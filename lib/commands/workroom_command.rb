@@ -55,6 +55,8 @@ module Rails
 
       error "Cannot delete. #{vcs_label} '#{name}' does not exist!" if !workroom_exists?
 
+      return if !yes?("Are you sure you want to delete workroom '#{name}'?")
+
       remove_workroom
       delete_caddy_route
       cleanup_directory if jj?
@@ -137,6 +139,7 @@ module Rails
 
       def cleanup_directory
         return if !workroom_path.exist?
+        return if !yes?("  Directory '#{workroom_path}' still exists. Delete it?")
 
         remove_dir(workroom_path, verbose:)
       end
