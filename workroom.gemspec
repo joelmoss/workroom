@@ -9,7 +9,7 @@ Gem::Specification.new do |spec|
   spec.email       = ['joel@developwithstyle.com']
   spec.homepage    = 'https://github.com/joelmoss/workroom'
   spec.summary     = 'Manage development workrooms using JJ workspaces or git worktrees'
-  spec.description = 'Rails command for creating and managing development workrooms using JJ workspaces or git worktrees'
+  spec.description = 'Rails command for creating and managing development workrooms using JJ workspaces or git worktrees' # rubocop:disable Layout/LineLength
   spec.license     = 'MIT'
   spec.required_ruby_version = '>= 3.3.0'
 

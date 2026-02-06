@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bin/rubocop -a --force-exclusion $CLAUDE_FILE_PATHS 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -53,7 +53,7 @@ module Rails
       @name = name
       @workroom_path = Rails.root.join("../#{name}")
 
-      error "Cannot delete. #{vcs_label} '#{name}' does not exist!" unless workroom_exists?
+      error "Cannot delete. #{vcs_label} '#{name}' does not exist!" if !workroom_exists?
 
       remove_workroom
       delete_caddy_route
@@ -67,11 +67,11 @@ module Rails
 
       def error(message)
         say_error message, :red
-        exit 1 # rubocop:disable Rails/Exit
+        exit 1
       end
 
       def check_not_in_workroom!
-        return unless ENV.key?('DEFAULT_WORKROOM_PATH')
+        return if !ENV.key?('DEFAULT_WORKROOM_PATH')
 
         say_error 'It looks like you are already in a workroom, ' \
                   'as the $DEFAULT_WORKROOM_PATH is set!', :yellow
@@ -136,7 +136,7 @@ module Rails
       end
 
       def cleanup_directory
-        return unless workroom_path.exist?
+        return if !workroom_path.exist?
 
         remove_dir(workroom_path, verbose:)
       end
@@ -157,13 +157,15 @@ module Rails
         else
           say_error '.env.local not found.', :yellow
           create_file(workroom_env_path, workroom_env_content, verbose:)
-          say '  Created a fresh .env.local for you. Check out .env.example to get started.',
-              :yellow if verbose
+          if verbose
+            say '  Created a fresh .env.local for you. Check out .env.example to get started.',
+                :yellow
+          end
         end
       end
 
       def symlink_bundle
-        return unless (bundle_path = Rails.root.join('.bundle')).exist?
+        return if !(bundle_path = Rails.root.join('.bundle')).exist?
 
         create_link(workroom_path.join('.bundle'), bundle_path, verbose:)
       end
@@ -177,7 +179,7 @@ module Rails
 
         begin
           response = Net::HTTP.get_response(uri)
-          unless response.is_a?(Net::HTTPSuccess)
+          if !response.is_a?(Net::HTTPSuccess)
             say "No Caddy route found for '#{route_id}', skipping...", :yellow if verbose
             return
           end
