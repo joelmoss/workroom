@@ -10,3 +10,6 @@ gem 'debug', '>= 1.0.0'
 gem 'rubocop-disable_syntax', require: false
 gem 'rubocop-packaging', require: false
 gem 'rubocop-performance', require: false
+
+gem 'maxitest'
+gem 'minitest-focus'
