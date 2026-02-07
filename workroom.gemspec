@@ -18,9 +18,14 @@ Gem::Specification.new do |spec|
   spec.metadata['changelog_uri'] = spec.homepage
   spec.metadata['rubygems_mfa_required'] = 'true'
 
+  spec.executables = %w[workroom]
+
   spec.files = Dir.chdir(File.expand_path(__dir__)) do
-    Dir['lib/**/*', 'MIT-LICENSE', 'README.md']
+    Dir['lib/**/*', 'bin/workroom', 'MIT-LICENSE', 'README.md']
   end
 
+  spec.require_paths = ['lib']
+
   spec.add_dependency 'thor', '~> 1.5'
+  spec.add_dependency 'zeitwerk', '~> 2.7'
 end
