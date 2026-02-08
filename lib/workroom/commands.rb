@@ -28,15 +28,15 @@ module Workroom
       check_not_in_workroom!
       validate_name!
 
-      if workroom_exists?
-        say_status :create, name, :red
-        exception = jj? ? JJWorkspaceExistsError : GitWorktreeExistsError
-        raise_error exception, "#{vcs_label} '#{name}' already exists!"
-      end
+      if !options[:pretend]
+        if workroom_exists?
+          exception = jj? ? JJWorkspaceExistsError : GitWorktreeExistsError
+          raise_error exception, "#{vcs_label} '#{name}' already exists!"
+        end
 
-      if workroom_path.exist?
-        say_status :create, name, :red
-        raise_error DirExistsError, "Workroom directory '#{workroom_path}' already exists!"
+        if workroom_path.exist?
+          raise_error DirExistsError, "Workroom directory '#{workroom_path}' already exists!"
+        end
       end
 
       create_workroom
@@ -50,16 +50,16 @@ module Workroom
       check_not_in_workroom!
       validate_name!
 
-      say_status :delete, name, :red
+      if !options[:pretend]
+        if !workroom_exists?
+          exception = jj? ? JJWorkspaceExistsError : GitWorktreeExistsError
+          raise_error exception, "#{vcs_label} '#{name}' does not exist!"
+        end
 
-      if !workroom_exists?
-        exception = jj? ? JJWorkspaceExistsError : GitWorktreeExistsError
-        raise_error exception, "#{vcs_label} '#{name}' does not exist!"
-      end
-
-      if !yes?("Are you sure you want to delete workroom '#{name}'?")
-        say_error "Aborting. Workroom '#{name}' was not deleted.", :yellow
-        return
+        if !yes?("Are you sure you want to delete workroom '#{name}'?")
+          say_error "Aborting. Workroom '#{name}' was not deleted.", :yellow
+          return
+        end
       end
 
       delete_workroom
