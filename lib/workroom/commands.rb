@@ -72,15 +72,22 @@ module Workroom
 
       delete_workroom
       cleanup_directory if jj?
+      run_teardown_script
 
       say
       say "Workroom '#{name}' deleted successfully.", :green
 
-      return if jj?
+      if !jj?
+        say
+        say "Note: Git branch '#{name}' was not deleted."
+        say "      Delete manually with `git branch -D #{name}` if needed."
+      end
+
+      return if !@teardown_result
 
       say
-      say "Note: Git branch '#{name}' was not deleted."
-      say "      Delete manually with `git branch -D #{name}` if needed."
+      say 'Teardown script output:', :blue
+      say @teardown_result
     end
 
     private
@@ -93,6 +100,28 @@ module Workroom
         end
       end
 
+      def setup_script
+        @setup_script ||= workroom_path.join('scripts', 'workroom_setup')
+      end
+
+      def setup_script_to_run
+        setup_script
+      end
+
+      def run_teardown_script
+        return if !teardown_script.exist?
+
+        run_user_script :teardown, teardown_script_to_run.to_s
+      end
+
+      def teardown_script
+        @teardown_script ||= Pathname.pwd.join('scripts', 'workroom_teardown')
+      end
+
+      def teardown_script_to_run
+        teardown_script
+      end
+
       def run_user_script(type, command)
         return if behavior != :invoke
 
@@ -102,21 +131,15 @@ module Workroom
 
         return if options[:pretend]
 
-        @setup_result, status = Open3.capture2e(command)
+        result, status = Open3.capture2e(command)
+
+        instance_variable_set :"@#{type}_result", result
 
         return if status.success?
 
         exception_class = Object.const_get("::Workroom::#{type.to_s.capitalize}Error")
 
-        raise_error exception_class, "#{command} returned a non-zero exit code.\n#{@setup_result}"
-      end
-
-      def setup_script
-        @setup_script ||= workroom_path.join('scripts', 'workroom_setup')
-      end
-
-      def setup_script_to_run
-        setup_script
+        raise_error exception_class, "#{command} returned a non-zero exit code.\n#{result}"
       end
 
       def raise_error(exception_class, message)

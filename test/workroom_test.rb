@@ -118,7 +118,6 @@ describe Workroom do
       end
     end
 
-    focus
     it 'errors on failed setup script' do
       cmd = Workroom::Commands.any_instance
       cmd.stubs(:raw_jj_workspace_list).returns 'default: mk 6ec05f05 (no description set)'
@@ -213,6 +212,55 @@ describe Workroom do
 
         command(:delete, 'foo')
         refute Dir.exist?('/foo')
+      end
+    end
+
+    it 'runs the teardown script if it exists' do
+      cmd = Workroom::Commands.any_instance
+      cmd.stubs(:raw_jj_workspace_list).returns <<~_
+        default: mk 6ec05f05 (no description set)
+        foo: mk 6ec05f05 (no description set)
+      _
+      cmd.stubs(:teardown_script_to_run).returns("#{__dir__}/fixtures/teardown")
+
+      Thor::LineEditor.expects(:readline).with(
+        "Are you sure you want to delete workroom 'foo'? ", { add_to_history: false }
+      ).returns('y')
+
+      sandbox do
+        FileUtils.mkdir('.jj')
+        FileUtils.mkdir('/foo')
+        FileUtils.mkdir('/sandbox/scripts')
+        FileUtils.touch('/sandbox/scripts/workroom_teardown')
+
+        out = capture(:stdout) { command(:delete, 'foo') }
+        assert_match 'I teared down', out
+        assert_match "Workroom 'foo' deleted successfully.", out
+      end
+    end
+
+    it 'errors on failed teardown script' do
+      cmd = Workroom::Commands.any_instance
+      cmd.stubs(:raw_jj_workspace_list).returns <<~_
+        default: mk 6ec05f05 (no description set)
+        foo: mk 6ec05f05 (no description set)
+      _
+      cmd.stubs(:teardown_script_to_run).returns("#{__dir__}/fixtures/failed_teardown")
+
+      Thor::LineEditor.expects(:readline).with(
+        "Are you sure you want to delete workroom 'foo'? ", { add_to_history: false }
+      ).returns('y')
+
+      sandbox do
+        FileUtils.mkdir('.jj')
+        FileUtils.mkdir('/foo')
+        FileUtils.mkdir('/sandbox/scripts')
+        FileUtils.touch('/sandbox/scripts/workroom_teardown')
+
+        err = assert_raises Workroom::TeardownError do
+          command(:delete, 'foo')
+        end
+        assert_match 'I failed to tear down', err.message
       end
     end
   end
