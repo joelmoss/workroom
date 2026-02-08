@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'open3'
 require 'thor'
 
 module Workroom
@@ -40,8 +41,15 @@ module Workroom
       end
 
       create_workroom
+      run_setup_script
 
+      say
       say "Workroom '#{name}' created successfully at #{workroom_path}.", :green
+
+      return if !@setup_result
+
+      say 'Setup script output:', :blue
+      say @setup_result
     end
 
     desc 'delete NAME', 'Delete an existing workroom'
@@ -65,14 +73,51 @@ module Workroom
       delete_workroom
       cleanup_directory if jj?
 
+      say
       say "Workroom '#{name}' deleted successfully.", :green
+
       return if jj?
 
+      say
       say "Note: Git branch '#{name}' was not deleted."
       say "      Delete manually with `git branch -D #{name}` if needed."
     end
 
     private
+
+      def run_setup_script
+        return if !setup_script.exist?
+
+        inside workroom_path do
+          run_user_script :setup, setup_script_to_run.to_s
+        end
+      end
+
+      def run_user_script(type, command)
+        return if behavior != :invoke
+
+        destination = relative_to_original_destination_root(destination_root, false)
+
+        say_status type, "Running #{command} from #{destination.inspect}"
+
+        return if options[:pretend]
+
+        @setup_result, status = Open3.capture2e(command)
+
+        return if status.success?
+
+        exception_class = Object.const_get("::Workroom::#{type.to_s.capitalize}Error")
+
+        raise_error exception_class, "#{command} returned a non-zero exit code.\n#{@setup_result}"
+      end
+
+      def setup_script
+        @setup_script ||= workroom_path.join('scripts', 'workroom_setup')
+      end
+
+      def setup_script_to_run
+        setup_script
+      end
 
       def raise_error(exception_class, message)
         message = shell.set_color message, :red if !testing?
@@ -89,10 +134,10 @@ module Workroom
 
       def vcs
         @vcs ||= if Dir.exist?('.jj')
-                   say_status :repo, 'Detected Jujutsu', :green
+                   say_status :repo, 'Detected Jujutsu'
                    :jj
                  elsif Dir.exist?('.git')
-                   say_status :repo, 'Detected Git', :green
+                   say_status :repo, 'Detected Git'
                    :git
                  else
                    say_status :repo, 'No supported VCS detected', :red
@@ -169,6 +214,11 @@ module Workroom
       end
 
       def create_workroom
+        if testing?
+          FileUtils.copy('./', workroom_path)
+          return
+        end
+
         if jj?
           run "jj workspace add #{workroom_path}"
         else
@@ -177,6 +227,11 @@ module Workroom
       end
 
       def delete_workroom
+        if testing?
+          FileUtils.rm_rf(workroom_path)
+          return
+        end
+
         if jj?
           run "jj workspace forget #{name}"
         else
@@ -191,7 +246,9 @@ module Workroom
       end
 
       def run(command, config = {})
-        raise TestError, "Command execution blocked during testing: `#{command}`" if testing?
+        if !config[:force] && testing?
+          raise TestError, "Command execution blocked during testing: `#{command}`"
+        end
 
         config[:verbose] = verbose
         config[:capture] = !verbose if !config.key?(:capture)

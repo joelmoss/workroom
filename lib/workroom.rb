@@ -15,4 +15,6 @@ module Workroom
   class UnsupportedVCSError < Error; end
   class JJWorkspaceExistsError < Error; end
   class GitWorktreeExistsError < Error; end
+  class SetupError < Error; end
+  class TeardownError < Error; end
 end

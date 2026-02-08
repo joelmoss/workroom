@@ -81,7 +81,7 @@ describe Workroom do
 
       sandbox do
         FileUtils.mkdir('.jj')
-        FileUtils.mkdir('../foo')
+        FileUtils.mkdir('/foo')
 
         assert_raises Workroom::DirExistsError do
           command(:create, 'foo')
@@ -92,14 +92,47 @@ describe Workroom do
     it 'succeeds' do
       cmd = Workroom::Commands.any_instance
       cmd.stubs(:raw_jj_workspace_list).returns 'default: mk 6ec05f05 (no description set)'
-      cmd.stubs(:create_workroom)
 
       sandbox do
         FileUtils.mkdir('.jj')
 
-        assert_equal "Workroom 'foo' created successfully at /foo.\n", capture(:stdout) {
+        out = capture(:stdout) { command(:create, 'foo') }
+        assert_match "Workroom 'foo' created successfully at /foo.", out
+        assert Dir.exist?('/foo')
+      end
+    end
+
+    it 'runs the setup script if it exists' do
+      cmd = Workroom::Commands.any_instance
+      cmd.stubs(:raw_jj_workspace_list).returns 'default: mk 6ec05f05 (no description set)'
+      cmd.stubs(:setup_script_to_run).returns("#{__dir__}/fixtures/setup")
+
+      sandbox do
+        FileUtils.mkdir('.jj')
+        FileUtils.mkdir_p('scripts')
+        FileUtils.touch('scripts/workroom_setup')
+
+        out = capture(:stdout) { command(:create, 'foo') }
+        assert_match 'I succeeded', out
+        assert_match "Workroom 'foo' created successfully at /foo.\n", out
+      end
+    end
+
+    focus
+    it 'errors on failed setup script' do
+      cmd = Workroom::Commands.any_instance
+      cmd.stubs(:raw_jj_workspace_list).returns 'default: mk 6ec05f05 (no description set)'
+      cmd.stubs(:setup_script_to_run).returns("#{__dir__}/fixtures/failed_setup")
+
+      sandbox do
+        FileUtils.mkdir('.jj')
+        FileUtils.mkdir_p('scripts')
+        FileUtils.touch('scripts/workroom_setup')
+
+        err = assert_raises Workroom::SetupError do
           command(:create, 'foo')
-        }
+        end
+        assert_match 'I failed', err.message
       end
     end
   end
@@ -168,7 +201,6 @@ describe Workroom do
         default: mk 6ec05f05 (no description set)
         foo: mk 6ec05f05 (no description set)
       _
-      cmd.stubs(:delete_workroom)
       cmd.stubs(:say).returns("Workroom 'foo' deleted successfully.")
 
       Thor::LineEditor.expects(:readline).with(
@@ -177,10 +209,10 @@ describe Workroom do
 
       sandbox do
         FileUtils.mkdir('.jj')
-        FileUtils.mkdir('../foo')
+        FileUtils.mkdir('/foo')
 
         command(:delete, 'foo')
-        refute Dir.exist?('../foo')
+        refute Dir.exist?('/foo')
       end
     end
   end
