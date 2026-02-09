@@ -140,8 +140,9 @@ module Workroom
       def run_setup_script
         return if !setup_script.exist?
 
+        parent_dir = Pathname.pwd.to_s
         inside workroom_path do
-          run_user_script :setup, setup_script_to_run.to_s
+          run_user_script :setup, setup_script_to_run.to_s, parent_dir
         end
       end
 
@@ -156,8 +157,9 @@ module Workroom
       def run_teardown_script
         return if !teardown_script.exist?
 
+        parent_dir = Pathname.pwd.to_s
         inside workroom_path do
-          run_user_script :teardown, teardown_script_to_run.to_s
+          run_user_script :teardown, teardown_script_to_run.to_s, parent_dir
         end
       end
 
@@ -169,7 +171,7 @@ module Workroom
         teardown_script
       end
 
-      def run_user_script(type, command)
+      def run_user_script(type, command, parent_dir)
         return if behavior != :invoke
 
         destination = relative_to_original_destination_root(destination_root, false)
@@ -178,7 +180,7 @@ module Workroom
 
         return if options[:pretend]
 
-        result, status = Open3.capture2e(command)
+        result, status = Open3.capture2e({ 'WORKROOM_PARENT_DIR' => parent_dir }, command)
 
         instance_variable_set :"@#{type}_result", result
 

@@ -85,7 +85,13 @@ Place an executable script at `scripts/workroom_setup` in your project. It will 
 
 ### Teardown script
 
-Place an executable script at `scripts/workroom_teardown` in your project. It will run after a workroom is deleted.
+Place an executable script at `scripts/workroom_teardown` in your project. It will run inside the workroom directory before it is deleted.
+
+### Environment variables
+
+The following environment variables are available to setup and teardown scripts:
+
+- `WORKROOM_PARENT_DIR` - The absolute path to the parent project directory. Since scripts run inside the workroom directory, this lets you reference files in the original project root.
 
 ## Rails integration
 
