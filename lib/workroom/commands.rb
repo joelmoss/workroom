@@ -102,6 +102,8 @@ module Workroom
     end
 
     desc 'delete|d NAME', 'Delete an existing workroom'
+    method_option :confirm, type: :string,
+                            desc: 'Skip confirmation if value matches the workroom name'
     def delete(name)
       @name = name
       check_not_in_workroom!
@@ -113,7 +115,13 @@ module Workroom
           raise_error exception, "#{vcs_label} '#{name}' does not exist!"
         end
 
-        if !yes?("Are you sure you want to delete workroom '#{name}'?")
+        if options[:confirm]
+          if options[:confirm] != name
+            raise_error ArgumentError,
+                        "--confirm value '#{options[:confirm]}' does not match " \
+                        "workroom name '#{name}'."
+          end
+        elsif !yes?("Are you sure you want to delete workroom '#{name}'?")
           say_error "Aborting. Workroom '#{name}' was not deleted.", :yellow
           return
         end

@@ -423,6 +423,70 @@ describe Workroom do
       end
     end
 
+    it '--confirm skips prompt and deletes' do
+      cmd = Workroom::Commands.any_instance
+      cmd.stubs(:raw_jj_workspace_list).returns <<~_
+        default: mk 6ec05f05 (no description set)
+        foo: mk 6ec05f05 (no description set)
+      _
+      cmd.stubs(:say).returns("Workroom 'foo' deleted successfully.")
+      cmd.stubs(:workrooms_dir).returns(Pathname.new('/workrooms'))
+
+      Thor::LineEditor.expects(:readline).never
+
+      sandbox do
+        FileUtils.mkdir('.jj')
+        FileUtils.mkdir_p('/workrooms/foo')
+
+        command(:delete, 'foo', '--confirm', 'foo')
+        refute Dir.exist?('/workrooms/foo')
+      end
+    end
+
+    it '--confirm with mismatched name raises error' do
+      cmd = Workroom::Commands.any_instance
+      cmd.stubs(:raw_jj_workspace_list).returns <<~_
+        default: mk 6ec05f05 (no description set)
+        foo: mk 6ec05f05 (no description set)
+      _
+      cmd.stubs(:workrooms_dir).returns(Pathname.new('/workrooms'))
+
+      sandbox do
+        FileUtils.mkdir('.jj')
+        FileUtils.mkdir_p('/workrooms/foo')
+
+        err = assert_raises ArgumentError do
+          command(:delete, 'foo', '--confirm', 'wrong')
+        end
+        assert_match "--confirm value 'wrong' does not match workroom name 'foo'", err.message
+      end
+    end
+
+    it '--confirm with matching name updates config' do
+      cmd = Workroom::Commands.any_instance
+      cmd.stubs(:raw_jj_workspace_list).returns <<~_
+        default: mk 6ec05f05 (no description set)
+        foo: mk 6ec05f05 (no description set)
+      _
+      cmd.stubs(:say).returns("Workroom 'foo' deleted successfully.")
+      cmd.stubs(:workrooms_dir).returns(Pathname.new('/workrooms'))
+
+      Thor::LineEditor.expects(:readline).never
+
+      sandbox do
+        FileUtils.mkdir('.jj')
+        FileUtils.mkdir_p('/workrooms/foo')
+
+        config = Workroom::Config.new
+        config.add_workroom(Pathname.pwd.to_s, 'foo', '/workrooms/foo', :jj)
+
+        command(:delete, 'foo', '--confirm', 'foo')
+
+        data = config.read
+        assert_nil data[Pathname.pwd.to_s]
+      end
+    end
+
     it 'runs the teardown script if it exists' do
       cmd = Workroom::Commands.any_instance
       cmd.stubs(:raw_jj_workspace_list).returns <<~_
