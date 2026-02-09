@@ -55,6 +55,12 @@ workroom delete my-feature
 
 Removes the workspace/worktree and cleans up the directory. You'll be prompted for confirmation before deletion.
 
+When run without a name, an interactive multi-select menu is shown, allowing you to pick one or more workrooms to delete:
+
+```bash
+workroom delete
+```
+
 To skip the confirmation prompt (useful for scripting), pass `--confirm` with the workroom name:
 
 ```bash
