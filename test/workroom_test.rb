@@ -646,7 +646,7 @@ describe Workroom do
       sandbox do
         FileUtils.mkdir('.jj')
         FileUtils.mkdir_p('/workrooms/foo')
-        FileUtils.mkdir('/sandbox/scripts')
+        FileUtils.mkdir_p('/sandbox/scripts')
         FileUtils.touch('/sandbox/scripts/workroom_teardown')
 
         out = capture(:stdout) { command(:delete, 'foo') }
@@ -671,7 +671,7 @@ describe Workroom do
       sandbox do
         FileUtils.mkdir('.jj')
         FileUtils.mkdir_p('/workrooms/foo')
-        FileUtils.mkdir('/sandbox/scripts')
+        FileUtils.mkdir_p('/sandbox/scripts')
         FileUtils.touch('/sandbox/scripts/workroom_teardown')
 
         err = assert_raises Workroom::TeardownError do

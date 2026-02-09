@@ -64,8 +64,7 @@ module Workroom
 
     desc 'list|l|ls', 'List all workrooms for the current project'
     def list
-      data = config.read
-      project_path, project = find_project(data)
+      project_path, project = config.find_current_project
 
       # Inside a workroom
       if project && Pathname.pwd.to_s != project_path
@@ -87,13 +86,12 @@ module Workroom
       end
 
       # Neither — list all workrooms grouped by parent
-      projects_with_workrooms = data.select { |_, p| p['workrooms']&.any? }
-      if projects_with_workrooms.empty?
+      if config.projects_with_workrooms.empty?
         say 'No workrooms found.'
         return
       end
 
-      projects_with_workrooms.each do |path, proj|
+      config.projects_with_workrooms.each do |path, proj|
         say "#{display_path(path)}:"
         inside path do
           list_workrooms(proj['workrooms'], proj['vcs'])
@@ -106,13 +104,14 @@ module Workroom
     method_option :confirm, type: :string,
                             desc: 'Skip confirmation if value matches the workroom name'
     def delete(name = nil)
+      check_not_in_workroom!
+
       if !name
         interactive_delete
         return
       end
 
       @name = name
-      check_not_in_workroom!
       validate_name!
 
       if !options[:pretend]
@@ -147,7 +146,7 @@ module Workroom
       end
 
       def setup_script
-        @setup_script ||= workroom_path.join('scripts', 'workroom_setup')
+        @setup_script ||= Pathname.pwd.join('scripts', 'workroom_setup')
       end
 
       def setup_script_to_run
@@ -157,7 +156,9 @@ module Workroom
       def run_teardown_script
         return if !teardown_script.exist?
 
-        run_user_script :teardown, teardown_script_to_run.to_s
+        inside workroom_path do
+          run_user_script :teardown, teardown_script_to_run.to_s
+        end
       end
 
       def teardown_script
@@ -294,10 +295,7 @@ module Workroom
       end
 
       def interactive_delete
-        check_not_in_workroom!
-
-        data = config.read
-        _, project = find_project(data)
+        _, project = config.find_current_project
 
         if !project || !project['workrooms'] || project['workrooms'].empty?
           say 'No workrooms found for this project.'
@@ -329,10 +327,10 @@ module Workroom
         @name = selected_name
         @workroom_path = nil
 
+        run_teardown_script
         delete_workroom
         cleanup_directory if jj?
         update_config(:remove)
-        run_teardown_script
 
         say "Workroom '#{name}' deleted successfully.", :green
 
@@ -458,20 +456,6 @@ module Workroom
           row
         end
         print_table rows, indent: 2
-      end
-
-      # Find the project for the current directory. If pwd is a project in the config, return it
-      # directly. Otherwise, check if pwd is a workroom path under any project.
-      def find_project(data)
-        pwd = Pathname.pwd.to_s
-        return [pwd, data[pwd]] if data.key?(pwd)
-
-        data.each do |project_path, project|
-          workrooms = project['workrooms'] || {}
-          return [project_path, project] if workrooms.any? { |_, info| info['path'] == pwd }
-        end
-
-        [pwd, nil]
       end
 
       def workroom_warnings(name, info, stored_vcs)

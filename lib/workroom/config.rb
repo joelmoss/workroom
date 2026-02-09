@@ -40,6 +40,25 @@ module Workroom
       end
     end
 
+    # Find the project for the current directory. If pwd is a project in the config, return it
+    # directly. Otherwise, check if pwd is a workroom path under any project.
+    def find_current_project
+      data = read
+      pwd = Pathname.pwd.to_s
+      return [pwd, data[pwd]] if data.key?(pwd)
+
+      data.each do |project_path, project|
+        workrooms = project['workrooms'] || {}
+        return [project_path, project] if workrooms.any? { |_, info| info['path'] == pwd }
+      end
+
+      [pwd, nil]
+    end
+
+    def projects_with_workrooms
+      @projects_with_workrooms ||= read.select { |_, p| p['workrooms']&.any? }
+    end
+
     def workrooms_dir
       Pathname.new(File.expand_path(read['workrooms_dir'] || DEFAULT_WORKROOMS_DIR))
     end
