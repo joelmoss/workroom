@@ -137,8 +137,8 @@ module Workroom
 
       if !jj?
         say
-        say "Note: Git branch '#{name}' was not deleted."
-        say "      Delete manually with `git branch -D #{name}` if needed."
+        say "Note: Git branch '#{vcs_name}' was not deleted."
+        say "      Delete manually with `git branch -D #{vcs_name}` if needed."
       end
 
       if @teardown_result
@@ -215,6 +215,10 @@ module Workroom
         @workrooms_dir ||= config.workrooms_dir
       end
 
+      def vcs_name
+        "workroom/#{name}"
+      end
+
       def workroom_path
         @workroom_path ||= workrooms_dir.join(name)
       end
@@ -247,7 +251,7 @@ module Workroom
       end
 
       def jj_workspace_exists?
-        jj_workspaces.include?(name)
+        jj_workspaces.include?(vcs_name)
       end
 
       def git_worktree_exists?
@@ -341,9 +345,9 @@ module Workroom
         end
 
         if jj?
-          run "jj workspace add #{workroom_path}"
+          run "jj workspace add #{workroom_path} --name #{vcs_name}"
         else
-          run "git worktree add -b #{name} #{workroom_path}"
+          run "git worktree add -b #{vcs_name} #{workroom_path}"
         end
       end
 
@@ -354,7 +358,7 @@ module Workroom
         end
 
         if jj?
-          run "jj workspace forget #{name}"
+          run "jj workspace forget #{vcs_name}"
         else
           run "git worktree remove #{workroom_path} --force"
         end
@@ -432,7 +436,7 @@ module Workroom
         warnings << 'directory not found' if !Dir.exist?(info['path'])
         if !testing?
           vcs_missing = if stored_vcs == 'jj'
-                          !jj_workspaces.include?(name)
+                          !jj_workspaces.include?("workroom/#{name}")
                         elsif stored_vcs == 'git'
                           git_worktrees.none? { |path| File.basename(path) == name }
                         end

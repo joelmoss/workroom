@@ -204,7 +204,7 @@ describe Workroom do
       cmd.stubs(:raw_jj_workspace_list)
          .returns <<~_
            default: mk 6ec05f05 (no description set)
-           taken: qo a41890ed (empty) (no description set)
+           workroom/taken: qo a41890ed (empty) (no description set)
          _
       cmd.stubs(:workrooms_dir).returns(Pathname.new('/workrooms'))
 
@@ -377,7 +377,7 @@ describe Workroom do
       cmd = Workroom::Commands.any_instance
       cmd.stubs(:raw_jj_workspace_list).returns <<~_
         default: mk 6ec05f05 (no description set)
-        foo: mk 6ec05f05 (no description set)
+        workroom/foo: mk 6ec05f05 (no description set)
       _
       cmd.stubs(:say).returns("Workroom 'foo' deleted successfully.")
       cmd.stubs(:workrooms_dir).returns(Pathname.new('/workrooms'))
@@ -399,7 +399,7 @@ describe Workroom do
       cmd = Workroom::Commands.any_instance
       cmd.stubs(:raw_jj_workspace_list).returns <<~_
         default: mk 6ec05f05 (no description set)
-        foo: mk 6ec05f05 (no description set)
+        workroom/foo: mk 6ec05f05 (no description set)
       _
       cmd.stubs(:say).returns("Workroom 'foo' deleted successfully.")
       cmd.stubs(:workrooms_dir).returns(Pathname.new('/workrooms'))
@@ -427,7 +427,7 @@ describe Workroom do
       cmd = Workroom::Commands.any_instance
       cmd.stubs(:raw_jj_workspace_list).returns <<~_
         default: mk 6ec05f05 (no description set)
-        foo: mk 6ec05f05 (no description set)
+        workroom/foo: mk 6ec05f05 (no description set)
       _
       cmd.stubs(:say).returns("Workroom 'foo' deleted successfully.")
       cmd.stubs(:workrooms_dir).returns(Pathname.new('/workrooms'))
@@ -447,7 +447,7 @@ describe Workroom do
       cmd = Workroom::Commands.any_instance
       cmd.stubs(:raw_jj_workspace_list).returns <<~_
         default: mk 6ec05f05 (no description set)
-        foo: mk 6ec05f05 (no description set)
+        workroom/foo: mk 6ec05f05 (no description set)
       _
       cmd.stubs(:workrooms_dir).returns(Pathname.new('/workrooms'))
 
@@ -466,7 +466,7 @@ describe Workroom do
       cmd = Workroom::Commands.any_instance
       cmd.stubs(:raw_jj_workspace_list).returns <<~_
         default: mk 6ec05f05 (no description set)
-        foo: mk 6ec05f05 (no description set)
+        workroom/foo: mk 6ec05f05 (no description set)
       _
       cmd.stubs(:say).returns("Workroom 'foo' deleted successfully.")
       cmd.stubs(:workrooms_dir).returns(Pathname.new('/workrooms'))
@@ -491,7 +491,7 @@ describe Workroom do
       cmd = Workroom::Commands.any_instance
       cmd.stubs(:raw_jj_workspace_list).returns <<~_
         default: mk 6ec05f05 (no description set)
-        foo: mk 6ec05f05 (no description set)
+        workroom/foo: mk 6ec05f05 (no description set)
       _
       cmd.stubs(:teardown_script_to_run).returns("#{__dir__}/fixtures/teardown")
       cmd.stubs(:workrooms_dir).returns(Pathname.new('/workrooms'))
@@ -516,7 +516,7 @@ describe Workroom do
       cmd = Workroom::Commands.any_instance
       cmd.stubs(:raw_jj_workspace_list).returns <<~_
         default: mk 6ec05f05 (no description set)
-        foo: mk 6ec05f05 (no description set)
+        workroom/foo: mk 6ec05f05 (no description set)
       _
       cmd.stubs(:teardown_script_to_run).returns("#{__dir__}/fixtures/failed_teardown")
       cmd.stubs(:workrooms_dir).returns(Pathname.new('/workrooms'))
