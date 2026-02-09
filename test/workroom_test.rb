@@ -7,6 +7,98 @@ describe Workroom do
     refute_nil Workroom::VERSION
   end
 
+  context 'Config' do
+    it 'returns OS-appropriate config path for macOS' do
+      config = Workroom::Config.new
+      config.stubs(:config_dir).returns('/Users/test/Library/Application Support')
+      config.instance_variable_set(:@config_path, nil)
+      assert_equal(
+        '/Users/test/Library/Application Support/workroom/config.json',
+        config.config_path
+      )
+    end
+
+    it 'returns OS-appropriate config path for Linux' do
+      config = Workroom::Config.new
+      config.stubs(:config_dir).returns('/home/test/.config')
+      config.instance_variable_set(:@config_path, nil)
+      assert_equal '/home/test/.config/workroom/config.json', config.config_path
+    end
+
+    it 'reads empty hash when config file does not exist' do
+      sandbox do
+        config = Workroom::Config.new
+        config.stubs(:config_path).returns('/tmp/workroom/config.json')
+        assert_equal({}, config.read)
+      end
+    end
+
+    it 'creates config file and directory if they do not exist' do
+      sandbox do
+        config = Workroom::Config.new
+        config.stubs(:config_path).returns('/tmp/workroom/config.json')
+        config.add_workroom('/project', 'foo', '/foo', :jj)
+        assert File.exist?('/tmp/workroom/config.json')
+      end
+    end
+
+    it 'adds a workroom entry' do
+      sandbox do
+        config = Workroom::Config.new
+        config.stubs(:config_path).returns('/tmp/workroom/config.json')
+        config.add_workroom('/project', 'foo', '/foo', :jj)
+        data = config.read
+        assert_equal '/foo', data['/project']['workrooms']['foo']['path']
+        assert_equal 'jj', data['/project']['vcs']
+      end
+    end
+
+    it 'adds multiple workroom entries' do
+      sandbox do
+        config = Workroom::Config.new
+        config.stubs(:config_path).returns('/tmp/workroom/config.json')
+        config.add_workroom('/project', 'foo', '/foo', :jj)
+        config.add_workroom('/project', 'bar', '/bar', :jj)
+        data = config.read
+        assert_equal '/foo', data['/project']['workrooms']['foo']['path']
+        assert_equal '/bar', data['/project']['workrooms']['bar']['path']
+      end
+    end
+
+    it 'removes a workroom entry and cleans up empty parent' do
+      sandbox do
+        config = Workroom::Config.new
+        config.stubs(:config_path).returns('/tmp/workroom/config.json')
+        config.add_workroom('/project', 'foo', '/foo', :jj)
+        config.remove_workroom('/project', 'foo')
+        data = config.read
+        assert_nil data['/project']
+      end
+    end
+
+    it 'removes a workroom entry but keeps parent with remaining workrooms' do
+      sandbox do
+        config = Workroom::Config.new
+        config.stubs(:config_path).returns('/tmp/workroom/config.json')
+        config.add_workroom('/project', 'foo', '/foo', :jj)
+        config.add_workroom('/project', 'bar', '/bar', :jj)
+        config.remove_workroom('/project', 'foo')
+        data = config.read
+        assert_nil data['/project']['workrooms']['foo']
+        assert_equal '/bar', data['/project']['workrooms']['bar']['path']
+      end
+    end
+
+    it 'handles remove for nonexistent parent gracefully' do
+      sandbox do
+        config = Workroom::Config.new
+        config.stubs(:config_path).returns('/tmp/workroom/config.json')
+        config.remove_workroom('/nonexistent', 'foo')
+        assert_equal({}, config.read)
+      end
+    end
+  end
+
   context 'create' do
     it 'errors on invalid name' do
       assert_raises Workroom::InvalidNameError do
@@ -99,6 +191,24 @@ describe Workroom do
         out = capture(:stdout) { command(:create, 'foo') }
         assert_match "Workroom 'foo' created successfully at /foo.", out
         assert Dir.exist?('/foo')
+      end
+    end
+
+    it 'updates config on create' do
+      cmd = Workroom::Commands.any_instance
+      cmd.stubs(:raw_jj_workspace_list).returns 'default: mk 6ec05f05 (no description set)'
+
+      sandbox do
+        FileUtils.mkdir('.jj')
+        config = Workroom::Config.new
+        config_path = config.config_path
+
+        capture(:stdout) { command(:create, 'foo') }
+
+        data = JSON.parse(File.read(config_path))
+        parent = Pathname.pwd.to_s
+        assert_equal 'jj', data[parent]['vcs']
+        assert_equal '/foo', data[parent]['workrooms']['foo']['path']
       end
     end
 
@@ -212,6 +322,33 @@ describe Workroom do
 
         command(:delete, 'foo')
         refute Dir.exist?('/foo')
+      end
+    end
+
+    it 'updates config on delete' do
+      cmd = Workroom::Commands.any_instance
+      cmd.stubs(:raw_jj_workspace_list).returns <<~_
+        default: mk 6ec05f05 (no description set)
+        foo: mk 6ec05f05 (no description set)
+      _
+      cmd.stubs(:say).returns("Workroom 'foo' deleted successfully.")
+
+      Thor::LineEditor.expects(:readline).with(
+        "Are you sure you want to delete workroom 'foo'? ", { add_to_history: false }
+      ).returns('y')
+
+      sandbox do
+        FileUtils.mkdir('.jj')
+        FileUtils.mkdir('/foo')
+
+        # Pre-populate config
+        config = Workroom::Config.new
+        config.add_workroom(Pathname.pwd.to_s, 'foo', '/foo', :jj)
+
+        command(:delete, 'foo')
+
+        data = config.read
+        assert_nil data[Pathname.pwd.to_s]
       end
     end
 

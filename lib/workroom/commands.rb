@@ -41,6 +41,7 @@ module Workroom
       end
 
       create_workroom
+      update_config(:add)
       run_setup_script
 
       say
@@ -72,6 +73,7 @@ module Workroom
 
       delete_workroom
       cleanup_directory if jj?
+      update_config(:remove)
       run_teardown_script
 
       say
@@ -266,6 +268,17 @@ module Workroom
         return if !workroom_path.exist?
 
         remove_dir(workroom_path, verbose:)
+      end
+
+      def update_config(action)
+        return if options[:pretend]
+
+        config = Config.new
+        if action == :add
+          config.add_workroom Pathname.pwd.to_s, name, workroom_path.to_s, vcs
+        else
+          config.remove_workroom Pathname.pwd.to_s, name
+        end
       end
 
       def run(command, config = {})
