@@ -41,9 +41,9 @@ A minimal Rails Engine with a single custom Rails command.
 
 ### Command: `rails workroom`
 
-Two subcommands: `add NAME` and `delete NAME`.
+Two subcommands: `create` and `delete NAME`.
 
-**`add`** creates a workroom as a sibling directory (`../NAME`), detects JJ (via `.jj` dir at `Rails.root`) vs git, copies `.env.local` with prepended workroom env vars (`DEFAULT_WORKROOM_PATH`, `PROJECT_NAME`, `HOST_DOMAIN`), and symlinks `.bundle`.
+**`create`** auto-generates a random friendly name (e.g. `swift-meadow`) and creates a workroom as a sibling directory, detects JJ (via `.jj` dir at `Rails.root`) vs git, copies `.env.local` with prepended workroom env vars (`DEFAULT_WORKROOM_PATH`, `PROJECT_NAME`, `HOST_DOMAIN`), and symlinks `.bundle`. Name generation retries on collision.
 
 **`delete`** removes the workspace/worktree, deletes the Caddy reverse proxy route via admin API at `localhost:2019` (route ID: `{name}-{project_name}`), and cleans up the directory for JJ.
 

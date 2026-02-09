@@ -100,56 +100,12 @@ describe Workroom do
   end
 
   context 'create' do
-    it 'errors on invalid name' do
-      assert_raises Workroom::InvalidNameError do
-        command(:create, 'fo.o')
-      end
-    end
-
     it 'errors if not a jj or git repo' do
+      Workroom::NameGenerator.any_instance.stubs(:generate).returns('foo')
+
       sandbox do
         assert_raises Workroom::UnsupportedVCSError do
-          command(:create, 'foo')
-        end
-      end
-    end
-
-    it 'errors if jj workspace already exists' do
-      Workroom::Commands.any_instance
-                        .stubs(:raw_jj_workspace_list)
-                        .returns <<~_
-                          default: mk 6ec05f05 (no description set)
-                          foo: qo a41890ed (empty) (no description set)
-                        _
-
-      sandbox do
-        FileUtils.mkdir('.jj')
-
-        assert_raises Workroom::JJWorkspaceExistsError do
-          command(:create, 'foo')
-        end
-      end
-    end
-
-    it 'errors if git worktree already exists' do
-      Workroom::Commands.any_instance
-                        .stubs(:raw_git_worktree_list)
-                        .returns <<~_
-                          worktree /
-                          HEAD cbace1f043eee2836c7b8494797dfe49f6985716
-                          branch refs/heads/master
-
-                          worktree /foo
-                          HEAD cbace1f043eee2836c7b8494797dfe49f6985716
-                          branch refs/heads/foo
-
-                        _
-
-      sandbox do
-        FileUtils.mkdir('.git')
-
-        assert_raises Workroom::GitWorktreeExistsError do
-          command(:create, 'foo')
+          command(:create)
         end
       end
     end
@@ -159,24 +115,7 @@ describe Workroom do
         FileUtils.touch('.Workroom')
 
         assert_raises Workroom::InWorkroomError do
-          command(:create, 'foo')
-        end
-      end
-    end
-
-    it 'errors if workroom path already exists' do
-      Workroom::Commands.any_instance
-                        .stubs(:raw_jj_workspace_list)
-                        .returns <<~_
-                          default: mk 6ec05f05 (no description set)
-                        _
-
-      sandbox do
-        FileUtils.mkdir('.jj')
-        FileUtils.mkdir('/foo')
-
-        assert_raises Workroom::DirExistsError do
-          command(:create, 'foo')
+          command(:create)
         end
       end
     end
@@ -184,11 +123,12 @@ describe Workroom do
     it 'succeeds' do
       cmd = Workroom::Commands.any_instance
       cmd.stubs(:raw_jj_workspace_list).returns 'default: mk 6ec05f05 (no description set)'
+      Workroom::NameGenerator.any_instance.stubs(:generate).returns('foo')
 
       sandbox do
         FileUtils.mkdir('.jj')
 
-        out = capture(:stdout) { command(:create, 'foo') }
+        out = capture(:stdout) { command(:create) }
         assert_match "Workroom 'foo' created successfully at /foo.", out
         assert Dir.exist?('/foo')
       end
@@ -197,13 +137,14 @@ describe Workroom do
     it 'updates config on create' do
       cmd = Workroom::Commands.any_instance
       cmd.stubs(:raw_jj_workspace_list).returns 'default: mk 6ec05f05 (no description set)'
+      Workroom::NameGenerator.any_instance.stubs(:generate).returns('foo')
 
       sandbox do
         FileUtils.mkdir('.jj')
         config = Workroom::Config.new
         config_path = config.config_path
 
-        capture(:stdout) { command(:create, 'foo') }
+        capture(:stdout) { command(:create) }
 
         data = JSON.parse(File.read(config_path))
         parent = Pathname.pwd.to_s
@@ -216,13 +157,14 @@ describe Workroom do
       cmd = Workroom::Commands.any_instance
       cmd.stubs(:raw_jj_workspace_list).returns 'default: mk 6ec05f05 (no description set)'
       cmd.stubs(:setup_script_to_run).returns("#{__dir__}/fixtures/setup")
+      Workroom::NameGenerator.any_instance.stubs(:generate).returns('foo')
 
       sandbox do
         FileUtils.mkdir('.jj')
         FileUtils.mkdir_p('scripts')
         FileUtils.touch('scripts/workroom_setup')
 
-        out = capture(:stdout) { command(:create, 'foo') }
+        out = capture(:stdout) { command(:create) }
         assert_match 'I succeeded', out
         assert_match "Workroom 'foo' created successfully at /foo.\n", out
       end
@@ -232,6 +174,7 @@ describe Workroom do
       cmd = Workroom::Commands.any_instance
       cmd.stubs(:raw_jj_workspace_list).returns 'default: mk 6ec05f05 (no description set)'
       cmd.stubs(:setup_script_to_run).returns("#{__dir__}/fixtures/failed_setup")
+      Workroom::NameGenerator.any_instance.stubs(:generate).returns('foo')
 
       sandbox do
         FileUtils.mkdir('.jj')
@@ -239,9 +182,47 @@ describe Workroom do
         FileUtils.touch('scripts/workroom_setup')
 
         err = assert_raises Workroom::SetupError do
-          command(:create, 'foo')
+          command(:create)
         end
         assert_match 'I failed', err.message
+      end
+    end
+
+    it 'retries on name collision with existing workspace' do
+      Workroom::NameGenerator.any_instance
+                             .stubs(:generate)
+                             .returns('taken').then.returns('fresh')
+
+      Workroom::Commands.any_instance
+                        .stubs(:raw_jj_workspace_list)
+                        .returns <<~_
+                          default: mk 6ec05f05 (no description set)
+                          taken: qo a41890ed (empty) (no description set)
+                        _
+
+      sandbox do
+        FileUtils.mkdir('.jj')
+
+        out = capture(:stdout) { command(:create) }
+        assert_match "Workroom 'fresh' created successfully at /fresh.", out
+      end
+    end
+
+    it 'retries on name collision with existing directory' do
+      Workroom::Commands.any_instance
+                        .stubs(:raw_jj_workspace_list)
+                        .returns 'default: mk 6ec05f05 (no description set)'
+
+      Workroom::NameGenerator.any_instance
+                             .stubs(:generate)
+                             .returns('taken').then.returns('fresh')
+
+      sandbox do
+        FileUtils.mkdir('.jj')
+        FileUtils.mkdir('/taken')
+
+        out = capture(:stdout) { command(:create) }
+        assert_match "Workroom 'fresh' created successfully at /fresh.", out
       end
     end
   end

@@ -20,15 +20,15 @@ module Workroom
       true
     end
 
-    desc 'create NAME', 'Create a new workroom'
+    desc 'create', 'Create a new workroom'
     long_desc <<-DESC, wrap: false
-      Create a new workroom with the given NAME at the same level as your main project directory,
-      using JJ workspaces if available, otherwise falling back to git worktrees.
+      Create a new workroom at the same level as your main project directory, using JJ workspaces
+      if available, otherwise falling back to git worktrees. A random friendly name is
+      auto-generated.
     DESC
-    def create(name)
-      @name = name
+    def create
       check_not_in_workroom!
-      validate_name!
+      @name = generate_unique_name
 
       if !options[:pretend]
         if workroom_exists?
@@ -278,10 +278,38 @@ module Workroom
       def check_not_in_workroom!
         return if !Pathname.pwd.join('.Workroom').exist?
 
-        say_status :create, name, :red
         raise_error InWorkroomError, <<~_
           Looks like you are already in a workroom. Run this command from the root of your main development directory, not from within an existing workroom.
         _
+      end
+
+      def generate_unique_name
+        generator = NameGenerator.new
+        last_name = nil
+
+        5.times do
+          last_name = generator.generate
+          if !workroom_exists_for?(last_name) && !workroom_path_for(last_name).exist?
+            return last_name
+          end
+        end
+
+        loop do
+          candidate = "#{last_name}-#{rand(10..99)}"
+          if !workroom_exists_for?(candidate) && !workroom_path_for(candidate).exist?
+            return candidate
+          end
+        end
+      end
+
+      def workroom_exists_for?(candidate)
+        @name = candidate
+        @workroom_path = nil
+        workroom_exists?
+      end
+
+      def workroom_path_for(candidate)
+        Pathname.pwd.join("../#{candidate}")
       end
 
       def create_workroom
