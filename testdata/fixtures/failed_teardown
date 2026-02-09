@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+
+echo "I failed to tear down"
+exit 1

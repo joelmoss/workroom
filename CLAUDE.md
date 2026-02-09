@@ -4,47 +4,43 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-Workroom is a Rails Engine gem that provides a `rails workroom` command for creating and managing development workrooms or workspaces using Git worktrees or JJ workspaces. Targets Rails >= 7.1, Ruby >= 3.3.
+Workroom is a standalone CLI tool (Go binary) for creating and managing development workrooms using Git worktrees or JJ (Jujutsu) workspaces. It auto-detects VCS type, generates friendly workroom names, and manages configuration at `~/.config/workroom/config.json`.
 
-## Build
-
-```bash
-bundle install
-gem build workroom.gemspec
-```
-
-No test suite exists yet.
-
-## Lint
+## Build & Test
 
 ```bash
-bin/rubocop
-bin/rubocop -a  # auto-fix
+go build -o workroom .              # build binary
+go test ./...                       # run all tests
+go test ./internal/workroom/ -v     # run workroom tests verbose
+go vet ./...                        # lint
+make build                          # build with version injection
+make test                           # run tests
+make install                        # install to $GOBIN
 ```
-
-## Code Style
-
-Rubocop enforced with plugins: `rubocop-disable_syntax`, `rubocop-packaging`, `rubocop-performance`.
-
-- **No `unless`** — use `if !condition` instead (enforced by `rubocop-disable_syntax`)
-- **No `and`/`or`/`not`** — use `&&`/`||`/`!`
-- **No numbered parameters** (`_1`, `_2`)
-- Indentation: `indented_internal_methods` (private methods indented one extra level)
-- Line length: 100 chars max
 
 ## Architecture
 
-A minimal Rails Engine with a single custom Rails command.
+Go project using Cobra for CLI, with clean internal package separation:
 
-- `lib/workroom/engine.rb` — Empty `Rails::Engine` subclass for auto-discovery by host Rails apps
-- `lib/commands/workroom_command.rb` — All core logic in `Rails::WorkroomCommand < Rails::Command::Base`
+- `main.go` — Entry point, sets version via ldflags
+- `cmd/` — Cobra command definitions (root, create, list, delete, version)
+- `internal/config/` — JSON config CRUD at `~/.config/workroom/config.json`
+- `internal/namegen/` — Adjective-noun name generation (120 adjectives, 210 nouns)
+- `internal/vcs/` — VCS interface + JJ/Git implementations with `CommandExecutor` for testability
+- `internal/workroom/` — Core orchestration: create/delete/list flows
+- `internal/script/` — Setup/teardown script runner with env vars
+- `internal/ui/` — Colored output, table printing, interactive prompts (huh library)
+- `internal/errs/` — Shared error sentinels
 
-### Command: `rails workroom`
+### Subcommands
 
-Two subcommands: `create` and `delete NAME`.
+- `workroom create` (alias: `c`) — Auto-generate name, create VCS workspace, update config, run setup script
+- `workroom list` (aliases: `ls`, `l`) — List workrooms for current project or all projects
+- `workroom delete [NAME]` (alias: `d`) — Delete by name with `--confirm`, or interactive multi-select
+- `workroom version` — Print version
 
-**`create`** auto-generates a random friendly name (e.g. `swift-meadow`) and creates a workroom under a centralized directory (default `~/workrooms`, configurable via `workrooms_dir` in `config.json`), detects JJ (via `.jj` dir at `Rails.root`) vs git, copies `.env.local` with prepended workroom env vars (`DEFAULT_WORKROOM_PATH`, `PROJECT_NAME`, `HOST_DOMAIN`), and symlinks `.bundle`. Name generation retries on collision.
+### Flags
 
-**`delete`** removes the workspace/worktree, deletes the Caddy reverse proxy route via admin API at `localhost:2019` (route ID: `{name}-{project_name}`), and cleans up the directory for JJ.
-
-The `check_not_in_workroom!` guard prevents running from within an existing workroom by checking for `$DEFAULT_WORKROOM_PATH`. The command requires `PROJECT_NAME` and `HOST_DOMAIN` env vars to be set. Uses Thor actions (inherited from `Rails::Command::Base`) for file operations.
+- `-v`/`--verbose` — Detailed output
+- `-p`/`--pretend` — Dry run
+- `--confirm NAME` — Skip delete confirmation (delete subcommand only)

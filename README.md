@@ -6,23 +6,21 @@ A workroom is an isolated copy of your project, allowing you to work on multiple
 
 ## Installation
 
-Add to your Gemfile:
-
-```ruby
-gem 'workroom'
+```bash
+go install github.com/joelmoss/workroom@latest
 ```
 
-Then run `bundle install`.
-
-Or install directly:
+Or build from source:
 
 ```bash
-gem install workroom
+git clone https://github.com/joelmoss/workroom.git
+cd workroom
+make build
 ```
 
 ## Requirements
 
-- Ruby >= 3.1
+- Go 1.22+
 - [JJ (Jujutsu)](https://martinvonz.github.io/jj/) or [Git](https://git-scm.com/)
 
 ## Usage
@@ -93,10 +91,6 @@ The following environment variables are available to setup and teardown scripts:
 
 - `WORKROOM_NAME` - The name of the workroom being created or deleted.
 - `WORKROOM_PARENT_DIR` - The absolute path to the parent project directory. Since scripts run inside the workroom directory, this lets you reference files in the original project root.
-
-## Rails integration
-
-Workroom includes a Rails Engine for auto-discovery by host Rails apps. Simply add the gem to your Rails app's Gemfile and it will be loaded automatically.
 
 ## License
 
