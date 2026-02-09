@@ -62,30 +62,39 @@ module Workroom
       data = config.read
       project_path, project = find_project(data)
 
-      workrooms = project&.dig('workrooms')
-
-      if !workrooms || workrooms.empty?
-        say 'No workrooms found for this project.'
-        return
-      end
-
-      pwd = Pathname.pwd.to_s
-      if pwd != project_path
+      # Inside a workroom
+      if project && Pathname.pwd.to_s != project_path
         say 'You are already in a workroom.', :yellow
         say "Parent project is at #{project_path}"
-        say
         return
       end
 
-      say 'Your workrooms:'
-      rows = workrooms.map do |name, info|
-        warnings = workroom_warnings(name, info, project['vcs'])
-        row = [name, info['path']]
-        row << shell.set_color("[#{warnings.join(', ')}]", :yellow) if warnings.any?
-        row
+      # Inside a parent project
+      if project
+        workrooms = project['workrooms']
+        if !workrooms || workrooms.empty?
+          say 'No workrooms found for this project.'
+          return
+        end
+
+        list_workrooms(workrooms, project['vcs'])
+        return
       end
-      print_table rows, indent: 2
-      say
+
+      # Neither — list all workrooms grouped by parent
+      projects_with_workrooms = data.select { |_, p| p['workrooms']&.any? }
+      if projects_with_workrooms.empty?
+        say 'No workrooms found.'
+        return
+      end
+
+      projects_with_workrooms.each do |path, proj|
+        say "#{path}:"
+        inside path do
+          list_workrooms(proj['workrooms'], proj['vcs'])
+        end
+        say
+      end
     end
 
     desc 'delete NAME', 'Delete an existing workroom'
@@ -339,6 +348,16 @@ module Workroom
 
       def testing?
         ENV['WORKROOM_TEST'] == '1'
+      end
+
+      def list_workrooms(workrooms, vcs)
+        rows = workrooms.map do |name, info|
+          warnings = workroom_warnings(name, info, vcs)
+          row = [shell.set_color(name, :bold), shell.set_color(info['path'], :black)]
+          row << shell.set_color("[#{warnings.join(', ')}]", :yellow) if warnings.any?
+          row
+        end
+        print_table rows, indent: 2
       end
 
       # Find the project for the current directory. If pwd is a project in the config, return it

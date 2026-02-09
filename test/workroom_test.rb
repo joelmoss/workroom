@@ -247,13 +247,6 @@ describe Workroom do
   end
 
   context 'list' do
-    it 'shows message when no workrooms exist' do
-      sandbox do
-        out = capture(:stdout) { command(:list) }
-        assert_match 'No workrooms found for this project.', out
-      end
-    end
-
     it 'lists workrooms for the current project' do
       sandbox do
         config = Workroom::Config.new
@@ -290,13 +283,26 @@ describe Workroom do
       end
     end
 
-    it 'does not list workrooms from other projects' do
+    it 'lists all workrooms grouped by parent from an unknown directory' do
       sandbox do
         config = Workroom::Config.new
+        FileUtils.mkdir_p('/other/baz')
+        FileUtils.mkdir_p('/another/qux')
         config.add_workroom('/other/project', 'baz', '/other/baz', :git)
+        config.add_workroom('/another/project', 'qux', '/another/qux', :jj)
 
         out = capture(:stdout) { command(:list) }
-        assert_match 'No workrooms found for this project.', out
+        assert_match(%r{^/other/project:$}, out)
+        assert_match(%r{^\s+baz\s+/other/baz$}, out)
+        assert_match(%r{^/another/project:$}, out)
+        assert_match(%r{^\s+qux\s+/another/qux$}, out)
+      end
+    end
+
+    it 'shows message when no workrooms exist anywhere' do
+      sandbox do
+        out = capture(:stdout) { command(:list) }
+        assert_match 'No workrooms found.', out
       end
     end
 
