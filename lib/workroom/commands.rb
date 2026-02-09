@@ -180,7 +180,10 @@ module Workroom
 
         return if options[:pretend]
 
-        result, status = Open3.capture2e({ 'WORKROOM_PARENT_DIR' => parent_dir }, command)
+        result, status = Open3.capture2e({
+                                           'WORKROOM_NAME' => name,
+                                           'WORKROOM_PARENT_DIR' => parent_dir
+                                         }, command)
 
         instance_variable_set :"@#{type}_result", result
 
