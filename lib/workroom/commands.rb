@@ -20,7 +20,11 @@ module Workroom
       true
     end
 
-    desc 'create', 'Create a new workroom'
+    map 'c' => :create
+    map 'd' => :delete
+    map %w[ls l] => :list
+
+    desc 'create|c', 'Create a new workroom'
     long_desc <<-DESC, wrap: false
       Create a new workroom at the same level as your main project directory, using JJ workspaces
       if available, otherwise falling back to git worktrees. A random friendly name is
@@ -56,7 +60,7 @@ module Workroom
       say
     end
 
-    desc 'list', 'List all workrooms for the current project'
+    desc 'list|l|ls', 'List all workrooms for the current project'
     def list
       data = config.read
       project_path, project = find_project(data)
@@ -96,7 +100,7 @@ module Workroom
       end
     end
 
-    desc 'delete NAME', 'Delete an existing workroom'
+    desc 'delete|d NAME', 'Delete an existing workroom'
     def delete(name)
       @name = name
       check_not_in_workroom!
