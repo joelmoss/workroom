@@ -315,6 +315,149 @@ describe Workroom do
     end
   end
 
+  context 'delete (interactive)' do
+    it 'shows message when no workrooms exist' do
+      sandbox do
+        FileUtils.mkdir('.jj')
+
+        out = capture(:stdout) { command(:delete) }
+        assert_match 'No workrooms found for this project.', out
+      end
+    end
+
+    it 'deletes a single selected workroom' do
+      cmd = Workroom::Commands.any_instance
+      cmd.stubs(:raw_jj_workspace_list).returns <<~_
+        default: mk 6ec05f05 (no description set)
+        workroom/foo: mk 6ec05f05 (no description set)
+      _
+      cmd.stubs(:workrooms_dir).returns(Pathname.new('/workrooms'))
+
+      prompt = mock('prompt')
+      TTY::Prompt.stubs(:new).returns(prompt)
+      prompt.expects(:multi_select).with(
+        'Select workrooms to delete:',
+        ['foo']
+      ).returns(['foo'])
+
+      Thor::LineEditor.expects(:readline).with(
+        "Are you sure you want to delete 1 workroom(s): 'foo'? ",
+        { add_to_history: false }
+      ).returns('y')
+
+      sandbox do
+        FileUtils.mkdir('.jj')
+        FileUtils.mkdir_p('/workrooms/foo')
+
+        config = Workroom::Config.new
+        config.add_workroom(Pathname.pwd.to_s, 'foo', '/workrooms/foo', :jj)
+
+        out = capture(:stdout) { command(:delete) }
+        assert_match "Workroom 'foo' deleted successfully.", out
+        refute Dir.exist?('/workrooms/foo')
+      end
+    end
+
+    it 'deletes multiple selected workrooms' do
+      cmd = Workroom::Commands.any_instance
+      cmd.stubs(:raw_jj_workspace_list).returns <<~_
+        default: mk 6ec05f05 (no description set)
+        workroom/foo: mk 6ec05f05 (no description set)
+        workroom/bar: mk 6ec05f05 (no description set)
+      _
+      cmd.stubs(:workrooms_dir).returns(Pathname.new('/workrooms'))
+
+      prompt = mock('prompt')
+      TTY::Prompt.stubs(:new).returns(prompt)
+      prompt.expects(:multi_select).with(
+        'Select workrooms to delete:',
+        %w[foo bar]
+      ).returns(%w[foo bar])
+
+      Thor::LineEditor.expects(:readline).with(
+        "Are you sure you want to delete 2 workroom(s): 'foo', 'bar'? ",
+        { add_to_history: false }
+      ).returns('y')
+
+      sandbox do
+        FileUtils.mkdir('.jj')
+        FileUtils.mkdir_p('/workrooms/foo')
+        FileUtils.mkdir_p('/workrooms/bar')
+
+        config = Workroom::Config.new
+        config.add_workroom(Pathname.pwd.to_s, 'foo', '/workrooms/foo', :jj)
+        config.add_workroom(Pathname.pwd.to_s, 'bar', '/workrooms/bar', :jj)
+
+        out = capture(:stdout) { command(:delete) }
+        assert_match "Workroom 'foo' deleted successfully.", out
+        assert_match "Workroom 'bar' deleted successfully.", out
+        refute Dir.exist?('/workrooms/foo')
+        refute Dir.exist?('/workrooms/bar')
+      end
+    end
+
+    it 'aborts when user declines confirmation' do
+      cmd = Workroom::Commands.any_instance
+      cmd.stubs(:raw_jj_workspace_list).returns <<~_
+        default: mk 6ec05f05 (no description set)
+        workroom/foo: mk 6ec05f05 (no description set)
+      _
+      cmd.stubs(:workrooms_dir).returns(Pathname.new('/workrooms'))
+
+      prompt = mock('prompt')
+      TTY::Prompt.stubs(:new).returns(prompt)
+      prompt.expects(:multi_select).with(
+        'Select workrooms to delete:',
+        ['foo']
+      ).returns(['foo'])
+
+      Thor::LineEditor.expects(:readline).with(
+        "Are you sure you want to delete 1 workroom(s): 'foo'? ",
+        { add_to_history: false }
+      ).returns('n')
+
+      sandbox do
+        FileUtils.mkdir('.jj')
+        FileUtils.mkdir_p('/workrooms/foo')
+
+        config = Workroom::Config.new
+        config.add_workroom(Pathname.pwd.to_s, 'foo', '/workrooms/foo', :jj)
+
+        out = capture(:stderr) { command(:delete) }
+        assert_match 'Aborting. No workrooms were deleted.', out
+        assert Dir.exist?('/workrooms/foo')
+      end
+    end
+
+    it 'aborts when no workrooms are selected' do
+      cmd = Workroom::Commands.any_instance
+      cmd.stubs(:raw_jj_workspace_list).returns <<~_
+        default: mk 6ec05f05 (no description set)
+        workroom/foo: mk 6ec05f05 (no description set)
+      _
+      cmd.stubs(:workrooms_dir).returns(Pathname.new('/workrooms'))
+
+      prompt = mock('prompt')
+      TTY::Prompt.stubs(:new).returns(prompt)
+      prompt.expects(:multi_select).with(
+        'Select workrooms to delete:',
+        ['foo']
+      ).returns([])
+
+      sandbox do
+        FileUtils.mkdir('.jj')
+        FileUtils.mkdir_p('/workrooms/foo')
+
+        config = Workroom::Config.new
+        config.add_workroom(Pathname.pwd.to_s, 'foo', '/workrooms/foo', :jj)
+
+        out = capture(:stderr) { command(:delete) }
+        assert_match 'Aborting. No workrooms were selected.', out
+        assert Dir.exist?('/workrooms/foo')
+      end
+    end
+  end
+
   context 'delete' do
     it 'errors on invalid name' do
       assert_raises Workroom::InvalidNameError do

@@ -2,6 +2,7 @@
 
 require 'open3'
 require 'thor'
+require 'tty-prompt'
 require 'pathname'
 
 module Workroom
@@ -101,10 +102,15 @@ module Workroom
       end
     end
 
-    desc 'delete|d NAME', 'Delete an existing workroom'
+    desc 'delete|d [NAME]', 'Delete an existing workroom'
     method_option :confirm, type: :string,
                             desc: 'Skip confirmation if value matches the workroom name'
-    def delete(name)
+    def delete(name = nil)
+      if !name
+        interactive_delete
+        return
+      end
+
       @name = name
       check_not_in_workroom!
       validate_name!
@@ -127,27 +133,7 @@ module Workroom
         end
       end
 
-      delete_workroom
-      cleanup_directory if jj?
-      update_config(:remove)
-      run_teardown_script
-
-      say
-      say "Workroom '#{name}' deleted successfully.", :green
-
-      if !jj?
-        say
-        say "Note: Git branch '#{vcs_name}' was not deleted."
-        say "      Delete manually with `git branch -D #{vcs_name}` if needed."
-      end
-
-      if @teardown_result
-        say
-        say 'Teardown script output:', :blue
-        say @teardown_result
-      end
-
-      say
+      delete_by_name(name)
     end
 
     private
@@ -305,6 +291,63 @@ module Workroom
         raise_error InWorkroomError, <<~_
           Looks like you are already in a workroom. Run this command from the root of your main development directory, not from within an existing workroom.
         _
+      end
+
+      def interactive_delete
+        check_not_in_workroom!
+
+        data = config.read
+        _, project = find_project(data)
+
+        if !project || !project['workrooms'] || project['workrooms'].empty?
+          say 'No workrooms found for this project.'
+          return
+        end
+
+        workrooms = project['workrooms']
+        prompt = TTY::Prompt.new
+        selected = prompt.multi_select(
+          'Select workrooms to delete:',
+          workrooms.keys
+        )
+
+        if selected.empty?
+          say_error 'Aborting. No workrooms were selected.', :yellow
+          return
+        end
+
+        names_list = selected.map { |n| "'#{n}'" }.join(', ')
+        if !yes?("Are you sure you want to delete #{selected.size} workroom(s): #{names_list}?")
+          say_error 'Aborting. No workrooms were deleted.', :yellow
+          return
+        end
+
+        selected.each { |n| delete_by_name(n) }
+      end
+
+      def delete_by_name(selected_name)
+        @name = selected_name
+        @workroom_path = nil
+
+        delete_workroom
+        cleanup_directory if jj?
+        update_config(:remove)
+        run_teardown_script
+
+        say "Workroom '#{name}' deleted successfully.", :green
+
+        if !jj?
+          say
+          say "Note: Git branch '#{vcs_name}' was not deleted."
+          say "      Delete manually with `git branch -D #{vcs_name}` if needed."
+        end
+
+        return if !@teardown_result
+
+        say
+        say 'Teardown script output:', :blue
+        say @teardown_result
+        say
       end
 
       def generate_unique_name

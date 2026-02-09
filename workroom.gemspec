@@ -24,5 +24,6 @@ Gem::Specification.new do |spec|
   spec.require_paths = ['lib']
 
   spec.add_dependency 'thor', '~> 1.5'
+  spec.add_dependency 'tty-prompt', '~> 0.23'
   spec.add_dependency 'zeitwerk', '~> 2.7'
 end

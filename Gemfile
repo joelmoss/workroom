@@ -9,6 +9,7 @@ gemspec
 gem 'debug', require: false
 gem 'fakefs', require: false
 gem 'rake'
+gem 'tty-prompt', '~> 0.23'
 
 gem 'rubocop-disable_syntax', require: false
 gem 'rubocop-packaging', require: false

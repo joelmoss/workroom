@@ -8,6 +8,7 @@ require 'mocha/minitest'
 require 'minitest/focus'
 require 'pathname'
 require 'fakefs'
+require 'tty-prompt'
 
 ENV['WORKROOM_TEST'] = '1'
 ENV['THOR_DEBUG'] = ENV.fetch('WORKROOM_TEST', nil)
