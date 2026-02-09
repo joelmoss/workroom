@@ -8,35 +8,28 @@ describe Workroom do
   end
 
   context 'Config' do
-    it 'returns OS-appropriate config path for macOS' do
+    it 'returns config path under ~/.config' do
       config = Workroom::Config.new
-      config.stubs(:config_dir).returns('/Users/test/Library/Application Support')
-      config.instance_variable_set(:@config_path, nil)
       assert_equal(
-        '/Users/test/Library/Application Support/workroom/config.json',
+        File.expand_path('~/.config/workroom/config.json'),
         config.config_path
       )
     end
 
-    it 'returns OS-appropriate config path for Linux' do
-      config = Workroom::Config.new
-      config.stubs(:config_dir).returns('/home/test/.config')
-      config.instance_variable_set(:@config_path, nil)
-      assert_equal '/home/test/.config/workroom/config.json', config.config_path
+    let(:config) do
+      c = Workroom::Config.new
+      c.stubs(:config_path).returns('/tmp/workroom/config.json')
+      c
     end
 
     it 'reads empty hash when config file does not exist' do
       sandbox do
-        config = Workroom::Config.new
-        config.stubs(:config_path).returns('/tmp/workroom/config.json')
         assert_equal({}, config.read)
       end
     end
 
     it 'creates config file and directory if they do not exist' do
       sandbox do
-        config = Workroom::Config.new
-        config.stubs(:config_path).returns('/tmp/workroom/config.json')
         config.add_workroom('/project', 'foo', '/foo', :jj)
         assert File.exist?('/tmp/workroom/config.json')
       end
@@ -44,8 +37,6 @@ describe Workroom do
 
     it 'adds a workroom entry' do
       sandbox do
-        config = Workroom::Config.new
-        config.stubs(:config_path).returns('/tmp/workroom/config.json')
         config.add_workroom('/project', 'foo', '/foo', :jj)
         data = config.read
         assert_equal '/foo', data['/project']['workrooms']['foo']['path']
@@ -55,8 +46,6 @@ describe Workroom do
 
     it 'adds multiple workroom entries' do
       sandbox do
-        config = Workroom::Config.new
-        config.stubs(:config_path).returns('/tmp/workroom/config.json')
         config.add_workroom('/project', 'foo', '/foo', :jj)
         config.add_workroom('/project', 'bar', '/bar', :jj)
         data = config.read
@@ -67,8 +56,6 @@ describe Workroom do
 
     it 'removes a workroom entry and cleans up empty parent' do
       sandbox do
-        config = Workroom::Config.new
-        config.stubs(:config_path).returns('/tmp/workroom/config.json')
         config.add_workroom('/project', 'foo', '/foo', :jj)
         config.remove_workroom('/project', 'foo')
         data = config.read
@@ -78,8 +65,6 @@ describe Workroom do
 
     it 'removes a workroom entry but keeps parent with remaining workrooms' do
       sandbox do
-        config = Workroom::Config.new
-        config.stubs(:config_path).returns('/tmp/workroom/config.json')
         config.add_workroom('/project', 'foo', '/foo', :jj)
         config.add_workroom('/project', 'bar', '/bar', :jj)
         config.remove_workroom('/project', 'foo')
@@ -91,10 +76,28 @@ describe Workroom do
 
     it 'handles remove for nonexistent parent gracefully' do
       sandbox do
-        config = Workroom::Config.new
-        config.stubs(:config_path).returns('/tmp/workroom/config.json')
         config.remove_workroom('/nonexistent', 'foo')
         assert_equal({}, config.read)
+      end
+    end
+
+    it 'returns default workrooms_dir when not configured' do
+      sandbox do
+        assert_equal Pathname.new(File.expand_path('~/workrooms')), config.workrooms_dir
+      end
+    end
+
+    it 'returns configured workrooms_dir' do
+      sandbox do
+        config.workrooms_dir = '/custom/workrooms'
+        assert_equal Pathname.new('/custom/workrooms'), config.workrooms_dir
+      end
+    end
+
+    it 'expands tilde in workrooms_dir' do
+      sandbox do
+        config.workrooms_dir = '~/my-workrooms'
+        assert_equal Pathname.new(File.expand_path('~/my-workrooms')), config.workrooms_dir
       end
     end
   end
@@ -123,20 +126,22 @@ describe Workroom do
     it 'succeeds' do
       cmd = Workroom::Commands.any_instance
       cmd.stubs(:raw_jj_workspace_list).returns 'default: mk 6ec05f05 (no description set)'
+      cmd.stubs(:workrooms_dir).returns(Pathname.new('/workrooms'))
       Workroom::NameGenerator.any_instance.stubs(:generate).returns('foo')
 
       sandbox do
         FileUtils.mkdir('.jj')
 
         out = capture(:stdout) { command(:create) }
-        assert_match "Workroom 'foo' created successfully at /foo.", out
-        assert Dir.exist?('/foo')
+        assert_match "Workroom 'foo' created successfully at /workrooms/foo.", out
+        assert Dir.exist?('/workrooms/foo')
       end
     end
 
     it 'updates config on create' do
       cmd = Workroom::Commands.any_instance
       cmd.stubs(:raw_jj_workspace_list).returns 'default: mk 6ec05f05 (no description set)'
+      cmd.stubs(:workrooms_dir).returns(Pathname.new('/workrooms'))
       Workroom::NameGenerator.any_instance.stubs(:generate).returns('foo')
 
       sandbox do
@@ -149,13 +154,14 @@ describe Workroom do
         data = JSON.parse(File.read(config_path))
         parent = Pathname.pwd.to_s
         assert_equal 'jj', data[parent]['vcs']
-        assert_equal '/foo', data[parent]['workrooms']['foo']['path']
+        assert_equal '/workrooms/foo', data[parent]['workrooms']['foo']['path']
       end
     end
 
     it 'runs the setup script if it exists' do
       cmd = Workroom::Commands.any_instance
       cmd.stubs(:raw_jj_workspace_list).returns 'default: mk 6ec05f05 (no description set)'
+      cmd.stubs(:workrooms_dir).returns(Pathname.new('/workrooms'))
       cmd.stubs(:setup_script_to_run).returns("#{__dir__}/fixtures/setup")
       Workroom::NameGenerator.any_instance.stubs(:generate).returns('foo')
 
@@ -166,13 +172,14 @@ describe Workroom do
 
         out = capture(:stdout) { command(:create) }
         assert_match 'I succeeded', out
-        assert_match "Workroom 'foo' created successfully at /foo.\n", out
+        assert_match "Workroom 'foo' created successfully at /workrooms/foo.\n", out
       end
     end
 
     it 'errors on failed setup script' do
       cmd = Workroom::Commands.any_instance
       cmd.stubs(:raw_jj_workspace_list).returns 'default: mk 6ec05f05 (no description set)'
+      cmd.stubs(:workrooms_dir).returns(Pathname.new('/workrooms'))
       cmd.stubs(:setup_script_to_run).returns("#{__dir__}/fixtures/failed_setup")
       Workroom::NameGenerator.any_instance.stubs(:generate).returns('foo')
 
@@ -193,25 +200,27 @@ describe Workroom do
                              .stubs(:generate)
                              .returns('taken').then.returns('fresh')
 
-      Workroom::Commands.any_instance
-                        .stubs(:raw_jj_workspace_list)
-                        .returns <<~_
-                          default: mk 6ec05f05 (no description set)
-                          taken: qo a41890ed (empty) (no description set)
-                        _
+      cmd = Workroom::Commands.any_instance
+      cmd.stubs(:raw_jj_workspace_list)
+         .returns <<~_
+           default: mk 6ec05f05 (no description set)
+           taken: qo a41890ed (empty) (no description set)
+         _
+      cmd.stubs(:workrooms_dir).returns(Pathname.new('/workrooms'))
 
       sandbox do
         FileUtils.mkdir('.jj')
 
         out = capture(:stdout) { command(:create) }
-        assert_match "Workroom 'fresh' created successfully at /fresh.", out
+        assert_match "Workroom 'fresh' created successfully at /workrooms/fresh.", out
       end
     end
 
     it 'retries on name collision with existing directory' do
-      Workroom::Commands.any_instance
-                        .stubs(:raw_jj_workspace_list)
-                        .returns 'default: mk 6ec05f05 (no description set)'
+      cmd = Workroom::Commands.any_instance
+      cmd.stubs(:raw_jj_workspace_list)
+         .returns 'default: mk 6ec05f05 (no description set)'
+      cmd.stubs(:workrooms_dir).returns(Pathname.new('/workrooms'))
 
       Workroom::NameGenerator.any_instance
                              .stubs(:generate)
@@ -219,10 +228,10 @@ describe Workroom do
 
       sandbox do
         FileUtils.mkdir('.jj')
-        FileUtils.mkdir('/taken')
+        FileUtils.mkdir_p('/workrooms/taken')
 
         out = capture(:stdout) { command(:create) }
-        assert_match "Workroom 'fresh' created successfully at /fresh.", out
+        assert_match "Workroom 'fresh' created successfully at /workrooms/fresh.", out
       end
     end
   end
@@ -371,6 +380,7 @@ describe Workroom do
         foo: mk 6ec05f05 (no description set)
       _
       cmd.stubs(:say).returns("Workroom 'foo' deleted successfully.")
+      cmd.stubs(:workrooms_dir).returns(Pathname.new('/workrooms'))
 
       Thor::LineEditor.expects(:readline).with(
         "Are you sure you want to delete workroom 'foo'? ", { add_to_history: false }
@@ -378,10 +388,10 @@ describe Workroom do
 
       sandbox do
         FileUtils.mkdir('.jj')
-        FileUtils.mkdir('/foo')
+        FileUtils.mkdir_p('/workrooms/foo')
 
         command(:delete, 'foo')
-        refute Dir.exist?('/foo')
+        refute Dir.exist?('/workrooms/foo')
       end
     end
 
@@ -392,6 +402,7 @@ describe Workroom do
         foo: mk 6ec05f05 (no description set)
       _
       cmd.stubs(:say).returns("Workroom 'foo' deleted successfully.")
+      cmd.stubs(:workrooms_dir).returns(Pathname.new('/workrooms'))
 
       Thor::LineEditor.expects(:readline).with(
         "Are you sure you want to delete workroom 'foo'? ", { add_to_history: false }
@@ -399,11 +410,11 @@ describe Workroom do
 
       sandbox do
         FileUtils.mkdir('.jj')
-        FileUtils.mkdir('/foo')
+        FileUtils.mkdir_p('/workrooms/foo')
 
         # Pre-populate config
         config = Workroom::Config.new
-        config.add_workroom(Pathname.pwd.to_s, 'foo', '/foo', :jj)
+        config.add_workroom(Pathname.pwd.to_s, 'foo', '/workrooms/foo', :jj)
 
         command(:delete, 'foo')
 
@@ -419,6 +430,7 @@ describe Workroom do
         foo: mk 6ec05f05 (no description set)
       _
       cmd.stubs(:teardown_script_to_run).returns("#{__dir__}/fixtures/teardown")
+      cmd.stubs(:workrooms_dir).returns(Pathname.new('/workrooms'))
 
       Thor::LineEditor.expects(:readline).with(
         "Are you sure you want to delete workroom 'foo'? ", { add_to_history: false }
@@ -426,7 +438,7 @@ describe Workroom do
 
       sandbox do
         FileUtils.mkdir('.jj')
-        FileUtils.mkdir('/foo')
+        FileUtils.mkdir_p('/workrooms/foo')
         FileUtils.mkdir('/sandbox/scripts')
         FileUtils.touch('/sandbox/scripts/workroom_teardown')
 
@@ -443,6 +455,7 @@ describe Workroom do
         foo: mk 6ec05f05 (no description set)
       _
       cmd.stubs(:teardown_script_to_run).returns("#{__dir__}/fixtures/failed_teardown")
+      cmd.stubs(:workrooms_dir).returns(Pathname.new('/workrooms'))
 
       Thor::LineEditor.expects(:readline).with(
         "Are you sure you want to delete workroom 'foo'? ", { add_to_history: false }
@@ -450,7 +463,7 @@ describe Workroom do
 
       sandbox do
         FileUtils.mkdir('.jj')
-        FileUtils.mkdir('/foo')
+        FileUtils.mkdir_p('/workrooms/foo')
         FileUtils.mkdir('/sandbox/scripts')
         FileUtils.touch('/sandbox/scripts/workroom_teardown')
 

@@ -58,7 +58,6 @@ module Workroom
 
     desc 'list', 'List all workrooms for the current project'
     def list
-      config = Config.new
       data = config.read
       project_path, project = find_project(data)
 
@@ -195,8 +194,16 @@ module Workroom
         raise exception_class, message
       end
 
+      def config
+        @config ||= Config.new
+      end
+
+      def workrooms_dir
+        @workrooms_dir ||= config.workrooms_dir
+      end
+
       def workroom_path
-        @workroom_path ||= Pathname.pwd.join("../#{name}")
+        @workroom_path ||= workrooms_dir.join(name)
       end
 
       def jj?
@@ -211,9 +218,9 @@ module Workroom
                    say_status :repo, 'Detected Git'
                    :git
                  else
-                   say_status :repo, 'No supported VCS detected', :red
+                   say_status :repo, 'No supported VCS detected in this directory.', :red
                    raise_error UnsupportedVCSError, <<~_
-                     No supported VCS detected. Workroom requires either Jujutsu or Git to manage workspaces.
+                     No supported VCS detected in this directory. Workroom requires either Git or Jujutsu to manage workspaces.
                    _
                  end
       end
@@ -309,10 +316,12 @@ module Workroom
       end
 
       def workroom_path_for(candidate)
-        Pathname.pwd.join("../#{candidate}")
+        workrooms_dir.join(candidate)
       end
 
       def create_workroom
+        FileUtils.mkdir_p(workrooms_dir) if !workrooms_dir.exist?
+
         if testing?
           FileUtils.copy('./', workroom_path)
           return
@@ -347,7 +356,6 @@ module Workroom
       def update_config(action)
         return if options[:pretend]
 
-        config = Config.new
         if action == :add
           config.add_workroom Pathname.pwd.to_s, name, workroom_path.to_s, vcs
         else
