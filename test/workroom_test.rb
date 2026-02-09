@@ -246,6 +246,61 @@ describe Workroom do
     end
   end
 
+  context 'list' do
+    it 'shows message when no workrooms exist' do
+      sandbox do
+        out = capture(:stdout) { command(:list) }
+        assert_match 'No workrooms found for this project.', out
+      end
+    end
+
+    it 'lists workrooms for the current project' do
+      sandbox do
+        config = Workroom::Config.new
+        FileUtils.mkdir('/foo')
+        FileUtils.mkdir('/bar')
+        config.add_workroom(Pathname.pwd.to_s, 'foo', '/foo', :jj)
+        config.add_workroom(Pathname.pwd.to_s, 'bar', '/bar', :jj)
+
+        out = capture(:stdout) { command(:list) }
+        assert_match(%r{^\s+foo\s+/foo$}, out)
+        assert_match(%r{^\s+bar\s+/bar$}, out)
+      end
+    end
+
+    it 'warns when workroom directory does not exist' do
+      sandbox do
+        config = Workroom::Config.new
+        config.add_workroom(Pathname.pwd.to_s, 'foo', '/nonexistent', :jj)
+
+        out = capture(:stdout) { command(:list) }
+        assert_match(%r{foo\s+/nonexistent\s+\[directory not found\]}, out)
+      end
+    end
+
+    it 'does not warn when workroom directory exists' do
+      sandbox do
+        config = Workroom::Config.new
+        FileUtils.mkdir('/myworkroom')
+        config.add_workroom(Pathname.pwd.to_s, 'foo', '/myworkroom', :jj)
+
+        out = capture(:stdout) { command(:list) }
+        assert_match(%r{^\s+foo\s+/myworkroom$}, out)
+        refute_match(/directory not found/, out)
+      end
+    end
+
+    it 'does not list workrooms from other projects' do
+      sandbox do
+        config = Workroom::Config.new
+        config.add_workroom('/other/project', 'baz', '/other/baz', :git)
+
+        out = capture(:stdout) { command(:list) }
+        assert_match 'No workrooms found for this project.', out
+      end
+    end
+  end
+
   context 'delete' do
     it 'errors on invalid name' do
       assert_raises Workroom::InvalidNameError do

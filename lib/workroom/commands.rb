@@ -47,10 +47,35 @@ module Workroom
       say
       say "Workroom '#{name}' created successfully at #{workroom_path}.", :green
 
-      return if !@setup_result
+      if @setup_result
+        say 'Setup script output:', :blue
+        say @setup_result
+      end
 
-      say 'Setup script output:', :blue
-      say @setup_result
+      say
+    end
+
+    desc 'list', 'List all workrooms for the current project'
+    def list
+      config = Config.new
+      data = config.read
+      project = data[Pathname.pwd.to_s]
+      workrooms = project&.dig('workrooms')
+
+      if !workrooms || workrooms.empty?
+        say 'No workrooms found for this project.'
+        return
+      end
+
+      say "Workrooms for #{Pathname.pwd}:\n\n"
+      rows = workrooms.map do |name, info|
+        warnings = workroom_warnings(name, info, project['vcs'])
+        row = [name, info['path']]
+        row << shell.set_color("[#{warnings.join(', ')}]", :yellow) if warnings.any?
+        row
+      end
+      print_table(rows, indent: 2)
+      say
     end
 
     desc 'delete NAME', 'Delete an existing workroom'
@@ -85,11 +110,13 @@ module Workroom
         say "      Delete manually with `git branch -D #{name}` if needed."
       end
 
-      return if !@teardown_result
+      if @teardown_result
+        say
+        say 'Teardown script output:', :blue
+        say @teardown_result
+      end
 
       say
-      say 'Teardown script output:', :blue
-      say @teardown_result
     end
 
     private
@@ -302,6 +329,20 @@ module Workroom
 
       def testing?
         ENV['WORKROOM_TEST'] == '1'
+      end
+
+      def workroom_warnings(name, info, stored_vcs)
+        warnings = []
+        warnings << 'directory not found' if !Dir.exist?(info['path'])
+        if !testing?
+          vcs_missing = if stored_vcs == 'jj'
+                          !jj_workspaces.include?(name)
+                        elsif stored_vcs == 'git'
+                          git_worktrees.none? { |path| File.basename(path) == name }
+                        end
+          warnings << "#{stored_vcs} workspace not found" if vcs_missing
+        end
+        warnings
       end
   end
 end
