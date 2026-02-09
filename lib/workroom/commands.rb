@@ -41,7 +41,8 @@ module Workroom
         end
 
         if workroom_path.exist?
-          raise_error DirExistsError, "Workroom directory '#{workroom_path}' already exists!"
+          raise_error DirExistsError,
+                      "Workroom directory '#{display_path(workroom_path)}' already exists!"
         end
       end
 
@@ -50,7 +51,7 @@ module Workroom
       run_setup_script
 
       say
-      say "Workroom '#{name}' created successfully at #{workroom_path}.", :green
+      say "Workroom '#{name}' created successfully at #{display_path(workroom_path)}.", :green
 
       if @setup_result
         say 'Setup script output:', :blue
@@ -68,7 +69,7 @@ module Workroom
       # Inside a workroom
       if project && Pathname.pwd.to_s != project_path
         say 'You are already in a workroom.', :yellow
-        say "Parent project is at #{project_path}"
+        say "Parent project is at #{display_path(project_path)}"
         return
       end
 
@@ -92,7 +93,7 @@ module Workroom
       end
 
       projects_with_workrooms.each do |path, proj|
-        say "#{path}:"
+        say "#{display_path(path)}:"
         inside path do
           list_workrooms(proj['workrooms'], proj['vcs'])
         end
@@ -390,10 +391,14 @@ module Workroom
         ENV['WORKROOM_TEST'] == '1'
       end
 
+      def display_path(path)
+        path.to_s.sub(/\A#{Regexp.escape(Dir.home)}/, '~')
+      end
+
       def list_workrooms(workrooms, vcs)
         rows = workrooms.map do |name, info|
           warnings = workroom_warnings(name, info, vcs)
-          row = [shell.set_color(name, :bold), shell.set_color(info['path'], :black)]
+          row = [shell.set_color(name, :bold), shell.set_color(display_path(info['path']), :black)]
           row << shell.set_color("[#{warnings.join(', ')}]", :yellow) if warnings.any?
           row
         end
