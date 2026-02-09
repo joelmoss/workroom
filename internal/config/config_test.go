@@ -9,11 +9,18 @@ import (
 func newTestConfig(t *testing.T) *Config {
 	t.Helper()
 	dir := t.TempDir()
-	return New(filepath.Join(dir, "config.json"))
+	c, err := New(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
 }
 
 func TestConfigPath(t *testing.T) {
-	c := New("")
+	c, err := New("")
+	if err != nil {
+		t.Fatal(err)
+	}
 	home, _ := os.UserHomeDir()
 	expected := filepath.Join(home, ".config", "workroom", "config.json")
 	if c.Path() != expected {
@@ -154,8 +161,12 @@ func TestWorkroomsDirDefault(t *testing.T) {
 	c := newTestConfig(t)
 	home, _ := os.UserHomeDir()
 	expected := filepath.Join(home, "workrooms")
-	if c.WorkroomsDir() != expected {
-		t.Fatalf("expected %s, got %s", expected, c.WorkroomsDir())
+	got, err := c.WorkroomsDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != expected {
+		t.Fatalf("expected %s, got %s", expected, got)
 	}
 }
 
@@ -164,8 +175,12 @@ func TestWorkroomsDirConfigured(t *testing.T) {
 	if err := c.SetWorkroomsDir("/custom/workrooms"); err != nil {
 		t.Fatal(err)
 	}
-	if c.WorkroomsDir() != "/custom/workrooms" {
-		t.Fatalf("expected /custom/workrooms, got %s", c.WorkroomsDir())
+	got, err := c.WorkroomsDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/custom/workrooms" {
+		t.Fatalf("expected /custom/workrooms, got %s", got)
 	}
 }
 
@@ -176,8 +191,12 @@ func TestWorkroomsDirExpandsTilde(t *testing.T) {
 	}
 	home, _ := os.UserHomeDir()
 	expected := filepath.Join(home, "my-workrooms")
-	if c.WorkroomsDir() != expected {
-		t.Fatalf("expected %s, got %s", expected, c.WorkroomsDir())
+	got, err := c.WorkroomsDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != expected {
+		t.Fatalf("expected %s, got %s", expected, got)
 	}
 }
 
@@ -252,7 +271,10 @@ func TestProjectsWithWorkrooms(t *testing.T) {
 
 func TestCreatesConfigDirOnWrite(t *testing.T) {
 	dir := t.TempDir()
-	c := New(filepath.Join(dir, "subdir", "config.json"))
+	c, err := New(filepath.Join(dir, "subdir", "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if err := c.AddWorkroom("/project", "foo", "/foo", "jj"); err != nil {
 		t.Fatal(err)

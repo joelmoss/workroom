@@ -6,7 +6,18 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bin/rubocop -a --force-exclusion $CLAUDE_FILE_PATHS 2>/dev/null || true"
+            "command": "gofmt -w $CLAUDE_FILE_PATHS 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo $CLAUDE_FILE_PATHS | grep -q 'go.sum' && echo 'BLOCK: Do not edit go.sum directly. Use go mod tidy.' && exit 1 || true"
           }
         ]
       }

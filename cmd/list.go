@@ -10,7 +10,10 @@ var listCmd = &cobra.Command{
 	Short:   "List all workrooms for the current project",
 	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		svc := newService()
+		svc, err := newService()
+		if err != nil {
+			return err
+		}
 		cwd, err := getCwd()
 		if err != nil {
 			return err

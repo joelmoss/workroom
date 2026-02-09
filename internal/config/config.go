@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,12 +16,15 @@ type Config struct {
 }
 
 // New creates a Config. If configPath is empty, uses the default location.
-func New(configPath string) *Config {
+func New(configPath string) (*Config, error) {
 	if configPath == "" {
-		home, _ := os.UserHomeDir()
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("determine home directory: %w", err)
+		}
 		configPath = filepath.Join(home, ".config", "workroom", "config.json")
 	}
-	return &Config{path: configPath}
+	return &Config{path: configPath}, nil
 }
 
 // Path returns the config file path.
@@ -35,11 +39,11 @@ func (c *Config) Read() (map[string]any, error) {
 		if os.IsNotExist(err) {
 			return map[string]any{}, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("read config %s: %w", c.path, err)
 	}
 	var result map[string]any
 	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse config %s: %w", c.path, err)
 	}
 	return result, nil
 }
@@ -48,13 +52,16 @@ func (c *Config) Read() (map[string]any, error) {
 func (c *Config) Write(data map[string]any) error {
 	dir := filepath.Dir(c.path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return fmt.Errorf("create config directory %s: %w", dir, err)
 	}
 	b, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal config: %w", err)
 	}
-	return os.WriteFile(c.path, b, 0o644)
+	if err := os.WriteFile(c.path, b, 0o644); err != nil {
+		return fmt.Errorf("write config %s: %w", c.path, err)
+	}
+	return nil
 }
 
 // AddWorkroom adds a workroom entry under the given parent project path.
@@ -166,7 +173,7 @@ func (c *Config) ProjectsWithWorkrooms() (map[string]map[string]any, error) {
 }
 
 // WorkroomsDir returns the configured workrooms directory, or the default ~/workrooms.
-func (c *Config) WorkroomsDir() string {
+func (c *Config) WorkroomsDir() (string, error) {
 	data, err := c.Read()
 	if err != nil {
 		return expandPath(DefaultWorkroomsDir)
@@ -189,10 +196,13 @@ func (c *Config) SetWorkroomsDir(path string) error {
 }
 
 // expandPath replaces a leading ~ with the user's home directory.
-func expandPath(path string) string {
+func expandPath(path string) (string, error) {
 	if strings.HasPrefix(path, "~/") || path == "~" {
-		home, _ := os.UserHomeDir()
-		return filepath.Join(home, path[1:])
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("determine home directory: %w", err)
+		}
+		return filepath.Join(home, path[1:]), nil
 	}
-	return path
+	return path, nil
 }

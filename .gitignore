@@ -1,12 +1,7 @@
-/.bundle/
-/log/*.log
-/pkg/
-/tmp/
 /.DS_Store
 /.vscode/
 CLAUDE.local.md
 /.claude/settings.local.json
-/*.gem
 
 # Go
 /workroom

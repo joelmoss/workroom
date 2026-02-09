@@ -35,13 +35,17 @@ func Execute() error {
 	return rootCmd.Execute()
 }
 
-func newService() *workroom.Service {
+func newService() (*workroom.Service, error) {
+	cfg, err := config.New("")
+	if err != nil {
+		return nil, err
+	}
 	return &workroom.Service{
-		Config:    config.New(""),
+		Config:    cfg,
 		Out:       os.Stdout,
 		Verbose:   verbose,
 		Pretend:   pretend,
 		PromptFn:  ui.MultiSelect,
 		ConfirmFn: ui.Confirm,
-	}
+	}, nil
 }

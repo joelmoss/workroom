@@ -3,6 +3,7 @@ package workroom
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,10 +30,19 @@ func (m *mockExecutor) Run(dir string, name string, args ...string) (string, err
 	return m.output, m.err
 }
 
+func newTestConfig(t *testing.T, path string) *config.Config {
+	t.Helper()
+	cfg, err := config.New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
 func newTestService(t *testing.T, v vcs.VCS) (*Service, *bytes.Buffer, *config.Config) {
 	t.Helper()
 	dir := t.TempDir()
-	cfg := config.New(filepath.Join(dir, "config.json"))
+	cfg := newTestConfig(t, filepath.Join(dir, "config.json"))
 	var buf bytes.Buffer
 	svc := &Service{
 		Config:    cfg,
@@ -71,7 +81,7 @@ func TestCheckNotInWorkroomOK(t *testing.T) {
 func TestCreateErrorsIfNotJJOrGit(t *testing.T) {
 	dir := t.TempDir()
 	svc := &Service{
-		Config: config.New(filepath.Join(dir, "config.json")),
+		Config: newTestConfig(t, filepath.Join(dir, "config.json")),
 		Out:    &bytes.Buffer{},
 	}
 
@@ -104,7 +114,7 @@ func TestCreateSucceedsJJ(t *testing.T) {
 	jj := &vcs.JJ{Executor: mock}
 
 	svc, buf, cfg := newTestService(t, jj)
-	svc.Config = config.New(filepath.Join(dir, "config.json"))
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 
 	// Override workrooms dir
 	svc.Config.SetWorkroomsDir(workroomsDir)
@@ -154,7 +164,7 @@ func TestCreateSucceedsGit(t *testing.T) {
 	git := &vcs.Git{Executor: mock}
 
 	svc, buf, _ := newTestService(t, git)
-	svc.Config = config.New(filepath.Join(dir, "config.json"))
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 
 	svc.NameGenFunc = func() string { return "bar" }
@@ -193,7 +203,7 @@ func TestCreateRunsSetupScript(t *testing.T) {
 	jj := &vcs.JJ{Executor: mock}
 
 	svc, buf, _ := newTestService(t, jj)
-	svc.Config = config.New(filepath.Join(dir, "config.json"))
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.NameGenFunc = func() string { return "foo" }
 
@@ -232,7 +242,7 @@ func TestCreateErrorsOnFailedSetupScript(t *testing.T) {
 	jj := &vcs.JJ{Executor: mock}
 
 	svc, _, _ := newTestService(t, jj)
-	svc.Config = config.New(filepath.Join(dir, "config.json"))
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.NameGenFunc = func() string { return "foo" }
 
@@ -256,7 +266,7 @@ func TestCreateRetriesOnNameCollisionWorkspace(t *testing.T) {
 	jj := &vcs.JJ{Executor: mock}
 
 	svc, buf, _ := newTestService(t, jj)
-	svc.Config = config.New(filepath.Join(dir, "config.json"))
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 
 	callCount := 0
@@ -291,7 +301,7 @@ func TestCreateRetriesOnNameCollisionDirectory(t *testing.T) {
 	jj := &vcs.JJ{Executor: mock}
 
 	svc, buf, _ := newTestService(t, jj)
-	svc.Config = config.New(filepath.Join(dir, "config.json"))
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 
 	callCount := 0
@@ -314,6 +324,44 @@ func TestCreateRetriesOnNameCollisionDirectory(t *testing.T) {
 	}
 }
 
+func TestCreateErrorsAfterTooManyNameCollisions(t *testing.T) {
+	dir := t.TempDir()
+	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
+	workroomsDir := filepath.Join(dir, "workrooms")
+
+	// Make the mock dynamically report every queried workspace as existing
+	// by including the requested name in the output.
+	mock := &mockExecutor{}
+	mock.onRun = func(_, name string, args []string) {
+		if name == "jj" && len(args) > 0 && args[0] == "workspace" && args[1] == "list" {
+			mock.output = "default: mk 6ec05f05 (no description set)\nworkroom/taken: qo a41890ed (empty) (no description set)\n"
+		}
+	}
+	jj := &vcs.JJ{Executor: mock}
+
+	svc, _, _ := newTestService(t, jj)
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
+	svc.Config.SetWorkroomsDir(workroomsDir)
+
+	// Always return the same name. The initial 5 attempts collide via VCS.
+	// The fallback loop generates "taken-NN" names — pre-create the workrooms
+	// directory so os.Stat finds it, causing directory collisions too.
+	svc.NameGenFunc = func() string { return "taken" }
+
+	// Pre-create directories for all possible suffixed names (taken-10 through taken-99)
+	for i := 10; i <= 99; i++ {
+		os.MkdirAll(filepath.Join(workroomsDir, fmt.Sprintf("taken-%d", i)), 0o755)
+	}
+
+	err := svc.Create(dir)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to generate unique workroom name") {
+		t.Fatalf("expected name generation error, got: %v", err)
+	}
+}
+
 func TestCreateUpdatesConfig(t *testing.T) {
 	dir := t.TempDir()
 	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
@@ -325,7 +373,7 @@ func TestCreateUpdatesConfig(t *testing.T) {
 	jj := &vcs.JJ{Executor: mock}
 
 	svc, _, _ := newTestService(t, jj)
-	svc.Config = config.New(filepath.Join(dir, "config.json"))
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.NameGenFunc = func() string { return "foo" }
 
@@ -350,7 +398,7 @@ func TestCreateUpdatesConfig(t *testing.T) {
 
 func TestListWorkroomsForCurrentProject(t *testing.T) {
 	dir := t.TempDir()
-	cfg := config.New(filepath.Join(dir, "config.json"))
+	cfg := newTestConfig(t, filepath.Join(dir, "config.json"))
 	fooDir := filepath.Join(dir, "foo")
 	barDir := filepath.Join(dir, "bar")
 	os.MkdirAll(fooDir, 0o755)
@@ -378,7 +426,7 @@ func TestListWorkroomsForCurrentProject(t *testing.T) {
 
 func TestListWarnsWhenDirNotFound(t *testing.T) {
 	dir := t.TempDir()
-	cfg := config.New(filepath.Join(dir, "config.json"))
+	cfg := newTestConfig(t, filepath.Join(dir, "config.json"))
 	cfg.AddWorkroom(dir, "foo", "/nonexistent", "jj")
 
 	var buf bytes.Buffer
@@ -399,7 +447,7 @@ func TestListNoWarningWhenDirExists(t *testing.T) {
 	dir := t.TempDir()
 	wrDir := filepath.Join(dir, "myworkroom")
 	os.MkdirAll(wrDir, 0o755)
-	cfg := config.New(filepath.Join(dir, "config.json"))
+	cfg := newTestConfig(t, filepath.Join(dir, "config.json"))
 	cfg.AddWorkroom(dir, "foo", wrDir, "jj")
 
 	var buf bytes.Buffer
@@ -418,7 +466,7 @@ func TestListNoWarningWhenDirExists(t *testing.T) {
 
 func TestListAllGroupedByParent(t *testing.T) {
 	dir := t.TempDir()
-	cfg := config.New(filepath.Join(dir, "config.json"))
+	cfg := newTestConfig(t, filepath.Join(dir, "config.json"))
 
 	bazDir := filepath.Join(dir, "baz")
 	quxDir := filepath.Join(dir, "qux")
@@ -450,7 +498,7 @@ func TestListAllGroupedByParent(t *testing.T) {
 
 func TestListNoWorkroomsAnywhere(t *testing.T) {
 	dir := t.TempDir()
-	cfg := config.New(filepath.Join(dir, "config.json"))
+	cfg := newTestConfig(t, filepath.Join(dir, "config.json"))
 
 	var buf bytes.Buffer
 	svc := &Service{Config: cfg, Out: &buf}
@@ -470,7 +518,7 @@ func TestListInsideWorkroom(t *testing.T) {
 	dir := t.TempDir()
 	wrDir := filepath.Join(dir, "myworkroom")
 	os.MkdirAll(wrDir, 0o755)
-	cfg := config.New(filepath.Join(dir, "config.json"))
+	cfg := newTestConfig(t, filepath.Join(dir, "config.json"))
 	cfg.AddWorkroom(dir, "myworkroom", wrDir, "jj")
 
 	var buf bytes.Buffer
@@ -510,7 +558,7 @@ func TestDeleteErrorsIfNotJJOrGit(t *testing.T) {
 	dir := t.TempDir()
 
 	svc := &Service{
-		Config: config.New(filepath.Join(dir, "config.json")),
+		Config: newTestConfig(t, filepath.Join(dir, "config.json")),
 		Out:    &bytes.Buffer{},
 	}
 
@@ -530,7 +578,7 @@ func TestDeleteErrorsIfJJWorkspaceNotFound(t *testing.T) {
 	jj := &vcs.JJ{Executor: mock}
 
 	svc, _, _ := newTestService(t, jj)
-	svc.Config = config.New(filepath.Join(dir, "config.json"))
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 
 	err := svc.Delete(dir, "foo", "foo")
 	if !errors.Is(err, ErrJJWorkspaceNotFound) {
@@ -548,7 +596,7 @@ func TestDeleteErrorsIfGitWorktreeNotFound(t *testing.T) {
 	git := &vcs.Git{Executor: mock}
 
 	svc, _, _ := newTestService(t, git)
-	svc.Config = config.New(filepath.Join(dir, "config.json"))
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 
 	err := svc.Delete(dir, "foo", "foo")
 	if !errors.Is(err, ErrGitWorktreeNotFound) {
@@ -580,7 +628,7 @@ func TestDeleteSucceeds(t *testing.T) {
 	jj := &vcs.JJ{Executor: mock}
 
 	svc, buf, _ := newTestService(t, jj)
-	svc.Config = config.New(filepath.Join(dir, "config.json"))
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.Config.AddWorkroom(dir, "foo", wrPath, "jj")
 
@@ -613,7 +661,7 @@ func TestDeleteUpdatesConfig(t *testing.T) {
 	jj := &vcs.JJ{Executor: mock}
 
 	svc, _, _ := newTestService(t, jj)
-	svc.Config = config.New(filepath.Join(dir, "config.json"))
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.Config.AddWorkroom(dir, "foo", wrPath, "jj")
 
@@ -642,7 +690,7 @@ func TestDeleteConfirmSkipsPrompt(t *testing.T) {
 
 	confirmCalled := false
 	svc, _, _ := newTestService(t, jj)
-	svc.Config = config.New(filepath.Join(dir, "config.json"))
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.Config.AddWorkroom(dir, "foo", wrPath, "jj")
 	svc.ConfirmFn = func(string) (bool, error) {
@@ -672,7 +720,7 @@ func TestDeleteConfirmMismatchErrors(t *testing.T) {
 	jj := &vcs.JJ{Executor: mock}
 
 	svc, _, _ := newTestService(t, jj)
-	svc.Config = config.New(filepath.Join(dir, "config.json"))
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 
 	err := svc.Delete(dir, "foo", "wrong")
@@ -702,7 +750,7 @@ func TestDeleteRunsTeardownScript(t *testing.T) {
 	jj := &vcs.JJ{Executor: mock}
 
 	svc, buf, _ := newTestService(t, jj)
-	svc.Config = config.New(filepath.Join(dir, "config.json"))
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.Config.AddWorkroom(dir, "foo", wrPath, "jj")
 
@@ -738,7 +786,7 @@ func TestDeleteErrorsOnFailedTeardownScript(t *testing.T) {
 	jj := &vcs.JJ{Executor: mock}
 
 	svc, _, _ := newTestService(t, jj)
-	svc.Config = config.New(filepath.Join(dir, "config.json"))
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.Config.AddWorkroom(dir, "foo", wrPath, "jj")
 
@@ -764,7 +812,7 @@ func TestDeleteGitShowsBranchNote(t *testing.T) {
 	git := &vcs.Git{Executor: mock}
 
 	svc, buf, _ := newTestService(t, git)
-	svc.Config = config.New(filepath.Join(dir, "config.json"))
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.Config.AddWorkroom(dir, "foo", wrPath, "git")
 
@@ -784,7 +832,7 @@ func TestDeleteGitShowsBranchNote(t *testing.T) {
 func TestInteractiveDeleteNoWorkrooms(t *testing.T) {
 	dir := t.TempDir()
 	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
-	cfg := config.New(filepath.Join(dir, "config.json"))
+	cfg := newTestConfig(t, filepath.Join(dir, "config.json"))
 
 	var buf bytes.Buffer
 	svc := &Service{Config: cfg, Out: &buf}
@@ -813,7 +861,7 @@ func TestInteractiveDeleteSingle(t *testing.T) {
 	jj := &vcs.JJ{Executor: mock}
 
 	svc, buf, _ := newTestService(t, jj)
-	svc.Config = config.New(filepath.Join(dir, "config.json"))
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.Config.AddWorkroom(dir, "foo", wrPath, "jj")
 
@@ -848,7 +896,7 @@ func TestInteractiveDeleteMultiple(t *testing.T) {
 	jj := &vcs.JJ{Executor: mock}
 
 	svc, buf, _ := newTestService(t, jj)
-	svc.Config = config.New(filepath.Join(dir, "config.json"))
+	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
 	svc.Config.SetWorkroomsDir(workroomsDir)
 	svc.Config.AddWorkroom(dir, "foo", fooPath, "jj")
 	svc.Config.AddWorkroom(dir, "bar", barPath, "jj")
@@ -879,7 +927,7 @@ func TestInteractiveDeleteAbortsOnDecline(t *testing.T) {
 	wrPath := filepath.Join(workroomsDir, "foo")
 	os.MkdirAll(wrPath, 0o755)
 
-	cfg := config.New(filepath.Join(dir, "config.json"))
+	cfg := newTestConfig(t, filepath.Join(dir, "config.json"))
 	cfg.SetWorkroomsDir(workroomsDir)
 	cfg.AddWorkroom(dir, "foo", wrPath, "jj")
 
@@ -915,7 +963,7 @@ func TestInteractiveDeleteAbortsOnNoSelection(t *testing.T) {
 	wrPath := filepath.Join(workroomsDir, "foo")
 	os.MkdirAll(wrPath, 0o755)
 
-	cfg := config.New(filepath.Join(dir, "config.json"))
+	cfg := newTestConfig(t, filepath.Join(dir, "config.json"))
 	cfg.SetWorkroomsDir(workroomsDir)
 	cfg.AddWorkroom(dir, "foo", wrPath, "jj")
 

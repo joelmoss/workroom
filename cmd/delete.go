@@ -13,7 +13,10 @@ var deleteCmd = &cobra.Command{
 	Long:    "Delete an existing workroom. When run without a name, shows an interactive multi-select menu.",
 	Args:    cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		svc := newService()
+		svc, err := newService()
+		if err != nil {
+			return err
+		}
 		cwd, err := getCwd()
 		if err != nil {
 			return err

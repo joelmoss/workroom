@@ -21,7 +21,7 @@ func TestGenerate(t *testing.T) {
 		name := Generate()
 		adj := strings.SplitN(name, "-", 2)[0]
 		found := false
-		for _, a := range Adjectives {
+		for _, a := range adjectives {
 			if a == adj {
 				found = true
 				break
@@ -36,7 +36,7 @@ func TestGenerate(t *testing.T) {
 		name := Generate()
 		noun := strings.SplitN(name, "-", 2)[1]
 		found := false
-		for _, n := range Nouns {
+		for _, n := range nouns {
 			if n == noun {
 				found = true
 				break
@@ -58,11 +58,11 @@ func TestGenerate(t *testing.T) {
 	})
 
 	t.Run("has expected word list sizes", func(t *testing.T) {
-		if len(Adjectives) != 120 {
-			t.Fatalf("expected 120 adjectives, got %d", len(Adjectives))
+		if len(adjectives) != 120 {
+			t.Fatalf("expected 120 adjectives, got %d", len(adjectives))
 		}
-		if len(Nouns) != 210 {
-			t.Fatalf("expected 210 nouns, got %d", len(Nouns))
+		if len(nouns) != 210 {
+			t.Fatalf("expected 210 nouns, got %d", len(nouns))
 		}
 	})
 }

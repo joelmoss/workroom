@@ -3,6 +3,8 @@ package vcs
 import (
 	"os"
 	"path/filepath"
+
+	"github.com/joelmoss/workroom/internal/errs"
 )
 
 // Type represents a VCS type.
@@ -25,11 +27,12 @@ type VCS interface {
 
 // Detect determines the VCS type by checking for .jj then .git directories.
 func Detect(dir string) (VCS, error) {
-	if _, err := os.Stat(filepath.Join(dir, ".jj")); err == nil {
+	if info, err := os.Stat(filepath.Join(dir, ".jj")); err == nil && info.IsDir() {
 		return &JJ{Executor: &RealExecutor{}}, nil
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+		// .git can be a directory (normal repo) or a file (worktree)
 		return &Git{Executor: &RealExecutor{}}, nil
 	}
-	return nil, nil
+	return nil, errs.ErrUnsupportedVCS
 }

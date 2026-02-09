@@ -1,10 +1,13 @@
 package vcs
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/joelmoss/workroom/internal/errs"
 )
 
 // MockExecutor records calls and returns canned output.
@@ -76,8 +79,8 @@ func TestDetectNone(t *testing.T) {
 	dir := t.TempDir()
 
 	v, err := Detect(dir)
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, errs.ErrUnsupportedVCS) {
+		t.Fatalf("expected ErrUnsupportedVCS, got %v", err)
 	}
 	if v != nil {
 		t.Fatalf("expected nil VCS, got %v", v)
@@ -271,6 +274,24 @@ branch refs/heads/master
 	result := parseGitWorktrees(output, "/")
 	if len(result) != 0 {
 		t.Fatalf("expected 0 (excluded cwd), got %d", len(result))
+	}
+}
+
+func TestGitWorktreePathsWithSpaces(t *testing.T) {
+	mock := &MockExecutor{
+		Output: "worktree /Users/foo/my project\nHEAD cbace1f043eee2836c7b8494797dfe49f6985716\nbranch refs/heads/master\n\nworktree /Users/foo/my workrooms/feature one\nHEAD abc123\nbranch refs/heads/workroom/feature-one\n",
+	}
+	git := &Git{Executor: mock}
+
+	workrooms, err := git.ListWorkrooms("/Users/foo/my project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(workrooms) != 1 {
+		t.Fatalf("expected 1 worktree, got %d: %v", len(workrooms), workrooms)
+	}
+	if workrooms[0] != "feature one" {
+		t.Fatalf("expected 'feature one', got %q", workrooms[0])
 	}
 }
 

@@ -58,12 +58,13 @@ func parseGitWorktrees(output, cwd string) []string {
 	var result []string
 	var directory string
 	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "worktree ") {
+			directory = strings.TrimPrefix(line, "worktree ")
+			continue
+		}
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
-		}
-		if fields[0] == "worktree" {
-			directory = fields[1]
 		}
 		if fields[0] == "HEAD" && directory != cwd {
 			result = append(result, directory)

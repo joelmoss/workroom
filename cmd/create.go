@@ -11,7 +11,10 @@ var createCmd = &cobra.Command{
 	Long:    "Create a new workroom at the same level as your main project directory, using JJ workspaces if available, otherwise falling back to git worktrees. A random friendly name is auto-generated.",
 	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		svc := newService()
+		svc, err := newService()
+		if err != nil {
+			return err
+		}
 		cwd, err := getCwd()
 		if err != nil {
 			return err

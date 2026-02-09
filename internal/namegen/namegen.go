@@ -5,7 +5,7 @@ import (
 	"math/rand/v2"
 )
 
-var Adjectives = []string{
+var adjectives = []string{
 	"agile", "amber", "apt", "azure", "bold", "brave", "bright", "brisk", "calm", "cedar",
 	"clear", "cold", "cool", "coral", "crisp", "cyan", "damp", "dark", "dawn", "deep",
 	"deft", "dry", "dusk", "dusty", "easy", "even", "fair", "fast", "firm", "flat",
@@ -20,7 +20,7 @@ var Adjectives = []string{
 	"tidy", "trim", "true", "vivid", "warm", "west", "wide", "wild", "wise", "young",
 }
 
-var Nouns = []string{
+var nouns = []string{
 	"acre", "arch", "aspen", "badge", "bank", "bark", "basin", "bay", "beach", "bear",
 	"birch", "blade", "blaze", "bloom", "bolt", "bone", "bow", "brace", "brass", "breeze",
 	"brick", "bridge", "brook", "brush", "canopy", "cape", "cave", "cedar", "chain", "chime",
@@ -45,7 +45,7 @@ var Nouns = []string{
 }
 
 func Generate() string {
-	adj := Adjectives[rand.IntN(len(Adjectives))]
-	noun := Nouns[rand.IntN(len(Nouns))]
+	adj := adjectives[rand.IntN(len(adjectives))]
+	noun := nouns[rand.IntN(len(nouns))]
 	return fmt.Sprintf("%s-%s", adj, noun)
 }

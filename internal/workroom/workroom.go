@@ -84,9 +84,6 @@ func (s *Service) detectVCS(dir string) error {
 	if err != nil {
 		return err
 	}
-	if v == nil {
-		return ErrUnsupportedVCS
-	}
 	s.VCS = v
 	s.sayStatus("repo", fmt.Sprintf("Detected %s", s.VCS.Label()))
 	return nil
@@ -96,8 +93,12 @@ func (s *Service) vcsName(name string) string {
 	return "workroom/" + name
 }
 
-func (s *Service) workroomPath(name string) string {
-	return filepath.Join(s.Config.WorkroomsDir(), name)
+func (s *Service) workroomPath(name string) (string, error) {
+	dir, err := s.Config.WorkroomsDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, name), nil
 }
 
 func (s *Service) generateName() string {
@@ -121,7 +122,10 @@ func (s *Service) Create(dir string) error {
 		return err
 	}
 
-	wrPath := s.workroomPath(name)
+	wrPath, err := s.workroomPath(name)
+	if err != nil {
+		return err
+	}
 
 	if !s.Pretend {
 		exists, err := s.VCS.WorkroomExists(dir, name)
@@ -142,7 +146,11 @@ func (s *Service) Create(dir string) error {
 
 	// Create VCS workspace
 	if !s.Pretend {
-		if err := os.MkdirAll(s.Config.WorkroomsDir(), 0o755); err != nil {
+		wrDir, err := s.Config.WorkroomsDir()
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(wrDir, 0o755); err != nil {
 			return err
 		}
 		if _, err := s.VCS.Create(dir, s.vcsName(name), wrPath); err != nil {
@@ -191,7 +199,10 @@ func (s *Service) generateUniqueName(dir string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		wrPath := s.workroomPath(lastName)
+		wrPath, err := s.workroomPath(lastName)
+		if err != nil {
+			return "", err
+		}
 		if !exists {
 			if _, err := os.Stat(wrPath); os.IsNotExist(err) {
 				return lastName, nil
@@ -199,19 +210,24 @@ func (s *Service) generateUniqueName(dir string) (string, error) {
 		}
 	}
 
-	for {
+	for range 10 {
 		candidate := fmt.Sprintf("%s-%d", lastName, rand.IntN(90)+10)
 		exists, err := s.workroomExistsFor(dir, candidate)
 		if err != nil {
 			return "", err
 		}
-		wrPath := s.workroomPath(candidate)
+		wrPath, err := s.workroomPath(candidate)
+		if err != nil {
+			return "", err
+		}
 		if !exists {
 			if _, err := os.Stat(wrPath); os.IsNotExist(err) {
 				return candidate, nil
 			}
 		}
 	}
+
+	return "", fmt.Errorf("failed to generate unique workroom name after multiple attempts")
 }
 
 func (s *Service) workroomExistsFor(dir, name string) (bool, error) {
@@ -440,7 +456,10 @@ func (s *Service) InteractiveDelete(dir string) error {
 }
 
 func (s *Service) deleteByName(dir, name string) error {
-	wrPath := s.workroomPath(name)
+	wrPath, err := s.workroomPath(name)
+	if err != nil {
+		return err
+	}
 
 	// Run teardown script
 	teardownScript := filepath.Join(dir, "scripts", "workroom_teardown")
@@ -467,7 +486,9 @@ func (s *Service) deleteByName(dir, name string) error {
 	if s.VCS.Type() == vcs.TypeJJ {
 		if _, err := os.Stat(wrPath); err == nil {
 			if !s.Pretend {
-				os.RemoveAll(wrPath)
+				if err := os.RemoveAll(wrPath); err != nil {
+					s.sayColor(fmt.Sprintf("Warning: failed to remove directory %s: %v", wrPath, err), "yellow")
+				}
 			}
 		}
 	}
