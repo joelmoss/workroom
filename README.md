@@ -1,8 +1,8 @@
 # Workroom
 
-Create and manage local development workrooms using [JJ](https://martinvonz.github.io/jj/) workspaces or git worktrees.
+Create and manage local development workrooms using [Git](https://git-scm.com/) worktrees or [Jujutsu](https://martinvonz.github.io/jj/) workspaces.
 
-A workroom is an isolated copy of your project created as a sibling directory, allowing you to work on multiple branches or features simultaneously without stashing or switching contexts.
+A workroom is an isolated copy of your project, allowing you to work on multiple branches or features simultaneously without stashing or switching contexts. Workrooms are created under a centralized directory (`~/workrooms` by default, configurable via `workrooms_dir` in `~/.config/workroom/config.json`).
 
 ## Installation
 
@@ -23,17 +23,29 @@ gem install workroom
 ## Requirements
 
 - Ruby >= 3.1
-- [JJ (Jujutsu)](https://martinvonz.github.io/jj/) or Git
+- [JJ (Jujutsu)](https://martinvonz.github.io/jj/) or [Git](https://git-scm.com/)
 
 ## Usage
 
 ### Create a workroom
 
 ```bash
-workroom create my-feature
+workroom create
 ```
 
-This creates a new workroom at `../my-feature` relative to your project root. Workroom automatically detects whether you're using JJ or Git and uses the appropriate mechanism (JJ workspace or git worktree).
+A random friendly name (e.g. `swift-meadow`) is auto-generated. Workroom automatically detects whether you're using JJ or Git and uses the appropriate mechanism (JJ workspace or git worktree).
+
+Alias: `workroom c`
+
+### List workrooms
+
+```bash
+workroom list
+```
+
+Lists all workrooms for the current project. When run from outside a known project, lists all workrooms grouped by parent project. When run from inside a workroom, shows the parent project path.
+
+Aliases: `workroom ls`, `workroom l`
 
 ### Delete a workroom
 
@@ -43,14 +55,19 @@ workroom delete my-feature
 
 Removes the workspace/worktree and cleans up the directory. You'll be prompted for confirmation before deletion.
 
+To skip the confirmation prompt (useful for scripting), pass `--confirm` with the workroom name:
+
+```bash
+workroom delete my-feature --confirm my-feature
+```
+
+Alias: `workroom d`
+
 ### Options
 
 - `-v`, `--verbose` - Print detailed output
 - `-p`, `--pretend` - Run through the command without making changes (dry run)
-
-### Naming rules
-
-Workroom names must be alphanumeric (dashes and underscores allowed) and must not start or end with a dash or underscore.
+- `--confirm NAME` - Skip delete confirmation when NAME matches the workroom being deleted
 
 ## Setup and teardown scripts
 
