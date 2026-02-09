@@ -2,6 +2,7 @@
 
 require 'open3'
 require 'thor'
+require 'pathname'
 
 module Workroom
   class Commands < Thor
@@ -59,7 +60,8 @@ module Workroom
     def list
       config = Config.new
       data = config.read
-      project = data[Pathname.pwd.to_s]
+      project_path, project = find_project(data)
+
       workrooms = project&.dig('workrooms')
 
       if !workrooms || workrooms.empty?
@@ -67,14 +69,22 @@ module Workroom
         return
       end
 
-      say "Workrooms for #{Pathname.pwd}:\n\n"
+      pwd = Pathname.pwd.to_s
+      if pwd != project_path
+        say 'You are already in a workroom.', :yellow
+        say "Parent project is at #{project_path}"
+        say
+        return
+      end
+
+      say 'Your workrooms:'
       rows = workrooms.map do |name, info|
         warnings = workroom_warnings(name, info, project['vcs'])
         row = [name, info['path']]
         row << shell.set_color("[#{warnings.join(', ')}]", :yellow) if warnings.any?
         row
       end
-      print_table(rows, indent: 2)
+      print_table rows, indent: 2
       say
     end
 
@@ -329,6 +339,20 @@ module Workroom
 
       def testing?
         ENV['WORKROOM_TEST'] == '1'
+      end
+
+      # Find the project for the current directory. If pwd is a project in the config, return it
+      # directly. Otherwise, check if pwd is a workroom path under any project.
+      def find_project(data)
+        pwd = Pathname.pwd.to_s
+        return [pwd, data[pwd]] if data.key?(pwd)
+
+        data.each do |project_path, project|
+          workrooms = project['workrooms'] || {}
+          return [project_path, project] if workrooms.any? { |_, info| info['path'] == pwd }
+        end
+
+        [pwd, nil]
       end
 
       def workroom_warnings(name, info, stored_vcs)

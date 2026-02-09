@@ -299,6 +299,24 @@ describe Workroom do
         assert_match 'No workrooms found for this project.', out
       end
     end
+
+    it 'details parent project when inside a workroom' do
+      sandbox do
+        config = Workroom::Config.new
+        project_path = Pathname.pwd.to_s
+        workroom_path = '/myworkroom'
+        FileUtils.mkdir(workroom_path)
+        config.add_workroom(project_path, 'myworkroom', workroom_path, :jj)
+
+        Dir.chdir(workroom_path) do
+          out = capture(:stdout) { command(:list) }
+          assert_match(
+            /You are already in a workroom\.\nParent project is at #{Regexp.escape(project_path)}/,
+            out
+          )
+        end
+      end
+    end
   end
 
   context 'delete' do
