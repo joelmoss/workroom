@@ -13,9 +13,6 @@ Gem::Specification.new do |spec|
   spec.license     = 'MIT'
   spec.required_ruby_version = '>= 3.1.0'
 
-  spec.metadata['homepage_uri'] = spec.homepage
-  spec.metadata['source_code_uri'] = spec.homepage
-  spec.metadata['changelog_uri'] = spec.homepage
   spec.metadata['rubygems_mfa_required'] = 'true'
 
   spec.executables = %w[workroom]
