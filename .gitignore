@@ -6,3 +6,6 @@ CLAUDE.local.md
 # Go
 /workroom
 *.exe
+
+# GoReleaser
+/dist/

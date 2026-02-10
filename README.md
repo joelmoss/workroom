@@ -6,11 +6,33 @@ A workroom is an isolated copy of your project, allowing you to work on multiple
 
 ## Installation
 
+**macOS / Linux:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/joelmoss/workroom/master/install.sh | sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+iwr https://raw.githubusercontent.com/joelmoss/workroom/master/install.ps1 -useb | iex
+```
+
+**Install a specific version:**
+
+```bash
+VERSION=v1.2.0 curl -fsSL https://raw.githubusercontent.com/joelmoss/workroom/master/install.sh | sh
+```
+
+### Alternative methods
+
+**Via Go:**
+
 ```bash
 go install github.com/joelmoss/workroom@latest
 ```
 
-Or build from source:
+**Build from source:**
 
 ```bash
 git clone https://github.com/joelmoss/workroom.git
@@ -20,7 +42,6 @@ make build
 
 ## Requirements
 
-- Go 1.22+
 - [JJ (Jujutsu)](https://martinvonz.github.io/jj/) or [Git](https://git-scm.com/)
 
 ## Usage
@@ -91,6 +112,23 @@ The following environment variables are available to setup and teardown scripts:
 
 - `WORKROOM_NAME` - The name of the workroom being created or deleted.
 - `WORKROOM_PARENT_DIR` - The absolute path to the parent project directory. Since scripts run inside the workroom directory, this lets you reference files in the original project root.
+
+## Releasing
+
+Pushing a version tag triggers GitHub Actions to build binaries for all platforms and attach them to a GitHub release.
+
+```bash
+git tag v1.3.0
+git push origin v1.3.0
+```
+
+You can test the build locally with [GoReleaser](https://goreleaser.com/) before tagging:
+
+```bash
+goreleaser build --snapshot --clean
+```
+
+This produces binaries in `dist/` without publishing anything.
 
 ## License
 
