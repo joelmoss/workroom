@@ -24,6 +24,14 @@ iwr https://raw.githubusercontent.com/joelmoss/workroom/master/install.ps1 -useb
 VERSION=v1.2.0 curl -fsSL https://raw.githubusercontent.com/joelmoss/workroom/master/install.sh | sh
 ```
 
+**Override install location (macOS / Linux):**
+
+By default, the binary is installed to `~/.local/bin`. Set `WORKROOM_INSTALL_PATH` to change this:
+
+```bash
+WORKROOM_INSTALL_PATH=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/joelmoss/workroom/master/install.sh | sh
+```
+
 ### Alternative methods
 
 **Via Go:**
