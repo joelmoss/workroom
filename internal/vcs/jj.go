@@ -9,7 +9,7 @@ type JJ struct {
 	Executor CommandExecutor
 }
 
-func (j *JJ) Type() Type  { return TypeJJ }
+func (j *JJ) Type() Type    { return TypeJJ }
 func (j *JJ) Label() string { return "JJ workspace" }
 
 func (j *JJ) WorkroomExists(dir, name string) (bool, error) {

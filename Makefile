@@ -13,6 +13,7 @@ install:
 
 lint:
 	go vet ./...
+	test -z "$$(gofmt -l .)"
 
 clean:
 	rm -f workroom

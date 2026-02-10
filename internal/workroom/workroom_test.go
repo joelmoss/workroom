@@ -15,10 +15,10 @@ import (
 
 // mockExecutor returns canned VCS output for testing.
 type mockExecutor struct {
-	output  string
-	err     error
-	calls   [][]string
-	onRun   func(dir, name string, args []string) // optional side effect
+	output string
+	err    error
+	calls  [][]string
+	onRun  func(dir, name string, args []string) // optional side effect
 }
 
 func (m *mockExecutor) Run(dir string, name string, args ...string) (string, error) {

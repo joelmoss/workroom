@@ -10,7 +10,7 @@ type Git struct {
 	Executor CommandExecutor
 }
 
-func (g *Git) Type() Type  { return TypeGit }
+func (g *Git) Type() Type    { return TypeGit }
 func (g *Git) Label() string { return "Git worktree" }
 
 func (g *Git) WorkroomExists(dir, name string) (bool, error) {
