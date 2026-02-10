@@ -178,15 +178,14 @@ func (s *Service) Create(dir string) error {
 		}
 	}
 
-	s.say("")
 	s.sayColor(fmt.Sprintf("Workroom '%s' created successfully at %s.", name, ui.DisplayPath(wrPath)), "green")
 
 	if setupOutput != "" {
+		s.say("")
 		s.sayColor("Setup script output:", "blue")
 		s.say(strings.TrimSpace(setupOutput))
 	}
 
-	s.say("")
 	return nil
 }
 
@@ -512,7 +511,6 @@ func (s *Service) deleteByName(dir, name string) error {
 		s.say("")
 		s.sayColor("Teardown script output:", "blue")
 		s.say(strings.TrimSpace(teardownOutput))
-		s.say("")
 	}
 
 	return nil
