@@ -1,8 +1,10 @@
 # Workroom
 
-Create and manage local development workrooms using [Git](https://git-scm.com/) worktrees or [Jujutsu](https://martinvonz.github.io/jj/) workspaces.
+A CLI to manage local development workrooms using [Git](https://git-scm.com/) worktrees or [Jujutsu](https://martinvonz.github.io/jj/) workspaces.
 
 A workroom is an isolated copy of your project, allowing you to work on multiple branches or features simultaneously without stashing or switching contexts. Workrooms are created under a centralized directory (`~/workrooms` by default, configurable via `workrooms_dir` in `~/.config/workroom/config.json`).
+
+Use Workroom to create a workroom for each feature or bugfix you're working on, and easily switch between them without worrying about uncommitted changes or context switching. Continue using whatever IDE or editor you like, and let Workroom handle the workroom management.
 
 ## Installation
 
