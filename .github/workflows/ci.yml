@@ -44,8 +44,11 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      # jj (Jujutsu) is required by WorkroomStatusIntegrationTests, which exercise the VCS
+      # status resolver against real git + jj repos. git + gh are preinstalled on the runner;
+      # jj is not. XcodeGen generates the (gitignored) .xcodeproj.
+      - name: Install XcodeGen + jj
+        run: brew install xcodegen jj
 
       - name: Lint (swift-format --strict)
         run: make app-lint

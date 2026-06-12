@@ -144,7 +144,7 @@ struct RootView: View {
       }
     }
     .inspector(isPresented: $showNotifications) {
-      NotificationsPanel(isOpen: showNotifications)
+      RightInspector()
         .inspectorColumnWidth(min: 260, ideal: 300, max: 420)
     }
     .onAppear { applyAppearance() }

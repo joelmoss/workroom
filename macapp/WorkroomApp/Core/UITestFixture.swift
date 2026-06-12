@@ -48,4 +48,37 @@ enum UITestFixture {
         ])
     ]
   }
+
+  // MARK: - Changes-inspector status
+
+  /// Deterministic VCS status for the fixture **workroom** (`uitest-room`): a dirty jj change with a
+  /// description, bookmark, and a mix of root-level and nested changed files. Lets the Changes
+  /// inspector render its jj-log header and the filename / dimmed-directory file list with no real
+  /// repo — visual QA never has to touch (or expose) the developer's actual projects.
+  static var workroomStatus: WorkroomStatus {
+    WorkroomStatus(
+      dirty: true,
+      changedFiles: [
+        ChangedFile(path: "Gemfile", change: .modified),
+        ChangedFile(path: ".env.example", change: .added),
+        ChangedFile(path: "app/models/user.rb", change: .modified),
+        ChangedFile(path: "app/controllers/sessions_controller.rb", change: .added),
+        ChangedFile(path: "config/routes.rb", change: .modified),
+        ChangedFile(path: "test/models/user_test.rb", change: .added),
+      ],
+      ci: .passing,
+      jjRefs: ["feature/login"],
+      jjDescription: "feat: add session login (#42)",
+      jjChangeID: "pw", jjCommitID: "7d74470b",
+      lastChecked: Date(timeIntervalSince1970: 1_700_000_000))
+  }
+
+  /// Deterministic status for the fixture **project root**: a clean git branch that's one commit
+  /// ahead of upstream with passing CI — so the inspector renders the git header, the sync line,
+  /// and the clean empty state.
+  static var rootStatus: WorkroomStatus {
+    WorkroomStatus(
+      dirty: false, ahead: 1, behind: 0, changedFiles: [], ci: .passing,
+      branchForCI: "main", lastChecked: Date(timeIntervalSince1970: 1_700_000_000))
+  }
 }

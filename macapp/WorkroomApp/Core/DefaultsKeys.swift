@@ -68,4 +68,12 @@ extension Defaults.Keys {
   /// encoding as `sidebarSelection`). Terminals don't survive relaunch, so this is just an ordering
   /// hint applied to whatever is currently active — stale ids resolve away harmlessly.
   static let workroomTabOrder = Key<[String]>("workroomsView.tabOrder", default: [])
+
+  /// Whether the right inspector's "Changes" section is collapsed (issue #24). The inspector now
+  /// composes two sections (Changes + Notifications); per-section collapse persists independently.
+  static let changesSectionCollapsed = Key<Bool>(
+    "inspector.changesSectionCollapsed", default: false)
+  /// Whether the right inspector's "Notifications" section is collapsed (issue #24).
+  static let notificationsSectionCollapsed = Key<Bool>(
+    "inspector.notificationsSectionCollapsed", default: false)
 }

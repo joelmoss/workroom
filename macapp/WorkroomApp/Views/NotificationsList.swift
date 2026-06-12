@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// The notifications history as a list, newest first — the shared body behind both the right-hand
-/// inspector (`NotificationsPanel`) and the menu bar popover (`MenuBarNotificationsView`), so the
-/// rows look identical in both. There's no read state: tapping a row opens the terminal it came
+/// inspector's Notifications section (`RightInspector`) and the menu bar popover
+/// (`MenuBarNotificationsView`), so the rows look identical in both. There's no read state: tapping a row opens the terminal it came
 /// from (`AppStore.openTerminal`, which also dismisses it), then runs `onActivate` so a host that
 /// needs to close itself (the popover) can.
 struct NotificationsList: View {
@@ -14,9 +14,16 @@ struct NotificationsList: View {
 
   var body: some View {
     if notifications.items.isEmpty {
-      ContentUnavailableView {
-        Label("No notifications", systemImage: "bell.slash")
+      // Compact, left-aligned, icon-first empty state (issue #24 feedback) — not the large
+      // centered ContentUnavailableView.
+      HStack(spacing: 6) {
+        Image(systemName: "bell.slash").font(.callout).foregroundStyle(.tertiary)
+        Text("No notifications").font(.callout).foregroundStyle(.secondary)
+        Spacer(minLength: 0)
       }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 8)
+      .frame(maxWidth: .infinity, alignment: .leading)
     } else {
       List {
         // Newest first; the store appends chronologically.

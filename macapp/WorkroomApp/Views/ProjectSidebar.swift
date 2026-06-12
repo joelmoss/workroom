@@ -159,6 +159,12 @@ struct ProjectSidebar: View {
 
       // Aggregate dot so notifications are visible even when the project is collapsed.
       UnreadDot(count: unread)
+      // Aggregate VCS status (worst child) when collapsed — so collapsing a project doesn't
+      // hide the command-center signal (issue #24). Only when collapsed: expanded projects show
+      // each row's own dot. Visually distinct from the UnreadDot above (different concern).
+      if !isExpanded(project.path), let agg = store.aggregateStatus(forProject: project.path) {
+        VCSAggregateDot(status: agg)
+      }
 
       if store.busyProjects.contains(project.path) {
         ProgressView().controlSize(.small)
@@ -204,6 +210,7 @@ struct ProjectSidebar: View {
     let id = SidebarID.root(project: project.path)
     let target = project.rootTarget
     let style = RootPresentation.make(store.rootRefs[project.id] ?? .unresolved)
+    let status = store.workroomStatuses[id] ?? .unresolved
     HStack(spacing: 6) {
       terminalDisclosure(for: target)
       Text(style.label)
@@ -225,6 +232,8 @@ struct ProjectSidebar: View {
           .font(.system(size: 9, weight: .semibold))
           .foregroundStyle(.secondary)
       }
+      // VCS status for the project root (issue #24), same placement as the workroom rows.
+      VCSStatusCluster(status: status)
       Spacer(minLength: 0)
       UnreadDot(count: notifications.count(target: target.id))
       if target.isMissing {
@@ -247,7 +256,10 @@ struct ProjectSidebar: View {
       .help(style.tooltip)
       .accessibilityElement(children: .ignore)
       .accessibilityLabel(
-        target.isMissing ? "\(style.accessibility), folder not found" : style.accessibility
+        [
+          target.isMissing ? "\(style.accessibility), folder not found" : style.accessibility,
+          VCSStatusPresentation.accessibilityLabel(status),
+        ].filter { !$0.isEmpty }.joined(separator: ", ")
       )
       .onHover { inside in
         if inside { hovered = id } else if hovered == id { hovered = nil }
@@ -264,7 +276,12 @@ struct ProjectSidebar: View {
       // Shared caret column, then the name — the same left edge as the root row above (which adds
       // its house glyph after the label), so roots and workrooms read as aligned siblings.
       terminalDisclosure(for: target)
-      Text(workroom.name).font(.callout)
+      // lineLimit so a long name yields to the VCS badges (the dot must always be visible) —
+      // truncation priority: dot never, name first (issue #24).
+      Text(workroom.name).font(.callout).lineLimit(1).truncationMode(.tail)
+      // VCS status sub-cluster: after the name, before the Spacer — distinct from the trailing
+      // actions cluster below (unread/warnings/run), so dirty dots scan as a column (issue #24).
+      VCSStatusCluster(status: store.workroomStatuses[id] ?? .unresolved)
       Spacer()
       UnreadDot(count: unread)
       ForEach(workroom.warnings, id: \.kind) { warning in

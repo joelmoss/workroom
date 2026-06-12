@@ -385,6 +385,9 @@ struct WorkroomCommands: Commands {
   @FocusedValue(\.multipleWorkroomTabs) private var multipleWorkroomTabs
   // Shared with RootView's inspector + toolbar toggle (same key) so all three stay in sync.
   @Default(.showNotifications) private var showNotifications
+  // The Changes section's collapse state (same key as RightInspector) so the View > Changes item
+  // reflects and drives whether the Changes view is actually showing inside the inspector.
+  @Default(.changesSectionCollapsed) private var changesCollapsed
   // Same key as the Settings checkbox so the two stay in sync; GhosttySurfaceView reads it
   // on each selection, so toggling here takes effect on the next drag.
   @Default(.copyOnSelect) private var copyOnSelect
@@ -428,6 +431,25 @@ struct WorkroomCommands: Commands {
     }
 
     CommandGroup(after: .sidebar) {
+      // View menu: reveal the Changes view. The inspector hosts both Changes and Notifications, so
+      // "showing" Changes means opening the inspector *and* expanding its Changes section; the
+      // checkmark is on only when both hold. Turning it off just collapses the section (the
+      // inspector stays open if Notifications is still showing).
+      Toggle(
+        "Changes",
+        isOn: Binding(
+          get: { showNotifications && !changesCollapsed },
+          set: { on in
+            if on {
+              showNotifications = true
+              changesCollapsed = false
+            } else {
+              changesCollapsed = true
+            }
+          })
+      )
+      .keyboardShortcut("c", modifiers: [.command, .option])
+
       // View menu: toggle the notifications inspector (checkmark reflects open/closed).
       Toggle("Notifications", isOn: $showNotifications)
         .keyboardShortcut("n", modifiers: [.command, .option])

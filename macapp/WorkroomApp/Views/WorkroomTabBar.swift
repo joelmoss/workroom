@@ -261,6 +261,8 @@ private struct WorkroomTabChip: View {
           .lineLimit(1)
           .foregroundStyle(.secondary)
       }
+      // Compact VCS status (issue #24): dot + CI glyph only (no ahead/behind text on the chip).
+      VCSStatusCluster(status: store.workroomStatuses[sid] ?? .unresolved, compact: true)
     }
     .padding(.horizontal, 14)
     .padding(.vertical, 7)
@@ -313,6 +315,8 @@ private struct WorkroomTabChip: View {
   private func accessibilityLabel(hasActivity: Bool, running: Bool) -> String {
     var parts = [primaryLabel]
     if let branchLabel { parts.append("on \(branchLabel)") }
+    let vcs = VCSStatusPresentation.accessibilityLabel(store.workroomStatuses[sid] ?? .unresolved)
+    if !vcs.isEmpty { parts.append(vcs) }
     if target.isMissing { parts.append("directory not found") }
     if running { parts.append("running") }
     if hasActivity { parts.append("unread activity") }

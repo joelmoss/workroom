@@ -38,6 +38,9 @@ final class AppStore: ObservableObject {
       Defaults[.sidebarSelection] = Self.targetIDString(for: selectedTargetID)
       // Record the new location for back/forward (issue #26), unless we're replaying history.
       if !isNavigatingHistory { recordCurrentLocation() }
+      // Freshen the newly-selected workroom's status (incl. CI) — debounced so arrow-key
+      // cycling through rows doesn't fork a probe per row (issue #24).
+      scheduleSelectedStatusRefresh()
     }
   }
   /// Project paths the user has collapsed in the sidebar (issue #14). Held here as `@Published`
@@ -78,6 +81,12 @@ final class AppStore: ObservableObject {
   /// Per-project resolved root branch/bookmark labels, hydrated asynchronously after each
   /// load (see `resolveBranches`). Absent ⇒ the root row shows a dim "root" until resolved.
   @Published var rootRefs: [Project.ID: RootRef] = [:]
+  /// Per-workroom (and per-root) VCS + CI status driving the ambient badges and the Changes
+  /// detail panel (issue #24), keyed by `SidebarID`. Resolved app-side (see
+  /// `WorkroomStatusResolver`), best-effort/"last checked" — NOT real-time. Ephemeral:
+  /// deliberately NOT persisted (operational state, unlike the sidebar prefs above). Hydrated
+  /// after each load, on selection, and on focus; see `AppStore+WorkroomStatus.swift`.
+  @Published var workroomStatuses: [SidebarID: WorkroomStatus] = [:]
 
   @Published var errorMessage: String?
   /// Title for the error alert. Nil falls back to the generic title; specific
@@ -118,6 +127,12 @@ final class AppStore: ObservableObject {
   /// The in-flight branch-resolution sweep; cancelled and replaced on each reload so a
   /// slow sweep never writes stale labels over a newer one.
   private var branchTask: Task<Void, Never>?
+  /// VCS/CI status resolution (issue #24). `internal` (not `private`) so the
+  /// `AppStore+WorkroomStatus.swift` extension can drive them. Tasks are cancelled+replaced
+  /// per sweep / per selection so a slow probe never writes stale status over a newer one.
+  let statusResolver = WorkroomStatusResolver()
+  var statusSweepTask: Task<Void, Never>?
+  var selectionStatusTask: Task<Void, Never>?
   /// When the project list was last loaded — used to throttle the on-focus refresh.
   private var lastLoadAt: Date = .distantPast
   /// The selection persisted from a previous launch (issue #14), applied once on the first
@@ -623,6 +638,7 @@ final class AppStore: ObservableObject {
       apply(response.projects)
       lastLoadAt = Date()
       resolveBranches()
+      refreshWorkroomStatuses()
     } catch {
       present(error)
     }
@@ -658,6 +674,9 @@ final class AppStore: ObservableObject {
       // for the UI tests — they assume the fixture workroom has a terminal (and thus a tab) on launch.
       terminals.ensureTab(for: workroom.target(inProject: project.path))
     }
+    // Seed deterministic Changes-inspector status (the fixture paths aren't real repos, so the live
+    // probe would only report "unknown"); the resolver sweep is skipped in fixture mode.
+    seedFixtureStatuses()
     lastLoadAt = Date()
   }
 
@@ -686,6 +705,20 @@ final class AppStore: ObservableObject {
     // Forget labels for projects that went away.
     let liveIDs = Set(fresh.map(\.id))
     rootRefs = rootRefs.filter { liveIDs.contains($0.key) }
+    // Forget VCS/CI status for sidebar ids that went away (mirrors rootRefs pruning, issue #24).
+    let liveSidebarIDs = Self.liveSidebarIDs(in: fresh)
+    workroomStatuses = workroomStatuses.filter { liveSidebarIDs.contains($0.key) }
+  }
+
+  /// Every `.root`/`.workroom` `SidebarID` present in `projects` — used to prune
+  /// `workroomStatuses` on reload so a since-deleted workroom can't leave a stale badge.
+  nonisolated static func liveSidebarIDs(in projects: [Project]) -> Set<SidebarID> {
+    var ids = Set<SidebarID>()
+    for p in projects {
+      ids.insert(.root(project: p.id))
+      for w in p.workrooms { ids.insert(.workroom(project: p.id, name: w.name)) }
+    }
+    return ids
   }
 
   /// Keeps the current selection if it still exists in `projects`, else nil. Never invents
@@ -856,6 +889,8 @@ final class AppStore: ObservableObject {
     if selectedTargetID == .workroom(project: project.path, name: workroom.name) {
       selectedTargetID = nil
     }
+    // Drop the gone workroom's VCS/CI status so a stale badge can't linger (issue #24).
+    workroomStatuses[.workroom(project: project.path, name: workroom.name)] = nil
 
     // Teardown continues in the background. We still collect its output so a failure
     // can be surfaced in an alert.
