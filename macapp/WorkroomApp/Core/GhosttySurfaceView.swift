@@ -707,6 +707,15 @@ final class GhosttySurfaceView: NSView {
   /// AppDelegate monitor; included here defensively. ⌘C/⌘V/etc. fall through to libghostty.
   private func isAppShortcut(_ event: NSEvent) -> Bool {
     let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
+    // The arrow-key tab-navigation menu shortcuts, matched by keyCode (charactersIgnoringModifiers
+    // returns a function-key sentinel, not a letter, so the char checks below can't see them):
+    // ⌥⌘←/→ = prev/next terminal tab; ⇧⌥⌘←/→ = prev/next workroom tab (issue #29). Reserved like the
+    // Run keys so the menu key-equivalent wins over a TUI in an enhanced keyboard mode (Claude/Codex).
+    // ⌃⌘arrows (split-pane focus, issue #3) is monitor-only with no menu item, so it's deliberately
+    // NOT reserved — it passes through to the terminal at a split's edge, exactly as it did on ⌥⌘arrows.
+    if event.keyCode == 123 || event.keyCode == 124 {  // ← / →
+      if flags == [.command, .option] || flags == [.command, .option, .shift] { return true }
+    }
     guard let chars = event.charactersIgnoringModifiers, let ch = chars.first else { return false }
     let key = Character(ch.lowercased())
     // Menu commands that pair Command with Shift or Option fail the command-only guard below, so

@@ -257,6 +257,28 @@ final class AppStore: ObservableObject {
     return true
   }
 
+  /// Switch to the next (`forward`) or previous workroom tab, wrapping at the ends — bound to
+  /// ⇧⌥⌘→ / ⇧⌥⌘← (issue #29), the workroom-level counterpart to ⌥⌘arrows' terminal-tab cycle. When
+  /// the current selection isn't in the bar (e.g. a root with no terminals), steps in at the first
+  /// tab (forward) or the last (back). Returns whether it switched, so the AppDelegate monitor
+  /// consumes the key in the monitor only when there's a tab to move to (it's a no-op otherwise —
+  /// the key is reserved in `isAppShortcut` either way, so it never reaches the terminal).
+  @discardableResult
+  func cycleWorkroomTab(forward: Bool) -> Bool {
+    let tabs = orderedWorkroomTargets()
+    guard !tabs.isEmpty else { return false }
+    let next: Int
+    if let current = tabs.firstIndex(where: { $0.sid == selectedTargetID }) {
+      guard tabs.count > 1 else { return false }
+      next = (current + (forward ? 1 : -1) + tabs.count) % tabs.count
+    } else {
+      next = forward ? 0 : tabs.count - 1
+    }
+    selectedTargetID = tabs[next].sid
+    selectedProjectID = Self.projectPath(of: tabs[next].sid)
+    return true
+  }
+
   // MARK: Run command (issue #7)
 
   /// The lifecycle of a target's run command (issue #7), one value per target. A single state machine
@@ -936,6 +958,24 @@ final class AppStore: ObservableObject {
     terminals.select(tabs[index].id, for: target)
   }
 
+  /// Switch to the next (`forward`) or previous terminal tab in the selected target, wrapping at the
+  /// ends — bound to ⌥⌘→ / ⌥⌘← (issue #29). Returns whether it switched, so the AppDelegate monitor
+  /// consumes the key in the monitor only when there's more than one tab (a no-op otherwise — the
+  /// key is reserved in `isAppShortcut` either way, so it never reaches the terminal).
+  @discardableResult
+  func cycleTerminalTab(forward: Bool) -> Bool {
+    guard let target = selectedTarget else { return false }
+    let tabs = terminals.tabs(for: target)
+    guard tabs.count > 1 else { return false }
+    let current =
+      terminals.activeTab(for: target).flatMap { active in
+        tabs.firstIndex(where: { $0.id == active.id })
+      } ?? 0
+    let next = (current + (forward ? 1 : -1) + tabs.count) % tabs.count
+    terminals.select(tabs[next].id, for: target)
+    return true
+  }
+
   /// Split the focused pane by opening a new terminal beside it: ⌘D to the right, ⇧⌘D below
   /// (issue #3). The new terminal inherits the focused pane's working directory.
   func splitFocusedRight() {
@@ -958,7 +998,7 @@ final class AppStore: ObservableObject {
     terminals.splitFocusedPane(for: target, edge: .top)
   }
 
-  /// Move keyboard focus to the adjacent pane in a split (⌥⌘arrows). Returns whether focus moved, so
+  /// Move keyboard focus to the adjacent pane in a split (⌃⌘arrows). Returns whether focus moved, so
   /// the key monitor passes the event through to the terminal when there's no pane that way.
   @discardableResult
   func focusPane(_ direction: PaneDirection) -> Bool {

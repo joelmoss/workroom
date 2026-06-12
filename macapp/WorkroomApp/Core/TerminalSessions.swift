@@ -402,7 +402,7 @@ final class TerminalSessions: ObservableObject {
     if notify { onFocusChange?(targetID, tabID) }
   }
 
-  /// Move focus to the adjacent pane in `direction` within the visible split (⌥⌘arrows, issue #3).
+  /// Move focus to the adjacent pane in `direction` within the visible split (⌃⌘arrows, issue #3).
   /// Returns whether focus actually moved, so the key monitor only swallows the event when it acts.
   @discardableResult
   func focusAdjacentPane(_ direction: PaneDirection, for target: TerminalTarget) -> Bool {

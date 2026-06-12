@@ -227,7 +227,7 @@ enum PaneTreeLayout {
   }
 
   /// The pane nearest `tabID` in `direction` within `layout`: the closest pane that lies that way and
-  /// overlaps on the perpendicular axis (so ⌥⌘→ from a tall left pane lands on whichever right pane
+  /// overlaps on the perpendicular axis (so ⌃⌘→ from a tall left pane lands on whichever right pane
   /// shares the most rows). Pure geometry over a reference rect — `nil` if there's nothing that way.
   static func adjacentPane<Leaf: Hashable>(
     to tabID: Leaf, direction: PaneDirection, in layout: PaneLayout<Leaf>

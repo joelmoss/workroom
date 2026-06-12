@@ -171,6 +171,9 @@ struct RootView: View {
     .focusedSceneValue(\.hasRunCommand, selectedHasRunCommand)
     .focusedSceneValue(\.runCommandActive, selectedRunCommandActive)
     .focusedSceneValue(\.hasRunTerminal, store.hasAnyRunTerminal)
+    // Drive the Go-menu Previous/Next Workroom Tab items (issue #29) — only meaningful with ≥2 tabs.
+    // RootView observes `terminals`, so this stays live as workrooms gain/lose their tabs.
+    .focusedSceneValue(\.multipleWorkroomTabs, store.orderedWorkroomTargets().count > 1)
   }
 
   /// The project path of the selected root or workroom (nil for no selection) — the run command is

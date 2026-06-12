@@ -103,6 +103,8 @@ struct WorkroomTerminalsView: View {
     }
     // Drive the "Close Terminal" menu command's enabled state.
     .focusedSceneValue(\.hasTerminal, !tabs.isEmpty)
+    // Drive the Go-menu Previous/Next Terminal Tab items (issue #29) — only meaningful with ≥2 tabs.
+    .focusedSceneValue(\.multipleTerminalTabs, tabs.count > 1)
   }
 
   /// The layout the content area renders: the split when it's visible, else the focused solo tab.

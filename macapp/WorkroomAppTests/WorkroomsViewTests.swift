@@ -149,6 +149,96 @@ final class WorkroomsViewTests: XCTestCase {
     XCTAssertEqual(store.selectedTargetID, before)
   }
 
+  // MARK: cycleWorkroomTab (⇧⌥⌘←/→, issue #29)
+
+  func testCycleWorkroomTabWrapsBothWays() {
+    let store = makeStore([project("/a", workrooms: ["main", "feature"])])
+    store.workroomTabOrder = [
+      TerminalTarget.workroomID(project: "/a", name: "main"),
+      TerminalTarget.workroomID(project: "/a", name: "feature"),
+    ]
+    activate(store, .workroom(project: "/a", name: "main"))
+    activate(store, .workroom(project: "/a", name: "feature"))
+
+    let tabs = store.orderedWorkroomTargets()
+    XCTAssertEqual(tabs.count, 2)
+    XCTAssertEqual(store.selectedTargetID, tabs[1].sid)  // feature selected (activated last)
+
+    XCTAssertTrue(store.cycleWorkroomTab(forward: true))  // index 1 wraps to 0
+    XCTAssertEqual(store.selectedTargetID, tabs[0].sid)
+    XCTAssertTrue(store.cycleWorkroomTab(forward: false))  // index 0 wraps to 1
+    XCTAssertEqual(store.selectedTargetID, tabs[1].sid)
+    XCTAssertTrue(store.cycleWorkroomTab(forward: false))  // 1 → 0
+    XCTAssertEqual(store.selectedTargetID, tabs[0].sid)
+  }
+
+  func testCycleWorkroomTabSingleTabReturnsFalse() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    activate(store, .workroom(project: "/a", name: "main"))
+    let before = store.selectedTargetID
+    XCTAssertFalse(
+      store.cycleWorkroomTab(forward: true), "one tab → nothing to cycle (no-op)")
+    XCTAssertEqual(store.selectedTargetID, before)
+  }
+
+  func testCycleWorkroomTabStepsInWhenSelectionNotInBar() {
+    // Selection isn't a tab (a root with no terminal): forward steps in at the first tab, back the last.
+    let store = makeStore([project("/a", workrooms: ["main", "feature"])])
+    store.workroomTabOrder = [
+      TerminalTarget.workroomID(project: "/a", name: "main"),
+      TerminalTarget.workroomID(project: "/a", name: "feature"),
+    ]
+    activate(store, .workroom(project: "/a", name: "main"))
+    activate(store, .workroom(project: "/a", name: "feature"))
+    let tabs = store.orderedWorkroomTargets()
+
+    store.selectedTargetID = .root(project: "/a")  // not in the bar
+    XCTAssertTrue(store.cycleWorkroomTab(forward: true))
+    XCTAssertEqual(store.selectedTargetID, tabs.first?.sid)
+
+    store.selectedTargetID = .root(project: "/a")
+    XCTAssertTrue(store.cycleWorkroomTab(forward: false))
+    XCTAssertEqual(store.selectedTargetID, tabs.last?.sid)
+  }
+
+  // MARK: cycleTerminalTab (⌥⌘←/→, issue #29)
+
+  func testCycleTerminalTabWrapsBothWays() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    let a = SidebarID.workroom(project: "/a", name: "main")
+    let target = store.target(for: a)!
+    store.selectedTargetID = a
+    store.terminals.addTab(for: target)  // tab 0
+    store.terminals.addTab(for: target)  // tab 1
+    store.terminals.addTab(for: target)  // tab 2 (focused — addTab focuses the new tab)
+
+    let tabs = store.terminals.tabs(for: target)
+    XCTAssertEqual(tabs.count, 3)
+    XCTAssertEqual(store.terminals.activeTab(for: target)?.id, tabs[2].id)
+
+    XCTAssertTrue(store.cycleTerminalTab(forward: true))  // index 2 wraps to 0
+    XCTAssertEqual(store.terminals.activeTab(for: target)?.id, tabs[0].id)
+    XCTAssertTrue(store.cycleTerminalTab(forward: false))  // index 0 wraps to 2
+    XCTAssertEqual(store.terminals.activeTab(for: target)?.id, tabs[2].id)
+    XCTAssertTrue(store.cycleTerminalTab(forward: false))  // 2 → 1
+    XCTAssertEqual(store.terminals.activeTab(for: target)?.id, tabs[1].id)
+  }
+
+  func testCycleTerminalTabSingleTabReturnsFalse() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    let a = SidebarID.workroom(project: "/a", name: "main")
+    activate(store, a)  // one tab
+    let target = store.target(for: a)!
+    let before = store.terminals.activeTab(for: target)?.id
+    XCTAssertFalse(store.cycleTerminalTab(forward: true), "one tab → nothing to cycle")
+    XCTAssertEqual(store.terminals.activeTab(for: target)?.id, before)
+  }
+
+  func testCycleTerminalTabNoSelectionReturnsFalse() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    XCTAssertFalse(store.cycleTerminalTab(forward: true), "no selected target → not handled")
+  }
+
   // MARK: Selecting a workroom does not auto-open a terminal
 
   func testSelectingWorkroomDoesNotCreateTerminal() {

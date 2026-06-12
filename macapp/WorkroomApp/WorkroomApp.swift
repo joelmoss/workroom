@@ -93,7 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       // ⌥⌘1–9: switch to the Nth workroom tab (issue #23), the workroom-level counterpart to ⌘1–9.
       // Caught here (like ⌘1–9) so it fires before the terminal. Consumed only when there's an Nth tab
       // to switch to (focusWorkroomTab returns true), so ⌥⌘digit still reaches the terminal otherwise.
-      // (Digit chars don't collide with the ⌥⌘R / ⌥⌘arrow checks below.)
+      // (Digit chars don't collide with the ⌥⌘R / arrow-key checks below.)
       if flags == [.command, .option], let chars = event.charactersIgnoringModifiers,
         let digit = Int(chars), (1...9).contains(digit),
         MainActor.assumeIsolated({ AppStore.shared.focusWorkroomTab(at: digit - 1) })
@@ -115,17 +115,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         return nil
       }
       // ⌥⌘R: restart the selected workroom's run command if it's running (issue #7). Caught here for
-      // reliability, like ⌘R/⇧⌘R. No-op when nothing's running. (⌥⌘arrows are matched by keyCode
-      // above, so "r" doesn't collide with pane navigation.)
+      // reliability, like ⌘R/⇧⌘R. No-op when nothing's running. (The arrow-key checks below match by
+      // keyCode, so "r" doesn't collide with tab/pane navigation.)
       if flags == [.command, .option], event.charactersIgnoringModifiers?.lowercased() == "r" {
         Task { @MainActor in AppStore.shared.restartSelectedRunCommand() }
         return nil
       }
-      // ⌥⌘arrows: move focus between split panes — consumed only when focus actually moves, so the
-      // keys still reach the terminal when there's no split to navigate. (Virtual keycodes:
-      // left 123 / right 124 / down 125 / up 126.)
+      // ⌥⌘←/→: previous/next terminal tab (issue #29). Caught here like ⌘1–9 so it fires before the
+      // terminal; consumed when it switches a tab, and reserved in `isAppShortcut` anyway so it never
+      // reaches the terminal as input. (⌥⌘↑/↓ are unbound — they pass through to the terminal.)
+      if flags == [.command, .option], event.keyCode == 123 || event.keyCode == 124,
+        MainActor.assumeIsolated({ AppStore.shared.cycleTerminalTab(forward: event.keyCode == 124) }
+        )
+      {
+        return nil
+      }
+      // ⇧⌥⌘←/→: previous/next workroom tab (issue #29), the workroom-level counterpart to ⌥⌘←/→.
+      // Consumed when it switches; reserved in `isAppShortcut` anyway, like ⌥⌘←/→.
+      if flags == [.command, .option, .shift], event.keyCode == 123 || event.keyCode == 124,
+        MainActor.assumeIsolated({ AppStore.shared.cycleWorkroomTab(forward: event.keyCode == 124) }
+        )
+      {
+        return nil
+      }
+      // ⌃⌘arrows: move focus between split panes (issue #3) — moved off ⌥⌘arrows, which now cycles
+      // terminal tabs (issue #29). Consumed only when focus actually moves, so the keys still reach
+      // the terminal when there's no split to navigate. (Virtual keycodes: left 123 / right 124 /
+      // down 125 / up 126.)
       let arrows: [UInt16: PaneDirection] = [123: .left, 124: .right, 125: .down, 126: .up]
-      if flags == [.command, .option], let direction = arrows[event.keyCode],
+      if flags == [.command, .control], let direction = arrows[event.keyCode],
         MainActor.assumeIsolated({ AppStore.shared.focusPane(direction) })
       {
         return nil
@@ -291,6 +309,19 @@ struct HasRunTerminalKey: FocusedValueKey {
   typealias Value = Bool
 }
 
+/// Whether the selected target has more than one terminal tab (issue #29) — published by
+/// WorkroomTerminalsView, so the Go-menu Previous/Next Terminal Tab items disable when there's
+/// nothing to cycle between.
+struct MultipleTerminalTabsKey: FocusedValueKey {
+  typealias Value = Bool
+}
+
+/// Whether there's more than one workroom tab (issue #29) — published by RootView, so the Go-menu
+/// Previous/Next Workroom Tab items disable when there's nothing to cycle between.
+struct MultipleWorkroomTabsKey: FocusedValueKey {
+  typealias Value = Bool
+}
+
 extension FocusedValues {
   var workroomSelected: Bool? {
     get { self[WorkroomSelectedKey.self] }
@@ -324,6 +355,14 @@ extension FocusedValues {
     get { self[HasRunTerminalKey.self] }
     set { self[HasRunTerminalKey.self] = newValue }
   }
+  var multipleTerminalTabs: Bool? {
+    get { self[MultipleTerminalTabsKey.self] }
+    set { self[MultipleTerminalTabsKey.self] = newValue }
+  }
+  var multipleWorkroomTabs: Bool? {
+    get { self[MultipleWorkroomTabsKey.self] }
+    set { self[MultipleWorkroomTabsKey.self] = newValue }
+  }
 }
 
 /// Menu-bar commands + keyboard shortcuts. They act on the shared store so they work
@@ -342,6 +381,8 @@ struct WorkroomCommands: Commands {
   @FocusedValue(\.hasRunCommand) private var hasRunCommand
   @FocusedValue(\.runCommandActive) private var runCommandActive
   @FocusedValue(\.hasRunTerminal) private var hasRunTerminal
+  @FocusedValue(\.multipleTerminalTabs) private var multipleTerminalTabs
+  @FocusedValue(\.multipleWorkroomTabs) private var multipleWorkroomTabs
   // Shared with RootView's inspector + toolbar toggle (same key) so all three stay in sync.
   @Default(.showNotifications) private var showNotifications
   // Same key as the Settings checkbox so the two stay in sync; GhosttySurfaceView reads it
@@ -478,6 +519,26 @@ struct WorkroomCommands: Commands {
       Button("Forward") { AppStore.shared.navigateForward() }
         .keyboardShortcut("]", modifiers: .command)
         .disabled(canNavigateForward != true)
+
+      // Cycle terminal tabs (⌥⌘←/→) and workroom tabs (⇧⌥⌘←/→) (issue #29). The keys are caught by
+      // the AppDelegate monitor so they fire before the terminal; shown here for discoverability (the
+      // monitor consumes them, so no double-fire — like the Run menu). Disabled when there's nothing
+      // to cycle between (≤1 tab).
+      Divider()
+      Button("Previous Terminal Tab") { AppStore.shared.cycleTerminalTab(forward: false) }
+        .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+        .disabled(multipleTerminalTabs != true)
+      Button("Next Terminal Tab") { AppStore.shared.cycleTerminalTab(forward: true) }
+        .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+        .disabled(multipleTerminalTabs != true)
+      Button("Previous Workroom Tab") { AppStore.shared.cycleWorkroomTab(forward: false) }
+        .keyboardShortcut(.leftArrow, modifiers: [.command, .option, .shift])
+        .disabled(multipleWorkroomTabs != true)
+      Button("Next Workroom Tab") { AppStore.shared.cycleWorkroomTab(forward: true) }
+        .keyboardShortcut(.rightArrow, modifiers: [.command, .option, .shift])
+        .disabled(multipleWorkroomTabs != true)
+
+      Divider()
 
       // Jump to the run terminal if one exists (issue #7) — navigation only, so it's named distinctly
       // from the Run menu's "Run" (which starts the command). Disabled when there's none to go to.
