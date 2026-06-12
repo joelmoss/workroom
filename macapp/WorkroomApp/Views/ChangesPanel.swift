@@ -10,6 +10,7 @@ struct RightInspector: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
   @Default(.changesSectionCollapsed) private var changesCollapsed
+  @Default(.prSectionCollapsed) private var prCollapsed
   @Default(.notificationsSectionCollapsed) private var notificationsCollapsed
 
   var body: some View {
@@ -22,6 +23,10 @@ struct RightInspector: View {
         }
       } content: {
         ChangesPanel()
+      }
+      InspectorSection(title: "Pull Request", collapsed: $prCollapsed) {
+      } content: {
+        PullRequestPanel()
       }
       InspectorSection(title: "Notifications", collapsed: $notificationsCollapsed, fill: true) {
         InspectorHeaderButton(

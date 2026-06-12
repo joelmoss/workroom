@@ -388,6 +388,8 @@ struct WorkroomCommands: Commands {
   // The Changes section's collapse state (same key as RightInspector) so the View > Changes item
   // reflects and drives whether the Changes view is actually showing inside the inspector.
   @Default(.changesSectionCollapsed) private var changesCollapsed
+  // Likewise for the Pull Request section (issue #24, Phase 2).
+  @Default(.prSectionCollapsed) private var prCollapsed
   // Same key as the Settings checkbox so the two stay in sync; GhosttySurfaceView reads it
   // on each selection, so toggling here takes effect on the next drag.
   @Default(.copyOnSelect) private var copyOnSelect
@@ -449,6 +451,23 @@ struct WorkroomCommands: Commands {
           })
       )
       .keyboardShortcut("c", modifiers: [.command, .option])
+
+      // View menu: reveal the Pull Request view — same open-inspector-and-expand-section semantics
+      // as Changes above.
+      Toggle(
+        "Pull Request",
+        isOn: Binding(
+          get: { showNotifications && !prCollapsed },
+          set: { on in
+            if on {
+              showNotifications = true
+              prCollapsed = false
+            } else {
+              prCollapsed = true
+            }
+          })
+      )
+      .keyboardShortcut("p", modifiers: [.command, .option])
 
       // View menu: toggle the notifications inspector (checkmark reflects open/closed).
       Toggle("Notifications", isOn: $showNotifications)

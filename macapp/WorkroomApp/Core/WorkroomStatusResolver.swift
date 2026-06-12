@@ -8,6 +8,14 @@ enum CIResolution: Equatable, Sendable {
   case keepPrior
 }
 
+/// What a PR probe decided. `keepPrior` (transient rate-limit/network blip) keeps the last good PR
+/// so a flaky `gh` doesn't flicker the Pull Request section to empty.
+enum PRResolution: Equatable, Sendable {
+  case info(PullRequestInfo)
+  case absent  // gh missing/unauth, no remote, or no PR for the branch
+  case keepPrior
+}
+
 /// Resolves a workroom's VCS + CI status app-side by shelling to git/jj/gh. App-side (not in
 /// the `workroom --json` contract) for the same reasons as `BranchResolver`: GUI-only, keeps
 /// `list` instant, isolates a slow repo to its own row. Stage 1 (`resolveLocal`) is fast/local;
@@ -101,6 +109,27 @@ struct WorkroomStatusResolver: Sendable {
         "headSha,status,conclusion,workflowName",
       ], in: path, timeout: ciTimeout)
     return Self.classifyCI(r, head: head)
+  }
+
+  /// Resolve the pull request for `branch` (the git branch from stage 1; falls back to the colocated
+  /// git ref). Slow network `gh` call, run beside `resolveCI`. `gh pr list --head` returns a JSON
+  /// array — empty when the branch has no PR — so "no PR" is a clean `.absent`, not an error.
+  func resolvePR(path: String, branch: String?) async -> PRResolution {
+    var branchName = branch
+    if branchName == nil {
+      let b = await runner.run(
+        "git", ["symbolic-ref", "--quiet", "--short", "HEAD"], in: path, timeout: timeout)
+      branchName = b.ok ? b.stdout.trimmingCharacters(in: .whitespacesAndNewlines) : nil
+    }
+    guard let branchName, !branchName.isEmpty else { return .absent }
+
+    let r = await runner.run(
+      "gh",
+      [
+        "pr", "list", "--head", branchName, "--state", "all", "--limit", "1", "--json",
+        "number,title,state,isDraft,url,reviewDecision",
+      ], in: path, timeout: ciTimeout)
+    return Self.classifyPR(r)
   }
 
   // MARK: - Pure parsers / classifiers (unit-tested directly)
@@ -306,5 +335,49 @@ struct WorkroomStatusResolver: Sendable {
     if anySuccess { return .state(.passing) }
     if anyNeutral { return .state(.neutral) }
     return .absent
+  }
+
+  /// Decode `gh pr list --head <branch> --state all --json … --limit 1` (a JSON array) into the
+  /// first PR, mapping GitHub's UPPER_SNAKE `state`/`reviewDecision` to our enums. An empty array is
+  /// `.absent` (no PR); a transient rate-limit is `.keepPrior` so the section doesn't flicker.
+  static func classifyPR(_ r: CommandResult) -> PRResolution {
+    if r.timedOut { return .keepPrior }
+    if r.exitCode == CommandResult.commandNotFound { return .absent }  // gh not installed
+    let lowerErr = r.stderr.lowercased()
+    if lowerErr.contains("rate limit") || lowerErr.contains("503") || lowerErr.contains("timeout") {
+      return .keepPrior
+    }
+    if !r.ok { return .absent }  // auth failure, no remote, not a gh repo, etc.
+
+    struct Raw: Decodable {
+      let number: Int
+      let title: String
+      let state: String
+      let isDraft: Bool
+      let url: String
+      let reviewDecision: String?
+    }
+    guard let data = r.stdout.data(using: .utf8),
+      let raws = try? JSONDecoder().decode([Raw].self, from: data),
+      let raw = raws.first
+    else { return .absent }
+
+    let state: PullRequestInfo.State
+    switch raw.state.uppercased() {
+    case "MERGED": state = .merged
+    case "CLOSED": state = .closed
+    default: state = .open  // "OPEN" (and anything unexpected) → open
+    }
+    let review: PullRequestInfo.ReviewDecision?
+    switch raw.reviewDecision?.uppercased() {
+    case "APPROVED": review = .approved
+    case "CHANGES_REQUESTED": review = .changesRequested
+    case "REVIEW_REQUIRED": review = .reviewRequired
+    default: review = nil  // "" or absent → no decision to show
+    }
+    return .info(
+      PullRequestInfo(
+        number: raw.number, title: raw.title, state: state, isDraft: raw.isDraft, url: raw.url,
+        reviewDecision: review))
   }
 }

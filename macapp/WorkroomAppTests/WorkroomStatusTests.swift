@@ -186,6 +186,44 @@ final class WorkroomStatusTests: XCTestCase {
     XCTAssertNil(stored?.jjChangeID)
   }
 
+  // MARK: - PRPresentation (Phase 2 pull-request badge)
+
+  private func pr(_ state: PullRequestInfo.State, draft: Bool = false) -> PullRequestInfo {
+    PullRequestInfo(
+      number: 1, title: "t", state: state, isDraft: draft, url: "u", reviewDecision: nil)
+  }
+
+  func testPRBadgeStates() {
+    XCTAssertEqual(PRPresentation.badge(pr(.open)).semantic, .open)
+    XCTAssertEqual(PRPresentation.badge(pr(.open)).label, "Open")
+    // a draft is still OPEN, but the badge surfaces "Draft" — the more useful signal
+    XCTAssertEqual(PRPresentation.badge(pr(.open, draft: true)).semantic, .draft)
+    XCTAssertEqual(PRPresentation.badge(pr(.open, draft: true)).label, "Draft")
+    XCTAssertEqual(PRPresentation.badge(pr(.merged)).semantic, .merged)
+    XCTAssertEqual(PRPresentation.badge(pr(.closed)).semantic, .closed)
+  }
+
+  func testPRReviewLabel() {
+    XCTAssertEqual(PRPresentation.reviewLabel(.approved), "Approved")
+    XCTAssertEqual(PRPresentation.reviewLabel(.changesRequested), "Changes requested")
+    XCTAssertEqual(PRPresentation.reviewLabel(.reviewRequired), "Review required")
+    XCTAssertNil(PRPresentation.reviewLabel(nil))
+  }
+
+  /// A local refresh must preserve the separately-probed PR (like CI) — mergeLocalStatus must not
+  /// drop it.
+  @MainActor
+  func testMergeLocalStatusPreservesPR() {
+    let store = AppStore()
+    let sid = SidebarID.root(project: "/p")
+    store.workroomStatuses[sid] = WorkroomStatus(
+      dirty: true,
+      pr: PullRequestInfo(
+        number: 5, title: "t", state: .open, isDraft: false, url: "u", reviewDecision: .approved))
+    store.mergeLocalStatus(WorkroomStatus(dirty: false, branchForCI: "main"), into: sid)
+    XCTAssertEqual(store.workroomStatuses[sid]?.pr?.number, 5)  // PR survives the local refresh
+  }
+
   // MARK: - ChangesPanel.splitPath (filename + dimmed directory rendering)
 
   func testSplitPath() {

@@ -87,6 +87,9 @@ extension AppStore {
       let ci = await resolver.resolveCI(path: item.path, branch: fresh.branchForCI)
       if Task.isCancelled { return }
       self.applyCIStatus(ci, to: sid)
+      let pr = await resolver.resolvePR(path: item.path, branch: fresh.branchForCI)
+      if Task.isCancelled { return }
+      self.applyPRStatus(pr, to: sid)
     }
   }
 
@@ -219,6 +222,22 @@ extension AppStore {
       // re-probed on every sweep (no backoff). Coarse but cheap; true exponential backoff is a
       // future refinement.
       s.ciCheckedAt = Date()
+    }
+    workroomStatuses[sid] = s
+  }
+
+  private func applyPRStatus(_ res: PRResolution, to sid: SidebarID) {
+    guard var s = workroomStatuses[sid] else { return }
+    switch res {
+    case .info(let pr):
+      s.pr = pr
+      s.prCheckedAt = Date()
+    case .absent:
+      s.pr = nil
+      s.prCheckedAt = Date()
+    case .keepPrior:
+      // Transient blip: keep the last good PR but stamp `prCheckedAt` so the TTL/backoff applies.
+      s.prCheckedAt = Date()
     }
     workroomStatuses[sid] = s
   }

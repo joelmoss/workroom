@@ -304,4 +304,118 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let res = await r.resolveCI(path: existing, branch: "main")
     XCTAssertEqual(res, .absent)  // no git HEAD → no CI
   }
+
+  // MARK: - classifyPR
+
+  func testClassifyPROpenApproved() {
+    let r = ok(
+      #"[{"number":42,"title":"Add login","state":"OPEN","isDraft":false,"url":"https://x/42","reviewDecision":"APPROVED"}]"#
+    )
+    guard case .info(let pr) = WorkroomStatusResolver.classifyPR(r) else {
+      return XCTFail("expected .info")
+    }
+    XCTAssertEqual(pr.number, 42)
+    XCTAssertEqual(pr.title, "Add login")
+    XCTAssertEqual(pr.state, .open)
+    XCTAssertFalse(pr.isDraft)
+    XCTAssertEqual(pr.url, "https://x/42")
+    XCTAssertEqual(pr.reviewDecision, .approved)
+  }
+
+  func testClassifyPRDraftEmptyReviewIsNil() {
+    let r = ok(
+      #"[{"number":7,"title":"WIP","state":"OPEN","isDraft":true,"url":"u","reviewDecision":""}]"#)
+    guard case .info(let pr) = WorkroomStatusResolver.classifyPR(r) else { return XCTFail() }
+    XCTAssertTrue(pr.isDraft)
+    XCTAssertEqual(pr.state, .open)  // a draft is still OPEN
+    XCTAssertNil(pr.reviewDecision)  // "" → nil
+  }
+
+  func testClassifyPRMergedAndClosed() {
+    let merged = ok(
+      #"[{"number":1,"title":"m","state":"MERGED","isDraft":false,"url":"u","reviewDecision":"APPROVED"}]"#
+    )
+    let closed = ok(
+      #"[{"number":2,"title":"c","state":"CLOSED","isDraft":false,"url":"u","reviewDecision":null}]"#
+    )
+    guard case .info(let mpr) = WorkroomStatusResolver.classifyPR(merged),
+      case .info(let cpr) = WorkroomStatusResolver.classifyPR(closed)
+    else { return XCTFail() }
+    XCTAssertEqual(mpr.state, .merged)
+    XCTAssertEqual(cpr.state, .closed)
+    XCTAssertNil(cpr.reviewDecision)  // null → nil
+  }
+
+  func testClassifyPRReviewDecisions() {
+    let cr = ok(
+      #"[{"number":1,"title":"t","state":"OPEN","isDraft":false,"url":"u","reviewDecision":"CHANGES_REQUESTED"}]"#
+    )
+    let rr = ok(
+      #"[{"number":2,"title":"t","state":"OPEN","isDraft":false,"url":"u","reviewDecision":"REVIEW_REQUIRED"}]"#
+    )
+    guard case .info(let crpr) = WorkroomStatusResolver.classifyPR(cr),
+      case .info(let rrpr) = WorkroomStatusResolver.classifyPR(rr)
+    else { return XCTFail() }
+    XCTAssertEqual(crpr.reviewDecision, .changesRequested)
+    XCTAssertEqual(rrpr.reviewDecision, .reviewRequired)
+  }
+
+  func testClassifyPREmptyArrayIsAbsent() {
+    XCTAssertEqual(WorkroomStatusResolver.classifyPR(ok("[]")), .absent)  // no PR for the branch
+  }
+
+  func testClassifyPRGhMissingIsAbsent() {
+    let r = CommandResult(
+      stdout: "", stderr: "env: gh: No such file", exitCode: 127, timedOut: false)
+    XCTAssertEqual(WorkroomStatusResolver.classifyPR(r), .absent)
+  }
+
+  func testClassifyPRNotOkIsAbsent() {
+    let r = CommandResult(
+      stdout: "", stderr: "no git remote found", exitCode: 1, timedOut: false)
+    XCTAssertEqual(WorkroomStatusResolver.classifyPR(r), .absent)
+  }
+
+  func testClassifyPRRateLimitKeepsPrior() {
+    let r = CommandResult(
+      stdout: "", stderr: "API rate limit exceeded", exitCode: 1, timedOut: false)
+    XCTAssertEqual(WorkroomStatusResolver.classifyPR(r), .keepPrior)
+  }
+
+  func testClassifyPRTimeoutKeepsPrior() {
+    let r = CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: true)
+    XCTAssertEqual(WorkroomStatusResolver.classifyPR(r), .keepPrior)
+  }
+
+  func testClassifyPRMalformedIsAbsent() {
+    XCTAssertEqual(WorkroomStatusResolver.classifyPR(ok("not json")), .absent)
+  }
+
+  // MARK: - resolvePR (end-to-end via the mock)
+
+  func testResolvePRWithBranch() async {
+    let json =
+      #"[{"number":9,"title":"Feature","state":"OPEN","isDraft":false,"url":"https://x/9","reviewDecision":"APPROVED"}]"#
+    let r = WorkroomStatusResolver(
+      runner: MockStatusRunner { exe, args in
+        (exe == "gh" && args.contains("pr")) ? ok(json) : ok("")
+      })
+    let res = await r.resolvePR(path: existing, branch: "main")
+    guard case .info(let pr) = res else { return XCTFail("expected .info") }
+    XCTAssertEqual(pr.number, 9)
+    XCTAssertEqual(pr.reviewDecision, .approved)
+  }
+
+  func testResolvePRNoBranchIsAbsent() async {
+    // branch nil + git symbolic-ref fails (detached) → no branch → absent, never calls gh.
+    let r = WorkroomStatusResolver(
+      runner: MockStatusRunner { exe, args in
+        if exe == "git", args.contains("symbolic-ref") {
+          return CommandResult(stdout: "", stderr: "", exitCode: 1, timedOut: false)
+        }
+        return ok("[]")
+      })
+    let res = await r.resolvePR(path: existing, branch: nil)
+    XCTAssertEqual(res, .absent)
+  }
 }

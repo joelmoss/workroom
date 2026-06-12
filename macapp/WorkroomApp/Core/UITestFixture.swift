@@ -70,7 +70,11 @@ enum UITestFixture {
       jjRefs: ["feature/login"],
       jjDescription: "feat: add session login (#42)",
       jjChangeID: "pw", jjCommitID: "7d74470b",
-      lastChecked: Date(timeIntervalSince1970: 1_700_000_000))
+      pr: PullRequestInfo(
+        number: 42, title: "Add session login", state: .open, isDraft: false,
+        url: "https://github.com/acme/app/pull/42", reviewDecision: .approved),
+      // All three "checked" stamps set so the inspector shows the seeded data, not "Checking…".
+      lastChecked: Self.checkedAt, ciCheckedAt: Self.checkedAt, prCheckedAt: Self.checkedAt)
   }
 
   /// Deterministic status for the fixture **project root**: a clean git branch that's one commit
@@ -79,6 +83,13 @@ enum UITestFixture {
   static var rootStatus: WorkroomStatus {
     WorkroomStatus(
       dirty: false, ahead: 1, behind: 0, changedFiles: [], ci: .passing,
-      branchForCI: "main", lastChecked: Date(timeIntervalSince1970: 1_700_000_000))
+      branchForCI: "main",
+      // No PR seeded here, so a `prCheckedAt` stamp makes the inspector show the "No pull request"
+      // empty state (not "Checking…").
+      lastChecked: Self.checkedAt, ciCheckedAt: Self.checkedAt, prCheckedAt: Self.checkedAt)
   }
+
+  /// A fixed timestamp for the seeded statuses' "last checked" stamps (deterministic; the value
+  /// isn't displayed, only its non-nil-ness gates the loading state).
+  private static let checkedAt = Date(timeIntervalSince1970: 1_700_000_000)
 }

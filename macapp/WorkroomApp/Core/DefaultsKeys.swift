@@ -76,4 +76,7 @@ extension Defaults.Keys {
   /// Whether the right inspector's "Notifications" section is collapsed (issue #24).
   static let notificationsSectionCollapsed = Key<Bool>(
     "inspector.notificationsSectionCollapsed", default: false)
+  /// Whether the right inspector's "Pull Request" section is collapsed (issue #24, Phase 2).
+  static let prSectionCollapsed = Key<Bool>(
+    "inspector.prSectionCollapsed", default: false)
 }

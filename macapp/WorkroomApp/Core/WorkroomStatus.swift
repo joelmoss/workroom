@@ -30,6 +30,23 @@ struct ChangedFile: Equatable, Hashable, Identifiable, Sendable {
   var id: String { "\(change.rawValue):\(path)" }
 }
 
+/// The pull request for a workroom's branch (Phase 2), resolved via `gh pr list --head`. Read-only
+/// in this iteration — the Pull Request inspector section shows it; create/merge/etc. come later.
+struct PullRequestInfo: Equatable, Sendable {
+  /// GitHub's PR `state` (a draft is still `open` — see `isDraft`).
+  enum State: String, Equatable, Sendable { case open, merged, closed }
+  /// GitHub's `reviewDecision`; `nil` when no review is required or none has been given yet.
+  enum ReviewDecision: String, Equatable, Sendable {
+    case approved, changesRequested, reviewRequired
+  }
+  let number: Int
+  let title: String
+  let state: State
+  let isDraft: Bool
+  let url: String
+  let reviewDecision: ReviewDecision?
+}
+
 /// A point-in-time snapshot of one workroom's VCS + CI status, resolved app-side.
 ///
 /// `dirty == nil` means **unknown** (a probe failed) — never rendered as clean. `clean` is
@@ -58,10 +75,15 @@ struct WorkroomStatus: Equatable, Sendable {
   /// the header shows the jj-log line for the changeset, not just the bookmark.
   var jjChangeID: String?
   var jjCommitID: String?
+  /// The branch's pull request (Phase 2), resolved by a separate slow `gh` probe like `ci`. `nil` ⇒
+  /// none resolved (no PR, no remote, gh missing, or not yet probed).
+  var pr: PullRequestInfo?
   var lastChecked: Date?
   /// When CI was last probed — separate from `lastChecked` because CI has a much longer TTL
   /// (the local git probe refreshes often; the network `gh` call should not).
   var ciCheckedAt: Date?
+  /// When the PR was last probed — its own TTL/backoff, like `ciCheckedAt`.
+  var prCheckedAt: Date?
 
   /// Not yet probed (first render before the sweep resolves it).
   static let unresolved = WorkroomStatus()
@@ -172,5 +194,40 @@ enum VCSStatusPresentation {
     if let ab = aheadBehind(s) { parts.append(ab.accessibility) }
     if let ci = ci(s) { parts.append(ci.accessibility) }
     return parts.joined(separator: ", ")
+  }
+}
+
+/// Pure mapping from a `PullRequestInfo` to its state badge (SF Symbol + semantic color + label)
+/// and review-decision label. Extracted from the view so it's unit-testable and the badge reads
+/// the same way everywhere. A draft outranks `open` for the badge (it's the more useful signal).
+enum PRPresentation {
+  enum Semantic: Equatable { case open, draft, merged, closed }
+  struct StateBadge: Equatable {
+    let label: String
+    let symbol: String  // SF Symbol name
+    let semantic: Semantic
+  }
+
+  static func badge(_ pr: PullRequestInfo) -> StateBadge {
+    switch pr.state {
+    case .merged:
+      return StateBadge(label: "Merged", symbol: "arrow.triangle.merge", semantic: .merged)
+    case .closed:
+      return StateBadge(label: "Closed", symbol: "xmark.circle.fill", semantic: .closed)
+    case .open:
+      return pr.isDraft
+        ? StateBadge(label: "Draft", symbol: "pencil.circle", semantic: .draft)
+        : StateBadge(label: "Open", symbol: "arrow.triangle.branch", semantic: .open)
+    }
+  }
+
+  /// Human label for the review decision, or nil when there's nothing to announce.
+  static func reviewLabel(_ decision: PullRequestInfo.ReviewDecision?) -> String? {
+    switch decision {
+    case .approved: return "Approved"
+    case .changesRequested: return "Changes requested"
+    case .reviewRequired: return "Review required"
+    case nil: return nil
+    }
   }
 }
