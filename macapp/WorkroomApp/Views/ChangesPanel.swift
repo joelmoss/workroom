@@ -342,17 +342,8 @@ struct ChangesPanel: View {
         } else {
           fileList(status.changedFiles ?? [])
         }
-        // CI comes from gh — hide it when the GitHub CLI isn't available (the Pull Request section
-        // shows the why), so a stale "CI passing" can't contradict the warning.
-        if store.githubCLIStatus == .available, let ci = VCSStatusPresentation.ci(status) {
-          HStack(spacing: 5) {
-            Image(systemName: ci.symbol).foregroundStyle(ci.semantic.color)
-            Text(ci.accessibility).foregroundStyle(.secondary)
-          }
-          .font(.callout)
-          .accessibilityElement(children: .ignore)
-          .accessibilityLabel(ci.accessibility)
-        }
+        // CI is GitHub-derived, so it lives in the Pull Request section (with or without a PR) —
+        // not here in the local working-tree view.
       }
       .padding(12)
     }

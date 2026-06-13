@@ -61,67 +61,71 @@ struct PullRequestPanel: View {
     let status = store.workroomStatuses[sid]
     if status?.prCheckedAt == nil {
       message("Checking\u{2026}")
-    } else if let status, let pr = status.pr {
-      prDetail(pr, status: status)
-    } else {
-      // Probed, no PR for this branch — the icon-first empty state used across the inspector.
-      emptyState("arrow.triangle.branch", "No pull request")
+    } else if let status {
+      // GitHub status for the branch: the PR (or "no PR") *and* its CI checks, since CI exists for
+      // a branch with or without a PR (this is its only home — it's not in the Changes section).
+      VStack(alignment: .leading, spacing: 8) {
+        if let pr = status.pr {
+          prRows(pr)
+        } else {
+          noPullRequestRow
+        }
+        if let ci = VCSStatusPresentation.ci(status) {
+          ciRow(ci)
+        }
+      }
+      .padding(12)
+      .frame(maxWidth: .infinity, alignment: .leading)
     }
   }
 
-  private func prDetail(_ pr: PullRequestInfo, status: WorkroomStatus) -> some View {
+  @ViewBuilder
+  private func prRows(_ pr: PullRequestInfo) -> some View {
     let badge = PRPresentation.badge(pr)
-    return VStack(alignment: .leading, spacing: 6) {
-      // Status + an open-in-browser affordance, linking to the PR. The number lives in the section
-      // header badge now, so it's dropped here.
-      Button {
-        if let url = URL(string: pr.url) { openURL(url) }
-      } label: {
-        HStack(spacing: 6) {
-          Image(systemName: badge.symbol).foregroundStyle(badge.semantic.color)
-          Text(badge.label).fontWeight(.medium).foregroundStyle(badge.semantic.color)
-          Image(systemName: "arrow.up.right").font(.caption).foregroundStyle(.secondary)
-          Spacer(minLength: 0)
-        }
-        .font(.callout)
-        .contentShape(Rectangle())
+    // Status + an open-in-browser affordance, linking to the PR. The number lives in the section
+    // header badge now, so it's dropped here.
+    Button {
+      if let url = URL(string: pr.url) { openURL(url) }
+    } label: {
+      HStack(spacing: 6) {
+        Image(systemName: badge.symbol).foregroundStyle(badge.semantic.color)
+        Text(badge.label).fontWeight(.medium).foregroundStyle(badge.semantic.color)
+        Image(systemName: "arrow.up.right").font(.caption).foregroundStyle(.secondary)
+        Spacer(minLength: 0)
       }
-      .buttonStyle(.plain)
-      .help("Open pull request #\(pr.number) in browser")
-      .accessibilityLabel("\(badge.label), pull request #\(pr.number), open in browser")
-      Text(pr.title)
-        .font(.callout)
-        .foregroundStyle(.primary)
-        .lineLimit(2).truncationMode(.tail)
-      if let review = PRPresentation.reviewLabel(pr.reviewDecision) {
-        Text(review).font(.footnote).foregroundStyle(.secondary)
-      }
-      // CI checks for the PR's branch (GitHub Actions). Reached only when gh is available, so the
-      // glyph never contradicts the gh-unavailable warning.
-      if let ci = VCSStatusPresentation.ci(status) {
-        HStack(spacing: 5) {
-          Image(systemName: ci.symbol).foregroundStyle(ci.semantic.color)
-          Text(ci.accessibility).foregroundStyle(.secondary)
-        }
-        .font(.callout)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(ci.accessibility)
-      }
+      .font(.callout)
+      .contentShape(Rectangle())
     }
-    .padding(12)
-    .frame(maxWidth: .infinity, alignment: .leading)
+    .buttonStyle(.plain)
+    .help("Open pull request #\(pr.number) in browser")
+    .accessibilityLabel("\(badge.label), pull request #\(pr.number), open in browser")
+    Text(pr.title)
+      .font(.callout)
+      .foregroundStyle(.primary)
+      .lineLimit(2).truncationMode(.tail)
+    if let review = PRPresentation.reviewLabel(pr.reviewDecision) {
+      Text(review).font(.footnote).foregroundStyle(.secondary)
+    }
   }
 
-  private func emptyState(_ icon: String, _ text: String) -> some View {
+  private var noPullRequestRow: some View {
     HStack(spacing: 6) {
-      Image(systemName: icon).font(.callout).foregroundStyle(.tertiary)
-      Text(text).font(.callout).foregroundStyle(.secondary)
+      Image(systemName: "arrow.triangle.branch").font(.callout).foregroundStyle(.tertiary)
+      Text("No pull request").font(.callout).foregroundStyle(.secondary)
       Spacer(minLength: 0)
     }
     .accessibilityElement(children: .ignore)
-    .accessibilityLabel(text)
-    .padding(.horizontal, 12).padding(.vertical, 8)
-    .frame(maxWidth: .infinity, alignment: .leading)
+    .accessibilityLabel("No pull request")
+  }
+
+  private func ciRow(_ ci: VCSStatusPresentation.CIGlyph) -> some View {
+    HStack(spacing: 5) {
+      Image(systemName: ci.symbol).foregroundStyle(ci.semantic.color)
+      Text(ci.accessibility).foregroundStyle(.secondary)
+    }
+    .font(.callout)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(ci.accessibility)
   }
 
   private func message(_ text: String) -> some View {
