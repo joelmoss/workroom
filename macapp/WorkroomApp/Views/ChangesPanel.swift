@@ -194,6 +194,93 @@ private struct PendingPRAction: Identifiable {
   var id: String { "\(action.rawValue)-\(number)" }
 }
 
+/// One changed-file row: a colored change-kind letter (M/A/D/…), the filename, then its parent
+/// directory dimmed (issue #24 feedback). Clicking opens the file in the configured app (Settings →
+/// "Open file paths in"; falls back to the file's default app), resolving the repo-relative path
+/// against the workroom directory. The directory yields first when space is tight (truncates from
+/// the head). The change kind is spelled out in the accessibility label so it isn't color-only.
+private struct ChangedFileRow: View {
+  let file: ChangedFile
+  /// The workroom directory the repo-relative `file.path` is resolved against. `nil` ⇒ not openable.
+  let directory: String?
+  @State private var hovering = false
+
+  var body: some View {
+    let (dir, name) = ChangesPanel.splitPath(file.path)
+    Button {
+      if let directory { TerminalLinkOpener.handleCmdClickFile(file.path, cwd: directory) }
+    } label: {
+      HStack(spacing: 6) {
+        Text(letter)
+          .font(.system(.callout, design: .monospaced))
+          .foregroundStyle(color)
+          .frame(width: 14, alignment: .leading)
+        Text(name)
+          .font(.callout)
+          .lineLimit(1).truncationMode(.middle)
+          .layoutPriority(1)
+        if !dir.isEmpty {
+          Text(dir)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .lineLimit(1).truncationMode(.head)
+        }
+        Spacer(minLength: 0)
+      }
+      .padding(.vertical, 2)
+      .padding(.horizontal, 4)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(
+        RoundedRectangle(cornerRadius: 5)
+          .fill(Color.primary.opacity(hovering && directory != nil ? 0.08 : 0))
+      )
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .onHover { hovering = $0 }
+    .disabled(directory == nil)
+    .help(directory == nil ? "" : "Open \(file.path)")
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(
+      dir.isEmpty
+        ? "\(name), \(changeWord), open" : "\(name), \(changeWord), in \(dir), open")
+  }
+
+  private var letter: String {
+    switch file.change {
+    case .modified: return "M"
+    case .added: return "A"
+    case .deleted: return "D"
+    case .renamed: return "R"
+    case .untracked: return "?"
+    case .conflicted: return "C"
+    case .other: return "\u{2022}"
+    }
+  }
+
+  private var color: Color {
+    switch file.change {
+    case .added: return .green
+    case .deleted: return .red
+    case .conflicted: return .red
+    case .modified, .renamed: return .orange
+    case .untracked, .other: return .secondary
+    }
+  }
+
+  private var changeWord: String {
+    switch file.change {
+    case .modified: return "modified"
+    case .added: return "added"
+    case .deleted: return "deleted"
+    case .renamed: return "renamed"
+    case .untracked: return "untracked"
+    case .conflicted: return "conflicted"
+    case .other: return "changed"
+    }
+  }
+}
+
 /// A collapsible section header + body for the composed inspector. `fill: true` makes the
 /// expanded body grab the remaining vertical space (used by Notifications so its list fills
 /// below the intrinsic-height Changes section).
@@ -340,7 +427,7 @@ struct ChangesPanel: View {
         } else if status.isClean {
           cleanState
         } else {
-          fileList(status.changedFiles ?? [])
+          fileList(status.changedFiles ?? [], in: target?.path)
         }
         // CI is GitHub-derived, so it lives in the Pull Request section (with or without a PR) —
         // not here in the local working-tree view.
@@ -444,11 +531,11 @@ struct ChangesPanel: View {
   }
 
   @ViewBuilder
-  private func fileList(_ files: [ChangedFile]) -> some View {
+  private func fileList(_ files: [ChangedFile], in directory: String?) -> some View {
     let shown = Array(files.prefix(renderCap))
-    VStack(alignment: .leading, spacing: 4) {
+    VStack(alignment: .leading, spacing: 1) {
       ForEach(shown) { file in
-        fileRow(file)
+        ChangedFileRow(file: file, directory: directory)
       }
       if files.count > shown.count {
         Text("Showing first \(shown.count) of \(files.count)")
@@ -457,74 +544,10 @@ struct ChangesPanel: View {
     }
   }
 
-  /// One changed file: a colored change-kind letter (M/A/D/…), the filename, then its parent
-  /// directory dimmed (issue #24 feedback) — like many editors' changed-file lists. The directory
-  /// yields first when space is tight (it truncates from the head so the meaningful tail stays). The
-  /// change kind is also spelled out in the accessibility label so it doesn't ride on color alone.
-  private func fileRow(_ file: ChangedFile) -> some View {
-    let (dir, name) = Self.splitPath(file.path)
-    return HStack(spacing: 6) {
-      Text(letter(file.change))
-        .font(.system(.callout, design: .monospaced))
-        .foregroundStyle(color(file.change))
-        .frame(width: 14, alignment: .leading)
-      Text(name)
-        .font(.callout)
-        .lineLimit(1).truncationMode(.middle)
-        .layoutPriority(1)
-      if !dir.isEmpty {
-        Text(dir)
-          .font(.callout)
-          .foregroundStyle(.secondary)
-          .lineLimit(1).truncationMode(.head)
-      }
-      Spacer(minLength: 0)
-    }
-    .accessibilityElement(children: .ignore)
-    .accessibilityLabel(
-      dir.isEmpty
-        ? "\(name), \(Self.changeWord(file.change))"
-        : "\(name), \(Self.changeWord(file.change)), in \(dir)")
-  }
-
-  private func letter(_ c: ChangedFile.Change) -> String {
-    switch c {
-    case .modified: return "M"
-    case .added: return "A"
-    case .deleted: return "D"
-    case .renamed: return "R"
-    case .untracked: return "?"
-    case .conflicted: return "C"
-    case .other: return "\u{2022}"
-    }
-  }
-
-  private func color(_ c: ChangedFile.Change) -> Color {
-    switch c {
-    case .added: return .green
-    case .deleted: return .red
-    case .conflicted: return .red
-    case .modified, .renamed: return .orange
-    case .untracked, .other: return .secondary
-    }
-  }
-
   /// Split a repo-relative path into (directory, filename). A root-level file → empty directory.
   static func splitPath(_ path: String) -> (dir: String, name: String) {
     guard let slash = path.lastIndex(of: "/") else { return ("", path) }
     return (String(path[..<slash]), String(path[path.index(after: slash)...]))
-  }
-
-  private static func changeWord(_ c: ChangedFile.Change) -> String {
-    switch c {
-    case .modified: return "modified"
-    case .added: return "added"
-    case .deleted: return "deleted"
-    case .renamed: return "renamed"
-    case .untracked: return "untracked"
-    case .conflicted: return "conflicted"
-    case .other: return "changed"
-    }
   }
 
   private func failureText(_ f: VCSStatusFailure) -> String {
