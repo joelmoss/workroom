@@ -233,7 +233,8 @@ struct ProjectSidebar: View {
           .foregroundStyle(.secondary)
       }
       // VCS status for the project root (issue #24), same placement as the workroom rows.
-      VCSStatusCluster(status: status, showCI: store.githubCLIStatus == .available)
+      // No CI in the projects tree — CI lives in the inspector's Changes/Pull Request sections.
+      VCSStatusCluster(status: status, showCI: false)
       Spacer(minLength: 0)
       UnreadDot(count: notifications.count(target: target.id))
       if target.isMissing {
@@ -283,7 +284,7 @@ struct ProjectSidebar: View {
       // actions cluster below (unread/warnings/run), so dirty dots scan as a column (issue #24).
       VCSStatusCluster(
         status: store.workroomStatuses[id] ?? .unresolved,
-        showCI: store.githubCLIStatus == .available)
+        showCI: false)
       Spacer()
       UnreadDot(count: unread)
       ForEach(workroom.warnings, id: \.kind) { warning in
