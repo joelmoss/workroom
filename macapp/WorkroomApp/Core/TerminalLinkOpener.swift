@@ -138,7 +138,14 @@ enum TerminalLinkOpener {
   /// open it in the configured editor. No-op if it doesn't resolve (e.g. cwd unknown for a relative
   /// path under ssh/tmux — see plan CMT-1).
   static func handleCmdClickFile(_ word: String, cwd: String?) {
-    guard let resolved = resolveExistingFile(word, cwd: cwd) else { return }
+    openFilePath(word, cwd: cwd)
+  }
+
+  /// Open the file at `path` (absolute or `cwd`-relative) in the configured editor / default app.
+  /// The plain-click entry point — used by the Changes panel (a single click), where there's no
+  /// modifier involved; the terminal's ⌘-click handler delegates here too.
+  static func openFilePath(_ path: String, cwd: String?) {
+    guard let resolved = resolveExistingFile(path, cwd: cwd) else { return }
     openFile(resolved)
   }
 

@@ -208,7 +208,7 @@ private struct ChangedFileRow: View {
   var body: some View {
     let (dir, name) = ChangesPanel.splitPath(file.path)
     Button {
-      if let directory { TerminalLinkOpener.handleCmdClickFile(file.path, cwd: directory) }
+      if let directory { TerminalLinkOpener.openFilePath(file.path, cwd: directory) }
     } label: {
       HStack(spacing: 6) {
         Text(letter)
