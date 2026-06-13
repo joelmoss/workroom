@@ -24,6 +24,8 @@ struct NotificationsList: View {
       .padding(.horizontal, 12)
       .padding(.vertical, 8)
       .frame(maxWidth: .infinity, alignment: .leading)
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel("No notifications")
     } else {
       List {
         // Newest first; the store appends chronologically.

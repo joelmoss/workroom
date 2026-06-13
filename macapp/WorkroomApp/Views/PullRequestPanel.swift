@@ -30,6 +30,7 @@ struct PullRequestPanel: View {
     VStack(alignment: .leading, spacing: 6) {
       HStack(spacing: 6) {
         Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
+          .accessibilityHidden(true)
         Text(status == .notInstalled ? "GitHub CLI not found" : "GitHub CLI not signed in")
           .fontWeight(.medium)
         Spacer(minLength: 0)
@@ -78,6 +79,8 @@ struct PullRequestPanel: View {
         Spacer(minLength: 0)
       }
       .font(.callout)
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel("\(badge.label), pull request #\(pr.number)")
       Button {
         if let url = URL(string: pr.url) { openURL(url) }
       } label: {
@@ -89,6 +92,7 @@ struct PullRequestPanel: View {
       }
       .buttonStyle(.plain)
       .help("Open \(pr.url)")
+      .accessibilityLabel("\(pr.title), open in browser")
       if let review = PRPresentation.reviewLabel(pr.reviewDecision) {
         Text(review).font(.footnote).foregroundStyle(.secondary)
       }
@@ -100,6 +104,8 @@ struct PullRequestPanel: View {
           Text(ci.accessibility).foregroundStyle(.secondary)
         }
         .font(.callout)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(ci.accessibility)
       }
     }
     .padding(12)
@@ -112,6 +118,8 @@ struct PullRequestPanel: View {
       Text(text).font(.callout).foregroundStyle(.secondary)
       Spacer(minLength: 0)
     }
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(text)
     .padding(.horizontal, 12).padding(.vertical, 8)
     .frame(maxWidth: .infinity, alignment: .leading)
   }

@@ -15,7 +15,8 @@ struct RightInspector: View {
     // reliably re-renders this inspector content — see AppStore.
     VStack(spacing: 0) {  // sections are flush; a 1px rule separates them
       InspectorSection(
-        title: "Changes", collapsed: $store.changesSectionCollapsed, indicator: changesIndicator
+        title: "Changes", collapsed: $store.changesSectionCollapsed, indicator: changesIndicator,
+        indicatorLabel: changesIndicatorLabel
       ) {
         InspectorHeaderButton(systemImage: "arrow.clockwise", help: "Refresh workroom status") {
           store.refreshWorkroomStatuses(force: true)
@@ -25,7 +26,8 @@ struct RightInspector: View {
       }
       sectionRule
       InspectorSection(
-        title: "Pull Request", collapsed: $store.prSectionCollapsed, indicator: prIndicator
+        title: "Pull Request", collapsed: $store.prSectionCollapsed, indicator: prIndicator,
+        indicatorLabel: prIndicatorLabel
       ) {
       } content: {
         PullRequestPanel()
@@ -33,7 +35,7 @@ struct RightInspector: View {
       sectionRule
       InspectorSection(
         title: "Notifications", collapsed: $store.notificationsSectionCollapsed, fill: true,
-        indicator: notificationsIndicator
+        indicator: notificationsIndicator, indicatorLabel: notificationsIndicatorLabel
       ) {
         InspectorHeaderButton(
           systemImage: "trash", help: "Clear notifications", destructive: true,
@@ -112,6 +114,30 @@ struct RightInspector: View {
       UnreadBadge(count: count)
         .help(count == 1 ? "1 notification" : "\(count) notifications"))
   }
+
+  // VoiceOver text for each header indicator (the visual badge can't be read through the collapse
+  // button's own label), appended to the section's accessibility label.
+
+  private var changesIndicatorLabel: String {
+    guard let s = selectedStatus else { return "" }
+    let ins = s.insertions ?? 0
+    let del = s.deletions ?? 0
+    if ins > 0 || del > 0 {
+      return (s.conflicted ? "conflicted, " : "") + "\(ins) insertions, \(del) deletions"
+    }
+    return VCSStatusPresentation.dot(s)?.accessibility ?? ""
+  }
+
+  private var prIndicatorLabel: String {
+    guard store.githubCLIStatus == .available, let pr = selectedStatus?.pr else { return "" }
+    return "pull request #\(pr.number), \(PRPresentation.badge(pr).label)"
+  }
+
+  private var notificationsIndicatorLabel: String {
+    let count = notifications.items.count
+    if count == 0 { return "" }
+    return count == 1 ? "1 notification" : "\(count) notifications"
+  }
 }
 
 /// A collapsible section header + body for the composed inspector. `fill: true` makes the
@@ -124,6 +150,9 @@ struct InspectorSection<Accessory: View, Content: View>: View {
   /// A small status indicator shown right after the title (a dot / count badge), so a *collapsed*
   /// section still conveys its state. Non-interactive, so it rides inside the collapse button.
   var indicator: AnyView = AnyView(EmptyView())
+  /// VoiceOver text for `indicator` — appended to the header's accessibility label, since the
+  /// collapse button's explicit label would otherwise swallow the indicator's own a11y.
+  var indicatorLabel: String = ""
   /// Trailing header action — overlaid on top of the full-width collapse button so tapping it
   /// fires the action without also toggling the section.
   @ViewBuilder var accessory: () -> Accessory
@@ -159,7 +188,10 @@ struct InspectorSection<Accessory: View, Content: View>: View {
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .accessibilityLabel("\(title) section, \(collapsed ? "collapsed" : "expanded")")
+      .accessibilityLabel(
+        "\(title) section, \(collapsed ? "collapsed" : "expanded")"
+          + (indicatorLabel.isEmpty ? "" : ", \(indicatorLabel)")
+      )
       .help(collapsed ? "Expand \(title)" : "Collapse \(title)")
       // Solid header bar so the sections read as distinct blocks (issue #24 polish).
       .background(Color.primary.opacity(0.08))
@@ -264,6 +296,8 @@ struct ChangesPanel: View {
             Text(ci.accessibility).foregroundStyle(.secondary)
           }
           .font(.callout)
+          .accessibilityElement(children: .ignore)
+          .accessibilityLabel(ci.accessibility)
         }
       }
       .padding(12)
@@ -313,6 +347,20 @@ struct ChangesPanel: View {
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
+    // Read as one phrase ("change pw, commit 7d74470b, feature/login, feat: …") rather than four
+    // cryptic tokens.
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(jjHeaderAccessibility(status))
+  }
+
+  /// Composed VoiceOver phrase for the jj header.
+  private func jjHeaderAccessibility(_ status: WorkroomStatus) -> String {
+    var parts: [String] = []
+    if let change = status.jjChangeID { parts.append("change \(change)") }
+    if let commit = status.jjCommitID { parts.append("commit \(commit)") }
+    parts += status.jjRefs ?? []
+    parts.append(status.jjDescription ?? "no description set")
+    return parts.joined(separator: ", ")
   }
 
   private func gitBranchLabel(sid: SidebarID, status: WorkroomStatus) -> String {
@@ -346,6 +394,8 @@ struct ChangesPanel: View {
       Spacer(minLength: 0)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("No uncommitted changes")
   }
 
   @ViewBuilder
