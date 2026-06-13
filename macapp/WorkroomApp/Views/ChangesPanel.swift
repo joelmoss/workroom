@@ -13,22 +13,27 @@ struct RightInspector: View {
     // Each section owns its action in its own header (issue #24 feedback): Refresh in Changes,
     // Clear in Notifications. Collapse state lives on `store` (not `@Default`) so toggling it
     // reliably re-renders this inspector content — see AppStore.
-    VStack(spacing: 0) {  // sections are flush; a hairline Divider separates them
-      InspectorSection(title: "Changes", collapsed: $store.changesSectionCollapsed) {
+    VStack(spacing: 0) {  // sections are flush; a 1px rule separates them
+      InspectorSection(
+        title: "Changes", collapsed: $store.changesSectionCollapsed, indicator: changesIndicator
+      ) {
         InspectorHeaderButton(systemImage: "arrow.clockwise", help: "Refresh workroom status") {
           store.refreshWorkroomStatuses(force: true)
         }
       } content: {
         ChangesPanel()
       }
-      Divider()
-      InspectorSection(title: "Pull Request", collapsed: $store.prSectionCollapsed) {
+      sectionRule
+      InspectorSection(
+        title: "Pull Request", collapsed: $store.prSectionCollapsed, indicator: prIndicator
+      ) {
       } content: {
         PullRequestPanel()
       }
-      Divider()
+      sectionRule
       InspectorSection(
-        title: "Notifications", collapsed: $store.notificationsSectionCollapsed, fill: true
+        title: "Notifications", collapsed: $store.notificationsSectionCollapsed, fill: true,
+        indicator: notificationsIndicator
       ) {
         InspectorHeaderButton(
           systemImage: "trash", help: "Clear notifications", destructive: true,
@@ -42,6 +47,53 @@ struct RightInspector: View {
     }
     .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
   }
+
+  /// A 1px rule between sections so adjacent (especially collapsed) header bars stay separated.
+  private var sectionRule: some View {
+    Color.primary.opacity(0.15).frame(height: 1)
+  }
+
+  /// The selected workroom's status, or nil when a non-target (project) or nothing is selected —
+  /// drives the header indicators so a collapsed section still shows state.
+  private var selectedStatus: WorkroomStatus? {
+    guard let sid = store.selectedTargetID else { return nil }
+    if case .project = sid { return nil }
+    return store.workroomStatuses[sid]
+  }
+
+  /// Changes header dot: the working-tree status (dirty/conflict/unknown); nothing when clean.
+  private var changesIndicator: AnyView {
+    guard let s = selectedStatus, let dot = VCSStatusPresentation.dot(s) else {
+      return AnyView(EmptyView())
+    }
+    return AnyView(
+      Image(systemName: dot.symbol).font(.system(size: 9)).foregroundStyle(dot.semantic.color)
+        .help(dot.accessibility))
+  }
+
+  /// Pull Request header badge: the PR number in a pill tinted by the PR state (open/draft/merged/
+  /// closed). Nothing when there's no PR or gh is unavailable.
+  private var prIndicator: AnyView {
+    guard store.githubCLIStatus == .available, let pr = selectedStatus?.pr else {
+      return AnyView(EmptyView())
+    }
+    let badge = PRPresentation.badge(pr)
+    return AnyView(
+      Text("#\(pr.number)")
+        .font(.caption2).fontWeight(.semibold).monospacedDigit()
+        .foregroundStyle(.white)
+        .padding(.horizontal, 5).padding(.vertical, 1)
+        .background(Capsule().fill(badge.semantic.color))
+        .help("Pull request #\(pr.number): \(badge.label)"))
+  }
+
+  /// Notifications header count badge, with a tooltip.
+  private var notificationsIndicator: AnyView {
+    let count = notifications.items.count
+    return AnyView(
+      UnreadBadge(count: count)
+        .help(count == 1 ? "1 notification" : "\(count) notifications"))
+  }
 }
 
 /// A collapsible section header + body for the composed inspector. `fill: true` makes the
@@ -51,7 +103,10 @@ struct InspectorSection<Accessory: View, Content: View>: View {
   let title: String
   @Binding var collapsed: Bool
   var fill: Bool = false
-  /// Trailing header action(s) — a sibling of the collapse toggle (not nested), so tapping it
+  /// A small status indicator shown right after the title (a dot / count badge), so a *collapsed*
+  /// section still conveys its state. Non-interactive, so it rides inside the collapse button.
+  var indicator: AnyView = AnyView(EmptyView())
+  /// Trailing header action — overlaid on top of the full-width collapse button so tapping it
   /// fires the action without also toggling the section.
   @ViewBuilder var accessory: () -> Accessory
   @ViewBuilder var content: () -> Content
@@ -59,36 +114,40 @@ struct InspectorSection<Accessory: View, Content: View>: View {
 
   var body: some View {
     VStack(spacing: 0) {
-      // Header bar: chevron + title (the collapse toggle), then the trailing action button.
-      HStack(spacing: 6) {
-        Button {
-          if reduceMotion {
-            collapsed.toggle()
-          } else {
-            withAnimation(.easeInOut(duration: 0.15)) { collapsed.toggle() }
-          }
-        } label: {
-          HStack(spacing: 7) {
-            Image(systemName: collapsed ? "chevron.right" : "chevron.down")
-              .font(.system(size: 11, weight: .semibold))
-              .foregroundStyle(.secondary)
-              // Fixed width: chevron.right and chevron.down differ in glyph width, which would
-              // otherwise nudge the title sideways on every toggle.
-              .frame(width: 12, alignment: .center)
-            Text(title).font(.headline)
-            Spacer(minLength: 0)
-          }
-          .contentShape(Rectangle())
+      // The ENTIRE header bar toggles collapse — the padding lives *inside* the button's content
+      // shape, so there are no dead zones around the title. The trailing action button is overlaid
+      // on top so it still gets its own taps.
+      Button {
+        if reduceMotion {
+          collapsed.toggle()
+        } else {
+          withAnimation(.easeInOut(duration: 0.15)) { collapsed.toggle() }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(title) section, \(collapsed ? "collapsed" : "expanded")")
-        accessory()
+      } label: {
+        HStack(spacing: 7) {
+          Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.secondary)
+            // Fixed width: chevron.right and chevron.down differ in glyph width, which would
+            // otherwise nudge the title sideways on every toggle.
+            .frame(width: 12, alignment: .center)
+          Text(title).font(.headline)
+          indicator
+          Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
       }
-      .padding(.horizontal, 12)
-      .padding(.vertical, 8)
-      .frame(maxWidth: .infinity, alignment: .leading)
+      .buttonStyle(.plain)
+      .accessibilityLabel("\(title) section, \(collapsed ? "collapsed" : "expanded")")
+      .help(collapsed ? "Expand \(title)" : "Collapse \(title)")
       // Solid header bar so the sections read as distinct blocks (issue #24 polish).
       .background(Color.primary.opacity(0.08))
+      .overlay(alignment: .trailing) {
+        accessory().padding(.trailing, 12)
+      }
 
       if !collapsed {
         content()

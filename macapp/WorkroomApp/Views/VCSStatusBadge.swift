@@ -63,6 +63,7 @@ struct VCSStatusCluster: View {
       }
       .accessibilityElement(children: .ignore)
       .accessibilityLabel(VCSStatusPresentation.accessibilityLabel(status))
+      .help(VCSStatusPresentation.accessibilityLabel(status))
     }
   }
 }
@@ -78,6 +79,7 @@ struct VCSAggregateDot: View {
         .font(.system(size: 9))
         .foregroundStyle(dot.semantic.color)
         .accessibilityLabel("project \(dot.accessibility)")
+        .help("Project: \(dot.accessibility)")
     }
   }
 }

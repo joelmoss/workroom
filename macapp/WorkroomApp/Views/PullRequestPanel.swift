@@ -43,7 +43,7 @@ struct PullRequestPanel: View {
       .font(.footnote).foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
       if status == .notInstalled, let url = URL(string: "https://cli.github.com") {
-        Link("Install gh\u{2026}", destination: url).font(.footnote)
+        Link("Install gh\u{2026}", destination: url).font(.footnote).help("Open cli.github.com")
       }
     }
     .padding(12)
@@ -60,15 +60,15 @@ struct PullRequestPanel: View {
     let status = store.workroomStatuses[sid]
     if status?.prCheckedAt == nil {
       message("Checking\u{2026}")
-    } else if let pr = status?.pr {
-      prDetail(pr)
+    } else if let status, let pr = status.pr {
+      prDetail(pr, status: status)
     } else {
       // Probed, no PR for this branch — the icon-first empty state used across the inspector.
       emptyState("arrow.triangle.branch", "No pull request")
     }
   }
 
-  private func prDetail(_ pr: PullRequestInfo) -> some View {
+  private func prDetail(_ pr: PullRequestInfo, status: WorkroomStatus) -> some View {
     let badge = PRPresentation.badge(pr)
     return VStack(alignment: .leading, spacing: 6) {
       HStack(spacing: 6) {
@@ -91,6 +91,15 @@ struct PullRequestPanel: View {
       .help("Open \(pr.url)")
       if let review = PRPresentation.reviewLabel(pr.reviewDecision) {
         Text(review).font(.footnote).foregroundStyle(.secondary)
+      }
+      // CI checks for the PR's branch (GitHub Actions). Reached only when gh is available, so the
+      // glyph never contradicts the gh-unavailable warning.
+      if let ci = VCSStatusPresentation.ci(status) {
+        HStack(spacing: 5) {
+          Image(systemName: ci.symbol).foregroundStyle(ci.semantic.color)
+          Text(ci.accessibility).foregroundStyle(.secondary)
+        }
+        .font(.callout)
       }
     }
     .padding(12)
