@@ -83,7 +83,7 @@ struct RightInspector: View {
           }
         }
       } label: {
-        Image(systemName: "ellipsis.circle").font(.system(size: 12)).foregroundStyle(.secondary)
+        Image(systemName: "ellipsis").font(.system(size: 12)).foregroundStyle(.secondary)
       }
       .menuStyle(.borderlessButton)
       .menuIndicator(.hidden)
