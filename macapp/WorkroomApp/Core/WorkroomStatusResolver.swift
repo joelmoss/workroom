@@ -132,7 +132,22 @@ struct WorkroomStatusResolver: Sendable {
     return Self.classifyPR(r)
   }
 
+  /// Probe whether `gh` is installed and authenticated (machine-global, not per-workroom). Runs
+  /// `gh auth status` in a neutral dir; a network/keyring blip (timeout) reports `available` so a
+  /// flaky connection doesn't raise a false "not signed in" warning.
+  func resolveGitHubCLI() async -> GitHubCLIStatus {
+    let r = await runner.run(
+      "gh", ["auth", "status"], in: NSTemporaryDirectory(), timeout: ciTimeout)
+    return Self.classifyGitHubCLI(r)
+  }
+
   // MARK: - Pure parsers / classifiers (unit-tested directly)
+
+  static func classifyGitHubCLI(_ r: CommandResult) -> GitHubCLIStatus {
+    if r.exitCode == CommandResult.commandNotFound { return .notInstalled }
+    if r.timedOut { return .available }  // network/keyring blip — don't cry wolf
+    return r.ok ? .available : .notAuthenticated  // gh auth status fails only when not logged in
+  }
 
   struct GitParse: Equatable {
     var dirty = false

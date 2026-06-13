@@ -12,12 +12,41 @@ struct PullRequestPanel: View {
 
   var body: some View {
     Group {
-      if let sid = store.selectedTargetID, isStatusable(sid) {
+      if store.githubCLIStatus != .available {
+        // gh can't be used → the PR (and CI) probes can't run; explain why instead of a blank/"no PR".
+        ghWarning(store.githubCLIStatus)
+      } else if let sid = store.selectedTargetID, isStatusable(sid) {
         content(for: sid)
       } else {
         message("Select a workroom to see its pull request.")
       }
     }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  /// Warning shown when `gh` isn't installed or isn't signed in — the GitHub-backed PR/CI data
+  /// can't be fetched, so say why and how to fix it rather than silently showing nothing.
+  private func ghWarning(_ status: GitHubCLIStatus) -> some View {
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: 6) {
+        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
+        Text(status == .notInstalled ? "GitHub CLI not found" : "GitHub CLI not signed in")
+          .fontWeight(.medium)
+        Spacer(minLength: 0)
+      }
+      .font(.callout)
+      Text(
+        status == .notInstalled
+          ? "Install the gh command-line tool to see pull requests and CI status."
+          : "Run \u{201C}gh auth login\u{201D} in a terminal to see pull requests and CI status."
+      )
+      .font(.footnote).foregroundStyle(.secondary)
+      .fixedSize(horizontal: false, vertical: true)
+      if status == .notInstalled, let url = URL(string: "https://cli.github.com") {
+        Link("Install gh\u{2026}", destination: url).font(.footnote)
+      }
+    }
+    .padding(12)
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 

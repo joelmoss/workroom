@@ -27,11 +27,14 @@ struct VCSStatusCluster: View {
   let status: WorkroomStatus
   /// Tab-chip mode: show only the status dot + CI glyph, no ahead/behind text.
   var compact: Bool = false
+  /// Whether to show the CI glyph. CI comes from `gh`; callers pass `false` when the GitHub CLI
+  /// isn't available so a stale CI badge can't linger (issue #24).
+  var showCI: Bool = true
 
   var body: some View {
     let dot = VCSStatusPresentation.dot(status)
     let ab = compact ? nil : VCSStatusPresentation.aheadBehind(status)
-    let ci = VCSStatusPresentation.ci(status)
+    let ci = showCI ? VCSStatusPresentation.ci(status) : nil
     if dot != nil || ab != nil || ci != nil {
       HStack(spacing: 4) {
         if let dot {

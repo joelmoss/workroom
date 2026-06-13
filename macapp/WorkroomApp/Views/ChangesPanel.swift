@@ -175,7 +175,9 @@ struct ChangesPanel: View {
         } else {
           fileList(status.changedFiles ?? [])
         }
-        if let ci = VCSStatusPresentation.ci(status) {
+        // CI comes from gh — hide it when the GitHub CLI isn't available (the Pull Request section
+        // shows the why), so a stale "CI passing" can't contradict the warning.
+        if store.githubCLIStatus == .available, let ci = VCSStatusPresentation.ci(status) {
           HStack(spacing: 5) {
             Image(systemName: ci.symbol).foregroundStyle(ci.semantic.color)
             Text(ci.accessibility).foregroundStyle(.secondary)

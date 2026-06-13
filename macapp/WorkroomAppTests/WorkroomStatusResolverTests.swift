@@ -418,4 +418,49 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let res = await r.resolvePR(path: existing, branch: nil)
     XCTAssertEqual(res, .absent)
   }
+
+  // MARK: - classifyGitHubCLI
+
+  func testClassifyGitHubCLINotInstalled() {
+    let r = CommandResult(
+      stdout: "", stderr: "env: gh: No such file", exitCode: 127, timedOut: false)
+    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .notInstalled)
+  }
+
+  func testClassifyGitHubCLINotAuthenticated() {
+    let r = CommandResult(
+      stdout: "", stderr: "You are not logged into any GitHub hosts.", exitCode: 1, timedOut: false)
+    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .notAuthenticated)
+  }
+
+  func testClassifyGitHubCLIAvailable() {
+    let r = ok("github.com\n  \u{2713} Logged in to github.com account joelmoss")
+    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .available)
+  }
+
+  func testClassifyGitHubCLITimeoutIsAvailable() {
+    // A network/keyring blip must not raise a false "not signed in" warning.
+    let r = CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: true)
+    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .available)
+  }
+
+  // MARK: - resolveGitHubCLI (end-to-end via the mock)
+
+  func testResolveGitHubCLIInstalledAndAuthed() async {
+    let r = WorkroomStatusResolver(
+      runner: MockStatusRunner { exe, args in
+        (exe == "gh" && args.contains("auth")) ? ok("Logged in") : ok("")
+      })
+    let status = await r.resolveGitHubCLI()
+    XCTAssertEqual(status, .available)
+  }
+
+  func testResolveGitHubCLIMissing() async {
+    let r = WorkroomStatusResolver(
+      runner: MockStatusRunner { _, _ in
+        CommandResult(stdout: "", stderr: "env: gh: No such file", exitCode: 127, timedOut: false)
+      })
+    let status = await r.resolveGitHubCLI()
+    XCTAssertEqual(status, .notInstalled)
+  }
 }

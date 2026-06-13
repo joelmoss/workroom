@@ -9,6 +9,7 @@ import Foundation
 extension AppStore {
   fileprivate static let localStatusTTL: TimeInterval = 15  // git/jj dirty/ahead-behind
   fileprivate static let ciStatusTTL: TimeInterval = 300  // gh CI (network)
+  fileprivate static let ghStatusTTL: TimeInterval = 60  // `gh auth status` availability check
   fileprivate static let localConcurrency = 5
   fileprivate static let ciConcurrency = 2
 
@@ -55,6 +56,11 @@ extension AppStore {
       guard let self else { return }
       await self.runLocalSweep(localItems, resolver: resolver, cap: Self.localConcurrency)
       if Task.isCancelled { return }
+      // Guard the network stage: if `gh` isn't installed/authenticated, skip the whole CI sweep
+      // rather than spawn a `gh` per dirty workroom only to have each fail.
+      await self.refreshGitHubCLI(resolver: resolver, force: force)
+      if Task.isCancelled { return }
+      guard self.githubCLIStatus == .available else { return }
       let ciItems = self.statusWorkItems().filter { item in
         guard let s = self.workroomStatuses[item.sid], s.dirty != nil, s.failure == nil else {
           return false
@@ -66,6 +72,20 @@ extension AppStore {
       if Task.isCancelled { return }
       await self.runCISweep(ciItems, resolver: resolver, cap: Self.ciConcurrency)
     }
+  }
+
+  /// Refresh `githubCLIStatus` if stale (own short TTL), so the warning + probe guards reflect
+  /// whether `gh` is usable. No-ops in fixture mode (the fixture seeds `.available`).
+  func refreshGitHubCLI(resolver: WorkroomStatusResolver, force: Bool = false) async {
+    if UITestFixture.isActive { return }
+    if !force, let at = ghStatusCheckedAt,
+      Date().timeIntervalSince(at) < Self.ghStatusTTL
+    {
+      return
+    }
+    let status = await resolver.resolveGitHubCLI()
+    githubCLIStatus = status
+    ghStatusCheckedAt = Date()
   }
 
   /// Freshen just the selected workroom (local + CI, forced), debounced so arrow-key cycling
@@ -84,6 +104,10 @@ extension AppStore {
       let fresh = await resolver.resolveLocal(path: item.path, vcs: item.vcs)
       if Task.isCancelled { return }
       self.mergeLocalStatus(fresh, into: sid)
+      // Skip the network CI/PR probes when `gh` isn't usable (the inspector shows a warning instead).
+      await self.refreshGitHubCLI(resolver: resolver)
+      if Task.isCancelled { return }
+      guard self.githubCLIStatus == .available else { return }
       let ci = await resolver.resolveCI(path: item.path, branch: fresh.branchForCI)
       if Task.isCancelled { return }
       self.applyCIStatus(ci, to: sid)

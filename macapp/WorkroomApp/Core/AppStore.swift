@@ -87,6 +87,13 @@ final class AppStore: ObservableObject {
   /// deliberately NOT persisted (operational state, unlike the sidebar prefs above). Hydrated
   /// after each load, on selection, and on focus; see `AppStore+WorkroomStatus.swift`.
   @Published var workroomStatuses: [SidebarID: WorkroomStatus] = [:]
+  /// Whether the GitHub CLI is usable for the PR/CI probes (machine-global). Optimistic default so
+  /// no warning flashes before the first check; refreshed by `refreshGitHubCLI()` and read by the
+  /// Pull Request inspector section. Drives a warning + gates the `gh` probes when not available.
+  @Published var githubCLIStatus: GitHubCLIStatus = .available
+  /// When `githubCLIStatus` was last probed (its own short TTL, so we don't re-run `gh auth status`
+  /// on every selection).
+  var ghStatusCheckedAt: Date?
 
   @Published var errorMessage: String?
   /// Title for the error alert. Nil falls back to the generic title; specific

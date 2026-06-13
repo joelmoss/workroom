@@ -262,7 +262,9 @@ private struct WorkroomTabChip: View {
           .foregroundStyle(.secondary)
       }
       // Compact VCS status (issue #24): dot + CI glyph only (no ahead/behind text on the chip).
-      VCSStatusCluster(status: store.workroomStatuses[sid] ?? .unresolved, compact: true)
+      VCSStatusCluster(
+        status: store.workroomStatuses[sid] ?? .unresolved, compact: true,
+        showCI: store.githubCLIStatus == .available)
     }
     .padding(.horizontal, 14)
     .padding(.vertical, 7)

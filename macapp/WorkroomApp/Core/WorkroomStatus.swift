@@ -10,6 +10,16 @@ enum CIState: Equatable, Sendable {
   case neutral  // cancelled / skipped — completed without pass or fail
 }
 
+/// Whether the GitHub CLI (`gh`) is usable for the PR/CI probes (machine-global, not per-workroom).
+/// `available` is the optimistic default so no warning flashes before the first check; the others
+/// drive a warning in the Pull Request inspector section and gate the `gh` probes so we don't spawn
+/// `gh` pointlessly.
+enum GitHubCLIStatus: Equatable, Sendable {
+  case available
+  case notInstalled  // gh not on PATH (env exit 127)
+  case notAuthenticated  // gh present but `gh auth status` fails (not logged in)
+}
+
 /// Why a status probe couldn't produce a clean/dirty answer. Drives the "unknown" badge.
 /// `notRepository` is distinct from `clean`: a path the model says is a repo but isn't is
 /// broken/stale, not clean.
