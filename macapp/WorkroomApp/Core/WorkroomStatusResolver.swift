@@ -103,44 +103,89 @@ struct WorkroomStatusResolver: Sendable {
 
   // MARK: Stage 2 — CI (slow, network; never blocks stage 1)
 
-  /// `branch` is the git branch from stage 1 (git workrooms); when nil (jj, or unknown) we try
-  /// the colocated git ref. CI is hidden whenever the branch/HEAD/remote can't be resolved.
-  func resolveCI(path: String, branch: String?) async -> CIResolution {
-    let headR = await runner.run("git", ["rev-parse", "HEAD"], in: path, timeout: timeout)
-    guard headR.ok else { return .absent }  // no git backing → no CI
-    let head = headR.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !head.isEmpty else { return .absent }
-
-    guard let branchName = await resolveBranchName(branch, in: path) else { return .absent }
+  /// CI for `branch` (stage 1's branch/bookmark). `vcs`/`projectRoot` pick where `gh` runs and which
+  /// commit its runs must match — see `ghProbeTarget`. For jj the matched commit is the bookmark's
+  /// tip (jj's `@` is an unpushed empty change), so a `gh run` for `@` could never match. CI is
+  /// hidden whenever the branch / commit / git+gh context can't be resolved.
+  func resolveCI(path: String, vcs: String, projectRoot: String, branch: String?) async
+    -> CIResolution
+  {
+    guard
+      let target = await ghProbeTarget(
+        path: path, vcs: vcs, projectRoot: projectRoot, branch: branch)
+    else { return .absent }
+    guard let head = await ciMatchCommit(path: path, vcs: vcs, branch: target.branch) else {
+      return .absent
+    }
 
     let r = await runner.run(
       "gh",
       [
-        "run", "list", "--branch", branchName, "--limit", "20", "--json",
+        "run", "list", "--branch", target.branch, "--limit", "20", "--json",
         "headSha,status,conclusion,workflowName",
-      ], in: path, timeout: ciTimeout)
+      ], in: target.dir, timeout: ciTimeout)
     return Self.classifyCI(r, head: head)
   }
 
-  /// Resolve the pull request for `branch` (the git branch from stage 1; falls back to the colocated
-  /// git ref). Slow network `gh` call, run beside `resolveCI`. `gh pr list --head` returns a JSON
-  /// array — empty when the branch has no PR — so "no PR" is a clean `.absent`, not an error.
-  func resolvePR(path: String, branch: String?) async -> PRResolution {
-    guard let branchName = await resolveBranchName(branch, in: path) else { return .absent }
+  /// The pull request for `branch`. Like `resolveCI`, `vcs`/`projectRoot` pick where `gh` runs (a
+  /// jj workspace has no `.git` of its own, so `gh` must run from the colocated project root). `gh
+  /// pr list --head` returns a JSON array — empty when the branch has no PR — so "no PR" is a clean
+  /// `.absent`, not an error.
+  func resolvePR(path: String, vcs: String, projectRoot: String, branch: String?) async
+    -> PRResolution
+  {
+    guard
+      let target = await ghProbeTarget(
+        path: path, vcs: vcs, projectRoot: projectRoot, branch: branch)
+    else { return .absent }
 
     let r = await runner.run(
       "gh",
       [
-        "pr", "list", "--head", branchName, "--state", "all", "--limit", "1", "--json",
+        "pr", "list", "--head", target.branch, "--state", "all", "--limit", "1", "--json",
         "number,title,state,isDraft,url,reviewDecision",
-      ], in: path, timeout: ciTimeout)
+      ], in: target.dir, timeout: ciTimeout)
     return Self.classifyPR(r)
   }
 
-  /// The branch CI/PR key off: the stage-1 branch when known, else the colocated git ref via
-  /// `git symbolic-ref` (empty for a *detached* HEAD — e.g. jj's `@`). Returns `nil` when neither
-  /// yields a non-empty name, so the caller resolves to `.absent`. Faithful to the prior inline
-  /// fallback: a non-nil `branch` is used as-is (the symbolic-ref probe runs only when it's nil).
+  /// Where a stage-2 `gh` probe must run and which branch it keys off, per VCS. A **git worktree**
+  /// has its own `.git`, so `gh` runs in-place (`path`) keyed by the git branch (stage-1 branch, or
+  /// the colocated ref via `git symbolic-ref`). A **jj workspace** has no `.git` of its own — only
+  /// the colocated `projectRoot` does — so `gh` runs from `projectRoot`, keyed by the bookmark.
+  /// `nil` ⇒ no resolvable branch ⇒ caller returns `.absent`.
+  private func ghProbeTarget(path: String, vcs: String, projectRoot: String, branch: String?) async
+    -> (dir: String, branch: String)?
+  {
+    if vcs == "jj" {
+      guard let branch, !branch.isEmpty else { return nil }
+      return (projectRoot, branch)
+    }
+    guard let branchName = await resolveBranchName(branch, in: path) else { return nil }
+    return (path, branchName)
+  }
+
+  /// The commit a `gh run` must match to count as "this branch's CI". For a **git worktree** that's
+  /// `HEAD` (the branch tip). For a **jj workspace** it's the bookmark's tip commit — jj's `@` is an
+  /// unpushed empty change, so CI ran on the bookmark, not `@`. jj's `commit_id` is the git commit
+  /// hash in a git-backed repo, so it matches `gh`'s `headSha` exactly. `nil` ⇒ unresolved ⇒ absent.
+  private func ciMatchCommit(path: String, vcs: String, branch: String) async -> String? {
+    let r: CommandResult
+    if vcs == "jj" {
+      r = await runner.run(
+        "jj", ["log", "-r", branch, "--no-graph", "--color", "never", "-T", "commit_id"],
+        in: path, timeout: timeout)
+    } else {
+      r = await runner.run("git", ["rev-parse", "HEAD"], in: path, timeout: timeout)
+    }
+    guard r.ok else { return nil }
+    let sha = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+    return sha.isEmpty ? nil : sha
+  }
+
+  /// The git branch CI/PR key off when not jj: the stage-1 branch when known, else the colocated
+  /// git ref via `git symbolic-ref` (empty for a *detached* HEAD). Returns `nil` when neither yields
+  /// a non-empty name. Faithful to the prior inline fallback: a non-nil `branch` is used as-is (the
+  /// symbolic-ref probe runs only when it's nil).
   private func resolveBranchName(_ branch: String?, in path: String) async -> String? {
     var branchName = branch
     if branchName == nil {

@@ -13,6 +13,33 @@ private struct MockStatusRunner: StatusCommandRunning {
   }
 }
 
+/// Like `MockStatusRunner` but records every (exe, args, dir) call, so a test can assert *where* a
+/// probe ran — e.g. that a jj workspace's `gh` probe runs from the colocated project root, not the
+/// (gitless) workspace.
+private final class RecordingStatusRunner: StatusCommandRunning, @unchecked Sendable {
+  private let handler: @Sendable (_ executable: String, _ args: [String]) -> CommandResult
+  private let lock = NSLock()
+  private var _calls: [(exe: String, args: [String], dir: String)] = []
+  var calls: [(exe: String, args: [String], dir: String)] {
+    lock.lock()
+    defer { lock.unlock() }
+    return _calls
+  }
+
+  init(_ handler: @escaping @Sendable (_ executable: String, _ args: [String]) -> CommandResult) {
+    self.handler = handler
+  }
+
+  func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
+    async -> CommandResult
+  {
+    lock.lock()
+    _calls.append((executable, args, directory))
+    lock.unlock()
+    return handler(executable, args)
+  }
+}
+
 private func ok(_ stdout: String) -> CommandResult {
   CommandResult(stdout: stdout, stderr: "", exitCode: 0, timedOut: false)
 }
@@ -421,7 +448,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
         if exe == "gh" { return ok(json) }
         return ok("")
       })
-    let res = await r.resolveCI(path: existing, branch: "main")
+    let res = await r.resolveCI(path: existing, vcs: "git", projectRoot: existing, branch: "main")
     XCTAssertEqual(res, .state(.passing))
   }
 
@@ -430,7 +457,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
       runner: MockStatusRunner { _, _ in
         CommandResult(stdout: "", stderr: "not a repo", exitCode: 128, timedOut: false)
       })
-    let res = await r.resolveCI(path: existing, branch: "main")
+    let res = await r.resolveCI(path: existing, vcs: "git", projectRoot: existing, branch: "main")
     XCTAssertEqual(res, .absent)  // no git HEAD → no CI
   }
 
@@ -529,7 +556,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
       runner: MockStatusRunner { exe, args in
         (exe == "gh" && args.contains("pr")) ? ok(json) : ok("")
       })
-    let res = await r.resolvePR(path: existing, branch: "main")
+    let res = await r.resolvePR(path: existing, vcs: "git", projectRoot: existing, branch: "main")
     guard case .info(let pr) = res else { return XCTFail("expected .info") }
     XCTAssertEqual(pr.number, 9)
     XCTAssertEqual(pr.reviewDecision, .approved)
@@ -544,8 +571,56 @@ final class WorkroomStatusResolverTests: XCTestCase {
         }
         return ok("[]")
       })
-    let res = await r.resolvePR(path: existing, branch: nil)
+    let res = await r.resolvePR(path: existing, vcs: "git", projectRoot: existing, branch: nil)
     XCTAssertEqual(res, .absent)
+  }
+
+  // MARK: - resolveCI / resolvePR for jj (gh runs from the colocated project root)
+
+  func testResolveCIJJProbesProjectRootWithBookmarkSha() async {
+    // jj's `commit_id` for the bookmark == the git sha gh reports for the run on that branch.
+    let json =
+      #"[{"headSha":"JJSHA","status":"completed","conclusion":"success","workflowName":"CI"}]"#
+    let runner = RecordingStatusRunner { exe, _ in
+      if exe == "jj" { return ok("JJSHA\n") }  // `jj log -r <bookmark> -T commit_id`
+      if exe == "gh" { return ok(json) }
+      return ok("")
+    }
+    let r = WorkroomStatusResolver(runner: runner)
+    let res = await r.resolveCI(
+      path: "/proj/ws", vcs: "jj", projectRoot: "/proj", branch: "feature/login")
+    XCTAssertEqual(res, .state(.passing))
+    // gh must run from the colocated project root (the workspace has no `.git`), keyed by the bookmark.
+    let gh = runner.calls.first { $0.exe == "gh" }
+    XCTAssertEqual(gh?.dir, "/proj")
+    XCTAssertTrue(gh?.args.contains("feature/login") ?? false)
+    // the commit-id probe runs in the workspace itself (jj resolves the workspace from cwd)
+    let jj = runner.calls.first { $0.exe == "jj" }
+    XCTAssertEqual(jj?.dir, "/proj/ws")
+    XCTAssertFalse(runner.calls.contains { $0.exe == "git" })  // never shells git in the workspace
+  }
+
+  func testResolveCIJJNoBookmarkIsAbsent() async {
+    // No bookmark resolved upstream (branch nil) → no branch → absent, never calls jj or gh.
+    let runner = RecordingStatusRunner { _, _ in ok("") }
+    let r = WorkroomStatusResolver(runner: runner)
+    let res = await r.resolveCI(path: "/proj/ws", vcs: "jj", projectRoot: "/proj", branch: nil)
+    XCTAssertEqual(res, .absent)
+    XCTAssertTrue(runner.calls.isEmpty)  // short-circuits before any probe
+  }
+
+  func testResolvePRJJProbesProjectRoot() async {
+    let json =
+      #"[{"number":9,"title":"F","state":"OPEN","isDraft":false,"url":"u","reviewDecision":null}]"#
+    let runner = RecordingStatusRunner { exe, _ in (exe == "gh") ? ok(json) : ok("") }
+    let r = WorkroomStatusResolver(runner: runner)
+    let res = await r.resolvePR(
+      path: "/proj/ws", vcs: "jj", projectRoot: "/proj", branch: "feature/login")
+    guard case .info(let pr) = res else { return XCTFail("expected .info") }
+    XCTAssertEqual(pr.number, 9)
+    let gh = runner.calls.first { $0.exe == "gh" }
+    XCTAssertEqual(gh?.dir, "/proj")  // colocated project root, not the workspace
+    XCTAssertTrue(gh?.args.contains("feature/login") ?? false)
   }
 
   // MARK: - classifyGitHubCLI

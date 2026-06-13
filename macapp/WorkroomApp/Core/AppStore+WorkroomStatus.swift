@@ -17,20 +17,26 @@ extension AppStore {
     let sid: SidebarID
     let path: String
     let vcs: String
+    /// The colocated project root. Equals `path` for the root row; for a workroom it's the parent
+    /// project's path — where stage-2 `gh` probes run for a jj workspace (which has no `.git`).
+    let projectRoot: String
   }
 
   /// Every root + workroom as a status work item.
   func statusWorkItems() -> [StatusWorkItem] {
     var items: [StatusWorkItem] = []
     for p in projects {
-      items.append(StatusWorkItem(sid: .root(project: p.id), path: p.path, vcs: p.vcs))
+      items.append(
+        StatusWorkItem(sid: .root(project: p.id), path: p.path, vcs: p.vcs, projectRoot: p.path))
       for w in p.workrooms {
         // A workroom's VCS *type* is its project's (`p.vcs`) — a git project's workrooms are git
         // worktrees, a jj project's are jj workspaces. NOT `w.vcsName`, which is the workroom's
         // branch/workspace *name* (`workroom/<name>`); passing that as the type made resolveLocal
         // fall through to `.notRepository` for every workroom.
         items.append(
-          StatusWorkItem(sid: .workroom(project: p.id, name: w.name), path: w.path, vcs: p.vcs))
+          StatusWorkItem(
+            sid: .workroom(project: p.id, name: w.name), path: w.path, vcs: p.vcs,
+            projectRoot: p.path))
       }
     }
     return items
@@ -112,10 +118,12 @@ extension AppStore {
       await self.refreshGitHubCLI(resolver: resolver)
       if Task.isCancelled { return }
       guard self.githubCLIStatus == .available else { return }
-      let ci = await resolver.resolveCI(path: item.path, branch: fresh.branchForCI)
+      let ci = await resolver.resolveCI(
+        path: item.path, vcs: item.vcs, projectRoot: item.projectRoot, branch: fresh.branchForCI)
       if Task.isCancelled { return }
       self.applyCIStatus(ci, to: sid)
-      let pr = await resolver.resolvePR(path: item.path, branch: fresh.branchForCI)
+      let pr = await resolver.resolvePR(
+        path: item.path, vcs: item.vcs, projectRoot: item.projectRoot, branch: fresh.branchForCI)
       if Task.isCancelled { return }
       self.applyPRStatus(pr, to: sid)
     }
@@ -209,13 +217,13 @@ extension AppStore {
     switch sid {
     case .root(let path):
       guard let p = projects.first(where: { $0.id == path }) else { return nil }
-      return StatusWorkItem(sid: sid, path: p.path, vcs: p.vcs)
+      return StatusWorkItem(sid: sid, path: p.path, vcs: p.vcs, projectRoot: p.path)
     case .workroom(let path, let name):
       guard let p = projects.first(where: { $0.id == path }),
         let w = p.workrooms.first(where: { $0.id == name })
       else { return nil }
       // `p.vcs` is the VCS type; `w.vcsName` is the branch name, not the type (see statusWorkItems).
-      return StatusWorkItem(sid: sid, path: w.path, vcs: p.vcs)
+      return StatusWorkItem(sid: sid, path: w.path, vcs: p.vcs, projectRoot: p.path)
     case .project:
       return nil
     }
@@ -257,7 +265,13 @@ extension AppStore {
         let item = items[idx]
         idx += 1
         let branch = workroomStatuses[item.sid]?.branchForCI
-        group.addTask { (item.sid, await resolver.resolveCI(path: item.path, branch: branch)) }
+        group.addTask {
+          (
+            item.sid,
+            await resolver.resolveCI(
+              path: item.path, vcs: item.vcs, projectRoot: item.projectRoot, branch: branch)
+          )
+        }
       }
       while let (sid, res) = await group.next() {
         if Task.isCancelled { break }
@@ -266,7 +280,13 @@ extension AppStore {
           let item = items[idx]
           idx += 1
           let branch = workroomStatuses[item.sid]?.branchForCI
-          group.addTask { (item.sid, await resolver.resolveCI(path: item.path, branch: branch)) }
+          group.addTask {
+            (
+              item.sid,
+              await resolver.resolveCI(
+                path: item.path, vcs: item.vcs, projectRoot: item.projectRoot, branch: branch)
+            )
+          }
         }
       }
     }
