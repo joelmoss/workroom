@@ -78,6 +78,9 @@ final class WorkroomStatusTests: XCTestCase {
     XCTAssertEqual(
       VCSStatusPresentation.ci(WorkroomStatus(dirty: false, ci: .running))?.symbol,
       "clock.arrow.circlepath")
+    let neutral = VCSStatusPresentation.ci(WorkroomStatus(dirty: false, ci: .neutral))
+    XCTAssertEqual(neutral?.symbol, "minus.circle")
+    XCTAssertEqual(neutral?.semantic, .neutral)
   }
 
   // MARK: - aheadBehind

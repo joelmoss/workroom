@@ -83,12 +83,21 @@ struct WorkroomStatusResolver: Sendable {
     let statR = await runner.run(
       "jj", ["diff", "-r", "@", "--stat", "--color", "never"], in: dir, timeout: timeout)
     let stat = statR.ok ? Self.parseDiffStat(statR.stdout) : (insertions: 0, deletions: 0)
-    // Phase 1 omits jj ahead/behind (no reliable git-equivalent — see plan); ci branch comes
-    // from the colocated git ref if present (resolveCI handles that), so leave branchForCI nil.
+    // CI/PR branch: jj's `@` is a *detached* git HEAD, so `git symbolic-ref` (resolveCI's fallback)
+    // finds nothing. Resolve the nearest bookmark in `@`'s ancestry instead — that's the branch
+    // pushed to origin, which `gh` keys PR/CI off. nil ⇒ no bookmark ⇒ CI/PR stay absent.
+    let branchR = await runner.run(
+      "jj",
+      [
+        "log", "-r", "heads(::@ & bookmarks())", "--no-graph", "--color", "never", "-T",
+        Self.jjBranchTemplate,
+      ], in: dir, timeout: timeout)
+    let branch = branchR.ok ? Self.parseJJBranch(branchR.stdout) : nil
+    // Phase 1 omits jj ahead/behind (no reliable git-equivalent — see plan).
     return WorkroomStatus(
       dirty: !files.isEmpty || head.conflicted, conflicted: head.conflicted, ahead: nil,
       behind: nil, changedFiles: files, insertions: stat.insertions, deletions: stat.deletions,
-      branchForCI: nil, jjRefs: head.refs, jjDescription: head.description,
+      branchForCI: branch, jjRefs: head.refs, jjDescription: head.description,
       jjChangeID: head.changeID, jjCommitID: head.commitID)
   }
 
@@ -287,6 +296,21 @@ struct WorkroomStatusResolver: Sendable {
     var commitID: String?  // shortest-8 commit-id
     var refs: [String] = []  // bookmarks + tags
     var description: String?  // first line; nil ⇒ "(no description set)"
+  }
+
+  /// jj template for the CI/PR branch query — just the bookmark name(s) on the matched commit.
+  static let jjBranchTemplate = #"bookmarks ++ "\n""#
+
+  /// First bookmark from `jj log -r 'heads(::@ & bookmarks())' -T 'bookmarks'` — the nearest
+  /// bookmark in `@`'s ancestry, used as the jj branch for CI/PR lookup. Strips jj's `*` (ahead) /
+  /// `??` (conflicted) decorations. `nil` when there's no bookmark (CI/PR then stay absent).
+  static func parseJJBranch(_ output: String) -> String? {
+    for raw in output.split(whereSeparator: \.isNewline) {
+      guard let token = raw.split(separator: " ").first.map(String.init) else { continue }
+      let cleaned = token.trimmingCharacters(in: CharacterSet(charactersIn: "*?"))
+      if !cleaned.isEmpty { return cleaned }
+    }
+    return nil
   }
 
   static func parseJJHead(_ output: String) -> JJHead {

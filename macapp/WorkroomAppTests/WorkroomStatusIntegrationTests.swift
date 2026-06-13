@@ -222,4 +222,20 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
     XCTAssertFalse((s.jjChangeID ?? "").isEmpty)
     XCTAssertEqual((s.jjCommitID ?? "").count, 8)  // commit-id is jj's shortest-8 id
   }
+
+  /// The real reason `branchForCI` exists for jj: `@` is a *detached* git HEAD (so the
+  /// `git symbolic-ref` fallback in resolveCI/resolvePR finds nothing), and a bookmark normally
+  /// sits at `@-` because `@` is an empty working-copy change on top. This proves the
+  /// `heads(::@ & bookmarks())` revset resolves that ancestor bookmark — the branch pushed to
+  /// origin that `gh` keys PR/CI off — even though it's not on `@` itself. Without it, PR/CI are
+  /// inert for every jj workroom.
+  func testJJBranchForCIResolvesAncestorBookmark() async throws {
+    let dir = try jjRepo()
+    sh("echo a > f.txt && jj describe -m base 2>/dev/null", in: dir)
+    sh("jj bookmark create feature/login -r @ 2>/dev/null", in: dir)
+    sh("jj new 2>/dev/null", in: dir)  // @ becomes a fresh empty change; the bookmark stays at @-
+    let s = await resolver.resolveLocal(path: dir, vcs: "jj")
+    // git symbolic-ref would fail here (detached HEAD); the revset finds the nearest bookmark.
+    XCTAssertEqual(s.branchForCI, "feature/login")
+  }
 }

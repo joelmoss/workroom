@@ -65,6 +65,20 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertEqual(p.files.first?.path, "new file.txt")  // paths with spaces survive
   }
 
+  func testParseAddedAndDeleted() {
+    // type-1 XY: "A." → added, ".D" → deleted (path is after 8 space-fields).
+    let out =
+      [
+        "# branch.head main",
+        "1 A. N... 100644 100644 100644 0 a added.txt",
+        "1 .D N... 100644 100644 000000 a 0 gone.txt",
+      ].joined(separator: nul) + nul
+    let p = WorkroomStatusResolver.parseGitPorcelainV2Z(out)
+    let byChange = Dictionary(grouping: p.files, by: \.change).mapValues { $0.map(\.path) }
+    XCTAssertEqual(byChange[.added], ["added.txt"])
+    XCTAssertEqual(byChange[.deleted], ["gone.txt"])
+  }
+
   func testParseConflicted() {
     // porcelain-v2 unmerged: u <xy> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path> (path is the
     // 11th token / after 10 space-fields).
@@ -154,6 +168,16 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertEqual(h.changeID, "ab")
     XCTAssertEqual(h.refs, ["main", "feat", "v1.0"])  // bookmarks + tags
     XCTAssertEqual(h.description, "fix: thing")  // first line only
+  }
+
+  func testParseJJHeadEmpty() {
+    // A best-effort jj log failure returns empty stdout — must not crash, yields a blank head.
+    let h = WorkroomStatusResolver.parseJJHead("")
+    XCTAssertFalse(h.conflicted)
+    XCTAssertNil(h.changeID)
+    XCTAssertNil(h.commitID)
+    XCTAssertEqual(h.refs, [])
+    XCTAssertNil(h.description)
   }
 
   // MARK: - parseDiffStat (git --shortstat / jj --stat totals)
@@ -249,6 +273,43 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertEqual(WorkroomStatusResolver.classifyCI(r, head: "H"), .keepPrior)
   }
 
+  func testCINeutral() {
+    // A sole completed run with a non-pass/non-fail conclusion collapses to .neutral.
+    let json =
+      #"[{"headSha":"H","status":"completed","conclusion":"cancelled","workflowName":"CI"}]"#
+    XCTAssertEqual(WorkroomStatusResolver.classifyCI(ok(json), head: "H"), .state(.neutral))
+  }
+
+  func testCIFailingConclusions() {
+    // All of these map to .failing, not just "failure".
+    for conclusion in ["failure", "timed_out", "startup_failure", "action_required"] {
+      let json =
+        "[{\"headSha\":\"H\",\"status\":\"completed\",\"conclusion\":\"\(conclusion)\",\"workflowName\":\"CI\"}]"
+      XCTAssertEqual(
+        WorkroomStatusResolver.classifyCI(ok(json), head: "H"), .state(.failing),
+        "conclusion \(conclusion) should be failing")
+    }
+  }
+
+  func testCIRunningWinsOverPassing() {
+    // Across workflows, a running check outranks a passing one.
+    let json = """
+      [{"headSha":"H","status":"completed","conclusion":"success","workflowName":"lint"},
+       {"headSha":"H","status":"in_progress","conclusion":null,"workflowName":"test"}]
+      """
+    XCTAssertEqual(WorkroomStatusResolver.classifyCI(ok(json), head: "H"), .state(.running))
+  }
+
+  func testCIServerErrorKeepsPrior() {
+    let r = CommandResult(
+      stdout: "", stderr: "HTTP 503 Service Unavailable", exitCode: 1, timedOut: false)
+    XCTAssertEqual(WorkroomStatusResolver.classifyCI(r, head: "H"), .keepPrior)
+  }
+
+  func testCIMalformedIsAbsent() {
+    XCTAssertEqual(WorkroomStatusResolver.classifyCI(ok("not json"), head: "H"), .absent)
+  }
+
   // MARK: - resolveLocal (end-to-end via the mock)
 
   func testResolveLocalMissingPath() async {
@@ -299,6 +360,8 @@ final class WorkroomStatusResolverTests: XCTestCase {
         if exe == "jj", args.contains("--stat") {
           return ok("2 files changed, 9 insertions(+), 3 deletions(-)\n")
         }
+        // Branch query (nearest bookmark in @'s ancestry) — distinct from the head log below.
+        if exe == "jj", args.contains("heads(::@ & bookmarks())") { return ok("my-feature\n") }
         // Head template (6 fields): conflict \t change-shortest \t commit-shortest8
         //                           \t bookmarks \t tags \t description.
         if exe == "jj", args.contains("log") { return ok("true\tch\tco34\tfeat\t\twip: x\n") }
@@ -312,10 +375,32 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertNil(s.behind)
     XCTAssertEqual(s.insertions, 9)
     XCTAssertEqual(s.deletions, 3)
+    // jj branch resolved from the nearest bookmark, used for CI/PR lookup.
+    XCTAssertEqual(s.branchForCI, "my-feature")
     XCTAssertEqual(s.jjRefs, ["feat"])
     XCTAssertEqual(s.jjDescription, "wip: x")
     XCTAssertEqual(s.jjChangeID, "ch")
     XCTAssertEqual(s.jjCommitID, "co34")
+  }
+
+  // MARK: - parseJJBranch (nearest-bookmark resolution for jj CI/PR)
+
+  func testParseJJBranchBasic() {
+    XCTAssertEqual(WorkroomStatusResolver.parseJJBranch("my-feature\n"), "my-feature")
+  }
+
+  func testParseJJBranchEmptyIsNil() {
+    XCTAssertNil(WorkroomStatusResolver.parseJJBranch(""))
+    XCTAssertNil(WorkroomStatusResolver.parseJJBranch("\n\n"))
+  }
+
+  func testParseJJBranchMultipleTakesFirst() {
+    XCTAssertEqual(WorkroomStatusResolver.parseJJBranch("alpha beta\n"), "alpha")
+  }
+
+  func testParseJJBranchStripsDecoration() {
+    // jj decorates a bookmark ahead of its remote with a trailing `*`; we strip it.
+    XCTAssertEqual(WorkroomStatusResolver.parseJJBranch("feature*\n"), "feature")
   }
 
   func testResolveLocalUnknownVCS() async {
