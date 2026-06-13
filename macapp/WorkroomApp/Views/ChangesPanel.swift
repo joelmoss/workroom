@@ -1,4 +1,3 @@
-import Defaults
 import SwiftUI
 
 /// The right inspector (issue #24). macOS 14 supports only one `.inspector` per view, so the
@@ -9,26 +8,28 @@ import SwiftUI
 struct RightInspector: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
-  @Default(.changesSectionCollapsed) private var changesCollapsed
-  @Default(.prSectionCollapsed) private var prCollapsed
-  @Default(.notificationsSectionCollapsed) private var notificationsCollapsed
 
   var body: some View {
     // Each section owns its action in its own header (issue #24 feedback): Refresh in Changes,
-    // Clear in Notifications — instead of both sharing the inspector toolbar.
-    VStack(spacing: 12) {  // margin between the section blocks
-      InspectorSection(title: "Changes", collapsed: $changesCollapsed) {
+    // Clear in Notifications. Collapse state lives on `store` (not `@Default`) so toggling it
+    // reliably re-renders this inspector content — see AppStore.
+    VStack(spacing: 0) {  // sections are flush; a hairline Divider separates them
+      InspectorSection(title: "Changes", collapsed: $store.changesSectionCollapsed) {
         InspectorHeaderButton(systemImage: "arrow.clockwise", help: "Refresh workroom status") {
           store.refreshWorkroomStatuses(force: true)
         }
       } content: {
         ChangesPanel()
       }
-      InspectorSection(title: "Pull Request", collapsed: $prCollapsed) {
+      Divider()
+      InspectorSection(title: "Pull Request", collapsed: $store.prSectionCollapsed) {
       } content: {
         PullRequestPanel()
       }
-      InspectorSection(title: "Notifications", collapsed: $notificationsCollapsed, fill: true) {
+      Divider()
+      InspectorSection(
+        title: "Notifications", collapsed: $store.notificationsSectionCollapsed, fill: true
+      ) {
         InspectorHeaderButton(
           systemImage: "trash", help: "Clear notifications", destructive: true,
           disabled: notifications.items.isEmpty
@@ -71,6 +72,9 @@ struct InspectorSection<Accessory: View, Content: View>: View {
             Image(systemName: collapsed ? "chevron.right" : "chevron.down")
               .font(.system(size: 11, weight: .semibold))
               .foregroundStyle(.secondary)
+              // Fixed width: chevron.right and chevron.down differ in glyph width, which would
+              // otherwise nudge the title sideways on every toggle.
+              .frame(width: 12, alignment: .center)
             Text(title).font(.headline)
             Spacer(minLength: 0)
           }

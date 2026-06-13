@@ -385,11 +385,6 @@ struct WorkroomCommands: Commands {
   @FocusedValue(\.multipleWorkroomTabs) private var multipleWorkroomTabs
   // Shared with RootView's inspector + toolbar toggle (same key) so all three stay in sync.
   @Default(.showNotifications) private var showNotifications
-  // The Changes section's collapse state (same key as RightInspector) so the View > Changes item
-  // reflects and drives whether the Changes view is actually showing inside the inspector.
-  @Default(.changesSectionCollapsed) private var changesCollapsed
-  // Likewise for the Pull Request section (issue #24, Phase 2).
-  @Default(.prSectionCollapsed) private var prCollapsed
   // Same key as the Settings checkbox so the two stay in sync; GhosttySurfaceView reads it
   // on each selection, so toggling here takes effect on the next drag.
   @Default(.copyOnSelect) private var copyOnSelect
@@ -440,13 +435,13 @@ struct WorkroomCommands: Commands {
       Toggle(
         "Changes",
         isOn: Binding(
-          get: { showNotifications && !changesCollapsed },
+          get: { showNotifications && !store.changesSectionCollapsed },
           set: { on in
             if on {
               showNotifications = true
-              changesCollapsed = false
+              store.changesSectionCollapsed = false
             } else {
-              changesCollapsed = true
+              store.changesSectionCollapsed = true
             }
           })
       )
@@ -457,13 +452,13 @@ struct WorkroomCommands: Commands {
       Toggle(
         "Pull Request",
         isOn: Binding(
-          get: { showNotifications && !prCollapsed },
+          get: { showNotifications && !store.prSectionCollapsed },
           set: { on in
             if on {
               showNotifications = true
-              prCollapsed = false
+              store.prSectionCollapsed = false
             } else {
-              prCollapsed = true
+              store.prSectionCollapsed = true
             }
           })
       )

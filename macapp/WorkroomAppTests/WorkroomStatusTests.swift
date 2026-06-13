@@ -1,3 +1,4 @@
+import Defaults
 import XCTest
 
 @testable import Workroom
@@ -184,6 +185,21 @@ final class WorkroomStatusTests: XCTestCase {
     XCTAssertEqual(stored?.branchForCI, "main")
     XCTAssertNil(stored?.jjRefs)  // stale jj head cleared
     XCTAssertNil(stored?.jjChangeID)
+  }
+
+  // MARK: - Inspector section collapse (store-backed, persisted to Defaults)
+
+  /// The collapse state lives on the store (so the `.inspector` content re-renders) and persists to
+  /// Defaults via `didSet`. Guards that store↔Defaults wiring.
+  @MainActor
+  func testInspectorSectionCollapsePersistsToDefaults() {
+    let original = Defaults[.changesSectionCollapsed]
+    defer { Defaults[.changesSectionCollapsed] = original }
+    let store = AppStore()
+    store.changesSectionCollapsed = true
+    XCTAssertTrue(Defaults[.changesSectionCollapsed])
+    store.changesSectionCollapsed = false
+    XCTAssertFalse(Defaults[.changesSectionCollapsed])
   }
 
   // MARK: - PRPresentation (Phase 2 pull-request badge)

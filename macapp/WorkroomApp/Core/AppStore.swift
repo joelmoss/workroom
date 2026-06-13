@@ -95,6 +95,19 @@ final class AppStore: ObservableObject {
   /// on every selection).
   var ghStatusCheckedAt: Date?
 
+  // Inspector section collapse (issue #24). Held on the store rather than as `@Default` in the
+  // inspector view: the `.inspector` content doesn't observe `@Default` changes, but it DOES observe
+  // this `@EnvironmentObject`. Seeded from — and persisted back to — Defaults via `didSet`.
+  @Published var changesSectionCollapsed = Defaults[.changesSectionCollapsed] {
+    didSet { Defaults[.changesSectionCollapsed] = changesSectionCollapsed }
+  }
+  @Published var prSectionCollapsed = Defaults[.prSectionCollapsed] {
+    didSet { Defaults[.prSectionCollapsed] = prSectionCollapsed }
+  }
+  @Published var notificationsSectionCollapsed = Defaults[.notificationsSectionCollapsed] {
+    didSet { Defaults[.notificationsSectionCollapsed] = notificationsSectionCollapsed }
+  }
+
   @Published var errorMessage: String?
   /// Title for the error alert. Nil falls back to the generic title; specific
   /// failures (e.g. teardown) set their own.
