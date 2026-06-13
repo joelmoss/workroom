@@ -238,4 +238,32 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
     // git symbolic-ref would fail here (detached HEAD); the revset finds the nearest bookmark.
     XCTAssertEqual(s.branchForCI, "feature/login")
   }
+
+  /// The reported bug: a jj *workroom* is a `jj workspace add` workspace, not the main repo — and
+  /// (unlike the colocated main repo) a secondary workspace has no `.git`. It must be resolved as
+  /// "jj" (the project's VCS type), NOT by the workroom's `vcs_name` (`workroom/<name>`), which
+  /// made resolveLocal fall through to `.notRepository` and the header render the git "detached"
+  /// fallback. Proves a real workspace path reports its dirty state, the jj head, and the ancestor
+  /// bookmark — i.e. the Changes panel shows the jj line, not "not a repository" / "detached".
+  func testJJWorkspaceResolvesAsJJ() async throws {
+    try requireTool("jj")
+    let root = tempDir()
+    sh(
+      """
+      mkdir -p main && cd main
+      jj git init . 2>/dev/null || jj init --git . 2>/dev/null
+      jj config set --repo user.email a@b.c; jj config set --repo user.name t
+      echo hello > f.txt && jj describe -m base 2>/dev/null
+      jj bookmark create feature/login -r @ 2>/dev/null
+      jj new 2>/dev/null
+      jj workspace add ../ws --name workroom/ws 2>/dev/null
+      """, in: root)
+    let ws = root + "/ws"
+    sh("echo dirty >> f.txt", in: ws)
+    let s = await resolver.resolveLocal(path: ws, vcs: "jj")
+    XCTAssertNil(s.failure)  // NOT .notRepository
+    XCTAssertEqual(s.dirty, true)
+    XCTAssertEqual(s.branchForCI, "feature/login")  // ancestor bookmark via the jj revset
+    XCTAssertNotNil(s.jjChangeID)  // jj head populated → Changes shows the jj line, not "detached"
+  }
 }

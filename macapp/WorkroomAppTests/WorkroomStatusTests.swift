@@ -147,6 +147,27 @@ final class WorkroomStatusTests: XCTestCase {
     XCTAssertNil(store.aggregateStatus(forProject: "/p"))
   }
 
+  /// Regression: a workroom's status work item must carry the project's VCS *type* (`p.vcs`), not
+  /// the workroom's `vcsName` — which is the branch/workspace name (`workroom/<name>`), not a type.
+  /// Passing the branch name made `resolveLocal` fall through to `.notRepository`, so every (jj or
+  /// git) workroom's Changes panel showed "not a repository" with a "detached" header.
+  @MainActor
+  func testStatusWorkItemsUseProjectVCSTypeForWorkrooms() {
+    let store = AppStore()
+    store.projects = [
+      Project(
+        path: "/p", vcs: "jj",
+        workrooms: [
+          Workroom(name: "feat", path: "/p/feat", vcsName: "workroom/feat", warnings: [])
+        ])
+    ]
+    let items = store.statusWorkItems()
+    let workroomItem = items.first { $0.sid == .workroom(project: "/p", name: "feat") }
+    XCTAssertEqual(workroomItem?.vcs, "jj")  // the project's type, NOT "workroom/feat"
+    let rootItem = items.first { $0.sid == .root(project: "/p") }
+    XCTAssertEqual(rootItem?.vcs, "jj")
+  }
+
   // MARK: - mergeLocalStatus carries the full local probe forward
 
   /// Regression: `mergeLocalStatus` once copied only a subset of the fresh fields and dropped the

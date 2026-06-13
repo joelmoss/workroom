@@ -25,8 +25,12 @@ extension AppStore {
     for p in projects {
       items.append(StatusWorkItem(sid: .root(project: p.id), path: p.path, vcs: p.vcs))
       for w in p.workrooms {
+        // A workroom's VCS *type* is its project's (`p.vcs`) — a git project's workrooms are git
+        // worktrees, a jj project's are jj workspaces. NOT `w.vcsName`, which is the workroom's
+        // branch/workspace *name* (`workroom/<name>`); passing that as the type made resolveLocal
+        // fall through to `.notRepository` for every workroom.
         items.append(
-          StatusWorkItem(sid: .workroom(project: p.id, name: w.name), path: w.path, vcs: w.vcsName))
+          StatusWorkItem(sid: .workroom(project: p.id, name: w.name), path: w.path, vcs: p.vcs))
       }
     }
     return items
@@ -210,7 +214,8 @@ extension AppStore {
       guard let p = projects.first(where: { $0.id == path }),
         let w = p.workrooms.first(where: { $0.id == name })
       else { return nil }
-      return StatusWorkItem(sid: sid, path: w.path, vcs: w.vcsName)
+      // `p.vcs` is the VCS type; `w.vcsName` is the branch name, not the type (see statusWorkItems).
+      return StatusWorkItem(sid: sid, path: w.path, vcs: p.vcs)
     case .project:
       return nil
     }
