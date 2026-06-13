@@ -66,6 +66,7 @@ enum UITestFixture {
         ChangedFile(path: "config/routes.rb", change: .modified),
         ChangedFile(path: "test/models/user_test.rb", change: .added),
       ],
+      insertions: 411, deletions: 222,
       ci: .passing,
       jjRefs: ["feature/login"],
       jjDescription: "feat: add session login (#42)",

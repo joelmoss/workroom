@@ -156,6 +156,39 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertEqual(h.description, "fix: thing")  // first line only
   }
 
+  // MARK: - parseDiffStat (git --shortstat / jj --stat totals)
+
+  func testParseDiffStatGitFull() {
+    let s = WorkroomStatusResolver.parseDiffStat(" 2 files changed, 5 insertions(+), 1 deletion(-)")
+    XCTAssertEqual(s.insertions, 5)
+    XCTAssertEqual(s.deletions, 1)
+  }
+
+  func testParseDiffStatInsertionsOnly() {
+    let s = WorkroomStatusResolver.parseDiffStat("1 file changed, 5 insertions(+)")
+    XCTAssertEqual(s.insertions, 5)
+    XCTAssertEqual(s.deletions, 0)
+  }
+
+  func testParseDiffStatDeletionsOnly() {
+    let s = WorkroomStatusResolver.parseDiffStat("1 file changed, 1 deletion(-)")
+    XCTAssertEqual(s.insertions, 0)
+    XCTAssertEqual(s.deletions, 1)
+  }
+
+  func testParseDiffStatJJSummary() {
+    let s = WorkroomStatusResolver.parseDiffStat(
+      "PLAN.md | 428 ++++++\n1 file changed, 428 insertions(+), 0 deletions(-)")
+    XCTAssertEqual(s.insertions, 428)
+    XCTAssertEqual(s.deletions, 0)
+  }
+
+  func testParseDiffStatCleanIsZero() {
+    let s = WorkroomStatusResolver.parseDiffStat("")
+    XCTAssertEqual(s.insertions, 0)
+    XCTAssertEqual(s.deletions, 0)
+  }
+
   // MARK: - classifyGitFailure
 
   func testClassifyTimeout() {
@@ -231,12 +264,18 @@ final class WorkroomStatusResolverTests: XCTestCase {
       .joined(separator: nul) + nul
     let r = WorkroomStatusResolver(
       runner: MockStatusRunner { exe, args in
-        (exe == "git" && args.contains("status")) ? ok(porcelain) : ok("")
+        if exe == "git", args.contains("status") { return ok(porcelain) }
+        if exe == "git", args.contains("diff") {
+          return ok(" 1 file changed, 7 insertions(+), 2 deletions(-)\n")
+        }
+        return ok("")
       })
     let s = await r.resolveLocal(path: existing, vcs: "git")
     XCTAssertEqual(s.dirty, true)
     XCTAssertEqual(s.branchForCI, "main")
     XCTAssertEqual(s.changedFiles?.count, 1)
+    XCTAssertEqual(s.insertions, 7)
+    XCTAssertEqual(s.deletions, 2)
     XCTAssertNil(s.failure)
   }
 
@@ -256,7 +295,10 @@ final class WorkroomStatusResolverTests: XCTestCase {
   func testResolveLocalJJDirtyAndConflict() async {
     let r = WorkroomStatusResolver(
       runner: MockStatusRunner { exe, args in
-        if exe == "jj", args.contains("diff") { return ok("M a.txt\nA b.txt\n") }
+        if exe == "jj", args.contains("--summary") { return ok("M a.txt\nA b.txt\n") }
+        if exe == "jj", args.contains("--stat") {
+          return ok("2 files changed, 9 insertions(+), 3 deletions(-)\n")
+        }
         // Head template (6 fields): conflict \t change-shortest \t commit-shortest8
         //                           \t bookmarks \t tags \t description.
         if exe == "jj", args.contains("log") { return ok("true\tch\tco34\tfeat\t\twip: x\n") }
@@ -268,6 +310,8 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertEqual(s.changedFiles?.count, 2)
     XCTAssertNil(s.ahead)  // jj omits ahead/behind in Phase 1
     XCTAssertNil(s.behind)
+    XCTAssertEqual(s.insertions, 9)
+    XCTAssertEqual(s.deletions, 3)
     XCTAssertEqual(s.jjRefs, ["feat"])
     XCTAssertEqual(s.jjDescription, "wip: x")
     XCTAssertEqual(s.jjChangeID, "ch")

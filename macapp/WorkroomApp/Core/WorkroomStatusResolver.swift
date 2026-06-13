@@ -57,9 +57,13 @@ struct WorkroomStatusResolver: Sendable {
       return WorkroomStatus(dirty: nil, failure: Self.classifyGitFailure(r))
     }
     let p = Self.parseGitPorcelainV2Z(r.stdout)
+    // Line counts vs HEAD (staged + unstaged tracked changes; untracked files aren't in the diff).
+    let statR = await runner.run("git", ["diff", "--shortstat", "HEAD"], in: dir, timeout: timeout)
+    let stat = statR.ok ? Self.parseDiffStat(statR.stdout) : (insertions: 0, deletions: 0)
     return WorkroomStatus(
       dirty: p.dirty, conflicted: p.conflicted, ahead: p.ahead, behind: p.behind,
-      changedFiles: p.files, branchForCI: p.branch)
+      changedFiles: p.files, insertions: stat.insertions, deletions: stat.deletions,
+      branchForCI: p.branch)
   }
 
   private func resolveJJ(_ dir: String) async -> WorkroomStatus {
@@ -76,12 +80,16 @@ struct WorkroomStatusResolver: Sendable {
       "jj", ["log", "-r", "@", "--no-graph", "--color", "never", "-T", Self.jjHeadTemplate],
       in: dir, timeout: timeout)
     let head = logR.ok ? Self.parseJJHead(logR.stdout) : JJHead()
+    let statR = await runner.run(
+      "jj", ["diff", "-r", "@", "--stat", "--color", "never"], in: dir, timeout: timeout)
+    let stat = statR.ok ? Self.parseDiffStat(statR.stdout) : (insertions: 0, deletions: 0)
     // Phase 1 omits jj ahead/behind (no reliable git-equivalent — see plan); ci branch comes
     // from the colocated git ref if present (resolveCI handles that), so leave branchForCI nil.
     return WorkroomStatus(
       dirty: !files.isEmpty || head.conflicted, conflicted: head.conflicted, ahead: nil,
-      behind: nil, changedFiles: files, branchForCI: nil, jjRefs: head.refs,
-      jjDescription: head.description, jjChangeID: head.changeID, jjCommitID: head.commitID)
+      behind: nil, changedFiles: files, insertions: stat.insertions, deletions: stat.deletions,
+      branchForCI: nil, jjRefs: head.refs, jjDescription: head.description,
+      jjChangeID: head.changeID, jjCommitID: head.commitID)
   }
 
   // MARK: Stage 2 — CI (slow, network; never blocks stage 1)
@@ -289,6 +297,19 @@ struct WorkroomStatusResolver: Sendable {
       h.description = (first?.isEmpty == false) ? first : nil
     }
     return h
+  }
+
+  /// Sum the totals from a git `--shortstat` or jj `--stat` summary line, e.g.
+  /// "3 files changed, 12 insertions(+), 4 deletions(-)". Either clause may be absent (→ 0); empty
+  /// input (a clean tree) ⇒ (0, 0).
+  static func parseDiffStat(_ text: String) -> (insertions: Int, deletions: Int) {
+    func count(before noun: String) -> Int {
+      guard let r = text.range(of: "\\d+(?= \(noun))", options: .regularExpression) else {
+        return 0
+      }
+      return Int(text[r]) ?? 0
+    }
+    return (count(before: "insertion"), count(before: "deletion"))
   }
 
   static func classifyGitFailure(_ r: CommandResult) -> VCSStatusFailure {

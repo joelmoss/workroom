@@ -72,6 +72,10 @@ struct WorkroomStatus: Equatable, Sendable {
   var ahead: Int?
   var behind: Int?
   var changedFiles: [ChangedFile]?
+  /// Working-tree line counts vs the last commit (git: `diff --shortstat HEAD`; jj: `diff --stat`).
+  /// `nil` ⇒ not resolved; both 0 ⇒ no line delta (e.g. only untracked files, which git omits).
+  var insertions: Int?
+  var deletions: Int?
   var ci: CIState?
   var failure: VCSStatusFailure?
   var branchForCI: String?

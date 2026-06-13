@@ -61,11 +61,29 @@ struct RightInspector: View {
     return store.workroomStatuses[sid]
   }
 
-  /// Changes header dot: the working-tree status (dirty/conflict/unknown); nothing when clean.
+  /// Changes header indicator: the working-tree line counts (`+N` green / `-M` red) when there's a
+  /// delta; otherwise the status dot (untracked-only dirty, conflict, or unknown); nothing if clean.
   private var changesIndicator: AnyView {
-    guard let s = selectedStatus, let dot = VCSStatusPresentation.dot(s) else {
-      return AnyView(EmptyView())
+    guard let s = selectedStatus else { return AnyView(EmptyView()) }
+    let ins = s.insertions ?? 0
+    let del = s.deletions ?? 0
+    if ins > 0 || del > 0 {
+      var help = ""
+      if s.conflicted { help += "conflicted, " }
+      help += "\(ins) insertions, \(del) deletions"
+      return AnyView(
+        HStack(spacing: 5) {
+          if s.conflicted {
+            Image(systemName: "exclamationmark.triangle.fill")
+              .font(.system(size: 9)).foregroundStyle(Color.red)
+          }
+          if ins > 0 { Text("+\(ins)").foregroundStyle(.green) }
+          if del > 0 { Text("-\(del)").foregroundStyle(.red) }
+        }
+        .font(.caption).monospacedDigit()
+        .help(help))
     }
+    guard let dot = VCSStatusPresentation.dot(s) else { return AnyView(EmptyView()) }
     return AnyView(
       Image(systemName: dot.symbol).font(.system(size: 9)).foregroundStyle(dot.semantic.color)
         .help(dot.accessibility))

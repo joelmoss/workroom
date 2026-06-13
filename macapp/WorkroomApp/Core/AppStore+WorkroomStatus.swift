@@ -221,6 +221,8 @@ extension AppStore {
     s.ahead = fresh.ahead
     s.behind = fresh.behind
     s.changedFiles = fresh.changedFiles
+    s.insertions = fresh.insertions
+    s.deletions = fresh.deletions
     s.branchForCI = fresh.branchForCI
     s.jjRefs = fresh.jjRefs
     s.jjDescription = fresh.jjDescription
