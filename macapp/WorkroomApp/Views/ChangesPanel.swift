@@ -98,12 +98,14 @@ struct RightInspector: View {
       return AnyView(EmptyView())
     }
     let badge = PRPresentation.badge(pr)
+    // Status color as text on a subtle tint of itself (GitHub-label style) — white-on-color was
+    // illegible on the light states (e.g. green). Readable across open/draft/merged/closed.
     return AnyView(
       Text("#\(pr.number)")
         .font(.caption2).fontWeight(.semibold).monospacedDigit()
-        .foregroundStyle(.white)
+        .foregroundStyle(badge.semantic.color)
         .padding(.horizontal, 5).padding(.vertical, 1)
-        .background(Capsule().fill(badge.semantic.color))
+        .background(Capsule().fill(badge.semantic.color.opacity(0.22)))
         .help("Pull request #\(pr.number): \(badge.label)"))
   }
 
