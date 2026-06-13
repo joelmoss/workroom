@@ -79,12 +79,22 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
 
       let timeoutItem = DispatchWorkItem {
         state.markTimedOut()
-        if proc.isRunning { proc.terminate() }
+        if proc.isRunning { proc.terminate() }  // SIGTERM
       }
       DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: timeoutItem)
 
+      // Hard-kill fallback: a wedged child (e.g. `gh` blocked on a dead socket) can ignore SIGTERM,
+      // so `terminationHandler` — the only place the continuation resumes — would never fire and the
+      // awaiting Task would hang forever, defeating the timeout. SIGKILL is uncatchable, guaranteeing
+      // the process exits and we resume. A 2s grace after SIGTERM lets well-behaved children exit.
+      let killItem = DispatchWorkItem {
+        if proc.isRunning { kill(proc.processIdentifier, SIGKILL) }
+      }
+      DispatchQueue.global().asyncAfter(deadline: .now() + timeout + 2, execute: killItem)
+
       proc.terminationHandler = { finished in
         timeoutItem.cancel()
+        killItem.cancel()
         drain.wait()  // both pipes fully read (child has exited and closed its write ends)
         gate.resume(
           CommandResult(
@@ -100,6 +110,7 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
         // Launch failed (e.g. cwd vanished). Close the write ends so the drain readers hit
         // EOF instead of blocking forever, then resolve as command-not-found.
         timeoutItem.cancel()
+        killItem.cancel()
         try? outPipe.fileHandleForWriting.close()
         try? errPipe.fileHandleForWriting.close()
         gate.resume(
@@ -115,7 +126,12 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
   private static func readCapped(_ handle: FileHandle, cap: Int) -> Data {
     var collected = Data()
     while true {
-      let chunk = handle.availableData
+      // `read(upToCount:)` (throwing) instead of `availableData`: the latter raises an
+      // *Objective-C* `NSFileHandleOperationException` on a read error (common right after the
+      // child is `terminate()`d out from under the open read end), which Swift can't catch — it
+      // crashes the app. Treat a read error as EOF and return what we have.
+      let chunk: Data
+      do { chunk = try handle.read(upToCount: 1 << 16) ?? Data() } catch { break }
       if chunk.isEmpty { break }  // EOF: pipe closed
       if collected.count < cap {
         collected.append(chunk.prefix(cap - collected.count))
