@@ -194,6 +194,13 @@ extension AppStore {
 
   // MARK: - Internals
 
+  /// Whether `sid` still maps to a live root/workroom. A status sweep captures its work-list up
+  /// front, so a workroom can be deleted before its (slow) probe lands — without this guard the
+  /// merge would write a ghost entry into `workroomStatuses` for a target that no longer exists.
+  private func targetExists(_ sid: SidebarID) -> Bool {
+    selectedStatusWorkItem(for: sid) != nil
+  }
+
   private func selectedStatusWorkItem(for sid: SidebarID) -> StatusWorkItem? {
     switch sid {
     case .root(let path):
@@ -266,6 +273,7 @@ extension AppStore {
   /// `dirty`, so dropping them here would leave the Changes header on the git fallback even for a
   /// jj repo.
   func mergeLocalStatus(_ fresh: WorkroomStatus, into sid: SidebarID) {
+    guard targetExists(sid) else { return }  // deleted mid-sweep → don't write a ghost entry
     var s = workroomStatuses[sid] ?? .unresolved
     s.dirty = fresh.dirty
     s.conflicted = fresh.conflicted

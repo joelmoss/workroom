@@ -155,6 +155,7 @@ final class WorkroomStatusTests: XCTestCase {
   @MainActor
   func testMergeLocalStatusCarriesJJHeadFields() {
     let store = AppStore()
+    store.projects = [Project(path: "/p", vcs: "jj", workrooms: [])]
     let sid = SidebarID.root(project: "/p")
     let fresh = WorkroomStatus(
       dirty: true,
@@ -176,6 +177,7 @@ final class WorkroomStatusTests: XCTestCase {
   @MainActor
   func testMergeLocalStatusPreservesCIAndClearsStaleJJOnGitResult() {
     let store = AppStore()
+    store.projects = [Project(path: "/p", vcs: "jj", workrooms: [])]
     let sid = SidebarID.root(project: "/p")
     // Seed: a prior jj snapshot with CI already resolved.
     store.workroomStatuses[sid] = WorkroomStatus(
@@ -234,6 +236,7 @@ final class WorkroomStatusTests: XCTestCase {
   @MainActor
   func testMergeLocalStatusPreservesPR() {
     let store = AppStore()
+    store.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
     let sid = SidebarID.root(project: "/p")
     store.workroomStatuses[sid] = WorkroomStatus(
       dirty: true,
@@ -241,6 +244,18 @@ final class WorkroomStatusTests: XCTestCase {
         number: 5, title: "t", state: .open, isDraft: false, url: "u", reviewDecision: .approved))
     store.mergeLocalStatus(WorkroomStatus(dirty: false, branchForCI: "main"), into: sid)
     XCTAssertEqual(store.workroomStatuses[sid]?.pr?.number, 5)  // PR survives the local refresh
+  }
+
+  /// The deleted-mid-sweep guard: a status sweep captures its work-list up front, so a workroom
+  /// can be deleted before its (slow) probe lands. The merge must NOT write a ghost entry for a
+  /// sid that no longer maps to a live project/workroom.
+  @MainActor
+  func testMergeLocalStatusSkipsDeletedTarget() {
+    let store = AppStore()
+    store.projects = []  // the project the sweep captured has since been deleted
+    let sid = SidebarID.root(project: "/gone")
+    store.mergeLocalStatus(WorkroomStatus(dirty: true, branchForCI: "main"), into: sid)
+    XCTAssertNil(store.workroomStatuses[sid])  // no ghost entry created
   }
 
   // MARK: - PRAction (Phase 2b: gh command mapping + state availability)

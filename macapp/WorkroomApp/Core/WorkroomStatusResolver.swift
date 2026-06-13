@@ -111,13 +111,7 @@ struct WorkroomStatusResolver: Sendable {
     let head = headR.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !head.isEmpty else { return .absent }
 
-    var branchName = branch
-    if branchName == nil {
-      let b = await runner.run(
-        "git", ["symbolic-ref", "--quiet", "--short", "HEAD"], in: path, timeout: timeout)
-      branchName = b.ok ? b.stdout.trimmingCharacters(in: .whitespacesAndNewlines) : nil
-    }
-    guard let branchName, !branchName.isEmpty else { return .absent }
+    guard let branchName = await resolveBranchName(branch, in: path) else { return .absent }
 
     let r = await runner.run(
       "gh",
@@ -132,13 +126,7 @@ struct WorkroomStatusResolver: Sendable {
   /// git ref). Slow network `gh` call, run beside `resolveCI`. `gh pr list --head` returns a JSON
   /// array — empty when the branch has no PR — so "no PR" is a clean `.absent`, not an error.
   func resolvePR(path: String, branch: String?) async -> PRResolution {
-    var branchName = branch
-    if branchName == nil {
-      let b = await runner.run(
-        "git", ["symbolic-ref", "--quiet", "--short", "HEAD"], in: path, timeout: timeout)
-      branchName = b.ok ? b.stdout.trimmingCharacters(in: .whitespacesAndNewlines) : nil
-    }
-    guard let branchName, !branchName.isEmpty else { return .absent }
+    guard let branchName = await resolveBranchName(branch, in: path) else { return .absent }
 
     let r = await runner.run(
       "gh",
@@ -147,6 +135,21 @@ struct WorkroomStatusResolver: Sendable {
         "number,title,state,isDraft,url,reviewDecision",
       ], in: path, timeout: ciTimeout)
     return Self.classifyPR(r)
+  }
+
+  /// The branch CI/PR key off: the stage-1 branch when known, else the colocated git ref via
+  /// `git symbolic-ref` (empty for a *detached* HEAD — e.g. jj's `@`). Returns `nil` when neither
+  /// yields a non-empty name, so the caller resolves to `.absent`. Faithful to the prior inline
+  /// fallback: a non-nil `branch` is used as-is (the symbolic-ref probe runs only when it's nil).
+  private func resolveBranchName(_ branch: String?, in path: String) async -> String? {
+    var branchName = branch
+    if branchName == nil {
+      let b = await runner.run(
+        "git", ["symbolic-ref", "--quiet", "--short", "HEAD"], in: path, timeout: timeout)
+      branchName = b.ok ? b.stdout.trimmingCharacters(in: .whitespacesAndNewlines) : nil
+    }
+    guard let branchName, !branchName.isEmpty else { return nil }
+    return branchName
   }
 
   /// Run a mutating `gh pr …` command (Phase 2b PR actions). Network timeout, like the read probes.
@@ -348,11 +351,18 @@ struct WorkroomStatusResolver: Sendable {
     return .notRepository  // any other non-zero: treat the repo as unreadable (unknown, not clean)
   }
 
-  /// Decode `gh run list ... --json` and collapse to a single CI state, considering only runs
-  /// whose `headSha` matches the current HEAD (so a stale older run for a different commit can't
-  /// mislead). Distinguishes absent (no gh / no runs / sha mismatch) from a transient rate-limit
-  /// (`keepPrior`).
-  static func classifyCI(_ r: CommandResult, head: String) -> CIResolution {
+  /// Shared preflight for the two `gh` read probes (CI runs, PR list): distinguishes a transient
+  /// blip (timeout / rate-limit / 503 → `keepPrior`, so the badge doesn't flicker) from a hard
+  /// absence (gh not installed / auth failure / no remote → `absent`) from "proceed and parse"
+  /// (`proceed`). Both classifiers must treat gh's failure modes identically — sharing this keeps
+  /// them from drifting.
+  enum GHPreflight: Equatable {
+    case proceed
+    case absent
+    case keepPrior
+  }
+
+  static func ghPreflight(_ r: CommandResult) -> GHPreflight {
     if r.timedOut { return .keepPrior }
     if r.exitCode == CommandResult.commandNotFound { return .absent }  // gh not installed
     let lowerErr = r.stderr.lowercased()
@@ -360,6 +370,19 @@ struct WorkroomStatusResolver: Sendable {
       return .keepPrior
     }
     if !r.ok { return .absent }  // auth failure, no remote, not a gh repo, etc.
+    return .proceed
+  }
+
+  /// Decode `gh run list ... --json` and collapse to a single CI state, considering only runs
+  /// whose `headSha` matches the current HEAD (so a stale older run for a different commit can't
+  /// mislead). Distinguishes absent (no gh / no runs / sha mismatch) from a transient rate-limit
+  /// (`keepPrior`).
+  static func classifyCI(_ r: CommandResult, head: String) -> CIResolution {
+    switch ghPreflight(r) {
+    case .absent: return .absent
+    case .keepPrior: return .keepPrior
+    case .proceed: break
+    }
 
     struct Run: Decodable {
       let headSha: String?
@@ -407,13 +430,11 @@ struct WorkroomStatusResolver: Sendable {
   /// first PR, mapping GitHub's UPPER_SNAKE `state`/`reviewDecision` to our enums. An empty array is
   /// `.absent` (no PR); a transient rate-limit is `.keepPrior` so the section doesn't flicker.
   static func classifyPR(_ r: CommandResult) -> PRResolution {
-    if r.timedOut { return .keepPrior }
-    if r.exitCode == CommandResult.commandNotFound { return .absent }  // gh not installed
-    let lowerErr = r.stderr.lowercased()
-    if lowerErr.contains("rate limit") || lowerErr.contains("503") || lowerErr.contains("timeout") {
-      return .keepPrior
+    switch ghPreflight(r) {
+    case .absent: return .absent
+    case .keepPrior: return .keepPrior
+    case .proceed: break
     }
-    if !r.ok { return .absent }  // auth failure, no remote, not a gh repo, etc.
 
     struct Raw: Decodable {
       let number: Int
