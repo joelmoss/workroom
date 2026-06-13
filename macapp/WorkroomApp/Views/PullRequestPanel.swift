@@ -72,27 +72,27 @@ struct PullRequestPanel: View {
   private func prDetail(_ pr: PullRequestInfo, status: WorkroomStatus) -> some View {
     let badge = PRPresentation.badge(pr)
     return VStack(alignment: .leading, spacing: 6) {
-      HStack(spacing: 6) {
-        Image(systemName: badge.symbol).foregroundStyle(badge.semantic.color)
-        Text(badge.label).fontWeight(.medium).foregroundStyle(badge.semantic.color)
-        Text("#\(pr.number)").foregroundStyle(.secondary)
-        Spacer(minLength: 0)
-      }
-      .font(.callout)
-      .accessibilityElement(children: .ignore)
-      .accessibilityLabel("\(badge.label), pull request #\(pr.number)")
+      // Status + an open-in-browser affordance, linking to the PR. The number lives in the section
+      // header badge now, so it's dropped here.
       Button {
         if let url = URL(string: pr.url) { openURL(url) }
       } label: {
-        Text(pr.title)
-          .font(.callout)
-          .foregroundStyle(.primary)
-          .multilineTextAlignment(.leading)
-          .lineLimit(2).truncationMode(.tail)
+        HStack(spacing: 6) {
+          Image(systemName: badge.symbol).foregroundStyle(badge.semantic.color)
+          Text(badge.label).fontWeight(.medium).foregroundStyle(badge.semantic.color)
+          Image(systemName: "arrow.up.right").font(.caption).foregroundStyle(.secondary)
+          Spacer(minLength: 0)
+        }
+        .font(.callout)
+        .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .help("Open \(pr.url)")
-      .accessibilityLabel("\(pr.title), open in browser")
+      .help("Open pull request #\(pr.number) in browser")
+      .accessibilityLabel("\(badge.label), pull request #\(pr.number), open in browser")
+      Text(pr.title)
+        .font(.callout)
+        .foregroundStyle(.primary)
+        .lineLimit(2).truncationMode(.tail)
       if let review = PRPresentation.reviewLabel(pr.reviewDecision) {
         Text(review).font(.footnote).foregroundStyle(.secondary)
       }
