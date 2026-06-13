@@ -94,6 +94,8 @@ final class AppStore: ObservableObject {
   /// When `githubCLIStatus` was last probed (its own short TTL, so we don't re-run `gh auth status`
   /// on every selection).
   var ghStatusCheckedAt: Date?
+  /// A PR write action (Phase 2b) is running — disables the PR actions menu so it can't double-fire.
+  @Published var prActionInFlight = false
 
   // Inspector section collapse (issue #24). Held on the store rather than as `@Default` in the
   // inspector view: the `.inspector` content doesn't observe `@Default` changes, but it DOES observe

@@ -140,6 +140,12 @@ struct WorkroomStatusResolver: Sendable {
     return Self.classifyPR(r)
   }
 
+  /// Run a mutating `gh pr …` command (Phase 2b PR actions). Network timeout, like the read probes.
+  /// Returns the raw result so the caller can refresh on success or surface `stderr` on failure.
+  func runPRCommand(_ arguments: [String], in dir: String) async -> CommandResult {
+    await runner.run("gh", arguments, in: dir, timeout: ciTimeout)
+  }
+
   /// Probe whether `gh` is installed and authenticated (machine-global, not per-workroom). Runs
   /// `gh auth status` in a neutral dir; a network/keyring blip (timeout) reports `available` so a
   /// flaky connection doesn't raise a false "not signed in" warning.

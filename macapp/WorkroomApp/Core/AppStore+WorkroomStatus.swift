@@ -129,6 +129,57 @@ extension AppStore {
     return worst
   }
 
+  /// Run a PR write action (Phase 2b) on the selected workroom's PR: shell to `gh`, refresh the PR
+  /// on success, surface `stderr` on failure. In fixture mode it optimistically updates the seeded
+  /// status instead of spawning `gh`, so the actions menu is exercisable hermetically.
+  func performPRAction(_ action: PRAction, number: Int, on sid: SidebarID) {
+    guard let item = selectedStatusWorkItem(for: sid) else { return }
+    if UITestFixture.isActive {
+      applyFixturePRAction(action, on: sid)
+      return
+    }
+    prActionInFlight = true
+    let resolver = statusResolver
+    Task { [weak self] in
+      let r = await resolver.runPRCommand(action.arguments(number: number), in: item.path)
+      guard let self else { return }
+      self.prActionInFlight = false
+      if r.ok {
+        self.scheduleSelectedStatusRefresh()
+      } else {
+        self.errorTitle = "Couldn’t \(action.label.lowercased())"
+        let stderr = r.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.errorMessage = stderr.isEmpty ? "The gh command failed." : stderr
+      }
+    }
+  }
+
+  /// Fixture-only: optimistically reflect a PR action in the seeded status (no `gh`), so the menu +
+  /// confirm dialog are demoable and the badge/state visibly update.
+  private func applyFixturePRAction(_ action: PRAction, on sid: SidebarID) {
+    guard var s = workroomStatuses[sid], let pr = s.pr else { return }
+    let state: PullRequestInfo.State
+    let draft: Bool
+    switch action {
+    case .markReady:
+      state = .open
+      draft = false
+    case .convertToDraft:
+      state = .open
+      draft = true
+    case .close:
+      state = .closed
+      draft = pr.isDraft
+    case .reopen:
+      state = .open
+      draft = pr.isDraft
+    }
+    s.pr = PullRequestInfo(
+      number: pr.number, title: pr.title, state: state, isDraft: draft, url: pr.url,
+      reviewDecision: pr.reviewDecision)
+    workroomStatuses[sid] = s
+  }
+
   /// Seed deterministic VCS status for the UI-test fixture targets so the Changes inspector is
   /// exercisable hermetically — the fixture paths aren't real repos, so the live probe would only
   /// ever report "unknown". No-ops outside fixture mode.

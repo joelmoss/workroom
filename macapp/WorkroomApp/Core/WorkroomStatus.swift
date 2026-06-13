@@ -10,6 +10,54 @@ enum CIState: Equatable, Sendable {
   case neutral  // cancelled / skipped — completed without pass or fail
 }
 
+/// A write action on a pull request (Phase 2b), mapped to a `gh pr …` invocation. Pure so the
+/// command, label, and state-availability are unit-testable without spawning `gh`.
+enum PRAction: String, CaseIterable, Sendable {
+  case markReady, convertToDraft, close, reopen
+
+  var label: String {
+    switch self {
+    case .markReady: return "Mark Ready for Review"
+    case .convertToDraft: return "Convert to Draft"
+    case .close: return "Close Pull Request"
+    case .reopen: return "Reopen Pull Request"
+    }
+  }
+
+  var systemImage: String {
+    switch self {
+    case .markReady: return "checkmark.circle"
+    case .convertToDraft: return "pencil.circle"
+    case .close: return "xmark.circle"
+    case .reopen: return "arrow.uturn.left.circle"
+    }
+  }
+
+  /// Closing a PR is outward-facing enough to confirm first (it's reversible via reopen, but it
+  /// changes the PR for everyone). The other actions act on the user's deliberate menu click.
+  var needsConfirmation: Bool { self == .close }
+  var isDestructive: Bool { self == .close }
+
+  /// `gh` arguments for the action against PR `number`.
+  func arguments(number: Int) -> [String] {
+    switch self {
+    case .markReady: return ["pr", "ready", "\(number)"]
+    case .convertToDraft: return ["pr", "ready", "\(number)", "--undo"]
+    case .close: return ["pr", "close", "\(number)"]
+    case .reopen: return ["pr", "reopen", "\(number)"]
+    }
+  }
+
+  /// The actions offered for a PR in its current state.
+  static func available(for pr: PullRequestInfo) -> [PRAction] {
+    switch pr.state {
+    case .open: return [pr.isDraft ? .markReady : .convertToDraft, .close]
+    case .closed: return [.reopen]
+    case .merged: return []
+    }
+  }
+}
+
 /// Whether the GitHub CLI (`gh`) is usable for the PR/CI probes (machine-global, not per-workroom).
 /// `available` is the optimistic default so no warning flashes before the first check; the others
 /// drive a warning in the Pull Request inspector section and gate the `gh` probes so we don't spawn

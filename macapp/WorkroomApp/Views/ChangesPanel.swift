@@ -8,6 +8,8 @@ import SwiftUI
 struct RightInspector: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
+  /// A PR action awaiting confirmation (close), surfaced via a confirmation dialog.
+  @State private var pendingConfirm: PendingPRAction?
 
   var body: some View {
     // Each section owns its action in its own header (issue #24 feedback): Refresh in Changes,
@@ -29,6 +31,7 @@ struct RightInspector: View {
         title: "Pull Request", collapsed: $store.prSectionCollapsed, indicator: prIndicator,
         indicatorLabel: prIndicatorLabel
       ) {
+        prActionsMenu
       } content: {
         PullRequestPanel()
       }
@@ -48,6 +51,47 @@ struct RightInspector: View {
       }
     }
     .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    .confirmationDialog(
+      pendingConfirm.map { "\($0.action.label)?" } ?? "",
+      isPresented: Binding(
+        get: { pendingConfirm != nil }, set: { if !$0 { pendingConfirm = nil } }),
+      presenting: pendingConfirm
+    ) { item in
+      Button(item.action.label, role: .destructive) {
+        store.performPRAction(item.action, number: item.number, on: item.sid)
+      }
+      Button("Cancel", role: .cancel) {}
+    }
+  }
+
+  /// The PR write-actions menu (Phase 2b), shown in the Pull Request header. State-dependent
+  /// (ready/draft, close, reopen); destructive actions route through a confirmation dialog.
+  @ViewBuilder private var prActionsMenu: some View {
+    if store.githubCLIStatus == .available, let pr = selectedStatus?.pr,
+      let sid = store.selectedTargetID, !PRAction.available(for: pr).isEmpty
+    {
+      Menu {
+        ForEach(PRAction.available(for: pr), id: \.self) { action in
+          Button(role: action.isDestructive ? .destructive : nil) {
+            if action.needsConfirmation {
+              pendingConfirm = PendingPRAction(action: action, number: pr.number, sid: sid)
+            } else {
+              store.performPRAction(action, number: pr.number, on: sid)
+            }
+          } label: {
+            Label(action.label, systemImage: action.systemImage)
+          }
+        }
+      } label: {
+        Image(systemName: "ellipsis.circle").font(.system(size: 12)).foregroundStyle(.secondary)
+      }
+      .menuStyle(.borderlessButton)
+      .menuIndicator(.hidden)
+      .fixedSize()
+      .disabled(store.prActionInFlight)
+      .help("Pull request actions")
+      .accessibilityLabel("Pull request actions")
+    }
   }
 
   /// A 1px rule between sections so adjacent (especially collapsed) header bars stay separated.
@@ -140,6 +184,14 @@ struct RightInspector: View {
     if count == 0 { return "" }
     return count == 1 ? "1 notification" : "\(count) notifications"
   }
+}
+
+/// A PR action awaiting user confirmation (the close action), carried by the confirmation dialog.
+private struct PendingPRAction: Identifiable {
+  let action: PRAction
+  let number: Int
+  let sid: SidebarID
+  var id: String { "\(action.rawValue)-\(number)" }
 }
 
 /// A collapsible section header + body for the composed inspector. `fill: true` makes the

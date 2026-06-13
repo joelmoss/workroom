@@ -240,6 +240,33 @@ final class WorkroomStatusTests: XCTestCase {
     XCTAssertEqual(store.workroomStatuses[sid]?.pr?.number, 5)  // PR survives the local refresh
   }
 
+  // MARK: - PRAction (Phase 2b: gh command mapping + state availability)
+
+  func testPRActionArguments() {
+    XCTAssertEqual(PRAction.markReady.arguments(number: 7), ["pr", "ready", "7"])
+    XCTAssertEqual(PRAction.convertToDraft.arguments(number: 7), ["pr", "ready", "7", "--undo"])
+    XCTAssertEqual(PRAction.close.arguments(number: 7), ["pr", "close", "7"])
+    XCTAssertEqual(PRAction.reopen.arguments(number: 7), ["pr", "reopen", "7"])
+  }
+
+  func testPRActionCloseConfirms() {
+    XCTAssertTrue(PRAction.close.needsConfirmation)
+    XCTAssertTrue(PRAction.close.isDestructive)
+    XCTAssertFalse(PRAction.markReady.needsConfirmation)
+    XCTAssertFalse(PRAction.reopen.needsConfirmation)
+  }
+
+  func testPRActionAvailability() {
+    func pr(_ state: PullRequestInfo.State, draft: Bool = false) -> PullRequestInfo {
+      PullRequestInfo(
+        number: 1, title: "t", state: state, isDraft: draft, url: "u", reviewDecision: nil)
+    }
+    XCTAssertEqual(PRAction.available(for: pr(.open)), [.convertToDraft, .close])
+    XCTAssertEqual(PRAction.available(for: pr(.open, draft: true)), [.markReady, .close])
+    XCTAssertEqual(PRAction.available(for: pr(.closed)), [.reopen])
+    XCTAssertEqual(PRAction.available(for: pr(.merged)), [])  // nothing to do on a merged PR
+  }
+
   // MARK: - ChangesPanel.splitPath (filename + dimmed directory rendering)
 
   func testSplitPath() {
