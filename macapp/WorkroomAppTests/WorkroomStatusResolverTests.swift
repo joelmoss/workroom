@@ -333,8 +333,9 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertEqual(WorkroomStatusResolver.classifyCI(r, head: "H"), .keepPrior)
   }
 
-  func testCIMalformedIsAbsent() {
-    XCTAssertEqual(WorkroomStatusResolver.classifyCI(ok("not json"), head: "H"), .absent)
+  func testCIMalformedKeepsPrior() {
+    // Malformed/truncated JSON (schema change, capped output) must NOT erase the CI badge.
+    XCTAssertEqual(WorkroomStatusResolver.classifyCI(ok("not json"), head: "H"), .keepPrior)
   }
 
   // MARK: - resolveLocal (end-to-end via the mock)
@@ -428,6 +429,11 @@ final class WorkroomStatusResolverTests: XCTestCase {
   func testParseJJBranchStripsDecoration() {
     // jj decorates a bookmark ahead of its remote with a trailing `*`; we strip it.
     XCTAssertEqual(WorkroomStatusResolver.parseJJBranch("feature*\n"), "feature")
+  }
+
+  func testParseJJBranchStripsConflictDecoration() {
+    // jj marks a conflicted bookmark with a trailing `??`; strip it too.
+    XCTAssertEqual(WorkroomStatusResolver.parseJJBranch("feature??\n"), "feature")
   }
 
   func testResolveLocalUnknownVCS() async {
@@ -543,8 +549,18 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertEqual(WorkroomStatusResolver.classifyPR(r), .keepPrior)
   }
 
-  func testClassifyPRMalformedIsAbsent() {
-    XCTAssertEqual(WorkroomStatusResolver.classifyPR(ok("not json")), .absent)
+  func testClassifyPRMalformedKeepsPrior() {
+    // Malformed/truncated JSON must NOT erase the PR badge (a valid empty array still → .absent).
+    XCTAssertEqual(WorkroomStatusResolver.classifyPR(ok("not json")), .keepPrior)
+  }
+
+  func testClassifyPRUnknownStateKeepsPrior() {
+    // A future/unknown GitHub PR state must not render (mapping to .open would expose destructive
+    // actions on a PR we don't understand) — keep the last good value instead.
+    let r = ok(
+      #"[{"number":3,"title":"t","state":"LOCKED","isDraft":false,"url":"u","reviewDecision":null}]"#
+    )
+    XCTAssertEqual(WorkroomStatusResolver.classifyPR(r), .keepPrior)
   }
 
   // MARK: - resolvePR (end-to-end via the mock)
@@ -621,6 +637,55 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let gh = runner.calls.first { $0.exe == "gh" }
     XCTAssertEqual(gh?.dir, "/proj")  // colocated project root, not the workspace
     XCTAssertTrue(gh?.args.contains("feature/login") ?? false)
+  }
+
+  func testGhProbeDirectoryJJUsesProjectRootGitUsesPath() {
+    XCTAssertEqual(
+      WorkroomStatusResolver.ghProbeDirectory(path: "/p/ws", vcs: "jj", projectRoot: "/p"), "/p")
+    XCTAssertEqual(
+      WorkroomStatusResolver.ghProbeDirectory(path: "/p/wt", vcs: "git", projectRoot: "/p"), "/p/wt"
+    )
+  }
+
+  func testResolveBranchNameFallsBackToSymbolicRef() async {
+    // branch=nil + git symbolic-ref returns a name → resolvePR proceeds keyed by that branch.
+    let json =
+      #"[{"number":1,"title":"t","state":"OPEN","isDraft":false,"url":"u","reviewDecision":null}]"#
+    let runner = RecordingStatusRunner { exe, args in
+      if exe == "git", args.contains("symbolic-ref") { return ok("main\n") }
+      if exe == "gh" { return ok(json) }
+      return ok("")
+    }
+    let r = WorkroomStatusResolver(runner: runner)
+    let res = await r.resolvePR(path: existing, vcs: "git", projectRoot: existing, branch: nil)
+    guard case .info = res else { return XCTFail("expected .info via symbolic-ref fallback") }
+    XCTAssertTrue((runner.calls.first { $0.exe == "gh" })?.args.contains("main") ?? false)
+  }
+
+  func testResolveLocalJJFailureIsNotRepository() async {
+    // jj diff --summary fails (not a jj repo / exit 128) → unknown, not clean.
+    let r = WorkroomStatusResolver(
+      runner: MockStatusRunner { _, _ in
+        CommandResult(stdout: "", stderr: "Error: no jj repo here", exitCode: 1, timedOut: false)
+      })
+    let s = await r.resolveLocal(path: existing, vcs: "jj")
+    XCTAssertNil(s.dirty)  // unknown, NOT clean
+    XCTAssertEqual(s.failure, .notRepository)
+  }
+
+  func testClassifyGitFailureNonStandardExitIsNotRepository() {
+    // Any non-zero exit (not just 128) ⇒ unreadable repo → unknown, never clean.
+    let r = CommandResult(
+      stdout: "", stderr: "fatal: detected dubious ownership", exitCode: 1, timedOut: false)
+    XCTAssertEqual(WorkroomStatusResolver.classifyGitFailure(r), .notRepository)
+  }
+
+  func testGHPreflightStderrTimeoutKeepsPrior() {
+    // A `gh` exit-1 whose stderr contains "timeout" (a network blip, distinct from the timedOut
+    // flag) → keepPrior, so a transient failure doesn't erase the badge.
+    let r = CommandResult(stdout: "", stderr: "dial tcp: i/o timeout", exitCode: 1, timedOut: false)
+    XCTAssertEqual(WorkroomStatusResolver.classifyCI(r, head: "H"), .keepPrior)
+    XCTAssertEqual(WorkroomStatusResolver.classifyPR(r), .keepPrior)
   }
 
   // MARK: - classifyGitHubCLI

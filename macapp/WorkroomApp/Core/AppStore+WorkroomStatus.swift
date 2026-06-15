@@ -12,6 +12,7 @@ extension AppStore {
   fileprivate static let ghStatusTTL: TimeInterval = 60  // `gh auth status` availability check
   fileprivate static let localConcurrency = 5
   fileprivate static let ciConcurrency = 2
+  fileprivate static let selectionDebounce: TimeInterval = 0.3  // arrow-key row cycling coalesce
 
   struct StatusWorkItem: Sendable {
     let sid: SidebarID
@@ -108,7 +109,7 @@ extension AppStore {
     guard let sid = selectedTargetID, let item = selectedStatusWorkItem(for: sid) else { return }
     let resolver = statusResolver
     selectionStatusTask = Task { [weak self] in
-      try? await Task.sleep(nanoseconds: 300_000_000)  // 300ms debounce
+      try? await Task.sleep(nanoseconds: UInt64(Self.selectionDebounce * 1_000_000_000))
       if Task.isCancelled { return }
       guard let self else { return }
       let fresh = await resolver.resolveLocal(path: item.path, vcs: item.vcs)
@@ -152,8 +153,12 @@ extension AppStore {
     }
     prActionInFlight = true
     let resolver = statusResolver
+    // Run `gh pr …` where the read probes run: in-place for git, but the colocated project root for
+    // a jj workspace (gitless), else the action fails / targets the wrong repo context.
+    let dir = WorkroomStatusResolver.ghProbeDirectory(
+      path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
     Task { [weak self] in
-      let r = await resolver.runPRCommand(action.arguments(number: number), in: item.path)
+      let r = await resolver.runPRCommand(action.arguments(number: number), in: dir)
       guard let self else { return }
       self.prActionInFlight = false
       if r.ok {
@@ -327,11 +332,11 @@ extension AppStore {
       s.ci = nil
       s.ciCheckedAt = Date()
     case .keepPrior:
-      // Transient rate-limit / network blip: keep the last good CI value but stamp
-      // `ciCheckedAt` so the normal CI TTL applies — otherwise a rate-limited remote would be
-      // re-probed on every sweep (no backoff). Coarse but cheap; true exponential backoff is a
-      // future refinement.
-      s.ciCheckedAt = Date()
+      // Transient rate-limit / network blip. Stamp `ciCheckedAt` so the TTL throttles re-probes —
+      // but ONLY if we've probed before (ciCheckedAt set). On a first-ever probe that blips, leave
+      // it nil so the next sweep retries instead of hiding CI for the full TTL on one blip. Coarse
+      // but cheap; true exponential backoff is a future refinement.
+      if s.ciCheckedAt != nil { s.ciCheckedAt = Date() }
     }
     workroomStatuses[sid] = s
   }
@@ -346,8 +351,9 @@ extension AppStore {
       s.pr = nil
       s.prCheckedAt = Date()
     case .keepPrior:
-      // Transient blip: keep the last good PR but stamp `prCheckedAt` so the TTL/backoff applies.
-      s.prCheckedAt = Date()
+      // Transient blip: keep the last good PR. Stamp `prCheckedAt` so the TTL throttles re-probes,
+      // but only if we've probed before — a first-ever blip leaves it nil so the next sweep retries.
+      if s.prCheckedAt != nil { s.prCheckedAt = Date() }
     }
     workroomStatuses[sid] = s
   }

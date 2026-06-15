@@ -75,7 +75,6 @@ enum VCSStatusFailure: Equatable, Sendable {
   case missingPath  // workroom directory gone
   case notRepository  // path exists but isn't the expected VCS repo (git exit 128)
   case timeout  // probe exceeded its deadline (slow disk, index.lock contention)
-  case parseError  // command succeeded but output didn't parse
 }
 
 /// One changed path in the working tree, with its change kind (for the detail panel grouping).

@@ -393,18 +393,13 @@ struct ChangesPanel: View {
 
   var body: some View {
     Group {
-      if let sid = store.selectedTargetID, isStatusable(sid) {
+      if let sid = store.selectedTargetID, sid.isStatusable {
         content(for: sid)
       } else {
-        message("Select a workroom to see its changes.")
+        inspectorMessage("Select a workroom to see its changes.")
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-  }
-
-  private func isStatusable(_ sid: SidebarID) -> Bool {
-    if case .project = sid { return false }
-    return true
   }
 
   @ViewBuilder
@@ -412,9 +407,9 @@ struct ChangesPanel: View {
     let target = store.target(for: sid)
     let status = store.workroomStatuses[sid]
     if let target, target.isMissing {
-      message("Directory not found.")
+      inspectorMessage("Directory not found.")
     } else if status == nil || status?.lastChecked == nil {
-      message("Checking\u{2026}")
+      inspectorMessage("Checking\u{2026}")
     } else if let status {
       VStack(alignment: .leading, spacing: 10) {
         header(sid: sid, status: status)
@@ -423,7 +418,7 @@ struct ChangesPanel: View {
         }
         Divider()
         if let failure = status.failure {
-          message(failureText(failure))
+          inspectorMessage(failureText(failure))
         } else if status.isClean {
           cleanState
         } else {
@@ -555,15 +550,25 @@ struct ChangesPanel: View {
     case .missingPath: return "Directory not found."
     case .notRepository: return "Not a repository."
     case .timeout: return "Status unavailable (timed out)."
-    case .parseError: return "Status unavailable."
     }
   }
+}
 
-  private func message(_ text: String) -> some View {
-    Text(text)
-      .font(.body)
-      .foregroundStyle(.secondary)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(12)
+extension SidebarID {
+  /// A row whose VCS status the inspector can show: the project root or a workroom, but not the
+  /// collapsed `.project` group header. Shared by the Changes and Pull Request panels.
+  var isStatusable: Bool {
+    if case .project = self { return false }
+    return true
   }
+}
+
+/// The inspector's "nothing to show" placeholder line (e.g. "Select a workroom…"), shared by the
+/// Changes and Pull Request panels so they read identically.
+func inspectorMessage(_ text: String) -> some View {
+  Text(text)
+    .font(.body)
+    .foregroundStyle(.secondary)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(12)
 }

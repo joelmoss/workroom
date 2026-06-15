@@ -15,10 +15,10 @@ struct PullRequestPanel: View {
       if store.githubCLIStatus != .available {
         // gh can't be used → the PR (and CI) probes can't run; explain why instead of a blank/"no PR".
         ghWarning(store.githubCLIStatus)
-      } else if let sid = store.selectedTargetID, isStatusable(sid) {
+      } else if let sid = store.selectedTargetID, sid.isStatusable {
         content(for: sid)
       } else {
-        message("Select a workroom to see its pull request.")
+        inspectorMessage("Select a workroom to see its pull request.")
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -51,16 +51,11 @@ struct PullRequestPanel: View {
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
-  private func isStatusable(_ sid: SidebarID) -> Bool {
-    if case .project = sid { return false }
-    return true
-  }
-
   @ViewBuilder
   private func content(for sid: SidebarID) -> some View {
     let status = store.workroomStatuses[sid]
     if status?.prCheckedAt == nil {
-      message("Checking\u{2026}")
+      inspectorMessage("Checking\u{2026}")
     } else if let status {
       // GitHub status for the branch: the PR (or "no PR") *and* its CI checks, since CI exists for
       // a branch with or without a PR (this is its only home — it's not in the Changes section).
@@ -128,13 +123,6 @@ struct PullRequestPanel: View {
     .accessibilityLabel(ci.accessibility)
   }
 
-  private func message(_ text: String) -> some View {
-    Text(text)
-      .font(.body)
-      .foregroundStyle(.secondary)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(12)
-  }
 }
 
 extension PRPresentation.Semantic {

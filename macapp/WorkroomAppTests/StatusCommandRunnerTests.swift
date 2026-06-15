@@ -35,6 +35,17 @@ final class StatusCommandRunnerTests: XCTestCase {
     XCTAssertFalse(r.ok)
   }
 
+  func testSigtermIgnoringChildIsSigkilledAndStillReturns() async {
+    // A child that traps SIGTERM must NOT hang the continuation forever: the hard-kill fallback
+    // SIGKILLs it ~2s after the timeout, terminationHandler fires, and the bounded drain resumes.
+    // Assert the call returns (flagged timed-out) well within the SIGKILL grace rather than hanging.
+    let start = Date()
+    let r = await runner.run("sh", ["-c", "trap '' TERM; sleep 30"], in: tmp, timeout: 0.3)
+    XCTAssertTrue(r.timedOut)
+    XCTAssertFalse(r.ok)
+    XCTAssertLessThan(Date().timeIntervalSince(start), 8)  // not the 30s sleep
+  }
+
   func testLaunchFailureInMissingDirIsCommandNotFound() async {
     let r = await runner.run(
       "git", ["status"], in: "/no/such/dir-\(UUID().uuidString)", timeout: 5)

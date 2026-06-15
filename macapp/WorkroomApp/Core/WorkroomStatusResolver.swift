@@ -35,6 +35,13 @@ struct WorkroomStatusResolver: Sendable {
     self.ciTimeout = ciTimeout
   }
 
+  /// `-c` overrides prepended to every `git` invocation. A workroom can be a clone of an *untrusted*
+  /// repo, and the status sweep runs git automatically on load/focus/selection — without this, a
+  /// repo-local `core.fsmonitor` runs an arbitrary program on a plain `git status`. The diff probe
+  /// additionally passes `--no-ext-diff`/`--no-textconv` (and the runner unsets `GIT_EXTERNAL_DIFF`)
+  /// so `diff.external`/textconv config can't execute either. These flags go before the subcommand.
+  static let gitHardening = ["-c", "core.fsmonitor="]
+
   // MARK: Stage 1 — local VCS status
 
   func resolveLocal(path: String, vcs: String) async -> WorkroomStatus {
@@ -51,14 +58,18 @@ struct WorkroomStatusResolver: Sendable {
   private func resolveGit(_ dir: String) async -> WorkroomStatus {
     let r = await runner.run(
       "git",
-      ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=normal"],
+      Self.gitHardening + [
+        "status", "--porcelain=v2", "-z", "--branch", "--untracked-files=normal",
+      ],
       in: dir, timeout: timeout)
     guard r.ok else {
       return WorkroomStatus(dirty: nil, failure: Self.classifyGitFailure(r))
     }
     let p = Self.parseGitPorcelainV2Z(r.stdout)
     // Line counts vs HEAD (staged + unstaged tracked changes; untracked files aren't in the diff).
-    let statR = await runner.run("git", ["diff", "--shortstat", "HEAD"], in: dir, timeout: timeout)
+    let statR = await runner.run(
+      "git", Self.gitHardening + ["diff", "--no-ext-diff", "--no-textconv", "--shortstat", "HEAD"],
+      in: dir, timeout: timeout)
     let stat = statR.ok ? Self.parseDiffStat(statR.stdout) : (insertions: 0, deletions: 0)
     return WorkroomStatus(
       dirty: p.dirty, conflicted: p.conflicted, ahead: p.ahead, behind: p.behind,
@@ -156,12 +167,21 @@ struct WorkroomStatusResolver: Sendable {
   private func ghProbeTarget(path: String, vcs: String, projectRoot: String, branch: String?) async
     -> (dir: String, branch: String)?
   {
+    let dir = Self.ghProbeDirectory(path: path, vcs: vcs, projectRoot: projectRoot)
     if vcs == "jj" {
       guard let branch, !branch.isEmpty else { return nil }
-      return (projectRoot, branch)
+      return (dir, branch)
     }
     guard let branchName = await resolveBranchName(branch, in: path) else { return nil }
-    return (path, branchName)
+    return (dir, branchName)
+  }
+
+  /// The directory a `gh` invocation must run in for this workroom: in-place for a git worktree
+  /// (it has its own `.git` + remote), but the colocated `projectRoot` for a jj workspace (a
+  /// secondary jj workspace has no `.git`, so `gh` can't resolve the repo there). Shared by the
+  /// read probes (`ghProbeTarget`) and the PR write actions (`performPRAction`) so they agree.
+  static func ghProbeDirectory(path: String, vcs: String, projectRoot: String) -> String {
+    vcs == "jj" ? projectRoot : path
   }
 
   /// The commit a `gh run` must match to count as "this branch's CI". For a **git worktree** that's
@@ -175,7 +195,8 @@ struct WorkroomStatusResolver: Sendable {
         "jj", ["log", "-r", branch, "--no-graph", "--color", "never", "-T", "commit_id"],
         in: path, timeout: timeout)
     } else {
-      r = await runner.run("git", ["rev-parse", "HEAD"], in: path, timeout: timeout)
+      r = await runner.run(
+        "git", Self.gitHardening + ["rev-parse", "HEAD"], in: path, timeout: timeout)
     }
     guard r.ok else { return nil }
     let sha = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -190,7 +211,8 @@ struct WorkroomStatusResolver: Sendable {
     var branchName = branch
     if branchName == nil {
       let b = await runner.run(
-        "git", ["symbolic-ref", "--quiet", "--short", "HEAD"], in: path, timeout: timeout)
+        "git", Self.gitHardening + ["symbolic-ref", "--quiet", "--short", "HEAD"], in: path,
+        timeout: timeout)
       branchName = b.ok ? b.stdout.trimmingCharacters(in: .whitespacesAndNewlines) : nil
     }
     guard let branchName, !branchName.isEmpty else { return nil }
@@ -392,8 +414,9 @@ struct WorkroomStatusResolver: Sendable {
 
   static func classifyGitFailure(_ r: CommandResult) -> VCSStatusFailure {
     if r.timedOut { return .timeout }
-    if r.exitCode == CommandResult.gitFatal { return .notRepository }
-    return .notRepository  // any other non-zero: treat the repo as unreadable (unknown, not clean)
+    // Any non-zero exit (128 "not a repository", or anything else) ⇒ the repo is unreadable —
+    // report unknown, never "clean". No finer distinction is needed today.
+    return .notRepository
   }
 
   /// Shared preflight for the two `gh` read probes (CI runs, PR list): distinguishes a transient
@@ -435,9 +458,11 @@ struct WorkroomStatusResolver: Sendable {
       let conclusion: String?
       let workflowName: String?
     }
+    // Malformed/truncated JSON (a gh schema change, or output capped mid-stream) must NOT erase the
+    // CI badge — keep the last good value rather than flip to "no CI".
     guard let data = r.stdout.data(using: .utf8),
       let runs = try? JSONDecoder().decode([Run].self, from: data)
-    else { return .absent }
+    else { return .keepPrior }
 
     // Newest-first; keep the first run per workflow, only for the current HEAD.
     var latestByWorkflow: [String: Run] = [:]
@@ -489,16 +514,21 @@ struct WorkroomStatusResolver: Sendable {
       let url: String
       let reviewDecision: String?
     }
+    // Malformed/truncated JSON (a gh schema change, or output capped mid-stream) must NOT erase the
+    // PR badge. A *valid* empty array is different — that genuinely means no PR (handled below).
     guard let data = r.stdout.data(using: .utf8),
-      let raws = try? JSONDecoder().decode([Raw].self, from: data),
-      let raw = raws.first
-    else { return .absent }
+      let raws = try? JSONDecoder().decode([Raw].self, from: data)
+    else { return .keepPrior }
+    guard let raw = raws.first else { return .absent }  // valid empty array ⇒ genuinely no PR
 
     let state: PullRequestInfo.State
     switch raw.state.uppercased() {
+    case "OPEN": state = .open
     case "MERGED": state = .merged
     case "CLOSED": state = .closed
-    default: state = .open  // "OPEN" (and anything unexpected) → open
+    // An unexpected/future GitHub state: keep the last good PR rather than render one we don't
+    // understand — mapping it to `.open` would expose destructive actions (close/draft) on it.
+    default: return .keepPrior
     }
     let review: PullRequestInfo.ReviewDecision?
     switch raw.reviewDecision?.uppercased() {

@@ -42,82 +42,104 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
   func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
     async -> CommandResult
   {
-    await withCheckedContinuation { (continuation: CheckedContinuation<CommandResult, Never>) in
-      let proc = Process()
-      proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-      proc.arguments = [executable] + args
-      proc.currentDirectoryURL = URL(fileURLWithPath: directory)
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    proc.arguments = [executable] + args
+    proc.currentDirectoryURL = URL(fileURLWithPath: directory)
 
-      var env = ProcessInfo.processInfo.environment
-      env["PATH"] = ShellEnvironment.path()
-      env["GIT_OPTIONAL_LOCKS"] = "0"
-      env["GIT_TERMINAL_PROMPT"] = "0"
-      proc.environment = env
+    var env = ProcessInfo.processInfo.environment
+    env["PATH"] = ShellEnvironment.path()
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    // A workroom can be a clone of an *untrusted* repo, and the status sweep runs git automatically
+    // on load/focus/selection. `git diff` would otherwise run an inherited external-diff program;
+    // unset it so only the explicit `--no-ext-diff` flag (see WorkroomStatusResolver) governs diffs.
+    env.removeValue(forKey: "GIT_EXTERNAL_DIFF")
+    proc.environment = env
 
-      let outPipe = Pipe()
-      let errPipe = Pipe()
-      proc.standardOutput = outPipe
-      proc.standardError = errPipe
+    let outPipe = Pipe()
+    let errPipe = Pipe()
+    proc.standardOutput = outPipe
+    proc.standardError = errPipe
 
-      let state = StatusRunState()
-      let drain = DispatchGroup()
-      let cap = maxBytes
-      let gate = CommandResumeGate(continuation)
+    // `proc` is shared with the @Sendable cancellation handler; box it so the non-Sendable Process
+    // can cross that boundary (mirrors the @unchecked Sendable helpers below).
+    let box = ProcessBox(proc)
 
-      // Concurrent drains (the deadlock fix). availableData blocks until data or EOF;
-      // started before run() so we never miss a fast child's output, harmless until it runs.
-      drain.enter()
-      DispatchQueue.global().async {
-        state.setStdout(Self.readCapped(outPipe.fileHandleForReading, cap: cap))
-        drain.leave()
+    return await withTaskCancellationHandler {
+      await withCheckedContinuation { (continuation: CheckedContinuation<CommandResult, Never>) in
+        let state = StatusRunState()
+        let drain = DispatchGroup()
+        let cap = maxBytes
+        let gate = CommandResumeGate(continuation)
+
+        // Concurrent drains (the deadlock fix). availableData blocks until data or EOF;
+        // started before run() so we never miss a fast child's output, harmless until it runs.
+        drain.enter()
+        DispatchQueue.global().async {
+          state.setStdout(Self.readCapped(outPipe.fileHandleForReading, cap: cap))
+          drain.leave()
+        }
+        drain.enter()
+        DispatchQueue.global().async {
+          state.setStderr(Self.readCapped(errPipe.fileHandleForReading, cap: cap))
+          drain.leave()
+        }
+
+        let timeoutItem = DispatchWorkItem {
+          state.markTimedOut()
+          if proc.isRunning { proc.terminate() }  // SIGTERM
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: timeoutItem)
+
+        // Hard-kill fallback: a wedged child (e.g. `gh` blocked on a dead socket) can ignore SIGTERM,
+        // so `terminationHandler` — the only place the continuation resumes — would never fire and the
+        // awaiting Task would hang forever, defeating the timeout. SIGKILL is uncatchable, guaranteeing
+        // the process exits and we resume. A 2s grace after SIGTERM lets well-behaved children exit.
+        let killItem = DispatchWorkItem {
+          if proc.isRunning { kill(proc.processIdentifier, SIGKILL) }
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout + 2, execute: killItem)
+
+        proc.terminationHandler = { finished in
+          timeoutItem.cancel()
+          killItem.cancel()
+          // The process has exited, so its own pipe write ends are closed and EOF is imminent. But a
+          // grandchild that inherited the pipe (a helper spawned by gh/git) can hold the write end
+          // open after the parent dies — an unbounded `drain.wait()` would then never return and the
+          // continuation would never resume, wedging this probe slot forever. Bound the wait and
+          // resume with whatever drained; a still-blocked reader writes to `state` we no longer read
+          // (safe — lock-guarded) and exits when the grandchild finally closes the pipe.
+          _ = drain.wait(timeout: .now() + 2)
+          gate.resume(
+            CommandResult(
+              stdout: String(decoding: state.stdout, as: UTF8.self),
+              stderr: String(decoding: state.stderr, as: UTF8.self),
+              exitCode: finished.terminationStatus,
+              timedOut: state.timedOut))
+        }
+
+        do {
+          try proc.run()
+        } catch {
+          // Launch failed (e.g. cwd vanished). Close the write ends so the drain readers hit
+          // EOF instead of blocking forever, then resolve as command-not-found.
+          timeoutItem.cancel()
+          killItem.cancel()
+          try? outPipe.fileHandleForWriting.close()
+          try? errPipe.fileHandleForWriting.close()
+          gate.resume(
+            CommandResult(
+              stdout: "", stderr: "\(error)", exitCode: CommandResult.commandNotFound,
+              timedOut: false))
+        }
       }
-      drain.enter()
-      DispatchQueue.global().async {
-        state.setStderr(Self.readCapped(errPipe.fileHandleForReading, cap: cap))
-        drain.leave()
-      }
-
-      let timeoutItem = DispatchWorkItem {
-        state.markTimedOut()
-        if proc.isRunning { proc.terminate() }  // SIGTERM
-      }
-      DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: timeoutItem)
-
-      // Hard-kill fallback: a wedged child (e.g. `gh` blocked on a dead socket) can ignore SIGTERM,
-      // so `terminationHandler` — the only place the continuation resumes — would never fire and the
-      // awaiting Task would hang forever, defeating the timeout. SIGKILL is uncatchable, guaranteeing
-      // the process exits and we resume. A 2s grace after SIGTERM lets well-behaved children exit.
-      let killItem = DispatchWorkItem {
-        if proc.isRunning { kill(proc.processIdentifier, SIGKILL) }
-      }
-      DispatchQueue.global().asyncAfter(deadline: .now() + timeout + 2, execute: killItem)
-
-      proc.terminationHandler = { finished in
-        timeoutItem.cancel()
-        killItem.cancel()
-        drain.wait()  // both pipes fully read (child has exited and closed its write ends)
-        gate.resume(
-          CommandResult(
-            stdout: String(decoding: state.stdout, as: UTF8.self),
-            stderr: String(decoding: state.stderr, as: UTF8.self),
-            exitCode: finished.terminationStatus,
-            timedOut: state.timedOut))
-      }
-
-      do {
-        try proc.run()
-      } catch {
-        // Launch failed (e.g. cwd vanished). Close the write ends so the drain readers hit
-        // EOF instead of blocking forever, then resolve as command-not-found.
-        timeoutItem.cancel()
-        killItem.cancel()
-        try? outPipe.fileHandleForWriting.close()
-        try? errPipe.fileHandleForWriting.close()
-        gate.resume(
-          CommandResult(
-            stdout: "", stderr: "\(error)", exitCode: CommandResult.commandNotFound,
-            timedOut: false))
-      }
+    } onCancel: {
+      // The awaiting Task was cancelled (e.g. a superseded sweep, or rapid selection cycling). Kill
+      // the in-flight child so a cancelled probe doesn't leave a git/jj/gh process running to its own
+      // timeout. terminationHandler then resumes the continuation with the abandoned result, which
+      // the cancelled caller discards. SIGKILL (not SIGTERM) so a wedged child dies promptly.
+      box.terminate()
     }
   }
 
@@ -138,6 +160,17 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
       }
     }
     return collected
+  }
+}
+
+/// Boxes a non-Sendable `Process` so it can be captured by the @Sendable task-cancellation handler.
+private final class ProcessBox: @unchecked Sendable {
+  private let process: Process
+  init(_ process: Process) { self.process = process }
+  /// SIGKILL the child if still running — the cancellation path abandons the result, so kill
+  /// promptly rather than wait out a SIGTERM grace.
+  func terminate() {
+    if process.isRunning { kill(process.processIdentifier, SIGKILL) }
   }
 }
 
