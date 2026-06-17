@@ -10,6 +10,7 @@ struct SettingsView: View {
   @Default(.copyOnSelect) private var copyOnSelect
   @Default(.confirmOnQuit) private var confirmOnQuit
   @Default(.confirmOnCloseTerminal) private var confirmOnCloseTerminal
+  @Default(.openTerminalOnCreate) private var openTerminalOnCreate
   @Default(.globalHotkey) private var globalHotkey
   @Default(.showMenuBarItem) private var showMenuBarItem
   // Bundle id of the editor for ⌘-clicked file paths; "" = the file's default app.
@@ -50,6 +51,8 @@ struct SettingsView: View {
       Toggle("Confirm before quitting", isOn: $confirmOnQuit)
 
       Toggle("Confirm before closing a terminal", isOn: $confirmOnCloseTerminal)
+
+      Toggle("Open a terminal in new workrooms", isOn: $openTerminalOnCreate)
 
       Toggle("Global show/hide hotkey (⌘§)", isOn: $globalHotkey)
 

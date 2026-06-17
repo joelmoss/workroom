@@ -270,6 +270,49 @@ final class RunCommandTests: XCTestCase {
     XCTAssertEqual(store.terminals.tabCount(forTargetID: t.id), 0, "no auto-spawned terminal")
   }
 
+  func testOpenTerminalOnCreateOpensShellWithoutAutoRun() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    let t = target(store, "/a", "main")
+
+    // Setting on (armed at create), no run command auto-run → first mount opens a single plain shell,
+    // no run tab. This is the "open a terminal in new workrooms" setting standing alone.
+    store.armOpenTerminal(forWorkroom: t.id)
+    store.ensureInitialTerminal(for: t)
+
+    XCTAssertNil(store.runTabID(for: t.id), "no run command → no run tab")
+    XCTAssertFalse(store.isRunCommandRunning(for: t.id))
+    XCTAssertEqual(store.terminals.tabCount(forTargetID: t.id), 1, "one shell terminal opened")
+  }
+
+  func testOpenTerminalOnCreateAlongsideAutoRunOpensBothRunTabFocused() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: true), forProject: "/a")
+    let t = target(store, "/a", "main")
+
+    // Both armed at create: auto-run becomes tab #1 (focused, prominent), the setting's shell is
+    // tab #2 (available behind it). The run command runs and the run tab stays focused.
+    store.armAutoRun(forWorkroom: t.id)
+    store.armOpenTerminal(forWorkroom: t.id)
+    store.ensureInitialTerminal(for: t)
+
+    XCTAssertTrue(store.isRunCommandRunning(for: t.id))
+    XCTAssertEqual(store.terminals.tabCount(forTargetID: t.id), 2, "run tab + shell tab")
+    XCTAssertEqual(
+      store.terminals.activeTab(for: t)?.id, store.runTabID(for: t.id),
+      "the run command, not the extra shell, stays focused")
+  }
+
+  func testOpenTerminalMarkerIsOneShot() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    let t = target(store, "/a", "main")
+
+    store.armOpenTerminal(forWorkroom: t.id)
+    store.ensureInitialTerminal(for: t)
+    store.ensureInitialTerminal(for: t)  // a re-mount (navigate away and back) must not re-open
+
+    XCTAssertEqual(store.terminals.tabCount(forTargetID: t.id), 1, "no duplicate shell on re-mount")
+  }
+
   func testToggleStartsWhenNotRunning() {
     let store = makeStore([project("/a", workrooms: ["main"])])
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")

@@ -42,6 +42,13 @@ extension Defaults.Keys {
   /// Confirm before closing a terminal (closing kills its shell and any running process, no undo).
   static let confirmOnCloseTerminal = Key<Bool>("confirmOnCloseTerminal", default: true)
 
+  /// Open a fresh shell terminal in a newly created workroom, once any setup script has run and its
+  /// dialog is dismissed. Off by default, so the existing behaviour is unchanged (a created workroom
+  /// shows the empty state unless a run command auto-runs). Consulted once at create time; the run
+  /// command's auto-run is independent — when both fire the run command is tab #1 and this shell is
+  /// tab #2 (see `AppStore.ensureInitialTerminal`).
+  static let openTerminalOnCreate = Key<Bool>("openTerminalOnWorkroomCreate", default: false)
+
   /// Whether the global ⌘§ show/hide hotkey is registered (issue #13).
   static let globalHotkey = Key<Bool>("globalHotkeyEnabled", default: true)
 
