@@ -22,6 +22,10 @@ struct RootView: View {
   /// Presents the theme picker (issue #36), raised by the `Theme…` (⌘⇧K) command via notification.
   @State private var showThemePicker = false
 
+  /// Presents the keyboard-shortcuts reference, raised by the `Keyboard Shortcuts…` command via
+  /// notification (same menu-can't-anchor-a-sheet pattern as the theme picker).
+  @State private var showKeyboardShortcuts = false
+
   /// Live preview of a workroom tab being dragged into the detail content to form a split (issue #23
   /// follow-up). Set by `WorkroomTabBar`'s drag, read by `WorkroomSplitView` to highlight the drop edge.
   @State private var workroomChipDrag: WorkroomPaneDrag?
@@ -167,6 +171,12 @@ struct RootView: View {
     }
     .sheet(isPresented: $showThemePicker) {
       ThemePicker(presentedAsSheet: true)
+    }
+    .onReceive(NotificationCenter.default.publisher(for: .showKeyboardShortcuts)) { _ in
+      showKeyboardShortcuts = true
+    }
+    .sheet(isPresented: $showKeyboardShortcuts) {
+      KeyboardShortcutsView()
     }
     // Extend the active theme up into the title bar (issue #36): hide the toolbar's own material so
     // the transparent titlebar reveals the themed window background set by WindowBackgroundThemer —

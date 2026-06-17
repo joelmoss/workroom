@@ -467,6 +467,17 @@ struct WorkroomCommands: Commands {
       }
     }
 
+    // App menu: a reference sheet of every keyboard shortcut, grouped by area. Sits just below
+    // Settings… (`after: .appSettings`). No accelerator — a ⌘-key would need reserving from the
+    // terminal in GhosttySurfaceView.isAppShortcut; the menu item is discovery enough. Posts a
+    // notification RootView observes to present the sheet (a menu command can't anchor one — same
+    // pattern as Theme… below).
+    CommandGroup(after: .appSettings) {
+      Button("Keyboard Shortcuts…") {
+        NotificationCenter.default.post(name: .showKeyboardShortcuts, object: nil)
+      }
+    }
+
     // Sit the quit-confirmation toggle just above Quit (default on): `.appVisibility` is the
     // Hide/Show All group, the last thing before Quit, so `after:` lands between it and Quit. A
     // divider separates it from that group; mirrored by the Settings checkbox.
