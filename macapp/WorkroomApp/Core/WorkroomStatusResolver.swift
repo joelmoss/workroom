@@ -154,7 +154,7 @@ struct WorkroomStatusResolver: Sendable {
       "gh",
       [
         "pr", "list", "--head", target.branch, "--state", "all", "--limit", "1", "--json",
-        "number,title,state,isDraft,url,reviewDecision",
+        "number,title,state,isDraft,url,reviewDecision,latestReviews,reviewRequests",
       ], in: target.dir, timeout: ciTimeout)
     return Self.classifyPR(r)
   }
@@ -514,6 +514,19 @@ struct WorkroomStatusResolver: Sendable {
     case .proceed: break
     }
 
+    // `latestReviews` = the latest submitted review per author; `reviewRequests` = pending reviewers
+    // (users by `login`, teams by `slug`). Both optional so JSON that omits them (old/other callers)
+    // decodes cleanly to an empty reviewer list — only a *present-but-malformed* payload fails the
+    // whole decode and trips `.keepPrior` below, so we never silently blank reviewers on a parse error.
+    struct RawAuthor: Decodable { let login: String? }
+    struct RawReview: Decodable {
+      let author: RawAuthor?
+      let state: String?
+    }
+    struct RawRequest: Decodable {
+      let login: String?  // present for user reviewers
+      let slug: String?  // present for team reviewers (with `name`); `__typename` is ignored
+    }
     struct Raw: Decodable {
       let number: Int
       let title: String
@@ -521,6 +534,8 @@ struct WorkroomStatusResolver: Sendable {
       let isDraft: Bool
       let url: String
       let reviewDecision: String?
+      let latestReviews: [RawReview]?
+      let reviewRequests: [RawRequest]?
     }
     // Malformed/truncated JSON (a gh schema change, or output capped mid-stream) must NOT erase the
     // PR badge. A *valid* empty array is different — that genuinely means no PR (handled below).
@@ -545,9 +560,41 @@ struct WorkroomStatusResolver: Sendable {
     case "REVIEW_REQUIRED": review = .reviewRequired
     default: review = nil  // "" or absent → no decision to show
     }
+
+    // Fold the two review arrays into one list keyed by reviewer identity. `latestReviews` is the
+    // latest submitted review per author (so a login appears at most once — the keyed insert is
+    // idempotent). `reviewRequests` then OVERRIDES: a re-requested reviewer is pending again even if
+    // a stale submitted review exists. Order is irrelevant — `PRPresentation.reviewers` sorts.
+    var reviewersByID: [String: Reviewer] = [:]
+    for rev in raw.latestReviews ?? [] {
+      guard let login = rev.author?.login, !login.isEmpty else { continue }
+      let st: Reviewer.State
+      switch rev.state?.uppercased() {
+      case "APPROVED": st = .approved
+      case "CHANGES_REQUESTED": st = .changesRequested
+      case "COMMENTED": st = .commented
+      case "DISMISSED": st = .dismissed
+      default: continue  // unrecognised state (e.g. a future GitHub value, PENDING) → don't render
+      }
+      let reviewer = Reviewer(identity: .user(login: login), state: st)
+      reviewersByID[reviewer.id] = reviewer
+    }
+    for req in raw.reviewRequests ?? [] {
+      let identity: Reviewer.Identity
+      if let login = req.login, !login.isEmpty {
+        identity = .user(login: login)
+      } else if let slug = req.slug, !slug.isEmpty {
+        identity = .team(slug: slug)
+      } else {
+        continue  // no usable identifier
+      }
+      let reviewer = Reviewer(identity: identity, state: .requested)
+      reviewersByID[reviewer.id] = reviewer
+    }
+
     return .info(
       PullRequestInfo(
         number: raw.number, title: raw.title, state: state, isDraft: raw.isDraft, url: raw.url,
-        reviewDecision: review))
+        reviewDecision: review, reviewers: Array(reviewersByID.values)))
   }
 }

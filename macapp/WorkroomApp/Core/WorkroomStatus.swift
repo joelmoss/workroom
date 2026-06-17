@@ -87,12 +87,41 @@ struct ChangedFile: Equatable, Hashable, Identifiable, Sendable {
   var id: String { "\(change.rawValue):\(path)" }
 }
 
+/// One reviewer on a pull request (issue #52): either someone who has *submitted* a review
+/// (`latestReviews`) or someone who's been *requested* but hasn't yet (`reviewRequests`). The
+/// identity is typed so a requested team (which has a `slug`, not a `login`) can never collide
+/// with a user in the dedup. Pure data — the per-reviewer glyph/label/sort live in `PRPresentation`.
+struct Reviewer: Equatable, Sendable, Identifiable {
+  /// A user (keyed by GitHub `login`) or a requested team (keyed by `slug`). Prefixed in `id` so
+  /// `user:octocat` and `team:octocat` are distinct keys.
+  enum Identity: Equatable, Sendable, Hashable {
+    case user(login: String)
+    case team(slug: String)
+  }
+  /// `requested` = in `reviewRequests` (asked, no submitted review yet). The rest mirror GitHub's
+  /// submitted-review states; an unrecognised state is dropped at parse time, never stored.
+  enum State: Equatable, Sendable {
+    case requested
+    case approved, changesRequested, commented, dismissed
+  }
+  let identity: Identity
+  let state: State
+  var id: String {
+    switch identity {
+    case .user(let login): return "user:\(login)"
+    case .team(let slug): return "team:\(slug)"
+    }
+  }
+}
+
 /// The pull request for a workroom's branch (Phase 2), resolved via `gh pr list --head`. Read-only
 /// in this iteration — the Pull Request inspector section shows it; create/merge/etc. come later.
 struct PullRequestInfo: Equatable, Sendable {
   /// GitHub's PR `state` (a draft is still `open` — see `isDraft`).
   enum State: String, Equatable, Sendable { case open, merged, closed }
-  /// GitHub's `reviewDecision`; `nil` when no review is required or none has been given yet.
+  /// GitHub's `reviewDecision`; `nil` when no review is required or none has been given yet. Kept
+  /// (issue #52) as the aggregate header above the per-reviewer rows — branch-protection/CODEOWNERS
+  /// can require a review with no concrete reviewer rows, so the rows alone can't carry this signal.
   enum ReviewDecision: String, Equatable, Sendable {
     case approved, changesRequested, reviewRequired
   }
@@ -102,6 +131,10 @@ struct PullRequestInfo: Equatable, Sendable {
   let isDraft: Bool
   let url: String
   let reviewDecision: ReviewDecision?
+  /// Per-reviewer status (issue #52). No default: every construction site must pass it, so the
+  /// compiler — not a runtime test — guarantees a rebuild (e.g. `applyFixturePRAction`) can't
+  /// silently drop reviewers. Order is not significant here; `PRPresentation.reviewers` sorts.
+  let reviewers: [Reviewer]
 }
 
 /// A point-in-time snapshot of one workroom's VCS + CI status, resolved app-side.
@@ -282,7 +315,8 @@ enum PRPresentation {
     }
   }
 
-  /// Human label for the review decision, or nil when there's nothing to announce.
+  /// Human label for the aggregate review decision (the header above the per-reviewer rows), or nil
+  /// when there's nothing to announce.
   static func reviewLabel(_ decision: PullRequestInfo.ReviewDecision?) -> String? {
     switch decision {
     case .approved: return "Approved"
@@ -290,5 +324,94 @@ enum PRPresentation {
     case .reviewRequired: return "Review required"
     case nil: return nil
     }
+  }
+
+  // MARK: Per-reviewer rows (issue #52)
+
+  enum ReviewSemantic: Equatable {
+    case approved, changesRequested, commented, requested, dismissed
+  }
+  /// One reviewer row: SF Symbol + semantic + a human/bot-aware state label. `id` is the reviewer's
+  /// collision-free identity (`user:` / `team:`), so it's a stable, unique `ForEach` key.
+  struct ReviewerBadge: Equatable, Identifiable {
+    let id: String
+    let displayName: String  // bot-friendly (e.g. "Copilot"); team → its slug
+    let symbol: String
+    let semantic: ReviewSemantic
+    let stateLabel: String
+    let accessibility: String
+  }
+
+  /// The reviewer rows for the PR panel, sorted by attention (changes-requested first) then `id`
+  /// for determinism. This is the ONLY place reviewer order is decided. Pure → unit-testable.
+  static func reviewers(_ pr: PullRequestInfo) -> [ReviewerBadge] {
+    pr.reviewers
+      .sorted { lhs, rhs in
+        let l = sortRank(lhs.state)
+        let r = sortRank(rhs.state)
+        return l == r ? lhs.id < rhs.id : l < r
+      }
+      .map(badge(for:))
+  }
+
+  private static func sortRank(_ s: Reviewer.State) -> Int {
+    switch s {
+    case .changesRequested: return 0
+    case .requested: return 1
+    case .commented: return 2
+    case .approved: return 3
+    case .dismissed: return 4
+    }
+  }
+
+  private static func badge(for r: Reviewer) -> ReviewerBadge {
+    let name = displayName(r.identity)
+    let symbol: String
+    let semantic: ReviewSemantic
+    let label: String
+    switch r.state {
+    case .approved:
+      symbol = "checkmark.circle.fill"
+      semantic = .approved
+      label = "approved"
+    case .changesRequested:
+      symbol = "xmark.circle.fill"
+      semantic = .changesRequested
+      label = "changes requested"
+    case .commented:
+      symbol = "text.bubble"
+      semantic = .commented
+      label = "commented"
+    case .requested:
+      // A bot in `reviewRequests` is actively generating ("in progress"); a human just hasn't
+      // started yet ("review requested"). The API can't tell us more.
+      symbol = "clock.arrow.circlepath"
+      semantic = .requested
+      label = isBot(r.identity) ? "in progress" : "review requested"
+    case .dismissed:
+      symbol = "minus.circle"
+      semantic = .dismissed
+      label = "dismissed"
+    }
+    return ReviewerBadge(
+      id: r.id, displayName: name, symbol: symbol, semantic: semantic, stateLabel: label,
+      accessibility: "\(name) \(label)")
+  }
+
+  /// Display name: friendly for known bots, the team slug for teams, else the raw login.
+  static func displayName(_ identity: Reviewer.Identity) -> String {
+    switch identity {
+    case .team(let slug): return slug
+    case .user(let login):
+      if login == "copilot-pull-request-reviewer" { return "Copilot" }
+      if login.hasSuffix("[bot]") { return String(login.dropLast("[bot]".count)) }
+      return login
+    }
+  }
+
+  /// Whether this identity is a bot — drives "in progress" vs "review requested". Teams are humans.
+  static func isBot(_ identity: Reviewer.Identity) -> Bool {
+    guard case .user(let login) = identity else { return false }
+    return login.hasSuffix("[bot]") || login == "copilot-pull-request-reviewer"
   }
 }

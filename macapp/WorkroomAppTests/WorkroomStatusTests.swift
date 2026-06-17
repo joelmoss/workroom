@@ -232,7 +232,8 @@ final class WorkroomStatusTests: XCTestCase {
 
   private func pr(_ state: PullRequestInfo.State, draft: Bool = false) -> PullRequestInfo {
     PullRequestInfo(
-      number: 1, title: "t", state: state, isDraft: draft, url: "u", reviewDecision: nil)
+      number: 1, title: "t", state: state, isDraft: draft, url: "u", reviewDecision: nil,
+      reviewers: [])
   }
 
   func testPRBadgeStates() {
@@ -252,6 +253,106 @@ final class WorkroomStatusTests: XCTestCase {
     XCTAssertNil(PRPresentation.reviewLabel(nil))
   }
 
+  // MARK: - PRPresentation.reviewers (issue #52: per-reviewer rows)
+
+  private func prWithReviewers(_ reviewers: [Reviewer]) -> PullRequestInfo {
+    PullRequestInfo(
+      number: 1, title: "t", state: .open, isDraft: false, url: "u", reviewDecision: nil,
+      reviewers: reviewers)
+  }
+
+  func testReviewersEmpty() {
+    XCTAssertTrue(PRPresentation.reviewers(prWithReviewers([])).isEmpty)
+  }
+
+  func testReviewersStateMapping() {
+    let badges = PRPresentation.reviewers(
+      prWithReviewers([
+        Reviewer(identity: .user(login: "a"), state: .approved),
+        Reviewer(identity: .user(login: "b"), state: .changesRequested),
+        Reviewer(identity: .user(login: "c"), state: .commented),
+        Reviewer(identity: .user(login: "d"), state: .dismissed),
+        Reviewer(identity: .user(login: "e"), state: .requested),
+      ]))
+    func badge(_ login: String) -> PRPresentation.ReviewerBadge {
+      badges.first { $0.id == "user:\(login)" }!
+    }
+    XCTAssertEqual(badge("a").symbol, "checkmark.circle.fill")
+    XCTAssertEqual(badge("a").semantic, .approved)
+    XCTAssertEqual(badge("a").stateLabel, "approved")
+    XCTAssertEqual(badge("b").symbol, "xmark.circle.fill")
+    XCTAssertEqual(badge("b").semantic, .changesRequested)
+    XCTAssertEqual(badge("b").stateLabel, "changes requested")
+    XCTAssertEqual(badge("c").symbol, "text.bubble")
+    XCTAssertEqual(badge("c").stateLabel, "commented")
+    XCTAssertEqual(badge("d").symbol, "minus.circle")
+    XCTAssertEqual(badge("d").stateLabel, "dismissed")
+    XCTAssertEqual(badge("e").symbol, "clock.arrow.circlepath")
+    XCTAssertEqual(badge("e").stateLabel, "review requested")  // human pending
+    XCTAssertEqual(badge("a").accessibility, "a approved")
+  }
+
+  /// Sort: changes-requested → requested → commented → approved → dismissed, then id A–Z.
+  func testReviewersSortOrder() {
+    let badges = PRPresentation.reviewers(
+      prWithReviewers([
+        Reviewer(identity: .user(login: "z"), state: .approved),
+        Reviewer(identity: .user(login: "a"), state: .dismissed),
+        Reviewer(identity: .user(login: "m"), state: .changesRequested),
+        Reviewer(identity: .user(login: "n"), state: .requested),
+        Reviewer(identity: .user(login: "p"), state: .commented),
+      ]))
+    XCTAssertEqual(badges.map(\.id), ["user:m", "user:n", "user:p", "user:z", "user:a"])
+  }
+
+  func testReviewersSortTieBrokenByID() {
+    let badges = PRPresentation.reviewers(
+      prWithReviewers([
+        Reviewer(identity: .user(login: "bob"), state: .approved),
+        Reviewer(identity: .user(login: "amy"), state: .approved),
+      ]))
+    XCTAssertEqual(badges.map(\.id), ["user:amy", "user:bob"])
+  }
+
+  func testReviewersBotLabelAndName() {
+    let copilot = PRPresentation.reviewers(
+      prWithReviewers([
+        Reviewer(identity: .user(login: "copilot-pull-request-reviewer"), state: .requested)
+      ])
+    ).first!
+    XCTAssertEqual(copilot.displayName, "Copilot")
+    XCTAssertEqual(copilot.stateLabel, "in progress")  // bot pending → in progress
+    XCTAssertEqual(copilot.accessibility, "Copilot in progress")
+
+    let appBot = PRPresentation.reviewers(
+      prWithReviewers([
+        Reviewer(identity: .user(login: "dependabot[bot]"), state: .requested)
+      ])
+    ).first!
+    XCTAssertEqual(appBot.displayName, "dependabot")
+    XCTAssertEqual(appBot.stateLabel, "in progress")
+  }
+
+  func testReviewersTeamDisplay() {
+    let team = PRPresentation.reviewers(
+      prWithReviewers([Reviewer(identity: .team(slug: "platform"), state: .requested)])
+    ).first!
+    XCTAssertEqual(team.id, "team:platform")
+    XCTAssertEqual(team.displayName, "platform")
+    XCTAssertEqual(team.stateLabel, "review requested")  // teams are non-bot
+  }
+
+  /// A team slug and a user login sharing a string must NOT collide into one row.
+  func testReviewerIdentityNoCollision() {
+    let badges = PRPresentation.reviewers(
+      prWithReviewers([
+        Reviewer(identity: .user(login: "octo"), state: .approved),
+        Reviewer(identity: .team(slug: "octo"), state: .requested),
+      ]))
+    XCTAssertEqual(badges.count, 2)
+    XCTAssertEqual(Set(badges.map(\.id)), ["user:octo", "team:octo"])
+  }
+
   /// A local refresh must preserve the separately-probed PR (like CI) — mergeLocalStatus must not
   /// drop it.
   @MainActor
@@ -262,9 +363,11 @@ final class WorkroomStatusTests: XCTestCase {
     store.workroomStatuses[sid] = WorkroomStatus(
       dirty: true,
       pr: PullRequestInfo(
-        number: 5, title: "t", state: .open, isDraft: false, url: "u", reviewDecision: .approved))
+        number: 5, title: "t", state: .open, isDraft: false, url: "u", reviewDecision: .approved,
+        reviewers: [Reviewer(identity: .user(login: "iainad"), state: .approved)]))
     store.mergeLocalStatus(WorkroomStatus(dirty: false, branchForCI: "main"), into: sid)
     XCTAssertEqual(store.workroomStatuses[sid]?.pr?.number, 5)  // PR survives the local refresh
+    XCTAssertEqual(store.workroomStatuses[sid]?.pr?.reviewers.count, 1)  // …with its reviewers
   }
 
   /// The deleted-mid-sweep guard: a status sweep captures its work-list up front, so a workroom
@@ -298,7 +401,8 @@ final class WorkroomStatusTests: XCTestCase {
   func testPRActionAvailability() {
     func pr(_ state: PullRequestInfo.State, draft: Bool = false) -> PullRequestInfo {
       PullRequestInfo(
-        number: 1, title: "t", state: state, isDraft: draft, url: "u", reviewDecision: nil)
+        number: 1, title: "t", state: state, isDraft: draft, url: "u", reviewDecision: nil,
+        reviewers: [])
     }
     XCTAssertEqual(PRAction.available(for: pr(.open)), [.convertToDraft, .close])
     XCTAssertEqual(PRAction.available(for: pr(.open, draft: true)), [.markReady, .close])

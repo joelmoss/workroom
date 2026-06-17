@@ -482,6 +482,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertFalse(pr.isDraft)
     XCTAssertEqual(pr.url, "https://x/42")
     XCTAssertEqual(pr.reviewDecision, .approved)
+    XCTAssertTrue(pr.reviewers.isEmpty)  // back-compat: JSON without review fields → no rows
   }
 
   func testClassifyPRDraftEmptyReviewIsNil() {
@@ -561,6 +562,73 @@ final class WorkroomStatusResolverTests: XCTestCase {
       #"[{"number":3,"title":"t","state":"LOCKED","isDraft":false,"url":"u","reviewDecision":null}]"#
     )
     XCTAssertEqual(WorkroomStatusResolver.classifyPR(r), .keepPrior)
+  }
+
+  // MARK: - classifyPR reviewers (issue #52)
+
+  func testClassifyPRParsesReviewers() {
+    let r = ok(
+      #"[{"number":1,"title":"t","state":"OPEN","isDraft":false,"url":"u","reviewDecision":"CHANGES_REQUESTED","latestReviews":[{"author":{"login":"iainad"},"state":"APPROVED"},{"author":{"login":"octocat"},"state":"CHANGES_REQUESTED"},{"author":{"login":"carl"},"state":"COMMENTED"},{"author":{"login":"dot"},"state":"DISMISSED"}],"reviewRequests":[{"login":"copilot-pull-request-reviewer"}]}]"#
+    )
+    guard case .info(let pr) = WorkroomStatusResolver.classifyPR(r) else { return XCTFail() }
+    XCTAssertEqual(pr.reviewDecision, .changesRequested)
+    let byID = Dictionary(uniqueKeysWithValues: pr.reviewers.map { ($0.id, $0.state) })
+    XCTAssertEqual(byID["user:iainad"], .approved)
+    XCTAssertEqual(byID["user:octocat"], .changesRequested)
+    XCTAssertEqual(byID["user:carl"], .commented)
+    XCTAssertEqual(byID["user:dot"], .dismissed)
+    XCTAssertEqual(byID["user:copilot-pull-request-reviewer"], .requested)
+    XCTAssertEqual(pr.reviewers.count, 5)
+  }
+
+  /// A reviewer who submitted a review and was then RE-requested shows as pending again
+  /// (reviewRequests overrides the stale submitted review).
+  func testClassifyPRReviewRequestsWin() {
+    let r = ok(
+      #"[{"number":1,"title":"t","state":"OPEN","isDraft":false,"url":"u","reviewDecision":"REVIEW_REQUIRED","latestReviews":[{"author":{"login":"octocat"},"state":"CHANGES_REQUESTED"}],"reviewRequests":[{"login":"octocat"}]}]"#
+    )
+    guard case .info(let pr) = WorkroomStatusResolver.classifyPR(r) else { return XCTFail() }
+    XCTAssertEqual(pr.reviewers.count, 1)
+    XCTAssertEqual(pr.reviewers.first?.id, "user:octocat")
+    XCTAssertEqual(pr.reviewers.first?.state, .requested)
+  }
+
+  func testClassifyPRTeamReviewRequest() {
+    let r = ok(
+      #"[{"number":1,"title":"t","state":"OPEN","isDraft":false,"url":"u","reviewDecision":null,"latestReviews":[],"reviewRequests":[{"__typename":"Team","name":"Platform","slug":"platform"}]}]"#
+    )
+    guard case .info(let pr) = WorkroomStatusResolver.classifyPR(r) else { return XCTFail() }
+    XCTAssertEqual(pr.reviewers.count, 1)
+    XCTAssertEqual(pr.reviewers.first?.identity, .team(slug: "platform"))
+    XCTAssertEqual(pr.reviewers.first?.state, .requested)
+  }
+
+  /// A future/unknown review state (e.g. PENDING) is dropped, not rendered; known ones survive.
+  func testClassifyPRSkipsUnknownReviewState() {
+    let r = ok(
+      #"[{"number":1,"title":"t","state":"OPEN","isDraft":false,"url":"u","reviewDecision":null,"latestReviews":[{"author":{"login":"a"},"state":"PENDING"},{"author":{"login":"b"},"state":"APPROVED"}],"reviewRequests":[]}]"#
+    )
+    guard case .info(let pr) = WorkroomStatusResolver.classifyPR(r) else { return XCTFail() }
+    XCTAssertEqual(pr.reviewers.map(\.id), ["user:b"])
+  }
+
+  /// A review with no author login, and a request with neither login nor slug, are skipped.
+  func testClassifyPRSkipsReviewerWithoutIdentity() {
+    let r = ok(
+      #"[{"number":1,"title":"t","state":"OPEN","isDraft":false,"url":"u","reviewDecision":null,"latestReviews":[{"author":null,"state":"APPROVED"}],"reviewRequests":[{"login":null,"slug":null}]}]"#
+    )
+    guard case .info(let pr) = WorkroomStatusResolver.classifyPR(r) else { return XCTFail() }
+    XCTAssertTrue(pr.reviewers.isEmpty)
+  }
+
+  /// REGRESSION: JSON omitting the review fields must still resolve to a PR with no reviewer rows.
+  func testClassifyPRBackCompatNoReviewFields() {
+    let r = ok(
+      #"[{"number":9,"title":"t","state":"OPEN","isDraft":false,"url":"u","reviewDecision":"APPROVED"}]"#
+    )
+    guard case .info(let pr) = WorkroomStatusResolver.classifyPR(r) else { return XCTFail() }
+    XCTAssertEqual(pr.reviewDecision, .approved)
+    XCTAssertTrue(pr.reviewers.isEmpty)
   }
 
   // MARK: - resolvePR (end-to-end via the mock)

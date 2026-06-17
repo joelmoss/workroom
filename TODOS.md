@@ -356,3 +356,50 @@ per workroom when logged out" optimization it currently buys (`:70-73`), and rew
 
 **Priority:** P3 (the `--active` fix covers the reported bug and current gh; revisit only if
 multi-host or old-gh false-negatives get reported).
+
+## Per-reviewer comment counts in the PR panel (macapp) — #52 follow-up
+
+**What:** Show a per-reviewer comment count next to each reviewer row in the Pull Request panel,
+e.g. `iainad approved · 3 comments` — the `[N comments]` part of the issue #52 mockup.
+
+**Current state:** #52 shipped the per-reviewer rows (state + bot-aware "in progress" label) by
+riding the existing `gh pr list --head … --json …` probe, which carries `latestReviews` /
+`reviewRequests` but **no review-comment counts**. The rows show state only.
+
+**Why:** richer signal at a glance — how much feedback a reviewer left, not just their verdict.
+
+**How to start:** counts aren't in `latestReviews`, so this needs a second call —
+`gh api repos/{owner}/{repo}/pulls/{number}/comments` (review/diff comments) grouped by
+`user.login` — added to `resolvePR` (`Core/WorkroomStatusResolver.swift`) and surfaced on
+`Reviewer` (e.g. an optional `commentCount`). Weigh the extra network round-trip on the already-slow,
+TTL-throttled PR probe; consider fetching counts lazily/only for the selected PR. Map counts onto
+the existing identity-keyed fold; teams won't have counts.
+
+**Depends on:** the #52 reviewer rows (shipped).
+
+**Priority:** P3 (nice-to-have; deliberately deferred from #52 to keep that change to free data).
+
+## At-a-glance review status in the sidebar / collapsed PR header (macapp) — #52 follow-up
+
+**What:** Surface a compact review-status glyph (the aggregate `reviewDecision` — approved /
+changes-requested / review-required) on the sidebar workroom row or the collapsed "Pull Request"
+section header, next to the existing CI glyph — so review state is visible without expanding the
+panel. Directly serves issue #52's framing ("so we can go visit the PR when needed").
+
+**Current state:** #52 shows reviewers (and the kept `reviewDecision` aggregate) only in the
+**expanded** Pull Request inspector panel. The aggregate is the natural feed for a glyph.
+
+**Why:** a glance from the sidebar beats expanding the panel per workroom; matches how CI status
+already reads at a glance.
+
+**How to start:** the blocker is data freshness — the PR (and thus `reviewDecision`) is resolved
+**only on selection** (`scheduleSelectedStatusRefresh`), not in the bounded background sweep
+(`refreshWorkroomStatuses` / `runCISweep` in `Core/AppStore+WorkroomStatus.swift`). A sidebar glyph
+needs PR resolution added to the sweep (a third probe stage, bounded like CI, with its own TTL), then
+a `VCSStatusPresentation`-style mapper for the review glyph reused by the sidebar row + collapsed
+header (`ChangesPanel.prIndicator`).
+
+**Depends on:** the #52 `reviewDecision` aggregate (shipped). Bigger than a UI tweak — it adds a PR
+sweep stage.
+
+**Priority:** P3 (strong UX win, but the background-sweep work makes it its own chunk, not part of #52).

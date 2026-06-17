@@ -101,8 +101,22 @@ struct PullRequestPanel: View {
       .font(.callout)
       .foregroundStyle(.primary)
       .lineLimit(2).truncationMode(.tail)
+    // Aggregate decision header (issue #52): always shown when GitHub reports one, so a
+    // branch-protected PR that's REVIEW_REQUIRED with no named reviewers still shows a signal.
     if let review = PRPresentation.reviewLabel(pr.reviewDecision) {
       Text(review).font(.footnote).foregroundStyle(.secondary)
+    }
+    // One row per reviewer: state glyph + name + state label (e.g. "Copilot in progress",
+    // "iainad approved"). Glyph + label carry the meaning without relying on color.
+    ForEach(PRPresentation.reviewers(pr)) { reviewer in
+      HStack(spacing: 6) {
+        Image(systemName: reviewer.symbol).foregroundStyle(reviewer.semantic.color)
+        Text(reviewer.displayName).font(.footnote).lineLimit(1).truncationMode(.tail)
+        Text(reviewer.stateLabel).font(.footnote).foregroundStyle(.secondary)
+        Spacer(minLength: 0)
+      }
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel(reviewer.accessibility)
     }
   }
 
@@ -158,6 +172,20 @@ extension PRPresentation.Semantic {
     case .draft: return .secondary
     case .merged: return .purple
     case .closed: return .red
+    }
+  }
+}
+
+extension PRPresentation.ReviewSemantic {
+  /// Semantic → SwiftUI color for a per-reviewer row glyph. Mirrors GitHub: approved green,
+  /// changes-requested red, pending amber; commented/dismissed stay quiet (the glyph carries it).
+  var color: Color {
+    switch self {
+    case .approved: return .green
+    case .changesRequested: return .red
+    case .requested: return .orange
+    case .commented: return .secondary
+    case .dismissed: return .secondary
     }
   }
 }

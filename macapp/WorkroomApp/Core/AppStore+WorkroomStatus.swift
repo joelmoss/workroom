@@ -193,7 +193,7 @@ extension AppStore {
     }
     s.pr = PullRequestInfo(
       number: pr.number, title: pr.title, state: state, isDraft: draft, url: pr.url,
-      reviewDecision: pr.reviewDecision)
+      reviewDecision: pr.reviewDecision, reviewers: pr.reviewers)
     workroomStatuses[sid] = s
   }
 
