@@ -732,4 +732,20 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let status = await r.resolveGitHubCLI()
     XCTAssertEqual(status, .notInstalled)
   }
+
+  /// Regression lock for issue #50. The auth probe MUST pass `--active`: plain `gh auth status`
+  /// exits non-zero when *any* account on *any* host has an issue, so a broken secondary /
+  /// GitHub-App account would flip the whole app to "not signed in". `--active` scopes the check to
+  /// the active account (the one the PR/CI probes use). Asserting the flag directly stops a future
+  /// edit from silently dropping it — the other `resolveGitHubCLI` tests match only `"auth"` and
+  /// would stay green without it.
+  func testResolveGitHubCLIProbesActiveAccountOnly() async {
+    let runner = RecordingStatusRunner { _, _ in ok("Logged in") }
+    let r = WorkroomStatusResolver(runner: runner)
+    let status = await r.resolveGitHubCLI()
+    XCTAssertEqual(status, .available)
+    let authCall = runner.calls.first { $0.exe == "gh" && $0.args.contains("auth") }
+    XCTAssertNotNil(authCall, "resolveGitHubCLI should invoke `gh auth status`")
+    XCTAssertEqual(authCall?.args, ["auth", "status", "--active"])
+  }
 }

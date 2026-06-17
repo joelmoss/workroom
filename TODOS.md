@@ -327,3 +327,32 @@ collides with a bundled family.
 **Depends on:** the #36 families model shipping first (done).
 
 **Priority:** P3 (bundled families cover the common case; this is for users with custom schemes).
+
+## Harden `gh` auth detection — robust gate (macapp) — #50 follow-up
+
+**What:** Replace the exit-code-based global GitHub-auth gate with a more robust design — either
+parse `gh auth status --json hosts` (always exits 0; classify the active account's `state` in
+Swift) or de-gate so the per-workroom PR/CI probes self-classify their own auth failures (they
+already return `.absent` on `!r.ok`) and the global `githubCLIStatus` becomes advisory.
+
+**Current state:** #50 was fixed by adding `--active` to `gh auth status`
+(`Core/WorkroomStatusResolver.swift` `resolveGitHubCLI`). That is correct for current gh but leans
+on `gh`'s exit-code behavior and carries a **gh ≥ 2.57.0** floor (where `--active` was added).
+
+**Why:** removes the dependency on `gh`'s exit-code quirk and the version floor, and closes the
+residual multi-host case the `--active` fix leaves open — the global probe runs host-agnostic in
+`NSTemporaryDirectory()`, so a broken *active* account on an unrelated host (e.g. a GHE server the
+user still has configured) still trips a false "not signed in". `--json hosts` lets the check be
+host-aware without pinning `--hostname` (which would break GitHub Enterprise users).
+
+**How to start:** prototype `gh auth status --json hosts` parsing in `classifyGitHubCLI` (note the
+`--json` field set + `state`/`active` schema also has a gh version floor — confirm it). Or, for the
+de-gate route, relax `guard self.githubCLIStatus == .available else { return }`
+(`Core/AppStore+WorkroomStatus.swift:74`, `:121`) — but weigh the deliberate "don't spawn a `gh`
+per workroom when logged out" optimization it currently buys (`:70-73`), and rework the
+`PullRequestPanel` "not signed in" warning, which is driven by the global status.
+
+**Depends on:** nothing — pure follow-up to the #50 `--active` fix.
+
+**Priority:** P3 (the `--active` fix covers the reported bug and current gh; revisit only if
+multi-host or old-gh false-negatives get reported).

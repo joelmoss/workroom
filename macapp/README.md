@@ -16,6 +16,10 @@ binary** and shelling out over its `--json` contract — no cgo, no duplicated l
 - Go (to build the embedded helper) — must be on `PATH`, or edit `Scripts/build-helper.sh`
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen): `brew install xcodegen`
 
+> **Runtime (not build):** the inspector's pull-request / CI section shells out to the GitHub CLI.
+> It needs **`gh` ≥ 2.57.0** on `PATH` and an authenticated active account — the auth probe uses
+> `gh auth status --active`, and `--active` landed in gh 2.57.0 (issue #50).
+
 ## Build & run
 
 ```bash

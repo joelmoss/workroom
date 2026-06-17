@@ -226,11 +226,17 @@ struct WorkroomStatusResolver: Sendable {
   }
 
   /// Probe whether `gh` is installed and authenticated (machine-global, not per-workroom). Runs
-  /// `gh auth status` in a neutral dir; a network/keyring blip (timeout) reports `available` so a
-  /// flaky connection doesn't raise a false "not signed in" warning.
+  /// `gh auth status --active` in a neutral dir; a network/keyring blip (timeout) reports
+  /// `available` so a flaky connection doesn't raise a false "not signed in" warning.
+  ///
+  /// `--active` (gh ≥ 2.57.0) scopes the check to the *active* account on each host — the one
+  /// `gh pr list` / `gh run list` actually use. Without it, plain `gh auth status` exits non-zero
+  /// when *any* account on *any* host has an issue, so a single broken secondary / GitHub-App
+  /// account would flip the whole app to "not signed in" and gate off the CI/PR sweep even though
+  /// the active account works fine (issue #50).
   func resolveGitHubCLI() async -> GitHubCLIStatus {
     let r = await runner.run(
-      "gh", ["auth", "status"], in: NSTemporaryDirectory(), timeout: ciTimeout)
+      "gh", ["auth", "status", "--active"], in: NSTemporaryDirectory(), timeout: ciTimeout)
     return Self.classifyGitHubCLI(r)
   }
 
@@ -239,7 +245,9 @@ struct WorkroomStatusResolver: Sendable {
   static func classifyGitHubCLI(_ r: CommandResult) -> GitHubCLIStatus {
     if r.exitCode == CommandResult.commandNotFound { return .notInstalled }
     if r.timedOut { return .available }  // network/keyring blip — don't cry wolf
-    return r.ok ? .available : .notAuthenticated  // gh auth status fails only when not logged in
+    // With `--active`, a non-zero exit means the *active* account specifically isn't authenticated.
+    // (Plain `gh auth status` would also fail on a broken *secondary* account — the cause of #50.)
+    return r.ok ? .available : .notAuthenticated
   }
 
   struct GitParse: Equatable {
