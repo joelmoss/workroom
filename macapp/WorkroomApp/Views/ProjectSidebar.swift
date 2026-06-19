@@ -74,7 +74,6 @@ struct ProjectSidebar: View {
     // background, so rows scroll under it and stay legible; the list reserves matching bottom room
     // (`contentMargins` in `tree`) so the last row can still scroll clear of it.
     .overlay(alignment: .bottom) { bottomBar }
-    .navigationTitle("Projects")
     // Per-project run-command settings (issue #7) stays sidebar-local — it's only ever triggered
     // from a (visible) project row, so it needs no re-homing.
     .sheet(item: $settingsProject) { project in
@@ -129,6 +128,9 @@ struct ProjectSidebar: View {
     // Selection/hover are already hand-rolled via `listRowBackground`, so no native sidebar styling is
     // lost; `scrollContentBackground(.hidden)` keeps the window's sidebar material showing through.
     .listStyle(.plain)
+    // Hide the List's own background so the `sidebarCard` (applied at the use site, for both the
+    // docked column and the edge-reveal panel) shows through — its `tokens.bg` replaces
+    // NavigationSplitView's native sidebar material, so pinned and unpinned share one card style.
     .scrollContentBackground(.hidden)
     .environment(\.defaultMinListRowHeight, 1)
     .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.collapsedProjects)

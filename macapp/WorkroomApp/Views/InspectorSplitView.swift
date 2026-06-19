@@ -101,8 +101,18 @@ final class InspectorPaneViewController: NSViewController {
 ///   after the first real layout, and re-applied whenever the collapse state changes. Plain window
 ///   resizes keep the user's proportions (native `NSSplitView` behaviour); only a collapse toggle
 ///   re-distributes, so a manual drag is preserved until the user collapses/expands a section.
+/// `NSSplitView` whose dividers use a themed hairline. The system's thin divider can render a hard,
+/// near-black line between the section panes — most visible while the inspector collapses/expands —
+/// so we override `dividerColor` to force our subtle border colour on every draw, mid-animation
+/// included.
+final class ThemedSplitView: NSSplitView {
+  override var dividerColor: NSColor {
+    ThemeService.shared.tokens.nsFg.withAlphaComponent(0.12)
+  }
+}
+
 final class InspectorSplitContainerController: NSViewController, NSSplitViewDelegate {
-  let splitView = NSSplitView()
+  let splitView = ThemedSplitView()
   private(set) var panes: [InspectorPaneViewController] = []
   private var heightConstraints: [NSLayoutConstraint] = []
   private var collapsedFlags = [Bool](repeating: false, count: InspectorSectionKind.allCases.count)
@@ -308,7 +318,7 @@ struct SectionHeader<Accessory: View>: View {
           .foregroundStyle(.secondary)
           .rotationEffect(.degrees(collapsed ? 0 : 90))
           .frame(width: 12, alignment: .center)
-        Text(title).font(.headline)
+        Text(title).font(.system(size: 11, weight: .semibold))
         indicator
         Spacer(minLength: 0)
       }

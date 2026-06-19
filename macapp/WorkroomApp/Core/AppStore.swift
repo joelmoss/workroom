@@ -105,11 +105,12 @@ final class AppStore: ObservableObject {
   /// `NSSplitView` divider (you couldn't resize). The reveal reads it on the next natural render —
   /// when the sidebar collapses — which is the only time it's needed.
   var dockedSidebarWidth: CGFloat?
-  /// The docked right inspector's last-measured width (issue #56), captured while the inspector is
-  /// open so the right edge-hover reveal matches the user's resized inspector width. `nil` until the
-  /// inspector has been opened at least once this session — the reveal falls back to a default. Plain
-  /// (non-`@Published`) for the same reason as `dockedSidebarWidth`.
-  var dockedInspectorWidth: CGFloat?
+  /// The docked right inspector's width (issue #56), set by the custom inspector column's resize
+  /// handle and read by both the docked card and the right edge-hover reveal. `@Published` so a
+  /// resize drag re-renders the inspector live. Safe to publish (unlike `dockedSidebarWidth`):
+  /// the inspector is a custom column now, not the native NavigationSplitView one, so nothing writes
+  /// this on every layout pass. `nil` until first set this session; falls back to `Defaults`.
+  @Published var dockedInspectorWidth: CGFloat?
   /// The workroom-into-workroom split (issue #23 follow-up): two+ workrooms shown side by side, each a
   /// full `TargetTerminalDetail`. `nil` = the single `selectedTarget` (the normal case). Leaves are
   /// `SidebarID`; the focused member IS `selectedTargetID`. Always ≥2 *live* leaves when non-nil (a lone

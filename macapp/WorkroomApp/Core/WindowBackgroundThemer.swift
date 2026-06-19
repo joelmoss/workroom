@@ -37,6 +37,14 @@ struct WindowBackgroundThemer: NSViewRepresentable {
   @MainActor private static func apply(to window: NSWindow?) {
     guard let window else { return }
     window.titlebarAppearsTransparent = true
+    // No title text in the bar — the leading/trailing title-bar accessories (the unified toolbar) and
+    // the workroom tabs carry the chrome; an app-name title would just clutter the row.
+    window.titleVisibility = .hidden
+    // Hide NavigationSplitView's window toolbar. Its only item (the auto sidebar toggle) is removed
+    // (`.toolbar(removing:)`), and an itemless toolbar still draws an overflow chevron in the title
+    // bar. The traffic lights (window buttons) and our title-bar accessories are separate from the
+    // toolbar, so hiding it leaves the single unified accessory row clean.
+    window.toolbar?.isVisible = false
     // The title bar belongs to the chrome panel, so it takes the panel colour (a subtle step off
     // the terminal background) — title bar + tab bar + panel read as one surface, terminals as
     // another (issue #36).

@@ -40,12 +40,21 @@ struct RootView: View {
     return true
   }
 
-  /// The custom trailing title-bar controls (bell + inspector toggle), with the environment objects
-  /// its hosted SwiftUI tree needs injected inside the closure (it's hosted outside the
-  /// WindowGroup's tree).
-  private var titlebarControls: some View {
-    TitlebarAccessory(edge: .trailing, identifier: .init("workroom.titlebarControls")) {
-      TitlebarControlsBar()
+  /// The leading title-bar controls (sidebar toggle + history nav + quick terminal) hosted as an
+  /// `NSTitlebarAccessoryViewController`, pinned just after the traffic lights. Env objects are
+  /// injected inside the closure because the hosted tree lives outside the WindowGroup's environment.
+  private var leadingTitlebar: some View {
+    TitlebarAccessory(edge: .leading, identifier: .init("workroom.titlebarLeading")) {
+      LeadingTitlebarBar()
+        .environmentObject(store)
+    }
+  }
+
+  /// The trailing title-bar controls (run/open-in + notifications bell + inspector toggle) hosted as
+  /// an `NSTitlebarAccessoryViewController`, pinned to the window's true trailing edge.
+  private var trailingTitlebar: some View {
+    TitlebarAccessory(edge: .trailing, identifier: .init("workroom.titlebarTrailing")) {
+      TrailingTitlebarBar()
         .environmentObject(store)
         .environmentObject(notifications)
     }
@@ -61,15 +70,12 @@ struct RootView: View {
         set: { store.sidebarVisible = $0 != .detailOnly })
     ) {
       ProjectSidebar()
-        // Bound the sidebar column: a floor so a wide inspector can't crush it (clipping labels) and
-        // a ceiling so it can't be dragged so wide it eats the main panel. Expressed as a
-        // NavigationSplitView column constraint, which the split view honours as the real column
-        // range (a plain `.frame(minWidth:)` is not treated as the column floor).
-        .navigationSplitViewColumnWidth(min: 240, ideal: 270, max: 360)
-        // Persist the user-dragged sidebar width across launches (issue #14) via the
-        // underlying NSSplitView's autosave — SwiftUI offers no width binding.
-        .background(SplitViewAutosave(name: "WorkroomSidebarSplit"))
-        // Capture the live (autosaved) width so the edge-hover reveal panel (issue #56) matches it.
+        // The sidebar column's title (for accessibility / the column header). Set here, not inside
+        // `ProjectSidebar`, so the reveal overlay — which reuses `ProjectSidebar` — doesn't leak
+        // "Projects" into the window titlebar when unpinned.
+        .navigationTitle("Projects")
+        // Capture the card's inner content width (before the card's own padding) so the edge-reveal
+        // panel — which re-applies the same `sidebarCard` — matches the docked card exactly (issue #56).
         .background(
           GeometryReader { geo in
             Color.clear.preference(key: SidebarWidthKey.self, value: geo.size.width)
@@ -78,8 +84,30 @@ struct RootView: View {
         .onPreferenceChange(SidebarWidthKey.self) { width in
           if width > 0 { store.dockedSidebarWidth = width }
         }
+        // No custom card here: macOS already renders the docked sidebar column as an inset floating
+        // card. The edge-reveal panel (an overlay, which gets no native card) re-creates that look via
+        // `sidebarCard` so the unpinned state matches.
+        // Bound the sidebar column: a floor so a wide inspector can't crush it (clipping labels) and
+        // a ceiling so it can't be dragged so wide it eats the main panel. Expressed as a
+        // NavigationSplitView column constraint, which the split view honours as the real column
+        // range (a plain `.frame(minWidth:)` is not treated as the column floor).
+        .navigationSplitViewColumnWidth(min: 240, ideal: 270, max: 360)
+        // Persist the user-dragged sidebar width across launches (issue #14) via the
+        // underlying NSSplitView's autosave — SwiftUI offers no width binding.
+        .background(SplitViewAutosave(name: "WorkroomSidebarSplit"))
     } detail: {
-      detail
+      // The inspector is a custom card laid out beside the detail (it pushes the detail narrower, like
+      // the sidebar) rather than the native `.inspector` — which drew a separator line beside our card.
+      // `InspectorColumn` reuses the same `sidebarCard` as the reveal, so pinned == unpinned.
+      HStack(spacing: 0) {
+        detail
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+        if showNotifications {
+          InspectorColumn()
+            .transition(.move(edge: .trailing))
+        }
+      }
+      .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: showNotifications)
     }
     .alert(
       store.errorTitle ?? "Something went wrong",
@@ -145,77 +173,13 @@ struct RootView: View {
         },
         onCancel: { store.pendingProjectDeletion = nil })
     }
-    // Top toolbar (issue #26, #39): the back/forward chevrons + the quick terminal (snug, one item)
-    // pinned to the leading `.navigation` area beside the sidebar toggle. The trailing controls
-    // (notifications bell + inspector toggle) are NOT toolbar items — `.toolbar`'s `.primaryAction` is
-    // column-scoped in a NavigationSplitView (it docks to the sidebar column, not the window edge), so
-    // they live in a custom title-bar accessory bar instead (`TitlebarControlsBar`, attached below).
-    .toolbar {
-      ToolbarItem(placement: .navigation) {
-        HStack(spacing: 0) {
-          Button {
-            store.navigateBack()
-          } label: {
-            Image(systemName: "chevron.left")
-          }
-          .help("Back")
-          .accessibilityLabel("Back")
-          .disabled(!store.canGoBack)
-          Button {
-            store.navigateForward()
-          } label: {
-            Image(systemName: "chevron.right")
-          }
-          .help("Forward")
-          .accessibilityLabel("Forward")
-          .disabled(!store.canGoForward)
-          // Quick terminal (issue #39): grouped with the history nav, to the right of forward.
-          Button {
-            // Opens / focuses the quick terminal; AppDelegate owns the controller.
-            NotificationCenter.default.post(name: .showQuickTerminal, object: nil)
-          } label: {
-            Image(systemName: "macwindow.badge.plus")
-          }
-          .help("Quick Terminal (⌥§)")
-          .accessibilityLabel("Quick Terminal")
-          .accessibilityIdentifier("toolbar.quickTerminal")
-        }
-      }
-    }
-    .inspector(isPresented: $showNotifications) {
-      RightInspector()
-        // Max is capped below the point where a wider inspector starts squeezing the left sidebar.
-        // SwiftUI's NavigationSplitView resizes the inner sidebar|detail split proportionally when
-        // the inspector grows, crushing the sidebar's labels, and the AppKit fixes for that
-        // (setHoldingPriority / a custom split delegate) crash on SwiftUI's private split subclass —
-        // so 520 is the safe ceiling rather than something larger.
-        // ideal = the remembered width (read non-reactively so a live drag doesn't re-render and
-        // fight the divider). `.inspector` snaps back to `ideal` on every re-show, so this is what
-        // makes hiding and re-showing restore the user's last width.
-        .inspectorColumnWidth(
-          min: 260, ideal: store.dockedInspectorWidth ?? CGFloat(Defaults[.inspectorWidth]),
-          max: 520
-        )
-        // Capture the live inspector width so the right edge-hover reveal (issue #56) matches it,
-        // and persist it (clamped to the column range) so the width survives hide/show + relaunch.
-        .background(
-          GeometryReader { geo in
-            Color.clear.preference(key: InspectorWidthKey.self, value: geo.size.width)
-          }
-        )
-        .onPreferenceChange(InspectorWidthKey.self) { width in
-          if width > 0 {
-            store.dockedInspectorWidth = width
-            Defaults[.inspectorWidth] = Double(min(max(width, 260), 520))
-          }
-        }
-    }
     // Edge-hover reveal of a collapsed sidebar (issue #56): each layer is active only while its
     // sidebar is closed, slides the same content in OVER the detail, and is inert otherwise. Applied
     // before the toast overlay so toasts keep z-order above a revealed panel. Packaged as a modifier
     // so this large `body` stays within the type-checker's budget.
     .modifier(
-      EdgeRevealSidebars(sidebarVisible: store.sidebarVisible, inspectorVisible: showNotifications)
+      EdgeRevealSidebars(
+        sidebarVisible: store.sidebarVisible, inspectorVisible: showNotifications)
     )
     // Foreground toasts (issue #31): pinned bottom-right of the window, over the split + inspector.
     // Only ever populated while the inspector is closed, so it never overlaps the open inspector.
@@ -241,22 +205,25 @@ struct RootView: View {
     .sheet(isPresented: $showKeyboardShortcuts) {
       KeyboardShortcutsView()
     }
-    // Extend the active theme up into the title bar (issue #36): hide the toolbar's own material so
-    // the transparent titlebar reveals the themed window background set by WindowBackgroundThemer —
-    // the canonical themed-terminal-app look (the top bar matches the terminal/chrome, not system).
-    .toolbarBackground(.hidden, for: .windowToolbar)
+    // No window title text — all the chrome lives in the title-bar accessories + the workroom tabs.
+    .navigationTitle("")
+    // Drop NavigationSplitView's auto sidebar toggle — `LeadingTitlebarBar` carries its own, leftmost
+    // after the traffic lights. The now-itemless window toolbar is hidden in WindowBackgroundThemer
+    // (its overflow chevron would otherwise linger); the traffic lights + accessories aren't part of
+    // the toolbar, so they stay.
+    .toolbar(removing: .sidebarToggle)
     .background(WindowBackgroundThemer())
-    // Trailing title-bar controls (notifications bell + inspector toggle) hosted as an
-    // NSTitlebarAccessoryViewController rather than `.toolbar` items: `.primaryAction` is
-    // column-scoped in a NavigationSplitView, so this is the only way to pin both to the window's
-    // true trailing edge in a fixed order. Env objects are injected inside the closure because the
-    // hosted tree lives outside the WindowGroup's environment.
-    .background(titlebarControls)
+    // The single unified title-bar toolbar: leading + trailing accessories sharing the native
+    // title-bar row with the traffic lights (see `TitlebarBars`). Both hosted outside the
+    // WindowGroup's environment, so each injects its env objects inside the closure.
+    .background(leadingTitlebar)
+    .background(trailingTitlebar)
     // Keep the root branch labels reasonably current: refresh when the app regains
     // focus (throttled, so rapid alt-tabbing doesn't fork a git/jj process per project).
     // Regaining focus also dismisses the now-visible terminal's notifications (you're looking at it).
-    .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification))
-    { _ in
+    .onReceive(
+      NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+    ) { _ in
       store.dismissFocusedTerminalNotifications()
       Task { await store.reloadIfStale() }
     }
@@ -399,23 +366,11 @@ struct RootView: View {
         // that would re-parent the surface and blank a pane (issue #23, the same lesson as
         // `WorkroomTerminalsView` always rendering through `PaneTreeView`). Title/toolbar follow the
         // focused member (`selectedTarget`).
+        // The run/stop/restart + "Open in…" controls now live in the title-bar toolbar
+        // (`TrailingTitlebarBar`, driven by `store.selectedTarget`), not a detail `.toolbar`. The
+        // window title/subtitle are dropped too — the workroom tabs already name the current workroom.
         workroomSplitBody(focused: target)
           .frame(maxWidth: .infinity, maxHeight: .infinity)
-          .navigationTitle(target.title)
-          .navigationSubtitle(target.path)
-          .toolbar {
-            // Run/Stop/Restart for the selected root OR workroom (issue #7): the command is configured
-            // per project and both targets have a project path + a directory to run in. `projectPath(of:)`
-            // resolves for `.root`/`.workroom`, nil for a bare `.project` (never shown in the detail pane).
-            if let projectPath = AppStore.projectPath(of: store.selectedTargetID) {
-              RunCommandToolbar(target: target, projectPath: projectPath)
-            }
-            TargetDetailToolbar(path: target.path)
-            // The right-sidebar (inspector) toggle is NOT here — it moved to the title-bar accessory
-            // bar (`TitlebarControlsBar`) next to the bell, so the two trailing controls sit together
-            // at the window's true trailing edge regardless of split column (they previously had to be
-            // split across two toolbars to land near the right edge).
-          }
       }
     } else {
       ContentUnavailableView(
@@ -425,10 +380,6 @@ struct RootView: View {
           "Select a project's root or a workroom to open a terminal in its directory, or create one."
         )
       )
-      // Nothing selected → nothing to title, so drop the toolbar bar/separator and the
-      // window title for a clean empty state.
-      .navigationTitle("")
-      .toolbarBackground(.hidden, for: .windowToolbar)
     }
   }
 
@@ -500,15 +451,6 @@ private struct DetailContentFrameKey: PreferenceKey {
 /// The docked Projects sidebar's measured width, published so the edge-hover reveal panel matches it
 /// (issue #56). Mirrors `DetailContentFrameKey`: a non-zero reading wins.
 private struct SidebarWidthKey: PreferenceKey {
-  static var defaultValue: CGFloat = 0
-  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-    let next = nextValue()
-    if next != 0 { value = next }
-  }
-}
-
-/// The docked right inspector's measured width, for the right edge-hover reveal (issue #56).
-private struct InspectorWidthKey: PreferenceKey {
   static var defaultValue: CGFloat = 0
   static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
     let next = nextValue()

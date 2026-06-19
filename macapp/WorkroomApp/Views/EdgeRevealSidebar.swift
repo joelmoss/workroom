@@ -181,11 +181,6 @@ struct EdgeRevealSidebar<Content: View>: View {
   /// portion of the toolbar.
   private let topSensorHeight: CGFloat = 52
   private let topSensorWidth: CGFloat = 180
-  /// Inset of the floating panel card from the window edges (leading) and the toolbar / window bottom.
-  private let panelMargin: CGFloat = 8
-  /// Corner radius of the floating panel card. Set so its corner is concentric with the window's
-  /// rounded corner: card radius = window corner radius − `panelMargin` (macOS Tahoe window ≈ 26).
-  private let cornerRadius: CGFloat = 18
   /// Debounce before hiding after the cursor leaves — long enough to cross the sensor→panel seam
   /// without a flicker, short enough to feel responsive.
   private let hideDelay: Duration = .milliseconds(180)
@@ -229,25 +224,16 @@ struct EdgeRevealSidebar<Content: View>: View {
 
   private var panel: some View {
     content()
-      // Breathing room between the card's rounded top and the first row — but only for the leading
-      // sidebar (a List). The trailing inspector's first element is a full-width section header bar
-      // that must sit flush under the card's rounded top, so it gets no top inset.
-      .padding(.top, side == .leading ? 8 : 0)
+      // Breathing room between the card's top edge and the first row — matches the native pinned
+      // card's top inset. Only for the leading sidebar (a List); the trailing inspector's first
+      // element is a full-width header bar that sits flush.
+      .padding(.top, side == .leading ? 10 : 0)
       .frame(width: width)
       .frame(maxHeight: .infinity)
-      .background(ThemeService.shared.tokens.panel)
-      // A floating card: all corners rounded, a themed hairline all the way around, inset from the
-      // window edges + toolbar by `panelMargin` (issue #56 feedback).
-      .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-          .stroke(ThemeService.shared.tokens.border, lineWidth: 1)
-      )
-      .compositingGroup()
-      // Subtle, downward-biased shadow so it doesn't cast a dark halo up into the toolbar gap.
-      .shadow(color: .black.opacity(reducer.revealed ? 0.22 : 0), radius: 8, y: 2)
-      .padding(.vertical, panelMargin)
-      .padding(side == .leading ? .leading : .trailing, panelMargin)
+      // The same floating card the docked column uses (`sidebarCard`). `topMargin: 0` extends the card
+      // up to sit flush below the toolbar like the native pinned card (the reveal's safe-area top is
+      // ~8pt lower than the native card's top), so pinned and unpinned line up.
+      .sidebarCard(topMargin: 0)
       .offset(x: panelOffsetX)
       .opacity(reducer.revealed ? 1 : 0)
       // Hidden/off-screen panel must never eat terminal clicks.
@@ -273,10 +259,10 @@ struct EdgeRevealSidebar<Content: View>: View {
 
   private var stackAlignment: Alignment { side == .leading ? .leading : .trailing }
 
-  /// Slide the card fully off the matching edge when hidden (margin + width + shadow clearance).
+  /// Slide the panel fully off the matching edge when hidden (width + card margin + shadow clearance).
   private var panelOffsetX: CGFloat {
     guard !reducer.revealed else { return 0 }
-    let hidden = panelMargin + width + 32
+    let hidden = width + 40
     return side == .leading ? -hidden : hidden
   }
 
