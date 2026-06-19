@@ -14,6 +14,10 @@ struct RootView: View {
   /// View-menu command (WorkroomCommands) toggles the same value.
   @Default(.showNotifications) private var showNotifications
 
+  /// PROTOTYPE toggle (SwiftUI vs AppKit titlebar placement): show the custom `TitlebarAccessory`
+  /// bar alongside the native toolbar. See `TitlebarPrototypeBar`.
+  @Default(.titlebarAccessoryPrototype) private var titlebarAccessoryPrototype
+
   /// Drives the add-project importer — set from `store.requestAddProject`, which both ⌘O and the
   /// sidebar's Add-Project buttons raise. Hosted here (vs the sidebar) so the ⌘O command presents it
   /// even if the sidebar is collapsed via the standard toggle.
@@ -38,6 +42,16 @@ struct RootView: View {
     guard let target = store.selectedTarget, !target.isMissing else { return false }
     if store.logs[target.id]?.blocking == true { return false }
     return true
+  }
+
+  /// PROTOTYPE: the custom trailing title-bar accessory, with the environment objects its hosted
+  /// SwiftUI tree needs injected inside the closure (it's hosted outside the WindowGroup's tree).
+  private var titlebarPrototype: some View {
+    TitlebarAccessory(edge: .trailing, identifier: .init("workroom.titlebarPrototype")) {
+      TitlebarPrototypeBar()
+        .environmentObject(store)
+        .environmentObject(notifications)
+    }
   }
 
   var body: some View {
@@ -249,6 +263,11 @@ struct RootView: View {
     // the canonical themed-terminal-app look (the top bar matches the terminal/chrome, not system).
     .toolbarBackground(.hidden, for: .windowToolbar)
     .background(WindowBackgroundThemer())
+    // PROTOTYPE (SwiftUI vs AppKit titlebar placement): a custom trailing title-bar bar hosted via
+    // an NSTitlebarAccessoryViewController, shown alongside the native toolbar to evaluate the
+    // placement control `.toolbar` won't give. Gated by `titlebarAccessoryPrototype` (on by default
+    // while evaluating). Env objects are injected inside the closure so the hosted tree stays live.
+    .background(titlebarAccessoryPrototype ? AnyView(titlebarPrototype) : AnyView(EmptyView()))
     // Keep the root branch labels reasonably current: refresh when the app regains
     // focus (throttled, so rapid alt-tabbing doesn't fork a git/jj process per project).
     // Regaining focus also dismisses the now-visible terminal's notifications (you're looking at it).
