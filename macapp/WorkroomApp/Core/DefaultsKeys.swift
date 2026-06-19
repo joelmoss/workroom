@@ -70,12 +70,6 @@ extension Defaults.Keys {
   /// Whether the notifications menu bar item is shown (issue #33). On by default.
   static let showMenuBarItem = Key<Bool>("showMenuBarItem", default: true)
 
-  /// PROTOTYPE flag (SwiftUI vs AppKit titlebar placement): show the custom `NSTitlebarAccessory`
-  /// trailing bar (`TitlebarPrototypeBar`) alongside the native toolbar for an A/B comparison of
-  /// placement control. On by default so it's visible on first run while we evaluate; flip to false
-  /// (or `defaults write … titlebarAccessoryPrototype 0`) to hide it.
-  static let titlebarAccessoryPrototype = Key<Bool>("titlebarAccessoryPrototype", default: true)
-
   /// The persisted selected sidebar target as a `TerminalTarget.ID` string, or nil (issue #14).
   static let sidebarSelection = Key<String?>("sidebar.selectionTargetID", default: nil)
 

@@ -3,7 +3,7 @@ import SwiftUI
 
 /// Hosts arbitrary SwiftUI content as an `NSTitlebarAccessoryViewController` pinned to one edge of
 /// the window's title bar — the AppKit escape hatch for the placement control SwiftUI's `.toolbar`
-/// withholds (issue: SwiftUI vs AppKit titlebar placement).
+/// withholds.
 ///
 /// Why this exists: in a `NavigationSplitView`, `.toolbar`'s `placement:` is *semantic and
 /// column-scoped* — `.primaryAction` means "trailing edge of *this column*", not "trailing edge of

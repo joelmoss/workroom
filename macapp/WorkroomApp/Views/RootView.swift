@@ -14,10 +14,6 @@ struct RootView: View {
   /// View-menu command (WorkroomCommands) toggles the same value.
   @Default(.showNotifications) private var showNotifications
 
-  /// PROTOTYPE toggle (SwiftUI vs AppKit titlebar placement): show the custom `TitlebarAccessory`
-  /// bar alongside the native toolbar. See `TitlebarPrototypeBar`.
-  @Default(.titlebarAccessoryPrototype) private var titlebarAccessoryPrototype
-
   /// Drives the add-project importer — set from `store.requestAddProject`, which both ⌘O and the
   /// sidebar's Add-Project buttons raise. Hosted here (vs the sidebar) so the ⌘O command presents it
   /// even if the sidebar is collapsed via the standard toggle.
@@ -44,11 +40,12 @@ struct RootView: View {
     return true
   }
 
-  /// PROTOTYPE: the custom trailing title-bar accessory, with the environment objects its hosted
-  /// SwiftUI tree needs injected inside the closure (it's hosted outside the WindowGroup's tree).
-  private var titlebarPrototype: some View {
-    TitlebarAccessory(edge: .trailing, identifier: .init("workroom.titlebarPrototype")) {
-      TitlebarPrototypeBar()
+  /// The custom trailing title-bar controls (bell + inspector toggle), with the environment objects
+  /// its hosted SwiftUI tree needs injected inside the closure (it's hosted outside the
+  /// WindowGroup's tree).
+  private var titlebarControls: some View {
+    TitlebarAccessory(edge: .trailing, identifier: .init("workroom.titlebarControls")) {
+      TitlebarControlsBar()
         .environmentObject(store)
         .environmentObject(notifications)
     }
@@ -149,10 +146,10 @@ struct RootView: View {
         onCancel: { store.pendingProjectDeletion = nil })
     }
     // Top toolbar (issue #26, #39): the back/forward chevrons + the quick terminal (snug, one item)
-    // pinned to the leading `.navigation` area beside the sidebar toggle; the notifications bell
-    // pinned to the trailing `.primaryAction` area. Both split-view level so they're present even in
-    // the empty state — the detail toolbar's document actions (Open in…/Reveal/Copy Path) only attach
-    // when a target is selected, and slot in before the bell.
+    // pinned to the leading `.navigation` area beside the sidebar toggle. The trailing controls
+    // (notifications bell + inspector toggle) are NOT toolbar items — `.toolbar`'s `.primaryAction` is
+    // column-scoped in a NavigationSplitView (it docks to the sidebar column, not the window edge), so
+    // they live in a custom title-bar accessory bar instead (`TitlebarControlsBar`, attached below).
     .toolbar {
       ToolbarItem(placement: .navigation) {
         HStack(spacing: 0) {
@@ -183,20 +180,6 @@ struct RootView: View {
           .accessibilityLabel("Quick Terminal")
           .accessibilityIdentifier("toolbar.quickTerminal")
         }
-      }
-      ToolbarItem(placement: .primaryAction) {
-        Button {
-          showNotifications.toggle()
-        } label: {
-          HStack(spacing: 3) {
-            Image(systemName: "bell")
-            UnreadBadge(count: notifications.total)
-          }
-        }
-        .help("Notifications")
-        .accessibilityLabel(
-          notifications.total > 0
-            ? "Notifications, \(notifications.total) unread" : "Notifications")
       }
     }
     .inspector(isPresented: $showNotifications) {
@@ -263,11 +246,12 @@ struct RootView: View {
     // the canonical themed-terminal-app look (the top bar matches the terminal/chrome, not system).
     .toolbarBackground(.hidden, for: .windowToolbar)
     .background(WindowBackgroundThemer())
-    // PROTOTYPE (SwiftUI vs AppKit titlebar placement): a custom trailing title-bar bar hosted via
-    // an NSTitlebarAccessoryViewController, shown alongside the native toolbar to evaluate the
-    // placement control `.toolbar` won't give. Gated by `titlebarAccessoryPrototype` (on by default
-    // while evaluating). Env objects are injected inside the closure so the hosted tree stays live.
-    .background(titlebarAccessoryPrototype ? AnyView(titlebarPrototype) : AnyView(EmptyView()))
+    // Trailing title-bar controls (notifications bell + inspector toggle) hosted as an
+    // NSTitlebarAccessoryViewController rather than `.toolbar` items: `.primaryAction` is
+    // column-scoped in a NavigationSplitView, so this is the only way to pin both to the window's
+    // true trailing edge in a fixed order. Env objects are injected inside the closure because the
+    // hosted tree lives outside the WindowGroup's environment.
+    .background(titlebarControls)
     // Keep the root branch labels reasonably current: refresh when the app regains
     // focus (throttled, so rapid alt-tabbing doesn't fork a git/jj process per project).
     // Regaining focus also dismisses the now-visible terminal's notifications (you're looking at it).
@@ -427,25 +411,10 @@ struct RootView: View {
               RunCommandToolbar(target: target, projectPath: projectPath)
             }
             TargetDetailToolbar(path: target.path)
-            // Right-sidebar (inspector) toggle — declared last in the detail column's toolbar so it
-            // lands at the window's true top-right edge (the macOS convention for an inspector toggle).
-            // The split-view-level toolbar's `.primaryAction` items dock to the sidebar column instead
-            // (that's where the bell sits), so the trailing edge belongs to this detail toolbar. Toggles
-            // the same `showNotifications` inspector the bell does.
-            ToolbarItem(placement: .primaryAction) {
-              Button {
-                showNotifications.toggle()
-              } label: {
-                // Fills while the inspector is open so the on/off state reads at a glance, mirroring
-                // the leading sidebar toggle.
-                Image(systemName: "sidebar.right")
-                  .symbolVariant(showNotifications ? .fill : .none)
-              }
-              .help(showNotifications ? "Hide right sidebar" : "Show right sidebar")
-              .accessibilityLabel("Right sidebar")
-              .accessibilityValue(showNotifications ? "shown" : "hidden")
-              .accessibilityIdentifier("toolbar.toggleInspector")
-            }
+            // The right-sidebar (inspector) toggle is NOT here — it moved to the title-bar accessory
+            // bar (`TitlebarControlsBar`) next to the bell, so the two trailing controls sit together
+            // at the window's true trailing edge regardless of split column (they previously had to be
+            // split across two toolbars to land near the right edge).
           }
       }
     } else {
