@@ -19,6 +19,12 @@ struct TitlebarControlsBar: View {
   @Default(.showNotifications) private var showNotifications
   private let theme = ThemeService.shared
 
+  /// The bell's accessibility label, factored out so the call site stays a single short line
+  /// (a wrapped multi-line `.accessibilityLabel(…)` argument trips swift-format's line-break rule).
+  private static func bellLabel(unread: Int) -> String {
+    unread > 0 ? "Notifications, \(unread) unread" : "Notifications"
+  }
+
   var body: some View {
     HStack(spacing: 10) {
       // Notifications bell with live unread badge.
@@ -31,10 +37,7 @@ struct TitlebarControlsBar: View {
         }
       }
       .help("Notifications")
-      .accessibilityLabel(
-        notifications.total > 0
-          ? "Notifications, \(notifications.total) unread"
-          : "Notifications")
+      .accessibilityLabel(Self.bellLabel(unread: notifications.total))
       .accessibilityIdentifier("titlebar.notifications")
 
       // Hairline divider grouping the bell with the inspector toggle.
