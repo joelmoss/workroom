@@ -188,7 +188,8 @@ final class WorkroomWorkflowUITests: XCTestCase {
     // The inspector starts closed (showNotifications defaults to false), so its first section header
     // isn't in the tree and the toggle reports "hidden".
     let changes = app.buttons.matching(
-      NSPredicate(format: "label BEGINSWITH %@", "Changes section")).firstMatch
+      NSPredicate(format: "label BEGINSWITH %@", "Changes section")
+    ).firstMatch
     XCTAssertFalse(changes.exists, "the inspector should start closed")
     assertValue(toggle, equals: "hidden")
 

@@ -33,7 +33,8 @@ struct TitlebarControlsBar: View {
       .help("Notifications")
       .accessibilityLabel(
         notifications.total > 0
-          ? "Notifications, \(notifications.total) unread" : "Notifications")
+          ? "Notifications, \(notifications.total) unread"
+          : "Notifications")
       .accessibilityIdentifier("titlebar.notifications")
 
       // Hairline divider grouping the bell with the inspector toggle.
