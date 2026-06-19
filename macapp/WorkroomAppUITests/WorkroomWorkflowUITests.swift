@@ -41,6 +41,26 @@ final class WorkroomWorkflowUITests: XCTestCase {
       "element count did not reach \(expected) within \(timeout)s")
   }
 
+  /// Wait for an element's accessibility value to settle on `value` (the inspector toggle reports
+  /// "shown"/"hidden", so this asserts the control reflects the open state).
+  private func assertValue(
+    _ element: XCUIElement, equals value: String, timeout: TimeInterval = 4
+  ) {
+    let exp = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "value == %@", value), object: element)
+    XCTAssertEqual(
+      XCTWaiter().wait(for: [exp], timeout: timeout), .completed,
+      "element value did not reach \"\(value)\" within \(timeout)s")
+  }
+
+  /// Wait for an element to stop existing (re-snapshotting via a predicate, so it tolerates the
+  /// inspector's dismiss animation).
+  private func waitForDisappearance(_ element: XCUIElement, timeout: TimeInterval = 4) -> Bool {
+    let exp = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "exists == false"), object: element)
+    return XCTWaiter().wait(for: [exp], timeout: timeout) == .completed
+  }
+
   /// Regression: expanding/collapsing a project must commit on the click itself, not only after the
   /// pointer leaves the row. The collapse state lived in a `@Default`, which didn't re-evaluate the
   /// sidebar until some other state changed (e.g. `hovered` on mouse-move) — so the tree appeared to
@@ -146,5 +166,42 @@ final class WorkroomWorkflowUITests: XCTestCase {
     XCTAssertTrue(stop.waitForExistence(timeout: 8), "Run should become Stop once the command runs")
     XCTAssertTrue(restart.exists, "Restart should appear alongside Stop")
     XCTAssertFalse(run.exists, "Run should be replaced while running")
+  }
+
+  /// The trailing title-bar controls (notifications bell + inspector toggle) live in an
+  /// `NSTitlebarAccessoryViewController` bar, not `.toolbar` — `.primaryAction` is column-scoped in a
+  /// NavigationSplitView, so they couldn't both sit at the window's trailing edge as toolbar items.
+  /// This asserts both controls exist, the toggle reflects open/closed via its accessibility value,
+  /// and that the bell drives the *same* inspector the toggle does (clicking the bell closes what the
+  /// toggle opened — proving they're one control surface, not two independent ones).
+  func testTitlebarControlsToggleInspector() throws {
+    let app = launchedApp()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+
+    let bell = app.buttons["titlebar.notifications"]
+    let toggle = app.buttons["titlebar.toggleInspector"]
+    XCTAssertTrue(
+      bell.waitForExistence(timeout: 10), "the notifications bell should be in the title bar")
+    XCTAssertTrue(
+      toggle.waitForExistence(timeout: 10), "the inspector toggle should be in the title bar")
+
+    // The inspector starts closed (showNotifications defaults to false), so its first section header
+    // isn't in the tree and the toggle reports "hidden".
+    let changes = app.buttons.matching(
+      NSPredicate(format: "label BEGINSWITH %@", "Changes section")).firstMatch
+    XCTAssertFalse(changes.exists, "the inspector should start closed")
+    assertValue(toggle, equals: "hidden")
+
+    // The toggle opens the inspector and flips to "shown".
+    toggle.click()
+    XCTAssertTrue(changes.waitForExistence(timeout: 5), "the toggle should open the inspector")
+    assertValue(toggle, equals: "shown")
+
+    // The bell drives the same inspector: clicking it closes what the toggle opened.
+    bell.click()
+    XCTAssertTrue(
+      waitForDisappearance(changes),
+      "the bell should close the same inspector the toggle opened")
+    assertValue(toggle, equals: "hidden")
   }
 }
