@@ -2405,6 +2405,19 @@ final class AppStore: ObservableObject {
   func scrollFocusedTerminalToTop() { focusedSurface?.scrollToTop() }
   func scrollFocusedTerminalToBottom() { focusedSurface?.scrollToBottom() }
 
+  /// Open the scrollback find bar on the focused terminal (⌘F / Edit ▸ Find).
+  func startFindInFocusedTerminal() { focusedSurface?.startSearch() }
+
+  /// Navigate the focused terminal's *active* find to the next/previous match (⌘G / ⇧⌘G). Returns
+  /// `true` only when a search is open, so the AppDelegate monitor consumes the key then but lets it
+  /// reach the terminal otherwise — ⌘G is an ordinary key with no find bar showing.
+  @discardableResult
+  func navigateFocusedTerminalSearch(forward: Bool) -> Bool {
+    guard let surface = focusedSurface, surface.searchModel.isActive else { return false }
+    surface.searchModel.navigate(forward ? .next : .previous)
+    return true
+  }
+
   /// Split the focused pane by opening a new terminal beside it: ⌘D to the right, ⇧⌘D below
   /// (issue #3). The new terminal inherits the focused pane's working directory.
   func splitFocusedRight() {

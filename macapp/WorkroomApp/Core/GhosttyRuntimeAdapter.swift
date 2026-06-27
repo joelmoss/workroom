@@ -91,6 +91,31 @@ final class GhosttyRuntimeAdapter {
       view.handleChildExited(exitCode: action.action.child_exited.exit_code)
       return false
 
+    case GHOSTTY_ACTION_START_SEARCH:
+      // Scrollback find (⌘F). libghostty opens its search and asks the host to show the find UI; the
+      // needle is non-empty when search starts from a selection (`search_selection`), else empty.
+      guard let view = surfaceView(from: target) else { return false }
+      let needle = action.action.start_search.needle.map { String(cString: $0) } ?? ""
+      view.applySearchEvent(.start(needle: needle))
+      return true
+
+    case GHOSTTY_ACTION_END_SEARCH:
+      guard let view = surfaceView(from: target) else { return false }
+      view.applySearchEvent(.end)
+      return true
+
+    case GHOSTTY_ACTION_SEARCH_TOTAL:
+      // Total matches in the scrollback for the current needle — drives the bar's "/ N" count.
+      guard let view = surfaceView(from: target) else { return false }
+      view.applySearchEvent(.total(Int(action.action.search_total.total)))
+      return true
+
+    case GHOSTTY_ACTION_SEARCH_SELECTED:
+      // Index of the currently-highlighted match — drives the bar's "n /" count.
+      guard let view = surfaceView(from: target) else { return false }
+      view.applySearchEvent(.selected(Int(action.action.search_selected.selected)))
+      return true
+
     case GHOSTTY_ACTION_RING_BELL:
       // libghostty delegates the bell to the host — it does NOT produce audio/flash itself, so
       // without this the bell would be silent. Ring the system bell. We intentionally do not record

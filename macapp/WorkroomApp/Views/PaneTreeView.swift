@@ -426,6 +426,13 @@ private struct PaneLeafView: View {
     switch content {
     case .terminal(let s):
       TerminalContainerView(view: s.view, isFocusedPane: focused)
+        // Scrollback find bar (⌘F), pinned top-trailing over the focused pane only — search state is
+        // per-surface, and only the focused pane can be searched. Renders nothing until active.
+        .overlay(alignment: .topTrailing) {
+          if focused {
+            TerminalSearchBar(model: s.view.searchModel)
+          }
+        }
     case .diff(let descriptor):
       // The diff pane body carries the SAME context menu as its tab chip (issue #72) — fetch the live
       // tab so "Keep Open" / split-guard reflect its current preview / split state. A diff leaf is

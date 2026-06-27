@@ -99,6 +99,11 @@ struct TerminalContainerView: NSViewRepresentable {
     DispatchQueue.main.async {
       guard let window = container.window else { return }
       if isFocusedPane {
+        // While this pane's find bar is open, the search field owns first responder — don't reclaim
+        // it for the terminal. Opening the bar re-renders this pane (the overlay appears), which runs
+        // applyFocus; without this guard it would steal focus straight back from the field, so ⌘F
+        // would never land you in the search box.
+        if view.searchModel.isActive { return }
         guard window.firstResponder !== view else { return }
         window.makeFirstResponder(view)
       } else {
