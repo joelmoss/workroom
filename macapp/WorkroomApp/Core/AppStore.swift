@@ -1840,12 +1840,16 @@ final class AppStore: ObservableObject {
     do {
       try await WorkroomCLI.shared.addProject(url.path)
       await reload()
-      // Select the freshly added project as context (no target — the root is one click away).
+      // Select the freshly added project and open a terminal on its root — mirroring workroom
+      // creation, which lands the user in a live terminal rather than the "Nothing selected" empty
+      // state (issue #104). Selecting the root target mounts its terminal view, which opens the
+      // initial shell via `ensureInitialTerminal`. A new project has no workrooms, so the root is
+      // the only sensible terminal to open.
       if let match = projects.first(where: {
         $0.path == url.path || ($0.path as NSString).lastPathComponent == url.lastPathComponent
       }) {
         selectedProjectID = match.id
-        selectedTargetID = nil
+        selectedTargetID = .root(project: match.path)
       }
     } catch {
       present(error)
