@@ -13,6 +13,18 @@ struct ProjectSidebar: View {
   @EnvironmentObject var notifications: NotificationCenterStore
   @EnvironmentObject var terminals: TerminalSessions
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  /// Live drag of a root/workroom row into the detail content to form a workroom split (issue #101) —
+  /// the same pipeline the title-bar tab bar uses (`WorkroomTabBar`). Bound to `RootView`'s
+  /// `workroomChipDrag` so `WorkroomSplitView.externalDrag` highlights the drop edge while dragging.
+  /// The defaults make the gesture an inert no-op for previews / any host that doesn't wire it.
+  var paneDrag: Binding<WorkroomPaneDrag?> = .constant(nil)
+  /// Maps a global drag point into detail-content-local coords, or nil when it's outside the detail
+  /// area (→ not a drop). Owned by `RootView` (it knows the content frame).
+  var localize: (CGPoint) -> CGPoint? = { _ in nil }
+  /// Where a drop at a global point lands (workroom pane + edge), or nil if it isn't over a pane.
+  var dropTarget: (CGPoint) -> (sid: SidebarID, edge: PaneEdge)? = { _ in nil }
+
   @State private var hovered: SidebarID?
   /// The terminal row currently under the cursor (issue #30). Keyed by the tab's UUID rather than a
   /// `SidebarID` — terminal rows aren't selectable `List` rows, so they sit outside `hovered`.
@@ -53,6 +65,33 @@ struct ProjectSidebar: View {
     default:
       break
     }
+  }
+
+  /// The drag-to-split gesture for a root/workroom row (issue #101). Mirrors the tab-bar chip
+  /// (`WorkroomTabBar`), minus the reorder math: while dragging into the detail content it previews the
+  /// drop edge (driving the shared `paneDrag`), and on release over a pane it forms/extends the
+  /// workroom split via the same `insertWorkroomSplit` the chip uses. Attached with
+  /// `.simultaneousGesture` so it coexists with the List's vertical scroll; `minimumDistance` keeps a
+  /// plain click selecting the row (a zero-translation tap never starts the drag).
+  private func rowSplitDrag(_ id: SidebarID) -> some Gesture {
+    DragGesture(minimumDistance: 6, coordinateSpace: .global)
+      .onChanged { value in
+        paneDrag.wrappedValue = localize(value.location).map {
+          WorkroomPaneDrag(sid: id, location: $0)
+        }
+      }
+      .onEnded { value in
+        if let drop = dropTarget(value.location) {
+          store.insertWorkroomSplit(id, beside: drop.sid, edge: drop.edge)
+        }
+        paneDrag.wrappedValue = nil
+      }
+  }
+
+  /// Whether `id`'s row is the one currently being dragged into a split — drives a light dim cue
+  /// (the primary affordance is the detail-side accent drop band via `externalDrag`).
+  private func isDraggingForSplit(_ id: SidebarID) -> Bool {
+    paneDrag.wrappedValue?.sid == id
   }
 
   var body: some View {
@@ -287,7 +326,11 @@ struct ProjectSidebar: View {
         RowRunButton(target: target)
       }
     }.contentShape(Rectangle())
+      .opacity(isDraggingForSplit(id) ? 0.5 : 1)
       .onTapGesture { selectTarget(id) }
+      // Drag this root onto a displayed workroom pane to split them (issue #101). Simultaneous so the
+      // List still scrolls vertically; the tap above still selects.
+      .simultaneousGesture(rowSplitDrag(id))
       .help(style.tooltip)
       .accessibilityElement(children: .ignore)
       .accessibilityAddTraits(.isButton)
@@ -348,7 +391,11 @@ struct ProjectSidebar: View {
           .accessibilityIdentifier("sidebar.workroom.\(workroom.name).run")
       }
     }.contentShape(Rectangle())
+      .opacity(isDraggingForSplit(id) ? 0.5 : 1)
       .onTapGesture { selectTarget(id) }
+      // Drag this workroom onto a displayed pane to split them (issue #101). Simultaneous so the List
+      // still scrolls vertically; the tap above still selects.
+      .simultaneousGesture(rowSplitDrag(id))
       .accessibilityIdentifier("sidebar.workroom.\(workroom.name)")
       .accessibilityAddTraits(.isButton)
       .onHover { inside in

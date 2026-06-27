@@ -121,8 +121,12 @@ struct RootView: View {
     } detail: {
       HStack(spacing: 0) {
         if store.sidebarVisible {
-          SidebarColumn()
-            .transition(.move(edge: .leading))
+          SidebarColumn(
+            paneDrag: $workroomChipDrag,
+            localize: { workroomChipLocal($0) },
+            dropTarget: { workroomChipDropTarget(at: $0) }
+          )
+          .transition(.move(edge: .leading))
         }
         detail
           .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -242,7 +246,10 @@ struct RootView: View {
       // so this large `body` stays within the type-checker's budget.
       .modifier(
         EdgeRevealSidebars(
-          sidebarVisible: store.sidebarVisible, inspectorVisible: showNotifications)
+          sidebarVisible: store.sidebarVisible, inspectorVisible: showNotifications,
+          paneDrag: $workroomChipDrag,
+          localize: { workroomChipLocal($0) },
+          dropTarget: { workroomChipDropTarget(at: $0) })
       )
       // Foreground toasts (issue #31): pinned bottom-right of the window, over the split + inspector.
       // Only ever populated while the inspector is closed, so it never overlaps the open inspector.

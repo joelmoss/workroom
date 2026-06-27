@@ -283,6 +283,12 @@ struct EdgeRevealSidebars: ViewModifier {
   @EnvironmentObject private var store: AppStore
   let sidebarVisible: Bool
   let inspectorVisible: Bool
+  /// Drag-to-split plumbing for the revealed Projects panel (issue #101) — same as the docked
+  /// `SidebarColumn`'s, so dragging a row out of the slide-over forms a split too. The panel floats
+  /// over the same detail content, so it resolves against the same frame.
+  var paneDrag: Binding<WorkroomPaneDrag?> = .constant(nil)
+  var localize: (CGPoint) -> CGPoint? = { _ in nil }
+  var dropTarget: (CGPoint) -> (sid: SidebarID, edge: PaneEdge)? = { _ in nil }
 
   func body(content: Content) -> some View {
     content
@@ -290,7 +296,7 @@ struct EdgeRevealSidebars: ViewModifier {
         EdgeRevealSidebar(
           side: .leading, enabled: !sidebarVisible, width: store.dockedSidebarWidth ?? 260
         ) {
-          ProjectSidebar()
+          ProjectSidebar(paneDrag: paneDrag, localize: localize, dropTarget: dropTarget)
         }
       }
       .overlay {

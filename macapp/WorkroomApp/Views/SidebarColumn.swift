@@ -13,6 +13,12 @@ import SwiftUI
 struct SidebarColumn: View {
   @EnvironmentObject var store: AppStore
 
+  /// Drag-to-split plumbing forwarded to `ProjectSidebar` so a row can be dragged into the detail to
+  /// form a workroom split (issue #101) — the same three the title-bar tab bar receives from `RootView`.
+  var paneDrag: Binding<WorkroomPaneDrag?> = .constant(nil)
+  var localize: (CGPoint) -> CGPoint? = { _ in nil }
+  var dropTarget: (CGPoint) -> (sid: SidebarID, edge: PaneEdge)? = { _ in nil }
+
   /// Live width while dragging — non-`nil` only during a drag. Local `@State` so each mouse-moved
   /// tick re-renders just this column, not the whole RootView tree. Committed once, on drag end.
   @State private var liveWidth: CGFloat?
@@ -27,7 +33,7 @@ struct SidebarColumn: View {
   }
 
   var body: some View {
-    ProjectSidebar()
+    ProjectSidebar(paneDrag: paneDrag, localize: localize, dropTarget: dropTarget)
       .frame(width: width)
       .frame(maxHeight: .infinity)
       // Tighten the gap to the detail panel: 2pt trailing vs the default 8 (mirrors the inspector's
