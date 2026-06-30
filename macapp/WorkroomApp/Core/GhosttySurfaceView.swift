@@ -49,9 +49,14 @@ final class GhosttySurfaceView: NSView {
   /// The surface's latest title (OSC 0/2, via shell integration): the running command while busy,
   /// the working directory when idle. Forwarded to the tab strip (issue #2).
   var onTitleChange: ((String) -> Void)?
+  /// The shell's cwd changed (`GHOSTTY_ACTION_PWD`). The host relays it into the tab's observable
+  /// state so the detail-panel status bar can show the live cwd (issue #49).
+  var onCwdChange: ((String) -> Void)?
   /// The shell returned to its prompt (OSC 133 D / `GHOSTTY_ACTION_COMMAND_FINISHED`) — the tab
-  /// strip uses this to drop the finished command's title back to the default (issue #2).
-  var onCommandFinished: (() -> Void)?
+  /// strip uses this to drop the finished command's title back to the default (issue #2). The
+  /// argument is the command's resolved exit code (issue #49), or `nil` when the shell didn't
+  /// report one; the title-clear path ignores it.
+  var onCommandFinished: ((Int32?) -> Void)?
   /// OSC 9;4 progress (`GHOSTTY_ACTION_PROGRESS_REPORT`): `true` while the running program reports it's
   /// working, `false` when idle/done (the REMOVE state). The host drives the sidebar/underline spinner
   /// solely from this (issue #28 follow-up). The adapter calls `handleProgressReport(_:)`, which forwards
@@ -605,7 +610,11 @@ final class GhosttySurfaceView: NSView {
   // MARK: PWD (CMT-1)
 
   /// Called by `GhosttyRuntimeAdapter` on `GHOSTTY_ACTION_PWD`.
-  func handlePwd(_ pwd: String) { lastKnownCwd = pwd }
+  func handlePwd(_ pwd: String) {
+    guard lastKnownCwd != pwd else { return }
+    lastKnownCwd = pwd
+    onCwdChange?(pwd)
+  }
 
   // MARK: Progress (OSC 9;4)
 
@@ -706,6 +715,66 @@ final class GhosttySurfaceView: NSView {
       String(bytes: UnsafeBufferPointer(start: raw, count: len), encoding: .utf8)
     }
   }
+
+  // MARK: Inline agent capture (issue #49)
+
+  /// Relay `GHOSTTY_ACTION_COMMAND_FINISHED` to the host, resolving the raw `Int16` exit code from
+  /// the action payload (`-1` → "shell didn't report"; see `TerminalCapture.resolveExitCode`).
+  func handleCommandFinished(rawExitCode: Int16) {
+    onCommandFinished?(TerminalCapture.resolveExitCode(commandFinished: rawExitCode))
+  }
+
+  /// Read the rendered text of the active screen — the prompt, the command, and its output — for the
+  /// inline agent. Call this **synchronously** when a command finishes (we are on the main thread in
+  /// the runtime callback, before the next prompt renders), so the captured region is the
+  /// just-finished command's, not a later one. Returns `nil` when nothing meaningful is on screen.
+  /// The exact command-start boundary isn't exposed by libghostty 1.2.3; reading the active screen
+  /// captures recent output (errors live at the end), and the host trims/caps via `TerminalCapture`.
+  func readCommandRegion(maxBytes: Int = 16_384) -> String? {
+    guard let surface else { return nil }
+    var selection = ghostty_selection_s()
+    selection.top_left = ghostty_point_s(
+      tag: GHOSTTY_POINT_SCREEN, coord: GHOSTTY_POINT_COORD_TOP_LEFT, x: 0, y: 0)
+    selection.bottom_right = ghostty_point_s(
+      tag: GHOSTTY_POINT_SCREEN, coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT, x: 0, y: 0)
+    selection.rectangle = false
+    var text = ghostty_text_s()
+    guard ghostty_surface_read_text(surface, selection, &text) else { return nil }
+    defer { ghostty_surface_free_text(surface, &text) }
+    guard let raw = Self.extractString(from: text) else { return nil }
+    return TerminalCapture.tidy(raw, maxBytes: maxBytes)
+  }
+
+  /// Read the entire surface (visible screen + scrollback, capped) for a run-tab diagnosis (issue
+  /// #49, A1). Run commands `exec` over the shell so there are no OSC 133 command marks — the whole
+  /// surface is the command's output, and long output (a failing test suite) may have scrolled, so
+  /// we read SURFACE (incl. history), not just the active screen.
+  func readFullSurface(maxBytes: Int = 65_536) -> String? {
+    guard let surface else { return nil }
+    var selection = ghostty_selection_s()
+    selection.top_left = ghostty_point_s(
+      tag: GHOSTTY_POINT_SURFACE, coord: GHOSTTY_POINT_COORD_TOP_LEFT, x: 0, y: 0)
+    selection.bottom_right = ghostty_point_s(
+      tag: GHOSTTY_POINT_SURFACE, coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT, x: 0, y: 0)
+    selection.rectangle = false
+    var text = ghostty_text_s()
+    guard ghostty_surface_read_text(surface, selection, &text) else { return nil }
+    defer { ghostty_surface_free_text(surface, &text) }
+    guard let raw = Self.extractString(from: text) else { return nil }
+    return TerminalCapture.tidy(raw, maxBytes: maxBytes)
+  }
+
+  /// Type literal text into the surface WITHOUT a trailing newline ("Insert fix", issue #49): the
+  /// user reviews and presses Return themselves — we never auto-execute an AI-suggested command.
+  func sendText(_ string: String) {
+    guard let surface, !string.isEmpty else { return }
+    string.withCString { ghostty_surface_text(surface, $0, UInt(string.utf8.count)) }
+  }
+
+  /// Whether this surface runs a fixed command (the Run feature) rather than a login shell. Run tabs
+  /// always qualify for inline-agent diagnosis (issue #49, A1), since they're the issue's headline
+  /// cases (dev server / test suite).
+  var isRunCommandSurface: Bool { runCommand != nil }
 
   // MARK: Keyboard
 

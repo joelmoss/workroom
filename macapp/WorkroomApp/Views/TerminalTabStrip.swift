@@ -17,7 +17,10 @@ struct TerminalTabStrip: View {
   var compact: Bool = false
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
+  @EnvironmentObject var agentManager: TerminalAgentManager
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  /// The tab whose ✦ agent popover is open.
+  @State private var agentPopoverTab: TerminalTab.ID?
   /// Global default diff layout — the toolbar's mode toggle shows it as active until this tab gets a
   /// per-tab override (`TerminalTab.diffViewModeOverride`).
   @Default(.diffViewMode) private var defaultDiffViewMode
@@ -80,13 +83,24 @@ struct TerminalTabStrip: View {
               : gapShift(
                 for: index, draggedIndex: draggedIndex, target: dropIndex,
                 amount: draggedWidth + tabSpacing)
+            // A ✦ badge marks any tab with a live diagnosis (issue #49) — the per-tab signal that
+            // complements the active tab's diagnosis shown in the detail-panel status bar.
+            let agentBadge = agentManager.banners[tab.id] != nil
             TerminalTabChip(
               tab: tab, isActive: tab.id == activeID, isHovered: isHovered,
               isDragging: isDragging, hasActivity: hasActivity, runState: runState,
               showLeadingSeparator: showsLeadingSeparator(at: index),
-              isGrouped: groupMembers.contains(tab.id)
+              isGrouped: groupMembers.contains(tab.id),
+              agentBadge: agentBadge, onAgentTap: { agentPopoverTab = tab.id }
             ) {
               store.requestCloseTerminalTab(tab.id, for: target)
+            }
+            .popover(
+              isPresented: Binding(
+                get: { agentPopoverTab == tab.id },
+                set: { if !$0 { agentPopoverTab = nil } })
+            ) {
+              agentPopover(for: tab)
             }
             .onHover { inside in
               if inside { hoveredTab = tab.id } else if hoveredTab == tab.id { hoveredTab = nil }
@@ -365,6 +379,36 @@ struct TerminalTabStrip: View {
       dragTranslation = 0
     }
   }
+
+  /// The ✦ agent popover for a tab (inline presentation): the diagnosis + its actions, off the grid.
+  @ViewBuilder private func agentPopover(for tab: TerminalTab) -> some View {
+    if let state = agentManager.banners[tab.id] {
+      TerminalAgentBanner(
+        state: state,
+        onDiagnose: { agentManager.diagnose(tab: tab.id, target: target.id) },
+        onInsertFix: { fix in
+          if case .terminal(let s) = tab.content { s.view.sendText(fix) }
+          agentPopoverTab = nil
+        },
+        onInvestigate: {
+          let cwd: String
+          if case .terminal(let s) = tab.content {
+            cwd = s.view.lastKnownCwd ?? target.path
+          } else {
+            cwd = target.path
+          }
+          _ = store.terminals.addRunTab(for: target, command: "claude", cwd: cwd)
+          agentManager.dismiss(tab: tab.id)
+          agentPopoverTab = nil
+        },
+        onDismiss: {
+          agentManager.dismiss(tab: tab.id)
+          agentPopoverTab = nil
+        }
+      )
+      .frame(width: 360)
+    }
+  }
 }
 
 /// A single terminal tab chip: its title, an always-visible close button, and the active/hover/
@@ -387,6 +431,9 @@ private struct TerminalTabChip: View {
   /// A member of a split group — its fill insets so it sits *inside* the group's bracket, never
   /// overrunning it (the bracket hugs the chip run, so a full-bleed pill would cover the border).
   let isGrouped: Bool
+  /// A ✦ badge marking an available inline-agent diagnosis (issue #49); tapping opens its popover.
+  var agentBadge: Bool = false
+  var onAgentTap: () -> Void = {}
   let onClose: () -> Void
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   private let theme = ThemeService.shared
@@ -405,6 +452,18 @@ private struct TerminalTabChip: View {
     // Title and close button laid out side by side: a compact gap keeps the ✕ visibly tied to its
     // tab (a wide gap reads as detached) while still clearing the title so they never crowd.
     HStack(spacing: 6) {
+      // Inline-agent diagnosis available (issue #49): a ✦ badge that opens the diagnosis popover.
+      if agentBadge {
+        Button(action: onAgentTap) {
+          Image(systemName: "sparkles")
+            .font(.system(size: 10))
+            .foregroundStyle(theme.tokens.accent)
+        }
+        .buttonStyle(.plain)
+        .help("Show the diagnosis for this command")
+        .accessibilityIdentifier("terminal.agentBadge")
+        .accessibilityLabel("Diagnosis available")
+      }
       // Leading state dot for the run tab (#7): green play while the command runs, dim play once it
       // has cleanly exited, a red octagon if it failed (#79). The fixed 10pt size keeps the chip
       // width stable across the glyph swap. Mirrors the sidebar/workroom run dot — one signal.

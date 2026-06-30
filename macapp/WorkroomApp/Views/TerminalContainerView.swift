@@ -31,6 +31,10 @@ struct TerminalContainerView: NSViewRepresentable {
   /// Whether this pane should hold keyboard focus. Solo callers leave it `true`; the split renderer
   /// passes `true` only for the focused leaf.
   var isFocusedPane: Bool = true
+  /// When a status bar is stacked below the surface (issue #49), the surface rounds only its TOP
+  /// corners so the terminal and the bar together read as one rounded panel (the enclosing clip
+  /// rounds the bottom). Solo/default keeps all four rounded.
+  var roundsBottomCorners: Bool = true
 
   func makeNSView(context: Context) -> NSView {
     let container = NSView()
@@ -40,14 +44,23 @@ struct TerminalContainerView: NSViewRepresentable {
     container.layer?.cornerRadius = TerminalPanelMetrics.cornerRadius
     container.layer?.cornerCurve = .continuous
     container.layer?.masksToBounds = true
+    applyRoundedCorners(container)
     mount(in: container)
     applyFocus(in: container)
     return container
   }
 
   func updateNSView(_ container: NSView, context: Context) {
+    applyRoundedCorners(container)
     mount(in: container)
     applyFocus(in: container)
+  }
+
+  private func applyRoundedCorners(_ container: NSView) {
+    container.layer?.maskedCorners =
+      roundsBottomCorners
+      ? [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMaxYCorner]
+      : [.layerMinXMaxYCorner, .layerMaxXMaxYCorner]  // top corners only (top-left, top-right)
   }
 
   // No `dismantleNSView`: occlusion is driven by the model (`reconcileOcclusion`) and by AppKit's

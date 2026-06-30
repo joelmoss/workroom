@@ -11,8 +11,13 @@ enum ShellEnvironment {
 
   static func path() -> String {
     let base = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
-    // Prepend common tool locations (arm64 + Intel Homebrew, /usr/local).
-    let extra = ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin"]
+    // Prepend common tool locations: arm64 + Intel Homebrew, /usr/local, and `~/.local/bin` — where
+    // the `claude` installer (and pipx, and many user CLIs) put binaries (issue #49: the inline
+    // agent must find `claude`/`codex` even when they're not under Homebrew).
+    let extra = [
+      "/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin",
+      "\(NSHomeDirectory())/.local/bin",
+    ]
     var parts: [String] = []
     for p in extra + base.split(separator: ":").map(String.init) where !parts.contains(p) {
       parts.append(p)

@@ -1009,6 +1009,34 @@ final class AppStore: ObservableObject {
     }
   }
 
+  /// The current branch/bookmark label for a terminal target, for the detail-panel status bar (issue
+  /// #49). Reuses the already-resolved sidebar caches — the per-workroom local status (`branchForCI`)
+  /// and the project root's `RootRef` — so it adds no new VCS calls. Nil until those resolve, or when
+  /// no branch is resolvable (the status bar then just omits the segment).
+  func branchLabel(for target: TerminalTarget) -> String? {
+    guard let project = project(forTarget: target) else { return nil }
+    let sid: SidebarID
+    if TerminalTarget.rootID(project: project.path) == target.id {
+      sid = .root(project: project.path)
+    } else if let workroom = project.workrooms.first(where: {
+      TerminalTarget.workroomID(project: project.path, name: $0.name) == target.id
+    }) {
+      sid = .workroom(project: project.path, name: workroom.name)
+    } else {
+      return nil
+    }
+    let status = workroomStatuses[sid]
+    if let branch = status?.branchForCI, !branch.isEmpty { return branch }
+    // jj: the working copy's own bookmark (`@`) is the label when no CI branch is resolved — matches
+    // what the Changes panel shows for a jj workroom.
+    if let ref = status?.jjWorkingCopy?.refs.first, !ref.isEmpty { return ref }
+    if case .root = sid {
+      let label = RootPresentation.make(rootRefs[project.path] ?? .unresolved).label
+      return label.isEmpty ? nil : label
+    }
+    return nil
+  }
+
   /// The bundled run supervisor (issue #7) — the long-lived shell that owns each run command's
   /// process tree inside its terminal (start/stop/restart serialized there, controlled by signals +
   /// a status file). Resolved from `Bundle.main`; the fallback keeps tests (no bundled resource)
@@ -1228,9 +1256,42 @@ final class AppStore: ObservableObject {
       if Self.runOutcomeIsBannerWorthy(runOutcomes[target.id]) {
         postRunFailureBannerIfBackgrounded(
           targetID: target.id, tabID: tab, title: "Run failed", body: "exited with code \(code)")
+        diagnoseRunFailure(target: target, tab: tab, exitCode: code)
       }
     default:
       break
+    }
+  }
+
+  /// Diagnose a failed Run command with the inline agent (issue #49, A1 + X3). Run tabs `exec` over
+  /// the shell so they emit no OSC 133 marks — capture the whole surface instead, and only once the
+  /// supervisor's in-band exit trailer has rendered (so the snapshot includes the last output lines,
+  /// not whatever had painted when the out-of-band `.status` file landed).
+  private func diagnoseRunFailure(target: TerminalTarget, tab: TerminalTab.ID, exitCode: Int32) {
+    guard terminals.agentManager.isEnabled,
+      case .terminal(let s)? = terminals.tab(tab, for: target)?.content
+    else { return }
+    let view = s.view
+    let command = project(forTarget: target).map { runConfig(forProject: $0.path).command }
+    let shell = (ShellEnvironment.loginShell() as NSString).lastPathComponent
+
+    Task { @MainActor in
+      var surfaceText = view.readFullSurface() ?? ""
+      var tries = 0
+      while !RunCaptureSupport.hasRenderedTrailer(surfaceText) && tries < 20 {
+        try? await Task.sleep(nanoseconds: 50_000_000)  // up to ~1s for the trailer to render
+        surfaceText = view.readFullSurface() ?? ""
+        tries += 1
+      }
+      let failure = FailedCommand(
+        command: command,
+        cwd: view.lastKnownCwd ?? target.path,
+        exitCode: exitCode,
+        shell: shell,
+        output: RunCaptureSupport.extractOutput(fromSurface: surfaceText) ?? "",
+        isRunTab: true,
+        isRemote: false)
+      terminals.agentManager.commandFinished(tab: tab, target: target.id, failure: failure)
     }
   }
 

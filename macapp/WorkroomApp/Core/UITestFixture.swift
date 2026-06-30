@@ -69,6 +69,26 @@ enum UITestFixture {
     UserDefaults.standard.bool(forKey: "WorkroomUITestGitWorkroom")
   }
 
+  /// When set (`-WorkroomUITestAgentStub 1`), the inline terminal agent (issue #49) is enabled with
+  /// a STUB backend that returns a canned diagnosis — so the XCUITest exercises the REAL capture +
+  /// banner end-to-end (failure → `readCommandRegion`/`readFullSurface` → classify → manager →
+  /// parse → banner render) with no network and no cost. Pairs with auto-diagnose so no click is
+  /// needed to surface the banner.
+  static var agentStub: Bool {
+    UserDefaults.standard.bool(forKey: "WorkroomUITestAgentStub")
+  }
+
+  /// The canned claude `--output-format json` envelope the stub agent returns. Its inner JSON is the
+  /// compact diagnosis the XCUITest asserts on (a recognisable `UITEST` summary + a safe fix).
+  static let agentStubEnvelope: String = {
+    let inner =
+      #"{\"summary\":\"UITEST diagnosis: port already in use\",\"fix\":\"kill $(lsof -ti:3000)\"}"#
+    return #"{"type":"result","is_error":false,"result":"\#(inner)"}"#
+  }()
+
+  /// The summary text the stub produces — queried by the XCUITest as the banner's headline.
+  static let agentStubSummary = "UITEST diagnosis: port already in use"
+
   /// When set (`-WorkroomUITestUpdateAvailable 1`), `Updater` seeds a fake available-update version so
   /// the toolbar "Update" pill renders for visual QA without a live Sparkle update.
   static var updateAvailableVersion: String? {
@@ -378,5 +398,17 @@ enum UITestFixture {
        end
      end
     """
+  }
+}
+
+/// The inline agent backend used under `-WorkroomUITestAgentStub`: returns a canned envelope with no
+/// network, so the XCUITest exercises the real capture + banner without hitting `claude`/`codex`.
+struct StubAgentRunner: AgentRunning {
+  let envelope: String
+
+  func diagnoseInline(
+    systemPrompt: String?, model: String?, prompt: String, cwd: String, timeout: TimeInterval
+  ) async -> AgentRunOutcome {
+    .success(stdout: envelope)
   }
 }

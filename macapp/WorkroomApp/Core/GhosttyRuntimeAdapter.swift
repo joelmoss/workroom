@@ -41,10 +41,11 @@ final class GhosttyRuntimeAdapter {
       return true
 
     case GHOSTTY_ACTION_COMMAND_FINISHED:
-      // The shell returned to the prompt (OSC 133 D) — clear the tab's command title back to the
-      // default (issue #2).
+      // The shell returned to the prompt (OSC 133 D). The payload carries the command's exit code
+      // (`ghostty_action_command_finished_s`, -1 when the shell omitted a status). The tab strip
+      // drops the finished command's title (issue #2); the inline agent reads the exit code (#49).
       guard let view = surfaceView(from: target) else { return false }
-      view.onCommandFinished?()
+      view.handleCommandFinished(rawExitCode: action.action.command_finished.exit_code)
       return true
 
     case GHOSTTY_ACTION_PROGRESS_REPORT:

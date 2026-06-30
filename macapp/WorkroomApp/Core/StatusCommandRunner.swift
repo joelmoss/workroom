@@ -97,7 +97,7 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
         // awaiting Task would hang forever, defeating the timeout. SIGKILL is uncatchable, guaranteeing
         // the process exits and we resume. A 2s grace after SIGTERM lets well-behaved children exit.
         let killItem = DispatchWorkItem {
-          if proc.isRunning { kill(proc.processIdentifier, SIGKILL) }
+          if proc.isRunning { ProcessTree.killTree(proc.processIdentifier) }
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout + 2, execute: killItem)
 
@@ -167,10 +167,10 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
 private final class ProcessBox: @unchecked Sendable {
   private let process: Process
   init(_ process: Process) { self.process = process }
-  /// SIGKILL the child if still running — the cancellation path abandons the result, so kill
-  /// promptly rather than wait out a SIGTERM grace.
+  /// SIGKILL the child (and any descendants it spawned) if still running — the cancellation path
+  /// abandons the result, so kill promptly rather than wait out a SIGTERM grace.
   func terminate() {
-    if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+    if process.isRunning { ProcessTree.killTree(process.processIdentifier) }
   }
 }
 

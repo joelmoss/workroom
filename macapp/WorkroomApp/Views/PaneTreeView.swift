@@ -329,6 +329,8 @@ private struct PaneLeafView: View {
   @ObservedObject var sessions: TerminalSessions
   /// Routes the diff pane's reused tab context menu (issue #72: "Open File in…", split, close group).
   @EnvironmentObject var store: AppStore
+  /// The inline terminal agent (issue #49); its per-tab state drives the auto-diagnose opt-in dialog.
+  @EnvironmentObject var agentManager: TerminalAgentManager
   let title: String
   let focused: Bool
   let multiPane: Bool
@@ -389,6 +391,20 @@ private struct PaneLeafView: View {
           .animation(reduceMotion ? nil : .easeInOut(duration: 0.08), value: focused)
       }
       .overlay(alignment: .top) { handle }
+      // The one-time auto-diagnose opt-in — attached to the pane so it fires wherever the failure
+      // surfaces (the diagnosis itself lives in the detail-panel status bar / tab badge, issue #49).
+      .confirmationDialog(
+        "Auto-diagnose failures from now on?",
+        isPresented: Binding(
+          get: { agentManager.autoOptInPromptTab == tabID },
+          set: { if !$0 { agentManager.respondToAutoOptIn(enable: false) } }),
+        titleVisibility: .visible
+      ) {
+        Button("Auto-diagnose") { agentManager.respondToAutoOptIn(enable: true) }
+        Button("Not now", role: .cancel) { agentManager.respondToAutoOptIn(enable: false) }
+      } message: {
+        Text("Workroom can diagnose failed commands automatically, instead of waiting for a click.")
+      }
       // A uniform 2pt pad on EVERY pane (solo or split) — split panes need it as the inter-pane gutter
       // (plus the surrounding panel gutter from WorkroomTerminalsView) so the rounded panes read as
       // separate cards, and a solo pane keeps the same pad so the panel doesn't shift when you switch
@@ -425,14 +441,22 @@ private struct PaneLeafView: View {
   @ViewBuilder private var paneContent: some View {
     switch content {
     case .terminal(let s):
-      TerminalContainerView(view: s.view, isFocusedPane: focused)
-        // Scrollback find bar (⌘F), pinned top-trailing over the focused pane only — search state is
-        // per-surface, and only the focused pane can be searched. Renders nothing until active.
-        .overlay(alignment: .topTrailing) {
-          if focused {
-            TerminalSearchBar(model: s.view.searchModel)
+      // The terminal and its status bar (issue #49) stack as one rounded panel: the surface rounds
+      // only its top corners, the enclosing clip rounds the bar's bottom, so every pane — including
+      // each split member — carries its own bar as part of the pane.
+      VStack(spacing: 0) {
+        TerminalContainerView(view: s.view, isFocusedPane: focused, roundsBottomCorners: false)
+          // Scrollback find bar (⌘F), pinned top-trailing over the focused pane only — search state
+          // is per-surface, and only the focused pane can be searched. Nothing until active.
+          .overlay(alignment: .topTrailing) {
+            if focused {
+              TerminalSearchBar(model: s.view.searchModel)
+            }
           }
-        }
+        TerminalStatusBar(target: target, tabID: tabID, state: s, sessions: sessions)
+      }
+      .clipShape(
+        RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius, style: .continuous))
     case .diff(let descriptor):
       // The diff pane body carries the SAME context menu as its tab chip (issue #72) — fetch the live
       // tab so "Keep Open" / split-guard reflect its current preview / split state. A diff leaf is
@@ -441,12 +465,11 @@ private struct PaneLeafView: View {
         descriptor: descriptor, directory: target.path,
         viewModeOverride: sessions.tab(tabID, for: target)?.diffViewModeOverride
       )
-      .clipShape(
-        RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius, style: .continuous))
       if let tab = sessions.tab(tabID, for: target) {
-        diff.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions)
+        contentPanel(
+          diff.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions))
       } else {
-        diff
+        contentPanel(diff)
       }
     case .file(let descriptor):
       // Read-only file viewer (Files inspector section). Same rounded clip + chip context menu as the
@@ -456,14 +479,25 @@ private struct PaneLeafView: View {
         previewOverride: sessions.tab(tabID, for: target)?.markdownPreviewOverride,
         find: store.fileFind
       )
-      .clipShape(
-        RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius, style: .continuous))
       if let tab = sessions.tab(tabID, for: target) {
-        file.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions)
+        contentPanel(
+          file.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions))
       } else {
-        file
+        contentPanel(file)
       }
     }
+  }
+
+  /// Wrap a non-terminal content pane (diff / file) with a branch-only status bar (issue #49), so
+  /// every pane — terminal or not — carries the same bottom chrome. The content rounds its top with
+  /// the bar's bottom into one panel, matching the terminal leaf.
+  private func contentPanel(_ content: some View) -> some View {
+    VStack(spacing: 0) {
+      content
+      TerminalStatusBar(target: target, tabID: tabID, state: nil, sessions: sessions)
+    }
+    .clipShape(
+      RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius, style: .continuous))
   }
 
   private var isTerminal: Bool {
