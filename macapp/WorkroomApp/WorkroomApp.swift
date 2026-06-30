@@ -83,6 +83,7 @@ struct RootWindow: View {
       .environmentObject(store)
       .environmentObject(store.notifications)
       .environmentObject(store.terminals)
+      .environmentObject(store.terminals.agentManager)
       .focusedSceneObject(store)
       .frame(minWidth: 900, maxWidth: .infinity, minHeight: 560, maxHeight: .infinity)
       .background(

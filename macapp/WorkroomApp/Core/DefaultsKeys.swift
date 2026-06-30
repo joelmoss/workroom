@@ -54,6 +54,21 @@ extension Defaults.Keys {
   /// Whether the right-hand notifications inspector is open.
   static let showNotifications = Key<Bool>("showNotificationsInspector", default: false)
 
+  /// Inline terminal agent (issue #49). Opt-in, default OFF: when on, a failed command can be
+  /// diagnosed by the local `claude`/`codex` CLI and a fix suggested below the pane.
+  static let terminalAgentEnabled = Key<Bool>("terminalAgentEnabled", default: false)
+  /// When on, an eligible failure diagnoses automatically; otherwise the banner waits for a click.
+  /// Set the first time the user accepts the "auto-diagnose next time?" prompt.
+  static let terminalAgentAutoDiagnose = Key<Bool>("terminalAgentAutoDiagnose", default: false)
+  /// Whether the one-time "auto-diagnose from now on?" prompt has been shown (after the first manual
+  /// Diagnose). Prevents re-asking on every manual diagnosis.
+  static let terminalAgentAutoDiagnosePrompted = Key<Bool>(
+    "terminalAgentAutoDiagnosePrompted", default: false)
+  /// Mask common secret shapes in captured output before it's sent to the agent. On by default.
+  static let terminalAgentRedactSecrets = Key<Bool>("terminalAgentRedactSecrets", default: true)
+  /// Preferred agent backend: "auto" (claude, else codex), "claude", or "codex".
+  static let terminalAgentBackend = Key<String>("terminalAgentBackend", default: "auto")
+
   /// The docked right inspector's remembered column width. `.inspector` resets to its `ideal`
   /// width every time it's re-shown, so we feed this back as the ideal — hiding and re-showing
   /// (and relaunching) restores the user's last width instead of snapping back to 300. Written

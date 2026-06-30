@@ -329,6 +329,8 @@ private struct PaneLeafView: View {
   @ObservedObject var sessions: TerminalSessions
   /// Routes the diff pane's reused tab context menu (issue #72: "Open File in…", split, close group).
   @EnvironmentObject var store: AppStore
+  /// The inline terminal agent (issue #49); its per-tab banner state drives the overlay below.
+  @EnvironmentObject var agentManager: TerminalAgentManager
   let title: String
   let focused: Bool
   let multiPane: Bool
@@ -389,6 +391,7 @@ private struct PaneLeafView: View {
           .animation(reduceMotion ? nil : .easeInOut(duration: 0.08), value: focused)
       }
       .overlay(alignment: .top) { handle }
+      .overlay(alignment: .bottom) { agentBanner }
       // A uniform 2pt pad on EVERY pane (solo or split) — split panes need it as the inter-pane gutter
       // (plus the surrounding panel gutter from WorkroomTerminalsView) so the rounded panes read as
       // separate cards, and a solo pane keeps the same pad so the panel doesn't shift when you switch
@@ -418,6 +421,37 @@ private struct PaneLeafView: View {
       .accessibilityIdentifier("terminal.pane")
       .accessibilityLabel(Text(accessibilityLabel))
       .accessibilityAddTraits(focused && multiPane ? .isSelected : [])
+  }
+
+  /// The inline-agent banner (issue #49), pinned to the bottom of a terminal pane when the manager
+  /// has state for this tab. Diff panes never show it.
+  @ViewBuilder private var agentBanner: some View {
+    if case .terminal(let s) = content, let state = agentManager.banners[tabID] {
+      TerminalAgentBanner(
+        state: state,
+        onDiagnose: { agentManager.diagnose(tab: tabID, target: target.id) },
+        onInsertFix: { s.view.sendText($0) },
+        onInvestigate: {
+          let cwd = s.view.lastKnownCwd ?? target.path
+          _ = sessions.addRunTab(for: target, command: "claude", cwd: cwd)
+          agentManager.dismiss(tab: tabID)
+        },
+        onDismiss: { agentManager.dismiss(tab: tabID) }
+      )
+      .frame(maxWidth: 560)
+      .confirmationDialog(
+        "Auto-diagnose failures from now on?",
+        isPresented: Binding(
+          get: { agentManager.autoOptInPromptTab == tabID },
+          set: { if !$0 { agentManager.respondToAutoOptIn(enable: false) } }),
+        titleVisibility: .visible
+      ) {
+        Button("Auto-diagnose") { agentManager.respondToAutoOptIn(enable: true) }
+        Button("Not now", role: .cancel) { agentManager.respondToAutoOptIn(enable: false) }
+      } message: {
+        Text("Workroom can diagnose failed commands automatically, instead of waiting for a click.")
+      }
+    }
   }
 
   /// The pane's centre: a hosted terminal surface, or a diff viewer for a content tab. Clipped to the

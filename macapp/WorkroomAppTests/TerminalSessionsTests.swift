@@ -125,7 +125,7 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertTrue(s.isRunning(forTargetID: target.id))
 
     // The shell returning to the prompt stops the indicator even if the program never sent REMOVE.
-    view.onCommandFinished?()
+    view.handleCommandFinished(rawExitCode: 0)
     XCTAssertFalse(s.isRunning(forTargetID: target.id))
   }
 
@@ -178,7 +178,7 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertEqual(s.tabs(for: target).first?.title, "vim README.md")
 
     // …and finishing the command falls back to the default "Terminal N".
-    view.onCommandFinished?()
+    view.handleCommandFinished(rawExitCode: 0)
     XCTAssertEqual(s.tabs(for: target).first?.title, "Terminal 1")
   }
 

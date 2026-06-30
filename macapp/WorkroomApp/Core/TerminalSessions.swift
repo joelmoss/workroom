@@ -167,7 +167,21 @@ final class TerminalSessions: ObservableObject {
 
   private var appearanceObserver: NSObjectProtocol?
 
+  /// The inline terminal agent (issue #49). Owned here so the per-tab callbacks can feed it; injected
+  /// into the environment (see `WorkroomApp`) so the pane banner observes it. Opt-in, default off.
+  let agentManager: TerminalAgentManager
+
   init() {
+    // Under the UI-test agent fixture, drive a stub backend (no network) with the feature + auto on
+    // so the XCUITest sees the banner; otherwise the normal opt-in, default-off real runner.
+    if UITestFixture.agentStub {
+      agentManager = TerminalAgentManager(
+        runner: StubAgentRunner(envelope: UITestFixture.agentStubEnvelope),
+        featureEnabled: { true }, autoDiagnoseEnabled: { true })
+    } else {
+      agentManager = TerminalAgentManager()
+    }
+
     appearanceObserver = DistributedNotificationCenter.default().addObserver(
       forName: Notification.Name("AppleInterfaceThemeChangedNotification"), object: nil,
       queue: .main
@@ -763,6 +777,7 @@ final class TerminalSessions: ObservableObject {
 
     if wasFocused { setFocused(successor, for: target.id) }
     reconcileOcclusion(for: target)
+    agentManager.tabClosed(tabID)
     onTabsRemoved?(target.id, [tabID])
   }
 
@@ -778,6 +793,7 @@ final class TerminalSessions: ObservableObject {
     splitByTarget[id] = nil
     setFocused(nil, for: id, notify: false)
     counts[id] = nil
+    for removed in removedIDs { agentManager.tabClosed(removed) }
     if !removedIDs.isEmpty { onTabsRemoved?(id, removedIDs) }
   }
 
@@ -856,7 +872,10 @@ final class TerminalSessions: ObservableObject {
 
   /// The shell returned to its prompt (OSC 133 D): drop the finished command's title back to the default
   /// (issue #2) and clear any OSC 9;4 progress, so the indicator stops the moment the command exits.
-  private func handleCommandFinished(forTab tabID: TerminalTab.ID, target: TerminalTarget.ID) {
+  private func handleCommandFinished(
+    forTab tabID: TerminalTab.ID, target: TerminalTarget.ID, exitCode: Int32? = nil
+  ) {
+    notifyAgentOfCommandFinish(tabID: tabID, target: target, exitCode: exitCode)
     guard let tab = tabsByTarget[target]?[tabID], case .terminal(let s) = tab.content,
       s.liveTitle != nil || s.progressActive != nil
     else { return }
@@ -864,6 +883,32 @@ final class TerminalSessions: ObservableObject {
       $0.liveTitle = nil
       $0.progressActive = nil
     }
+  }
+
+  /// Build the failed-command context from the surface and hand it to the inline agent (issue #49).
+  /// Captures synchronously — we're in the runtime callback before the next prompt renders, so
+  /// `readCommandRegion()` returns the just-finished command's output (the A4 race fix, Swift-side).
+  /// Gated on the feature flag so the screen read never runs when the agent is off.
+  private func notifyAgentOfCommandFinish(
+    tabID: TerminalTab.ID, target: TerminalTarget.ID, exitCode: Int32?
+  ) {
+    guard agentManager.isEnabled,
+      let tab = tabsByTarget[target]?[tabID], case .terminal(let s) = tab.content
+    else { return }
+    guard let exitCode else {
+      agentManager.commandFinished(tab: tabID, target: target, failure: nil)
+      return
+    }
+    let view = s.view
+    let failure = FailedCommand(
+      command: s.liveTitle,
+      cwd: view.lastKnownCwd,
+      exitCode: exitCode,
+      shell: (ShellEnvironment.loginShell() as NSString).lastPathComponent,
+      output: view.readCommandRegion() ?? "",
+      isRunTab: view.isRunCommandSurface,
+      isRemote: false)
+    agentManager.commandFinished(tab: tabID, target: target, failure: failure)
   }
 
   /// Apply an OSC 9;4 progress report (issue #28 follow-up). `active` is false only for the REMOVE state
@@ -973,8 +1018,10 @@ final class TerminalSessions: ObservableObject {
     view.onTitleChange = { [weak self] title in
       self?.updateTitle(title, forTab: tabID, target: targetID)
     }
-    view.onCommandFinished = { [weak self] in
-      self?.handleCommandFinished(forTab: tabID, target: targetID)
+    view.onCommandFinished = { [weak self] exitCode in
+      // Exit code feeds the inline-agent manager (issue #49); the title-clear path (issue #2)
+      // ignores it.
+      self?.handleCommandFinished(forTab: tabID, target: targetID, exitCode: exitCode)
     }
     view.onProgressReport = { [weak self] active in
       self?.updateProgress(active, forTab: tabID, target: targetID)

@@ -30,7 +30,9 @@ final class PaneRenderingTests: XCTestCase {
 
   /// Host the content (the same layout decision `WorkroomTerminalsView` makes) in a window.
   private func host(_ sessions: TerminalSessions) -> (NSWindow, NSView) {
-    let root = TestPaneHost(target: target, sessions: sessions).environmentObject(AppStore())
+    let root = TestPaneHost(target: target, sessions: sessions)
+      .environmentObject(AppStore())
+      .environmentObject(sessions.agentManager)
     let hosting = NSHostingView(rootView: root)
     hosting.frame = NSRect(x: 0, y: 0, width: 900, height: 600)
     let window = NSWindow(

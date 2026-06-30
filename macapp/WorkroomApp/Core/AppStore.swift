@@ -1219,9 +1219,42 @@ final class AppStore: ObservableObject {
       if Self.runOutcomeIsBannerWorthy(runOutcomes[target.id]) {
         postRunFailureBannerIfBackgrounded(
           targetID: target.id, tabID: tab, title: "Run failed", body: "exited with code \(code)")
+        diagnoseRunFailure(target: target, tab: tab, exitCode: code)
       }
     default:
       break
+    }
+  }
+
+  /// Diagnose a failed Run command with the inline agent (issue #49, A1 + X3). Run tabs `exec` over
+  /// the shell so they emit no OSC 133 marks — capture the whole surface instead, and only once the
+  /// supervisor's in-band exit trailer has rendered (so the snapshot includes the last output lines,
+  /// not whatever had painted when the out-of-band `.status` file landed).
+  private func diagnoseRunFailure(target: TerminalTarget, tab: TerminalTab.ID, exitCode: Int32) {
+    guard terminals.agentManager.isEnabled,
+      case .terminal(let s)? = terminals.tab(tab, for: target)?.content
+    else { return }
+    let view = s.view
+    let command = project(forTarget: target).map { runConfig(forProject: $0.path).command }
+    let shell = (ShellEnvironment.loginShell() as NSString).lastPathComponent
+
+    Task { @MainActor in
+      var surfaceText = view.readFullSurface() ?? ""
+      var tries = 0
+      while !RunCaptureSupport.hasRenderedTrailer(surfaceText) && tries < 20 {
+        try? await Task.sleep(nanoseconds: 50_000_000)  // up to ~1s for the trailer to render
+        surfaceText = view.readFullSurface() ?? ""
+        tries += 1
+      }
+      let failure = FailedCommand(
+        command: command,
+        cwd: view.lastKnownCwd ?? target.path,
+        exitCode: exitCode,
+        shell: shell,
+        output: RunCaptureSupport.extractOutput(fromSurface: surfaceText) ?? "",
+        isRunTab: true,
+        isRemote: false)
+      terminals.agentManager.commandFinished(tab: tab, target: target.id, failure: failure)
     }
   }
 

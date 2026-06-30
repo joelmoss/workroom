@@ -16,6 +16,10 @@ struct SettingsView: View {
   @Default(.filePathEditor) private var pathEditor
   @Default(.themeFamily) private var themeFamily
   @Default(.diffViewMode) private var diffViewMode
+  @Default(.terminalAgentEnabled) private var agentEnabled
+  @Default(.terminalAgentAutoDiagnose) private var agentAutoDiagnose
+  @Default(.terminalAgentRedactSecrets) private var agentRedactSecrets
+  @Default(.terminalAgentBackend) private var agentBackend
   @EnvironmentObject private var updater: Updater
   @State private var showThemePopover = false
 
@@ -77,6 +81,28 @@ struct SettingsView: View {
         isOn: Binding(
           get: { updater.automaticallyChecksForUpdates },
           set: { updater.automaticallyChecksForUpdates = $0 }))
+
+      // Inline terminal agent (issue #49). Opt-in: the sub-options appear only when it's on.
+      Toggle("Suggest fixes for failed commands", isOn: $agentEnabled)
+        .help("When a command fails, offer an AI diagnosis and a suggested fix below the terminal.")
+      if agentEnabled {
+        Picker("Agent", selection: $agentBackend) {
+          Text("Auto (Claude, else Codex)").tag("auto")
+          Text("Claude").tag("claude")
+          Text("Codex").tag("codex")
+        }
+        Toggle("Diagnose automatically", isOn: $agentAutoDiagnose)
+          .help("Run the diagnosis as soon as a command fails, instead of waiting for a click.")
+        Toggle("Redact obvious secrets before sending", isOn: $agentRedactSecrets)
+        Text(
+          "A failed command's text and output are sent to the local "
+            + "\(agentBackend == "codex" ? "codex" : "claude") CLI for a suggested fix. "
+            + "Secret redaction is best-effort, not a guarantee — Codex is used only for the "
+            + "interactive “Investigate” action, never the automatic diagnosis."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      }
     }
     .formStyle(.grouped)
     .frame(width: 440)
