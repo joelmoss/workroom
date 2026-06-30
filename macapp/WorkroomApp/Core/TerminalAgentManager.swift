@@ -62,6 +62,8 @@ final class TerminalAgentManager: ObservableObject {
   private let featureEnabled: () -> Bool
   private let autoDiagnoseEnabled: () -> Bool
   private let redactSecrets: () -> Bool
+  /// The model for the inline diagnosis (cheap/fast by default; nil = the CLI's own default).
+  private let model: () -> String?
   /// Whether the one-time auto-diagnose opt-in prompt has already been shown.
   private let hasPromptedAutoOptIn: () -> Bool
   /// Persist the opt-in answer: always mark prompted; enable auto-diagnose when accepted.
@@ -86,6 +88,10 @@ final class TerminalAgentManager: ObservableObject {
     featureEnabled: @escaping () -> Bool = { Defaults[.terminalAgentEnabled] },
     autoDiagnoseEnabled: @escaping () -> Bool = { Defaults[.terminalAgentAutoDiagnose] },
     redactSecrets: @escaping () -> Bool = { Defaults[.terminalAgentRedactSecrets] },
+    model: @escaping () -> String? = {
+      let value = Defaults[.terminalAgentModel]
+      return value.isEmpty ? nil : value
+    },
     hasPromptedAutoOptIn: @escaping () -> Bool = { Defaults[.terminalAgentAutoDiagnosePrompted] },
     persistAutoOptIn: @escaping (Bool) -> Void = { enable in
       Defaults[.terminalAgentAutoDiagnosePrompted] = true
@@ -100,6 +106,7 @@ final class TerminalAgentManager: ObservableObject {
     self.featureEnabled = featureEnabled
     self.autoDiagnoseEnabled = autoDiagnoseEnabled
     self.redactSecrets = redactSecrets
+    self.model = model
     self.hasPromptedAutoOptIn = hasPromptedAutoOptIn
     self.persistAutoOptIn = persistAutoOptIn
     self.now = now
@@ -192,10 +199,11 @@ final class TerminalAgentManager: ObservableObject {
     let runner = self.runner
     let cwd = inlineCwd
     let timeout = self.timeout
+    let model = self.model()
 
     inFlight[tab] = Task { [weak self] in
       let outcome = await runner.diagnoseInline(
-        systemPrompt: systemPrompt, prompt: prompt, cwd: cwd, timeout: timeout)
+        systemPrompt: systemPrompt, model: model, prompt: prompt, cwd: cwd, timeout: timeout)
       if Task.isCancelled { return }
       self?.apply(outcome: outcome, tab: tab, failure: failure)
     }

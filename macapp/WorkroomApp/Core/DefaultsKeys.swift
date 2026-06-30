@@ -68,6 +68,11 @@ extension Defaults.Keys {
   static let terminalAgentRedactSecrets = Key<Bool>("terminalAgentRedactSecrets", default: true)
   /// Preferred agent backend: "auto" (claude, else codex), "claude", or "codex".
   static let terminalAgentBackend = Key<String>("terminalAgentBackend", default: "auto")
+  /// Model for the inline (no-tools) diagnosis. A fast, cheap model is plenty for a bounded
+  /// error diagnosis and avoids the user's default (often Opus) running on every failure. Empty =
+  /// let the CLI pick its default. (Issue #49 cost optimisation.)
+  static let terminalAgentModel = Key<String>(
+    "terminalAgentModel", default: "claude-haiku-4-5-20251001")
 
   /// The docked right inspector's remembered column width. `.inspector` resets to its `ideal`
   /// width every time it's re-shown, so we feed this back as the ideal — hiding and re-showing

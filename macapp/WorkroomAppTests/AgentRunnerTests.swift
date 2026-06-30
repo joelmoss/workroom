@@ -40,6 +40,20 @@ final class AgentRunnerTests: XCTestCase {
     XCTAssertEqual(inv.arguments.last, "p")
   }
 
+  func testClaudeInlineInjectsModel() {
+    let inv = AgentInvocationBuilder.claudeInline(model: "claude-haiku-4-5-20251001", prompt: "p")
+    let idx = inv.arguments.firstIndex(of: "--model")
+    XCTAssertNotNil(idx)
+    XCTAssertEqual(inv.arguments[idx! + 1], "claude-haiku-4-5-20251001")
+    XCTAssertEqual(inv.arguments.last, "p", "prompt stays the trailing positional")
+  }
+
+  func testClaudeInlineOmitsModelWhenNilOrEmpty() {
+    XCTAssertFalse(AgentInvocationBuilder.claudeInline(prompt: "p").arguments.contains("--model"))
+    XCTAssertFalse(
+      AgentInvocationBuilder.claudeInline(model: "", prompt: "p").arguments.contains("--model"))
+  }
+
   func testClaudeInlineOmitsSystemPromptWhenNilOrEmpty() {
     XCTAssertFalse(
       AgentInvocationBuilder.claudeInline(prompt: "p").arguments.contains("--system-prompt"))

@@ -376,9 +376,9 @@ enum UITestFixture {
 struct StubAgentRunner: AgentRunning {
   let envelope: String
 
-  func diagnoseInline(systemPrompt: String?, prompt: String, cwd: String, timeout: TimeInterval)
-    async -> AgentRunOutcome
-  {
+  func diagnoseInline(
+    systemPrompt: String?, model: String?, prompt: String, cwd: String, timeout: TimeInterval
+  ) async -> AgentRunOutcome {
     .success(stdout: envelope)
   }
 }

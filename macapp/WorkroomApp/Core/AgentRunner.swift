@@ -46,8 +46,11 @@ enum AgentInvocationBuilder {
   /// - `--no-session-persistence` → the prompt/output don't land in claude's session history.
   /// The working directory is supplied to the executor (`run(in:)`), not as a claude flag.
   /// `systemPrompt`, when given, replaces claude's heavy default system prompt — it both shapes the
-  /// output and cuts token cost (task #15). The prompt stays the trailing positional.
-  static func claudeInline(systemPrompt: String? = nil, prompt: String) -> AgentInvocation {
+  /// output and cuts token cost (task #15). `model`, when given, pins a cheap/fast model so the
+  /// diagnosis doesn't run on the user's (often Opus) default. The prompt stays the trailing positional.
+  static func claudeInline(systemPrompt: String? = nil, model: String? = nil, prompt: String)
+    -> AgentInvocation
+  {
     var arguments = [
       "--print",
       "--output-format", "json",
@@ -55,6 +58,9 @@ enum AgentInvocationBuilder {
       "--allowed-tools", "none",
       "--no-session-persistence",
     ]
+    if let model, !model.isEmpty {
+      arguments.append(contentsOf: ["--model", model])
+    }
     if let systemPrompt, !systemPrompt.isEmpty {
       arguments.append(contentsOf: ["--system-prompt", systemPrompt])
     }
@@ -84,11 +90,13 @@ enum AgentRunOutcome: Sendable, Equatable {
 /// fake runner — no real `claude`/`codex` process.
 protocol AgentRunning: Sendable {
   /// Run an inline, no-tools diagnosis (claude only, X1). `systemPrompt` replaces claude's default
-  /// to shape output + cut cost (task #15). `cwd` is where claude runs — callers should pass a
-  /// NEUTRAL dir (not the project) so `CLAUDE.md` doesn't auto-load: the inline path has no tools and
-  /// gets all context from `prompt`, so the real failure cwd belongs in the prompt text, not here.
-  func diagnoseInline(systemPrompt: String?, prompt: String, cwd: String, timeout: TimeInterval)
-    async -> AgentRunOutcome
+  /// to shape output + cut cost; `model` pins a cheap/fast model (task #15). `cwd` is where claude
+  /// runs — callers should pass a NEUTRAL dir (not the project) so `CLAUDE.md` doesn't auto-load:
+  /// the inline path has no tools and gets all context from `prompt`, so the real failure cwd
+  /// belongs in the prompt text, not here.
+  func diagnoseInline(
+    systemPrompt: String?, model: String?, prompt: String, cwd: String, timeout: TimeInterval
+  ) async -> AgentRunOutcome
 }
 
 /// Default `AgentRunning`: builds the claude inline argv and runs it through the existing
@@ -102,9 +110,11 @@ struct AgentRunner: AgentRunning {
   }
 
   func diagnoseInline(
-    systemPrompt: String? = nil, prompt: String, cwd: String, timeout: TimeInterval = 60
+    systemPrompt: String? = nil, model: String? = nil, prompt: String, cwd: String,
+    timeout: TimeInterval = 60
   ) async -> AgentRunOutcome {
-    let invocation = AgentInvocationBuilder.claudeInline(systemPrompt: systemPrompt, prompt: prompt)
+    let invocation = AgentInvocationBuilder.claudeInline(
+      systemPrompt: systemPrompt, model: model, prompt: prompt)
     let result = await executor.run(
       invocation.executable, invocation.arguments, in: cwd, timeout: timeout)
     return Self.classify(result)

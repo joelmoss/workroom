@@ -73,8 +73,8 @@ final class AgentDiagnosisEvalTests: XCTestCase {
         command: scenario.command, cwd: "/tmp/project", exitCode: scenario.exitCode, shell: "zsh",
         output: scenario.output)
       let outcome = await runner.diagnoseInline(
-        systemPrompt: AgentPrompt.systemPrompt, prompt: prompt, cwd: NSTemporaryDirectory(),
-        timeout: 90)
+        systemPrompt: AgentPrompt.systemPrompt, model: "claude-haiku-4-5-20251001", prompt: prompt,
+        cwd: NSTemporaryDirectory(), timeout: 90)
 
       guard case .success(let stdout) = outcome,
         let diagnosis = AgentPrompt.parse(envelopeJSON: stdout)

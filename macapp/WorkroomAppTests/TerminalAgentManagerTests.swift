@@ -235,9 +235,9 @@ private final class FakeAgentRunner: AgentRunning, @unchecked Sendable {
 
   init(outcome: AgentRunOutcome) { self.outcome = outcome }
 
-  func diagnoseInline(systemPrompt: String?, prompt: String, cwd: String, timeout: TimeInterval)
-    async -> AgentRunOutcome
-  {
+  func diagnoseInline(
+    systemPrompt: String?, model: String?, prompt: String, cwd: String, timeout: TimeInterval
+  ) async -> AgentRunOutcome {
     calls += 1
     lastCwd = cwd
     return outcome
