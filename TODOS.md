@@ -533,3 +533,25 @@ behind `!pretend`, emitting a dry-run envelope instead (mirror the `--create` dr
 **Depends on:** nothing.
 
 **Priority:** P3 (unused flag combination; consistency cleanup).
+
+## Stream the inline terminal agent's diagnosis into the banner — #49 follow-up
+
+**What:** Show the diagnosis appearing live in the banner (claude `--output-format stream-json`)
+instead of a spinner during the (blocking) call.
+
+**Why:** Nicer perceived latency. Deferred deliberately, not dropped: (1) the diagnosis output is a
+structured JSON object (`{summary, fix, detail}`) — that's what makes the "Insert fix" button
+reliable (the on-demand eval validates it) — and streaming emits partial JSON deltas that don't
+render nicely; (2) the inline diagnosis now runs on Haiku 4.5 (~2-3s), so the spinner is brief and
+the payoff is marginal.
+
+**How to start:** The clean approach that preserves the structured fix is to change the model's
+output to "one-line prose summary, then a delimiter, then the JSON fix", stream the prose live while
+parsing the JSON tail on completion. Needs: an incremental-stdout streaming runner (the current
+`StatusCommandRunner` buffers to completion), a stream-json NDJSON delta parser, the split prompt +
+parser, banner partial-text state, and its own entry in `AgentDiagnosisEvalTests`.
+
+**Depends on:** the inline agent (#49, merged). Touches `AgentRunner`, `AgentPrompt`,
+`TerminalAgentManager`, `TerminalAgentBanner`.
+
+**Priority:** P3 (polish; marginal over a 2-3s spinner, and must not regress the structured fix).
