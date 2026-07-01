@@ -173,6 +173,41 @@ final class TerminalAgentManagerTests: XCTestCase {
     XCTAssertEqual(manager.banners[tab], .failure(failure(1), .malformed))
   }
 
+  // MARK: inline presentation
+
+  func testInlinePresentationInjectsDiagnosis() async {
+    let spy = InjectSpy()
+    let manager = TerminalAgentManager(
+      runner: FakeAgentRunner(outcome: .success(stdout: successEnvelope)), featureEnabled: { true },
+      autoDiagnoseEnabled: { true }, redactSecrets: { false }, presentation: { .inline },
+      inlineCwd: "/var/neutral", timeout: 5)
+    manager.injectInline = { spy.calls.append(($0, $1)) }
+    let tab = UUID()
+    manager.commandFinished(tab: tab, target: target, failure: failure(1))
+    await manager.inFlight[tab]?.value
+    XCTAssertEqual(spy.calls.count, 1)
+    XCTAssertEqual(spy.calls.first?.0, tab)
+    XCTAssertTrue(spy.calls.first?.1.contains("port in use") ?? false, "injects the summary")
+    // The banner state is still set (drives the tab badge + popover).
+    if case .ready = manager.banners[tab] {
+    } else {
+      XCTFail("banner state also set in inline mode")
+    }
+  }
+
+  func testBannerPresentationDoesNotInject() async {
+    let spy = InjectSpy()
+    let manager = TerminalAgentManager(
+      runner: FakeAgentRunner(outcome: .success(stdout: successEnvelope)), featureEnabled: { true },
+      autoDiagnoseEnabled: { true }, redactSecrets: { false }, presentation: { .banner }, timeout: 5
+    )
+    manager.injectInline = { spy.calls.append(($0, $1)) }
+    let tab = UUID()
+    manager.commandFinished(tab: tab, target: target, failure: failure(1))
+    await manager.inFlight[tab]?.value
+    XCTAssertTrue(spy.calls.isEmpty, "banner mode never writes to the terminal")
+  }
+
   // MARK: auto-diagnose opt-in (first manual Diagnose)
 
   private func optInManager(prompted: Bool, spy: OptInSpy) -> TerminalAgentManager {
@@ -225,6 +260,11 @@ final class TerminalAgentManagerTests: XCTestCase {
 /// Records the opt-in persistence calls so the tests can assert what was saved.
 private final class OptInSpy {
   var calls: [Bool] = []
+}
+
+/// Records inline-injection calls (tab id + rendered text).
+private final class InjectSpy {
+  var calls: [(TerminalTab.ID, String)] = []
 }
 
 /// Records calls and returns a canned outcome, so the manager runs without a real `claude`/`codex`.

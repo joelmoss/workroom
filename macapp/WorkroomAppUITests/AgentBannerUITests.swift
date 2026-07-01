@@ -15,11 +15,12 @@ final class AgentBannerUITests: XCTestCase {
     continueAfterFailure = false
   }
 
-  private func launchedApp(runCommand: String) -> XCUIApplication {
+  private func launchedApp(runCommand: String, presentation: String = "banner") -> XCUIApplication {
     let app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
     app.launchArguments += ["-WorkroomUITestAgentStub", "1"]
     app.launchArguments += ["-WorkroomUITestRunCommand", runCommand]
+    app.launchArguments += ["-terminalAgentPresentation", presentation]
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
     app.launch()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
@@ -55,6 +56,29 @@ final class AgentBannerUITests: XCTestCase {
     // The canned fix is non-destructive, so Insert fix + Investigate are offered.
     XCTAssertTrue(app.buttons["Insert fix"].exists, "a safe fix offers Insert")
     XCTAssertTrue(app.buttons["Investigate"].exists)
+  }
+
+  /// Inline presentation (issue #49): no pane overlay — a ✦ badge on the failed tab opens a popover
+  /// with the diagnosis, so the terminal is never covered.
+  func testInlinePresentationUsesBadgeAndPopover() {
+    let app = launchedApp(runCommand: "echo 'boom: build failed'; exit 7", presentation: "inline")
+    startRun(app)
+    revealRunTab(app)
+
+    // The chip sets its own `terminal.tab.<title>` identifier, which shadows child identifiers, so
+    // query the badge by its a11y LABEL (same pattern as the run-status icon).
+    let badge = app.buttons.matching(NSPredicate(format: "label == %@", "Diagnosis available"))
+      .firstMatch
+    XCTAssertTrue(
+      badge.waitForExistence(timeout: 20), "inline mode shows the ✦ badge on the failed tab")
+    XCTAssertFalse(
+      app.descendants(matching: .any)["terminal.agentBanner"].exists,
+      "no pane overlay in inline mode (before the popover opens)")
+
+    badge.click()
+    XCTAssertTrue(
+      app.staticTexts["UITEST diagnosis: port already in use"].waitForExistence(timeout: 5),
+      "the ✦ popover shows the diagnosis")
   }
 
   /// Dismissing the banner removes it.

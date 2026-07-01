@@ -181,6 +181,11 @@ final class TerminalSessions: ObservableObject {
     } else {
       agentManager = TerminalAgentManager()
     }
+    // Inline presentation: the manager renders a diagnosis and asks us to write it into the tab's
+    // terminal as output (it holds no surface refs).
+    agentManager.injectInline = { [weak self] tabID, text in
+      self?.writeInlineDiagnosis(text, tab: tabID)
+    }
 
     appearanceObserver = DistributedNotificationCenter.default().addObserver(
       forName: Notification.Name("AppleInterfaceThemeChangedNotification"), object: nil,
@@ -882,6 +887,17 @@ final class TerminalSessions: ObservableObject {
     mutateTerminalState(tabID, target: target) {
       $0.liveTitle = nil
       $0.progressActive = nil
+    }
+  }
+
+  /// Write a rendered diagnosis into a tab's terminal as output (issue #49 inline presentation).
+  /// Tab ids are unique, so resolve the surface by scanning targets — the manager passes only the id.
+  private func writeInlineDiagnosis(_ text: String, tab tabID: TerminalTab.ID) {
+    for tabs in tabsByTarget.values {
+      if let tab = tabs[tabID], case .terminal(let s) = tab.content {
+        s.view.writeOutput(text)
+        return
+      }
     }
   }
 

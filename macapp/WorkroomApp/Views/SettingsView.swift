@@ -20,6 +20,7 @@ struct SettingsView: View {
   @Default(.terminalAgentAutoDiagnose) private var agentAutoDiagnose
   @Default(.terminalAgentRedactSecrets) private var agentRedactSecrets
   @Default(.terminalAgentBackend) private var agentBackend
+  @Default(.terminalAgentPresentation) private var agentPresentation
   @EnvironmentObject private var updater: Updater
   @State private var showThemePopover = false
 
@@ -93,6 +94,13 @@ struct SettingsView: View {
         }
         Toggle("Diagnose automatically", isOn: $agentAutoDiagnose)
           .help("Run the diagnosis as soon as a command fails, instead of waiting for a click.")
+        Picker("Show diagnosis", selection: $agentPresentation) {
+          Text("As a banner below the pane").tag("banner")
+          Text("Inline in the terminal").tag("inline")
+        }
+        .help(
+          "Inline writes a dim diagnosis into the terminal output and puts the actions in a popover "
+            + "on the tab, so nothing covers the terminal.")
         Toggle("Redact obvious secrets before sending", isOn: $agentRedactSecrets)
         Text(
           "A failed command's text and output are sent to the local "

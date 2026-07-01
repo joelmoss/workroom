@@ -736,6 +736,18 @@ final class GhosttySurfaceView: NSView {
     string.withCString { ghostty_surface_text(surface, $0, UInt(string.utf8.count)) }
   }
 
+  /// Write bytes to the terminal as if the child had emitted them — renders as OUTPUT in the
+  /// scrollback (issue #49 inline presentation). Unlike `sendText` (which feeds the child's stdin),
+  /// this feeds the terminal parser, so the text appears on screen and scrolls with the output.
+  func writeOutput(_ text: String) {
+    guard let surface, !text.isEmpty else { return }
+    let bytes = Array(text.utf8)
+    bytes.withUnsafeBufferPointer { buffer in
+      guard let base = buffer.baseAddress else { return }
+      ghostty_surface_write_buffer(surface, base, UInt(buffer.count))
+    }
+  }
+
   /// Whether this surface runs a fixed command (the Run feature) rather than a login shell. Run tabs
   /// always qualify for inline-agent diagnosis (issue #49, A1), since they're the issue's headline
   /// cases (dev server / test suite).

@@ -68,6 +68,9 @@ extension Defaults.Keys {
   static let terminalAgentRedactSecrets = Key<Bool>("terminalAgentRedactSecrets", default: true)
   /// Preferred agent backend: "auto" (claude, else codex), "claude", or "codex".
   static let terminalAgentBackend = Key<String>("terminalAgentBackend", default: "auto")
+  /// How a diagnosis is shown: "banner" (a panel below the pane) or "inline" (dim text written into
+  /// the terminal output + a badge on the tab chip with the actions). Default banner (issue #49).
+  static let terminalAgentPresentation = Key<String>("terminalAgentPresentation", default: "banner")
   /// Model for the inline (no-tools) diagnosis. A fast, cheap model is plenty for a bounded
   /// error diagnosis and avoids the user's default (often Opus) running on every failure. Empty =
   /// let the CLI pick its default. (Issue #49 cost optimisation.)

@@ -1,4 +1,5 @@
 import AppKit
+import Defaults
 import SwiftUI
 
 /// Renders a target's pane layout (issue #3): a solo terminal is a single-leaf layout, a split is a
@@ -331,6 +332,8 @@ private struct PaneLeafView: View {
   @EnvironmentObject var store: AppStore
   /// The inline terminal agent (issue #49); its per-tab banner state drives the overlay below.
   @EnvironmentObject var agentManager: TerminalAgentManager
+  /// Presentation mode: the pane overlay renders only in `.banner`; `.inline` uses the tab badge.
+  @Default(.terminalAgentPresentation) private var agentPresentation
   let title: String
   let focused: Bool
   let multiPane: Bool
@@ -392,6 +395,20 @@ private struct PaneLeafView: View {
       }
       .overlay(alignment: .top) { handle }
       .overlay(alignment: .bottom) { agentBanner }
+      // The one-time auto-diagnose opt-in — attached to the pane (not the banner) so it works in
+      // both banner and inline presentation (issue #49).
+      .confirmationDialog(
+        "Auto-diagnose failures from now on?",
+        isPresented: Binding(
+          get: { agentManager.autoOptInPromptTab == tabID },
+          set: { if !$0 { agentManager.respondToAutoOptIn(enable: false) } }),
+        titleVisibility: .visible
+      ) {
+        Button("Auto-diagnose") { agentManager.respondToAutoOptIn(enable: true) }
+        Button("Not now", role: .cancel) { agentManager.respondToAutoOptIn(enable: false) }
+      } message: {
+        Text("Workroom can diagnose failed commands automatically, instead of waiting for a click.")
+      }
       // A uniform 2pt pad on EVERY pane (solo or split) — split panes need it as the inter-pane gutter
       // (plus the surrounding panel gutter from WorkroomTerminalsView) so the rounded panes read as
       // separate cards, and a solo pane keeps the same pad so the panel doesn't shift when you switch
@@ -426,7 +443,9 @@ private struct PaneLeafView: View {
   /// The inline-agent banner (issue #49), pinned to the bottom of a terminal pane when the manager
   /// has state for this tab. Diff panes never show it.
   @ViewBuilder private var agentBanner: some View {
-    if case .terminal(let s) = content, let state = agentManager.banners[tabID] {
+    if agentPresentation == "banner", case .terminal(let s) = content,
+      let state = agentManager.banners[tabID]
+    {
       TerminalAgentBanner(
         state: state,
         onDiagnose: { agentManager.diagnose(tab: tabID, target: target.id) },
@@ -439,18 +458,6 @@ private struct PaneLeafView: View {
         onDismiss: { agentManager.dismiss(tab: tabID) }
       )
       .frame(maxWidth: 560)
-      .confirmationDialog(
-        "Auto-diagnose failures from now on?",
-        isPresented: Binding(
-          get: { agentManager.autoOptInPromptTab == tabID },
-          set: { if !$0 { agentManager.respondToAutoOptIn(enable: false) } }),
-        titleVisibility: .visible
-      ) {
-        Button("Auto-diagnose") { agentManager.respondToAutoOptIn(enable: true) }
-        Button("Not now", role: .cancel) { agentManager.respondToAutoOptIn(enable: false) }
-      } message: {
-        Text("Workroom can diagnose failed commands automatically, instead of waiting for a click.")
-      }
     }
   }
 

@@ -15,6 +15,16 @@ struct FailedCommand: Equatable, Sendable {
   var isRemote: Bool
 }
 
+/// How a diagnosis is surfaced (issue #49). `.banner` = a panel below the pane; `.inline` = dim
+/// text written into the terminal output (via `ghostty_surface_write_buffer`) plus a badge on the
+/// tab chip that opens a popover with the actions — so the terminal is never covered.
+enum AgentPresentation: String, Sendable {
+  case banner
+  case inline
+
+  init(defaultsValue: String) { self = AgentPresentation(rawValue: defaultsValue) ?? .banner }
+}
+
 /// Distinct error states so the banner can show actionable guidance.
 enum AgentErrorKind: Equatable, Sendable {
   case cliNotFound
@@ -64,6 +74,12 @@ final class TerminalAgentManager: ObservableObject {
   private let redactSecrets: () -> Bool
   /// The model for the inline diagnosis (cheap/fast by default; nil = the CLI's own default).
   private let model: () -> String?
+  /// How diagnoses are presented (.banner overlay vs .inline terminal output + tab badge).
+  private let presentation: () -> AgentPresentation
+
+  /// Host hook to write a rendered diagnosis into a tab's terminal as output (inline presentation).
+  /// Set by `TerminalSessions` (which owns the surfaces); nil in tests unless a spy is wired.
+  var injectInline: ((TerminalTab.ID, String) -> Void)?
   /// Whether the one-time auto-diagnose opt-in prompt has already been shown.
   private let hasPromptedAutoOptIn: () -> Bool
   /// Persist the opt-in answer: always mark prompted; enable auto-diagnose when accepted.
@@ -92,6 +108,9 @@ final class TerminalAgentManager: ObservableObject {
       let value = Defaults[.terminalAgentModel]
       return value.isEmpty ? nil : value
     },
+    presentation: @escaping () -> AgentPresentation = {
+      AgentPresentation(defaultsValue: Defaults[.terminalAgentPresentation])
+    },
     hasPromptedAutoOptIn: @escaping () -> Bool = { Defaults[.terminalAgentAutoDiagnosePrompted] },
     persistAutoOptIn: @escaping (Bool) -> Void = { enable in
       Defaults[.terminalAgentAutoDiagnosePrompted] = true
@@ -107,6 +126,7 @@ final class TerminalAgentManager: ObservableObject {
     self.autoDiagnoseEnabled = autoDiagnoseEnabled
     self.redactSecrets = redactSecrets
     self.model = model
+    self.presentation = presentation
     self.hasPromptedAutoOptIn = hasPromptedAutoOptIn
     self.persistAutoOptIn = persistAutoOptIn
     self.now = now
@@ -213,18 +233,25 @@ final class TerminalAgentManager: ObservableObject {
     // Ignore a result whose banner was superseded or dismissed while it ran.
     guard case .loading(let pending)? = banners[tab], pending == failure else { return }
     inFlight[tab] = nil
+
+    let resolved: AgentBannerState
     switch outcome {
     case .success(let stdout):
-      if let diagnosis = AgentPrompt.parse(envelopeJSON: stdout) {
-        setBanner(.ready(failure, diagnosis), tab: tab)
-      } else {
-        setBanner(.failure(failure, .malformed), tab: tab)
-      }
-    case .cliNotFound: setBanner(.failure(failure, .cliNotFound), tab: tab)
-    case .notAuthenticated: setBanner(.failure(failure, .notAuthenticated), tab: tab)
-    case .timedOut: setBanner(.failure(failure, .timedOut), tab: tab)
-    case .emptyOutput: setBanner(.failure(failure, .emptyOutput), tab: tab)
-    case .failed(let code, _): setBanner(.failure(failure, .other("exit \(code)")), tab: tab)
+      resolved =
+        AgentPrompt.parse(envelopeJSON: stdout).map { .ready(failure, $0) }
+        ?? .failure(failure, .malformed)
+    case .cliNotFound: resolved = .failure(failure, .cliNotFound)
+    case .notAuthenticated: resolved = .failure(failure, .notAuthenticated)
+    case .timedOut: resolved = .failure(failure, .timedOut)
+    case .emptyOutput: resolved = .failure(failure, .emptyOutput)
+    case .failed(let code, _): resolved = .failure(failure, .other("exit \(code)"))
+    }
+
+    setBanner(resolved, tab: tab)
+    // Inline presentation: write the result into the terminal as output; the banner state still
+    // drives the tab badge + popover. Only the final result is injected (not loading/remote).
+    if presentation() == .inline, let ansi = AgentInlineRenderer.ansi(for: resolved) {
+      injectInline?(tab, ansi)
     }
   }
 
