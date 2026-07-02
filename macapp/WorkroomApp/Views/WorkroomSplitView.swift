@@ -20,6 +20,10 @@ struct WorkroomPaneDrag: Equatable {
 /// not a structural swap — the same lesson that made `WorkroomTerminalsView` always render through
 /// `PaneTreeView`.
 struct WorkroomSplitView: View {
+  /// The app store, threaded to each leaf as a plain (non-observed) reference so the workroom
+  /// context menu (issue #112) can read/mutate it WITHOUT subscribing this terminal-hosting view
+  /// tree to the whole churny store. NOT `@EnvironmentObject`/`@ObservedObject` on purpose.
+  let store: AppStore
   let layout: PaneLayout<SidebarID>
   /// Resolve a leaf to its live target (drops a since-deleted workroom). Owned by the store.
   let resolve: (SidebarID) -> TerminalTarget?
@@ -51,7 +55,7 @@ struct WorkroomSplitView: View {
         ForEach(leaves, id: \.self) { sid in
           if let target = resolve(sid), let rect = plan.panes[sid] {
             WorkroomPaneLeaf(
-              sid: sid, target: target, focused: sid == focusedID, multi: multi,
+              store: store, sid: sid, target: target, focused: sid == focusedID, multi: multi,
               externalDrag: $externalDrag, localize: localize, dropTarget: dropTarget,
               onClose: { onClose(sid) }, onMove: onMove
             )
@@ -117,6 +121,10 @@ enum WorkroomSplitTitlePresentation {
 /// (`multi == false`) it's just the bare `TargetTerminalDetail`, so the single-workroom case renders
 /// identically to the old `targetDetail` content.
 private struct WorkroomPaneLeaf: View {
+  /// Plain (non-observed) store reference for the group title bar's context menu (issue #112) —
+  /// see `WorkroomSplitView.store`. NOT `@EnvironmentObject`: this view hosts a live terminal and
+  /// must not re-evaluate on every unrelated store change.
+  let store: AppStore
   let sid: SidebarID
   let target: TerminalTarget
   let focused: Bool
@@ -157,6 +165,18 @@ private struct WorkroomPaneLeaf: View {
                 externalDrag = nil
               }
           )
+          // The workroom's right-click menu (issue #112) — the SAME items as the tab chip (incl.
+          // "Close"), PLUS a "Remove from Split" item (the menu equivalent of the title bar's ✕),
+          // wired to the same `onClose` the ✕ uses. `closeName` matches the chip's `workroomName ??
+          // primaryLabel`. Attached AFTER `.gesture` so both share the bar's `.contentShape`;
+          // secondary-click (menu) and the primary-button drag coexist. The ✕ is its own hit target,
+          // so a right-click directly on it won't raise this menu (expected — the menu covers the
+          // rest of the bar).
+          .contextMenu {
+            workroomContextMenu(
+              store: store, sid: sid, target: target, closeName: workroomName ?? projectLabel,
+              onRemoveFromSplit: onClose)
+          }
           content(compact: true)
         }
         // No border now: the group reads as a unit by a subtle raised fill over the `panel` base plus

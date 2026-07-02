@@ -444,40 +444,12 @@ private struct WorkroomTabChip: View {
     }
     .contentShape(Rectangle())
     .help(target.path)
+    // The workroom's right-click menu, shared with the split group title bar (issue #112). The tab
+    // keeps "Close" (whole-workroom close), so `closeName` is non-nil: a root chip shows Close only,
+    // a workroom chip shows the full set — same as before the extraction.
     .contextMenu {
-      // Close the whole workroom (all its tabs); the workroom's files stay. Confirmed via RootView's
-      // `pendingWorkroomClose` dialog — mirrors the sidebar delete's store-flag → dialog bridge.
-      Button {
-        store.pendingWorkroomClose = PendingWorkroomClose(
-          target: target, name: workroomName ?? primaryLabel)
-      } label: {
-        Label("Close", systemImage: "xmark")
-      }
-      // Label + delete only apply to a workroom (roots are never labelled or deletable). Mirrors the
-      // sidebar row's context menu (issue #41 + delete).
-      if let pair = store.workroomAndProject(for: sid) {
-        Divider()
-        Button {
-          store.pendingWorkroomLabel = PendingWorkroomLabel(
-            workroom: pair.workroom, project: pair.project)
-        } label: {
-          Label(pair.workroom.label == nil ? "Set Label…" : "Edit Label…", systemImage: "pencil")
-        }
-        if pair.workroom.label != nil {
-          Button {
-            store.removeWorkroomLabel(pair.workroom, in: pair.project)
-          } label: {
-            Label("Remove Label", systemImage: "pencil.slash")
-          }
-        }
-        Divider()
-        Button(role: .destructive) {
-          store.pendingDeletion = PendingWorkroomDeletion(
-            workroom: pair.workroom, project: pair.project)
-        } label: {
-          Label("Delete Workroom…", systemImage: "trash")
-        }
-      }
+      workroomContextMenu(
+        store: store, sid: sid, target: target, closeName: workroomName ?? primaryLabel)
     }
     .accessibilityElement(children: .combine)
     .accessibilityLabel(

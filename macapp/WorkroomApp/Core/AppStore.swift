@@ -1753,6 +1753,17 @@ final class AppStore: ObservableObject {
         if UITestFixture.twoTabs, project.workrooms.count > 1 {
           terminals.ensureTab(for: project.workrooms[1].target(inProject: project.path))
         }
+        // Workroom-split scenario (context-menu XCUITest, issue #112): start already in a
+        // root + workroom split so the group title bar renders on launch without a flaky drag.
+        // The selected workroom is a member, so `visibleWorkroomLayout` shows the split; open the
+        // root's terminal too so its pane mounts.
+        if UITestFixture.workroomSplit {
+          terminals.ensureTab(for: project.rootTarget)
+          workroomSplit = .split(
+            id: UUID(), orientation: .horizontal, ratio: 0.5,
+            first: .leaf(.root(project: project.path)),
+            second: .leaf(.workroom(project: project.path, name: workroom.name)))
+        }
         // Seed a representative notification history (the inspector's Notifications panel is otherwise
         // empty in fixture mode) so it gets visual + UI-test coverage. Keyed to the workroom target
         // but synthetic tabs (see `UITestFixture.notifications`) so the window's focus auto-dismiss

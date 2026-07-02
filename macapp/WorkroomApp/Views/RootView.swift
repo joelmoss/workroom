@@ -503,6 +503,7 @@ struct RootView: View {
   private func workroomSplitBody(focused: TerminalTarget) -> some View {
     if let selected = store.selectedTargetID {
       WorkroomSplitView(
+        store: store,
         layout: store.visibleWorkroomLayout(for: selected),
         resolve: { store.target(for: $0) },
         focusedID: selected,

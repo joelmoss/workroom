@@ -15,12 +15,15 @@ import XCTest
 final class SplitPaneUITests: XCTestCase {
   override func setUpWithError() throws { continueAfterFailure = false }
 
-  private func launchedApp() -> XCUIApplication {
+  private func launchedApp(workroomSplit: Bool = false) -> XCUIApplication {
     let app = XCUIApplication()
     // Fixture mode: deterministic fake projects/workrooms (not the developer's real config), with the
     // close/quit confirmations suppressed in-app — so ⌘W closes synchronously and teardown never
     // blocks on an alert.
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
+    // Workroom-split scenario (issue #112): start already in a root + workroom split so the group
+    // title bar renders on launch without a flaky XCUITest drag.
+    if workroomSplit { app.launchArguments += ["-WorkroomUITestWorkroomSplit", "1"] }
     // Start each test clean, ignoring persisted window state (cf. NewWindowUITests).
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
     app.launch()
@@ -115,5 +118,135 @@ final class SplitPaneUITests: XCTestCase {
     XCTAssertTrue(
       app.wait(for: .runningForeground, timeout: 3), "app must stay alive after Close Terminal")
     assertCount(panes(app), reaches: 1)  // collapsed to the survivor, no crash
+  }
+
+  // MARK: Split group title-bar context menu (issue #112)
+
+  /// The split group title bars — one `workroom.pane.titlebar` per split member.
+  private func titlebars(_ app: XCUIApplication) -> XCUIElementQuery {
+    app.descendants(matching: .any).matching(identifier: "workroom.pane.titlebar")
+  }
+
+  /// A title bar identifies its member by accessibility label: a workroom member's label is
+  /// `"<project>, workroom <name>"` (always contains the word "workroom", even once relabelled),
+  /// while a project-root member's label is just the project name.
+  private func workroomTitleBar(_ app: XCUIApplication) -> XCUIElement {
+    titlebars(app).matching(NSPredicate(format: "label CONTAINS[c] %@", "workroom")).firstMatch
+  }
+  private func rootTitleBar(_ app: XCUIApplication) -> XCUIElement {
+    titlebars(app)
+      .matching(NSPredicate(format: "NOT (label CONTAINS[c] %@)", "workroom")).firstMatch
+  }
+
+  /// A hittable context-menu item with this exact title. Filters out the collapsed menu-bar
+  /// duplicates (zero frame, not hittable) so an assertion reflects the on-screen context menu — the
+  /// same reasoning `testRightClickCloseTerminalDoesNotCrash` uses. Titles use the real ellipsis "…".
+  private func hittableMenuItem(_ app: XCUIApplication, _ title: String) -> XCUIElement? {
+    app.menuItems.matching(NSPredicate(format: "title == %@", title))
+      .allElementsBoundByIndex.first { $0.isHittable }
+  }
+
+  /// Right-clicking a **workroom** split member's title bar shows the full workroom menu: Close,
+  /// Remove from Split, Set Label…, and Delete Workroom….
+  func testSplitTitleBarMenuOnWorkroomMember() throws {
+    let app = launchedApp(workroomSplit: true)
+    try openWorkroom(app)
+    assertCount(titlebars(app), reaches: 2)  // root + workroom members
+
+    let bar = workroomTitleBar(app)
+    XCTAssertTrue(bar.waitForExistence(timeout: 6), "the workroom member's title bar should render")
+    bar.rightClick()
+
+    XCTAssertNotNil(hittableMenuItem(app, "Close"), "workroom member menu should offer Close")
+    XCTAssertNotNil(
+      hittableMenuItem(app, "Remove from Split"), "…and Remove from Split")
+    XCTAssertNotNil(
+      hittableMenuItem(app, "Set Label…"), "…and Set Label…")
+    XCTAssertNotNil(
+      hittableMenuItem(app, "Delete Workroom…"), "…and Delete Workroom…")
+  }
+
+  /// A **project-root** split member is never labelled or deletable, but it can still be closed or
+  /// popped out of the split — so its menu offers Close + Remove from Split only.
+  func testSplitTitleBarMenuOnRootMember() throws {
+    let app = launchedApp(workroomSplit: true)
+    try openWorkroom(app)
+    assertCount(titlebars(app), reaches: 2)
+
+    let bar = rootTitleBar(app)
+    XCTAssertTrue(bar.waitForExistence(timeout: 6), "the root member's title bar should render")
+    bar.rightClick()
+
+    XCTAssertNotNil(hittableMenuItem(app, "Close"), "root members can be closed")
+    XCTAssertNotNil(hittableMenuItem(app, "Remove from Split"), "…and removed from the split")
+    XCTAssertNil(hittableMenuItem(app, "Delete Workroom…"), "but root members aren't deletable")
+    XCTAssertNil(hittableMenuItem(app, "Set Label…"), "and aren't labelled")
+  }
+
+  /// "Remove from Split" pops the member out of the split — the split collapses to a solo view, so
+  /// its group title bars disappear (a solo pane has none). The workroom keeps running.
+  func testSplitTitleBarRemoveFromSplitCollapses() throws {
+    let app = launchedApp(workroomSplit: true)
+    try openWorkroom(app)
+    assertCount(titlebars(app), reaches: 2)
+
+    workroomTitleBar(app).rightClick()
+    let remove = hittableMenuItem(app, "Remove from Split")
+    XCTAssertNotNil(remove, "Remove from Split should be offered")
+    remove?.click()
+
+    assertCount(titlebars(app), reaches: 0)  // collapsed to solo → no group title bars
+    XCTAssertTrue(panes(app).firstMatch.waitForExistence(timeout: 6), "the survivor still renders")
+  }
+
+  /// The store-flag → RootView confirmation bridge fires from the split title bar, and the menu acts
+  /// on the member it was opened on even when that member is NOT focused. Focus the root first, then
+  /// delete the (non-focused) workroom member → its confirmation dialog appears.
+  func testSplitTitleBarDeleteTargetsMemberEvenWhenNotFocused() throws {
+    let app = launchedApp(workroomSplit: true)
+    try openWorkroom(app)
+    assertCount(titlebars(app), reaches: 2)
+
+    rootTitleBar(app).click()  // focus the ROOT member → the workroom member is now non-focused
+    workroomTitleBar(app).rightClick()
+    let delete = hittableMenuItem(app, "Delete Workroom…")
+    XCTAssertNotNil(delete, "Delete Workroom… should be offered on the workroom member")
+    delete?.click()
+
+    XCTAssertTrue(
+      app.buttons["Delete"].waitForExistence(timeout: 4),
+      "deleting from the split title bar should raise the confirmation dialog")
+    app.typeKey(.escape, modifierFlags: [])  // dismiss (cancel role) without deleting
+  }
+
+  /// Full label round-trip through the NEW split title-bar menu: Set Label… opens the label sheet
+  /// (the sheet bridge works from the split bar too), and once a label is set the menu flips to
+  /// Edit Label… + Remove Label. Guards the `label != nil` branch from silent regression.
+  func testSplitTitleBarLabelRoundTrip() throws {
+    let app = launchedApp(workroomSplit: true)
+    try openWorkroom(app)
+    XCTAssertTrue(workroomTitleBar(app).waitForExistence(timeout: 6))
+
+    // Unlabelled: the menu offers Set Label… (not Edit Label…).
+    workroomTitleBar(app).rightClick()
+    XCTAssertNil(hittableMenuItem(app, "Edit Label…"))
+    let setLabel = hittableMenuItem(app, "Set Label…")
+    XCTAssertNotNil(setLabel, "an unlabelled workroom member should offer Set Label…")
+    setLabel?.click()
+
+    // The label sheet opens from the split bar; enter a label and save.
+    let field = app.textFields["workroomLabel.field"]
+    XCTAssertTrue(field.waitForExistence(timeout: 4), "Set Label… should open the label sheet")
+    field.click()
+    field.typeText("My Label")
+    app.buttons["workroomLabel.saveButton"].click()
+    XCTAssertTrue(field.waitForNonExistence(timeout: 4), "the sheet should dismiss after Save")
+
+    // Labelled: the menu now offers Edit Label… + Remove Label, not Set Label….
+    workroomTitleBar(app).rightClick()
+    XCTAssertNotNil(
+      hittableMenuItem(app, "Edit Label…"), "a labelled member should offer Edit Label…")
+    XCTAssertNotNil(hittableMenuItem(app, "Remove Label"), "…and Remove Label")
+    XCTAssertNil(hittableMenuItem(app, "Set Label…"))
   }
 }

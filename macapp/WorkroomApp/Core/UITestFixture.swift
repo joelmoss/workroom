@@ -52,6 +52,15 @@ enum UITestFixture {
     UserDefaults.standard.bool(forKey: "WorkroomUITestTwoTabs")
   }
 
+  /// When set (`-WorkroomUITestWorkroomSplit 1`), the fixture starts already in a workroom-into-
+  /// workroom split of the project ROOT + the first workroom, so the split group title bar (issue
+  /// #112) renders on launch WITHOUT an XCUITest drag (which is flaky). One split covers both menu
+  /// branches: the workroom member gets the full menu, the root member gets none. Default (unset)
+  /// keeps the single-pane fixture the other tests rely on.
+  static var workroomSplit: Bool {
+    UserDefaults.standard.bool(forKey: "WorkroomUITestWorkroomSplit")
+  }
+
   /// When set (`-WorkroomUITestGitWorkroom 1`), the fixture workroom reports a **git** working tree
   /// (a flat changed-file list, no jj groups) instead of the default jj change — so the diff-viewer
   /// UI tests can exercise the `.gitWorktree` diff source. Default (unset) keeps the jj scenario the
