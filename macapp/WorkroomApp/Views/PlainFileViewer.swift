@@ -34,9 +34,6 @@ struct PlainFileViewer: View {
   /// Source vs. rendered for a Markdown file; ignored for other files (always source). Reset to the
   /// per-file default on load; a manual toggle persists until the next file opens.
   @State private var mode: RenderMode = .source
-  /// The rendered-Markdown attributed string for preview mode, and its reset token.
-  @State private var rendered = NSAttributedString()
-  @State private var renderVersion = 0
   private let theme = ThemeService.shared
 
   enum RenderMode: String, CaseIterable { case source, preview }
@@ -85,10 +82,6 @@ struct PlainFileViewer: View {
     .background(theme.tokens.bg)
     .task(id: descriptor.path) { await load() }
     .task(id: highlightKey) { await applyHighlight() }
-    // Render Markdown for preview mode (off-main), re-running on content / theme / mode change.
-    .task(id: "\(descriptor.path)\u{1F}\(theme.generation)\u{1F}\(showingPreview)") {
-      await renderMarkdown()
-    }
     // Feed the find model this file's lines when focus arrives (or the file/content changes), so a
     // search runs against what's actually on screen.
     .onChange(of: isFocused) { _, focused in if focused { find.setSource(lines) } }
@@ -168,19 +161,6 @@ struct PlainFileViewer: View {
     }
   }
 
-  /// Render the Markdown content for preview mode (off-main). Cheap miss when not previewing.
-  private func renderMarkdown() async {
-    guard showingPreview, state == .text, !content.isEmpty else { return }
-    let source = content
-    let tokens = theme.tokens
-    let result = await Task.detached(priority: .utility) {
-      MarkdownRenderer.attributedString(source, tokens: tokens)
-    }.value
-    guard !Task.isCancelled, source == content else { return }
-    rendered = result
-    renderVersion &+= 1
-  }
-
   /// Build syntax highlighting for the loaded file, off-main and cancellable. Any miss (no grammar,
   /// parse failure, stale/cancelled) leaves the file rendering plain — highlighting can never block
   /// or break the viewer.
@@ -257,8 +237,9 @@ struct PlainFileViewer: View {
 
   @ViewBuilder private var fileBody: some View {
     if showingPreview {
-      // Rendered Markdown — read-only, selectable, with clickable links.
-      MarkdownPreviewView(attributed: rendered, version: renderVersion, tokens: theme.tokens)
+      // Rendered Markdown in a themed WKWebView — GFM tables, task lists, and mermaid diagrams,
+      // all bundled/offline. Read-only, selectable, with externally-opening links.
+      MarkdownWebView(markdown: content, tokens: theme.tokens, generation: theme.generation)
     } else {
       // Source: an NSTextView (CodeTextView) — read-only, fully selectable across lines, with a
       // line-number gutter and find-match highlighting.

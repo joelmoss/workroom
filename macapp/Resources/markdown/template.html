@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!--
+      Content-Security-Policy for an UNTRUSTED workroom Markdown file. The page and all scripts are
+      loaded from the app bundle (file:), so 'self' covers our marked/DOMPurify/mermaid/render code.
+      'unsafe-eval' is required by mermaid's rendering path; it is safe here only because every byte of
+      user Markdown is DOMPurify-sanitized (no <script>, no on* handlers, no javascript: URLs survive)
+      before it reaches the DOM, so eval only ever executes our own bundled code. Remote loads are
+      blocked except images (data: + https:), and connect-src 'none' kills any beacon/exfil channel.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none';"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <article id="content" class="markdown-body"></article>
+    <!-- Order matters: parser + sanitizer + diagram engine, then our glue that ties them together. -->
+    <script src="marked.min.js"></script>
+    <script src="dompurify.min.js"></script>
+    <script src="mermaid.min.js"></script>
+    <script src="render.js"></script>
+  </body>
+</html>

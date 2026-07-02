@@ -1,0 +1,171 @@
+/* Markdown preview styling. Every colour is a CSS variable the native side sets from the active
+   ThemeTokens (see MarkdownWebView.themeVars), so the preview tracks the app theme in light + dark.
+   Layout only lives here; colours never hard-code so a theme switch recolours without a reload. */
+
+:root {
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --muted: #6a6a6a;
+  --dim: #9a9a9a;
+  --border: #e0e0e0;
+  --code-bg: #f2f2f2;
+  --accent: #316dca;
+  --accent-soft: #316dca22;
+  --table-header-bg: #f2f2f2;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.markdown-body {
+  box-sizing: border-box;
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 18px 22px 60px;
+  font: 14px/1.62 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  word-wrap: break-word;
+}
+
+.markdown-body > *:first-child {
+  margin-top: 0;
+}
+
+/* Headings */
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  margin: 1.5em 0 0.6em;
+  font-weight: 600;
+  line-height: 1.28;
+}
+.markdown-body h1 {
+  font-size: 1.9em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--border);
+}
+.markdown-body h2 {
+  font-size: 1.45em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--border);
+}
+.markdown-body h3 {
+  font-size: 1.2em;
+}
+.markdown-body h4 {
+  font-size: 1em;
+}
+.markdown-body h5,
+.markdown-body h6 {
+  font-size: 0.9em;
+  color: var(--muted);
+}
+
+.markdown-body p,
+.markdown-body ul,
+.markdown-body ol,
+.markdown-body blockquote,
+.markdown-body table,
+.markdown-body pre {
+  margin: 0 0 1em;
+}
+
+.markdown-body a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.markdown-body a:hover {
+  text-decoration: underline;
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 1.7em;
+}
+.markdown-body li + li {
+  margin-top: 0.25em;
+}
+.markdown-body li.task-list-item {
+  list-style: none;
+}
+.markdown-body li.task-list-item input {
+  margin: 0 0.5em 0 -1.4em;
+}
+
+.markdown-body blockquote {
+  padding: 0 1em;
+  color: var(--muted);
+  border-left: 3px solid var(--border);
+}
+
+/* Inline + block code */
+.markdown-body code {
+  font: 0.88em ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+  background: var(--code-bg);
+  padding: 0.15em 0.4em;
+  border-radius: 5px;
+}
+.markdown-body pre {
+  background: var(--code-bg);
+  padding: 12px 14px;
+  border-radius: 8px;
+  overflow: auto;
+}
+.markdown-body pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.86em;
+  line-height: 1.5;
+}
+
+/* Tables — the headline fix. */
+.markdown-body table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow: auto;
+  border-collapse: collapse;
+  font-size: 0.95em;
+}
+.markdown-body th,
+.markdown-body td {
+  padding: 6px 13px;
+  border: 1px solid var(--border);
+}
+.markdown-body th {
+  font-weight: 600;
+  background: var(--table-header-bg);
+}
+.markdown-body tr:nth-child(2n) td {
+  background: var(--accent-soft);
+}
+
+.markdown-body hr {
+  height: 1px;
+  border: 0;
+  background: var(--border);
+  margin: 1.6em 0;
+}
+
+.markdown-body img {
+  max-width: 100%;
+}
+
+/* Mermaid diagrams render into an inline SVG; centre them and give a little breathing room. */
+.markdown-body pre.mermaid {
+  background: none;
+  padding: 8px 0;
+  text-align: center;
+}
+.markdown-body pre.mermaid svg {
+  max-width: 100%;
+  height: auto;
+}

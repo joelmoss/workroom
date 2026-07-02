@@ -138,6 +138,12 @@ targets:
       - path: Resources/run-supervisor
         type: folder
         buildPhase: resources
+      # Markdown preview web assets (marked + DOMPurify + mermaid + our template/CSS/glue). Folder
+      # reference → copied verbatim to Contents/Resources/markdown; MarkdownWebView loads it offline
+      # via Bundle.main.url(forResource: "markdown"). See Resources/markdown/template.html.
+      - path: Resources/markdown
+        type: folder
+        buildPhase: resources
     dependencies:
       - package: Sparkle
       # libghostty: link the raw C API product (GhosttyKit). Its package links c++ + Carbon;
