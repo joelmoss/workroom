@@ -319,10 +319,13 @@ struct RootView: View {
   private func rootWindowChrome<V: View>(_ content: V) -> some View {
     content
       // Title the window with the selected project/workroom for the Window menu + Mission Control. A
-      // non-empty `navigationTitle` re-asserts `titleVisibility = .visible` every render, so the bar is
-      // kept clear by a hard lock in `AppStore.attachWindow` (a `didUpdate` observer that re-hides it
-      // after each SwiftUI pass) — the title never shows in the bar (issue #70).
+      // non-empty `navigationTitle` re-asserts `titleVisibility = .visible` every render — which used to
+      // flash the name across the bar on each selection/focus/close change. On macOS 15+ we remove the
+      // *visible* title declaratively with `.toolbar(removing: .title)` (S1 spike): the window keeps its
+      // `title` for the Window menu, but SwiftUI no longer re-asserts a visible title → no flash. The
+      // `AppStore.attachWindow` `didUpdate` re-hide lock stays as the pre-15 fallback (issue #70).
       .navigationTitle(store.windowTitle)
+      .modifier(RemoveWindowTitleBarTitle())
       // Drop NavigationSplitView's auto sidebar toggle — `LeadingTitlebarBar` carries its own, leftmost
       // after the traffic lights. This removal doesn't fully take (the live toolbar still carries the
       // toggle + a flexible space + the split tracking-separator), so the whole window toolbar is hidden
@@ -596,5 +599,21 @@ private struct MenuStateValues: ViewModifier {
       .focusedSceneValue(\.multipleWorkroomTabs, multipleWorkroomTabs)
       .focusedSceneValue(\.canOpenInEditor, canOpenInEditor)
       .focusedSceneValue(\.workroomSplitVisible, workroomSplitVisible)
+  }
+}
+
+/// S1 spike (title-flash): remove the window bar's *visible* title on macOS 15+ while keeping
+/// `window.title` (from `.navigationTitle`) for the Window menu / Mission Control. Unlike a non-empty
+/// `.navigationTitle` — which re-asserts `titleVisibility = .visible` on every window update and lets
+/// AppKit fade the name across the bar — `.toolbar(removing: .title)` removes the visible title
+/// declaratively, so there is nothing to flash. No-op on macOS 14 (the `AppStore.attachWindow`
+/// `didUpdate` re-hide lock remains the pre-15 fallback).
+private struct RemoveWindowTitleBarTitle: ViewModifier {
+  func body(content: Content) -> some View {
+    if #available(macOS 15.0, *) {
+      content.toolbar(removing: .title)
+    } else {
+      content
+    }
   }
 }

@@ -7,6 +7,9 @@ import SwiftUI
 /// Chrome/Arc approach is used instead: `.fullSizeContentView` + draw the bar in content at any
 /// height. Tune `height` to taste.
 enum WorkroomTitlebar {
+  /// Total bar height (panel background + drag area). Must stay tall enough to clear the
+  /// NavigationSplitView's ~30pt top toolbar-reserve — shrinking it lets the split's sidebar column
+  /// slide up and overlap the bar (clips the tabs, eats clicks). 38 is the tested-safe value.
   static let height: CGFloat = 38
   /// Leading inset so the bar's first control clears the traffic-light cluster.
   static let trafficLightInset: CGFloat = 80

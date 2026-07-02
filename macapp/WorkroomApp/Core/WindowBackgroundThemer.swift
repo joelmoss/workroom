@@ -18,13 +18,6 @@ struct WindowBackgroundThemer: NSViewRepresentable {
     ) { [weak probe] _ in
       MainActor.assumeIsolated { Self.apply(to: probe?.window) }
     }
-    // AppKit re-lays the traffic lights on resize/fullscreen, resetting our centring — re-apply it.
-    context.coordinator.resizeObserver = NotificationCenter.default.addObserver(
-      forName: NSWindow.didResizeNotification, object: nil, queue: .main
-    ) { [weak probe] note in
-      guard let window = probe?.window, note.object as? NSWindow === window else { return }
-      MainActor.assumeIsolated { Self.positionTrafficLights(in: window) }
-    }
     return probe
   }
 
@@ -36,10 +29,8 @@ struct WindowBackgroundThemer: NSViewRepresentable {
 
   final class Coordinator {
     var observer: NSObjectProtocol?
-    var resizeObserver: NSObjectProtocol?
     deinit {
       if let observer { NotificationCenter.default.removeObserver(observer) }
-      if let resizeObserver { NotificationCenter.default.removeObserver(resizeObserver) }
     }
   }
 
@@ -73,29 +64,10 @@ struct WindowBackgroundThemer: NSViewRepresentable {
     // the terminal background) — title bar + tab bar + panel read as one surface, terminals as
     // another (issue #36).
     window.backgroundColor = ThemeService.shared.tokens.nsPanel
-
-    positionTrafficLights(in: window)
-    // The buttons are re-laid by AppKit after this pass on first show; re-apply next runloop tick so
-    // our centring sticks.
-    DispatchQueue.main.async { positionTrafficLights(in: window) }
-  }
-
-  /// Vertically centre the traffic-light cluster in the custom title bar. The buttons live in the
-  /// native ~32pt title-bar container (centred in it); our bar is taller and drawn as the top strip
-  /// of the content, so without this the lights sit too high. Their container is not flipped (y=0 at
-  /// its bottom = window top edge), so centring the button on `barHeight/2`-from-the-top means
-  /// `origin.y = containerHeight − buttonHeight/2 − barHeight/2`. Re-applied on resize (AppKit resets
-  /// the frames). For very tall bars the buttons move below the 32pt container, which is fine — the
-  /// content (and our bar) fill the full window with `.fullSizeContentView`.
-  @MainActor static func positionTrafficLights(in window: NSWindow) {
-    let types: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
-    for type in types {
-      guard let button = window.standardWindowButton(type), let container = button.superview
-      else { continue }
-      let targetY = container.bounds.height - button.frame.height / 2 - WorkroomTitlebar.height / 2
-      if abs(button.frame.origin.y - targetY) > 0.5 {
-        button.setFrameOrigin(NSPoint(x: button.frame.origin.x, y: targetY))
-      }
-    }
+    // S2a spike: we no longer hand-position the traffic lights. Manually moving the standard window
+    // buttons into our 38pt bar fought AppKit (it re-lays them to the standard row on every layout
+    // change — opening the first terminal, resize, fullscreen — so they shifted, and re-centering on
+    // every update jittered). The lights now sit at AppKit's natural position, stable. `RootView`'s
+    // bar content is inset to clear them (`WorkroomTitlebar.trafficLightInset`).
   }
 }
