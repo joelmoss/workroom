@@ -34,6 +34,14 @@ struct WorkroomApp: App {
         .environmentObject(updater)
         .environmentObject(whatsNew)
     }
+    // A real unified window toolbar gives the title bar a taller single row and lets AppKit
+    // vertically center the traffic lights in it (the "breathing room" above/below the chrome —
+    // issue #23). The toolbar itself carries no items: our chrome lives in a full-width `.left`
+    // titlebar accessory (never overflows), and the toolbar is purely the height/lights-centering
+    // owner. Its material is hidden in `rootWindowChrome` (`.toolbarBackground(.hidden)`) so the
+    // themed window background shows through the whole bar. `.unifiedCompact` is the shorter of the
+    // two unified variants — a little breathing room without the taller `.unified` row.
+    .windowToolbarStyle(.unifiedCompact)
     .commands { WorkroomCommands(updater: updater) }
 
     Settings {

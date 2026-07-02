@@ -97,6 +97,26 @@ struct RootView: View {
   /// trailing controls are separate toolbar placements (`LeadingTitlebarBar` / `TrailingTitlebarBar`).
   /// No strip chrome (height / panel background / drag layer / inset) — the real toolbar provides the
   /// bar, its height, and the traffic-light gutter.
+  /// The full title-bar bar hosted in the `.left` titlebar accessory: leading controls, the workroom
+  /// tab strip (fills + scrolls), trailing controls. Environment objects are re-injected because the
+  /// accessory is a separate hosting tree from the main window content.
+  private var accessoryBarContent: some View {
+    HStack(spacing: 6) {
+      LeadingTitlebarBar()
+      workroomTabsBar
+      TrailingTitlebarBar()
+    }
+    .padding(.horizontal, 8)
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    // No own background — the accessory is transparent so the window's panel bg shows through it AND
+    // behind the traffic lights uniformly (an opaque fill here didn't match the titlebar strip behind
+    // the lights). WindowBackgroundThemer sets the window bg to the panel token.
+    .environmentObject(store)
+    .environmentObject(notifications)
+    .environmentObject(terminals)
+    .environmentObject(updater)
+  }
+
   @ViewBuilder private var workroomTabsBar: some View {
     let tabs = store.displayedWorkroomTargets()
     if !tabs.isEmpty {
@@ -341,29 +361,20 @@ struct RootView: View {
       // `AppStore.attachWindow` `didUpdate` re-hide lock stays as the pre-15 fallback (issue #70).
       .navigationTitle(store.windowTitle)
       .modifier(RemoveWindowTitleBarTitle())
-      // S4 rehost: host the custom chrome in a REAL `.unified` toolbar (AppKit centers the traffic
-      // lights + controls in the taller bar, full width, no NavigationSplitView clipping). Split into
-      // three placements — leading controls, the workroom tab strip (principal), trailing controls —
-      // instead of one centered pill. Replaces the old content-strip `titlebarBar`.
-      .toolbar {
-        if #available(macOS 26.0, *) {
-          // macOS 26 wraps toolbar items in a Liquid Glass capsule; `.sharedBackgroundVisibility(.hidden)`
-          // removes it so our controls sit flat on the bar (matches the pre-migration look).
-          ToolbarItem(placement: .navigation) { LeadingTitlebarBar() }
-            .sharedBackgroundVisibility(.hidden)
-          ToolbarItem(placement: .principal) { workroomTabsBar }
-            .sharedBackgroundVisibility(.hidden)
-          ToolbarItem(placement: .primaryAction) { TrailingTitlebarBar() }
-            .sharedBackgroundVisibility(.hidden)
-        } else {
-          ToolbarItem(placement: .navigation) { LeadingTitlebarBar() }
-          ToolbarItem(placement: .principal) { workroomTabsBar }
-          ToolbarItem(placement: .primaryAction) { TrailingTitlebarBar() }
-        }
-      }
-      // Flatten the bar: hide the toolbar's own background material so it reads as one flat surface
-      // with our panel-coloured title bar (WindowBackgroundThemer sets the window background).
+      // An item-less `.unified` window toolbar (style set on the scene in `WorkroomApp`) is present
+      // purely to (a) grow the title-bar to a taller single row and (b) let AppKit vertically center
+      // the traffic lights in it — the "breathing room" above/below the chrome (issue #23). It carries
+      // no controls: the chrome (leading controls · workroom tabs · trailing controls) lives in a
+      // full-width `.left` titlebar accessory to the RIGHT of the lights (Chrome-style), which never
+      // collapses into an overflow `»` (the tab strip is a ScrollView that just scrolls) and grows to
+      // the taller bar. The clear principal item forces the (otherwise empty) toolbar to exist so it
+      // sets the height; `.toolbarBackground(.hidden)` removes the toolbar's own material so the themed
+      // window background (WindowBackgroundThemer) shows through the whole bar uniformly, incl. behind
+      // the lights — instead of the toolbar's grey vibrancy.
+      .toolbar { ToolbarItem(placement: .principal) { Color.clear.frame(width: 0, height: 0) } }
+      .toolbar(.visible, for: .windowToolbar)
       .toolbarBackground(.hidden, for: .windowToolbar)
+      .background(TitlebarAccessoryHost { accessoryBarContent })
       .background(WindowBackgroundThemer())
       // Keep the root branch labels reasonably current: refresh when the app regains
       // focus (throttled, so rapid alt-tabbing doesn't fork a git/jj process per project).
