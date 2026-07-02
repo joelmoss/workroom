@@ -98,6 +98,21 @@ struct WorkroomSplitView: View {
   }
 }
 
+/// Pure, testable mapping from a split member's `SidebarID` + its resolved `target` to the workroom
+/// name shown in the group title bar. Extracted from `WorkroomPaneLeaf` so it is unit-testable without
+/// instantiating the view (same rationale as `RootPresentation`).
+///
+/// INVARIANT: `target` MUST be the resolved target for `sid` (i.e. `AppStore.target(for: sid)`), so
+/// `target.title` is *this* workroom's label-aware `displayName` (issue #41). A mismatched target would
+/// display an unrelated title; the one caller satisfies this via `resolve(sid)`.
+enum WorkroomSplitTitlePresentation {
+  static func workroomName(sid: SidebarID, target: TerminalTarget) -> String? {
+    // `target.title` is the label-aware `displayName`; NOT the raw `sid` name (issue #113).
+    if case .workroom = sid { return target.title }
+    return nil
+  }
+}
+
 /// One workroom pane: the full terminal body + a focus border and a hover ✕ (remove from split). Solo
 /// (`multi == false`) it's just the bare `TargetTerminalDetail`, so the single-workroom case renders
 /// identically to the old `targetDetail` content.
@@ -175,11 +190,12 @@ private struct WorkroomPaneLeaf: View {
     AppStore.projectPath(of: sid).map { ($0 as NSString).lastPathComponent } ?? ""
   }
 
-  /// This member's own workroom name (nil for a project root) — taken from the sid so the label format
-  /// is provably the same as the tab chip's `workroomName`.
+  /// This member's own display name (nil for a project root) — the label-aware `target.title`,
+  /// resolved through `WorkroomSplitTitlePresentation` so a relabel (issue #41) shows here
+  /// immediately. Feeds both the title bar's visible text and its accessibility label (issue #113);
+  /// NOT the raw `SidebarID` name, which never changes on relabel.
   private var workroomName: String? {
-    if case .workroom(_, let name) = sid { return name }
-    return nil
+    WorkroomSplitTitlePresentation.workroomName(sid: sid, target: target)
   }
 
   @ViewBuilder

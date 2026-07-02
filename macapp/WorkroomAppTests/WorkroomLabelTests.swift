@@ -83,6 +83,26 @@ final class WorkroomLabelTests: XCTestCase {
       wr.target(inProject: "/p").id, key("/p", "fox"), "id stays keyed on the real name")
   }
 
+  // MARK: View presentation — split title bar name source (issue #113 regression)
+
+  func testSplitTitleNameUsesLabelAwareTargetTitle() {
+    var wr = Workroom(name: "fox", path: "/p/fox", vcsName: "workroom/fox", warnings: [])
+    let sid = SidebarID.workroom(project: "/p", name: "fox")
+    // Unlabelled → the real name (must track displayName, never diverge).
+    XCTAssertEqual(
+      WorkroomSplitTitlePresentation.workroomName(sid: sid, target: wr.target(inProject: "/p")),
+      "fox")
+    // Labelled → the LABEL, not the raw sid name — the exact #113 bug.
+    wr.label = "Auth"
+    XCTAssertEqual(
+      WorkroomSplitTitlePresentation.workroomName(sid: sid, target: wr.target(inProject: "/p")),
+      "Auth", "REGRESSION #113: split title must show the label, not the raw workspace name")
+    // A non-workroom member (project root) shows only the project label → nil workroom name.
+    XCTAssertNil(
+      WorkroomSplitTitlePresentation.workroomName(
+        sid: .project("/p"), target: wr.target(inProject: "/p")))
+  }
+
   // MARK: Store — displayName(forWorkroom:inProject:)
 
   func testStoreDisplayNameLookup() {
