@@ -1,8 +1,17 @@
 # Workroom
 
-### Mission control for every branch you're running at once.
+### The Terminal Driven Development Environment for the AI Revolution
 
-Spin up a workroom, get a terminal, get notified.
+Workroom is a native MacOS IDE with the terminal at its heart. We believe that the terminal is now
+the best interface for developers, and that it should be the center of your development environment.
+The terminal is where the magic happens - it's where your agents live, your servers and tests run,
+and where you review and commit your code.
+
+Workroom also embraces agentic development, where you can have multiple agents working on different
+bugs/chores/features at the same time, or even on different projects. Give each agent its own
+workroom, with its own terminal and its own context, so you can work on multiple projects and
+branches at the same time without losing context. You can even work on multiple projects in a single
+split view.
 
 <p align="center">
   <img src="docs/workroom-app.png" width="900"
@@ -18,23 +27,6 @@ Spin up a workroom, get a terminal, get notified.
   &nbsp;·&nbsp;
   <a href="#local-development">Develop</a>
 </p>
-
-**Workroom is a native [macOS app](#the-macos-app) for running many copies of a project at once.**
-Every project gets a sidebar; every workroom inside it gets its own persistent terminal. Spin a new
-workroom up in one click, jump between their terminals freely without losing a running build or dev
-server, and get notified the moment one finishes or needs your input — instead of hunting through a
-wall of terminal tabs to find out.
-
-Under the hood, a workroom is a full, isolated copy of your project — its own
-[Git](https://git-scm.com/) worktree or [Jujutsu](https://martinvonz.github.io/jj/) workspace, so
-you can work on several branches or features at the same time without stashing, switching, or
-tripping over uncommitted changes. Workroom does all that bookkeeping for you (auto-detecting Git
-vs JJ) and keeps your workrooms under a central directory (`~/workrooms` by default, configurable
-via `workrooms_dir` in `~/.config/workroom/config.json`).
-
-The app bundles and drives the same `workroom` engine that also ships as a
-[standalone CLI](#the-cli-standalone) — handy for terminal-first workflows, and the only option on
-Linux/Windows.
 
 ---
 
@@ -82,21 +74,22 @@ Linux/Windows.
 
 ## Key Features
 
-- **Isolated project copies** — each workroom is a Git worktree or JJ workspace, so several
-  branches/features run side by side without stashing or switching.
-- **Automatic VCS detection** — Workroom detects Git vs Jujutsu and uses the right mechanism.
-- **One-click create/delete** (in the app) or one command (in the CLI), with friendly auto-generated
-  names like `swift-meadow`.
-- **A persistent terminal per workroom** (app) powered by [libghostty](https://ghostty.org) — switch
-  away and your dev server, build, or REPL keeps running.
+- **Multiple projects** — add/create Git or JJ repos.
+- **Mutiple Workrooms** — each workroom is an isolated project copy (Git worktree or JJ workspace),
+  so several branches/features run side by side without stashing or switching.
+- **Git/Jujutsu Support** — Shows changes, commits, and file diffs (side-by-side or unified) for each workroom.
+- **Pull Requests** — create, view, and manage pull requests directly from each workroom.
+- **File explorer** — browse and view the workroom's files with automatic language detection, and syntax highlighting.
+- **Multiple terminals, multiple tabs** — each workroom keeps its own terminal alive, and you can
+  open as many terminals as you like in a draggable tab strip.
+- **Split view** — Open and arrange multiple workrooms and tabs horizontally or vertically.
 - **Live activity & notifications** — tabs and sidebar rows animate while busy; desktop banners fire
   when a backgrounded terminal needs you.
+- **Custom Run Command** — set a custom command to run in each workroom (e.g. `npm start` or `rails s`).
 - **Setup/teardown hooks** — run a project script automatically on create and delete.
-- **A single engine, two front-ends** — the macOS app bundles the Go CLI and drives it over a
-  machine-readable `--json` API; the CLI is also fully standalone (and the only option on
-  Linux/Windows).
-- **Self-updating** — the app updates itself via [Sparkle](https://sparkle-project.org); the CLI has
-  a `workroom update` command.
+- **Quick Terminal** — a global hotkey to open a quick terminal.
+- **Keyboard shortcuts** — at the heart of the app, including a global hotkey to show/hide Workroom from anywhere.
+- **Themes** — Dozens of themes, each with light/dark mode, and live re-theming of the entire app, including terminals.
 
 ---
 
