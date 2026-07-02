@@ -533,3 +533,40 @@ behind `!pretend`, emitting a dry-run envelope instead (mirror the `--create` dr
 **Depends on:** nothing.
 
 **Priority:** P3 (unused flag combination; consistency cleanup).
+
+## Consolidate terminal focus authority + cross-window reconciliation (macapp) — focus-desync follow-up
+
+**What:** (1) Collapse the ~5 duplicated "make first responder + `setSurfaceFocused`" call sites in
+`GhosttySurfaceView`/`TerminalContainerView` into one guarded helper; (2) add window key-gain focus
+reconciliation so the focused pane's surface reclaims first responder when the app window
+reactivates (Cmd-Tab / Mission Control) and first responder had drifted to a non-terminal view.
+
+**Current state:** The reported bug — arrows/letters dead when a TUI selection prompt appears in a
+freshly-mounted/unfocused-looking pane — is **fixed**: `createSurface` now re-syncs the libghostty
+focus flag when the surface is created while the view already holds first responder
+(`GhosttySurfaceView.adoptFocusIfFirstResponder`, tested by `TerminalFocusAdoptionTests` +
+`TerminalFocusAdoptionLiveSurfaceTests`). Focus-set logic still lives in several places
+(`becomeFirstResponder`, `mouseDown`, search hand-back `:171`, `viewDidMoveToWindow`, `applyFocus`),
+and `WindowRegistry`'s `didBecomeKeyNotification` observer still only updates `lastActiveStore`, not
+terminal focus.
+
+**Why:** The duplication has produced repeated focus-race fixes (#3 splits, the diff-pane fix, the
+`viewDidMoveToWindow` backstop, and now this one) — each patch adds another copy and the next race
+slips through the gap. One guarded helper removes that class. Cross-window reconciliation is the one
+drift trigger the createSurface fix does not cover (surface already exists; first responder moved
+away). Surfaced by `/plan-eng-review` (DRY finding) and the Codex outside-voice pass, deliberately
+deferred to avoid refactoring focus timing before the root cause was confirmed.
+
+**How to start:** Extract `focusTerminal(surface:)` with a single guard set; route the existing call
+sites through it. For reconciliation, extend the `WindowRegistry` `didBecomeKeyNotification` handler
+(`Core/WindowRegistry.swift:50`) to restore first responder to the focused pane **only** when no
+sheet is open AND the current first responder is nil/the window/a removed responder (NOT a live text
+field or sidebar table — codex's caveat: "no sheet" alone is insufficient). Unit-test the guard as a
+pure decision.
+
+**Depends on:** the shipped createSurface focus-sync; also relates to the queued first-responder
+stale-state recheck noted under "Workroom split: deferred follow-ups" (`TerminalContainerView`
+`applyFocus`) — fold both into the one helper.
+
+**Priority:** P3 (primary bug fixed; this is the DRY/robustness follow-up that prevents the next
+focus race).

@@ -28,6 +28,10 @@ the likeliest suspects.
 - [ ] **option-as-alt**: `⌥b` / `⌥f` move by word in a shell with readline.
 - [ ] 🔧 During active marked (pre-edit) text, hold ⌘ → cursor still updates
       (flagsChanged-during-IME fix).
+- [ ] 🔧 **TUI selection prompt in a fresh/just-mounted pane**: start `claude` (or another TUI with
+      an ↑/↓ selection prompt) in a newly-opened tab or split pane, trigger the prompt → arrow keys
+      and letter keys (e.g. `N`) work immediately without needing to click the pane first
+      (createSurface focus-sync — surface created after the pane took first responder).
 
 ## D. Shortcuts
 - [ ] `⌘T` → new terminal tab in the selected target.

@@ -253,6 +253,13 @@ final class GhosttySurfaceView: NSView {
     addSubview(scrollbarThumb, positioned: .above, relativeTo: nil)
     addSubview(goToBottomButton, positioned: .above, relativeTo: nil)
     layoutGoToBottomButton()
+    // The surface may have been created AFTER this view already became first responder: a zero-bounds
+    // attach defers `createSurface` to `setFrameSize`/`layout`, so `becomeFirstResponder` ran while
+    // `surface == nil` and its `setSurfaceFocused(true)` no-oped (see `setSurfaceFocused`). Without
+    // this the surface comes up blurred while the view holds first responder — keys reach `keyDown`
+    // but libghostty drops them on an unfocused surface, and a click can't recover because
+    // `makeFirstResponder` short-circuits on an already-first-responder view. Re-sync the flag now.
+    adoptFocusIfFirstResponder()
   }
 
   /// Spawn the surface's PTY *without* waiting for window mount (issue #67, background run). Normally
@@ -443,6 +450,27 @@ final class GhosttySurfaceView: NSView {
   private func setSurfaceFocused(_ focused: Bool) {
     guard let surface else { return }
     ghostty_surface_set_focus(surface, focused)
+  }
+
+  /// True when this view currently holds the window's first responder. The predicate the
+  /// surface-creation focus re-sync hinges on; exposed (like `canSpawnSurface`) so the decision is
+  /// unit-testable against a real `NSWindow` without a live libghostty surface.
+  var holdsFirstResponder: Bool { window?.firstResponder === self }
+
+  /// Test-observable count of focus re-syncs performed by `adoptFocusIfFirstResponder` (which
+  /// otherwise routes through the surface-guarded `setSurfaceFocused`, invisible without a getter).
+  private(set) var focusSyncCount = 0
+
+  /// Re-sync libghostty's per-surface focus flag to AppKit first-responder state. `createSurface`
+  /// calls this at the end to cover the case where `becomeFirstResponder` fired before the surface
+  /// existed (its `setSurfaceFocused` no-oped). Only `becomeFirstResponder` fired `onFocused` back
+  /// then — the AppStore logical focus is already correct — so this re-syncs the ghostty flag ONLY
+  /// and deliberately does not re-fire `onFocused`. No-op when the view isn't first responder, so it
+  /// can never create the inverse desync (ghostty focused while AppKit isn't).
+  func adoptFocusIfFirstResponder() {
+    guard holdsFirstResponder else { return }
+    focusSyncCount += 1
+    setSurfaceFocused(true)
   }
 
   // MARK: Theming

@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 
 @testable import Workroom
@@ -102,5 +103,68 @@ final class ScrollbarGeometryTests: XCTestCase {
     XCTAssertTrue(GhosttySurfaceView.isScrolledBack(total: 400, offset: 0, len: 200))  // top
     // No scrollback (buffer == viewport) → nothing below, so the button stays hidden.
     XCTAssertFalse(GhosttySurfaceView.isScrolledBack(total: 200, offset: 0, len: 200))
+  }
+}
+
+/// Guards the focus re-sync that fixes "arrows/letters do nothing when a TUI prompt appears in a
+/// pane that looks focused." Root cause: a zero-bounds attach defers `createSurface`, so
+/// `becomeFirstResponder` runs while `surface == nil` and its `setSurfaceFocused(true)` no-ops — the
+/// surface is later created blurred while the view holds first responder, and keys are dropped. The
+/// fix re-syncs the focus flag at the end of `createSurface`. These exercise the decision
+/// (`holdsFirstResponder`) and the action (`adoptFocusIfFirstResponder`) against a real `NSWindow`
+/// with no live surface, mirroring how `canSpawnSurface` is unit-tested.
+@MainActor
+final class TerminalFocusAdoptionTests: XCTestCase {
+  private func windowedView() -> (NSWindow, GhosttySurfaceView) {
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+      styleMask: [.titled], backing: .buffered, defer: true)
+    let view = GhosttySurfaceView(
+      workingDirectory: NSTemporaryDirectory(), command: nil, spawnsSurface: false)
+    view.frame = window.contentView!.bounds
+    window.contentView!.addSubview(view)
+    return (window, view)
+  }
+
+  func testHoldsFirstResponderReflectsWindowState() {
+    let (window, view) = windowedView()
+    XCTAssertTrue(window.makeFirstResponder(view), "the surface view must accept first responder")
+    XCTAssertTrue(view.holdsFirstResponder)
+    XCTAssertTrue(window.makeFirstResponder(nil))
+    XCTAssertFalse(view.holdsFirstResponder)
+  }
+
+  func testAdoptFocusOnlyActsWhenFirstResponder() {
+    let (window, view) = windowedView()
+    _ = window.makeFirstResponder(nil)
+    view.adoptFocusIfFirstResponder()
+    XCTAssertEqual(view.focusSyncCount, 0, "must not adopt focus when not first responder")
+    _ = window.makeFirstResponder(view)
+    view.adoptFocusIfFirstResponder()
+    XCTAssertEqual(view.focusSyncCount, 1, "adopts focus exactly once when first responder")
+  }
+}
+
+/// The end-to-end ordering repro, gated on the libghostty runtime being available in the test host
+/// (`XCTSkipUnless`) — a skipped test beats a flaky one. Reproduces: the view becomes first responder
+/// while the surface is still nil (zero-bounds attach), then the surface is created on resize; the
+/// fix must re-sync focus so `focusSyncCount` bumps during `createSurface`.
+@MainActor
+final class TerminalFocusAdoptionLiveSurfaceTests: XCTestCase {
+  func testSurfaceCreatedAfterFirstResponderAdoptsFocus() throws {
+    try XCTSkipUnless(GhosttyApp.shared.app != nil, "requires the libghostty runtime")
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+      styleMask: [.titled], backing: .buffered, defer: true)
+    let view = GhosttySurfaceView(
+      workingDirectory: NSTemporaryDirectory(), command: nil, spawnsSurface: true)
+    defer { view.tearDown() }
+    view.frame = .zero  // zero bounds → createSurface defers on attach
+    window.contentView!.addSubview(view)
+    XCTAssertTrue(window.makeFirstResponder(view))
+    XCTAssertEqual(view.focusSyncCount, 0, "no surface yet — nothing to sync")
+    view.setFrameSize(NSSize(width: 400, height: 300))  // deferred createSurface runs now
+    XCTAssertEqual(
+      view.focusSyncCount, 1, "createSurface must re-sync focus for the first-responder view")
   }
 }
