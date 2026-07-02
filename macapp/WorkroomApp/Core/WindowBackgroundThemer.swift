@@ -57,14 +57,18 @@ struct WindowBackgroundThemer: NSViewRepresentable {
     // shorter `.unifiedCompact`) gives a taller bar with more space beneath it. (Replacing the toolbar
     // outright crashes — SwiftUI owns it — so hide, don't replace.) `.none` separator so no hairline
     // rule appears under the bar when the terminal scrolls.
-    window.toolbar?.isVisible = false
+    // S4 rehost increment 1 (probe): DO NOT hide the toolbar — reveal SwiftUI's `.unified` toolbar so
+    // AppKit centers the traffic lights in it (proven by the spike). This surfaces whatever items
+    // NavigationSplitView still injects (toggleSidebar / flexible space / split separator) so we can
+    // see what to replace with our own toolbar content in the next increment.
+    // window.toolbar?.isVisible = false
     window.toolbarStyle = .unified
     window.titlebarSeparatorStyle = .none
     // The title bar belongs to the chrome panel, so it takes the panel colour (a subtle step off
     // the terminal background) — title bar + tab bar + panel read as one surface, terminals as
     // another (issue #36).
     window.backgroundColor = ThemeService.shared.tokens.nsPanel
-    // S2a spike: we no longer hand-position the traffic lights. Manually moving the standard window
+    // We no longer hand-position the traffic lights. Manually moving the standard window
     // buttons into our 38pt bar fought AppKit (it re-lays them to the standard row on every layout
     // change — opening the first terminal, resize, fullscreen — so they shifted, and re-centering on
     // every update jittered). The lights now sit at AppKit's natural position, stable. `RootView`'s

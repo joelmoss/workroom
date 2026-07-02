@@ -87,16 +87,30 @@ struct RootView: View {
   }
 
   var body: some View {
-    // The custom title bar is the top strip of the (full-size) content: stack it ABOVE the split view
-    // so the filled detail content can never slide up under it (hanging it off the split view as a top
-    // `safeAreaInset` let the terminal tab strip clip under the bar). `ignoresSafeArea(.top)` lets the
-    // stack reach up under the transparent native title bar so the bar starts at the very top. The
-    // sidebar's own native-card top gap is closed separately, on the sidebar column in `splitView`.
-    VStack(spacing: 0) {
-      titlebarBar
-      rootWindowChrome(rootLifecycle(rootReveals(rootModals(splitView))))
+    // The custom chrome now lives in a real `.unified` window toolbar (`titlebarContent`, hosted via
+    // `.toolbar` in `rootWindowChrome`), not a content top-strip — so AppKit owns the bar height and
+    // centers the traffic lights alongside the controls.
+    rootWindowChrome(rootLifecycle(rootReveals(rootModals(splitView))))
+  }
+
+  /// The workroom tab strip, hosted as the principal (center) toolbar item (S4 rehost). Leading /
+  /// trailing controls are separate toolbar placements (`LeadingTitlebarBar` / `TrailingTitlebarBar`).
+  /// No strip chrome (height / panel background / drag layer / inset) — the real toolbar provides the
+  /// bar, its height, and the traffic-light gutter.
+  @ViewBuilder private var workroomTabsBar: some View {
+    let tabs = store.displayedWorkroomTargets()
+    if !tabs.isEmpty {
+      WorkroomTabBar(
+        tabs: tabs, selectedID: store.selectedTargetID,
+        onSelect: { selectWorkroomTab($0) },
+        chipPaneDrag: $workroomChipDrag,
+        localize: { workroomChipLocal($0) },
+        dropTarget: { workroomChipDropTarget(at: $0) }
+      )
+      .frame(maxWidth: .infinity)
+    } else {
+      Spacer(minLength: 0)
     }
-    .ignoresSafeArea(.container, edges: .top)
   }
 
   /// The two-column `NavigationSplitView` core (sidebar + detail/inspector). The window chrome, modal
@@ -117,28 +131,29 @@ struct RootView: View {
     // title-bar vibrancy (a plain HStack / NavigationStack doesn't). Its native sidebar column is
     // never used (forced `.detailOnly`) — that column is what kept the ~30pt inset-card top gap — so
     // the real sidebar is our own `SidebarColumn` in the detail HStack, flush below the bar.
-    NavigationSplitView(columnVisibility: .constant(.detailOnly)) {
-      Color.clear.frame(width: 0)
-    } detail: {
-      HStack(spacing: 0) {
-        if store.sidebarVisible {
-          SidebarColumn(
-            paneDrag: $workroomChipDrag,
-            localize: { workroomChipLocal($0) },
-            dropTarget: { workroomChipDropTarget(at: $0) }
-          )
-          .transition(.move(edge: .leading))
-        }
-        detail
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
-        if showNotifications {
-          InspectorColumn()
-            .transition(.move(edge: .trailing))
-        }
+    // S4 rehost increment 2: dropped the detail-only `NavigationSplitView` wrapper. It split/clipped
+    // the window toolbar to the sidebar-column width (that's why the tabs were cut off once the toolbar
+    // was shown). The real sidebar|detail|inspector was already this hand-rolled `HStack`; using it
+    // directly lets a real full-width unified toolbar host our chrome. (The old vibrancy rationale was
+    // for the *fake* content-strip bar, which the real toolbar replaces.)
+    HStack(spacing: 0) {
+      if store.sidebarVisible {
+        SidebarColumn(
+          paneDrag: $workroomChipDrag,
+          localize: { workroomChipLocal($0) },
+          dropTarget: { workroomChipDropTarget(at: $0) }
+        )
+        .transition(.move(edge: .leading))
       }
-      .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.sidebarVisible)
-      .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: showNotifications)
+      detail
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+      if showNotifications {
+        InspectorColumn()
+          .transition(.move(edge: .trailing))
+      }
     }
+    .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.sidebarVisible)
+    .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: showNotifications)
   }
 
   /// Error alert, add-project importer, and the new-workroom / workroom-delete / project-delete
@@ -326,12 +341,29 @@ struct RootView: View {
       // `AppStore.attachWindow` `didUpdate` re-hide lock stays as the pre-15 fallback (issue #70).
       .navigationTitle(store.windowTitle)
       .modifier(RemoveWindowTitleBarTitle())
-      // Drop NavigationSplitView's auto sidebar toggle — `LeadingTitlebarBar` carries its own, leftmost
-      // after the traffic lights. This removal doesn't fully take (the live toolbar still carries the
-      // toggle + a flexible space + the split tracking-separator), so the whole window toolbar is hidden
-      // in WindowBackgroundThemer to kill its overflow chevron; the traffic lights + accessories aren't
-      // part of the toolbar, so they stay.
-      .toolbar(removing: .sidebarToggle)
+      // S4 rehost: host the custom chrome in a REAL `.unified` toolbar (AppKit centers the traffic
+      // lights + controls in the taller bar, full width, no NavigationSplitView clipping). Split into
+      // three placements — leading controls, the workroom tab strip (principal), trailing controls —
+      // instead of one centered pill. Replaces the old content-strip `titlebarBar`.
+      .toolbar {
+        if #available(macOS 26.0, *) {
+          // macOS 26 wraps toolbar items in a Liquid Glass capsule; `.sharedBackgroundVisibility(.hidden)`
+          // removes it so our controls sit flat on the bar (matches the pre-migration look).
+          ToolbarItem(placement: .navigation) { LeadingTitlebarBar() }
+            .sharedBackgroundVisibility(.hidden)
+          ToolbarItem(placement: .principal) { workroomTabsBar }
+            .sharedBackgroundVisibility(.hidden)
+          ToolbarItem(placement: .primaryAction) { TrailingTitlebarBar() }
+            .sharedBackgroundVisibility(.hidden)
+        } else {
+          ToolbarItem(placement: .navigation) { LeadingTitlebarBar() }
+          ToolbarItem(placement: .principal) { workroomTabsBar }
+          ToolbarItem(placement: .primaryAction) { TrailingTitlebarBar() }
+        }
+      }
+      // Flatten the bar: hide the toolbar's own background material so it reads as one flat surface
+      // with our panel-coloured title bar (WindowBackgroundThemer sets the window background).
+      .toolbarBackground(.hidden, for: .windowToolbar)
       .background(WindowBackgroundThemer())
       // Keep the root branch labels reasonably current: refresh when the app regains
       // focus (throttled, so rapid alt-tabbing doesn't fork a git/jj process per project).
