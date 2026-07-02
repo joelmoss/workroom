@@ -602,18 +602,13 @@ private struct MenuStateValues: ViewModifier {
   }
 }
 
-/// S1 spike (title-flash): remove the window bar's *visible* title on macOS 15+ while keeping
-/// `window.title` (from `.navigationTitle`) for the Window menu / Mission Control. Unlike a non-empty
-/// `.navigationTitle` — which re-asserts `titleVisibility = .visible` on every window update and lets
-/// AppKit fade the name across the bar — `.toolbar(removing: .title)` removes the visible title
-/// declaratively, so there is nothing to flash. No-op on macOS 14 (the `AppStore.attachWindow`
-/// `didUpdate` re-hide lock remains the pre-15 fallback).
+/// Remove the window bar's *visible* title while keeping `window.title` (from `.navigationTitle`) for
+/// the Window menu / Mission Control. Unlike a non-empty `.navigationTitle` — which re-asserts
+/// `titleVisibility = .visible` on every window update and lets AppKit fade the name across the bar —
+/// `.toolbar(removing: .title)` removes the visible title declaratively, so there is nothing to flash.
+/// (`.title` is macOS 15+, which is the app's minimum deployment target.)
 private struct RemoveWindowTitleBarTitle: ViewModifier {
   func body(content: Content) -> some View {
-    if #available(macOS 15.0, *) {
-      content.toolbar(removing: .title)
-    } else {
-      content
-    }
+    content.toolbar(removing: .title)
   }
 }

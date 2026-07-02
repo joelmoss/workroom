@@ -1,6 +1,6 @@
 # macapp/CLAUDE.md
 
-The Workroom macOS app: a SwiftUI (macOS 14+) front-end that bundles the `workroom`
+The Workroom macOS app: a SwiftUI (macOS 15+) front-end that bundles the `workroom`
 Go binary and drives it over the CLI's `--json` contract. See README.md for full
 architecture, signing, and notarization detail — this file is the quick reference.
 

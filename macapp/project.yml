@@ -12,7 +12,7 @@ name: WorkroomApp
 options:
   bundleIdPrefix: com.developwithstyle
   deploymentTarget:
-    macOS: "14.0"
+    macOS: "15.0"
   createIntermediateGroups: true
 
 packages:
@@ -196,7 +196,7 @@ targets:
         CFBundleDisplayName: "$(PRODUCT_NAME)"
         CFBundleName: "$(PRODUCT_NAME)"
         CFBundleIconName: "$(ASSETCATALOG_COMPILER_APPICON_NAME)"
-        LSMinimumSystemVersion: "14.0"
+        LSMinimumSystemVersion: "15.0"
         NSHighResolutionCapable: true
         LSApplicationCategoryType: public.app-category.developer-tools
         # Resolve from the build settings below so Scripts/release.sh can inject them from the

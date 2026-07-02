@@ -127,7 +127,7 @@ real directories, four terminals — without the constant `git stash` / `git swi
 | **Colored output** | [fatih/color](https://github.com/fatih/color) |
 | **VCS backends** | Git worktrees, Jujutsu (JJ) workspaces |
 | **Config store** | JSON at `~/.config/workroom/config.json` |
-| **macOS app language** | Swift 5 + SwiftUI (macOS 14 Sonoma+, Apple Silicon) |
+| **macOS app language** | Swift 5 + SwiftUI (macOS 15 Sequoia+, Apple Silicon) |
 | **Terminal engine** | [libghostty](https://ghostty.org) (`libghostty-spm` 1.2.x, Metal-rendered) |
 | **App auto-update** | [Sparkle](https://sparkle-project.org) 2.6 (EdDSA-signed appcast) |
 | **App crash reporting** | [Sentry](https://sentry.io) (optional, dSYM upload at release) |
@@ -140,7 +140,7 @@ real directories, four terminals — without the constant `git stash` / `git swi
 ## Prerequisites
 
 **To use the macOS app:** nothing — the `.dmg` is self-contained (the CLI is bundled inside it).
-macOS 14 Sonoma or later on Apple Silicon.
+macOS 15 Sequoia or later on Apple Silicon.
 
 **To use the standalone CLI:** [Git](https://git-scm.com/) or [JJ (Jujutsu)](https://martinvonz.github.io/jj/)
 on your `PATH`. That's it for installed-binary use.
@@ -148,7 +148,7 @@ on your `PATH`. That's it for installed-binary use.
 **To develop on the project:**
 
 - **Go 1.25+** (the module targets `go 1.25.7`; CI and the maintainer build with Go 1.26) — for the CLI.
-- **Xcode 15+** with the macOS 14 SDK — for the app.
+- **Xcode 16+** with the macOS 15 SDK — for the app.
 - **[XcodeGen](https://github.com/yonaskolb/XcodeGen)** (`brew install xcodegen`) — the `.xcodeproj`
   is generated from `macapp/project.yml`, not checked in.
 - **`jj`** (`brew install jj`) — needed for the app's VCS integration tests, and if you develop in this
@@ -164,7 +164,7 @@ on your `PATH`. That's it for installed-binary use.
 > flows still want polish. [Bug reports and feedback](https://github.com/joelmoss/workroom/issues)
 > are very welcome.
 
-The native app (macOS 14 Sonoma or later, Apple Silicon) is a home for every project you work on
+The native app (macOS 15 Sequoia or later, Apple Silicon) is a home for every project you work on
 and every workroom inside it. Pick a workroom in the sidebar, get a real terminal already `cd`'d
 into it, and run whatever you like — Workroom keeps each one alive and out of the others' way.
 
