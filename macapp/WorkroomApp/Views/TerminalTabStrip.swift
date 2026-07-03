@@ -231,6 +231,17 @@ struct TerminalTabStrip: View {
           }
           .disabled(descriptor.change == .deleted)
         }
+        // Markdown file tab: the source/preview switch (the toggle lifted out of the file viewer's
+        // own header into the tab toolbar, alongside split). Sets this tab's
+        // `markdownPreviewOverride`, which the pane's `PlainFileViewer` reads. Markdown-only —
+        // other files have no rendered form, so no switch.
+        if case .file(let descriptor) = active.content,
+          PlainFileViewer.isMarkdown(descriptor.path)
+        {
+          MarkdownModeSwitch(preview: active.markdownPreviewOverride ?? true) {
+            sessions.setMarkdownPreview($0, forTab: active.id, in: target)
+          }
+        }
         TabToolbarButton(
           systemImage: "rectangle.trailinghalf.inset.filled", help: "Split right (⌘D)",
           accessibilityLabel: "Split right", identifier: "tab.toolbar.splitRight"
@@ -617,6 +628,54 @@ private struct DiffModeSwitch: View {
       Image(systemName: segMode.symbol)
         // A touch smaller than the plain action buttons (size 11): the `doc.*` glyphs render heavier,
         // so matching their size made the switch read as oversized next to them.
+        .font(.system(size: 9.5))
+        .foregroundStyle(active ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .background(RoundedRectangle(cornerRadius: 5).fill(active ? theme.tokens.bg : .clear))
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .help(help)
+    .accessibilityLabel(help)
+    .accessibilityIdentifier(identifier)
+    .accessibilityAddTraits(active ? .isSelected : [])
+  }
+}
+
+/// A grouped two-segment switch for a Markdown file tab's rendered-preview vs. source view, built to
+/// match `DiffModeSwitch` (same track + raised-thumb styling) so the two toolbars read as siblings.
+/// Clicking a segment reports whether preview should be on. Lives in the tab toolbar (issue: file
+/// viewer toggle moved out of the pane header, alongside the split button).
+private struct MarkdownModeSwitch: View {
+  /// Whether rendered preview is the effective mode (this tab's override, defaulting to preview) — the
+  /// lit segment.
+  let preview: Bool
+  let select: (Bool) -> Void
+  private let theme = ThemeService.shared
+
+  var body: some View {
+    HStack(spacing: 0) {
+      segment(
+        isPreview: true, symbol: "eye", help: "Rendered preview",
+        identifier: "tab.toolbar.markdownPreview")
+      segment(
+        isPreview: false, symbol: "chevron.left.forwardslash.chevron.right", help: "Source",
+        identifier: "tab.toolbar.markdownSource")
+    }
+    .padding(1.5)
+    .background(RoundedRectangle(cornerRadius: 6).fill(theme.tokens.surface))
+  }
+
+  @ViewBuilder
+  private func segment(isPreview: Bool, symbol: String, help: String, identifier: String)
+    -> some View
+  {
+    let active = preview == isPreview
+    Button {
+      select(isPreview)
+    } label: {
+      Image(systemName: symbol)
         .font(.system(size: 9.5))
         .foregroundStyle(active ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
         .padding(.horizontal, 6)

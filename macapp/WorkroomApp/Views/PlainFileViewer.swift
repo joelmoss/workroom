@@ -12,6 +12,10 @@ struct PlainFileViewer: View {
   /// Whether this pane holds focus — only the focused file viewer feeds the find model and shows the
   /// find bar / match highlights (the model is shared, since only one pane searches at a time).
   var isFocused: Bool = true
+  /// This tab's Markdown source/preview override, driven by the tab toolbar's Source/Preview switch
+  /// (`TerminalTab.markdownPreviewOverride`). `nil` ⇒ the default (Markdown opens rendered). Ignored
+  /// for non-Markdown files, which are always source. Mirrors `DiffViewer.viewModeOverride`.
+  var previewOverride: Bool?
   /// The shared in-file find state (owned by `AppStore`). The focused viewer feeds it its lines.
   @ObservedObject var find: FileFindModel
 
@@ -31,16 +35,19 @@ struct PlainFileViewer: View {
   /// Bumped when a file finishes loading, so the highlight task (keyed on it) re-runs against the
   /// freshly loaded content without re-reading on every theme change.
   @State private var loadToken = 0
-  /// Source vs. rendered for a Markdown file; ignored for other files (always source). Reset to the
-  /// per-file default on load; a manual toggle persists until the next file opens.
-  @State private var mode: RenderMode = .source
   private let theme = ThemeService.shared
 
-  enum RenderMode: String, CaseIterable { case source, preview }
-
   /// Whether this file is Markdown (preview mode is offered only then).
-  private var isMarkdown: Bool { SyntaxLanguage.grammar(forPath: descriptor.path) == .markdown }
-  private var showingPreview: Bool { isMarkdown && mode == .preview }
+  private var isMarkdown: Bool { PlainFileViewer.isMarkdown(descriptor.path) }
+  /// Rendered preview vs. source. Markdown defaults to preview; the tab toolbar's switch overrides it
+  /// via `previewOverride`. Non-Markdown files are always source.
+  private var showingPreview: Bool { isMarkdown && (previewOverride ?? true) }
+
+  /// Whether the file at `path` is Markdown — the one file kind that offers a rendered preview. Shared
+  /// with the tab strip so its Source/Preview switch appears for exactly these tabs.
+  static func isMarkdown(_ path: String) -> Bool {
+    SyntaxLanguage.grammar(forPath: path) == .markdown
+  }
 
   /// Files at or over this size aren't loaded (open them in an editor instead). Comfortably above
   /// the 2 MB syntax-highlight cap, so a big-but-readable file still shows (plain).
@@ -69,45 +76,18 @@ struct PlainFileViewer: View {
   }
 
   var body: some View {
-    VStack(spacing: 0) {
-      // Markdown gets a header bar with the Source/Preview switch, so it never overlays the content.
-      if isMarkdown && state == .text { modeToggleBar }
-      content(for: state)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        // Find bar (source mode only — preview has no in-text find), top-trailing over a focused pane.
-        .overlay(alignment: .topTrailing) {
-          if isFocused && !showingPreview { FileFindBar(model: find) }
-        }
-    }
-    .background(theme.tokens.bg)
-    .task(id: descriptor.path) { await load() }
-    .task(id: highlightKey) { await applyHighlight() }
-    // Feed the find model this file's lines when focus arrives (or the file/content changes), so a
-    // search runs against what's actually on screen.
-    .onChange(of: isFocused) { _, focused in if focused { find.setSource(lines) } }
-  }
-
-  /// The header bar with the Source ⇄ Preview switch (Markdown files only).
-  private var modeToggleBar: some View {
-    HStack(spacing: 0) {
-      Picker("", selection: $mode) {
-        Text("Preview").tag(RenderMode.preview)
-        Text("Source").tag(RenderMode.source)
+    content(for: state)
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+      // Find bar (source mode only — preview has no in-text find), top-trailing over a focused pane.
+      .overlay(alignment: .topTrailing) {
+        if isFocused && !showingPreview { FileFindBar(model: find) }
       }
-      .pickerStyle(.segmented)
-      .labelsHidden()
-      .controlSize(.small)
-      .fixedSize()
-      // macOS doesn't show a pointer over controls by default; the switch reads better as a button.
-      .onHover { inside in
-        if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-      }
-      Spacer(minLength: 0)
-    }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 6)
-    .background(theme.tokens.bg)
-    .overlay(alignment: .bottom) { Divider() }
+      .background(theme.tokens.bg)
+      .task(id: descriptor.path) { await load() }
+      .task(id: highlightKey) { await applyHighlight() }
+      // Feed the find model this file's lines when focus arrives (or the file/content changes), so a
+      // search runs against what's actually on screen.
+      .onChange(of: isFocused) { _, focused in if focused { find.setSource(lines) } }
   }
 
   /// Identity of the current highlight: file + theme generation + which load it's for. Any change
@@ -156,7 +136,6 @@ struct PlainFileViewer: View {
       version &+= 1
       state = .text
       loadToken &+= 1
-      mode = isMarkdown ? .preview : .source  // Markdown opens rendered; others always source
       if isFocused { find.setSource(split) }  // search this file once it's on screen
     }
   }

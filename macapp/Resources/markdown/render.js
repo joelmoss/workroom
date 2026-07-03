@@ -14,27 +14,42 @@ let mermaidTheme = "default";
 
 marked.setOptions({ gfm: true, breaks: false });
 
-// mermaid draws into whatever we hand it; `securityLevel: 'strict'` makes it sanitize diagram text,
-// a second layer behind DOMPurify. startOnLoad is off — we drive it explicitly after each render.
-mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: mermaidTheme });
+// mermaid's generated SVG never passes through the DOMPurify call in renderMarkdown (that pass only
+// ever saw the fenced block as inert text). Two gates cover mermaid output instead: `securityLevel:
+// 'strict'` sanitizes diagram text inside mermaid, and renderMermaid() runs the returned SVG through
+// DOMPurify before it reaches the DOM. `htmlLabels: false` makes mermaid draw labels as native SVG
+// <text> rather than HTML inside <foreignObject> — foreignObject is an mXSS vector DOMPurify strips as
+// a tag, which would otherwise blank every label. startOnLoad is off — we drive rendering explicitly.
+function initMermaid(theme) {
+  mermaid.initialize({
+    startOnLoad: false,
+    securityLevel: "strict",
+    theme,
+    htmlLabels: false,
+    flowchart: { htmlLabels: false },
+  });
+}
+initMermaid(mermaidTheme);
 
 function renderMarkdown(source) {
   lastSource = source;
   const dirty = marked.parse(source);
   // Untrusted Markdown can embed raw HTML; strip anything executable before it touches the DOM.
   const clean = DOMPurify.sanitize(dirty, {
+    USE_PROFILES: { html: true }, // HTML only — drop user-authored SVG/MathML (mermaid emits its own)
     ADD_TAGS: ["input"], // GitHub-style task-list checkboxes
     ADD_ATTR: ["target"],
   });
   const root = document.getElementById("content");
   root.innerHTML = clean;
   promoteMermaidBlocks(root);
-  runMermaid(root);
+  renderMermaid(root);
 }
 
 // marked emits a ```mermaid fence as <pre><code class="language-mermaid">…</code></pre>; mermaid wants
 // a bare <pre class="mermaid"> holding the diagram source. Rewrite each such block in place. The
-// original text is read from textContent, so DOMPurify has already neutralised anything hostile.
+// original text is read from textContent (inert text, not markup) — mermaid parses it under
+// securityLevel 'strict' and renderMermaid sanitizes the resulting SVG.
 function promoteMermaidBlocks(root) {
   const codes = root.querySelectorAll("code.language-mermaid");
   codes.forEach((code) => {
@@ -46,12 +61,29 @@ function promoteMermaidBlocks(root) {
   });
 }
 
-function runMermaid(root) {
-  const nodes = root.querySelectorAll("pre.mermaid");
-  if (nodes.length === 0) return;
-  // suppressErrors keeps one bad diagram from blanking the whole document; the offending block is
-  // left showing its source text instead.
-  mermaid.run({ nodes: Array.from(nodes), suppressErrors: true }).catch(() => {});
+// Render each promoted mermaid block. We use mermaid.render() rather than mermaid.run() (which writes
+// SVG straight into the DOM) so the generated SVG can be run through DOMPurify before it is inserted —
+// diagram labels are attacker-influenced and would otherwise never meet a sanitizer. Each block is
+// caught independently, so one bad diagram is left showing its source text and can't blank the doc.
+let mermaidSeq = 0;
+function renderMermaid(root) {
+  const holders = root.querySelectorAll("pre.mermaid");
+  holders.forEach((holder) => {
+    const source = holder.textContent;
+    mermaid
+      .render("mmd-" + mermaidSeq++, source)
+      .then(({ svg }) => {
+        // mermaid emits native SVG <text> labels (htmlLabels:false above), so an svg-only sanitize
+        // keeps them while dropping foreignObject/HTML. DOMPurify still strips scripts / on* handlers
+        // / javascript: URLs, so mermaid output is gated without widening the allowed-tag surface.
+        holder.innerHTML = DOMPurify.sanitize(svg, {
+          USE_PROFILES: { svg: true, svgFilters: true },
+        });
+      })
+      .catch(() => {
+        /* leave the source text in place */
+      });
+  });
 }
 
 window.__render = function (source) {
@@ -70,7 +102,7 @@ window.__applyTheme = function (vars) {
   });
   if (vars.mermaidTheme && vars.mermaidTheme !== mermaidTheme) {
     mermaidTheme = vars.mermaidTheme;
-    mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: mermaidTheme });
+    initMermaid(mermaidTheme);
     if (lastSource) renderMarkdown(lastSource); // re-render so diagrams pick up the new theme
   }
 };

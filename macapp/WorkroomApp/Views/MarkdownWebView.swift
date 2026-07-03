@@ -29,6 +29,12 @@ struct MarkdownWebView: NSViewRepresentable {
   func makeNSView(context: Context) -> WKWebView {
     let config = WKWebViewConfiguration()
     config.websiteDataStore = .nonPersistent()  // no cache/cookies for untrusted content
+    // Seed the theme CSS variables at document start, before styles.css first paints. Without this
+    // the page paints one frame with the stylesheet's light `--bg` default (a white flash over the
+    // panel in dark mode) until `didFinish`'s applyTheme lands. Setting them pre-paint themes frame 1.
+    if let boot = Self.themeBootScript(themeVars(tokens)) {
+      config.userContentController.addUserScript(boot)
+    }
 
     let webView = WKWebView(frame: .zero, configuration: config)
     webView.navigationDelegate = context.coordinator
@@ -36,6 +42,7 @@ struct MarkdownWebView: NSViewRepresentable {
     webView.underPageBackgroundColor = tokens.nsBg  // no white flash before first paint
     context.coordinator.webView = webView
     context.coordinator.templateURL = Self.templateURL
+    context.coordinator.assetDirectory = Self.assetDirectory
 
     if let template = Self.templateURL, let dir = Self.assetDirectory {
       webView.loadFileURL(template, allowingReadAccessTo: dir)
@@ -75,6 +82,23 @@ struct MarkdownWebView: NSViewRepresentable {
     ]
   }
 
+  /// A user script that writes the theme's CSS variables onto `documentElement` at document start —
+  /// before `styles.css` paints — so the first frame is themed instead of flashing the stylesheet's
+  /// light `--bg` default. Skips `mermaidTheme` (not a CSS var; mermaid is themed in JS). Mirrors the
+  /// variable-setting half of `render.js`'s `__applyTheme`, but runs pre-paint and needs no bundled JS.
+  private static func themeBootScript(_ vars: [String: String]) -> WKUserScript? {
+    guard let data = try? JSONSerialization.data(withJSONObject: vars),
+      let json = String(data: data, encoding: .utf8)
+    else { return nil }
+    let source = """
+      (function () {
+        var v = \(json), s = document.documentElement.style;
+        for (var k in v) { if (k !== "mermaidTheme") s.setProperty("--" + k, v[k]); }
+      })();
+      """
+    return WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+  }
+
   /// An `NSColor` as a CSS `rgba(r, g, b, a)` string (sRGB, 0–255 channels). Falls back to the
   /// foreground-ish grey if the colour can't be resolved into sRGB.
   private static func css(_ color: NSColor) -> String {
@@ -89,6 +113,8 @@ struct MarkdownWebView: NSViewRepresentable {
   final class Coordinator: NSObject, WKNavigationDelegate {
     weak var webView: WKWebView?
     var templateURL: URL?
+    /// The bundled markdown asset directory; in-frame navigation is scoped to files under it.
+    var assetDirectory: URL?
     /// Loaded flag + the values to flush once the template's `didFinish` fires (JS isn't callable
     /// before then). After load, `render`/`applyTheme` run immediately.
     private var isLoaded = false
@@ -100,7 +126,15 @@ struct MarkdownWebView: NSViewRepresentable {
 
     /// Web/mail schemes a rendered link may open in the user's browser. A workroom Markdown file is
     /// untrusted, so `file:`/`javascript:`/custom-scheme links must never navigate or reach an app.
-    private static let openableSchemes: Set<String> = ["http", "https", "mailto"]
+    static let openableSchemes: Set<String> = ["http", "https", "mailto"]
+
+    /// The gate's decision for a navigation, with no side effects — so the security logic can be unit
+    /// tested without a live `WKWebView`/`WKNavigationAction`. Applied by `decidePolicyFor` below.
+    enum NavigationDecision: Equatable {
+      case allow  // keep it in the frame
+      case openExternally(URL)  // hand to the user's browser, cancel the in-frame load
+      case cancel  // drop it
+    }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
       isLoaded = true
@@ -141,26 +175,52 @@ struct MarkdownWebView: NSViewRepresentable {
       _ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
       decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
     ) {
-      guard let url = navigationAction.request.url else {
+      switch Self.navigationDecision(
+        url: navigationAction.request.url,
+        isLinkActivated: navigationAction.navigationType == .linkActivated,
+        templateURL: templateURL, assetDirectory: assetDirectory)
+      {
+      case .allow:
+        decisionHandler(.allow)
+      case .openExternally(let url):
+        NSWorkspace.shared.open(url)
         decisionHandler(.cancel)
-        return
+      case .cancel:
+        decisionHandler(.cancel)
       }
-      if navigationAction.navigationType != .linkActivated {
-        // Template load / same-document fragment scroll — keep it in the frame if it's our own file.
-        decisionHandler(url.isFileURL ? .allow : .cancel)
-        return
+    }
+
+    /// Pure navigation-gate policy (no side effects). `isLinkActivated` is
+    /// `navigationType == .linkActivated`; `templateURL` / `assetDirectory` are the bundled page and
+    /// its read-access directory. Unit-tested in `MarkdownWebViewNavigationTests`.
+    static func navigationDecision(
+      url: URL?, isLinkActivated: Bool, templateURL: URL?, assetDirectory: URL?
+    ) -> NavigationDecision {
+      guard let url else { return .cancel }
+      if !isLinkActivated {
+        // Template load / same-document fragment scroll — allow only our own bundled asset files.
+        return isBundledAsset(url, assetDirectory: assetDirectory) ? .allow : .cancel
       }
       // In-page anchor: same file, differing only by fragment — allow the scroll.
       if url.isFileURL, let template = templateURL,
         url.deletingFragment() == template.deletingFragment()
       {
-        decisionHandler(.allow)
-        return
+        return .allow
       }
-      if let scheme = url.scheme?.lowercased(), Self.openableSchemes.contains(scheme) {
-        NSWorkspace.shared.open(url)
+      // A real outbound link opens in the user's browser, but only for web/mail schemes.
+      if let scheme = url.scheme?.lowercased(), openableSchemes.contains(scheme) {
+        return .openExternally(url)
       }
-      decisionHandler(.cancel)
+      return .cancel
+    }
+
+    /// True if `url` is a `file:` URL inside the bundled markdown asset directory (the template and
+    /// its sibling JS/CSS). Scopes in-frame navigation to our own assets, not any local file.
+    static func isBundledAsset(_ url: URL, assetDirectory: URL?) -> Bool {
+      guard url.isFileURL, let dir = assetDirectory else { return false }
+      let target = url.deletingFragment().standardizedFileURL.path
+      let base = dir.standardizedFileURL.path
+      return target == base || target.hasPrefix(base + "/")
     }
 
     private static func jsonString(_ value: String) -> String? {

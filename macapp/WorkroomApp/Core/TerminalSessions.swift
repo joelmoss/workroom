@@ -21,6 +21,12 @@ struct TerminalTab: Identifiable {
   /// Only meaningful for a `.diff` tab.
   var diffViewModeOverride: DiffViewMode?
 
+  /// Per-tab Markdown source/preview override, set by the tab toolbar's Source/Preview switch. `nil` ⇒
+  /// the default (a Markdown file opens rendered, i.e. preview). Lives on the tab (not the viewer) so
+  /// the toolbar can set it and the pane's `PlainFileViewer` can read it, mirroring
+  /// `diffViewModeOverride`. Only meaningful for a `.file` tab whose file is Markdown.
+  var markdownPreviewOverride: Bool?
+
   /// The terminal surface this tab owns, or nil for a content (e.g. diff) tab. The single accessor
   /// every surface-specific path (occlusion, theme reload, teardown, run-state) funnels through, so
   /// a content tab transparently does *fewer* surface operations — never more.
@@ -427,6 +433,17 @@ final class TerminalSessions: ObservableObject {
   ) {
     guard var tab = tabsByTarget[target.id]?[tabID], case .diff = tab.content else { return }
     tab.diffViewModeOverride = mode
+    tabsByTarget[target.id]?[tabID] = tab
+  }
+
+  /// Set a file tab's Markdown source/preview override, from the tab toolbar's Source/Preview switch.
+  /// Reassigns the tab value so `@Published tabsByTarget` fires and the pane's `PlainFileViewer`
+  /// re-renders. No-op for a missing or non-file tab.
+  func setMarkdownPreview(
+    _ preview: Bool, forTab tabID: TerminalTab.ID, in target: TerminalTarget
+  ) {
+    guard var tab = tabsByTarget[target.id]?[tabID], case .file = tab.content else { return }
+    tab.markdownPreviewOverride = preview
     tabsByTarget[target.id]?[tabID] = tab
   }
 

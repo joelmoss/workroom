@@ -570,6 +570,36 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertEqual(s.tabs(for: target).count, 2)
   }
 
+  // MARK: Markdown source/preview override (tab-toolbar switch)
+
+  func testMarkdownPreviewOverrideDefaultsNil() {
+    let s = makeSessions()
+    let id = s.openFilePreview(FileDescriptor(path: "notes.md", isPreview: false), for: target)
+    // nil ⇒ the view falls back to its default (Markdown opens rendered).
+    XCTAssertNil(s.tab(id, for: target)?.markdownPreviewOverride)
+  }
+
+  func testSetMarkdownPreviewStoresOverrideOnTab() {
+    let s = makeSessions()
+    let id = s.openFilePreview(FileDescriptor(path: "notes.md", isPreview: false), for: target)
+    s.setMarkdownPreview(false, forTab: id, in: target)
+    XCTAssertEqual(s.tab(id, for: target)?.markdownPreviewOverride, false)
+    s.setMarkdownPreview(true, forTab: id, in: target)
+    XCTAssertEqual(s.tab(id, for: target)?.markdownPreviewOverride, true)
+  }
+
+  func testSetMarkdownPreviewIsNoOpForNonFileTab() {
+    let s = makeSessions()
+    s.addTab(for: target)  // a terminal tab
+    let termID = s.activeTab(for: target)!.id
+    s.setMarkdownPreview(false, forTab: termID, in: target)
+    XCTAssertNil(s.tab(termID, for: target)?.markdownPreviewOverride)
+
+    let diffID = s.openDiffPreview(diffDesc("a.swift"), for: target)
+    s.setMarkdownPreview(false, forTab: diffID, in: target)
+    XCTAssertNil(s.tab(diffID, for: target)?.markdownPreviewOverride)
+  }
+
   /// The key cross-type invariant: files and diffs SHARE the single preview slot. Opening a file
   /// preview retargets the lone diff preview in place (same id/slot), and vice-versa — never two
   /// preview tabs.
