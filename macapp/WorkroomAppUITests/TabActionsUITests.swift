@@ -69,11 +69,13 @@ final class TabActionsUITests: XCTestCase {
 
   // MARK: Toolbar — terminal tab
 
-  /// A terminal tab's toolbar offers Split-right + Close-all, but NOT Open-file-in (that's diff-only).
+  /// A terminal tab's toolbar offers Split-right + Split-down + Close-all, but NOT Open-file-in
+  /// (that's diff-only).
   func testTerminalToolbarHasSplitAndCloseAllNotOpenFile() {
     let app = launchedApp()
     openWorkroom(app)
     XCTAssertTrue(app.buttons["tab.toolbar.splitRight"].waitForExistence(timeout: 6))
+    XCTAssertTrue(app.buttons["tab.toolbar.splitDown"].exists)
     XCTAssertTrue(app.buttons["tab.toolbar.closeAll"].exists)
     XCTAssertFalse(
       app.buttons["tab.toolbar.openFile"].exists, "a terminal tab has no Open-file action")
@@ -87,6 +89,14 @@ final class TabActionsUITests: XCTestCase {
     assertCount(panes(app), reaches: 2)
   }
 
+  func testTerminalToolbarSplitDownCreatesTwoPanes() {
+    let app = launchedApp()
+    openWorkroom(app)
+    assertCount(panes(app), reaches: 1)
+    app.buttons["tab.toolbar.splitDown"].click()
+    assertCount(panes(app), reaches: 2)
+  }
+
   // MARK: Toolbar — diff tab
 
   /// A diff tab's toolbar adds Open-file-in alongside Split-right + Close-all.
@@ -96,6 +106,7 @@ final class TabActionsUITests: XCTestCase {
     openDiffPreview(app)
     XCTAssertTrue(app.buttons["tab.toolbar.openFile"].waitForExistence(timeout: 6))
     XCTAssertTrue(app.buttons["tab.toolbar.splitRight"].exists)
+    XCTAssertTrue(app.buttons["tab.toolbar.splitDown"].exists)
     XCTAssertTrue(app.buttons["tab.toolbar.closeAll"].exists)
   }
 

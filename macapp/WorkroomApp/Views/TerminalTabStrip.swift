@@ -232,10 +232,16 @@ struct TerminalTabStrip: View {
           .disabled(descriptor.change == .deleted)
         }
         TabToolbarButton(
-          systemImage: "square.split.2x1", help: "Split right (⌘D)",
+          systemImage: "rectangle.trailinghalf.inset.filled", help: "Split right (⌘D)",
           accessibilityLabel: "Split right", identifier: "tab.toolbar.splitRight"
         ) {
           sessions.splitTab(active.id, on: .right, for: target)
+        }
+        TabToolbarButton(
+          systemImage: "rectangle.bottomhalf.inset.filled", help: "Split down (⇧⌘D)",
+          accessibilityLabel: "Split down", identifier: "tab.toolbar.splitDown"
+        ) {
+          sessions.splitTab(active.id, on: .bottom, for: target)
         }
         TabToolbarButton(
           systemImage: "xmark.square", help: "Close all tabs in this workroom",
@@ -723,22 +729,22 @@ extension View {
         Button {
           sessions.splitTab(tab.id, on: .right, for: target)
         } label: {
-          Label("Split Right", systemImage: "square.split.2x1")
+          Label("Split Right", systemImage: "rectangle.trailinghalf.inset.filled")
         }
         Button {
           sessions.splitTab(tab.id, on: .left, for: target)
         } label: {
-          Label("Split Left", systemImage: "square.split.2x1")
+          Label("Split Left", systemImage: "rectangle.leadinghalf.inset.filled")
         }
         Button {
           sessions.splitTab(tab.id, on: .bottom, for: target)
         } label: {
-          Label("Split Down", systemImage: "square.split.1x2")
+          Label("Split Down", systemImage: "rectangle.bottomhalf.inset.filled")
         }
         Button {
           sessions.splitTab(tab.id, on: .top, for: target)
         } label: {
-          Label("Split Up", systemImage: "square.split.1x2")
+          Label("Split Up", systemImage: "rectangle.tophalf.inset.filled")
         }
       }
       .disabled(splitDisabled)
