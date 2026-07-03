@@ -214,20 +214,20 @@ struct TerminalTabStrip: View {
     if let active = tabs.first(where: { $0.id == activeID }) {
       HStack(spacing: 2) {
         // Diff (content) tab: the unified/side-by-side switch (issue #66) + open the working file in
-        // the configured editor. The switch is one grouped segmented control — the active mode's
+        // the in-app viewer. The switch is one grouped segmented control — the active mode's
         // segment stays lit; clicking sets this tab's override (`TerminalTab.diffViewModeOverride`),
         // which the pane's `DiffViewer` re-renders to. Shows the global default until a choice is made.
         if case .diff(let descriptor) = active.content {
           DiffModeSwitch(mode: active.diffViewModeOverride ?? defaultDiffViewMode) {
             sessions.setDiffViewMode($0, forTab: active.id, in: target)
           }
-          // Open the working file in the configured editor. Disabled when the source was deleted
-          // (review D4) — there's no file to open.
+          // Open the working file in the in-app viewer (issue #117). Disabled when the source was
+          // deleted (review D4) — there's no working copy to open.
           TabToolbarButton(
-            systemImage: "doc.text", help: "Open file in editor",
-            accessibilityLabel: "Open file in editor", identifier: "tab.toolbar.openFile"
+            systemImage: "doc.text", help: "Open File",
+            accessibilityLabel: "Open File", identifier: "tab.toolbar.openFile"
           ) {
-            store.openDiffTabFile(descriptor, for: target)
+            store.openFilePreview(path: descriptor.path)
           }
           .disabled(descriptor.change == .deleted)
         }
@@ -673,10 +673,19 @@ extension View {
   ) -> some View {
     self.contextMenu {
       if case .diff(let descriptor) = tab.content {
+        // Open the working file in the in-app viewer (issue #117), alongside the external-editor
+        // "Open File in…" below — mirrors the Changes-panel row menu. Both no-op / disabled for a
+        // deleted source (no working copy).
+        Button {
+          store.openFilePreview(path: descriptor.path)
+        } label: {
+          Label("Open File", systemImage: "doc.text")
+        }
+        .disabled(descriptor.change == .deleted)
         Button {
           store.openDiffTabFile(descriptor, for: target)
         } label: {
-          Label("Open File in…", systemImage: "doc.text")
+          Label("Open File in…", systemImage: "arrow.up.forward.app")
         }
         .disabled(descriptor.change == .deleted)
         if tab.isPreview {

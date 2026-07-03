@@ -338,6 +338,11 @@ private struct ChangedFileRow: View {
         .fill(isSelected ? theme.tokens.rowSelection : (hovering ? theme.tokens.rowHover : .clear))
         .padding(.horizontal, -12)
     )
+    // The row's tooltip describes its click action (open the diff). Applied BEFORE the hover overlay
+    // so it scopes to the row content only — the trailing "Open file" button, painted on top, keeps
+    // its OWN tooltip. A `.help` applied after the overlay covers the whole row and occludes the
+    // button's, so hovering the button wrongly showed "Open diff for …" (issue #117 follow-up).
+    .help("Open diff")
     // Hover toolbar (issue #93): a content-sized cluster pinned to the trailing edge, painted over
     // the path. Only the button area intercepts clicks (it opens the file) — the rest of the row
     // still opens the diff. Built only while hovering, so the editor-name lookup runs on hover only.
@@ -359,7 +364,6 @@ private struct ChangedFileRow: View {
         lastClick = now
       }
     }
-    .help("Open diff for \(file.path)")
     .accessibilityElement(children: .ignore)
     .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
     .accessibilityIdentifier("changes.file.\(file.path)")
@@ -367,31 +371,38 @@ private struct ChangedFileRow: View {
       dir.isEmpty
         ? "\(name), \(changeWord), open diff" : "\(name), \(changeWord), in \(dir), open diff"
     )
-    // A non-pointer path to the open-file action (the hover toolbar is mouse-only): keyboard /
-    // VoiceOver reach it here, mirroring the diff-tab chip's "Open File in…" (issue #93).
+    // A non-pointer path to the open-file actions (the hover toolbar is mouse-only): keyboard /
+    // VoiceOver reach them here. "Open File" opens the in-app viewer (issue #117); "Open File in …"
+    // keeps the external-editor path (issue #93). Both no-op for a deleted file (no working copy).
     .contextMenu {
+      Button {
+        store.openChangedFileInApp(file)
+      } label: {
+        Label("Open File", systemImage: "doc.text")
+      }
+      .disabled(file.change == .deleted)
       Button {
         store.openChangedFileInEditor(file)
       } label: {
-        Label("Open File in \(openFileEditorName)", systemImage: "doc.text")
+        Label("Open File in \(openFileEditorName)", systemImage: "arrow.up.forward.app")
       }
       .disabled(file.change == .deleted)
     }
   }
 
-  /// The trailing hover toolbar: the "Open file in <editor>" button (extensible to more buttons).
-  /// Hidden for a deleted file — there's no working copy to open — so the toolbar renders nothing.
-  /// Its backing is the same opaque `rowHover`/`rowSelection` token the row uses for its highlight, so
-  /// the toolbar is solid (occludes the path text) and exactly the same colour as the row.
+  /// The trailing hover toolbar: the in-app "Open File" button (extensible to more buttons; issue
+  /// #117). Hidden for a deleted file — there's no working copy to open — so the toolbar renders
+  /// nothing. Its backing is the same opaque `rowHover`/`rowSelection` token the row uses for its
+  /// highlight, so the toolbar is solid (occludes the path text) and exactly the same colour as the row.
   @ViewBuilder private var rowToolbar: some View {
     if file.change != .deleted {
       HStack(spacing: 2) {
         TabToolbarButton(
-          systemImage: "doc.text", help: "Open File in \(openFileEditorName)",
-          accessibilityLabel: "Open File in \(openFileEditorName)",
+          systemImage: "doc.text", help: "Open file",
+          accessibilityLabel: "Open file",
           identifier: "changes.file.openFile.\(file.path)"
         ) {
-          store.openChangedFileInEditor(file)
+          store.openChangedFileInApp(file)
         }
       }
       .padding(.horizontal, 2)
@@ -412,13 +423,18 @@ private struct ChangedFileRow: View {
     ExternalEditor.forFilePaths?.name ?? "your default app"
   }
 
-  /// True when this row's file+revision is the currently focused diff tab in the selected target —
-  /// so the row that's showing in the diff viewer reads as selected.
+  /// True when the selected target's focused content tab is this row — either its diff (opened by a
+  /// row click) or its file (opened by the in-app "Open File", issue #117) — so the row that's
+  /// showing in the pane reads as selected. The file match ignores `source` since a file tab has no
+  /// revision; the diff match keeps it so the same path under `@` vs `@-` selects the right row.
   private var isSelected: Bool {
-    guard let target = store.selectedTarget, let tab = sessions.focusedTab(for: target),
-      case .diff(let descriptor) = tab.content
+    guard let target = store.selectedTarget, let tab = sessions.focusedTab(for: target)
     else { return false }
-    return descriptor.path == file.path && descriptor.source == source
+    switch tab.content {
+    case .diff(let descriptor): return descriptor.path == file.path && descriptor.source == source
+    case .file(let descriptor): return descriptor.path == file.path
+    default: return false
+    }
   }
 
   private var letter: String {

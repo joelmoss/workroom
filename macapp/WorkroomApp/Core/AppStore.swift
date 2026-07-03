@@ -2666,12 +2666,21 @@ final class AppStore: ObservableObject {
     openWorkroomFile(relativePath: descriptor.path, for: target)
   }
 
-  /// Open a changed file's working copy in the configured editor — the Changes-panel hover-toolbar
-  /// button, the row's ⌘-click, and the row context menu (issue #93). No-op when nothing's selected
-  /// or the file was deleted (no working file to open — see `resolveOpenTarget`).
+  /// Open a changed file's working copy in the configured editor — the Changes-panel row's ⌘-click
+  /// and the row context-menu "Open File in …" (issue #93). No-op when nothing's selected or the
+  /// file was deleted (no working file to open — see `resolveOpenTarget`).
   func openChangedFileInEditor(_ file: ChangedFile) {
     guard let target = selectedTarget, let rel = Self.resolveOpenTarget(file: file) else { return }
     openWorkroomFile(relativePath: rel, for: target)
+  }
+
+  /// Open a changed file's working copy in the in-app viewer as a preview tab — the Changes-panel
+  /// hover-toolbar button and the row context-menu "Open File" (issue #117). No-op when nothing's
+  /// selected or the file was deleted (no working copy — see `resolveOpenTarget`). Shares the single
+  /// preview slot with diffs, so it recycles the row's diff preview (a persisted diff tab is kept).
+  func openChangedFileInApp(_ file: ChangedFile) {
+    guard let rel = Self.resolveOpenTarget(file: file) else { return }
+    openFilePreview(path: rel)
   }
 
   /// The repo-relative path to open for a changed file, or nil when there's nothing to open (a

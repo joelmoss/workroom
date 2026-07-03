@@ -112,6 +112,19 @@ enum UITestFixture {
   /// Stable name of the SECOND fixture workroom, seeded only under `twoTabs` (drag/reorder test).
   static let workroomName2 = "uitest-room-2"
 
+  /// A real working-tree file seeded into the fixture workroom (matches the `Gemfile` entry in
+  /// `changedFiles`), so the in-app file viewer has genuine content to render (issue #117 XCUITest).
+  static let seededFileName = "Gemfile"
+  /// The seeded file's contents. The marker is a single contiguous token so a UITest can assert it
+  /// appears in the viewer's text regardless of syntax-token splitting.
+  static let seededFileContent = """
+    # UITEST_FILE_MARKER
+    source "https://rubygems.org"
+    gem "rails"
+    """
+  /// The distinctive token the XCUITest looks for in the rendered file viewer.
+  static let seededFileMarker = "UITEST_FILE_MARKER"
+
   /// The fake project list. Idempotent within a launch: the backing temp directories are created if
   /// missing so each target's terminal can start a shell. The project is reported as `git` so the
   /// sidebar's root row renders normally; no real VCS call is ever made (loading is short-circuited
@@ -137,6 +150,14 @@ enum UITestFixture {
     }
     for dir in dirs {
       try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    }
+    // Seed one real working-tree file matching a `changedFiles` entry (`Gemfile`), so the in-app
+    // "Open File" (issue #117) renders actual content instead of `PlainFileViewer`'s "File
+    // unavailable" placeholder — `ChangesPanelUITests` asserts the marker below is on screen. Written
+    // only if absent, so it stays idempotent within a launch.
+    let seededGemfile = workroomDir.appendingPathComponent(seededFileName)
+    if !FileManager.default.fileExists(atPath: seededGemfile.path) {
+      try? seededFileContent.write(to: seededGemfile, atomically: true, encoding: .utf8)
     }
     return [Project(path: projectDir.path, vcs: "git", workrooms: workrooms)]
   }
