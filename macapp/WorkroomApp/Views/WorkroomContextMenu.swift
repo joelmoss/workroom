@@ -68,5 +68,7 @@ func workroomContextMenu(
     } label: {
       Label("Delete Workroom…", systemImage: "trash")
     }
+    // Can't delete a workroom while its setup is still running against the worktree (issue #116).
+    .disabled(store.isCreatingWorkroom(pair.workroom, in: pair.project))
   }
 }

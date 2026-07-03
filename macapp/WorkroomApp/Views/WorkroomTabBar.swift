@@ -105,6 +105,21 @@ struct WorkroomTabBar: View {
           .animation(
             isDragging || reduceMotion ? nil : .easeInOut(duration: 0.18), value: offsetX)
         }
+        // A provisional "Creating…" chip while a workroom is being created in this window (issue
+        // #116), shown from the first click until its real named chip resolves into `tabs`. Tapping it
+        // refocuses the creating slot (its loader/dialog); it takes no part in drag/reorder.
+        if let creating = provisionalCreation {
+          ProvisionalWorkroomChip(
+            project: creating.project, isActive: store.isCreationFocused,
+            onSelect: {
+              if let name = creating.name {
+                store.selectedTargetID = .workroom(project: creating.project.path, name: name)
+              } else {
+                store.selectedTargetID = nil
+              }
+              store.selectedProjectID = creating.project.id
+            })
+        }
         // A divider sets the "new workroom" (+) button apart from the last tab. Hidden only when the
         // last tab is in a split group (the `splitWell` bracket already frames it, so a divider would
         // double against its rounded edge) — hover no longer hides it (tabs are just underlined now).
@@ -136,6 +151,15 @@ struct WorkroomTabBar: View {
     // chip drag reorders instead of moving the window — the empty bar still drags it. See
     // `WindowMovableController`.
     .background(WindowMovableController(movable: draggingID == nil && hoveredID == nil))
+  }
+
+  /// The in-progress create whose chip isn't yet a real tab (issue #116): shown as a provisional
+  /// "Creating…" chip until its named chip resolves into `tabs` (which happens once the CLI reports
+  /// the workroom and the reload lands it in `projects`). nil otherwise — no double chip.
+  private var provisionalCreation: WorkroomCreation? {
+    guard let creation = store.creation else { return nil }
+    if let tid = creation.targetID, tabs.contains(where: { $0.target.id == tid }) { return nil }
+    return creation
   }
 
   /// Whether to draw a hairline on the leading edge of tab `index`. Every tab gets a leading divider
@@ -469,6 +493,56 @@ private struct WorkroomTabChip: View {
     if running { parts.append("running") }
     if hasActivity { parts.append("unread activity") }
     return parts.joined(separator: ", ")
+  }
+}
+
+/// The provisional "Creating…" chip shown while a workroom is being created and its real named chip
+/// hasn't resolved yet (issue #116). Mirrors `WorkroomTabChip`'s layout — a leading cube glyph, the
+/// project name, then a small spinner in place of the (not-yet-known) workroom name — with the same
+/// focused/hover underline. Tapping it refocuses the creating slot; it takes no part in drag/reorder
+/// or width measurement, so it never enters the tab-reorder math.
+private struct ProvisionalWorkroomChip: View {
+  let project: Project
+  var isActive: Bool
+  var onSelect: () -> Void
+  @State private var hovered = false
+  private let theme = ThemeService.shared
+
+  private var projectName: String { (project.path as NSString).lastPathComponent }
+
+  var body: some View {
+    HStack(spacing: 6) {
+      Image(systemName: "cube")
+        .font(.system(size: 10))
+        .foregroundStyle(.secondary)
+      HStack(alignment: .firstTextBaseline, spacing: 4) {
+        Text(projectName).foregroundStyle(.secondary)
+        Text("/").foregroundStyle(.tertiary)
+      }
+      .font(.subheadline)
+      .lineLimit(1)
+      ProgressView().controlSize(.small).scaleEffect(0.7)
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 7)
+    // The same accent underline the real chips use for focus/hover — so the creating slot reads as the
+    // active tab while its loader/dialog owns the detail.
+    .overlay(alignment: .bottom) {
+      RoundedRectangle(cornerRadius: 0.5)
+        .fill(theme.tokens.accent)
+        .frame(height: 1)
+        .padding(.horizontal, 6)
+        .padding(.bottom, 3)
+        .opacity(isActive || hovered ? 1 : 0)
+    }
+    .contentShape(Rectangle())
+    .onHover { hovered = $0 }
+    .onTapGesture(perform: onSelect)
+    .help("Creating workroom in \(projectName)…")
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("Creating workroom in \(projectName)")
+    .accessibilityIdentifier("workroom.tab.creating")
+    .transition(.opacity)
   }
 }
 

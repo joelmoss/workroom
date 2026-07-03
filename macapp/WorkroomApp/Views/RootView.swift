@@ -41,11 +41,11 @@ struct RootView: View {
   /// The detail content area's global frame, so a chip drag can be resolved against the workroom panes.
   @State private var detailContentFrame: CGRect = .zero
 
-  /// True when the selected target can host a terminal right now: it exists, isn't missing,
-  /// and isn't currently blocked by a running setup script.
+  /// True when the selected target can host a terminal right now: it exists, isn't missing, and the
+  /// detail isn't currently showing the creating slot's loader/setup dialog (issue #116).
   private var terminalInteractionAvailable: Bool {
     guard let target = store.selectedTarget, !target.isMissing else { return false }
-    if store.logs[target.id]?.blocking == true { return false }
+    if store.isCreationFocused { return false }
     return true
   }
 
@@ -119,7 +119,9 @@ struct RootView: View {
 
   @ViewBuilder private var workroomTabsBar: some View {
     let tabs = store.displayedWorkroomTargets()
-    if !tabs.isEmpty {
+    // Show the bar during a create even before any tab resolves (issue #116) — it hosts the
+    // provisional "Creating…" chip, so the bar can't be hidden just because `tabs` is still empty.
+    if !tabs.isEmpty || store.creation != nil {
       WorkroomTabBar(
         tabs: tabs, selectedID: store.selectedTargetID,
         onSelect: { selectWorkroomTab($0) },
@@ -520,7 +522,13 @@ struct RootView: View {
 
   @ViewBuilder
   private var detailContent: some View {
-    if let target = store.selectedTarget {
+    if store.isCreationFocused, let creation = store.creation {
+      // The creating slot owns the detail (issue #116): a loader through the pre-name phase (and all
+      // the way to the terminal for a no-setup workroom), swapped for the streaming setup dialog once
+      // a setup script starts. Scoped to this focused slot — selecting another workroom shows it.
+      creationDetail(creation)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    } else if let target = store.selectedTarget {
       if target.isMissing {
         ContentUnavailableView(
           "Directory not found",
@@ -551,6 +559,18 @@ struct RootView: View {
     }
   }
 
+  /// The creating slot's detail (issue #116): a centered loader until a setup script's dialog is ready,
+  /// then the streaming setup dialog. A workroom with no setup script never reaches the dialog — the
+  /// loader shows until the create completes (which clears `store.creation`) and the terminal mounts.
+  @ViewBuilder
+  private func creationDetail(_ creation: WorkroomCreation) -> some View {
+    if creation.targetID != nil, creation.hasSetup {
+      SetupOverlay(session: creation.session) { store.dismissCreation() }
+    } else {
+      CreationLoader()
+    }
+  }
+
   /// The workroom body: always `WorkroomSplitView`, with the layout being the split when the selected
   /// workroom is a member, else `.leaf(selected)` — the split is shown only when a member is focused but
   /// persists otherwise (`visibleWorkroomLayout`, mirroring the terminal split). One render path → no
@@ -576,35 +596,14 @@ struct RootView: View {
     }
   }
 
-  /// One target's terminal ZStack with its setup log (if any). While a setup script runs
-  /// (`log.blocking`), the log floats over the pane and the terminal is withheld — `WorkroomTerminalsView`
-  /// mounts (and `.task` creates the first terminal) only once the blocking log is dismissed. Only
-  /// workrooms ever have a log; for a root, `logs[target.id]` is nil. Title/toolbar are owned by the
-  /// caller (shared with the split path), so this is just the body.
+  /// One target's terminal body. While this workroom is being created with a setup script
+  /// (`isCreationBlocking`), the terminal is withheld — `WorkroomTerminalsView` mounts (and `.task`
+  /// creates the first terminal) only once the setup dialog is dismissed. The dialog itself is drawn
+  /// window-level over the whole detail (see `detail`), not here, so this is just the terminal.
   @ViewBuilder
   private func targetTerminalBody(_ target: TerminalTarget) -> some View {
-    let isBlocking = store.logs[target.id]?.blocking == true
-    ZStack {
-      if !isBlocking {
-        VStack(spacing: 0) {
-          WorkroomTerminalsView(target: target, sessions: store.terminals)
-
-          if let log = store.logs[target.id] {
-            ThemeService.shared.tokens.border.frame(height: 1)
-            ScriptLogPanel(session: log) { store.logs[target.id] = nil }
-          }
-        }
-      }
-
-      if let log = store.logs[target.id], log.blocking {
-        SetupOverlay(session: log) {
-          withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-            store.logs[target.id] = nil
-          }
-        }
-        .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .center)))
-        .zIndex(1)
-      }
+    if !store.isCreationBlocking(target.id) {
+      WorkroomTerminalsView(target: target, sessions: store.terminals)
     }
   }
 }

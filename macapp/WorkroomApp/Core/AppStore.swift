@@ -308,6 +308,18 @@ final class AppStore: ObservableObject {
     get { projectStore.busyProjects }
     set { projectStore.busyProjects = newValue }
   }
+  /// Target ids of workrooms whose create is still in flight (issue #116) — must not be deleted while
+  /// their setup runs. Shared across windows (see `ProjectStore`).
+  var creatingWorkrooms: Set<TerminalTarget.ID> {
+    get { projectStore.creatingWorkrooms }
+    set { projectStore.creatingWorkrooms = newValue }
+  }
+  /// Target ids of workrooms with an in-flight optimistic deletion — filtered out of every reload so a
+  /// stale `list` can't resurrect them (the create/delete race). Shared across windows.
+  var deletingWorkrooms: Set<TerminalTarget.ID> {
+    get { projectStore.deletingWorkrooms }
+    set { projectStore.deletingWorkrooms = newValue }
+  }
   /// Set by the "Add Project" menu command to trigger the sidebar's file importer.
   @Published var requestAddProject = false
   /// Set by the "New Workroom" menu command (⌘N) to raise the project-picker dialog (issue #81).
@@ -329,11 +341,11 @@ final class AppStore: ObservableObject {
   /// A workroom awaiting a display-label edit (drives the WorkroomLabelSheet, issue #41). Set by the
   /// sidebar row's / tab chip's "Set Label…"/"Edit Label…" item; cleared when the sheet resolves.
   @Published var pendingWorkroomLabel: PendingWorkroomLabel?
-  /// Setup logs scoped per terminal target (a workroom's target id), rendered under that
-  /// workroom's terminal. Kept until the user closes them (or the workroom is deleted) so
-  /// the output stays available for review. Keyed on the target id (project-scoped) so
-  /// same-named workrooms across projects don't share a log.
-  @Published var logs: [TerminalTarget.ID: ScriptLogSession] = [:]
+  /// A workroom being created in THIS window (issue #116). Non-nil from the moment the user picks a
+  /// project until the setup dialog is dismissed (a setup script ran) or auto-dismisses (no script).
+  /// Drives the immediate full-pane setup dialog AND the provisional "Creating…" tab chip — both
+  /// appear before the CLI has even reported the (generated) name. Per-window, like selection.
+  @Published var creation: WorkroomCreation?
 
   let terminals = TerminalSessions()
   /// In-memory notification spine driving the badges + inspector (issue #10). Owned here,
@@ -658,8 +670,12 @@ final class AppStore: ObservableObject {
   func orderedWorkroomTargets(order: [TerminalTarget.ID]? = nil)
     -> [(sid: SidebarID, target: TerminalTarget)]
   {
-    Self.orderedActiveTargets(
-      persisted: order ?? workroomTabOrder, active: terminals.activeTargetIDs
+    // Include the in-progress creation's target (issue #116): its terminal is withheld during a setup
+    // script, so it isn't yet "active" (no terminal), but its chip must still show through setup.
+    var active = terminals.activeTargetIDs
+    if let creating = creation?.targetID { active.insert(creating) }
+    return Self.orderedActiveTargets(
+      persisted: order ?? workroomTabOrder, active: active
     )
     .compactMap { tid in
       guard let sid = Self.sidebarID(forTargetID: tid, in: projects), let target = target(for: sid)
@@ -1789,10 +1805,14 @@ final class AppStore: ObservableObject {
     // predictable regardless of CLI/config order. Case-insensitive, with the full path as a
     // tie-break so same-named projects in different dirs keep a deterministic order. Done here at the
     // single source of truth so selection defaults (`fresh.first`) and the rendered tree agree.
-    let fresh = fresh0.sorted {
+    let sorted = fresh0.sorted {
       let byName = $0.displayName.localizedCaseInsensitiveCompare($1.displayName)
       return byName == .orderedSame ? $0.path < $1.path : byName == .orderedAscending
     }
+    // Drop workrooms with an in-flight optimistic deletion (issue #116): a `list` snapshot taken
+    // before the teardown persisted still lists them, so without this a concurrent reload would
+    // resurrect a just-deleted workroom. Cleared from `deletingWorkrooms` when the teardown ends.
+    let fresh = applyingDeletionTombstones(sorted)
     projects = fresh
     // First load after launch: restore last session's selection (issue #14) before it's
     // validated below. Resolved against the live projects, so a since-deleted target — or a
@@ -1822,6 +1842,22 @@ final class AppStore: ObservableObject {
     workroomStatuses = workroomStatuses.filter { liveSidebarIDs.contains($0.key) }
     // Keep the live root-branch watchers in sync with the project set (start new, drop departed).
     updateRootBranchWatches()
+  }
+
+  /// Removes workrooms currently tombstoned in `deletingWorkrooms` from an incoming CLI project list,
+  /// so a stale `list` snapshot (taken before a delete's teardown persisted) can't resurrect a
+  /// just-deleted workroom (issue #116, the create/delete reload race). A no-op when nothing is being
+  /// deleted; otherwise rebuilds only the projects that actually contained a tombstoned workroom.
+  private func applyingDeletionTombstones(_ projects: [Project]) -> [Project] {
+    let tombstoned = deletingWorkrooms
+    guard !tombstoned.isEmpty else { return projects }
+    return projects.map { project in
+      let kept = project.workrooms.filter {
+        !tombstoned.contains(TerminalTarget.workroomID(project: project.path, name: $0.name))
+      }
+      guard kept.count != project.workrooms.count else { return project }
+      return Project(path: project.path, vcs: project.vcs, workrooms: kept)
+    }
   }
 
   /// Every `.root`/`.workroom` `SidebarID` present in `projects` — used to prune
@@ -1968,9 +2004,13 @@ final class AppStore: ObservableObject {
 
     let session = ScriptLogSession(
       title: "Setting up new workroom in \(project.displayName)", phase: "setup")
-    // Whether the project has a setup script; reported by the early "created" event.
-    // A blocking session shows its log full-pane (no terminal) until the user dismisses.
-    var hasSetup = false
+    // Show the creating slot immediately — before the CLI has even reported the (generated) name — so
+    // the window shows progress from the first click, not just the sidebar spinner (issue #116). Until
+    // the name arrives the detail shows the loader (`isCreationFocused` is unconditionally true
+    // pre-name); once the workroom exists we land on it and — for a setup script — swap to its dialog.
+    creation = WorkroomCreation(session: session, project: project)
+    selectedProjectID = project.id
+
     do {
       let created = try await cli.create(
         project: project.path,
@@ -1978,76 +2018,126 @@ final class AppStore: ObservableObject {
           DispatchQueue.main.async { session.append(text) }
         },
         onReady: { name, _, setup in
-          // The workroom now exists; mount it and (if a setup script will run) block its
-          // terminal behind the streaming setup log so output appears live from the start.
+          // The workroom now exists: land on it (the provisional chip becomes the real named chip, and
+          // the detail moves from the loader to the new workroom's slot). A setup script shows its
+          // dialog there; a no-setup workroom keeps the loader until the create completes.
           DispatchQueue.main.async {
-            hasSetup = setup
             Task { @MainActor in
-              // Pre-arm auto-run BEFORE the workroom is mounted/selected, so its terminal view runs
-              // the command as tab #1 instead of a default shell (issue #7, Codex #12). The run fires
-              // when that terminal view first mounts: immediately for a no-setup workroom, or only
-              // AFTER the user dismisses the blocking setup dialog (the terminal is withheld behind
-              // it until then) — so the command runs post-setup, as intended.
-              let workroomID = TerminalTarget.workroomID(project: project.path, name: name)
-              let cfg = self.runConfig(forProject: project.path)
-              if cfg.autoRun, cfg.hasCommand {
-                self.armAutoRun(forWorkroom: workroomID)
-              }
-              // A newly created workroom always opens a shell on first mount (`ensureInitialTerminal`);
-              // no arming needed — its pane has no tabs yet, so the tabCount==0 path covers it. When
-              // auto-run also fires, the run is backgrounded tab #1 and the shell is the focused tab #2.
-              await self.mountSetupLog(session, workroom: name, project: project, blocking: setup)
+              await self.landOnCreatedWorkroom(name: name, project: project, setup: setup)
             }
           }
         }
       )
       session.finish()
-      await reload()
-      // Mount now if the early "created" event never arrived (older CLI).
-      if session.targetID == nil {
-        await mountSetupLog(session, workroom: created.name, project: project, blocking: hasSetup)
+      // Land now if the early "created" event never arrived (older CLI) — no setup flag to read.
+      if creation?.targetID == nil {
+        await landOnCreatedWorkroom(name: created.name, project: project, setup: false)
+      } else {
+        await reload()  // reflect the finished setup script's tree
       }
-      // A non-blocking run with no output leaves nothing to dock. A blocking session
-      // stays up (even with no output) until the user dismisses it.
-      if !session.blocking, session.lines.isEmpty, let id = session.targetID { logs[id] = nil }
-      // Auto-run is NOT triggered here: it fires from `ensureInitialTerminal` when the workroom's
-      // terminal pane first mounts (issue #7), which is after the setup dialog is dismissed for a
-      // blocking setup. Triggering here would also race the `onReady` arming on a fast no-setup create.
+      // Setup (if any) has finished, so the worktree is no longer being written — allow deletion again
+      // (issue #116).
+      if let id = creation?.targetID { creatingWorkrooms.remove(id) }
+      // No setup script → there was never a dialog, just the loader: clear the create so the loader
+      // gives way to the new workroom's terminal (issue #116). A setup script instead keeps its dialog
+      // up (with a Dismiss button) until the user closes it — dismissing is what mounts the withheld
+      // terminal. Auto-run is NOT triggered here: it fires from `ensureInitialTerminal` when the
+      // terminal pane first mounts, which for a setup script is after dismissal (issue #7).
+      if creation?.hasSetup != true {
+        creation = nil
+      }
     } catch {
       // Even on (partial) failure, reload so a "created but setup failed" workroom shows up.
       await reload()
-      if let id = session.targetID {
+      if let name = creation?.name, let id = creation?.targetID {
         // The workroom exists but setup failed. Disarm the auto-run armed in `onReady` (before setup
-        // ran) so dismissing the failure dialog doesn't launch the command against a half-set-up tree
-        // — auto-run is a success-path action (issue #7, review finding).
+        // ran) so dismissing the failure doesn't launch the command against a half-set-up tree —
+        // auto-run is a success-path action (issue #7, review finding). Force `hasSetup` so the detail
+        // shows the setup dialog (with a Dismiss button + the failure message), not the loader, until
+        // it's closed. Re-assert selection (idempotent with `onReady`) so the failure is on screen even
+        // if the `onReady` land lost the race to this catch.
         if case .armed = runStates[id] { runStates[id] = nil }
-        // Show the failure in its log. Keep it blocking (if a setup script ran) so the failure
-        // replaces the terminal until the user dismisses it.
-        session.blocking = hasSetup
-        logs[id] = session
+        creatingWorkrooms.remove(id)  // setup failed — the workroom can now be deleted (issue #116)
+        creation?.hasSetup = true
         selectedProjectID = project.id
-        selectedTargetID = targetIDFromLogKey(id, project: project)
+        selectedTargetID = .workroom(project: project.path, name: name)
         session.finish(failure: errorText(error))
       } else {
-        // Failed before the workroom existed — nothing to dock under.
+        // Failed before the workroom existed — no tab/slot target; clear the create and surface it.
+        creation = nil
         present(error)
       }
     }
   }
 
-  /// Mounts a just-created workroom (selecting it) and attaches its setup log. When
-  /// `blocking` is true the log replaces the terminal full-pane (a setup script is
-  /// running); otherwise it docks beneath the terminal. Safe to call more than once.
-  private func mountSetupLog(
-    _ session: ScriptLogSession, workroom name: String, project: Project, blocking: Bool = false
-  ) async {
-    let id = TerminalTarget.workroomID(project: project.path, name: name)
-    session.targetID = id
-    session.blocking = blocking
-    logs[id] = session
+  /// Lands on a just-created workroom once it exists (issue #116). Reloads FIRST so the workroom
+  /// resolves against `projects` (its real tab chip takes over from the provisional one), then — in one
+  /// synchronous step, no `await` in between — records its name/target/setup flag, arms auto-run, and
+  /// selects it. The reload-then-set order is deliberate: `createWorkroom`'s fallback keys on
+  /// `creation?.targetID`, so target id and selection must be set together (never target-set-then-
+  /// suspend), or the fallback could fire while selection is still pending. Idempotent — the `onReady`
+  /// path and the older-CLI fallback can both call it. The detail then shows the new workroom's slot:
+  /// its setup dialog (script) or, once the create clears `creation`, its terminal (no script).
+  private func landOnCreatedWorkroom(name: String, project: Project, setup: Bool) async {
+    // Drop the project row's creating spinner the moment the workroom exists (issue #116) — the
+    // creating slot (its loader, then a setup script's dialog) now carries the progress, so the
+    // sidebar indicator is redundant. `created` fires as setup begins, so this is the earlier of the
+    // two. The `createWorkroom` defer still clears it for a failure before the workroom ever existed.
+    busyProjects.remove(project.path)
     await reload()
+    // A late `onReady` echo can arrive after the flow already finished and cleared `creation` (a fast
+    // no-setup create). Bail before touching selection or the creating guard so it can't re-arm a
+    // guard the create flow already released.
+    guard creation != nil else { return }
+    let id = TerminalTarget.workroomID(project: project.path, name: name)
+    // Block deletion of this workroom while its setup runs against the worktree (issue #116); the
+    // create flow clears this once the setup finishes.
+    creatingWorkrooms.insert(id)
+    creation?.name = name
+    creation?.targetID = id
+    creation?.hasSetup = setup
+    // Arm auto-run so the workroom's first terminal runs the project command as tab #1 (issue #7). It
+    // fires from `ensureInitialTerminal` when the pane mounts — after the setup dialog is dismissed for
+    // a setup script, or as soon as the loader clears for a no-setup create — so it runs post-setup.
+    let cfg = runConfig(forProject: project.path)
+    if cfg.autoRun, cfg.hasCommand { armAutoRun(forWorkroom: id) }
     selectedProjectID = project.id
     selectedTargetID = .workroom(project: project.path, name: name)
+  }
+
+  /// Whether the in-progress create (issue #116) is the focused detail — i.e. the detail pane should
+  /// show the creating slot (its loader, then, for a setup script, its dialog). Pre-name the loader
+  /// unconditionally owns the detail (a brief phase, "loader until the dialog appears"). Once named it
+  /// follows selection — the new workroom's own tab — so a setup script blocks ONLY that workroom:
+  /// selecting another workroom reveals it while the create keeps running in the background.
+  var isCreationFocused: Bool {
+    guard let creation else { return false }
+    // Derive the sid from the create's own name — not `projects` — so the dialog shows even during a
+    // setup script, before that reload has landed the workroom in the project list.
+    guard let name = creation.name else { return true }
+    return selectedTargetID == .workroom(project: creation.project.path, name: name)
+  }
+
+  /// Whether the given target's terminal must stay withheld while its workroom is being created with a
+  /// setup script (issue #116) — a safety net for the edge where the creation target is co-displayed as
+  /// a non-focused split member (the focused slot is already handled by `isCreationFocused` in the
+  /// detail). A no-setup create never blocks — its terminal mounts as soon as the loader clears.
+  func isCreationBlocking(_ targetID: TerminalTarget.ID) -> Bool {
+    guard let creation, creation.targetID == targetID else { return false }
+    return creation.hasSetup
+  }
+
+  /// Whether `workroom` has an in-flight create (its setup is running) — the delete affordances
+  /// disable while this holds so it can't be torn down mid-setup (issue #116). Shared across windows.
+  func isCreatingWorkroom(_ workroom: Workroom, in project: Project) -> Bool {
+    creatingWorkrooms.contains(
+      TerminalTarget.workroomID(project: project.path, name: workroom.name))
+  }
+
+  /// Dismiss the setup dialog after a setup script (or its failure) — the user clicked Dismiss.
+  /// Clearing `creation` drops the dialog and lets the withheld terminal mount (issue #116).
+  func dismissCreation() {
+    creation = nil
   }
 
   /// Removes the workroom from the sidebar immediately, then runs its teardown (script +
@@ -2057,6 +2147,10 @@ final class AppStore: ObservableObject {
   func deleteWorkroom(_ workroom: Workroom, in project: Project) {
     let sid = SidebarID.workroom(project: project.path, name: workroom.name)
     let targetID = TerminalTarget.workroomID(project: project.path, name: workroom.name)
+    // Don't delete a workroom whose create is still in flight (issue #116) — its setup script is
+    // running against the worktree, so tearing it down now would race the script. The delete
+    // affordances are disabled while creating; this is the chokepoint that guarantees it.
+    guard !creatingWorkrooms.contains(targetID) else { return }
     // Was the deleted workroom the one selected in *this* window? Captured before `detachTarget`
     // mutates selection, so the issue #80 fallback below can re-point only when the delete left us
     // with nothing selected (a solo selected workroom — a split member yields to its survivor).
@@ -2064,6 +2158,9 @@ final class AppStore: ObservableObject {
     // Optimistic shared-model removal, visible in every window: drop it from the project list and its
     // shared VCS/CI status now (snappy UI). Terminals stay alive for the graceful stop; the reap +
     // VCS teardown follow once the process exits, so a dev server isn't orphaned against a deleted dir.
+    // Tombstone it first so a concurrent reload's stale `list` snapshot can't resurrect it (the
+    // create/delete race) — `apply` filters tombstoned workrooms until the teardown completes.
+    deletingWorkrooms.insert(targetID)
     removeWorkroomLocally(workroom, in: project)
     workroomStatuses[sid] = nil
     // Clear the deleted workroom from EVERY window's split + selection (issue #70, OV #7) — another
@@ -2126,7 +2223,6 @@ final class AppStore: ObservableObject {
     clearRunPidFile(for: targetID)
     runOutcomes[targetID] = nil
     resetRunToast(for: targetID)  // deleted target → drop any run toast state (issue #67)
-    logs[targetID] = nil
     // Drop the gone target's notifications and pull any banners it already delivered.
     systemNotifier.withdraw(tabIDs: notifications.removeForTarget(targetID))
   }
@@ -2135,13 +2231,20 @@ final class AppStore: ObservableObject {
   /// its captured output in an alert. Split out of `deleteWorkroom` so the run command can stop first
   /// (issue #7) — the worktree must not be deleted while its dev server still holds the directory.
   private func startWorkroomTeardown(_ workroom: Workroom, in project: Project) {
+    let targetID = TerminalTarget.workroomID(project: project.path, name: workroom.name)
     Task {
       let log = ScriptLogSession(title: "Tearing down \(workroom.name)", phase: "teardown")
       do {
         try await cli.delete(name: workroom.name, project: project.path) { text in
           DispatchQueue.main.async { log.append(text) }
         }
+        // Teardown persisted (the workroom is gone from config): drop the tombstone. Future `list`
+        // snapshots no longer include it, and the optimistic removal already matches (issue #116).
+        deletingWorkrooms.remove(targetID)
       } catch {
+        // Teardown failed → the workroom still exists. Clear the tombstone BEFORE reloading so the
+        // reload's `apply` doesn't filter it out — it must reappear in the sidebar.
+        deletingWorkrooms.remove(targetID)
         await reload()
         presentTeardownFailure(workroom, error: error, log: log)
       }
@@ -2255,13 +2358,6 @@ final class AppStore: ObservableObject {
     workrooms[wIdx] = wr
     let p = projects[pIdx]
     projects[pIdx] = Project(path: p.path, vcs: p.vcs, workrooms: workrooms)
-  }
-
-  /// Maps a workroom log key ("wr|<project>|<name>") back to its selection id.
-  private func targetIDFromLogKey(_ key: TerminalTarget.ID, project: Project) -> SidebarID? {
-    let prefix = "wr|\(project.path)|"
-    guard key.hasPrefix(prefix) else { return nil }
-    return .workroom(project: project.path, name: String(key.dropFirst(prefix.count)))
   }
 
   /// Teardown failed (it ran in the background): pop an alert carrying the captured
@@ -3161,6 +3257,24 @@ final class AppStore: ObservableObject {
   }
 }
 
+/// Tracks a create-in-progress for the initiating window (issue #116). `session` streams setup
+/// output into the dialog; `name`/`targetID` fill in when the CLI reports the workroom exists (the
+/// provisional "Creating…" chip becomes the real named chip); `hasSetup` gates the dialog's
+/// dismissal contract — a setup script keeps the Dismiss button and withholds the terminal, while a
+/// no-setup create auto-dismisses. A value type: mutating a field republishes `AppStore.creation`.
+struct WorkroomCreation {
+  let session: ScriptLogSession
+  let project: Project
+  /// The CLI-generated workroom name, once the "created" event arrives (nil while still creating).
+  var name: String?
+  /// The mounted target id, once known — added to the workroom-tab active set so the real chip shows
+  /// during setup, and matched by `isCreationBlocking` to withhold its terminal.
+  var targetID: TerminalTarget.ID?
+  /// Whether a setup script is (or was) running — set from the "created" event, and forced true on a
+  /// post-create failure so the dialog stays up with a Dismiss button.
+  var hasSetup = false
+}
+
 /// The live log for one create/delete run. Lines stream in from the CLI's NDJSON
 /// stderr (see WorkroomCLI). A plain ObservableObject — all mutations happen on the
 /// main thread (the store hops there before appending), so SwiftUI sees them safely.
@@ -3168,14 +3282,6 @@ final class ScriptLogSession: ObservableObject, Identifiable {
   let id = UUID()
   let title: String
   let phase: String
-  /// The terminal target id this log is docked under, once the CLI reports the workroom
-  /// exists. nil while the workroom is still being created.
-  var targetID: TerminalTarget.ID?
-  /// When true, this session blocks its workroom's terminal: the detail pane shows the
-  /// setup log full-pane (no terminal) until the user dismisses it. Set once, before the
-  /// session is inserted into the observed `logs` dict, so it must NOT be @Published —
-  /// flipping it after mount would create then tear down a terminal (mirrors `targetID`).
-  var blocking = false
   @Published private(set) var lines: [LogLine] = []
   @Published private(set) var isFinished = false
   @Published private(set) var failureMessage: String?

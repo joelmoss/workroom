@@ -371,15 +371,22 @@ struct ProjectSidebar: View {
           .foregroundStyle(.yellow)
           .help(warning.message)
       }
-      // Spinner/delete slot: a progress spinner while a command runs, swapped for the delete button
-      // on hover — so a workroom stays deletable even mid-run (issue #28). The delete button is
-      // always laid out (it reveals via opacity), so it fixes the slot's size and the spinner,
-      // which is smaller, can't shift the row.
+      // Spinner/delete slot: a progress spinner while the workroom's setup runs (issue #116) or a
+      // command runs (issue #28), swapped for the delete button on hover — so a workroom stays
+      // deletable even mid-run. The delete button is always laid out (it reveals via opacity), so it
+      // fixes the slot's size and the smaller spinner can't shift the row.
       ZStack {
-        if terminals.isRunning(forTargetID: targetID), hovered != id {
+        if store.isCreatingWorkroom(workroom, in: project) {
+          // Setup script still running against the new worktree — a spinner, and (below) no delete.
+          SetupSpinner()
+        } else if terminals.isRunning(forTargetID: targetID), hovered != id {
           RunningSpinner()
         }
-        DeleteRowButton(name: workroom.displayName, visible: hovered == id) {
+        // Hidden while the workroom's setup is still running — it can't be deleted mid-setup (#116).
+        DeleteRowButton(
+          name: workroom.displayName,
+          visible: hovered == id && !store.isCreatingWorkroom(workroom, in: project)
+        ) {
           store.pendingDeletion = PendingWorkroomDeletion(workroom: workroom, project: project)
         }
       }
@@ -423,6 +430,8 @@ struct ProjectSidebar: View {
         } label: {
           Label("Delete \(workroom.displayName)", systemImage: "trash")
         }
+        // Can't delete a workroom while its setup is still running against the worktree (issue #116).
+        .disabled(store.isCreatingWorkroom(workroom, in: project))
       }
   }
 
@@ -670,6 +679,17 @@ private struct RunningSpinner: View {
       .controlSize(.small)
       .help("Running a command")
       .accessibilityLabel("Running a command")
+  }
+}
+
+/// Row spinner shown while a newly-created workroom's setup script is still running (issue #116) —
+/// mirrors `RunningSpinner`, but says "setting up" so the row's state reads correctly.
+private struct SetupSpinner: View {
+  var body: some View {
+    ProgressView()
+      .controlSize(.small)
+      .help("Setting up workroom")
+      .accessibilityLabel("Setting up workroom")
   }
 }
 
