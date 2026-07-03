@@ -151,29 +151,39 @@ struct RootView: View {
     // title-bar vibrancy (a plain HStack / NavigationStack doesn't). Its native sidebar column is
     // never used (forced `.detailOnly`) — that column is what kept the ~30pt inset-card top gap — so
     // the real sidebar is our own `SidebarColumn` in the detail HStack, flush below the bar.
-    // S4 rehost increment 2: dropped the detail-only `NavigationSplitView` wrapper. It split/clipped
-    // the window toolbar to the sidebar-column width (that's why the tabs were cut off once the toolbar
-    // was shown). The real sidebar|detail|inspector was already this hand-rolled `HStack`; using it
-    // directly lets a real full-width unified toolbar host our chrome. (The old vibrancy rationale was
-    // for the *fake* content-strip bar, which the real toolbar replaces.)
-    HStack(spacing: 0) {
-      if store.sidebarVisible {
-        SidebarColumn(
-          paneDrag: $workroomChipDrag,
-          localize: { workroomChipLocal($0) },
-          dropTarget: { workroomChipDropTarget(at: $0) }
-        )
-        .transition(.move(edge: .leading))
+    // Wrapped in a *detail-only* `NavigationSplitView` (empty sidebar column, forced `.detailOnly`) —
+    // NOT a plain HStack. A plain HStack detail in a full-size-content window with a visible `.unified`
+    // toolbar loses SwiftUI `.onHover` for its content that sits near the top under the title bar (the
+    // terminal tab strip's trailing toolbar buttons never lit their hover well — issue #114); the
+    // title-bar region eats mouse-moved for a raw content view. `NavigationSplitView` hosts the detail
+    // in an `NSSplitViewController`, which sets up the correct content tracking so `.onHover` fires
+    // again. Dropping it (0e354d6e) was to stop it clipping `.toolbar { items }` to the sidebar-column
+    // width — but the chrome no longer lives in toolbar items; it's a full-width window-level `.left`
+    // `TitlebarAccessoryHost` (see `accessoryBarContent`), which NavigationSplitView does not clip. So
+    // we get correct hover back with no clipping. The empty native sidebar column is unused — the real
+    // sidebar is our own `SidebarColumn` in the detail HStack, flush below the bar.
+    NavigationSplitView(columnVisibility: .constant(.detailOnly)) {
+      Color.clear.frame(width: 0)
+    } detail: {
+      HStack(spacing: 0) {
+        if store.sidebarVisible {
+          SidebarColumn(
+            paneDrag: $workroomChipDrag,
+            localize: { workroomChipLocal($0) },
+            dropTarget: { workroomChipDropTarget(at: $0) }
+          )
+          .transition(.move(edge: .leading))
+        }
+        detail
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+        if showNotifications {
+          InspectorColumn()
+            .transition(.move(edge: .trailing))
+        }
       }
-      detail
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-      if showNotifications {
-        InspectorColumn()
-          .transition(.move(edge: .trailing))
-      }
+      .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.sidebarVisible)
+      .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: showNotifications)
     }
-    .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.sidebarVisible)
-    .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: showNotifications)
   }
 
   /// Error alert, add-project importer, and the new-workroom / workroom-delete / project-delete
