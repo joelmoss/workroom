@@ -3,10 +3,10 @@ import Defaults
 import SwiftUI
 
 /// The right inspector (issue #24). macOS 14 supports only one `.inspector` per view, so the
-/// inspector composes two collapsible sections — **Changes** (the selected workroom's VCS
-/// detail) on top, **Notifications** (the existing session history) below — rather than two
-/// inspectors. The toolbar bell toggles the whole inspector; each section's disclosure handles
-/// its own visibility (persisted). The Clear-notifications action rides the inspector toolbar.
+/// inspector composes three collapsible sections — **Changes** (the selected workroom's VCS
+/// detail), **Files** (the repo tree), and **Pull Request** — rather than separate inspectors.
+/// The toolbar `sidebar.right` toggle shows/hides the whole inspector; each section's disclosure
+/// handles its own visibility (persisted). (Notifications moved to the left sidebar, issue #118.)
 struct RightInspector: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
@@ -18,7 +18,7 @@ struct RightInspector: View {
     // Composed as a native NSSplitView (see InspectorSplitView). Each section's header + body are
     // handed over as environment-injected AnyViews — the hosted tree does NOT inherit our
     // `@EnvironmentObject`s across NSHostingController, so we inject `store` + `notifications` here.
-    // Order matches InspectorSectionKind.allCases: Changes, Pull Request, Notifications.
+    // Order matches InspectorSectionKind.allCases: Changes, Files, Pull Request.
     InspectorSplitView(
       headers: [
         AnyView(
@@ -50,20 +50,6 @@ struct RightInspector: View {
             prHeaderAccessory
           }
           .environmentObject(store).environmentObject(notifications)),
-        AnyView(
-          SectionHeader(
-            title: "Notifications", collapsed: $store.notificationsSectionCollapsed,
-            indicator: notificationsIndicator, indicatorLabel: notificationsIndicatorLabel,
-            shortcut: "⌥⌘N"
-          ) {
-            InspectorHeaderButton(
-              systemImage: "trash", help: "Clear notifications", destructive: true,
-              disabled: notifications.items.isEmpty
-            ) {
-              notifications.clear()
-            }
-          }
-          .environmentObject(store).environmentObject(notifications)),
       ],
       bodies: [
         AnyView(ChangesPanel().environmentObject(store).environmentObject(notifications)),
@@ -72,13 +58,11 @@ struct RightInspector: View {
             notifications)
         ),
         AnyView(PullRequestPanel().environmentObject(store).environmentObject(notifications)),
-        AnyView(NotificationsList().environmentObject(store).environmentObject(notifications)),
       ],
       collapsed: [
         store.changesSectionCollapsed,
         store.filesSectionCollapsed,
         store.prSectionCollapsed,
-        store.notificationsSectionCollapsed,
       ],
       workroomKey: AppStore.targetIDString(for: store.selectedTargetID) ?? "",
       weights: store.inspectorSizeWeights,
@@ -216,14 +200,6 @@ struct RightInspector: View {
         .help(dot.accessibility))
   }
 
-  /// Notifications header count badge, with a tooltip.
-  private var notificationsIndicator: AnyView {
-    let count = notifications.items.count
-    return AnyView(
-      UnreadBadge(count: count)
-        .help(count == 1 ? "1 notification" : "\(count) notifications"))
-  }
-
   // VoiceOver text for each header indicator (the visual badge can't be read through the collapse
   // button's own label), appended to the section's accessibility label.
 
@@ -235,12 +211,6 @@ struct RightInspector: View {
       return (s.conflicted ? "conflicted, " : "") + "\(ins) insertions, \(del) deletions"
     }
     return VCSStatusPresentation.dot(s)?.accessibility ?? ""
-  }
-
-  private var notificationsIndicatorLabel: String {
-    let count = notifications.items.count
-    if count == 0 { return "" }
-    return count == 1 ? "1 notification" : "\(count) notifications"
   }
 }
 

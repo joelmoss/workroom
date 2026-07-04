@@ -99,6 +99,33 @@ final class NotificationStoreTests: XCTestCase {
     XCTAssertEqual(s.items.first?.title, "2")  // "0" and "1" evicted
   }
 
+  /// The left-sidebar strip (issue #118) shows `items.first` (the oldest) with a `+N` badge where
+  /// `N == items.count - 1`; dismissing the oldest reveals the next oldest. These are pure
+  /// derivations over the chronologically-appended `items`, so exercise them directly here.
+  func testOldestFirstAndExtraCountDriveTheSidebarStrip() {
+    let s = makeStore()
+    let first = s.record(targetID: target, tabID: UUID(), activity: osc("oldest"), focused: false)
+    s.record(targetID: target, tabID: UUID(), activity: osc("middle"), focused: false)
+    s.record(targetID: target, tabID: UUID(), activity: osc("newest"), focused: false)
+
+    // Oldest is displayed; the badge counts the rest.
+    XCTAssertEqual(s.items.first?.title, "oldest")
+    XCTAssertEqual(s.items.count - 1, 2)
+
+    // Dismissing the oldest reveals the next oldest and drops the extra count.
+    s.dismiss(notifID: first!.id)
+    XCTAssertEqual(s.items.first?.title, "middle")
+    XCTAssertEqual(s.items.count - 1, 1)
+
+    // The `+N` popover shows the others (chronological subset the strip passes as `dropFirst()`).
+    XCTAssertEqual(Array(s.items.dropFirst()).map(\.title), ["newest"])
+
+    // Down to one: no extra, strip shows just the oldest.
+    s.dismiss(notifID: s.items.first!.id)
+    XCTAssertEqual(s.items.count - 1, 0)
+    XCTAssertEqual(s.items.first?.title, "newest")
+  }
+
   // onTotalChange — the Dock-badge seam: fires with the new aggregate total on every history change
   // (issue #32), so the badge tracks the count from the model rather than a (suspendable) view.
 

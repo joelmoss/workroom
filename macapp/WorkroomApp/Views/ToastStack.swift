@@ -14,13 +14,12 @@ struct ToastStack: View {
   @EnvironmentObject var notifications: NotificationCenterStore
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-  /// Toasts to render. While the right inspector is edge-hover-revealed (issue #56) the revealed
-  /// Notifications panel IS the surface, so withhold toasts — the routing already flashes instead of
-  /// toasting for *new* arrivals during a reveal (`recordNotification`); this also hides any toast
-  /// that was already on screen when the reveal began, so the two never co-display. They reappear
-  /// (re-armed) once the reveal ends.
+  /// Toasts to render. Notifications no longer live in the right inspector (moved to the left
+  /// sidebar, issue #118), so the previous `previewingRight` suppression — which withheld toasts
+  /// while the right inspector was edge-revealed because that panel WAS the notifications surface —
+  /// is gone; a focused arrival always toasts now (see `recordNotification`).
   private var visibleToasts: [WorkroomNotification] {
-    store.previewingRight ? [] : store.toasts
+    store.toasts
   }
 
   /// Origin label for a toast, resolved from the live model so a workroom's display label

@@ -14,9 +14,9 @@ struct RootView: View {
   @EnvironmentObject var whatsNew: WhatsNewService
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Default(.theme) private var theme
-  /// Whether the right-hand notifications inspector is open. `@Default` (not `@State`) so the
-  /// View-menu command (WorkroomCommands) toggles the same value.
-  @Default(.showNotifications) private var showNotifications
+  /// Whether the right-hand inspector (Changes / Files / Pull Request) is open. `@Default` (not
+  /// `@State`) so the View-menu command (WorkroomCommands) toggles the same value.
+  @Default(.showInspector) private var showInspector
 
   /// Drives the New Project sheet — set from `store.requestAddProject`, which both the menu command
   /// and the sidebar's Add-Project buttons raise. Hosted here (vs the sidebar) so the command presents
@@ -146,7 +146,7 @@ struct RootView: View {
     // the custom title bar, and that inset isn't controllable. `SidebarColumn`/`InspectorColumn` are
     // our own resizable cards (same `sidebarCard` as the edge-reveal, so pinned == unpinned), giving
     // full control over their position. Visibility round-trips through `store.sidebarVisible` /
-    // `showNotifications` (the View-menu ticks + toggles); width persists per column to `Defaults`.
+    // `showInspector` (the View-menu ticks + toggles); width persists per column to `Defaults`.
     // A *detail-only* NavigationSplitView: we keep it (vs a plain HStack) only for the window
     // toolbar/layering context it sets up — that's what lets the custom title bar, drawn in the
     // full-size content under the native title bar, render crisp instead of washed-out by the
@@ -178,13 +178,13 @@ struct RootView: View {
         }
         detail
           .frame(maxWidth: .infinity, maxHeight: .infinity)
-        if showNotifications {
+        if showInspector {
           InspectorColumn()
             .transition(.move(edge: .trailing))
         }
       }
       .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.sidebarVisible)
-      .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: showNotifications)
+      .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: showInspector)
     }
   }
 
@@ -309,7 +309,7 @@ struct RootView: View {
       // so this large `body` stays within the type-checker's budget.
       .modifier(
         EdgeRevealSidebars(
-          sidebarVisible: store.sidebarVisible, inspectorVisible: showNotifications,
+          sidebarVisible: store.sidebarVisible, inspectorVisible: showInspector,
           paneDrag: $workroomChipDrag,
           localize: { workroomChipLocal($0) },
           dropTarget: { workroomChipDropTarget(at: $0) })

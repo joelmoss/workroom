@@ -236,17 +236,17 @@ final class WorkroomStatusTests: XCTestCase {
 
     store.selectedTargetID = a
     store.changesSectionCollapsed = true
-    store.notificationsSectionCollapsed = true
+    store.filesSectionCollapsed = true
 
     // Switching to a different workroom shows its own (default, all-expanded) layout.
     store.selectedTargetID = b
     XCTAssertFalse(store.changesSectionCollapsed)
-    XCTAssertFalse(store.notificationsSectionCollapsed)
+    XCTAssertFalse(store.filesSectionCollapsed)
 
     // Switching back restores workroom a's saved collapse.
     store.selectedTargetID = a
     XCTAssertTrue(store.changesSectionCollapsed)
-    XCTAssertTrue(store.notificationsSectionCollapsed)
+    XCTAssertTrue(store.filesSectionCollapsed)
     XCTAssertFalse(store.prSectionCollapsed)
   }
 
@@ -262,15 +262,15 @@ final class WorkroomStatusTests: XCTestCase {
     let b = SidebarID.workroom(project: "/p", name: "b")
 
     store.selectedTargetID = a
-    store.updateInspectorSizeWeights([300, 100, 200, 150])
+    store.updateInspectorSizeWeights([300, 100, 200])
 
     store.selectedTargetID = b
     XCTAssertEqual(
-      store.inspectorSizeWeights, [1, 1, 1, 1], "another workroom uses the equal default")
+      store.inspectorSizeWeights, [1, 1, 1], "another workroom uses the equal default")
 
     store.selectedTargetID = a
     XCTAssertEqual(
-      store.inspectorSizeWeights, [300, 100, 200, 150], "workroom a's drag is restored")
+      store.inspectorSizeWeights, [300, 100, 200], "workroom a's drag is restored")
   }
 
   // MARK: - PRPresentation (Phase 2 pull-request badge)

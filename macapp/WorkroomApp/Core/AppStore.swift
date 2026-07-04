@@ -267,9 +267,6 @@ final class AppStore: ObservableObject {
   @Published var prSectionCollapsed = false {
     didSet { persistInspectorState() }
   }
-  @Published var notificationsSectionCollapsed = false {
-    didSet { persistInspectorState() }
-  }
   /// Collapse state of the two jj Changes-panel lists (Working Copy `@` / Parent Commit `@-`). Held
   /// here as `@Published` (not `@Default` in the panel) for the same reason as `collapsedProjects`
   /// and the section flags above: the inspector content observes this `@EnvironmentObject` but a
@@ -286,7 +283,7 @@ final class AppStore: ObservableObject {
   /// `InspectorSectionKind.allCases`. Equal == the default three-equal-sections layout; updated when
   /// the user drags a divider (via `updateInspectorSizeWeights`) and persisted per workroom. Not set
   /// directly by the view — the `NSSplitView` reports drag results back through the store.
-  @Published var inspectorSizeWeights: [Double] = [1, 1, 1, 1]
+  @Published var inspectorSizeWeights: [Double] = [1, 1, 1]
   /// The repo file tree behind the inspector's Files section. Re-pointed at the selected target's
   /// directory whenever the selection changes (see `selectedTargetID.didSet`); the `FilesPanel`
   /// observes it. Owned here so it survives inspector re-renders and tracks selection centrally.
@@ -357,10 +354,6 @@ final class AppStore: ObservableObject {
   /// each toast carries the `WorkroomNotification` it mirrors so a tap can route via `openTerminal`.
   /// Rendered by `ToastStack`, overlaid bottom-right in `RootView`.
   @Published var toasts: [WorkroomNotification] = []
-  /// The id of a notification to flash in the inspector's Notifications list — set when one arrives
-  /// while the inspector is *open* (issue #31). Self-clearing after the flash so a later open can't
-  /// re-flash a stale row; read by `NotificationsList`.
-  @Published var flashNotifID: UUID?
   /// Max simultaneously-visible toasts; beyond this the oldest is dropped so a chatty emitter can't
   /// overflow the window (matches the "stack a few, drop oldest" decision).
   private static let maxToasts = 4
@@ -3032,16 +3025,14 @@ final class AppStore: ObservableObject {
         activity: activity, focused: false)
     else { return }
     if NotificationGate.shouldPresentInApp(recorded: true, appActive: NSApp.isActive) {
-      // App is focused: sound on every arrival, then either flash the row (inspector visible) or pop
-      // a toast (inspector closed). The two surfaces are exclusive — never both at once. The inspector
-      // counts as visible when docked open (`showNotifications`) OR temporarily edge-hover-revealed
-      // (`previewingRight`, issue #56) — otherwise a toast would pop over the revealed panel.
+      // App is focused: sound on every arrival, then pop a toast. Notifications now live in the
+      // always-visible left-sidebar strip + the title-bar bell badge (issue #118), so the transient
+      // toast is the arrival signal regardless of what else is on screen. Previously this flashed the
+      // notifications row when the *right* inspector was open/edge-revealed and only toasted otherwise
+      // — that gating referenced a surface that no longer shows notifications, so a focused arrival
+      // with the inspector open would have silently dropped.
       NotificationSound.play()
-      if Defaults[.showNotifications] || previewingRight {
-        flashNotification(note.id)
-      } else {
-        enqueueToast(note)
-      }
+      enqueueToast(note)
     } else if NotificationGate.shouldPostBanner(recorded: true, appActive: NSApp.isActive) {
       Task { @MainActor in
         if await systemNotifier.ensureAuthorized() {
@@ -3063,16 +3054,6 @@ final class AppStore: ObservableObject {
   /// Remove a toast by id — on tap (after `openTerminal`), on auto-dismiss, or when its underlying
   /// notification is dismissed elsewhere (`ToastStack` prunes those).
   func dismissToast(_ id: UUID) { toasts.removeAll { $0.id == id } }
-
-  /// Flag a notification for a one-shot flash in the open inspector, then clear the flag shortly
-  /// after so re-opening the inspector later can't re-flash the same (still-present) row. The row's
-  /// own animation runs on appear/change of this id (see `NotificationsList`).
-  private func flashNotification(_ id: UUID) {
-    flashNotifID = id
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
-      if self?.flashNotifID == id { self?.flashNotifID = nil }
-    }
-  }
 
   /// The on-screen target for `targetID`, ignoring app/window activation (so it's unit-testable): the
   /// selected target, or — when a workroom split is shown — any co-displayed split member. The focused
@@ -3179,15 +3160,15 @@ final class AppStore: ObservableObject {
     changesSectionCollapsed = collapsed[0]
     filesSectionCollapsed = collapsed[1]
     prSectionCollapsed = collapsed[2]
-    notificationsSectionCollapsed = collapsed[3]
     inspectorSizeWeights = weights
     isLoadingInspectorState = false
   }
 
-  /// Reconcile a persisted inspector layout against the current section count. One Files section was
-  /// added (3 → 4): a pre-Files layout (count 3) is discarded to the all-expanded / equal-weight
-  /// default rather than mis-mapped onto the new 4-section ordering. `nonisolated` + pure so the
-  /// migration is unit-testable without an `AppStore` / `Defaults` (issue #24).
+  /// Reconcile a persisted inspector layout against the current section count. The count has changed
+  /// twice — a Files section was added (3 → 4), then Notifications was removed (4 → 3, issue #118).
+  /// Any layout whose element count doesn't match the current section count is discarded to the
+  /// all-expanded / equal-weight default rather than mis-mapped onto the new ordering. `nonisolated`
+  /// + pure so the migration is unit-testable without an `AppStore` / `Defaults` (issue #24).
   nonisolated static func reconcileInspectorState(
     _ state: InspectorPaneState, sectionCount count: Int
   ) -> (collapsed: [Bool], weights: [Double]) {
@@ -3206,7 +3187,6 @@ final class AppStore: ObservableObject {
     Defaults[.inspectorPaneStates][key] = InspectorPaneState(
       collapsed: [
         changesSectionCollapsed, filesSectionCollapsed, prSectionCollapsed,
-        notificationsSectionCollapsed,
       ],
       weights: inspectorSizeWeights)
   }

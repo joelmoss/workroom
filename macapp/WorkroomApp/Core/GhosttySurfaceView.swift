@@ -870,12 +870,13 @@ final class GhosttySurfaceView: NSView {
     // reserve them explicitly. Without this they reach the terminal, and a TUI in an enhanced
     // keyboard mode (Claude/Codex) consumes the keystroke so the menu key-equivalent never fires.
     // ⇧⌘D = Split Down; ⇧⌘G = Find Previous; ⇧⌘K = Theme picker (issue #36/#53); ⇧⌘L = dark/light
-    // toggle (issue #57); ⇧⌘N = Next Notification; ⇧⌘R = Stop run; ⌥⌘N = Notifications toggle;
-    // ⌥⌘R = Restart run (issue #7).
+    // toggle (issue #57); ⇧⌘N = Next Notification; ⇧⌘R = Stop run; ⌥⌘R = Restart run (issue #7).
+    // (⌥⌘N was the Notifications inspector toggle; removed with issue #118, so it's no longer
+    // reserved and passes through to the terminal.)
     if flags == [.command, .shift] {
       return key == "d" || key == "g" || key == "k" || key == "l" || key == "n" || key == "r"
     }
-    if flags == [.command, .option] { return key == "n" || key == "r" }
+    if flags == [.command, .option] { return key == "r" }
     guard flags == .command else { return false }
     if ("1"..."9").contains(ch) { return true }  // focus tab N
     // ⌘N is New Window (issue #70); ⌘T/⌘W/⌘O/⌘D are real menu commands; ⌘Q/⌘H/⌘M/⌘, are system

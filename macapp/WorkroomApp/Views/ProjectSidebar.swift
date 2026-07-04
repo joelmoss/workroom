@@ -40,9 +40,6 @@ struct ProjectSidebar: View {
   /// disclosure caret (root/workroom, only at ≥2 terminals) or the terminal glyph, and is always
   /// reserved so the labels beside it line up whether or not a caret is shown.
   private let caretWidth: CGFloat = 14
-  /// Height of the floating theme/add bar (top fade pad 18 + 28 button + bottom pad 6). Used to
-  /// reserve a trailing list spacer so the last row scrolls clear of it.
-  private let bottomBarHeight: CGFloat = 52
   /// Per-level leading indent so the tree reads as a hierarchy: projects sit at `rowInsets.leading`,
   /// their root/workroom children one `levelIndent` deeper (`childRowInsets`), and a target's terminal
   /// rows deeper again — the terminal base matches its root/workroom, then the in-row `caretWidth`
@@ -109,10 +106,12 @@ struct ProjectSidebar: View {
         tree
       }
     }
-    // The theme/add bar floats over the list contents (issue #56 feedback) with a top-fading solid
-    // background, so rows scroll under it and stay legible; the list reserves matching bottom room
-    // (`contentMargins` in `tree`) so the last row can still scroll clear of it.
-    .overlay(alignment: .bottom) { bottomBar }
+    // The footer (notification strip + theme/add bar) is a SOLID bar pinned to the bottom via
+    // `safeAreaInset`, which *reserves* its height so the list scrolls above it — a long project list
+    // no longer disappears behind a translucent bar, and nothing shows through (issue #118 feedback).
+    // (This replaces the earlier floating overlay + top-fade gradient from issue #56, which let rows
+    // peek under the footer.)
+    .safeAreaInset(edge: .bottom, spacing: 0) { footer }
     // Per-project run-command settings (issue #7) stays sidebar-local — it's only ever triggered
     // from a (visible) project row, so it needs no re-homing.
     .sheet(item: $settingsProject) { project in
@@ -153,13 +152,8 @@ struct ProjectSidebar: View {
           }
         }
       }
-      // Trailing spacer the height of the floating theme/add bar, so the last real row can always
-      // scroll clear of it (issue #56 feedback).
-      Color.clear
-        .frame(height: bottomBarHeight)
-        .listRowInsets(EdgeInsets())
-        .listRowSeparator(.hidden)
-        .listRowBackground(Color.clear)
+      // No trailing spacer needed: the footer is a solid `safeAreaInset` (see `body`) that reserves
+      // its own height, so the list already scrolls clear of it (issue #118 feedback).
     }
     // Plain style (not the NavigationSplitView sidebar default): the `.sidebar` style forces a
     // comfortable ~28pt row-height floor and ignores small `listRowInsets` + `defaultMinListRowHeight`,
@@ -593,6 +587,19 @@ struct ProjectSidebar: View {
 
   // MARK: Chrome
 
+  /// The sidebar's SOLID bottom footer (issue #118): the notification band stacked directly above the
+  /// theme/add bar. Pinned via `safeAreaInset` (see `body`), so it reserves its own height and the
+  /// list scrolls above it — an opaque `tokens.panel` fill with a top hairline means no list row ever
+  /// shows through. The strip manages its own slide in/out; the footer's height follows it.
+  private var footer: some View {
+    VStack(spacing: 0) {
+      ThemeService.shared.tokens.border.frame(height: 1)
+      SidebarNotificationStrip()
+      bottomBar
+    }
+    .background(ThemeService.shared.tokens.panel)
+  }
+
   /// The sidebar's bottom bar: the appearance toggle on the left, "Add Project" on the right.
   private var bottomBar: some View {
     HStack {
@@ -600,9 +607,9 @@ struct ProjectSidebar: View {
         theme = theme.next
       } label: {
         Image(systemName: theme.symbol)
-          .font(.system(size: 14))
+          .font(.system(size: 11))
           .foregroundStyle(.secondary)
-          .frame(width: 28, height: 28)
+          .frame(width: 24, height: 24)
           .background(
             RoundedRectangle(cornerRadius: 6)
               .fill(ThemeService.shared.tokens.hover.opacity(themeHovering ? 1 : 0))
@@ -622,9 +629,9 @@ struct ProjectSidebar: View {
         store.requestAddProject = true
       } label: {
         Image(systemName: "plus")
-          .font(.system(size: 14))
+          .font(.system(size: 11))
           .foregroundStyle(.secondary)
-          .frame(width: 28, height: 28)
+          .frame(width: 24, height: 24)
           .background(
             RoundedRectangle(cornerRadius: 6)
               .fill(ThemeService.shared.tokens.hover.opacity(addProjectHovering ? 1 : 0))
@@ -637,24 +644,9 @@ struct ProjectSidebar: View {
       .accessibilityIdentifier("AddProject")
     }
     .padding(.horizontal, 8)
-    .padding(.top, 18)
-    .padding(.bottom, 6)
-    // Solid at the buttons, fading to transparent at the top, so list rows scroll under the bar and
-    // stay legible behind it (issue #56 feedback). Click-through so only the buttons capture clicks —
-    // a row scrolled under the bar is still clickable through the background. The solid colour is
-    // `tokens.panel` — the tint the sidebar's vibrancy is washed with — so the fade blends into the
-    // sidebar's (now frosted) background rather than reading as the darker terminal `tokens.bg`.
-    .background(
-      LinearGradient(
-        stops: [
-          .init(color: ThemeService.shared.tokens.panel.opacity(0), location: 0),
-          .init(color: ThemeService.shared.tokens.panel, location: 0.65),
-          .init(color: ThemeService.shared.tokens.panel, location: 1),
-        ],
-        startPoint: .top, endPoint: .bottom
-      )
-      .allowsHitTesting(false)
-    )
+    .padding(.vertical, 6)
+    // No background here: the enclosing `footer` provides the solid `tokens.panel` fill for the whole
+    // bar (issue #118). The bar is pinned via `safeAreaInset`, so nothing scrolls behind it.
   }
 }
 

@@ -139,7 +139,7 @@ extension KeyboardShortcutsView {
         ShortcutItem(label: "Toggle Projects sidebar", keys: "⌃⌘S"),
         ShortcutItem(label: "Changes", keys: "⌥⌘C"),
         ShortcutItem(label: "Pull Request", keys: "⌥⌘P"),
-        ShortcutItem(label: "Notifications", keys: "⌥⌘N"),
+        ShortcutItem(label: "Next Notification", keys: "⇧⌘N"),
         ShortcutItem(label: "Theme…", keys: "⇧⌘K"),
         ShortcutItem(label: "Toggle Light/Dark Mode", keys: "⇧⌘L"),
       ]),

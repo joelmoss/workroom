@@ -605,7 +605,7 @@ struct WorkroomCommands: Commands {
   @FocusedValue(\.terminalSplitVisible) private var terminalSplitVisible
   @FocusedValue(\.workroomSplitVisible) private var workroomSplitVisible
   // Shared with RootView's inspector + toolbar toggle (same key) so all three stay in sync.
-  @Default(.showNotifications) private var showNotifications
+  @Default(.showInspector) private var showInspector
   // Same key as the Settings checkbox so the two stay in sync; GhosttySurfaceView reads it
   // on each selection, so toggling here takes effect on the next drag.
   @Default(.copyOnSelect) private var copyOnSelect
@@ -675,17 +675,17 @@ struct WorkroomCommands: Commands {
     }
 
     CommandGroup(after: .sidebar) {
-      // View menu: reveal the Changes view. The inspector hosts both Changes and Notifications, so
+      // View menu: reveal the Changes view. The inspector hosts Changes, Files, and Pull Request, so
       // "showing" Changes means opening the inspector *and* expanding its Changes section; the
       // checkmark is on only when both hold. Turning it off just collapses the section (the
-      // inspector stays open if Notifications is still showing).
+      // inspector stays open if another section is still showing).
       Toggle(
         "Changes",
         isOn: Binding(
-          get: { showNotifications && !(store?.changesSectionCollapsed ?? true) },
+          get: { showInspector && !(store?.changesSectionCollapsed ?? true) },
           set: { on in
             if on {
-              showNotifications = true
+              showInspector = true
               store?.changesSectionCollapsed = false
             } else {
               store?.changesSectionCollapsed = true
@@ -699,10 +699,10 @@ struct WorkroomCommands: Commands {
       Toggle(
         "Files",
         isOn: Binding(
-          get: { showNotifications && !(store?.filesSectionCollapsed ?? true) },
+          get: { showInspector && !(store?.filesSectionCollapsed ?? true) },
           set: { on in
             if on {
-              showNotifications = true
+              showInspector = true
               store?.filesSectionCollapsed = false
             } else {
               store?.filesSectionCollapsed = true
@@ -712,14 +712,15 @@ struct WorkroomCommands: Commands {
       .keyboardShortcut("f", modifiers: [.command, .option])
 
       // View menu: reveal the Pull Request view — same open-inspector-and-expand-section semantics
-      // as Changes above.
+      // as Changes above. (Notifications moved out of the inspector to the left sidebar, issue #118,
+      // so there's no longer a Notifications section toggle here — ⌥⌘N is freed back to the terminal.)
       Toggle(
         "Pull Request",
         isOn: Binding(
-          get: { showNotifications && !(store?.prSectionCollapsed ?? true) },
+          get: { showInspector && !(store?.prSectionCollapsed ?? true) },
           set: { on in
             if on {
-              showNotifications = true
+              showInspector = true
               store?.prSectionCollapsed = false
             } else {
               store?.prSectionCollapsed = true
@@ -727,24 +728,6 @@ struct WorkroomCommands: Commands {
           })
       )
       .keyboardShortcut("p", modifiers: [.command, .option])
-
-      // View menu: reveal the Notifications view — same open-inspector-and-expand-section semantics
-      // as Changes and Pull Request above (it used to toggle the whole inspector, which was
-      // inconsistent with the other two and took two clicks to land on "open").
-      Toggle(
-        "Notifications",
-        isOn: Binding(
-          get: { showNotifications && !(store?.notificationsSectionCollapsed ?? true) },
-          set: { on in
-            if on {
-              showNotifications = true
-              store?.notificationsSectionCollapsed = false
-            } else {
-              store?.notificationsSectionCollapsed = true
-            }
-          })
-      )
-      .keyboardShortcut("n", modifiers: [.command, .option])
 
       // Theme chooser (issue #36). A menu command can't anchor a popover, so it posts a
       // notification RootView observes to present the picker as a sheet.

@@ -186,8 +186,10 @@ final class WorkroomWorkflowUITests: XCTestCase {
   /// `NSTitlebarAccessoryViewController` bar, not `.toolbar` — `.primaryAction` is column-scoped in a
   /// NavigationSplitView, so they couldn't both sit at the window's trailing edge as toolbar items.
   /// This asserts both controls exist, the `sidebar.right` toggle is the sole show/hide control for
-  /// the inspector (open + close via its accessibility value), and the bell opens + dismisses the
-  /// oldest pending notification (dropping its unread total) WITHOUT touching the inspector.
+  /// the inspector (open + close via its accessibility value), and — after notifications moved to the
+  /// left sidebar (issue #118) — a plain bell click opens the all-notifications popover WITHOUT
+  /// dismissing anything, while ⇧⌘N (the same "walk the backlog" path a ⌘-click on the bell uses)
+  /// opens the oldest and drops the unread total, all WITHOUT touching the inspector.
   func testTitlebarControlsBellAndInspectorToggle() throws {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
@@ -200,22 +202,55 @@ final class WorkroomWorkflowUITests: XCTestCase {
       toggle.waitForExistence(timeout: 10), "the inspector toggle should be in the title bar")
 
     // The `sidebar.right` toggle is the sole inspector show/hide control. Assert via its OWN
-    // accessibility value, which is bound directly to `showNotifications` — the inspector's section
+    // accessibility value, which is bound directly to `showInspector` — the inspector's section
     // headers linger in the a11y tree after it hides, so they're an unreliable open/closed proxy.
-    // `showNotifications` persists across launches, so read the starting value rather than assuming it.
+    // `showInspector` persists across launches, so read the starting value rather than assuming it.
     let start = (toggle.value as? String) ?? "hidden"
     let flipped = start == "shown" ? "hidden" : "shown"
     toggle.click()
     assertValue(toggle, equals: flipped)
 
-    // The bell opens the oldest pending notification's terminal and dismisses it. The fixture seeds a
-    // backlog (5 entries totalling 7 unread; the oldest is a ×3 coalesced "Tests passed"), so one
-    // click drops the live unread total the bell's label reports from 7 to 4 — and does NOT change the
-    // inspector toggle's state (the bell is no longer an inspector control).
+    // The fixture seeds a backlog (5 entries totalling 7 unread; the oldest is a ×3 coalesced
+    // "Tests passed"). A plain bell click opens the all-notifications popover and does NOT dismiss
+    // anything — the unread total stays 7.
     XCTAssertTrue(bell.isEnabled, "the bell is enabled while notifications are pending")
     assertLabel(bell, equals: "Notifications, 7 unread")
     bell.click()
+    let popover = app.popovers.firstMatch
+    XCTAssertTrue(
+      popover.waitForExistence(timeout: 4), "a bell click opens the notifications popover")
+    assertLabel(bell, equals: "Notifications, 7 unread")
+    app.typeKey(.escape, modifierFlags: [])  // dismiss the transient popover before the next step
+
+    // ⇧⌘N (Next Notification) opens the oldest pending notification's terminal and dismisses it — the
+    // same `openOldestNotification` path a ⌘-click on the bell drives. The oldest is the ×3 "Tests
+    // passed", so the unread total the bell reports drops from 7 to 4, WITHOUT changing the inspector.
+    app.typeKey("n", modifierFlags: [.command, .shift])
     assertLabel(bell, equals: "Notifications, 4 unread")
     assertValue(toggle, equals: flipped)
+  }
+
+  /// The left-sidebar notification band (issue #118): the fixture's 5-entry backlog surfaces the
+  /// oldest entry as a strip at the bottom of the sidebar with a `+4` badge for the rest; clicking the
+  /// badge opens a popover listing those others.
+  func testSidebarNotificationStripAndPlusPopover() throws {
+    let app = launchedApp()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+
+    // The oldest seeded entry ("Tests passed", ×3) surfaces as a row at the sidebar bottom with a +N
+    // badge for the rest (five seeded ⇒ "+4").
+    let plus = app.buttons["sidebar.notifications.plus"]
+    XCTAssertTrue(
+      plus.waitForExistence(timeout: 10),
+      "the oldest notification should surface as a strip with a +N badge for the rest")
+    assertLabel(plus, equals: "4 more notifications")
+
+    // Clicking the badge opens the popover of the other notifications.
+    plus.click()
+    let popover = app.descendants(matching: .any)
+      .matching(identifier: "notifications.popover").firstMatch
+    XCTAssertTrue(
+      popover.waitForExistence(timeout: 4),
+      "clicking the +N badge opens the extra-notifications popover")
   }
 }

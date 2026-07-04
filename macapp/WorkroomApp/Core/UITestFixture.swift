@@ -195,8 +195,8 @@ enum UITestFixture {
         JJCommitChanges(
           changeID: "qz", commitID: "a1b2c3d4", refs: [],
           description: "refactor: extract auth service", files: parentChangedFiles)),
-      // The many-changes repro scenario pairs a tall Changes list with an empty Pull Request and
-      // Notifications (the exact configuration the disclosure-animation glitch was reported in).
+      // The many-changes repro scenario pairs a tall Changes list with an empty Pull Request (the
+      // exact configuration the disclosure-animation glitch was reported in).
       pr: manyChanges
         ? nil
         : PullRequestInfo(
@@ -232,11 +232,11 @@ enum UITestFixture {
 
   // MARK: - Notifications
 
-  /// A deterministic notification history for the inspector's Notifications panel. The fixture
-  /// otherwise leaves it empty (real entries only arrive when a terminal emits an OSC notification),
-  /// so this seeds a representative spread — a coalesced ×N entry, a wrapping two-line body, a
-  /// title-only entry, and a body-only (titleless) one — across a range of ages so the panel, every
-  /// row variant, and the "time ago" line all get visual + UI-test coverage.
+  /// A deterministic notification history for the notification surfaces (the left-sidebar strip + the
+  /// bell/`+N` popovers, issue #118). The fixture otherwise leaves it empty (real entries only arrive
+  /// when a terminal emits an OSC notification), so this seeds a representative spread — a coalesced
+  /// ×N entry, a wrapping two-line body, a title-only entry, and a body-only (titleless) one — across
+  /// a range of ages so every row variant and the "time ago" line all get visual + UI-test coverage.
   ///
   /// Each entry carries a *synthetic* tab id, NOT the workroom's live tab: real notifications are
   /// raised for terminals you're NOT looking at, and the app dismisses the visible tab's history on

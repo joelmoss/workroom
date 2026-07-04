@@ -51,8 +51,10 @@ extension Defaults.Keys {
   /// Bundle id of the last editor picked from the toolbar "Open in…" menu; "" = none yet.
   static let lastEditor = Key<String>("openInEditorBundleID", default: "")
 
-  /// Whether the right-hand notifications inspector is open.
-  static let showNotifications = Key<Bool>("showNotificationsInspector", default: false)
+  /// Whether the right-hand inspector (Changes / Files / Pull Request) is open. The stored key is
+  /// still `showNotificationsInspector` for back-compat — the inspector used to carry a Notifications
+  /// section (moved to the left sidebar, issue #118), but the persisted user state is preserved.
+  static let showInspector = Key<Bool>("showNotificationsInspector", default: false)
 
   /// The docked right inspector's remembered column width. `.inspector` resets to its `ideal`
   /// width every time it's re-shown, so we feed this back as the ideal — hiding and re-showing
@@ -135,14 +137,15 @@ extension Defaults.Keys {
 }
 
 /// One workroom's persisted inspector layout: the collapse state and relative pane heights of the
-/// sections, ordered as `InspectorSectionKind.allCases` (Changes, Files, Pull Request,
-/// Notifications). `weights` are relative (renormalised among the expanded panes at layout time),
-/// so they survive inspector-width/height changes; equal weights == the equal-sections default. A
-/// layout saved before the Files section existed (3 entries) is discarded to this default on load.
+/// sections, ordered as `InspectorSectionKind.allCases` (Changes, Files, Pull Request). `weights`
+/// are relative (renormalised among the expanded panes at layout time), so they survive
+/// inspector-width/height changes; equal weights == the equal-sections default. A layout whose entry
+/// count doesn't match the current section count (e.g. a pre-Files 3-entry layout, or a pre-#118
+/// 4-entry layout that still had Notifications) is discarded to this default on load.
 struct InspectorPaneState: Codable, Defaults.Serializable, Equatable {
   var collapsed: [Bool]
   var weights: [Double]
 
   static let `default` = InspectorPaneState(
-    collapsed: [false, false, false, false], weights: [1, 1, 1, 1])
+    collapsed: [false, false, false], weights: [1, 1, 1])
 }
