@@ -675,6 +675,56 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertEqual(WorkroomStatusResolver.classifyPR(ok("not json")), .keepPrior)
   }
 
+  func testClassifyPRMergeability() {
+    // MERGEABLE + CLEAN → the Merge button is offered (issue #88).
+    let clean = ok(
+      #"[{"number":1,"title":"t","state":"OPEN","isDraft":false,"url":"u","reviewDecision":null,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN"}]"#
+    )
+    guard case .info(let cpr) = WorkroomStatusResolver.classifyPR(clean) else { return XCTFail() }
+    XCTAssertEqual(cpr.mergeable, true)
+    XCTAssertEqual(cpr.mergeState, .clean)
+    XCTAssertTrue(cpr.canMerge)
+
+    // CONFLICTING + DIRTY → not mergeable.
+    let dirty = ok(
+      #"[{"number":2,"title":"t","state":"OPEN","isDraft":false,"url":"u","reviewDecision":null,"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY"}]"#
+    )
+    guard case .info(let dpr) = WorkroomStatusResolver.classifyPR(dirty) else { return XCTFail() }
+    XCTAssertEqual(dpr.mergeable, false)
+    XCTAssertEqual(dpr.mergeState, .dirty)
+    XCTAssertFalse(dpr.canMerge)
+
+    // UNKNOWN (GitHub still computing) → nil / .unknown, button hidden.
+    let unknown = ok(
+      #"[{"number":3,"title":"t","state":"OPEN","isDraft":false,"url":"u","reviewDecision":null,"mergeable":"UNKNOWN","mergeStateStatus":"UNKNOWN"}]"#
+    )
+    guard case .info(let upr) = WorkroomStatusResolver.classifyPR(unknown) else { return XCTFail() }
+    XCTAssertNil(upr.mergeable)
+    XCTAssertEqual(upr.mergeState, .unknown)
+    XCTAssertFalse(upr.canMerge)
+  }
+
+  func testClassifyPRMergeFieldsAbsentAreNil() {
+    // Back-compat: JSON without the merge fields decodes cleanly with nil mergeability (button off).
+    let r = ok(
+      #"[{"number":1,"title":"t","state":"OPEN","isDraft":false,"url":"u","reviewDecision":null}]"#)
+    guard case .info(let pr) = WorkroomStatusResolver.classifyPR(r) else { return XCTFail() }
+    XCTAssertNil(pr.mergeable)
+    XCTAssertNil(pr.mergeState)
+    XCTAssertFalse(pr.canMerge)
+  }
+
+  func testClassifyPRUnknownMergeStateMapsToUnknown() {
+    // A future/unrecognised mergeStateStatus must map to .unknown (not-yet-mergeable), never be
+    // silently treated as clean.
+    let r = ok(
+      #"[{"number":1,"title":"t","state":"OPEN","isDraft":false,"url":"u","reviewDecision":null,"mergeable":"MERGEABLE","mergeStateStatus":"QUEUED"}]"#
+    )
+    guard case .info(let pr) = WorkroomStatusResolver.classifyPR(r) else { return XCTFail() }
+    XCTAssertEqual(pr.mergeState, .unknown)
+    XCTAssertFalse(pr.canMerge)
+  }
+
   func testClassifyPRUnknownStateKeepsPrior() {
     // A future/unknown GitHub PR state must not render (mapping to .open would expose destructive
     // actions on a PR we don't understand) — keep the last good value instead.

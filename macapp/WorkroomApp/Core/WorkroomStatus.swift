@@ -158,6 +158,12 @@ struct PullRequestInfo: Equatable, Sendable {
   enum ReviewDecision: String, Equatable, Sendable {
     case approved, changesRequested, reviewRequired
   }
+  /// GitHub's `mergeStateStatus` (issue #88) — the richer merge signal behind the Merge button.
+  /// `.unknown` is GitHub still computing (transient after a push); an unrecognised future value
+  /// also maps here so it's treated as not-yet-mergeable rather than misread as clean.
+  enum MergeState: String, Equatable, Sendable {
+    case clean, blocked, behind, unstable, dirty, draft, hasHooks, unknown
+  }
   let number: Int
   let title: String
   let state: State
@@ -168,6 +174,24 @@ struct PullRequestInfo: Equatable, Sendable {
   /// compiler — not a runtime test — guarantees a rebuild (e.g. `applyOptimisticPRAction`) can't
   /// silently drop reviewers. Order is not significant here; `PRPresentation.reviewers` sorts.
   let reviewers: [Reviewer]
+  /// GitHub's `mergeable` (issue #88): `MERGEABLE` → `true`, `CONFLICTING` → `false`, `UNKNOWN`
+  /// / absent → `nil` (also "not yet probed"). `nil`/`false` hides the Merge button. Optional with
+  /// a default so it's additive — every construction site need not pass it (unlike `reviewers`).
+  var mergeable: Bool? = nil
+  /// GitHub's `mergeStateStatus` (issue #88), mapped to `MergeState`; `nil` = not probed / absent.
+  var mergeState: MergeState? = nil
+
+  /// Whether the split-button Merge action should be offered (issue #88): an open, non-draft PR
+  /// that GitHub reports as mergeable with a merge-state that actually permits merging. Deliberately
+  /// conservative — a state we can't confirm as mergeable (conflicts, branch-protection block, draft,
+  /// or GitHub still computing) hides the button rather than showing one that would just error.
+  var canMerge: Bool {
+    guard state == .open, !isDraft, mergeable == true else { return false }
+    switch mergeState {
+    case .clean, .unstable, .hasHooks, .behind: return true
+    case .blocked, .dirty, .draft, .unknown, .none: return false
+    }
+  }
 }
 
 /// One CI check on a pull request (issue #75), from `gh pr checks <n> --json

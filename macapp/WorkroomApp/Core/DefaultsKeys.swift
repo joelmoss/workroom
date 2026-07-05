@@ -154,6 +154,11 @@ extension Defaults.Keys {
   /// workrooms in different projects from colliding. The key *string* `workroomLabels` is a
   /// stored-data contract — keep it byte-for-byte stable once shipped.
   static let workroomLabels = Key<[String: String]>("workroomLabels", default: [:])
+
+  /// The split "Merge" button's chosen strategy (issue #88): create a merge commit (default),
+  /// squash, or rebase. Global (not per-project) so the choice persists across projects and
+  /// restarts. Stored as the bare raw string via `PRMergeMethod: PreferRawRepresentable`.
+  static let prMergeMethod = Key<PRMergeMethod>("prMergeMethod", default: .merge)
 }
 
 /// One workroom's persisted inspector layout: the collapse state and relative pane heights of the

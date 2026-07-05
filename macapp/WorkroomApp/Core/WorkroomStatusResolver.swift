@@ -272,7 +272,8 @@ struct WorkroomStatusResolver: Sendable {
       "gh",
       [
         "pr", "list", "--head", target.branch, "--state", "all", "--limit", "1", "--json",
-        "number,title,state,isDraft,url,reviewDecision,latestReviews,reviewRequests",
+        "number,title,state,isDraft,url,reviewDecision,latestReviews,reviewRequests,"
+          + "mergeable,mergeStateStatus",
       ], in: target.dir, timeout: ciTimeout)
     return Self.classifyPR(r)
   }
@@ -325,7 +326,8 @@ struct WorkroomStatusResolver: Sendable {
     return .info(
       PullRequestInfo(
         number: pr.number, title: pr.title, state: pr.state, isDraft: pr.isDraft, url: pr.url,
-        reviewDecision: pr.reviewDecision, reviewers: enriched))
+        reviewDecision: pr.reviewDecision, reviewers: enriched,
+        mergeable: pr.mergeable, mergeState: pr.mergeState))
   }
 
   /// The GraphQL query that maps a PR's submitted reviews to their author + permalink. Keyed by the
@@ -779,6 +781,8 @@ struct WorkroomStatusResolver: Sendable {
       let reviewDecision: String?
       let latestReviews: [RawReview]?
       let reviewRequests: [RawRequest]?
+      let mergeable: String?  // MERGEABLE / CONFLICTING / UNKNOWN (issue #88)
+      let mergeStateStatus: String?  // CLEAN / BLOCKED / BEHIND / … (issue #88)
     }
     // Malformed/truncated JSON (a gh schema change, or output capped mid-stream) must NOT erase the
     // PR badge. A *valid* empty array is different — that genuinely means no PR (handled below).
@@ -835,10 +839,33 @@ struct WorkroomStatusResolver: Sendable {
       reviewersByID[reviewer.id] = reviewer
     }
 
+    // Mergeability (issue #88): `MERGEABLE`/`CONFLICTING` map to true/false; anything else
+    // (`UNKNOWN`, absent) stays nil so the Merge button hides while GitHub is still computing.
+    let mergeable: Bool?
+    switch raw.mergeable?.uppercased() {
+    case "MERGEABLE": mergeable = true
+    case "CONFLICTING": mergeable = false
+    default: mergeable = nil
+    }
+    let mergeState: PullRequestInfo.MergeState?
+    switch raw.mergeStateStatus?.uppercased() {
+    case "CLEAN": mergeState = .clean
+    case "BLOCKED": mergeState = .blocked
+    case "BEHIND": mergeState = .behind
+    case "UNSTABLE": mergeState = .unstable
+    case "DIRTY": mergeState = .dirty
+    case "DRAFT": mergeState = .draft
+    case "HAS_HOOKS": mergeState = .hasHooks
+    case "UNKNOWN": mergeState = .unknown
+    case .some: mergeState = .unknown  // a future value → not-yet-mergeable, never misread as clean
+    case nil: mergeState = nil
+    }
+
     return .info(
       PullRequestInfo(
         number: raw.number, title: raw.title, state: state, isDraft: raw.isDraft, url: raw.url,
-        reviewDecision: review, reviewers: Array(reviewersByID.values)))
+        reviewDecision: review, reviewers: Array(reviewersByID.values),
+        mergeable: mergeable, mergeState: mergeState))
   }
 
   /// Decode `gh pr checks <n> --json name,state,bucket,link,workflow` into the per-check list.

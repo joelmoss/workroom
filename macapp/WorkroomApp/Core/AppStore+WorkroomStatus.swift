@@ -221,9 +221,56 @@ extension AppStore {
       state = .open
       draft = pr.isDraft
     }
+    // Carry the prior mergeability forward (the re-probe corrects it): dropping it here would flip
+    // `canMerge` off and blink the Merge button away for the (multi-second) round-trip.
     s.pr = PullRequestInfo(
       number: pr.number, title: pr.title, state: state, isDraft: draft, url: pr.url,
-      reviewDecision: pr.reviewDecision, reviewers: pr.reviewers)
+      reviewDecision: pr.reviewDecision, reviewers: pr.reviewers,
+      mergeable: pr.mergeable, mergeState: pr.mergeState)
+    workroomStatuses[sid] = s
+  }
+
+  /// Merge the selected workroom's PR (issue #88) with `method`: shell to `gh pr merge`, refresh on
+  /// success, surface `stderr` on failure. Mirrors `performPRAction` — same in-flight gate, same
+  /// `gh` repo context, same optimistic-then-authoritative flow — but the strategy is a parameter,
+  /// so it's kept separate from the state-only `PRAction` verbs. In fixture mode it optimistically
+  /// flips the PR to merged instead of spawning `gh`.
+  func performMerge(_ method: PRMergeMethod, number: Int, on sid: SidebarID) {
+    guard let item = selectedStatusWorkItem(for: sid) else { return }
+    let priorPR = workroomStatuses[sid]?.pr
+    applyOptimisticMerge(on: sid)
+    if UITestFixture.isActive { return }
+    prActionInFlight = true
+    let resolver = statusResolver
+    let dir = WorkroomStatusResolver.ghProbeDirectory(
+      path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
+    Task { [weak self] in
+      let r = await resolver.runPRCommand(method.arguments(number: number), in: dir)
+      guard let self else { return }
+      self.prActionInFlight = false
+      if r.ok {
+        self.scheduleSelectedStatusRefresh()
+      } else {
+        if var s = self.workroomStatuses[sid] {
+          s.pr = priorPR
+          self.workroomStatuses[sid] = s
+        }
+        self.errorTitle = "Couldn’t merge pull request"
+        let stderr = r.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.errorMessage = stderr.isEmpty ? "The gh command failed." : stderr
+      }
+    }
+  }
+
+  /// Optimistically flip the PR to merged (no `gh`): the badge turns purple and the Merge button
+  /// disappears the instant the user confirms. `mergeable` is cleared so `canMerge` is false too.
+  /// The real path restores the prior PR if `gh` fails and re-probes on success.
+  private func applyOptimisticMerge(on sid: SidebarID) {
+    guard var s = workroomStatuses[sid], let pr = s.pr else { return }
+    s.pr = PullRequestInfo(
+      number: pr.number, title: pr.title, state: .merged, isDraft: false, url: pr.url,
+      reviewDecision: pr.reviewDecision, reviewers: pr.reviewers,
+      mergeable: false, mergeState: pr.mergeState)
     workroomStatuses[sid] = s
   }
 

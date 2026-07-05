@@ -455,6 +455,58 @@ final class WorkroomStatusTests: XCTestCase {
     XCTAssertEqual(PRAction.available(for: pr(.merged)), [])  // nothing to do on a merged PR
   }
 
+  // MARK: - PRMergeMethod (issue #88: split Merge button)
+
+  func testPRMergeMethodLabels() {
+    // The button says just "Merge" for a merge commit; the dropdown item spells it out.
+    XCTAssertEqual(PRMergeMethod.merge.buttonLabel, "Merge")
+    XCTAssertEqual(PRMergeMethod.merge.menuLabel, "Create a merge commit")
+    XCTAssertEqual(PRMergeMethod.squash.buttonLabel, "Squash and merge")
+    XCTAssertEqual(PRMergeMethod.squash.menuLabel, "Squash and merge")
+    XCTAssertEqual(PRMergeMethod.rebase.buttonLabel, "Rebase and merge")
+    XCTAssertEqual(PRMergeMethod.rebase.menuLabel, "Rebase and merge")
+  }
+
+  func testPRMergeMethodArguments() {
+    XCTAssertEqual(PRMergeMethod.merge.arguments(number: 42), ["pr", "merge", "42", "--merge"])
+    XCTAssertEqual(PRMergeMethod.squash.arguments(number: 7), ["pr", "merge", "7", "--squash"])
+    XCTAssertEqual(PRMergeMethod.rebase.arguments(number: 9), ["pr", "merge", "9", "--rebase"])
+  }
+
+  // MARK: - PullRequestInfo.canMerge (issue #88)
+
+  private func mergePR(
+    _ state: PullRequestInfo.State = .open, draft: Bool = false, mergeable: Bool?,
+    mergeState: PullRequestInfo.MergeState?
+  ) -> PullRequestInfo {
+    PullRequestInfo(
+      number: 1, title: "t", state: state, isDraft: draft, url: "u", reviewDecision: nil,
+      reviewers: [], mergeable: mergeable, mergeState: mergeState)
+  }
+
+  func testCanMergeCleanMergeable() {
+    XCTAssertTrue(mergePR(mergeable: true, mergeState: .clean).canMerge)
+    // GitHub still enables the button for unstable (non-required check failing), has-hooks, behind.
+    XCTAssertTrue(mergePR(mergeable: true, mergeState: .unstable).canMerge)
+    XCTAssertTrue(mergePR(mergeable: true, mergeState: .hasHooks).canMerge)
+    XCTAssertTrue(mergePR(mergeable: true, mergeState: .behind).canMerge)
+  }
+
+  func testCanMergeBlockedStatesHideButton() {
+    // Blocked by branch protection, conflicts (dirty), a draft, or GitHub still computing.
+    XCTAssertFalse(mergePR(mergeable: true, mergeState: .blocked).canMerge)
+    XCTAssertFalse(mergePR(mergeable: false, mergeState: .dirty).canMerge)
+    XCTAssertFalse(mergePR(mergeable: true, mergeState: .unknown).canMerge)
+    XCTAssertFalse(mergePR(mergeable: true, mergeState: nil).canMerge)  // not probed
+    XCTAssertFalse(mergePR(mergeable: nil, mergeState: .clean).canMerge)  // mergeability unknown
+  }
+
+  func testCanMergeRequiresOpenNonDraft() {
+    XCTAssertFalse(mergePR(.open, draft: true, mergeable: true, mergeState: .clean).canMerge)
+    XCTAssertFalse(mergePR(.merged, mergeable: true, mergeState: .clean).canMerge)
+    XCTAssertFalse(mergePR(.closed, mergeable: true, mergeState: .clean).canMerge)
+  }
+
   // MARK: - ChangesPanel.splitPath (filename + dimmed directory rendering)
 
   func testSplitPath() {

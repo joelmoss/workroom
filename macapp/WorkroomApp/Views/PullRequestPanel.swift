@@ -1,3 +1,4 @@
+import Defaults
 import SwiftUI
 
 /// The "Pull Request" inspector section (issue #24, Phase 2): the pull request for the selected
@@ -64,6 +65,7 @@ struct PullRequestPanel: View {
       VStack(alignment: .leading, spacing: 8) {
         if let pr = status.pr {
           readyForReviewButton(pr: pr, sid: sid)
+          mergeButton(pr: pr, sid: sid)
           prRows(pr)
           // Summary glyph, tappable → the PR's "/checks" tab. Derived from the loaded per-check list
           // so it can't contradict the rows below; falls back to the branch CI aggregate
@@ -88,6 +90,16 @@ struct PullRequestPanel: View {
   private func readyForReviewButton(pr: PullRequestInfo, sid: SidebarID) -> some View {
     if PRAction.available(for: pr).contains(.markReady) {
       ReadyForReviewButton(pr: pr, sid: sid)
+    }
+  }
+
+  /// The split "Merge" button (issue #88), shown at the top of the panel body only when the PR can
+  /// actually be merged (`PullRequestInfo.canMerge`). Mutually exclusive with the draft-only Ready
+  /// button (a draft can't merge), so the two never stack.
+  @ViewBuilder
+  private func mergeButton(pr: PullRequestInfo, sid: SidebarID) -> some View {
+    if pr.canMerge {
+      MergeButton(pr: pr, sid: sid)
     }
   }
 
@@ -251,6 +263,95 @@ private struct ReadyForReviewButton: View {
     .disabled(store.prActionInFlight)
     .help("Mark pull request #\(String(pr.number)) ready for review")
     .accessibilityLabel("Ready for review")
+  }
+}
+
+/// The split "Merge" button (issue #88): the primary area merges with the persisted method; the
+/// trailing dropdown picks the method ("Create a merge commit" / "Squash and merge" /
+/// "Rebase and merge") and relabels the button. The chosen method is stored globally
+/// (`Defaults[.prMergeMethod]`), so it persists across projects and restarts. Merging is
+/// outward-facing and effectively irreversible, so the primary click confirms first — matching
+/// GitHub's own two-step "Merge → Confirm merge". A standalone view so it can own its `@State`.
+///
+/// Drawn manually (a green primary `Button` + a chevron `Menu`, joined on one fill) rather than a
+/// `Menu(primaryAction:)` with `.buttonStyle(.borderedProminent).tint(.green)`: macOS does NOT
+/// honor a prominent/tinted button style on a `.menuStyle(.button)` split menu (it renders the
+/// default gray), so the fill has to be ours to guarantee GitHub's green.
+private struct MergeButton: View {
+  let pr: PullRequestInfo
+  let sid: SidebarID
+  @EnvironmentObject var store: AppStore
+  @Default(.prMergeMethod) private var method
+  @State private var confirming = false
+  @State private var hovering = false
+
+  private let corner: CGFloat = 5
+
+  var body: some View {
+    HStack(spacing: 0) {
+      // Primary: merge with the current method (confirms first).
+      Button {
+        confirming = true
+      } label: {
+        Text(method.buttonLabel)
+          .font(.caption).fontWeight(.medium)
+          .padding(.leading, 9).padding(.trailing, 7).padding(.vertical, 3)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .help("Merge pull request #\(String(pr.number)) (\(method.buttonLabel))")
+      .accessibilityLabel("\(method.buttonLabel), pull request #\(String(pr.number))")
+
+      // Hairline divider between the two halves (GitHub's split seam).
+      Rectangle().fill(Color.white.opacity(0.3)).frame(width: 1).padding(.vertical, 3)
+
+      // Dropdown: pick the merge method (relabels the button; persists globally).
+      Menu {
+        ForEach(PRMergeMethod.allCases, id: \.self) { option in
+          Button {
+            method = option
+          } label: {
+            // A checkmark marks the current selection (GitHub's menu convention). SwiftUI omits the
+            // symbol space for unselected rows, so their labels align under the checked one.
+            if option == method {
+              Label(option.menuLabel, systemImage: "checkmark")
+            } else {
+              Text(option.menuLabel)
+            }
+          }
+        }
+      } label: {
+        Image(systemName: "chevron.down")
+          .font(.system(size: 8, weight: .semibold))
+          .padding(.horizontal, 6).padding(.vertical, 4)
+          .contentShape(Rectangle())
+      }
+      .menuStyle(.button)
+      .buttonStyle(.plain)
+      .menuIndicator(.hidden)
+      .fixedSize()
+      .help("Choose merge method")
+      .accessibilityLabel("Choose merge method")
+    }
+    .foregroundStyle(.white)
+    .background(
+      RoundedRectangle(cornerRadius: corner)
+        .fill(Color.green.opacity(hovering ? 1 : 0.9))
+    )
+    .fixedSize()
+    .onHover { hovering = $0 }
+    .disabled(store.prActionInFlight)
+    .opacity(store.prActionInFlight ? 0.5 : 1)
+    .confirmationDialog(
+      "\(method.buttonLabel)?", isPresented: $confirming, titleVisibility: .visible
+    ) {
+      Button(method.buttonLabel) {
+        store.performMerge(method, number: pr.number, on: sid)
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("This merges pull request #\(String(pr.number)) into its base branch on GitHub.")
+    }
   }
 }
 

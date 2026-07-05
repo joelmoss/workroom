@@ -233,7 +233,10 @@ enum UITestFixture {
             Reviewer(
               identity: .user(login: "octocat"), state: .changesRequested,
               url: "https://github.com/acme/app/pull/42#pullrequestreview-1002"),
-          ]),
+          ],
+          // Mergeable + clean (issue #88) so the split "Merge" button renders in the fixture for
+          // visual QA of its default/dropdown states.
+          mergeable: true, mergeState: .clean),
       // All three "checked" stamps set so the inspector shows the seeded data, not "Checking…".
       lastChecked: Self.checkedAt, ciCheckedAt: Self.checkedAt, prCheckedAt: Self.checkedAt)
   }
