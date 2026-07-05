@@ -103,4 +103,83 @@ enum InspectorPanePolicy {
     }
     return heights
   }
+
+  /// Re-derive pane heights after a **single** section's collapse state toggled, preserving the
+  /// heights of every *other* pane so a manual resize elsewhere isn't disturbed (issue: collapsing
+  /// one section reset a divider the user had dragged between two others). `allocate`'s proportional
+  /// renormalisation moves every divider on a collapse; this keeps them put.
+  ///
+  /// - The toggled pane goes to the header when it collapsed, or to `expandedMinHeight` when it
+  ///   expanded (so it re-opens to a usable size).
+  /// - Every other expanded pane keeps its current height (floored at `expandedMinHeight`).
+  /// - The resulting surplus (a collapse frees space) or deficit (an expand needs space) is absorbed
+  ///   by / taken from the nearest expanded neighbour — the pane directly below the toggled section
+  ///   first (content below slides up to fill), then the one above, widening outward. A deficit that
+  ///   would push a neighbour below its floor spills to the next-nearest expanded pane; if nothing
+  ///   fits, panes hold their floor and overflow into their own scroll views.
+  ///
+  /// Because only a neighbour flexes, every divider *not* adjacent to the toggle stays exactly where
+  /// the user left it. Used only for a lone toggle within one workroom; a workroom switch or a
+  /// multi-flag change re-derives the whole layout from the saved weights via `allocate`.
+  static func reallocateOnToggle(
+    previous: [CGFloat], collapsed: [Bool], toggled: Int, capacity: CGFloat,
+    dividerThickness: CGFloat
+  ) -> [CGFloat] {
+    let n = collapsed.count
+    guard n > 0, previous.count == n, toggled >= 0, toggled < n else { return previous }
+    guard capacity > 0 else { return Array(repeating: 0, count: n) }
+
+    let dividers = dividerThickness * CGFloat(max(0, n - 1))
+    let target = max(0, capacity - dividers)
+
+    // Fix every pane: collapsed → header; the toggled (now-expanded) pane → its floor; every other
+    // expanded pane keeps its current height (floored). Only the anchor(s) flex to reconcile the sum.
+    var heights = previous
+    for i in 0..<n {
+      if collapsed[i] {
+        heights[i] = headerHeight
+      } else if i == toggled {
+        heights[i] = expandedMinHeight
+      } else {
+        heights[i] = max(expandedMinHeight, heights[i])
+      }
+    }
+
+    let anchors = anchorOrder(around: toggled, collapsed: collapsed)
+    guard !anchors.isEmpty else {
+      // The toggled pane is the only expanded one — it fills whatever the collapsed headers leave.
+      heights[toggled] = max(expandedMinHeight, target - CGFloat(n - 1) * headerHeight)
+      return heights
+    }
+
+    var delta = target - heights.reduce(0, +)
+    if delta >= 0 {
+      heights[anchors[0]] += delta  // freed space → the nearest expanded neighbour
+    } else {
+      for anchor in anchors {  // deficit → take from neighbours, nearest first, down to their floor
+        let room = max(0, heights[anchor] - expandedMinHeight)
+        let take = min(-delta, room)
+        heights[anchor] -= take
+        delta += take
+        if delta >= 0 { break }
+      }
+    }
+    return heights
+  }
+
+  /// Expanded panes other than `toggled`, ordered by proximity to it — the pane directly below the
+  /// toggled section first, then the one above, widening outward. The anchor a collapse/expand flexes.
+  private static func anchorOrder(around toggled: Int, collapsed: [Bool]) -> [Int] {
+    let n = collapsed.count
+    var order: [Int] = []
+    var distance = 1
+    while toggled + distance < n || toggled - distance >= 0 {
+      let below = toggled + distance
+      if below < n, !collapsed[below] { order.append(below) }
+      let above = toggled - distance
+      if above >= 0, !collapsed[above] { order.append(above) }
+      distance += 1
+    }
+    return order
+  }
 }

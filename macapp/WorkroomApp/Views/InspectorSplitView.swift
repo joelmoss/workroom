@@ -97,10 +97,13 @@ final class InspectorPaneViewController: NSViewController {
 /// - A per-pane height constraint (swapped on collapse change) pins a collapsed pane to the header
 ///   and floors an expanded pane at `expandedMinHeight` — this is what a drag and a window resize
 ///   respect.
-/// - The **default** distribution (equal among expanded panes) is applied once via `setPosition`
-///   after the first real layout, and re-applied whenever the collapse state changes. Plain window
-///   resizes keep the user's proportions (native `NSSplitView` behaviour); only a collapse toggle
-///   re-distributes, so a manual drag is preserved until the user collapses/expands a section.
+/// - The **default** distribution (equal among expanded panes, or the saved weights) is applied via
+///   `setPosition` after the first real layout and on a workroom switch. Plain window resizes keep
+///   the user's proportions (native `NSSplitView` behaviour).
+/// - A **single section's collapse toggling** within one workroom does NOT re-distribute: it keeps
+///   the other panes' heights and flexes only a neighbour (`reallocateOnToggle`), so a divider the
+///   user dragged between two unrelated sections survives a collapse elsewhere — the whole-layout
+///   renormalisation used to move it.
 /// `NSSplitView` whose dividers use a themed hairline. The system's thin divider can render a hard,
 /// near-black line between the section panes — most visible while the inspector collapses/expands —
 /// so we override `dividerColor` to force our subtle border colour on every draw, mid-animation
@@ -118,7 +121,17 @@ final class InspectorSplitContainerController: NSViewController, NSSplitViewDele
   private var collapsedFlags = [Bool](repeating: false, count: InspectorSectionKind.allCases.count)
   private var weights = [CGFloat](repeating: 1, count: InspectorSectionKind.allCases.count)
   private var workroomKey = ""
-  private var needsDefaultDistribution = true
+
+  /// What the next real layout should do. `.redistribute` re-derives the whole layout from the saved
+  /// weights (initial layout + workroom switch); `.toggle` re-sizes for one collapse change while
+  /// preserving the untouched panes' heights. Both need `bounds.height > 0`, so the work is deferred
+  /// to `viewDidLayout`.
+  private enum PendingLayout {
+    case none
+    case redistribute
+    case toggle(index: Int, previous: [CGFloat])
+  }
+  private var pendingLayout: PendingLayout = .redistribute
 
   /// Called when the user drags a divider, with the new relative pane heights.
   var onWeightsChanged: (([Double]) -> Void)?
@@ -151,30 +164,62 @@ final class InspectorSplitContainerController: NSViewController, NSSplitViewDele
   }
 
   /// Reflect the selected workroom's layout: its key, collapse state, and persisted pane weights.
-  /// A change of workroom *or* collapse state re-distributes on the next layout (those are exactly
-  /// when the saved/default proportions should reassert); a mere weights update coming back from a
-  /// drag does not (the divider is already where the user left it).
+  /// A workroom switch re-derives the whole layout from the saved weights. A single section's
+  /// collapse toggling re-sizes only a neighbour, preserving the other panes' heights (so a manual
+  /// drag elsewhere survives). A mere weights update coming back from a drag / a toggle's own
+  /// persistence does nothing (the dividers are already where they belong).
   func update(workroomKey: String, collapsed: [Bool], weights: [Double]) {
     precondition(collapsed.count == panes.count, "need one collapse flag per section")
     let resolvedWeights =
       weights.count == panes.count ? weights.map { CGFloat($0) } : self.weights
     let workroomChanged = workroomKey != self.workroomKey
-    let collapseChanged = collapsed != collapsedFlags
+    let previousCollapsed = collapsedFlags
+    let collapseChanged = collapsed != previousCollapsed
     self.weights = resolvedWeights
     self.workroomKey = workroomKey
     guard workroomChanged || collapseChanged else { return }
 
+    // A lone collapse toggle within the same workroom preserves the other panes; a workroom switch
+    // or a multi-flag change re-derives the whole layout. Capture the pre-toggle heights *before*
+    // swapping constraints — the frames still hold the current layout at this point.
+    let toggled = workroomChanged ? nil : Self.singleDifference(previousCollapsed, collapsed)
+    let previousHeights = panes.map { $0.view.frame.height }
+
     collapsedFlags = collapsed
     swapHeightConstraints()
-    needsDefaultDistribution = true
+    if let toggled, previousHeights.allSatisfy({ $0 > 0 }) {
+      pendingLayout = .toggle(index: toggled, previous: previousHeights)
+    } else {
+      pendingLayout = .redistribute
+    }
     view.needsLayout = true
   }
 
   override func viewDidLayout() {
     super.viewDidLayout()
-    guard needsDefaultDistribution, splitView.bounds.height > 0 else { return }
-    needsDefaultDistribution = false
-    redistribute()
+    guard splitView.bounds.height > 0 else { return }
+    switch pendingLayout {
+    case .none:
+      return
+    case .redistribute:
+      pendingLayout = .none
+      redistribute()
+    case .toggle(let index, let previous):
+      pendingLayout = .none
+      applyToggle(index: index, previous: previous)
+    }
+  }
+
+  /// The single index whose flag differs between two collapse states, or nil when zero or more than
+  /// one differ — i.e. exactly the "one section toggled" case the neighbour-preserving resize wants.
+  private static func singleDifference(_ a: [Bool], _ b: [Bool]) -> Int? {
+    guard a.count == b.count else { return nil }
+    var diff: Int?
+    for i in a.indices where a[i] != b[i] {
+      if diff != nil { return nil }
+      diff = i
+    }
+    return diff
   }
 
   /// Swap each pane's height constraint to match the current collapse state (collapsed → pinned to
@@ -189,17 +234,47 @@ final class InspectorSplitContainerController: NSViewController, NSSplitViewDele
   }
 
   /// Realise the pane heights from `InspectorPanePolicy` (collapsed panes pinned to the header, the
-  /// rest split by the saved weights — equal by default) via divider positions.
+  /// rest split by the saved weights — equal by default) via divider positions. Used for the initial
+  /// layout and on a workroom switch, when the saved/default proportions should reassert.
   private func redistribute() {
     let heights = InspectorPanePolicy.allocate(
       collapsed: collapsedFlags, weights: weights, capacity: splitView.bounds.height,
       dividerThickness: splitView.dividerThickness)
+    setPositions(heights)
+  }
+
+  /// Resize for a single section's collapse toggle, preserving the untouched panes' heights (only a
+  /// neighbour flexes — see `reallocateOnToggle`), then persist the resulting layout so a later
+  /// window resize / workroom switch reflects what the user now sees.
+  private func applyToggle(index: Int, previous: [CGFloat]) {
+    let heights = InspectorPanePolicy.reallocateOnToggle(
+      previous: previous, collapsed: collapsedFlags, toggled: index,
+      capacity: splitView.bounds.height, dividerThickness: splitView.dividerThickness)
+    setPositions(heights)
+    reportWeights(from: heights)
+  }
+
+  /// Set divider positions to realise `heights` (top to bottom).
+  private func setPositions(_ heights: [CGFloat]) {
     var offset: CGFloat = 0
     for index in 0..<(panes.count - 1) {
       offset += heights[index]
       splitView.setPosition(offset, ofDividerAt: index)
       offset += splitView.dividerThickness
     }
+  }
+
+  /// Persist a toggle's resulting layout as weights: each expanded pane reports its new height; a
+  /// collapsed pane keeps its remembered weight (which `allocate` ignores while it's collapsed and
+  /// renormalises among the expanded panes on re-expand). No-op if nothing changed. This reuses the
+  /// drag-capture channel (`onWeightsChanged`); the follow-up `update` it triggers sees no
+  /// workroom/collapse change and so does not re-layout.
+  private func reportWeights(from heights: [CGFloat]) {
+    var reported = weights
+    for index in panes.indices where !collapsedFlags[index] { reported[index] = heights[index] }
+    guard reported != weights else { return }
+    weights = reported
+    onWeightsChanged?(reported.map { Double($0) })
   }
 
   /// Capture the new proportions when the user drags a divider. Two conditions distinguish a real

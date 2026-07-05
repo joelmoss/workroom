@@ -76,6 +76,47 @@ final class InspectorSplitLayoutTests: XCTestCase {
     XCTAssertEqual(reported, [300, 5, 200])
   }
 
+  func testSingleCollapsePreservesUntouchedPaneAndReports() throws {
+    // End-to-end: a lone section collapse routes through the neighbour-preserving path (not the
+    // whole-layout redistribute), so the pane the user resized keeps its height — the reported
+    // weights (persisted layout) show the untouched top pane unchanged, the neighbour grown.
+    let container = makeContainer(heights: [600, 148, 150])
+    container.splitView.frame = CGRect(x: 0, y: 0, width: 300, height: 900)
+    container.update(workroomKey: "k", collapsed: [false, false, false], weights: [600, 148, 150])
+    container.viewDidLayout()
+    // The pane heights actually on screen just before the collapse — what preservation is measured
+    // against (a divider-thickness of renormalisation may have nudged them off the seed values).
+    let before = container.panes.map { Double($0.view.frame.height) }
+
+    var reported: [Double]?
+    container.onWeightsChanged = { reported = $0 }
+    container.update(workroomKey: "k", collapsed: [false, false, true], weights: [600, 148, 150])
+    container.viewDidLayout()
+
+    let got = try XCTUnwrap(reported)
+    XCTAssertEqual(
+      got[0], before[0], accuracy: 1.0, "the untouched top pane keeps its exact height")
+    XCTAssertGreaterThan(
+      got[1], before[1] + 50, "the neighbour absorbs the collapsed pane's freed space")
+  }
+
+  func testWorkroomSwitchDoesNotUseTheTogglePath() {
+    // A workroom switch re-derives the whole layout from saved weights; it must NOT be mistaken for
+    // a collapse toggle (which would preserve stale heights). It reports nothing back (redistribute
+    // doesn't persist), leaving the saved weights authoritative.
+    let container = makeContainer(heights: [600, 148, 150])
+    container.splitView.frame = CGRect(x: 0, y: 0, width: 300, height: 900)
+    container.update(workroomKey: "a", collapsed: [false, false, true], weights: [600, 148, 150])
+    var reported: [Double]?
+    container.onWeightsChanged = { reported = $0 }
+
+    // Same collapse *shape* but a different workroom → redistribute, not toggle.
+    container.update(workroomKey: "b", collapsed: [false, false, true], weights: [1, 1, 1])
+    container.viewDidLayout()
+
+    XCTAssertNil(reported, "a workroom switch redistributes and does not report weights back")
+  }
+
   // MARK: Persisted-layout migration (issue #24; Notifications removed, 4 → 3, issue #118)
 
   func testReconcileDiscardsStalePreNotificationRemovalLayout() {
