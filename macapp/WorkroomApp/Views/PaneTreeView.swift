@@ -550,20 +550,82 @@ private struct PaneLeafView: View {
 }
 
 /// Focus a non-terminal pane on click. `enabled` is gated on content type only (stable for the
-/// pane's lifetime) so the conditional never flips and churns the wrapped view's identity. A
-/// `simultaneousGesture` tap (not a drag) so it fires promptly on click-up without fighting the
-/// diff's own scroll / text-selection gestures — a `minimumDistance: 0` drag would stall while the
-/// system disambiguates it from a scroll.
+/// pane's lifetime) so the conditional never flips and churns the wrapped view's identity.
+///
+/// A diff/file pane's body is selectable `Text` (`.textSelection(.enabled)` in `DiffViewer`), whose
+/// AppKit text interaction swallows the `mouseDown` before SwiftUI's gesture graph sees it — so a
+/// SwiftUI tap (even `simultaneousGesture`) never fires on a click that lands on a diff *line*, only
+/// on the empty space between/after lines where no text intercepts. That made clicking a diff line in
+/// a co-displayed workroom fail to focus its pane (and the owning workroom split member). A
+/// window-local `NSEvent` monitor (the same lever the ⌘-key `AppDelegate` monitor uses) sees every
+/// left `mouseDown` first and fires `onActivate` when it falls within this pane — returning the event
+/// untouched, so the text underneath still selects.
 private struct ActivateOnPress: ViewModifier {
   let enabled: Bool
   let onActivate: () -> Void
 
   func body(content: Content) -> some View {
     if enabled {
-      content.simultaneousGesture(TapGesture().onEnded { onActivate() })
+      content.background(PaneClickFocusCatcher(onActivate: onActivate))
     } else {
       content
     }
+  }
+}
+
+/// Hosts a window-local left-`mouseDown` monitor that fires `onActivate` for any click landing within
+/// this view's bounds, WITHOUT consuming it (see `ActivateOnPress`). Placed as a `.background`, sized
+/// to the pane; `hitTest` returns nil so the view never becomes the event target itself — detection is
+/// purely via the monitor, leaving the diff's own text selection and scrolling untouched.
+private struct PaneClickFocusCatcher: NSViewRepresentable {
+  let onActivate: () -> Void
+
+  func makeNSView(context: Context) -> ClickFocusCatchView {
+    ClickFocusCatchView(onActivate: onActivate)
+  }
+
+  func updateNSView(_ view: ClickFocusCatchView, context: Context) {
+    view.onActivate = onActivate  // keep the closure fresh so a stale target is never focused
+  }
+
+  static func dismantleNSView(_ view: ClickFocusCatchView, coordinator: ()) {
+    view.teardownMonitor()
+  }
+
+  final class ClickFocusCatchView: NSView {
+    var onActivate: () -> Void
+    private var monitor: Any?
+
+    init(onActivate: @escaping () -> Void) {
+      self.onActivate = onActivate
+      super.init(frame: .zero)
+    }
+
+    @available(*, unavailable) required init?(coder: NSCoder) { fatalError("init(coder:) unused") }
+
+    // Never become the event target — the monitor does the detecting, so text selection / scrolling
+    // in the pane content layered in front stay untouched.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidMoveToWindow() {
+      super.viewDidMoveToWindow()
+      teardownMonitor()
+      guard window != nil else { return }
+      monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+        guard let self, let window = self.window, event.window === window else { return event }
+        if self.bounds.contains(self.convert(event.locationInWindow, from: nil)) {
+          self.onActivate()
+        }
+        return event  // pass through so the underlying text still selects
+      }
+    }
+
+    func teardownMonitor() {
+      if let monitor { NSEvent.removeMonitor(monitor) }
+      monitor = nil
+    }
+
+    deinit { teardownMonitor() }
   }
 }
 
