@@ -2090,8 +2090,13 @@ final class AppStore: ObservableObject {
         await reload()  // reflect the finished setup script's tree
       }
       // Setup (if any) has finished, so the worktree is no longer being written — allow deletion again
-      // (issue #116).
-      if let id = creation?.targetID { creatingWorkrooms.remove(id) }
+      // (issue #116), and re-arm the (create-suppressed) watcher + run one status probe now that the
+      // tree has settled. Unlike the failure path — where the `selectedTargetID` assignment fires the
+      // probe via its `didSet` — nothing re-selects here, so call it explicitly.
+      if let id = creation?.targetID {
+        creatingWorkrooms.remove(id)
+        scheduleSelectedStatusRefresh()
+      }
       // No setup script → there was never a dialog, just the loader: clear the create so the loader
       // gives way to the new workroom's terminal (issue #116). A setup script instead keeps its dialog
       // up (with a Dismiss button) until the user closes it — dismissing is what mounts the withheld
@@ -2114,6 +2119,10 @@ final class AppStore: ObservableObject {
         creatingWorkrooms.remove(id)  // setup failed — the workroom can now be deleted (issue #116)
         creation?.hasSetup = true
         selectedProjectID = project.id
+        // Assigning `selectedTargetID` here fires its `didSet` → `scheduleSelectedStatusRefresh()`,
+        // which (now that `creatingWorkrooms` no longer holds the id, removed just above) re-arms the
+        // watcher + probes the half-written worktree so its local status shows under the failure
+        // dialog. Keep the remove-before-assign order, or the create-time gate would swallow this probe.
         selectedTargetID = .workroom(project: project.path, name: name)
         session.finish(failure: errorText(error))
       } else {
@@ -2132,21 +2141,30 @@ final class AppStore: ObservableObject {
   /// suspend), or the fallback could fire while selection is still pending. Idempotent — the `onReady`
   /// path and the older-CLI fallback can both call it. The detail then shows the new workroom's slot:
   /// its setup dialog (script) or, once the create clears `creation`, its terminal (no script).
-  private func landOnCreatedWorkroom(name: String, project: Project, setup: Bool) async {
+  // `internal` (not `private`) only so `@testable` can drive the late-echo bail path directly — a
+  // late `onReady` echo lands here with `creation == nil`, and `onReady` is non-escaping so a fake
+  // CLI can't reproduce that timing through `create()`. Not called from outside `AppStore`.
+  func landOnCreatedWorkroom(name: String, project: Project, setup: Bool) async {
     // Drop the project row's creating spinner the moment the workroom exists (issue #116) — the
     // creating slot (its loader, then a setup script's dialog) now carries the progress, so the
     // sidebar indicator is redundant. `created` fires as setup begins, so this is the earlier of the
     // two. The `createWorkroom` defer still clears it for a failure before the workroom ever existed.
     busyProjects.remove(project.path)
+    // Mark the workroom "creating" BEFORE the first reload (create-time FSEvents storm fix). The
+    // reload's status sweep — and any watch/selection work it triggers — must all observe
+    // `isCreating`, or they'd probe/watch the worktree the setup script is actively writing (~70
+    // FSEvents callbacks/sec → a git/jj probe storm). Also blocks deletion while setup runs against
+    // the worktree (issue #116); the create flow clears it once setup finishes.
+    let id = TerminalTarget.workroomID(project: project.path, name: name)
+    creatingWorkrooms.insert(id)
     await reload()
     // A late `onReady` echo can arrive after the flow already finished and cleared `creation` (a fast
-    // no-setup create). Bail before touching selection or the creating guard so it can't re-arm a
-    // guard the create flow already released.
-    guard creation != nil else { return }
-    let id = TerminalTarget.workroomID(project: project.path, name: name)
-    // Block deletion of this workroom while its setup runs against the worktree (issue #116); the
-    // create flow clears this once the setup finishes.
-    creatingWorkrooms.insert(id)
+    // no-setup create). Bail before touching selection — and undo the insert above, or a bailed
+    // create would leave the workroom permanently suppressed (its dirty dot would never update again).
+    guard creation != nil else {
+      creatingWorkrooms.remove(id)
+      return
+    }
     creation?.name = name
     creation?.targetID = id
     creation?.hasSetup = setup

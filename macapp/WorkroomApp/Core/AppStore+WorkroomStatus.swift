@@ -59,11 +59,16 @@ extension AppStore {
     let localTTL = Self.localStatusTTL
     let ciTTL = Self.ciStatusTTL
     let localItems = statusWorkItems().filter { item in
+      // Never sweep a workroom whose setup is still writing its worktree (issue: create-time FSEvents
+      // storm) — even on `force`. Its status is refreshed once, post-setup, by `createWorkroom`.
+      // Covers this window's create AND another window's, since `creatingWorkrooms` is shared.
+      if isCreating(item.sid) { return false }
       guard !force else { return true }
       guard let checked = workroomStatuses[item.sid]?.lastChecked else { return true }
       return now.timeIntervalSince(checked) >= localTTL
     }
-    statusSweepTask = Task { [weak self] in
+    // `.utility` so this background sweep yields CPU to a mounting terminal surface + its login shell.
+    statusSweepTask = Task(priority: .utility) { [weak self] in
       guard let self else { return }
       await self.runLocalSweep(localItems, resolver: resolver, cap: Self.localConcurrency)
       if Task.isCancelled { return }
@@ -110,6 +115,10 @@ extension AppStore {
     // probe that would overwrite it.
     if UITestFixture.isActive { return }
     guard let sid = selectedTargetID, let item = selectedStatusWorkItem(for: sid) else { return }
+    // Don't probe a workroom whose setup is still writing its worktree — the watcher is already
+    // suppressed above; this skips the debounced local+CI probe too. Re-armed post-setup by
+    // `createWorkroom` calling this again once `creatingWorkrooms` no longer holds the id.
+    if isCreating(sid) { return }
     let resolver = statusResolver
     selectionStatusTask = Task { [weak self] in
       try? await Task.sleep(nanoseconds: UInt64(Self.selectionDebounce * 1_000_000_000))
@@ -481,10 +490,24 @@ extension AppStore {
 
   // MARK: - Live filesystem watch (selected workroom)
 
+  /// Whether `sid` is a workroom whose create/setup is still in flight (issue: create-time FSEvents
+  /// storm). While a setup script writes the worktree (e.g. `npm install`), arming the recursive
+  /// FSEvents watcher on it or probing its VCS status is pointless churn — the tree isn't settled and
+  /// FSEvents floods ~70 callbacks/sec under that load. `creatingWorkrooms` (set as setup begins,
+  /// cleared when it finishes) is the exact signal; this is the single conversion point from the
+  /// `SidebarID`-keyed status world to the `TerminalTarget.ID`-keyed `creatingWorkrooms` set. Roots
+  /// and projects are never "creating".
+  func isCreating(_ sid: SidebarID) -> Bool {
+    guard case .workroom(let project, let name) = sid else { return false }
+    return creatingWorkrooms.contains(TerminalTarget.workroomID(project: project, name: name))
+  }
+
   /// Point the filesystem watcher at the selected workroom's directory, or stop it when nothing
-  /// statusable is selected. No-ops in fixture mode (the seeded status must stay deterministic).
+  /// statusable is selected — or when the selection's create is still in flight (don't watch a tree a
+  /// setup script is actively writing). No-ops in fixture mode (the seeded status must stay
+  /// deterministic).
   func updateSelectedWorkroomWatch() {
-    guard !UITestFixture.isActive, let sid = selectedTargetID,
+    guard !UITestFixture.isActive, let sid = selectedTargetID, !isCreating(sid),
       let item = selectedStatusWorkItem(for: sid)
     else {
       workroomFileWatcher.stop()
@@ -501,6 +524,10 @@ extension AppStore {
     guard !UITestFixture.isActive, let sid = selectedTargetID,
       let item = selectedStatusWorkItem(for: sid)
     else { return }
+    // Defensive: never probe a mid-setup worktree. The watcher shouldn't be armed while creating
+    // (updateSelectedWorkroomWatch stops it), but a stray in-flight FSEvents callback can land during
+    // the stop transition — bail so it can't fork a probe against the tree the setup script is writing.
+    if isCreating(sid) { return }
     // A jj *local* probe snapshots `@` (writes under `.jj/`), which would itself trip the watcher —
     // an endless refresh loop. So ignore a burst that touched ONLY jj-internal paths. (git probes are
     // read-only, and `.git/index` changes from `git add` are real signal, so git events pass through.)

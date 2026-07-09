@@ -60,4 +60,65 @@ final class WorkroomFileWatcherTests: XCTestCase {
     watcher.stop()
     watcher.stop()
   }
+
+  // MARK: - Leading + trailing coalescing (the create-time FSEvents storm fix)
+
+  @MainActor private final class Sink {
+    var count = 0
+    var paths = Set<String>()
+  }
+
+  /// A sustained write burst (spread past the coalescing window, the case where FSEvents' own
+  /// `latency` breaks down and delivers ~one callback per flush) must collapse to a small, bounded
+  /// number of `onChange` calls — leading + trailing — NOT one per raw flush. This is the general
+  /// fix that also protects the Files inspector's watcher; the exact ~70/sec→~2 reduction is proven
+  /// by the standalone FSEvents-replica profiling harness.
+  @MainActor
+  func testWatcherCoalescesSustainedBurst() async throws {
+    let dir = NSTemporaryDirectory() + "wfw-coalesce-\(UUID().uuidString)"
+    try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(atPath: dir) }
+
+    let sink = Sink()
+    let watcher = WorkroomFileWatcher(latency: 0.1, coalesceWindow: 0.3) { paths in
+      sink.count += 1
+      sink.paths.formUnion(paths)
+    }
+    watcher.start(path: dir)
+    defer { watcher.stop() }
+
+    try await Task.sleep(nanoseconds: 250_000_000)  // let the stream arm
+    // 30 writes spaced 30ms apart ≈ 0.9s of sustained churn — long enough that FSEvents flushes
+    // several raw callbacks, so only the app-level state machine keeps the delivered count low.
+    for i in 0..<30 {
+      try "x".write(toFile: dir + "/f\(i).txt", atomically: true, encoding: .utf8)
+      try await Task.sleep(nanoseconds: 30_000_000)
+    }
+    try await Task.sleep(nanoseconds: 700_000_000)  // > coalesceWindow, so the trailing edge fires
+
+    XCTAssertGreaterThanOrEqual(sink.count, 1, "the leading edge must deliver at least once")
+    XCTAssertLessThanOrEqual(
+      sink.count, 8,
+      "a sustained burst must coalesce, not deliver per-flush (got \(sink.count))")
+    XCTAssertFalse(sink.paths.isEmpty, "delivered batches must carry the changed paths")
+  }
+
+  /// `stop()` cancels any pending trailing emit — no `onChange` may arrive after teardown.
+  @MainActor
+  func testWatcherStopCancelsPendingTrailing() async throws {
+    let dir = NSTemporaryDirectory() + "wfw-stop-\(UUID().uuidString)"
+    try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(atPath: dir) }
+
+    let sink = Sink()
+    let watcher = WorkroomFileWatcher(latency: 0.1, coalesceWindow: 0.5) { _ in sink.count += 1 }
+    watcher.start(path: dir)
+    try await Task.sleep(nanoseconds: 250_000_000)
+    try "a".write(toFile: dir + "/a.txt", atomically: true, encoding: .utf8)
+    try await Task.sleep(nanoseconds: 200_000_000)  // leading likely fired; trailing still pending
+    let afterLeading = sink.count
+    watcher.stop()
+    try await Task.sleep(nanoseconds: 700_000_000)  // past the trailing window
+    XCTAssertEqual(sink.count, afterLeading, "no trailing delivery may fire after stop()")
+  }
 }

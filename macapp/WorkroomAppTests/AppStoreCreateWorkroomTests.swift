@@ -59,6 +59,27 @@ private final class CreatingFakeCLI: WorkroomCLIProtocol {
   ) async throws -> [URL] { [] }
 }
 
+/// Records the working directory of every VCS probe (and returns a benign clean result) so tests can
+/// assert WHICH worktrees were — or were NOT — probed. Used to prove the create-time gate suppresses
+/// probes against a worktree whose setup is still in flight (the ~70/sec git/jj storm fix).
+private final class RecordingStatusRunner: StatusCommandRunning, @unchecked Sendable {
+  private let lock = NSLock()
+  private var _dirs: [String] = []
+  var dirs: [String] {
+    lock.lock()
+    defer { lock.unlock() }
+    return _dirs
+  }
+  func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
+    async -> CommandResult
+  {
+    lock.lock()
+    _dirs.append(directory)
+    lock.unlock()
+    return CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: false)
+  }
+}
+
 @MainActor
 final class AppStoreCreateWorkroomTests: XCTestCase {
   private let projectPath = "/private/var/tmp/wr-create-project"
@@ -76,6 +97,22 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
         Workroom(
           name: name, path: "\(projectPath)/.workrooms/\(name)", vcsName: "git", warnings: [])
       ])
+  }
+
+  /// A project + workroom backed by REAL on-disk dirs. `resolveLocal` short-circuits with
+  /// `.missingPath` before ever touching the (faked) runner when the path doesn't exist, so the
+  /// probe-suppression tests need real directories to observe whether the runner was invoked. Caller
+  /// removes `root` (via `defer`).
+  private func makeRealProject(workroom name: String) -> (
+    project: Project, root: String, wrPath: String
+  ) {
+    let root = NSTemporaryDirectory() + "wr-storm-\(UUID().uuidString)"
+    let wrPath = "\(root)/.workrooms/\(name)"
+    try? FileManager.default.createDirectory(atPath: wrPath, withIntermediateDirectories: true)
+    let project = Project(
+      path: root, vcs: "git",
+      workrooms: [Workroom(name: name, path: wrPath, vcsName: "git", warnings: [])])
+    return (project, root, wrPath)
   }
 
   // MARK: - Async create flow
@@ -212,5 +249,81 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     XCTAssertFalse(
       store.orderedWorkroomTargets().contains { $0.target.id == wrID },
       "the tab falls back to terminal-presence once the dialog is dismissed")
+  }
+
+  // MARK: - Create-time FSEvents storm suppression (create-gate)
+
+  func testIsCreatingHelper() {
+    let store = makeStore(FakeWorkroomCLI(canonical: projectPath, projects: []))
+    let wrID = TerminalTarget.workroomID(project: projectPath, name: "wr")
+    XCTAssertFalse(store.isCreating(.workroom(project: projectPath, name: "wr")))
+    store.creatingWorkrooms.insert(wrID)
+    XCTAssertTrue(store.isCreating(.workroom(project: projectPath, name: "wr")))
+    XCTAssertFalse(
+      store.isCreating(.workroom(project: projectPath, name: "other")),
+      "a different workroom isn't creating")
+    XCTAssertFalse(store.isCreating(.root(project: projectPath)), "a root row is never creating")
+  }
+
+  /// REGRESSION: while a workroom's setup is in flight, NEITHER the status sweep NOR a file-change
+  /// burst may probe its worktree — that per-burst git/jj probing (~70/sec under an `npm install`)
+  /// was the CPU storm behind the reported spike. Drives the real ordering: flag set before reload,
+  /// then selection (didSet probe), then a burst — all must be suppressed for the creating worktree.
+  func testNoProbeAgainstWorktreeWhileCreating() async {
+    let (proj, root, wrPath) = makeRealProject(workroom: "wr")
+    defer { try? FileManager.default.removeItem(atPath: root) }
+    let store = makeStore(FakeWorkroomCLI(canonical: root, projects: [proj]))
+    let runner = RecordingStatusRunner()
+    store.statusResolver = WorkroomStatusResolver(runner: runner)
+    let wrID = TerminalTarget.workroomID(project: root, name: "wr")
+
+    store.creatingWorkrooms.insert(wrID)  // setup in flight, BEFORE any reload/selection
+    await store.reload()  // the sweep must SKIP the creating workroom
+    // Selecting fires the didSet probe; the file-change burst is the storm — both must be suppressed.
+    store.selectedTargetID = .workroom(project: root, name: "wr")
+    store.handleWorkroomFileChange(["\(wrPath)/node_modules/pkg/index.js"])
+    // > selectionDebounce (0.3s), so a live probe WOULD have fired by now if it weren't suppressed.
+    try? await Task.sleep(nanoseconds: 500_000_000)
+
+    XCTAssertTrue(
+      runner.dirs.allSatisfy { !$0.hasPrefix(wrPath) },
+      "no VCS probe may run against a worktree whose setup is in flight; probed: \(runner.dirs)")
+  }
+
+  /// Once setup completes (the flag lifts), the worktree is probed again — the suppression is scoped
+  /// to the create window, not permanent.
+  func testWorktreeProbedOnceCreatingClears() async {
+    let (proj, root, wrPath) = makeRealProject(workroom: "wr")
+    defer { try? FileManager.default.removeItem(atPath: root) }
+    let store = makeStore(FakeWorkroomCLI(canonical: root, projects: [proj]))
+    let runner = RecordingStatusRunner()
+    store.statusResolver = WorkroomStatusResolver(runner: runner)
+    let wrID = TerminalTarget.workroomID(project: root, name: "wr")
+
+    store.creatingWorkrooms.insert(wrID)
+    await store.reload()
+    store.selectedTargetID = .workroom(project: root, name: "wr")
+    store.creatingWorkrooms.remove(wrID)  // setup finished
+    store.handleWorkroomFileChange(["\(wrPath)/src/main.swift"])
+    try? await Task.sleep(nanoseconds: 500_000_000)
+
+    XCTAssertTrue(
+      runner.dirs.contains { $0.hasPrefix(wrPath) },
+      "once setup completes the worktree must be probed again; probed: \(runner.dirs)")
+  }
+
+  /// A late `onReady` echo lands in `landOnCreatedWorkroom` with `creation == nil`. The early
+  /// `creatingWorkrooms.insert` MUST be undone on that bail, or the workroom is permanently
+  /// suppressed (its dirty dot / Changes panel never updates again). Reachable only by calling the
+  /// method directly — `onReady` is non-escaping, so a fake CLI can't reproduce the timing.
+  func testLateEchoLandingRemovesCreatingFlag() async {
+    let fake = FakeWorkroomCLI(canonical: projectPath, projects: [project(withWorkroom: "wr")])
+    let store = makeStore(fake)
+    store.creation = nil  // the create already finished + cleared creation; this is the late echo
+    await store.landOnCreatedWorkroom(
+      name: "wr", project: project(withWorkroom: "wr"), setup: false)
+    XCTAssertTrue(
+      store.creatingWorkrooms.isEmpty,
+      "a late onReady echo (no active creation) must not leave a leaked creating flag")
   }
 }
