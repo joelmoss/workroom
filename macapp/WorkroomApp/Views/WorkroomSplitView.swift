@@ -138,65 +138,79 @@ private struct WorkroomPaneLeaf: View {
   private let theme = ThemeService.shared
 
   var body: some View {
-    Group {
+    // `content` MUST stay at ONE structural position across solo↔split (it's the second child of this
+    // VStack in both cases) — the group title bar is a toggled *sibling* above it, never a wrapper
+    // around it, and all card styling is applied as always-present modifiers whose *values* go neutral
+    // when solo. A structural `if multi { VStack { titleBar; content } } else { content }` would swap
+    // SwiftUI's `_ConditionalContent` branch when a 2-member split dissolves to solo (survivor flips
+    // `multi: true→false`), tearing down + rebuilding `TargetTerminalDetail` and re-parenting the
+    // libghostty surface — the blank/stranded-pane bug. This mirrors `PaneLeafView`, which keeps its
+    // content in one slot and expresses the `multiPane` chrome as always-mounted overlays (issue #3).
+    VStack(spacing: 0) {
       if multi {
         // A real split member: a group header (issue #110) tops the pane, identifying which workroom
         // this is, with the whole pane wrapped in a rounded card so members read as distinct units.
-        VStack(spacing: 0) {
-          WorkroomSplitGroupTitleBar(
-            projectLabel: projectLabel, workroomName: workroomName, focused: focused,
-            isMissing: target.isMissing, onClose: onClose
-          )
-          // Drag the group by its title bar to move the whole member within the split (issue #110) —
-          // the SAME gesture/closures the tab-bar chip uses, so it drops onto the same panes and shows
-          // the same drop-edge highlight. A plain click (no movement past `minimumDistance`) still
-          // falls through to the leaf's focus tap.
-          .gesture(
-            DragGesture(minimumDistance: 6, coordinateSpace: .global)
-              .onChanged { value in
-                externalDrag = localize(value.location).map {
-                  WorkroomPaneDrag(sid: sid, location: $0)
-                }
+        WorkroomSplitGroupTitleBar(
+          projectLabel: projectLabel, workroomName: workroomName, focused: focused,
+          isMissing: target.isMissing, onClose: onClose
+        )
+        // Drag the group by its title bar to move the whole member within the split (issue #110) —
+        // the SAME gesture/closures the tab-bar chip uses, so it drops onto the same panes and shows
+        // the same drop-edge highlight. A plain click (no movement past `minimumDistance`) still
+        // falls through to the leaf's focus tap.
+        .gesture(
+          DragGesture(minimumDistance: 6, coordinateSpace: .global)
+            .onChanged { value in
+              externalDrag = localize(value.location).map {
+                WorkroomPaneDrag(sid: sid, location: $0)
               }
-              .onEnded { value in
-                if let drop = dropTarget(value.location), drop.sid != sid {
-                  onMove(sid, drop.sid, drop.edge)
-                }
-                externalDrag = nil
+            }
+            .onEnded { value in
+              if let drop = dropTarget(value.location), drop.sid != sid {
+                onMove(sid, drop.sid, drop.edge)
               }
-          )
-          // The workroom's right-click menu (issue #112) — the SAME items as the tab chip (incl.
-          // "Close"), PLUS a "Remove from Split" item (the menu equivalent of the title bar's ✕),
-          // wired to the same `onClose` the ✕ uses. `closeName` matches the chip's `workroomName ??
-          // primaryLabel`. Attached AFTER `.gesture` so both share the bar's `.contentShape`;
-          // secondary-click (menu) and the primary-button drag coexist. The ✕ is its own hit target,
-          // so a right-click directly on it won't raise this menu (expected — the menu covers the
-          // rest of the bar).
-          .contextMenu {
-            workroomContextMenu(
-              store: store, sid: sid, target: target, closeName: workroomName ?? projectLabel,
-              onRemoveFromSplit: onClose)
-          }
-          content(compact: true)
+              externalDrag = nil
+            }
+        )
+        // The workroom's right-click menu (issue #112) — the SAME items as the tab chip (incl.
+        // "Close"), PLUS a "Remove from Split" item (the menu equivalent of the title bar's ✕),
+        // wired to the same `onClose` the ✕ uses. `closeName` matches the chip's `workroomName ??
+        // primaryLabel`. Attached AFTER `.gesture` so both share the bar's `.contentShape`;
+        // secondary-click (menu) and the primary-button drag coexist. The ✕ is its own hit target,
+        // so a right-click directly on it won't raise this menu (expected — the menu covers the
+        // rest of the bar).
+        .contextMenu {
+          workroomContextMenu(
+            store: store, sid: sid, target: target, closeName: workroomName ?? projectLabel,
+            onRemoveFromSplit: onClose)
         }
-        // No border now: the group reads as a unit by a subtle raised fill over the `panel` base plus
-        // the shadow + rounded corners (issue #110). The focused member's fill is accent-tinted so focus
-        // reads as a colour; the rest take a faint neutral lift — both dedicated theme tokens.
-        .background(focused ? theme.tokens.splitGroupFocusedFill : theme.tokens.splitGroupFill)
-        .background(theme.tokens.panel)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .shadow(color: .black.opacity(focused ? 0.18 : 0.10), radius: focused ? 6 : 3, y: 2)
-        // A clear inter-group gutter on every side — the title bar (not the tab strip) sits at the
-        // pane's top, so the old top:0 sidebar-alignment no longer applies to a split member.
-        .padding(4)
-      } else {
-        // Solo: no header, no frame — the bordered terminals inside do the framing. Keep the 2pt gutter
-        // on the sides and bottom, but NOT the top: the top edge sits flush so the terminal tab strip
-        // aligns with the top of the sidebar (the single-workroom case renders identically to before).
-        content(compact: false)
-          .padding(EdgeInsets(top: 0, leading: 2, bottom: 2, trailing: 2))
       }
+      // Solo: `compact == false` → the bordered terminals inside do the framing and the card modifiers
+      // below all go neutral, so the single-workroom case renders identically to before.
+      content(compact: multi)
     }
+    // No border in the split: the group reads as a unit by a subtle raised fill over the `panel` base
+    // plus the shadow + rounded corners (issue #110). The focused member's fill is accent-tinted so
+    // focus reads as a colour; the rest take a faint neutral lift — both dedicated theme tokens. Solo
+    // takes `.clear`/no-shadow so these always-applied modifiers are visual no-ops (identity-stable).
+    .background(
+      multi
+        ? (focused ? theme.tokens.splitGroupFocusedFill : theme.tokens.splitGroupFill) : Color.clear
+    )
+    .background(multi ? theme.tokens.panel : Color.clear)
+    .clipShape(RoundedRectangle(cornerRadius: multi ? 8 : 0, style: .continuous))
+    .shadow(
+      color: .black.opacity(multi ? (focused ? 0.18 : 0.10) : 0),
+      radius: multi ? (focused ? 6 : 3) : 0, y: multi ? 2 : 0
+    )
+    // Split: a clear inter-group gutter on every side (the title bar sits at the pane's top). Solo:
+    // the 2pt gutter on sides + bottom but NOT the top, so the terminal tab strip aligns with the top
+    // of the sidebar. Always-applied (value-only change) so it never flips a structural branch.
+    .padding(
+      multi
+        ? EdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4)
+        : EdgeInsets(top: 0, leading: 2, bottom: 2, trailing: 2)
+    )
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("workroom.pane")
     .accessibilityLabel(Text("Workroom \(target.title)"))
