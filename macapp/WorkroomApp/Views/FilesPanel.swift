@@ -32,17 +32,20 @@ struct FilesPanel: View {
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    // Point the tree at the selected target — but only while this section is expanded, so a selection
-    // (or a collapsed inspector) never lists files you're not looking at. Re-runs on either change;
-    // `activate` no-ops when already on the path, so re-expanding the same target is instant.
+    // Point the tree at the selected target — but only while Files is the active activity-bar
+    // section, so a selection (or another section showing) never lists files you're not looking at.
+    // Re-runs on either change; `activate` no-ops when already on the path, so re-selecting the same
+    // target is instant. (The Files pane is only mounted when it's the active section, but the guard
+    // keeps the behaviour correct regardless of where the panel is hosted.)
     .task(id: activationKey) {
-      guard !store.filesSectionCollapsed else { return }
+      guard store.activeInspectorSection == .files else { return }
       model.activate(path: store.selectedTarget?.path)
     }
   }
 
   private var activationKey: String {
-    "\(AppStore.targetIDString(for: store.selectedTargetID) ?? "")\u{1F}\(store.filesSectionCollapsed)"
+    "\(AppStore.targetIDString(for: store.selectedTargetID) ?? "")"
+      + "\u{1F}\(store.activeInspectorSection == .files)"
   }
 
   private var fileList: some View {

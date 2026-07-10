@@ -82,17 +82,11 @@ struct SettingsView: View {
     }
   }
 
-  // Hand-rolled row highlight (mirrors `ProjectSidebar.rowHighlight`): a stronger fill for the
-  // selected pane, a subtle one on hover. Drawn ourselves so it uses the theme tokens and doesn't
-  // depend on `List`'s built-in selection.
+  // Shared row highlight (see `RowHighlight`): a stronger fill for the selected pane, a subtle one on
+  // hover. Drawn ourselves so it uses the theme tokens and doesn't depend on `List`'s built-in
+  // selection. Settings rows inset by 6 (vs the project sidebar's 8).
   @ViewBuilder private func rowHighlight(_ pane: SettingsPane) -> some View {
-    let tokens = ThemeService.shared.tokens
-    RoundedRectangle(cornerRadius: 6)
-      .fill(
-        selection == pane ? tokens.surface : (hovered == pane ? tokens.hover : Color.clear)
-      )
-      .padding(.horizontal, 6)
-      .padding(.vertical, 1)
+    RowHighlight(selected: selection == pane, hovered: hovered == pane, horizontalPadding: 6)
   }
 }
 

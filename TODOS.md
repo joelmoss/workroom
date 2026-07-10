@@ -591,3 +591,22 @@ parser, banner partial-text state, and its own entry in `AgentDiagnosisEvalTests
 `TerminalAgentManager`, `TerminalAgentBanner`.
 
 **Priority:** P3 (polish; marginal over a 2-3s spinner, and must not regress the structured fix).
+
+## Search section for the right activity bar (macapp) — activity-bar follow-up
+
+**What:** A functional Search pane (find in files / content) as a new right-activity-bar section.
+
+**Why:** The activity bar (`ActivitySection` + per-section `subSections`) is built to grow; Search
+was the first candidate but has no functionality yet, so it was dropped from the initial bar (v1
+shipped Changes + Files) to avoid a visibly-empty icon reading as unfinished.
+
+**How to start:** Add a `.search` case to `Core/ActivitySection.swift` (label +
+`systemImage: "magnifyingglass"` + its `subSections`) and a real Search pane body, wired into
+`RightInspector.sectionBody(for:)`. A new `InspectorSectionKind` may be needed for the sub-section
+identity. The DEBUG-only feature-flag staging pattern (considered and rejected for v1) is one option
+to ship the scaffold before the search is real.
+
+**Depends on:** the right activity bar (shipped). Touches `Core/ActivitySection.swift`,
+`Views/ChangesPanel.swift` (`RightInspector`), a new `Views/SearchPanel.swift`.
+
+**Priority:** P3 (new feature; not blocking).

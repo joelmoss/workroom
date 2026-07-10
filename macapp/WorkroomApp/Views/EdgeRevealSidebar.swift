@@ -274,15 +274,14 @@ struct EdgeRevealSidebar<Content: View>: View {
 
 // MARK: - Both-edges modifier
 
-/// Adds both edge-hover reveal overlays (issue #56) to the split view: the left Projects panel (active
-/// while `sidebarVisible` is false) and the right inspector panel (active while `inspectorVisible` is
-/// false), each at the captured docked width. Packaged as a `ViewModifier` so `RootView`'s already
-/// large `body` stays within the Swift type-checker's budget (adding the two overlays inline tipped it
-/// past "unable to type-check in reasonable time").
+/// Adds the left Projects edge-hover reveal overlay (issue #56) to the split view — active while
+/// `sidebarVisible` is false, at the captured docked width. (The right inspector had a matching
+/// trailing reveal, dropped when the always-visible activity bar took over the right edge: the bar
+/// occupies the hover trigger zone and clicking a section icon is the reveal now.) Packaged as a
+/// `ViewModifier` so `RootView`'s already large `body` stays within the Swift type-checker's budget.
 struct EdgeRevealSidebars: ViewModifier {
   @EnvironmentObject private var store: AppStore
   let sidebarVisible: Bool
-  let inspectorVisible: Bool
   /// Drag-to-split plumbing for the revealed Projects panel (issue #101) — same as the docked
   /// `SidebarColumn`'s, so dragging a row out of the slide-over forms a split too. Unlike the docked
   /// column (left of the detail) and the tab bar (above it), the reveal panel floats OVER the detail,
@@ -315,13 +314,6 @@ struct EdgeRevealSidebars: ViewModifier {
             localize: { overPanel($0) ? nil : localize($0) },
             dropTarget: { overPanel($0) ? nil : dropTarget($0) }
           )
-        }
-      }
-      .overlay {
-        EdgeRevealSidebar(
-          side: .trailing, enabled: !inspectorVisible, width: store.dockedInspectorWidth ?? 300
-        ) {
-          RightInspector()
         }
       }
   }

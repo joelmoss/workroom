@@ -546,11 +546,7 @@ struct ProjectSidebar: View {
   /// selection highlight.
   @ViewBuilder
   private func rowHighlight(_ id: SidebarID, selected: Bool) -> some View {
-    let tokens = ThemeService.shared.tokens
-    RoundedRectangle(cornerRadius: 6)
-      .fill(selected ? tokens.surface : (hovered == id ? tokens.hover : Color.clear))
-      .padding(.horizontal, 8)
-      .padding(.vertical, 1)
+    RowHighlight(selected: selected, hovered: hovered == id, horizontalPadding: 8)
   }
 
   /// Row highlight for a terminal row (issue #30) — same geometry as `rowHighlight` but keyed on the

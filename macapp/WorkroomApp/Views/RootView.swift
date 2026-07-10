@@ -182,6 +182,10 @@ struct RootView: View {
           InspectorColumn()
             .transition(.move(edge: .trailing))
         }
+        // The activity bar is ALWAYS present, flush to the window's trailing edge — the inspector
+        // content pane (above) slides in/out beside it. Placed inside the detail-only
+        // NavigationSplitView so its icon buttons get working `.onHover` (issue #114).
+        ActivityBar()
       }
       .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.sidebarVisible)
       .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: showInspector)
@@ -309,14 +313,14 @@ struct RootView: View {
       // so this large `body` stays within the type-checker's budget.
       .modifier(
         EdgeRevealSidebars(
-          sidebarVisible: store.sidebarVisible, inspectorVisible: showInspector,
+          sidebarVisible: store.sidebarVisible,
           paneDrag: $workroomChipDrag,
           localize: { workroomChipLocal($0) },
           dropTarget: { workroomChipDropTarget(at: $0) })
       )
-      // Foreground toasts (issue #31): pinned bottom-right of the window, over the split + inspector.
-      // Only ever populated while the inspector is closed, so it never overlaps the open inspector.
-      .overlay(alignment: .bottomTrailing) { ToastStack() }
+      // Foreground toasts (issue #31): pinned bottom-right, over the split + inspector. Inset by the
+      // activity bar's width (44) so a toast never sits under the always-visible bar on the edge.
+      .overlay(alignment: .bottomTrailing) { ToastStack().padding(.trailing, 44) }
   }
 
   /// Window lifecycle + the notification-raised sheets (theme picker, keyboard shortcuts, What's New):

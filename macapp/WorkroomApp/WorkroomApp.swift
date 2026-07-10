@@ -687,16 +687,20 @@ struct WorkroomCommands: Commands {
     }
 
     CommandGroup(after: .sidebar) {
-      // View menu: reveal the Changes view. The inspector hosts Changes, Files, and Pull Request, so
-      // "showing" Changes means opening the inspector *and* expanding its Changes section; the
-      // checkmark is on only when both hold. Turning it off just collapses the section (the
-      // inspector stays open if another section is still showing).
+      // View menu: reveal the Changes view. Changes and Pull Request share the **Changes** activity-bar
+      // pane (a stack), so "showing" Changes means selecting that pane, opening the inspector, and
+      // expanding the Changes sub-section; the checkmark is on only when all three hold. Turning it off
+      // just collapses the sub-section (the pane stays open if Pull Request is still showing).
       Toggle(
         "Changes",
         isOn: Binding(
-          get: { showInspector && !(store?.changesSectionCollapsed ?? true) },
+          get: {
+            showInspector && store?.activeInspectorSection == .changes
+              && !(store?.changesSectionCollapsed ?? true)
+          },
           set: { on in
             if on {
+              store?.activeInspectorSection = .changes
               showInspector = true
               store?.changesSectionCollapsed = false
             } else {
@@ -706,32 +710,33 @@ struct WorkroomCommands: Commands {
       )
       .keyboardShortcut("c", modifiers: [.command, .option])
 
-      // View menu: reveal the Files view (the repo file tree) — same open-inspector-and-expand-section
-      // semantics as Changes above.
+      // View menu: reveal the Files view (the repo file tree) — its own single-section activity-bar
+      // pane, so showing it selects the Files pane and opens the inspector; turning it off hides the
+      // pane (Files has no sub-section to collapse). Assigning `activeInspectorSection` in both
+      // branches forces the bar + inspector to re-render synchronously (see `AppStore.apply`).
       Toggle(
         "Files",
         isOn: Binding(
-          get: { showInspector && !(store?.filesSectionCollapsed ?? true) },
+          get: { showInspector && store?.activeInspectorSection == .files },
           set: { on in
-            if on {
-              showInspector = true
-              store?.filesSectionCollapsed = false
-            } else {
-              store?.filesSectionCollapsed = true
-            }
+            store?.activeInspectorSection = .files
+            showInspector = on
           })
       )
       .keyboardShortcut("f", modifiers: [.command, .option])
 
-      // View menu: reveal the Pull Request view — same open-inspector-and-expand-section semantics
-      // as Changes above. (Notifications moved out of the inspector to the left sidebar, issue #118,
-      // so there's no longer a Notifications section toggle here — ⌥⌘N is freed back to the terminal.)
+      // View menu: reveal the Pull Request view — the second sub-section of the Changes pane, so it
+      // selects that pane, opens the inspector, and expands the Pull Request sub-section.
       Toggle(
         "Pull Request",
         isOn: Binding(
-          get: { showInspector && !(store?.prSectionCollapsed ?? true) },
+          get: {
+            showInspector && store?.activeInspectorSection == .changes
+              && !(store?.prSectionCollapsed ?? true)
+          },
           set: { on in
             if on {
+              store?.activeInspectorSection = .changes
               showInspector = true
               store?.prSectionCollapsed = false
             } else {

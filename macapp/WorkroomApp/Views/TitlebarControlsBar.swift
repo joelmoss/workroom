@@ -64,10 +64,11 @@ struct TitlebarControlsBar: View {
       .accessibilityLabel(Self.bellLabel(unread: notifications.total))
       .accessibilityIdentifier("titlebar.notifications")
 
-      // Inspector toggle — fills while the inspector is open so the on/off state reads at a glance,
-      // mirroring the leading sidebar toggle.
+      // Inspector toggle — fills while the content pane is open so the on/off state reads at a glance,
+      // mirroring the leading sidebar toggle. Routed through the reducer so it flips pane visibility
+      // WITHOUT changing which activity-bar section is selected (`.toggleVisibility`).
       Button {
-        showInspector.toggle()
+        store.apply(.toggleVisibility)
       } label: {
         Image(systemName: "sidebar.right")
           .symbolVariant(showInspector ? .fill : .none)
@@ -76,12 +77,6 @@ struct TitlebarControlsBar: View {
       .accessibilityLabel("Right sidebar")
       .accessibilityValue(showInspector ? "shown" : "hidden")
       .accessibilityIdentifier("titlebar.toggleInspector")
-      // Hovering this button (while the inspector is collapsed) peeks it via the edge-reveal overlay
-      // (issue #74) — the trigger is the button alone, mirroring the leading sidebar toggle. Only
-      // report while collapsed so a hover with the inspector open doesn't churn reveal state.
-      .onHover { hovering in
-        if !showInspector { store.hoveringRightToggle = hovering }
-      }
     }
     .buttonStyle(ToolbarIconButtonStyle())
     // No leading padding: the leading divider above is the bar's first element, and the gap to its

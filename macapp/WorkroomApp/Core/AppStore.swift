@@ -284,6 +284,18 @@ final class AppStore: ObservableObject {
   /// the user drags a divider (via `updateInspectorSizeWeights`) and persisted per workroom. Not set
   /// directly by the view — the `NSSplitView` reports drag results back through the store.
   @Published var inspectorSizeWeights: [Double] = [1, 1, 1]
+  /// The selected top-level section in the right activity bar (issue: activity bar). Drives which
+  /// pane the inspector shows (`RightInspector` renders `activeInspectorSection.subSections`). Held
+  /// as `@Published` (not read via `@Default` in the bar) so a click re-renders the bar + inspector
+  /// synchronously — a bare `@Default` write invalidates asynchronously (the `SettingsView` gotcha).
+  /// Persisted per-machine via `didSet`; whether the pane is visible at all is `Defaults[.showInspector]`.
+  @Published var activeInspectorSection: ActivitySection = Defaults[.activeInspectorSection] {
+    didSet {
+      if activeInspectorSection != oldValue {
+        Defaults[.activeInspectorSection] = activeInspectorSection
+      }
+    }
+  }
   /// The repo file tree behind the inspector's Files section. Re-pointed at the selected target's
   /// directory whenever the selection changes (see `selectedTargetID.didSet`); the `FilesPanel`
   /// observes it. Owned here so it survives inspector re-renders and tracks selection centrally.
@@ -3277,6 +3289,19 @@ final class AppStore: ObservableObject {
     else { return }
     inspectorSizeWeights = weights
     persistInspectorState()
+  }
+
+  /// Apply an activity-bar navigation action through the pure `ActivityBarReducer`. Writes the
+  /// resulting pane visibility to `Defaults[.showInspector]` first, then **always** assigns
+  /// `activeInspectorSection` (even when it doesn't change): `@Published` fires `objectWillChange`
+  /// on every set, so this forces the bar + inspector to re-render synchronously on the click and
+  /// read the freshly-written `showInspector` (which, as a bare `@Default`, invalidates async).
+  func apply(_ action: ActivityBarReducer.Action) {
+    let current = ActivityBarReducer.State(
+      active: activeInspectorSection, visible: Defaults[.showInspector])
+    let next = ActivityBarReducer.reduce(current, action)
+    Defaults[.showInspector] = next.visible
+    activeInspectorSection = next.active
   }
 
   nonisolated static func targetIDString(for id: SidebarID?) -> String? {

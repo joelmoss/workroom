@@ -15,58 +15,27 @@ struct RightInspector: View {
   @State private var pendingConfirm: PendingPRAction?
 
   var body: some View {
-    // Composed as a native NSSplitView (see InspectorSplitView). Each section's header + body are
-    // handed over as environment-injected AnyViews — the hosted tree does NOT inherit our
-    // `@EnvironmentObject`s across NSHostingController, so we inject `store` + `notifications` here.
-    // Order matches InspectorSectionKind.allCases: Changes, Files, Pull Request.
+    // The active activity-bar section decides which sub-sections this pane stacks (Changes stacks
+    // Changes + Pull Request; Files is solo). Each sub-section's header + body are handed to the
+    // NSSplitView bridge (see InspectorSplitView) as environment-injected AnyViews — the hosted tree
+    // does NOT inherit our `@EnvironmentObject`s across NSHostingController. Collapse flags +
+    // size-weights persist as full `InspectorSectionKind.allCases`-ordered vectors on the store; we
+    // slice out — and write back — the entries for the sub-sections actually shown, by `storeIndex`.
+    let subs = store.activeInspectorSection.subSections
     InspectorSplitView(
-      headers: [
-        AnyView(
-          SectionHeader(
-            title: "Changes", collapsed: $store.changesSectionCollapsed,
-            indicator: changesIndicator, indicatorLabel: changesIndicatorLabel,
-            shortcut: "⌥⌘C"
-          ) {
-            InspectorHeaderButton(systemImage: "arrow.clockwise", help: "Refresh workroom status") {
-              store.refreshWorkroomStatuses(force: true)
-            }
-          }
-          .environmentObject(store).environmentObject(notifications)),
-        AnyView(
-          SectionHeader(
-            title: "Files", collapsed: $store.filesSectionCollapsed,
-            shortcut: "⌥⌘F"
-          ) {
-            InspectorHeaderButton(systemImage: "arrow.clockwise", help: "Refresh files") {
-              store.fileTree.reload()
-            }
-          }
-          .environmentObject(store).environmentObject(notifications)),
-        AnyView(
-          SectionHeader(
-            title: "Pull Request", collapsed: $store.prSectionCollapsed,
-            shortcut: "⌥⌘P"
-          ) {
-            prHeaderAccessory
-          }
-          .environmentObject(store).environmentObject(notifications)),
-      ],
-      bodies: [
-        AnyView(ChangesPanel().environmentObject(store).environmentObject(notifications)),
-        AnyView(
-          FilesPanel(model: store.fileTree).environmentObject(store).environmentObject(
-            notifications)
-        ),
-        AnyView(PullRequestPanel().environmentObject(store).environmentObject(notifications)),
-      ],
-      collapsed: [
-        store.changesSectionCollapsed,
-        store.filesSectionCollapsed,
-        store.prSectionCollapsed,
-      ],
+      headers: subs.map { sectionHeader(for: $0) },
+      bodies: subs.map { sectionBody(for: $0) },
+      collapsed: subs.map { collapsedValue(for: $0) },
+      sectionKey: store.activeInspectorSection.rawValue,
       workroomKey: AppStore.targetIDString(for: store.selectedTargetID) ?? "",
-      weights: store.inspectorSizeWeights,
-      onWeightsChanged: { store.updateInspectorSizeWeights($0) }
+      weights: subs.map { store.inspectorSizeWeights[$0.storeIndex] },
+      onWeightsChanged: { shown in
+        var full = store.inspectorSizeWeights
+        for (index, sub) in subs.enumerated() where index < shown.count {
+          full[sub.storeIndex] = shown[index]
+        }
+        store.updateInspectorSizeWeights(full)
+      }
     )
     .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     .confirmationDialog(
@@ -79,6 +48,62 @@ struct RightInspector: View {
         store.performPRAction(item.action, number: item.number, on: item.sid)
       }
       Button("Cancel", role: .cancel) {}
+    }
+  }
+
+  /// The live collapse value for a sub-section. A solo pane (Files, which stacks only itself) never
+  /// collapses, so it reports expanded and its header shows no chevron.
+  private func collapsedValue(for sub: InspectorSectionKind) -> Bool {
+    switch sub {
+    case .changes: return store.changesSectionCollapsed
+    case .files: return false
+    case .pullRequest: return store.prSectionCollapsed
+    }
+  }
+
+  /// A sub-section's sticky header, environment-injected for the NSHostingController-hosted tree.
+  /// Files passes a nil collapse binding (solo pane → no chevron).
+  private func sectionHeader(for sub: InspectorSectionKind) -> AnyView {
+    switch sub {
+    case .changes:
+      return AnyView(
+        SectionHeader(
+          title: "Changes", collapsed: $store.changesSectionCollapsed,
+          indicator: changesIndicator, indicatorLabel: changesIndicatorLabel, shortcut: "⌥⌘C"
+        ) {
+          InspectorHeaderButton(systemImage: "arrow.clockwise", help: "Refresh workroom status") {
+            store.refreshWorkroomStatuses(force: true)
+          }
+        }
+        .environmentObject(store).environmentObject(notifications))
+    case .files:
+      return AnyView(
+        SectionHeader(title: "Files", collapsed: nil, shortcut: "⌥⌘F") {
+          InspectorHeaderButton(systemImage: "arrow.clockwise", help: "Refresh files") {
+            store.fileTree.reload()
+          }
+        }
+        .environmentObject(store).environmentObject(notifications))
+    case .pullRequest:
+      return AnyView(
+        SectionHeader(title: "Pull Request", collapsed: $store.prSectionCollapsed, shortcut: "⌥⌘P")
+        {
+          prHeaderAccessory
+        }
+        .environmentObject(store).environmentObject(notifications))
+    }
+  }
+
+  /// A sub-section's scrollable body, environment-injected for the hosted tree.
+  private func sectionBody(for sub: InspectorSectionKind) -> AnyView {
+    switch sub {
+    case .changes:
+      return AnyView(ChangesPanel().environmentObject(store).environmentObject(notifications))
+    case .files:
+      return AnyView(
+        FilesPanel(model: store.fileTree).environmentObject(store).environmentObject(notifications))
+    case .pullRequest:
+      return AnyView(PullRequestPanel().environmentObject(store).environmentObject(notifications))
     }
   }
 

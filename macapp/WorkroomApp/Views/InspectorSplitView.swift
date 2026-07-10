@@ -118,8 +118,11 @@ final class InspectorSplitContainerController: NSViewController, NSSplitViewDele
   let splitView = ThemedSplitView()
   private(set) var panes: [InspectorPaneViewController] = []
   private var heightConstraints: [NSLayoutConstraint] = []
-  private var collapsedFlags = [Bool](repeating: false, count: InspectorSectionKind.allCases.count)
-  private var weights = [CGFloat](repeating: 1, count: InspectorSectionKind.allCases.count)
+  // Sized to the installed pane count, which is dynamic: the active activity-bar section decides how
+  // many sub-sections its pane stacks (2 for Changes + Pull Request, 1 for Files). Empty until the
+  // first `install`.
+  private var collapsedFlags: [Bool] = []
+  private var weights: [CGFloat] = []
   private var workroomKey = ""
 
   /// What the next real layout should do. `.redistribute` re-derives the whole layout from the saved
@@ -148,10 +151,16 @@ final class InspectorSplitContainerController: NSViewController, NSSplitViewDele
     view = splitView
   }
 
-  /// Install one arranged subview per section, in `InspectorSectionKind.allCases` order. Call once.
+  /// Install one arranged subview per sub-section of the active pane, top to bottom. The collapse
+  /// flags / weights are (re)sized to the pane count here so a caller can install any count (1..N).
   func install(panes: [InspectorPaneViewController]) {
-    precondition(panes.count == InspectorSectionKind.allCases.count, "need one pane per section")
     self.panes = panes
+    if collapsedFlags.count != panes.count {
+      collapsedFlags = [Bool](repeating: false, count: panes.count)
+    }
+    if weights.count != panes.count {
+      weights = [CGFloat](repeating: 1, count: panes.count)
+    }
     for (index, pane) in panes.enumerated() {
       addChild(pane)
       pane.view.translatesAutoresizingMaskIntoConstraints = false
@@ -161,6 +170,23 @@ final class InspectorSplitContainerController: NSViewController, NSSplitViewDele
       constraint.isActive = true
       heightConstraints.append(constraint)
     }
+  }
+
+  /// Tear down the current panes and install a fresh set — used when the active activity-bar section
+  /// changes and the pane count/identity differs (e.g. the 2-pane Changes stack ↔ the 1-pane Files).
+  /// Resets the layout state so the next `viewDidLayout` re-derives the distribution from scratch.
+  func rebuild(panes newPanes: [InspectorPaneViewController]) {
+    for pane in panes {
+      pane.view.removeFromSuperview()
+      pane.removeFromParent()
+    }
+    for constraint in heightConstraints { constraint.isActive = false }
+    heightConstraints.removeAll()
+    panes = []
+    collapsedFlags = []
+    weights = []
+    install(panes: newPanes)
+    pendingLayout = .redistribute
   }
 
   /// Reflect the selected workroom's layout: its key, collapse state, and persisted pane weights.
@@ -322,6 +348,9 @@ struct InspectorSplitView: NSViewControllerRepresentable {
   var headers: [AnyView]
   var bodies: [AnyView]
   var collapsed: [Bool]
+  /// Identifies the active activity-bar section's sub-section set (its raw value). When it changes,
+  /// the pane count/identity differs, so the controller rebuilds its panes rather than reusing them.
+  var sectionKey: String
   /// A stable key for the selected workroom (so the controller re-distributes when it switches).
   var workroomKey: String
   /// The selected workroom's persisted relative pane heights (equal by default).
@@ -330,8 +359,9 @@ struct InspectorSplitView: NSViewControllerRepresentable {
   var onWeightsChanged: ([Double]) -> Void
 
   func makeNSViewController(context: Context) -> InspectorSplitContainerController {
-    let panes = (0..<InspectorSectionKind.allCases.count).map { _ in InspectorPaneViewController() }
+    let panes = (0..<headers.count).map { _ in InspectorPaneViewController() }
     context.coordinator.panes = panes
+    context.coordinator.sectionKey = sectionKey
     let controller = InspectorSplitContainerController()
     controller.onWeightsChanged = onWeightsChanged
     controller.install(panes: panes)
@@ -342,6 +372,16 @@ struct InspectorSplitView: NSViewControllerRepresentable {
 
   func updateNSViewController(_ controller: InspectorSplitContainerController, context: Context) {
     controller.onWeightsChanged = onWeightsChanged
+    // Active section changed (or the pane count differs) → rebuild the panes for the new sub-section
+    // set before pushing content, so headers/bodies/collapse all line up with the new pane list.
+    if context.coordinator.sectionKey != sectionKey
+      || context.coordinator.panes.count != headers.count
+    {
+      let panes = (0..<headers.count).map { _ in InspectorPaneViewController() }
+      context.coordinator.panes = panes
+      context.coordinator.sectionKey = sectionKey
+      controller.rebuild(panes: panes)
+    }
     pushContent(into: context.coordinator.panes)
     controller.update(workroomKey: workroomKey, collapsed: collapsed, weights: weights)
   }
@@ -367,6 +407,8 @@ struct InspectorSplitView: NSViewControllerRepresentable {
 
   final class Coordinator {
     var panes: [InspectorPaneViewController] = []
+    /// The section-set the current `panes` were built for; a change triggers a rebuild.
+    var sectionKey: String = ""
   }
 }
 
@@ -378,7 +420,10 @@ struct InspectorSplitView: NSViewControllerRepresentable {
 /// header — its body content is hosted separately in the pane's scroll view.
 struct SectionHeader<Accessory: View>: View {
   let title: String
-  @Binding var collapsed: Bool
+  /// The section's collapse binding, or `nil` for a **solo** pane (a section whose activity-bar pane
+  /// stacks only itself, e.g. Files) — a solo pane can't collapse, so its header shows no chevron and
+  /// is a static label rather than a toggle button.
+  var collapsed: Binding<Bool>? = nil
   var indicator: AnyView = AnyView(EmptyView())
   var indicatorLabel: String = ""
   /// The View-menu shortcut that reveals this section (e.g. "⌥⌘C"), shown in the header tooltip for
@@ -387,38 +432,57 @@ struct SectionHeader<Accessory: View>: View {
   @ViewBuilder var accessory: () -> Accessory
 
   var body: some View {
-    Button {
-      collapsed.toggle()
-    } label: {
-      HStack(spacing: 7) {
-        Image(systemName: "chevron.right")
-          .font(.system(size: 11, weight: .semibold))
-          .foregroundStyle(.secondary)
-          .rotationEffect(.degrees(collapsed ? 0 : 90))
-          .frame(width: 12, alignment: .center)
-        Text(title).font(.system(size: 11, weight: .semibold))
-        indicator
-        Spacer(minLength: 0)
+    Group {
+      if let collapsed {
+        Button {
+          collapsed.wrappedValue.toggle()
+        } label: {
+          headerLabel(collapsed: collapsed.wrappedValue, showsChevron: true)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(
+          "\(title) section, \(collapsed.wrappedValue ? "collapsed" : "expanded")"
+            + (indicatorLabel.isEmpty ? "" : ", \(indicatorLabel)")
+        )
+        .help(
+          (collapsed.wrappedValue ? "Expand \(title)" : "Collapse \(title)")
+            + (shortcut.map { " (\($0))" } ?? "")
+        )
+      } else {
+        headerLabel(collapsed: false, showsChevron: false)
+          .accessibilityLabel(
+            "\(title) section" + (indicatorLabel.isEmpty ? "" : ", \(indicatorLabel)")
+          )
+          .help(shortcut.map { "\(title) (\($0))" } ?? title)
       }
-      .padding(.horizontal, 12)
-      .padding(.vertical, 8)
-      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-      .contentShape(Rectangle())
     }
-    .buttonStyle(.plain)
-    .accessibilityLabel(
-      "\(title) section, \(collapsed ? "collapsed" : "expanded")"
-        + (indicatorLabel.isEmpty ? "" : ", \(indicatorLabel)")
-    )
     .accessibilityIdentifier("inspector.header.\(title)")
-    .help(
-      (collapsed ? "Expand \(title)" : "Collapse \(title)")
-        + (shortcut.map { " (\($0))" } ?? "")
-    )
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(ThemeService.shared.tokens.surface)
     .overlay(alignment: .trailing) {
       accessory().padding(.trailing, 12)
     }
+  }
+
+  /// The header's row: an optional rotating disclosure chevron, the title, a status indicator, and a
+  /// trailing spacer (the action accessory is overlaid by `body`). The chevron is omitted for a solo
+  /// pane (`showsChevron == false`).
+  @ViewBuilder private func headerLabel(collapsed: Bool, showsChevron: Bool) -> some View {
+    HStack(spacing: 7) {
+      if showsChevron {
+        Image(systemName: "chevron.right")
+          .font(.system(size: 11, weight: .semibold))
+          .foregroundStyle(.secondary)
+          .rotationEffect(.degrees(collapsed ? 0 : 90))
+          .frame(width: 12, alignment: .center)
+      }
+      Text(title).font(.system(size: 11, weight: .semibold))
+      indicator
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 8)
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+    .contentShape(Rectangle())
   }
 }

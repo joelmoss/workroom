@@ -56,6 +56,13 @@ extension Defaults.Keys {
   /// section (moved to the left sidebar, issue #118), but the persisted user state is preserved.
   static let showInspector = Key<Bool>("showNotificationsInspector", default: false)
 
+  /// The selected top-level section in the right activity bar (the vertical icon rail), so it reopens
+  /// where you left it. Stored as the bare raw string via `ActivitySection: PreferRawRepresentable`;
+  /// a stored value matching no case falls back to `.changes`. Which *pane* the inspector shows;
+  /// whether the pane is visible at all is `showInspector`.
+  static let activeInspectorSection = Key<ActivitySection>(
+    "inspector.activeSection", default: .changes)
+
   /// Inline terminal agent (issue #49): always on — a failed command can be diagnosed by the local
   /// `claude`/`codex` CLI and a fix suggested in the pane's status bar. (No enable toggle; automatic
   /// vs manual diagnosis is `terminalAgentAutoDiagnose`.)
