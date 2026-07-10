@@ -467,13 +467,18 @@ struct RootView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // The detail content's global frame, so a chip dragged from the bar can be resolved against the
         // workroom panes below it (issue #23 follow-up) — mirrors WorkroomTerminalsView ↔ TerminalTabStrip.
-        .background(
-          GeometryReader { geo in
-            Color.clear.preference(key: DetailContentFrameKey.self, value: geo.frame(in: .global))
-          }
-        )
+        // Track the detail content's global frame so a chip dragged from the tab bar can be resolved
+        // against the workroom panes below it (issue #23 follow-up). `.onGeometryChange` (not the older
+        // `.background(GeometryReader → preference)` + `.onPreferenceChange`): preferences set inside a
+        // `.background` did not reliably re-propagate the *settled* frame — after the sidebar opened and
+        // shifted the detail right, the sink kept a stale transient value and never received the final
+        // rect, so a chip drop hit-tested an off-screen frame and the split silently failed with the
+        // sidebar open (worked collapsed only because the stale frame still spanned the left). This
+        // observes the frame directly and fires reliably on every change.
+        .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) {
+          detailContentFrame = $0
+        }
     }
-    .onPreferenceChange(DetailContentFrameKey.self) { detailContentFrame = $0 }
     // The detail column (tab bar + region around the panes) uses the theme *panel* colour — a
     // subtle step off the terminal background (issue #36) — so the chrome reads as a distinct
     // surface framing the terminals rather than one flat colour.
@@ -605,17 +610,6 @@ struct RootView: View {
     if !store.isCreationBlocking(target.id) {
       WorkroomTerminalsView(target: target, sessions: store.terminals)
     }
-  }
-}
-
-/// The detail content area's global frame, published so `WorkroomTabBar`'s chip drag can localise a
-/// cursor point against the workroom panes below the bar (issue #23 follow-up). Mirrors
-/// `ContentFrameKey` in `WorkroomTerminalsView`, one level up.
-private struct DetailContentFrameKey: PreferenceKey {
-  static var defaultValue: CGRect = .zero
-  static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
-    let next = nextValue()
-    if next != .zero { value = next }
   }
 }
 
