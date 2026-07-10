@@ -53,6 +53,35 @@ jobs:
       - name: Lint (swift-format --strict)
         run: make app-lint
 
+      # SPM resolves ~15 packages (Sparkle, Sentry, libghostty, the tree-sitter grammars, and
+      # swift-syntax pulled transitively) by cloning them from GitHub on every run. Cache the
+      # resolved checkouts keyed on project.yml (the sole source of the dependency set — the
+      # .xcodeproj is xcodegen-generated and gitignored) so an unchanged set skips the network
+      # entirely. The restore-keys fallback reuses an older cache after a dep change so only the
+      # delta is fetched.
+      - name: Cache SPM packages
+        uses: actions/cache@v4
+        with:
+          path: macapp/DerivedData/SourcePackages
+          key: spm-${{ runner.os }}-${{ hashFiles('macapp/project.yml') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      # Resolve up front with retries so a transient github.com blip mid-clone can't fail the whole
+      # run (it did: swift-syntax clone hit "Couldn't connect to server"). The subsequent app-test
+      # build reuses these checkouts via the same -clonedSourcePackagesDirPath, so it won't re-clone.
+      - name: Resolve SPM packages (retry on network flake)
+        working-directory: macapp
+        run: |
+          xcodegen generate
+          for attempt in 1 2 3; do
+            xcodebuild -project WorkroomApp.xcodeproj -scheme WorkroomApp \
+              -derivedDataPath DerivedData -clonedSourcePackagesDirPath DerivedData/SourcePackages \
+              -resolvePackageDependencies && exit 0
+            echo "::warning::SPM resolve attempt $attempt failed; retrying in 15s"
+            sleep 15
+          done
+          echo "::error::SPM resolve failed after 3 attempts"; exit 1
+
       # Hosted runners have no signing cert / dev team: ad-hoc sign, clear the team, manual
       # style so xcodebuild won't provision against Apple's servers. Lets the non-sandboxed
       # app build and the unit tests launch their host app. (`make app-test` also builds.)
