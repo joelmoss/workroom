@@ -93,6 +93,11 @@ extension Defaults.Keys {
   /// The persisted selected sidebar target as a `TerminalTarget.ID` string, or nil (issue #14).
   static let sidebarSelection = Key<String?>("sidebar.selectionTargetID", default: nil)
 
+  /// The last-viewed pane in the Settings window (⌘,), so it reopens where you left it (macOS
+  /// System Settings behaviour). Stored as the bare raw string via `SettingsPane:
+  /// PreferRawRepresentable`; a stored value matching no case falls back to `.general`.
+  static let settingsSelectedPane = Key<SettingsPane>("settings.selectedPane", default: .general)
+
   /// The last window's frame as `NSStringFromRect` (issue #70). The launch window restores it so it
   /// reopens at the size you left; empty means "use the default size". The value-based `WindowGroup`
   /// doesn't restore window size itself, so it's managed app-side in `AppStore.attachWindow`.

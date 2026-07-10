@@ -160,6 +160,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         quickTerminalWindow.performClose(nil)
         return nil
       }
+      // ⌘W on an auxiliary window (Settings, About) — a window with no AppStore (not a workroom
+      // window). The menu's "Close Terminal" owns ⌘W app-wide but is disabled there (no focused
+      // terminal), so ⌘W would otherwise just beep. Close the window, as the standard File ▸ Close
+      // would. Workroom windows (store != nil) fall through so their "Close Terminal" still fires.
+      if flags == .command, event.charactersIgnoringModifiers == "w",
+        let keyWindow = event.window ?? NSApp.keyWindow,
+        MainActor.assumeIsolated({ WindowRegistry.shared.store(for: keyWindow) }) == nil
+      {
+        keyWindow.performClose(nil)
+        return nil
+      }
       // ⌘` / ⇧⌘`: cycle key focus through the app's windows incl. the quick terminal (issue #87) —
       // the standard "Move focus to next window" shortcut. Caught here, like ⌘1–9, so the focused
       // terminal surface doesn't swallow the backtick as input. keyCode 50 is the grave (`) key,
