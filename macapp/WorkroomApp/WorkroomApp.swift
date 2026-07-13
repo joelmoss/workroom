@@ -1,6 +1,7 @@
 import AppKit
 import Defaults
 import SwiftUI
+import SwiftGitX
 import UserNotifications
 import WrVcs
 
@@ -148,6 +149,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
               + "reachedEnd=\(page.reachedEnd) [\(heads)]")
         } catch {
           NSLog("[wr-vcs] probe error: \(error)")
+        }
+
+        // git via SwiftGitX (libgit2) — the git-backend counterpart to the jj probe above.
+        do {
+          let repo = try Repository.open(at: URL(fileURLWithPath: root))
+          let commits = Array(try repo.log().prefix(3))
+          let heads = commits.map { $0.id.abbreviated }.joined(separator: " ")
+          NSLog("[wr-git] commits=\(commits.count) [\(heads)]")
+        } catch {
+          NSLog("[wr-git] error: \(error)")
         }
       }
     #endif

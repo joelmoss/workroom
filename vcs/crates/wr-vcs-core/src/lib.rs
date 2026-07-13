@@ -1,54 +1,38 @@
-//! Workroom VCS core: app-facing structured reads over git (gix) and jj (jj-lib).
+//! Workroom VCS core: structured jj reads over `jj-lib`.
 //!
-//! This is the only crate that depends on `jj-lib` (isolated to [`jj_backend`]) and `gix`
-//! ([`git_backend`]). Everything else in the workspace stays backend-agnostic.
-//!
-//! Phase 0: the module layout + a pure repo-identity probe. The real jj-lib/gix reads (log page,
-//! changeset, per-file diff) land once the dependency tree is proven to compile (task 2 → task 3).
+//! **jj-only by design.** git is handled app-side in Swift via SwiftGitX (libgit2) — git has a
+//! mature native Swift path, jj does not, so only jj needs the Rust/UniFFI bridge. `jj-lib` is
+//! isolated to [`jj_backend`]; everything else stays backend-agnostic.
 
 use std::path::Path;
-use wr_vcs_model::{RepoKind, VcsError};
+use wr_vcs_model::RepoKind;
 
-pub mod git_backend;
 pub mod jj_backend;
 
 pub use wr_vcs_model as model;
 
-/// A bounded, newest-first page of the repo's history, dispatched to the right backend.
-pub fn log_page(root: &Path, limit: usize) -> model::Result<model::HistoryPage> {
-    match probe_repo(root) {
-        RepoKind::JjColocated | RepoKind::JjNonColocated => jj_backend::log_page(root, limit),
-        RepoKind::PlainGit => Err(VcsError::Io("git backend not yet implemented".into())),
-        RepoKind::Unsupported(reason) => Err(VcsError::UnsupportedRepo(reason)),
-    }
-}
-
-/// A single changeset's metadata (+ full message; files land in Phase 1), dispatched by backend.
-pub fn changeset(root: &Path, commit_id_hex: &str) -> model::Result<model::Changeset> {
-    match probe_repo(root) {
-        RepoKind::JjColocated | RepoKind::JjNonColocated => {
-            jj_backend::changeset(root, commit_id_hex)
-        }
-        RepoKind::PlainGit => Err(VcsError::Io("git backend not yet implemented".into())),
-        RepoKind::Unsupported(reason) => Err(VcsError::UnsupportedRepo(reason)),
-    }
-}
-
-/// Classify a path into the backend-selection discriminant. Pure filesystem inspection — no jj-lib
-/// or gix calls — so it's cheap and can't take the jj working-copy lock.
-///
-/// Colocated jj+git (a `.jj` *and* a `.git` under the same root) prefers the jj backend, matching
-/// how this very repo is set up.
+/// Classify a path (git / colocated-jj / unsupported). Pure filesystem inspection — no jj-lib call,
+/// so it can't take the jj working-copy lock. The Swift side does its own routing (jj → this Rust
+/// core, plain git → the SwiftGitX provider); this is exposed for diagnostics/parity.
 pub fn probe_repo(root: &Path) -> RepoKind {
     let has_jj = root.join(".jj").is_dir();
-    let has_git = root.join(".git").exists(); // dir (normal) or file (worktree/submodule)
+    let has_git = root.join(".git").exists();
     match (has_jj, has_git) {
         (true, true) => RepoKind::JjColocated,
         (true, false) => RepoKind::JjNonColocated,
         (false, true) => RepoKind::PlainGit,
-        (false, false) => RepoKind::Unsupported(format!(
-            "no .jj or .git found at {}",
-            root.display()
-        )),
+        (false, false) => {
+            RepoKind::Unsupported(format!("no .jj or .git found at {}", root.display()))
+        }
     }
+}
+
+/// A bounded, newest-first page of jj history.
+pub fn log_page(root: &Path, limit: usize) -> model::Result<model::HistoryPage> {
+    jj_backend::log_page(root, limit)
+}
+
+/// A single jj changeset's metadata (+ full message; files land in Phase 1).
+pub fn changeset(root: &Path, commit_id_hex: &str) -> model::Result<model::Changeset> {
+    jj_backend::changeset(root, commit_id_hex)
 }

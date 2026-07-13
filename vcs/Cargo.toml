@@ -19,7 +19,6 @@ repository = "https://github.com/joelmoss/workroom"
 # Pinned exactly (plan: chase jj-lib deliberately — it's pre-1.0 with no Rust-API changelog).
 [workspace.dependencies]
 jj-lib = "=0.43.0"
-gix = { version = "0.85", default-features = false }
 uniffi = "0.32"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
