@@ -144,10 +144,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             p.commits.map { $0.shortID + ($0.isWorkingCopy ? "@" : "") }.joined(separator: " ")
           }
           do {
-            let page = try await VCS.provider(for: url).log(root: url, limit: 3)
+            let provider = try VCS.provider(for: url)
+            let page = try await provider.log(root: url, limit: 3)
             NSLog(
               "[wr-vcs] kind=\(VCS.repoKind(at: url)) routed: commits=\(page.commits.count) "
                 + "reachedEnd=\(page.reachedEnd) [\(heads(page))]")
+            // Fetch a real changeset (first non-working-copy commit) to exercise the file list.
+            if let target = page.commits.first(where: { !$0.isWorkingCopy }) ?? page.commits.first {
+              let cs = try await provider.changeset(root: url, commitID: target.commitID)
+              let files = cs.files.prefix(4).map { "\($0.kind):\($0.path)" }.joined(separator: " ")
+              NSLog(
+                "[wr-vcs] changeset \(target.shortID): merge=\(cs.isMerge) "
+                  + "files=\(cs.files.count) [\(files)]")
+            }
           } catch {
             NSLog("[wr-vcs] routed error: \(error)")
           }

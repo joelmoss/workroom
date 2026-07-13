@@ -2764,6 +2764,7 @@ dependencies = [
 name = "wr-vcs-core"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "jj-lib",
  "pollster",
  "thiserror",

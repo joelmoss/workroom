@@ -15,9 +15,18 @@ struct RustJJProvider: VCSProviding {
   }
 
   func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
-    // The full changeset (file list + per-file diff) isn't exposed over UniFFI yet — it needs the
-    // jj-lib async diff_stream in wr-vcs-core (Phase-1 task). Metadata-only until then.
-    throw VCSError.io("jj changeset detail not yet implemented (Phase 1)")
+    let cs: WrVcs.Changeset
+    do {
+      cs = try WrVcs.changeset(root: root.path, commitId: commitID)
+    } catch {
+      throw Self.mapError(error)
+    }
+    return VCSChangeset(
+      commit: Self.map(cs.commit),
+      fullMessage: cs.fullMessage,
+      files: cs.files.map(Self.map),
+      isMerge: cs.isMerge
+    )
   }
 
   private static func map(_ c: WrVcs.Commit) -> VCSCommit {
@@ -34,8 +43,24 @@ struct RustJJProvider: VCSProviding {
     )
   }
 
+  private static func map(_ f: WrVcs.ChangedFile) -> VCSChangedFile {
+    VCSChangedFile(path: f.path, oldPath: f.oldPath, kind: map(f.kind))
+  }
+
+  private static func map(_ k: WrVcs.ChangeKind) -> VCSChangeKind {
+    switch k {
+    case .added: return .added
+    case .modified: return .modified
+    case .deleted: return .deleted
+    case .renamed: return .renamed
+    case .copied: return .copied
+    case .conflicted: return .conflicted
+    case .other: return .other
+    }
+  }
+
   /// The UniFFI surface throws `WrVcs.VcsError`; stringify for now (a precise case-by-case mapping to
-  /// `VCSError` lands with the error-taxonomy work once the changeset surface exists).
+  /// `VCSError` lands with the error-taxonomy work).
   private static func mapError(_ error: Error) -> VCSError {
     .io("\(error)")
   }

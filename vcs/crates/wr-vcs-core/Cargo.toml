@@ -12,5 +12,7 @@ wr-vcs-model = { path = "../wr-vcs-model" }
 wr-vcs-diff = { path = "../wr-vcs-diff" }
 jj-lib = { workspace = true }
 thiserror = { workspace = true }
-# block_on for jj-lib's async load_at_head (jayjay uses pollster the same way).
+# block_on for jj-lib's async load_at_head + diff_stream (jayjay uses pollster the same way).
 pollster = "0.4"
+# StreamExt to drive jj-lib's async tree diff_stream.
+futures = "0.3"

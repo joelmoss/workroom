@@ -36,6 +36,32 @@ pub struct HistoryPage {
     pub reached_end: bool,
 }
 
+#[derive(uniffi::Enum)]
+pub enum ChangeKind {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    Copied,
+    Conflicted,
+    Other,
+}
+
+#[derive(uniffi::Record)]
+pub struct ChangedFile {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub kind: ChangeKind,
+}
+
+#[derive(uniffi::Record)]
+pub struct Changeset {
+    pub commit: Commit,
+    pub full_message: String,
+    pub files: Vec<ChangedFile>,
+    pub is_merge: bool,
+}
+
 /// Mirrors `model::VcsError`; each variant maps to a distinct, recoverable Swift-side UI state.
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum VcsError {
@@ -87,6 +113,38 @@ impl From<model::HistoryPage> for HistoryPage {
     }
 }
 
+impl From<model::ChangeKind> for ChangeKind {
+    fn from(k: model::ChangeKind) -> Self {
+        use model::ChangeKind as M;
+        match k {
+            M::Added => ChangeKind::Added,
+            M::Modified => ChangeKind::Modified,
+            M::Deleted => ChangeKind::Deleted,
+            M::Renamed => ChangeKind::Renamed,
+            M::Copied => ChangeKind::Copied,
+            M::Conflicted => ChangeKind::Conflicted,
+            M::Other => ChangeKind::Other,
+        }
+    }
+}
+
+impl From<model::ChangedFile> for ChangedFile {
+    fn from(f: model::ChangedFile) -> Self {
+        ChangedFile { path: f.path, old_path: f.old_path, kind: f.kind.into() }
+    }
+}
+
+impl From<model::Changeset> for Changeset {
+    fn from(c: model::Changeset) -> Self {
+        Changeset {
+            commit: c.commit.into(),
+            full_message: c.full_message,
+            files: c.files.into_iter().map(ChangedFile::from).collect(),
+            is_merge: c.is_merge,
+        }
+    }
+}
+
 impl From<model::VcsError> for VcsError {
     fn from(e: model::VcsError) -> Self {
         use model::VcsError as M;
@@ -113,5 +171,13 @@ pub fn probe_repo(root: String) -> String {
 pub fn log_page(root: String, limit: u32) -> Result<HistoryPage, VcsError> {
     wr_vcs_core::log_page(Path::new(&root), limit as usize)
         .map(HistoryPage::from)
+        .map_err(VcsError::from)
+}
+
+/// A single jj changeset: metadata + full message + changed-file list.
+#[uniffi::export]
+pub fn changeset(root: String, commit_id: String) -> Result<Changeset, VcsError> {
+    wr_vcs_core::changeset(Path::new(&root), &commit_id)
+        .map(Changeset::from)
         .map_err(VcsError::from)
 }

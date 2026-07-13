@@ -143,8 +143,8 @@ pub fn log_page(root: &Path, limit: usize) -> model::Result<HistoryPage> {
     Ok(HistoryPage { commits, reached_end })
 }
 
-/// A single changeset's metadata + full message. NOTE: the changed-file list + per-file diff use
-/// jj-lib's async `diff_stream` and land in Phase 1; `files` is empty here by design.
+/// A single changeset: metadata + full message + changed-file list (vs the first parent). Per-file
+/// hunk-level diff is a separate call (lazy on selection).
 pub fn changeset(root: &Path, commit_id_hex: &str) -> model::Result<model::Changeset> {
     let (_workspace, repo) = open(root)?;
     let store = repo.store();
@@ -152,11 +152,51 @@ pub fn changeset(root: &Path, commit_id_hex: &str) -> model::Result<model::Chang
         .ok_or_else(|| VcsError::NotFound(format!("bad commit id {commit_id_hex}")))?;
     let commit = store.get_commit(&id).map_err(io)?;
     let bookmarks = bookmark_map(&repo);
+    let files = changed_files(store, &commit)?;
     let model_commit = to_model_commit(&commit, None, &bookmarks);
     Ok(model::Changeset {
         is_merge: commit.parent_ids().len() > 1,
         full_message: commit.description().to_string(),
-        files: Vec::new(), // Phase 1: async diff_stream(parent_tree, tree)
+        files,
         commit: model_commit,
     })
+}
+
+/// The changed files of `commit` vs its FIRST parent (the jj root commit provides the empty base for
+/// the first real change, so no empty-tree special case is needed). Add/modify/delete from before↔
+/// after presence; rename detection (copy records) is a later refinement. Drives jj-lib's async
+/// tree `diff_stream`, blocked on with pollster.
+fn changed_files(
+    store: &std::sync::Arc<jj_lib::store::Store>,
+    commit: &JjCommit,
+) -> model::Result<Vec<model::ChangedFile>> {
+    use futures::StreamExt;
+    use jj_lib::matchers::EverythingMatcher;
+
+    let after = commit.tree();
+    let before = match commit.parent_ids().first() {
+        Some(pid) => store.get_commit(pid).map_err(io)?.tree(),
+        None => return Ok(Vec::new()), // the jj root commit itself
+    };
+
+    let mut files = Vec::new();
+    pollster::block_on(async {
+        let mut stream = before.diff_stream(&after, &EverythingMatcher);
+        while let Some(entry) = stream.next().await {
+            let Ok(diff) = entry.values else { continue };
+            let kind = if diff.before.is_absent() {
+                model::ChangeKind::Added
+            } else if diff.after.is_absent() {
+                model::ChangeKind::Deleted
+            } else {
+                model::ChangeKind::Modified
+            };
+            files.push(model::ChangedFile {
+                path: entry.path.as_internal_file_string().to_string(),
+                old_path: None,
+                kind,
+            });
+        }
+    });
+    Ok(files)
 }
