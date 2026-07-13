@@ -65,25 +65,24 @@ struct WorkroomStatusResolver: Sendable {
   }
 
   private func resolveGit(_ dir: String) async -> WorkroomStatus {
-    let r = await runner.run(
-      "git",
-      Self.gitHardening + [
-        "status", "--porcelain=v2", "-z", "--branch", "--untracked-files=normal",
-      ],
-      in: dir, timeout: timeout)
-    guard r.ok else {
-      return WorkroomStatus(dirty: nil, failure: Self.classifyGitFailure(r))
+    // Read git status structurally through libgit2 (SwiftGitX) instead of shelling `git status` +
+    // `git diff --shortstat`. `VCSProviding` has no built-in timeout, so bound the (synchronous,
+    // off-main) read with `withTimeout` — a wedged repo abandons only its own row.
+    let root = URL(fileURLWithPath: dir, isDirectory: true)
+    do {
+      let ws = try await withTimeout(seconds: timeout) {
+        try await Task.detached(priority: .userInitiated) {
+          try GitProvider().workingStatus(root: root)
+        }.value
+      }
+      return WorkroomStatus(
+        dirty: ws.dirty, conflicted: ws.conflicted, changedFiles: ws.files,
+        insertions: ws.insertions, deletions: ws.deletions, branchForCI: ws.branch)
+    } catch is VCSTimeoutError {
+      return WorkroomStatus(dirty: nil, failure: .timeout)
+    } catch {
+      return WorkroomStatus(dirty: nil, failure: .notRepository)
     }
-    let p = Self.parseGitPorcelainV2Z(r.stdout)
-    // Line counts vs HEAD (staged + unstaged tracked changes; untracked files aren't in the diff).
-    let statR = await runner.run(
-      "git", Self.gitHardening + ["diff", "--no-ext-diff", "--no-textconv", "--shortstat", "HEAD"],
-      in: dir, timeout: timeout)
-    let stat = statR.ok ? Self.parseDiffStat(statR.stdout) : (insertions: 0, deletions: 0)
-    return WorkroomStatus(
-      dirty: p.dirty, conflicted: p.conflicted,
-      changedFiles: p.files, insertions: stat.insertions, deletions: stat.deletions,
-      branchForCI: p.branch)
   }
 
   private func resolveJJ(_ dir: String) async -> WorkroomStatus {
@@ -501,85 +500,6 @@ struct WorkroomStatusResolver: Sendable {
   static func isGitHubAuthFailure(_ error: String?) -> Bool {
     guard let e = error?.lowercased() else { return false }
     return e.contains("http 401") || e.contains("bad credentials")
-  }
-
-  struct GitParse: Equatable {
-    var dirty = false
-    var conflicted = false
-    var branch: String?
-    var files: [ChangedFile] = []
-  }
-
-  /// Parse `git status --porcelain=v2 -z --branch`. The stream is NUL-separated; `# ...` lines
-  /// are headers; entries start with `1 `/`2 `/`u `/`? `. A `2 ` (rename/copy) entry is followed
-  /// by an extra NUL field holding the original path — consumed and skipped.
-  static func parseGitPorcelainV2Z(_ output: String) -> GitParse {
-    var p = GitParse()
-    let fields = output.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
-    var i = 0
-    while i < fields.count {
-      let f = fields[i]
-      i += 1
-      if f.isEmpty { continue }
-      if f.hasPrefix("# ") {
-        let rest = String(f.dropFirst(2))
-        if rest.hasPrefix("branch.head ") {
-          let name = String(rest.dropFirst("branch.head ".count))
-          p.branch = name == "(detached)" ? nil : name
-        }
-        continue
-      }
-      switch f.first {
-      case "1":
-        p.dirty = true
-        if let cf = changedFile(type1: f) { p.files.append(cf) }
-      case "2":
-        p.dirty = true
-        if let cf = pathAfter(f, fields: 9).map({ ChangedFile(path: $0, change: .renamed) }) {
-          p.files.append(cf)
-        }
-        i += 1  // skip the original-path field
-      case "u":
-        p.dirty = true
-        p.conflicted = true
-        if let path = pathAfter(f, fields: 10) {
-          p.files.append(ChangedFile(path: path, change: .conflicted))
-        }
-      case "?":
-        p.dirty = true
-        let path = String(f.dropFirst(2))
-        if !path.isEmpty { p.files.append(ChangedFile(path: path, change: .untracked)) }
-      default:
-        break  // "!" ignored, or unrecognized
-      }
-    }
-    return p
-  }
-
-  /// Path of a type-1 entry plus its change kind, derived from the XY status code.
-  private static func changedFile(type1 f: String) -> ChangedFile? {
-    guard let path = pathAfter(f, fields: 8) else { return nil }
-    let parts = f.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: false)
-    let xy = parts.count > 1 ? String(parts[1]) : ".."
-    return ChangedFile(path: path, change: change(forXY: xy))
-  }
-
-  /// The path is everything after the first `fieldCount` space-delimited fields (paths may
-  /// contain spaces, so we split at most `fieldCount` times and take the remainder).
-  private static func pathAfter(_ f: String, fields fieldCount: Int) -> String? {
-    let parts = f.split(separator: " ", maxSplits: fieldCount, omittingEmptySubsequences: false)
-    guard parts.count > fieldCount else { return nil }
-    let path = String(parts[fieldCount])
-    return path.isEmpty ? nil : path
-  }
-
-  private static func change(forXY xy: String) -> ChangedFile.Change {
-    let chars = Set(xy)
-    if chars.contains("A") { return .added }
-    if chars.contains("D") { return .deleted }
-    if chars.contains("R") { return .renamed }
-    if chars.contains("M") || chars.contains("T") { return .modified }
-    return .other
   }
 
   /// Parse `jj diff --summary -r @` (lines like `M path`, `A path`, `D path`).

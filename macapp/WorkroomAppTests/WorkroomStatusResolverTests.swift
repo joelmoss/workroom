@@ -46,106 +46,14 @@ private func ok(_ stdout: String) -> CommandResult {
 private func fail() -> CommandResult {
   CommandResult(stdout: "", stderr: "boom", exitCode: 1, timedOut: false)
 }
-private let nul = "\u{0}"
 
 final class WorkroomStatusResolverTests: XCTestCase {
 
   /// An existing directory so `resolveLocal`'s fileExists guard passes (the mock ignores it).
   private let existing = NSTemporaryDirectory()
 
-  // MARK: - parseGitPorcelainV2Z
-
-  func testParseClean() {
-    // The `branch.ab` header is now ignored (ahead/behind removed); the parser must skip it cleanly.
-    let out =
-      [
-        "# branch.oid abc", "# branch.head main", "# branch.upstream origin/main",
-        "# branch.ab +0 -0",
-      ]
-      .joined(separator: nul) + nul
-    let p = WorkroomStatusResolver.parseGitPorcelainV2Z(out)
-    XCTAssertFalse(p.dirty)
-    XCTAssertFalse(p.conflicted)
-    XCTAssertEqual(p.branch, "main")
-    XCTAssertTrue(p.files.isEmpty)
-  }
-
-  func testParseDirtyModified() {
-    let out =
-      [
-        "# branch.head main",
-        "1 .M N... 100644 100644 100644 aaa bbb file.swift",
-      ]
-      .joined(separator: nul) + nul
-    let p = WorkroomStatusResolver.parseGitPorcelainV2Z(out)
-    XCTAssertTrue(p.dirty)
-    XCTAssertEqual(p.files.count, 1)
-    XCTAssertEqual(p.files.first?.path, "file.swift")
-    XCTAssertEqual(p.files.first?.change, .modified)
-  }
-
-  func testParseUntracked() {
-    let out = ["# branch.head main", "? new file.txt"].joined(separator: nul) + nul
-    let p = WorkroomStatusResolver.parseGitPorcelainV2Z(out)
-    XCTAssertTrue(p.dirty)
-    XCTAssertEqual(p.files.first?.change, .untracked)
-    XCTAssertEqual(p.files.first?.path, "new file.txt")  // paths with spaces survive
-  }
-
-  func testParseAddedAndDeleted() {
-    // type-1 XY: "A." → added, ".D" → deleted (path is after 8 space-fields).
-    let out =
-      [
-        "# branch.head main",
-        "1 A. N... 100644 100644 100644 0 a added.txt",
-        "1 .D N... 100644 100644 000000 a 0 gone.txt",
-      ].joined(separator: nul) + nul
-    let p = WorkroomStatusResolver.parseGitPorcelainV2Z(out)
-    let byChange = Dictionary(grouping: p.files, by: \.change).mapValues { $0.map(\.path) }
-    XCTAssertEqual(byChange[.added], ["added.txt"])
-    XCTAssertEqual(byChange[.deleted], ["gone.txt"])
-  }
-
-  func testParseConflicted() {
-    // porcelain-v2 unmerged: u <xy> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path> (path is the
-    // 11th token / after 10 space-fields).
-    let out =
-      ["# branch.head main", "u UU N... 100644 100644 100644 100644 h1 h2 h3 conflicted.txt"]
-      .joined(separator: nul) + nul
-    let p = WorkroomStatusResolver.parseGitPorcelainV2Z(out)
-    XCTAssertTrue(p.dirty)
-    XCTAssertTrue(p.conflicted)
-    XCTAssertEqual(p.files.first?.change, .conflicted)
-    XCTAssertEqual(p.files.first?.path, "conflicted.txt")
-  }
-
-  func testParseDetached() {
-    let out = ["# branch.oid abc", "# branch.head (detached)"].joined(separator: nul) + nul
-    let p = WorkroomStatusResolver.parseGitPorcelainV2Z(out)
-    XCTAssertNil(p.branch)  // detached → no branch for CI
-  }
-
-  func testParseBranchWithoutUpstreamLine() {
-    let out = ["# branch.head feature"].joined(separator: nul) + nul  // no branch.ab line
-    let p = WorkroomStatusResolver.parseGitPorcelainV2Z(out)
-    XCTAssertEqual(p.branch, "feature")
-  }
-
-  func testParseRenameConsumesOriginalPath() {
-    let out =
-      [
-        "# branch.head main",
-        "2 R. N... 100644 100644 100644 aaa bbb R100 new.txt",
-        // "old.txt" = the rename's original-path field; must be consumed, not parsed.
-        "old.txt",
-        "1 .M N... 100644 100644 100644 ccc ddd after.txt",
-      ].joined(separator: nul) + nul
-    let p = WorkroomStatusResolver.parseGitPorcelainV2Z(out)
-    XCTAssertEqual(p.files.count, 2)
-    XCTAssertEqual(p.files[0].path, "new.txt")
-    XCTAssertEqual(p.files[0].change, .renamed)
-    XCTAssertEqual(p.files[1].path, "after.txt")  // proves "old.txt" wasn't mis-parsed as an entry
-  }
+  // git status is now read structurally via GitProvider (SwiftGitX); the porcelain-v2 parser is
+  // gone. See WorkroomStatusIntegrationTests.testGitProviderWorkingStatus* for real-repo coverage.
 
   // MARK: - parseJJSummary
 
@@ -336,34 +244,14 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertEqual(s.failure, .missingPath)
   }
 
-  func testResolveLocalGitDirty() async {
-    let porcelain =
-      ["# branch.head main", "# branch.ab +0 -0", "1 .M N... 1 2 3 a b x.swift"]
-      .joined(separator: nul) + nul
-    let r = WorkroomStatusResolver(
-      runner: MockStatusRunner { exe, args in
-        if exe == "git", args.contains("status") { return ok(porcelain) }
-        if exe == "git", args.contains("diff") {
-          return ok(" 1 file changed, 7 insertions(+), 2 deletions(-)\n")
-        }
-        return ok("")
-      })
-    let s = await r.resolveLocal(path: existing, vcs: "git")
-    XCTAssertEqual(s.dirty, true)
-    XCTAssertEqual(s.branchForCI, "main")
-    XCTAssertEqual(s.changedFiles?.count, 1)
-    XCTAssertEqual(s.insertions, 7)
-    XCTAssertEqual(s.deletions, 2)
-    XCTAssertNil(s.failure)
-  }
+  // A dirty git working tree is now read via GitProvider/SwiftGitX (not the mock runner + porcelain
+  // parser) — covered by WorkroomStatusIntegrationTests.testGitProviderWorkingStatus on a real repo.
 
   func testResolveLocalGitFailureIsUnknownNotClean() async {
-    let r = WorkroomStatusResolver(
-      runner: MockStatusRunner { _, _ in
-        CommandResult(stdout: "", stderr: "fatal", exitCode: 128, timedOut: false)
-      })
+    // `existing` is a real directory but NOT a git repo, so the SwiftGitX read fails → notRepository.
+    // The regression-critical property: a failed probe is UNKNOWN, never clean.
+    let r = WorkroomStatusResolver()
     let s = await r.resolveLocal(path: existing, vcs: "git")
-    // the regression-critical assertion: unknown ≠ clean
     XCTAssertNil(s.dirty)
     XCTAssertFalse(s.isClean)
     XCTAssertTrue(s.isUnknown)

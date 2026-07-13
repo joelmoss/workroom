@@ -59,27 +59,6 @@ private final class CreatingFakeCLI: WorkroomCLIProtocol {
   ) async throws -> [URL] { [] }
 }
 
-/// Records the working directory of every VCS probe (and returns a benign clean result) so tests can
-/// assert WHICH worktrees were — or were NOT — probed. Used to prove the create-time gate suppresses
-/// probes against a worktree whose setup is still in flight (the ~70/sec git/jj storm fix).
-private final class RecordingStatusRunner: StatusCommandRunning, @unchecked Sendable {
-  private let lock = NSLock()
-  private var _dirs: [String] = []
-  var dirs: [String] {
-    lock.lock()
-    defer { lock.unlock() }
-    return _dirs
-  }
-  func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
-    async -> CommandResult
-  {
-    lock.lock()
-    _dirs.append(directory)
-    lock.unlock()
-    return CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: false)
-  }
-}
-
 @MainActor
 final class AppStoreCreateWorkroomTests: XCTestCase {
   private let projectPath = "/private/var/tmp/wr-create-project"
@@ -269,25 +248,28 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
   /// burst may probe its worktree — that per-burst git/jj probing (~70/sec under an `npm install`)
   /// was the CPU storm behind the reported spike. Drives the real ordering: flag set before reload,
   /// then selection (didSet probe), then a burst — all must be suppressed for the creating worktree.
+  // Probing is observed via the OUTCOME, not a mock runner: git status is now read through
+  // GitProvider/SwiftGitX (in-process, no command runner to record). `makeRealProject` makes a plain
+  // directory (not a git repo), so a probe RESOLVES a status with `.notRepository`; a suppressed
+  // worktree records no local status at all.
   func testNoProbeAgainstWorktreeWhileCreating() async {
     let (proj, root, wrPath) = makeRealProject(workroom: "wr")
     defer { try? FileManager.default.removeItem(atPath: root) }
     let store = makeStore(FakeWorkroomCLI(canonical: root, projects: [proj]))
-    let runner = RecordingStatusRunner()
-    store.statusResolver = WorkroomStatusResolver(runner: runner)
+    let sid = SidebarID.workroom(project: root, name: "wr")
     let wrID = TerminalTarget.workroomID(project: root, name: "wr")
 
     store.creatingWorkrooms.insert(wrID)  // setup in flight, BEFORE any reload/selection
     await store.reload()  // the sweep must SKIP the creating workroom
     // Selecting fires the didSet probe; the file-change burst is the storm — both must be suppressed.
-    store.selectedTargetID = .workroom(project: root, name: "wr")
+    store.selectedTargetID = sid
     store.handleWorkroomFileChange(["\(wrPath)/node_modules/pkg/index.js"])
     // > selectionDebounce (0.3s), so a live probe WOULD have fired by now if it weren't suppressed.
     try? await Task.sleep(nanoseconds: 500_000_000)
 
-    XCTAssertTrue(
-      runner.dirs.allSatisfy { !$0.hasPrefix(wrPath) },
-      "no VCS probe may run against a worktree whose setup is in flight; probed: \(runner.dirs)")
+    XCTAssertNil(
+      store.workroomStatuses[sid]?.failure,
+      "no VCS probe may run against a worktree whose setup is in flight")
   }
 
   /// Once setup completes (the flag lifts), the worktree is probed again — the suppression is scoped
@@ -296,20 +278,20 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     let (proj, root, wrPath) = makeRealProject(workroom: "wr")
     defer { try? FileManager.default.removeItem(atPath: root) }
     let store = makeStore(FakeWorkroomCLI(canonical: root, projects: [proj]))
-    let runner = RecordingStatusRunner()
-    store.statusResolver = WorkroomStatusResolver(runner: runner)
+    let sid = SidebarID.workroom(project: root, name: "wr")
     let wrID = TerminalTarget.workroomID(project: root, name: "wr")
 
     store.creatingWorkrooms.insert(wrID)
     await store.reload()
-    store.selectedTargetID = .workroom(project: root, name: "wr")
+    store.selectedTargetID = sid
     store.creatingWorkrooms.remove(wrID)  // setup finished
     store.handleWorkroomFileChange(["\(wrPath)/src/main.swift"])
     try? await Task.sleep(nanoseconds: 500_000_000)
 
-    XCTAssertTrue(
-      runner.dirs.contains { $0.hasPrefix(wrPath) },
-      "once setup completes the worktree must be probed again; probed: \(runner.dirs)")
+    // A probe ran and resolved a status: wrPath isn't a real repo, so it's `.notRepository`.
+    XCTAssertEqual(
+      store.workroomStatuses[sid]?.failure, .notRepository,
+      "once setup completes the worktree must be probed again")
   }
 
   /// A late `onReady` echo lands in `landOnCreatedWorkroom` with `creation == nil`. The early

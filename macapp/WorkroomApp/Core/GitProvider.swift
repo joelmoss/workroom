@@ -93,7 +93,12 @@ struct GitProvider: VCSProviding {
       let repo = try Repository.open(at: root)
       var files: [ChangedFile] = []
       var conflicted = false
-      for entry in try repo.status() {
+      // Enable rename detection (off by default in libgit2) so a `git mv` reads as one `.renamed`
+      // entry, matching the CLI porcelain this replaced — not a separate delete + add.
+      let options: StatusOption = [
+        .includeUntracked, .recurseUntrackedDirectories, .renamesIndex, .renamesWorkingTree,
+      ]
+      for entry in try repo.status(options: options) {
         if entry.status.contains(.ignored) || entry.status.contains(.current) { continue }
         if entry.status.contains(.conflicted) {
           conflicted = true
