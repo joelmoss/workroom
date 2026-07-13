@@ -156,6 +156,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
               NSLog(
                 "[wr-vcs] changeset \(target.shortID): merge=\(cs.isMerge) "
                   + "files=\(cs.files.count) [\(files)]")
+              if let f = cs.files.first {
+                let patch = try await provider.fileDiff(
+                  root: url, commitID: target.commitID, path: f.path)
+                let head = patch.prefix(70).replacingOccurrences(of: "\n", with: "⏎")
+                NSLog("[wr-vcs] fileDiff \(f.path): \(patch.count) chars head=[\(head)]")
+              }
             }
           } catch {
             NSLog("[wr-vcs] routed error: \(error)")

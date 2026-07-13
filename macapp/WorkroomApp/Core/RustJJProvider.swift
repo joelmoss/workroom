@@ -30,9 +30,48 @@ struct RustJJProvider: VCSProviding {
   }
 
   func fileDiff(root: URL, commitID: String, path: String) async throws -> String {
-    // jj per-file diff needs jj-lib's git-format diff writer in wr-vcs-core (next task). Until then
-    // the changeset file list works but the diff column is unavailable for jj.
-    throw VCSError.io("jj per-file diff not yet implemented (Phase 1)")
+    // jj-lib exposes raw diff regions but no git-format writer (that lives in the jj CLI). Rather
+    // than reimplement unified-diff formatting, use the jj CLI for the per-file patch text — the
+    // plan's sanctioned CLI fallback for ops jj-lib doesn't expose ergonomically. `--git` gives the
+    // git-format patch the UnifiedDiff parser wants; `--ignore-working-copy` never locks `@`.
+    try await Self.run(
+      "jj",
+      ["diff", "--git", "-r", commitID, "--ignore-working-copy", "--color", "never", "--", path],
+      cwd: root
+    )
+  }
+
+  /// Run a VCS CLI (via `/usr/bin/env` so PATH lookup works), returning stdout. GUI apps get a
+  /// minimal PATH, so prepend the common Homebrew / local locations where `jj` lives.
+  private static func run(_ exe: String, _ args: [String], cwd: URL) async throws -> String {
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    proc.arguments = [exe] + args
+    proc.currentDirectoryURL = cwd
+    var env = ProcessInfo.processInfo.environment
+    let extra = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+    env["PATH"] = env["PATH"].map { "\(extra):\($0)" } ?? extra
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    proc.environment = env
+
+    let out = Pipe()
+    let err = Pipe()
+    proc.standardOutput = out
+    proc.standardError = err
+    do {
+      try proc.run()
+    } catch {
+      throw VCSError.io("failed to spawn \(exe): \(error)")
+    }
+    // Single-file diffs are small, so reading stdout to EOF before waiting can't deadlock here.
+    let data = out.fileHandleForReading.readDataToEndOfFile()
+    proc.waitUntilExit()
+    guard proc.terminationStatus == 0 else {
+      let stderr =
+        String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+      throw VCSError.io("\(exe) exited \(proc.terminationStatus): \(stderr)")
+    }
+    return String(data: data, encoding: .utf8) ?? ""
   }
 
   private static func map(_ c: WrVcs.Commit) -> VCSCommit {
