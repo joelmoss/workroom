@@ -10,7 +10,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 .DEFAULT_GOAL := help
 .PHONY: help \
         cli-build cli-test cli-install cli-lint cli-clean \
-        app-run app-build app-test app-test-supervisor app-generate app-format app-lint app-release app-icon app-clean
+        app-vcs app-run app-build app-test app-uitest app-test-supervisor app-generate app-format app-lint app-release app-icon app-clean
 
 help: ## List available targets
 	@grep -hE '^[a-z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
@@ -49,6 +49,14 @@ APP_XCODEBUILD := xcodebuild -project $(APP_PROJECT) -scheme WorkroomApp -config
 # `make app-test APP_SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM="`).
 APP_SIGN_FLAGS ?=
 
+# The Rust VCS core (jj-lib via UniFFI) the app links, built into the local WrVcs SwiftPM package
+# (vcs/swift/WrVcs). Must run before xcodegen so the package's xcframework + generated Swift exist.
+# arm64 by default; release/distribution sets VCS_APPLE_FLAGS=--universal (needs rustup stable >=
+# 1.93 + both darwin targets, and `protoc` on PATH for jj-lib's build).
+VCS_APPLE_FLAGS ?=
+app-vcs: ## Build the Rust VCS core (xcframework + Swift bindings) the app links
+	vcs/scripts/build-apple.sh $(VCS_APPLE_FLAGS)
+
 app-run: app-build ## Build (Debug) and launch the dev app, replacing any running dev instance
 	cd macapp || exit 1; \
 	pkill -x "$(APP_NAME)" 2>/dev/null || true; \
@@ -59,19 +67,19 @@ app-run: app-build ## Build (Debug) and launch the dev app, replacing any runnin
 	echo "Launching $(APP_BUNDLE)"; \
 	open "$(APP_BUNDLE)"
 
-app-build: ## Build the app (Debug)
+app-build: app-vcs ## Build the app (Debug)
 	cd macapp && xcodegen generate && $(APP_XCODEBUILD) build $(APP_SIGN_FLAGS)
 
-app-test: ## Run the app's unit tests
+app-test: app-vcs ## Run the app's unit tests
 	cd macapp && xcodegen generate && $(APP_XCODEBUILD) -destination 'platform=macOS' test $(APP_SIGN_FLAGS)
 
-app-uitest: ## Run the app's UI tests (XCUITest — needs a real GUI login session, not headless)
+app-uitest: app-vcs ## Run the app's UI tests (XCUITest — needs a real GUI login session, not headless)
 	cd macapp && xcodegen generate && xcodebuild -project $(APP_PROJECT) -scheme WorkroomAppUITests -configuration Debug -derivedDataPath DerivedData -clonedSourcePackagesDirPath DerivedData/SourcePackages -destination 'platform=macOS' test $(APP_SIGN_FLAGS)
 
 app-test-supervisor: ## Run the run-command supervisor PTY integration test (real shell + fake server)
 	python3 macapp/Tests/run-supervisor/test_supervisor.py
 
-app-generate: ## Force-regenerate the (gitignored) .xcodeproj from project.yml
+app-generate: app-vcs ## Force-regenerate the (gitignored) .xcodeproj from project.yml
 	cd macapp && xcodegen generate
 
 app-format: ## Format Swift sources in place (swift-format)
@@ -80,7 +88,8 @@ app-format: ## Format Swift sources in place (swift-format)
 app-lint: ## Lint Swift with swift-format (--strict)
 	cd macapp && xcrun swift-format lint --strict --parallel --recursive WorkroomApp WorkroomAppTests WorkroomAppUITests
 
-app-release: ## Build, notarize, staple + package a DMG installer (macapp/Scripts/release.sh)
+app-release: VCS_APPLE_FLAGS := --universal
+app-release: app-vcs ## Build, notarize, staple + package a DMG installer (macapp/Scripts/release.sh)
 	cd macapp && Scripts/release.sh
 
 app-icon: ## Regenerate the release + dev AppIcon PNGs (macapp/Scripts/make-icon.swift)

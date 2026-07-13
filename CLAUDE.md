@@ -16,6 +16,10 @@ Workroom manages development workrooms (isolated project copies) using Git workt
   never need to install it separately. It auto-detects VCS type, generates friendly workroom
   names, and stores config at `~/.config/workroom/config.json`.
 
+The app's structured **VCS engine** lives in `vcs/` — a Rust workspace (jj via `jj-lib`/UniFFI)
+plus SwiftGitX (libgit2) for git, built via `make app-vcs`. It's app-only and separate from this
+Go CLI; see `macapp/CLAUDE.md` → "VCS core".
+
 When working on the app, start with `macapp/CLAUDE.md`; the rest of this file covers the Go CLI.
 
 ## Build & Test

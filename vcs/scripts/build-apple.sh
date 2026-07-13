@@ -25,8 +25,17 @@ universal=false
 cargo build --release -p wr-vcs-uniffi
 LIB="target/release/$LIBNAME"
 if $universal; then
-  cargo build --release -p wr-vcs-uniffi --target x86_64-apple-darwin
-  cargo build --release -p wr-vcs-uniffi --target aarch64-apple-darwin
+  # Universal needs both arch stds. Homebrew rust ships only the host arch, so cross-compile via
+  # rustup (which manages cross targets): `rustup target add x86_64-apple-darwin aarch64-apple-darwin`.
+  # jj-lib's MSRV is 1.93, so rustup's `stable` must be >= that (a stale toolchain fails cryptically).
+  need="1.93.0"
+  have=$(rustup run stable rustc --version 2>/dev/null | awk '{print $2}')
+  if [ -z "$have" ] || [ "$(printf '%s\n%s\n' "$need" "$have" | sort -V | head -1)" != "$need" ]; then
+    echo "error: --universal needs rustup 'stable' >= $need (have '${have:-none}'). Run 'rustup update stable && rustup target add x86_64-apple-darwin aarch64-apple-darwin'." >&2
+    exit 1
+  fi
+  rustup run stable cargo build --release -p wr-vcs-uniffi --target x86_64-apple-darwin
+  rustup run stable cargo build --release -p wr-vcs-uniffi --target aarch64-apple-darwin
   mkdir -p target/apple
   lipo -create \
     "target/aarch64-apple-darwin/release/$LIBNAME" \

@@ -14,6 +14,7 @@ make app-run        # canonical local loop: xcodegen → xcodebuild (Debug) → 
 make app-build      # xcodegen → xcodebuild (Debug)
 make app-test       # xcodebuild test (WorkroomAppTests)
 make app-generate   # force-regenerate the (gitignored) .xcodeproj from project.yml
+make app-vcs        # build the Rust VCS core → WrVcs SwiftPM package (auto-run before app builds)
 make app-format     # swift-format, rewrite sources in place
 make app-lint       # swift-format --strict (non-zero on any violation — the hard gate)
 make app-release    # Release build → notarize → staple → DMG installer (Scripts/release.sh)
@@ -24,6 +25,31 @@ make app-clean      # remove DerivedData + .xcodeproj
 Builds reuse `macapp/DerivedData/` so the Swift packages (incl. the GhosttyKit xcframework)
 aren't re-resolved/re-downloaded every build. (`cli-*` targets cover the Go CLI — see the root
 CLAUDE.md.)
+
+## VCS core (Rust jj + SwiftGitX git)
+
+Workroom reads VCS data through **two backends behind one Swift layer** (the app is growing into a
+VCS-first IDE — issue #59 is the first brick):
+
+- **jj → Rust `jj-lib` via UniFFI.** The `vcs/` Rust workspace (jj-only) builds a static xcframework
+  + generated Swift into the local SwiftPM package `vcs/swift/WrVcs` — the app does `import WrVcs`.
+- **git → SwiftGitX (libgit2), pure Swift.** git has a mature native Swift path; jj has none — so
+  only jj needs the Rust/UniFFI bridge. (An all-Rust core with gix was tried and dropped: gix bought
+  no real unification and libgit2 is the more complete git engine.)
+
+`make app-vcs` (→ `vcs/scripts/build-apple.sh`) builds the Rust artifacts and **runs automatically
+before `app-build`/`app-test`/`app-generate`** (a Makefile prerequisite). Requirements:
+
+- **`protoc`** on PATH (`brew install protobuf`) — a build-time dep of jj-lib.
+- arm64 by default; **`make app-release` builds universal** (`VCS_APPLE_FLAGS=--universal`), which
+  needs **rustup `stable` ≥ 1.93** + `rustup target add x86_64-apple-darwin aarch64-apple-darwin`
+  (Homebrew's rust can't cross-compile; the script preflights this and errors clearly).
+
+The xcframework + generated Swift are **gitignored and regenerated**; only `Package.swift` + a
+`shim.c` are tracked. Packaging note: the xcframework is **library-only** (no headers) and the FFI
+Clang module (`wr_vcs_uniffiFFI`) is a separate SPM C target — a headers-bearing static xcframework
+copies its `module.modulemap` into the shared `Debug/include/` and collides with GhosttyKit's
+("Multiple commands produce include/module.modulemap").
 
 ## Formatting & linting
 

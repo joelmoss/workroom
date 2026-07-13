@@ -46,12 +46,30 @@ jobs:
 
       # jj (Jujutsu) is required by WorkroomStatusIntegrationTests, which exercise the VCS
       # status resolver against real git + jj repos. git + gh are preinstalled on the runner;
-      # jj is not. XcodeGen generates the (gitignored) .xcodeproj.
-      - name: Install XcodeGen + jj
-        run: brew install xcodegen jj
+      # jj is not. XcodeGen generates the (gitignored) .xcodeproj. protobuf provides protoc, a
+      # build-time dependency of jj-lib (the Rust VCS core, built by `make app-vcs`).
+      - name: Install XcodeGen + jj + protobuf
+        run: brew install xcodegen jj protobuf
 
       - name: Lint (swift-format --strict)
         run: make app-lint
+
+      # The Rust VCS core (jj-lib via UniFFI) the app links. Cache the heavy jj-lib build + the crate
+      # registry keyed on the lockfile so an unchanged dep set skips recompiling. `make app-vcs` runs
+      # vcs/scripts/build-apple.sh to produce the WrVcs package's xcframework + Swift bindings, and
+      # MUST run before SPM resolves that local package below. Rust is preinstalled on the runner.
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            vcs/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('vcs/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Build VCS core (Rust → xcframework + Swift bindings)
+        run: make app-vcs
 
       # SPM resolves ~15 packages (Sparkle, Sentry, libghostty, the tree-sitter grammars, and
       # swift-syntax pulled transitively) by cloning them from GitHub on every run. Cache the
