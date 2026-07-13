@@ -12,22 +12,28 @@ struct HistoryPanel: View {
 
   var body: some View {
     Group {
-      switch model.state {
-      case .idle:
-        placeholder("Select a workroom", systemImage: "clock")
-      case .loading where model.commits.isEmpty:
-        HStack(spacing: 6) {
-          ProgressView().controlSize(.small)
-          Text("Loading history…").font(.callout).foregroundStyle(.secondary)
-        }
-        .padding(.vertical, 6).padding(.horizontal, 8)
-      case .failed(let message):
-        placeholder(message, systemImage: "exclamationmark.triangle")
-      default:
-        if model.commits.isEmpty {
-          placeholder("No history", systemImage: "clock")
-        } else {
-          list
+      if store.inspectorTargetID == nil {
+        // No active workspace (nothing selected, or the selected workroom has no open tabs) — empty
+        // out to match the detail pane's "No terminal" state rather than show a stale last workroom.
+        placeholder("No open terminal", systemImage: "clock")
+      } else {
+        switch model.state {
+        case .idle:
+          placeholder("Select a workroom", systemImage: "clock")
+        case .loading where model.commits.isEmpty:
+          HStack(spacing: 6) {
+            ProgressView().controlSize(.small)
+            Text("Loading history…").font(.callout).foregroundStyle(.secondary)
+          }
+          .padding(.vertical, 6).padding(.horizontal, 8)
+        case .failed(let message):
+          placeholder(message, systemImage: "exclamationmark.triangle")
+        default:
+          if model.commits.isEmpty {
+            placeholder("No history", systemImage: "clock")
+          } else {
+            list
+          }
         }
       }
     }
@@ -35,17 +41,17 @@ struct HistoryPanel: View {
     // No container-level `accessibilityIdentifier` here: SwiftUI propagates a container id onto the
     // combined `HistoryRow` leaves, clobbering their own id. The rows carry "HistoryRow"; that the
     // pane is showing is asserted via `inspector.header.History` (the canonical section marker).
-    // Point the model at the selected target — only while History is the active section, so a
-    // selection (or another section showing) never loads history you're not looking at. Mirrors
-    // FilesPanel; `focus` no-ops when already on the path.
+    // Point the model at the inspector's active target (nil once all its tabs close → History
+    // clears), only while History is the active section. Mirrors FilesPanel; `focus` no-ops when
+    // already on the path.
     .task(id: activationKey) {
       guard store.activeInspectorSection == .history else { return }
-      model.focus(store.selectedTarget.map { URL(fileURLWithPath: $0.path) })
+      model.focus(store.inspectorTarget.map { URL(fileURLWithPath: $0.path) })
     }
   }
 
   private var activationKey: String {
-    "\(AppStore.targetIDString(for: store.selectedTargetID) ?? "")"
+    "\(AppStore.targetIDString(for: store.inspectorTargetID) ?? "")"
       + "\u{1F}\(store.activeInspectorSection == .history)"
   }
 

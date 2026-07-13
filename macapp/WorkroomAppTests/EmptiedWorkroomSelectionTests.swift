@@ -121,6 +121,29 @@ final class EmptiedWorkroomSelectionTests: XCTestCase {
       "no other tab → selection unchanged; the empty 'New Terminal' state stays (do nothing)")
   }
 
+  /// Closing all tabs of the selected workroom empties the inspector (History/Changes/PR key on
+  /// `inspectorTargetID`, which drops to nil when the selection has no tabs) — even though the
+  /// selection itself deliberately stays. Re-opening a terminal re-populates it.
+  func testInspectorEmptiesWhenSelectedWorkroomLosesAllTabs() {
+    let store = storeWithTabs(["solo"])
+    let target = store.target(for: wr("solo"))!
+    store.selectedTargetID = wr("solo")
+    XCTAssertTrue(store.selectionHasTabs)
+    XCTAssertEqual(store.inspectorTargetID, wr("solo"))
+
+    let tab = store.terminals.tabs(for: target).first!
+    store.terminals.closeTab(tab.id, for: target)
+
+    XCTAssertEqual(store.selectedTargetID, wr("solo"), "the close path leaves the selection")
+    XCTAssertFalse(store.selectionHasTabs)
+    XCTAssertNil(
+      store.inspectorTargetID, "inspector empties when the selected workroom has no open tabs")
+
+    store.terminals.addTab(for: target)  // re-open a terminal
+    XCTAssertTrue(store.selectionHasTabs)
+    XCTAssertEqual(store.inspectorTargetID, wr("solo"), "re-opening a terminal re-populates it")
+  }
+
   func testClosingNonLastPanelDoesNotChangeSelection() {
     let store = storeWithTabs(["main", "feature"])
     let target = store.target(for: wr("main"))!

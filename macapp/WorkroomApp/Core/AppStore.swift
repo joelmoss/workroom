@@ -155,8 +155,17 @@ final class AppStore: ObservableObject {
       if selectedTargetID != oldValue { loadInspectorState() }
       // The Files tree is re-pointed lazily by `FilesPanel` (only while that section is shown), not
       // here — so selecting a workroom doesn't list its files unless you're actually browsing them.
+      refreshSelectionHasTabs()  // the inspector follows the *active* (tab-having) selection
     }
   }
+
+  /// True while the selected target has ≥1 open tab. The inspector (History / Changes / Pull
+  /// Request) reflects the *active* workspace, so closing all tabs of the selected workroom empties
+  /// it even though the sidebar row stays selected (the detail pane likewise drops to its "No
+  /// terminal" placeholder — this keeps the two in sync). Maintained at selection changes + the tab
+  /// add/remove hooks: a plain `terminals.tabCount` read in a view wouldn't re-render on a tab close,
+  /// because AppStore doesn't forward `terminals`' `objectWillChange` (only `ProjectStore`'s).
+  @Published private(set) var selectionHasTabs = false
   /// Project paths the user has collapsed in the sidebar (issue #14). Held here as `@Published`
   /// rather than read via `@Default` in the view: a `@Default` change does not reliably re-evaluate
   /// the sidebar's `List` until some *other* state changes (e.g. the pointer moving over a row), so
@@ -458,6 +467,8 @@ final class AppStore: ObservableObject {
       // focused-tab change ends that session: close it so ⌘G can't step a hidden find from a
       // terminal/diff pane, and the bar doesn't reappear pre-filled on the next file (review).
       if self.fileFind.isOpen { self.fileFind.close() }
+      // A focus change includes a freshly-added tab appearing → re-enable the inspector.
+      self.refreshSelectionHasTabs()
       guard !self.isNavigatingHistory else { return }
       self.recordCurrentLocation()
     }
@@ -490,6 +501,9 @@ final class AppStore: ObservableObject {
       // selected *solo* workroom. No-op for a background close or a delete (selection isn't the
       // emptied target by the time its reap reaches here).
       self.selectFallbackWorkroomAfterEmpty(targetID)
+      // After the fallback re-point (or not): if the selected target now has no tabs, the inspector
+      // empties (issue: History/Changes/PR stayed on the last workroom after closing all its tabs).
+      self.refreshSelectionHasTabs()
     }
     // Mirror the aggregate unread count onto the Dock icon badge (issue #32). Owned here, not in a
     // view: see `NotificationCenterStore.onTotalChange` for why a view-driven badge misses
@@ -603,6 +617,19 @@ final class AppStore: ObservableObject {
   /// The selected terminal target resolved against the current project list (nil if it no
   /// longer exists).
   var selectedTarget: TerminalTarget? { selectedTargetID.flatMap(target(for:)) }
+
+  /// The target the inspector reflects: the selection, but only while it has open tabs
+  /// (`selectionHasTabs`). `nil` ⇒ the inspector shows its empty state. History/Changes/PR key on
+  /// this, not `selectedTargetID`, so they empty when all tabs close.
+  var inspectorTargetID: SidebarID? { selectionHasTabs ? selectedTargetID : nil }
+  var inspectorTarget: TerminalTarget? { inspectorTargetID.flatMap(target(for:)) }
+
+  /// Recompute `selectionHasTabs` — call after a selection change or a tab add/remove. Guarded so it
+  /// only publishes (re-renders the inspector) on an actual transition.
+  func refreshSelectionHasTabs() {
+    let has = selectedTarget.map { terminals.tabCount(forTargetID: $0.id) > 0 } ?? false
+    if has != selectionHasTabs { selectionHasTabs = has }
+  }
 
   /// Whether there's a usable editor and a valid selected target to open — drives the ⌘O command and
   /// Go-menu item's enabled state (and matches when the toolbar's open button is meaningful).

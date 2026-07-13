@@ -17,7 +17,7 @@ struct PullRequestPanel: View {
       if store.githubCLIStatus != .available {
         // gh can't be used → the PR (and CI) probes can't run; explain why instead of a blank/"no PR".
         ghWarning(store.githubCLIStatus)
-      } else if let sid = store.selectedTargetID, sid.isStatusable {
+      } else if let sid = store.inspectorTargetID, sid.isStatusable {
         content(for: sid)
       } else {
         inspectorMessage("Select a workroom to see its pull request.")

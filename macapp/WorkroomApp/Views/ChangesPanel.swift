@@ -203,7 +203,7 @@ struct RightInspector: View {
   /// The selected workroom's status, or nil when a non-target (project) or nothing is selected —
   /// drives the header indicators so a collapsed section still shows state.
   private var selectedStatus: WorkroomStatus? {
-    guard let sid = store.selectedTargetID else { return nil }
+    guard let sid = store.inspectorTargetID else { return nil }
     if case .project = sid { return nil }
     return store.workroomStatuses[sid]
   }
@@ -660,7 +660,7 @@ struct ChangesPanel: View {
 
   var body: some View {
     Group {
-      if let sid = store.selectedTargetID, sid.isStatusable {
+      if let sid = store.inspectorTargetID, sid.isStatusable {
         content(for: sid)
       } else {
         inspectorMessage("Select a workroom to see its changes.")

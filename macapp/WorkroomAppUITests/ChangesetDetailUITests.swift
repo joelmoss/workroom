@@ -115,4 +115,29 @@ final class ChangesetDetailUITests: XCTestCase {
       el(app, "terminal.tab.Fixture commit 1").exists,
       "the persisted changeset tab survives opening another commit's preview")
   }
+
+  /// Regression: closing ALL tabs of the selected workroom empties the History inspector. The sidebar
+  /// row stays selected (the detail drops to its "No terminal" placeholder), so the inspector must
+  /// follow — History keys on the *active* target, which is nil once no tabs remain. (Changes + PR
+  /// use the same `inspectorTargetID` gate.)
+  func testHistoryEmptiesWhenAllTabsClosed() throws {
+    let app = launchedApp()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    openHistory(app)  // History active + fixture rows rendered (asserts a HistoryRow exists)
+
+    XCTAssertTrue(
+      els(app, "HistoryRow").element(boundBy: 0).exists, "history has rows while a tab is open")
+
+    // Close every terminal tab (the fixture opens one on launch; idle shells close w/o a confirm).
+    let chips = app.staticTexts.matching(
+      NSPredicate(format: "identifier BEGINSWITH %@", "terminal.tab."))
+    let initial = chips.count
+    for _ in 0..<max(1, initial) { app.typeKey("w", modifierFlags: .command) }
+    XCTAssertTrue(waitExists(chips.firstMatch, false), "all terminal tabs closed")
+
+    // History empties — its rows are gone, replaced by the no-active-workspace placeholder.
+    XCTAssertTrue(
+      waitExists(els(app, "HistoryRow").element(boundBy: 0), false),
+      "History empties once the selected workroom has no open tabs")
+  }
 }
