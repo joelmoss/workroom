@@ -86,94 +86,36 @@ struct WorkroomStatusResolver: Sendable {
   }
 
   private func resolveJJ(_ dir: String) async -> WorkroomStatus {
-    // STEP 1 (serial): this command snapshots `@` and takes the working-copy lock. Run it alone
-    // first so the snapshot is fresh and the lock is released before the concurrent reads below.
-    let summary = await runner.run(
-      "jj", ["diff", "--summary", "-r", "@", "--color", "never"], in: dir, timeout: timeout)
-    guard summary.ok else {
-      return WorkroomStatus(dirty: nil, failure: Self.classifyGitFailure(summary))
+    // Read the jj working-copy status structurally through the Rust core (jj-lib): it snapshots `@`
+    // (so it reflects disk) and returns the `@`/`@-` change sets + CI branch — replacing the old
+    // serial-snapshot-then-concurrent-CLI-reads dance. `VCSProviding` has no built-in timeout, so
+    // bound the (synchronous, off-main) read with `withTimeout` — a wedged repo abandons only itself.
+    let root = URL(fileURLWithPath: dir, isDirectory: true)
+    var status: WorkroomStatus
+    do {
+      status = try await withTimeout(seconds: timeout) {
+        try await Task.detached(priority: .userInitiated) {
+          try RustJJProvider().workingStatus(root: root)
+        }.value
+      }
+    } catch is VCSTimeoutError {
+      return WorkroomStatus(dirty: nil, failure: .timeout)
+    } catch {
+      return WorkroomStatus(dirty: nil, failure: .notRepository)
     }
-    let files = Self.parseJJSummary(summary.stdout)
 
-    // STEP 2 (concurrent): the remaining reads reuse the snapshot from STEP 1. `--ignore-working-copy`
-    // means none of them re-snapshots or takes the working-copy lock, so they're safe to run in
-    // parallel (without it, concurrent jj would contend on the lock and could block/error). All are
-    // best-effort: a failure degrades that slice rather than failing the whole probe.
-    async let headR = runner.run(
-      "jj",
-      [
-        "log", "-r", "@", "--ignore-working-copy", "--no-graph", "--color", "never", "-T",
-        Self.jjHeadTemplate,
-      ], in: dir, timeout: timeout)
-    async let parentSummaryR = runner.run(
-      "jj", ["diff", "--summary", "-r", "@-", "--ignore-working-copy", "--color", "never"],
-      in: dir, timeout: timeout)
-    async let parentHeadR = runner.run(
-      "jj",
-      [
-        "log", "-r", "@-", "--ignore-working-copy", "--no-graph", "--color", "never", "-T",
-        Self.jjHeadTemplate,
-      ], in: dir, timeout: timeout)
-    async let parentCountR = runner.run(
-      "jj",
-      [
-        "log", "-r", "@-", "--ignore-working-copy", "--no-graph", "--color", "never", "-T",
-        Self.jjParentCountTemplate,
-      ], in: dir, timeout: timeout)
-    async let statR = runner.run(
+    // Line counts: jayjay-style, one `jj diff --stat` (the native read intentionally omits it — a
+    // line count would materialize every file). `--ignore-working-copy` reuses the snapshot the read
+    // just took, so it neither re-snapshots nor re-locks. Best-effort: a failure just drops the delta.
+    let statR = await runner.run(
       "jj", ["diff", "-r", "@", "--ignore-working-copy", "--stat", "--color", "never"],
       in: dir, timeout: timeout)
-    // CI/PR branch: jj's `@` is a *detached* git HEAD, so `git symbolic-ref` (resolveCI's fallback)
-    // finds nothing. Resolve the nearest bookmark in `@`'s ancestry instead — that's the branch
-    // pushed to origin, which `gh` keys PR/CI off. nil ⇒ no bookmark ⇒ CI/PR stay absent.
-    async let branchR = runner.run(
-      "jj",
-      [
-        "log", "-r", "heads(::@ & bookmarks())", "--ignore-working-copy", "--no-graph", "--color",
-        "never", "-T", Self.jjBranchTemplate,
-      ], in: dir, timeout: timeout)
-
-    let (logR, parentSummary, parentHead, parentCount, statR2, branchR2) =
-      await (headR, parentSummaryR, parentHeadR, parentCountR, statR, branchR)
-
-    let head = logR.ok ? Self.parseJJHead(logR.stdout) : JJHead()
-    let stat = statR2.ok ? Self.parseDiffStat(statR2.stdout) : (insertions: 0, deletions: 0)
-    let branch = branchR2.ok ? Self.parseJJBranch(branchR2.stdout) : nil
-    let workingCopy = JJCommitChanges(
-      changeID: head.changeID, commitID: head.commitID, refs: head.refs,
-      description: head.description, files: files)
-    let parent = Self.resolveJJParent(
-      summary: parentSummary, head: parentHead, count: parentCount)
-    // `changedFiles` mirrors the working copy's files (set from the one STEP-1 parse) so non-panel
-    // consumers are unchanged.
-    return WorkroomStatus(
-      dirty: !files.isEmpty || head.conflicted, conflicted: head.conflicted,
-      changedFiles: files, insertions: stat.insertions, deletions: stat.deletions,
-      branchForCI: branch, jjWorkingCopy: workingCopy, jjParent: parent)
-  }
-
-  /// Classify the working copy's parent (`@-`) from its three best-effort probes. `count` (a
-  /// one-token-per-revision template) disambiguates the structural cases that `summary`/`head`
-  /// can't: 0 revisions ⇒ `@` is the root (`.root`), >1 ⇒ a merge (`.merge`, and `jj diff -r @-`
-  /// would itself error on a multi-rev revset). For a single parent the `summary` probe is
-  /// authoritative for the file list — if it failed we can't show the parent's changes truthfully,
-  /// so `.unavailable` rather than a misleading empty list; `head` is best-effort (a missing
-  /// id/description just drops the header chips, not the files).
-  static func resolveJJParent(summary: CommandResult, head: CommandResult, count: CommandResult)
-    -> JJParentState
-  {
-    if count.ok {
-      let n = count.stdout.split(whereSeparator: \.isNewline).count
-      if n == 0 { return .root }
-      if n > 1 { return .merge(n) }
+    if statR.ok {
+      let stat = Self.parseDiffStat(statR.stdout)
+      status.insertions = stat.insertions
+      status.deletions = stat.deletions
     }
-    guard summary.ok else { return .unavailable }
-    let files = parseJJSummary(summary.stdout)
-    let h = head.ok ? parseJJHead(head.stdout) : JJHead()
-    return .changes(
-      JJCommitChanges(
-        changeID: h.changeID, commitID: h.commitID, refs: h.refs, description: h.description,
-        files: files))
+    return status
   }
 
   // MARK: Stage 2 — CI (slow, network; never blocks stage 1)
@@ -502,81 +444,7 @@ struct WorkroomStatusResolver: Sendable {
     return e.contains("http 401") || e.contains("bad credentials")
   }
 
-  /// Parse `jj diff --summary -r @` (lines like `M path`, `A path`, `D path`).
-  static func parseJJSummary(_ output: String) -> [ChangedFile] {
-    var files: [ChangedFile] = []
-    for raw in output.split(whereSeparator: \.isNewline) {
-      let line = String(raw)
-      guard line.count >= 2, let code = line.first,
-        line[line.index(line.startIndex, offsetBy: 1)] == " "
-      else { continue }
-      let path = String(line.dropFirst(2))
-      guard !path.isEmpty else { continue }
-      let change: ChangedFile.Change
-      switch code {
-      case "A": change = .added
-      case "D": change = .deleted
-      case "M": change = .modified
-      case "R", "C": change = .renamed
-      default: change = .other
-      }
-      files.append(ChangedFile(path: path, change: change))
-    }
-    return files
-  }
-
-  /// jj template for the working-copy head line, tab-separated: conflict flag, the change-id's
-  /// shortest **unique prefix** on its own (`change_id.shortest()`, no padding), the shortest-8
-  /// commit-id, then bookmarks, tags, and description. Description comes last so its (possible)
-  /// newlines don't break the split. The `\t` stays a literal backslash-t in this raw string —
-  /// jj's template parser turns it into a tab. Verified against jj 0.42.
-  static let jjHeadTemplate =
-    #"if(conflict, "true", "false") ++ "\t" ++ change_id.shortest() ++ "\t" ++ commit_id.shortest(8) ++ "\t" ++ bookmarks ++ "\t" ++ tags ++ "\t" ++ description"#
-
-  struct JJHead: Equatable {
-    var conflicted = false
-    var changeID: String?  // shortest unique change-id prefix, no padding
-    var commitID: String?  // shortest-8 commit-id
-    var refs: [String] = []  // bookmarks + tags
-    var description: String?  // first line; nil ⇒ "(no description set)"
-  }
-
-  /// jj template for the CI/PR branch query — just the bookmark name(s) on the matched commit.
-  static let jjBranchTemplate = #"bookmarks ++ "\n""#
-
-  /// jj template that emits one token per matched revision, so the line count of `jj log -r @-`
-  /// distinguishes a single parent (1) from a merge (>1) or the root, which has no parent (0).
-  static let jjParentCountTemplate = #""x\n""#
-
-  /// First bookmark from `jj log -r 'heads(::@ & bookmarks())' -T 'bookmarks'` — the nearest
-  /// bookmark in `@`'s ancestry, used as the jj branch for CI/PR lookup. Strips jj's `*` (ahead) /
-  /// `??` (conflicted) decorations. `nil` when there's no bookmark (CI/PR then stay absent).
-  static func parseJJBranch(_ output: String) -> String? {
-    for raw in output.split(whereSeparator: \.isNewline) {
-      guard let token = raw.split(separator: " ").first.map(String.init) else { continue }
-      let cleaned = token.trimmingCharacters(in: CharacterSet(charactersIn: "*?"))
-      if !cleaned.isEmpty { return cleaned }
-    }
-    return nil
-  }
-
-  static func parseJJHead(_ output: String) -> JJHead {
-    var h = JJHead()
-    let f = output.split(separator: "\t", maxSplits: 5, omittingEmptySubsequences: false)
-      .map(String.init)
-    if f.count > 0 { h.conflicted = f[0].trimmingCharacters(in: .whitespacesAndNewlines) == "true" }
-    if f.count > 1, !f[1].isEmpty { h.changeID = f[1] }
-    if f.count > 2, !f[2].isEmpty { h.commitID = f[2] }
-    if f.count > 3 { h.refs += f[3].split(separator: " ").map(String.init) }
-    if f.count > 4 { h.refs += f[4].split(separator: " ").map(String.init) }
-    if f.count > 5 {
-      let first = f[5].split(whereSeparator: \.isNewline).first.map(String.init)
-      h.description = (first?.isEmpty == false) ? first : nil
-    }
-    return h
-  }
-
-  /// Sum the totals from a git `--shortstat` or jj `--stat` summary line, e.g.
+  /// Sum the totals from a jj `--stat` summary line, e.g.
   /// "3 files changed, 12 insertions(+), 4 deletions(-)". Either clause may be absent (→ 0); empty
   /// input (a clean tree) ⇒ (0, 0).
   static func parseDiffStat(_ text: String) -> (insertions: Int, deletions: Int) {
@@ -587,13 +455,6 @@ struct WorkroomStatusResolver: Sendable {
       return Int(text[r]) ?? 0
     }
     return (count(before: "insertion"), count(before: "deletion"))
-  }
-
-  static func classifyGitFailure(_ r: CommandResult) -> VCSStatusFailure {
-    if r.timedOut { return .timeout }
-    // Any non-zero exit (128 "not a repository", or anything else) ⇒ the repo is unreadable —
-    // report unknown, never "clean". No finer distinction is needed today.
-    return .notRepository
   }
 
   /// Shared preflight for the two `gh` read probes (CI runs, PR list): distinguishes a transient

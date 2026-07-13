@@ -55,63 +55,10 @@ final class WorkroomStatusResolverTests: XCTestCase {
   // git status is now read structurally via GitProvider (SwiftGitX); the porcelain-v2 parser is
   // gone. See WorkroomStatusIntegrationTests.testGitProviderWorkingStatus* for real-repo coverage.
 
-  // MARK: - parseJJSummary
+  // The jj working-copy read (summary/head/parent) is now native (jj-lib) via RustJJProvider; its
+  // CLI parsers are gone. Real-repo coverage: WorkroomStatusIntegrationTests.testJJ*.
 
-  func testParseJJSummary() {
-    let files = WorkroomStatusResolver.parseJJSummary("M a.txt\nA b.txt\nD c.txt\n")
-    XCTAssertEqual(files.map(\.change), [.modified, .added, .deleted])
-    XCTAssertEqual(files.map(\.path), ["a.txt", "b.txt", "c.txt"])
-  }
-
-  func testParseJJSummaryEmpty() {
-    XCTAssertTrue(WorkroomStatusResolver.parseJJSummary("").isEmpty)
-  }
-
-  // MARK: - parseJJHead
-  // template (6 fields): conflict \t change-shortest \t commit-shortest8
-  //                      \t bookmarks \t tags \t description
-  // The change-id is its shortest unique prefix (no padding); the commit-id is the shortest-8 id.
-
-  func testParseJJHeadFresh() {
-    // fresh @: has change/commit ids but no bookmark/tag/description
-    let h = WorkroomStatusResolver.parseJJHead("false\tz\tda44c86c\t\t\t\n")
-    XCTAssertFalse(h.conflicted)
-    XCTAssertEqual(h.changeID, "z")  // unique prefix, no padding
-    XCTAssertEqual(h.commitID, "da44c86c")
-    XCTAssertEqual(h.refs, [])
-    XCTAssertNil(h.description)  // empty → "(no description set)" at the view
-  }
-
-  func testParseJJHeadBookmarkAndDescription() {
-    let h = WorkroomStatusResolver.parseJJHead(
-      "false\tpw\t7d74470b\tmybook\t\thello world (#7)\n")
-    XCTAssertFalse(h.conflicted)
-    XCTAssertEqual(h.changeID, "pw")
-    XCTAssertEqual(h.commitID, "7d74470b")
-    XCTAssertEqual(h.refs, ["mybook"])
-    XCTAssertEqual(h.description, "hello world (#7)")
-  }
-
-  func testParseJJHeadConflictRefsAndMultilineDescription() {
-    let h = WorkroomStatusResolver.parseJJHead(
-      "true\tab\t12345678\tmain feat\tv1.0\tfix: thing\nsecond line\n")
-    XCTAssertTrue(h.conflicted)
-    XCTAssertEqual(h.changeID, "ab")
-    XCTAssertEqual(h.refs, ["main", "feat", "v1.0"])  // bookmarks + tags
-    XCTAssertEqual(h.description, "fix: thing")  // first line only
-  }
-
-  func testParseJJHeadEmpty() {
-    // A best-effort jj log failure returns empty stdout — must not crash, yields a blank head.
-    let h = WorkroomStatusResolver.parseJJHead("")
-    XCTAssertFalse(h.conflicted)
-    XCTAssertNil(h.changeID)
-    XCTAssertNil(h.commitID)
-    XCTAssertEqual(h.refs, [])
-    XCTAssertNil(h.description)
-  }
-
-  // MARK: - parseDiffStat (git --shortstat / jj --stat totals)
+  // MARK: - parseDiffStat (jj --stat totals)
 
   func testParseDiffStatGitFull() {
     let s = WorkroomStatusResolver.parseDiffStat(" 2 files changed, 5 insertions(+), 1 deletion(-)")
@@ -142,19 +89,6 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let s = WorkroomStatusResolver.parseDiffStat("")
     XCTAssertEqual(s.insertions, 0)
     XCTAssertEqual(s.deletions, 0)
-  }
-
-  // MARK: - classifyGitFailure
-
-  func testClassifyTimeout() {
-    let r = CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: true)
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitFailure(r), .timeout)
-  }
-
-  func testClassifyNotRepository() {
-    let r = CommandResult(
-      stdout: "", stderr: "fatal: not a git repository", exitCode: 128, timedOut: false)
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitFailure(r), .notRepository)
   }
 
   // MARK: - classifyCheckRollup (#76: sidebar CI from GitHub's status-check rollup)
@@ -258,161 +192,11 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertEqual(s.failure, .notRepository)
   }
 
-  func testResolveLocalJJDirtyAndConflict() async {
-    let r = WorkroomStatusResolver(
-      runner: MockStatusRunner { exe, args in
-        if exe == "jj", args.contains("--summary") { return ok("M a.txt\nA b.txt\n") }
-        if exe == "jj", args.contains("--stat") {
-          return ok("2 files changed, 9 insertions(+), 3 deletions(-)\n")
-        }
-        // Branch query (nearest bookmark in @'s ancestry) — distinct from the head log below.
-        if exe == "jj", args.contains("heads(::@ & bookmarks())") { return ok("my-feature\n") }
-        // Head template (6 fields): conflict \t change-shortest \t commit-shortest8
-        //                           \t bookmarks \t tags \t description.
-        if exe == "jj", args.contains("log") { return ok("true\tch\tco34\tfeat\t\twip: x\n") }
-        return ok("")
-      })
-    let s = await r.resolveLocal(path: existing, vcs: "jj")
-    XCTAssertEqual(s.dirty, true)
-    XCTAssertTrue(s.conflicted)
-    XCTAssertEqual(s.changedFiles?.count, 2)
-    XCTAssertEqual(s.insertions, 9)
-    XCTAssertEqual(s.deletions, 3)
-    // jj branch resolved from the nearest bookmark, used for CI/PR lookup.
-    XCTAssertEqual(s.branchForCI, "my-feature")
-    // The working-copy change set drives the Working Copy disclosure group; `changedFiles` mirrors it.
-    XCTAssertEqual(s.jjWorkingCopy?.refs, ["feat"])
-    XCTAssertEqual(s.jjWorkingCopy?.description, "wip: x")
-    XCTAssertEqual(s.jjWorkingCopy?.changeID, "ch")
-    XCTAssertEqual(s.jjWorkingCopy?.commitID, "co34")
-    XCTAssertEqual(s.jjWorkingCopy?.files.count, 2)
-    // With this mock the @- probes resolve to a single parent change set.
-    guard case .changes(let parent)? = s.jjParent else {
-      return XCTFail("expected .changes parent, got \(String(describing: s.jjParent))")
-    }
-    XCTAssertEqual(parent.files.count, 2)
-  }
-
-  // MARK: - resolveJJParent (working copy's parent @- state)
-
-  func testResolveJJParentMerge() async {
-    let r = WorkroomStatusResolver(
-      runner: MockStatusRunner { exe, args in
-        guard exe == "jj" else { return ok("") }
-        if args.contains(WorkroomStatusResolver.jjParentCountTemplate) { return ok("x\nx\n") }
-        if args.contains("--summary"), args.contains("@"), !args.contains("@-") {
-          return ok("M a.txt\n")
-        }
-        return ok("")
-      })
-    let s = await r.resolveLocal(path: existing, vcs: "jj")
-    XCTAssertEqual(s.jjParent, .merge(2))  // @- resolved to two revisions
-  }
-
-  func testResolveJJParentRoot() async {
-    let r = WorkroomStatusResolver(
-      runner: MockStatusRunner { exe, args in
-        guard exe == "jj" else { return ok("") }
-        // 0 revisions ⇒ @ has no parent (the root).
-        if args.contains(WorkroomStatusResolver.jjParentCountTemplate) { return ok("") }
-        if args.contains("--summary"), args.contains("@"), !args.contains("@-") {
-          return ok("M a.txt\n")
-        }
-        return ok("")
-      })
-    let s = await r.resolveLocal(path: existing, vcs: "jj")
-    XCTAssertEqual(s.jjParent, .root)
-  }
-
-  func testResolveJJParentUnavailableWhenProbesFail() async {
-    let r = WorkroomStatusResolver(
-      runner: MockStatusRunner { exe, args in
-        guard exe == "jj" else { return ok("") }
-        if args.contains(WorkroomStatusResolver.jjParentCountTemplate) { return fail() }
-        if args.contains("--summary"), args.contains("@-") { return fail() }  // parent files fail
-        if args.contains("--summary") { return ok("M a.txt\n") }  // working copy ok (STEP-1 guard)
-        return ok("")
-      })
-    let s = await r.resolveLocal(path: existing, vcs: "jj")
-    XCTAssertEqual(s.jjParent, .unavailable)  // can't read the parent → not faked as empty
-  }
-
-  func testResolveJJParentDegradedHeaderWhenLogFails() async {
-    let r = WorkroomStatusResolver(
-      runner: MockStatusRunner { exe, args in
-        guard exe == "jj" else { return ok("") }
-        // exactly one parent revision.
-        if args.contains(WorkroomStatusResolver.jjParentCountTemplate) { return ok("x\n") }
-        if args.contains(WorkroomStatusResolver.jjHeadTemplate), args.contains("@-") {
-          return fail()  // parent head/log fails → no id chips, but files still shown
-        }
-        if args.contains("--summary"), args.contains("@-") { return ok("M p.txt\nA q.txt\n") }
-        if args.contains("--summary") { return ok("M a.txt\n") }
-        if args.contains(WorkroomStatusResolver.jjHeadTemplate) {
-          return ok("false\tch\tco34\t\t\twip\n")
-        }
-        return ok("")
-      })
-    let s = await r.resolveLocal(path: existing, vcs: "jj")
-    guard case .changes(let parent)? = s.jjParent else {
-      return XCTFail("expected degraded .changes parent, got \(String(describing: s.jjParent))")
-    }
-    XCTAssertEqual(parent.files.count, 2)  // summary succeeded → files present
-    XCTAssertNil(parent.changeID)  // log failed → header chips dropped, not the whole group
-  }
-
-  /// The parent (`@-`) is probed, the working-copy snapshot probe (STEP 1) does NOT ignore the
-  /// working copy (it must snapshot + take the lock), and the concurrent STEP-2 reads DO ignore it
-  /// (so they don't contend on the lock).
-  func testResolveJJProbesParentAndIgnoresWorkingCopyOnStep2() async {
-    let runner = RecordingStatusRunner { _, args in
-      if args.contains(WorkroomStatusResolver.jjParentCountTemplate) { return ok("x\n") }
-      if args.contains("--summary") { return ok("M a.txt\n") }
-      if args.contains(WorkroomStatusResolver.jjHeadTemplate) {
-        return ok("false\tch\tco34\t\t\twip\n")
-      }
-      return ok("")
-    }
-    _ = await WorkroomStatusResolver(runner: runner).resolveLocal(path: existing, vcs: "jj")
-    let jj = runner.calls.filter { $0.exe == "jj" }
-    XCTAssertTrue(jj.contains { $0.args.contains("@-") }, "parent @- must be probed")
-    let wcSummary = jj.first {
-      $0.args.contains("--summary") && $0.args.contains("@") && !$0.args.contains("@-")
-    }
-    XCTAssertNotNil(wcSummary)
-    XCTAssertFalse(
-      wcSummary?.args.contains("--ignore-working-copy") ?? true,
-      "STEP-1 @ summary must snapshot (no --ignore-working-copy)")
-    let parentSummary = jj.first { $0.args.contains("--summary") && $0.args.contains("@-") }
-    XCTAssertEqual(
-      parentSummary?.args.contains("--ignore-working-copy"), true,
-      "STEP-2 @- summary must reuse the snapshot (--ignore-working-copy)")
-  }
-
-  // MARK: - parseJJBranch (nearest-bookmark resolution for jj CI/PR)
-
-  func testParseJJBranchBasic() {
-    XCTAssertEqual(WorkroomStatusResolver.parseJJBranch("my-feature\n"), "my-feature")
-  }
-
-  func testParseJJBranchEmptyIsNil() {
-    XCTAssertNil(WorkroomStatusResolver.parseJJBranch(""))
-    XCTAssertNil(WorkroomStatusResolver.parseJJBranch("\n\n"))
-  }
-
-  func testParseJJBranchMultipleTakesFirst() {
-    XCTAssertEqual(WorkroomStatusResolver.parseJJBranch("alpha beta\n"), "alpha")
-  }
-
-  func testParseJJBranchStripsDecoration() {
-    // jj decorates a bookmark ahead of its remote with a trailing `*`; we strip it.
-    XCTAssertEqual(WorkroomStatusResolver.parseJJBranch("feature*\n"), "feature")
-  }
-
-  func testParseJJBranchStripsConflictDecoration() {
-    // jj marks a conflicted bookmark with a trailing `??`; strip it too.
-    XCTAssertEqual(WorkroomStatusResolver.parseJJBranch("feature??\n"), "feature")
-  }
+  // The jj working-copy read (dirty/conflict, working-copy + parent `@-` change sets, and the CI
+  // branch from the nearest bookmark) is now native (jj-lib) via `RustJJProvider.workingStatus`;
+  // the CLI-parser + mock-runner path (parseJJSummary/parseJJHead/parseJJBranch, resolveJJParent,
+  // the head/parent-count templates) is gone. Real-repo coverage lives in
+  // WorkroomStatusIntegrationTests.testJJ* (against a throwaway jj repo).
 
   func testResolveLocalUnknownVCS() async {
     let r = WorkroomStatusResolver(runner: MockStatusRunner { _, _ in ok("anything") })
@@ -874,21 +658,15 @@ final class WorkroomStatusResolverTests: XCTestCase {
   }
 
   func testResolveLocalJJFailureIsNotRepository() async {
-    // jj diff --summary fails (not a jj repo / exit 128) → unknown, not clean.
-    let r = WorkroomStatusResolver(
-      runner: MockStatusRunner { _, _ in
-        CommandResult(stdout: "", stderr: "Error: no jj repo here", exitCode: 1, timedOut: false)
-      })
+    // `existing` is a real directory but NOT a jj repo, so the native jj-lib read (RustJJProvider)
+    // throws → notRepository. The regression-critical property: a failed probe is UNKNOWN, never
+    // clean.
+    let r = WorkroomStatusResolver()
     let s = await r.resolveLocal(path: existing, vcs: "jj")
     XCTAssertNil(s.dirty)  // unknown, NOT clean
+    XCTAssertFalse(s.isClean)
+    XCTAssertTrue(s.isUnknown)
     XCTAssertEqual(s.failure, .notRepository)
-  }
-
-  func testClassifyGitFailureNonStandardExitIsNotRepository() {
-    // Any non-zero exit (not just 128) ⇒ unreadable repo → unknown, never clean.
-    let r = CommandResult(
-      stdout: "", stderr: "fatal: detected dubious ownership", exitCode: 1, timedOut: false)
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitFailure(r), .notRepository)
   }
 
   func testGHPreflightStderrTimeoutKeepsPrior() {
