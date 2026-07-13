@@ -297,10 +297,6 @@ struct ProjectSidebar: View {
           .font(.system(size: 9, weight: .semibold))
           .foregroundStyle(.secondary)
       }
-      // VCS status for the project root (issue #24), same placement as the workroom rows. The dirty
-      // dot is dropped (`showDot: false`) — the leading house glyph's tint carries that signal — so
-      // only ahead/behind remains here. No CI in the projects tree (it's in the inspector).
-      VCSStatusCluster(status: status, showCI: false, showDot: false)
       Spacer(minLength: 0)
       UnreadDot(count: notifications.count(target: target.id))
       if target.isMissing {
@@ -353,11 +349,6 @@ struct ProjectSidebar: View {
       // lineLimit so a long name yields to the VCS badges — truncation priority: name first (#24).
       // Shows the display label when one is set (issue #41), else the real workroom name.
       Text(workroom.displayName).font(.callout).lineLimit(1).truncationMode(.tail)
-      // VCS status sub-cluster: after the name, before the Spacer. The dirty dot is dropped
-      // (`showDot: false`) — the leading cube glyph's tint carries that signal — leaving ahead/behind.
-      VCSStatusCluster(
-        status: store.workroomStatuses[id] ?? .unresolved,
-        showCI: false, showDot: false)
       Spacer()
       UnreadDot(count: unread)
       ForEach(workroom.warnings, id: \.kind) { warning in

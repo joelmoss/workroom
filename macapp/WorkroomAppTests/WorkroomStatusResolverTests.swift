@@ -56,6 +56,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
   // MARK: - parseGitPorcelainV2Z
 
   func testParseClean() {
+    // The `branch.ab` header is now ignored (ahead/behind removed); the parser must skip it cleanly.
     let out =
       [
         "# branch.oid abc", "# branch.head main", "# branch.upstream origin/main",
@@ -65,23 +66,19 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let p = WorkroomStatusResolver.parseGitPorcelainV2Z(out)
     XCTAssertFalse(p.dirty)
     XCTAssertFalse(p.conflicted)
-    XCTAssertEqual(p.ahead, 0)
-    XCTAssertEqual(p.behind, 0)
     XCTAssertEqual(p.branch, "main")
     XCTAssertTrue(p.files.isEmpty)
   }
 
-  func testParseDirtyModifiedAndAheadBehind() {
+  func testParseDirtyModified() {
     let out =
       [
-        "# branch.head main", "# branch.ab +2 -1",
+        "# branch.head main",
         "1 .M N... 100644 100644 100644 aaa bbb file.swift",
       ]
       .joined(separator: nul) + nul
     let p = WorkroomStatusResolver.parseGitPorcelainV2Z(out)
     XCTAssertTrue(p.dirty)
-    XCTAssertEqual(p.ahead, 2)
-    XCTAssertEqual(p.behind, 1)
     XCTAssertEqual(p.files.count, 1)
     XCTAssertEqual(p.files.first?.path, "file.swift")
     XCTAssertEqual(p.files.first?.change, .modified)
@@ -122,20 +119,16 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertEqual(p.files.first?.path, "conflicted.txt")
   }
 
-  func testParseDetachedNoAheadBehind() {
+  func testParseDetached() {
     let out = ["# branch.oid abc", "# branch.head (detached)"].joined(separator: nul) + nul
     let p = WorkroomStatusResolver.parseGitPorcelainV2Z(out)
     XCTAssertNil(p.branch)  // detached → no branch for CI
-    XCTAssertNil(p.ahead)
-    XCTAssertNil(p.behind)
   }
 
-  func testParseNoUpstream() {
+  func testParseBranchWithoutUpstreamLine() {
     let out = ["# branch.head feature"].joined(separator: nul) + nul  // no branch.ab line
     let p = WorkroomStatusResolver.parseGitPorcelainV2Z(out)
     XCTAssertEqual(p.branch, "feature")
-    XCTAssertNil(p.ahead)
-    XCTAssertNil(p.behind)
   }
 
   func testParseRenameConsumesOriginalPath() {
@@ -395,8 +388,6 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertEqual(s.dirty, true)
     XCTAssertTrue(s.conflicted)
     XCTAssertEqual(s.changedFiles?.count, 2)
-    XCTAssertNil(s.ahead)  // jj omits ahead/behind in Phase 1
-    XCTAssertNil(s.behind)
     XCTAssertEqual(s.insertions, 9)
     XCTAssertEqual(s.deletions, 3)
     // jj branch resolved from the nearest bookmark, used for CI/PR lookup.

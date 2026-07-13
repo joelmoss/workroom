@@ -27,61 +27,6 @@ extension VCSStatusPresentation {
   }
 }
 
-/// The shared, compact VCS status cluster (issue #24): a dirty/conflict/unknown dot, optional
-/// ahead/behind counts, and an optional CI glyph. Used identically by the sidebar rows and the
-/// workroom tab chip (the chip uses `compact` to drop the ahead/behind text). Clean renders
-/// nothing (so dirty pops); absent CI renders nothing. Glyph order is fixed so dirty dots scan
-/// as a column. The dot never truncates; ahead/behind compresses (only the non-zero side); the
-/// CI glyph is last to lay out, so it's the first to be pushed out on a narrow row.
-struct VCSStatusCluster: View {
-  let status: WorkroomStatus
-  /// Tab-chip mode: show only the status dot + CI glyph, no ahead/behind text.
-  var compact: Bool = false
-  /// Whether to show the CI glyph. CI comes from `gh`; callers pass `false` when the GitHub CLI
-  /// isn't available so a stale CI badge can't linger (issue #24).
-  var showCI: Bool = true
-  /// Whether to show the dirty/conflict/unknown status dot. The sidebar rows + workroom tabs pass
-  /// `false` — there the dirty signal is carried by the leading house/cube glyph's tint instead
-  /// (see `VCSStatusPresentation.iconTint`), so a separate dot would double up.
-  var showDot: Bool = true
-
-  var body: some View {
-    let dot = showDot ? VCSStatusPresentation.dot(status) : nil
-    let ab = compact ? nil : VCSStatusPresentation.aheadBehind(status)
-    let ci = showCI ? VCSStatusPresentation.ci(status) : nil
-    if dot != nil || ab != nil || ci != nil {
-      HStack(spacing: 4) {
-        if let dot {
-          Image(systemName: dot.symbol)
-            .font(.system(size: 7))
-            .foregroundStyle(dot.semantic.color)
-        }
-        if let ab {
-          HStack(spacing: 1) {
-            if ab.ahead != 0 {
-              Image(systemName: "arrow.up").font(.system(size: 8, weight: .semibold))
-              Text("\(ab.ahead)").font(.caption2).monospacedDigit()
-            }
-            if ab.behind != 0 {
-              Image(systemName: "arrow.down").font(.system(size: 8, weight: .semibold))
-              Text("\(ab.behind)").font(.caption2).monospacedDigit()
-            }
-          }
-          .foregroundStyle(.secondary)
-        }
-        if let ci {
-          Image(systemName: ci.symbol)
-            .font(.system(size: 10))
-            .foregroundStyle(ci.semantic.color)
-        }
-      }
-      .accessibilityElement(children: .ignore)
-      .accessibilityLabel(VCSStatusPresentation.accessibilityLabel(status))
-      .help(VCSStatusPresentation.accessibilityLabel(status))
-    }
-  }
-}
-
 /// A single aggregate status dot for a collapsed project row — the worst child status, so
 /// collapsing a project doesn't hide the command-center signal. Nothing to show ⇒ renders
 /// nothing.

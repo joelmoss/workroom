@@ -83,31 +83,11 @@ final class WorkroomStatusTests: XCTestCase {
     XCTAssertEqual(neutral?.semantic, .neutral)
   }
 
-  // MARK: - aheadBehind
-
-  func testAheadBehindZeroIsNil() {
-    XCTAssertNil(
-      VCSStatusPresentation.aheadBehind(WorkroomStatus(dirty: false, ahead: 0, behind: 0)))
-  }
-
-  func testAheadBehindNoUpstreamIsNil() {
-    // ahead/behind both nil (no upstream resolved)
-    XCTAssertNil(VCSStatusPresentation.aheadBehind(WorkroomStatus(dirty: false)))
-  }
-
-  func testAheadBehindCounts() {
-    let ab = VCSStatusPresentation.aheadBehind(WorkroomStatus(dirty: true, ahead: 2, behind: 1))
-    XCTAssertEqual(ab?.ahead, 2)
-    XCTAssertEqual(ab?.behind, 1)
-    XCTAssertEqual(ab?.accessibility, "ahead 2, behind 1")
-  }
-
   // MARK: - composed accessibility label
 
   func testAccessibilityLabelComposition() {
-    let s = WorkroomStatus(dirty: true, ahead: 2, behind: 1, ci: .failing)
-    XCTAssertEqual(
-      VCSStatusPresentation.accessibilityLabel(s), "dirty, ahead 2, behind 1, CI failing")
+    let s = WorkroomStatus(dirty: true, ci: .failing)
+    XCTAssertEqual(VCSStatusPresentation.accessibilityLabel(s), "dirty, CI failing")
   }
 
   func testAccessibilityLabelCleanIsEmpty() {

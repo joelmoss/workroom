@@ -700,9 +700,6 @@ struct ChangesPanel: View {
           .lineLimit(1).truncationMode(.middle)
         Spacer(minLength: 0)
       }
-      if let sync = syncText(status) {
-        Text(sync).font(.callout).foregroundStyle(.secondary)
-      }
       Divider()
       if let failure = status.failure {
         inspectorMessage(failureText(failure))
@@ -787,20 +784,6 @@ struct ChangesPanel: View {
       return RootPresentation.make(store.rootRefs[p] ?? .unresolved).label
     }
     return "detached"
-  }
-
-  /// Ahead/behind summary, or nil when there's no upstream info (git no-upstream, or jj which
-  /// omits ahead/behind in Phase 1 — both leave the counts nil, so we say nothing rather than
-  /// claim "no upstream" misleadingly).
-  private func syncText(_ s: WorkroomStatus) -> String? {
-    guard s.hasUpstream else { return nil }
-    let a = s.ahead ?? 0
-    let b = s.behind ?? 0
-    if a == 0 && b == 0 { return "Up to date with upstream" }
-    var parts: [String] = []
-    if a != 0 { parts.append("\u{2191}\(a)") }
-    if b != 0 { parts.append("\u{2193}\(b)") }
-    return parts.joined(separator: " ") + " vs upstream"
   }
 
   /// The clean (no working-tree changes) state, styled like the Notifications empty state (issue

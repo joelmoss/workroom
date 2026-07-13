@@ -81,7 +81,7 @@ struct WorkroomStatusResolver: Sendable {
       in: dir, timeout: timeout)
     let stat = statR.ok ? Self.parseDiffStat(statR.stdout) : (insertions: 0, deletions: 0)
     return WorkroomStatus(
-      dirty: p.dirty, conflicted: p.conflicted, ahead: p.ahead, behind: p.behind,
+      dirty: p.dirty, conflicted: p.conflicted,
       changedFiles: p.files, insertions: stat.insertions, deletions: stat.deletions,
       branchForCI: p.branch)
   }
@@ -145,11 +145,11 @@ struct WorkroomStatusResolver: Sendable {
       description: head.description, files: files)
     let parent = Self.resolveJJParent(
       summary: parentSummary, head: parentHead, count: parentCount)
-    // Phase 1 omits jj ahead/behind (no reliable git-equivalent — see plan). `changedFiles` mirrors
-    // the working copy's files (set from the one STEP-1 parse) so non-panel consumers are unchanged.
+    // `changedFiles` mirrors the working copy's files (set from the one STEP-1 parse) so non-panel
+    // consumers are unchanged.
     return WorkroomStatus(
-      dirty: !files.isEmpty || head.conflicted, conflicted: head.conflicted, ahead: nil,
-      behind: nil, changedFiles: files, insertions: stat.insertions, deletions: stat.deletions,
+      dirty: !files.isEmpty || head.conflicted, conflicted: head.conflicted,
+      changedFiles: files, insertions: stat.insertions, deletions: stat.deletions,
       branchForCI: branch, jjWorkingCopy: workingCopy, jjParent: parent)
   }
 
@@ -506,8 +506,6 @@ struct WorkroomStatusResolver: Sendable {
   struct GitParse: Equatable {
     var dirty = false
     var conflicted = false
-    var ahead: Int?
-    var behind: Int?
     var branch: String?
     var files: [ChangedFile] = []
   }
@@ -528,12 +526,6 @@ struct WorkroomStatusResolver: Sendable {
         if rest.hasPrefix("branch.head ") {
           let name = String(rest.dropFirst("branch.head ".count))
           p.branch = name == "(detached)" ? nil : name
-        } else if rest.hasPrefix("branch.ab ") {
-          let nums = rest.dropFirst("branch.ab ".count).split(separator: " ")
-          for n in nums {
-            if n.hasPrefix("+") { p.ahead = Int(n.dropFirst()) }
-            if n.hasPrefix("-") { p.behind = Int(n.dropFirst()) }
-          }
         }
         continue
       }

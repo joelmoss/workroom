@@ -7,7 +7,7 @@ import Foundation
 /// don't fork 50 git + 50 gh processes at once); CI is a second, slower stage that never blocks
 /// the dirty dot, and is gated by a much longer TTL than the local git probe.
 extension AppStore {
-  fileprivate static let localStatusTTL: TimeInterval = 15  // git/jj dirty/ahead-behind
+  fileprivate static let localStatusTTL: TimeInterval = 15  // git/jj dirty/changed-files
   fileprivate static let ciStatusTTL: TimeInterval = 300  // gh CI (network)
   fileprivate static let ghStatusTTL: TimeInterval = 60  // `gh auth status` availability check
   fileprivate static let localConcurrency = 5
@@ -404,8 +404,6 @@ extension AppStore {
     var s = workroomStatuses[sid] ?? .unresolved
     s.dirty = fresh.dirty
     s.conflicted = fresh.conflicted
-    s.ahead = fresh.ahead
-    s.behind = fresh.behind
     s.changedFiles = fresh.changedFiles
     s.insertions = fresh.insertions
     s.deletions = fresh.deletions

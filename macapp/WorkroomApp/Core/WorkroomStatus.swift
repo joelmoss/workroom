@@ -214,8 +214,7 @@ struct CICheck: Equatable, Sendable, Identifiable {
 /// A point-in-time snapshot of one workroom's VCS + CI status, resolved app-side.
 ///
 /// `dirty == nil` means **unknown** (a probe failed) — never rendered as clean. `clean` is
-/// `dirty == false`. `ahead`/`behind` are `nil` when there's no upstream (git) or for jj
-/// (Phase 1 omits jj ahead/behind rather than fake git semantics). `changedFiles` is the
+/// `dirty == false`. `changedFiles` is the
 /// (capped) working-tree change list used by the detail panel. `ci` is filled by a separate,
 /// slower second-stage probe so a wedged `gh` never blocks the dirty dot. `branchForCI` is the
 /// git branch name (used to look up CI) when resolvable. PR fields are intentionally reserved
@@ -223,8 +222,6 @@ struct CICheck: Equatable, Sendable, Identifiable {
 struct WorkroomStatus: Equatable, Sendable {
   var dirty: Bool?
   var conflicted: Bool = false
-  var ahead: Int?
-  var behind: Int?
   var changedFiles: [ChangedFile]?
   /// Working-tree line counts vs the last commit (git: `diff --shortstat HEAD`; jj: `diff --stat`).
   /// `nil` ⇒ not resolved; both 0 ⇒ no line delta (e.g. only untracked files, which git omits).
@@ -265,7 +262,6 @@ struct WorkroomStatus: Equatable, Sendable {
 
   var isUnknown: Bool { dirty == nil }
   var isClean: Bool { dirty == false && !conflicted }
-  var hasUpstream: Bool { ahead != nil || behind != nil }
 
   /// Scan-severity for the project-row aggregate: higher wins.
   /// missingPath/notRepository(unknown) > conflicted > dirty > clean/unresolved.
@@ -336,24 +332,7 @@ enum VCSStatusPresentation {
     }
   }
 
-  /// Ahead/behind compact text + symbols, or nil when there's no upstream / nothing to show.
-  /// "↑2 ↓1" semantics rendered with SF Symbols at the view; here we give the counts + a label.
-  struct AheadBehind: Equatable {
-    let ahead: Int
-    let behind: Int
-    let accessibility: String
-  }
-  static func aheadBehind(_ s: WorkroomStatus) -> AheadBehind? {
-    let a = s.ahead ?? 0
-    let b = s.behind ?? 0
-    guard s.hasUpstream, a != 0 || b != 0 else { return nil }
-    var parts: [String] = []
-    if a != 0 { parts.append("ahead \(a)") }
-    if b != 0 { parts.append("behind \(b)") }
-    return AheadBehind(ahead: a, behind: b, accessibility: parts.joined(separator: ", "))
-  }
-
-  /// The full composed VoiceOver phrase for a row/chip, e.g. "dirty, ahead 2, CI failing".
+  /// The full composed VoiceOver phrase for a row/chip, e.g. "dirty, CI failing".
   /// Empty string when there's nothing to announce (clean, no CI).
   static func accessibilityLabel(_ s: WorkroomStatus) -> String {
     var parts: [String] = []
@@ -366,7 +345,6 @@ enum VCSStatusPresentation {
     } else if s.dirty == false {
       parts.append("clean")
     }
-    if let ab = aheadBehind(s) { parts.append(ab.accessibility) }
     if let ci = ci(s) { parts.append(ci.accessibility) }
     return parts.joined(separator: ", ")
   }

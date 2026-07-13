@@ -89,8 +89,6 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
     let dir = try gitRepoWithUpstream()
     let s = await resolver.resolveLocal(path: dir, vcs: "git")
     XCTAssertEqual(s.dirty, false)
-    XCTAssertEqual(s.ahead, 0)
-    XCTAssertEqual(s.behind, 0)
     XCTAssertEqual(s.branchForCI, "main")
     XCTAssertNil(s.failure)
   }
@@ -115,12 +113,10 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
       (s.changedFiles ?? []).contains { $0.path == "staged.txt" && $0.change == .added })
   }
 
-  func testGitAheadOne() async throws {
+  func testGitCommittedIsClean() async throws {
     let dir = try gitRepoWithUpstream()
     sh("echo two >> a.txt && git commit -qam work", in: dir)  // commit locally, don't push
     let s = await resolver.resolveLocal(path: dir, vcs: "git")
-    XCTAssertEqual(s.ahead, 1)
-    XCTAssertEqual(s.behind, 0)
     XCTAssertEqual(s.dirty, false)  // committed → working tree clean
   }
 
@@ -137,8 +133,6 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
     let dir = try gitRepoWithUpstream()
     sh("git checkout -q \"$(git rev-parse HEAD)\"", in: dir)
     let s = await resolver.resolveLocal(path: dir, vcs: "git")
-    XCTAssertNil(s.ahead)  // detached → no upstream comparison
-    XCTAssertNil(s.behind)
     XCTAssertNil(s.branchForCI)  // (detached) → no branch for CI
   }
 
@@ -182,7 +176,6 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
     let s = await resolver.resolveLocal(path: dir, vcs: "jj")
     XCTAssertEqual(s.dirty, false)
     XCTAssertFalse(s.conflicted)
-    XCTAssertNil(s.ahead)  // jj omits ahead/behind in Phase 1
     XCTAssertNil(s.failure)
   }
 

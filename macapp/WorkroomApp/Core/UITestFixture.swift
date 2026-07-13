@@ -241,12 +241,11 @@ enum UITestFixture {
       lastChecked: Self.checkedAt, ciCheckedAt: Self.checkedAt, prCheckedAt: Self.checkedAt)
   }
 
-  /// Deterministic status for the fixture **project root**: a clean git branch that's one commit
-  /// ahead of upstream with passing CI — so the inspector renders the git header, the sync line,
-  /// and the clean empty state.
+  /// Deterministic status for the fixture **project root**: a clean git branch with passing CI — so
+  /// the inspector renders the git header and the clean empty state.
   static var rootStatus: WorkroomStatus {
     WorkroomStatus(
-      dirty: false, ahead: 1, behind: 0, changedFiles: [], ci: .passing,
+      dirty: false, changedFiles: [], ci: .passing,
       branchForCI: "main",
       // No PR seeded here, so a `prCheckedAt` stamp makes the inspector show the "No pull request"
       // empty state (not "Checking…").
