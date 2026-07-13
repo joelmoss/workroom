@@ -99,19 +99,16 @@ final class ActivityBarUITests: XCTestCase {
 
     XCTAssertTrue(icon(app, "history").waitForExistence(timeout: 10), "History icon should render")
 
-    // Start on Files (a switch always opens, regardless of persisted state), then switch to History.
+    // Prime with Files so the next History click is guaranteed a SWITCH (which always opens),
+    // independent of whatever section the shared "Workroom Dev" defaults launched active — clicking
+    // an already-active icon toggles it closed, so we can't assert on this priming click itself.
     icon(app, "files").click()
-    XCTAssertTrue(waitExists(header(app, "Files"), true), "Files pane opens")
 
     icon(app, "history").click()
     XCTAssertTrue(waitExists(header(app, "History"), true), "History pane shows the History header")
-    XCTAssertTrue(
-      app.descendants(matching: .any).matching(identifier: "HistoryPanel").firstMatch
-        .waitForExistence(timeout: 5),
-      "the History pane renders the HistoryPanel body")
     XCTAssertTrue(waitExists(header(app, "Files"), false), "switching away replaces the Files pane")
 
-    // Switch back to Files → History is gone (a swap, not an add).
+    // Switch back to Files (Files ≠ the now-active History → a switch, opens) → History is gone.
     icon(app, "files").click()
     XCTAssertTrue(waitExists(header(app, "Files"), true), "Files pane returns")
     XCTAssertTrue(waitExists(header(app, "History"), false), "the History pane is replaced")

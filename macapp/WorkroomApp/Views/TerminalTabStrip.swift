@@ -491,6 +491,13 @@ private struct TerminalTabChip: View {
           .foregroundStyle(theme.tokens.fgMuted)
           .accessibilityHidden(true)
       }
+      // A changeset (commit detail) tab gets a clock glyph (issue #59), same intent as above.
+      if case .changeset = tab.content {
+        Image(systemName: "clock")
+          .font(.system(size: 9, weight: .semibold))
+          .foregroundStyle(theme.tokens.fgMuted)
+          .accessibilityHidden(true)
+      }
       // Unread activity is marked by a leading accent dot (+ accent title) — a different visual
       // primitive from the selected tab's neutral fill, so the two never read alike.
       if hasActivity {
@@ -835,6 +842,16 @@ extension View {
           } label: {
             Label("Keep Open", systemImage: "pin")
           }
+        }
+        Divider()
+      }
+      // A changeset (commit detail) tab has no per-file actions of its own, but still offers "Keep
+      // Open" while previewed (issue #59) — same pin affordance as diff/file panes.
+      if case .changeset = tab.content, tab.isPreview {
+        Button {
+          sessions.persist(tab.id, for: target)
+        } label: {
+          Label("Keep Open", systemImage: "pin")
         }
         Divider()
       }

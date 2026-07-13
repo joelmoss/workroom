@@ -3,8 +3,8 @@ import SwiftUI
 /// The inspector's **History** section body (issue #59): a newest-first commit log for the selected
 /// workroom, read via `VCSProviding` through the store-owned `HistoryModel`. Lives inside the
 /// inspector's scroll view, so it renders a flat `VStack` of rows (like `ChangesPanel`/`FilesPanel`)
-/// rather than a `List`. Single-click a row opens the changeset (preview), double-click persists —
-/// wired in 12b once the changeset content tab exists.
+/// rather than a `List`. Single-click a row opens the commit's `ChangesetDetailView` as a preview
+/// content tab; a quick double-click persists it (the same gate the Changes panel uses).
 struct HistoryPanel: View {
   @EnvironmentObject var store: AppStore
   private var model: HistoryModel { store.commitHistory }
@@ -32,7 +32,9 @@ struct HistoryPanel: View {
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .accessibilityIdentifier("HistoryPanel")
+    // No container-level `accessibilityIdentifier` here: SwiftUI propagates a container id onto the
+    // combined `HistoryRow` leaves, clobbering their own id. The rows carry "HistoryRow"; that the
+    // pane is showing is asserted via `inspector.header.History` (the canonical section marker).
     // Point the model at the selected target — only while History is the active section, so a
     // selection (or another section showing) never loads history you're not looking at. Mirrors
     // FilesPanel; `focus` no-ops when already on the path.
@@ -47,10 +49,22 @@ struct HistoryPanel: View {
       + "\u{1F}\(store.activeInspectorSection == .history)"
   }
 
+  /// The changeset tab's title for a commit — its summary, or the short id when it has none.
+  private func title(_ commit: VCSCommit) -> String {
+    commit.summary.isEmpty ? commit.shortID : commit.summary
+  }
+
   private var list: some View {
     VStack(alignment: .leading, spacing: 0) {
       ForEach(model.commits) { commit in
-        HistoryRow(commit: commit)
+        HistoryRow(
+          commit: commit,
+          onPreview: {
+            store.openChangesetPreview(commitID: commit.commitID, title: title(commit))
+          },
+          onPersist: {
+            store.openChangesetPersistent(commitID: commit.commitID, title: title(commit))
+          })
       }
       if !model.reachedEnd {
         Button {
@@ -88,6 +102,11 @@ struct HistoryPanel: View {
 /// time) with any bookmark/branch refs, and a `@` marker for the jj working copy.
 private struct HistoryRow: View {
   let commit: VCSCommit
+  /// Single-click: open the commit's changeset detail as a preview tab. Double-click: persist it.
+  let onPreview: () -> Void
+  let onPersist: () -> Void
+  /// Timestamp of the last plain click, for the manual double-click gate (mirrors `ChangesPanel`).
+  @State private var lastClick: Date?
 
   private static let relative: RelativeDateTimeFormatter = {
     let f = RelativeDateTimeFormatter()
@@ -128,7 +147,20 @@ private struct HistoryRow: View {
     .padding(.vertical, 4).padding(.horizontal, 8)
     .frame(maxWidth: .infinity, alignment: .leading)
     .contentShape(Rectangle())
+    // Eager single-click preview, quick second click (< 0.35s) persists — the same manual
+    // double-click gate the Changes panel uses (avoids SwiftUI's count:2 delay).
+    .onTapGesture {
+      let now = Date()
+      if let last = lastClick, now.timeIntervalSince(last) < 0.35 {
+        onPersist()
+        lastClick = nil
+      } else {
+        onPreview()
+        lastClick = now
+      }
+    }
     .accessibilityElement(children: .combine)
+    .accessibilityAddTraits(.isButton)
     .accessibilityIdentifier("HistoryRow")
   }
 }

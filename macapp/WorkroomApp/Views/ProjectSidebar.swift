@@ -472,6 +472,7 @@ struct ProjectSidebar: View {
       switch tab.content {
       case .diff: return "plusminus"
       case .file: return "doc"
+      case .changeset: return "clock"
       case .terminal: return "terminal"
       }
     }()

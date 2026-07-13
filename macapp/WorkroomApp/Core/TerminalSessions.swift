@@ -42,6 +42,7 @@ struct TerminalTab: Identifiable {
     case .terminal(let s): return s.liveTitle ?? s.defaultTitle
     case .diff(let d): return (d.path as NSString).lastPathComponent
     case .file(let f): return (f.path as NSString).lastPathComponent
+    case .changeset(let c): return c.title
     }
   }
 
@@ -51,6 +52,7 @@ struct TerminalTab: Identifiable {
     switch content {
     case .diff(let d): return d.isPreview
     case .file(let f): return f.isPreview
+    case .changeset(let c): return c.isPreview
     case .terminal: return false
     }
   }
@@ -77,6 +79,11 @@ struct TerminalTab: Identifiable {
   static func file(_ descriptor: FileDescriptor) -> TerminalTab {
     TerminalTab(content: .file(descriptor))
   }
+
+  /// A changeset (commit detail) content tab from its descriptor (History section, issue #59).
+  static func changeset(_ descriptor: ChangesetDescriptor) -> TerminalTab {
+    TerminalTab(content: .changeset(descriptor))
+  }
 }
 
 /// A tab's content: a terminal surface, or non-terminal content (issue #66). A closed set — the
@@ -86,6 +93,7 @@ enum TabContent {
   case terminal(TerminalState)
   case diff(DiffDescriptor)
   case file(FileDescriptor)
+  case changeset(ChangesetDescriptor)
 }
 
 /// A non-terminal content-tab payload the preview/persist openers drive uniformly (issue #59). Diffs,
@@ -416,7 +424,7 @@ final class TerminalSessions: ObservableObject {
   }
 
   /// Persist a preview content tab (double-click its chip, or "Keep Open" in its menu). No-op unless
-  /// it's a preview content tab (diff or file).
+  /// it's a preview content tab (diff, file, or changeset).
   func persist(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
     guard var tab = tabsByTarget[target.id]?[tabID] else { return }
     switch tab.content {
@@ -426,6 +434,9 @@ final class TerminalSessions: ObservableObject {
     case .file(var f) where f.isPreview:
       f.isPreview = false
       tab.content = .file(f)
+    case .changeset(var c) where c.isPreview:
+      c.isPreview = false
+      tab.content = .changeset(c)
     default:
       return
     }
@@ -630,6 +641,14 @@ final class TerminalSessions: ObservableObject {
       if let other = previewTabID(in: target.id) { persist(other, for: target) }  // keep ≤1 preview
       desc.isPreview = true
       return TerminalTab.diff(desc)
+    }
+    // A changeset anchor mirrors the diff case: a second view of the same commit as a fresh preview
+    // pane, the original pinned and any other preview persisted (≤1-preview invariant).
+    if case .changeset(var desc) = anchor.content {
+      persist(anchor.id, for: target)
+      if let other = previewTabID(in: target.id) { persist(other, for: target) }
+      desc.isPreview = true
+      return TerminalTab.changeset(desc)
     }
     let cwd = anchor.surface?.lastKnownCwd ?? target.path
     return makeTerminalTab(for: target, cwd: cwd)

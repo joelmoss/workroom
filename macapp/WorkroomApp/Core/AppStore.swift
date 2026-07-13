@@ -302,8 +302,12 @@ final class AppStore: ObservableObject {
   let fileTree = FileTreeModel()
   /// Store-owned commit-history state for the History inspector section (issue #59); re-pointed on
   /// selection by `HistoryPanel`, mirroring `fileTree`. Named `commitHistory` — `history` is the
-  /// browser-style `NavigationHistory`.
-  let commitHistory = HistoryModel()
+  /// browser-style `NavigationHistory`. In UI-test fixture mode it reads canned commits (the fake
+  /// workroom dirs aren't real repos), so the History → changeset click-through is testable.
+  let commitHistory: HistoryModel =
+    UITestFixture.isActive
+    ? HistoryModel(resolve: { _ in UITestFixture.vcsProvider })
+    : HistoryModel()
   /// Shared in-file find state for the read-only file viewer (⌘F in a file pane). Only the focused
   /// `PlainFileViewer` feeds + shows it; routed to from `startFindInFocusedPane`.
   let fileFind = FileFindModel()
@@ -2824,6 +2828,23 @@ final class AppStore: ObservableObject {
     terminals.openFilePersistent(FileDescriptor(path: path, isPreview: false), for: target)
   }
 
+  /// Open a commit's changeset detail as the selected target's single PREVIEW content tab
+  /// (single-click a History row, issue #59). Shares the preview slot with diffs/files. No-op if
+  /// nothing's selected.
+  func openChangesetPreview(commitID: String, title: String) {
+    guard let target = selectedTarget else { return }
+    terminals.openContentPreview(
+      ChangesetDescriptor(commitID: commitID, title: title, isPreview: true), for: target)
+  }
+
+  /// Open a commit's changeset detail as a *persisted* content tab (double-click a History row).
+  /// No-op if nothing's selected.
+  func openChangesetPersistent(commitID: String, title: String) {
+    guard let target = selectedTarget else { return }
+    terminals.openContentPersistent(
+      ChangesetDescriptor(commitID: commitID, title: title, isPreview: false), for: target)
+  }
+
   /// Open a repo file in the configured external editor (⌘-click / context menu in the Files
   /// section), reusing the shared editor path. No-op if nothing's selected.
   func openFileInEditor(path: String) {
@@ -2893,7 +2914,7 @@ final class AppStore: ObservableObject {
     switch tab.content {
     case .terminal: focusedSurface?.startSearch()
     case .file: fileFind.open()
-    case .diff: break
+    case .diff, .changeset: break
     }
   }
 

@@ -403,6 +403,52 @@ enum UITestFixture {
      end
     """
   }
+
+  /// The canned VCS backend for History + changeset detail in fixture mode (issue #59). The fake
+  /// workroom dirs aren't real repos, so `HistoryModel` / `ChangesetDetailView` read from this instead
+  /// of `VCS.provider(for:)` — the History → changeset click-through then runs hermetically.
+  static let vcsProvider: VCSProviding = FixtureVCSProvider()
+}
+
+/// Deterministic `VCSProviding` for UI-test fixture mode (see `UITestFixture.vcsProvider`). Per-file
+/// diffs are NOT sourced here: `DiffViewer` serves `UITestFixture.diff(for:)` directly in fixture
+/// mode, so `fileDiff` is only a protocol stub.
+struct FixtureVCSProvider: VCSProviding {
+  /// Four newest-first commits; the first is the working copy (`@`) and carries the `main` ref, so the
+  /// History rows exercise the ref chip + `@` marker.
+  static let commits: [VCSCommit] = {
+    let author = VCSAuthor(name: "Ada Fixture", email: "ada@example.com")
+    return (1...4).map { (n: Int) -> VCSCommit in
+      let base: TimeInterval = 1_700_000_000
+      let ts = Date(timeIntervalSince1970: base - TimeInterval(n * 3600))
+      let refs: [String] = n == 1 ? ["main"] : []
+      let parents: [String] = n < 4 ? ["fixturecommit\(n + 1)"] : []
+      return VCSCommit(
+        commitID: "fixturecommit\(n)", shortID: "fixc000\(n)",
+        changeID: n == 1 ? "zqxyparent" : nil, summary: "Fixture commit \(n)",
+        authors: [author], timestamp: ts, refs: refs, parentIDs: parents, isWorkingCopy: n == 1)
+    }
+  }()
+
+  func log(root: URL, limit: Int) async throws -> VCSHistoryPage {
+    let slice = Array(Self.commits.prefix(limit))
+    return VCSHistoryPage(commits: slice, reachedEnd: slice.count >= Self.commits.count)
+  }
+
+  func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
+    let commit = Self.commits.first { $0.commitID == commitID } ?? Self.commits[0]
+    let files = [
+      VCSChangedFile(path: "src/session.rb", oldPath: nil, kind: .modified),
+      VCSChangedFile(path: "docs/notes.txt", oldPath: nil, kind: .added),
+    ]
+    return VCSChangeset(
+      commit: commit, fullMessage: commit.summary + "\n\nFixture commit body.", files: files,
+      isMerge: false)
+  }
+
+  func fileDiff(root: URL, commitID: String, path: String) async throws -> String {
+    "diff --git a/\(path) b/\(path)\n@@ -1 +1 @@\n-old\n+new\n"
+  }
 }
 
 /// The inline agent backend used under `-WorkroomUITestAgentStub`: returns a canned envelope with no
