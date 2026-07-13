@@ -18,6 +18,7 @@ private struct StubProvider: VCSProviding {
   func workingFileDiff(root: URL, path: String, base: VCSWorkingDiffBase) async throws -> String {
     throw VCSError.io("unused")
   }
+  func fileContent(root: URL, rev: String, path: String) async throws -> String? { nil }
   func currentRef(root: URL) async throws -> VCSRef { try await ref() }
 }
 

@@ -53,17 +53,8 @@ private final class StubDiffProvider: VCSProviding, @unchecked Sendable {
     lock.unlock()
     return try workingText?(path, base) ?? ""
   }
-}
 
-/// Fails the test if a diff ever shells out — diffs now go through `VCSProviding`, never the runner.
-/// (`DiffResolver` still keeps a runner for `fileContent`, which these tests don't exercise.)
-private struct NoShellRunner: StatusCommandRunning {
-  func run(_ exe: String, _ args: [String], in directory: String, timeout: TimeInterval)
-    async -> CommandResult
-  {
-    XCTFail("DiffResolver must not shell out for diffs (\(exe) \(args))")
-    return CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: false)
-  }
+  func fileContent(root: URL, rev: String, path: String) async throws -> String? { nil }
 }
 
 private let sampleDiff = """
@@ -87,12 +78,12 @@ private func desc(_ path: String, _ change: ChangedFile.Change, _ source: DiffSo
 
 final class DiffResolverTests: XCTestCase {
 
-  /// A resolver wired to `provider`, a no-shell runner, and (by default) a fresh cache so tests are
-  /// isolated from each other and from the shared commit cache.
+  /// A resolver wired to `provider` and (by default) a fresh cache so tests are isolated from each
+  /// other and from the shared commit cache.
   private func resolver(_ provider: StubDiffProvider, cache: DiffCache = DiffCache())
     -> DiffResolver
   {
-    DiffResolver(runner: NoShellRunner(), timeout: 5, makeProvider: { _ in provider }, cache: cache)
+    DiffResolver(makeProvider: { _ in provider }, cache: cache)
   }
 
   // MARK: - interpret (pure classification)

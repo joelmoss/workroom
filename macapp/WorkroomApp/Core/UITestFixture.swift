@@ -453,6 +453,9 @@ struct FixtureVCSProvider: VCSProviding {
     "diff --git a/\(path) b/\(path)\n@@ -1 +1 @@\n-old\n+new\n"
   }
 
+  // Highlighting content is served by `UITestFixture.fileContent` in fixture mode, not the provider.
+  func fileContent(root: URL, rev: String, path: String) async throws -> String? { nil }
+
   func currentRef(root: URL) async throws -> VCSRef {
     VCSRef(name: "main", kind: .branch)
   }

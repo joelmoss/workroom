@@ -86,6 +86,34 @@ final class VCSProviderConformanceTests: XCTestCase {
     XCTAssertTrue(jjModified.contains("+three"), "jj missing the edit: \(jjModified)")
   }
 
+  /// `fileContent` (the new-side content that feeds syntax highlighting) must return the file's
+  /// bytes at a committed revision from both backends (git = tree-walk to blob, jj = `jj file show`),
+  /// and `nil` for a path absent at that revision.
+  func testFileContentAcrossBackends() async throws {
+    try requireTool("git")
+    try requireTool("jj")
+    let root = try colocatedFixture()
+    let url = URL(fileURLWithPath: root)
+
+    // The last real commit (@-): a.txt is "one\ntwo\n", b.txt was added.
+    let cid = sh(
+      "jj log -r @- --no-graph --ignore-working-copy --color never -T 'commit_id'", in: root
+    ).out.trimmingCharacters(in: .whitespacesAndNewlines)
+    XCTAssertFalse(cid.isEmpty, "could not resolve a commit id")
+
+    let gitContent = try await GitProvider().fileContent(root: url, rev: cid, path: "a.txt")
+    XCTAssertEqual(gitContent, "one\ntwo\n", "git blob content at the commit")
+
+    let jjContent = try await RustJJProvider().fileContent(root: url, rev: cid, path: "a.txt")
+    XCTAssertEqual(jjContent, "one\ntwo\n", "jj file show content at the commit")
+
+    // A path that doesn't exist at that revision → nil from both (render plain, never throw out).
+    let gitMissing = try await GitProvider().fileContent(root: url, rev: cid, path: "nope.txt")
+    XCTAssertNil(gitMissing)
+    let jjMissing = try await RustJJProvider().fileContent(root: url, rev: cid, path: "nope.txt")
+    XCTAssertNil(jjMissing)
+  }
+
   // MARK: - Fixture helpers (mirror WorkroomStatusIntegrationTests)
 
   private struct MissingTool: Error { let name: String }

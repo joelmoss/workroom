@@ -24,6 +24,11 @@ protocol VCSProviding: Sendable {
   /// The per-file diff for one path in the working copy (or its parent), as git-format unified-diff
   /// text — the working-copy counterpart of `fileDiff`. Lazy, per-file (never a whole-tree diff).
   func workingFileDiff(root: URL, path: String, base: VCSWorkingDiffBase) async throws -> String
+  /// The full content of `path` at revision `rev` (a git commit id, or a jj revset like `@-`), for
+  /// syntax-highlighting a diff's new side. `nil` ⇒ absent at that rev / binary / over the highlight
+  /// cap → the caller renders plain. Read-only; must not take the jj working-copy lock (jj uses
+  /// `--ignore-working-copy`).
+  func fileContent(root: URL, rev: String, path: String) async throws -> String?
   /// The repo's current ref for the sidebar root-row label — the `@` bookmark / nearest ancestor
   /// bookmark (jj) or current branch / short SHA (git). Read-only; must not take the jj working-copy
   /// lock (backs `BranchResolver`).

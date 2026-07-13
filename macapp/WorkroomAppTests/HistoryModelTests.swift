@@ -30,6 +30,7 @@ final class HistoryModelTests: XCTestCase {
     func workingFileDiff(root: URL, path: String, base: VCSWorkingDiffBase) async throws -> String {
       throw VCSError.io("unused")
     }
+    func fileContent(root: URL, rev: String, path: String) async throws -> String? { nil }
     func currentRef(root: URL) async throws -> VCSRef { .none }
   }
 
@@ -44,6 +45,9 @@ final class HistoryModelTests: XCTestCase {
       throw VCSError.io("boom")
     }
     func workingFileDiff(root: URL, path: String, base: VCSWorkingDiffBase) async throws -> String {
+      throw VCSError.io("boom")
+    }
+    func fileContent(root: URL, rev: String, path: String) async throws -> String? {
       throw VCSError.io("boom")
     }
     func currentRef(root: URL) async throws -> VCSRef { throw VCSError.io("boom") }

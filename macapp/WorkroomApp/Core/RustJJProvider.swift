@@ -57,6 +57,22 @@ struct RustJJProvider: VCSProviding {
       branchForCI: w.branchForCi, jjWorkingCopy: workingCopy, jjParent: Self.jjParent(w.parent))
   }
 
+  /// The content of `path` at revision `rev` (a commit id or a revset like `@-`), for
+  /// syntax-highlighting a diff's new side. jj-lib has no ergonomic file-content read, so this uses
+  /// the `jj file show` CLI — read-only with `--ignore-working-copy`, so it never locks `@`. `nil` ⇒
+  /// absent / empty / over the highlight cap (or the CLI erred) → the caller renders plain.
+  func fileContent(root: URL, rev: String, path: String) async throws -> String? {
+    let text: String
+    do {
+      text = try await Self.run(
+        "jj", ["file", "show", "-r", rev, "--ignore-working-copy", "--", path], cwd: root)
+    } catch {
+      return nil  // path absent at rev / CLI error → no highlightable content (best-effort)
+    }
+    guard !text.isEmpty, text.utf8.count <= SyntaxLanguage.byteCap else { return nil }
+    return text
+  }
+
   func fileDiff(root: URL, commitID: String, path: String) async throws -> String {
     // jj-lib exposes raw diff regions but no git-format writer (that lives in the jj CLI). Rather
     // than reimplement unified-diff formatting, use the jj CLI for the per-file patch text — the

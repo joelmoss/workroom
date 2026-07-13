@@ -20,30 +20,24 @@ enum DiffResult: Equatable, Sendable {
 /// specifics are in `command(for:dir:)` (unit-tested without spawning). `resolve(_:in:)` calls
 /// the runner, interprets the result, and parses the unified diff.
 struct DiffResolver: Sendable {
-  /// Still used by `fileContent` (the jj `@-` parent-side content read for syntax highlighting); the
-  /// diff itself no longer shells out (it goes through `makeProvider`).
-  let runner: StatusCommandRunning
-  var timeout: TimeInterval
   /// The VCS backend, injected for tests. Defaults to the real repo-kind router
-  /// (`VCS.provider(for:)` — jj → jj-lib/CLI, git → SwiftGitX). Serves both commit (`fileDiff`) and
-  /// working-copy (`workingFileDiff`) diffs.
+  /// (`VCS.provider(for:)` — jj → jj-lib/CLI, git → SwiftGitX). Serves commit (`fileDiff`) and
+  /// working-copy (`workingFileDiff`) diffs and the new-side content for highlighting (`fileContent`)
+  /// — the resolver itself no longer shells out for anything.
   let makeProvider: @Sendable (URL) throws -> VCSProviding
   /// Cache for immutable **commit** diffs, shared across viewers. Working-copy diffs are never cached
   /// — their content is mutable, so a cache would serve stale hunks after an edit.
   let cache: DiffCache
 
   /// Diffs whose git-format text exceeds this render as `.tooLarge` instead of being parsed — a
-  /// multi-MB single-file diff is unreadable, and the jj CLI path truncates at the runner's 4 MB cap,
-  /// so parsing it would mis-render. (GitHub Desktop gates whole diffs at 10 MB; this is per-file.)
+  /// multi-MB single-file diff is unreadable and slow to lay out. (GitHub Desktop gates whole diffs
+  /// at 10 MB; this is per-file.)
   static let maxDiffBytes = 3 * 1024 * 1024
 
   init(
-    runner: StatusCommandRunning = StatusCommandRunner(), timeout: TimeInterval = 5,
     makeProvider: @escaping @Sendable (URL) throws -> VCSProviding = { try VCS.provider(for: $0) },
     cache: DiffCache = .shared
   ) {
-    self.runner = runner
-    self.timeout = timeout
     self.makeProvider = makeProvider
     self.cache = cache
   }
@@ -180,42 +174,29 @@ actor DiffCache {
 
 extension DiffResolver {
   /// The **new-side** file content for syntax highlighting, or `nil` ⇒ the caller renders the diff
-  /// plain. Folded into `DiffResolver` (one hardened command-runner surface) rather than a second
-  /// VCS-fetch service.
+  /// plain. Read structurally through the VCS backend, except the working copy (the new side *is* the
+  /// on-disk file):
   ///
-  /// - For working-copy sources (`gitWorktree`, `jjWorkingCopy`) the new side *is* the working file
-  ///   on disk → a guarded disk read (the working copy is `@`, so we never shell out and never
-  ///   contend on the jj working-copy lock).
-  /// - For the jj **parent** (`@-`) the new side is the parent commit's version (not on disk) →
-  ///   `jj file show -r @- --ignore-working-copy` (never `-r @`).
+  /// - working-copy sources (`gitWorktree`, `jjWorkingCopy`): a guarded disk read (the working copy
+  ///   is `@`, so nothing shells out and nothing contends on the jj working-copy lock).
+  /// - `commit(id)` / jj `parent` (`@-`): the new side is a committed revision (not on disk) →
+  ///   `VCSProviding.fileContent` (git blob walk / jj `jj file show --ignore-working-copy`). This is
+  ///   why a commit diff now highlights too.
   ///
-  /// Only additions + context are highlighted from this content; deletions render plain, so a
-  /// deleted file (no new side) correctly yields `nil`.
+  /// Best-effort throughout: any backend error becomes `nil` (render plain). Only additions + context
+  /// are highlighted, so a deleted file (no new side) correctly yields `nil`.
   func fileContent(for descriptor: DiffDescriptor, in dir: String) async -> String? {
+    let root = URL(fileURLWithPath: dir, isDirectory: true)
     switch descriptor.source {
-    case .commit:
-      // The new-side content at an arbitrary commit isn't on disk and `VCSProviding` has no
-      // file-content read yet, so a commit diff renders without syntax highlighting — best-effort by
-      // design (highlighting always degrades to plain). A structured read is a later addition.
-      return nil
+    case .commit(let commitID):
+      return try? await makeProvider(root).fileContent(
+        root: root, rev: commitID, path: descriptor.path)
     case .gitWorktree, .jjWorkingCopy:
       return Self.readWorkingFile(path: descriptor.path, in: dir)
     case .jjParent:
-      let (exe, args) = Self.parentShowCommand(path: descriptor.path)
-      let r = await runner.run(exe, args, in: dir, timeout: timeout)
-      guard r.ok, !r.stdout.isEmpty else { return nil }
-      // The runner caps stdout (4MB). If the file is at/over our parse cap, don't highlight
-      // (truncated content would mis-map byte offsets) — render plain.
-      guard r.stdout.utf8.count <= SyntaxLanguage.byteCap else { return nil }
-      return r.stdout
+      return try? await makeProvider(root).fileContent(
+        root: root, rev: "@-", path: descriptor.path)
     }
-  }
-
-  /// The jj command for the parent commit's version of a file. Pure (unit-tested): MUST target
-  /// `@-` with `--ignore-working-copy` and MUST NOT pass `-r @` (which would take the working-copy
-  /// lock the status sweep contends on).
-  static func parentShowCommand(path: String) -> (exe: String, args: [String]) {
-    ("jj", ["file", "show", "-r", "@-", "--ignore-working-copy", "--", path])
   }
 
   /// Read a working-copy file for highlighting, guarded against the traps a syntax parse would

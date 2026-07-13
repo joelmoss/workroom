@@ -3,35 +3,48 @@ import XCTest
 @testable import Workroom
 
 /// Tests for `DiffResolver.fileContent` — the new-side content fetch that feeds syntax highlighting.
-/// Working-copy sources read disk (exercised against a real temp workroom, never a real repo); the
-/// jj parent shells out (exercised via a recording mock runner so we can assert the exact args —
-/// crucially that it uses `@-` and never `-r @`).
+/// Working-copy sources read disk directly (guarded; exercised against a real temp workroom, never a
+/// real repo); commit / jj-parent sources read through `VCSProviding.fileContent` (a stub here — the
+/// crucial invariant is the revision each source resolves to, and that working-copy reads never touch
+/// the backend). Real-backend behaviour is covered by `VCSProviderConformanceTests`.
 final class DiffResolverFileContentTests: XCTestCase {
 
-  // A runner that records calls and returns a canned result; also flags whether it was called at
-  // all (disk-read sources must NOT touch it).
-  private final class RecordingRunner: StatusCommandRunning, @unchecked Sendable {
-    let result: CommandResult
+  /// Records `fileContent` calls and returns a configurable result (or throws). All other
+  /// `VCSProviding` members are unused stubs.
+  private final class StubContentProvider: VCSProviding, @unchecked Sendable {
+    var result: Result<String?, Error> = .success(nil)
     private let lock = NSLock()
-    private var _calls: [(exe: String, args: [String])] = []
-    var calls: [(exe: String, args: [String])] {
+    private var _calls: [(rev: String, path: String)] = []
+    var calls: [(rev: String, path: String)] {
       lock.lock()
       defer { lock.unlock() }
       return _calls
     }
-    init(result: CommandResult) { self.result = result }
-    func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
-      async -> CommandResult
-    {
+
+    func log(root: URL, limit: Int) async throws -> VCSHistoryPage {
+      .init(commits: [], reachedEnd: true)
+    }
+    func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
+      throw VCSError.io("unused")
+    }
+    func fileDiff(root: URL, commitID: String, path: String) async throws -> String { "" }
+    func workingFileDiff(root: URL, path: String, base: VCSWorkingDiffBase) async throws -> String {
+      ""
+    }
+    func currentRef(root: URL) async throws -> VCSRef { .none }
+    func fileContent(root: URL, rev: String, path: String) async throws -> String? {
       lock.lock()
-      _calls.append((executable, args))
+      _calls.append((rev, path))
       lock.unlock()
-      return result
+      switch result {
+      case .success(let s): return s
+      case .failure(let e): throw e
+      }
     }
   }
 
-  private func ok(_ stdout: String) -> CommandResult {
-    CommandResult(stdout: stdout, stderr: "", exitCode: 0, timedOut: false)
+  private func resolver(_ provider: StubContentProvider) -> DiffResolver {
+    DiffResolver(makeProvider: { _ in provider })
   }
 
   /// A fresh temp workroom directory, auto-removed at test end.
@@ -49,77 +62,66 @@ final class DiffResolverFileContentTests: XCTestCase {
     DiffDescriptor(path: path, change: change, source: source, isPreview: false)
   }
 
-  // MARK: - Pure command builder
+  // MARK: - Committed sources read through the backend at the right revision
 
-  func testParentShowCommandUsesParentNotWorkingCopy() {
-    let (exe, args) = DiffResolver.parentShowCommand(path: "app/models/user.rb")
-    XCTAssertEqual(exe, "jj")
-    XCTAssertEqual(
-      args, ["file", "show", "-r", "@-", "--ignore-working-copy", "--", "app/models/user.rb"])
-    XCTAssertTrue(args.contains("@-"), "must target the parent revision")
-    XCTAssertFalse(args.contains("@"), "must never use -r @ (would take the working-copy lock)")
-    XCTAssertTrue(args.contains("--ignore-working-copy"))
-  }
-
-  // MARK: - jj parent (shells out)
-
-  func testJJParentReadsViaFileShow() async throws {
+  func testCommitRoutesToProviderAtCommitRev() async throws {
     let dir = try makeWorkroom()
-    let runner = RecordingRunner(result: ok("class User\nend\n"))
-    let resolver = DiffResolver(runner: runner, timeout: 5)
-    let content = await resolver.fileContent(for: desc("user.rb", .jjParent), in: dir.path)
+    let p = StubContentProvider()
+    p.result = .success("class User\nend\n")
+    let content = await resolver(p).fileContent(
+      for: desc("user.rb", .commit("abc123")), in: dir.path)
     XCTAssertEqual(content, "class User\nend\n")
-    let call = runner.calls.first
-    XCTAssertEqual(call?.exe, "jj")
-    XCTAssertEqual(call?.args.first, "file")
-    XCTAssertTrue(call?.args.contains("@-") == true)
-    XCTAssertFalse(call?.args.contains("@") == true, "must never pass -r @")
+    XCTAssertEqual(p.calls.first?.rev, "abc123")
+    XCTAssertEqual(p.calls.first?.path, "user.rb")
   }
 
-  func testJJParentEmptyOutputIsNil() async throws {
+  func testJJParentRoutesToProviderAtParentRev() async throws {
     let dir = try makeWorkroom()
-    let resolver = DiffResolver(runner: RecordingRunner(result: ok("")), timeout: 5)
-    let content = await resolver.fileContent(for: desc("user.rb", .jjParent), in: dir.path)
+    let p = StubContentProvider()
+    p.result = .success("puts 1\n")
+    let content = await resolver(p).fileContent(for: desc("a.rb", .jjParent), in: dir.path)
+    XCTAssertEqual(content, "puts 1\n")
+    // The jj parent's content must come from `@-`, never `@` (which would take the working-copy lock).
+    XCTAssertEqual(p.calls.first?.rev, "@-")
+    XCTAssertFalse(p.calls.contains { $0.rev == "@" }, "must never read -r @")
+  }
+
+  func testProviderNilContentIsNil() async throws {
+    let dir = try makeWorkroom()
+    let p = StubContentProvider()
+    p.result = .success(nil)  // absent / binary / over-cap at the backend
+    let content = await resolver(p).fileContent(for: desc("x.rb", .commit("c1")), in: dir.path)
     XCTAssertNil(content)
   }
 
-  func testJJParentFailureIsNil() async throws {
+  func testProviderErrorIsNil() async throws {
     let dir = try makeWorkroom()
-    let fail = CommandResult(stdout: "x", stderr: "no such path", exitCode: 1, timedOut: false)
-    let resolver = DiffResolver(runner: RecordingRunner(result: fail), timeout: 5)
-    let content = await resolver.fileContent(for: desc("user.rb", .jjParent), in: dir.path)
-    XCTAssertNil(content)
+    let p = StubContentProvider()
+    p.result = .failure(VCSError.notFound("no such path"))
+    let content = await resolver(p).fileContent(for: desc("x.rb", .jjParent), in: dir.path)
+    XCTAssertNil(content, "a backend error degrades to plain, never propagates")
   }
 
-  func testJJParentOverCapIsNil() async throws {
-    let dir = try makeWorkroom()
-    let big = String(repeating: "a", count: SyntaxLanguage.byteCap + 1)
-    let resolver = DiffResolver(runner: RecordingRunner(result: ok(big)), timeout: 5)
-    let content = await resolver.fileContent(for: desc("big.rb", .jjParent), in: dir.path)
-    XCTAssertNil(content, "content at/over the parse cap must render plain, not mis-map")
-  }
+  // MARK: - Working-copy sources read disk (the backend must NOT be touched)
 
-  // MARK: - Working-copy sources (disk read; runner must NOT be called)
-
-  func testGitWorktreeReadsDiskWithoutRunner() async throws {
+  func testGitWorktreeReadsDiskWithoutBackend() async throws {
     let dir = try makeWorkroom()
     let body = "func main() {}\n"
-    try body.write(
-      to: dir.appendingPathComponent("main.go"), atomically: true, encoding: .utf8)
-    let runner = RecordingRunner(result: ok("SHOULD NOT BE USED"))
-    let resolver = DiffResolver(runner: runner, timeout: 5)
-    let content = await resolver.fileContent(for: desc("main.go", .gitWorktree), in: dir.path)
+    try body.write(to: dir.appendingPathComponent("main.go"), atomically: true, encoding: .utf8)
+    let p = StubContentProvider()
+    let content = await resolver(p).fileContent(for: desc("main.go", .gitWorktree), in: dir.path)
     XCTAssertEqual(content, body)
-    XCTAssertTrue(runner.calls.isEmpty, "working-copy reads must not shell out")
+    XCTAssertTrue(p.calls.isEmpty, "working-copy reads come from disk, never the backend")
   }
 
   func testJJWorkingCopyReadsDisk() async throws {
     let dir = try makeWorkroom()
     let body = "puts 'hi'\n"
     try body.write(to: dir.appendingPathComponent("a.rb"), atomically: true, encoding: .utf8)
-    let resolver = DiffResolver(runner: RecordingRunner(result: ok("x")), timeout: 5)
-    let content = await resolver.fileContent(for: desc("a.rb", .jjWorkingCopy), in: dir.path)
+    let p = StubContentProvider()
+    let content = await resolver(p).fileContent(for: desc("a.rb", .jjWorkingCopy), in: dir.path)
     XCTAssertEqual(content, body)
+    XCTAssertTrue(p.calls.isEmpty)
   }
 
   func testNestedPathReadsDisk() async throws {
@@ -128,18 +130,17 @@ final class DiffResolverFileContentTests: XCTestCase {
     try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
     let body = "class User; end\n"
     try body.write(to: sub.appendingPathComponent("user.rb"), atomically: true, encoding: .utf8)
-    let resolver = DiffResolver(runner: RecordingRunner(result: ok("x")), timeout: 5)
-    let content = await resolver.fileContent(
+    let content = await resolver(StubContentProvider()).fileContent(
       for: desc("app/models/user.rb", .gitWorktree), in: dir.path)
     XCTAssertEqual(content, body)
   }
 
-  // MARK: - Guards
+  // MARK: - Guards (working-copy disk read)
 
   func testMissingFileIsNil() async throws {
     let dir = try makeWorkroom()
-    let resolver = DiffResolver(runner: RecordingRunner(result: ok("x")), timeout: 5)
-    let content = await resolver.fileContent(for: desc("gone.swift", .gitWorktree), in: dir.path)
+    let content = await resolver(StubContentProvider()).fileContent(
+      for: desc("gone.swift", .gitWorktree), in: dir.path)
     XCTAssertNil(content)
   }
 
@@ -153,15 +154,14 @@ final class DiffResolverFileContentTests: XCTestCase {
     let link = dir.appendingPathComponent("link.swift")
     try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
 
-    let resolver = DiffResolver(runner: RecordingRunner(result: ok("x")), timeout: 5)
-    let content = await resolver.fileContent(for: desc("link.swift", .gitWorktree), in: dir.path)
+    let content = await resolver(StubContentProvider()).fileContent(
+      for: desc("link.swift", .gitWorktree), in: dir.path)
     XCTAssertNil(content, "a symlink's diff is its target-path text, not file content → plain")
   }
 
   func testPathEscapingWorkroomIsNil() async throws {
     let dir = try makeWorkroom()
-    let resolver = DiffResolver(runner: RecordingRunner(result: ok("x")), timeout: 5)
-    let content = await resolver.fileContent(
+    let content = await resolver(StubContentProvider()).fileContent(
       for: desc("../../../../etc/hosts", .gitWorktree), in: dir.path)
     XCTAssertNil(content, "a path escaping the workroom must not be read")
   }
@@ -170,8 +170,8 @@ final class DiffResolverFileContentTests: XCTestCase {
     let dir = try makeWorkroom()
     let big = String(repeating: "x", count: SyntaxLanguage.byteCap + 10)
     try big.write(to: dir.appendingPathComponent("big.json"), atomically: true, encoding: .utf8)
-    let resolver = DiffResolver(runner: RecordingRunner(result: ok("x")), timeout: 5)
-    let content = await resolver.fileContent(for: desc("big.json", .gitWorktree), in: dir.path)
+    let content = await resolver(StubContentProvider()).fileContent(
+      for: desc("big.json", .gitWorktree), in: dir.path)
     XCTAssertNil(content, "files over the byte cap must render plain")
   }
 }

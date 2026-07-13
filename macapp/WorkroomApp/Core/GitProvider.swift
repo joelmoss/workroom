@@ -122,6 +122,43 @@ struct GitProvider: VCSProviding {
     }
   }
 
+  /// The content of `path` at commit `rev`, for syntax-highlighting the diff's new side. Walks the
+  /// commit's tree to the blob (no subprocess). `nil` ⇒ path absent at that commit / not a blob /
+  /// over the highlight cap / non-UTF-8 (binary) → the caller renders plain.
+  func fileContent(root: URL, rev: String, path: String) async throws -> String? {
+    do {
+      let repo = try Repository.open(at: root)
+      let commit: Commit = try repo.show(id: OID(hex: rev))
+      guard let blobID = try Self.blobID(in: commit.tree, path: path, repo: repo) else {
+        return nil
+      }
+      let blob: Blob = try repo.show(id: blobID)
+      // Over the highlight cap → render plain (a truncated read would mis-map byte offsets).
+      guard blob.content.count <= SyntaxLanguage.byteCap else { return nil }
+      return String(data: blob.content, encoding: .utf8)  // nil ⇒ binary / non-UTF-8
+    } catch {
+      throw VCSError.io("\(error)")
+    }
+  }
+
+  /// Resolve `path` to its blob OID by walking the tree component-by-component (SwiftGitX `Tree`
+  /// exposes only flat `entries`, so nested paths are walked by hand). `nil` if any component is
+  /// missing or the leaf isn't a blob.
+  private static func blobID(in tree: Tree, path: String, repo: Repository) throws -> OID? {
+    let parts = path.split(separator: "/").map(String.init)
+    guard !parts.isEmpty else { return nil }
+    var current = tree
+    for (index, part) in parts.enumerated() {
+      guard let entry = current.entries.first(where: { $0.name == part }) else { return nil }
+      if index == parts.count - 1 {
+        return entry.type == .blob ? entry.id : nil
+      }
+      guard entry.type == .tree else { return nil }
+      current = try repo.show(id: entry.id)
+    }
+    return nil
+  }
+
   /// Build a single file's working-copy `Patch`. Prefers SwiftGitX's `patch(from: delta)` (handles
   /// untracked/added/modified/renamed); fills its gaps by hand: `.deleted` = old blob → empty,
   /// `.conflicted` = HEAD blob → the on-disk (conflict-marked) file. `nil` for anything else.
