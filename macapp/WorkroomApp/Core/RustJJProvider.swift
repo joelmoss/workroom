@@ -126,15 +126,25 @@ struct RustJJProvider: VCSProviding {
     } catch {
       throw VCSError.io("failed to spawn \(exe): \(error)")
     }
-    // Single-file diffs are small, so reading stdout to EOF before waiting can't deadlock here.
-    let data = out.fileHandleForReading.readDataToEndOfFile()
+    // Drain stdout AND stderr concurrently before waiting. Each pipe has a bounded OS buffer
+    // (~64 KB); reading only stdout while the child fills stderr (a verbose `jj` warning, an error
+    // dump) blocks the child on its stderr write while we block on stdout → deadlock. Reading both
+    // to EOF in parallel — each on its own detached read — can't deadlock.
+    async let outData = Self.readToEnd(out.fileHandleForReading)
+    async let errData = Self.readToEnd(err.fileHandleForReading)
+    let (data, errBytes) = await (outData, errData)
     proc.waitUntilExit()
     guard proc.terminationStatus == 0 else {
-      let stderr =
-        String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+      let stderr = String(data: errBytes, encoding: .utf8) ?? ""
       throw VCSError.io("\(exe) exited \(proc.terminationStatus): \(stderr)")
     }
     return String(data: data, encoding: .utf8) ?? ""
+  }
+
+  /// Read a pipe handle to EOF off the calling task (the blocking read runs on a detached task), so
+  /// two handles can be drained concurrently without one starving the other.
+  private static func readToEnd(_ handle: FileHandle) async -> Data {
+    await Task.detached { handle.readDataToEndOfFile() }.value
   }
 
   private static func map(_ c: WrVcs.Commit) -> VCSCommit {

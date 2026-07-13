@@ -8,7 +8,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use jj_lib::commit::Commit as JjCommit;
@@ -255,14 +255,41 @@ fn commit_changes(
     }
 }
 
+/// Base (non-tracked-tree) gitignores for the snapshot: the git global excludes and the repo-local
+/// `.git/info/exclude`, mirroring what the jj CLI feeds `SnapshotOptions`. Without these, an
+/// auto-status snapshot would *track* a file the user globally-ignores (e.g. a `.env` matched by
+/// `~/.config/git/ignore`) into `@`. jj-lib's snapshot walk always chains the in-tree `.gitignore`
+/// files on top of this base, so `node_modules` etc. stay ignored regardless.
+///
+/// Residual gap vs. the CLI: a custom `core.excludesFile` set in git config is not read (that needs
+/// a git-config parse); only git's default XDG location (`$XDG_CONFIG_HOME/git/ignore`, i.e.
+/// `~/.config/git/ignore`) is honored. Tracked as a follow-up.
+fn base_ignores(root: &Path) -> Arc<GitIgnoreFile> {
+    use jj_lib::repo_path::RepoPath;
+    let mut ignores = GitIgnoreFile::empty();
+    let chain = |ignores: Arc<GitIgnoreFile>, file: PathBuf| -> Arc<GitIgnoreFile> {
+        // chain_with_file no-ops when the file is absent; on a read error keep what we have.
+        ignores
+            .chain_with_file(RepoPath::root(), file)
+            .unwrap_or(ignores)
+    };
+    let xdg = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
+    if let Some(dir) = xdg {
+        ignores = chain(ignores, dir.join("git/ignore"));
+    }
+    chain(ignores, root.join(".git/info/exclude"))
+}
+
 /// Snapshot the working copy so `@` reflects on-disk edits, returning the repo at the resulting
 /// operation. Unlike the read-only `open`, this MUTATES (exactly like every `jj` command): it takes
 /// the working-copy lock, and when disk differs from `@`'s tree it rewrites `@`, rebases descendants,
 /// and commits a "snapshot working copy" operation. Modeled on jayjay's `refresh_working_copy`.
 ///
-/// `base_ignores` is empty on purpose: jj-lib's snapshot walk still chains the working tree's own
-/// `.gitignore` files (so `node_modules` etc. stay ignored) — only the global excludes
-/// (`core.excludesFile`, `.git/info/exclude`) are skipped, a minor fidelity gap versus the CLI.
+/// `base_ignores` chains the global + repo-local excludes (see `base_ignores`); `max_new_file_size`
+/// matches the jj CLI default (1 MiB) so a status refresh can't hash/store an arbitrarily huge
+/// untracked file.
 fn snapshot_working_copy(root: &Path) -> model::Result<(Workspace, Arc<ReadonlyRepo>)> {
     let settings = UserSettings::from_config(StackedConfig::with_defaults()).map_err(io)?;
     let mut workspace = Workspace::load(
@@ -283,11 +310,11 @@ fn snapshot_working_copy(root: &Path) -> model::Result<(Workspace, Arc<ReadonlyR
 
     let mut locked_ws = pollster::block_on(workspace.start_working_copy_mutation()).map_err(io)?;
     let options = SnapshotOptions {
-        base_ignores: GitIgnoreFile::empty(),
+        base_ignores: base_ignores(root),
         progress: None,
         start_tracking_matcher: &EverythingMatcher,
         force_tracking_matcher: &NothingMatcher,
-        max_new_file_size: u64::MAX,
+        max_new_file_size: 1024 * 1024, // 1 MiB — the jj CLI default (snapshot.max-new-file-size)
     };
     let (new_tree, _stats) =
         pollster::block_on(locked_ws.locked_wc().snapshot(&options)).map_err(io)?;
