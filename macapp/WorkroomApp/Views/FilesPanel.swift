@@ -12,39 +12,43 @@ struct FilesPanel: View {
 
   var body: some View {
     Group {
-      switch model.state {
-      case .idle:
-        placeholder("No workroom selected", systemImage: "folder")
-      case .loading:
-        HStack(spacing: 6) {
-          ProgressView().controlSize(.small)
-          Text("Listing files…").font(.callout).foregroundStyle(.secondary)
-        }
-        .padding(.vertical, 6).padding(.horizontal, 8)
-      case .unavailable:
-        placeholder("Not a repository", systemImage: "folder.badge.questionmark")
-      case .loaded:
-        if model.roots.isEmpty {
-          placeholder("No files", systemImage: "folder")
-        } else {
-          fileList
+      if store.inspectorTargetID == nil {
+        // No active workspace (nothing selected, or the selected workroom has no open tabs) — empty
+        // out to match the detail pane's "No terminal" state rather than list a stale workroom.
+        placeholder("No open terminal", systemImage: "folder")
+      } else {
+        switch model.state {
+        case .idle:
+          placeholder("No workroom selected", systemImage: "folder")
+        case .loading:
+          HStack(spacing: 6) {
+            ProgressView().controlSize(.small)
+            Text("Listing files…").font(.callout).foregroundStyle(.secondary)
+          }
+          .padding(.vertical, 6).padding(.horizontal, 8)
+        case .unavailable:
+          placeholder("Not a repository", systemImage: "folder.badge.questionmark")
+        case .loaded:
+          if model.roots.isEmpty {
+            placeholder("No files", systemImage: "folder")
+          } else {
+            fileList
+          }
         }
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    // Point the tree at the selected target — but only while Files is the active activity-bar
-    // section, so a selection (or another section showing) never lists files you're not looking at.
-    // Re-runs on either change; `activate` no-ops when already on the path, so re-selecting the same
-    // target is instant. (The Files pane is only mounted when it's the active section, but the guard
-    // keeps the behaviour correct regardless of where the panel is hosted.)
+    // Point the tree at the inspector's active target (nil once all its tabs close → the tree
+    // clears), only while Files is the active activity-bar section. Re-runs on either change;
+    // `activate` no-ops when already on the path, so re-selecting the same target is instant.
     .task(id: activationKey) {
       guard store.activeInspectorSection == .files else { return }
-      model.activate(path: store.selectedTarget?.path)
+      model.activate(path: store.inspectorTarget?.path)
     }
   }
 
   private var activationKey: String {
-    "\(AppStore.targetIDString(for: store.selectedTargetID) ?? "")"
+    "\(AppStore.targetIDString(for: store.inspectorTargetID) ?? "")"
       + "\u{1F}\(store.activeInspectorSection == .files)"
   }
 
