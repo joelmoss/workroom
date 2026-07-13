@@ -163,8 +163,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
           if let jj = try? await RustJJProvider().log(root: url, limit: 3) {
             NSLog("[wr-vcs] jj provider: [\(heads(jj))]")
           }
-          if let git = try? await GitProvider().log(root: url, limit: 3) {
-            NSLog("[wr-git] git provider: [\(heads(git))]")
+          do {
+            let g = GitProvider()
+            let gp = try await g.log(root: url, limit: 3)
+            NSLog("[wr-git] git provider: [\(heads(gp))]")
+            if let target = gp.commits.first {
+              let cs = try await g.changeset(root: url, commitID: target.commitID)
+              let files = cs.files.prefix(4).map { "\($0.kind):\($0.path)" }.joined(separator: " ")
+              NSLog("[wr-git] changeset \(target.shortID): files=\(cs.files.count) [\(files)]")
+              if let f = cs.files.first {
+                let patch = try await g.fileDiff(root: url, commitID: target.commitID, path: f.path)
+                let head = patch.prefix(70).replacingOccurrences(of: "\n", with: "⏎")
+                NSLog("[wr-git] fileDiff \(f.path): \(patch.count) chars head=[\(head)]")
+              }
+            }
+          } catch {
+            NSLog("[wr-git] error: \(error)")
           }
         }
       }

@@ -29,6 +29,12 @@ struct RustJJProvider: VCSProviding {
     )
   }
 
+  func fileDiff(root: URL, commitID: String, path: String) async throws -> String {
+    // jj per-file diff needs jj-lib's git-format diff writer in wr-vcs-core (next task). Until then
+    // the changeset file list works but the diff column is unavailable for jj.
+    throw VCSError.io("jj per-file diff not yet implemented (Phase 1)")
+  }
+
   private static func map(_ c: WrVcs.Commit) -> VCSCommit {
     VCSCommit(
       commitID: c.commitId,

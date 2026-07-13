@@ -8,6 +8,9 @@ protocol VCSProviding: Sendable {
   func log(root: URL, limit: Int) async throws -> VCSHistoryPage
   /// A single changeset: metadata + full message + changed-file list.
   func changeset(root: URL, commitID: String) async throws -> VCSChangeset
+  /// The per-file diff for one path within a changeset, as git-format unified-diff text (fed to the
+  /// existing `UnifiedDiff` parser / `DiffViewer`). Lazy — the detail view fetches it on selection.
+  func fileDiff(root: URL, commitID: String, path: String) async throws -> String
 }
 
 /// Backend selection + routing.
