@@ -136,6 +136,31 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
     XCTAssertNil(s.branchForCI)  // (detached) → no branch for CI
   }
 
+  // MARK: GitProvider.workingStatus (SwiftGitX / libgit2 — the structured status read)
+
+  func testGitProviderWorkingStatus() throws {
+    let dir = try gitRepoWithUpstream()
+    sh("echo two >> a.txt && echo new > untr.txt", in: dir)  // modify tracked + add untracked
+    let ws = try GitProvider().workingStatus(root: URL(fileURLWithPath: dir))
+    XCTAssertTrue(ws.dirty)
+    XCTAssertFalse(ws.conflicted)
+    XCTAssertEqual(ws.branch, "main")
+    let byChange = Dictionary(grouping: ws.files, by: \.change).mapValues { $0.map(\.path) }
+    XCTAssertEqual(byChange[.modified], ["a.txt"])
+    XCTAssertEqual(byChange[.untracked], ["untr.txt"])
+    // `git diff HEAD` counts the tracked modification (one added line); untracked is excluded.
+    XCTAssertEqual(ws.insertions, 1)
+    XCTAssertEqual(ws.deletions, 0)
+  }
+
+  func testGitProviderWorkingStatusClean() throws {
+    let dir = try gitRepoWithUpstream()
+    let ws = try GitProvider().workingStatus(root: URL(fileURLWithPath: dir))
+    XCTAssertFalse(ws.dirty)
+    XCTAssertTrue(ws.files.isEmpty)
+    XCTAssertEqual(ws.branch, "main")
+  }
+
   func testGitConflict() async throws {
     let dir = try gitRepoWithUpstream()
     sh(

@@ -79,6 +79,46 @@ struct GitProvider: VCSProviding {
     }
   }
 
+  /// The working-tree status for the sidebar/Changes badges: changed files (incl. untracked +
+  /// conflicts), dirty flag, current branch (for CI lookup), and the `git diff HEAD` line counts.
+  /// Read entirely through libgit2 — no subprocess.
+  ///
+  /// Security: this replaces the CLI status read that carried `-c core.fsmonitor=` +
+  /// `--no-ext-diff --no-textconv` hardening against an untrusted repo's config executing a program.
+  /// libgit2 needs no such flags here: its fsmonitor support is the bool/IPC form (it never spawns a
+  /// `core.fsmonitor` hook program), and its status/diff don't honor `diff.external`/textconv — so
+  /// there's no config-driven code-execution surface to neutralise.
+  func workingStatus(root: URL) throws -> GitWorkingStatus {
+    do {
+      let repo = try Repository.open(at: root)
+      var files: [ChangedFile] = []
+      var conflicted = false
+      for entry in try repo.status() {
+        if entry.status.contains(.ignored) || entry.status.contains(.current) { continue }
+        if entry.status.contains(.conflicted) {
+          conflicted = true
+          if let path = Self.statusPath(entry) {
+            files.append(ChangedFile(path: path, change: .conflicted))
+          }
+          continue
+        }
+        // Prefer the working-tree delta (unstaged), fall back to the index delta (staged-only).
+        guard let delta = entry.workingTree ?? entry.index,
+          let change = Self.change(delta.type), let path = Self.statusPath(entry)
+        else { continue }
+        files.append(ChangedFile(path: path, change: change))
+      }
+      // Current branch for CI (nil when detached / unborn) — `branch.current` throws when detached.
+      let branch = (try? repo.branch.current.name)
+      let (insertions, deletions) = Self.workingLineStats(repo)
+      return GitWorkingStatus(
+        dirty: !files.isEmpty, conflicted: conflicted, files: files, branch: branch,
+        insertions: insertions, deletions: deletions)
+    } catch {
+      throw VCSError.io("\(error)")
+    }
+  }
+
   // MARK: - Mapping
 
   private static func map(_ c: Commit) -> VCSCommit {
@@ -139,4 +179,60 @@ struct GitProvider: VCSProviding {
     }
     return out
   }
+
+  // MARK: - Working-status helpers
+
+  /// The path a status entry refers to (the new path, or the old path for a delete/rename).
+  private static func statusPath(_ entry: StatusEntry) -> String? {
+    guard let delta = entry.workingTree ?? entry.index else { return nil }
+    return delta.newFile.path.isEmpty ? delta.oldFile.path : delta.newFile.path
+  }
+
+  /// Map a libgit2 delta type to the app's working-tree change kind. `nil` for unmodified/ignored
+  /// (skipped). Conflicts are handled before this by the entry's `.conflicted` status.
+  private static func change(_ type: Diff.DeltaType) -> ChangedFile.Change? {
+    switch type {
+    case .added: return .added
+    case .deleted: return .deleted
+    case .modified, .typeChange: return .modified
+    case .renamed, .copied: return .renamed
+    case .untracked: return .untracked
+    case .conflicted: return .conflicted
+    case .unmodified, .ignored, .unreadable: return nil
+    }
+  }
+
+  /// `git diff HEAD` line counts (staged + unstaged tracked changes; untracked files excluded, as
+  /// git's `--shortstat HEAD` does). `nil` when there's no diff to read. Summed from patch lines
+  /// since libgit2's diff-stats aren't surfaced by SwiftGitX.
+  private static func workingLineStats(_ repo: Repository) -> (insertions: Int?, deletions: Int?) {
+    guard let diff = try? repo.diff(to: [.workingTree, .index]) else { return (nil, nil) }
+    var insertions = 0
+    var deletions = 0
+    for patch in diff.patches {
+      for hunk in patch.hunks {
+        for line in hunk.lines {
+          switch line.type {
+          case .addition, .additionEOF: insertions += 1
+          case .deletion, .deletionEOF: deletions += 1
+          default: break
+          }
+        }
+      }
+    }
+    return (insertions, deletions)
+  }
+}
+
+/// The git working-tree status behind the sidebar/Changes badges (issue #59), read via SwiftGitX.
+/// Git-shaped for now; the jj working status (with its `@`/`@-` disclosure structure) unifies onto a
+/// shared `VCSProviding.workingStatus` in the follow-on that migrates the jj resolver reads.
+struct GitWorkingStatus: Equatable, Sendable {
+  let dirty: Bool
+  let conflicted: Bool
+  let files: [ChangedFile]
+  /// Current branch (for CI lookup); nil when HEAD is detached or unborn.
+  let branch: String?
+  let insertions: Int?
+  let deletions: Int?
 }
