@@ -1,0 +1,11 @@
+[package]
+name = "wr-vcs-diff"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# jj-lib-free diff engine (hunks / line / word diff). May later reuse jayjay's `jj-diff` crate as the
+# producer (evaluated in Phase 1); for now it owns the model-level diff types' construction helpers.
+[dependencies]
+wr-vcs-model = { path = "../wr-vcs-model" }

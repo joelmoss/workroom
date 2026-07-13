@@ -1,0 +1,30 @@
+# Workroom VCS foundation — a Rust workspace exposing structured git + jj reads to the SwiftUI app
+# via UniFFI (see the plan: "Workroom VCS Foundation (Rust core)"). jj-lib is isolated to
+# wr-vcs-core's jj backend; the model + diff layers stay jj-lib-free so they're stable while jj churns.
+[workspace]
+members = [
+  "crates/wr-vcs-model",
+  "crates/wr-vcs-diff",
+  "crates/wr-vcs-core",
+  "crates/wr-vcs-uniffi",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/joelmoss/workroom"
+
+# Pinned exactly (plan: chase jj-lib deliberately — it's pre-1.0 with no Rust-API changelog).
+[workspace.dependencies]
+jj-lib = "=0.43.0"
+gix = { version = "0.85", default-features = false }
+uniffi = "0.32"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

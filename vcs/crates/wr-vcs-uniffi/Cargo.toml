@@ -1,0 +1,13 @@
+[package]
+name = "wr-vcs-uniffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# The UniFFI export surface + Swift-binding boundary. Becomes a staticlib linked into the app
+# (crate-type added in the xcframework task); the actual #[uniffi::export] surface lands in task 4.
+[dependencies]
+wr-vcs-core = { path = "../wr-vcs-core" }
+wr-vcs-model = { path = "../wr-vcs-model" }
+uniffi = { workspace = true }

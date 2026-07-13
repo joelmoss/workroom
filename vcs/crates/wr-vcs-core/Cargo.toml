@@ -1,0 +1,17 @@
+[package]
+name = "wr-vcs-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# The ONLY crate allowed to depend on jj-lib (isolated in the jj backend module) and gix (git backend).
+# App-facing reads: repo identity/backend selection, log page, changeset, per-file diff.
+[dependencies]
+wr-vcs-model = { path = "../wr-vcs-model" }
+wr-vcs-diff = { path = "../wr-vcs-diff" }
+jj-lib = { workspace = true }
+gix = { workspace = true }
+thiserror = { workspace = true }
+# block_on for jj-lib's async load_at_head (jayjay uses pollster the same way).
+pollster = "0.4"
