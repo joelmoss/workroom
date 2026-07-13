@@ -106,45 +106,74 @@ struct RustJJProvider: VCSProviding {
 
   /// Run a VCS CLI (via `/usr/bin/env` so PATH lookup works), returning stdout. GUI apps get a
   /// minimal PATH, so prepend the common Homebrew / local locations where `jj` lives.
+  ///
+  /// The entire blocking `Process` lifecycle (`run` + the pipe reads + `waitUntilExit`) runs on a
+  /// GCD global-queue thread, NEVER on the Swift cooperative thread pool. `readDataToEndOfFile()` and
+  /// `waitUntilExit()` park their thread until the child exits; parking a cooperative-pool thread
+  /// (what a bare `Task.detached` uses) starves the pool. With a few concurrent VCS reads in flight
+  /// (several windows polling status/branch + a diff load *and* its syntax-highlight `fileContent`
+  /// fetch), every cooperative thread ends up parked in a read, this call's own reads can't be
+  /// scheduled, its `jj` child fills its >64 KB stdout pipe with no reader, blocks on the write, and
+  /// never exits — the read never reaches EOF and the diff pane spins forever. GCD global-queue
+  /// threads exist precisely to be blocked, so the work goes there and the cooperative pool stays free.
   private static func run(_ exe: String, _ args: [String], cwd: URL) async throws -> String {
-    let proc = Process()
-    proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-    proc.arguments = [exe] + args
-    proc.currentDirectoryURL = cwd
     var env = ProcessInfo.processInfo.environment
     let extra = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
     env["PATH"] = env["PATH"].map { "\(extra):\($0)" } ?? extra
     env["GIT_OPTIONAL_LOCKS"] = "0"
-    proc.environment = env
+    let fullArgs = [exe] + args
+    let cwdURL = cwd
 
-    let out = Pipe()
-    let err = Pipe()
-    proc.standardOutput = out
-    proc.standardError = err
-    do {
-      try proc.run()
-    } catch {
-      throw VCSError.io("failed to spawn \(exe): \(error)")
+    return try await withCheckedThrowingContinuation {
+      (cont: CheckedContinuation<String, Error>) in
+      DispatchQueue.global(qos: .userInitiated).async {
+        // Build the process here (off the cooperative pool) so nothing non-Sendable crosses the
+        // continuation boundary.
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        proc.arguments = fullArgs
+        proc.currentDirectoryURL = cwdURL
+        proc.environment = env
+        let out = Pipe()
+        let err = Pipe()
+        proc.standardOutput = out
+        proc.standardError = err
+        do {
+          try proc.run()
+        } catch {
+          cont.resume(throwing: VCSError.io("failed to spawn \(exe): \(error)"))
+          return
+        }
+        // Drain stdout AND stderr concurrently before waiting. Each pipe has a bounded OS buffer
+        // (~64 KB); reading only stdout while the child fills stderr (a verbose `jj` warning, an
+        // error dump) blocks the child on its stderr write while we block on stdout → deadlock.
+        // Two GCD reads can't deadlock, and — unlike detached Tasks — don't touch the cooperative pool.
+        let box = OutputBox()
+        let group = DispatchGroup()
+        DispatchQueue.global(qos: .userInitiated).async(group: group) {
+          box.out = out.fileHandleForReading.readDataToEndOfFile()
+        }
+        DispatchQueue.global(qos: .userInitiated).async(group: group) {
+          box.err = err.fileHandleForReading.readDataToEndOfFile()
+        }
+        group.wait()  // both pipes drained to EOF (barrier: box is safe to read after this)
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else {
+          let stderr = String(data: box.err, encoding: .utf8) ?? ""
+          cont.resume(throwing: VCSError.io("\(exe) exited \(proc.terminationStatus): \(stderr)"))
+          return
+        }
+        cont.resume(returning: String(data: box.out, encoding: .utf8) ?? "")
+      }
     }
-    // Drain stdout AND stderr concurrently before waiting. Each pipe has a bounded OS buffer
-    // (~64 KB); reading only stdout while the child fills stderr (a verbose `jj` warning, an error
-    // dump) blocks the child on its stderr write while we block on stdout → deadlock. Reading both
-    // to EOF in parallel — each on its own detached read — can't deadlock.
-    async let outData = Self.readToEnd(out.fileHandleForReading)
-    async let errData = Self.readToEnd(err.fileHandleForReading)
-    let (data, errBytes) = await (outData, errData)
-    proc.waitUntilExit()
-    guard proc.terminationStatus == 0 else {
-      let stderr = String(data: errBytes, encoding: .utf8) ?? ""
-      throw VCSError.io("\(exe) exited \(proc.terminationStatus): \(stderr)")
-    }
-    return String(data: data, encoding: .utf8) ?? ""
   }
 
-  /// Read a pipe handle to EOF off the calling task (the blocking read runs on a detached task), so
-  /// two handles can be drained concurrently without one starving the other.
-  private static func readToEnd(_ handle: FileHandle) async -> Data {
-    await Task.detached { handle.readDataToEndOfFile() }.value
+  /// Mutable capture for the two concurrent pipe reads. `@unchecked Sendable` because the
+  /// `DispatchGroup` barrier (`group.wait()`) establishes the happens-before that makes the writes
+  /// visible before either field is read.
+  private final class OutputBox: @unchecked Sendable {
+    var out = Data()
+    var err = Data()
   }
 
   private static func map(_ c: WrVcs.Commit) -> VCSCommit {
