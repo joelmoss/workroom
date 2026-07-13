@@ -35,6 +35,21 @@ struct VCSHistoryPage: Equatable, Sendable {
   let reachedEnd: Bool
 }
 
+/// The kind of a repo's current ref (the sidebar root-row label). `ancestor` is jj-only (the nearest
+/// bookmark above a bookmark-less `@`); `detached` is git-only (HEAD on a raw commit, no branch).
+enum VCSRefKind: Equatable, Sendable {
+  case branch, ancestor, detached, none
+}
+
+/// A repo's current ref: jj's `@` bookmark (or nearest ancestor bookmark), or git's current branch
+/// (or a short SHA when detached). `name` is nil only for `.none`.
+struct VCSRef: Equatable, Sendable {
+  let name: String?
+  let kind: VCSRefKind
+
+  static let none = VCSRef(name: nil, kind: .none)
+}
+
 struct VCSChangedFile: Equatable, Identifiable, Sendable {
   let path: String
   /// Set for renames/copies.

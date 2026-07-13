@@ -431,4 +431,5 @@ private struct StubDiffProvider: VCSProviding {
   func fileDiff(root: URL, commitID: String, path: String) async throws -> String {
     try diff(root, commitID, path)
   }
+  func currentRef(root: URL) async throws -> VCSRef { .none }
 }

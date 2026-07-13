@@ -449,6 +449,10 @@ struct FixtureVCSProvider: VCSProviding {
   func fileDiff(root: URL, commitID: String, path: String) async throws -> String {
     "diff --git a/\(path) b/\(path)\n@@ -1 +1 @@\n-old\n+new\n"
   }
+
+  func currentRef(root: URL) async throws -> VCSRef {
+    VCSRef(name: "main", kind: .branch)
+  }
 }
 
 /// The inline agent backend used under `-WorkroomUITestAgentStub`: returns a canned envelope with no

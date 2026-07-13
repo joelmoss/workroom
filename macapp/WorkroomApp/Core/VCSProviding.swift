@@ -11,6 +11,10 @@ protocol VCSProviding: Sendable {
   /// The per-file diff for one path within a changeset, as git-format unified-diff text (fed to the
   /// existing `UnifiedDiff` parser / `DiffViewer`). Lazy — the detail view fetches it on selection.
   func fileDiff(root: URL, commitID: String, path: String) async throws -> String
+  /// The repo's current ref for the sidebar root-row label — the `@` bookmark / nearest ancestor
+  /// bookmark (jj) or current branch / short SHA (git). Read-only; must not take the jj working-copy
+  /// lock (backs `BranchResolver`).
+  func currentRef(root: URL) async throws -> VCSRef
 }
 
 /// Backend selection + routing.

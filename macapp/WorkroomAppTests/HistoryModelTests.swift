@@ -27,6 +27,7 @@ final class HistoryModelTests: XCTestCase {
     func fileDiff(root: URL, commitID: String, path: String) async throws -> String {
       throw VCSError.io("unused")
     }
+    func currentRef(root: URL) async throws -> VCSRef { .none }
   }
 
   private struct FailProvider: VCSProviding {
@@ -39,6 +40,7 @@ final class HistoryModelTests: XCTestCase {
     func fileDiff(root: URL, commitID: String, path: String) async throws -> String {
       throw VCSError.io("boom")
     }
+    func currentRef(root: URL) async throws -> VCSRef { throw VCSError.io("boom") }
   }
 
   private func model(_ provider: some VCSProviding, pageSize: Int) -> HistoryModel {

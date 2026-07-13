@@ -62,6 +62,20 @@ pub struct Changeset {
     pub is_merge: bool,
 }
 
+#[derive(uniffi::Enum)]
+pub enum RefKind {
+    Branch,
+    Ancestor,
+    Detached,
+    None,
+}
+
+#[derive(uniffi::Record)]
+pub struct Ref {
+    pub name: Option<String>,
+    pub kind: RefKind,
+}
+
 /// Mirrors `model::VcsError`; each variant maps to a distinct, recoverable Swift-side UI state.
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum VcsError {
@@ -83,7 +97,10 @@ pub enum VcsError {
 
 impl From<model::Author> for Author {
     fn from(a: model::Author) -> Self {
-        Author { name: a.name, email: a.email }
+        Author {
+            name: a.name,
+            email: a.email,
+        }
     }
 }
 
@@ -130,7 +147,11 @@ impl From<model::ChangeKind> for ChangeKind {
 
 impl From<model::ChangedFile> for ChangedFile {
     fn from(f: model::ChangedFile) -> Self {
-        ChangedFile { path: f.path, old_path: f.old_path, kind: f.kind.into() }
+        ChangedFile {
+            path: f.path,
+            old_path: f.old_path,
+            kind: f.kind.into(),
+        }
     }
 }
 
@@ -141,6 +162,27 @@ impl From<model::Changeset> for Changeset {
             full_message: c.full_message,
             files: c.files.into_iter().map(ChangedFile::from).collect(),
             is_merge: c.is_merge,
+        }
+    }
+}
+
+impl From<model::RefKind> for RefKind {
+    fn from(k: model::RefKind) -> Self {
+        use model::RefKind as M;
+        match k {
+            M::Branch => RefKind::Branch,
+            M::Ancestor => RefKind::Ancestor,
+            M::Detached => RefKind::Detached,
+            M::None => RefKind::None,
+        }
+    }
+}
+
+impl From<model::Ref> for Ref {
+    fn from(r: model::Ref) -> Self {
+        Ref {
+            name: r.name,
+            kind: r.kind.into(),
         }
     }
 }
@@ -179,5 +221,14 @@ pub fn log_page(root: String, limit: u32) -> Result<HistoryPage, VcsError> {
 pub fn changeset(root: String, commit_id: String) -> Result<Changeset, VcsError> {
     wr_vcs_core::changeset(Path::new(&root), &commit_id)
         .map(Changeset::from)
+        .map_err(VcsError::from)
+}
+
+/// The repo's current ref (the `@` bookmark / nearest ancestor bookmark / none) for the sidebar
+/// root-row label.
+#[uniffi::export]
+pub fn current_ref(root: String) -> Result<Ref, VcsError> {
+    wr_vcs_core::current_ref(Path::new(&root))
+        .map(Ref::from)
         .map_err(VcsError::from)
 }

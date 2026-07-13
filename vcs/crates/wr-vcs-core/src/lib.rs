@@ -36,3 +36,9 @@ pub fn log_page(root: &Path, limit: usize) -> model::Result<model::HistoryPage> 
 pub fn changeset(root: &Path, commit_id_hex: &str) -> model::Result<model::Changeset> {
     jj_backend::changeset(root, commit_id_hex)
 }
+
+/// The repo's current ref (the `@` bookmark, nearest ancestor bookmark, or none) for the sidebar
+/// root-row label. Read-only; no working-copy snapshot/lock.
+pub fn current_ref(root: &Path) -> model::Result<model::Ref> {
+    jj_backend::current_ref(root)
+}

@@ -48,7 +48,11 @@ fn author_of(sig: &jj_lib::backend::Signature) -> (Author, i64, i32) {
         name: sig.name.clone(),
         email: sig.email.clone(),
     };
-    (author, sig.timestamp.timestamp.0, sig.timestamp.tz_offset * 60)
+    (
+        author,
+        sig.timestamp.timestamp.0,
+        sig.timestamp.tz_offset * 60,
+    )
 }
 
 /// Build `commit_id_hex -> [bookmark names]` from the repo view's local bookmarks.
@@ -90,7 +94,10 @@ fn to_model_commit(
 struct HeapItem(JjCommit);
 impl HeapItem {
     fn key(&self) -> (i64, &[u8]) {
-        (self.0.committer().timestamp.timestamp.0, self.0.id().as_bytes())
+        (
+            self.0.committer().timestamp.timestamp.0,
+            self.0.id().as_bytes(),
+        )
     }
 }
 impl PartialEq for HeapItem {
@@ -115,7 +122,10 @@ impl PartialOrd for HeapItem {
 pub fn log_page(root: &Path, limit: usize) -> model::Result<HistoryPage> {
     let (workspace, repo) = open(root)?;
     let store = repo.store();
-    let wc_id = repo.view().get_wc_commit_id(workspace.workspace_name()).cloned();
+    let wc_id = repo
+        .view()
+        .get_wc_commit_id(workspace.workspace_name())
+        .cloned();
 
     let bookmarks = bookmark_map(&repo);
 
@@ -130,7 +140,10 @@ pub fn log_page(root: &Path, limit: usize) -> model::Result<HistoryPage> {
     while commits.len() < limit {
         let Some(HeapItem(commit)) = heap.pop() else {
             // Exhausted the reachable graph before filling the page.
-            return Ok(HistoryPage { commits, reached_end: true });
+            return Ok(HistoryPage {
+                commits,
+                reached_end: true,
+            });
         };
         commits.push(to_model_commit(&commit, wc_id.as_ref(), &bookmarks));
         for parent_id in commit.parent_ids() {
@@ -140,7 +153,75 @@ pub fn log_page(root: &Path, limit: usize) -> model::Result<HistoryPage> {
         }
     }
     let reached_end = heap.is_empty();
-    Ok(HistoryPage { commits, reached_end })
+    Ok(HistoryPage {
+        commits,
+        reached_end,
+    })
+}
+
+/// The repo's current ref for the sidebar label (read-only; no snapshot/lock — same `open` path as
+/// the log). A bookmark directly on the working copy `@` ⇒ `Branch`; else the nearest ancestor
+/// bookmark (walk `@`'s ancestry newest-first, first bookmarked commit wins) ⇒ `Ancestor`; else
+/// `None`. jj never reports `Detached` (that's a git concept). When a commit carries several
+/// bookmarks the alphabetically-first is chosen, matching the jj CLI's sorted `bookmarks` template.
+pub fn current_ref(root: &Path) -> model::Result<model::Ref> {
+    let (workspace, repo) = open(root)?;
+    let store = repo.store();
+    let bookmarks = bookmark_map(&repo);
+    let none = model::Ref {
+        name: None,
+        kind: model::RefKind::None,
+    };
+    if bookmarks.is_empty() {
+        return Ok(none);
+    }
+    let Some(wc_id) = repo
+        .view()
+        .get_wc_commit_id(workspace.workspace_name())
+        .cloned()
+    else {
+        return Ok(none);
+    };
+
+    let pick = |id_hex: &str| -> Option<String> {
+        bookmarks
+            .get(id_hex)
+            .and_then(|names| names.iter().min().cloned())
+    };
+
+    // A bookmark directly on `@`.
+    if let Some(name) = pick(&wc_id.hex()) {
+        return Ok(model::Ref {
+            name: Some(name),
+            kind: model::RefKind::Branch,
+        });
+    }
+
+    // Otherwise the nearest ancestor bookmark: walk `@`'s ancestry newest-first (the same heap the
+    // log uses), returning the first bookmarked commit.
+    let mut seen: HashSet<Vec<u8>> = HashSet::new();
+    let mut heap: BinaryHeap<HeapItem> = BinaryHeap::new();
+    seen.insert(wc_id.as_bytes().to_vec());
+    let wc_commit = store.get_commit(&wc_id).map_err(io)?;
+    for parent_id in wc_commit.parent_ids() {
+        if seen.insert(parent_id.as_bytes().to_vec()) {
+            heap.push(HeapItem(store.get_commit(parent_id).map_err(io)?));
+        }
+    }
+    while let Some(HeapItem(commit)) = heap.pop() {
+        if let Some(name) = pick(&commit.id().hex()) {
+            return Ok(model::Ref {
+                name: Some(name),
+                kind: model::RefKind::Ancestor,
+            });
+        }
+        for parent_id in commit.parent_ids() {
+            if seen.insert(parent_id.as_bytes().to_vec()) {
+                heap.push(HeapItem(store.get_commit(parent_id).map_err(io)?));
+            }
+        }
+    }
+    Ok(none)
 }
 
 /// A single changeset: metadata + full message + changed-file list (vs the first parent). Per-file

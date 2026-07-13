@@ -29,6 +29,16 @@ struct RustJJProvider: VCSProviding {
     )
   }
 
+  func currentRef(root: URL) async throws -> VCSRef {
+    let ref: WrVcs.Ref
+    do {
+      ref = try WrVcs.currentRef(root: root.path)
+    } catch {
+      throw Self.mapError(error)
+    }
+    return VCSRef(name: ref.name, kind: Self.map(ref.kind))
+  }
+
   func fileDiff(root: URL, commitID: String, path: String) async throws -> String {
     // jj-lib exposes raw diff regions but no git-format writer (that lives in the jj CLI). Rather
     // than reimplement unified-diff formatting, use the jj CLI for the per-file patch text — the
@@ -101,6 +111,15 @@ struct RustJJProvider: VCSProviding {
     case .copied: return .copied
     case .conflicted: return .conflicted
     case .other: return .other
+    }
+  }
+
+  private static func map(_ k: WrVcs.RefKind) -> VCSRefKind {
+    switch k {
+    case .branch: return .branch
+    case .ancestor: return .ancestor
+    case .detached: return .detached
+    case .none: return .none
     }
   }
 

@@ -40,6 +40,27 @@ struct GitProvider: VCSProviding {
     }
   }
 
+  func currentRef(root: URL) async throws -> VCSRef {
+    do {
+      let repo = try Repository.open(at: root)
+      // Unborn HEAD (git init, no commit): HEAD symbolically points at a branch that has no commit
+      // yet. Report that branch name (from config's init.defaultBranch) so a fresh repo still labels.
+      if repo.isHEADUnborn {
+        let name = try? repo.config.defaultBranchName
+        return VCSRef(name: name, kind: name == nil ? .none : .branch)
+      }
+      // Attached HEAD → the current branch. `branch.current` throws when HEAD is detached.
+      if let branch = try? repo.branch.current {
+        return VCSRef(name: branch.name, kind: .branch)
+      }
+      // Detached HEAD → the short commit id (mirrors `git rev-parse --short HEAD`).
+      let head = try repo.HEAD
+      return VCSRef(name: head.target.id.abbreviated, kind: .detached)
+    } catch {
+      throw VCSError.io("\(error)")
+    }
+  }
+
   func fileDiff(root: URL, commitID: String, path: String) async throws -> String {
     do {
       let repo = try Repository.open(at: root)

@@ -60,6 +60,24 @@ pub struct HistoryPage {
     pub reached_end: bool,
 }
 
+/// The kind of a repo's current ref (the sidebar root-row label). `Ancestor` is jj-only (the nearest
+/// bookmark above a bookmark-less `@`); `Detached` is git-only (HEAD on a raw commit, no branch).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RefKind {
+    Branch,
+    Ancestor,
+    Detached,
+    None,
+}
+
+/// A repo's current ref: jj's `@` bookmark (or nearest ancestor bookmark), or git's current branch
+/// (or a short SHA when detached). `name` is `None` only for `RefKind::None`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ref {
+    pub name: Option<String>,
+    pub kind: RefKind,
+}
+
 /// A full changeset: its commit metadata, full (multi-line) message, and changed-file list.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Changeset {

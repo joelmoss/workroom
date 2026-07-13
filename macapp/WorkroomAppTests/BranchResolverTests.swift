@@ -2,117 +2,91 @@ import XCTest
 
 @testable import Workroom
 
-/// A `CommandRunning` that returns canned output per (executable, args), so BranchResolver
-/// can be tested without spawning real git/jj.
-private struct MockRunner: CommandRunning {
-  let handler: @Sendable (_ executable: String, _ args: [String]) -> String?
-  func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
-    async -> String?
-  {
-    handler(executable, args)
+/// A `VCSProviding` whose `currentRef` is a closure; the other reads are unused here. Lets
+/// `BranchResolver` be tested without a real repo now that it reads through the provider seam.
+private struct StubProvider: VCSProviding {
+  let ref: @Sendable () async throws -> VCSRef
+  func log(root: URL, limit: Int) async throws -> VCSHistoryPage {
+    .init(commits: [], reachedEnd: true)
   }
+  func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
+    throw VCSError.io("unused")
+  }
+  func fileDiff(root: URL, commitID: String, path: String) async throws -> String {
+    throw VCSError.io("unused")
+  }
+  func currentRef(root: URL) async throws -> VCSRef { try await ref() }
 }
 
+/// `BranchResolver` now just maps the backend's `VCSRef` → the sidebar's `RootRef`, guards the
+/// vcs kind, and bounds the read with a timeout — the git/jj specifics (symbolic-ref, bookmark
+/// walk, name cleaning) moved into `GitProvider`/`RustJJProvider` (+ the Rust `current_ref`).
 final class BranchResolverTests: XCTestCase {
+  private func resolver(
+    timeout: TimeInterval = 3, _ ref: @escaping @Sendable () async throws -> VCSRef
+  ) -> BranchResolver {
+    BranchResolver(timeout: timeout, makeProvider: { _ in StubProvider(ref: ref) })
+  }
 
-  // MARK: git
+  // MARK: VCSRef → RootRef mapping (git branch/detached + jj bookmark/ancestor all funnel here)
 
-  func testGitOnBranch() async {
-    let r = BranchResolver(
-      runner: MockRunner { _, args in
-        args.contains("symbolic-ref") ? "main" : nil
-      })
-    let ref = await r.resolve(path: "/x", vcs: "git")
+  func testBranchMapsToBranch() async {
+    let ref = await resolver { VCSRef(name: "main", kind: .branch) }.resolve(path: "/x", vcs: "git")
     XCTAssertEqual(ref.kind, .branch)
     XCTAssertEqual(ref.branch, "main")
   }
 
-  func testGitUnbornRepoIsStillBranch() async {
-    // `git symbolic-ref` succeeds on an unborn repo (HEAD → refs/heads/main before the
-    // first commit), so the working copy is "on" main — NOT .none.
-    let r = BranchResolver(
-      runner: MockRunner { _, args in
-        args.contains("symbolic-ref") ? "main" : nil
-      })
-    let ref = await r.resolve(path: "/x", vcs: "git")
-    XCTAssertEqual(ref.kind, .branch)
-  }
-
-  func testGitDetached() async {
-    let r = BranchResolver(
-      runner: MockRunner { _, args in
-        if args.contains("symbolic-ref") { return nil }  // detached → fails
-        if args.contains("rev-parse") { return "a1b2c3d" }
-        return nil
-      })
-    let ref = await r.resolve(path: "/x", vcs: "git")
-    XCTAssertEqual(ref.kind, .detached)
-    XCTAssertEqual(ref.branch, "a1b2c3d")
-  }
-
-  func testGitNone() async {
-    let r = BranchResolver(runner: MockRunner { _, _ in nil })
-    let ref = await r.resolve(path: "/x", vcs: "git")
-    XCTAssertEqual(ref.kind, .none)
-    XCTAssertNil(ref.branch)
-  }
-
-  // MARK: jj
-  // First query is `-r @`; the fallback is `-r heads(::@ & bookmarks())`.
-
-  func testJJBookmarkOnWorkingCopy() async {
-    let r = BranchResolver(
-      runner: MockRunner { _, args in
-        args.contains("@") ? "feature" : nil
-      })
-    let ref = await r.resolve(path: "/x", vcs: "jj")
-    XCTAssertEqual(ref.kind, .branch)
-    XCTAssertEqual(ref.branch, "feature")
-  }
-
-  func testJJAncestorFallback() async {
-    let r = BranchResolver(
-      runner: MockRunner { _, args in
-        if args.contains("@") { return "" }  // no bookmark on @
-        if args.contains("heads(::@ & bookmarks())") { return "master\n" }
-        return nil
-      })
-    let ref = await r.resolve(path: "/x", vcs: "jj")
+  func testAncestorMapsToAncestor() async {
+    let ref = await resolver { VCSRef(name: "master", kind: .ancestor) }
+      .resolve(path: "/x", vcs: "jj")
     XCTAssertEqual(ref.kind, .ancestor)
     XCTAssertEqual(ref.branch, "master")
   }
 
-  func testJJNoBookmarksAnywhere() async {
-    let r = BranchResolver(runner: MockRunner { _, _ in "" })
-    let ref = await r.resolve(path: "/x", vcs: "jj")
-    XCTAssertEqual(ref.kind, .none)
+  func testDetachedMapsToDetached() async {
+    let ref = await resolver { VCSRef(name: "a1b2c3d", kind: .detached) }
+      .resolve(path: "/x", vcs: "git")
+    XCTAssertEqual(ref.kind, .detached)
+    XCTAssertEqual(ref.branch, "a1b2c3d")
   }
 
-  func testJJMultipleBookmarksTakesFirst() async {
-    let r = BranchResolver(
-      runner: MockRunner { _, args in
-        args.contains("@") ? "feat-a feat-b" : nil
-      })
-    let ref = await r.resolve(path: "/x", vcs: "jj")
-    XCTAssertEqual(ref.branch, "feat-a")
+  func testNoneMapsToUnresolved() async {
+    let ref = await resolver { VCSRef.none }.resolve(path: "/x", vcs: "jj")
+    XCTAssertEqual(ref, .unresolved)
   }
 
-  func testUnknownVCS() async {
-    let r = BranchResolver(runner: MockRunner { _, _ in "anything" })
+  func testEmptyNameFallsBackToUnresolved() async {
+    // Defensive: a kind that claims a branch but carries no name isn't a usable label.
+    let ref = await resolver { VCSRef(name: "", kind: .branch) }.resolve(path: "/x", vcs: "git")
+    XCTAssertEqual(ref, .unresolved)
+  }
+
+  // MARK: routing + failure modes
+
+  func testUnknownVCSSkipsProvider() async {
+    // A non-git/jj vcs resolves to .unresolved WITHOUT ever calling the provider.
+    let r = BranchResolver(makeProvider: { _ in
+      StubProvider {
+        XCTFail("the provider must not be called for an unsupported vcs")
+        return .none
+      }
+    })
     let ref = await r.resolve(path: "/x", vcs: "hg")
-    XCTAssertEqual(ref.kind, .none)
+    XCTAssertEqual(ref, .unresolved)
   }
 
-  // MARK: firstBookmark normalization (Codex #9)
+  func testProviderErrorYieldsUnresolved() async {
+    let ref = await resolver { throw VCSError.io("boom") }.resolve(path: "/x", vcs: "git")
+    XCTAssertEqual(ref, .unresolved)
+  }
 
-  func testFirstBookmarkNormalization() {
-    XCTAssertEqual(BranchResolver.firstBookmark("main"), "main")
-    XCTAssertEqual(BranchResolver.firstBookmark("main*"), "main")  // conflicted
-    XCTAssertEqual(BranchResolver.firstBookmark("main??"), "main")  // conflicted
-    XCTAssertEqual(BranchResolver.firstBookmark("main@origin"), "main")  // remote-tracking
-    XCTAssertEqual(BranchResolver.firstBookmark("feat-a feat-b"), "feat-a")
-    XCTAssertEqual(BranchResolver.firstBookmark("\n\nmaster\n"), "master")
-    XCTAssertNil(BranchResolver.firstBookmark(""))
-    XCTAssertNil(BranchResolver.firstBookmark("   \n  "))
+  func testTimeoutYieldsUnresolved() async {
+    // A read that outruns the deadline is abandoned → .unresolved (one wedged repo, one row).
+    let r = resolver(timeout: 0.1) {
+      try await Task.sleep(nanoseconds: 5_000_000_000)
+      return VCSRef(name: "late", kind: .branch)
+    }
+    let ref = await r.resolve(path: "/x", vcs: "git")
+    XCTAssertEqual(ref, .unresolved)
   }
 }

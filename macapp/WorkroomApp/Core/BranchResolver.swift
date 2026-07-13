@@ -1,161 +1,60 @@
 import Foundation
 
-/// Runs a short command in `directory` and returns its trimmed stdout, or nil on error,
-/// non-zero exit, or timeout. A seam (mirrors the Go `CommandExecutor`) so `BranchResolver`
-/// can be unit-tested without spawning real git/jj.
-protocol CommandRunning: Sendable {
-  func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
-    async -> String?
-}
-
-/// Resolves a project root's current branch/bookmark by shelling out to git/jj. Resolution
-/// is app-side because the label is a GUI-only concern — the `workroom` CLI never shows it
-/// — and because resolving per project (rather than inside `list --json`) keeps the list
-/// instant and isolates a slow/wedged repo to its own row. Best-effort: any failure or
-/// timeout yields `.none` for that project and never affects others.
-struct BranchResolver {
-  let runner: CommandRunning
-  /// Per-call ceiling so one hung repo abandons only its own label.
+/// Resolves a project root's current branch/bookmark for the sidebar root-row label — the `@`
+/// bookmark / nearest ancestor bookmark (jj) or current branch / short SHA (git) — read structurally
+/// through `VCSProviding` (jj via jj-lib, git via SwiftGitX). GUI-only: the `workroom` CLI never
+/// shows it, and resolving per project (not inside `list --json`) keeps the list instant and
+/// isolates a slow/wedged repo to its own row. Best-effort — any failure or timeout yields
+/// `.unresolved` for that project and never affects others.
+///
+/// (Previously shelled `git symbolic-ref` / `jj log -T bookmarks` and parsed the output; the jj
+/// bookmark cleaning + nearest-ancestor walk now live in the Rust core's `current_ref`, and jj-lib's
+/// `local_bookmarks()` yields clean names — no `*`/`?`/`@` decoration to strip. The read stays
+/// lock-safe: `current_ref` never snapshots the working copy, so it can't self-trigger the
+/// `.jj` file watcher.)
+struct BranchResolver: Sendable {
+  /// Per-call ceiling so one hung repo abandons only its own label. `VCSProviding` has no built-in
+  /// timeout, so this wraps the read in `withTimeout`.
   var timeout: TimeInterval
+  /// The VCS backend, injected for tests. Defaults to the real repo-kind router.
+  let makeProvider: @Sendable (URL) throws -> VCSProviding
 
-  init(runner: CommandRunning = ProcessCommandRunner(), timeout: TimeInterval = 3) {
-    self.runner = runner
+  init(
+    timeout: TimeInterval = 3,
+    makeProvider: @escaping @Sendable (URL) throws -> VCSProviding = { try VCS.provider(for: $0) }
+  ) {
     self.timeout = timeout
+    self.makeProvider = makeProvider
   }
 
   func resolve(path: String, vcs: String) async -> RootRef {
-    switch vcs {
-    case "git": return await resolveGit(path)
-    case "jj": return await resolveJJ(path)
-    default: return .unresolved
-    }
-  }
-
-  private func resolveGit(_ dir: String) async -> RootRef {
-    // symbolic-ref succeeds whenever HEAD points at a branch — including an *unborn*
-    // repo (HEAD → refs/heads/main before the first commit). A detached HEAD fails it.
-    if let name = await run(dir, "git", "symbolic-ref", "--quiet", "--short", "HEAD"),
-      !name.isEmpty
-    {
-      return RootRef(branch: name, kind: .branch)
-    }
-    if let sha = await run(dir, "git", "rev-parse", "--short", "HEAD"), !sha.isEmpty {
-      return RootRef(branch: sha, kind: .detached)
-    }
-    return .unresolved
-  }
-
-  private func resolveJJ(_ dir: String) async -> RootRef {
-    // `--ignore-working-copy` keeps resolution read-only: jj would otherwise snapshot the working
-    // copy (writing under `.jj/`) on every `log`, which both mutates the repo for a mere label read
-    // and self-triggers the root-branch filesystem watcher into a refresh loop (see
-    // `AppStore.handleRootBranchChange`). The bookmark we want is already recorded, so the snapshot
-    // is unnecessary. Mirrors `WorkroomStatusResolver`'s jj reads.
-    // Bookmarks pointing exactly at the working copy.
-    if let out = await run(
-      dir, "jj", "log", "-r", "@", "--ignore-working-copy", "--no-graph", "--color", "never",
-      "-T", "bookmarks"),
-      let name = Self.firstBookmark(out)
-    {
-      return RootRef(branch: name, kind: .branch)
-    }
-    // Otherwise the nearest ancestor bookmark (the jj norm — the working copy is an
-    // anonymous change ahead of, say, `master`).
-    if let out = await run(
-      dir, "jj", "log", "-r", "heads(::@ & bookmarks())", "--ignore-working-copy", "--no-graph",
-      "--color", "never", "-T", #"bookmarks ++ "\n""#),
-      let name = Self.firstBookmark(out)
-    {
-      return RootRef(branch: name, kind: .ancestor)
-    }
-    return .unresolved
-  }
-
-  private func run(_ dir: String, _ exe: String, _ args: String...) async -> String? {
-    await runner.run(exe, args, in: dir, timeout: timeout)
-  }
-
-  /// First bookmark token from jj `bookmarks` template output, with status/sync markers
-  /// stripped: jj renders e.g. `main*` / `main??` (conflicted) or `main@origin` (remote).
-  /// Multi-line / multi-bookmark output collapses to the first token so the row stays a
-  /// single clean label.
-  static func firstBookmark(_ output: String) -> String? {
-    for line in output.split(whereSeparator: \.isNewline) {
-      for token in line.split(whereSeparator: \.isWhitespace) {
-        let cleaned = token.prefix { $0 != "*" && $0 != "?" && $0 != "@" }
-        if !cleaned.isEmpty { return String(cleaned) }
+    // Only git/jj projects have a resolvable root ref; anything else has no label. (The provider
+    // itself routes jj vs git by repo kind — this guard just skips the unsupported case.)
+    guard vcs == "git" || vcs == "jj" else { return .unresolved }
+    let root = URL(fileURLWithPath: path, isDirectory: true)
+    do {
+      let ref = try await withTimeout(seconds: timeout) {
+        // Off the main actor: the providers do blocking work (libgit2 / jj-lib over UniFFI).
+        try await Task.detached(priority: .userInitiated) {
+          try await makeProvider(root).currentRef(root: root)
+        }.value
       }
-    }
-    return nil
-  }
-}
-
-/// Default `CommandRunning`: spawns the command via `/usr/bin/env` (so the augmented PATH
-/// finds Homebrew git/jj) with git's prompt/locks disabled, and enforces `timeout` by
-/// terminating the process. Output is small (a branch name), so reading to EOF in the
-/// termination handler cannot deadlock.
-struct ProcessCommandRunner: CommandRunning {
-  func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
-    async -> String?
-  {
-    await withCheckedContinuation { (continuation: CheckedContinuation<String?, Never>) in
-      let proc = Process()
-      proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-      proc.arguments = [executable] + args
-      proc.currentDirectoryURL = URL(fileURLWithPath: directory)
-
-      var env = ProcessInfo.processInfo.environment
-      env["PATH"] = ShellEnvironment.path()
-      env["GIT_OPTIONAL_LOCKS"] = "0"
-      env["GIT_TERMINAL_PROMPT"] = "0"
-      proc.environment = env
-
-      let outPipe = Pipe()
-      proc.standardOutput = outPipe
-      proc.standardError = Pipe()  // discard
-
-      let gate = ResumeGate(continuation)
-
-      let timeoutItem = DispatchWorkItem {
-        if proc.isRunning { proc.terminate() }
-        gate.resume(nil)
-      }
-      DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: timeoutItem)
-
-      proc.terminationHandler = { finished in
-        timeoutItem.cancel()
-        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
-        let out = String(data: data, encoding: .utf8)?
-          .trimmingCharacters(in: .whitespacesAndNewlines)
-        gate.resume(finished.terminationStatus == 0 ? out : nil)
-      }
-
-      do {
-        try proc.run()
-      } catch {
-        timeoutItem.cancel()
-        gate.resume(nil)
-      }
+      return Self.rootRef(from: ref)
+    } catch {
+      return .unresolved
     }
   }
-}
 
-/// Resumes a continuation exactly once across the termination / timeout / launch-failure
-/// paths (whichever fires first wins).
-private final class ResumeGate: @unchecked Sendable {
-  private let lock = NSLock()
-  private var done = false
-  private let continuation: CheckedContinuation<String?, Never>
-
-  init(_ continuation: CheckedContinuation<String?, Never>) {
-    self.continuation = continuation
-  }
-
-  func resume(_ value: String?) {
-    lock.lock()
-    let first = !done
-    done = true
-    lock.unlock()
-    if first { continuation.resume(returning: value) }
+  /// Map the backend's `VCSRef` onto the sidebar's `RootRef`. `.none` (or a kind with no name) ⇒
+  /// `.unresolved`, so an unlabelled repo never clobbers a prior label (the caller keeps the old
+  /// value on `.unresolved`). `branch` is normalized to nil-never-"" per `RootRef`'s contract.
+  static func rootRef(from ref: VCSRef) -> RootRef {
+    let name = (ref.name?.isEmpty == false) ? ref.name : nil
+    switch ref.kind {
+    case .none: return .unresolved
+    case .branch: return name.map { RootRef(branch: $0, kind: .branch) } ?? .unresolved
+    case .ancestor: return name.map { RootRef(branch: $0, kind: .ancestor) } ?? .unresolved
+    case .detached: return name.map { RootRef(branch: $0, kind: .detached) } ?? .unresolved
+    }
   }
 }
