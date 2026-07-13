@@ -88,4 +88,32 @@ final class ActivityBarUITests: XCTestCase {
       waitExists(header(app, "Changes"), false), "clicking the active icon hides content")
     XCTAssertTrue(changes.exists, "the bar icon stays visible after collapsing the pane")
   }
+
+  /// History (issue #59) is its own bar section, not a tab inside Changes: clicking its icon swaps
+  /// the History pane in (its header + the `HistoryPanel` body appear) and replaces whatever pane
+  /// was showing — the same swap contract as Changes/Files, proving History joined the rail as a
+  /// peer section rather than being nested under another.
+  func testHistorySectionSwapsIntoView() throws {
+    let app = launchedApp()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+
+    XCTAssertTrue(icon(app, "history").waitForExistence(timeout: 10), "History icon should render")
+
+    // Start on Files (a switch always opens, regardless of persisted state), then switch to History.
+    icon(app, "files").click()
+    XCTAssertTrue(waitExists(header(app, "Files"), true), "Files pane opens")
+
+    icon(app, "history").click()
+    XCTAssertTrue(waitExists(header(app, "History"), true), "History pane shows the History header")
+    XCTAssertTrue(
+      app.descendants(matching: .any).matching(identifier: "HistoryPanel").firstMatch
+        .waitForExistence(timeout: 5),
+      "the History pane renders the HistoryPanel body")
+    XCTAssertTrue(waitExists(header(app, "Files"), false), "switching away replaces the Files pane")
+
+    // Switch back to Files → History is gone (a swap, not an add).
+    icon(app, "files").click()
+    XCTAssertTrue(waitExists(header(app, "Files"), true), "Files pane returns")
+    XCTAssertTrue(waitExists(header(app, "History"), false), "the History pane is replaced")
+  }
 }

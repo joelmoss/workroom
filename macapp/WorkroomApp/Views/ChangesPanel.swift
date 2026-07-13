@@ -58,6 +58,7 @@ struct RightInspector: View {
     case .changes: return store.changesSectionCollapsed
     case .files: return false
     case .pullRequest: return store.prSectionCollapsed
+    case .history: return false  // solo pane, never collapses (like Files)
     }
   }
 
@@ -91,6 +92,14 @@ struct RightInspector: View {
           prHeaderAccessory
         }
         .environmentObject(store).environmentObject(notifications))
+    case .history:
+      return AnyView(
+        SectionHeader(title: "History", collapsed: nil, shortcut: "⌥⌘Y") {
+          InspectorHeaderButton(systemImage: "arrow.clockwise", help: "Refresh history") {
+            store.commitHistory.refresh()
+          }
+        }
+        .environmentObject(store).environmentObject(notifications))
     }
   }
 
@@ -104,6 +113,8 @@ struct RightInspector: View {
         FilesPanel(model: store.fileTree).environmentObject(store).environmentObject(notifications))
     case .pullRequest:
       return AnyView(PullRequestPanel().environmentObject(store).environmentObject(notifications))
+    case .history:
+      return AnyView(HistoryPanel().environmentObject(store).environmentObject(notifications))
     }
   }
 

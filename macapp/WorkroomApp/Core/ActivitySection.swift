@@ -14,6 +14,7 @@ enum ActivitySection: String, CaseIterable, Identifiable, Defaults.Serializable,
   Defaults.PreferRawRepresentable
 {
   case changes
+  case history
   case files
 
   var id: Self { self }
@@ -22,6 +23,7 @@ enum ActivitySection: String, CaseIterable, Identifiable, Defaults.Serializable,
   var label: String {
     switch self {
     case .changes: return "Changes"
+    case .history: return "History"
     case .files: return "Files"
     }
   }
@@ -30,6 +32,7 @@ enum ActivitySection: String, CaseIterable, Identifiable, Defaults.Serializable,
   var systemImage: String {
     switch self {
     case .changes: return "arrow.triangle.branch"
+    case .history: return "clock.arrow.circlepath"
     case .files: return "folder"
     }
   }
@@ -39,6 +42,7 @@ enum ActivitySection: String, CaseIterable, Identifiable, Defaults.Serializable,
   var subSections: [InspectorSectionKind] {
     switch self {
     case .changes: return [.changes, .pullRequest]
+    case .history: return [.history]
     case .files: return [.files]
     }
   }
@@ -47,6 +51,7 @@ enum ActivitySection: String, CaseIterable, Identifiable, Defaults.Serializable,
   var shortcutHint: String {
     switch self {
     case .changes: return "⌥⌘C"
+    case .history: return "⌥⌘Y"
     case .files: return "⌥⌘F"
     }
   }

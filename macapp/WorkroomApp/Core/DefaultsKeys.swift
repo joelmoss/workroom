@@ -184,5 +184,5 @@ struct InspectorPaneState: Codable, Defaults.Serializable, Equatable {
   var weights: [Double]
 
   static let `default` = InspectorPaneState(
-    collapsed: [false, false, false], weights: [1, 1, 1])
+    collapsed: [false, false, false, false], weights: [1, 1, 1, 1])
 }

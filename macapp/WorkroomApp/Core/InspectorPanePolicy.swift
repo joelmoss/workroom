@@ -7,6 +7,9 @@ enum InspectorSectionKind: CaseIterable {
   case changes
   case files
   case pullRequest
+  // Appended last (not in bar order) so the existing storeIndex mapping 0/1/2 for
+  // changes/files/pullRequest stays stable; History is a solo pane, so it never collapses.
+  case history
 }
 
 /// The vertical sizing constraints one inspector pane imposes on the `NSSplitView`, derived purely

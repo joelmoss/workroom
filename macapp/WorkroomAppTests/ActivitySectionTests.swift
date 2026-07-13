@@ -31,7 +31,7 @@ final class ActivitySectionTests: XCTestCase {
   }
 
   func testAllCasesOrderMatchesBarOrder() {
-    XCTAssertEqual(ActivitySection.allCases, [.changes, .files])
+    XCTAssertEqual(ActivitySection.allCases, [.changes, .history, .files])
   }
 
   func testEveryCaseHasNonEmptyLabelSystemImageAndShortcut() {
@@ -47,6 +47,7 @@ final class ActivitySectionTests: XCTestCase {
   func testSubSectionsMapping() {
     XCTAssertEqual(ActivitySection.changes.subSections, [.changes, .pullRequest])
     XCTAssertEqual(ActivitySection.files.subSections, [.files])
+    XCTAssertEqual(ActivitySection.history.subSections, [.history])
     for section in ActivitySection.allCases {
       XCTAssertFalse(section.subSections.isEmpty, "\(section) pane has no sub-sections")
     }
@@ -58,6 +59,7 @@ final class ActivitySectionTests: XCTestCase {
     XCTAssertEqual(InspectorSectionKind.changes.storeIndex, 0)
     XCTAssertEqual(InspectorSectionKind.files.storeIndex, 1)
     XCTAssertEqual(InspectorSectionKind.pullRequest.storeIndex, 2)
+    XCTAssertEqual(InspectorSectionKind.history.storeIndex, 3)
   }
 
   func testDefaultsToChangesWhenUnset() {

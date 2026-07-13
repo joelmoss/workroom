@@ -782,6 +782,19 @@ struct WorkroomCommands: Commands {
       )
       .keyboardShortcut("f", modifiers: [.command, .option])
 
+      // View menu: reveal the History view (the commit log) — its own single-section activity-bar
+      // pane, like Files. (⌥⌘Y — ⌥⌘H is macOS "Hide Others".)
+      Toggle(
+        "History",
+        isOn: Binding(
+          get: { showInspector && store?.activeInspectorSection == .history },
+          set: { on in
+            store?.activeInspectorSection = .history
+            showInspector = on
+          })
+      )
+      .keyboardShortcut("y", modifiers: [.command, .option])
+
       // View menu: reveal the Pull Request view — the second sub-section of the Changes pane, so it
       // selects that pane, opens the inspector, and expands the Pull Request sub-section.
       Toggle(

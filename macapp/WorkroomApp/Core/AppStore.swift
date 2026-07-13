@@ -283,7 +283,7 @@ final class AppStore: ObservableObject {
   /// `InspectorSectionKind.allCases`. Equal == the default three-equal-sections layout; updated when
   /// the user drags a divider (via `updateInspectorSizeWeights`) and persisted per workroom. Not set
   /// directly by the view — the `NSSplitView` reports drag results back through the store.
-  @Published var inspectorSizeWeights: [Double] = [1, 1, 1]
+  @Published var inspectorSizeWeights: [Double] = [1, 1, 1, 1]
   /// The selected top-level section in the right activity bar (issue: activity bar). Drives which
   /// pane the inspector shows (`RightInspector` renders `activeInspectorSection.subSections`). Held
   /// as `@Published` (not read via `@Default` in the bar) so a click re-renders the bar + inspector
@@ -300,6 +300,10 @@ final class AppStore: ObservableObject {
   /// directory whenever the selection changes (see `selectedTargetID.didSet`); the `FilesPanel`
   /// observes it. Owned here so it survives inspector re-renders and tracks selection centrally.
   let fileTree = FileTreeModel()
+  /// Store-owned commit-history state for the History inspector section (issue #59); re-pointed on
+  /// selection by `HistoryPanel`, mirroring `fileTree`. Named `commitHistory` — `history` is the
+  /// browser-style `NavigationHistory`.
+  let commitHistory = HistoryModel()
   /// Shared in-file find state for the read-only file viewer (⌘F in a file pane). Only the focused
   /// `PlainFileViewer` feeds + shows it; routed to from `startFindInFocusedPane`.
   let fileFind = FileFindModel()
@@ -3277,7 +3281,7 @@ final class AppStore: ObservableObject {
     }
     Defaults[.inspectorPaneStates][key] = InspectorPaneState(
       collapsed: [
-        changesSectionCollapsed, filesSectionCollapsed, prSectionCollapsed,
+        changesSectionCollapsed, filesSectionCollapsed, prSectionCollapsed, false,
       ],
       weights: inspectorSizeWeights)
   }

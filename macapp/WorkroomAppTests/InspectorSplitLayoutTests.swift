@@ -12,7 +12,9 @@ import XCTest
 final class InspectorSplitLayoutTests: XCTestCase {
   private func makeContainer(heights: [CGFloat]) -> InspectorSplitContainerController {
     let container = InspectorSplitContainerController()
-    let panes = (0..<InspectorSectionKind.allCases.count).map { _ in InspectorPaneViewController() }
+    // One pane per supplied height, so a change to the section count doesn't break the drag tests
+    // (which exercise controller logic with a fixed small pane set, not the live section count).
+    let panes = (0..<heights.count).map { _ in InspectorPaneViewController() }
     container.install(panes: panes)
     for (index, pane) in panes.enumerated() {
       pane.view.frame = CGRect(x: 0, y: 0, width: 300, height: heights[index])
@@ -31,7 +33,8 @@ final class InspectorSplitLayoutTests: XCTestCase {
   }
 
   func testInstallCreatesOnePanePerSection() {
-    let container = makeContainer(heights: [200, 200, 200])
+    let container = makeContainer(
+      heights: Array(repeating: 200, count: InspectorSectionKind.allCases.count))
     XCTAssertEqual(container.panes.count, InspectorSectionKind.allCases.count)
     XCTAssertEqual(container.splitView.arrangedSubviews.count, InspectorSectionKind.allCases.count)
   }
