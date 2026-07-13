@@ -2,6 +2,7 @@ import AppKit
 import Defaults
 import SwiftUI
 import UserNotifications
+import WrVcs
 
 @main
 struct WorkroomApp: App {
@@ -133,6 +134,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   deinit { hotkeyObservation?.cancel() }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
+    #if DEBUG
+      // Phase-0 VCS-core smoke: prove the Rust/UniFFI VCS engine links + runs inside the app.
+      // Opt-in via `WR_VCS_PROBE_ROOT=<repo>` so no path is hardcoded. Temporary — removed once the
+      // History UI (issue #59) consumes the engine through VCSProviding.
+      if let root = ProcessInfo.processInfo.environment["WR_VCS_PROBE_ROOT"] {
+        do {
+          let page = try logPage(root: root, limit: 3)
+          let heads = page.commits.map { "\($0.shortId)\($0.isWorkingCopy ? "@" : "")" }
+            .joined(separator: " ")
+          NSLog(
+            "[wr-vcs] probe=\(probeRepo(root: root)) commits=\(page.commits.count) "
+              + "reachedEnd=\(page.reachedEnd) [\(heads)]")
+        } catch {
+          NSLog("[wr-vcs] probe error: \(error)")
+        }
+      }
+    #endif
+
     // Disable native macOS window tabbing. It tabs whole app windows (each with its own
     // sidebar) — a level above our per-workroom terminal tabs and a poor fit for a
     // single-window, sidebar-driven app. Off, it also drops the auto-injected

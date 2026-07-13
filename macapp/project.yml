@@ -16,6 +16,9 @@ options:
   createIntermediateGroups: true
 
 packages:
+  # Local Rust VCS core (jj-lib + gix via UniFFI); artifacts built by vcs/scripts/build-apple.sh.
+  WrVcs:
+    path: ../vcs/swift/WrVcs
   Sparkle:
     # Auto-update framework: polls the appcast feed and installs EdDSA-signed DMGs.
     # See WorkroomApp/Core/Updater.swift and the SU* Info.plist keys below.
@@ -146,6 +149,10 @@ targets:
         buildPhase: resources
     dependencies:
       - package: Sparkle
+      # Workroom VCS core: the Rust engine (jj-lib + gix) exposed via UniFFI, wrapped as a local SPM
+      # package (vcs/swift/WrVcs) whose binaryTarget carries the static xcframework. `import WrVcs`.
+      # Built by vcs/scripts/build-apple.sh (xcframework + generated Swift are gitignored).
+      - package: WrVcs
       # libghostty: link the raw C API product (GhosttyKit). Its package links c++ + Carbon;
       # the static Ghostty archive additionally needs these system frameworks at final link
       # (GPU renderer + CoreText font backend + HID).

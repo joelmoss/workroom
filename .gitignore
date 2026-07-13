@@ -14,6 +14,12 @@ CLAUDE.local.md
 /macapp/build/
 /macapp/DerivedData/
 /macapp/WorkroomApp.xcodeproj/
+# VCS-core Rust artifacts (built by vcs/scripts/build-apple.sh; regenerated, not tracked).
+# Package.swift is tracked; the xcframework + generated Swift inside it are not.
+/vcs/swift/WrVcs/Frameworks/
+/vcs/swift/WrVcs/.build/
+/vcs/swift/WrVcs/Sources/WrVcs/wr_vcs_uniffi.swift
+/vcs/swift/WrVcs/Sources/wr_vcs_uniffiFFI/include/
 *.xcuserstate
 .xcode.env.local
 
