@@ -610,3 +610,180 @@ to ship the scaffold before the search is real.
 `Views/ChangesPanel.swift` (`RightInspector`), a new `Views/SearchPanel.swift`.
 
 **Priority:** P3 (new feature; not blocking).
+
+<!-- The following were surfaced by /plan-eng-review of the unpushed VCS-foundation stack
+     (2026-07-13), cross-model with a Codex outside-voice pass. The bug cluster (jj CLI pipe
+     deadlock, snapshot file-size cap, base_ignores) was fixed in that review (b7dd9b7d); the
+     items below were explicitly deferred. -->
+
+## jj vs git rename detection divergence (macapp) — VCS-foundation eng-review
+
+**What:** `RustJJProvider`/`jj_backend.rs` `changed_files` classifies only Added/Modified/Deleted;
+`GitProvider` emits `.renamed`/`.copied` with `oldPath`. For the SAME colocated commit (or working
+copy) containing a rename, jj shows delete-old + add-new while git shows one rename row.
+
+**Why:** Cross-backend inconsistency the hybrid architecture is supposed to hide (both should map to
+one app model). The `VCSProviderConformanceTests` asserts the two backends produce equal file lists,
+but its fixture has no rename — so this divergence passes the guard falsely.
+
+**How to start:** Add rename detection to `changed_files` in `vcs/crates/wr-vcs-core/src/jj_backend.rs`
+(jj-lib exposes copy/rename records via the tree `diff_stream`'s copy sources, or a follow-up
+`CopiesTreeDiffEntry`). Add a renamed-file case to the conformance fixture to lock parity. Emit
+`old_path` so the UI can show `old → new`.
+
+**Depends on:** the VCS read foundation (shipped). Touches `jj_backend.rs`, `wr-vcs-model`, the UniFFI
+surface, `RustJJProvider.map`, and `VCSProviderConformanceTests`.
+
+**Priority:** P2 (user-visible wrong file list on renames; a known "later refinement" in the code).
+
+## jj per-file conflict status never reaches the UI (macapp) — VCS-foundation eng-review
+
+**What:** `jj_backend.rs` `working_status` sets the top-level `conflicted` flag from
+`wc_commit.has_conflict()`, but `changed_files` maps every present-before/present-after entry to
+`.modified` — no per-file `.conflicted` is ever produced. `GitProvider` does emit per-file
+`.conflicted`.
+
+**Why:** In a conflicted jj working copy, the Changes list shows conflicted files as plain "modified",
+losing the conflict affordance that git repos get — another cross-backend divergence.
+
+**How to start:** In `changed_files` (or a working-copy-specific variant), detect a conflicted tree
+value (jj-lib's `MergedTreeValue`/`Conflict`) and map it to `model::ChangeKind::Conflicted`. Add a
+conflicted-`@` case to the cargo `working_status` test.
+
+**Depends on:** VCS read foundation. Touches `jj_backend.rs`, cargo tests.
+
+**Priority:** P2 (conflicts are important state; currently silently downgraded for jj).
+
+## Git History branch/tag decoration — `refs: []` (macapp) — VCS-foundation eng-review
+
+**What:** `GitProvider.map` always returns `refs: []` for commits (comment: "branch/tag decoration: a
+later increment"), so the git History panel shows no branch/tag chips. jj provides them and the shared
+`VCSCommit` model promises them.
+
+**How to start:** Build a `commit-id → [ref names]` map from SwiftGitX branches + tags (mirror
+`jj_backend.rs` `bookmark_map`) and populate `VCSCommit.refs` in `GitProvider.map`.
+
+**Depends on:** VCS read foundation. Touches `Core/GitProvider.swift`.
+
+**Priority:** P2 (History UI parity; empty where jj is populated).
+
+## `withTimeout` doesn't bound a wedged synchronous backend read (macapp) — VCS-foundation eng-review
+
+**What:** `Core/Timeout.swift` `withTimeout` delivers `VCSTimeoutError` to `group.next()` promptly, but
+`withThrowingTaskGroup` awaits all children at scope exit, and the operation child is suspended on
+`await Task.detached { … }.value` — a detached task isn't cancelled by the group and `.value` doesn't
+abandon on cancellation. So a truly wedged jj-lib/libgit2 call blocks `withTimeout` for the FULL
+backend duration, not `seconds`. The doc's "one wedged repo abandons only its row" contract is false.
+
+**Why:** `WorkroomStatusResolver`/`BranchResolver` rely on this seam to stay responsive when a repo
+hangs. In practice these reads finish in ms so it rarely bites, but the guarantee is not real.
+
+**How to start:** Resolve the deadline against the detached task WITHOUT structurally awaiting it — e.g.
+a `withCheckedThrowingContinuation` that the timeout can resolve first, leaving the detached task to
+finish and drop its result on the floor. Or fix the doc to state the true (weaker) behavior.
+
+**Depends on:** —. Touches `Core/Timeout.swift`.
+
+**Priority:** P2 (robustness; false safety claim, rare trigger).
+
+## Serialize jj working-copy snapshots across the status fan-out (macapp) — VCS-foundation eng-review
+
+**What:** `AppStore+WorkroomStatus.swift` fans out local status at concurrency 5 with no jj
+serialization, while `AppStore.swift:~420` comments claim "one jj probe at a time." Each
+`working_status` snapshots + can mutate `@`. Colocated workrooms of the same project share the backing
+`.git` (packed-refs) — observed live as a `packed-refs.lock could not be obtained` error while
+committing during this review.
+
+**Why:** Concurrent snapshot/export can contend on the working-copy lock (per workspace) and on the
+shared git packed-refs (across colocated workspaces of one project), causing transient status errors.
+
+**How to start:** Gate `working_status` calls through a per-project (or global-jj) serial queue /
+actor, or confirm the fan-out only ever hits distinct non-colocated workspaces. Reconcile the stale
+"one probe at a time" comment with reality.
+
+**Depends on:** VCS read foundation. Touches `Core/AppStore+WorkroomStatus.swift`, `Core/AppStore.swift`.
+
+**Priority:** P2 (transient real-world lock errors on colocated repos).
+
+## Git working line-counts recompute the whole-worktree diff per refresh (macapp) — VCS-foundation eng-review
+
+**What:** `GitProvider.workingLineStats` (`GitProvider.swift:~317`) runs `repo.diff(to: [.workingTree,
+.index])` — the ENTIRE worktree diff — on every status refresh (focus/appear/manual), just to sum
+±line counts for the badge. The per-file diff path was carefully kept per-file; this reintroduces
+whole-worktree work for a cosmetic count.
+
+**How to start:** Prefer libgit2's diff stats API if SwiftGitX surfaces it (avoids materializing every
+patch), or make the badge counts lazy / cache them per (HEAD, worktree-generation).
+
+**Depends on:** VCS read foundation. Touches `Core/GitProvider.swift`.
+
+**Priority:** P2 (perf on large dirty trees; every refresh).
+
+## jj log/current-ref use timestamp order, not topological order (macapp) — VCS-foundation eng-review
+
+**What:** `jj_backend.rs` orders the log heap by committer timestamp (`HeapItem`, comment: "close
+enough for the proof"), and `nearest_bookmark` walks ancestry newest-timestamp-first. Rebased/amended
+commits or clock skew make History order (and the "nearest ancestor bookmark" pick) diverge from
+`jj log`'s topological/index order.
+
+**How to start:** Order by jj's graph/index position (revset evaluation order) instead of timestamp;
+walk the DAG by generation for `nearest_bookmark`.
+
+**Depends on:** VCS read foundation. Touches `jj_backend.rs`.
+
+**Priority:** P2 (History mis-order + wrong branch label under skew/rebase).
+
+## Real `VcsError` taxonomy across the UniFFI boundary (macapp) — VCS-foundation eng-review
+
+**What:** `RustJJProvider.mapError` flattens every `WrVcs.VcsError` to `.io`, so
+`WorkroomStatusResolver` reports lock-contention / stale-snapshot as `.notRepository`, and
+`DiffResolver`'s `.lockContention`/`.staleSnapshot` handling + messages are dead code.
+
+**How to start:** Map each `WrVcs.VcsError` case → the matching `VCSError` case in
+`RustJJProvider.mapError` (and the `GitProvider` catch). Then the resolvers' typed recovery states
+light up. This is the "error taxonomy" work from the Phase-1 plan (CQ2).
+
+**Depends on:** VCS read foundation. Touches `Core/RustJJProvider.swift`, `Core/GitProvider.swift`.
+
+**Priority:** P2 (typed recovery UI currently unreachable).
+
+## Git diff shows one side when a file is both staged and re-modified (macapp) — VCS-foundation eng-review
+
+**What:** `GitProvider` working diff/status use `entry.workingTree ?? entry.index`, so a file that is
+staged AND further modified in the worktree renders only the working-tree (index→worktree) delta, not
+the combined HEAD→worktree change.
+
+**How to start:** Diff HEAD-tree → worktree directly for the file (or combine index + worktree deltas)
+rather than picking one status delta.
+
+**Depends on:** VCS read foundation. Touches `Core/GitProvider.swift`.
+
+**Priority:** P3 (partial-staging is uncommon in the workroom flow; content still shown, just one side).
+
+## jj file list + diffstat can skew across two reads (macapp) — VCS-foundation eng-review
+
+**What:** `WorkroomStatusResolver.resolveJJ` reads the working-copy file list via native
+`workingStatus` and then the ±line counts via a separate `jj diff --stat --ignore-working-copy`. An
+on-disk edit (or a concurrent snapshot) between the two gives files from one `@` and counts from
+another.
+
+**How to start:** Return the diffstat from the same native snapshot (add insertions/deletions to
+`working_status` in `jj_backend.rs`) so the file list and counts come from one read.
+
+**Depends on:** VCS read foundation. Touches `jj_backend.rs`, `WorkroomStatusResolver.swift`.
+
+**Priority:** P3 (brief count/file skew on a mid-refresh edit; self-heals next refresh).
+
+## Honor a custom `core.excludesFile` in the jj snapshot base_ignores (macapp) — VCS-foundation eng-review
+
+**What:** The base_ignores fix (b7dd9b7d) chains git's default XDG global excludes
+(`~/.config/git/ignore`) + repo `.git/info/exclude`, but does NOT read a custom `core.excludesFile`
+set in git config (that needs a git-config parse). A user who points `core.excludesFile` elsewhere
+still gets those patterns skipped by the auto-status snapshot.
+
+**How to start:** Read `core.excludesFile` from the repo's git config (via jj-lib's git backend / a
+gix-config read) and chain it in `jj_backend.rs::base_ignores` instead of the hardcoded XDG default.
+
+**Depends on:** the base_ignores fix (shipped). Touches `jj_backend.rs`.
+
+**Priority:** P3 (residual of a fixed P1; only affects users with a non-default excludesFile).
