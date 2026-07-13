@@ -1,9 +1,7 @@
 import AppKit
 import Defaults
 import SwiftUI
-import SwiftGitX
 import UserNotifications
-import WrVcs
 
 @main
 struct WorkroomApp: App {
@@ -136,29 +134,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     #if DEBUG
-      // Phase-0 VCS-core smoke: prove the Rust/UniFFI VCS engine links + runs inside the app.
-      // Opt-in via `WR_VCS_PROBE_ROOT=<repo>` so no path is hardcoded. Temporary — removed once the
-      // History UI (issue #59) consumes the engine through VCSProviding.
-      if let root = ProcessInfo.processInfo.environment["WR_VCS_PROBE_ROOT"] {
-        do {
-          let page = try logPage(root: root, limit: 3)
-          let heads = page.commits.map { "\($0.shortId)\($0.isWorkingCopy ? "@" : "")" }
-            .joined(separator: " ")
-          NSLog(
-            "[wr-vcs] probe=\(probeRepo(root: root)) commits=\(page.commits.count) "
-              + "reachedEnd=\(page.reachedEnd) [\(heads)]")
-        } catch {
-          NSLog("[wr-vcs] probe error: \(error)")
-        }
-
-        // git via SwiftGitX (libgit2) — the git-backend counterpart to the jj probe above.
-        do {
-          let repo = try Repository.open(at: URL(fileURLWithPath: root))
-          let commits = Array(try repo.log().prefix(3))
-          let heads = commits.map { $0.id.abbreviated }.joined(separator: " ")
-          NSLog("[wr-git] commits=\(commits.count) [\(heads)]")
-        } catch {
-          NSLog("[wr-git] error: \(error)")
+      // Phase-1 VCS smoke: exercise the VCSProviding seam (routed by repo kind + both backends
+      // explicitly) inside the app. Opt-in via WR_VCS_PROBE_ROOT=<repo>. Temporary — removed once
+      // the History UI (issue #59) consumes VCSProviding for real.
+      if let probeRoot = ProcessInfo.processInfo.environment["WR_VCS_PROBE_ROOT"] {
+        let url = URL(fileURLWithPath: probeRoot)
+        Task {
+          func heads(_ p: VCSHistoryPage) -> String {
+            p.commits.map { $0.shortID + ($0.isWorkingCopy ? "@" : "") }.joined(separator: " ")
+          }
+          do {
+            let page = try await VCS.provider(for: url).log(root: url, limit: 3)
+            NSLog(
+              "[wr-vcs] kind=\(VCS.repoKind(at: url)) routed: commits=\(page.commits.count) "
+                + "reachedEnd=\(page.reachedEnd) [\(heads(page))]")
+          } catch {
+            NSLog("[wr-vcs] routed error: \(error)")
+          }
+          if let jj = try? await RustJJProvider().log(root: url, limit: 3) {
+            NSLog("[wr-vcs] jj provider: [\(heads(jj))]")
+          }
+          if let git = try? await GitProvider().log(root: url, limit: 3) {
+            NSLog("[wr-git] git provider: [\(heads(git))]")
+          }
         }
       }
     #endif
