@@ -44,6 +44,48 @@ final class VCSProviderConformanceTests: XCTestCase {
       "unexpected changed files")
   }
 
+  /// The working-copy per-file diff, read structurally by each backend (git = SwiftGitX/libgit2, jj
+  /// = the `jj diff --git` CLI fallback), must reflect an uncommitted on-disk edit — and git must
+  /// render an untracked file as an all-added diff from `/dev/null` (the SwiftGitX `patch(from:)`
+  /// path that replaced the old `git diff --no-index` shell-out).
+  func testWorkingFileDiffAcrossBackends() async throws {
+    try requireTool("git")
+    try requireTool("jj")
+    let root = try colocatedFixture()
+    let url = URL(fileURLWithPath: root)
+
+    // An uncommitted edit to a tracked file + a brand-new untracked file.
+    let r = sh(
+      "printf 'one\\ntwo\\nthree\\n' > a.txt\nprintf 'brand new\\n' > c.txt\necho done", in: root)
+    XCTAssertTrue(r.out.contains("done"), "working-copy edit failed: \(r.out)")
+
+    // Read git first (all git reads before any jj read, so jj's snapshot can't perturb git status).
+    let git = GitProvider()
+    let gitModified = try await git.workingFileDiff(root: url, path: "a.txt", base: .workingCopy)
+    XCTAssertTrue(gitModified.contains("diff --git a/a.txt b/a.txt"), "git header: \(gitModified)")
+    XCTAssertTrue(gitModified.contains("+three"), "git missing the edit: \(gitModified)")
+
+    let gitUntracked = try await git.workingFileDiff(root: url, path: "c.txt", base: .workingCopy)
+    XCTAssertTrue(gitUntracked.contains("+brand new"), "git untracked content: \(gitUntracked)")
+    XCTAssertTrue(
+      gitUntracked.contains("/dev/null"), "untracked old side is /dev/null: \(gitUntracked)")
+
+    // git has no working-copy parent concept → unsupported (jj-only surface).
+    do {
+      _ = try await git.workingFileDiff(root: url, path: "a.txt", base: .parent)
+      XCTFail("git .parent working diff should be unsupported")
+    } catch let error as VCSError {
+      guard case .unsupportedRepo = error else {
+        return XCTFail("expected .unsupportedRepo: \(error)")
+      }
+    }
+
+    // jj snapshots `@` and shows the same edit.
+    let jjModified = try await RustJJProvider().workingFileDiff(
+      root: url, path: "a.txt", base: .workingCopy)
+    XCTAssertTrue(jjModified.contains("+three"), "jj missing the edit: \(jjModified)")
+  }
+
   // MARK: - Fixture helpers (mirror WorkroomStatusIntegrationTests)
 
   private struct MissingTool: Error { let name: String }

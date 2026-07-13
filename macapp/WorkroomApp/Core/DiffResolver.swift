@@ -8,6 +8,9 @@ enum DiffResult: Equatable, Sendable {
   case binary
   /// No differences (the file is clean / unchanged for this source).
   case empty
+  /// The diff exceeds `DiffResolver.maxDiffBytes` — the UI shows a "too large" placeholder rather
+  /// than parsing a multi-MB (or CLI-truncated) buffer that would render slowly or wrongly.
+  case tooLarge
   /// The command failed or timed out. The associated value is a short human-readable message
   /// (the first non-empty stderr line, or a generic fallback).
   case failed(String)
@@ -17,72 +20,91 @@ enum DiffResult: Equatable, Sendable {
 /// specifics are in `command(for:dir:)` (unit-tested without spawning). `resolve(_:in:)` calls
 /// the runner, interprets the result, and parses the unified diff.
 struct DiffResolver: Sendable {
+  /// Still used by `fileContent` (the jj `@-` parent-side content read for syntax highlighting); the
+  /// diff itself no longer shells out (it goes through `makeProvider`).
   let runner: StatusCommandRunning
   var timeout: TimeInterval
-  /// The VCS backend for a commit-scoped diff (`.commit`), injected for tests. Defaults to the real
-  /// repo-kind router (`VCS.provider(for:)` — jj → jj-lib, git → SwiftGitX).
+  /// The VCS backend, injected for tests. Defaults to the real repo-kind router
+  /// (`VCS.provider(for:)` — jj → jj-lib/CLI, git → SwiftGitX). Serves both commit (`fileDiff`) and
+  /// working-copy (`workingFileDiff`) diffs.
   let makeProvider: @Sendable (URL) throws -> VCSProviding
+  /// Cache for immutable **commit** diffs, shared across viewers. Working-copy diffs are never cached
+  /// — their content is mutable, so a cache would serve stale hunks after an edit.
+  let cache: DiffCache
+
+  /// Diffs whose git-format text exceeds this render as `.tooLarge` instead of being parsed — a
+  /// multi-MB single-file diff is unreadable, and the jj CLI path truncates at the runner's 4 MB cap,
+  /// so parsing it would mis-render. (GitHub Desktop gates whole diffs at 10 MB; this is per-file.)
+  static let maxDiffBytes = 3 * 1024 * 1024
 
   init(
     runner: StatusCommandRunning = StatusCommandRunner(), timeout: TimeInterval = 5,
-    makeProvider: @escaping @Sendable (URL) throws -> VCSProviding = { try VCS.provider(for: $0) }
+    makeProvider: @escaping @Sendable (URL) throws -> VCSProviding = { try VCS.provider(for: $0) },
+    cache: DiffCache = .shared
   ) {
     self.runner = runner
     self.timeout = timeout
     self.makeProvider = makeProvider
+    self.cache = cache
   }
 
-  /// Fetch and parse the diff for `descriptor`, running the VCS command in `dir` (the workroom
-  /// directory, an absolute path). Returns a `DiffResult` that the diff viewer renders directly.
+  /// Fetch and parse the diff for `descriptor`, reading the repo rooted at `dir` (the workroom
+  /// directory, an absolute path). Every source is read structurally through the VCS backend
+  /// (`VCSProviding`) — no diff shells out of this resolver — and the git-format text each returns
+  /// feeds the one `UnifiedDiff` pipeline. Returns a `DiffResult` the viewer renders directly.
   func resolve(_ descriptor: DiffDescriptor, in dir: String) async -> DiffResult {
-    // A commit-scoped diff is read structurally through the VCS backend, not by shelling — the first
-    // step of migrating DiffResolver onto VCSProviding (issue #59). The backend routes jj vs git by
-    // repo kind; the git-format text it returns feeds the same UnifiedDiff parser as every source.
-    if case .commit(let commitID) = descriptor.source {
-      return await resolveCommit(commitID: commitID, path: descriptor.path, in: dir)
+    let root = URL(fileURLWithPath: dir, isDirectory: true)
+    switch descriptor.source {
+    case .commit(let commitID):
+      return await resolveCommit(commitID: commitID, path: descriptor.path, root: root)
+    case .jjWorkingCopy, .gitWorktree:
+      return await resolveWorking(path: descriptor.path, base: .workingCopy, root: root)
+    case .jjParent:
+      return await resolveWorking(path: descriptor.path, base: .parent, root: root)
     }
-    let (exe, args) = Self.command(for: descriptor, dir: dir)
-    let r = await runner.run(exe, args, in: dir, timeout: timeout)
-
-    // The --no-index (untracked) case: git exits 1 when files differ — that's success.
-    let isUntrackedGit =
-      descriptor.source == .gitWorktree && descriptor.change == .untracked
-    let success: Bool
-    if r.timedOut {
-      return .failed("Timed out")
-    } else if isUntrackedGit {
-      success = r.exitCode == 0 || r.exitCode == 1
-    } else {
-      success = r.ok
-    }
-
-    guard success else {
-      let msg =
-        r.stderr.split(whereSeparator: \.isNewline).map(String.init)
-        .first(where: { !$0.isEmpty }) ?? "Diff unavailable"
-      return .failed(msg)
-    }
-
-    if UnifiedDiff.isBinary(r.stdout) { return .binary }
-    if r.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .empty }
-    return .diff(UnifiedDiff.parse(r.stdout))
   }
 
-  /// Resolve a single file's diff for an arbitrary commit through the VCS backend — the same
-  /// git-format-text → `UnifiedDiff` pipeline as the shell sources, but sourced from
-  /// `VCSProviding.fileDiff` (jj-lib / SwiftGitX) so it's structured and backend-routed.
-  private func resolveCommit(commitID: String, path: String, in dir: String) async -> DiffResult {
-    let root = URL(fileURLWithPath: dir, isDirectory: true)
+  /// A commit diff is immutable, so it's cached (keyed by root + commit id + path): re-selecting a
+  /// file in History or reopening a changeset tab is then instant. Sourced from
+  /// `VCSProviding.fileDiff` (jj-lib / SwiftGitX).
+  private func resolveCommit(commitID: String, path: String, root: URL) async -> DiffResult {
+    let key = "commit\u{1F}\(root.path)\u{1F}\(commitID)\u{1F}\(path)"
+    if let cached = await cache.get(key) { return cached }
     do {
       let text = try await makeProvider(root).fileDiff(root: root, commitID: commitID, path: path)
-      if UnifiedDiff.isBinary(text) { return .binary }
-      if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .empty }
-      return .diff(UnifiedDiff.parse(text))
+      let result = Self.interpret(text)
+      // Cache only settled outcomes — never a transient failure.
+      if case .failed = result {} else { await cache.set(key, result, bytes: text.utf8.count) }
+      return result
     } catch let error as VCSError {
       return .failed(Self.message(for: error))
     } catch {
       return .failed("Diff unavailable")
     }
+  }
+
+  /// A working-copy diff (jj `@`/`@-`, git worktree) read structurally via
+  /// `VCSProviding.workingFileDiff`. Never cached — the working copy is mutable, so a cache would
+  /// serve a stale diff after an on-disk edit.
+  private func resolveWorking(path: String, base: VCSWorkingDiffBase, root: URL) async -> DiffResult
+  {
+    do {
+      let text = try await makeProvider(root).workingFileDiff(root: root, path: path, base: base)
+      return Self.interpret(text)
+    } catch let error as VCSError {
+      return .failed(Self.message(for: error))
+    } catch {
+      return .failed("Diff unavailable")
+    }
+  }
+
+  /// Classify git-format diff text into a render outcome. Size-gate first (cheapest rejection of a
+  /// huge/truncated buffer), then binary, then empty, then parse. Pure — unit-tested.
+  static func interpret(_ text: String) -> DiffResult {
+    if text.utf8.count > maxDiffBytes { return .tooLarge }
+    if UnifiedDiff.isBinary(text) { return .binary }
+    if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .empty }
+    return .diff(UnifiedDiff.parse(text))
   }
 
   /// A short, human-readable message for a backend error (shown in the diff pane's failed state).
@@ -98,57 +120,58 @@ struct DiffResolver: Sendable {
     }
   }
 
-  /// Pure command builder — the executable and arguments for the given descriptor.
-  ///
-  /// `dir` is needed only for the `gitWorktree` + `untracked` case, where git's `--no-index`
-  /// requires absolute paths. All git invocations prepend `WorkroomStatusResolver.gitHardening`
-  /// to neutralise `core.fsmonitor` and related config (security-critical; must not drift).
-  static func command(for descriptor: DiffDescriptor, dir: String) -> (exe: String, args: [String])
-  {
-    let path = descriptor.path
-    let hardening = WorkroomStatusResolver.gitHardening
-    let gitBase =
-      hardening + [
-        "-c", "core.quotePath=false",
-        "diff", "--no-ext-diff", "--no-textconv", "--no-color",
-      ]
+}
 
-    switch descriptor.source {
-    case .commit:
-      // A commit-scoped diff never shells through here: `resolve` intercepts `.commit` and routes it
-      // through `VCSProviding.fileDiff`. Present only to satisfy the exhaustive switch — reaching it
-      // is a programming error.
-      preconditionFailure("commit diffs resolve via VCSProviding, not a shell command")
+/// LRU byte-budgeted cache for immutable (commit) diffs, shared across `DiffViewer`s. Modeled on
+/// jayjay's `DiffCache`: evict least-recently-used until under budget, but always keep the most
+/// recent entry so a single oversized diff still stays cached for its own view. An `actor` so
+/// concurrent viewers can read/write it without a data race.
+actor DiffCache {
+  static let shared = DiffCache()
 
-    case .jjWorkingCopy:
-      return ("jj", ["diff", "--git", "-r", "@", "--color", "never", "--", path])
+  private var entries: [String: DiffResult] = [:]
+  private var sizes: [String: Int] = [:]
+  private var order: [String] = []  // front = least-recently-used
+  private var total = 0
+  private let budget: Int
 
-    case .jjParent:
-      return (
-        "jj",
-        ["diff", "--git", "-r", "@-", "--ignore-working-copy", "--color", "never", "--", path]
-      )
+  init(budget: Int = 32 * 1024 * 1024) { self.budget = budget }
 
-    case .gitWorktree:
-      switch descriptor.change {
-      case .untracked:
-        // --no-index compares two arbitrary paths; /dev/null stands in for "no old file".
-        let absPath = URL(fileURLWithPath: path, relativeTo: URL(fileURLWithPath: dir))
-          .standardizedFileURL.path
-        return (
-          "git",
-          hardening + [
-            "-c", "core.quotePath=false", "diff", "--no-ext-diff",
-            "--no-textconv", "--no-color", "--no-index", "--", "/dev/null", absPath,
-          ]
-        )
+  func get(_ key: String) -> DiffResult? {
+    guard let value = entries[key] else { return nil }
+    touch(key)
+    return value
+  }
 
-      case .renamed:
-        return ("git", gitBase + ["-M", "HEAD", "--", path])
+  func set(_ key: String, _ value: DiffResult, bytes: Int) {
+    if entries[key] != nil {
+      total -= sizes[key] ?? 0
+      order.removeAll { $0 == key }
+    }
+    entries[key] = value
+    sizes[key] = bytes
+    order.append(key)
+    total += bytes
+    evict()
+  }
 
-      default:
-        return ("git", gitBase + ["HEAD", "--", path])
-      }
+  func clear() {
+    entries.removeAll()
+    sizes.removeAll()
+    order.removeAll()
+    total = 0
+  }
+
+  private func touch(_ key: String) {
+    order.removeAll { $0 == key }
+    order.append(key)
+  }
+
+  private func evict() {
+    while total > budget, order.count > 1, let oldest = order.first {
+      order.removeFirst()
+      total -= sizes.removeValue(forKey: oldest) ?? 0
+      entries.removeValue(forKey: oldest)
     }
   }
 }

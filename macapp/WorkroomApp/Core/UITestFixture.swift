@@ -449,6 +449,10 @@ struct FixtureVCSProvider: VCSProviding {
     "diff --git a/\(path) b/\(path)\n@@ -1 +1 @@\n-old\n+new\n"
   }
 
+  func workingFileDiff(root: URL, path: String, base: VCSWorkingDiffBase) async throws -> String {
+    "diff --git a/\(path) b/\(path)\n@@ -1 +1 @@\n-old\n+new\n"
+  }
+
   func currentRef(root: URL) async throws -> VCSRef {
     VCSRef(name: "main", kind: .branch)
   }

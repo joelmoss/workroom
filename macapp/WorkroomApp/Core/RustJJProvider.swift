@@ -69,6 +69,25 @@ struct RustJJProvider: VCSProviding {
     )
   }
 
+  /// Working-copy per-file diff, as git-format text (the `jj diff --git` sanctioned CLI fallback — jj
+  /// has no non-CLI git-format writer; same as `fileDiff`). `.workingCopy` diffs `@` and MUST snapshot
+  /// (no `--ignore-working-copy`) so it reflects on-disk edits; `.parent` diffs `@-` with
+  /// `--ignore-working-copy` so it reuses the snapshot and never contends on the working-copy lock.
+  func workingFileDiff(root: URL, path: String, base: VCSWorkingDiffBase) async throws -> String {
+    try await Self.run("jj", Self.workingDiffArgs(path: path, base: base), cwd: root)
+  }
+
+  /// Pure `jj diff` args for a working-copy file diff (unit-tested — the invariant is which rev and
+  /// whether `--ignore-working-copy` is present, since that governs the working-copy lock).
+  static func workingDiffArgs(path: String, base: VCSWorkingDiffBase) -> [String] {
+    switch base {
+    case .workingCopy:
+      return ["diff", "--git", "-r", "@", "--color", "never", "--", path]
+    case .parent:
+      return ["diff", "--git", "-r", "@-", "--ignore-working-copy", "--color", "never", "--", path]
+    }
+  }
+
   /// Run a VCS CLI (via `/usr/bin/env` so PATH lookup works), returning stdout. GUI apps get a
   /// minimal PATH, so prepend the common Homebrew / local locations where `jj` lives.
   private static func run(_ exe: String, _ args: [String], cwd: URL) async throws -> String {

@@ -1,5 +1,15 @@
 import Foundation
 
+/// Which working-copy revision a `workingFileDiff` is against — backend-neutral so `DiffResolver`
+/// maps its UI `DiffSource` onto it without knowing the backend:
+///   - `.workingCopy` — the uncommitted changes: git = worktree/index vs `HEAD`; jj = `@` (vs `@-`).
+///   - `.parent`      — jj only: the working copy's parent (`@-`) own changes (vs `@--`). Git has no
+///     equivalent surface (git repos never request it) and reports it unsupported.
+enum VCSWorkingDiffBase: Sendable, Equatable {
+  case workingCopy
+  case parent
+}
+
 /// The single seam the app reads VCS data through. Two implementations — `RustJJProvider` (jj, over
 /// the Rust/UniFFI core) and `GitProvider` (git, over SwiftGitX) — both return the app-native models
 /// in `VCSModels.swift`. Views/models depend on this protocol, not on either backend.
@@ -11,6 +21,9 @@ protocol VCSProviding: Sendable {
   /// The per-file diff for one path within a changeset, as git-format unified-diff text (fed to the
   /// existing `UnifiedDiff` parser / `DiffViewer`). Lazy — the detail view fetches it on selection.
   func fileDiff(root: URL, commitID: String, path: String) async throws -> String
+  /// The per-file diff for one path in the working copy (or its parent), as git-format unified-diff
+  /// text — the working-copy counterpart of `fileDiff`. Lazy, per-file (never a whole-tree diff).
+  func workingFileDiff(root: URL, path: String, base: VCSWorkingDiffBase) async throws -> String
   /// The repo's current ref for the sidebar root-row label — the `@` bookmark / nearest ancestor
   /// bookmark (jj) or current branch / short SHA (git). Read-only; must not take the jj working-copy
   /// lock (backs `BranchResolver`).

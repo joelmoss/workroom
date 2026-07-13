@@ -9,8 +9,8 @@ import SwiftUI
 ///
 /// Fetch is on-appear via `.task(id:)` keyed on the descriptor's file + revision, so switching to a
 /// diff tab (or retargeting the preview to a new file) re-runs `DiffResolver` for the current state —
-/// the diff is always fresh, and SwiftUI cancels an in-flight fetch when the view goes away (the
-/// command runner SIGKILLs the abandoned git/jj child). Lines render in an eager `VStack` (see
+/// the diff is always fresh, and SwiftUI cancels an in-flight fetch when the view goes away. Lines
+/// render in an eager `VStack` (see
 /// `unifiedBody`), so a large diff lays out gap-free; `UnifiedDiff.parse`'s line cap bounds it.
 struct DiffViewer: View {
   let descriptor: DiffDescriptor
@@ -53,6 +53,7 @@ struct DiffViewer: View {
     case loaded(UnifiedDiff)
     case binary
     case empty
+    case tooLarge
     case failed(String)
   }
 
@@ -84,6 +85,10 @@ struct DiffViewer: View {
       message("Binary file", systemImage: "doc.fill", detail: "No text diff to show.")
     case .empty:
       message("No changes", systemImage: "checkmark.circle", detail: nil)
+    case .tooLarge:
+      message(
+        "Diff too large to show", systemImage: "doc.fill",
+        detail: "Open the file in your editor (⌘-click in the Files list).")
     case .failed(let reason):
       message("Diff unavailable", systemImage: "exclamationmark.triangle", detail: reason)
     }
@@ -102,6 +107,7 @@ struct DiffViewer: View {
     case .diff(let diff): state = diff.hunks.isEmpty ? .empty : .loaded(diff)
     case .binary: state = .binary
     case .empty: state = .empty
+    case .tooLarge: state = .tooLarge
     case .failed(let reason): state = .failed(reason)
     }
     // Intra-line (character-level) change emphasis is computed straight from the diff (no fetch),

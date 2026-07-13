@@ -73,9 +73,73 @@ struct GitProvider: VCSProviding {
       else {
         return ""  // path unchanged in this changeset
       }
-      return Self.gitFormat(patch)
+      let d = patch.delta
+      let oldPath = d.oldFile.path.isEmpty ? d.newFile.path : d.oldFile.path
+      let newPath = d.newFile.path.isEmpty ? d.oldFile.path : d.newFile.path
+      return Self.gitFormat(patch, oldPath: oldPath, newPath: newPath, type: d.type)
     } catch {
       throw VCSError.io("\(error)")
+    }
+  }
+
+  /// Working-copy per-file diff, as git-format text — the working-copy counterpart of `fileDiff`,
+  /// built structurally from libgit2 (no subprocess, no `git diff` shell-out). Per-file by
+  /// construction: it fetches the single path's status delta, then builds just that file's `Patch`
+  /// (`git_patch_from_blob*`) — never a whole-worktree diff.
+  ///
+  /// jj-only `.parent` isn't a git concept (git repos never request it) → unsupported.
+  func workingFileDiff(root: URL, path: String, base: VCSWorkingDiffBase) async throws -> String {
+    guard base == .workingCopy else {
+      throw VCSError.unsupportedRepo("git has no working-copy parent diff")
+    }
+    do {
+      let repo = try Repository.open(at: root)
+      // Same status options as `workingStatus`: untracked + rename detection, so the delta type
+      // matches the badge and a `git mv` reads as one rename (blob→file), not delete + add.
+      let options: StatusOption = [
+        .includeUntracked, .recurseUntrackedDirectories, .renamesIndex, .renamesWorkingTree,
+      ]
+      guard
+        let entry = try repo.status(options: options).first(where: {
+          let d = $0.workingTree ?? $0.index
+          return d?.newFile.path == path || d?.oldFile.path == path
+        }),
+        let delta = entry.workingTree ?? entry.index
+      else {
+        return ""  // path clean / not a working-copy change
+      }
+      guard let patch = try Self.workingPatch(repo, delta: delta, root: root) else {
+        return ""  // a delta type with no renderable per-file patch (e.g. copy without content)
+      }
+      // Use the status delta's real paths — a blob-built patch carries empty delta paths.
+      let newPath = delta.newFile.path.isEmpty ? delta.oldFile.path : delta.newFile.path
+      let oldPath = delta.oldFile.path.isEmpty ? delta.newFile.path : delta.oldFile.path
+      return Self.gitFormat(patch, oldPath: oldPath, newPath: newPath, type: delta.type)
+    } catch let error as VCSError {
+      throw error
+    } catch {
+      throw VCSError.io("\(error)")
+    }
+  }
+
+  /// Build a single file's working-copy `Patch`. Prefers SwiftGitX's `patch(from: delta)` (handles
+  /// untracked/added/modified/renamed); fills its gaps by hand: `.deleted` = old blob → empty,
+  /// `.conflicted` = HEAD blob → the on-disk (conflict-marked) file. `nil` for anything else.
+  private static func workingPatch(_ repo: Repository, delta: Diff.Delta, root: URL) throws
+    -> Patch?
+  {
+    switch delta.type {
+    case .untracked, .added, .modified, .renamed:
+      return try repo.patch(from: delta)
+    case .deleted:
+      let oldBlob: Blob = try repo.show(id: delta.oldFile.id)
+      return try repo.patch(from: oldBlob, to: nil)
+    case .conflicted:
+      let headBlob: Blob? = try? repo.show(id: delta.oldFile.id)
+      let file = delta.newFile.path.isEmpty ? delta.oldFile.path : delta.newFile.path
+      return try repo.patch(from: headBlob, to: root.appendingPathComponent(file))
+    default:
+      return nil
     }
   }
 
@@ -159,17 +223,19 @@ struct GitProvider: VCSProviding {
   /// Reconstruct git-format unified-diff text from a SwiftGitX `Patch` so the existing `UnifiedDiff`
   /// parser (and `DiffViewer`) can consume it — the git-format patch is the app's diff lingua franca
   /// (jj produces the same shape).
-  private static func gitFormat(_ patch: Patch) -> String {
-    let d = patch.delta
-    let oldPath = d.oldFile.path.isEmpty ? d.newFile.path : d.oldFile.path
-    let newPath = d.newFile.path.isEmpty ? d.oldFile.path : d.newFile.path
+  private static func gitFormat(
+    _ patch: Patch, oldPath: String, newPath: String, type: Diff.DeltaType
+  ) -> String {
     var out = "diff --git a/\(oldPath) b/\(newPath)\n"
-    if d.flags.contains(.binary) {
+    if patch.delta.flags.contains(.binary) {
       out += "Binary files a/\(oldPath) and b/\(newPath) differ\n"
       return out
     }
-    out += "--- " + (d.type == .added ? "/dev/null" : "a/\(oldPath)") + "\n"
-    out += "+++ " + (d.type == .deleted ? "/dev/null" : "b/\(newPath)") + "\n"
+    // A file with no old side (added / untracked) uses /dev/null as the `---` side; a deleted file
+    // uses it as the `+++` side.
+    let noOldSide = type == .added || type == .untracked
+    out += "--- " + (noOldSide ? "/dev/null" : "a/\(oldPath)") + "\n"
+    out += "+++ " + (type == .deleted ? "/dev/null" : "b/\(newPath)") + "\n"
     for hunk in patch.hunks {
       out += hunk.header  // libgit2 includes the trailing newline
       for line in hunk.lines {

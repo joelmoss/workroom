@@ -2,51 +2,68 @@ import XCTest
 
 @testable import Workroom
 
-// MARK: - Test helpers
+// MARK: - Test doubles
 
-private struct MockDiffRunner: StatusCommandRunning {
-  let handler: @Sendable (_ executable: String, _ args: [String]) -> CommandResult
-  func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
-    async -> CommandResult
-  {
-    handler(executable, args)
-  }
-}
+/// A `VCSProviding` stub that records calls and returns configurable text (or throws). A class so
+/// its closures record into it without capturing a mutable `var` across the `@Sendable` boundary.
+private final class StubDiffProvider: VCSProviding, @unchecked Sendable {
+  var commitText: (@Sendable (_ commitID: String, _ path: String) throws -> String)?
+  var workingText: (@Sendable (_ path: String, _ base: VCSWorkingDiffBase) throws -> String)?
 
-private final class RecordingDiffRunner: StatusCommandRunning, @unchecked Sendable {
-  private let handler: @Sendable (_ executable: String, _ args: [String]) -> CommandResult
   private let lock = NSLock()
-  private var _calls: [(exe: String, args: [String], dir: String)] = []
-  var calls: [(exe: String, args: [String], dir: String)] {
+  private var _commitCalls = 0
+  private var _workingCalls: [(path: String, base: VCSWorkingDiffBase)] = []
+  private var _lastCommit: (commitID: String, path: String)?
+
+  var commitCalls: Int {
     lock.lock()
     defer { lock.unlock() }
-    return _calls
+    return _commitCalls
+  }
+  var workingCalls: [(path: String, base: VCSWorkingDiffBase)] {
+    lock.lock()
+    defer { lock.unlock() }
+    return _workingCalls
+  }
+  var lastCommit: (commitID: String, path: String)? {
+    lock.lock()
+    defer { lock.unlock() }
+    return _lastCommit
   }
 
-  init(_ handler: @escaping @Sendable (_ executable: String, _ args: [String]) -> CommandResult) {
-    self.handler = handler
+  func log(root: URL, limit: Int) async throws -> VCSHistoryPage {
+    .init(commits: [], reachedEnd: true)
+  }
+  func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
+    throw VCSError.io("unused")
+  }
+  func currentRef(root: URL) async throws -> VCSRef { .none }
+
+  func fileDiff(root: URL, commitID: String, path: String) async throws -> String {
+    lock.lock()
+    _commitCalls += 1
+    _lastCommit = (commitID, path)
+    lock.unlock()
+    return try commitText?(commitID, path) ?? ""
   }
 
-  func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
+  func workingFileDiff(root: URL, path: String, base: VCSWorkingDiffBase) async throws -> String {
+    lock.lock()
+    _workingCalls.append((path, base))
+    lock.unlock()
+    return try workingText?(path, base) ?? ""
+  }
+}
+
+/// Fails the test if a diff ever shells out — diffs now go through `VCSProviding`, never the runner.
+/// (`DiffResolver` still keeps a runner for `fileContent`, which these tests don't exercise.)
+private struct NoShellRunner: StatusCommandRunning {
+  func run(_ exe: String, _ args: [String], in directory: String, timeout: TimeInterval)
     async -> CommandResult
   {
-    lock.lock()
-    _calls.append((executable, args, directory))
-    lock.unlock()
-    return handler(executable, args)
+    XCTFail("DiffResolver must not shell out for diffs (\(exe) \(args))")
+    return CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: false)
   }
-}
-
-private func ok(_ stdout: String = "") -> CommandResult {
-  CommandResult(stdout: stdout, stderr: "", exitCode: 0, timedOut: false)
-}
-
-private func fail(_ stderr: String = "command failed", exitCode: Int32 = 1) -> CommandResult {
-  CommandResult(stdout: "", stderr: stderr, exitCode: exitCode, timedOut: false)
-}
-
-private func timedOut() -> CommandResult {
-  CommandResult(stdout: "", stderr: "", exitCode: 1, timedOut: true)
 }
 
 private let sampleDiff = """
@@ -60,376 +77,241 @@ private let sampleDiff = """
 
 private let binaryDiff = "Binary files a/img.png and b/img.png differ"
 
+private func desc(_ path: String, _ change: ChangedFile.Change, _ source: DiffSource)
+  -> DiffDescriptor
+{
+  DiffDescriptor(path: path, change: change, source: source, isPreview: false)
+}
+
 // MARK: - Tests
 
 final class DiffResolverTests: XCTestCase {
 
-  // MARK: - command(for:dir:) — jj sources
-
-  func testCommandJJWorkingCopy() {
-    let desc = DiffDescriptor(
-      path: "src/foo.swift", change: .modified, source: .jjWorkingCopy, isPreview: false)
-    let (exe, args) = DiffResolver.command(for: desc, dir: "/repo")
-    XCTAssertEqual(exe, "jj")
-    XCTAssertEqual(args, ["diff", "--git", "-r", "@", "--color", "never", "--", "src/foo.swift"])
+  /// A resolver wired to `provider`, a no-shell runner, and (by default) a fresh cache so tests are
+  /// isolated from each other and from the shared commit cache.
+  private func resolver(_ provider: StubDiffProvider, cache: DiffCache = DiffCache())
+    -> DiffResolver
+  {
+    DiffResolver(runner: NoShellRunner(), timeout: 5, makeProvider: { _ in provider }, cache: cache)
   }
 
-  func testCommandJJWorkingCopyAllChangeKinds() {
-    // Source is what matters for jj — change kind doesn't alter the args
-    for change: ChangedFile.Change in [.modified, .added, .deleted, .renamed, .untracked, .other] {
-      let desc = DiffDescriptor(
-        path: "p.txt", change: change, source: .jjWorkingCopy, isPreview: false)
-      let (exe, args) = DiffResolver.command(for: desc, dir: "/repo")
-      XCTAssertEqual(exe, "jj")
-      XCTAssertTrue(args.contains("-r"), "missing -r flag for change \(change)")
-      XCTAssertTrue(args.contains("@"), "missing @ for change \(change)")
-      XCTAssertFalse(
-        args.contains("--ignore-working-copy"),
-        "jjWorkingCopy must not have --ignore-working-copy for change \(change)")
-    }
-  }
+  // MARK: - interpret (pure classification)
 
-  func testCommandJJParent() {
-    let desc = DiffDescriptor(
-      path: "lib/bar.swift", change: .modified, source: .jjParent, isPreview: false)
-    let (exe, args) = DiffResolver.command(for: desc, dir: "/repo")
-    XCTAssertEqual(exe, "jj")
-    XCTAssertEqual(
-      args,
-      [
-        "diff", "--git", "-r", "@-", "--ignore-working-copy", "--color", "never", "--",
-        "lib/bar.swift",
-      ])
-  }
-
-  func testCommandJJParentHasIgnoreWorkingCopy() {
-    let desc = DiffDescriptor(
-      path: "p.txt", change: .added, source: .jjParent, isPreview: false)
-    let (_, args) = DiffResolver.command(for: desc, dir: "/repo")
-    XCTAssertTrue(args.contains("--ignore-working-copy"))
-    XCTAssertTrue(args.contains("@-"))
-  }
-
-  // MARK: - command(for:dir:) — git sources
-
-  func testCommandGitWorktreeModified() {
-    let desc = DiffDescriptor(
-      path: "src/main.swift", change: .modified, source: .gitWorktree, isPreview: false)
-    let (exe, args) = DiffResolver.command(for: desc, dir: "/repo")
-    XCTAssertEqual(exe, "git")
-    // Must begin with gitHardening flags
-    let hardening = WorkroomStatusResolver.gitHardening
-    XCTAssertTrue(args.starts(with: hardening), "args must start with gitHardening")
-    // Must contain core.quotePath=false
-    XCTAssertTrue(args.contains("core.quotePath=false"))
-    // Must NOT contain -M (not a rename)
-    XCTAssertFalse(args.contains("-M"))
-    // Must contain HEAD and the path
-    XCTAssertTrue(args.contains("HEAD"))
-    XCTAssertTrue(args.contains("src/main.swift"))
-    // Must not contain --no-index
-    XCTAssertFalse(args.contains("--no-index"))
-  }
-
-  func testCommandGitWorktreeAdded() {
-    let desc = DiffDescriptor(
-      path: "new.txt", change: .added, source: .gitWorktree, isPreview: false)
-    let (_, args) = DiffResolver.command(for: desc, dir: "/repo")
-    XCTAssertFalse(args.contains("-M"))
-    XCTAssertTrue(args.contains("HEAD"))
-  }
-
-  func testCommandGitWorktreeDeleted() {
-    let desc = DiffDescriptor(
-      path: "gone.txt", change: .deleted, source: .gitWorktree, isPreview: false)
-    let (_, args) = DiffResolver.command(for: desc, dir: "/repo")
-    XCTAssertFalse(args.contains("-M"))
-    XCTAssertTrue(args.contains("HEAD"))
-  }
-
-  func testCommandGitWorktreeRenamed() {
-    let desc = DiffDescriptor(
-      path: "renamed.swift", change: .renamed, source: .gitWorktree, isPreview: false)
-    let (exe, args) = DiffResolver.command(for: desc, dir: "/repo")
-    XCTAssertEqual(exe, "git")
-    let hardening = WorkroomStatusResolver.gitHardening
-    XCTAssertTrue(args.starts(with: hardening))
-    XCTAssertTrue(args.contains("-M"), "renamed must include -M")
-    XCTAssertTrue(args.contains("HEAD"))
-    XCTAssertTrue(args.contains("renamed.swift"))
-  }
-
-  func testCommandGitWorktreeUntracked() {
-    let dir = "/my/repo"
-    let path = "untracked/file.txt"
-    let desc = DiffDescriptor(
-      path: path, change: .untracked, source: .gitWorktree, isPreview: false)
-    let (exe, args) = DiffResolver.command(for: desc, dir: dir)
-    XCTAssertEqual(exe, "git")
-    let hardening = WorkroomStatusResolver.gitHardening
-    XCTAssertTrue(args.starts(with: hardening))
-    XCTAssertTrue(args.contains("--no-index"))
-    XCTAssertTrue(args.contains("/dev/null"))
-    // absPath must be an absolute path ending with the relative path
-    let absPath = args.last ?? ""
-    XCTAssertTrue(absPath.hasPrefix("/"), "absPath must be absolute: \(absPath)")
-    XCTAssertTrue(absPath.hasSuffix(path), "absPath must end with the relative path: \(absPath)")
-    // Must NOT contain HEAD or -M
-    XCTAssertFalse(args.contains("HEAD"))
-    XCTAssertFalse(args.contains("-M"))
-  }
-
-  func testCommandGitHardeningPresentInAllGitCases() {
-    let hardening = WorkroomStatusResolver.gitHardening
-    let cases: [(String, ChangedFile.Change)] = [
-      ("f.txt", .modified), ("f.txt", .added), ("f.txt", .deleted), ("f.txt", .renamed),
-      ("f.txt", .untracked), ("f.txt", .conflicted), ("f.txt", .other),
-    ]
-    for (path, change) in cases {
-      let desc = DiffDescriptor(path: path, change: change, source: .gitWorktree, isPreview: false)
-      let (_, args) = DiffResolver.command(for: desc, dir: "/repo")
-      XCTAssertTrue(
-        args.starts(with: hardening),
-        "gitHardening must be first in args for change \(change)")
-    }
-  }
-
-  // MARK: - resolve(_:in:) — success paths
-
-  func testResolveDiff() async {
-    let runner = MockDiffRunner { _, _ in ok(sampleDiff) }
-    let resolver = DiffResolver(runner: runner, timeout: 5)
-    let desc = DiffDescriptor(
-      path: "f.txt", change: .modified, source: .gitWorktree, isPreview: false)
-    let result = await resolver.resolve(desc, in: "/repo")
-    guard case .diff(let ud) = result else {
-      XCTFail("Expected .diff, got \(result)")
-      return
+  func testInterpretParsesDiff() {
+    guard case .diff(let ud) = DiffResolver.interpret(sampleDiff) else {
+      return XCTFail("expected .diff")
     }
     XCTAssertEqual(ud.hunks.count, 1)
   }
 
-  func testResolveBinary() async {
-    let runner = MockDiffRunner { _, _ in ok(binaryDiff) }
-    let resolver = DiffResolver(runner: runner, timeout: 5)
-    let desc = DiffDescriptor(
-      path: "img.png", change: .modified, source: .gitWorktree, isPreview: false)
-    let result = await resolver.resolve(desc, in: "/repo")
-    XCTAssertEqual(result, .binary)
+  func testInterpretBinary() {
+    XCTAssertEqual(DiffResolver.interpret(binaryDiff), .binary)
   }
 
-  func testResolveEmpty() async {
-    let runner = MockDiffRunner { _, _ in ok("") }
-    let resolver = DiffResolver(runner: runner, timeout: 5)
-    let desc = DiffDescriptor(
-      path: "f.txt", change: .modified, source: .gitWorktree, isPreview: false)
-    let result = await resolver.resolve(desc, in: "/repo")
-    XCTAssertEqual(result, .empty)
+  func testInterpretEmptyAndWhitespace() {
+    XCTAssertEqual(DiffResolver.interpret(""), .empty)
+    XCTAssertEqual(DiffResolver.interpret("   \n  "), .empty)
   }
 
-  func testResolveEmptyWhitespace() async {
-    let runner = MockDiffRunner { _, _ in ok("   \n  ") }
-    let resolver = DiffResolver(runner: runner, timeout: 5)
-    let desc = DiffDescriptor(
-      path: "f.txt", change: .modified, source: .gitWorktree, isPreview: false)
-    let result = await resolver.resolve(desc, in: "/repo")
-    XCTAssertEqual(result, .empty)
+  func testInterpretTooLarge() {
+    // One byte over the cap → tooLarge, never parsed.
+    let big = String(repeating: "x", count: DiffResolver.maxDiffBytes + 1)
+    XCTAssertEqual(DiffResolver.interpret(big), .tooLarge)
   }
 
-  func testResolveTimedOut() async {
-    let runner = MockDiffRunner { _, _ in timedOut() }
-    let resolver = DiffResolver(runner: runner, timeout: 5)
-    let desc = DiffDescriptor(
-      path: "f.txt", change: .modified, source: .gitWorktree, isPreview: false)
-    let result = await resolver.resolve(desc, in: "/repo")
-    XCTAssertEqual(result, .failed("Timed out"))
+  // MARK: - jj working-copy args (pure; the invariant the deleted command(for:) tests guarded)
+
+  func testJJWorkingCopyArgsSnapshot() {
+    let args = RustJJProvider.workingDiffArgs(path: "src/foo.swift", base: .workingCopy)
+    XCTAssertEqual(
+      args, ["diff", "--git", "-r", "@", "--color", "never", "--", "src/foo.swift"])
+    // Must NOT ignore the working copy — `.workingCopy` has to snapshot `@` to reflect disk.
+    XCTAssertFalse(args.contains("--ignore-working-copy"))
   }
 
-  func testResolveNonZeroExit() async {
-    let runner = MockDiffRunner { _, _ in fail("fatal: not a repo") }
-    let resolver = DiffResolver(runner: runner, timeout: 5)
-    let desc = DiffDescriptor(
-      path: "f.txt", change: .modified, source: .gitWorktree, isPreview: false)
-    let result = await resolver.resolve(desc, in: "/repo")
-    guard case .failed(let msg) = result else {
-      XCTFail("Expected .failed, got \(result)")
-      return
+  func testJJParentArgsIgnoreWorkingCopy() {
+    let args = RustJJProvider.workingDiffArgs(path: "lib/bar.swift", base: .parent)
+    XCTAssertTrue(args.contains("@-"))
+    // Must reuse the snapshot (never re-lock the working copy) when reading the parent.
+    XCTAssertTrue(args.contains("--ignore-working-copy"))
+  }
+
+  // MARK: - resolve: working-copy sources route to workingFileDiff with the right base
+
+  func testResolveGitWorktreeUsesWorkingCopyBase() async {
+    let p = StubDiffProvider()
+    p.workingText = { _, _ in sampleDiff }
+    let result = await resolver(p).resolve(desc("f.txt", .modified, .gitWorktree), in: "/repo")
+    guard case .diff = result else { return XCTFail("expected .diff, got \(result)") }
+    XCTAssertEqual(p.workingCalls.map(\.base), [.workingCopy])
+    XCTAssertEqual(p.workingCalls.first?.path, "f.txt")
+  }
+
+  func testResolveJJWorkingCopyUsesWorkingCopyBase() async {
+    let p = StubDiffProvider()
+    p.workingText = { _, _ in sampleDiff }
+    _ = await resolver(p).resolve(desc("a.txt", .modified, .jjWorkingCopy), in: "/repo")
+    XCTAssertEqual(p.workingCalls.map(\.base), [.workingCopy])
+  }
+
+  func testResolveJJParentUsesParentBase() async {
+    let p = StubDiffProvider()
+    p.workingText = { _, _ in sampleDiff }
+    _ = await resolver(p).resolve(desc("b.txt", .modified, .jjParent), in: "/repo")
+    XCTAssertEqual(p.workingCalls.map(\.base), [.parent])
+  }
+
+  func testResolveWorkingMapsBinaryEmptyTooLarge() async {
+    let p = StubDiffProvider()
+    p.workingText = { path, _ in
+      switch path {
+      case "img.png": return binaryDiff
+      case "clean.txt": return ""
+      default: return String(repeating: "x", count: DiffResolver.maxDiffBytes + 1)
+      }
     }
-    XCTAssertEqual(msg, "fatal: not a repo")
+    let r = resolver(p)
+    let binary = await r.resolve(desc("img.png", .modified, .gitWorktree), in: "/repo")
+    XCTAssertEqual(binary, .binary)
+    let empty = await r.resolve(desc("clean.txt", .modified, .gitWorktree), in: "/repo")
+    XCTAssertEqual(empty, .empty)
+    let big = await r.resolve(desc("huge.txt", .modified, .gitWorktree), in: "/repo")
+    XCTAssertEqual(big, .tooLarge)
   }
 
-  func testResolveNonZeroExitEmptyStderr() async {
-    let runner = MockDiffRunner { _, _ in
-      CommandResult(stdout: "", stderr: "", exitCode: 2, timedOut: false)
-    }
-    let resolver = DiffResolver(runner: runner, timeout: 5)
-    let desc = DiffDescriptor(
-      path: "f.txt", change: .modified, source: .gitWorktree, isPreview: false)
-    let result = await resolver.resolve(desc, in: "/repo")
-    XCTAssertEqual(result, .failed("Diff unavailable"))
+  func testResolveWorkingBackendErrorFails() async {
+    let p = StubDiffProvider()
+    p.workingText = { _, _ in throw VCSError.lockContention }
+    let result = await resolver(p).resolve(desc("f.txt", .modified, .gitWorktree), in: "/repo")
+    XCTAssertEqual(result, .failed("Repository is busy"))
   }
 
-  // MARK: - resolve: untracked special cases
+  // MARK: - resolve: .commit routes through the backend (never shells) and is cached
 
-  func testResolveUntrackedExit1IsSuccess() async {
-    // git --no-index exits 1 when files differ (that IS the success path)
-    let runner = MockDiffRunner { _, _ in
-      CommandResult(stdout: sampleDiff, stderr: "", exitCode: 1, timedOut: false)
-    }
-    let resolver = DiffResolver(runner: runner, timeout: 5)
-    let desc = DiffDescriptor(
-      path: "new.txt", change: .untracked, source: .gitWorktree, isPreview: false)
-    let result = await resolver.resolve(desc, in: "/repo")
-    guard case .diff = result else {
-      XCTFail("Expected .diff for untracked exit-1, got \(result)")
-      return
-    }
-  }
-
-  func testResolveUntrackedExit0IsEmpty() async {
-    // exit 0 from --no-index means files are identical → empty
-    let runner = MockDiffRunner { _, _ in ok("") }
-    let resolver = DiffResolver(runner: runner, timeout: 5)
-    let desc = DiffDescriptor(
-      path: "new.txt", change: .untracked, source: .gitWorktree, isPreview: false)
-    let result = await resolver.resolve(desc, in: "/repo")
-    XCTAssertEqual(result, .empty)
-  }
-
-  func testResolveUntrackedTimedOutIsFailed() async {
-    let runner = MockDiffRunner { _, _ in timedOut() }
-    let resolver = DiffResolver(runner: runner, timeout: 5)
-    let desc = DiffDescriptor(
-      path: "new.txt", change: .untracked, source: .gitWorktree, isPreview: false)
-    let result = await resolver.resolve(desc, in: "/repo")
-    XCTAssertEqual(result, .failed("Timed out"))
-  }
-
-  func testResolveUntrackedExit2IsFailed() async {
-    // Any other non-zero exit (e.g. 2 = usage error) is a genuine failure
-    let runner = MockDiffRunner { _, _ in
-      CommandResult(stdout: "", stderr: "bad usage", exitCode: 2, timedOut: false)
-    }
-    let resolver = DiffResolver(runner: runner, timeout: 5)
-    let desc = DiffDescriptor(
-      path: "new.txt", change: .untracked, source: .gitWorktree, isPreview: false)
-    let result = await resolver.resolve(desc, in: "/repo")
-    guard case .failed = result else {
-      XCTFail("Expected .failed for untracked exit-2, got \(result)")
-      return
-    }
-  }
-
-  // MARK: - resolve: jj sources
-
-  func testResolveJJWorkingCopy() async {
-    let recording = RecordingDiffRunner { _, _ in ok(sampleDiff) }
-    let resolver = DiffResolver(runner: recording, timeout: 5)
-    let desc = DiffDescriptor(
-      path: "a.txt", change: .modified, source: .jjWorkingCopy, isPreview: false)
-    let result = await resolver.resolve(desc, in: "/repo")
-    guard case .diff = result else {
-      XCTFail("Expected .diff, got \(result)")
-      return
-    }
-    let call = recording.calls.first
-    XCTAssertEqual(call?.exe, "jj")
-    XCTAssertTrue(call?.args.contains("-r") == true)
-    XCTAssertTrue(call?.args.contains("@") == true)
-  }
-
-  func testResolveJJParent() async {
-    let recording = RecordingDiffRunner { _, _ in ok(sampleDiff) }
-    let resolver = DiffResolver(runner: recording, timeout: 5)
-    let desc = DiffDescriptor(
-      path: "b.txt", change: .modified, source: .jjParent, isPreview: false)
-    let result = await resolver.resolve(desc, in: "/repo")
-    guard case .diff = result else {
-      XCTFail("Expected .diff, got \(result)")
-      return
-    }
-    let call = recording.calls.first
-    XCTAssertEqual(call?.exe, "jj")
-    XCTAssertTrue(call?.args.contains("@-") == true)
-    XCTAssertTrue(call?.args.contains("--ignore-working-copy") == true)
-  }
-
-  // MARK: - .commit source routes through VCSProviding (issue #59), not the shell runner
-
-  /// A commit-scoped diff bypasses the command runner entirely and reads through the injected VCS
-  /// backend: the runner must never be called, and the backend's git-format text parses to `.diff`.
   func testResolveCommitRoutesThroughProviderAndNeverShells() async {
-    let recording = RecordingDiffRunner { _, _ in
-      XCTFail("commit diffs must not shell out")
-      return ok("")
-    }
-    var seen: (root: URL, commitID: String, path: String)?
-    let provider = StubDiffProvider { root, commitID, path in
-      seen = (root, commitID, path)
-      return sampleDiff
-    }
-    let resolver = DiffResolver(runner: recording, timeout: 5, makeProvider: { _ in provider })
-    let desc = DiffDescriptor(
-      path: "b.txt", change: .modified, source: .commit("abc123"), isPreview: false)
-
-    let result = await resolver.resolve(desc, in: "/repo")
-
-    guard case .diff = result else {
-      XCTFail("Expected .diff, got \(result)")
-      return
-    }
-    XCTAssertTrue(recording.calls.isEmpty, "the shell runner is never used for a commit diff")
-    XCTAssertEqual(seen?.commitID, "abc123")
-    XCTAssertEqual(seen?.path, "b.txt")
-    XCTAssertEqual(seen?.root.path, "/repo")
+    let p = StubDiffProvider()
+    p.commitText = { _, _ in sampleDiff }
+    let result = await resolver(p).resolve(desc("b.txt", .modified, .commit("abc123")), in: "/repo")
+    guard case .diff = result else { return XCTFail("expected .diff, got \(result)") }
+    XCTAssertTrue(p.workingCalls.isEmpty, "a commit diff never uses the working-copy path")
+    XCTAssertEqual(p.lastCommit?.commitID, "abc123")
+    XCTAssertEqual(p.lastCommit?.path, "b.txt")
   }
 
   func testResolveCommitMapsBinaryAndEmpty() async {
-    let binary = DiffResolver(
-      runner: MockDiffRunner { _, _ in ok() },
-      makeProvider: { _ in StubDiffProvider { _, _, _ in binaryDiff } })
-    let binResult = await binary.resolve(
-      DiffDescriptor(path: "img.png", change: .modified, source: .commit("x"), isPreview: false),
-      in: "/repo")
+    let bin = StubDiffProvider()
+    bin.commitText = { _, _ in binaryDiff }
+    let binResult = await resolver(bin).resolve(
+      desc("img.png", .modified, .commit("x")), in: "/repo")
     XCTAssertEqual(binResult, .binary)
 
-    let empty = DiffResolver(
-      runner: MockDiffRunner { _, _ in ok() },
-      makeProvider: { _ in StubDiffProvider { _, _, _ in "   \n" } })
-    let emptyResult = await empty.resolve(
-      DiffDescriptor(path: "a.txt", change: .modified, source: .commit("x"), isPreview: false),
-      in: "/repo")
+    let mt = StubDiffProvider()
+    mt.commitText = { _, _ in "   \n" }
+    let emptyResult = await resolver(mt).resolve(
+      desc("a.txt", .modified, .commit("x")), in: "/repo")
     XCTAssertEqual(emptyResult, .empty)
   }
 
-  /// A backend error surfaces as `.failed` with the error's message (never a silent empty).
   func testResolveCommitBackendErrorFails() async {
-    let resolver = DiffResolver(
-      runner: MockDiffRunner { _, _ in ok() },
-      makeProvider: { _ in StubDiffProvider { _, _, _ in throw VCSError.notFound("no such commit") }
-      })
-    let result = await resolver.resolve(
-      DiffDescriptor(path: "a.txt", change: .modified, source: .commit("bad"), isPreview: false),
-      in: "/repo")
+    let p = StubDiffProvider()
+    p.commitText = { _, _ in throw VCSError.notFound("no such commit") }
+    let result = await resolver(p).resolve(desc("a.txt", .modified, .commit("bad")), in: "/repo")
     guard case .failed(let message) = result else {
-      XCTFail("Expected .failed, got \(result)")
-      return
+      return XCTFail("expected .failed, got \(result)")
     }
     XCTAssertTrue(message.contains("no such commit"), "the backend message is surfaced: \(message)")
   }
+
+  func testCommitDiffIsCachedSecondCallDoesNotHitProvider() async {
+    let p = StubDiffProvider()
+    p.commitText = { _, _ in sampleDiff }
+    let r = resolver(p)  // fresh cache
+    _ = await r.resolve(desc("f.txt", .modified, .commit("c1")), in: "/repo")
+    _ = await r.resolve(desc("f.txt", .modified, .commit("c1")), in: "/repo")
+    XCTAssertEqual(p.commitCalls, 1, "the second resolve is served from cache")
+  }
+
+  func testDifferentCommitsAreCachedSeparately() async {
+    let p = StubDiffProvider()
+    p.commitText = { _, _ in sampleDiff }
+    let r = resolver(p)
+    _ = await r.resolve(desc("f.txt", .modified, .commit("c1")), in: "/repo")
+    _ = await r.resolve(desc("f.txt", .modified, .commit("c2")), in: "/repo")
+    XCTAssertEqual(p.commitCalls, 2, "a different commit id is a distinct cache entry")
+  }
+
+  func testWorkingCopyDiffIsNotCached() async {
+    let p = StubDiffProvider()
+    p.workingText = { _, _ in sampleDiff }
+    let r = resolver(p)
+    _ = await r.resolve(desc("f.txt", .modified, .gitWorktree), in: "/repo")
+    _ = await r.resolve(desc("f.txt", .modified, .gitWorktree), in: "/repo")
+    XCTAssertEqual(
+      p.workingCalls.count, 2, "working-copy diffs must never be cached (mutable content)")
+  }
+
+  func testFailedCommitDiffIsNotCached() async {
+    let p = StubDiffProvider()
+    var attempts = 0
+    p.commitText = { _, _ in
+      attempts += 1
+      if attempts == 1 { throw VCSError.io("blip") }
+      return sampleDiff
+    }
+    let r = resolver(p)
+    let first = await r.resolve(desc("f.txt", .modified, .commit("c1")), in: "/repo")
+    guard case .failed = first else { return XCTFail("expected .failed, got \(first)") }
+    // A transient failure isn't cached, so the retry re-hits the backend and succeeds.
+    let second = await r.resolve(desc("f.txt", .modified, .commit("c1")), in: "/repo")
+    guard case .diff = second else { return XCTFail("expected .diff on retry, got \(second)") }
+  }
 }
 
-/// A `VCSProviding` whose `fileDiff` is a closure; `log`/`changeset` are unused here.
-private struct StubDiffProvider: VCSProviding {
-  let diff: @Sendable (_ root: URL, _ commitID: String, _ path: String) throws -> String
-  func log(root: URL, limit: Int) async throws -> VCSHistoryPage {
-    .init(commits: [], reachedEnd: true)
+// MARK: - DiffCache (LRU byte budget)
+
+final class DiffCacheTests: XCTestCase {
+  func testEvictsLeastRecentlyUsedOverBudget() async {
+    let c = DiffCache(budget: 120)
+    await c.set("a", .empty, bytes: 60)
+    await c.set("b", .empty, bytes: 60)  // total 120 — at budget, nothing evicted
+    await c.set("c", .empty, bytes: 60)  // total 180 > 120 — evict LRU ("a")
+    let a = await c.get("a")
+    let b = await c.get("b")
+    let cc = await c.get("c")
+    XCTAssertNil(a, "a was least-recently-used and should be evicted")
+    XCTAssertNotNil(b)
+    XCTAssertNotNil(cc)
   }
-  func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
-    throw VCSError.io("unused")
+
+  func testGetTouchesRecency() async {
+    let c = DiffCache(budget: 120)
+    await c.set("a", .empty, bytes: 60)
+    await c.set("b", .empty, bytes: 60)
+    _ = await c.get("a")  // touch a → b becomes least-recently-used
+    await c.set("c", .empty, bytes: 60)  // evicts the LRU, now b
+    let a = await c.get("a")
+    let b = await c.get("b")
+    let cc = await c.get("c")
+    XCTAssertNotNil(a, "a was touched, so it survives")
+    XCTAssertNil(b, "b was LRU after a's touch")
+    XCTAssertNotNil(cc)
   }
-  func fileDiff(root: URL, commitID: String, path: String) async throws -> String {
-    try diff(root, commitID, path)
+
+  func testKeepsMostRecentEvenWhenOversized() async {
+    let c = DiffCache(budget: 10)
+    await c.set("big", .empty, bytes: 999)  // over budget on its own
+    let big = await c.get("big")
+    XCTAssertNotNil(big, "the sole/most-recent entry is kept even over budget")
   }
-  func currentRef(root: URL) async throws -> VCSRef { .none }
+
+  func testReplacingKeyUpdatesTotalBytes() async {
+    let c = DiffCache(budget: 100)
+    await c.set("a", .empty, bytes: 90)
+    await c.set("a", .empty, bytes: 10)  // replace, not add — total is 10, not 100
+    await c.set("b", .empty, bytes: 80)  // 10 + 80 = 90 ≤ 100 — nothing evicted
+    let a = await c.get("a")
+    let b = await c.get("b")
+    XCTAssertNotNil(a, "a's bytes were replaced, so b fits without evicting it")
+    XCTAssertNotNil(b)
+  }
 }
