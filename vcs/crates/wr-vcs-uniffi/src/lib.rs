@@ -76,6 +76,32 @@ pub struct Ref {
     pub kind: RefKind,
 }
 
+#[derive(uniffi::Record)]
+pub struct CommitChanges {
+    pub change_id: Option<String>,
+    pub commit_id: Option<String>,
+    pub refs: Vec<String>,
+    pub description: Option<String>,
+    pub files: Vec<ChangedFile>,
+}
+
+#[derive(uniffi::Enum)]
+pub enum ParentState {
+    Root,
+    Merge { count: u32 },
+    Unavailable,
+    Changes { changes: CommitChanges },
+}
+
+#[derive(uniffi::Record)]
+pub struct WorkingStatus {
+    pub dirty: bool,
+    pub conflicted: bool,
+    pub working_copy: CommitChanges,
+    pub parent: ParentState,
+    pub branch_for_ci: Option<String>,
+}
+
 /// Mirrors `model::VcsError`; each variant maps to a distinct, recoverable Swift-side UI state.
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum VcsError {
@@ -187,6 +213,44 @@ impl From<model::Ref> for Ref {
     }
 }
 
+impl From<model::CommitChanges> for CommitChanges {
+    fn from(c: model::CommitChanges) -> Self {
+        CommitChanges {
+            change_id: c.change_id,
+            commit_id: c.commit_id,
+            refs: c.refs,
+            description: c.description,
+            files: c.files.into_iter().map(ChangedFile::from).collect(),
+        }
+    }
+}
+
+impl From<model::ParentState> for ParentState {
+    fn from(p: model::ParentState) -> Self {
+        use model::ParentState as M;
+        match p {
+            M::Root => ParentState::Root,
+            M::Merge(count) => ParentState::Merge { count },
+            M::Unavailable => ParentState::Unavailable,
+            M::Changes(changes) => ParentState::Changes {
+                changes: changes.into(),
+            },
+        }
+    }
+}
+
+impl From<model::WorkingStatus> for WorkingStatus {
+    fn from(s: model::WorkingStatus) -> Self {
+        WorkingStatus {
+            dirty: s.dirty,
+            conflicted: s.conflicted,
+            working_copy: s.working_copy.into(),
+            parent: s.parent.into(),
+            branch_for_ci: s.branch_for_ci,
+        }
+    }
+}
+
 impl From<model::VcsError> for VcsError {
     fn from(e: model::VcsError) -> Self {
         use model::VcsError as M;
@@ -230,5 +294,14 @@ pub fn changeset(root: String, commit_id: String) -> Result<Changeset, VcsError>
 pub fn current_ref(root: String) -> Result<Ref, VcsError> {
     wr_vcs_core::current_ref(Path::new(&root))
         .map(Ref::from)
+        .map_err(VcsError::from)
+}
+
+/// The jj working-copy status (dirty + `@`/`@-` change sets + CI branch). MUTATING: snapshots `@`
+/// first (takes the working-copy lock, rewrites `@` when disk changed).
+#[uniffi::export]
+pub fn working_status(root: String) -> Result<WorkingStatus, VcsError> {
+    wr_vcs_core::working_status(Path::new(&root))
+        .map(WorkingStatus::from)
         .map_err(VcsError::from)
 }

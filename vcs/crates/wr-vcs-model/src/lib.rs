@@ -78,23 +78,47 @@ pub struct Ref {
     pub kind: RefKind,
 }
 
-/// The jj working-copy status for the sidebar/Changes badges: the working copy `@`'s change set
-/// (its metadata + files vs `@-`) and a dirty flag. Reading it first SNAPSHOTS the working copy so
-/// `@` reflects on-disk edits (jj's own behavior on every command). The parent (`@-`) disclosure,
-/// diffstat, and CI branch land in a follow-up (this shape extends).
+/// A commit's change set for a jj disclosure group: its identity/description header + changed files.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommitChanges {
+    /// Change-id (jj display), shortest-8 commit-id, bookmarks, and first-line description.
+    pub change_id: Option<String>,
+    pub commit_id: Option<String>,
+    pub refs: Vec<String>,
+    pub description: Option<String>,
+    /// Changed files vs the commit's first parent.
+    pub files: Vec<ChangedFile>,
+}
+
+/// The working copy's parent (`@-`) state, driving the Parent Commit disclosure group.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ParentState {
+    /// `@` is the root commit — it has no parent.
+    Root,
+    /// `@` is a merge with `n` parents — no single parent to show.
+    Merge(u32),
+    /// The parent couldn't be read — show nothing rather than a misleading empty list.
+    Unavailable,
+    /// A single parent with its change set.
+    Changes(CommitChanges),
+}
+
+/// The jj working-copy status for the sidebar/Changes badges. Reading it first SNAPSHOTS the working
+/// copy so `@` reflects on-disk edits (jj's own behavior on every command). `insertions`/`deletions`
+/// (the diffstat) are NOT here — jayjay-style, the Swift layer adds them from one `jj diff --stat`
+/// call (a native line count would mean materializing every file, which jj's `--stat` does faster).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkingStatus {
     /// `true` when `@` has changed files or a conflict.
     pub dirty: bool,
     pub conflicted: bool,
-    /// `@`'s change-id (shortest unique prefix), commit-id (shortest-8), bookmarks, first-line
-    /// description — the working-copy disclosure header.
-    pub change_id: Option<String>,
-    pub commit_id: Option<String>,
-    pub refs: Vec<String>,
-    pub description: Option<String>,
-    /// `@`'s changed files (vs its first parent `@-`).
-    pub files: Vec<ChangedFile>,
+    /// The working copy `@`'s change set (metadata + files vs `@-`).
+    pub working_copy: CommitChanges,
+    /// The parent `@-` state.
+    pub parent: ParentState,
+    /// The nearest bookmark in `@`'s ancestry (the branch pushed to origin) for CI/PR lookup, since
+    /// jj's `@` is a detached git HEAD. `None` ⇒ no bookmark.
+    pub branch_for_ci: Option<String>,
 }
 
 /// A full changeset: its commit metadata, full (multi-line) message, and changed-file list.

@@ -56,11 +56,24 @@ fn working_status_snapshots_disk_edits_without_corrupting() {
     let status = wr_vcs_core::working_status(&dir).expect("working_status");
     assert!(status.dirty, "an on-disk edit should make @ dirty");
     assert!(
-        status.files.iter().any(|f| f.path == "hello.txt"),
+        status
+            .working_copy
+            .files
+            .iter()
+            .any(|f| f.path == "hello.txt"),
         "hello.txt should be a working-copy change; got {:?}",
-        status.files
+        status.working_copy.files
     );
     assert!(!status.conflicted);
+    // @ sits on the (empty) root commit → parent is the root's change set (or Root if @ IS root).
+    assert!(
+        matches!(
+            status.parent,
+            wr_vcs_core::model::ParentState::Changes(_) | wr_vcs_core::model::ParentState::Root
+        ),
+        "parent resolves to a single-parent change set or root; got {:?}",
+        status.parent
+    );
 
     // No corruption: jj itself now sees the snapshotted file in @, and a second read agrees.
     let diff = jj(
@@ -87,7 +100,11 @@ fn working_status_snapshots_disk_edits_without_corrupting() {
     );
     let status2 = wr_vcs_core::working_status(&dir).expect("second read");
     assert!(
-        status2.files.iter().any(|f| f.path == "hello.txt"),
+        status2
+            .working_copy
+            .files
+            .iter()
+            .any(|f| f.path == "hello.txt"),
         "second read agrees"
     );
 

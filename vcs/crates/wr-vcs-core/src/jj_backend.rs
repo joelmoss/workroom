@@ -173,9 +173,6 @@ pub fn current_ref(root: &Path) -> model::Result<model::Ref> {
         name: None,
         kind: model::RefKind::None,
     };
-    if bookmarks.is_empty() {
-        return Ok(none);
-    }
     let Some(wc_id) = repo
         .view()
         .get_wc_commit_id(workspace.workspace_name())
@@ -183,27 +180,42 @@ pub fn current_ref(root: &Path) -> model::Result<model::Ref> {
     else {
         return Ok(none);
     };
+    match nearest_bookmark(store, &wc_id, &bookmarks)? {
+        Some((name, true)) => Ok(model::Ref {
+            name: Some(name),
+            kind: model::RefKind::Branch,
+        }),
+        Some((name, false)) => Ok(model::Ref {
+            name: Some(name),
+            kind: model::RefKind::Ancestor,
+        }),
+        None => Ok(none),
+    }
+}
 
+/// The nearest bookmark to `@`: `(name, on_working_copy)` — the alphabetically-first bookmark on
+/// `@` itself (`on == true`), else the first bookmarked commit walking `@`'s ancestry newest-first
+/// (`on == false`), else `None`. Shared by `current_ref` (kind) and `working_status` (CI branch).
+fn nearest_bookmark(
+    store: &Arc<jj_lib::store::Store>,
+    wc_id: &jj_lib::backend::CommitId,
+    bookmarks: &HashMap<String, Vec<String>>,
+) -> model::Result<Option<(String, bool)>> {
+    if bookmarks.is_empty() {
+        return Ok(None);
+    }
     let pick = |id_hex: &str| -> Option<String> {
         bookmarks
             .get(id_hex)
             .and_then(|names| names.iter().min().cloned())
     };
-
-    // A bookmark directly on `@`.
     if let Some(name) = pick(&wc_id.hex()) {
-        return Ok(model::Ref {
-            name: Some(name),
-            kind: model::RefKind::Branch,
-        });
+        return Ok(Some((name, true)));
     }
-
-    // Otherwise the nearest ancestor bookmark: walk `@`'s ancestry newest-first (the same heap the
-    // log uses), returning the first bookmarked commit.
     let mut seen: HashSet<Vec<u8>> = HashSet::new();
     let mut heap: BinaryHeap<HeapItem> = BinaryHeap::new();
     seen.insert(wc_id.as_bytes().to_vec());
-    let wc_commit = store.get_commit(&wc_id).map_err(io)?;
+    let wc_commit = store.get_commit(wc_id).map_err(io)?;
     for parent_id in wc_commit.parent_ids() {
         if seen.insert(parent_id.as_bytes().to_vec()) {
             heap.push(HeapItem(store.get_commit(parent_id).map_err(io)?));
@@ -211,10 +223,7 @@ pub fn current_ref(root: &Path) -> model::Result<model::Ref> {
     }
     while let Some(HeapItem(commit)) = heap.pop() {
         if let Some(name) = pick(&commit.id().hex()) {
-            return Ok(model::Ref {
-                name: Some(name),
-                kind: model::RefKind::Ancestor,
-            });
+            return Ok(Some((name, false)));
         }
         for parent_id in commit.parent_ids() {
             if seen.insert(parent_id.as_bytes().to_vec()) {
@@ -222,7 +231,28 @@ pub fn current_ref(root: &Path) -> model::Result<model::Ref> {
             }
         }
     }
-    Ok(none)
+    Ok(None)
+}
+
+/// Map a jj commit + its changed files to a `CommitChanges` disclosure record (reuses
+/// `to_model_commit` for identity/description so it matches the log/changeset display).
+fn commit_changes(
+    commit: &JjCommit,
+    files: Vec<model::ChangedFile>,
+    bookmarks: &HashMap<String, Vec<String>>,
+) -> model::CommitChanges {
+    let c = to_model_commit(commit, None, bookmarks);
+    model::CommitChanges {
+        change_id: c.change_id,
+        commit_id: Some(c.short_id),
+        refs: c.refs,
+        description: if c.summary.is_empty() {
+            None
+        } else {
+            Some(c.summary)
+        },
+        files,
+    }
 }
 
 /// Snapshot the working copy so `@` reflects on-disk edits, returning the repo at the resulting
@@ -283,9 +313,9 @@ fn snapshot_working_copy(root: &Path) -> model::Result<(Workspace, Arc<ReadonlyR
     }
 }
 
-/// The jj working-copy status: snapshot `@` (so it reflects disk), then read its change set. `dirty`
-/// is set when `@` has changed files or a conflict. (Parent `@-` disclosure + diffstat + CI branch
-/// are a follow-up.)
+/// The jj working-copy status: snapshot `@` (so it reflects disk), then read its change set, the
+/// parent `@-` state, and the CI branch. `dirty` is set when `@` has changed files or a conflict.
+/// (`insertions`/`deletions` are added Swift-side from one `jj diff --stat`, jayjay-style.)
 pub fn working_status(root: &Path) -> model::Result<model::WorkingStatus> {
     let (workspace, repo) = snapshot_working_copy(root)?;
     let store = repo.store();
@@ -298,29 +328,47 @@ pub fn working_status(root: &Path) -> model::Result<model::WorkingStatus> {
         return Ok(model::WorkingStatus {
             dirty: false,
             conflicted: false,
-            change_id: None,
-            commit_id: None,
-            refs: Vec::new(),
-            description: None,
-            files: Vec::new(),
+            working_copy: model::CommitChanges {
+                change_id: None,
+                commit_id: None,
+                refs: Vec::new(),
+                description: None,
+                files: Vec::new(),
+            },
+            parent: model::ParentState::Unavailable,
+            branch_for_ci: None,
         });
     };
     let wc_commit = store.get_commit(&wc_id).map_err(io)?;
     let conflicted = wc_commit.has_conflict();
-    let files = changed_files(store, &wc_commit)?;
-    let commit = to_model_commit(&wc_commit, Some(&wc_id), &bookmarks);
+    let wc_files = changed_files(store, &wc_commit)?;
+    let working_copy = commit_changes(&wc_commit, wc_files, &bookmarks);
+
+    // Parent `@-`: 0 parents ⇒ `@` is the root; >1 ⇒ a merge; else the single parent's change set
+    // (its files vs `@--`). A parent-load failure degrades to Unavailable, not a misleading empty.
+    let parent_ids = wc_commit.parent_ids();
+    let parent = if parent_ids.is_empty() {
+        model::ParentState::Root
+    } else if parent_ids.len() > 1 {
+        model::ParentState::Merge(parent_ids.len() as u32)
+    } else {
+        match store.get_commit(&parent_ids[0]) {
+            Ok(parent) => {
+                let files = changed_files(store, &parent)?;
+                model::ParentState::Changes(commit_changes(&parent, files, &bookmarks))
+            }
+            Err(_) => model::ParentState::Unavailable,
+        }
+    };
+
+    let branch_for_ci = nearest_bookmark(store, &wc_id, &bookmarks)?.map(|(name, _)| name);
+
     Ok(model::WorkingStatus {
-        dirty: !files.is_empty() || conflicted,
+        dirty: !working_copy.files.is_empty() || conflicted,
         conflicted,
-        change_id: commit.change_id,
-        commit_id: Some(commit.commit_id),
-        refs: commit.refs,
-        description: if commit.summary.is_empty() {
-            None
-        } else {
-            Some(commit.summary)
-        },
-        files,
+        working_copy,
+        parent,
+        branch_for_ci,
     })
 }
 
