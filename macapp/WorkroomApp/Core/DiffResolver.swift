@@ -19,15 +19,28 @@ enum DiffResult: Equatable, Sendable {
 struct DiffResolver: Sendable {
   let runner: StatusCommandRunning
   var timeout: TimeInterval
+  /// The VCS backend for a commit-scoped diff (`.commit`), injected for tests. Defaults to the real
+  /// repo-kind router (`VCS.provider(for:)` — jj → jj-lib, git → SwiftGitX).
+  let makeProvider: @Sendable (URL) throws -> VCSProviding
 
-  init(runner: StatusCommandRunning = StatusCommandRunner(), timeout: TimeInterval = 5) {
+  init(
+    runner: StatusCommandRunning = StatusCommandRunner(), timeout: TimeInterval = 5,
+    makeProvider: @escaping @Sendable (URL) throws -> VCSProviding = { try VCS.provider(for: $0) }
+  ) {
     self.runner = runner
     self.timeout = timeout
+    self.makeProvider = makeProvider
   }
 
   /// Fetch and parse the diff for `descriptor`, running the VCS command in `dir` (the workroom
   /// directory, an absolute path). Returns a `DiffResult` that the diff viewer renders directly.
   func resolve(_ descriptor: DiffDescriptor, in dir: String) async -> DiffResult {
+    // A commit-scoped diff is read structurally through the VCS backend, not by shelling — the first
+    // step of migrating DiffResolver onto VCSProviding (issue #59). The backend routes jj vs git by
+    // repo kind; the git-format text it returns feeds the same UnifiedDiff parser as every source.
+    if case .commit(let commitID) = descriptor.source {
+      return await resolveCommit(commitID: commitID, path: descriptor.path, in: dir)
+    }
     let (exe, args) = Self.command(for: descriptor, dir: dir)
     let r = await runner.run(exe, args, in: dir, timeout: timeout)
 
@@ -55,6 +68,36 @@ struct DiffResolver: Sendable {
     return .diff(UnifiedDiff.parse(r.stdout))
   }
 
+  /// Resolve a single file's diff for an arbitrary commit through the VCS backend — the same
+  /// git-format-text → `UnifiedDiff` pipeline as the shell sources, but sourced from
+  /// `VCSProviding.fileDiff` (jj-lib / SwiftGitX) so it's structured and backend-routed.
+  private func resolveCommit(commitID: String, path: String, in dir: String) async -> DiffResult {
+    let root = URL(fileURLWithPath: dir, isDirectory: true)
+    do {
+      let text = try await makeProvider(root).fileDiff(root: root, commitID: commitID, path: path)
+      if UnifiedDiff.isBinary(text) { return .binary }
+      if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .empty }
+      return .diff(UnifiedDiff.parse(text))
+    } catch let error as VCSError {
+      return .failed(Self.message(for: error))
+    } catch {
+      return .failed("Diff unavailable")
+    }
+  }
+
+  /// A short, human-readable message for a backend error (shown in the diff pane's failed state).
+  private static func message(for error: VCSError) -> String {
+    switch error {
+    case .unsupportedRepo(let m): return "Unsupported repository: \(m)"
+    case .notFound(let m): return "Not found: \(m)"
+    case .lockContention: return "Repository is busy"
+    case .staleSnapshot: return "Repository changed — retry"
+    case .partialData(let m): return m
+    case .backendVersion(let m): return m
+    case .io(let m): return m
+    }
+  }
+
   /// Pure command builder — the executable and arguments for the given descriptor.
   ///
   /// `dir` is needed only for the `gitWorktree` + `untracked` case, where git's `--no-index`
@@ -71,6 +114,12 @@ struct DiffResolver: Sendable {
       ]
 
     switch descriptor.source {
+    case .commit:
+      // A commit-scoped diff never shells through here: `resolve` intercepts `.commit` and routes it
+      // through `VCSProviding.fileDiff`. Present only to satisfy the exhaustive switch — reaching it
+      // is a programming error.
+      preconditionFailure("commit diffs resolve via VCSProviding, not a shell command")
+
     case .jjWorkingCopy:
       return ("jj", ["diff", "--git", "-r", "@", "--color", "never", "--", path])
 
@@ -121,6 +170,11 @@ extension DiffResolver {
   /// deleted file (no new side) correctly yields `nil`.
   func fileContent(for descriptor: DiffDescriptor, in dir: String) async -> String? {
     switch descriptor.source {
+    case .commit:
+      // The new-side content at an arbitrary commit isn't on disk and `VCSProviding` has no
+      // file-content read yet, so a commit diff renders without syntax highlighting — best-effort by
+      // design (highlighting always degrades to plain). A structured read is a later addition.
+      return nil
     case .gitWorktree, .jjWorkingCopy:
       return Self.readWorkingFile(path: descriptor.path, in: dir)
     case .jjParent:

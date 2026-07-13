@@ -353,4 +353,82 @@ final class DiffResolverTests: XCTestCase {
     XCTAssertTrue(call?.args.contains("@-") == true)
     XCTAssertTrue(call?.args.contains("--ignore-working-copy") == true)
   }
+
+  // MARK: - .commit source routes through VCSProviding (issue #59), not the shell runner
+
+  /// A commit-scoped diff bypasses the command runner entirely and reads through the injected VCS
+  /// backend: the runner must never be called, and the backend's git-format text parses to `.diff`.
+  func testResolveCommitRoutesThroughProviderAndNeverShells() async {
+    let recording = RecordingDiffRunner { _, _ in
+      XCTFail("commit diffs must not shell out")
+      return ok("")
+    }
+    var seen: (root: URL, commitID: String, path: String)?
+    let provider = StubDiffProvider { root, commitID, path in
+      seen = (root, commitID, path)
+      return sampleDiff
+    }
+    let resolver = DiffResolver(runner: recording, timeout: 5, makeProvider: { _ in provider })
+    let desc = DiffDescriptor(
+      path: "b.txt", change: .modified, source: .commit("abc123"), isPreview: false)
+
+    let result = await resolver.resolve(desc, in: "/repo")
+
+    guard case .diff = result else {
+      XCTFail("Expected .diff, got \(result)")
+      return
+    }
+    XCTAssertTrue(recording.calls.isEmpty, "the shell runner is never used for a commit diff")
+    XCTAssertEqual(seen?.commitID, "abc123")
+    XCTAssertEqual(seen?.path, "b.txt")
+    XCTAssertEqual(seen?.root.path, "/repo")
+  }
+
+  func testResolveCommitMapsBinaryAndEmpty() async {
+    let binary = DiffResolver(
+      runner: MockDiffRunner { _, _ in ok() },
+      makeProvider: { _ in StubDiffProvider { _, _, _ in binaryDiff } })
+    let binResult = await binary.resolve(
+      DiffDescriptor(path: "img.png", change: .modified, source: .commit("x"), isPreview: false),
+      in: "/repo")
+    XCTAssertEqual(binResult, .binary)
+
+    let empty = DiffResolver(
+      runner: MockDiffRunner { _, _ in ok() },
+      makeProvider: { _ in StubDiffProvider { _, _, _ in "   \n" } })
+    let emptyResult = await empty.resolve(
+      DiffDescriptor(path: "a.txt", change: .modified, source: .commit("x"), isPreview: false),
+      in: "/repo")
+    XCTAssertEqual(emptyResult, .empty)
+  }
+
+  /// A backend error surfaces as `.failed` with the error's message (never a silent empty).
+  func testResolveCommitBackendErrorFails() async {
+    let resolver = DiffResolver(
+      runner: MockDiffRunner { _, _ in ok() },
+      makeProvider: { _ in StubDiffProvider { _, _, _ in throw VCSError.notFound("no such commit") }
+      })
+    let result = await resolver.resolve(
+      DiffDescriptor(path: "a.txt", change: .modified, source: .commit("bad"), isPreview: false),
+      in: "/repo")
+    guard case .failed(let message) = result else {
+      XCTFail("Expected .failed, got \(result)")
+      return
+    }
+    XCTAssertTrue(message.contains("no such commit"), "the backend message is surfaced: \(message)")
+  }
+}
+
+/// A `VCSProviding` whose `fileDiff` is a closure; `log`/`changeset` are unused here.
+private struct StubDiffProvider: VCSProviding {
+  let diff: @Sendable (_ root: URL, _ commitID: String, _ path: String) throws -> String
+  func log(root: URL, limit: Int) async throws -> VCSHistoryPage {
+    .init(commits: [], reachedEnd: true)
+  }
+  func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
+    throw VCSError.io("unused")
+  }
+  func fileDiff(root: URL, commitID: String, path: String) async throws -> String {
+    try diff(root, commitID, path)
+  }
 }

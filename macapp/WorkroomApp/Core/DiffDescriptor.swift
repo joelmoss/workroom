@@ -7,10 +7,15 @@ import Foundation
 ///   - `.gitWorktree`    — a git worktree's uncommitted changes vs `HEAD`.
 ///   - `.jjWorkingCopy`  — the jj working copy (`@`).
 ///   - `.jjParent`       — the jj working copy's parent commit (`@-`), the commit's own changes.
+///   - `.commit(id)`     — an arbitrary commit's *own* changes (vs its first parent), addressed by a
+///     stable commit id. The generalization of `.jjParent` used by the changeset detail (issue #59);
+///     resolved structurally via `VCSProviding.fileDiff` (jj-lib / SwiftGitX), not by shelling — so
+///     it works the same for jj and git repos. The revision is part of the diff's tab identity.
 enum DiffSource: Equatable, Hashable, Sendable {
   case gitWorktree
   case jjWorkingCopy
   case jjParent
+  case commit(String)
 }
 
 /// The `.diff` payload of a content tab (issue #66): which file, its change kind, where its diff

@@ -369,6 +369,7 @@ enum UITestFixture {
     case .gitWorktree: return "git-worktree"
     case .jjWorkingCopy: return "jj-working-copy"
     case .jjParent: return "jj-parent"
+    case .commit(let id): return "commit-\(id)"
     }
   }
 
