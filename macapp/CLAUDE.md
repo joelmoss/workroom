@@ -37,6 +37,20 @@ VCS-first IDE — issue #59 is the first brick):
   only jj needs the Rust/UniFFI bridge. (An all-Rust core with gix was tried and dropped: gix bought
   no real unification and libgit2 is the more complete git engine.)
 
+**Read surface & routing.** `Core/VCSProviding.swift` is the one Swift protocol; `VCS.provider(for:)`
+routes by repo kind. `RustJJProvider` maps `WrVcs.*` → app-native models, `GitProvider` wraps
+SwiftGitX. `WorkroomStatusResolver` and `BranchResolver` read through this layer — **the jj CLI
+parsers are gone** (log/changeset/currentRef/workingStatus are all native jj-lib).
+
+**The one mutating read: `RustJJProvider.workingStatus`.** jj's working copy is itself a commit, so
+on-disk edits don't exist to jj-lib until snapshotted — a working-copy status read therefore *must*
+snapshot `@` first: it takes the working-copy lock and rewrites `@` (modeled on jayjay's
+`refresh_working_copy`). Everything else (log/changeset/currentRef) is a read-only `load_at_head`
+with no lock. Because it mutates, **only test snapshot changes on throwaway repos** (corruption
+risk). Line counts still come from one `jj diff --stat` CLI call in `resolveJJ` — the native read
+omits the delta on purpose (a line count would materialize every file). Cargo coverage:
+`vcs/crates/wr-vcs-core/tests/working_status.rs`; Swift coverage: `WorkroomStatusIntegrationTests.testJJ*`.
+
 `make app-vcs` (→ `vcs/scripts/build-apple.sh`) builds the Rust artifacts and **runs automatically
 before `app-build`/`app-test`/`app-generate`** (a Makefile prerequisite). Requirements:
 

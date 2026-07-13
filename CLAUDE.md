@@ -8,7 +8,7 @@ Workroom manages development workrooms (isolated project copies) using Git workt
 (Jujutsu) workspaces. It ships as two components that share one engine:
 
 - **The macOS app** (`macapp/` — see [`macapp/CLAUDE.md`](macapp/CLAUDE.md)) is the primary,
-  recommended product: a native SwiftUI app (macOS 14+) with a project/workroom sidebar and
+  recommended product: a native SwiftUI app (macOS 15 Sequoia+) with a project/workroom sidebar and
   embedded terminals. It **bundles the CLI** and drives it over the machine-readable `--json` API
   (`create`/`list`/`delete`/`add-project`/`delete-project --json`).
 - **The Go CLI** (repo root, documented below) is the engine that does the VCS work. It's also a

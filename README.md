@@ -39,24 +39,24 @@ split view.
 - [The macOS app](#the-macos-app)
   - [Install](#install)
   - [What you get](#what-you-get)
-- [The CLI (standalone)](#the-cli-standalone)
+- [The CLI (addon)](#the-cli-addon)
   - [Installation](#installation)
   - [Requirements](#requirements)
   - [CLI Usage](#cli-usage)
 - [Setup and teardown scripts](#setup-and-teardown-scripts)
 - [Architecture Overview](#architecture-overview)
   - [Repository layout](#repository-layout)
+  - [The macOS app architecture](#the-macos-app-architecture)
   - [The Go CLI engine](#the-go-cli-engine)
   - [How a workroom is created (lifecycle)](#how-a-workroom-is-created-lifecycle)
   - [How a workroom is deleted (lifecycle)](#how-a-workroom-is-deleted-lifecycle)
   - [VCS abstraction](#vcs-abstraction)
   - [The config file](#the-config-file)
   - [The `--json` machine contract](#the---json-machine-contract)
-  - [The macOS app architecture](#the-macos-app-architecture)
 - [Configuration & Environment Variables](#configuration--environment-variables)
 - [Local Development](#local-development)
-  - [Working on the Go CLI](#working-on-the-go-cli)
   - [Working on the macOS app](#working-on-the-macos-app)
+  - [Working on the Go CLI (engine)](#working-on-the-go-cli-engine)
   - [Available commands (`make`)](#available-commands-make)
 - [Testing](#testing)
 - [Deployment & Releases](#deployment--releases)
@@ -112,19 +112,22 @@ real directories, four terminals — without the constant `git stash` / `git swi
 
 ## Tech Stack
 
+The macOS app is the product; the Go CLI is the bundled engine (and an optional standalone addon).
+
 | Component | Technology |
 | --- | --- |
-| **CLI language** | Go 1.25+ (built/tested on Go 1.26) |
-| **CLI framework** | [Cobra](https://github.com/spf13/cobra) for commands |
-| **Interactive prompts** | [charmbracelet/huh](https://github.com/charmbracelet/huh) |
-| **Colored output** | [fatih/color](https://github.com/fatih/color) |
-| **VCS backends** | Git worktrees, Jujutsu (JJ) workspaces |
-| **Config store** | JSON at `~/.config/workroom/config.json` |
-| **macOS app language** | Swift 5 + SwiftUI (macOS 15 Sequoia+, Apple Silicon) |
+| **App language** | Swift 5 + SwiftUI (macOS 15 Sequoia+, Apple Silicon) |
 | **Terminal engine** | [libghostty](https://ghostty.org) (`libghostty-spm` 1.2.x, Metal-rendered) |
+| **VCS reading core** | jj via Rust [`jj-lib`](https://github.com/jj-vcs/jj) (UniFFI); git via [SwiftGitX](https://github.com/ibrahimcetin/SwiftGitX) (libgit2) |
+| **Syntax highlighting** | [SwiftTreeSitter](https://github.com/ChimeHQ/SwiftTreeSitter) + tree-sitter grammars |
 | **App auto-update** | [Sparkle](https://sparkle-project.org) 2.6 (EdDSA-signed appcast) |
 | **App crash reporting** | [Sentry](https://sentry.io) (optional, dSYM upload at release) |
 | **App build tooling** | [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`project.yml` → `.xcodeproj`) |
+| **VCS backends** | Git worktrees, Jujutsu (JJ) workspaces |
+| **Config store** | JSON at `~/.config/workroom/config.json` |
+| **CLI engine language** | Go 1.25+ (built/tested on Go 1.26) |
+| **CLI framework** | [Cobra](https://github.com/spf13/cobra) for commands |
+| **CLI prompts / output** | [charmbracelet/huh](https://github.com/charmbracelet/huh) · [fatih/color](https://github.com/fatih/color) |
 | **CLI release tooling** | [GoReleaser](https://goreleaser.com) v2 |
 | **CI/CD** | GitHub Actions (CI on push/PR, release on `v*` tags) |
 
@@ -138,16 +141,21 @@ macOS 15 Sequoia or later on Apple Silicon.
 **To use the standalone CLI:** [Git](https://git-scm.com/) or [JJ (Jujutsu)](https://martinvonz.github.io/jj/)
 on your `PATH`. That's it for installed-binary use.
 
-**To develop on the project:**
+**To develop the app** (the primary product):
 
-- **Go 1.25+** (the module targets `go 1.25.7`; CI and the maintainer build with Go 1.26) — for the CLI.
-- **Xcode 16+** with the macOS 15 SDK — for the app.
+- **Xcode 16+** with the macOS 15 SDK.
 - **[XcodeGen](https://github.com/yonaskolb/XcodeGen)** (`brew install xcodegen`) — the `.xcodeproj`
   is generated from `macapp/project.yml`, not checked in.
+- **`protoc`** (`brew install protobuf`) — a build-time dep of the Rust jj-lib VCS core (`make app-vcs`).
+  A universal release build also needs rustup `stable` ≥ 1.93 with the `x86_64`/`aarch64-apple-darwin` targets.
+- **Go 1.25+** (the module targets `go 1.25.7`; CI and the maintainer build with Go 1.26) — the app
+  embeds the CLI engine at build time, so a Go toolchain must be on `PATH`.
 - **`jj`** (`brew install jj`) — needed for the app's VCS integration tests, and if you develop in this
   repo itself (it is a colocated Git+JJ repo).
-- **`golangci-lint` v1.x** — for `make cli-lint`: `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`.
 - **`gh` ≥ 2.57.0** (runtime, not build) — the app's PR/CI inspector shells out to the GitHub CLI.
+
+**To develop the CLI engine only:** Go 1.25+, and **`golangci-lint` v1.x** for `make cli-lint`
+(`go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`).
 
 ---
 
@@ -180,9 +188,9 @@ and [`macapp/README.md`](macapp/README.md) (`make app-run`).
 ### What you get
 
 **A sidebar of everything you're working on.** Each project expands into its workrooms as a tree,
-and every row shows its current Git branch or JJ bookmark inline — with an "ahead of upstream"
-marker and a warning when a folder has gone missing. Add a project, expand/collapse it, and pick a
-target; your layout, selection, and expansion state are remembered across launches.
+and every row shows its current Git branch or JJ bookmark inline, with a change badge and a warning
+when a folder has gone missing. Add a project, expand/collapse it, and pick a target; your layout,
+selection, and expansion state are remembered across launches.
 
 **A live terminal in every workroom.** Selecting a workroom gives you an embedded terminal (powered
 by [libghostty](https://ghostty.org)) already in the right directory. Each workroom keeps **its own
@@ -196,6 +204,13 @@ you can tell what's busy without switching to it. When a backgrounded terminal p
 its tab and project light up, and — if Workroom isn't the frontmost app — you get a desktop banner.
 A notifications inspector keeps the history; click any entry (or the banner) to jump straight to the
 terminal that raised it.
+
+**Review your work without leaving the app.** A right-hand inspector reads each workroom's VCS
+directly — a **History** log of commits, a **changeset detail** tab (message, authors, changed files,
+and per-file diffs in unified or side-by-side), and a live **Changes** view of the working copy.
+A **Pull Request** panel lets you create and track PRs, and a **file explorer** browses the tree
+with language detection and syntax highlighting. It's read structurally from Git (libgit2) and JJ
+(jj-lib) — not scraped from CLI output.
 
 **Create and delete without touching the command line.** Hit the **+** on a project to spin up a
 new workroom. Your `scripts/workroom_setup` runs behind a live progress overlay so you watch
@@ -217,10 +232,11 @@ Preferences (`⌘,`).
 
 ---
 
-## The CLI (standalone)
+## The CLI (addon)
 
-Prefer the terminal, or running on Linux/Windows? The `workroom` CLI does everything on its own.
-(Skip this entirely if you use the macOS app — it already bundles the CLI and drives it for you.)
+The `workroom` CLI is the engine the macOS app is built on — bundled inside the app and driven for
+you, so **app users never install it**. It's also a fully standalone addon for people who prefer the
+terminal, and the only option on Linux/Windows. **Skip this whole section if you use the app.**
 
 ### Installation
 
@@ -420,9 +436,12 @@ and workroom paths resolving to the same inode (which would clobber source) and 
 
 ## Architecture Overview
 
-Workroom is two front-ends over **one engine**. The engine is the Go CLI; the macOS app is a
-SwiftUI client that bundles the CLI binary and drives it over a stable `--json` contract — no cgo,
-no duplicated VCS logic.
+The product is the **macOS app** (`macapp/`). For workroom management (create/delete/list) it's a
+SwiftUI client over **one shared engine** — the Go CLI, which it bundles and drives over a stable
+`--json` contract (no cgo, no duplicated lifecycle logic). The same engine is usable standalone as
+the CLI addon. VCS **reading** (history, diffs, working-copy status) is done natively in the app
+through a structured core — jj via Rust `jj-lib` (UniFFI), git via SwiftGitX (libgit2) — not by
+scraping CLI output.
 
 ```
 ┌──────────────────────────────┐        ┌──────────────────────────────┐
@@ -468,18 +487,54 @@ workroom/
 │   ├── ui/                  # Colored output, tables, log panels, interactive prompts (huh)
 │   ├── updater/             # `workroom update`: GitHub release check + binary swap
 │   └── errs/                # Shared error sentinels + machine codes + exit codes
-├── macapp/                  # The macOS app (SwiftUI) — see macapp/CLAUDE.md & macapp/README.md
+├── macapp/                  # ★ The macOS app (SwiftUI) — the product; see macapp/CLAUDE.md & macapp/README.md
+├── vcs/                     # Rust VCS-reading core for the app (jj-lib + UniFFI → the WrVcs SwiftPM package)
 ├── scripts/workroom_setup   # This repo's own example setup hook
 ├── testdata/fixtures/       # Setup/teardown scripts used by Go tests
 ├── .github/workflows/       # CI + release + appcast automation
 ├── .goreleaser.yml          # CLI cross-platform build/release config
 ├── .golangci.yml            # Linter config
 ├── install.sh / install.ps1 # Standalone CLI installers
-└── Makefile                 # Dev tasks: cli-* (Go) and app-* (macОС app)
+└── Makefile                 # Dev tasks: app-* (macOS app) and cli-* (Go engine)
 ```
+
+### The macOS app architecture
+
+The app (`macapp/`, see [`macapp/CLAUDE.md`](macapp/CLAUDE.md)) is a value-based, **multi-window**
+SwiftUI app. The core loop:
+
+1. **Sidebar selection** (project / root / workroom) sets `AppStore.selectedTargetID`.
+2. **Opening a target** creates a libghostty terminal surface (`GhosttySurfaceView`), caches it in
+   `TerminalSessions` keyed by target, and renders it in the detail pane. One live terminal per
+   target persists for the session.
+3. **Terminal I/O** surfaces libghostty/OSC callbacks app-wide — title (OSC 0/2), command-finished
+   (OSC 133), busy/progress (OSC 9;4), and notifications (OSC) drive tab/sidebar animation, badges,
+   the inspector, and desktop banners.
+4. **VCS reading** (History, changeset/diffs, working-copy status, the sidebar's branch/bookmark)
+   goes through a `VCSProviding` layer with two backends: a Rust core (`vcs/`, jj-lib over UniFFI →
+   the `WrVcs` SwiftPM package) for JJ, and SwiftGitX (libgit2) for Git — both mapped to app-native
+   models, no CLI text parsing.
+5. **Mutations** (create/delete workroom, add/remove project) call the bundled Go CLI via
+   `WorkroomCLI` (a `Process` wrapper that locates `Workroom.app/Contents/Resources/workroom`,
+   overlays `PATH`, drains stdout/stderr concurrently, streams NDJSON logs, and decodes the JSON
+   envelope), then update the store on success.
+6. **State** splits into a shared `ProjectStore` (the one project list + derived branch/status data)
+   and a per-window `AppStore` (selection, terminals, splits) — so multiple windows share projects
+   but keep independent layouts. `WindowRegistry` tracks open windows.
+7. **Preferences** live in `DefaultsKeys` (via the `Defaults` library); **auto-update** is Sparkle
+   (`Updater`); **themes** load from bundled CSS theme families.
+
+Key dependencies: **libghostty-spm** (terminal), the **WrVcs** Rust/jj-lib core + **SwiftGitX**
+(VCS reading), **Sparkle** (update), **Sentry** (crash reporting), **Defaults** (preferences), and
+**SwiftTreeSitter** + grammars (syntax highlighting). The app is **non-sandboxed** with the
+**hardened runtime** enabled (it spawns `git`/`jj`/`workroom` and opens arbitrary directories), and
+registers a global `⌘§` hotkey via Carbon. The embedded Go helper is built and signed during the
+Xcode build by `macapp/Scripts/build-helper.sh` and placed under `Contents/Resources/` (not
+`Contents/MacOS/`, to avoid a case-insensitive collision with `Workroom`).
 
 ### The Go CLI engine
 
+This is the shared workroom-management engine the app drives (and the standalone CLI addon).
 Everything routes through `cmd.Execute()` (called from `main.go`). The root command sets up the
 persistent flags (`--verbose`, `--pretend`, `--json`) and `SilenceUsage`/`SilenceErrors` so Workroom
 renders its own error format. Each subcommand builds a `workroom.Service` via `newService()`:
@@ -658,35 +713,6 @@ Non-interactive callers can branch on the process exit code:
 | `6` | Config read / write / parse error |
 | `1` | Internal error |
 
-### The macOS app architecture
-
-The app (`macapp/`, see [`macapp/CLAUDE.md`](macapp/CLAUDE.md)) is a value-based, **multi-window**
-SwiftUI app. The core loop:
-
-1. **Sidebar selection** (project / root / workroom) sets `AppStore.selectedTargetID`.
-2. **Opening a target** creates a libghostty terminal surface (`GhosttySurfaceView`), caches it in
-   `TerminalSessions` keyed by target, and renders it in the detail pane. One live terminal per
-   target persists for the session.
-3. **Terminal I/O** surfaces libghostty/OSC callbacks app-wide — title (OSC 0/2), command-finished
-   (OSC 133), busy/progress (OSC 9;4), and notifications (OSC) drive tab/sidebar animation, badges,
-   the inspector, and desktop banners.
-4. **Mutations** (create/delete workroom, add/remove project) call the bundled CLI via
-   `WorkroomCLI` (a `Process` wrapper that locates `Workroom.app/Contents/Resources/workroom`,
-   overlays `PATH`, drains stdout/stderr concurrently, streams NDJSON logs, and decodes the JSON
-   envelope), then update the store on success.
-5. **State** splits into a shared `ProjectStore` (the one project list + derived branch/status data)
-   and a per-window `AppStore` (selection, terminals, splits) — so multiple windows share projects
-   but keep independent layouts. `WindowRegistry` tracks open windows.
-6. **Preferences** live in `DefaultsKeys` (via the `Defaults` library); **auto-update** is Sparkle
-   (`Updater`); **themes** load from bundled CSS theme families.
-
-Key dependencies: **libghostty-spm** (terminal), **Sparkle** (update), **Sentry** (crash reporting),
-**Defaults** (preferences), and **SwiftTreeSitter** + grammars (syntax highlighting). The app is
-**non-sandboxed** with the **hardened runtime** enabled (it spawns `git`/`jj`/`workroom` and opens
-arbitrary directories), and registers a global `⌘§` hotkey via Carbon. The embedded Go helper is
-built and signed during the Xcode build by `macapp/Scripts/build-helper.sh` and placed under
-`Contents/Resources/` (not `Contents/MacOS/`, to avoid a case-insensitive collision with `Workroom`).
-
 ---
 
 ## Configuration & Environment Variables
@@ -708,10 +734,47 @@ else is managed by Workroom.
 
 ## Local Development
 
-Dev tasks run through the **repo-root `Makefile`**, namespaced `cli-*` (Go CLI) and `app-*` (macOS
-app). Run `make` with no target to list everything.
+Dev tasks run through the **repo-root `Makefile`**, namespaced `app-*` (macOS app) and `cli-*` (Go
+engine). Run `make` with no target to list everything.
 
-### Working on the Go CLI
+### Working on the macOS app
+
+The app is built with [XcodeGen](https://github.com/yonaskolb/XcodeGen): the `.xcodeproj` is
+generated from `macapp/project.yml` and **gitignored**, so you regenerate it rather than editing it.
+
+```bash
+# Fastest loop: generate (if needed) → build (Debug) → relaunch the dev app
+make app-run
+
+# Build / test / lint / format
+make app-build
+make app-test           # WorkroomAppTests (unit, headless)
+make app-uitest         # WorkroomAppUITests (XCUITest — needs a real GUI login session)
+make app-lint           # swift-format --strict
+make app-format         # swift-format, rewrite in place
+make app-generate       # force-regenerate the .xcodeproj from project.yml
+
+# Open in Xcode instead
+cd macapp && xcodegen generate && open WorkroomApp.xcodeproj   # then ⌘R
+```
+
+The Debug product is **"Workroom Dev"** — a distinct bundle id (`…workroom.dev`) and name, with an
+amber icon — so it runs alongside the installed release "Workroom" without conflict. It shares the
+same `~/.config/workroom/config.json`, but skips the global `⌘§` hotkey and Sparkle scheduled checks
+so it doesn't interfere with your real install.
+
+> **Adding/removing Swift files** requires regenerating the project (`make app-generate`), since the
+> file list lives in the generated `.xcodeproj`.
+
+The Xcode build runs `macapp/Scripts/build-helper.sh` as a phase, which compiles the Go CLI and
+embeds it in the app bundle — so a Go toolchain must be on `PATH` when building the app. The app
+targets also run **`make app-vcs`** first (the Rust jj-lib core → the `WrVcs` SwiftPM package), which
+needs **`protoc`** on `PATH` (`brew install protobuf`); a universal release build additionally needs
+rustup `stable` ≥ 1.93. See [`macapp/README.md`](macapp/README.md) and
+[`macapp/CLAUDE.md`](macapp/CLAUDE.md) for the full architecture, the VCS core, the libghostty
+integration notes (`macapp/QA-libghostty.md`), and signing details.
+
+### Working on the Go CLI (engine)
 
 ```bash
 # Build the binary (version injected from git tags via ldflags)
@@ -745,59 +808,26 @@ when built without ldflags (which disables `workroom update`).
 Because all shell-outs go through `vcs.CommandExecutor`, orchestration is testable with a mock
 executor and a temp config — no real repo required.
 
-### Working on the macOS app
-
-The app is built with [XcodeGen](https://github.com/yonaskolb/XcodeGen): the `.xcodeproj` is
-generated from `macapp/project.yml` and **gitignored**, so you regenerate it rather than editing it.
-
-```bash
-# Fastest loop: generate (if needed) → build (Debug) → relaunch the dev app
-make app-run
-
-# Build / test / lint / format
-make app-build
-make app-test           # WorkroomAppTests (unit, headless)
-make app-uitest         # WorkroomAppUITests (XCUITest — needs a real GUI login session)
-make app-lint           # swift-format --strict
-make app-format         # swift-format, rewrite in place
-make app-generate       # force-regenerate the .xcodeproj from project.yml
-
-# Open in Xcode instead
-cd macapp && xcodegen generate && open WorkroomApp.xcodeproj   # then ⌘R
-```
-
-The Debug product is **"Workroom Dev"** — a distinct bundle id (`…workroom.dev`) and name, with an
-amber icon — so it runs alongside the installed release "Workroom" without conflict. It shares the
-same `~/.config/workroom/config.json`, but skips the global `⌘§` hotkey and Sparkle scheduled checks
-so it doesn't interfere with your real install.
-
-> **Adding/removing Swift files** requires regenerating the project (`make app-generate`), since the
-> file list lives in the generated `.xcodeproj`.
-
-The Xcode build runs `macapp/Scripts/build-helper.sh` as a phase, which compiles the Go CLI and
-embeds it in the app bundle — so a Go toolchain must be on `PATH` when building the app. See
-[`macapp/README.md`](macapp/README.md) and [`macapp/CLAUDE.md`](macapp/CLAUDE.md) for the full
-architecture, the libghostty integration notes (`macapp/QA-libghostty.md`), and signing details.
-
 ### Available commands (`make`)
 
 | Target | What it does |
 | --- | --- |
 | `make` | List all targets |
-| `cli-build` | Build `./workroom` with version injected |
-| `cli-test` | `go test ./...` |
-| `cli-install` | `go install` into `$GOBIN` |
-| `cli-lint` | `golangci-lint run` |
-| `cli-clean` | Remove the built binary |
 | `app-run` | Build (Debug) and relaunch the dev app |
 | `app-build` | Build the app (Debug) |
 | `app-test` | Run `WorkroomAppTests` (unit) |
 | `app-uitest` | Run `WorkroomAppUITests` (XCUITest; needs a GUI session) |
+| `app-vcs` | Build the Rust VCS core → the `WrVcs` package (auto-run before app builds) |
 | `app-generate` | Regenerate the `.xcodeproj` from `project.yml` |
 | `app-format` / `app-lint` | Format / lint Swift via swift-format |
 | `app-release` | Build → sign → notarize → staple → DMG (full release) |
 | `app-icon` | Regenerate the AppIcon PNGs |
 | `app-clean` | Remove `DerivedData` + the `.xcodeproj` |
+| `cli-build` | Build `./workroom` with version injected |
+| `cli-test` | `go test ./...` |
+| `cli-install` | `go install` into `$GOBIN` |
+| `cli-lint` | `golangci-lint run` |
+| `cli-clean` | Remove the built binary |
 
 ---
 
