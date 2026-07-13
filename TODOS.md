@@ -450,27 +450,34 @@ switch to a per-target lookup keyed by `store.selectedTargetID`.
 
 **Priority:** P3 (global is acceptable for v1; revisit if the cross-repo carryover annoys).
 
-## Evaluate libgit2 for git diffs if the diff viewer needs structured features (macapp)
+## Structured diff model (`FileDiff` hunks) for the diff viewer (macapp) — 47b / VCS-foundation follow-up
 
-**What:** Reconsider moving git status/diff off the CLI onto `libgit2` *specifically for the planned
-in-app diff viewer*, if and only if the viewer needs structured diff features that parsing
-`git diff --git` can't cleanly provide (rename-following, intra-line/word diff, binary handling as
-data).
+**What:** Give `VCSProviding` a structured per-file diff (a `FileDiff` of hunks/lines) instead of the
+current git-format unified-diff **text**, and rewrite `DiffViewer` to consume it — unlocking
+ignore-whitespace, word/intra-line diff, per-hunk/line staging, and diff-edit (the jayjay feature set).
 
-**Why:** The eng-review settled the backend as **CLI for both git + jj** with one shared git-format
-unified-diff parser fed by `git diff --git` and `jj diff --git` (jj-lib is unstable with no C/FFI, so
-jj diffs must be CLI patches regardless; reusing that parser for git keeps a single diff codepath +
-the one `StatusCommandRunning` mock seam). `libgit2` would only de-dupe the git half while splitting
-the path, so it's not worth it *unless* the viewer's feature depth makes patch-parsing the bottleneck.
+**Why:** The diff viewer today parses git-format text (`UnifiedDiff.parse`) fed by `GitProvider`
+(SwiftGitX `Patch` → text) and `RustJJProvider` (`jj diff --git` CLI text). That's the deliberate
+Option-1 first cut — it works and keeps one renderer — but text is a lossy intermediate for the
+features above. Both backends already expose structured diffs natively (libgit2 hunk callbacks;
+jj-lib diff regions / a `computeNativeDiff` over old+new content, as jayjay does), so a structured
+model would be lib-native end-to-end. Deferred because no shipped feature needs it yet, and the
+rewrite touches the whole diff UI (regression surface).
 
-**How to start:** Build the viewer on the shared CLI patch parser first. If a feature (e.g. precise
-rename-following or word-diff) proves painful to parse, prototype `libgit2`'s diff API for the git
-side only and weigh the second codepath against the gain. Verify `libgit2` worktree support first (the
-app's core mechanism).
+> Note: the earlier "evaluate libgit2 for git diffs" framing is obsolete — git already reads through
+> SwiftGitX/libgit2 (status, changeset, working + commit diff, `fileContent`). The open question is no
+> longer *which* git library, but *text vs structured hunks* at the `VCSProviding` seam.
 
-**Depends on:** the in-app diff viewer plan (in progress).
+**How to start:** Add a structured `FileDiff`/`Hunk`/`Line` model + a `VCSProviding.structuredDiff`
+(or evolve `fileDiff`/`workingFileDiff` to return it); git via `git_diff`/`git_patch` hunk callbacks,
+jj via jj-lib regions or `compute(old,new)` fed by `fileContent`. Reuse the existing `DiffCache` +
+`maxDiffBytes` gate. Rewrite `DiffViewer` (and `IntraLineDiff`/side-by-side pairing) to consume hunks.
 
-**Priority:** P3 (conditional — only if the viewer's needs outgrow patch-parsing).
+**Depends on:** the shipped Option-1 diff pipeline (`VCSProviding.fileDiff`/`workingFileDiff` +
+`DiffResolver` + `DiffViewer`). Touches `Core/VCSProviding.swift`, `GitProvider`, `RustJJProvider`,
+`jj_backend.rs` (+ UniFFI), `Core/DiffResolver.swift`, `Views/DiffViewer.swift`.
+
+**Priority:** P3 (build when a feature — ignore-whitespace / word-diff / staging / diff-edit — needs it).
 
 ## AppKit tracking-handle divider for an even wider resize target (macapp) — #83 follow-up
 
@@ -787,3 +794,48 @@ gix-config read) and chain it in `jj_backend.rs::base_ignores` instead of the ha
 **Depends on:** the base_ignores fix (shipped). Touches `jj_backend.rs`.
 
 **Priority:** P3 (residual of a fixed P1; only affects users with a non-default excludesFile).
+
+## Unify `workingStatus` onto the `VCSProviding` protocol (macapp) — VCS-foundation follow-up
+
+**What:** `workingStatus` is the one VCS read that never made it onto the `VCSProviding` protocol.
+`GitProvider.workingStatus` returns a git-shaped `GitWorkingStatus`; `RustJJProvider.workingStatus`
+returns the app `WorkroomStatus`. Both are concrete, off-protocol, and differently-shaped, so
+`WorkroomStatusResolver` bridges each backend by hand (`resolveGit` maps `GitWorkingStatus` →
+`WorkroomStatus`; `resolveJJ` calls the jj one directly).
+
+**Why:** Every other read (log/changeset/fileDiff/workingFileDiff/fileContent/currentRef) is on the
+protocol with one app-native return; `workingStatus` is the odd one out. Unifying it removes the
+special-casing in the resolver and lets a future backend (or a mock) satisfy status through the same
+seam. `GitWorkingStatus` (`GitProvider.swift:335`) is explicitly a placeholder — its own doc says the
+jj status "unifies onto a shared `VCSProviding.workingStatus` in the follow-on."
+
+**How to start:** Define a backend-neutral working-status return (the app already has `WorkroomStatus`
++ the jj `@`/`@-` disclosure model; give git the same shape, `.parent`/`jjWorkingCopy` fields nil for
+git). Add `func workingStatus(root:) async throws -> …` to `VCSProviding`; have both providers return
+the unified type; drop the `GitWorkingStatus` bridge in `WorkroomStatusResolver`.
+
+**Depends on:** the VCS read foundation (shipped). Touches `Core/VCSProviding.swift`, `GitProvider`,
+`RustJJProvider`, `Core/WorkroomStatusResolver.swift`.
+
+**Priority:** P3 (consistency/cleanup; the hand-bridged path works today).
+
+## VCS write actions — Phase 2 (macapp) — roadmap pointer
+
+**What:** The next VCS phase: turn the read-only foundation into a full in-app VCS UI. Write methods
+behind `VCSProviding` — commit/amend, push/pull/fetch, branch (git) / bookmark (jj) management — then
+the deep jj ops (undo/op-log, split, absorb, evolog, interdiff). A `CLIVCSProvider` fallback is
+introduced here for ops the libraries don't expose ergonomically (each with tests), NOT as a parallel
+read path.
+
+**Why:** This is a roadmap phase, not a tactical follow-up — it's tracked in full in the issue #59
+plan (Phase 2 section) + the `vcs-foundation-rust-core` design notes. This entry is only a pointer so
+Phase 2 is discoverable from `TODOS.md`; the authoritative scope + sequencing live in the plan.
+
+**How to start:** Read the plan's "Phase 2 — VCS write actions" section and issue #59. The read
+foundation (this file's other VCS entries) is the prerequisite; land the deferred read follow-ups
+(rename, conflict status, error taxonomy) first where they'd otherwise bite the write UI.
+
+**Depends on:** the VCS read foundation (shipped, Phase 1). Spans `vcs/` (Rust), `WrVcs` UniFFI,
+`Core/VCSProviding.swift` + both providers, and new write-flow UI.
+
+**Priority:** P2 (the product direction; large, sequenced after the read follow-ups — see the plan for the real breakdown).
