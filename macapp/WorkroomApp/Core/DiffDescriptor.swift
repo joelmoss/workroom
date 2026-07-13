@@ -33,3 +33,11 @@ struct DiffDescriptor: Equatable, Hashable, Sendable {
     path == other.path && source == other.source
   }
 }
+
+extension DiffDescriptor: ContentDescriptor {
+  func makeTabContent() -> TabContent { .diff(self) }
+  func matches(_ content: TabContent) -> Bool {
+    if case .diff(let d) = content { return d.sameFile(as: self) }
+    return false
+  }
+}

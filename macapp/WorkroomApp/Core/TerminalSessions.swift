@@ -88,6 +88,21 @@ enum TabContent {
   case file(FileDescriptor)
 }
 
+/// A non-terminal content-tab payload the preview/persist openers drive uniformly (issue #59). Diffs,
+/// files, and changesets differ only in how they wrap into a `TabContent` case and what makes two of
+/// them the *same* tab (the dedup / retarget identity) — extracting this collapses the otherwise
+/// near-identical per-kind openers into one `openContentPreview` + one `openContentPersistent`.
+protocol ContentDescriptor: Sendable {
+  /// VS-Code preview flag (italic chip, replaced by the next preview). The openers set it before use.
+  var isPreview: Bool { get set }
+  /// Wrap this descriptor into its `TabContent` case.
+  func makeTabContent() -> TabContent
+  /// Whether an already-open tab shows the same content — the identity used to dedupe (re-select)
+  /// and to decide whether the lone preview can be retargeted in place. The preview flag is excluded,
+  /// matching each type's `sameFile`.
+  func matches(_ content: TabContent) -> Bool
+}
+
 /// The state a terminal tab owns: its surface plus the live-title/progress the surface reports. Kept
 /// in the `.terminal` payload so a content tab carries none of it.
 struct TerminalState {
@@ -325,51 +340,79 @@ final class TerminalSessions: ObservableObject {
   //   double-click file ─▶ openDiffPersistent ─ create-or-promote a persisted tab
   //   double-click chip / "Keep Open" ─▶ persist ─ flip preview → persisted
 
-  /// Open a file diff as the target's single PREVIEW content tab (VS-Code semantics). Returns the id
-  /// of the tab now shown. A preview tab is replaced in place by the next previewed file, so its tab
-  /// id (and thus its strip slot / split position) is stable across retargets.
+  /// Open `descriptor` as the target's single PREVIEW content tab (VS-Code semantics). Returns the
+  /// id of the tab now shown. Generic over `ContentDescriptor` so diffs, files, and changesets share
+  /// ONE opener (issue #59): the per-kind differences are just how the descriptor builds its
+  /// `TabContent` and what makes two of them the same tab. A preview tab is replaced in place by the
+  /// next preview, so its id (and thus its strip slot / split position) is stable across retargets.
+  ///   - already open for this exact content (preview or persisted) → just select it (Inv C);
+  ///   - else the lone preview tab is retargeted IN PLACE — same id, slot, split position (Inv B);
+  ///   - else a fresh preview tab (≤1 preview per target: Inv A).
   @discardableResult
-  func openDiffPreview(_ descriptor: DiffDescriptor, for target: TerminalTarget) -> TerminalTab.ID {
+  func openContentPreview<D: ContentDescriptor>(_ descriptor: D, for target: TerminalTarget)
+    -> TerminalTab.ID
+  {
     var desc = descriptor
     desc.isPreview = true
-    // Already open for this exact file + revision (preview or persisted) → just select it (Inv C).
-    if let existing = diffTab(matching: desc, in: target.id) {
+    if let existing = contentTab(matching: desc, in: target.id) {
       focus(existing, for: target)
       return existing
     }
-    // Retarget the lone preview tab in place — keeps its id, slot, and split position (Inv B).
     if let previewID = previewTabID(in: target.id), var tab = tabsByTarget[target.id]?[previewID] {
-      tab.content = .diff(desc)
+      tab.content = desc.makeTabContent()
       tabsByTarget[target.id]?[previewID] = tab
       focus(previewID, for: target)
       return previewID
     }
-    // First diff for this target → a fresh preview tab (Inv A).
-    let tab = TerminalTab.diff(desc)
+    let tab = TerminalTab(content: desc.makeTabContent())
     insert(tab, for: target)
     setFocused(tab.id, for: target.id)
     reconcileOcclusion(for: target)
     return tab.id
   }
 
-  /// Open a file diff as a PERSISTED content tab (double-click in Changes). If a tab already shows
-  /// this file + revision, promote it (clear preview) and focus it; else append a persisted tab.
+  /// Open `descriptor` as a PERSISTED content tab (double-click). If a tab already shows this exact
+  /// content, promote it (clear preview) and focus it; else append a persisted tab. The persistent
+  /// sibling of `openContentPreview`.
   @discardableResult
-  func openDiffPersistent(_ descriptor: DiffDescriptor, for target: TerminalTarget)
+  func openContentPersistent<D: ContentDescriptor>(_ descriptor: D, for target: TerminalTarget)
     -> TerminalTab.ID
   {
     var desc = descriptor
     desc.isPreview = false
-    if let existing = diffTab(matching: desc, in: target.id) {
+    if let existing = contentTab(matching: desc, in: target.id) {
       persist(existing, for: target)
       focus(existing, for: target)
       return existing
     }
-    let tab = TerminalTab.diff(desc)
+    let tab = TerminalTab(content: desc.makeTabContent())
     insert(tab, for: target)
     setFocused(tab.id, for: target.id)
     reconcileOcclusion(for: target)
     return tab.id
+  }
+
+  /// The id of an open content tab whose content matches `descriptor` — the dedup / retarget
+  /// identity (see `ContentDescriptor.matches`), the preview flag excluded. Replaces the former
+  /// per-kind `diffTab`/`fileTab` matchers.
+  private func contentTab(matching descriptor: some ContentDescriptor, in target: TerminalTarget.ID)
+    -> TerminalTab.ID?
+  {
+    tabsByTarget[target]?.first { _, tab in descriptor.matches(tab.content) }?.key
+  }
+
+  /// Open a file diff as the target's single PREVIEW content tab (issue #66).
+  @discardableResult
+  func openDiffPreview(_ descriptor: DiffDescriptor, for target: TerminalTarget) -> TerminalTab.ID {
+    openContentPreview(descriptor, for: target)
+  }
+
+  /// Open a file diff as a PERSISTED content tab (double-click in Changes).
+  @discardableResult
+  func openDiffPersistent(_ descriptor: DiffDescriptor, for target: TerminalTarget)
+    -> TerminalTab.ID
+  {
+    openContentPersistent(descriptor, for: target)
   }
 
   /// Persist a preview content tab (double-click its chip, or "Keep Open" in its menu). No-op unless
@@ -394,23 +437,7 @@ final class TerminalSessions: ObservableObject {
   /// showed. Mirrors `openDiffPreview`.
   @discardableResult
   func openFilePreview(_ descriptor: FileDescriptor, for target: TerminalTarget) -> TerminalTab.ID {
-    var desc = descriptor
-    desc.isPreview = true
-    if let existing = fileTab(matching: desc, in: target.id) {
-      focus(existing, for: target)
-      return existing
-    }
-    if let previewID = previewTabID(in: target.id), var tab = tabsByTarget[target.id]?[previewID] {
-      tab.content = .file(desc)
-      tabsByTarget[target.id]?[previewID] = tab
-      focus(previewID, for: target)
-      return previewID
-    }
-    let tab = TerminalTab.file(desc)
-    insert(tab, for: target)
-    setFocused(tab.id, for: target.id)
-    reconcileOcclusion(for: target)
-    return tab.id
+    openContentPreview(descriptor, for: target)
   }
 
   /// Open a file as a PERSISTED content tab (double-click in the Files panel). Promotes an existing
@@ -419,28 +446,7 @@ final class TerminalSessions: ObservableObject {
   func openFilePersistent(_ descriptor: FileDescriptor, for target: TerminalTarget)
     -> TerminalTab.ID
   {
-    var desc = descriptor
-    desc.isPreview = false
-    if let existing = fileTab(matching: desc, in: target.id) {
-      persist(existing, for: target)
-      focus(existing, for: target)
-      return existing
-    }
-    let tab = TerminalTab.file(desc)
-    insert(tab, for: target)
-    setFocused(tab.id, for: target.id)
-    reconcileOcclusion(for: target)
-    return tab.id
-  }
-
-  /// The id of an open file tab showing the same path as `descriptor`, if any.
-  private func fileTab(matching descriptor: FileDescriptor, in target: TerminalTarget.ID)
-    -> TerminalTab.ID?
-  {
-    tabsByTarget[target]?.first { _, tab in
-      if case .file(let f) = tab.content { return f.sameFile(as: descriptor) }
-      return false
-    }?.key
+    openContentPersistent(descriptor, for: target)
   }
 
   /// Set a diff tab's per-tab layout override (issue #66), from the tab toolbar's unified/side-by-side
@@ -463,16 +469,6 @@ final class TerminalSessions: ObservableObject {
     guard var tab = tabsByTarget[target.id]?[tabID], case .file = tab.content else { return }
     tab.markdownPreviewOverride = preview
     tabsByTarget[target.id]?[tabID] = tab
-  }
-
-  /// The id of an open diff tab showing the same file + revision as `descriptor`, if any.
-  private func diffTab(matching descriptor: DiffDescriptor, in target: TerminalTarget.ID)
-    -> TerminalTab.ID?
-  {
-    tabsByTarget[target]?.first { _, tab in
-      if case .diff(let d) = tab.content { return d.sameFile(as: descriptor) }
-      return false
-    }?.key
   }
 
   /// The id of the target's single preview content tab, if one exists (the ≤1-preview invariant).

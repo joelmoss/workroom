@@ -25,6 +25,14 @@ struct FileDescriptor: Equatable, Hashable, Sendable {
   func sameFile(as other: FileDescriptor) -> Bool { path == other.path }
 }
 
+extension FileDescriptor: ContentDescriptor {
+  func makeTabContent() -> TabContent { .file(self) }
+  func matches(_ content: TabContent) -> Bool {
+    if case .file(let f) = content { return f.sameFile(as: self) }
+    return false
+  }
+}
+
 // MARK: - Tree model (pure)
 
 /// A node in the repo file tree: a directory (with sorted children) or a file leaf. Built by
