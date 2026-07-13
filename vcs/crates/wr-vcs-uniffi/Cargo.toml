@@ -5,9 +5,18 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# The UniFFI export surface + Swift-binding boundary. Becomes a staticlib linked into the app
-# (crate-type added in the xcframework task); the actual #[uniffi::export] surface lands in task 4.
+# The UniFFI export surface + Swift-binding boundary. Built as a staticlib for linking into the app
+# (Phase-0 xcframework) and a cdylib for UniFFI's library-mode binding generation.
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+
 [dependencies]
 wr-vcs-core = { path = "../wr-vcs-core" }
 wr-vcs-model = { path = "../wr-vcs-model" }
-uniffi = { workspace = true }
+uniffi = { workspace = true, features = ["cli"] }
+thiserror = { workspace = true }
+
+# `cargo run --bin uniffi-bindgen -- generate --library <dylib> --language swift` generates bindings.
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
