@@ -1,12 +1,10 @@
 //! jj backend — the ONLY site that touches `jj-lib`.
 //!
-//! Read-only access to a (colocated) jj repo: open the workspace, load the repo at the current
-//! operation head, and read commit data WITHOUT snapshotting/locking the working copy (prior
-//! learning `jj-concurrent-probes-working-copy-lock`: jj takes the working-copy lock only on ops
-//! that *write* `@` — plain `load_at_head` + reads do not).
-//!
-//! Phase 0 proof: `log_page` (bounded DAG walk from `@`) and `changeset` (metadata + full message).
-//! The changeset FILE LIST / per-file diff needs jj-lib's async `diff_stream` and lands in Phase 1.
+//! Most reads (`log_page`, `changeset`, `current_ref`) are read-only: they `open` the workspace and
+//! `load_at_head`, reading commit data WITHOUT snapshotting/locking the working copy (prior learning
+//! `jj-concurrent-probes-working-copy-lock`: jj takes the working-copy lock only on ops that *write*
+//! `@`). The exception is `working_status` (`snapshot_working_copy`), which MUST snapshot `@` so it
+//! reflects on-disk edits — so it takes the lock + rewrites `@`, exactly like every `jj` command.
 
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -15,9 +13,12 @@ use std::sync::Arc;
 
 use jj_lib::commit::Commit as JjCommit;
 use jj_lib::config::StackedConfig;
+use jj_lib::gitignore::GitIgnoreFile;
+use jj_lib::matchers::{EverythingMatcher, NothingMatcher};
 use jj_lib::object_id::ObjectId;
 use jj_lib::repo::{ReadonlyRepo, Repo, StoreFactories};
 use jj_lib::settings::UserSettings;
+use jj_lib::working_copy::SnapshotOptions;
 use jj_lib::workspace::{default_working_copy_factories, Workspace};
 
 use wr_vcs_model as model;
@@ -224,6 +225,105 @@ pub fn current_ref(root: &Path) -> model::Result<model::Ref> {
     Ok(none)
 }
 
+/// Snapshot the working copy so `@` reflects on-disk edits, returning the repo at the resulting
+/// operation. Unlike the read-only `open`, this MUTATES (exactly like every `jj` command): it takes
+/// the working-copy lock, and when disk differs from `@`'s tree it rewrites `@`, rebases descendants,
+/// and commits a "snapshot working copy" operation. Modeled on jayjay's `refresh_working_copy`.
+///
+/// `base_ignores` is empty on purpose: jj-lib's snapshot walk still chains the working tree's own
+/// `.gitignore` files (so `node_modules` etc. stay ignored) — only the global excludes
+/// (`core.excludesFile`, `.git/info/exclude`) are skipped, a minor fidelity gap versus the CLI.
+fn snapshot_working_copy(root: &Path) -> model::Result<(Workspace, Arc<ReadonlyRepo>)> {
+    let settings = UserSettings::from_config(StackedConfig::with_defaults()).map_err(io)?;
+    let mut workspace = Workspace::load(
+        &settings,
+        root,
+        &StoreFactories::default(),
+        &default_working_copy_factories(),
+    )
+    .map_err(io)?;
+    let repo = pollster::block_on(workspace.repo_loader().load_at_head()).map_err(io)?;
+
+    let wc_name = workspace.workspace_name().to_owned();
+    let Some(wc_commit_id) = repo.view().get_wc_commit_id(&wc_name).cloned() else {
+        // No working-copy commit (e.g. a bare/foreign workspace) — nothing to snapshot.
+        return Ok((workspace, repo));
+    };
+    let wc_commit = repo.store().get_commit(&wc_commit_id).map_err(io)?;
+
+    let mut locked_ws = pollster::block_on(workspace.start_working_copy_mutation()).map_err(io)?;
+    let options = SnapshotOptions {
+        base_ignores: GitIgnoreFile::empty(),
+        progress: None,
+        start_tracking_matcher: &EverythingMatcher,
+        force_tracking_matcher: &NothingMatcher,
+        max_new_file_size: u64::MAX,
+    };
+    let (new_tree, _stats) =
+        pollster::block_on(locked_ws.locked_wc().snapshot(&options)).map_err(io)?;
+
+    if new_tree.tree_ids_and_labels() != wc_commit.tree().tree_ids_and_labels() {
+        // Disk changed since the last snapshot → rewrite `@` with the new tree + commit the op.
+        let mut tx = repo.start_transaction();
+        tx.set_is_snapshot(true);
+        let write = tx
+            .repo_mut()
+            .rewrite_commit(&wc_commit)
+            .set_tree(new_tree)
+            .write();
+        pollster::block_on(write).map_err(io)?;
+        pollster::block_on(tx.repo_mut().rebase_descendants()).map_err(io)?;
+        let new_repo = pollster::block_on(tx.commit("snapshot working copy")).map_err(io)?;
+        pollster::block_on(locked_ws.finish(new_repo.op_id().clone())).map_err(io)?;
+        Ok((workspace, new_repo))
+    } else {
+        // Clean — release the lock without rewriting `@`.
+        pollster::block_on(locked_ws.finish(repo.op_id().clone())).map_err(io)?;
+        Ok((workspace, repo))
+    }
+}
+
+/// The jj working-copy status: snapshot `@` (so it reflects disk), then read its change set. `dirty`
+/// is set when `@` has changed files or a conflict. (Parent `@-` disclosure + diffstat + CI branch
+/// are a follow-up.)
+pub fn working_status(root: &Path) -> model::Result<model::WorkingStatus> {
+    let (workspace, repo) = snapshot_working_copy(root)?;
+    let store = repo.store();
+    let bookmarks = bookmark_map(&repo);
+    let Some(wc_id) = repo
+        .view()
+        .get_wc_commit_id(workspace.workspace_name())
+        .cloned()
+    else {
+        return Ok(model::WorkingStatus {
+            dirty: false,
+            conflicted: false,
+            change_id: None,
+            commit_id: None,
+            refs: Vec::new(),
+            description: None,
+            files: Vec::new(),
+        });
+    };
+    let wc_commit = store.get_commit(&wc_id).map_err(io)?;
+    let conflicted = wc_commit.has_conflict();
+    let files = changed_files(store, &wc_commit)?;
+    let commit = to_model_commit(&wc_commit, Some(&wc_id), &bookmarks);
+    Ok(model::WorkingStatus {
+        dirty: !files.is_empty() || conflicted,
+        conflicted,
+        change_id: commit.change_id,
+        commit_id: Some(commit.commit_id),
+        refs: commit.refs,
+        description: if commit.summary.is_empty() {
+            None
+        } else {
+            Some(commit.summary)
+        },
+        files,
+    })
+}
+
 /// A single changeset: metadata + full message + changed-file list (vs the first parent). Per-file
 /// hunk-level diff is a separate call (lazy on selection).
 pub fn changeset(root: &Path, commit_id_hex: &str) -> model::Result<model::Changeset> {
@@ -252,7 +352,6 @@ fn changed_files(
     commit: &JjCommit,
 ) -> model::Result<Vec<model::ChangedFile>> {
     use futures::StreamExt;
-    use jj_lib::matchers::EverythingMatcher;
 
     let after = commit.tree();
     let before = match commit.parent_ids().first() {

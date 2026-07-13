@@ -78,6 +78,25 @@ pub struct Ref {
     pub kind: RefKind,
 }
 
+/// The jj working-copy status for the sidebar/Changes badges: the working copy `@`'s change set
+/// (its metadata + files vs `@-`) and a dirty flag. Reading it first SNAPSHOTS the working copy so
+/// `@` reflects on-disk edits (jj's own behavior on every command). The parent (`@-`) disclosure,
+/// diffstat, and CI branch land in a follow-up (this shape extends).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkingStatus {
+    /// `true` when `@` has changed files or a conflict.
+    pub dirty: bool,
+    pub conflicted: bool,
+    /// `@`'s change-id (shortest unique prefix), commit-id (shortest-8), bookmarks, first-line
+    /// description — the working-copy disclosure header.
+    pub change_id: Option<String>,
+    pub commit_id: Option<String>,
+    pub refs: Vec<String>,
+    pub description: Option<String>,
+    /// `@`'s changed files (vs its first parent `@-`).
+    pub files: Vec<ChangedFile>,
+}
+
 /// A full changeset: its commit metadata, full (multi-line) message, and changed-file list.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Changeset {

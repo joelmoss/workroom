@@ -42,3 +42,9 @@ pub fn changeset(root: &Path, commit_id_hex: &str) -> model::Result<model::Chang
 pub fn current_ref(root: &Path) -> model::Result<model::Ref> {
     jj_backend::current_ref(root)
 }
+
+/// The jj working-copy status (dirty flag + `@`'s change set). MUTATING: snapshots `@` first (takes
+/// the working-copy lock, rewrites `@` when disk changed) — jj's own per-command behavior.
+pub fn working_status(root: &Path) -> model::Result<model::WorkingStatus> {
+    jj_backend::working_status(root)
+}
