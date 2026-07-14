@@ -471,6 +471,21 @@ final class TerminalSessions: ObservableObject {
     tabsByTarget[target.id]?[tabID] = tab
   }
 
+  /// Set the selected file within a changeset tab (the History detail's file list). Reassigns the
+  /// tab value so `@Published tabsByTarget` fires and `ChangesetDetailView` re-renders the diff for
+  /// the new file — without a reload (its `.task` keys on the commit id, unchanged). No-op for a
+  /// missing / non-changeset tab, or when already selected.
+  func setChangesetSelectedPath(
+    _ path: String?, forTab tabID: TerminalTab.ID, in target: TerminalTarget
+  ) {
+    guard var tab = tabsByTarget[target.id]?[tabID], case .changeset(var desc) = tab.content,
+      desc.selectedPath != path
+    else { return }
+    desc.selectedPath = path
+    tab.content = .changeset(desc)
+    tabsByTarget[target.id]?[tabID] = tab
+  }
+
   /// Set a file tab's Markdown source/preview override, from the tab toolbar's Source/Preview switch.
   /// Reassigns the tab value so `@Published tabsByTarget` fires and the pane's `PlainFileViewer`
   /// re-renders. No-op for a missing or non-file tab.

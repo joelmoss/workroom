@@ -489,7 +489,8 @@ private struct PaneLeafView: View {
       // A whole commit's detail (issue #59): metadata + file list + the selected file's diff (which
       // reuses DiffViewer via a `.commit` source). Same rounded clip + chip context menu as the other
       // content leaves, so "Keep Open"/Close/split behave identically.
-      let detail = ChangesetDetailView(descriptor: descriptor, directory: target.path)
+      let detail = ChangesetDetailView(
+        descriptor: descriptor, directory: target.path, tabID: tabID, target: target)
       if let tab = sessions.tab(tabID, for: target) {
         contentPanel(
           detail.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions))

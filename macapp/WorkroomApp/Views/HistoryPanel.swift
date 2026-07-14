@@ -19,13 +19,12 @@ struct HistoryPanel: View {
       } else {
         switch model.state {
         case .idle:
-          placeholder("Select a workroom", systemImage: "clock")
+          // A workroom is selected (the outer guard handled the nil case), so `.idle` is only the
+          // brief pre-focus state before the model loads — show the loader, never "Select a
+          // workroom" (which would wrongly imply no selection).
+          loadingIndicator
         case .loading where model.commits.isEmpty:
-          HStack(spacing: 6) {
-            ProgressView().controlSize(.small)
-            Text("Loading history…").font(.callout).foregroundStyle(.secondary)
-          }
-          .padding(.vertical, 6).padding(.horizontal, 8)
+          loadingIndicator
         case .failed(let message):
           placeholder(message, systemImage: "exclamationmark.triangle")
         default:
@@ -103,6 +102,14 @@ struct HistoryPanel: View {
     .foregroundStyle(.secondary)
     .padding(.vertical, 6).padding(.horizontal, 8)
   }
+
+  private var loadingIndicator: some View {
+    HStack(spacing: 6) {
+      ProgressView().controlSize(.small)
+      Text("Loading history…").font(.callout).foregroundStyle(.secondary)
+    }
+    .padding(.vertical, 6).padding(.horizontal, 8)
+  }
 }
 
 /// One commit row: first line of the message, then a metadata line (short id · author · relative
@@ -135,6 +142,7 @@ private struct HistoryRow: View {
             .help("Working copy")
         }
         Text(commit.summary.isEmpty ? "(no description)" : commit.summary)
+          .font(.callout)
           .lineLimit(1)
           .foregroundStyle(
             isSelected ? theme.tokens.accent : (commit.summary.isEmpty ? .secondary : .primary))

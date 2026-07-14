@@ -9,10 +9,13 @@ struct ChangesetDetailView: View {
   let descriptor: ChangesetDescriptor
   /// The workroom directory the VCS reads in.
   let directory: String
+  /// This changeset tab's id + target — so a file tap routes through the store (which records a
+  /// back/forward step and updates the tab), rather than a view-local `@State`.
+  let tabID: TerminalTab.ID
+  let target: TerminalTarget
+  @EnvironmentObject var store: AppStore
 
   @State private var state: LoadState = .loading
-  /// The file whose diff is shown; defaults to the first changed file once loaded.
-  @State private var selectedPath: String?
   /// Committed width of the file-list pane. Starts intentionally narrow.
   @State private var listWidth: CGFloat = 230
   /// Live width during a divider drag (`nil` when not dragging). Kept in local `@State` so the drag
@@ -20,6 +23,13 @@ struct ChangesetDetailView: View {
   @State private var liveWidth: CGFloat?
   /// The width to render right now — the live drag value if dragging, else the committed one.
   private var effectiveListWidth: CGFloat { liveWidth ?? listWidth }
+  /// The file whose diff is shown — the tab descriptor's selection (so it's restorable via
+  /// back/forward and persists across renders), falling back to the first changed file.
+  private var selectedPath: String? {
+    if let path = descriptor.selectedPath { return path }
+    if case .loaded(let changeset) = state { return changeset.files.first?.path }
+    return nil
+  }
   /// The diff header's unified/side-by-side choice for this changeset (nil ⇒ follow the global
   /// default). Held here so it persists as the user clicks between files; doesn't touch the global.
   @State private var diffMode: DiffViewMode?
@@ -84,7 +94,6 @@ struct ChangesetDetailView: View {
 
   private func load() async {
     state = .loading
-    selectedPath = nil
     let root = URL(fileURLWithPath: directory, isDirectory: true)
     let commitID = descriptor.commitID
     do {
@@ -99,7 +108,6 @@ struct ChangesetDetailView: View {
       }
       if Task.isCancelled { return }
       state = .loaded(changeset)
-      selectedPath = changeset.files.first?.path
     } catch {
       if Task.isCancelled { return }
       state = .failed("\(error)")
@@ -253,7 +261,7 @@ struct ChangesetDetailView: View {
         hoveredPath = nil
       }
     }
-    .onTapGesture { selectedPath = file.path }
+    .onTapGesture { store.selectChangesetFile(file.path, tab: tabID, in: target) }
     .help(file.path)
     .accessibilityElement(children: .combine)
     .accessibilityIdentifier("ChangesetFileRow")

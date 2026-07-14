@@ -309,6 +309,12 @@ final class AppStore: ObservableObject {
     didSet {
       if activeInspectorSection != oldValue {
         Defaults[.activeInspectorSection] = activeInspectorSection
+        // Entering History with a workroom already selected: point the model now so the pane shows
+        // its loader immediately, instead of flashing the `.idle` ("Select a workroom") placeholder
+        // until the panel's `.task` catches up. `focus` is idempotent (no-op if already there).
+        if activeInspectorSection == .history {
+          commitHistory.focus(inspectorTarget.map { URL(fileURLWithPath: $0.path) })
+        }
       }
     }
   }
@@ -2869,6 +2875,9 @@ final class AppStore: ObservableObject {
     guard let target = selectedTarget else { return }
     terminals.openContentPreview(
       ChangesetDescriptor(commitID: commitID, title: title, isPreview: true), for: target)
+    // Retargeting the preview tab fires no focus change, so record the commit view explicitly (a
+    // dedup collapses the double when a genuine focus change also recorded it).
+    if !isNavigatingHistory { recordCurrentLocation() }
   }
 
   /// Open a commit's changeset detail as a *persisted* content tab (double-click a History row).
@@ -2877,6 +2886,21 @@ final class AppStore: ObservableObject {
     guard let target = selectedTarget else { return }
     terminals.openContentPersistent(
       ChangesetDescriptor(commitID: commitID, title: title, isPreview: false), for: target)
+    if !isNavigatingHistory { recordCurrentLocation() }
+  }
+
+  /// Select a file within a changeset tab (a tap in the History detail's file list). Updates the tab
+  /// so `ChangesetDetailView` shows that file's diff (no reload — its `.task` keys on the commit),
+  /// and records a back/forward step, so each in-commit file selection is its own step. Records only
+  /// when this changeset is the active (focused) location, to avoid a wrong-tab entry.
+  func selectChangesetFile(_ path: String, tab tabID: TerminalTab.ID, in target: TerminalTarget) {
+    guard case .changeset(let d)? = terminals.tab(tabID, for: target)?.content,
+      d.selectedPath != path
+    else { return }
+    terminals.setChangesetSelectedPath(path, forTab: tabID, in: target)
+    if !isNavigatingHistory, terminals.focusedTab(for: target)?.id == tabID {
+      recordCurrentLocation()
+    }
   }
 
   /// Open a repo file in the configured external editor (⌘-click / context menu in the Files
@@ -3025,22 +3049,34 @@ final class AppStore: ObservableObject {
     guard let sid = selectedTargetID, let target = selectedTarget, !target.isMissing,
       let tab = terminals.focusedTab(for: target)
     else { return }
-    history.record(NavLocation(target: sid, tab: tab.id))
+    history.record(Self.location(target: sid, tab: tab))
+  }
+
+  /// Build a `NavLocation` from a focused tab, capturing the content selection (commit + file) so
+  /// back/forward can restore not just which tab, but which commit's changeset and which file within
+  /// it were on screen (issue: commit browser).
+  private static func location(target sid: SidebarID, tab: TerminalTab) -> NavLocation {
+    switch tab.content {
+    case .changeset(let d):
+      return NavLocation(
+        target: sid, tab: tab.id, commitID: d.commitID, commitTitle: d.title,
+        filePath: d.selectedPath)
+    case .diff(let d):
+      return NavLocation(target: sid, tab: tab.id, filePath: d.path)
+    default:
+      return NavLocation(target: sid, tab: tab.id)
+    }
   }
 
   /// Go back one step, skipping entries whose target/tab no longer exist (D2). No-op when there's no
   /// live earlier location.
   func navigateBack() {
-    if let loc = history.step(-1, isLive: isLive) {
-      applyLocation(target: loc.target, tab: loc.tab, recordHistory: false)
-    }
+    if let loc = history.step(-1, isLive: isLive) { applyLocation(loc, recordHistory: false) }
   }
 
   /// Go forward one step (mirrors `navigateBack`).
   func navigateForward() {
-    if let loc = history.step(+1, isLive: isLive) {
-      applyLocation(target: loc.target, tab: loc.tab, recordHistory: false)
-    }
+    if let loc = history.step(+1, isLive: isLive) { applyLocation(loc, recordHistory: false) }
   }
 
   /// The single primitive for "go to (target, tab)": used by back/forward replay and by
@@ -3061,7 +3097,34 @@ final class AppStore: ObservableObject {
       ?? terminals.focusedTab(for: target)?.id
     guard let resolved else { return }
     terminals.focus(resolved, for: target)
-    if recordHistory { history.record(NavLocation(target: sid, tab: resolved)) }
+    if recordHistory, let tab = terminals.tab(resolved, for: target) {
+      history.record(Self.location(target: sid, tab: tab))
+    }
+  }
+
+  /// Back/forward replay of a full `NavLocation`: select + focus its tab, then restore the recorded
+  /// content selection. For a changeset, re-establish the recorded commit + file — the preview tab
+  /// drifts as you browse (retargets record no focus change), so replay reopens the recorded commit
+  /// there; a persisted tab already shows the right commit, so only its file is restored. All under
+  /// `isNavigatingHistory`, so nothing re-records.
+  private func applyLocation(_ loc: NavLocation, recordHistory: Bool) {
+    applyLocation(target: loc.target, tab: loc.tab, recordHistory: recordHistory)
+    guard let commitID = loc.commitID, let target = selectedTarget, !target.isMissing else {
+      return
+    }
+    isNavigatingHistory = true
+    defer { isNavigatingHistory = false }
+    if let focused = terminals.focusedTab(for: target), case .changeset(let d) = focused.content,
+      d.commitID == commitID
+    {
+      terminals.setChangesetSelectedPath(loc.filePath, forTab: focused.id, in: target)
+    } else {
+      terminals.openContentPreview(
+        ChangesetDescriptor(
+          commitID: commitID, title: loc.commitTitle ?? commitID, isPreview: true,
+          selectedPath: loc.filePath),
+        for: target)
+    }
   }
 
   /// Whether a recorded location is still reachable: its target resolves to a live, non-missing

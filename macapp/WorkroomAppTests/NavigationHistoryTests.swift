@@ -44,6 +44,34 @@ final class NavigationHistoryTests: XCTestCase {
     XCTAssertEqual(h.cursor, 0)
   }
 
+  /// Browsing commits in one preview tab (same target+tab): different commit or file → distinct
+  /// back/forward steps, so Back walks file→file then commit→commit (the commit-browser contract).
+  func testCommitAndFileAreDistinctSteps() {
+    let a = SidebarID.workroom(project: "/a", name: "main")
+    let tab = UUID()
+    let cA = NavLocation(target: a, tab: tab, commitID: "A", commitTitle: "a", filePath: nil)
+    let cAfile = NavLocation(
+      target: a, tab: tab, commitID: "A", commitTitle: "a", filePath: "x.swift")
+    let cB = NavLocation(target: a, tab: tab, commitID: "B", commitTitle: "b", filePath: nil)
+    var h = NavigationHistory()
+    h.record(cA)
+    h.record(cAfile)
+    h.record(cB)
+    XCTAssertEqual(h.entries, [cA, cAfile, cB])
+    XCTAssertEqual(h.step(-1, isLive: alwaysLive), cAfile)
+    XCTAssertEqual(h.step(-1, isLive: alwaysLive), cA)
+    XCTAssertEqual(h.step(+1, isLive: alwaysLive), cAfile)
+  }
+
+  func testSameCommitAndFileDedups() {
+    let a = SidebarID.workroom(project: "/a", name: "main")
+    let same = NavLocation(target: a, tab: UUID(), commitID: "A", commitTitle: "a", filePath: "x")
+    var h = NavigationHistory()
+    h.record(same)
+    h.record(same)  // identical content → no-op
+    XCTAssertEqual(h.entries, [same])
+  }
+
   func testRecordAfterBackTruncatesForward() {
     let l0 = loc()
     let l1 = loc()

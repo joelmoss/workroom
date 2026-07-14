@@ -13,6 +13,10 @@ struct ChangesetDescriptor: Equatable, Hashable, Sendable {
   /// True while this is the target's single preview tab (italic chip, replaced by the next preview);
   /// false once persisted ("Keep Open" / double-click / opened persistently).
   var isPreview: Bool
+  /// The changed file whose diff is shown, within this changeset. Non-identity (excluded from
+  /// `sameChangeset`): selecting a file mutates this in place, keeping the tab. `nil` ⇒ the detail
+  /// defaults to the first file. Backs back/forward restore of the in-commit file selection.
+  var selectedPath: String?
 
   /// Two descriptors address the *same* changeset tab when they point at the same commit — the
   /// identity used to dedupe (re-select an already-open commit) and to retarget the preview. The

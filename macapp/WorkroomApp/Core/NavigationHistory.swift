@@ -9,6 +9,15 @@ struct NavLocation: Equatable {
   /// The tab focused at the time. Always a real tab: a location is only ever recorded once a
   /// terminal is actually focused (see `AppStore.recordCurrentLocation`/`applyLocation`).
   let tab: TerminalTab.ID
+  /// For a changeset tab, the commit it showed at record time — so the preview tab (retargeted across
+  /// commits, which drifts its content) restores the right commit on replay. `nil` for other tabs.
+  var commitID: String? = nil
+  /// The commit's title, captured so replay can reopen the changeset without re-resolving it. `nil`
+  /// unless `commitID` is set.
+  var commitTitle: String? = nil
+  /// The selected file at record time: the changed file within a changeset (or a diff tab's path).
+  /// `nil` ⇒ the default (first) file. Makes each in-commit file selection its own step.
+  var filePath: String? = nil
 }
 
 /// A linear, browser-style back/forward history of visited terminal locations (issue #26).
