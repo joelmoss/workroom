@@ -14,7 +14,8 @@ final class GitProviderCoAuthorsTests: XCTestCase {
       Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
       """
     let co = GitProvider.coAuthors(inMessage: message, primaryEmail: "rosa@37signals.com")
-    XCTAssertEqual(co, [VCSAuthor(name: "Claude Opus 4.8 (1M context)", email: "noreply@anthropic.com")])
+    XCTAssertEqual(
+      co, [VCSAuthor(name: "Claude Opus 4.8 (1M context)", email: "noreply@anthropic.com")])
   }
 
   func testKeyIsCaseInsensitive() {
@@ -53,16 +54,20 @@ final class GitProviderCoAuthorsTests: XCTestCase {
   }
 
   func testSkipsTrailerWithoutEmail() {
-    let co = GitProvider.coAuthors(inMessage: "T\n\nCo-authored-by: No Email Here", primaryEmail: "p@x.com")
+    let co = GitProvider.coAuthors(
+      inMessage: "T\n\nCo-authored-by: No Email Here", primaryEmail: "p@x.com")
     XCTAssertTrue(co.isEmpty)
   }
 
   func testNameFallsBackToEmailWhenBlank() {
-    let co = GitProvider.coAuthors(inMessage: "T\n\nCo-authored-by: <lonely@x.com>", primaryEmail: "p@x.com")
+    let co = GitProvider.coAuthors(
+      inMessage: "T\n\nCo-authored-by: <lonely@x.com>", primaryEmail: "p@x.com")
     XCTAssertEqual(co, [VCSAuthor(name: "lonely@x.com", email: "lonely@x.com")])
   }
 
   func testNoTrailerYieldsEmpty() {
-    XCTAssertTrue(GitProvider.coAuthors(inMessage: "Just a subject\n\nA body.", primaryEmail: "p@x.com").isEmpty)
+    XCTAssertTrue(
+      GitProvider.coAuthors(inMessage: "Just a subject\n\nA body.", primaryEmail: "p@x.com").isEmpty
+    )
   }
 }

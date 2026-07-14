@@ -75,11 +75,20 @@ fn to_model_commit(
 ) -> Commit {
     let commit_id = c.id().hex();
     let (author, ts_ms, tz) = author_of(c.author());
-    let summary = c.description().lines().next().unwrap_or("").to_string();
+    let desc = c.description();
+    let summary = desc.lines().next().unwrap_or("").to_string();
+    let body = desc
+        .lines()
+        .skip(1)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string();
     Commit {
         short_id: commit_id.chars().take(8).collect(),
         change_id: Some(c.change_id().hex()),
         summary,
+        body,
         authors: vec![author],
         timestamp_ms: ts_ms,
         tz_offset_secs: tz,

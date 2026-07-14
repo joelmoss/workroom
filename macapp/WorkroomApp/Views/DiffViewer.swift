@@ -21,6 +21,15 @@ struct DiffViewer: View {
   /// Owned by the tab (`TerminalTab.diffViewModeOverride`) and passed in, so the toolbar sets it and
   /// this view reacts — an explicit per-file choice that the pane re-renders to without refetching.
   var viewModeOverride: DiffViewMode? = nil
+  /// When true, a compact header sits above the diff: the change symbol, the file path, and the
+  /// right-aligned additions/removals count (from the loaded diff). Off by default; the changeset
+  /// detail turns it on. Other diff surfaces render bare.
+  var showsFileHeader: Bool = false
+  /// When the header is shown, the unified/side-by-side switch reads and writes this binding (nil in
+  /// the binding ⇒ follow the global `Defaults[.diffViewMode]`). `nil` binding ⇒ no switch in the
+  /// header (and layout follows `viewModeOverride`/global as before). Lets the changeset detail own
+  /// the choice so it persists across file selection, without touching the global default.
+  var headerModeBinding: Binding<DiffViewMode?>? = nil
 
   @State private var state: LoadState = .loading
   /// The file identity (`fetchKey`) the current diff was loaded for — so a spurious `.task` re-run
@@ -61,26 +70,36 @@ struct DiffViewer: View {
   }
 
   var body: some View {
-    content
-      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-      .background(theme.tokens.bg)
-      // Re-fetch whenever the file or its source revision changes (preview retarget, tab switch).
-      // Load ONCE per file identity: SwiftUI re-runs this `.task` on the same view instance when the
-      // body re-renders after `applyHighlight` populates `highlightedLines` (even though `fetchKey`
-      // is unchanged). Without this guard each such re-run re-enters `load()`, which resets
-      // `state = .loading`, which re-renders, which re-highlights… a ~150ms feedback loop that leaves
-      // the diff pane stuck on its loader forever. Latent until commit-diff highlighting (issue #59)
-      // made `applyHighlight` actually populate lines for a History file diff. A genuine file switch
-      // changes `fetchKey`; a tab reopen recreates the view (so `@State` resets) — both re-run.
-      .task(id: fetchKey) {
-        guard loadedKey != fetchKey else { return }
-        loadedKey = fetchKey
-        await load()
+    Group {
+      if showsFileHeader {
+        VStack(spacing: 0) {
+          fileHeader
+          Divider()
+          content
+        }
+      } else {
+        content
       }
-      // Build (or rebuild) highlighting once a diff is loaded, and re-colour on theme change. Keyed
-      // on source+path+theme-generation+load-token so a superseded run is cancelled and a stale
-      // result (wrong file or old theme) is never applied.
-      .task(id: highlightKey) { await applyHighlight() }
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    .background(theme.tokens.bg)
+    // Re-fetch whenever the file or its source revision changes (preview retarget, tab switch).
+    // Load ONCE per file identity: SwiftUI re-runs this `.task` on the same view instance when the
+    // body re-renders after `applyHighlight` populates `highlightedLines` (even though `fetchKey`
+    // is unchanged). Without this guard each such re-run re-enters `load()`, which resets
+    // `state = .loading`, which re-renders, which re-highlights… a ~150ms feedback loop that leaves
+    // the diff pane stuck on its loader forever. Latent until commit-diff highlighting (issue #59)
+    // made `applyHighlight` actually populate lines for a History file diff. A genuine file switch
+    // changes `fetchKey`; a tab reopen recreates the view (so `@State` resets) — both re-run.
+    .task(id: fetchKey) {
+      guard loadedKey != fetchKey else { return }
+      loadedKey = fetchKey
+      await load()
+    }
+    // Build (or rebuild) highlighting once a diff is loaded, and re-colour on theme change. Keyed
+    // on source+path+theme-generation+load-token so a superseded run is cancelled and a stale
+    // result (wrong file or old theme) is never applied.
+    .task(id: highlightKey) { await applyHighlight() }
   }
 
   /// Identity of the file+revision this diff is for — the load task's key and the re-load guard.
@@ -108,6 +127,98 @@ struct DiffViewer: View {
         detail: "Open the file in your editor (⌘-click in the Files list).")
     case .failed(let reason):
       message("Diff unavailable", systemImage: "exclamationmark.triangle", detail: reason)
+    }
+  }
+
+  // MARK: File header
+
+  /// Compact header above the diff (opt-in via `showsFileHeader`): change symbol + file path, with
+  /// the additions/removals count right-aligned. The counts come from the loaded diff, so they're
+  /// blank until it loads (and for binary/too-large files, which have no line diff).
+  private var fileHeader: some View {
+    HStack(spacing: 8) {
+      // Info cluster — combined into one a11y element with the path as its tooltip, kept separate
+      // from the interactive switch (so the switch keeps its own per-segment tooltips + VoiceOver).
+      HStack(spacing: 8) {
+        Text(Self.changeLetter(descriptor.change))
+          .font(.system(.caption2, design: .monospaced).weight(.bold))
+          .foregroundStyle(Self.changeColor(descriptor.change))
+          .frame(width: 14)
+        headerPathText
+          .font(.system(.caption, design: .monospaced))
+          .lineLimit(1).truncationMode(.middle)
+        Spacer(minLength: 8)
+        if let stats = loadedStats {
+          HStack(spacing: 6) {
+            if stats.additions > 0 {
+              Text("+\(stats.additions)").foregroundStyle(theme.tokens.diffAddFg)
+            }
+            if stats.removals > 0 {
+              Text("−\(stats.removals)").foregroundStyle(theme.tokens.diffRemoveFg)
+            }
+            if stats.additions == 0 && stats.removals == 0 {
+              Text("0").foregroundStyle(.secondary)
+            }
+          }
+          .font(.system(.caption, design: .monospaced))
+        }
+      }
+      .help(descriptor.path)
+      .accessibilityElement(children: .combine)
+      if let binding = headerModeBinding {
+        DiffModeSwitch(mode: binding.wrappedValue ?? diffViewMode) { binding.wrappedValue = $0 }
+      }
+    }
+    .padding(.horizontal, 10).padding(.vertical, 5)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(theme.tokens.panel)
+  }
+
+  /// The header path with its leading directories dimmed and the file name in the primary colour.
+  private var headerPathText: Text {
+    let name = (descriptor.path as NSString).lastPathComponent
+    let prefix = String(descriptor.path.dropLast(name.count))
+    return Text(prefix).foregroundStyle(.tertiary) + Text(name)
+  }
+
+  /// Added / removed line counts of the loaded diff (`nil` until loaded, or when there's no line diff).
+  private var loadedStats: (additions: Int, removals: Int)? {
+    guard case .loaded(let diff) = state else { return nil }
+    var additions = 0
+    var removals = 0
+    for hunk in diff.hunks {
+      for line in hunk.lines {
+        switch line.kind {
+        case .addition: additions += 1
+        case .deletion: removals += 1
+        case .context: break
+        }
+      }
+    }
+    return (additions, removals)
+  }
+
+  /// Single-letter change symbol, matching the changeset file-list badges.
+  private static func changeLetter(_ change: ChangedFile.Change) -> String {
+    switch change {
+    case .added: return "A"
+    case .modified: return "M"
+    case .deleted: return "D"
+    case .renamed: return "R"
+    case .conflicted: return "!"
+    case .untracked: return "?"
+    case .other: return "\u{2022}"
+    }
+  }
+
+  private static func changeColor(_ change: ChangedFile.Change) -> Color {
+    switch change {
+    case .added: return .green
+    case .deleted: return .red
+    case .modified: return .yellow
+    case .renamed: return .blue
+    case .conflicted: return .orange
+    case .untracked, .other: return .secondary
     }
   }
 
@@ -198,8 +309,14 @@ struct DiffViewer: View {
   /// wins outright; the global default additionally falls back to unified in a pane too narrow for
   /// two columns.
   private func showSideBySide(width: CGFloat) -> Bool {
-    if let viewModeOverride { return viewModeOverride == .sideBySide }
+    if let activeViewModeOverride { return activeViewModeOverride == .sideBySide }
     return diffViewMode == .sideBySide && width >= Self.sideBySideMinWidth
+  }
+
+  /// The effective explicit layout override: the header switch's choice (if a header binding is
+  /// present) wins, else the tab's `viewModeOverride`. `nil` ⇒ follow the global default.
+  private var activeViewModeOverride: DiffViewMode? {
+    headerModeBinding?.wrappedValue ?? viewModeOverride
   }
 
   /// Pick the layout: side-by-side per `showSideBySide`, else unified. `GeometryReader` measures the

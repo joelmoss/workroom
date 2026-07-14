@@ -234,6 +234,7 @@ struct GitProvider: VCSProviding {
       shortID: c.id.abbreviated,
       changeID: nil,  // git has no change-id
       summary: c.summary,
+      body: Self.messageBody(c.message),
       // Git's author field holds one person; additional authors live in `Co-authored-by:` message
       // trailers (the GitHub convention). Surface both so a co-authored commit shows everyone.
       authors: [primary] + coAuthors(inMessage: c.message, primaryEmail: c.author.email),
@@ -242,6 +243,14 @@ struct GitProvider: VCSProviding {
       parentIDs: (try? c.parents)?.map { $0.id.hex } ?? [],
       isWorkingCopy: false  // git has no jj-style working-copy commit
     )
+  }
+
+  /// The commit message below its summary (first) line, trimmed — empty for a single-line message.
+  static func messageBody(_ message: String) -> String {
+    let lines = message.split(separator: "\n", omittingEmptySubsequences: false)
+    guard lines.count > 1 else { return "" }
+    return lines.dropFirst().joined(separator: "\n")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
   /// Additional authors from `Co-authored-by: Name <email>` trailers, in message order, deduped by

@@ -9,12 +9,14 @@ final class AvatarSubjectTests: XCTestCase {
   // MARK: Commit authors → Gravatar
 
   func testAuthorGravatarURLShape() {
-    let s = AvatarSubject(author: VCSAuthor(name: "Joel Moss", email: "joel@example.com"), pixelSize: 42)
+    let s = AvatarSubject(
+      author: VCSAuthor(name: "Joel Moss", email: "joel@example.com"), pixelSize: 42)
     XCTAssertEqual(s.displayName, "Joel Moss")
     let url = try? XCTUnwrap(s.imageURL?.absoluteString)
     // md5 hex (32 chars) + the size + the `d=404` fall-through flag.
     let pattern = #"^https://www\.gravatar\.com/avatar/[0-9a-f]{32}\?s=42&d=404$"#
-    XCTAssertNotNil(url?.range(of: pattern, options: .regularExpression), "unexpected URL: \(url ?? "nil")")
+    XCTAssertNotNil(
+      url?.range(of: pattern, options: .regularExpression), "unexpected URL: \(url ?? "nil")")
   }
 
   func testGravatarNormalisesCaseAndWhitespace() {
@@ -71,7 +73,7 @@ final class AvatarSubjectTests: XCTestCase {
 
   private func commit(authors: [VCSAuthor]) -> VCSCommit {
     VCSCommit(
-      commitID: "c", shortID: "c", changeID: nil, summary: "s", authors: authors,
+      commitID: "c", shortID: "c", changeID: nil, summary: "s", body: "", authors: authors,
       timestamp: Date(timeIntervalSince1970: 0), refs: [], parentIDs: [], isWorkingCopy: false)
   }
 

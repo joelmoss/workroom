@@ -182,6 +182,7 @@ struct RustJJProvider: VCSProviding {
       shortID: c.shortId,
       changeID: c.changeId,
       summary: c.summary,
+      body: c.body,
       authors: c.authors.map { VCSAuthor(name: $0.name, email: $0.email) },
       timestamp: Date(timeIntervalSince1970: Double(c.timestampMs) / 1000),
       refs: c.refs,

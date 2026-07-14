@@ -21,6 +21,8 @@ struct VCSCommit: Equatable, Identifiable, Sendable {
   let shortID: String
   let changeID: String?
   let summary: String
+  /// The commit message below the summary line, trimmed. Empty when the message is a single line.
+  let body: String
   let authors: [VCSAuthor]
   let timestamp: Date
   let refs: [String]

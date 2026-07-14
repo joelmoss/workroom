@@ -175,6 +175,7 @@ private struct HistoryRow: View {
     )
     .contentShape(Rectangle())
     .onHover { hovering = $0 }
+    .help(tooltip)
     // Eager single-click preview, quick second click (< 0.35s) persists — the same manual
     // double-click gate the Changes panel uses (avoids SwiftUI's count:2 delay).
     .onTapGesture {
@@ -190,6 +191,13 @@ private struct HistoryRow: View {
     .accessibilityElement(children: .combine)
     .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
     .accessibilityIdentifier("HistoryRow")
+  }
+
+  /// The hover tooltip: the full commit summary, plus the description body beneath it when present
+  /// (both can be truncated in the row itself).
+  private var tooltip: String {
+    let summary = commit.summary.isEmpty ? "(no description)" : commit.summary
+    return commit.body.isEmpty ? summary : "\(summary)\n\n\(commit.body)"
   }
 
   /// True when the selected target's focused content tab is this commit's changeset — so the row

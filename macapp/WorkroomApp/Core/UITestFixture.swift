@@ -425,6 +425,7 @@ struct FixtureVCSProvider: VCSProviding {
       return VCSCommit(
         commitID: "fixturecommit\(n)", shortID: "fixc000\(n)",
         changeID: n == 1 ? "zqxyparent" : nil, summary: "Fixture commit \(n)",
+        body: n == 1 ? "Extended fixture description.\nA second line of detail." : "",
         authors: [author], timestamp: ts, refs: refs, parentIDs: parents, isWorkingCopy: n == 1)
     }
   }()

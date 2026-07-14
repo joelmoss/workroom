@@ -670,7 +670,9 @@ private struct TabCloseButton: View {
 /// A grouped two-segment switch for the diff view mode (issue #66): unified | side-by-side, rendered
 /// as one control — a faint rounded track with a raised "thumb" behind the active segment — so it
 /// reads as a single switch rather than two loose buttons. Clicking a segment reports that mode.
-private struct DiffModeSwitch: View {
+/// The unified / side-by-side segmented switch. Used by the tab toolbar (per-tab override) and the
+/// changeset detail's diff header (its local override). Internal so both can share the one control.
+struct DiffModeSwitch: View {
   /// The currently effective mode (this tab's override, or the global default) — the lit segment.
   let mode: DiffViewMode
   let select: (DiffViewMode) -> Void

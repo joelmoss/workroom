@@ -43,6 +43,9 @@ pub struct Commit {
     pub short_id: String,
     pub change_id: Option<String>,
     pub summary: String,
+    /// The commit message below the summary line (the "description" body), trimmed. Empty when the
+    /// message is a single line.
+    pub body: String,
     pub authors: Vec<Author>,
     pub timestamp_ms: i64,
     pub tz_offset_secs: i32,

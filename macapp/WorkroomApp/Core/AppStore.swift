@@ -156,6 +156,13 @@ final class AppStore: ObservableObject {
       // The Files tree is re-pointed lazily by `FilesPanel` (only while that section is shown), not
       // here — so selecting a workroom doesn't list its files unless you're actually browsing them.
       refreshSelectionHasTabs()  // the inspector follows the *active* (tab-having) selection
+      // Re-point History the instant the workroom changes (only while it's the visible section,
+      // mirroring HistoryPanel's own guard) so the list clears + shows its loader immediately,
+      // instead of lingering on the previous workroom's commits until the panel's `.task` catches
+      // up. `focus` is idempotent, so the panel's later re-focus to the same root no-ops.
+      if selectedTargetID != oldValue, activeInspectorSection == .history {
+        commitHistory.focus(inspectorTarget.map { URL(fileURLWithPath: $0.path) })
+      }
     }
   }
 

@@ -99,7 +99,8 @@ struct AvatarView: View {
   var body: some View {
     Group {
       if let url = subject.imageURL {
-        AsyncImage(url: url, transaction: Transaction(animation: .easeOut(duration: 0.15))) { phase in
+        AsyncImage(url: url, transaction: Transaction(animation: .easeOut(duration: 0.15))) {
+          phase in
           if case .success(let image) = phase {
             image.resizable().scaledToFill()
           } else {

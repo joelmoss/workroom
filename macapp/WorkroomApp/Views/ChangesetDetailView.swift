@@ -13,7 +13,27 @@ struct ChangesetDetailView: View {
   @State private var state: LoadState = .loading
   /// The file whose diff is shown; defaults to the first changed file once loaded.
   @State private var selectedPath: String?
+  /// Committed width of the file-list pane. Starts intentionally narrow.
+  @State private var listWidth: CGFloat = 230
+  /// Live width during a divider drag (`nil` when not dragging). Kept in local `@State` so the drag
+  /// re-renders only this view; committed to `listWidth` on release.
+  @State private var liveWidth: CGFloat?
+  /// The width to render right now — the live drag value if dragging, else the committed one.
+  private var effectiveListWidth: CGFloat { liveWidth ?? listWidth }
+  /// The diff header's unified/side-by-side choice for this changeset (nil ⇒ follow the global
+  /// default). Held here so it persists as the user clicks between files; doesn't touch the global.
+  @State private var diffMode: DiffViewMode?
+  /// Commit-description disclosure: collapsed shows 2 lines; expanded shows all. The summary is
+  /// always shown in full — only the body below it collapses.
+  @State private var descriptionExpanded = false
+  /// True when the description body doesn't fit in 2 lines (so the Show more/less toggle is offered).
+  @State private var descriptionTruncatable = false
+  /// The file-list row under the pointer, for its hover highlight.
+  @State private var hoveredPath: String?
   private let theme = ThemeService.shared
+
+  private static let minListWidth: CGFloat = 180
+  private static let maxListWidth: CGFloat = 400
 
   enum LoadState: Equatable {
     case loading
@@ -48,11 +68,15 @@ struct ChangesetDetailView: View {
       if changeset.files.isEmpty {
         message("No file changes", systemImage: "doc", detail: nil)
       } else {
-        HSplitView {
+        // A hand-rolled split (not `HSplitView`) so the divider shows a reliable resize cursor and
+        // the list starts narrow. Live resize is driven by the AppKit `InspectorResizeHandle` (the
+        // same smooth, cursor-bearing handle the sidebar/inspector use), not a SwiftUI gesture.
+        HStack(spacing: 0) {
           fileList(changeset.files)
-            .frame(minWidth: 180, idealWidth: 240, maxWidth: 380)
+            .frame(width: effectiveListWidth)
+          resizeHandle
           diffPane(changeset)
-            .frame(minWidth: 240, maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
       }
     }
@@ -88,9 +112,10 @@ struct ChangesetDetailView: View {
     let commit = changeset.commit
     return VStack(alignment: .leading, spacing: 5) {
       Text(commit.summary.isEmpty ? "(no description)" : commit.summary)
-        .font(.headline).lineLimit(2)
+        .font(.headline)
         .foregroundStyle(commit.summary.isEmpty ? .secondary : .primary)
         .textSelection(.enabled)
+        .fixedSize(horizontal: false, vertical: true)
       HStack(spacing: 10) {
         Label(commit.shortID, systemImage: "number")
           .font(.system(.caption, design: .monospaced))
@@ -117,9 +142,25 @@ struct ChangesetDetailView: View {
       }
       .font(.caption).foregroundStyle(.secondary).lineLimit(1)
       if let body = Self.messageBody(changeset.fullMessage), !body.isEmpty {
-        Text(body)
-          .font(.callout).foregroundStyle(.secondary)
-          .textSelection(.enabled).lineLimit(8)
+        VStack(alignment: .leading, spacing: 3) {
+          Text(body)
+            .font(.callout).foregroundStyle(.secondary)
+            .textSelection(.enabled)
+            .lineLimit(descriptionExpanded ? nil : 2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(descriptionTruncationProbe(body))
+            .onPreferenceChange(DescriptionTruncationKey.self) { descriptionTruncatable = $0 }
+            .animation(.easeInOut(duration: 0.12), value: descriptionExpanded)
+          if descriptionTruncatable {
+            Button(descriptionExpanded ? "Show less" : "Show more") {
+              descriptionExpanded.toggle()
+            }
+            .buttonStyle(.plain)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.tint)
+            .help(descriptionExpanded ? "Collapse the description" : "Show the full description")
+          }
+        }
       }
     }
     .padding(.horizontal, 12).padding(.vertical, 10)
@@ -138,6 +179,32 @@ struct ChangesetDetailView: View {
       .trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
+  /// A hidden two-copy measure of the description at the body's width — a 2-line-capped copy vs an
+  /// unlimited copy — reporting `DescriptionTruncationKey = true` when the full text is taller. It
+  /// measures both cap and full regardless of the current expansion, so the toggle survives expand.
+  private func descriptionTruncationProbe(_ text: String) -> some View {
+    Text(text)
+      .font(.callout)
+      .lineLimit(2)
+      .hidden()
+      .overlay(
+        GeometryReader { twoLine in
+          Text(text)
+            .font(.callout)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(width: twoLine.size.width, alignment: .leading)
+            .hidden()
+            .background(
+              GeometryReader { full in
+                Color.clear.preference(
+                  key: DescriptionTruncationKey.self,
+                  value: full.size.height > twoLine.size.height + 1)
+              })
+        }
+      )
+      .allowsHitTesting(false)
+  }
+
   // MARK: File list
 
   private func fileList(_ files: [VCSChangedFile]) -> some View {
@@ -154,24 +221,74 @@ struct ChangesetDetailView: View {
 
   private func fileRow(_ file: VCSChangedFile) -> some View {
     let isSelected = (selectedPath ?? "") == file.path
-    return HStack(spacing: 6) {
+    return HStack(alignment: .firstTextBaseline, spacing: 6) {
       Text(Self.badge(file.kind))
         .font(.system(.caption2, design: .monospaced).weight(.bold))
         .foregroundStyle(Self.badgeColor(file.kind))
         .frame(width: 14)
-      Text((file.path as NSString).lastPathComponent).lineLimit(1)
+      VStack(alignment: .leading, spacing: 1) {
+        // File name on top, the full relative path dimmed beneath it — so a row reads even when the
+        // list is narrow. The path truncates from the middle, keeping the leading dirs + the name.
+        Text((file.path as NSString).lastPathComponent)
+          .lineLimit(1).truncationMode(.middle)
+        Text(file.path)
+          .font(.system(.caption, design: .monospaced)).foregroundStyle(.tertiary)
+          .lineLimit(1).truncationMode(.middle)
+      }
       Spacer(minLength: 0)
     }
     .font(.callout)
-    .padding(.horizontal, 8).padding(.vertical, 3)
+    .padding(.horizontal, 8).padding(.vertical, 5)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(isSelected ? Color.accentColor.opacity(0.18) : .clear)
+    .background(
+      isSelected
+        ? Color.accentColor.opacity(0.18)
+        : (hoveredPath == file.path ? theme.tokens.rowHover : Color.clear)
+    )
     .contentShape(Rectangle())
+    .onHover { inside in
+      if inside {
+        hoveredPath = file.path
+      } else if hoveredPath == file.path {
+        hoveredPath = nil
+      }
+    }
     .onTapGesture { selectedPath = file.path }
     .help(file.path)
     .accessibilityElement(children: .combine)
     .accessibilityIdentifier("ChangesetFileRow")
     .accessibilityAddTraits(isSelected ? .isSelected : [])
+  }
+
+  /// The draggable divider between the file list and the diff: a 1pt visible line with a 10pt AppKit
+  /// hit strip (`InspectorResizeHandle`) overlaid. The handle drives a LIVE resize — each mouse-moved
+  /// delta updates `liveWidth` so both panes track the cursor — and shows a reliable resize cursor
+  /// (`addCursorRect`). This is the same AppKit-backed handle the sidebar/inspector use, so it's as
+  /// smooth as those; a SwiftUI `DragGesture` here was janky. The width commits to `listWidth` on end.
+  private var resizeHandle: some View {
+    Rectangle()
+      .fill(theme.tokens.border)
+      .frame(width: 1)
+      .frame(maxHeight: .infinity)
+      .overlay {
+        InspectorResizeHandle(
+          onDrag: { dx in
+            liveWidth = min(
+              max(effectiveListWidth + dx, Self.minListWidth), Self.maxListWidth)
+          },
+          onEnd: {
+            if let final = liveWidth {
+              listWidth = final
+              liveWidth = nil
+            }
+          }
+        )
+        .frame(width: 10)
+        // The AppKit handle's `addCursorRect` doesn't fire reliably outside an NSSplitView context,
+        // so drive the resize cursor at the SwiftUI layer too (the AppKit view still handles drags).
+        .pointerStyle(.columnResize)
+      }
+      .accessibilityHidden(true)
   }
 
   // MARK: Diff
@@ -187,7 +304,9 @@ struct ChangesetDetailView: View {
         descriptor: DiffDescriptor(
           path: file.path, change: Self.change(file.kind),
           source: .commit(descriptor.commitID), isPreview: false),
-        directory: directory)
+        directory: directory,
+        showsFileHeader: true,
+        headerModeBinding: $diffMode)
     } else {
       message("Select a file", systemImage: "sidebar.left", detail: nil)
     }
@@ -252,4 +371,10 @@ struct ChangesetDetailView: View {
     case .other: return .other
     }
   }
+}
+
+/// True when the changeset description body overflows its collapsed 2-line height (⇒ offer expand).
+private struct DescriptionTruncationKey: PreferenceKey {
+  static let defaultValue = false
+  static func reduce(value: inout Bool, nextValue: () -> Bool) { value = value || nextValue() }
 }
