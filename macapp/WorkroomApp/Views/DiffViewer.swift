@@ -23,6 +23,9 @@ struct DiffViewer: View {
   var viewModeOverride: DiffViewMode? = nil
 
   @State private var state: LoadState = .loading
+  /// The file identity (`fetchKey`) the current diff was loaded for — so a spurious `.task` re-run
+  /// for the SAME file no-ops instead of re-entering `load()` (see the load task's comment).
+  @State private var loadedKey: String?
   /// Syntax-highlighted new-side lines, keyed by 1-based new-file line number. Empty ⇒ render plain
   /// (the always-available fallback). Built asynchronously off the diff render — highlighting can
   /// never block or break the diff.
@@ -62,12 +65,26 @@ struct DiffViewer: View {
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
       .background(theme.tokens.bg)
       // Re-fetch whenever the file or its source revision changes (preview retarget, tab switch).
-      .task(id: "\(descriptor.source)\u{1F}\(descriptor.path)") { await load() }
+      // Load ONCE per file identity: SwiftUI re-runs this `.task` on the same view instance when the
+      // body re-renders after `applyHighlight` populates `highlightedLines` (even though `fetchKey`
+      // is unchanged). Without this guard each such re-run re-enters `load()`, which resets
+      // `state = .loading`, which re-renders, which re-highlights… a ~150ms feedback loop that leaves
+      // the diff pane stuck on its loader forever. Latent until commit-diff highlighting (issue #59)
+      // made `applyHighlight` actually populate lines for a History file diff. A genuine file switch
+      // changes `fetchKey`; a tab reopen recreates the view (so `@State` resets) — both re-run.
+      .task(id: fetchKey) {
+        guard loadedKey != fetchKey else { return }
+        loadedKey = fetchKey
+        await load()
+      }
       // Build (or rebuild) highlighting once a diff is loaded, and re-colour on theme change. Keyed
       // on source+path+theme-generation+load-token so a superseded run is cancelled and a stale
       // result (wrong file or old theme) is never applied.
       .task(id: highlightKey) { await applyHighlight() }
   }
+
+  /// Identity of the file+revision this diff is for — the load task's key and the re-load guard.
+  private var fetchKey: String { "\(descriptor.source)\u{1F}\(descriptor.path)" }
 
   /// Identity of the current highlight: file + revision + theme generation + which diff load it's
   /// for. Any change cancels the in-flight highlight and starts a fresh, correctly-keyed one.
