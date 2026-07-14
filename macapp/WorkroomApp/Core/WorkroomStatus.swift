@@ -395,6 +395,8 @@ enum PRPresentation {
   struct ReviewerBadge: Equatable, Identifiable {
     let id: String
     let displayName: String  // bot-friendly (e.g. "Copilot"); team → its slug
+    /// The typed identity (user login / team slug) — drives the avatar image URL.
+    let identity: Reviewer.Identity
     let symbol: String
     let semantic: ReviewSemantic
     let stateLabel: String
@@ -456,8 +458,8 @@ enum PRPresentation {
       label = "dismissed"
     }
     return ReviewerBadge(
-      id: r.id, displayName: name, symbol: symbol, semantic: semantic, stateLabel: label,
-      accessibility: "\(name) \(label)", url: r.url)
+      id: r.id, displayName: name, identity: r.identity, symbol: symbol, semantic: semantic,
+      stateLabel: label, accessibility: "\(name) \(label)", url: r.url)
   }
 
   /// Display name: friendly for known bots, the team slug for teams, else the raw login.

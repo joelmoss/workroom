@@ -70,7 +70,8 @@ struct HistoryPanel: View {
           },
           onPersist: {
             store.openChangesetPersistent(commitID: commit.commitID, title: title(commit))
-          })
+          },
+          sessions: store.terminals)
       }
       if !model.reachedEnd {
         Button {
@@ -111,8 +112,14 @@ private struct HistoryRow: View {
   /// Single-click: open the commit's changeset detail as a preview tab. Double-click: persist it.
   let onPreview: () -> Void
   let onPersist: () -> Void
+  @EnvironmentObject var store: AppStore
+  /// Observed so the row's selected state tracks which changeset tab is focused — the tab strip
+  /// lives in a separate observation tree from the inspector (mirrors `ChangesPanel.ChangedFileRow`).
+  @ObservedObject var sessions: TerminalSessions
+  @State private var hovering = false
   /// Timestamp of the last plain click, for the manual double-click gate (mirrors `ChangesPanel`).
   @State private var lastClick: Date?
+  private let theme = ThemeService.shared
 
   private static let relative: RelativeDateTimeFormatter = {
     let f = RelativeDateTimeFormatter()
@@ -121,7 +128,7 @@ private struct HistoryRow: View {
   }()
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 2) {
+    VStack(alignment: .leading, spacing: 3) {
       HStack(spacing: 6) {
         if commit.isWorkingCopy {
           Text("@").font(.system(.body, design: .monospaced)).foregroundStyle(.tint)
@@ -129,7 +136,8 @@ private struct HistoryRow: View {
         }
         Text(commit.summary.isEmpty ? "(no description)" : commit.summary)
           .lineLimit(1)
-          .foregroundStyle(commit.summary.isEmpty ? .secondary : .primary)
+          .foregroundStyle(
+            isSelected ? theme.tokens.accent : (commit.summary.isEmpty ? .secondary : .primary))
         Spacer(minLength: 4)
         ForEach(commit.refs, id: \.self) { ref in
           Text(ref)
@@ -140,19 +148,33 @@ private struct HistoryRow: View {
         }
       }
       HStack(spacing: 6) {
-        Text(commit.shortID).font(.system(.caption, design: .monospaced))
-        if let author = commit.authors.first, !author.name.isEmpty {
-          Text("· \(author.name)")
+        let relative = Self.relative.localizedString(for: commit.timestamp, relativeTo: Date())
+        if !commit.authors.isEmpty {
+          AvatarStack(
+            subjects: commit.authors.map { AvatarSubject(author: $0, pixelSize: 42) }, size: 14)
         }
-        Text("· \(Self.relative.localizedString(for: commit.timestamp, relativeTo: Date()))")
+        let names = commit.authorNamesDisplay
+        if names.isEmpty {
+          Text(relative)
+        } else {
+          Text("\(names) · \(relative)")
+        }
       }
       .font(.caption)
       .foregroundStyle(.secondary)
       .lineLimit(1)
     }
-    .padding(.vertical, 4).padding(.horizontal, 8)
+    .padding(.vertical, 6).padding(.horizontal, 8)
     .frame(maxWidth: .infinity, alignment: .leading)
+    .background(
+      // Square, full-width band (no corner radius): bleed past the section's 12pt inset so the
+      // hover/selection highlight fills the inspector width edge-to-edge (mirrors `ChangedFileRow`).
+      Rectangle()
+        .fill(isSelected ? theme.tokens.rowSelection : (hovering ? theme.tokens.rowHover : .clear))
+        .padding(.horizontal, -12)
+    )
     .contentShape(Rectangle())
+    .onHover { hovering = $0 }
     // Eager single-click preview, quick second click (< 0.35s) persists — the same manual
     // double-click gate the Changes panel uses (avoids SwiftUI's count:2 delay).
     .onTapGesture {
@@ -166,7 +188,18 @@ private struct HistoryRow: View {
       }
     }
     .accessibilityElement(children: .combine)
-    .accessibilityAddTraits(.isButton)
+    .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
     .accessibilityIdentifier("HistoryRow")
+  }
+
+  /// True when the selected target's focused content tab is this commit's changeset — so the row
+  /// showing in the pane reads as selected. The History analogue of `ChangedFileRow.isSelected`.
+  private var isSelected: Bool {
+    guard let target = store.selectedTarget, let tab = sessions.focusedTab(for: target)
+    else { return false }
+    if case .changeset(let descriptor) = tab.content {
+      return descriptor.commitID == commit.commitID
+    }
+    return false
   }
 }

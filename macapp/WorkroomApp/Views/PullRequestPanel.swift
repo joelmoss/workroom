@@ -145,6 +145,10 @@ struct PullRequestPanel: View {
   /// reviewer has a permalink the whole row is the tap target (see the `Button` wrap above).
   private func reviewerRow(_ reviewer: PRPresentation.ReviewerBadge) -> some View {
     HStack(spacing: 6) {
+      AvatarView(
+        subject: AvatarSubject(
+          reviewer: reviewer.identity, displayName: reviewer.displayName, pixelSize: 32),
+        size: 16)
       Image(systemName: reviewer.symbol).foregroundStyle(reviewer.semantic.color)
       Text(reviewer.displayName).font(.footnote).lineLimit(1).truncationMode(.tail)
       Text(reviewer.stateLabel).font(.footnote).foregroundStyle(.secondary)

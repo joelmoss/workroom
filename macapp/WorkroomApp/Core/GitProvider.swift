@@ -228,17 +228,41 @@ struct GitProvider: VCSProviding {
   // MARK: - Mapping
 
   private static func map(_ c: Commit) -> VCSCommit {
-    VCSCommit(
+    let primary = VCSAuthor(name: c.author.name, email: c.author.email)
+    return VCSCommit(
       commitID: c.id.hex,
       shortID: c.id.abbreviated,
       changeID: nil,  // git has no change-id
       summary: c.summary,
-      authors: [VCSAuthor(name: c.author.name, email: c.author.email)],
+      // Git's author field holds one person; additional authors live in `Co-authored-by:` message
+      // trailers (the GitHub convention). Surface both so a co-authored commit shows everyone.
+      authors: [primary] + coAuthors(inMessage: c.message, primaryEmail: c.author.email),
       timestamp: c.date,
       refs: [],  // branch/tag decoration: a later increment
       parentIDs: (try? c.parents)?.map { $0.id.hex } ?? [],
       isWorkingCopy: false  // git has no jj-style working-copy commit
     )
+  }
+
+  /// Additional authors from `Co-authored-by: Name <email>` trailers, in message order, deduped by
+  /// email (case-insensitive) against the primary author and each other. Key match is
+  /// case-insensitive; a trailer without a `<email>` is skipped. Internal for unit testing.
+  static func coAuthors(inMessage message: String, primaryEmail: String) -> [VCSAuthor] {
+    var seen: Set<String> = [primaryEmail.lowercased()]
+    var result: [VCSAuthor] = []
+    for rawLine in message.split(whereSeparator: \.isNewline) {
+      let line = rawLine.trimmingCharacters(in: .whitespaces)
+      let prefix = "co-authored-by:"
+      guard line.lowercased().hasPrefix(prefix) else { continue }
+      let value = line.dropFirst(prefix.count).trimmingCharacters(in: .whitespaces)
+      guard let open = value.lastIndex(of: "<"), let close = value.lastIndex(of: ">"), open < close
+      else { continue }
+      let name = value[..<open].trimmingCharacters(in: .whitespaces)
+      let email = value[value.index(after: open)..<close].trimmingCharacters(in: .whitespaces)
+      guard !email.isEmpty, seen.insert(email.lowercased()).inserted else { continue }
+      result.append(VCSAuthor(name: name.isEmpty ? email : name, email: email))
+    }
+    return result
   }
 
   private static func mapDelta(_ d: Diff.Delta) -> VCSChangedFile {

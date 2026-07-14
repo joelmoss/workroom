@@ -94,8 +94,13 @@ struct ChangesetDetailView: View {
       HStack(spacing: 10) {
         Label(commit.shortID, systemImage: "number")
           .font(.system(.caption, design: .monospaced))
-        if let author = commit.authors.first, !author.name.isEmpty {
-          Label(author.name, systemImage: "person")
+        if !commit.authorNamesDisplay.isEmpty {
+          Label {
+            Text(commit.authorNamesDisplay)
+          } icon: {
+            AvatarStack(
+              subjects: commit.authors.map { AvatarSubject(author: $0, pixelSize: 48) }, size: 16)
+          }
         }
         Label(Self.dateFormatter.string(from: commit.timestamp), systemImage: "clock")
         if changeset.isMerge {
