@@ -399,6 +399,24 @@ enum UITestFixture {
 struct FixtureVCSProvider: VCSProviding {
   /// Four newest-first commits; the first is the working copy (`@`) and carries the `main` ref, so the
   /// History rows exercise the ref chip + `@` marker.
+  /// The two divergent copies of commit 2's change (`wqp`) — off the `::@` line, so they only appear
+  /// when the History row's "diverges" disclosure is expanded. Each carries its own `/N` offset.
+  static let divergentSiblings: [VCSCommit] = {
+    let author = VCSAuthor(name: "Ada Fixture", email: "ada@example.com")
+    return [
+      VCSCommit(
+        commitID: "fixturediv1", shortID: "fixdiv01", changeID: "wqp",
+        summary: "Divergent copy A", body: "", authors: [author],
+        timestamp: Date(timeIntervalSince1970: 1_699_990_000), refs: [], parentIDs: [],
+        isWorkingCopy: false, changeOffset: 1),
+      VCSCommit(
+        commitID: "fixturediv2", shortID: "fixdiv02", changeID: "wqp",
+        summary: "Divergent copy B", body: "", authors: [author],
+        timestamp: Date(timeIntervalSince1970: 1_699_980_000), refs: [], parentIDs: [],
+        isWorkingCopy: false, changeOffset: 5),
+    ]
+  }()
+
   static let commits: [VCSCommit] = {
     let author = VCSAuthor(name: "Ada Fixture", email: "ada@example.com")
     return (1...4).map { (n: Int) -> VCSCommit in
@@ -406,11 +424,15 @@ struct FixtureVCSProvider: VCSProviding {
       let ts = Date(timeIntervalSince1970: base - TimeInterval(n * 3600))
       let refs: [String] = n == 1 ? ["main"] : []
       let parents: [String] = n < 4 ? ["fixturecommit\(n + 1)"] : []
+      // Commit 2's change-id (`wqp`) is divergent: it resolves to more than one visible commit, so
+      // its row exercises the "diverges (2)" disclosure and its expanded sibling list.
+      let changeID: String? = n == 1 ? "zqxyparent" : (n == 2 ? "wqp" : nil)
       return VCSCommit(
         commitID: "fixturecommit\(n)", shortID: "fixc000\(n)",
-        changeID: n == 1 ? "zqxyparent" : nil, summary: "Fixture commit \(n)",
+        changeID: changeID, summary: "Fixture commit \(n)",
         body: n == 1 ? "Extended fixture description.\nA second line of detail." : "",
-        authors: [author], timestamp: ts, refs: refs, parentIDs: parents, isWorkingCopy: n == 1)
+        authors: [author], timestamp: ts, refs: refs, parentIDs: parents, isWorkingCopy: n == 1,
+        divergentSiblings: n == 2 ? divergentSiblings : [])
     }
   }()
 
@@ -420,7 +442,9 @@ struct FixtureVCSProvider: VCSProviding {
   }
 
   func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
-    let commit = Self.commits.first { $0.commitID == commitID } ?? Self.commits[0]
+    // Divergent siblings live off the main list; resolve them too so clicking one opens its detail.
+    let all = Self.commits + Self.divergentSiblings
+    let commit = all.first { $0.commitID == commitID } ?? Self.commits[0]
     let files = [
       VCSChangedFile(path: "src/session.rb", oldPath: nil, kind: .modified),
       VCSChangedFile(path: "docs/notes.txt", oldPath: nil, kind: .added),

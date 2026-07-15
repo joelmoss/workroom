@@ -149,4 +149,38 @@ final class ChangesetDetailUITests: XCTestCase {
       waitExists(els(app, "HistoryRow").element(boundBy: 0), false),
       "History empties once the selected workroom has no open tabs")
   }
+
+  /// The divergent fixture commit (change-id `wqp`, two off-line copies) carries a "diverges"
+  /// disclosure at the trailing end of its row. Expanding it reveals the two divergent sibling
+  /// copies — each labelled with jj's `id/N` offset — and clicking one opens its changeset detail.
+  func testDivergenceExpanderRevealsSiblings() throws {
+    let app = launchedApp()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    openHistory(app)
+
+    let toggle = el(app, "HistoryRowDiverges")
+    XCTAssertTrue(
+      toggle.waitForExistence(timeout: 8), "the divergent row shows the diverges disclosure")
+
+    // Collapsed: the sibling copies are hidden until the disclosure is opened.
+    XCTAssertFalse(
+      els(app, "HistoryDivergentSibling").element(boundBy: 0).exists,
+      "divergent siblings stay hidden until expanded")
+
+    toggle.click()
+
+    // Expanded: both off-line copies appear, labelled with their jj offsets (e.g. `wqp/1`).
+    XCTAssertTrue(
+      els(app, "HistoryDivergentSibling").element(boundBy: 1).waitForExistence(timeout: 6),
+      "expanding reveals the divergent sibling copies")
+    let labelled = app.descendants(matching: .any).matching(
+      NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "wqp/1", "wqp/1")
+    ).firstMatch
+    XCTAssertTrue(waitExists(labelled), "a sibling is labelled with its id/offset (wqp/1)")
+
+    // Clicking a divergent sibling opens its changeset detail — it resolves like any other commit.
+    els(app, "HistoryDivergentSibling").element(boundBy: 0).click()
+    XCTAssertTrue(
+      waitExists(el(app, "ChangesetDetail")), "clicking a divergent sibling opens its changeset")
+  }
 }

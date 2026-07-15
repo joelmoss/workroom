@@ -29,6 +29,11 @@ pub struct Commit {
     pub refs: Vec<String>,
     pub parent_ids: Vec<String>,
     pub is_working_copy: bool,
+    /// jj-only: this commit's `/N` offset within its divergent set. `None` unless divergent.
+    pub change_offset: Option<u32>,
+    /// jj-only: the other visible commits sharing this change-id (the divergent copies). Empty
+    /// unless divergent; never nested.
+    pub divergent_siblings: Vec<Commit>,
 }
 
 #[derive(uniffi::Record)]
@@ -145,6 +150,8 @@ impl From<model::Commit> for Commit {
             refs: c.refs,
             parent_ids: c.parent_ids,
             is_working_copy: c.is_working_copy,
+            change_offset: c.change_offset,
+            divergent_siblings: c.divergent_siblings.into_iter().map(Commit::from).collect(),
         }
     }
 }

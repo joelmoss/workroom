@@ -54,6 +54,16 @@ pub struct Commit {
     pub parent_ids: Vec<String>,
     /// jj working copy (`@`).
     pub is_working_copy: bool,
+    /// jj-only: this commit's offset among all commits sharing its change-id (the `/N` jj appends,
+    /// e.g. the `0` in `xl/0`) — hidden commits count, so it can be non-contiguous. `None` unless the
+    /// change-id is divergent. Set on both a divergent commit and each of its `divergent_siblings`.
+    pub change_offset: Option<u32>,
+    /// jj-only: the OTHER visible commits sharing this commit's change-id — the divergent copies.
+    /// Empty unless this commit's change-id is divergent (resolves to more than one visible commit).
+    /// The history walk only follows `::@`, so these siblings live off that line and would otherwise
+    /// be invisible; surfacing them here is what lets the History pane reveal a change's divergence.
+    /// Never nested (a sibling's own `divergent_siblings` is always empty).
+    pub divergent_siblings: Vec<Commit>,
 }
 
 /// A page of history. `reached_end` is true when the backend yielded fewer than the requested count.

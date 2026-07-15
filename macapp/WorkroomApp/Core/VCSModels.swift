@@ -28,7 +28,23 @@ struct VCSCommit: Equatable, Identifiable, Sendable {
   let refs: [String]
   let parentIDs: [String]
   let isWorkingCopy: Bool
+  /// jj-only: this commit's offset within its divergent set (the `/N` in `xl/0`). `nil` unless the
+  /// change ID is divergent. Set on both a divergent commit and each of its `divergentSiblings`.
+  var changeOffset: Int? = nil
+  /// jj-only: the OTHER visible commits sharing this commit's change ID — the divergent copies that
+  /// live off the `::@` history line. Empty unless divergent; never nested. Defaulted so non-jj /
+  /// test call sites needn't pass it.
+  var divergentSiblings: [VCSCommit] = []
   var id: String { commitID }
+  /// jj-only: true when this commit's change ID diverges — it resolves to more than one visible
+  /// commit, so `divergentSiblings` carries the other copies. Always false for git (no change ID).
+  var isDivergent: Bool { !divergentSiblings.isEmpty }
+  /// The `id/N` label jj shows for a divergent copy (e.g. `xl/2`) — change ID plus its `/N` offset.
+  /// `nil` without both. Used to label the sibling copies in the History pane's divergence expander.
+  var divergentLabel: String? {
+    guard let changeID, let changeOffset else { return nil }
+    return "\(changeID)/\(changeOffset)"
+  }
 }
 
 struct VCSHistoryPage: Equatable, Sendable {

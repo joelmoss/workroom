@@ -41,7 +41,10 @@ struct HistoryPanel: View {
         }
       }
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
+    // Fill the pane (hosted in fill mode) so the inner `ScrollView` has bounded height and scrolls
+    // itself — SwiftUI owns the scrolling, which is what lets the divergence accordion animate
+    // smoothly (see `list`).
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     // No container-level `accessibilityIdentifier` here: SwiftUI propagates a container id onto the
     // combined `HistoryRow` leaves, clobbering their own id. The rows carry "HistoryRow"; that the
     // pane is showing is asserted via `inspector.header.History` (the canonical section marker).
@@ -64,38 +67,48 @@ struct HistoryPanel: View {
     commit.summary.isEmpty ? commit.shortID : commit.summary
   }
 
+  /// The commit rows in a SwiftUI `ScrollView` (the History pane hosts its body in fill mode, so this
+  /// owns the scrolling rather than the AppKit `NSScrollView`). SwiftUI owning the scroll is what
+  /// makes the per-row divergence accordion animate smoothly — a growing row's height change and the
+  /// resulting scroll layout are one SwiftUI transaction, not a fight with an AppKit resize.
   private var list: some View {
-    VStack(alignment: .leading, spacing: 0) {
-      ForEach(model.commits) { commit in
-        HistoryRow(
-          commit: commit,
-          onPreview: {
-            store.openChangesetPreview(commitID: commit.commitID, title: title(commit))
-          },
-          onPersist: {
-            store.openChangesetPersistent(commitID: commit.commitID, title: title(commit))
-          },
-          sessions: store.terminals)
-      }
-      if !model.reachedEnd {
-        Button {
-          model.loadMore()
-        } label: {
-          HStack(spacing: 6) {
-            if case .loading = model.state {
-              ProgressView().controlSize(.small)
-            } else {
-              Image(systemName: "arrow.down.circle")
-            }
-            Text("Load more").font(.callout)
-          }
-          .frame(maxWidth: .infinity, alignment: .center)
-          .padding(.vertical, 8)
+    ScrollView {
+      VStack(alignment: .leading, spacing: 0) {
+        ForEach(model.commits) { commit in
+          HistoryRow(
+            commit: commit,
+            // Open any commit's changeset — the row itself, or one of its divergent siblings. Preview
+            // on a single click, persist on a quick double-click (siblings only ever preview).
+            open: { target, persist in
+              if persist {
+                store.openChangesetPersistent(commitID: target.commitID, title: title(target))
+              } else {
+                store.openChangesetPreview(commitID: target.commitID, title: title(target))
+              }
+            },
+            sessions: store.terminals)
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
-        .accessibilityIdentifier("HistoryLoadMore")
+        if !model.reachedEnd {
+          Button {
+            model.loadMore()
+          } label: {
+            HStack(spacing: 6) {
+              if case .loading = model.state {
+                ProgressView().controlSize(.small)
+              } else {
+                Image(systemName: "arrow.down.circle")
+              }
+              Text("Load more").font(.callout)
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.vertical, 8)
+          }
+          .buttonStyle(.plain)
+          .foregroundStyle(.secondary)
+          .accessibilityIdentifier("HistoryLoadMore")
+        }
       }
+      .frame(maxWidth: .infinity, alignment: .leading)
     }
   }
 
@@ -121,9 +134,9 @@ struct HistoryPanel: View {
 /// time) with any bookmark/branch refs, and a `@` marker for the jj working copy.
 private struct HistoryRow: View {
   let commit: VCSCommit
-  /// Single-click: open the commit's changeset detail as a preview tab. Double-click: persist it.
-  let onPreview: () -> Void
-  let onPersist: () -> Void
+  /// Open a commit's changeset detail as a tab — the row's own commit or one of its divergent
+  /// siblings. `persist` false previews (single click), true persists (quick double-click).
+  let open: (_ commit: VCSCommit, _ persist: Bool) -> Void
   @EnvironmentObject var store: AppStore
   /// Observed so the row's selected state tracks which changeset tab is focused — the tab strip
   /// lives in a separate observation tree from the inspector (mirrors `ChangesPanel.ChangedFileRow`).
@@ -131,6 +144,8 @@ private struct HistoryRow: View {
   @State private var hovering = false
   /// Timestamp of the last plain click, for the manual double-click gate (mirrors `ChangesPanel`).
   @State private var lastClick: Date?
+  /// Divergence expander: shows the change's other visible copies (`commit.divergentSiblings`).
+  @State private var showDivergent = false
   private let theme = ThemeService.shared
 
   private static let relative: RelativeDateTimeFormatter = {
@@ -140,70 +155,124 @@ private struct HistoryRow: View {
   }()
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 3) {
-      HStack(spacing: 6) {
-        if commit.isWorkingCopy {
-          Text("@").font(.system(.body, design: .monospaced)).foregroundStyle(.tint)
-            .help("Working copy")
+    VStack(alignment: .leading, spacing: 0) {
+      VStack(alignment: .leading, spacing: 3) {
+        // Line one — summary + any bookmark/branch refs — is the row's combined accessibility leaf
+        // (id `HistoryRow`), so the row reads and selects as a unit behind one queryable identifier.
+        HStack(spacing: 6) {
+          if commit.isWorkingCopy {
+            Text("@").font(.system(.body, design: .monospaced)).foregroundStyle(.tint)
+              .help("Working copy")
+          }
+          Text(commit.summary.isEmpty ? "(no description)" : commit.summary)
+            .font(.callout)
+            .lineLimit(1)
+            .foregroundStyle(
+              isSelected ? theme.tokens.accent : (commit.summary.isEmpty ? .secondary : .primary))
+          Spacer(minLength: 4)
+          ForEach(commit.refs, id: \.self) { ref in
+            Text(ref)
+              .font(.caption2)
+              .padding(.horizontal, 5).padding(.vertical, 1)
+              .background(.quaternary, in: Capsule())
+              .help("Bookmark / branch")
+          }
         }
-        Text(commit.summary.isEmpty ? "(no description)" : commit.summary)
-          .font(.callout)
-          .lineLimit(1)
-          .foregroundStyle(
-            isSelected ? theme.tokens.accent : (commit.summary.isEmpty ? .secondary : .primary))
-        Spacer(minLength: 4)
-        ForEach(commit.refs, id: \.self) { ref in
-          Text(ref)
-            .font(.caption2)
-            .padding(.horizontal, 5).padding(.vertical, 1)
-            .background(.quaternary, in: Capsule())
-            .help("Bookmark / branch")
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityIdentifier("HistoryRow")
+
+        // Line two — avatars, author, relative time — with the "diverging" disclosure trailing on the
+        // SAME line. It's a real button (its own accessibility element), so it toggles the expander
+        // without triggering the row's open-changeset tap.
+        HStack(spacing: 6) {
+          let relative = Self.relative.localizedString(for: commit.timestamp, relativeTo: Date())
+          if !commit.authors.isEmpty {
+            AvatarStack(
+              subjects: commit.authors.map { AvatarSubject(author: $0, pixelSize: 42) }, size: 14)
+          }
+          let names = commit.authorNamesDisplay
+          Text(names.isEmpty ? relative : "\(names) · \(relative)")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+          if commit.isDivergent {
+            Spacer(minLength: 6)
+            divergingToggle
+          }
         }
       }
-      HStack(spacing: 6) {
-        let relative = Self.relative.localizedString(for: commit.timestamp, relativeTo: Date())
-        if !commit.authors.isEmpty {
-          AvatarStack(
-            subjects: commit.authors.map { AvatarSubject(author: $0, pixelSize: 42) }, size: 14)
-        }
-        let names = commit.authorNamesDisplay
-        if names.isEmpty {
-          Text(relative)
+      .padding(.vertical, 6).padding(.horizontal, 8)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(
+        // Square, full-width band (no corner radius): bleed past the section's 12pt inset so the
+        // hover/selection highlight fills the inspector width edge-to-edge (mirrors `ChangedFileRow`).
+        Rectangle()
+          .fill(
+            isSelected ? theme.tokens.rowSelection : (hovering ? theme.tokens.rowHover : .clear)
+          )
+          .padding(.horizontal, -12)
+      )
+      .contentShape(Rectangle())
+      .onHover { hovering = $0 }
+      .help(tooltip)
+      // Eager single-click preview, quick second click (< 0.35s) persists — the same manual
+      // double-click gate the Changes panel uses (avoids SwiftUI's count:2 delay).
+      .onTapGesture {
+        let now = Date()
+        if let last = lastClick, now.timeIntervalSince(last) < 0.35 {
+          open(commit, true)
+          lastClick = nil
         } else {
-          Text("\(names) · \(relative)")
+          open(commit, false)
+          lastClick = now
         }
       }
-      .font(.caption)
-      .foregroundStyle(.secondary)
-      .lineLimit(1)
-    }
-    .padding(.vertical, 6).padding(.horizontal, 8)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      // Square, full-width band (no corner radius): bleed past the section's 12pt inset so the
-      // hover/selection highlight fills the inspector width edge-to-edge (mirrors `ChangedFileRow`).
-      Rectangle()
-        .fill(isSelected ? theme.tokens.rowSelection : (hovering ? theme.tokens.rowHover : .clear))
-        .padding(.horizontal, -12)
-    )
-    .contentShape(Rectangle())
-    .onHover { hovering = $0 }
-    .help(tooltip)
-    // Eager single-click preview, quick second click (< 0.35s) persists — the same manual
-    // double-click gate the Changes panel uses (avoids SwiftUI's count:2 delay).
-    .onTapGesture {
-      let now = Date()
-      if let last = lastClick, now.timeIntervalSince(last) < 0.35 {
-        onPersist()
-        lastClick = nil
-      } else {
-        onPreview()
-        lastClick = now
+
+      // The sibling list drops in below the row. Because the History pane hosts its body in fill
+      // mode and scrolls itself (a SwiftUI `ScrollView`, not the AppKit `NSScrollView`), SwiftUI
+      // owns this height change: the list animates in and the rows below flow down with it, natively
+      // smooth — no `NSHostingController.intrinsicContentSize` → `NSScrollView` resize to fight.
+      if showDivergent {
+        divergentSiblingsList
+          .transition(.opacity)
       }
     }
-    .accessibilityElement(children: .combine)
-    .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
-    .accessibilityIdentifier("HistoryRow")
+  }
+
+  /// The "diverging (N)" disclosure on the author/time line. jj shows only the copy that's an
+  /// ancestor of `@`; this reveals the change's other visible copies — its divergent siblings.
+  private var divergingToggle: some View {
+    let count = commit.divergentSiblings.count
+    let copies = count == 1 ? "copy" : "copies"
+    return Button {
+      withAnimation(.easeInOut(duration: 0.22)) { showDivergent.toggle() }
+    } label: {
+      HStack(spacing: 3) {
+        Text("diverging")
+        Text("(\(count))").foregroundStyle(.purple.opacity(0.6))
+      }
+      .font(.caption2)
+      .padding(.horizontal, 5).padding(.vertical, 1)
+      .background(Color.purple.opacity(showDivergent ? 0.22 : 0.12), in: Capsule())
+    }
+    .buttonStyle(.plain)
+    .foregroundStyle(.purple)
+    .help(
+      "This change is diverging — its change ID resolves to \(count + 1) visible commits. "
+        + "Click to \(showDivergent ? "hide" : "show") the \(count) other \(copies)."
+    )
+    .accessibilityIdentifier("HistoryRowDiverges")
+  }
+
+  /// The expanded list of the change's divergent copies — one `DivergentSiblingRow` each.
+  private var divergentSiblingsList: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      ForEach(commit.divergentSiblings) { sibling in
+        DivergentSiblingRow(sibling: sibling, open: open, sessions: sessions)
+      }
+    }
+    .padding(.top, 1).padding(.bottom, 5)
   }
 
   /// The hover tooltip: the full commit summary, plus the description body beneath it when present
@@ -220,6 +289,68 @@ private struct HistoryRow: View {
     else { return false }
     if case .changeset(let descriptor) = tab.content {
       return descriptor.commitID == commit.commitID
+    }
+    return false
+  }
+}
+
+/// One divergent-copy row inside the expander: jj's `id/N` label + summary + relative time, with the
+/// SAME hover / selected highlight as a `HistoryRow` — a full-width band (content indented under the
+/// parent). Selected when its changeset is the focused content tab; a single click opens it.
+private struct DivergentSiblingRow: View {
+  let sibling: VCSCommit
+  /// Opens a commit's changeset detail (preview) — the parent row's `open`, siblings only preview.
+  let open: (_ commit: VCSCommit, _ persist: Bool) -> Void
+  @EnvironmentObject var store: AppStore
+  @ObservedObject var sessions: TerminalSessions
+  @State private var hovering = false
+  private let theme = ThemeService.shared
+
+  private static let relative: RelativeDateTimeFormatter = {
+    let f = RelativeDateTimeFormatter()
+    f.unitsStyle = .abbreviated
+    return f
+  }()
+
+  var body: some View {
+    HStack(spacing: 6) {
+      Text(sibling.divergentLabel ?? sibling.shortID)
+        .font(.system(.caption2, design: .monospaced))
+        .foregroundStyle(.purple)
+      Text(sibling.summary.isEmpty ? "(no description)" : sibling.summary)
+        .font(.caption)
+        .lineLimit(1)
+        .foregroundStyle(
+          isSelected ? theme.tokens.accent : (sibling.summary.isEmpty ? .secondary : .primary))
+      Spacer(minLength: 4)
+      Text(Self.relative.localizedString(for: sibling.timestamp, relativeTo: Date()))
+        .font(.caption2).foregroundStyle(.secondary)
+    }
+    // Content indented under the parent row; the highlight band bleeds full-width (same -12 as the
+    // parent row) so hover/selection reads edge-to-edge, exactly like a top-level history row.
+    .padding(.vertical, 3)
+    .padding(.leading, 22).padding(.trailing, 8)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(
+      Rectangle()
+        .fill(isSelected ? theme.tokens.rowSelection : (hovering ? theme.tokens.rowHover : .clear))
+        .padding(.horizontal, -12)
+    )
+    .contentShape(Rectangle())
+    .onHover { hovering = $0 }
+    .onTapGesture { open(sibling, false) }
+    .help(sibling.summary.isEmpty ? "(no description)" : sibling.summary)
+    .accessibilityElement(children: .combine)
+    .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+    .accessibilityIdentifier("HistoryDivergentSibling")
+  }
+
+  /// Selected when the focused content tab is this sibling's changeset (mirrors `HistoryRow`).
+  private var isSelected: Bool {
+    guard let target = store.selectedTarget, let tab = sessions.focusedTab(for: target)
+    else { return false }
+    if case .changeset(let descriptor) = tab.content {
+      return descriptor.commitID == sibling.commitID
     }
     return false
   }

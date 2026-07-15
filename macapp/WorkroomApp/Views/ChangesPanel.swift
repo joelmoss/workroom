@@ -26,6 +26,9 @@ struct RightInspector: View {
       headers: subs.map { sectionHeader(for: $0) },
       bodies: subs.map { sectionBody(for: $0) },
       collapsed: subs.map { collapsedValue(for: $0) },
+      // History hosts its body in fill mode (it scrolls itself via SwiftUI) so its divergence
+      // expander animates cleanly; the other sections keep the default NSScrollView hosting.
+      fills: subs.map { $0 == .history },
       sectionKey: store.activeInspectorSection.rawValue,
       workroomKey: AppStore.targetIDString(for: store.selectedTargetID) ?? "",
       weights: subs.map { store.inspectorSizeWeights[$0.storeIndex] },

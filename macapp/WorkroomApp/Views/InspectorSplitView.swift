@@ -24,36 +24,66 @@ import SwiftUI
 // MARK: - Pane: sticky header + scrollable body
 
 /// One split pane. The section header is a fixed-height `NSHostingController` pinned to the top; the
-/// body is an `NSHostingController` inside a vertically-scrolling `NSScrollView` filling the rest.
-/// The body hosting view uses `.intrinsicContentSize` so it reports its natural height and the
-/// scroll view scrolls when the pane is shorter than the content. A raw `NSScrollView` already
-/// auto-hides and tracks the system "Show scroll bars" preference. When collapsed, the body scroll
-/// view is hidden and the enclosing split pins the pane to the header height.
+/// body sits below it in one of two hosting modes:
+///
+/// - **scroll** (default): the body is an `NSHostingController` (`.intrinsicContentSize`) inside a
+///   vertically-scrolling `NSScrollView` — it reports its natural height and the AppKit scroll view
+///   scrolls when the pane is shorter than the content (auto-hiding scrollers, tracks the system
+///   "Show scroll bars" preference).
+/// - **fill** (`fillsBody`): the body hosting view instead FILLS the pane below the header and is
+///   expected to scroll ITSELF (a SwiftUI `ScrollView`). This bypasses the `.intrinsicContentSize` →
+///   `NSScrollView` bridge, so an inline height animation inside the body (the History pane's
+///   divergence expander) is driven entirely by SwiftUI and can't fight AppKit's scroll-container
+///   resize-anchoring — the source of the visible content shift the bridge produced.
+///
+/// When collapsed, the body is hidden and the enclosing split pins the pane to the header height.
 final class InspectorPaneViewController: NSViewController {
   private let headerHost = NSHostingController(rootView: AnyView(EmptyView()))
   private let bodyScroll = NSScrollView()
   private let bodyHost = NSHostingController(rootView: AnyView(EmptyView()))
+  /// Whether the body fills the pane and scrolls itself (vs. the default `NSScrollView` hosting).
+  /// Must be set before the view first loads.
+  var fillsBody = false
 
   override func loadView() {
     let container = NSView()
 
-    // Add the body scroll view FIRST, then the header, so the header is topmost in z-order — the
-    // opaque sticky header always sits above the scrolling body and the content can never bleed over
-    // the title during a resize.
-    bodyHost.sizingOptions = [.intrinsicContentSize]
-    addChild(bodyHost)
-    let document = bodyHost.view
-    document.translatesAutoresizingMaskIntoConstraints = false
-
-    bodyScroll.translatesAutoresizingMaskIntoConstraints = false
-    bodyScroll.hasVerticalScroller = true
-    bodyScroll.hasHorizontalScroller = false
-    bodyScroll.autohidesScrollers = true
-    bodyScroll.drawsBackground = false
-    bodyScroll.documentView = document
-    container.addSubview(bodyScroll)
-
     headerHost.view.translatesAutoresizingMaskIntoConstraints = false
+    let bodyView: NSView
+
+    if fillsBody {
+      // Fill mode: the body hosting view fills below the header and owns its own scrolling.
+      bodyHost.sizingOptions = []
+      addChild(bodyHost)
+      bodyView = bodyHost.view
+      bodyView.translatesAutoresizingMaskIntoConstraints = false
+      container.addSubview(bodyView)
+    } else {
+      // Scroll mode: the body scroll view is added FIRST, then the header, so the header is topmost
+      // in z-order — the opaque sticky header always sits above the scrolling body so content can
+      // never bleed over the title during a resize.
+      bodyHost.sizingOptions = [.intrinsicContentSize]
+      addChild(bodyHost)
+      let document = bodyHost.view
+      document.translatesAutoresizingMaskIntoConstraints = false
+      bodyScroll.translatesAutoresizingMaskIntoConstraints = false
+      bodyScroll.hasVerticalScroller = true
+      bodyScroll.hasHorizontalScroller = false
+      bodyScroll.autohidesScrollers = true
+      bodyScroll.drawsBackground = false
+      bodyScroll.documentView = document
+      container.addSubview(bodyScroll)
+      bodyView = bodyScroll
+      NSLayoutConstraint.activate([
+        // Document pinned to the clip view's top/width (free height → it grows to content and the
+        // scroll view scrolls when the pane is shorter than the content).
+        document.topAnchor.constraint(equalTo: bodyScroll.contentView.topAnchor),
+        document.leadingAnchor.constraint(equalTo: bodyScroll.contentView.leadingAnchor),
+        document.trailingAnchor.constraint(equalTo: bodyScroll.contentView.trailingAnchor),
+        document.widthAnchor.constraint(equalTo: bodyScroll.contentView.widthAnchor),
+      ])
+    }
+
     addChild(headerHost)
     container.addSubview(headerHost.view)
 
@@ -64,29 +94,22 @@ final class InspectorPaneViewController: NSViewController {
       headerHost.view.trailingAnchor.constraint(equalTo: container.trailingAnchor),
       headerHost.view.heightAnchor.constraint(equalToConstant: InspectorPanePolicy.headerHeight),
 
-      // Body scroll view fills the rest of the pane below the header.
-      bodyScroll.topAnchor.constraint(equalTo: headerHost.view.bottomAnchor),
-      bodyScroll.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-      bodyScroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-      bodyScroll.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-
-      // Document pinned to the clip view's top/width (free height → it grows to content and the
-      // scroll view scrolls when the pane is shorter than the content).
-      document.topAnchor.constraint(equalTo: bodyScroll.contentView.topAnchor),
-      document.leadingAnchor.constraint(equalTo: bodyScroll.contentView.leadingAnchor),
-      document.trailingAnchor.constraint(equalTo: bodyScroll.contentView.trailingAnchor),
-      document.widthAnchor.constraint(equalTo: bodyScroll.contentView.widthAnchor),
+      // Body fills the rest of the pane below the header.
+      bodyView.topAnchor.constraint(equalTo: headerHost.view.bottomAnchor),
+      bodyView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+      bodyView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+      bodyView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
     ])
     view = container
   }
 
-  /// Swap the hosted header + body. The body scroll view is hidden when collapsed so only the header
-  /// shows (the enclosing split also pins a collapsed pane to the header height).
+  /// Swap the hosted header + body. The body is hidden when collapsed so only the header shows (the
+  /// enclosing split also pins a collapsed pane to the header height).
   func setContent(header: AnyView, body: AnyView, collapsed: Bool) {
     _ = view  // ensure loaded
     headerHost.rootView = header
     bodyHost.rootView = body
-    bodyScroll.isHidden = collapsed
+    (fillsBody ? bodyHost.view : bodyScroll).isHidden = collapsed
   }
 }
 
@@ -362,6 +385,10 @@ struct InspectorSplitView: NSViewControllerRepresentable {
   var headers: [AnyView]
   var bodies: [AnyView]
   var collapsed: [Bool]
+  /// Per-section: whether the pane hosts its body in **fill** mode (the body scrolls itself) rather
+  /// than the default `NSScrollView` hosting. History uses fill mode so its inline accordion animates
+  /// via SwiftUI without fighting the AppKit scroll container.
+  var fills: [Bool]
   /// Identifies the active activity-bar section's sub-section set (its raw value). When it changes,
   /// the pane count/identity differs, so the controller rebuilds its panes rather than reusing them.
   var sectionKey: String
@@ -373,7 +400,7 @@ struct InspectorSplitView: NSViewControllerRepresentable {
   var onWeightsChanged: ([Double]) -> Void
 
   func makeNSViewController(context: Context) -> InspectorSplitContainerController {
-    let panes = (0..<headers.count).map { _ in InspectorPaneViewController() }
+    let panes = makePanes()
     context.coordinator.panes = panes
     context.coordinator.sectionKey = sectionKey
     let controller = InspectorSplitContainerController()
@@ -391,7 +418,7 @@ struct InspectorSplitView: NSViewControllerRepresentable {
     if context.coordinator.sectionKey != sectionKey
       || context.coordinator.panes.count != headers.count
     {
-      let panes = (0..<headers.count).map { _ in InspectorPaneViewController() }
+      let panes = makePanes()
       context.coordinator.panes = panes
       context.coordinator.sectionKey = sectionKey
       controller.rebuild(panes: panes)
@@ -410,6 +437,16 @@ struct InspectorSplitView: NSViewControllerRepresentable {
   }
 
   func makeCoordinator() -> Coordinator { Coordinator() }
+
+  /// Create one pane per section, each pre-configured with its body hosting mode (set BEFORE the
+  /// pane's view loads, since `fillsBody` is read in `loadView`).
+  private func makePanes() -> [InspectorPaneViewController] {
+    (0..<headers.count).map { index in
+      let pane = InspectorPaneViewController()
+      pane.fillsBody = index < fills.count && fills[index]
+      return pane
+    }
+  }
 
   private func pushContent(into panes: [InspectorPaneViewController]) {
     guard panes.count == headers.count, panes.count == bodies.count, panes.count == collapsed.count

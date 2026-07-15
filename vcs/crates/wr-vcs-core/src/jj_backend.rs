@@ -84,11 +84,15 @@ fn short_change_id(repo: &dyn Repo, change_id: &ChangeId) -> String {
     full.chars().take(len).collect()
 }
 
-fn to_model_commit(
+/// Build one model commit from a jj commit, WITHOUT resolving divergence (`divergent_siblings`
+/// empty). `change_offset` is the caller-supplied `/N` offset (set only for members of a divergent
+/// set). Used both for page commits and for the sibling copies nested under them.
+fn build_commit(
     c: &JjCommit,
     wc_id: Option<&jj_lib::backend::CommitId>,
     bookmarks: &HashMap<String, Vec<String>>,
     repo: &dyn Repo,
+    change_offset: Option<u32>,
 ) -> Commit {
     let commit_id = c.id().hex();
     let (author, ts_ms, tz) = author_of(c.author());
@@ -112,8 +116,58 @@ fn to_model_commit(
         refs: bookmarks.get(&commit_id).cloned().unwrap_or_default(),
         parent_ids: c.parent_ids().iter().map(|id| id.hex()).collect(),
         is_working_copy: wc_id.map(|w| w == c.id()).unwrap_or(false),
+        change_offset,
+        divergent_siblings: Vec::new(),
         commit_id,
     }
+}
+
+fn to_model_commit(
+    c: &JjCommit,
+    wc_id: Option<&jj_lib::backend::CommitId>,
+    bookmarks: &HashMap<String, Vec<String>>,
+    repo: &dyn Repo,
+) -> Commit {
+    // Divergence: does this change-id resolve to more than one *visible* commit? Only one copy of a
+    // divergent change is an ancestor of `@`, so the `::@` walk shows just that one; jj addresses
+    // each copy by a `/N` offset (its position among all — hidden included — commits sharing the
+    // change-id, hence non-contiguous). Resolving against the whole repo (not just this page) is what
+    // makes it a true divergence check; the change-id index is built lazily, exactly like `jj log`.
+    let targets = repo.resolve_change_id(c.change_id()).ok().flatten();
+    let divergent = targets.as_ref().is_some_and(|t| t.is_divergent());
+    let self_offset = targets
+        .as_ref()
+        .and_then(|t| t.find_offset(c.id()))
+        .map(|o| o as u32);
+    let mut commit = build_commit(
+        c,
+        wc_id,
+        bookmarks,
+        repo,
+        if divergent { self_offset } else { None },
+    );
+    // Surface the OTHER visible copies (the divergent siblings) so the UI can reveal them — they sit
+    // off `::@` and are otherwise invisible in the log. Load each and carry its own `/N` offset.
+    if divergent {
+        if let Some(targets) = &targets {
+            let store = repo.store();
+            for (offset, sibling_id) in targets.visible_with_offsets() {
+                if sibling_id == c.id() {
+                    continue;
+                }
+                if let Ok(sibling) = store.get_commit(sibling_id) {
+                    commit.divergent_siblings.push(build_commit(
+                        &sibling,
+                        wc_id,
+                        bookmarks,
+                        repo,
+                        Some(offset as u32),
+                    ));
+                }
+            }
+        }
+    }
+    commit
 }
 
 // Max-heap ordering by committer timestamp then id, so `pop` yields newest-first. (True jj-log

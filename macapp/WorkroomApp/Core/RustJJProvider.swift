@@ -217,7 +217,9 @@ struct RustJJProvider: VCSProviding {
       timestamp: Date(timeIntervalSince1970: Double(c.timestampMs) / 1000),
       refs: c.refs,
       parentIDs: c.parentIds,
-      isWorkingCopy: c.isWorkingCopy
+      isWorkingCopy: c.isWorkingCopy,
+      changeOffset: c.changeOffset.map(Int.init),
+      divergentSiblings: c.divergentSiblings.map(Self.map)
     )
   }
 
