@@ -100,10 +100,11 @@ final class InspectorPaneViewController: NSViewController {
 /// - The **default** distribution (equal among expanded panes, or the saved weights) is applied via
 ///   `setPosition` after the first real layout and on a workroom switch. Plain window resizes keep
 ///   the user's proportions (native `NSSplitView` behaviour).
-/// - A **single section's collapse toggling** within one workroom does NOT re-distribute: it keeps
-///   the other panes' heights and flexes only a neighbour (`reallocateOnToggle`), so a divider the
-///   user dragged between two unrelated sections survives a collapse elsewhere — the whole-layout
-///   renormalisation used to move it.
+/// - **Collapsing** a single section keeps the other panes' heights and flexes only a neighbour
+///   (`reallocateOnToggle`), so a divider the user dragged between two unrelated sections survives a
+///   collapse elsewhere. **Expanding** a section re-splits the expanded panes **equally**
+///   (`allocate`) — re-opening a collapsed section returns the stack to equal heights (half each for
+///   Changes + Pull Request) rather than the minimum floor.
 /// `NSSplitView` whose dividers use a themed hairline. The system's thin divider can render a hard,
 /// near-black line between the section panes — most visible while the inspector collapses/expands —
 /// so we override `dividerColor` to force our subtle border colour on every draw, mid-animation
@@ -269,13 +270,26 @@ final class InspectorSplitContainerController: NSViewController, NSSplitViewDele
     setPositions(heights)
   }
 
-  /// Resize for a single section's collapse toggle, preserving the untouched panes' heights (only a
-  /// neighbour flexes — see `reallocateOnToggle`), then persist the resulting layout so a later
-  /// window resize / workroom switch reflects what the user now sees.
+  /// Resize for a single section's collapse toggle: a **collapse** preserves the untouched panes'
+  /// heights (only a neighbour flexes — `reallocateOnToggle`); an **expand** re-splits the expanded
+  /// panes equally (`allocate`), so a re-opened section returns to an equal share. Either way the
+  /// resulting layout is persisted so a later window resize / workroom switch reflects it.
   private func applyToggle(index: Int, previous: [CGFloat]) {
-    let heights = InspectorPanePolicy.reallocateOnToggle(
-      previous: previous, collapsed: collapsedFlags, toggled: index,
-      capacity: splitView.bounds.height, dividerThickness: splitView.dividerThickness)
+    let heights: [CGFloat]
+    if collapsedFlags[index] {
+      // Collapse: keep the other panes put — a neighbour absorbs the freed space, so a divider the
+      // user dragged elsewhere survives.
+      heights = InspectorPanePolicy.reallocateOnToggle(
+        previous: previous, collapsed: collapsedFlags, toggled: index,
+        capacity: splitView.bounds.height, dividerThickness: splitView.dividerThickness)
+    } else {
+      // Expand: split the space EQUALLY among the now-expanded panes, so re-opening a collapsed
+      // section returns the stack to equal heights (half each for Changes + Pull Request) rather than
+      // re-opening at the minimum floor with its neighbour hogging the rest.
+      heights = InspectorPanePolicy.allocate(
+        collapsed: collapsedFlags, weights: nil,
+        capacity: splitView.bounds.height, dividerThickness: splitView.dividerThickness)
+    }
     setPositions(heights)
     reportWeights(from: heights)
   }
