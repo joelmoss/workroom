@@ -29,11 +29,14 @@ struct GitProvider: VCSProviding {
       let repo = try Repository.open(at: root)
       let commit: Commit = try repo.show(id: OID(hex: commitID))
       let diff = try repo.diff(commit: commit)
+      let (insertions, deletions) = Self.diffLineStats(diff)
       return VCSChangeset(
         commit: Self.map(commit),
         fullMessage: commit.message,
         files: diff.changes.map(Self.mapDelta),
-        isMerge: ((try? commit.parents.count) ?? 0) > 1
+        isMerge: ((try? commit.parents.count) ?? 0) > 1,
+        insertions: insertions,
+        deletions: deletions
       )
     } catch {
       throw VCSError.io("\(error)")
@@ -375,6 +378,13 @@ struct GitProvider: VCSProviding {
   /// since libgit2's diff-stats aren't surfaced by SwiftGitX.
   private static func workingLineStats(_ repo: Repository) -> (insertions: Int?, deletions: Int?) {
     guard let diff = try? repo.diff(to: [.workingTree, .index]) else { return (nil, nil) }
+    let (ins, del) = diffLineStats(diff)
+    return (ins, del)
+  }
+
+  /// Sum added/removed lines across a whole diff (git has no surfaced diffstat in SwiftGitX, so count
+  /// the hunk lines) — the changeset header's `+N −M` and the working-tree line counts share this.
+  private static func diffLineStats(_ diff: Diff) -> (insertions: Int, deletions: Int) {
     var insertions = 0
     var deletions = 0
     for patch in diff.patches {

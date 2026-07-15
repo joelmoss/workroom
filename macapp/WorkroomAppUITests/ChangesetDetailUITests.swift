@@ -84,6 +84,15 @@ final class ChangesetDetailUITests: XCTestCase {
     els(app, "HistoryRow").element(boundBy: 0).click()
 
     XCTAssertTrue(waitExists(el(app, "ChangesetDetail")), "the changeset detail opens as a tab")
+
+    // The header shows the changeset's +/- line-count summary (fixture: 24 insertions, 8 deletions).
+    // It renders as a combined StaticText whose content is its `value` (the header's `ChangesetDetail`
+    // id propagates onto the leaf, so match on the spoken count text, not the id).
+    let summary = app.descendants(matching: .any).matching(
+      NSPredicate(format: "value CONTAINS %@", "24 insertions, 8 deletions")
+    ).firstMatch
+    XCTAssertTrue(waitExists(summary), "the header shows the +/- line-count summary")
+
     XCTAssertTrue(
       els(app, "ChangesetFileRow").element(boundBy: 0).waitForExistence(timeout: 8),
       "the changed-file list renders")

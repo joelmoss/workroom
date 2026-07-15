@@ -42,6 +42,14 @@ final class VCSProviderConformanceTests: XCTestCase {
     XCTAssertEqual(
       Set(jj.files.map(key)), Set(["modified:a.txt", "added:b.txt"]),
       "unexpected changed files")
+
+    // The changeset header's +/- line-count summary. This commit adds one line to a.txt ("two") and
+    // adds b.txt ("new") — 2 insertions, 0 deletions — and both backends must agree (git = summed
+    // libgit2 patch lines; jj = one `jj diff --stat`).
+    XCTAssertEqual(git.insertions, 2, "git changeset insertions")
+    XCTAssertEqual(git.deletions, 0, "git changeset deletions")
+    XCTAssertEqual(jj.insertions, git.insertions, "insertions differ between jj and git backends")
+    XCTAssertEqual(jj.deletions, git.deletions, "deletions differ between jj and git backends")
   }
 
   /// The working-copy per-file diff, read structurally by each backend (git = SwiftGitX/libgit2, jj

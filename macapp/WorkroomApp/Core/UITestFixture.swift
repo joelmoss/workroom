@@ -443,7 +443,7 @@ struct FixtureVCSProvider: VCSProviding {
     ]
     return VCSChangeset(
       commit: commit, fullMessage: commit.summary + "\n\nFixture commit body.", files: files,
-      isMerge: false)
+      isMerge: false, insertions: 24, deletions: 8)
   }
 
   func fileDiff(root: URL, commitID: String, path: String) async throws -> String {

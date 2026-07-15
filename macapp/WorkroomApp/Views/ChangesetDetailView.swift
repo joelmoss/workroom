@@ -139,6 +139,7 @@ struct ChangesetDetailView: View {
         if changeset.isMerge {
           Label("Merge", systemImage: "arrow.triangle.merge")
         }
+        diffStat(changeset)
         Spacer(minLength: 0)
         ForEach(commit.refs, id: \.self) { ref in
           Text(ref)
@@ -176,6 +177,25 @@ struct ChangesetDetailView: View {
     // The detail's presence marker lives on the header (not the outer container), so it doesn't
     // propagate onto and clobber the `ChangesetFileRow` / `diff.line` leaves in the sibling HSplitView.
     .accessibilityIdentifier("ChangesetDetail")
+  }
+
+  /// The changeset's `+N −M` line-count summary, coloured like the diff gutter (green add / red
+  /// remove). Rendered only when the backend resolved counts (`insertions`/`deletions` non-nil) — an
+  /// unresolved changeset simply omits it rather than showing a misleading `+0 −0`.
+  @ViewBuilder private func diffStat(_ changeset: VCSChangeset) -> some View {
+    if let insertions = changeset.insertions, let deletions = changeset.deletions {
+      HStack(spacing: 5) {
+        Text("+\(insertions)").foregroundStyle(theme.tokens.diffAddFg)
+        Text("−\(deletions)").foregroundStyle(theme.tokens.diffRemoveFg)
+      }
+      .font(.system(.caption, design: .monospaced))
+      // Combine the +/- into one element with a spoken label. No a11y identifier: the header's
+      // `ChangesetDetail` id absorbs its descendant leaves (see the header note), so this element's
+      // own id wouldn't survive — its label still merges into the header's, which the UITest matches.
+      .accessibilityElement(children: .combine)
+      .accessibilityLabel("\(insertions) insertions, \(deletions) deletions")
+      .help("\(insertions) insertions, \(deletions) deletions")
+    }
   }
 
   /// The commit message minus its first line (the summary already shown), trimmed. `nil` when the

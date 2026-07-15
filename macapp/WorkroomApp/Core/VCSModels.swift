@@ -66,6 +66,11 @@ struct VCSChangeset: Equatable, Sendable {
   let files: [VCSChangedFile]
   /// >1 parent ⇒ a merge; the git diff basis is the first parent.
   let isMerge: Bool
+  /// Total lines added / removed across the changeset (vs its first parent), for the detail header's
+  /// `+N −M` summary. `nil` ⇒ not resolved (older data / a backend that couldn't produce it) → the
+  /// header omits the summary rather than showing a misleading zero.
+  var insertions: Int? = nil
+  var deletions: Int? = nil
 }
 
 /// Typed VCS failures. Each maps to a distinct, recoverable UI state (inline message + retry),

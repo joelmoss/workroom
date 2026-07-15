@@ -21,11 +21,27 @@ struct RustJJProvider: VCSProviding {
     } catch {
       throw Self.mapError(error)
     }
+    // Line counts for the detail header: the native changeset read omits the diffstat (a line count
+    // would materialize every file), so — jayjay-style, like `WorkroomStatusResolver.resolveJJ` — one
+    // read-only `jj diff --stat` fills it. `--ignore-working-copy` never locks `@`. Best-effort: a
+    // failure leaves the counts nil and the header just omits the summary.
+    var insertions: Int?
+    var deletions: Int?
+    if let stat = try? await Self.run(
+      "jj",
+      ["diff", "-r", commitID, "--ignore-working-copy", "--stat", "--color", "never"],
+      cwd: root
+    ) {
+      let parsed = WorkroomStatusResolver.parseDiffStat(stat)
+      (insertions, deletions) = (parsed.insertions, parsed.deletions)
+    }
     return VCSChangeset(
       commit: Self.map(cs.commit),
       fullMessage: cs.fullMessage,
       files: cs.files.map(Self.map),
-      isMerge: cs.isMerge
+      isMerge: cs.isMerge,
+      insertions: insertions,
+      deletions: deletions
     )
   }
 
