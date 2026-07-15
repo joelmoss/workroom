@@ -21,7 +21,7 @@ final class DiffResolverFileContentTests: XCTestCase {
       return _calls
     }
 
-    func log(root: URL, limit: Int) async throws -> VCSHistoryPage {
+    func log(root: URL, limit: Int) throws -> VCSHistoryPage {
       .init(commits: [], reachedEnd: true)
     }
     func changeset(root: URL, commitID: String) async throws -> VCSChangeset {

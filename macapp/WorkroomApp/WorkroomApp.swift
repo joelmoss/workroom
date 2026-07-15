@@ -145,7 +145,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
           }
           do {
             let provider = try VCS.provider(for: url)
-            let page = try await provider.log(root: url, limit: 3)
+            let page = try provider.log(root: url, limit: 3)
             NSLog(
               "[wr-vcs] kind=\(VCS.repoKind(at: url)) routed: commits=\(page.commits.count) "
                 + "reachedEnd=\(page.reachedEnd) [\(heads(page))]")
@@ -166,12 +166,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
           } catch {
             NSLog("[wr-vcs] routed error: \(error)")
           }
-          if let jj = try? await RustJJProvider().log(root: url, limit: 3) {
+          if let jj = try? RustJJProvider().log(root: url, limit: 3) {
             NSLog("[wr-vcs] jj provider: [\(heads(jj))]")
           }
           do {
             let g = GitProvider()
-            let gp = try await g.log(root: url, limit: 3)
+            let gp = try g.log(root: url, limit: 3)
             NSLog("[wr-git] git provider: [\(heads(gp))]")
             if let target = gp.commits.first {
               let cs = try await g.changeset(root: url, commitID: target.commitID)

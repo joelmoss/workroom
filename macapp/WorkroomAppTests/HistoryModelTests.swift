@@ -17,7 +17,7 @@ final class HistoryModelTests: XCTestCase {
   /// exactly the growing-prefix pagination `HistoryModel` uses.
   private struct FakeProvider: VCSProviding {
     let all: [VCSCommit]
-    func log(root: URL, limit: Int) async throws -> VCSHistoryPage {
+    func log(root: URL, limit: Int) throws -> VCSHistoryPage {
       let slice = Array(all.prefix(limit))
       return VCSHistoryPage(commits: slice, reachedEnd: slice.count >= all.count)
     }
@@ -35,7 +35,7 @@ final class HistoryModelTests: XCTestCase {
   }
 
   private struct FailProvider: VCSProviding {
-    func log(root: URL, limit: Int) async throws -> VCSHistoryPage {
+    func log(root: URL, limit: Int) throws -> VCSHistoryPage {
       throw VCSError.io("boom")
     }
     func changeset(root: URL, commitID: String) async throws -> VCSChangeset {

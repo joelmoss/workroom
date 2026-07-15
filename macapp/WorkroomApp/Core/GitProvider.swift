@@ -8,7 +8,7 @@ import SwiftGitX
 /// error (`catch let e as SwiftGitXError`) trips a Swift 6 SIL ownership error across the async
 /// boundary.
 struct GitProvider: VCSProviding {
-  func log(root: URL, limit: Int) async throws -> VCSHistoryPage {
+  func log(root: URL, limit: Int) throws -> VCSHistoryPage {
     do {
       let repo = try Repository.open(at: root)
       // A repo with no commits yet (unborn HEAD) is an empty history, not a failure.

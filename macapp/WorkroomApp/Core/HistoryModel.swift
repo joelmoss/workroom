@@ -67,10 +67,11 @@ final class HistoryModel: ObservableObject {
     let resolve = self.resolve
     task = Task { [weak self] in
       do {
-        // Off the main actor: the providers do blocking work (UniFFI / libgit2 / jj CLI).
-        let page = try await Task.detached(priority: .userInitiated) {
-          try await resolve(root).log(root: root, limit: limit)
-        }.value
+        // The provider's log read blocks its thread (jj-lib over UniFFI / libgit2). Run it on GCD via
+        // `runBlocking`, NOT `Task.detached` — the cooperative pool is fixed-width and the
+        // per-workroom status snapshots fanned out on selection saturate it, which starved this read
+        // (the pane "loaded forever" until the pool drained; a tab switch just bought it time).
+        let page = try await runBlocking { try resolve(root).log(root: root, limit: limit) }
         if Task.isCancelled { return }
         guard let self else { return }
         self.commits = page.commits

@@ -414,7 +414,7 @@ struct FixtureVCSProvider: VCSProviding {
     }
   }()
 
-  func log(root: URL, limit: Int) async throws -> VCSHistoryPage {
+  func log(root: URL, limit: Int) throws -> VCSHistoryPage {
     let slice = Array(Self.commits.prefix(limit))
     return VCSHistoryPage(commits: slice, reachedEnd: slice.count >= Self.commits.count)
   }

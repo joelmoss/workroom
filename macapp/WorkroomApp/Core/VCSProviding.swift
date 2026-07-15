@@ -15,7 +15,7 @@ enum VCSWorkingDiffBase: Sendable, Equatable {
 /// in `VCSModels.swift`. Views/models depend on this protocol, not on either backend.
 protocol VCSProviding: Sendable {
   /// A bounded, newest-first page of history.
-  func log(root: URL, limit: Int) async throws -> VCSHistoryPage
+  func log(root: URL, limit: Int) throws -> VCSHistoryPage
   /// A single changeset: metadata + full message + changed-file list.
   func changeset(root: URL, commitID: String) async throws -> VCSChangeset
   /// The per-file diff for one path within a changeset, as git-format unified-diff text (fed to the

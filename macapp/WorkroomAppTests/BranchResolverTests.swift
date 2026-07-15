@@ -6,7 +6,7 @@ import XCTest
 /// `BranchResolver` be tested without a real repo now that it reads through the provider seam.
 private struct StubProvider: VCSProviding {
   let ref: @Sendable () async throws -> VCSRef
-  func log(root: URL, limit: Int) async throws -> VCSHistoryPage {
+  func log(root: URL, limit: Int) throws -> VCSHistoryPage {
     .init(commits: [], reachedEnd: true)
   }
   func changeset(root: URL, commitID: String) async throws -> VCSChangeset {

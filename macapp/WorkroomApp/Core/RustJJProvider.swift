@@ -4,7 +4,7 @@ import WrVcs
 /// jj-backed `VCSProviding`, over the Rust core (`wr-vcs-core` → UniFFI `WrVcs`). Maps the generated
 /// `WrVcs.*` types into the app-native models.
 struct RustJJProvider: VCSProviding {
-  func log(root: URL, limit: Int) async throws -> VCSHistoryPage {
+  func log(root: URL, limit: Int) throws -> VCSHistoryPage {
     let page: WrVcs.HistoryPage
     do {
       page = try WrVcs.logPage(root: root.path, limit: UInt32(max(0, limit)))

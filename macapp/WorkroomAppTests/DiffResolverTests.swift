@@ -31,7 +31,7 @@ private final class StubDiffProvider: VCSProviding, @unchecked Sendable {
     return _lastCommit
   }
 
-  func log(root: URL, limit: Int) async throws -> VCSHistoryPage {
+  func log(root: URL, limit: Int) throws -> VCSHistoryPage {
     .init(commits: [], reachedEnd: true)
   }
   func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
