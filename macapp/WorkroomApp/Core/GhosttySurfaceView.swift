@@ -100,6 +100,10 @@ final class GhosttySurfaceView: NSView {
   private var isPaneVisible = true
   private var isWindowVisible = true
   nonisolated(unsafe) private var occlusionObserver: NSObjectProtocol?
+  // Key-window focus observers (scoped to this view's window), driving the surface's focus report
+  // when the *key window* changes without a first-responder change — e.g. switching between two
+  // Workroom windows or the Quick Terminal, and app activate/deactivate. See `syncFocusToKeyWindow`.
+  nonisolated(unsafe) private var keyWindowObservers: [NSObjectProtocol] = []
 
   // IME / marked-text state.
   private var markedText = ""
@@ -291,6 +295,7 @@ final class GhosttySurfaceView: NSView {
   private func destroySurface() {
     if let surface { ghostty_surface_free(surface) }
     surface = nil
+    lastSetFocus = nil  // a new surface starts unfocused — don't let a stale value skip the re-sync
     freeSurfaceCStrings()
   }
 
@@ -313,6 +318,8 @@ final class GhosttySurfaceView: NSView {
       NotificationCenter.default.removeObserver(occlusionObserver)
       self.occlusionObserver = nil
     }
+    for observer in keyWindowObservers { NotificationCenter.default.removeObserver(observer) }
+    keyWindowObservers = []
     destroySurface()
     removeFromSuperview()
   }
@@ -320,6 +327,7 @@ final class GhosttySurfaceView: NSView {
   deinit {
     progressTimeoutTimer?.invalidate()
     if let occlusionObserver { NotificationCenter.default.removeObserver(occlusionObserver) }
+    for observer in keyWindowObservers { NotificationCenter.default.removeObserver(observer) }
     if let surface { ghostty_surface_free(surface) }
     freeSurfaceCStrings()
   }
@@ -362,6 +370,8 @@ final class GhosttySurfaceView: NSView {
       NotificationCenter.default.removeObserver(occlusionObserver)
       self.occlusionObserver = nil
     }
+    for observer in keyWindowObservers { NotificationCenter.default.removeObserver(observer) }
+    keyWindowObservers = []
     guard let window else {
       // Detached from any window → stop rendering. `updateWindowVisibility` defaults to "visible"
       // when window is nil, so set it explicitly here rather than leaving the last (stale) value.
@@ -373,6 +383,19 @@ final class GhosttySurfaceView: NSView {
     occlusionObserver = NotificationCenter.default.addObserver(
       forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
     ) { [weak self] _ in self?.updateWindowVisibility() }
+    // Report focus in/out when THIS window gains or loses key without a first-responder change —
+    // switching between two Workroom windows / the Quick Terminal, and app activate/deactivate
+    // (a window is not key while its app is inactive). Scoped to `window`; torn down above on the
+    // next move. First-responder-driven focus is still handled by become/resignFirstResponder.
+    let center = NotificationCenter.default
+    keyWindowObservers = [
+      center.addObserver(
+        forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main
+      ) { [weak self] _ in self?.syncFocusToKeyWindow() },
+      center.addObserver(
+        forName: NSWindow.didResignKeyNotification, object: window, queue: .main
+      ) { [weak self] _ in self?.syncFocusToKeyWindow() },
+    ]
     updateWindowVisibility()
     updateMetalLayerSize()
     // Claim first responder the moment the focused pane's surface lands in a window. On a tab/target
@@ -452,9 +475,30 @@ final class GhosttySurfaceView: NSView {
     return ok
   }
 
+  /// The last value pushed to `ghostty_surface_set_focus`, so `setSurfaceFocused` can no-op a
+  /// repeat. Several triggers now agree on the surface's focus (first-responder changes AND
+  /// key-window changes — `syncFocusToKeyWindow`); without this guard, two triggers landing on the
+  /// same value would emit a duplicate DECSET-1004 focus report to the TUI. Reset to nil in
+  /// `destroySurface` so a freshly-created surface (whose libghostty focus defaults to unfocused) is
+  /// always re-synced rather than skipped by a stale match.
+  private var lastSetFocus: Bool?
+
   private func setSurfaceFocused(_ focused: Bool) {
     guard let surface else { return }
+    guard focused != lastSetFocus else { return }
+    lastSetFocus = focused
     ghostty_surface_set_focus(surface, focused)
+  }
+
+  /// Drive the surface's focus report from key-window state. A surface should report itself focused
+  /// only when it holds first responder AND its window is key (`isKeyWindow` is false whenever the
+  /// app is inactive, so this also covers app deactivate/reactivate). First-responder changes are
+  /// already handled by `becomeFirstResponder`/`resignFirstResponder`; this covers the case where
+  /// the *key window* changes with no first-responder change — switching between two Workroom
+  /// windows or the Quick Terminal — where AppKit keeps first responder and neither fires. Non-
+  /// focused split panes aren't first responder, so they resolve to `false` (a dedup'd no-op).
+  private func syncFocusToKeyWindow() {
+    setSurfaceFocused(holdsFirstResponder && (window?.isKeyWindow ?? false))
   }
 
   /// True when this view currently holds the window's first responder. The predicate the

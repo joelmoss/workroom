@@ -42,6 +42,8 @@ final class GhosttyApp {
   /// The dark/light the generated config was last built for, so `reloadConfig` can no-op when the
   /// appearance hasn't actually changed (it's called per OS-appearance notification).
   private var lastConfiguredDark: Bool?
+  /// NSApplication active/inactive observers that drive app-level focus (see `observeAppFocus`).
+  private var appFocusObservers: [NSObjectProtocol] = []
 
   private init() {
     initialize()
@@ -97,8 +99,39 @@ final class GhosttyApp {
     app = createdApp
     config = cfg
     ghostty_app_set_color_scheme(createdApp, Self.currentColorScheme())
+    // Tell libghostty the application's focus state, now and on every change. Real Ghostty's macOS
+    // app drives this from NSApplication activation; we were missing it entirely — only per-surface
+    // `ghostty_surface_set_focus` (from first-responder changes) was wired. The gap surfaces as a
+    // terminal focus desync: a focus-tracking TUI (Claude Code, Codex) can end up stuck ignoring
+    // navigation keys after the app/terminal loses and regains focus, while Ctrl-C (a tty signal,
+    // focus-independent) still works. Keeping the app-level flag in sync is part of the embedding
+    // contract and a prerequisite for correct DECSET 1004 (`CSI I`/`CSI O`) focus reporting.
+    observeAppFocus(for: createdApp)
     let info = ghostty_info()
     logger.info("libghostty ready (build mode \(info.build_mode.rawValue), version available)")
+  }
+
+  // MARK: App-level focus (embedding contract)
+
+  /// Set libghostty's initial app-focus and keep it in sync with NSApplication activation. Real
+  /// Ghostty's macOS app does the same from `applicationDid{Become,Resign}Active`; the surface's
+  /// per-focus `ghostty_surface_set_focus` (driven by first-responder changes) is not enough on its
+  /// own — the app-level flag is what unblocks focus-event delivery.
+  private func observeAppFocus(for app: ghostty_app_t) {
+    ghostty_app_set_focus(app, NSApp.isActive)
+    let center = NotificationCenter.default
+    let onActive = center.addObserver(
+      forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+    ) { [weak self] _ in self?.setAppFocus(true) }
+    let onResign = center.addObserver(
+      forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
+    ) { [weak self] _ in self?.setAppFocus(false) }
+    appFocusObservers = [onActive, onResign]
+  }
+
+  private func setAppFocus(_ focused: Bool) {
+    guard let app else { return }
+    ghostty_app_set_focus(app, focused)
   }
 
   /// Log a libghostty startup failure and report it to Sentry. The terminal engine is the app's
@@ -257,6 +290,8 @@ final class GhosttyApp {
   // MARK: Teardown (A1 — on app quit, after surfaces are freed)
 
   func shutdown() {
+    for observer in appFocusObservers { NotificationCenter.default.removeObserver(observer) }
+    appFocusObservers.removeAll()
     if let app {
       ghostty_app_free(app)
       self.app = nil
