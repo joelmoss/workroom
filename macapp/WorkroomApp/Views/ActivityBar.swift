@@ -1,3 +1,4 @@
+import AppKit
 import Defaults
 import SwiftUI
 
@@ -34,8 +35,12 @@ struct ActivityBar: View {
         }
       }
       Spacer(minLength: 0)
+      // The notifications bell sits at the bottom of the rail (VSCode-style, where the account/gear
+      // icons live), separate from the section icons above — it opens a popover, it doesn't drive a
+      // pane. Always present, like the bar itself.
+      NotificationsBarButton()
     }
-    .padding(.top, 6)
+    .padding(.vertical, 6)
     .frame(width: width)
     .frame(maxHeight: .infinity)
     .background(theme.tokens.panel)
@@ -110,5 +115,61 @@ private struct ActivityBarButton: View {
     .accessibilityValue(badged ? "has changes" : "")
     .accessibilityIdentifier("activitySection.\(section.rawValue)")
     .accessibilityAddTraits(active ? [.isSelected] : [])
+  }
+}
+
+/// The notifications bell pinned to the bottom of the activity bar (moved here from the title bar).
+/// Not an `ActivitySection` — it opens a popover listing all notifications rather than driving a
+/// pane, so it draws no active strip. A plain click toggles the popover; ⌘-click walks the backlog
+/// (opens the oldest pending notification's terminal, mirroring ⇧⌘N). Disabled with no unread; an
+/// unread-count badge sits at the glyph's top-trailing corner. Because the bar lives in a normal
+/// SwiftUI view (unlike the title-bar accessory), a plain `.popover` anchors reliably — no
+/// hand-hosted `NSPopover` needed (contrast the old title-bar bell, which had to hand-host one).
+private struct NotificationsBarButton: View {
+  @EnvironmentObject var store: AppStore
+  @EnvironmentObject var notifications: NotificationCenterStore
+  @State private var hovering = false
+  @State private var showPopover = false
+  private let theme = ThemeService.shared
+
+  var body: some View {
+    Button {
+      if NSEvent.modifierFlags.contains(.command) {
+        store.openOldestNotification()
+      } else {
+        showPopover.toggle()
+      }
+    } label: {
+      Image(systemName: "bell")
+        .font(.system(size: 18, weight: .regular))
+        .foregroundStyle(theme.tokens.fgMuted)
+        .frame(width: 44, height: 40)
+        .overlay(alignment: .topTrailing) {
+          UnreadBadge(count: notifications.total)
+            .padding(.top, 3)
+            .padding(.trailing, 5)
+        }
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .background {
+      RoundedRectangle(cornerRadius: 6)
+        .fill(hovering ? theme.tokens.hover : Color.clear)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
+    }
+    .onHover { hovering = $0 }
+    .disabled(notifications.total == 0)
+    .help(notifications.total > 0 ? "Show notifications (⌘-click for next)" : "No notifications")
+    .accessibilityLabel(
+      notifications.total > 0 ? "Notifications, \(notifications.total) unread" : "Notifications"
+    )
+    .accessibilityIdentifier("activityBar.notifications")
+    .popover(isPresented: $showPopover, arrowEdge: .leading) {
+      NotificationsPopover(onActivate: { showPopover = false })
+        .environmentObject(store)
+        .environmentObject(notifications)
+        .frame(width: 320, height: 360)
+    }
   }
 }

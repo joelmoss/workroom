@@ -71,7 +71,7 @@ struct WindowMovableController: NSViewRepresentable {
 /// accessories instead gives every control one shared `.borderless` style and exact placement,
 /// independent of the split's columns.
 
-/// A hairline group separator shared by the title-bar bars (matches `TitlebarControlsBar`'s).
+/// A hairline group separator shared by the title-bar bars.
 struct TitlebarDivider: View {
   private let theme = ThemeService.shared
 
@@ -137,13 +137,12 @@ struct LeadingTitlebarBar: View {
   }
 }
 
-/// Trailing title-bar controls: the quick terminal (issue #39), the selected target's run/open-in
-/// actions (issue #7), plus the notifications bell + inspector toggle. `RunControls`/`OpenInControl`
-/// render nothing when not applicable, so the group collapses to just quick terminal + bell + toggle
-/// in the empty state.
+/// Trailing title-bar controls: the quick terminal (issue #39) and the selected target's run/open-in
+/// actions (issue #7). (Notifications + inspector visibility now live in the activity bar, so no bell
+/// or toggle here.) `RunControls`/`OpenInControl` render nothing when not applicable, so the group
+/// collapses to just the quick terminal in the empty state.
 struct TrailingTitlebarBar: View {
   @EnvironmentObject var store: AppStore
-  @EnvironmentObject var notifications: NotificationCenterStore
   @EnvironmentObject var updater: Updater
 
   var body: some View {
@@ -158,8 +157,19 @@ struct TrailingTitlebarBar: View {
         TitlebarDivider()
       }
 
-      // Quick Terminal (⌥§) — a ~/ shell in its own window. First of the always-present controls (the
-      // update pill precedes it only while an update is pending), just left of the run controls.
+      // The selected target's open-in + run actions (a group). Open In leads it, swapped with the
+      // Quick Terminal that used to sit here — Quick Terminal now trails at the window edge.
+      if let target = store.selectedTarget, !target.isMissing {
+        OpenInControl(path: target.path)
+        if let projectPath = AppStore.projectPath(of: store.selectedTargetID) {
+          RunControls(target: target, projectPath: projectPath)
+        }
+        // Separate the target's actions from the always-present quick terminal — a different group.
+        TitlebarDivider()
+      }
+
+      // Quick Terminal (⌥§) — a ~/ shell in its own window. Always present; sits at the window's
+      // trailing edge, after the target's run/open-in actions.
       Button {
         NotificationCenter.default.post(name: .showQuickTerminal, object: nil)
       } label: {
@@ -171,19 +181,12 @@ struct TrailingTitlebarBar: View {
       .help("Quick Terminal (⌥§)")
       .accessibilityLabel("Quick Terminal")
       .accessibilityIdentifier("toolbar.quickTerminal")
-
-      if let target = store.selectedTarget, !target.isMissing {
-        // Separate the quick terminal from the target's run/open-in actions — a different group.
-        TitlebarDivider()
-        if let projectPath = AppStore.projectPath(of: store.selectedTargetID) {
-          RunControls(target: target, projectPath: projectPath)
-        }
-        OpenInControl(path: target.path)
-      }
-      // Bell + inspector toggle (carries its own padding/divider/style).
-      TitlebarControlsBar()
     }
     .buttonStyle(ToolbarIconButtonStyle())
+    // Trailing gap so the last control isn't flush to the window edge (previously supplied by the
+    // removed TitlebarControlsBar — the right-sidebar toggle it hosted is redundant with the activity
+    // bar, whose section icons show/collapse the inspector).
+    .padding(.trailing, 10)
     // Fill the full-height (52pt) accessory host so the HStack centres its buttons — see LeadingTitlebarBar.
     .frame(maxHeight: .infinity)
   }

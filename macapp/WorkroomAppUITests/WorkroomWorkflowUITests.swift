@@ -43,18 +43,6 @@ final class WorkroomWorkflowUITests: XCTestCase {
       "element count did not reach \(expected) within \(timeout)s")
   }
 
-  /// Wait for an element's accessibility value to settle on `value` (the inspector toggle reports
-  /// "shown"/"hidden", so this asserts the control reflects the open state).
-  private func assertValue(
-    _ element: XCUIElement, equals value: String, timeout: TimeInterval = 4
-  ) {
-    let exp = XCTNSPredicateExpectation(
-      predicate: NSPredicate(format: "value == %@", value), object: element)
-    XCTAssertEqual(
-      XCTWaiter().wait(for: [exp], timeout: timeout), .completed,
-      "element value did not reach \"\(value)\" within \(timeout)s")
-  }
-
   /// Wait for an element to stop existing (re-snapshotting via a predicate, so it tolerates the
   /// inspector's dismiss animation).
   private func waitForDisappearance(_ element: XCUIElement, timeout: TimeInterval = 4) -> Bool {
@@ -185,30 +173,17 @@ final class WorkroomWorkflowUITests: XCTestCase {
   /// The trailing title-bar controls (notifications bell + inspector toggle) live in an
   /// `NSTitlebarAccessoryViewController` bar, not `.toolbar` — `.primaryAction` is column-scoped in a
   /// NavigationSplitView, so they couldn't both sit at the window's trailing edge as toolbar items.
-  /// This asserts both controls exist, the `sidebar.right` toggle is the sole show/hide control for
-  /// the inspector (open + close via its accessibility value), and — after notifications moved to the
-  /// left sidebar (issue #118) — a plain bell click opens the all-notifications popover WITHOUT
-  /// dismissing anything, while ⇧⌘N (the same "walk the backlog" path a ⌘-click on the bell uses)
-  /// opens the oldest and drops the unread total, all WITHOUT touching the inspector.
-  func testTitlebarControlsBellAndInspectorToggle() throws {
+  /// The notifications bell lives at the bottom of the activity bar (issue #118 → moved off the title
+  /// bar). A plain click opens the all-notifications popover WITHOUT dismissing anything; ⇧⌘N (the
+  /// "walk the backlog" path a ⌘-click on the bell also drives) opens the oldest and drops the unread
+  /// total.
+  func testNotificationsBellOpensPopoverAndWalksBacklog() throws {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
 
-    let bell = app.buttons["titlebar.notifications"]
-    let toggle = app.buttons["titlebar.toggleInspector"]
+    let bell = app.buttons["activityBar.notifications"]
     XCTAssertTrue(
-      bell.waitForExistence(timeout: 10), "the notifications bell should be in the title bar")
-    XCTAssertTrue(
-      toggle.waitForExistence(timeout: 10), "the inspector toggle should be in the title bar")
-
-    // The `sidebar.right` toggle is the sole inspector show/hide control. Assert via its OWN
-    // accessibility value, which is bound directly to `showInspector` — the inspector's section
-    // headers linger in the a11y tree after it hides, so they're an unreliable open/closed proxy.
-    // `showInspector` persists across launches, so read the starting value rather than assuming it.
-    let start = (toggle.value as? String) ?? "hidden"
-    let flipped = start == "shown" ? "hidden" : "shown"
-    toggle.click()
-    assertValue(toggle, equals: flipped)
+      bell.waitForExistence(timeout: 10), "the notifications bell should be in the activity bar")
 
     // The fixture seeds a backlog (5 entries totalling 7 unread; the oldest is a ×3 coalesced
     // "Tests passed"). A plain bell click opens the all-notifications popover and does NOT dismiss
@@ -224,10 +199,9 @@ final class WorkroomWorkflowUITests: XCTestCase {
 
     // ⇧⌘N (Next Notification) opens the oldest pending notification's terminal and dismisses it — the
     // same `openOldestNotification` path a ⌘-click on the bell drives. The oldest is the ×3 "Tests
-    // passed", so the unread total the bell reports drops from 7 to 4, WITHOUT changing the inspector.
+    // passed", so the unread total the bell reports drops from 7 to 4.
     app.typeKey("n", modifierFlags: [.command, .shift])
     assertLabel(bell, equals: "Notifications, 4 unread")
-    assertValue(toggle, equals: flipped)
   }
 
   /// The left-sidebar notification band (issue #118): the fixture's 5-entry backlog surfaces the

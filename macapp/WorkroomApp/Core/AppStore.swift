@@ -207,9 +207,10 @@ final class AppStore: ObservableObject {
   /// collapsed — the trigger for the edge-hover reveal (issue #74). The trigger used to be a wide
   /// strip over the toolbar (issue #56), but that strip sat directly above the leftmost workroom
   /// tabs: reaching for a tab tripped the reveal, whose panel then covered the very tab you wanted.
-  /// Pinning the trigger to the toggle button itself keeps it clear of the tabs. Set by the leading
-  /// (`LeadingTitlebarBar`) / trailing (`TitlebarControlsBar`) toggle buttons, observed by
-  /// `EdgeRevealSidebar`. Session-only, not persisted (transient hover state).
+  /// Pinning the trigger to the toggle button itself keeps it clear of the tabs. `hoveringLeftToggle`
+  /// is set by the leading sidebar's title-bar toggle (`LeadingTitlebarBar`); the trailing side has no
+  /// toggle button (the activity bar is always pinned to that edge), so `hoveringRightToggle` stays
+  /// false. Observed by `EdgeRevealSidebar`. Session-only, not persisted (transient hover state).
   @Published var hoveringLeftToggle: Bool = false
   @Published var hoveringRightToggle: Bool = false
   /// The docked Projects sidebar's chosen width, set by `SidebarColumn`'s resize handle on drag-end
