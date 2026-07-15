@@ -25,7 +25,10 @@ struct ActivityBar: View {
           section: section,
           // Active only while the pane is actually shown — a closed inspector highlights nothing
           // (VSCode behaviour), so the bar never implies content is visible when it isn't.
-          active: showInspector && store.activeInspectorSection == section
+          active: showInspector && store.activeInspectorSection == section,
+          // A dirty dot on the Changes icon so uncommitted changes are visible without opening (or
+          // even leaving) the pane — same orange `warning` tint the sidebar/tab dirty dot uses.
+          badged: section == .changes && changesDirty
         ) {
           store.apply(.iconClick(section))
         }
@@ -38,6 +41,14 @@ struct ActivityBar: View {
     .background(theme.tokens.panel)
     .onReceive(NotificationCenter.default.publisher(for: .themeDidChange)) { _ in themeTick += 1 }
   }
+
+  /// Whether the inspector's current target has an uncommitted working tree — drives the Changes
+  /// icon's dirty dot. Keyed off `inspectorTargetID` (nil when the selection has no open tabs, so the
+  /// Changes pane is empty and the dot stays hidden), matching what the pane actually shows.
+  private var changesDirty: Bool {
+    guard let id = store.inspectorTargetID else { return false }
+    return store.workroomStatuses[id]?.dirty == true
+  }
 }
 
 /// One activity-bar icon. Active state is signalled by **position** (a 2pt accent strip on the inner
@@ -47,6 +58,9 @@ struct ActivityBar: View {
 private struct ActivityBarButton: View {
   let section: ActivitySection
   let active: Bool
+  /// Draws a `warning` dirty dot at the icon's bottom-left (currently the Changes icon when the
+  /// working tree has uncommitted changes) — the low corner keeps it clear of the glyph.
+  var badged: Bool = false
   let action: () -> Void
   @State private var hovering = false
   private let theme = ThemeService.shared
@@ -57,6 +71,18 @@ private struct ActivityBarButton: View {
         .font(.system(size: 18, weight: .regular))
         .foregroundStyle(active ? theme.tokens.fg : theme.tokens.fgMuted)
         .frame(width: 44, height: 40)
+        .overlay(alignment: .bottomLeading) {
+          if badged {
+            // A11y-hidden — the state is announced once on the button's accessibility value ("has
+            // changes"), which the UITest reads. Low corner so it never crowds the glyph.
+            Circle()
+              .fill(theme.tokens.warning)
+              .frame(width: 7, height: 7)
+              .padding(.bottom, 8)
+              .padding(.leading, 9)
+              .accessibilityHidden(true)
+          }
+        }
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
@@ -75,8 +101,13 @@ private struct ActivityBarButton: View {
       }
     }
     .onHover { hovering = $0 }
-    .help("\(section.label) (\(section.shortcutHint))")
+    .help(
+      badged
+        ? "\(section.label) (\(section.shortcutHint)) — working tree has changes"
+        : "\(section.label) (\(section.shortcutHint))"
+    )
     .accessibilityLabel(section.label)
+    .accessibilityValue(badged ? "has changes" : "")
     .accessibilityIdentifier("activitySection.\(section.rawValue)")
     .accessibilityAddTraits(active ? [.isSelected] : [])
   }
