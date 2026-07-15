@@ -7,7 +7,12 @@ import SwiftUI
 /// content tab; a quick double-click persists it (the same gate the Changes panel uses).
 struct HistoryPanel: View {
   @EnvironmentObject var store: AppStore
-  private var model: HistoryModel { store.commitHistory }
+  /// Injected + `@ObservedObject` (mirrors `FilesPanel`), NOT read via `store.commitHistory`: the
+  /// panel must subscribe to the model's own `@Published` state so its `.loading → .loaded` flip
+  /// re-renders the pane. `AppStore` doesn't forward `commitHistory`'s `objectWillChange`, so a plain
+  /// `store.commitHistory` read only refreshed when some *unrelated* store change happened to publish
+  /// (a status refresh, a reselection, an app refocus) — leaving the loader stuck until then.
+  @ObservedObject var model: HistoryModel
   private let theme = ThemeService.shared
 
   var body: some View {

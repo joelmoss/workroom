@@ -114,7 +114,9 @@ struct RightInspector: View {
     case .pullRequest:
       return AnyView(PullRequestPanel().environmentObject(store).environmentObject(notifications))
     case .history:
-      return AnyView(HistoryPanel().environmentObject(store).environmentObject(notifications))
+      return AnyView(
+        HistoryPanel(model: store.commitHistory).environmentObject(store).environmentObject(
+          notifications))
     }
   }
 
