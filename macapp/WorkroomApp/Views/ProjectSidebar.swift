@@ -46,9 +46,14 @@ struct ProjectSidebar: View {
   /// glyph column carries the final step (so the terminal glyph lines up under the root/workroom
   /// label). Vertical insets are unchanged: 4 for the selectable rows, a tighter 2 for the smaller
   /// terminal rows. (`6 + 12`: the base sidebar margin plus one 12pt level step.)
-  private let rowInsets = EdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 0)
-  private let childRowInsets = EdgeInsets(top: 4, leading: 6 + 6, bottom: 4, trailing: 0)
+  private let rowInsets = EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 0)
+  private let childRowInsets = EdgeInsets(top: 2, leading: 6 + 6, bottom: 2, trailing: 0)
   private let terminalRowInsets = EdgeInsets(top: 3, leading: 6 + 6, bottom: 3, trailing: 0)
+  /// Fixed content height shared by the project row and its root/workroom children so every row in
+  /// the tree is the same height regardless of which trailing controls (run/delete/spinner) it shows
+  /// (issue: uniform row sizing). Paired with the matching top/bottom insets above. Terminal rows are
+  /// a deliberately more compact tier (their own glyph + footnote) and keep `terminalRowInsets`.
+  private let rowHeight: CGFloat = 20
 
   /// Select a target (root or workroom) on tap — sets the store's selected target id and follows the
   /// New-Workroom context project. Selection is driven by tap rather than the `List`'s own
@@ -203,7 +208,8 @@ struct ProjectSidebar: View {
           // The project chevron sits to the right of the project name — projects keep their own
           // disclosure idiom, distinct from the leading caret column the root/workroom/terminal rows
           // share. Always shown (every project has at least the root as a child).
-          Text(project.displayName).fontWeight(.medium)
+          Text(project.displayName).font(.callout).fontWeight(.medium)
+            .foregroundStyle(.secondary)
           Image(systemName: isExpanded(project.path) ? "chevron.down" : "chevron.right")
             .font(.system(size: 10, weight: .semibold))
             .foregroundStyle(.secondary)
@@ -244,6 +250,7 @@ struct ProjectSidebar: View {
         if busy { ProgressView().controlSize(.small) }
       }
     }
+    .frame(height: rowHeight)
     .contentShape(Rectangle())
     .accessibilityIdentifier("sidebar.project.\(project.displayName)")
     .onHover { inside in
@@ -315,7 +322,8 @@ struct ProjectSidebar: View {
       if store.canRunCommand(for: target, inProject: project.path) {
         RowRunButton(target: target)
       }
-    }.contentShape(Rectangle())
+    }.frame(height: rowHeight)
+      .contentShape(Rectangle())
       .opacity(isDraggingForSplit(id) ? 0.5 : 1)
       .onTapGesture { selectTarget(id) }
       // Drag this root onto a displayed workroom pane to split them (issue #101). Simultaneous so the
@@ -383,7 +391,8 @@ struct ProjectSidebar: View {
         RowRunButton(target: target)
           .accessibilityIdentifier("sidebar.workroom.\(workroom.name).run")
       }
-    }.contentShape(Rectangle())
+    }.frame(height: rowHeight)
+      .contentShape(Rectangle())
       .opacity(isDraggingForSplit(id) ? 0.5 : 1)
       .onTapGesture { selectTarget(id) }
       // Drag this workroom onto a displayed pane to split them (issue #101). Simultaneous so the List
