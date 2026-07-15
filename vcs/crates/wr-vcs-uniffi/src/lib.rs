@@ -91,20 +91,11 @@ pub struct CommitChanges {
     pub files: Vec<ChangedFile>,
 }
 
-#[derive(uniffi::Enum)]
-pub enum ParentState {
-    Root,
-    Merge { count: u32 },
-    Unavailable,
-    Changes { changes: CommitChanges },
-}
-
 #[derive(uniffi::Record)]
 pub struct WorkingStatus {
     pub dirty: bool,
     pub conflicted: bool,
     pub working_copy: CommitChanges,
-    pub parent: ParentState,
     pub branch_for_ci: Option<String>,
 }
 
@@ -234,27 +225,12 @@ impl From<model::CommitChanges> for CommitChanges {
     }
 }
 
-impl From<model::ParentState> for ParentState {
-    fn from(p: model::ParentState) -> Self {
-        use model::ParentState as M;
-        match p {
-            M::Root => ParentState::Root,
-            M::Merge(count) => ParentState::Merge { count },
-            M::Unavailable => ParentState::Unavailable,
-            M::Changes(changes) => ParentState::Changes {
-                changes: changes.into(),
-            },
-        }
-    }
-}
-
 impl From<model::WorkingStatus> for WorkingStatus {
     fn from(s: model::WorkingStatus) -> Self {
         WorkingStatus {
             dirty: s.dirty,
             conflicted: s.conflicted,
             working_copy: s.working_copy.into(),
-            parent: s.parent.into(),
             branch_for_ci: s.branch_for_ci,
         }
     }

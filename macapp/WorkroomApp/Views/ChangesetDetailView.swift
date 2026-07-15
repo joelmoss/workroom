@@ -101,10 +101,9 @@ struct ChangesetDetailView: View {
       if UITestFixture.isActive {
         changeset = try await UITestFixture.vcsProvider.changeset(root: root, commitID: commitID)
       } else {
-        // Off the main actor: the providers do blocking work (UniFFI / libgit2).
-        changeset = try await Task.detached(priority: .userInitiated) {
-          try await VCS.provider(for: root).changeset(root: root, commitID: commitID)
-        }.value
+        // The provider self-offloads its blocking read to GCD (`runBlocking`), so a plain await here
+        // stays off the cooperative pool — no `Task.detached` wrapper needed.
+        changeset = try await VCS.provider(for: root).changeset(root: root, commitID: commitID)
       }
       if Task.isCancelled { return }
       state = .loaded(changeset)

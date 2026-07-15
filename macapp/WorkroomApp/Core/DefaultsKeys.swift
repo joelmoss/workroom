@@ -97,6 +97,13 @@ extension Defaults.Keys {
   /// Whether the notifications menu bar item is shown (issue #33). On by default.
   static let showMenuBarItem = Key<Bool>("showMenuBarItem", default: true)
 
+  /// Load remote author/reviewer avatars — Gravatar (by commit-author email) and
+  /// `github.com/<login>.png`. On by default. Off ⇒ only the coloured initials chip renders and NO
+  /// avatar image request is made, so opening an untrusted repo's History never beacons the viewer's
+  /// IP + an author-email hash to gravatar.com. A privacy control (issue #59 review); the initials
+  /// fallback is always the same one used for unknown/404 avatars, so nothing else changes.
+  static let loadRemoteAvatars = Key<Bool>("loadRemoteAvatars", default: true)
+
   /// The persisted selected sidebar target as a `TerminalTarget.ID` string, or nil (issue #14).
   static let sidebarSelection = Key<String?>("sidebar.selectionTargetID", default: nil)
 

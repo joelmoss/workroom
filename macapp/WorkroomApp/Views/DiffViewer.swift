@@ -96,7 +96,7 @@ struct DiffViewer: View {
     // made `applyHighlight` actually populate lines for a History file diff. A genuine file switch
     // changes `fetchKey`; a tab reopen recreates the view (so `@State` resets) — both re-run.
     .task(id: fetchKey) {
-      guard loadedKey != fetchKey else { return }
+      guard Self.shouldLoad(loadedKey: loadedKey, fetchKey: fetchKey) else { return }
       loadedKey = fetchKey
       await load()
     }
@@ -108,6 +108,12 @@ struct DiffViewer: View {
 
   /// Identity of the file+revision this diff is for — the load task's key and the re-load guard.
   private var fetchKey: String { "\(descriptor.source)\u{1F}\(descriptor.path)" }
+
+  /// The load-once-per-file decision behind `.task(id: fetchKey)`: load only when the file identity
+  /// actually changed. A re-run with the SAME `fetchKey` (a spurious body re-render re-firing the
+  /// task after `applyHighlight` populates lines) must skip, so `load()` can't re-enter and spin the
+  /// loader forever (the issue-#59 re-fire loop). `nil` loadedKey ⇒ first load. Pure, unit-tested.
+  static func shouldLoad(loadedKey: String?, fetchKey: String) -> Bool { loadedKey != fetchKey }
 
   /// Identity of the current highlight: file + revision + theme generation + which diff load it's
   /// for. Any change cancels the in-flight highlight and starts a fresh, correctly-keyed one.

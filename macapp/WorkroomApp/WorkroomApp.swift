@@ -133,63 +133,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   deinit { hotkeyObservation?.cancel() }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
-    #if DEBUG
-      // Phase-1 VCS smoke: exercise the VCSProviding seam (routed by repo kind + both backends
-      // explicitly) inside the app. Opt-in via WR_VCS_PROBE_ROOT=<repo>. Temporary — removed once
-      // the History UI (issue #59) consumes VCSProviding for real.
-      if let probeRoot = ProcessInfo.processInfo.environment["WR_VCS_PROBE_ROOT"] {
-        let url = URL(fileURLWithPath: probeRoot)
-        Task {
-          func heads(_ p: VCSHistoryPage) -> String {
-            p.commits.map { $0.shortID + ($0.isWorkingCopy ? "@" : "") }.joined(separator: " ")
-          }
-          do {
-            let provider = try VCS.provider(for: url)
-            let page = try provider.log(root: url, limit: 3)
-            NSLog(
-              "[wr-vcs] kind=\(VCS.repoKind(at: url)) routed: commits=\(page.commits.count) "
-                + "reachedEnd=\(page.reachedEnd) [\(heads(page))]")
-            // Fetch a real changeset (first non-working-copy commit) to exercise the file list.
-            if let target = page.commits.first(where: { !$0.isWorkingCopy }) ?? page.commits.first {
-              let cs = try await provider.changeset(root: url, commitID: target.commitID)
-              let files = cs.files.prefix(4).map { "\($0.kind):\($0.path)" }.joined(separator: " ")
-              NSLog(
-                "[wr-vcs] changeset \(target.shortID): merge=\(cs.isMerge) "
-                  + "files=\(cs.files.count) [\(files)]")
-              if let f = cs.files.first {
-                let patch = try await provider.fileDiff(
-                  root: url, commitID: target.commitID, path: f.path)
-                let head = patch.prefix(70).replacingOccurrences(of: "\n", with: "⏎")
-                NSLog("[wr-vcs] fileDiff \(f.path): \(patch.count) chars head=[\(head)]")
-              }
-            }
-          } catch {
-            NSLog("[wr-vcs] routed error: \(error)")
-          }
-          if let jj = try? RustJJProvider().log(root: url, limit: 3) {
-            NSLog("[wr-vcs] jj provider: [\(heads(jj))]")
-          }
-          do {
-            let g = GitProvider()
-            let gp = try g.log(root: url, limit: 3)
-            NSLog("[wr-git] git provider: [\(heads(gp))]")
-            if let target = gp.commits.first {
-              let cs = try await g.changeset(root: url, commitID: target.commitID)
-              let files = cs.files.prefix(4).map { "\($0.kind):\($0.path)" }.joined(separator: " ")
-              NSLog("[wr-git] changeset \(target.shortID): files=\(cs.files.count) [\(files)]")
-              if let f = cs.files.first {
-                let patch = try await g.fileDiff(root: url, commitID: target.commitID, path: f.path)
-                let head = patch.prefix(70).replacingOccurrences(of: "\n", with: "⏎")
-                NSLog("[wr-git] fileDiff \(f.path): \(patch.count) chars head=[\(head)]")
-              }
-            }
-          } catch {
-            NSLog("[wr-git] error: \(error)")
-          }
-        }
-      }
-    #endif
-
     // Disable native macOS window tabbing. It tabs whole app windows (each with its own
     // sidebar) — a level above our per-workroom terminal tabs and a poor fit for a
     // single-window, sidebar-driven app. Off, it also drops the auto-injected

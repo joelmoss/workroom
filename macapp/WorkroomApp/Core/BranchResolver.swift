@@ -34,10 +34,9 @@ struct BranchResolver: Sendable {
     let root = URL(fileURLWithPath: path, isDirectory: true)
     do {
       let ref = try await withTimeout(seconds: timeout) {
-        // Off the main actor: the providers do blocking work (libgit2 / jj-lib over UniFFI).
-        try await Task.detached(priority: .userInitiated) {
-          try await makeProvider(root).currentRef(root: root)
-        }.value
+        // The provider self-offloads its blocking read to GCD (`runBlocking`), so a plain await here
+        // never occupies a cooperative-pool thread — no `Task.detached` wrapper needed.
+        try await makeProvider(root).currentRef(root: root)
       }
       return Self.rootRef(from: ref)
     } catch {

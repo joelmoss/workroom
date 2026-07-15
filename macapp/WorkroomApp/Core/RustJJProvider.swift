@@ -15,9 +15,20 @@ struct RustJJProvider: VCSProviding {
   }
 
   func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
-    let cs: WrVcs.Changeset
+    // The jj-lib read + mapping is synchronous, blocking UniFFI work — run it on GCD (`runBlocking`),
+    // never the fixed-width cooperative pool. Map to the (Sendable) app model inside the closure so no
+    // non-Sendable `WrVcs.*` type crosses the boundary.
+    var changeset: VCSChangeset
     do {
-      cs = try WrVcs.changeset(root: root.path, commitId: commitID)
+      changeset = try await runBlocking {
+        let cs = try WrVcs.changeset(root: root.path, commitId: commitID)
+        return VCSChangeset(
+          commit: Self.map(cs.commit),
+          fullMessage: cs.fullMessage,
+          files: cs.files.map(Self.map),
+          isMerge: cs.isMerge
+        )
+      }
     } catch {
       throw Self.mapError(error)
     }
@@ -25,34 +36,29 @@ struct RustJJProvider: VCSProviding {
     // would materialize every file), so — jayjay-style, like `WorkroomStatusResolver.resolveJJ` — one
     // read-only `jj diff --stat` fills it. `--ignore-working-copy` never locks `@`. Best-effort: a
     // failure leaves the counts nil and the header just omits the summary.
-    var insertions: Int?
-    var deletions: Int?
     if let stat = try? await Self.run(
       "jj",
       ["diff", "-r", commitID, "--ignore-working-copy", "--stat", "--color", "never"],
       cwd: root
     ) {
       let parsed = WorkroomStatusResolver.parseDiffStat(stat)
-      (insertions, deletions) = (parsed.insertions, parsed.deletions)
+      changeset.insertions = parsed.insertions
+      changeset.deletions = parsed.deletions
     }
-    return VCSChangeset(
-      commit: Self.map(cs.commit),
-      fullMessage: cs.fullMessage,
-      files: cs.files.map(Self.map),
-      isMerge: cs.isMerge,
-      insertions: insertions,
-      deletions: deletions
-    )
+    return changeset
   }
 
   func currentRef(root: URL) async throws -> VCSRef {
-    let ref: WrVcs.Ref
+    // Synchronous, blocking UniFFI read — GCD-offloaded so it never occupies a cooperative-pool
+    // thread. Mapped to the Sendable `VCSRef` inside the closure.
     do {
-      ref = try WrVcs.currentRef(root: root.path)
+      return try await runBlocking {
+        let ref = try WrVcs.currentRef(root: root.path)
+        return VCSRef(name: ref.name, kind: Self.map(ref.kind))
+      }
     } catch {
       throw Self.mapError(error)
     }
-    return VCSRef(name: ref.name, kind: Self.map(ref.kind))
   }
 
   /// The jj working-copy status via the native Rust core (jj-lib): snapshots `@` (so it reflects
@@ -134,76 +140,28 @@ struct RustJJProvider: VCSProviding {
     }
   }
 
-  /// Run a VCS CLI (via `/usr/bin/env` so PATH lookup works), returning stdout. GUI apps get a
-  /// minimal PATH, so prepend the common Homebrew / local locations where `jj` lives.
+  /// Run a VCS CLI (`jj`), returning stdout — routed through `StatusCommandRunner` so it inherits that
+  /// runner's hardening rather than re-implementing it:
+  ///   - a `timeout` enforced by SIGTERM→(2s grace)→SIGKILL `killTree`, so a wedged `jj` (lock
+  ///     contention, a child blocked on a dead socket) can't spin the diff pane forever;
+  ///   - task-cancellation kill, so a superseded/cancelled read doesn't leave a `jj` process running;
+  ///   - a bounded read (`maxBytes`, 4 MB) so a pathological single-file diff can't blow memory before
+  ///     `DiffResolver`'s size gate rejects it;
+  ///   - the app's full `ShellEnvironment.path()` (GUI apps get a minimal PATH — the same helper the
+  ///     rest of the app uses, so `jj` resolves identically everywhere).
   ///
-  /// The entire blocking `Process` lifecycle (`run` + the pipe reads + `waitUntilExit`) runs on a
-  /// GCD global-queue thread, NEVER on the Swift cooperative thread pool. `readDataToEndOfFile()` and
-  /// `waitUntilExit()` park their thread until the child exits; parking a cooperative-pool thread
-  /// (what a bare `Task.detached` uses) starves the pool. With a few concurrent VCS reads in flight
-  /// (several windows polling status/branch + a diff load *and* its syntax-highlight `fileContent`
-  /// fetch), every cooperative thread ends up parked in a read, this call's own reads can't be
-  /// scheduled, its `jj` child fills its >64 KB stdout pipe with no reader, blocks on the write, and
-  /// never exits — the read never reaches EOF and the diff pane spins forever. GCD global-queue
-  /// threads exist precisely to be blocked, so the work goes there and the cooperative pool stays free.
-  private static func run(_ exe: String, _ args: [String], cwd: URL) async throws -> String {
-    var env = ProcessInfo.processInfo.environment
-    let extra = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-    env["PATH"] = env["PATH"].map { "\(extra):\($0)" } ?? extra
-    env["GIT_OPTIONAL_LOCKS"] = "0"
-    let fullArgs = [exe] + args
-    let cwdURL = cwd
-
-    return try await withCheckedThrowingContinuation {
-      (cont: CheckedContinuation<String, Error>) in
-      DispatchQueue.global(qos: .userInitiated).async {
-        // Build the process here (off the cooperative pool) so nothing non-Sendable crosses the
-        // continuation boundary.
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        proc.arguments = fullArgs
-        proc.currentDirectoryURL = cwdURL
-        proc.environment = env
-        let out = Pipe()
-        let err = Pipe()
-        proc.standardOutput = out
-        proc.standardError = err
-        do {
-          try proc.run()
-        } catch {
-          cont.resume(throwing: VCSError.io("failed to spawn \(exe): \(error)"))
-          return
-        }
-        // Drain stdout AND stderr concurrently before waiting. Each pipe has a bounded OS buffer
-        // (~64 KB); reading only stdout while the child fills stderr (a verbose `jj` warning, an
-        // error dump) blocks the child on its stderr write while we block on stdout → deadlock.
-        // Two GCD reads can't deadlock, and — unlike detached Tasks — don't touch the cooperative pool.
-        let box = OutputBox()
-        let group = DispatchGroup()
-        DispatchQueue.global(qos: .userInitiated).async(group: group) {
-          box.out = out.fileHandleForReading.readDataToEndOfFile()
-        }
-        DispatchQueue.global(qos: .userInitiated).async(group: group) {
-          box.err = err.fileHandleForReading.readDataToEndOfFile()
-        }
-        group.wait()  // both pipes drained to EOF (barrier: box is safe to read after this)
-        proc.waitUntilExit()
-        guard proc.terminationStatus == 0 else {
-          let stderr = String(data: box.err, encoding: .utf8) ?? ""
-          cont.resume(throwing: VCSError.io("\(exe) exited \(proc.terminationStatus): \(stderr)"))
-          return
-        }
-        cont.resume(returning: String(data: box.out, encoding: .utf8) ?? "")
-      }
+  /// The runner drains stdout/stderr concurrently on GCD global-queue threads, so this blocking work
+  /// never touches the fixed-width Swift cooperative pool (the pool-starvation class documented on
+  /// `runBlocking`). Non-zero exit / timeout throw `VCSError.io`.
+  private static func run(
+    _ exe: String, _ args: [String], cwd: URL, timeout: TimeInterval = 30
+  ) async throws -> String {
+    let result = await StatusCommandRunner().run(exe, args, in: cwd.path, timeout: timeout)
+    if result.timedOut { throw VCSError.io("\(exe) timed out after \(Int(timeout))s") }
+    guard result.exitCode == 0 else {
+      throw VCSError.io("\(exe) exited \(result.exitCode): \(result.stderr)")
     }
-  }
-
-  /// Mutable capture for the two concurrent pipe reads. `@unchecked Sendable` because the
-  /// `DispatchGroup` barrier (`group.wait()`) establishes the happens-before that makes the writes
-  /// visible before either field is read.
-  private final class OutputBox: @unchecked Sendable {
-    var out = Data()
-    var err = Data()
+    return result.stdout
   }
 
   private static func map(_ c: WrVcs.Commit) -> VCSCommit {
@@ -272,9 +230,20 @@ struct RustJJProvider: VCSProviding {
     }
   }
 
-  /// The UniFFI surface throws `WrVcs.VcsError`; stringify for now (a precise case-by-case mapping to
-  /// `VCSError` lands with the error-taxonomy work).
+  /// Map the UniFFI `WrVcs.VcsError` onto the app's typed `VCSError`, case by case, so each backend
+  /// failure reaches a distinct UI state (e.g. `.partialData` → "Repository changed — retry" rather
+  /// than a generic io string). A non-`WrVcs.VcsError` (shouldn't occur across this surface) falls
+  /// back to `.io`.
   private static func mapError(_ error: Error) -> VCSError {
-    .io("\(error)")
+    guard let e = error as? WrVcs.VcsError else { return .io("\(error)") }
+    switch e {
+    case .UnsupportedRepo(let reason): return .unsupportedRepo(reason)
+    case .NotFound(let what): return .notFound(what)
+    case .LockContention: return .lockContention
+    case .StaleSnapshot: return .staleSnapshot
+    case .PartialData(let detail): return .partialData(detail)
+    case .BackendVersion(let detail): return .backendVersion(detail)
+    case .Io(let message): return .io(message)
+    }
   }
 }

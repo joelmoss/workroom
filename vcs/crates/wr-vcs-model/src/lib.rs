@@ -103,19 +103,6 @@ pub struct CommitChanges {
     pub files: Vec<ChangedFile>,
 }
 
-/// The working copy's parent (`@-`) state, driving the Parent Commit disclosure group.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ParentState {
-    /// `@` is the root commit — it has no parent.
-    Root,
-    /// `@` is a merge with `n` parents — no single parent to show.
-    Merge(u32),
-    /// The parent couldn't be read — show nothing rather than a misleading empty list.
-    Unavailable,
-    /// A single parent with its change set.
-    Changes(CommitChanges),
-}
-
 /// The jj working-copy status for the sidebar/Changes badges. Reading it first SNAPSHOTS the working
 /// copy so `@` reflects on-disk edits (jj's own behavior on every command). `insertions`/`deletions`
 /// (the diffstat) are NOT here — jayjay-style, the Swift layer adds them from one `jj diff --stat`
@@ -127,8 +114,6 @@ pub struct WorkingStatus {
     pub conflicted: bool,
     /// The working copy `@`'s change set (metadata + files vs `@-`).
     pub working_copy: CommitChanges,
-    /// The parent `@-` state.
-    pub parent: ParentState,
     /// The nearest bookmark in `@`'s ancestry (the branch pushed to origin) for CI/PR lookup, since
     /// jj's `@` is a detached git HEAD. `None` ⇒ no bookmark.
     pub branch_for_ci: Option<String>,

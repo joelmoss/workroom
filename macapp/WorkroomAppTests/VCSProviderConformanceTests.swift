@@ -122,6 +122,66 @@ final class VCSProviderConformanceTests: XCTestCase {
     XCTAssertNil(jjMissing)
   }
 
+  /// `GitProvider.log` (SwiftGitX) against a real repo: newest-first ordering and the `reachedEnd`
+  /// boundary (it takes one extra commit to learn whether more history exists). Previously only a
+  /// stub/fake exercised `log`; the real libgit2 walk had no coverage.
+  func testGitLogOrderingAndPagination() async throws {
+    try requireTool("git")
+    let root = try plainGitFixture()
+    let url = URL(fileURLWithPath: root)
+    let git = GitProvider()
+
+    let all = try git.log(root: url, limit: 10)
+    XCTAssertEqual(all.commits.map(\.summary), ["third", "second", "first"], "newest-first")
+    XCTAssertTrue(all.reachedEnd, "the whole history fits in the page")
+
+    let page = try git.log(root: url, limit: 2)
+    XCTAssertEqual(page.commits.map(\.summary), ["third", "second"], "first page, newest-first")
+    XCTAssertFalse(page.reachedEnd, "a third commit exists beyond the 2-commit page")
+  }
+
+  /// `GitProvider.currentRef` real branches: an attached HEAD reports its branch; a detached HEAD
+  /// reports the short SHA with `.detached`. (The unborn-HEAD path depends on git config resolution
+  /// and is left to manual verification.)
+  func testGitCurrentRefBranchAndDetached() async throws {
+    try requireTool("git")
+    let root = try plainGitFixture()
+    let url = URL(fileURLWithPath: root)
+
+    let onBranch = try await GitProvider().currentRef(root: url)
+    XCTAssertEqual(onBranch.kind, .branch)
+    XCTAssertEqual(onBranch.name, "main")
+
+    // Detach HEAD at the tip → the short SHA, kind `.detached`.
+    let sha = sh("git rev-parse HEAD", in: root).out.trimmingCharacters(in: .whitespacesAndNewlines)
+    _ = sh("git checkout --detach \(sha) >/dev/null 2>&1; echo done", in: root)
+    let detached = try await GitProvider().currentRef(root: url)
+    XCTAssertEqual(detached.kind, .detached)
+    let name = try XCTUnwrap(detached.name)
+    XCTAssertTrue(sha.hasPrefix(name), "detached ref \(name) should be a prefix of HEAD \(sha)")
+  }
+
+  /// `RustJJProvider.log` (jj-lib `log_page`) and `currentRef` against a real jj repo — neither had
+  /// real-backend coverage. The log must surface both real commits plus the `@` working-copy commit;
+  /// a bookmark placed on `@` must resolve as the current `.branch`.
+  func testJJLogAndCurrentRef() async throws {
+    try requireTool("jj")
+    let root = try jjBookmarkFixture()
+    let url = URL(fileURLWithPath: root)
+
+    let page = try RustJJProvider().log(root: url, limit: 20)
+    let summaries = page.commits.map(\.summary)
+    XCTAssertTrue(
+      summaries.contains("modify a, add b"), "jj log missing newest commit: \(summaries)")
+    XCTAssertTrue(summaries.contains("add a.txt"), "jj log missing first commit: \(summaries)")
+    XCTAssertTrue(
+      page.commits.contains { $0.isWorkingCopy }, "jj log should include the @ working-copy commit")
+
+    let ref = try await RustJJProvider().currentRef(root: url)
+    XCTAssertEqual(ref.name, "feature", "the bookmark on @ is the current ref")
+    XCTAssertEqual(ref.kind, .branch)
+  }
+
   // MARK: - Fixture helpers (mirror WorkroomStatusIntegrationTests)
 
   private struct MissingTool: Error { let name: String }
@@ -158,6 +218,44 @@ final class VCSProviderConformanceTests: XCTestCase {
       echo done
       """, in: root)
     XCTAssertTrue(r.out.contains("done"), "colocated fixture setup failed: \(r.out)")
+    return root
+  }
+
+  /// A plain git repo on branch `main` with three commits (`first`, `second`, `third`, oldest→newest).
+  private func plainGitFixture() throws -> String {
+    let root = tempDir()
+    let r = sh(
+      """
+      git init -b main >/dev/null 2>&1
+      git config user.name t >/dev/null 2>&1
+      git config user.email a@b.c >/dev/null 2>&1
+      printf 'one\\n' > a.txt && git add a.txt && git commit -m first >/dev/null 2>&1
+      printf 'two\\n' >> a.txt && git commit -am second >/dev/null 2>&1
+      printf 'three\\n' >> a.txt && git commit -am third >/dev/null 2>&1
+      echo done
+      """, in: root)
+    XCTAssertTrue(r.out.contains("done"), "plain git fixture setup failed: \(r.out)")
+    return root
+  }
+
+  /// A jj repo with two commits and a bookmark `feature` on `@` (the working copy), so `currentRef`
+  /// resolves to that branch.
+  private func jjBookmarkFixture() throws -> String {
+    let root = tempDir()
+    let r = sh(
+      """
+      jj git init . >/dev/null 2>&1 || jj init --git . >/dev/null 2>&1
+      jj config set --repo user.name t >/dev/null 2>&1 || true
+      jj config set --repo user.email a@b.c >/dev/null 2>&1 || true
+      printf 'one\\n' > a.txt
+      jj commit -m 'add a.txt' >/dev/null 2>&1
+      printf 'one\\ntwo\\n' > a.txt
+      printf 'new\\n' > b.txt
+      jj commit -m 'modify a, add b' >/dev/null 2>&1
+      jj bookmark create feature -r @ >/dev/null 2>&1 || jj bookmark set feature -r @ >/dev/null 2>&1
+      echo done
+      """, in: root)
+    XCTAssertTrue(r.out.contains("done"), "jj bookmark fixture setup failed: \(r.out)")
     return root
   }
 

@@ -448,7 +448,6 @@ pub fn working_status(root: &Path) -> model::Result<model::WorkingStatus> {
                 description: None,
                 files: Vec::new(),
             },
-            parent: model::ParentState::Unavailable,
             branch_for_ci: None,
         });
     };
@@ -457,35 +456,15 @@ pub fn working_status(root: &Path) -> model::Result<model::WorkingStatus> {
     let wc_files = changed_files(store, &wc_commit)?;
     let working_copy = commit_changes(&wc_commit, wc_files, &bookmarks, repo.as_ref());
 
-    // Parent `@-`: 0 parents ⇒ `@` is the root; >1 ⇒ a merge; else the single parent's change set
-    // (its files vs `@--`). A parent-load failure degrades to Unavailable, not a misleading empty.
-    let parent_ids = wc_commit.parent_ids();
-    let parent = if parent_ids.is_empty() {
-        model::ParentState::Root
-    } else if parent_ids.len() > 1 {
-        model::ParentState::Merge(parent_ids.len() as u32)
-    } else {
-        match store.get_commit(&parent_ids[0]) {
-            Ok(parent) => {
-                let files = changed_files(store, &parent)?;
-                model::ParentState::Changes(commit_changes(
-                    &parent,
-                    files,
-                    &bookmarks,
-                    repo.as_ref(),
-                ))
-            }
-            Err(_) => model::ParentState::Unavailable,
-        }
-    };
-
+    // NB: the parent `@-` change set is deliberately NOT computed — it would re-walk a second tree
+    // diff on every status poll (fanned out per-workroom on a 15s sweep) for a disclosure group the
+    // Changes panel no longer shows. If a parent view returns, compute it lazily on demand, not here.
     let branch_for_ci = nearest_bookmark(store, &wc_id, &bookmarks)?.map(|(name, _)| name);
 
     Ok(model::WorkingStatus {
         dirty: !working_copy.files.is_empty() || conflicted,
         conflicted,
         working_copy,
-        parent,
         branch_for_ci,
     })
 }
@@ -525,11 +504,19 @@ fn changed_files(
         None => return Ok(Vec::new()), // the jj root commit itself
     };
 
-    let mut files = Vec::new();
     pollster::block_on(async {
+        let mut files = Vec::new();
         let mut stream = before.diff_stream(&after, &EverythingMatcher);
         while let Some(entry) = stream.next().await {
-            let Ok(diff) = entry.values else { continue };
+            let path = entry.path.as_internal_file_string().to_string();
+            // A diff-stream entry that errors (corrupt/unreadable object, backend read failure) must
+            // NOT be silently skipped: dropping it reports a changed file as absent — a dirty commit
+            // as clean, the exact "empty diff read as no changes" failure this surfaces instead.
+            // `PartialData` is the model's escape hatch for it (plumbed through UniFFI to Swift's
+            // `VCSError.partialData`), so the caller shows a recoverable error, not incomplete data.
+            let diff = entry.values.map_err(|e| {
+                VcsError::PartialData(format!("diff read failed for {path}: {e}"))
+            })?;
             let kind = if diff.before.is_absent() {
                 model::ChangeKind::Added
             } else if diff.after.is_absent() {
@@ -538,11 +525,11 @@ fn changed_files(
                 model::ChangeKind::Modified
             };
             files.push(model::ChangedFile {
-                path: entry.path.as_internal_file_string().to_string(),
+                path,
                 old_path: None,
                 kind,
             });
         }
-    });
-    Ok(files)
+        Ok(files)
+    })
 }

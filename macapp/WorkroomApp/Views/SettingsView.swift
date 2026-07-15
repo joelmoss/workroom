@@ -212,6 +212,7 @@ private struct AppearanceSettingsPane: View {
   @Default(.theme) private var theme
   @Default(.themeFamily) private var themeFamily
   @Default(.diffViewMode) private var diffViewMode
+  @Default(.loadRemoteAvatars) private var loadRemoteAvatars
   @State private var showThemePopover = false
 
   var body: some View {
@@ -252,6 +253,17 @@ private struct AppearanceSettingsPane: View {
       }
       .help("Layout for newly opened diff tabs. A narrow pane falls back to unified.")
       .accessibilityIdentifier("settings.control.diffView")
+
+      // Privacy: author/reviewer avatars are fetched from Gravatar (by email hash) and GitHub. Off ⇒
+      // only the coloured initials chip shows and nothing is requested, so viewing an untrusted
+      // repo's history can't beacon your IP + author-email hashes to those services.
+      Toggle("Load author avatars", isOn: $loadRemoteAvatars)
+        .help(
+          "Fetch author and reviewer avatars from Gravatar and GitHub. Off shows coloured initials "
+            + "only and makes no network request — so opening an untrusted repo's history can't "
+            + "beacon your IP to those services."
+        )
+        .accessibilityIdentifier("settings.control.loadRemoteAvatars")
     }
     .formStyle(.grouped)
     .scrollContentBackground(.hidden)

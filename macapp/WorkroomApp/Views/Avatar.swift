@@ -1,4 +1,5 @@
 import CryptoKit
+import Defaults
 import SwiftUI
 
 extension VCSCommit {
@@ -95,10 +96,13 @@ struct AvatarView: View {
   let subject: AvatarSubject
   var size: CGFloat = 16
   private let theme = ThemeService.shared
+  /// Privacy gate: when off, no avatar image is ever requested (the initials chip shows instead), so
+  /// viewing an untrusted repo's history can't beacon the viewer to Gravatar/GitHub. See the key doc.
+  @Default(.loadRemoteAvatars) private var loadRemoteAvatars
 
   var body: some View {
     Group {
-      if let url = subject.imageURL {
+      if loadRemoteAvatars, let url = subject.imageURL {
         AsyncImage(url: url, transaction: Transaction(animation: .easeOut(duration: 0.15))) {
           phase in
           if case .success(let image) = phase {

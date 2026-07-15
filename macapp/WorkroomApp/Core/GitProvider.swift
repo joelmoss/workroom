@@ -25,63 +25,69 @@ struct GitProvider: VCSProviding {
   }
 
   func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
-    do {
-      let repo = try Repository.open(at: root)
-      let commit: Commit = try repo.show(id: OID(hex: commitID))
-      let diff = try repo.diff(commit: commit)
-      let (insertions, deletions) = Self.diffLineStats(diff)
-      return VCSChangeset(
-        commit: Self.map(commit),
-        fullMessage: commit.message,
-        files: diff.changes.map(Self.mapDelta),
-        isMerge: ((try? commit.parents.count) ?? 0) > 1,
-        insertions: insertions,
-        deletions: deletions
-      )
-    } catch {
-      throw VCSError.io("\(error)")
+    try await runBlocking {
+      do {
+        let repo = try Repository.open(at: root)
+        let commit: Commit = try repo.show(id: OID(hex: commitID))
+        let diff = try repo.diff(commit: commit)
+        let (insertions, deletions) = Self.diffLineStats(diff)
+        return VCSChangeset(
+          commit: Self.map(commit),
+          fullMessage: commit.message,
+          files: diff.changes.map(Self.mapDelta),
+          isMerge: ((try? commit.parents.count) ?? 0) > 1,
+          insertions: insertions,
+          deletions: deletions
+        )
+      } catch {
+        throw VCSError.io("\(error)")
+      }
     }
   }
 
   func currentRef(root: URL) async throws -> VCSRef {
-    do {
-      let repo = try Repository.open(at: root)
-      // Unborn HEAD (git init, no commit): HEAD symbolically points at a branch that has no commit
-      // yet. Report that branch name (from config's init.defaultBranch) so a fresh repo still labels.
-      if repo.isHEADUnborn {
-        let name = try? repo.config.defaultBranchName
-        return VCSRef(name: name, kind: name == nil ? .none : .branch)
+    try await runBlocking {
+      do {
+        let repo = try Repository.open(at: root)
+        // Unborn HEAD (git init, no commit): HEAD symbolically points at a branch with no commit yet.
+        // Report that branch name (from config's init.defaultBranch) so a fresh repo still labels.
+        if repo.isHEADUnborn {
+          let name = try? repo.config.defaultBranchName
+          return VCSRef(name: name, kind: name == nil ? .none : .branch)
+        }
+        // Attached HEAD → the current branch. `branch.current` throws when HEAD is detached.
+        if let branch = try? repo.branch.current {
+          return VCSRef(name: branch.name, kind: .branch)
+        }
+        // Detached HEAD → the short commit id (mirrors `git rev-parse --short HEAD`).
+        let head = try repo.HEAD
+        return VCSRef(name: head.target.id.abbreviated, kind: .detached)
+      } catch {
+        throw VCSError.io("\(error)")
       }
-      // Attached HEAD → the current branch. `branch.current` throws when HEAD is detached.
-      if let branch = try? repo.branch.current {
-        return VCSRef(name: branch.name, kind: .branch)
-      }
-      // Detached HEAD → the short commit id (mirrors `git rev-parse --short HEAD`).
-      let head = try repo.HEAD
-      return VCSRef(name: head.target.id.abbreviated, kind: .detached)
-    } catch {
-      throw VCSError.io("\(error)")
     }
   }
 
   func fileDiff(root: URL, commitID: String, path: String) async throws -> String {
-    do {
-      let repo = try Repository.open(at: root)
-      let commit: Commit = try repo.show(id: OID(hex: commitID))
-      let diff = try repo.diff(commit: commit)
-      guard
-        let patch = diff.patches.first(where: {
-          $0.delta.newFile.path == path || $0.delta.oldFile.path == path
-        })
-      else {
-        return ""  // path unchanged in this changeset
+    try await runBlocking {
+      do {
+        let repo = try Repository.open(at: root)
+        let commit: Commit = try repo.show(id: OID(hex: commitID))
+        let diff = try repo.diff(commit: commit)
+        guard
+          let patch = diff.patches.first(where: {
+            $0.delta.newFile.path == path || $0.delta.oldFile.path == path
+          })
+        else {
+          return ""  // path unchanged in this changeset
+        }
+        let d = patch.delta
+        let oldPath = d.oldFile.path.isEmpty ? d.newFile.path : d.oldFile.path
+        let newPath = d.newFile.path.isEmpty ? d.oldFile.path : d.newFile.path
+        return Self.gitFormat(patch, oldPath: oldPath, newPath: newPath, type: d.type)
+      } catch {
+        throw VCSError.io("\(error)")
       }
-      let d = patch.delta
-      let oldPath = d.oldFile.path.isEmpty ? d.newFile.path : d.oldFile.path
-      let newPath = d.newFile.path.isEmpty ? d.oldFile.path : d.newFile.path
-      return Self.gitFormat(patch, oldPath: oldPath, newPath: newPath, type: d.type)
-    } catch {
-      throw VCSError.io("\(error)")
     }
   }
 
@@ -95,80 +101,96 @@ struct GitProvider: VCSProviding {
     guard base == .workingCopy else {
       throw VCSError.unsupportedRepo("git has no working-copy parent diff")
     }
-    do {
-      let repo = try Repository.open(at: root)
-      // Same status options as `workingStatus`: untracked + rename detection, so the delta type
-      // matches the badge and a `git mv` reads as one rename (blob→file), not delete + add.
-      let options: StatusOption = [
-        .includeUntracked, .recurseUntrackedDirectories, .renamesIndex, .renamesWorkingTree,
-      ]
-      guard
-        let entry = try repo.status(options: options).first(where: {
-          let d = $0.workingTree ?? $0.index
-          return d?.newFile.path == path || d?.oldFile.path == path
-        }),
-        let delta = entry.workingTree ?? entry.index
-      else {
-        return ""  // path clean / not a working-copy change
+    return try await runBlocking {
+      do {
+        let repo = try Repository.open(at: root)
+        // Same status options as `workingStatus`: untracked + rename detection, so the delta type
+        // matches the badge and a `git mv` reads as one rename (blob→file), not delete + add.
+        let options: StatusOption = [
+          .includeUntracked, .recurseUntrackedDirectories, .renamesIndex, .renamesWorkingTree,
+        ]
+        guard
+          let entry = try repo.status(options: options).first(where: {
+            let d = $0.workingTree ?? $0.index
+            return d?.newFile.path == path || d?.oldFile.path == path
+          }),
+          let delta = entry.workingTree ?? entry.index
+        else {
+          return ""  // path clean / not a working-copy change
+        }
+        guard let patch = try Self.workingPatch(repo, delta: delta, root: root) else {
+          return ""  // a delta type with no renderable per-file patch (e.g. copy without content)
+        }
+        // Use the status delta's real paths — a blob-built patch carries empty delta paths.
+        let newPath = delta.newFile.path.isEmpty ? delta.oldFile.path : delta.newFile.path
+        let oldPath = delta.oldFile.path.isEmpty ? delta.newFile.path : delta.oldFile.path
+        return Self.gitFormat(patch, oldPath: oldPath, newPath: newPath, type: delta.type)
+      } catch let error as VCSError {
+        throw error
+      } catch {
+        throw VCSError.io("\(error)")
       }
-      guard let patch = try Self.workingPatch(repo, delta: delta, root: root) else {
-        return ""  // a delta type with no renderable per-file patch (e.g. copy without content)
-      }
-      // Use the status delta's real paths — a blob-built patch carries empty delta paths.
-      let newPath = delta.newFile.path.isEmpty ? delta.oldFile.path : delta.newFile.path
-      let oldPath = delta.oldFile.path.isEmpty ? delta.newFile.path : delta.oldFile.path
-      return Self.gitFormat(patch, oldPath: oldPath, newPath: newPath, type: delta.type)
-    } catch let error as VCSError {
-      throw error
-    } catch {
-      throw VCSError.io("\(error)")
     }
   }
 
   /// The content of `path` at commit `rev`, for syntax-highlighting the diff's new side. Walks the
   /// commit's tree to the blob (no subprocess). `nil` ⇒ path absent at that commit / not a blob /
-  /// over the highlight cap / non-UTF-8 (binary) → the caller renders plain.
+  /// over the highlight cap / non-UTF-8 (binary) → the caller renders plain. Offloaded to GCD
+  /// (`runBlocking`) so the synchronous libgit2 walk never runs on the fixed-width cooperative pool.
   func fileContent(root: URL, rev: String, path: String) async throws -> String? {
-    do {
-      let repo = try Repository.open(at: root)
-      let commit: Commit = try repo.show(id: OID(hex: rev))
-      guard let blobID = try Self.blobID(in: commit.tree, path: path, repo: repo) else {
-        return nil
+    try await runBlocking {
+      do {
+        let repo = try Repository.open(at: root)
+        return try Self.fileContentSync(repo, rev: rev, path: path)
+      } catch {
+        throw VCSError.io("\(error)")
       }
-      let blob: Blob = try repo.show(id: blobID)
-      // Over the highlight cap → render plain (a truncated read would mis-map byte offsets).
-      guard blob.content.count <= SyntaxLanguage.byteCap else { return nil }
-      return String(data: blob.content, encoding: .utf8)  // nil ⇒ binary / non-UTF-8
-    } catch {
-      throw VCSError.io("\(error)")
     }
   }
 
   /// Old-side content of `path` at commit `rev`'s first parent (for highlighting deleted lines).
-  /// `nil` for a root commit (no parent) / absent-at-parent / binary / over cap.
+  /// `nil` for a root commit (no parent) / absent-at-parent / binary / over cap. GCD-offloaded.
   func commitParentFileContent(root: URL, commitID: String, path: String) async throws -> String? {
-    do {
-      let repo = try Repository.open(at: root)
-      let commit: Commit = try repo.show(id: OID(hex: commitID))
-      guard let parent = (try? commit.parents)?.first else { return nil }
-      return try await fileContent(root: root, rev: parent.id.hex, path: path)
-    } catch {
-      throw VCSError.io("\(error)")
+    try await runBlocking {
+      do {
+        let repo = try Repository.open(at: root)
+        let commit: Commit = try repo.show(id: OID(hex: commitID))
+        guard let parent = (try? commit.parents)?.first else { return nil }
+        return try Self.fileContentSync(repo, rev: parent.id.hex, path: path)
+      } catch {
+        throw VCSError.io("\(error)")
+      }
     }
   }
 
   /// Old-side content of `path` for a working-copy diff — the file at `HEAD`. Git has no `.parent`
-  /// working surface, so that base yields `nil`.
+  /// working surface, so that base yields `nil`. GCD-offloaded.
   func workingBaseFileContent(root: URL, base: VCSWorkingDiffBase, path: String) async throws
     -> String?
   {
     guard base == .workingCopy else { return nil }
-    do {
-      let repo = try Repository.open(at: root)
-      return try await fileContent(root: root, rev: repo.HEAD.target.id.hex, path: path)
-    } catch {
-      throw VCSError.io("\(error)")
+    return try await runBlocking {
+      do {
+        let repo = try Repository.open(at: root)
+        return try Self.fileContentSync(repo, rev: repo.HEAD.target.id.hex, path: path)
+      } catch {
+        throw VCSError.io("\(error)")
+      }
     }
+  }
+
+  /// Synchronous blob read shared by the content methods (each opens the repo, then delegates here) —
+  /// so the two old-side methods resolve their pre-image WITHOUT a nested async hop inside `runBlocking`.
+  /// `nil` ⇒ path absent at `rev` / not a blob / over the highlight cap / non-UTF-8 (binary).
+  private static func fileContentSync(_ repo: Repository, rev: String, path: String) throws
+    -> String?
+  {
+    let commit: Commit = try repo.show(id: OID(hex: rev))
+    guard let blobID = try Self.blobID(in: commit.tree, path: path, repo: repo) else { return nil }
+    let blob: Blob = try repo.show(id: blobID)
+    // Over the highlight cap → render plain (a truncated read would mis-map byte offsets).
+    guard blob.content.count <= SyntaxLanguage.byteCap else { return nil }
+    return String(data: blob.content, encoding: .utf8)  // nil ⇒ binary / non-UTF-8
   }
 
   /// Resolve `path` to its blob OID by walking the tree component-by-component (SwiftGitX `Tree`

@@ -71,9 +71,10 @@ struct WorkroomStatusResolver: Sendable {
     let root = URL(fileURLWithPath: dir, isDirectory: true)
     do {
       let ws = try await withTimeout(seconds: timeout) {
-        try await Task.detached(priority: .userInitiated) {
-          try GitProvider().workingStatus(root: root)
-        }.value
+        // `runBlocking` (GCD), NOT `Task.detached`: the cooperative pool is fixed-width and this read
+        // is fanned out ~5-wide per sweep (`runLocalSweep`), overlapping History/diff/branch reads —
+        // exactly the burst the `runBlocking` doc flags as the "History loads forever" starvation.
+        try await runBlocking { try GitProvider().workingStatus(root: root) }
       }
       return WorkroomStatus(
         dirty: ws.dirty, conflicted: ws.conflicted, changedFiles: ws.files,
@@ -94,9 +95,9 @@ struct WorkroomStatusResolver: Sendable {
     var status: WorkroomStatus
     do {
       status = try await withTimeout(seconds: timeout) {
-        try await Task.detached(priority: .userInitiated) {
-          try RustJJProvider().workingStatus(root: root)
-        }.value
+        // `runBlocking` (GCD), NOT `Task.detached` — the blocking, snapshot-taking jj-lib read must
+        // stay off the fixed-width cooperative pool (see `resolveGit` / the `runBlocking` doc).
+        try await runBlocking { try RustJJProvider().workingStatus(root: root) }
       }
     } catch is VCSTimeoutError {
       return WorkroomStatus(dirty: nil, failure: .timeout)
