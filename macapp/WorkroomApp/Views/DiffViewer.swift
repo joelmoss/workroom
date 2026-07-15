@@ -39,6 +39,10 @@ struct DiffViewer: View {
   /// (the always-available fallback). Built asynchronously off the diff render — highlighting can
   /// never block or break the diff.
   @State private var highlightedLines: [Int: AttributedString] = [:]
+  /// Syntax-highlighted OLD-side lines, keyed by 1-based old-file line number — for the diff's
+  /// DELETED lines (the new-side `highlightedLines` can't cover them). Built from the pre-image file
+  /// in `applyHighlight`; empty ⇒ deletions render plain (no pre-image / binary / add-only diff).
+  @State private var highlightedOldLines: [Int: AttributedString] = [:]
   /// Bumped when a diff finishes loading, so the highlight task (keyed on it) re-runs against the
   /// freshly loaded diff without re-fetching the diff on every theme change.
   @State private var loadToken = 0
@@ -225,6 +229,7 @@ struct DiffViewer: View {
   private func load() async {
     state = .loading
     highlightedLines = [:]  // drop any previous file's colours immediately (no stale flash)
+    highlightedOldLines = [:]
     // In UI-test fixture mode the workroom path is a fake temp dir with no repo, so serve a canned
     // diff instead of shelling out to git/jj (issue #66 UI tests).
     let result =
@@ -301,6 +306,22 @@ struct DiffViewer: View {
       additionEmphasis: emphasis.additions)
     guard !Task.isCancelled else { return }
     highlightedLines = lines
+
+    // Old side: highlight the DELETED lines from the pre-image file (the new-side pass can't — they
+    // aren't in the new file). Only when the diff actually has deletions, and not in fixture mode
+    // (no pre-image source there → deletions render plain). Reuses the same grammar (same file).
+    guard diff.hunks.contains(where: { $0.lines.contains { $0.kind == .deletion } }) else { return }
+    let oldContent =
+      UITestFixture.isActive
+      ? nil : await DiffResolver().oldFileContent(for: descriptor, in: directory)
+    guard !Task.isCancelled, let oldContent else { return }
+    let oldSpans = await Task.detached(priority: .utility) {
+      SyntaxHighlighter.shared.spans(for: oldContent, grammar: grammar)
+    }.value
+    guard !Task.isCancelled else { return }
+    highlightedOldLines = DiffHighlightMapper.attributedLines(
+      diff: diff, content: oldContent, spans: oldSpans, tokens: theme.tokens,
+      side: .old, deletionEmphasis: emphasis.deletions)
   }
 
   // MARK: Diff body
@@ -398,11 +419,12 @@ struct DiffViewer: View {
       Divider()
       sideCell(row.right, side: .right)
     }
+    .padding(.vertical, 2)  // a little line breathing room (matches the unified rows)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
       HStack(spacing: 0) {
-        cellFill(row.left).frame(maxWidth: .infinity)
-        cellFill(row.right).frame(maxWidth: .infinity)
+        sideHalfFill(row.left).frame(maxWidth: .infinity)
+        sideHalfFill(row.right).frame(maxWidth: .infinity)
       }
     )
   }
@@ -415,10 +437,11 @@ struct DiffViewer: View {
   /// `+`/`-` marker: the side and colour already convey add/remove.
   @ViewBuilder private func sideCell(_ line: UnifiedDiff.Line?, side: DiffSide) -> some View {
     HStack(alignment: .top, spacing: 0) {
-      gutter(side == .left ? line?.oldLine : line?.newLine).padding(.leading, 4)
+      sideGutter(side == .left ? line?.oldLine : line?.newLine)
       if let line {
         styledText(line)
           .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.leading, 4)
           .padding(.trailing, 8)
       } else {
         Color.clear.frame(maxWidth: .infinity, alignment: .leading)
@@ -449,20 +472,27 @@ struct DiffViewer: View {
       .accessibilityLabel("Hunk \(header)")
   }
 
+  /// Width of the two-column gutter strip: two `unifiedGutterNumber` cells (32 + 6 + 6 each).
+  private static let gutterWidth: CGFloat = 88
+
   private func lineRow(_ line: UnifiedDiff.Line) -> some View {
-    // `.top` so the gutters + marker align to the first visual line when a long line wraps.
+    // `.top` so the gutter + marker align to the first visual line when a long line wraps.
     HStack(alignment: .top, spacing: 0) {
-      gutter(line.oldLine).padding(.leading, 4)
-      gutter(line.newLine)
+      unifiedGutter(old: line.oldLine, new: line.newLine)
       Text(marker(line.kind))
-        .font(.system(.body, design: .monospaced))
+        .font(.system(.callout, design: .monospaced))
         .foregroundStyle(foreground(line.kind))
-        .frame(width: 14, alignment: .center)
+        .frame(width: 16, alignment: .center)
       styledText(line)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.leading, 4)
         .padding(.trailing, 8)
     }
+    .padding(.vertical, 2)  // a little line breathing room
     .frame(maxWidth: .infinity, alignment: .leading)
+    // Gutter tint as a full-height leading strip (spans the row's vertical padding, unlike a fill on
+    // the top-aligned gutter block), painted over the row tint so the gutter reads deeper — GH-style.
+    .background(alignment: .leading) { gutterFill(line.kind).frame(width: Self.gutterWidth) }
     .background(rowBackground(line.kind))
     .accessibilityElement(children: .ignore)
     .accessibilityIdentifier("diff.line")
@@ -471,13 +501,45 @@ struct DiffViewer: View {
     .accessibilityValue(isHighlighted(line) ? "highlighted" : "plain")
   }
 
+  /// The GitHub-style two-column line-number gutter for the unified view: old | new, each right-
+  /// aligned in its own padded cell, in a fixed-width strip divided from the code by a hairline. The
+  /// tint is painted by `lineRow` as a full-height strip (see there); this just lays out the numbers.
+  private func unifiedGutter(old: Int?, new: Int?) -> some View {
+    HStack(spacing: 0) {
+      unifiedGutterNumber(old)
+      unifiedGutterNumber(new)
+    }
+    .frame(width: Self.gutterWidth)
+    .overlay(alignment: .trailing) { Rectangle().fill(theme.tokens.border).frame(width: 1) }
+  }
+
+  private func unifiedGutterNumber(_ number: Int?) -> some View {
+    Text(number.map(String.init) ?? "")
+      .font(.system(.caption2, design: .monospaced))
+      .foregroundStyle(theme.tokens.fgMuted)
+      .frame(width: 32, alignment: .trailing)
+      .padding(.leading, 6).padding(.trailing, 6)
+  }
+
+  /// The gutter strip's fill: neutral on context, a deeper add/remove tint on changed lines (layered
+  /// over the row background so the gutter reads deeper than the code, GitHub-style).
+  private func gutterFill(_ kind: UnifiedDiff.Line.Kind) -> Color {
+    switch kind {
+    case .context: return theme.tokens.fgMuted.opacity(0.06)
+    case .addition: return theme.tokens.diffAddFg.opacity(0.13)
+    case .deletion: return theme.tokens.diffRemoveFg.opacity(0.13)
+    }
+  }
+
   /// The styled, soft-wrapping text for one diff line, shared by the unified row and each
-  /// side-by-side cell. Deletions never carry syntax highlighting (no new side); additions/context
-  /// use the highlighted run when one was built. Intra-line change emphasis (deletions +
-  /// not-yet-highlighted additions) is folded in here; highlighted additions carry it from the mapper.
+  /// side-by-side cell. Additions/context use the new-side highlight run; deletions use the old-side
+  /// (pre-image) run — both built in `applyHighlight`. Intra-line change emphasis is folded into the
+  /// highlighted run by the mapper, or applied here (`emphasizedLine`) when highlighting is absent.
   @ViewBuilder private func styledText(_ line: UnifiedDiff.Line) -> some View {
     let highlighted: AttributedString? =
-      line.kind == .deletion ? nil : line.newLine.flatMap { highlightedLines[$0] }
+      line.kind == .deletion
+      ? line.oldLine.flatMap { highlightedOldLines[$0] }
+      : line.newLine.flatMap { highlightedLines[$0] }
     let emphasized: AttributedString? = highlighted == nil ? emphasizedLine(line) : nil
     Group {
       if let highlighted {
@@ -485,18 +547,22 @@ struct DiffViewer: View {
       } else if let emphasized {
         Text(emphasized)  // plain foreground + intra-line emphasis background
       } else {
-        Text(line.text.isEmpty ? " " : line.text).foregroundStyle(foreground(line.kind))
+        // Not syntax-highlighted: use the default code foreground (never the add/remove colour), so
+        // the row background — not the text colour — carries the change signal. Keeps text legible
+        // and matches the highlighted lines' uncaptured runs.
+        Text(line.text.isEmpty ? " " : line.text).foregroundStyle(codeTextColor)
       }
     }
-    .font(.system(.body, design: .monospaced))
+    .font(.system(.callout, design: .monospaced))
     .textSelection(.enabled)
     .fixedSize(horizontal: false, vertical: true)  // wrap long lines, never truncate
   }
 
-  /// Whether `line` renders with a syntax-highlighted run (its new-side line was coloured). Drives
-  /// the test-observable `accessibilityValue`. Deletions are never highlighted.
+  /// Whether `line` renders with a syntax-highlighted run — its new-side line (add/context) or its
+  /// old-side line (deletion) was coloured. Drives the test-observable `accessibilityValue`.
   private func isHighlighted(_ line: UnifiedDiff.Line) -> Bool {
-    line.kind != .deletion && line.newLine.flatMap { highlightedLines[$0] } != nil
+    if line.kind == .deletion { return line.oldLine.flatMap { highlightedOldLines[$0] } != nil }
+    return line.newLine.flatMap { highlightedLines[$0] } != nil
   }
 
   /// The intra-line-emphasised text for a replaced line (deeper tint behind the changed bytes), or
@@ -516,8 +582,13 @@ struct DiffViewer: View {
       return nil
     }
     guard let range, !line.text.isEmpty else { return nil }
-    return Self.emphasizedPlain(line.text, fg: foreground(line.kind), range: range, bg: bg)
+    return Self.emphasizedPlain(line.text, fg: codeTextColor, range: range, bg: bg)
   }
+
+  /// The default code foreground for diff text (matches the syntax mapper's uncaptured runs). Changed
+  /// lines use this, not the add/remove colour, so syntax highlighting stays visible — the row
+  /// background and the `+`/`−` marker carry the add/remove signal (GitHub-style).
+  private var codeTextColor: Color { Color(nsColor: theme.tokens.nsFg) }
 
   /// Build a single-colour line with `bg` drawn behind the `range` (line-relative UTF-8 bytes).
   static func emphasizedPlain(_ text: String, fg: Color, range: Range<Int>, bg: Color)
@@ -539,13 +610,24 @@ struct DiffViewer: View {
     return out
   }
 
-  /// A right-aligned, dim line-number cell (blank when the line doesn't exist on that side).
-  private func gutter(_ number: Int?) -> some View {
-    Text(number.map(String.init) ?? "")
-      .font(.system(.caption2, design: .monospaced))
-      .foregroundStyle(theme.tokens.fgMuted)
-      .frame(width: 26, alignment: .trailing)
-      .padding(.trailing, 3)
+  /// Width of one side's line-number gutter (a single `unifiedGutterNumber` cell: 32 + 6 + 6).
+  private static let sideGutterWidth: CGFloat = 44
+
+  /// One side's line-number gutter for the side-by-side view — the same number cell + hairline
+  /// divider as the unified gutter, so both views read identically. The deeper tint is painted by
+  /// `sideHalfFill` as a full-height strip (mirroring the unified row's strip).
+  private func sideGutter(_ number: Int?) -> some View {
+    unifiedGutterNumber(number)
+      .overlay(alignment: .trailing) { Rectangle().fill(theme.tokens.border).frame(width: 1) }
+  }
+
+  /// The full-height background for one side of a side-by-side row: the cell tint, plus a deeper
+  /// gutter strip over its leading number column (nil/absent side → just the faint cell fill).
+  @ViewBuilder private func sideHalfFill(_ line: UnifiedDiff.Line?) -> some View {
+    ZStack(alignment: .leading) {
+      cellFill(line)
+      if let line { gutterFill(line.kind).frame(width: Self.sideGutterWidth) }
+    }
   }
 
   private func headerNote(_ text: String) -> some View {

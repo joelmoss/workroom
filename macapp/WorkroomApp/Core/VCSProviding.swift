@@ -29,10 +29,31 @@ protocol VCSProviding: Sendable {
   /// cap → the caller renders plain. Read-only; must not take the jj working-copy lock (jj uses
   /// `--ignore-working-copy`).
   func fileContent(root: URL, rev: String, path: String) async throws -> String?
+  /// The pre-image (old side) content of `path` for a commit's file diff — the file at the commit's
+  /// first parent — for syntax-highlighting the diff's DELETED lines. The backend resolves its own
+  /// parent (git `^` / jj `-`). `nil` ⇒ added at this commit (no parent version) / root commit /
+  /// merge / binary / over cap → deletions render plain. Read-only; must not lock the jj working copy.
+  func commitParentFileContent(root: URL, commitID: String, path: String) async throws -> String?
+  /// The pre-image content of `path` for a working-copy file diff's base (git `HEAD`; jj `@-` for
+  /// `.workingCopy`, `@--` for `.parent`), for highlighting the diff's deleted lines. `nil` ⇒
+  /// absent / unsupported base / binary / over cap → deletions render plain.
+  func workingBaseFileContent(root: URL, base: VCSWorkingDiffBase, path: String) async throws
+    -> String?
   /// The repo's current ref for the sidebar root-row label — the `@` bookmark / nearest ancestor
   /// bookmark (jj) or current branch / short SHA (git). Read-only; must not take the jj working-copy
   /// lock (backs `BranchResolver`).
   func currentRef(root: URL) async throws -> VCSRef
+}
+
+extension VCSProviding {
+  /// Default: no pre-image source, so deletions render plain. `GitProvider`/`RustJJProvider` override
+  /// these; other conformers (tests, fixtures) inherit the no-op.
+  func commitParentFileContent(root: URL, commitID: String, path: String) async throws -> String? {
+    nil
+  }
+  func workingBaseFileContent(root: URL, base: VCSWorkingDiffBase, path: String) async throws
+    -> String?
+  { nil }
 }
 
 /// Backend selection + routing.

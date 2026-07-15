@@ -5,18 +5,26 @@ import SwiftUI
 /// home of the byte↔offset arithmetic, so the tricky cases (CRLF, retained `\r`, no final newline,
 /// multibyte/combining characters) are unit-testable without a parser or a UI.
 ///
-/// Deletions are never highlighted (their new side doesn't exist — they render plain). A line whose
-/// diff text no longer matches the file's line is skipped (degrade to plain): this is the
-/// changed-since-diff / symlink-target guard — a mid-edit race can't mis-map colours onto the
-/// wrong text.
+/// A line whose diff text no longer matches the file's line is skipped (degrade to plain): the
+/// changed-since-diff / symlink-target guard — a mid-edit race can't mis-map colours onto the wrong
+/// text.
+///
+/// `side` selects which lines to map and against which file `content`: `.new` (default) colours the
+/// added + context lines from the whole NEW file, keyed by new-line; `.old` colours the DELETED
+/// lines from the whole OLD (pre-image) file, keyed by old-line. `DiffViewer` calls it once per side
+/// and picks the right map per line, so a diff highlights both its added and its removed lines.
 enum DiffHighlightMapper {
-  /// Build `newLine → AttributedString` for the highlightable lines of `diff`, from `spans` over the
-  /// whole-new-file `content`. Uncaptured text uses the theme foreground; captured spans use the
-  /// syntax colour (with the add-background contrast guard for added lines). Empty lines are left
-  /// plain. Returns an empty map if there's nothing to colour.
+  enum Side: Sendable { case new, old }
+
+  /// Build `lineNumber → AttributedString` for the highlightable lines of `diff`, from `spans` over
+  /// the whole file `content` for the chosen `side`. Uncaptured text uses the theme foreground;
+  /// captured spans use the base syntax colour. Intra-line change emphasis is folded in per side
+  /// (`additionEmphasis` on the new side, `deletionEmphasis` on the old). Empty lines are left plain.
   static func attributedLines(
     diff: UnifiedDiff, content: String, spans: [HighlightSpan], tokens: ThemeTokens,
-    additionEmphasis: [Int: Range<Int>] = [:]
+    side: Side = .new,
+    additionEmphasis: [Int: Range<Int>] = [:],
+    deletionEmphasis: [Int: Range<Int>] = [:]
   ) -> [Int: AttributedString] {
     let bytes = Array(content.utf8)
     guard !bytes.isEmpty else { return [:] }
@@ -68,31 +76,39 @@ enum DiffHighlightMapper {
     }
 
     let defaultColor = Color(nsColor: tokens.nsFg)
+    let emphasisBg = side == .new ? tokens.diffAddEmphasisBg : tokens.diffRemoveEmphasisBg
     var result: [Int: AttributedString] = [:]
 
     for hunk in diff.hunks {
       for line in hunk.lines {
-        guard line.kind != .deletion, !line.text.isEmpty, let newLine = line.newLine else {
-          continue
+        // Pick this side's line number + intra-line emphasis; skip lines not on this side.
+        let lineNumber: Int
+        let lineEmphasis: Range<Int>?
+        switch side {
+        case .new:
+          guard line.kind != .deletion, let n = line.newLine else { continue }
+          lineNumber = n
+          lineEmphasis = line.kind == .addition ? additionEmphasis[n] : nil
+        case .old:
+          guard line.kind == .deletion, let o = line.oldLine else { continue }
+          lineNumber = o
+          lineEmphasis = deletionEmphasis[o]
         }
-        let idx = newLine - 1
+        guard !line.text.isEmpty else { continue }
+        let idx = lineNumber - 1
         guard idx >= 0, idx < lineCount else { continue }
 
         // Changed-since-diff guard: the file's line must still be exactly the diff's line text.
         let fileLineText = String(decoding: bytes[lineStart[idx]..<lineEnd[idx]], as: UTF8.self)
         guard fileLineText == line.text else { continue }
 
-        let onAdded = line.kind == .addition
         var attr = AttributedString()
         var cursor = lineStart[idx]
 
-        // The intra-line change emphasis for this added line, as a file-global byte range.
-        let emphasis: Range<Int>? =
-          onAdded
-          ? additionEmphasis[newLine].map {
-            (lineStart[idx] + $0.lowerBound)..<(lineStart[idx] + $0.upperBound)
-          }
-          : nil
+        // The intra-line change emphasis for this line, as a file-global byte range.
+        let emphasis: Range<Int>? = lineEmphasis.map {
+          (lineStart[idx] + $0.lowerBound)..<(lineStart[idx] + $0.upperBound)
+        }
 
         func emit(_ range: Range<Int>, _ fg: Color, _ bg: Color?) {
           guard range.lowerBound < range.upperBound else { return }
@@ -115,7 +131,7 @@ enum DiffHighlightMapper {
           if lo < beforeHi { emit(lo..<beforeHi, color, nil) }
           let inLo = max(lo, emphasis.lowerBound)
           let inHi = min(hi, emphasis.upperBound)
-          if inLo < inHi { emit(inLo..<inHi, color, tokens.diffAddEmphasisBg) }
+          if inLo < inHi { emit(inLo..<inHi, color, emphasisBg) }
           let afterLo = max(lo, emphasis.upperBound)
           if afterLo < hi { emit(afterLo..<hi, color, nil) }
         }
@@ -124,14 +140,16 @@ enum DiffHighlightMapper {
           if span.byteRange.lowerBound > cursor {
             appendRun(cursor..<span.byteRange.lowerBound, defaultColor)
           }
-          let color =
-            tokens.syntaxColor(forCapture: span.capture, onAddedBackground: onAdded) ?? defaultColor
+          // Use the base syntax colour on added lines too (not the contrast-nudged one): the add
+          // tint is light, so the same palette as context stays legible — and matching context is
+          // what reads as "syntax highlighting is preserved on changed lines" (GitHub-style).
+          let color = tokens.syntaxColor(forCapture: span.capture) ?? defaultColor
           appendRun(max(span.byteRange.lowerBound, cursor)..<span.byteRange.upperBound, color)
           cursor = max(cursor, span.byteRange.upperBound)
         }
         if cursor < lineEnd[idx] { appendRun(cursor..<lineEnd[idx], defaultColor) }
 
-        result[newLine] = attr
+        result[lineNumber] = attr
       }
     }
     return result

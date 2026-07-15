@@ -199,6 +199,26 @@ extension DiffResolver {
     }
   }
 
+  /// The OLD-side (pre-image) content for a diff — for syntax-highlighting its DELETED lines (the new
+  /// side highlighter can't, since deletions don't exist in the new file). Routes to the provider's
+  /// parent/base resolver per source. Best-effort: any error / absence → `nil` (deletions render
+  /// plain). Deleted files (no new side) still highlight their removals from this old side.
+  func oldFileContent(for descriptor: DiffDescriptor, in dir: String) async -> String? {
+    let root = URL(fileURLWithPath: dir, isDirectory: true)
+    let provider = try? makeProvider(root)
+    switch descriptor.source {
+    case .commit(let commitID):
+      return try? await provider?.commitParentFileContent(
+        root: root, commitID: commitID, path: descriptor.path)
+    case .gitWorktree, .jjWorkingCopy:
+      return try? await provider?.workingBaseFileContent(
+        root: root, base: .workingCopy, path: descriptor.path)
+    case .jjParent:
+      return try? await provider?.workingBaseFileContent(
+        root: root, base: .parent, path: descriptor.path)
+    }
+  }
+
   /// Read a working-copy file for highlighting, guarded against the traps a syntax parse would
   /// otherwise hit (a symlink whose *target text* git diffs, a path escaping the workroom, an
   /// over-cap file). Returns `nil` (⇒ render plain) on any guard failure or non-UTF-8 content.

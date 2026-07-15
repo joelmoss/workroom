@@ -141,6 +141,33 @@ struct GitProvider: VCSProviding {
     }
   }
 
+  /// Old-side content of `path` at commit `rev`'s first parent (for highlighting deleted lines).
+  /// `nil` for a root commit (no parent) / absent-at-parent / binary / over cap.
+  func commitParentFileContent(root: URL, commitID: String, path: String) async throws -> String? {
+    do {
+      let repo = try Repository.open(at: root)
+      let commit: Commit = try repo.show(id: OID(hex: commitID))
+      guard let parent = (try? commit.parents)?.first else { return nil }
+      return try await fileContent(root: root, rev: parent.id.hex, path: path)
+    } catch {
+      throw VCSError.io("\(error)")
+    }
+  }
+
+  /// Old-side content of `path` for a working-copy diff — the file at `HEAD`. Git has no `.parent`
+  /// working surface, so that base yields `nil`.
+  func workingBaseFileContent(root: URL, base: VCSWorkingDiffBase, path: String) async throws
+    -> String?
+  {
+    guard base == .workingCopy else { return nil }
+    do {
+      let repo = try Repository.open(at: root)
+      return try await fileContent(root: root, rev: repo.HEAD.target.id.hex, path: path)
+    } catch {
+      throw VCSError.io("\(error)")
+    }
+  }
+
   /// Resolve `path` to its blob OID by walking the tree component-by-component (SwiftGitX `Tree`
   /// exposes only flat `entries`, so nested paths are walked by hand). `nil` if any component is
   /// missing or the leaf isn't a blob.

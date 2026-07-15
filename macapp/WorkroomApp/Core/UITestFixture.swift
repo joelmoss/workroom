@@ -456,6 +456,12 @@ struct FixtureVCSProvider: VCSProviding {
 
   // Highlighting content is served by `UITestFixture.fileContent` in fixture mode, not the provider.
   func fileContent(root: URL, rev: String, path: String) async throws -> String? { nil }
+  func commitParentFileContent(root: URL, commitID: String, path: String) async throws -> String? {
+    nil
+  }
+  func workingBaseFileContent(root: URL, base: VCSWorkingDiffBase, path: String) async throws
+    -> String?
+  { nil }
 
   func currentRef(root: URL) async throws -> VCSRef {
     VCSRef(name: "main", kind: .branch)

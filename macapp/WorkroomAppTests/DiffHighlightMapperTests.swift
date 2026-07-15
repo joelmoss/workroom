@@ -81,7 +81,7 @@ final class DiffHighlightMapperTests: XCTestCase {
     XCTAssertEqual(r.map(\.text).joined(), "let x = 1")
     XCTAssertEqual(r.first?.text, "let")
     assertColor(
-      r.first?.color, NSColor(t.syntaxColor(forCapture: "keyword", onAddedBackground: true)!))
+      r.first?.color, NSColor(t.syntaxColor(forCapture: "keyword")!))
     // The remainder is the default foreground.
     assertColor(r.last?.color, t.nsFg, "uncaptured text uses theme fg")
   }
@@ -133,7 +133,7 @@ final class DiffHighlightMapperTests: XCTestCase {
     let r = runs(lines[1]!)
     XCTAssertEqual(r.map(\.text).joined(), "foo\r", "the \\r is retained")
     assertColor(
-      r.first?.color, NSColor(t.syntaxColor(forCapture: "keyword", onAddedBackground: true)!))
+      r.first?.color, NSColor(t.syntaxColor(forCapture: "keyword")!))
   }
 
   func testNoFinalNewlineMapsLastLine() {
@@ -147,7 +147,7 @@ final class DiffHighlightMapperTests: XCTestCase {
     XCTAssertEqual(r.map(\.text).joined(), "x = 1")
     XCTAssertEqual(r.last?.text, "1")
     assertColor(
-      r.last?.color, NSColor(t.syntaxColor(forCapture: "number", onAddedBackground: true)!))
+      r.last?.color, NSColor(t.syntaxColor(forCapture: "number")!))
   }
 
   func testMultibyteCharacterSliceIsIntact() {
@@ -163,7 +163,7 @@ final class DiffHighlightMapperTests: XCTestCase {
     XCTAssertEqual(r.map(\.text).joined(), "let π = 3", "multibyte content reassembles exactly")
     let pi = r.first { $0.text == "π" }
     XCTAssertNotNil(pi, "the multibyte span slices on a clean UTF-8 boundary")
-    assertColor(pi?.color, NSColor(t.syntaxColor(forCapture: "keyword", onAddedBackground: true)!))
+    assertColor(pi?.color, NSColor(t.syntaxColor(forCapture: "keyword")!))
   }
 
   func testCombiningCharacterSliceIsIntact() {
@@ -224,14 +224,14 @@ final class DiffHighlightMapperTests: XCTestCase {
     // Foreground still colours "let"; background still marks "2" — the two compose.
     let r = runs(lines[1]!)
     assertColor(
-      r.first?.color, NSColor(t.syntaxColor(forCapture: "keyword", onAddedBackground: true)!))
+      r.first?.color, NSColor(t.syntaxColor(forCapture: "keyword")!))
     let emphasised = backgrounds(lines[1]!).first { $0.bg != nil }
     XCTAssertEqual(emphasised?.text, "2")
   }
 
   // MARK: - Guards
 
-  func testDeletionsAreNeverHighlighted() {
+  func testNewSideMapperSkipsDeletions() {
     let t = tokens()
     let content = "kept\n"
     let spans = [HighlightSpan(byteRange: 0..<4, capture: "keyword")]
@@ -240,9 +240,26 @@ final class DiffHighlightMapperTests: XCTestCase {
       line(.addition, "kept", new: 1),
     ])
     let lines = DiffHighlightMapper.attributedLines(
-      diff: d, content: content, spans: spans, tokens: t)
+      diff: d, content: content, spans: spans, tokens: t)  // side .new
     XCTAssertNotNil(lines[1], "the addition is highlighted")
-    XCTAssertEqual(lines.count, 1, "only the addition maps; the deletion produces no entry")
+    XCTAssertEqual(lines.count, 1, "the new side maps only the addition; deletions come from .old")
+  }
+
+  func testOldSideMapperHighlightsDeletionsByOldLine() {
+    let t = tokens()
+    let oldContent = "let removed = 1\n"  // the pre-image line
+    let spans = [HighlightSpan(byteRange: 0..<3, capture: "keyword")]  // "let"
+    let d = diff([
+      line(.deletion, "let removed = 1", old: 1),
+      line(.addition, "let added = 2", new: 1),
+    ])
+    let lines = DiffHighlightMapper.attributedLines(
+      diff: d, content: oldContent, spans: spans, tokens: t, side: .old)
+    // Keyed by OLD line; only the deletion maps on the old side.
+    XCTAssertEqual(lines.count, 1)
+    let r = runs(lines[1]!)
+    XCTAssertEqual(r.map(\.text).joined(), "let removed = 1")
+    assertColor(r.first?.color, NSColor(t.syntaxColor(forCapture: "keyword")!))
   }
 
   func testChangedSinceDiffGuardSkipsMismatchedLine() {

@@ -73,6 +73,19 @@ struct RustJJProvider: VCSProviding {
     return text
   }
 
+  /// Old-side content at the commit's parent (`<commitID>-`), for highlighting deleted lines. A
+  /// merge (`X-` resolves to >1 revision) makes `jj file show` error → `fileContent` returns nil.
+  func commitParentFileContent(root: URL, commitID: String, path: String) async throws -> String? {
+    try await fileContent(root: root, rev: "\(commitID)-", path: path)
+  }
+
+  /// Old-side content for a working-copy diff base: `@-` (`.workingCopy`) or `@--` (`.parent`).
+  func workingBaseFileContent(root: URL, base: VCSWorkingDiffBase, path: String) async throws
+    -> String?
+  {
+    try await fileContent(root: root, rev: base == .parent ? "@--" : "@-", path: path)
+  }
+
   func fileDiff(root: URL, commitID: String, path: String) async throws -> String {
     // jj-lib exposes raw diff regions but no git-format writer (that lives in the jj CLI). Rather
     // than reimplement unified-diff formatting, use the jj CLI for the per-file patch text — the
