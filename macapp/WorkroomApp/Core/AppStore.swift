@@ -283,18 +283,6 @@ final class AppStore: ObservableObject {
   @Published var prSectionCollapsed = false {
     didSet { persistInspectorState() }
   }
-  /// Collapse state of the two jj Changes-panel lists (Working Copy `@` / Parent Commit `@-`). Held
-  /// here as `@Published` (not `@Default` in the panel) for the same reason as `collapsedProjects`
-  /// and the section flags above: the inspector content observes this `@EnvironmentObject` but a
-  /// `@Default` write doesn't reliably re-render it until some other state changes, so a header click
-  /// appeared to do nothing until the pointer moved. Working copy expanded, parent collapsed by
-  /// default; global (not per-workroom) for v1. Persisted via `didSet`.
-  @Published var changesWorkingCopyCollapsed: Bool = Defaults[.changesWorkingCopyCollapsed] {
-    didSet { Defaults[.changesWorkingCopyCollapsed] = changesWorkingCopyCollapsed }
-  }
-  @Published var changesParentCommitCollapsed: Bool = Defaults[.changesParentCommitCollapsed] {
-    didSet { Defaults[.changesParentCommitCollapsed] = changesParentCommitCollapsed }
-  }
   /// Relative heights of the three inspector panes for the selected workroom (issue #24), ordered as
   /// `InspectorSectionKind.allCases`. Equal == the default three-equal-sections layout; updated when
   /// the user drags a divider (via `updateInspectorSizeWeights`) and persisted per workroom. Not set
@@ -1832,10 +1820,6 @@ final class AppStore: ObservableObject {
   /// then drive splits/closes without any fragile sidebar navigation. Branch resolution is skipped
   /// (the temp-dir paths aren't real repos), so no git/jj process is ever spawned. Idempotent: a
   /// later reload re-injects the same projects but preserves whatever the test has since selected.
-  /// One-shot guard so the fixture's jj Changes-panel collapse reset runs only on the first load,
-  /// not on focus-driven reloads (which would revert a toggle). Fixture-mode only.
-  private static var didResetFixtureChangesCollapse = false
-
   private func loadFixture() {
     let fixtures = UITestFixture.projects()
     projects = fixtures
@@ -1855,15 +1839,6 @@ final class AppStore: ObservableObject {
     // Start every fixture project expanded so the sidebar tree is deterministic regardless of any
     // collapse state a prior UI-test run persisted to the shared defaults (real projects untouched).
     collapsedProjects.subtract(fixtures.map(\.id))
-    // Likewise reset the jj Changes-panel groups to their defaults (working copy expanded, parent
-    // collapsed) so the two-group UI test starts from a known state even after a prior run toggled
-    // them — but ONCE per process: loadFixture also runs on focus-driven reloads, and clobbering the
-    // collapse state every time would revert a toggle the test (or user) just made.
-    if !Self.didResetFixtureChangesCollapse {
-      Self.didResetFixtureChangesCollapse = true
-      changesWorkingCopyCollapsed = false
-      changesParentCommitCollapsed = true
-    }
     // Auto-select the fixture workroom only for the restoring (launch) window — a ⌘N window starts
     // blank in fixture mode too, mirroring production (issue #70). `fixtureAutoSelect` is the
     // per-window equivalent of clearing `pendingRestoreSelection` on the real path.

@@ -211,12 +211,7 @@ enum UITestFixture {
       jjWorkingCopy: JJCommitChanges(
         changeID: "pw", commitID: "7d74470b", refs: ["feature/login"],
         description: "feat: add session login (#42)", files: changedFiles),
-      jjParent: .changes(
-        JJCommitChanges(
-          changeID: "qz", commitID: "a1b2c3d4", refs: [],
-          description: "refactor: extract auth service", files: parentChangedFiles)),
-      // The many-changes repro scenario pairs a tall Changes list with an empty Pull Request (the
-      // exact configuration the disclosure-animation glitch was reported in).
+      // The many-changes repro scenario pairs a tall Changes list with an empty Pull Request.
       pr: manyChanges
         ? nil
         : PullRequestInfo(
@@ -304,17 +299,6 @@ enum UITestFixture {
       ChangedFile(path: "app/views/layouts/v\($0).html.erb", change: .modified)
     }
     return base + extra
-  }
-
-  /// The fixture parent commit's (`@-`) changed files — a small fixed set so the Parent Commit
-  /// group renders a header count and list when expanded (the working-copy `changedFiles` above is
-  /// the one that grows under `manyChanges`).
-  static var parentChangedFiles: [ChangedFile] {
-    [
-      ChangedFile(path: "app/services/auth_service.rb", change: .added),
-      ChangedFile(path: "app/models/account.rb", change: .modified),
-      ChangedFile(path: "db/schema.rb", change: .modified),
-    ]
   }
 
   /// A fixed timestamp for the seeded statuses' "last checked" stamps (deterministic; the value

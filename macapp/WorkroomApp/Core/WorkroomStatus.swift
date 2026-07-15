@@ -102,19 +102,6 @@ struct JJCommitChanges: Equatable, Sendable {
   var files: [ChangedFile] = []
 }
 
-/// The state of the working copy's parent (`@-`), modelled explicitly so a merge or a failed probe
-/// is never silently hidden (it would otherwise be indistinguishable from "no parent changes"):
-/// - `.changes` — a single parent we could read (its `files` may be empty for an empty/root-adjacent commit).
-/// - `.merge(n)` — `@-` resolves to multiple revisions, so there's no single parent diff to show.
-/// - `.unavailable` — both `@-` probes errored/timed out.
-/// - `.root` — `@-` is the root (no parent); the panel hides the group.
-enum JJParentState: Equatable, Sendable {
-  case changes(JJCommitChanges)
-  case merge(Int)
-  case unavailable
-  case root
-}
-
 /// One reviewer on a pull request (issue #52): either someone who has *submitted* a review
 /// (`latestReviews`) or someone who's been *requested* but hasn't yet (`reviewRequests`). The
 /// identity is typed so a requested team (which has a `slug`, not a `login`) can never collide
@@ -231,12 +218,9 @@ struct WorkroomStatus: Equatable, Sendable {
   var failure: VCSStatusFailure?
   var branchForCI: String?
   /// jj only: the working copy's (`@`) change set — id/commit/refs/description + changed files —
-  /// driving the Working Copy disclosure group, and the panel's jj/git discriminator (`nil` ⇒ git).
+  /// driving the Changes-panel header, and the panel's jj/git discriminator (`nil` ⇒ git).
   /// `changedFiles` mirrors `jjWorkingCopy?.files` for jj (both set from the one summary probe).
   var jjWorkingCopy: JJCommitChanges?
-  /// jj only: the working copy's parent (`@-`) state, driving the Parent Commit disclosure group.
-  /// `nil` ⇒ not a jj repo / not yet resolved. See `JJParentState`.
-  var jjParent: JJParentState?
   /// The branch's pull request (Phase 2), resolved by a separate slow `gh` probe like `ci`. `nil` ⇒
   /// none resolved (no PR, no remote, gh missing, or not yet probed).
   var pr: PullRequestInfo?

@@ -76,7 +76,7 @@ final class DiffPaneFocusUITests: XCTestCase {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
     XCTAssertTrue(
-      element(app, id: "changes.group.workingCopy").waitForExistence(timeout: 10),
+      element(app, id: "changes.workingCopy").waitForExistence(timeout: 10),
       "the Changes panel should render so a diff can be opened")
 
     // Open a persisted diff tab (double-click skips preview so it survives).

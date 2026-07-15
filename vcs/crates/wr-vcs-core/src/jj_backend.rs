@@ -11,9 +11,12 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use jj_lib::backend::ChangeId;
 use jj_lib::commit::Commit as JjCommit;
 use jj_lib::config::StackedConfig;
 use jj_lib::gitignore::GitIgnoreFile;
+use jj_lib::hex_util::encode_reverse_hex;
+use jj_lib::id_prefix::IdPrefixIndex;
 use jj_lib::matchers::{EverythingMatcher, NothingMatcher};
 use jj_lib::object_id::ObjectId;
 use jj_lib::repo::{ReadonlyRepo, Repo, StoreFactories};
@@ -68,10 +71,24 @@ fn bookmark_map(repo: &ReadonlyRepo) -> HashMap<String, Vec<String>> {
     map
 }
 
+/// jj's short change-id for display: the reverse-hex ("z-k" digit) form truncated to the shortest
+/// prefix that still uniquely resolves in this repo — exactly what `jj log` shows (e.g. `wo`, `znl`),
+/// rather than the full 32-digit hex. The empty prefix index falls back to the repo's own index +
+/// ref disambiguation, matching the CLI's default (no `--revisions` narrowing).
+fn short_change_id(repo: &dyn Repo, change_id: &ChangeId) -> String {
+    let full = encode_reverse_hex(change_id.as_bytes());
+    let len = IdPrefixIndex::empty()
+        .shortest_change_prefix_len(repo, change_id)
+        .unwrap_or(full.len())
+        .clamp(1, full.len());
+    full.chars().take(len).collect()
+}
+
 fn to_model_commit(
     c: &JjCommit,
     wc_id: Option<&jj_lib::backend::CommitId>,
     bookmarks: &HashMap<String, Vec<String>>,
+    repo: &dyn Repo,
 ) -> Commit {
     let commit_id = c.id().hex();
     let (author, ts_ms, tz) = author_of(c.author());
@@ -86,7 +103,7 @@ fn to_model_commit(
         .to_string();
     Commit {
         short_id: commit_id.chars().take(8).collect(),
-        change_id: Some(c.change_id().hex()),
+        change_id: Some(short_change_id(repo, c.change_id())),
         summary,
         body,
         authors: vec![author],
@@ -155,7 +172,12 @@ pub fn log_page(root: &Path, limit: usize) -> model::Result<HistoryPage> {
                 reached_end: true,
             });
         };
-        commits.push(to_model_commit(&commit, wc_id.as_ref(), &bookmarks));
+        commits.push(to_model_commit(
+            &commit,
+            wc_id.as_ref(),
+            &bookmarks,
+            repo.as_ref(),
+        ));
         for parent_id in commit.parent_ids() {
             if seen.insert(parent_id.as_bytes().to_vec()) {
                 heap.push(HeapItem(store.get_commit(parent_id).map_err(io)?));
@@ -249,8 +271,9 @@ fn commit_changes(
     commit: &JjCommit,
     files: Vec<model::ChangedFile>,
     bookmarks: &HashMap<String, Vec<String>>,
+    repo: &dyn Repo,
 ) -> model::CommitChanges {
-    let c = to_model_commit(commit, None, bookmarks);
+    let c = to_model_commit(commit, None, bookmarks, repo);
     model::CommitChanges {
         change_id: c.change_id,
         commit_id: Some(c.short_id),
@@ -378,7 +401,7 @@ pub fn working_status(root: &Path) -> model::Result<model::WorkingStatus> {
     let wc_commit = store.get_commit(&wc_id).map_err(io)?;
     let conflicted = wc_commit.has_conflict();
     let wc_files = changed_files(store, &wc_commit)?;
-    let working_copy = commit_changes(&wc_commit, wc_files, &bookmarks);
+    let working_copy = commit_changes(&wc_commit, wc_files, &bookmarks, repo.as_ref());
 
     // Parent `@-`: 0 parents ⇒ `@` is the root; >1 ⇒ a merge; else the single parent's change set
     // (its files vs `@--`). A parent-load failure degrades to Unavailable, not a misleading empty.
@@ -391,7 +414,12 @@ pub fn working_status(root: &Path) -> model::Result<model::WorkingStatus> {
         match store.get_commit(&parent_ids[0]) {
             Ok(parent) => {
                 let files = changed_files(store, &parent)?;
-                model::ParentState::Changes(commit_changes(&parent, files, &bookmarks))
+                model::ParentState::Changes(commit_changes(
+                    &parent,
+                    files,
+                    &bookmarks,
+                    repo.as_ref(),
+                ))
             }
             Err(_) => model::ParentState::Unavailable,
         }
@@ -418,7 +446,7 @@ pub fn changeset(root: &Path, commit_id_hex: &str) -> model::Result<model::Chang
     let commit = store.get_commit(&id).map_err(io)?;
     let bookmarks = bookmark_map(&repo);
     let files = changed_files(store, &commit)?;
-    let model_commit = to_model_commit(&commit, None, &bookmarks);
+    let model_commit = to_model_commit(&commit, None, &bookmarks, repo.as_ref());
     Ok(model::Changeset {
         is_merge: commit.parent_ids().len() > 1,
         full_message: commit.description().to_string(),

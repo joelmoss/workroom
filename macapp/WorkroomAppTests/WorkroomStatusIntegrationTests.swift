@@ -242,22 +242,6 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
     XCTAssertEqual((wc?.commitID ?? "").count, 8)  // commit-id is jj's shortest-8 id
   }
 
-  /// Proves the real `@-` probes resolve the working copy's parent change set end to end: a described
-  /// commit with a file, with `@` a fresh empty change holding its own working-copy edit on top.
-  func testJJParentCommitResolves() async throws {
-    let dir = try jjRepo()
-    sh("echo a > f.txt && jj describe -m 'parent change' 2>/dev/null", in: dir)
-    sh("jj new 2>/dev/null", in: dir)  // @ becomes empty; @- is the 'parent change' commit
-    sh("echo b > g.txt", in: dir)  // a working-copy edit on top
-    let s = await resolver.resolveLocal(path: dir, vcs: "jj")
-    XCTAssertTrue((s.jjWorkingCopy?.files ?? []).contains { $0.path == "g.txt" })
-    guard case .changes(let parent)? = s.jjParent else {
-      return XCTFail("expected .changes parent, got \(String(describing: s.jjParent))")
-    }
-    XCTAssertEqual(parent.description, "parent change")
-    XCTAssertTrue(parent.files.contains { $0.path == "f.txt" })
-  }
-
   /// The real reason `branchForCI` exists for jj: `@` is a *detached* git HEAD (so the
   /// `git symbolic-ref` fallback in resolveCI/resolvePR finds nothing), and a bookmark normally
   /// sits at `@-` because `@` is an empty working-copy change on top. This proves the

@@ -54,8 +54,8 @@ final class TabActionsUITests: XCTestCase {
   /// tab chip ("user.rb") exists.
   private func openDiffPreview(_ app: XCUIApplication) {
     XCTAssertTrue(
-      element(app, id: "changes.group.workingCopy").waitForExistence(timeout: 10),
-      "jj Working Copy group should render")
+      element(app, id: "changes.workingCopy").waitForExistence(timeout: 10),
+      "jj Working Copy header should render")
     let row = fileRow(app, "app/models/user.rb")
     XCTAssertTrue(row.waitForExistence(timeout: 10))
     row.click()

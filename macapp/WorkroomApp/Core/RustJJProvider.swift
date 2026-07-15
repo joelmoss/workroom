@@ -56,8 +56,9 @@ struct RustJJProvider: VCSProviding {
   }
 
   /// The jj working-copy status via the native Rust core (jj-lib): snapshots `@` (so it reflects
-  /// disk), then reads its change set, the parent `@-` state, and the CI branch — mapped to the app's
-  /// `WorkroomStatus`. `insertions`/`deletions` are left nil here; `WorkroomStatusResolver.resolveJJ`
+  /// disk), then reads its change set and the CI branch — mapped to the app's `WorkroomStatus`. (The
+  /// core also returns the parent `@-` state, no longer surfaced app-side.) `insertions`/`deletions`
+  /// are left nil here; `WorkroomStatusResolver.resolveJJ`
   /// fills them from one `jj diff --stat` (jayjay-style — a native line count would materialize every
   /// file). Synchronous (blocking jj-lib work); the resolver runs it off-main under a timeout.
   func workingStatus(root: URL) throws -> WorkroomStatus {
@@ -70,7 +71,7 @@ struct RustJJProvider: VCSProviding {
     let workingCopy = Self.jjCommitChanges(w.workingCopy)
     return WorkroomStatus(
       dirty: w.dirty, conflicted: w.conflicted, changedFiles: workingCopy.files,
-      branchForCI: w.branchForCi, jjWorkingCopy: workingCopy, jjParent: Self.jjParent(w.parent))
+      branchForCI: w.branchForCi, jjWorkingCopy: workingCopy)
   }
 
   /// The content of `path` at revision `rev` (a commit id or a revset like `@-`), for
@@ -251,15 +252,6 @@ struct RustJJProvider: VCSProviding {
     JJCommitChanges(
       changeID: c.changeId, commitID: c.commitId, refs: c.refs, description: c.description,
       files: c.files.map(changedFile))
-  }
-
-  private static func jjParent(_ p: WrVcs.ParentState) -> JJParentState {
-    switch p {
-    case .root: return .root
-    case .merge(let count): return .merge(Int(count))
-    case .unavailable: return .unavailable
-    case .changes(let c): return .changes(jjCommitChanges(c))
-    }
   }
 
   private static func changedFile(_ f: WrVcs.ChangedFile) -> ChangedFile {

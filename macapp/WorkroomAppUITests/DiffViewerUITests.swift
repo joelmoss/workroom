@@ -64,8 +64,8 @@ final class DiffViewerUITests: XCTestCase {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
     XCTAssertTrue(
-      element(app, id: "changes.group.workingCopy").waitForExistence(timeout: 10),
-      "jj Working Copy group should render")
+      element(app, id: "changes.workingCopy").waitForExistence(timeout: 10),
+      "jj Working Copy header should render")
 
     let row = fileRow(app, "app/models/user.rb")
     XCTAssertTrue(row.waitForExistence(timeout: 10), "working-copy file row should render")
@@ -76,28 +76,6 @@ final class DiffViewerUITests: XCTestCase {
     XCTAssertTrue(
       diffLineExists(app, contains: "jj-working-copy"),
       "the working-copy file opens the jj `@` diff")
-  }
-
-  /// Expanding the Parent Commit group and clicking one of its files opens the jj `@-` diff.
-  func testJJParentFileOpensParentDiff() throws {
-    let app = launchedApp()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-
-    let workingCopy = element(app, id: "changes.group.workingCopy")
-    let parentCommit = element(app, id: "changes.group.parentCommit")
-    XCTAssertTrue(parentCommit.waitForExistence(timeout: 10))
-    // Collapse the working copy (top header, always hittable) so the parent header is in view, then
-    // expand the parent to reveal its files.
-    workingCopy.click()
-    parentCommit.click()
-
-    let row = fileRow(app, "app/services/auth_service.rb")
-    XCTAssertTrue(row.waitForExistence(timeout: 6), "parent-commit file row should render")
-    row.click()
-
-    XCTAssertTrue(diffTab(app, "auth_service.rb").waitForExistence(timeout: 6))
-    XCTAssertTrue(
-      diffLineExists(app, contains: "jj-parent"), "a parent-commit file opens the jj `@-` diff")
   }
 
   // MARK: git
@@ -123,7 +101,7 @@ final class DiffViewerUITests: XCTestCase {
   func testSingleClickPreviewIsReplacedInPlace() throws {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    XCTAssertTrue(element(app, id: "changes.group.workingCopy").waitForExistence(timeout: 10))
+    XCTAssertTrue(element(app, id: "changes.workingCopy").waitForExistence(timeout: 10))
 
     fileRow(app, "app/models/user.rb").click()
     XCTAssertTrue(diffTab(app, "user.rb").waitForExistence(timeout: 6))
@@ -140,7 +118,7 @@ final class DiffViewerUITests: XCTestCase {
   func testFocusedFileRowIsSelectedAndFollowsFocus() throws {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    XCTAssertTrue(element(app, id: "changes.group.workingCopy").waitForExistence(timeout: 10))
+    XCTAssertTrue(element(app, id: "changes.workingCopy").waitForExistence(timeout: 10))
 
     let userRow = fileRow(app, "app/models/user.rb")
     XCTAssertTrue(userRow.waitForExistence(timeout: 10))
@@ -170,7 +148,7 @@ final class DiffViewerUITests: XCTestCase {
   func testDoubleClickPersistsAndCoexistsWithNextPreview() throws {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    XCTAssertTrue(element(app, id: "changes.group.workingCopy").waitForExistence(timeout: 10))
+    XCTAssertTrue(element(app, id: "changes.workingCopy").waitForExistence(timeout: 10))
 
     fileRow(app, "app/models/user.rb").doubleClick()
     XCTAssertTrue(diffTab(app, "user.rb").waitForExistence(timeout: 6))
@@ -199,7 +177,7 @@ final class DiffViewerUITests: XCTestCase {
     app.activate()
 
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    XCTAssertTrue(element(app, id: "changes.group.workingCopy").waitForExistence(timeout: 10))
+    XCTAssertTrue(element(app, id: "changes.workingCopy").waitForExistence(timeout: 10))
 
     let row = fileRow(app, "app/models/user.rb")
     XCTAssertTrue(row.waitForExistence(timeout: 10), "working-copy file row should render")
@@ -229,7 +207,7 @@ final class DiffViewerUITests: XCTestCase {
   func testTabToolbarToggleSwitchesThisFileToSideBySide() throws {
     let app = launchedApp()  // global default mode (unified)
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    XCTAssertTrue(element(app, id: "changes.group.workingCopy").waitForExistence(timeout: 10))
+    XCTAssertTrue(element(app, id: "changes.workingCopy").waitForExistence(timeout: 10))
 
     let row = fileRow(app, "app/models/user.rb")
     XCTAssertTrue(row.waitForExistence(timeout: 10))

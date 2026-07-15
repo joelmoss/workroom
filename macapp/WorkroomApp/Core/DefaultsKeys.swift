@@ -143,14 +143,6 @@ extension Defaults.Keys {
   static let whatsNewAttemptVersion = Key<String?>("app.whatsNewAttemptVersion", default: nil)
   static let whatsNewAttempts = Key<Int>("app.whatsNewAttempts", default: 0)
 
-  /// Collapse state of the two jj Changes-panel lists (Working Copy `@` / Parent Commit `@-`). The
-  /// working copy is expanded and the parent collapsed by default. Global (not per-workroom) for v1
-  /// — a possible follow-up is to scope these per workroom like `inspectorPaneStates`.
-  static let changesWorkingCopyCollapsed = Key<Bool>(
-    "changes.workingCopyCollapsed", default: false)
-  static let changesParentCommitCollapsed = Key<Bool>(
-    "changes.parentCommitCollapsed", default: true)
-
   /// Diff viewer layout (issue #66): `.unified` (default) or `.sideBySide`. Read by `DiffViewer` at
   /// view-construct time, so the choice applies to newly opened diff tabs (a narrow pane falls back
   /// to unified regardless). Stored as the bare raw string via `DiffViewMode: PreferRawRepresentable`.

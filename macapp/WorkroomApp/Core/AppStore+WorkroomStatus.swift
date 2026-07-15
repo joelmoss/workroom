@@ -396,9 +396,9 @@ extension AppStore {
   }
 
   /// Merge a fresh local result into the stored snapshot, preserving the (separately-resolved)
-  /// CI fields so a local refresh never wipes the CI badge. Carries the jj working-copy/parent
-  /// change sets through too — they come from the same local probe as `dirty`, so dropping them
-  /// here would leave the Changes panel on the git fallback even for a jj repo.
+  /// CI fields so a local refresh never wipes the CI badge. Carries the jj working-copy change set
+  /// through too — it comes from the same local probe as `dirty`, so dropping it here would leave
+  /// the Changes panel on the git fallback even for a jj repo.
   func mergeLocalStatus(_ fresh: WorkroomStatus, into sid: SidebarID) {
     guard targetExists(sid) else { return }  // deleted mid-sweep → don't write a ghost entry
     var s = workroomStatuses[sid] ?? .unresolved
@@ -409,7 +409,6 @@ extension AppStore {
     s.deletions = fresh.deletions
     s.branchForCI = fresh.branchForCI
     s.jjWorkingCopy = fresh.jjWorkingCopy
-    s.jjParent = fresh.jjParent
     s.failure = fresh.failure
     s.lastChecked = Date()
     workroomStatuses[sid] = s
