@@ -5,15 +5,15 @@ import SwiftUI
 /// window's trailing edge, VSCode-style. One large icon per `ActivitySection`; clicking one shows
 /// that section's pane in the inspector, clicking the active one collapses the pane (the bar stays).
 ///
-/// Always visible (unlike the inspector content pane it drives). Flat `panel` chrome with a leading
-/// hairline so it reads as the same surface as the title bar and sidebars. Lives inside `RootView`'s
+/// Always visible (unlike the inspector content pane it drives). Flat `panel` chrome so it reads as
+/// the same surface as the title bar and sidebars. Lives inside `RootView`'s
 /// detail `HStack` — inside the detail-only `NavigationSplitView` — so its buttons get working
 /// `.onHover` tracking (a raw content view near the title bar loses it, issue #114).
 struct ActivityBar: View {
   @EnvironmentObject var store: AppStore
   @Default(.showInspector) private var showInspector
-  // Bumped on `.themeDidChange` so the flat panel fill + hairline repaint live on a theme switch
-  // (tokens are read from the `ThemeService` singleton, which SwiftUI doesn't observe on its own).
+  // Bumped on `.themeDidChange` so the flat panel fill repaints live on a theme switch (tokens are
+  // read from the `ThemeService` singleton, which SwiftUI doesn't observe on its own).
   @State private var themeTick = 0
   private let theme = ThemeService.shared
   private let width: CGFloat = 44
@@ -36,7 +36,6 @@ struct ActivityBar: View {
     .frame(width: width)
     .frame(maxHeight: .infinity)
     .background(theme.tokens.panel)
-    .overlay(alignment: .leading) { theme.tokens.border.frame(width: 1) }
     .onReceive(NotificationCenter.default.publisher(for: .themeDidChange)) { _ in themeTick += 1 }
   }
 }
