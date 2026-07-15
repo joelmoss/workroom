@@ -142,6 +142,9 @@ private struct HistoryRow: View {
   /// lives in a separate observation tree from the inspector (mirrors `ChangesPanel.ChangedFileRow`).
   @ObservedObject var sessions: TerminalSessions
   @State private var hovering = false
+  /// Whether the rich hover card (mirroring the changeset detail's header) is showing. Revealed on a
+  /// short hover dwell so it doesn't flash while the pointer scans down the list (see the `.task`).
+  @State private var showCard = false
   /// Timestamp of the last plain click, for the manual double-click gate (mirrors `ChangesPanel`).
   @State private var lastClick: Date?
   /// Divergence expander: shows the change's other visible copies (`commit.divergentSiblings`).
@@ -157,8 +160,8 @@ private struct HistoryRow: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       VStack(alignment: .leading, spacing: 3) {
-        // Line one — summary + any bookmark/branch refs — is the row's combined accessibility leaf
-        // (id `HistoryRow`), so the row reads and selects as a unit behind one queryable identifier.
+        // Line one — the commit summary — is the row's combined accessibility leaf (id `HistoryRow`),
+        // so the row reads and selects as a unit behind one queryable identifier.
         HStack(spacing: 6) {
           if commit.isWorkingCopy {
             Text("@").font(.system(.body, design: .monospaced)).foregroundStyle(.tint)
@@ -169,22 +172,18 @@ private struct HistoryRow: View {
             .lineLimit(1)
             .foregroundStyle(
               isSelected ? theme.tokens.accent : (commit.summary.isEmpty ? .secondary : .primary))
-          Spacer(minLength: 4)
-          ForEach(commit.refs, id: \.self) { ref in
-            Text(ref)
-              .font(.caption2)
-              .padding(.horizontal, 5).padding(.vertical, 1)
-              .background(.quaternary, in: Capsule())
-              .help("Bookmark / branch")
-          }
+          Spacer(minLength: 0)
         }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
         .accessibilityIdentifier("HistoryRow")
 
-        // Line two — avatars, author, relative time — with the "diverging" disclosure trailing on the
-        // SAME line. It's a real button (its own accessibility element), so it toggles the expander
-        // without triggering the row's open-changeset tap.
+        // Line two — avatars, author, relative time, then any bookmark/branch refs right of the
+        // timestamp — with the "diverging" disclosure trailing on the SAME line. Refs live here (not
+        // line one) so a long bookmark/branch never wraps: each is a single truncating capsule, and
+        // the timestamp keeps layout priority so the refs give way first. The disclosure is a real
+        // button (its own accessibility element), so it toggles the expander without triggering the
+        // row's open-changeset tap.
         HStack(spacing: 6) {
           let relative = Self.relative.localizedString(for: commit.timestamp, relativeTo: Date())
           if !commit.authors.isEmpty {
@@ -196,8 +195,18 @@ private struct HistoryRow: View {
             .font(.caption)
             .foregroundStyle(.secondary)
             .lineLimit(1)
+            .layoutPriority(1)
+          ForEach(commit.refs, id: \.self) { ref in
+            Text(ref)
+              .font(.caption2)
+              .lineLimit(1)
+              .truncationMode(.tail)
+              .padding(.horizontal, 5).padding(.vertical, 1)
+              .background(.quaternary, in: Capsule())
+              .help("Bookmark / branch")
+          }
+          Spacer(minLength: 6)
           if commit.isDivergent {
-            Spacer(minLength: 6)
             divergingToggle
           }
         }
@@ -215,7 +224,25 @@ private struct HistoryRow: View {
       )
       .contentShape(Rectangle())
       .onHover { hovering = $0 }
-      .help(tooltip)
+      // Rich hover card in place of a plain text `.help` tooltip: the same header layout the changeset
+      // detail uses (summary, id/author/date/refs line, then the description body), so a full commit
+      // reads the same on hover as when opened. Anchored leading — the inspector sits at the window's
+      // trailing edge, so the card opens inward over the detail area rather than off-screen.
+      .popover(isPresented: $showCard, arrowEdge: .leading) {
+        HistoryCommitCard(commit: commit)
+      }
+      // Dwell gate: reveal only after the pointer rests ~0.5s, and hide the instant it leaves. Flipping
+      // `hovering` re-runs this task (SwiftUI cancels the prior one), so a quick pass over the row
+      // cancels the pending reveal before it fires — no popover flicker while scanning the list.
+      .task(id: hovering) {
+        guard hovering else {
+          showCard = false
+          return
+        }
+        try? await Task.sleep(for: .milliseconds(500))
+        guard !Task.isCancelled else { return }
+        showCard = true
+      }
       // Eager single-click preview, quick second click (< 0.35s) persists — the same manual
       // double-click gate the Changes panel uses (avoids SwiftUI's count:2 delay).
       .onTapGesture {
@@ -275,13 +302,6 @@ private struct HistoryRow: View {
     .padding(.top, 1).padding(.bottom, 5)
   }
 
-  /// The hover tooltip: the full commit summary, plus the description body beneath it when present
-  /// (both can be truncated in the row itself).
-  private var tooltip: String {
-    let summary = commit.summary.isEmpty ? "(no description)" : commit.summary
-    return commit.body.isEmpty ? summary : "\(summary)\n\n\(commit.body)"
-  }
-
   /// True when the selected target's focused content tab is this commit's changeset — so the row
   /// showing in the pane reads as selected. The History analogue of `ChangedFileRow.isSelected`.
   private var isSelected: Bool {
@@ -291,6 +311,75 @@ private struct HistoryRow: View {
       return descriptor.commitID == commit.commitID
     }
     return false
+  }
+}
+
+/// The history row's hover card — the same header layout the changeset detail view uses
+/// (`ChangesetDetailView.header`), so a commit reads identically on hover as when opened: the summary
+/// as a headline, an identity/author/date/refs line, then the full description body. Built purely from
+/// the `VCSCommit` already in hand — no changeset fetch — so it omits the detail's diff `+N −M` stat
+/// and file list (those need the resolved changeset). Rendered inside a `.popover`.
+private struct HistoryCommitCard: View {
+  let commit: VCSCommit
+  private let theme = ThemeService.shared
+
+  private static let dateFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.dateStyle = .medium
+    f.timeStyle = .short
+    return f
+  }()
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 5) {
+      Text(commit.summary.isEmpty ? "(no description)" : commit.summary)
+        .font(.headline)
+        .foregroundStyle(commit.summary.isEmpty ? .secondary : .primary)
+        .textSelection(.enabled)
+        .fixedSize(horizontal: false, vertical: true)
+      HStack(spacing: 10) {
+        // Identity, styled like the detail header: change-id (purple, jj only) + commit-id (blue),
+        // monospaced.
+        if let changeID = commit.changeID {
+          Text(changeID)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(.purple)
+        }
+        Text(commit.shortID)
+          .font(.system(.caption, design: .monospaced))
+          .foregroundStyle(.blue)
+        if !commit.authorNamesDisplay.isEmpty {
+          Label {
+            Text(commit.authorNamesDisplay)
+          } icon: {
+            AvatarStack(
+              subjects: commit.authors.map { AvatarSubject(author: $0, pixelSize: 48) }, size: 16)
+          }
+        }
+        Label(Self.dateFormatter.string(from: commit.timestamp), systemImage: "clock")
+        if commit.parentIDs.count > 1 {
+          Label("Merge", systemImage: "arrow.triangle.merge")
+        }
+        Spacer(minLength: 0)
+        // Bookmarks/branches, styled like the detail header's refs (accent, medium).
+        ForEach(commit.refs, id: \.self) { ref in
+          Text(ref)
+            .fontWeight(.medium)
+            .foregroundStyle(theme.tokens.accent)
+            .lineLimit(1)
+        }
+      }
+      .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+      if !commit.body.isEmpty {
+        Text(commit.body)
+          .font(.callout).foregroundStyle(.secondary)
+          .textSelection(.enabled)
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+    }
+    .padding(.horizontal, 12).padding(.vertical, 10)
+    .frame(width: 420, alignment: .leading)
   }
 }
 
