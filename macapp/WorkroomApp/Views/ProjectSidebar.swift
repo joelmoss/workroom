@@ -117,6 +117,10 @@ struct ProjectSidebar: View {
     // (This replaces the earlier floating overlay + top-fade gradient from issue #56, which let rows
     // peek under the footer.)
     .safeAreaInset(edge: .bottom, spacing: 0) { footer }
+    // Breathing room above the first project so it doesn't jam against the card's top edge (the card
+    // sits flush under the title bar via `SidebarColumn`'s `topMargin: 0`). A solid `safeAreaInset`
+    // like the footer — reserves an 8pt strip of the card surface, matching the card's side margin.
+    .safeAreaInset(edge: .top, spacing: 0) { Color.clear.frame(height: 8) }
     // Per-project run-command settings (issue #7) stays sidebar-local — it's only ever triggered
     // from a (visible) project row, so it needs no re-homing.
     .sheet(item: $settingsProject) { project in
