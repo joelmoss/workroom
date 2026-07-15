@@ -125,8 +125,18 @@ struct ChangesetDetailView: View {
         .textSelection(.enabled)
         .fixedSize(horizontal: false, vertical: true)
       HStack(spacing: 10) {
-        Label(commit.shortID, systemImage: "number")
+        // Identity, styled like the Changes panel header: change-id (purple, jj only) + commit-id
+        // (blue), monospaced — rather than a `#`-prefixed short id — so it reads the same in both.
+        if let changeID = commit.changeID {
+          Text(changeID)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(.purple)
+            .help("Change ID")
+        }
+        Text(commit.shortID)
           .font(.system(.caption, design: .monospaced))
+          .foregroundStyle(.blue)
+          .help("Commit ID")
         if !commit.authorNamesDisplay.isEmpty {
           Label {
             Text(commit.authorNamesDisplay)
@@ -141,11 +151,13 @@ struct ChangesetDetailView: View {
         }
         diffStat(changeset)
         Spacer(minLength: 0)
+        // Bookmarks/branches, styled like the Changes panel's header refs (accent, medium) rather
+        // than gray capsules, so a commit's refs read the same in both surfaces.
         ForEach(commit.refs, id: \.self) { ref in
           Text(ref)
-            .font(.caption2)
-            .padding(.horizontal, 5).padding(.vertical, 1)
-            .background(.quaternary, in: Capsule())
+            .fontWeight(.medium)
+            .foregroundStyle(theme.tokens.accent)
+            .lineLimit(1)
             .help("Bookmark / branch")
         }
       }
