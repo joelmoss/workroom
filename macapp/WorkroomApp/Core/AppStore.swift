@@ -630,7 +630,16 @@ final class AppStore: ObservableObject {
   /// only publishes (re-renders the inspector) on an actual transition.
   func refreshSelectionHasTabs() {
     let has = selectedTarget.map { terminals.tabCount(forTargetID: $0.id) > 0 } ?? false
-    if has != selectionHasTabs { selectionHasTabs = has }
+    guard has != selectionHasTabs else { return }
+    selectionHasTabs = has
+    // A tab opening (or the last one closing) for the selected workroom flips `inspectorTargetID`
+    // (nil↔id). Re-point History from here so it loads the instant its target appears, instead of
+    // waiting on the panel's own `.task` to re-fire — which doesn't happen reliably across the
+    // `NSHostingController`-hosted inspector, so History lagged until an app refocus (`reloadIfStale`)
+    // forced a re-render. `focus` is idempotent (no-op when the root is unchanged).
+    if activeInspectorSection == .history {
+      commitHistory.focus(inspectorTarget.map { URL(fileURLWithPath: $0.path) })
+    }
   }
 
   /// Whether there's a usable editor and a valid selected target to open — drives the ⌘O command and

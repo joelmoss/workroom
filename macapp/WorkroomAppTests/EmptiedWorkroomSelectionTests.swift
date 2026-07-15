@@ -292,4 +292,24 @@ final class EmptiedWorkroomSelectionTests: XCTestCase {
     XCTAssertEqual(
       store.selectedTargetID, wr("main"), "deleting a non-selected workroom leaves selection put")
   }
+
+  // MARK: History follows the inspector target
+
+  /// History must load the instant its target appears. The selected workroom's `inspectorTargetID` is
+  /// nil until it has a tab, so opening its first tab flips it nil→id — the store re-points
+  /// `commitHistory` from `refreshSelectionHasTabs` (the tab-add hook), not the hosted panel's
+  /// `.task`, which lagged until an app refocus forced a re-render (the "History delay" bug).
+  func testHistoryFocusesWhenSelectedWorkroomGainsFirstTab() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.activeInspectorSection = .history
+    store.selectedTargetID = wr("main")
+    XCTAssertNil(store.commitHistory.root, "no tab yet → History has no target to load")
+
+    store.terminals.addTab(for: store.target(for: wr("main"))!)
+    store.refreshSelectionHasTabs()  // the real path runs this from the tab-focus hook
+
+    XCTAssertEqual(
+      store.commitHistory.root, URL(fileURLWithPath: "/a/main"),
+      "History focuses on the workroom the moment it has a tab")
+  }
 }
