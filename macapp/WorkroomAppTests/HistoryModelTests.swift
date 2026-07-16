@@ -53,6 +53,43 @@ final class HistoryModelTests: XCTestCase {
     func currentRef(root: URL) async throws -> VCSRef { throw VCSError.io("boom") }
   }
 
+  /// A provider that counts `log` calls and can be toggled to fail — so `activate`'s branch behaviour
+  /// (does it reload? how many times?) is observable, and its failure-retry can be driven. Lock-guarded
+  /// + `@unchecked Sendable` because `log` runs off-main via `runBlocking`; the tests serialize access
+  /// with `awaitCurrentLoad`, so there's no real contention.
+  private final class CountingProvider: VCSProviding, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _count = 0
+    private var _all: [VCSCommit]
+    private var _fail = false
+    var logCount: Int { lock.withLock { _count } }
+    init(_ all: [VCSCommit]) { _all = all }
+    func setFail(_ f: Bool) { lock.withLock { _fail = f } }
+    func log(root: URL, limit: Int) throws -> VCSHistoryPage {
+      try lock.withLock {
+        _count += 1
+        if _fail { throw VCSError.io("boom") }
+        let slice = Array(_all.prefix(limit))
+        return VCSHistoryPage(commits: slice, reachedEnd: slice.count >= _all.count)
+      }
+    }
+    func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
+      throw VCSError.io("x")
+    }
+    func fileDiff(root: URL, commitID: String, path: String) async throws -> String {
+      throw VCSError.io("x")
+    }
+    func workingFileDiff(root: URL, path: String, base: VCSWorkingDiffBase) async throws -> String {
+      throw VCSError.io("x")
+    }
+    func fileContent(root: URL, rev: String, path: String) async throws -> String? { nil }
+    func currentRef(root: URL) async throws -> VCSRef { .none }
+  }
+
+  private func countingModel(_ provider: CountingProvider, pageSize: Int = 10) -> HistoryModel {
+    HistoryModel(pageSize: pageSize, resolve: { _ in provider })
+  }
+
   private func model(_ provider: some VCSProviding, pageSize: Int) -> HistoryModel {
     HistoryModel(pageSize: pageSize, resolve: { _ in provider })
   }
@@ -97,6 +134,71 @@ final class HistoryModelTests: XCTestCase {
     XCTAssertFalse(m.commits.isEmpty)
 
     m.focus(nil)
+    XCTAssertTrue(m.commits.isEmpty)
+    XCTAssertEqual(m.state, .idle)
+  }
+
+  // MARK: activate (section (re)activation — the live-refresh entry point)
+
+  func testActivateNewRootLoadsOnce() async {
+    let p = CountingProvider((1...3).map { commit("\($0)") })
+    let m = countingModel(p)
+    m.activate(url)
+    await m.awaitCurrentLoad()
+    XCTAssertEqual(p.logCount, 1)
+    XCTAssertEqual(m.commits.count, 3)
+    XCTAssertEqual(m.state, .loaded)
+  }
+
+  func testActivateReentryOnLoadedRootRefreshes() async {
+    let p = CountingProvider((1...3).map { commit("\($0)") })
+    let m = countingModel(p)
+    m.activate(url)
+    await m.awaitCurrentLoad()
+    XCTAssertEqual(p.logCount, 1)
+
+    // Same root, already `.loaded` → a genuine re-entry pulls fresh.
+    m.activate(url)
+    await m.awaitCurrentLoad()
+    XCTAssertEqual(p.logCount, 2, "re-entry on a loaded root must reload")
+    XCTAssertEqual(m.state, .loaded)
+  }
+
+  func testActivateWhileLoadingDoesNotDoubleLoad() async {
+    let p = CountingProvider((1...3).map { commit("\($0)") })
+    let m = countingModel(p)
+    m.activate(url)  // starts the load; state → .loading synchronously
+    m.activate(url)  // same root, NOT settled → focus no-ops; must not fork a 2nd load
+    await m.awaitCurrentLoad()
+    XCTAssertEqual(p.logCount, 1, "a fresh point-at already loading must not double-load")
+  }
+
+  func testActivateReentryOnFailedRootRetries() async {
+    let p = CountingProvider((1...3).map { commit("\($0)") })
+    p.setFail(true)
+    let m = countingModel(p)
+    m.activate(url)
+    await m.awaitCurrentLoad()
+    XCTAssertEqual(p.logCount, 1)
+    if case .failed = m.state {} else { XCTFail("expected .failed, got \(m.state)") }
+
+    // Transient failure cleared; re-entering History must RETRY (focus would no-op on the same root).
+    p.setFail(false)
+    m.activate(url)
+    await m.awaitCurrentLoad()
+    XCTAssertEqual(p.logCount, 2, "re-entry on a failed root must retry the load")
+    XCTAssertEqual(m.state, .loaded)
+    XCTAssertEqual(m.commits.count, 3)
+  }
+
+  func testActivateNilClears() async {
+    let p = CountingProvider([commit("1")])
+    let m = countingModel(p)
+    m.activate(url)
+    await m.awaitCurrentLoad()
+    XCTAssertFalse(m.commits.isEmpty)
+
+    m.activate(nil)
     XCTAssertTrue(m.commits.isEmpty)
     XCTAssertEqual(m.state, .idle)
   }

@@ -314,11 +314,10 @@ final class AppStore: ObservableObject {
   /// Store-owned commit-history state for the History inspector section (issue #59); re-pointed on
   /// selection by `HistoryPanel`, mirroring `fileTree`. Named `commitHistory` — `history` is the
   /// browser-style `NavigationHistory`. In UI-test fixture mode it reads canned commits (the fake
-  /// workroom dirs aren't real repos), so the History → changeset click-through is testable.
-  let commitHistory: HistoryModel =
-    UITestFixture.isActive
-    ? HistoryModel(resolve: { _ in UITestFixture.vcsProvider })
-    : HistoryModel()
+  /// workroom dirs aren't real repos), so the History → changeset click-through is testable. Assigned
+  /// in `init` (not inline) so tests can inject a stub and assert the live-refresh triggers fire —
+  /// see the `commitHistory:` init parameter (a `@MainActor` type can't be a nonisolated default arg).
+  let commitHistory: HistoryModel
   /// Shared in-file find state for the read-only file viewer (⌘F in a file pane). Only the focused
   /// `PlainFileViewer` feeds + shows it; routed to from `startFindInFocusedPane`.
   let fileFind = FileFindModel()
@@ -444,13 +443,23 @@ final class AppStore: ObservableObject {
   /// Production builds one store per window (issue #70), each sharing `ProjectStore.shared`; tests
   /// build an isolated `AppStore()` (own fresh `ProjectStore`), inject `projects`, and drive the real
   /// recording/navigation paths. `init` does no CLI work (only `bootstrap()`/`load()` do).
-  init(projectStore: ProjectStore? = nil, cli: WorkroomCLIProtocol? = nil) {
+  init(
+    projectStore: ProjectStore? = nil, cli: WorkroomCLIProtocol? = nil,
+    commitHistory: HistoryModel? = nil
+  ) {
     // Default to a fresh, isolated store (so `AppStore()` in tests never touches the singleton);
     // production passes `.shared`. Constructed here in the main-actor init body, not as a default
     // argument (default args are evaluated nonisolated, which can't call a @MainActor initializer).
     let store = projectStore ?? ProjectStore()
     self.projectStore = store
     self.cli = cli ?? WorkroomCLI.shared
+    // `commitHistory` is assigned here (not inline) for the same @MainActor reason: a test injects a
+    // stub to observe the live-refresh triggers; production/fixture keep the default.
+    self.commitHistory =
+      commitHistory
+      ?? (UITestFixture.isActive
+        ? HistoryModel(resolve: { _ in UITestFixture.vcsProvider })
+        : HistoryModel())
     // Re-publish the shared project store's changes so views and menus observing THIS store
     // re-render when the proxied `projects` / `rootRefs` / `workroomStatuses` / … change (issue #70).
     projectStoreObservation = store.objectWillChange.sink { [weak self] _ in
@@ -2063,6 +2072,20 @@ final class AppStore: ObservableObject {
   func handleRootBranchChange(projectID: Project.ID) {
     guard !UITestFixture.isActive, let p = projects.first(where: { $0.id == projectID })
     else { return }
+    // Live History (issue #59 follow-up): this project's VCS metadata dir moved — a commit / bookmark
+    // / ref update in the project or one of its workrooms (git worktree refs land in the shared
+    // `.git`; jj ops land in the shared `.jj/repo/`, so both surface here even though nothing lands
+    // under the workroom dir). If the inspector is *visible* (not merely the active section — that
+    // persists while hidden), showing History, and its target belongs to THIS project, repaint the
+    // log. Deliberately BEFORE the label-resolve task below and independent of it: a normal commit
+    // usually leaves the branch/bookmark label unchanged, so gating this on the label actually
+    // changing (the `unchanged → return` at the end) would skip the main case. The read is a
+    // read-only `load_at_head` (no working-copy lock, no write), so it can't re-fire this watcher.
+    if Defaults[.showInspector], activeInspectorSection == .history,
+      inspectorTargetID?.belongsToProject(p.path) == true
+    {
+      commitHistory.refresh()
+    }
     let resolver = self.resolver
     rootBranchRefreshTasks[projectID]?.cancel()
     rootBranchRefreshTasks[projectID] = Task { [weak self] in
@@ -3298,6 +3321,14 @@ final class AppStore: ObservableObject {
   func dismissFocusedTerminalNotifications() {
     guard let target = selectedTarget, let active = terminals.activeTab(for: target) else { return }
     notifications.dismiss(tab: active.id)
+  }
+
+  /// On app refocus, pull the History log fresh if the inspector is visible and on History — catches a
+  /// commit made in an external terminal while the app was backgrounded (the live per-project metadata
+  /// watcher may have been coalesced/idle across deactivation). Same visibility gate as the live
+  /// trigger; cheap + cancel-and-replace. Called from `RootView`'s `didBecomeActive` hook.
+  func refreshHistoryIfActive() {
+    if Defaults[.showInspector], activeInspectorSection == .history { commitHistory.refresh() }
   }
 
   /// Human-readable origin for a notification: the project name, plus the workroom for a

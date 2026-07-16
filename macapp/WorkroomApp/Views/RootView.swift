@@ -399,6 +399,9 @@ struct RootView: View {
         NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
       ) { _ in
         store.dismissFocusedTerminalNotifications()
+        // Refresh the History log if it's the visible inspector section — a commit made in an
+        // external terminal while backgrounded won't have repainted via the live watcher.
+        store.refreshHistoryIfActive()
         Task { await store.reloadIfStale() }
       }
       // Publish selection state for menu-command enablement (see WorkroomCommands). Grouped into one

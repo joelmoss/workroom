@@ -11,6 +11,16 @@ final class HistoryModel: ObservableObject {
     case loading
     case loaded
     case failed(String)
+
+    /// True once a load has *settled* into a result (loaded or failed) — the states from which
+    /// `activate` should re-read on re-entry, vs `.idle`/`.loading` (nothing to refresh yet / a load
+    /// is already in flight).
+    var isSettled: Bool {
+      switch self {
+      case .loaded, .failed: return true
+      case .idle, .loading: return false
+      }
+    }
   }
 
   @Published private(set) var commits: [VCSCommit] = []
@@ -49,6 +59,20 @@ final class HistoryModel: ObservableObject {
   func refresh() {
     guard root != nil else { return }
     load(limit: max(pageSize, commits.count))
+  }
+
+  /// Ensure fresh data when the History section (re)activates (the panel's `.task`). On a genuine
+  /// re-entry — same root and a load already *settled* (loaded OR failed) — pull fresh; otherwise
+  /// defer to `focus` (loads a new root, no-ops mid-load on the same one). The `isSettled` guard does
+  /// double duty: it prevents a redundant second load when the store just called `focus` eagerly on
+  /// selection/section-entry (state `.loading`), and it retries after a transient `.failed` (plain
+  /// `focus` would no-op on the same root and leave the pane stuck showing the error).
+  func activate(_ root: URL?) {
+    if self.root == root, root != nil, state.isSettled {
+      refresh()
+    } else {
+      focus(root)
+    }
   }
 
   /// Grow the page by one `pageSize` (the "Load more" affordance).
