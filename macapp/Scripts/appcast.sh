@@ -15,6 +15,10 @@ FEED="${BUILD}/appcast.xml"
 FEED_TAG="appcast"  # the fixed release that hosts appcast.xml (matches SUFeedURL)
 MIN_OS="14.0"
 
+# Shared channel classification (kept in lockstep with internal/channel + ReleaseChannel).
+# shellcheck source=channel-helper.sh
+. "${MACAPP_DIR}/Scripts/channel-helper.sh"
+
 # No signed fields → Sparkle isn't set up yet (no SPARKLE_PRIVATE_KEY). Skip without failing the
 # release, so the DMG still ships and auto-update activates once the key is configured.
 if [ ! -f "$FIELDS" ]; then
@@ -27,6 +31,15 @@ fi
 . "$FIELDS"  # SHORT_VERSION, BUILD_NUMBER, ENCLOSURE_ATTRS
 : "${TAG:?TAG required}"
 : "${REPO:?REPO required}"
+
+# Classify the release into a Sparkle channel. Stable items ship untagged (Sparkle's default
+# channel, offered to everyone); pre/nightly items carry <sparkle:channel> so only opted-in
+# clients see them. A tag that classifies to nothing (e.g. "appcast") must never reach here.
+if ! CHANNEL="$(wr_classify_channel "$TAG")"; then
+  echo "error: tag '$TAG' is not a publishable channel release — refusing to append to the appcast." >&2
+  exit 1
+fi
+echo "Publishing appcast item for $TAG on the '$CHANNEL' channel (build $BUILD_NUMBER)"
 
 # Must match the asset name the release workflow uploads (workroom-macos-app_<version>.dmg,
 # version without the tag's leading v).
@@ -64,14 +77,22 @@ else
 XML
 fi
 
+# Stable items ship untagged (Sparkle's default channel); pre/nightly carry <sparkle:channel>.
+CHANNEL_ELEM=""
+if [ "$CHANNEL" != "stable" ]; then
+  CHANNEL_ELEM="<sparkle:channel>${CHANNEL}</sparkle:channel>"
+fi
+
 ITEM=$(
   cat <<XML
     <item>
+      <!-- wr:${CHANNEL}:${BUILD_NUMBER} -->
       <title>Workroom ${SHORT_VERSION}</title>
       <pubDate>${PUBDATE}</pubDate>
       <sparkle:version>${BUILD_NUMBER}</sparkle:version>
       <sparkle:shortVersionString>${SHORT_VERSION}</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>${MIN_OS}</sparkle:minimumSystemVersion>
+      ${CHANNEL_ELEM}
       <link>${NOTES_URL}</link>
       ${NOTES_DESC}
       <enclosure url="${DMG_URL}" ${ENCLOSURE_ATTRS} type="application/octet-stream" />
@@ -79,23 +100,36 @@ ITEM=$(
 XML
 )
 
-# Insert as the newest item (idempotent on sparkle:version, so re-running a tag is safe).
-ITEM="$ITEM" BUILD_NUMBER="$BUILD_NUMBER" python3 - "$FEED" <<'PY'
+# Insert as the newest item. Idempotency is keyed on the (channel, build) marker, NOT the build
+# number alone — a same-commit prerelease and GA share a build number but are different items, so
+# a build-only key would wrongly skip the second. Nightly is a single ROLLING item: any existing
+# nightly item is removed first, so its enclosure URL/signature never goes stale (the DMG is
+# clobbered in place each run).
+ITEM="$ITEM" CHANNEL="$CHANNEL" BUILD_NUMBER="$BUILD_NUMBER" python3 - "$FEED" <<'PY'
 import os, re, sys
 path = sys.argv[1]
 item = os.environ["ITEM"]
+channel = os.environ["CHANNEL"]
 build = os.environ["BUILD_NUMBER"]
+marker = f"<!-- wr:{channel}:{build} -->"
 xml = open(path, encoding="utf-8").read()
-if f"<sparkle:version>{build}</sparkle:version>" in xml:
-    print(f"appcast already lists build {build}; leaving unchanged")
+
+if channel == "nightly":
+    # Drop the existing nightly item (matched by its channel tag) before inserting the new one.
+    def drop_if_nightly(m):
+        return "" if "<sparkle:channel>nightly</sparkle:channel>" in m.group(0) else m.group(0)
+    xml = re.sub(r"[ \t]*<item>.*?</item>\n?", drop_if_nightly, xml, flags=re.S)
+elif marker in xml:
+    print(f"appcast already lists {channel} build {build}; leaving unchanged")
     sys.exit(0)
+
 m = re.search(r"[ \t]*<item>", xml)          # newest-first: before the first existing item…
 if m:
     xml = xml[: m.start()] + item + "\n" + xml[m.start():]
 else:                                        # …or before </channel> when there are none yet
     xml = xml.replace("</channel>", item + "\n  </channel>", 1)
 open(path, "w", encoding="utf-8").write(xml)
-print(f"Inserted appcast item for build {build} ({sys.argv[1]})")
+print(f"Inserted appcast item: {channel} build {build}")
 PY
 
 # Publish: ensure the feed release exists (not "Latest"), then re-upload the asset.

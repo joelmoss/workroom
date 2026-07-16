@@ -40,6 +40,8 @@ let variants = [
             bgTop: rgb(0x18, 0xE0, 0xC8), bgBottom: rgb(0x2E, 0x7D, 0xFF)),   // teal→blue (release)
     Variant(dirName: "AppIcon-Dev.appiconset",
             bgTop: rgb(0xFF, 0xB0, 0x2E), bgBottom: rgb(0xFF, 0x3D, 0x55)),   // amber→red (dev)
+    Variant(dirName: "AppIcon-Nightly.appiconset",
+            bgTop: rgb(0x9D, 0x5C, 0xFF), bgBottom: rgb(0x4B, 0x1F, 0xB8)),   // violet→indigo (nightly)
 ]
 
 let cardBack = rgb(0xFF, 0xD2, 0x3F)  // yellow (deepest card)

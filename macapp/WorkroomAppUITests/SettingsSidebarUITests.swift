@@ -77,6 +77,19 @@ final class SettingsSidebarUITests: XCTestCase {
     XCTAssertTrue(waitExists(control(app, "autoDiagnose"), true), "Agent shows its controls")
   }
 
+  /// The General pane exposes the release-channel picker (issue #91), reachable by its a11y id.
+  func testGeneralPaneHasReleaseChannelPicker() throws {
+    let app = launchedApp()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    openSettings(app)
+
+    XCTAssertTrue(pane(app, "general").waitForExistence(timeout: 10), "sidebar should render")
+    pane(app, "general").click()
+    XCTAssertTrue(
+      waitExists(control(app, "releaseChannel"), true),
+      "General shows the release-channel picker")
+  }
+
   /// ⌘W closes the Settings window even though the app-wide "Close Terminal" ⌘W command is disabled
   /// there (it has no focused terminal) — handled by the AppDelegate key monitor for non-workroom
   /// windows.

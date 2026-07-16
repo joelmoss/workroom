@@ -7,8 +7,14 @@ import Foundation
 /// single `osascript … with administrator privileges` prompt; when it's already user-writable
 /// (e.g. a Homebrew-owned /usr/local on Intel) we symlink directly with no password.
 enum CommandLineInstaller {
+  /// The command name in PATH. The side-by-side nightly build installs as `workroom-nightly` so it
+  /// coexists with a main-app `workroom` (issue #91); every other build is `workroom`.
+  static var commandName: String {
+    ReleaseChannel.isNightlyBuild ? "workroom-nightly" : "workroom"
+  }
+
   /// Where the symlink goes. /usr/local/bin is on the default PATH for login shells.
-  static let symlinkURL = URL(fileURLWithPath: "/usr/local/bin/workroom")
+  static var symlinkURL: URL { URL(fileURLWithPath: "/usr/local/bin/\(commandName)") }
 
   enum Status: Equatable {
     case notInstalled
@@ -112,8 +118,8 @@ enum CommandLineInstaller {
       presentAlert(
         style: .informational, title: "Command Installed",
         message:
-          "You can now run “workroom” from the Terminal.\n\nLinked \(symlinkURL.path) → the "
-          + "binary bundled in Workroom.app.")
+          "You can now run “\(commandName)” from the Terminal.\n\nLinked \(symlinkURL.path) → the "
+          + "binary bundled in this app.")
     case .cancelled:
       break  // user dismissed the admin prompt — nothing to report
     case .failed(let message):

@@ -6,7 +6,7 @@
 # app signature — an unsigned/post-sign-modified helper fails notarization/Gatekeeper.
 #
 # Env vars provided by Xcode: SRCROOT, TARGET_BUILD_DIR, UNLOCALIZED_RESOURCES_FOLDER_PATH,
-# EXPANDED_CODE_SIGN_IDENTITY, ARCHS, MACOSX_DEPLOYMENT_TARGET.
+# EXPANDED_CODE_SIGN_IDENTITY, ARCHS, MACOSX_DEPLOYMENT_TARGET, MARKETING_VERSION.
 set -euo pipefail
 
 # The Go module lives one level up from macapp/ (this repo's root).
@@ -35,10 +35,18 @@ case "$ARCH" in
 esac
 
 mkdir -p "$HELPER_DIR"
-echo "Building workroom helper ($GOARCH) -> $HELPER"
+# Stamp the embedded CLI with the app's version so `workroom version` (and channel/update logic)
+# reports a real version instead of "dev". release.sh sets MARKETING_VERSION from the git tag; a
+# local Debug build falls back to the project.yml default. goreleaser injects the same
+# `main.version` for the standalone CLI, so the two stay consistent.
+VERSION="${MARKETING_VERSION:-dev}"
+# Bake the app's channel identity into the bundled CLI (issue #91): "nightly" for the Workroom
+# Nightly build, empty otherwise. Matches the standalone `workroom-nightly` binary's -X main.channel.
+CHANNEL="${WORKROOM_RELEASE_CHANNEL:-}"
+echo "Building workroom helper ($GOARCH, version=$VERSION, channel=${CHANNEL:-<main>}) -> $HELPER"
 ( cd "$GO_MODULE_DIR" && \
   CGO_ENABLED=0 GOOS=darwin GOARCH="$GOARCH" \
-  go build -trimpath -ldflags "-s -w" -o "$HELPER" . )
+  go build -trimpath -ldflags "-s -w -X main.version=${VERSION} -X main.channel=${CHANNEL}" -o "$HELPER" . )
 
 # Sign the helper. Use the app's identity + hardened runtime + timestamp when a real
 # Developer ID is present; otherwise ad-hoc sign for local dev.

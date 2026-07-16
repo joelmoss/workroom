@@ -13,6 +13,12 @@ on:
 permissions:
   contents: write
 
+# Serialize with the release + nightly workflows: all three download-modify-upload the same
+# appcast.xml, so overlapping runs could drop items. Queue rather than cancel.
+concurrency:
+  group: appcast-feed
+  cancel-in-progress: false
+
 jobs:
   refresh:
     # Skip edits to the appcast feed release itself (it mirrors no notes).

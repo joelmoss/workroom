@@ -17,10 +17,18 @@ var (
 	verbose    bool
 	pretend    bool
 	versionStr = "dev"
+	// bakedChannel is the binary's compile-time channel identity: "" for the main `workroom`
+	// binary (stable/pre selectable at runtime), or "nightly" for the `workroom-nightly` binary.
+	bakedChannel = ""
 )
 
 func SetVersion(v string) {
 	versionStr = v
+}
+
+// SetBakedChannel records the binary's compile-time channel identity (see bakedChannel).
+func SetBakedChannel(c string) {
+	bakedChannel = c
 }
 
 var rootCmd = &cobra.Command{

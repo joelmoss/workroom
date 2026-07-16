@@ -139,6 +139,24 @@ commit count, so it only ever increases — Sparkle compares it). The appcast fe
 on the fixed `appcast` GitHub release. See `README.md` ("Auto-update") for the one-time keypair
 setup and the `SPARKLE_PRIVATE_KEY` secret.
 
+**Release channels (issue #91) — two build identities.** The **main** app (`Release` config)
+switches `stable`⟷`pre` at runtime via the *Settings ▸ General ▸ Release channel* picker
+(`ReleaseChannel.pickerCases` = stable/pre only). **Workroom Nightly** is a separate side-by-side
+product — the `Nightly` build config in `project.yml` (bundle id `…workroom.nightly`, name, violet
+`AppIcon-Nightly`, `WORKROOM_RELEASE_CHANNEL=nightly` → the `WorkroomReleaseChannel` Info.plist
+marker read by `ReleaseChannel.current`/`isNightlyBuild`), extending the Debug/"Workroom Dev"
+per-config identity pattern to a third identity.
+
+`Updater.allowedChannels(for:)` returns `{nightly}` on the nightly build and the picked stable/pre
+floor otherwise; one appcast feed carries all channels (`Scripts/appcast.sh` tags items via the
+shared `Scripts/channel-helper.sh`; stable stays untagged = Sparkle default), and Sparkle's
+bundle-id check stops either identity installing the other's DMG. Nightly is a single **rolling**
+item; appcast idempotency keys on `(channel, build)`. `build-helper.sh` bakes both
+`-X main.version=$(MARKETING_VERSION)` and `-X main.channel=$(WORKROOM_RELEASE_CHANNEL)` into the
+bundled CLI, and `CommandLineInstaller` symlinks it as `workroom` (main) or `workroom-nightly`
+(nightly build) so both coexist in PATH. `Updater.migrateReleaseChannelIfNeeded` opts an upgrading
+beta user into `pre` and coerces a legacy `.nightly` selection to `.stable` (main build only).
+
 **Release-notes in the update dialog.** Sparkle's dialog renders the appcast item's
 `<description>`. `appcast.sh` (run during the release) embeds the GitHub release body as that
 description — but at release time the body is still goreleaser's raw commit list, since the

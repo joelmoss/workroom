@@ -8,6 +8,12 @@ on:
 permissions:
   contents: write
 
+# Serialize with the nightly + appcast-notes workflows: all three download-modify-upload the same
+# appcast.xml, so overlapping runs could drop items. Queue rather than cancel.
+concurrency:
+  group: appcast-feed
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest

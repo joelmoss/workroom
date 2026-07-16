@@ -1,0 +1,189 @@
+name: Nightly
+
+# Rolling nightly build from the tip of `master` (issue #91). Hosted on ONE fixed prerelease
+# named `nightly`: assets and the single appcast item are clobbered in place each run, so no
+# per-day tags accumulate. The release TITLE holds the resolved version ("<base>-nightly.<count>")
+# and doubles as the "already built this commit" marker for the skip guard — it is written only
+# after assets + appcast publish succeed, so a partial run retries next time instead of skipping.
+
+on:
+  schedule:
+    - cron: "0 7 * * *" # daily ~07:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Serialize with the release + appcast-notes workflows: all three download-modify-upload the same
+# appcast.xml, so overlapping runs could drop items. Queue rather than cancel.
+concurrency:
+  group: appcast-feed
+  cancel-in-progress: false
+
+jobs:
+  # Decide whether there's anything new to build, and compute the nightly version. Base rule:
+  # incpatch(latest reachable tag) — a prerelease tag targets its own release (v2.0.0-beta.21 →
+  # 2.0.0), a stable tag bumps patch (v1.3.0 → 1.3.1). The commit count is the monotonic ordering
+  # key the CLI + Sparkle compare on.
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.guard.outputs.should_build }}
+      version: ${{ steps.guard.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # rev-list --count + tag discovery need full history
+
+      - id: guard
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          LATEST="$(git describe --tags --abbrev=0 2>/dev/null || echo v0.0.0)"
+          RAW="${LATEST#v}"; RAW="${RAW%%+*}"   # strip leading v + any build metadata
+          CORE="${RAW%%-*}"                      # MAJOR.MINOR.PATCH
+          if [ "$RAW" != "$CORE" ]; then
+            BASE="$CORE"                         # prerelease latest → target that release line
+          else
+            MAJOR="${CORE%%.*}"; TMP="${CORE#*.}"; MINOR="${TMP%%.*}"; PATCH="${TMP#*.}"
+            BASE="${MAJOR}.${MINOR}.$((PATCH + 1))"  # stable latest → bump patch
+          fi
+          COUNT="$(git rev-list --count HEAD)"
+          VERSION="${BASE}-nightly.${COUNT}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Computed nightly version: ${VERSION}"
+
+          PUBLISHED="$(gh release view nightly --json name -q .name 2>/dev/null || echo '')"
+          PUB_COUNT="${PUBLISHED##*-nightly.}"
+          if [ "${PUB_COUNT}" = "${COUNT}" ]; then
+            echo "No new commits since nightly build ${COUNT}; skipping."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Cross-compile the CLI with the nightly version injected, package version-INDEPENDENT archives
+  # (so the fixed release's asset URLs stay stable), emit checksums.txt (the CLI updater verifies
+  # against it), and clobber-upload them to the nightly release.
+  cli:
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build nightly archives
+        run: |
+          set -euo pipefail
+          DIST="$PWD/dist"; mkdir -p "$DIST"
+          build() {
+            os="$1"; arch="$2"; ext="tar.gz"; bin="workroom"
+            if [ "$os" = "windows" ]; then ext="zip"; bin="workroom.exe"; fi
+            out="$(mktemp -d)"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+              go build -trimpath \
+                -ldflags "-s -w -X main.version=${VERSION} -X main.channel=nightly" \
+                -o "$out/$bin" .
+            name="workroom_nightly_${os}_${arch}.${ext}"
+            if [ "$ext" = "zip" ]; then (cd "$out" && zip -q "$DIST/$name" "$bin");
+            else tar czf "$DIST/$name" -C "$out" "$bin"; fi
+          }
+          for t in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 windows/arm64; do
+            build "${t%/*}" "${t#*/}"
+          done
+          ( cd "$DIST" && sha256sum ./* > checksums.txt )
+          echo "Built:"; ls -1 "$DIST"
+
+      - name: Ensure the nightly release exists
+        run: |
+          gh release view nightly >/dev/null 2>&1 || \
+            gh release create nightly --prerelease --title "nightly" \
+              --notes "Rolling nightly build from the tip of main. Not a stable release; expect rough edges."
+
+      - name: Upload nightly CLI archives
+        run: gh release upload nightly dist/* --clobber
+
+  # Build + sign + notarize + staple the DMG at the nightly version, upload it (fixed name), append
+  # the nightly appcast item, then stamp the release title with the version as the skip marker.
+  macapp:
+    needs: [check, cli]
+    if: needs.check.outputs.should_build == 'true'
+    runs-on: macos-15
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install XcodeGen + create-dmg + protobuf
+        run: brew install xcodegen create-dmg protobuf
+
+      - name: Add Rust darwin targets (universal VCS core)
+        run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
+
+      - name: Import Developer ID signing certificate
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          CERT="$RUNNER_TEMP/dev-id.p12"
+          KEYCHAIN="$RUNNER_TEMP/app-signing.keychain-db"
+          echo "$MACOS_CERTIFICATE" | openssl base64 -d -A > "$CERT"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT" -P "$MACOS_CERTIFICATE_PWD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychain -d user -s "$KEYCHAIN" login.keychain
+
+      - name: Build, sign, notarize, staple, package DMG
+        env:
+          NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          # release.sh derives MARKETING_VERSION = ${VERSION#v} and CURRENT_PROJECT_VERSION = commit
+          # count; the nightly version has no leading v, so it flows through unchanged.
+        run: |
+          echo "$NOTARY_KEY" | openssl base64 -d -A > "$RUNNER_TEMP/notary.p8"
+          # CONFIGURATION=Nightly builds the side-by-side "Workroom Nightly" identity (bundle id,
+          # name, icon, pinned nightly channel) instead of the main "Workroom" app.
+          CONFIGURATION=Nightly NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8" make app-release
+
+      - name: Upload nightly DMG
+        run: |
+          # Fixed, version-independent name so the appcast enclosure URL is stable across nights.
+          ASSET="$RUNNER_TEMP/workroom-macos-app_nightly.dmg"
+          cp "macapp/build/release/Workroom Nightly.dmg" "$ASSET"
+          gh release upload nightly "$ASSET" --clobber
+
+      - name: Publish Sparkle appcast (nightly channel)
+        env:
+          TAG: nightly
+          REPO: ${{ github.repository }}
+        run: macapp/Scripts/appcast.sh
+
+      - name: Stamp nightly release with the version (skip marker)
+        # LAST step: written only after assets + appcast succeed, so a partial run retries.
+        run: gh release edit nightly --title "${VERSION}"

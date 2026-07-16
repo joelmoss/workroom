@@ -36,5 +36,7 @@
 	<string>JUdX5urBRS1a/heb5qKRuxdxQtHXS3WLGYd0+qI9P6k=</string>
 	<key>SUScheduledCheckInterval</key>
 	<integer>86400</integer>
+	<key>WorkroomReleaseChannel</key>
+	<string>$(WORKROOM_RELEASE_CHANNEL)</string>
 </dict>
 </plist>

@@ -15,6 +15,14 @@ options:
     macOS: "15.0"
   createIntermediateGroups: true
 
+# Build configurations. Debug ("Workroom Dev") and Nightly ("Workroom Nightly") are distinct
+# side-by-side identities (issue #91) layered on the base identity via per-config settings below;
+# both Release and Nightly are release-type builds (optimised, Developer-ID signed).
+configs:
+  Debug: debug
+  Release: release
+  Nightly: release
+
 packages:
   # Local Rust VCS core (jj-lib via UniFFI, jj-only); artifacts built by vcs/scripts/build-apple.sh.
   WrVcs:
@@ -216,6 +224,10 @@ targets:
         CFBundleDisplayName: "$(PRODUCT_NAME)"
         CFBundleName: "$(PRODUCT_NAME)"
         CFBundleIconName: "$(ASSETCATALOG_COMPILER_APPICON_NAME)"
+        # The build's release-channel identity (issue #91): "" for the main app (stable/pre
+        # selectable at runtime), "nightly" for the side-by-side Workroom Nightly build. Read by
+        # ReleaseChannel.current → Updater.allowedChannels + CommandLineInstaller's binary name.
+        WorkroomReleaseChannel: "$(WORKROOM_RELEASE_CHANNEL)"
         LSMinimumSystemVersion: "15.0"
         NSHighResolutionCapable: true
         LSApplicationCategoryType: public.app-category.developer-tools
@@ -249,6 +261,8 @@ targets:
         DEAD_CODE_STRIPPING: YES
         DEVELOPMENT_TEAM: B898J443L9
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # Base identity is the main/release channel (empty marker). Debug + Nightly override below.
+        WORKROOM_RELEASE_CHANNEL: ""
       configs:
         Debug:
           # Distinct identity so a local Debug build runs alongside the installed release build
@@ -271,6 +285,20 @@ targets:
           # `xcodebuild build` (vs archive) injects com.apple.security.get-task-allow=1, a debug
           # entitlement notarization rejects ("The executable requests the get-task-allow
           # entitlement"). The app needs no entitlements, so suppress the base injection.
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+        Nightly:
+          # Side-by-side nightly identity (issue #91): distinct bundle id + name + icon so
+          # "Workroom Nightly" runs alongside the release "Workroom" and the Debug "Workroom Dev".
+          # PRODUCT_MODULE_NAME stays "Workroom" (pinned in base), so the module/imports are
+          # unchanged. WORKROOM_RELEASE_CHANNEL pins it to the nightly Sparkle channel. Signed for
+          # distribution exactly like Release.
+          PRODUCT_BUNDLE_IDENTIFIER: com.developwithstyle.workroom.nightly
+          PRODUCT_NAME: "Workroom Nightly"
+          ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon-Nightly
+          WORKROOM_RELEASE_CHANNEL: nightly
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: "Developer ID Application"
+          OTHER_CODE_SIGN_FLAGS: "--timestamp"
           CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
     preBuildScripts:
       - name: swift-format lint

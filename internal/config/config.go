@@ -14,6 +14,21 @@ import (
 
 const DefaultWorkroomsDir = "~/workrooms"
 
+// DefaultChannel is the release channel used when none is configured.
+const DefaultChannel = "stable"
+
+// reservedKeys are top-level config keys that hold scalar settings, not project
+// entries. Every project enumerator already skips non-map values, so these are
+// naturally excluded from listings; this set is the single source of truth for
+// the places that must guard by name (e.g. RemoveProject).
+var reservedKeys = map[string]bool{
+	"workrooms_dir": true,
+	"channel":       true,
+}
+
+// isReserved reports whether key is a reserved scalar setting rather than a project path.
+func isReserved(key string) bool { return reservedKeys[key] }
+
 // Config manages the workroom configuration stored at ~/.config/workroom/config.json.
 type Config struct {
 	path string
@@ -290,14 +305,15 @@ func (c *Config) RemoveWorkroomKeepProject(parentPath, name string) error {
 // RemoveProject removes a project entry (and its nested workrooms map) from the
 // config. It does NOT touch the filesystem or VCS — any worktree/workspace teardown
 // is the caller's job (via Service.Delete). Idempotent: an absent project is a no-op
-// returning nil. The reserved "workrooms_dir" key is never deletable through here.
+// returning nil. Reserved scalar keys (e.g. "workrooms_dir", "channel") are never
+// deletable through here.
 func (c *Config) RemoveProject(parentPath string) error {
 	return c.withLock(func() error {
 		data, err := c.Read()
 		if err != nil {
 			return err
 		}
-		if parentPath == "workrooms_dir" {
+		if isReserved(parentPath) {
 			return nil // reserved key, not a project
 		}
 		delete(data, parentPath)
@@ -428,6 +444,32 @@ func (c *Config) SetWorkroomsDir(path string) error {
 			return err
 		}
 		data["workrooms_dir"] = path
+		return c.Write(data)
+	})
+}
+
+// Channel returns the configured release channel, or DefaultChannel ("stable")
+// if unset. A read error is treated as unset so a broken config never blocks an
+// update check. Validation of the value is the caller's job.
+func (c *Config) Channel() string {
+	data, err := c.Read()
+	if err != nil {
+		return DefaultChannel
+	}
+	if ch, ok := data["channel"].(string); ok && ch != "" {
+		return ch
+	}
+	return DefaultChannel
+}
+
+// SetChannel persists the release channel in the config.
+func (c *Config) SetChannel(ch string) error {
+	return c.withLock(func() error {
+		data, err := c.Read()
+		if err != nil {
+			return err
+		}
+		data["channel"] = ch
 		return c.Write(data)
 	})
 }

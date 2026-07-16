@@ -258,6 +258,19 @@ iwr https://raw.githubusercontent.com/joelmoss/workroom/master/install.ps1 -useb
 VERSION=v1.2.0 curl -fsSL https://raw.githubusercontent.com/joelmoss/workroom/master/install.sh | sh
 ```
 
+**Install from a release channel:**
+
+```bash
+WORKROOM_CHANNEL=pre     curl -fsSL https://raw.githubusercontent.com/joelmoss/workroom/master/install.sh | sh
+WORKROOM_CHANNEL=nightly curl -fsSL https://raw.githubusercontent.com/joelmoss/workroom/master/install.sh | sh
+```
+
+`WORKROOM_CHANNEL=pre` installs the latest prerelease as `workroom` and remembers the channel, so a
+later `workroom update` stays on it. `WORKROOM_CHANNEL=nightly` installs a **separate
+`workroom-nightly`** binary (tip of `main`) that coexists with `workroom` and self-updates within
+nightly. `VERSION` takes precedence when set. Same variable works for the Windows PowerShell
+installer.
+
 **Override install location (macOS / Linux):**
 
 By default, the binary is installed to `~/.local/bin`. Set `WORKROOM_INSTALL_PATH` to change this:
@@ -349,11 +362,28 @@ Alias: `workroom d`
 #### Update the CLI
 
 ```bash
-workroom update          # download & install the latest release
-workroom update --check  # only report whether an update is available
+workroom update                # download & install the latest build on your channel
+workroom update --check        # only report whether an update is available (never writes config)
+workroom update --channel pre  # switch to the pre channel and install its latest build
 ```
 
-(Dev builds can't self-update — install from a release first.)
+**Release channels.** The main `workroom` binary tracks one of two channels, and `--channel`
+remembers your choice for future `workroom update` runs:
+
+- `stable` (default) — GA releases only.
+- `pre` — betas / release candidates, **plus** stable (whichever is newer).
+
+Switching to a lower channel installs that channel's current build even if it's a version
+*downgrade* (you're told so). Downloads are verified against the release `checksums.txt` before the
+binary is replaced.
+
+**Nightly is a separate install, not a channel switch.** Nightly builds (from the tip of `main`)
+ship as a distinct **`workroom-nightly`** binary that runs alongside `workroom`, so you never risk
+your working install. Get it via the installer's `WORKROOM_CHANNEL=nightly` (below); it self-updates
+within nightly on its own. `workroom update --channel nightly` is rejected with a pointer to that.
+
+(Dev builds can't self-update — install from a release first. A `workroom` bundled inside the macOS
+app is managed by the app; run *Check for Updates…* there instead of `workroom update`.)
 
 #### Print the version
 
@@ -904,6 +934,41 @@ list with a succinct, themed summary (a headline, a one-line framing, and groupe
 the release notes also triggers `appcast-notes.yml`, which re-renders the Sparkle update dialog's
 notes from your curated body.
 
+### Release channels
+
+Channels are delivered as **two products**, not one switchable install:
+
+- **Main product** — one install (the `workroom` CLI and the "Workroom" app) that tracks **stable**
+  or **pre**, chosen at runtime (`workroom update --channel stable|pre`, or the app's *Settings ▸
+  General ▸ Release channel*). Mutually exclusive; no side-by-side.
+- **Nightly product** — a **separate download** (the `workroom-nightly` CLI and a distinct "Workroom
+  Nightly" app: own bundle id `…workroom.nightly`, name, violet icon) pinned to nightly, running
+  **alongside** the main install (and the Debug "Workroom Dev" build). Channel here is a *build
+  identity*, not a runtime preference, so nothing can drift or collide.
+
+| Channel | Source | Appcast tagging | Delivered as |
+| --- | --- | --- | --- |
+| `stable` | clean `vX.Y.Z` tags | untagged (Sparkle default — everyone) | main app / `workroom` |
+| `pre` | `vX.Y.Z-beta.N` / `-rc` / `-alpha` tags | `<sparkle:channel>pre</sparkle:channel>` | main app / `workroom` |
+| `nightly` | daily build off `master` | `<sparkle:channel>nightly</sparkle:channel>` | Workroom Nightly / `workroom-nightly` |
+
+`stable` and `pre` fall out of the normal tag-driven release above. **Nightly** is a scheduled
+build — `.github/workflows/nightly.yml` runs on a daily cron (and `workflow_dispatch`), building the
+`Nightly` configuration ("Workroom Nightly" app) and baking `-X main.channel=nightly` into the CLI
+archives. It's hosted on a single fixed **`nightly`** prerelease whose assets and appcast item are
+clobbered in place each run (no per-day tags accumulate). Its version is
+`<incpatch(latest-tag)>-nightly.<commit-count>`; the commit count is the monotonic key the CLI and
+Sparkle order nightlies by. A no-new-commits guard skips a run when nothing changed, and the release
+title (the version) is stamped only after assets + appcast publish succeed, so a partial run retries.
+
+One appcast feed carries all channels; the main app's `allowedChannels` is the picked stable/pre
+floor while the nightly app's is fixed to `{nightly}`, and Sparkle's bundle-id check is the backstop
+that stops either from ever installing the other's DMG. The canonical tag → channel classification
+lives in **`internal/channel`** (Go), mirrored by `macapp/WorkroomApp/Core/ReleaseChannel.swift` and
+`macapp/Scripts/channel-helper.sh` — keep the three in sync. All appcast-writing workflows
+(`release`, `nightly`, `appcast-notes`) share a `concurrency: appcast-feed` group so they can't
+clobber each other's `appcast.xml` edits.
+
 ### Required CI secrets
 
 The CLI release needs only the default `GITHUB_TOKEN`. The macOS app release (the `macapp` job) needs
@@ -932,7 +997,14 @@ Each release publishes both components:
 | CLI archive (macOS/Linux) | `workroom_<version>_<os>_<arch>.tar.gz` | `workroom_1.4.0_darwin_arm64.tar.gz` |
 | CLI archive (Windows) | `workroom_<version>_windows_<arch>.zip` | `workroom_1.4.0_windows_amd64.zip` |
 | macOS app installer | `workroom-macos-app_<version>.dmg` | `workroom-macos-app_1.4.0.dmg` |
+| Nightly CLI archive | `workroom_nightly_<os>_<arch>.<ext>` | `workroom_nightly_linux_amd64.tar.gz` |
+| Nightly app installer | `workroom-macos-app_nightly.dmg` | (clobbered on the fixed `nightly` release) |
 | Sparkle feed | `appcast.xml` | published to a fixed `appcast` release |
+
+Nightly asset names are **version-independent** (the fixed `nightly` release clobbers them each
+run, so download URLs stay stable). `workroom update` on the stable/pre channels resolves the exact
+asset URL from the GitHub API rather than constructing it, so those don't share the name-lockstep
+constraint below; the constructed path is still used by `install.sh` and the nightly channel.
 
 GoReleaser builds the CLI for `darwin`/`linux`/`windows` × `amd64`/`arm64` with
 `CGO_ENABLED=0` and `-s -w -X main.version=<tag>`. The archive name (`workroom_<version>_…`) is what
@@ -962,6 +1034,25 @@ version, download URL, EdDSA signature, release notes) into `appcast.xml` and up
 `appcast` GitHub release that serves as the feed. When you later curate the GitHub release notes,
 `.github/workflows/appcast-notes.yml` re-renders that item's `<description>` so the in-app update
 dialog shows the polished notes instead of raw commits.
+
+**Channels.** One feed carries every channel. `appcast.sh` tags each item with
+`<sparkle:channel>pre</sparkle:channel>` or `nightly` (stable items stay untagged). The **main app**
+reads `Updater.allowedChannels(for:)` = the picked stable/pre floor (from *Settings ▸ General ▸
+Release channel*); the **Workroom Nightly** app returns a fixed `{nightly}`. Sparkle only offers
+items whose channel is allowed — the untagged/default (stable) channel is always allowed, giving the
+nested model for free — and its bundle-id check means the nightly app can never install a main-app
+DMG (or vice-versa) even though they share the feed. The nightly item is a single **rolling** entry
+(replaced each run so its enclosure signature never goes stale); pre/GA items are appended and
+idempotent on `(channel, build)`. The app's channel is separate from the CLI's `workroom update`
+channel — the app is Sparkle-managed, the standalone CLI self-updates.
+
+**Upgrade migration (main app).** New installs default to `stable`. But since the app has only ever
+shipped betas, an existing user upgrading into the channel-aware build would otherwise be defaulted
+to `stable` and stop receiving betas until GA. So on first launch, if the channel preference is unset
+*and* the running build is a prerelease, `Updater` opts the user into `pre` — preserving their
+existing beta update stream. A legacy `nightly` selection (the first-pass picker briefly offered it)
+is coerced to `stable`, since nightly is now the separate Workroom Nightly product. Fresh/stable
+installs are untouched; the nightly build skips migration entirely (its channel is fixed).
 
 ---
 

@@ -25,11 +25,22 @@ PROFILE="${NOTARY_PROFILE:-workroom-notary}"
 MACAPP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PROJ="${MACAPP_DIR}/WorkroomApp.xcodeproj"
 BUILD="${MACAPP_DIR}/build/release"
-ARCHIVE="${BUILD}/Workroom.xcarchive"
+
+# Which build identity to ship (issue #91). Release = the main "Workroom" app (stable/pre chosen at
+# runtime); Nightly = the side-by-side "Workroom Nightly" app. The exported product name (and thus
+# the .app/.dmg names) follows PRODUCT_NAME, which the config sets in project.yml.
+CONFIGURATION="${CONFIGURATION:-Release}"
+case "$CONFIGURATION" in
+  Release) APP_NAME="Workroom" ;;
+  Nightly) APP_NAME="Workroom Nightly" ;;
+  *) echo "error: unsupported CONFIGURATION '$CONFIGURATION' (want Release or Nightly)." >&2; exit 1 ;;
+esac
+
+ARCHIVE="${BUILD}/${APP_NAME}.xcarchive"
 EXPORT_DIR="${BUILD}/export"
-APP="${EXPORT_DIR}/Workroom.app"
-ZIP="${BUILD}/Workroom.zip"
-DMG="${BUILD}/Workroom.dmg"
+APP="${EXPORT_DIR}/${APP_NAME}.app"
+ZIP="${BUILD}/${APP_NAME}.zip"
+DMG="${BUILD}/${APP_NAME}.dmg"
 
 export PATH="/usr/local/go/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
 
@@ -81,9 +92,9 @@ BUILD_NUMBER="$(git -C "$MACAPP_DIR/.." rev-list --count HEAD 2>/dev/null || ech
 # Go helper — with our Developer ID, hardened runtime, and a secure timestamp. A plain `build`
 # leaves nested helpers without a timestamp (and injects get-task-allow), which notarization
 # rejects. Archiving also produces a distribution build with get-task-allow omitted.
-echo "==> Archiving Release $SHORT_VERSION ($BUILD_NUMBER)"
+echo "==> Archiving $CONFIGURATION ($APP_NAME) $SHORT_VERSION ($BUILD_NUMBER)"
 rm -rf "$ARCHIVE" "$EXPORT_DIR"
-xcodebuild -project "$PROJ" -scheme WorkroomApp -configuration Release \
+xcodebuild -project "$PROJ" -scheme WorkroomApp -configuration "$CONFIGURATION" \
   -derivedDataPath "$BUILD" \
   -clonedSourcePackagesDirPath "$BUILD/SourcePackages" \
   -archivePath "$ARCHIVE" \
@@ -150,11 +161,11 @@ rm -rf "$STAGE" "$DMG"
 mkdir -p "$STAGE"
 cp -R "$APP" "$STAGE/"
 create-dmg \
-  --volname "Workroom" \
+  --volname "$APP_NAME" \
   --window-size 660 400 --icon-size 100 \
-  --icon "Workroom.app" 160 185 \
+  --icon "${APP_NAME}.app" 160 185 \
   --app-drop-link 500 185 \
-  --hide-extension "Workroom.app" \
+  --hide-extension "${APP_NAME}.app" \
   --codesign "Developer ID Application" \
   "$DMG" "$STAGE"
 
