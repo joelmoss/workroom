@@ -170,6 +170,13 @@ extension Defaults.Keys {
   /// squash, or rebase. Global (not per-project) so the choice persists across projects and
   /// restarts. Stored as the bare raw string via `PRMergeMethod: PreferRawRepresentable`.
   static let prMergeMethod = Key<PRMergeMethod>("prMergeMethod", default: .merge)
+
+  /// The release channel for Sparkle auto-updates (issue #91): stable (default), pre, or nightly.
+  /// Drives `SPUUpdaterDelegate.allowedChannels(for:)`, read live so switching the Settings picker
+  /// takes effect on the next check. Independent of the Go CLI's own `channel` config: the app is
+  /// Sparkle-managed, while the standalone CLI self-updates via `workroom update --channel`. Stored
+  /// as the bare raw string via `ReleaseChannel: PreferRawRepresentable`.
+  static let releaseChannel = Key<ReleaseChannel>("releaseChannel", default: .stable)
 }
 
 /// One workroom's persisted inspector layout: the collapse state and relative pane heights of the
