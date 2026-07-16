@@ -87,16 +87,13 @@ struct RootView: View {
   }
 
   var body: some View {
-    // The custom chrome now lives in a real `.unified` window toolbar (`titlebarContent`, hosted via
-    // `.toolbar` in `rootWindowChrome`), not a content top-strip — so AppKit owns the bar height and
-    // centers the traffic lights alongside the controls.
+    // The custom chrome lives in a full-width `.left` titlebar accessory (`accessoryBarContent`, hosted
+    // via `TitlebarAccessoryHost` in `rootWindowChrome`), not a content top-strip and not SwiftUI
+    // `.toolbar` items — so AppKit owns the bar height (an empty NSToolbar; see WindowBackgroundThemer)
+    // and centers the traffic lights alongside the controls.
     rootWindowChrome(rootLifecycle(rootReveals(rootModals(splitView))))
   }
 
-  /// The workroom tab strip, hosted as the principal (center) toolbar item (S4 rehost). Leading /
-  /// trailing controls are separate toolbar placements (`LeadingTitlebarBar` / `TrailingTitlebarBar`).
-  /// No strip chrome (height / panel background / drag layer / inset) — the real toolbar provides the
-  /// bar, its height, and the traffic-light gutter.
   /// The full title-bar bar hosted in the `.left` titlebar accessory: leading controls, the workroom
   /// tab strip (fills + scrolls), trailing controls. Environment objects are re-injected because the
   /// accessory is a separate hosting tree from the main window content.
@@ -375,21 +372,16 @@ struct RootView: View {
       // *visible* title declaratively with `.toolbar(removing: .title)` (S1 spike): the window keeps its
       // `title` for the Window menu, but SwiftUI no longer re-asserts a visible title → no flash. The
       // `AppStore.attachWindow` `didUpdate` re-hide lock stays as the pre-15 fallback (issue #70).
+      // Sets `window.title` for the Window menu / Mission Control only; the VISIBLE title is hidden in
+      // AppKit (`WindowBackgroundThemer` sets `titleVisibility = .hidden`, backed by the `attachWindow`
+      // re-hide lock). We deliberately declare NO SwiftUI `.toolbar*` modifiers here: the taller
+      // unified title bar + centered traffic lights are now owned by an empty AppKit `NSToolbar` set in
+      // `WindowBackgroundThemer`. Any SwiftUI-managed toolbar item drags in the overflow
+      // `menuFormRepresentation` recompute that caused the macOS-26 AppHangs (see WindowBackgroundThemer
+      // for the full mechanism). The chrome (leading controls · workroom tabs · trailing controls) lives
+      // in a full-width `.left` titlebar accessory to the RIGHT of the lights (Chrome-style), which
+      // never collapses into an overflow `»` (the tab strip is a ScrollView that just scrolls).
       .navigationTitle(store.windowTitle)
-      .modifier(RemoveWindowTitleBarTitle())
-      // An item-less `.unified` window toolbar (style set on the scene in `WorkroomApp`) is present
-      // purely to (a) grow the title-bar to a taller single row and (b) let AppKit vertically center
-      // the traffic lights in it — the "breathing room" above/below the chrome (issue #23). It carries
-      // no controls: the chrome (leading controls · workroom tabs · trailing controls) lives in a
-      // full-width `.left` titlebar accessory to the RIGHT of the lights (Chrome-style), which never
-      // collapses into an overflow `»` (the tab strip is a ScrollView that just scrolls) and grows to
-      // the taller bar. The clear principal item forces the (otherwise empty) toolbar to exist so it
-      // sets the height; `.toolbarBackground(.hidden)` removes the toolbar's own material so the themed
-      // window background (WindowBackgroundThemer) shows through the whole bar uniformly, incl. behind
-      // the lights — instead of the toolbar's grey vibrancy.
-      .toolbar { ToolbarItem(placement: .principal) { Color.clear.frame(width: 0, height: 0) } }
-      .toolbar(.visible, for: .windowToolbar)
-      .toolbarBackground(.hidden, for: .windowToolbar)
       .background(TitlebarAccessoryHost { accessoryBarContent })
       .background(WindowBackgroundThemer())
       // Keep the root branch labels reasonably current: refresh when the app regains
@@ -652,16 +644,5 @@ private struct MenuStateValues: ViewModifier {
       .focusedSceneValue(\.multipleWorkroomTabs, multipleWorkroomTabs)
       .focusedSceneValue(\.canOpenInEditor, canOpenInEditor)
       .focusedSceneValue(\.workroomSplitVisible, workroomSplitVisible)
-  }
-}
-
-/// Remove the window bar's *visible* title while keeping `window.title` (from `.navigationTitle`) for
-/// the Window menu / Mission Control. Unlike a non-empty `.navigationTitle` — which re-asserts
-/// `titleVisibility = .visible` on every window update and lets AppKit fade the name across the bar —
-/// `.toolbar(removing: .title)` removes the visible title declaratively, so there is nothing to flash.
-/// (`.title` is macOS 15+, which is the app's minimum deployment target.)
-private struct RemoveWindowTitleBarTitle: ViewModifier {
-  func body(content: Content) -> some View {
-    content.toolbar(removing: .title)
   }
 }

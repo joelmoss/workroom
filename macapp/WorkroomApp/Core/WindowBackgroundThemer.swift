@@ -41,16 +41,26 @@ struct WindowBackgroundThemer: NSViewRepresentable {
     window.styleMask.insert(.fullSizeContentView)
     window.titlebarAppearsTransparent = true
     // No title text in the bar — the leading/trailing title-bar accessories (the unified toolbar) and
-    // the workroom tabs carry the chrome; an app-name title would just clutter the row.
+    // the workroom tabs carry the chrome; an app-name title would just clutter the row. Set here (not
+    // via SwiftUI `.toolbar(removing: .title)`) because SwiftUI no longer manages this window's
+    // toolbar — see the empty AppKit toolbar below. `.navigationTitle` still re-asserts a visible title
+    // on some updates, so `AppStore.attachWindow`'s `didUpdate` re-hide lock backstops this.
     window.titleVisibility = .hidden
-    // The window keeps its (item-less) `.unified` toolbar VISIBLE on purpose: it's what grows the
-    // title bar to a taller single row and lets AppKit vertically center the traffic lights (the
-    // breathing room, issue #23). We do NOT hide it (that would collapse the bar back to the standard
-    // height). Its own material would paint a grey vibrancy over the bar — that's removed declaratively
-    // in RootView with `.toolbarBackground(.hidden, for: .windowToolbar)`, so with
-    // `titlebarAppearsTransparent` the themed window background below shows through the whole bar. The
-    // chrome (controls + workroom tabs) lives in a `.left` titlebar accessory that grows to this taller
-    // bar (see TitlebarAccessoryHost), never in the toolbar itself — so there's no overflow `»` popup.
+    // Kill the window toolbar. The taller single-row title bar (with the traffic lights centered in
+    // it — the breathing room, issue #23) comes from the full-width `.left` titlebar accessory
+    // (`TitlebarAccessoryHost`), which grows the titlebar to its own height; the toolbar is NOT needed
+    // for that. We must remove it because `NavigationSplitView` (in RootView) auto-injects a
+    // sidebar-toggle toolbar item even with the sidebar column forced `.detailOnly`, and that single
+    // item is poison two ways: (a) it renders as a stray `»` "more toolbar items" overflow popup in
+    // the title bar, and (b) it keeps SwiftUI's `AppKitToolbarItem.updateMenuFormRepresentation` alive
+    // — recomputed on every layout pass, it bridges an NSAttributedString attributes dict into
+    // `swift_dynamicCast` → `_dyld_find_foreign_type_protocol_conformance` (a linear scan of every
+    // loaded Mach-O image; this app links many: GhosttyKit, the Rust VCS xcframework, SwiftGitX/
+    // libgit2, Sparkle), stacking up to the ≥2s macOS-26 AppHangs. SwiftUI OWNS this toolbar and
+    // re-injects the toggle, so `.toolbar(removing: .sidebarToggle)` is a no-op — we strip it in AppKit
+    // instead, on every apply, and hide the bar so the `»` never shows. Our own sidebar toggle lives in
+    // the `.left` accessory (`LeadingTitlebarBar`).
+    window.toolbar?.isVisible = false
     // `.none` separator so no hairline rule appears under the bar when the terminal scrolls.
     window.titlebarSeparatorStyle = .none
     // The title bar belongs to the chrome panel, so it takes the panel colour (a subtle step off

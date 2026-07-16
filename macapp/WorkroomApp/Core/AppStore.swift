@@ -553,12 +553,22 @@ final class AppStore: ObservableObject {
     // re-hide after every window update cycle: `didUpdate` fires *after* SwiftUI's changes, so this
     // lock always wins. The guard makes the re-hide a no-op once hidden, so it can't loop.
     window.titleVisibility = .hidden
+    // Same race, same lock for the window toolbar: `NavigationSplitView` (RootView) auto-injects a
+    // sidebar-toggle toolbar item even with the sidebar column forced `.detailOnly`, and SwiftUI owns
+    // + re-shows the toolbar on its update cycles (so `.toolbar(removing: .sidebarToggle)` is a no-op).
+    // That lone item renders as a stray `»` "more toolbar items" overflow in the title bar AND keeps
+    // SwiftUI's `AppKitToolbarItem.updateMenuFormRepresentation` alive — the layout-driven recompute
+    // that stacks into the ≥2s macOS-26 AppHangs (see WindowBackgroundThemer). Hiding the toolbar
+    // detaches those item views so neither happens; the taller title bar comes from the `.left`
+    // accessory, not the toolbar. Re-hide after every update cycle, guarded so it can't loop.
+    window.toolbar?.isVisible = false
     if titleVisibilityObserver == nil {
       titleVisibilityObserver = NotificationCenter.default.addObserver(
         forName: NSWindow.didUpdateNotification, object: window, queue: .main
       ) { [weak window] _ in
         MainActor.assumeIsolated {
           if window?.titleVisibility != .hidden { window?.titleVisibility = .hidden }
+          if window?.toolbar?.isVisible == true { window?.toolbar?.isVisible = false }
         }
       }
     }
