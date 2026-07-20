@@ -870,11 +870,13 @@ extension View {
         }
         Divider()
       }
+      // Split-membership computed once, shared by the Split-disable gate and the "Remove from
+      // Split" item below. `isMember` is true for a member of ANY split — visible or hidden (a
+      // split can exist while a solo tab is focused), so removal still works for that member.
+      let isMember = sessions.split(for: target)?.tabIDs.contains(tab.id) ?? false
       // Split this tab. Disabled for a tab outside the visible split (review D5) so right-clicking a
       // chip that isn't part of the shown split can't silently replace it.
-      let splitDisabled =
-        sessions.isSplitVisible(for: target)
-        && !(sessions.split(for: target)?.tabIDs.contains(tab.id) ?? false)
+      let splitDisabled = sessions.isSplitVisible(for: target) && !isMember
       Group {
         Button {
           sessions.splitTab(tab.id, on: .right, for: target)
@@ -898,6 +900,19 @@ extension View {
         }
       }
       .disabled(splitDisabled)
+      // Remove ONLY this tab from the split — the inverse of Split R/L/D/U (issue #122). Shown
+      // only for a real split member (hidden on solo tabs), matching the workroom-split menu's
+      // "Remove from Split" (WorkroomContextMenu.swift). `extractFromSplit` pops just this leaf,
+      // keeps any other members split, and dissolves only when <2 would remain; the removed tab is
+      // shown solo. Not `role: .destructive` — the tab keeps running (its surface isn't torn down).
+      if isMember {
+        Divider()
+        Button {
+          sessions.extractFromSplit(tab.id, for: target)
+        } label: {
+          Label("Remove from Split", systemImage: "pip.exit")
+        }
+      }
       Divider()
       Button(role: .destructive) {
         store.requestCloseTerminalTab(tab.id, for: target)

@@ -160,6 +160,20 @@ final class TabActionsUITests: XCTestCase {
     assertCount(panes(app), reaches: 2)
   }
 
+  /// "Remove from Split" is hidden on a solo (unsplit) tab — it only renders for a real split
+  /// member (issue #122). The split-creating items stay visible either way.
+  func testRemoveFromSplitAbsentOnSoloTab() {
+    let app = launchedApp()
+    openWorkroom(app)
+    openDiffPreview(app)  // one solo diff tab, no split
+    diffTab(app, "user.rb").rightClick()
+    XCTAssertTrue(menuItem(app, "Split Right").waitForExistence(timeout: 3), "menu should be open")
+    XCTAssertFalse(
+      menuItem(app, "Remove from Split").exists,
+      "a solo tab is in no split, so Remove from Split must not appear")
+    app.typeKey(.escape, modifierFlags: [])  // dismiss the menu
+  }
+
   // MARK: Context menu — diff PANEL (issue #72: same menu as the tab)
 
   /// Right-clicking the diff PANEL body shows the same context menu as its tab chip.
@@ -174,6 +188,24 @@ final class TabActionsUITests: XCTestCase {
     XCTAssertTrue(menuItem(app, "Split Right").exists)
     XCTAssertTrue(menuItem(app, "Close All").exists)
     app.typeKey(.escape, modifierFlags: [])
+  }
+
+  /// Removing a pane from the split via its PANEL body (issue #122): the shared menu offers "Remove
+  /// from Split" for a real split member, and invoking it pulls that pane out. Split of two diff
+  /// panes → remove one → collapses to the extracted tab shown solo (one pane). The pane body is
+  /// targeted by position (`boundBy`) since a same-file split makes the two chips share a title.
+  func testRemoveFromSplitViaPaneBodyCollapses() {
+    let app = launchedApp()
+    openWorkroom(app)
+    openDiffPreview(app)
+    app.buttons["tab.toolbar.splitRight"].click()
+    assertCount(panes(app), reaches: 2)
+    panes(app).element(boundBy: 1).rightClick()  // the second pane's body
+    let remove = menuItem(app, "Remove from Split")
+    XCTAssertTrue(
+      remove.waitForExistence(timeout: 3), "a split member's menu offers Remove from Split")
+    remove.click()
+    assertCount(panes(app), reaches: 1)  // extracted tab shown solo; split dissolved
   }
 
   // MARK: File menu — bulk close
