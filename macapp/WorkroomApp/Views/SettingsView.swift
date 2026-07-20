@@ -79,6 +79,7 @@ struct SettingsView: View {
     case .appearance: AppearanceSettingsPane()
     case .terminal: TerminalSettingsPane()
     case .agent: AgentSettingsPane()
+    case .about: AboutSettingsPane()
     }
   }
 
@@ -178,8 +179,6 @@ private struct GeneralSettingsPane: View {
   @Default(.confirmOnQuit) private var confirmOnQuit
   @Default(.globalHotkey) private var globalHotkey
   @Default(.showMenuBarItem) private var showMenuBarItem
-  @Default(.releaseChannel) private var releaseChannel
-  @EnvironmentObject private var updater: Updater
 
   var body: some View {
     Form {
@@ -194,33 +193,70 @@ private struct GeneralSettingsPane: View {
 
       Toggle("Show notifications in the menu bar", isOn: $showMenuBarItem)
         .help("Show the Workroom notifications item in the menu bar.")
+    }
+    .formStyle(.grouped)
+    .scrollContentBackground(.hidden)
+  }
+}
 
-      // Drives Sparkle's scheduled background checks (persisted as SUEnableAutomaticChecks).
-      Toggle(
-        "Automatically check for updates",
-        isOn: Binding(
-          get: { updater.automaticallyChecksForUpdates },
-          set: { updater.automaticallyChecksForUpdates = $0 })
-      )
-      .help("Let Workroom check for new versions automatically in the background.")
+/// About + updates (issue #91): the app version, links out to the repo and release notes, and the
+/// update controls (Check for Updates…, auto-check, and the Stable/Pre release-channel picker) —
+/// moved here from General so everything update-related lives in one place.
+private struct AboutSettingsPane: View {
+  @Default(.releaseChannel) private var releaseChannel
+  @EnvironmentObject private var updater: Updater
 
-      // Release channel (issue #91): Stable ⟷ Pre only. Nightly is a separate side-by-side
-      // download (its own app), not a runtime switch, so it's not offered here and the picker is
-      // hidden entirely on the nightly build (whose channel is fixed). Persist-only: the next
-      // update check honors the choice; we don't force a check here (that would pop Sparkle's
-      // dialog from inside Settings).
-      if !ReleaseChannel.isNightlyBuild {
-        Picker("Release channel", selection: $releaseChannel) {
-          ForEach(ReleaseChannel.pickerCases, id: \.self) { channel in
-            Text(channel.label).tag(channel)
-          }
-        }
-        .help(
-          "Which builds Workroom offers as updates: Stable (default) or Pre-release (betas and "
-            + "release candidates, plus stable). Applies to the next update check. Nightly builds "
-            + "are a separate download that runs alongside this app."
+  private static let repoURL = URL(
+    string: "https://github.com/\(GitHubReleasesClient.owner)/\(GitHubReleasesClient.repo)")!
+  private static let releasesURL = repoURL.appendingPathComponent("releases")
+
+  var body: some View {
+    Form {
+      Section {
+        LabeledContent("Version", value: AppVersion.current ?? "unknown")
+          .accessibilityIdentifier("about.version")
+        Link("View release notes", destination: Self.releasesURL)
+          .help("Open the GitHub Releases page in your browser.")
+          .accessibilityIdentifier("about.releaseNotes")
+        Link("Repository on GitHub", destination: Self.repoURL)
+          .help("Open the workroom repository in your browser.")
+          .accessibilityIdentifier("about.repo")
+      }
+
+      Section {
+        Button("Check for Updates…") { updater.checkForUpdates() }
+          .disabled(!updater.canCheckForUpdates)
+          .help("Check GitHub for a newer version now.")
+          .accessibilityIdentifier("about.checkForUpdates")
+
+        // Drives Sparkle's scheduled background checks (persisted as SUEnableAutomaticChecks).
+        Toggle(
+          "Automatically check for updates",
+          isOn: Binding(
+            get: { updater.automaticallyChecksForUpdates },
+            set: { updater.automaticallyChecksForUpdates = $0 })
         )
-        .accessibilityIdentifier("settings.control.releaseChannel")
+        .help("Let Workroom check for new versions automatically in the background.")
+        .accessibilityIdentifier("about.autoUpdate")
+
+        // Release channel (issue #91): Stable ⟷ Pre only. Nightly is a separate side-by-side
+        // download (its own app), not a runtime switch, so it's not offered here and the picker is
+        // hidden entirely on the nightly build (whose channel is fixed). Persist-only: the next
+        // update check honors the choice; we don't force a check here (that would pop Sparkle's
+        // dialog from inside Settings).
+        if !ReleaseChannel.isNightlyBuild {
+          Picker("Release channel", selection: $releaseChannel) {
+            ForEach(ReleaseChannel.pickerCases, id: \.self) { channel in
+              Text(channel.label).tag(channel)
+            }
+          }
+          .help(
+            "Which builds Workroom offers as updates: Stable (default) or Pre-release (betas and "
+              + "release candidates, plus stable). Applies to the next update check. Nightly builds "
+              + "are a separate download that runs alongside this app."
+          )
+          .accessibilityIdentifier("settings.control.releaseChannel")
+        }
       }
     }
     .formStyle(.grouped)
