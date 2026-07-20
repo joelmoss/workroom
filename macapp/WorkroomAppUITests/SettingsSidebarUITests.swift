@@ -41,6 +41,11 @@ final class SettingsSidebarUITests: XCTestCase {
     app.descendants(matching: .any).matching(identifier: "settings.control.\(id)").firstMatch
   }
 
+  /// An About-pane control by its accessibility id (`about.<name>`).
+  private func aboutControl(_ app: XCUIApplication, _ id: String) -> XCUIElement {
+    app.descendants(matching: .any).matching(identifier: "about.\(id)").firstMatch
+  }
+
   @discardableResult
   private func waitExists(_ el: XCUIElement, _ want: Bool, _ timeout: TimeInterval = 5) -> Bool {
     let p = NSPredicate(format: "exists == %@", NSNumber(value: want))
@@ -75,19 +80,32 @@ final class SettingsSidebarUITests: XCTestCase {
     // Agent → "Diagnose automatically".
     pane(app, "agent").click()
     XCTAssertTrue(waitExists(control(app, "autoDiagnose"), true), "Agent shows its controls")
+
+    // About → the "Check for Updates…" button; Agent's control is gone (detail swapped).
+    pane(app, "about").click()
+    XCTAssertTrue(
+      aboutControl(app, "checkForUpdates").waitForExistence(timeout: 5), "About shows its controls")
+    XCTAssertTrue(
+      waitExists(control(app, "autoDiagnose"), false),
+      "switching away replaces the Agent detail")
   }
 
-  /// The General pane exposes the release-channel picker (issue #91), reachable by its a11y id.
-  func testGeneralPaneHasReleaseChannelPicker() throws {
+  /// The About pane (issue #91) exposes the version, the repo/release-notes links, the
+  /// "Check for Updates…" button, and the release-channel picker — all reachable by a11y id.
+  func testAboutPaneHasUpdateControlsAndLinks() throws {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
     openSettings(app)
 
-    XCTAssertTrue(pane(app, "general").waitForExistence(timeout: 10), "sidebar should render")
-    pane(app, "general").click()
+    XCTAssertTrue(pane(app, "about").waitForExistence(timeout: 10), "sidebar should render")
+    pane(app, "about").click()
     XCTAssertTrue(
-      waitExists(control(app, "releaseChannel"), true),
-      "General shows the release-channel picker")
+      aboutControl(app, "version").waitForExistence(timeout: 5), "About shows the version")
+    XCTAssertTrue(aboutControl(app, "repo").exists, "About shows the repository link")
+    XCTAssertTrue(aboutControl(app, "releaseNotes").exists, "About shows the release-notes link")
+    XCTAssertTrue(aboutControl(app, "checkForUpdates").exists, "About shows Check for Updates…")
+    XCTAssertTrue(
+      control(app, "releaseChannel").exists, "About shows the release-channel picker")
   }
 
   /// ⌘W closes the Settings window even though the app-wide "Close Terminal" ⌘W command is disabled
