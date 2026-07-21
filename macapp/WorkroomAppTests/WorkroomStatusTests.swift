@@ -194,16 +194,16 @@ final class WorkroomStatusTests: XCTestCase {
     XCTAssertNil(stored?.jjWorkingCopy)  // stale jj working copy cleared
   }
 
-  // MARK: - Inspector layout (per-workroom, persisted to Defaults)
+  // MARK: - Inspector layout (global, persisted to Defaults)
 
-  /// Collapse state lives on the store (so the `.inspector` content re-renders) and persists
-  /// per-workroom into `inspectorPaneStates`, keyed by the selection. Switching workrooms swaps the
-  /// live state to that workroom's saved layout; switching back restores it.
+  /// Section collapse state lives on the store (so the `.inspector` content re-renders) and is
+  /// GLOBAL — one layout shared across all workrooms, persisted to `inspectorLayout`. Switching
+  /// workrooms changes only the inspector's content, never its section collapse.
   @MainActor
-  func testInspectorCollapsePersistsPerWorkroom() {
-    let original = Defaults[.inspectorPaneStates]
-    defer { Defaults[.inspectorPaneStates] = original }
-    Defaults[.inspectorPaneStates] = [:]
+  func testInspectorCollapseIsGlobalAcrossWorkrooms() {
+    let original = Defaults[.inspectorLayout]
+    defer { Defaults[.inspectorLayout] = original }
+    Defaults[.inspectorLayout] = .default
 
     let store = AppStore()
     let a = SidebarID.workroom(project: "/p", name: "a")
@@ -213,24 +213,26 @@ final class WorkroomStatusTests: XCTestCase {
     store.changesSectionCollapsed = true
     store.filesSectionCollapsed = true
 
-    // Switching to a different workroom shows its own (default, all-expanded) layout.
+    // Switching to a different workroom must NOT change the (global) section collapse.
     store.selectedTargetID = b
-    XCTAssertFalse(store.changesSectionCollapsed)
-    XCTAssertFalse(store.filesSectionCollapsed)
+    XCTAssertTrue(
+      store.changesSectionCollapsed, "collapse is global — unchanged by a workroom switch")
+    XCTAssertTrue(store.filesSectionCollapsed)
 
-    // Switching back restores workroom a's saved collapse.
+    // …and back: still exactly as left.
     store.selectedTargetID = a
     XCTAssertTrue(store.changesSectionCollapsed)
     XCTAssertTrue(store.filesSectionCollapsed)
     XCTAssertFalse(store.prSectionCollapsed)
   }
 
-  /// Pane size weights (set when the user drags a divider) persist per-workroom alongside collapse.
+  /// Pane size weights (set by a divider drag) are global too: a workroom switch doesn't change
+  /// them, and the change persists to `inspectorLayout`.
   @MainActor
-  func testInspectorSizeWeightsPersistPerWorkroom() {
-    let original = Defaults[.inspectorPaneStates]
-    defer { Defaults[.inspectorPaneStates] = original }
-    Defaults[.inspectorPaneStates] = [:]
+  func testInspectorSizeWeightsAreGlobalAcrossWorkrooms() {
+    let original = Defaults[.inspectorLayout]
+    defer { Defaults[.inspectorLayout] = original }
+    Defaults[.inspectorLayout] = .default
 
     let store = AppStore()
     let a = SidebarID.workroom(project: "/p", name: "a")
@@ -241,11 +243,25 @@ final class WorkroomStatusTests: XCTestCase {
 
     store.selectedTargetID = b
     XCTAssertEqual(
-      store.inspectorSizeWeights, [1, 1, 1, 1], "another workroom uses the equal default")
-
-    store.selectedTargetID = a
+      store.inspectorSizeWeights, [300, 100, 200, 150],
+      "weights are global — a workroom switch does not reset them")
     XCTAssertEqual(
-      store.inspectorSizeWeights, [300, 100, 200, 150], "workroom a's drag is restored")
+      Defaults[.inspectorLayout].weights, [300, 100, 200, 150], "and are persisted globally")
+  }
+
+  /// A fresh store hydrates its live collapse/size from the persisted global layout at launch.
+  @MainActor
+  func testInspectorLayoutHydratesFromGlobalStateAtLaunch() {
+    let original = Defaults[.inspectorLayout]
+    defer { Defaults[.inspectorLayout] = original }
+    Defaults[.inspectorLayout] = InspectorPaneState(
+      collapsed: [true, false, true, false], weights: [300, 100, 200, 150])
+
+    let store = AppStore()
+    XCTAssertTrue(store.changesSectionCollapsed)
+    XCTAssertFalse(store.filesSectionCollapsed)
+    XCTAssertTrue(store.prSectionCollapsed)
+    XCTAssertEqual(store.inspectorSizeWeights, [300, 100, 200, 150])
   }
 
   // MARK: - PRPresentation (Phase 2 pull-request badge)

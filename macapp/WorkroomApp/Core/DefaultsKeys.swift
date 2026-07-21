@@ -131,12 +131,15 @@ extension Defaults.Keys {
   /// hint applied to whatever is currently active — stale ids resolve away harmlessly.
   static let workroomTabOrder = Key<[String]>("workroomsView.tabOrder", default: [])
 
-  /// Per-workroom inspector layout (issue #24): each workroom remembers which of its three
-  /// sections (Changes / Pull Request / Notifications) are collapsed and the relative heights of
-  /// the panes, keyed by the workroom's `targetIDString`. Replaces the earlier global per-section
-  /// collapse flags — the inspector's shape is now per-workroom.
-  static let inspectorPaneStates = Key<[String: InspectorPaneState]>(
-    "inspector.paneStates", default: [:])
+  /// Global inspector layout (issue #24): which of the inspector's sections (Changes / Files / Pull
+  /// Request) are collapsed and the relative heights of the panes, ordered as
+  /// `InspectorSectionKind.allCases`. Shared across ALL workrooms and windows — switching the selected
+  /// workroom changes the inspector's *content* but never its section collapse/size (a single global
+  /// shape, not per-workroom). A stored layout whose entry count doesn't match the current section
+  /// count is discarded to the default on load. (Was a per-workroom map keyed by `targetIDString`; a
+  /// new key string means old per-workroom data is simply ignored.)
+  static let inspectorLayout = Key<InspectorPaneState>(
+    "inspector.layout", default: .default)
 
   /// The app `CFBundleShortVersionString` whose release notes the user has already seen (issue: What's
   /// New). nil on a fresh install / first launch after this feature shipped — recorded silently with
@@ -160,7 +163,7 @@ extension Defaults.Keys {
   /// the real workroom name and its Git/JJ workspace are unchanged. Absence of a key means no
   /// label. Invariant: stored values are always trimmed and non-empty (normalised at the write
   /// boundary in `AppStore.setWorkroomLabel`); a cleared label removes the key rather than storing
-  /// "". A single project-scoped map (mirrors `inspectorPaneStates`/`runCommands`): `Defaults` keys
+  /// "". A single project-scoped map (mirrors `runCommands`): `Defaults` keys
   /// are static, so per-workroom keys aren't an option, and the project-scoped id keeps same-named
   /// workrooms in different projects from colliding. The key *string* `workroomLabels` is a
   /// stored-data contract — keep it byte-for-byte stable once shipped.
@@ -179,7 +182,7 @@ extension Defaults.Keys {
   static let releaseChannel = Key<ReleaseChannel>("releaseChannel", default: .stable)
 }
 
-/// One workroom's persisted inspector layout: the collapse state and relative pane heights of the
+/// The global persisted inspector layout: the collapse state and relative pane heights of the
 /// sections, ordered as `InspectorSectionKind.allCases` (Changes, Files, Pull Request). `weights`
 /// are relative (renormalised among the expanded panes at layout time), so they survive
 /// inspector-width/height changes; equal weights == the equal-sections default. A layout whose entry

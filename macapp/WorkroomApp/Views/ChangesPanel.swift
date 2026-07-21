@@ -30,7 +30,10 @@ struct RightInspector: View {
       // expander animates cleanly; the other sections keep the default NSScrollView hosting.
       fills: subs.map { $0 == .history },
       sectionKey: store.activeInspectorSection.rawValue,
-      workroomKey: AppStore.targetIDString(for: store.selectedTargetID) ?? "",
+      // The section layout is GLOBAL, not per-workroom, so this key is constant: switching workrooms
+      // must not trigger the controller's workroom-switch redistribute (only a section change, via
+      // `sectionKey`, or a genuine collapse/drag re-lays out the panes).
+      workroomKey: "global",
       weights: subs.map { store.inspectorSizeWeights[$0.storeIndex] },
       onWeightsChanged: { shown in
         var full = store.inspectorSizeWeights

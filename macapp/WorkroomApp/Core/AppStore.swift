@@ -151,8 +151,8 @@ final class AppStore: ObservableObject {
       // Freshen the newly-selected workroom's status (incl. CI) — debounced so arrow-key
       // cycling through rows doesn't fork a probe per row (issue #24).
       scheduleSelectedStatusRefresh()
-      // Swap the inspector to the newly-selected workroom's saved layout (issue #24).
-      if selectedTargetID != oldValue { loadInspectorState() }
+      // The inspector's section collapse/size is GLOBAL (issue #24) — deliberately NOT reloaded on a
+      // workroom switch, so switching workrooms changes only the inspector's content, never its shape.
       // The Files tree is re-pointed lazily by `FilesPanel` (only while that section is shown), not
       // here — so selecting a workroom doesn't list its files unless you're actually browsing them.
       refreshSelectionHasTabs()  // the inspector follows the *active* (tab-having) selection
@@ -272,8 +272,9 @@ final class AppStore: ObservableObject {
   // Inspector section collapse (issue #24). Held on the store rather than as `@Default` in the
   // inspector view: the `.inspector` content doesn't observe `@Default` changes, but it DOES observe
   // this `@EnvironmentObject`. These three are the *live* state for the currently selected workroom;
-  // they're loaded from / persisted to the per-workroom `inspectorPaneStates` map (keyed by the
-  // selection) via `loadInspectorState()` / `persistInspectorState()`.
+  // they're the GLOBAL layout, loaded once at launch and persisted on every change to
+  // `Defaults[.inspectorLayout]` via `loadInspectorState()` / `persistInspectorState()` — shared
+  // across all workrooms, so a workroom switch never changes them.
   @Published var changesSectionCollapsed = false {
     didSet { persistInspectorState() }
   }
@@ -531,6 +532,9 @@ final class AppStore: ObservableObject {
     terminals.onSurfaceFocused = { [weak self] targetID in
       self?.focusWorkroomMemberFromSurface(targetID)
     }
+    // Hydrate the (global) inspector section layout once at launch — it's shared across all
+    // workrooms, so it's loaded here rather than re-loaded on every selection change (issue #24).
+    loadInspectorState()
   }
 
   /// The last persisted window frame (issue #70), or nil when unset/degenerate.
@@ -3384,17 +3388,15 @@ final class AppStore: ObservableObject {
 
   /// Encode a selectable target to its `TerminalTarget.ID` string for persistence (issue #14) —
   /// the inverse of `sidebarID(forTargetID:in:)`. `.project`/nil aren't selectable targets.
-  // MARK: Per-workroom inspector layout (issue #24)
+  // MARK: Global inspector layout (issue #24)
 
-  /// Load the selected workroom's saved inspector layout (collapse + pane weights) into the live
-  /// state, or the default (all expanded, equal) when the workroom has none / nothing is selected.
-  /// Guarded so the resulting `didSet`s don't immediately persist the values back.
+  /// Load the global inspector layout (collapse + pane weights) into the live state, or the default
+  /// (all expanded, equal) when none is stored. Called once at launch — the layout is global, so it
+  /// is deliberately NOT reloaded on workroom switches. Guarded so the resulting `didSet`s don't
+  /// immediately persist the values back.
   func loadInspectorState() {
-    let state =
-      Self.targetIDString(for: selectedTargetID)
-      .flatMap { Defaults[.inspectorPaneStates][$0] } ?? .default
     let (collapsed, weights) = Self.reconcileInspectorState(
-      state, sectionCount: InspectorSectionKind.allCases.count)
+      Defaults[.inspectorLayout], sectionCount: InspectorSectionKind.allCases.count)
     isLoadingInspectorState = true
     changesSectionCollapsed = collapsed[0]
     filesSectionCollapsed = collapsed[1]
@@ -3417,13 +3419,11 @@ final class AppStore: ObservableObject {
     return (collapsed, weights)
   }
 
-  /// Persist the live inspector layout to the selected workroom's entry. No-op while loading or when
-  /// the selection has no stable key (e.g. a project row, or nothing selected).
+  /// Persist the live inspector layout to the global store. No-op while loading (so a load's `didSet`s
+  /// don't write the values straight back).
   func persistInspectorState() {
-    guard !isLoadingInspectorState, let key = Self.targetIDString(for: selectedTargetID) else {
-      return
-    }
-    Defaults[.inspectorPaneStates][key] = InspectorPaneState(
+    guard !isLoadingInspectorState else { return }
+    Defaults[.inspectorLayout] = InspectorPaneState(
       collapsed: [
         changesSectionCollapsed, filesSectionCollapsed, prSectionCollapsed, false,
       ],
