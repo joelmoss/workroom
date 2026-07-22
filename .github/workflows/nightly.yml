@@ -40,7 +40,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          LATEST="$(git describe --tags --abbrev=0 2>/dev/null || echo v0.0.0)"
+          # --match 'v*' skips the floating `nightly` release tag (retagged to HEAD
+          # each run), which would otherwise win git describe and break parsing.
+          LATEST="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo v0.0.0)"
           RAW="${LATEST#v}"; RAW="${RAW%%+*}"   # strip leading v + any build metadata
           CORE="${RAW%%-*}"                      # MAJOR.MINOR.PATCH
           if [ "$RAW" != "$CORE" ]; then
