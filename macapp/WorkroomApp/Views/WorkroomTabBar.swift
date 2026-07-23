@@ -120,18 +120,21 @@ struct WorkroomTabBar: View {
               store.selectedProjectID = creating.project.id
             })
         }
-        // A divider sets the "new workroom" (+) button apart from the last tab. Hidden only when the
-        // last tab is in a split group (the `splitWell` bracket already frames it, so a divider would
-        // double against its rounded edge) — hover no longer hides it (tabs are just underlined now).
-        // Toggled via OPACITY (not removed) so the "+" never shifts. Negative leading trims the gap to
-        // the last tab to ~2pt (HStack `tabSpacing` 4 − 2), matching the inter-chip dividers.
+        // A divider sets the "new workroom" (+) button apart from the last tab. Hidden when the last
+        // tab is selected or hovered (its filled pill stands apart, mirroring the inter-chip dividers)
+        // or is in a split group (the `splitWell` bracket already frames it, so a divider would double
+        // against its rounded edge). Toggled via OPACITY (not removed) so the "+" never shifts. Negative
+        // leading trims the gap to the last tab to ~2pt (HStack `tabSpacing` 4 − 2), matching the
+        // inter-chip dividers.
         Rectangle()
           .fill(ThemeService.shared.tokens.border)
           .frame(width: 1, height: 16)
           .padding(.leading, -2)
           .padding(.trailing, 4)
           .opacity(
-            tabs.last.map { !splitMemberSet.contains($0.sid) } ?? true ? 1 : 0)
+            tabs.last.map {
+              !splitMemberSet.contains($0.sid) && $0.sid != selectedID && $0.sid != hoveredID
+            } ?? true ? 1 : 0)
         // Open-workroom + new-workroom buttons, immediately after the last chip (scroll with them).
         // Open sits to the left of the "+" and shares its exact size/style.
         openWorkroomButton
@@ -173,9 +176,16 @@ struct WorkroomTabBar: View {
     guard draggingID == nil else { return false }
     let members = splitMemberSet
     let here = tabs[index].sid
-    // First tab: a leading divider unless it's the leading (outer) edge of a split group.
-    guard index > 0 else { return !members.contains(here) }
+    // First tab: a leading divider unless it's the leading (outer) edge of a split group, or is itself
+    // the selected/hovered pill (which stands alone).
+    guard index > 0 else {
+      return !members.contains(here) && here != selectedID && here != hoveredID
+    }
     let prev = tabs[index - 1].sid
+    // Drop the divider on both sides of the selected or hovered tab so its filled pill stands apart
+    // from its neighbours (mirrors `TerminalTabStrip`).
+    if here == selectedID || prev == selectedID { return false }
+    if here == hoveredID || prev == hoveredID { return false }
     if members.contains(here) != members.contains(prev) { return false }
     return true
   }
@@ -414,10 +424,18 @@ private struct WorkroomTabChip: View {
         }
       }
     }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 7)
-    // Both the focused tab and a hovered tab are marked by an accent underline (below), not a fill or
-    // border — so an idle chip has no background wash; a solid lifted chip while dragging.
+    .padding(.horizontal, 10)
+    .padding(.vertical, 4)
+    // Selection & hover fill — the same treatment as the terminal tab chips: the selected tab is
+    // filled with the terminal background (`bg`) so it stands distinct from the strip; a hovered idle
+    // tab gets the faint hover wash. Front-most background so a dragged chip's material lift sits
+    // behind it.
+    .background {
+      RoundedRectangle(cornerRadius: 6, style: .continuous)
+        .fill(isActive ? theme.tokens.bg : (isHovered ? theme.tokens.hover : Color.clear))
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: isHovered)
+    }
+    // A solid lifted chip while dragging.
     .background {
       RoundedRectangle(cornerRadius: 6)
         .fill(.thickMaterial)
@@ -427,14 +445,34 @@ private struct WorkroomTabChip: View {
         )
         .opacity(isDragging ? 1 : 0)
     }
-    // Measure the chip's natural width for the drag gap math.
-    .background {
-      GeometryReader { geo in
-        Color.clear.preference(key: WorkroomTabWidthKey.self, value: [sid: geo.size.width])
+    // Only the selected tab is outlined — a stronger `fgDim` stroke (not the `border` hairline) so it
+    // reads as clearly selected. Mirrors the terminal tab chips.
+    .overlay {
+      if isActive {
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+          .strokeBorder(theme.tokens.fgDim, lineWidth: 1)
       }
     }
-    // Hairline between two idle neighbours, centred in the 4pt inter-chip gap. An overlay (not an
-    // extra HStack element) so it never enters the width the drag math measures.
+    // A flowing accent underline along the chip's base while any of this workroom's terminals is
+    // working (OSC 9;4) — the same indeterminate-progress animation as the terminal tabs (issue #28).
+    // An overlay so it never enters the width the drag gap math measures.
+    .overlay(alignment: .bottom) {
+      if terminals.isRunning(forTargetID: target.id) {
+        RunningUnderline()
+          .padding(.horizontal, 6)
+          .padding(.bottom, 1)
+      }
+    }
+    // The pill (fill + border) is the interactive shape; the margin added below stays dead gap space.
+    .contentShape(Rectangle())
+    // Outer margin OUTSIDE the pill/border — the space reclaimed from the interior padding, so the
+    // pill floats with breathing room from its neighbours. Kept equal to the removed padding so the
+    // chip's total footprint (and thus the drag-reorder pitch) is unchanged.
+    .padding(.horizontal, 2)
+    .padding(.vertical, 3)
+    // Hairline between two idle neighbours, centred in the inter-chip gap. Anchored to the outer box
+    // (after the margin) so it centres in the inter-chip spacing. An overlay so it never enters the
+    // width the drag math measures.
     .overlay(alignment: .leading) {
       if showLeadingSeparator {
         Rectangle()
@@ -443,30 +481,13 @@ private struct WorkroomTabChip: View {
           .offset(x: -2)
       }
     }
-    // Focused/hover indicator: an accent underline along the chip's base — no fill, no border. A
-    // hovered tab gets the same underline as the selected one, faded in/out on hover. Placed before the
-    // running underline so a working workroom's flowing bar draws over it. An overlay so it never
-    // enters the drag-gap width.
-    .overlay(alignment: .bottom) {
-      RoundedRectangle(cornerRadius: 0.5)
-        .fill(theme.tokens.accent)
-        .frame(height: 1)
-        .padding(.horizontal, 6)
-        .padding(.bottom, 3)
-        .opacity(isActive || isHovered ? 1 : 0)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: isHovered)
-    }
-    // A flowing underline along the chip's base while any of this workroom's terminals is working
-    // (OSC 9;4) — the same indeterminate-progress animation as the terminal tabs (issue #28). An
-    // overlay so it never enters the width the drag gap math measures.
-    .overlay(alignment: .bottom) {
-      if terminals.isRunning(forTargetID: target.id) {
-        RunningUnderline()
-          .padding(.horizontal, 6)
-          .padding(.bottom, 3)
+    // Measure the chip's full footprint (pill + margin) for the drag gap math — pairs with the
+    // inter-chip spacing to set the reorder pitch.
+    .background {
+      GeometryReader { geo in
+        Color.clear.preference(key: WorkroomTabWidthKey.self, value: [sid: geo.size.width])
       }
     }
-    .contentShape(Rectangle())
     .help(target.path)
     // The workroom's right-click menu, shared with the split group title bar (issue #112). The tab
     // keeps "Close" (whole-workroom close), so `closeName` is non-nil: a root chip shows Close only,
@@ -480,6 +501,7 @@ private struct WorkroomTabChip: View {
       accessibilityLabel(hasActivity: hasActivity, running: hasRunTab && runRunning)
     )
     .accessibilityIdentifier("workroom.tab.\(target.id)")
+    .accessibilityAddTraits(isActive ? .isSelected : [])
     .scaleEffect(isDragging ? 1.04 : 1)
     .shadow(color: .black.opacity(isDragging ? 0.25 : 0), radius: isDragging ? 6 : 0, y: 2)
   }
@@ -499,7 +521,7 @@ private struct WorkroomTabChip: View {
 /// The provisional "Creating…" chip shown while a workroom is being created and its real named chip
 /// hasn't resolved yet (issue #116). Mirrors `WorkroomTabChip`'s layout — a leading cube glyph, the
 /// project name, then a small spinner in place of the (not-yet-known) workroom name — with the same
-/// focused/hover underline. Tapping it refocuses the creating slot; it takes no part in drag/reorder
+/// selected/hover fill. Tapping it refocuses the creating slot; it takes no part in drag/reorder
 /// or width measurement, so it never enters the tab-reorder math.
 private struct ProvisionalWorkroomChip: View {
   let project: Project
@@ -523,19 +545,24 @@ private struct ProvisionalWorkroomChip: View {
       .lineLimit(1)
       ProgressView().controlSize(.small).scaleEffect(0.7)
     }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 7)
-    // The same accent underline the real chips use for focus/hover — so the creating slot reads as the
-    // active tab while its loader/dialog owns the detail.
-    .overlay(alignment: .bottom) {
-      RoundedRectangle(cornerRadius: 0.5)
-        .fill(theme.tokens.accent)
-        .frame(height: 1)
-        .padding(.horizontal, 6)
-        .padding(.bottom, 3)
-        .opacity(isActive || hovered ? 1 : 0)
+    .padding(.horizontal, 10)
+    .padding(.vertical, 4)
+    // The same fill + outline the real chips use for the selected/hover state — so the creating slot
+    // reads as the active tab while its loader/dialog owns the detail.
+    .background {
+      RoundedRectangle(cornerRadius: 6, style: .continuous)
+        .fill(isActive ? theme.tokens.bg : (hovered ? theme.tokens.hover : Color.clear))
+    }
+    .overlay {
+      if isActive {
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+          .strokeBorder(theme.tokens.fgDim, lineWidth: 1)
+      }
     }
     .contentShape(Rectangle())
+    // Outer margin outside the pill — matches the real chips so the creating slot lines up with them.
+    .padding(.horizontal, 2)
+    .padding(.vertical, 3)
     .onHover { hovered = $0 }
     .onTapGesture(perform: onSelect)
     .help("Creating workroom in \(projectName)…")
