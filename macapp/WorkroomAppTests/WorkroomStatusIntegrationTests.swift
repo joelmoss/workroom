@@ -161,6 +161,23 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
     XCTAssertEqual(ws.branch, "main")
   }
 
+  /// History rows carry branch/tag decoration on git, the way they carry bookmarks on jj: the tip
+  /// commit gets its local branches + tags, the older commit gets none, and remote-tracking refs
+  /// (`origin/main`, which points at the same tip here) are excluded so labels don't double up.
+  func testGitProviderLogRefs() throws {
+    let dir = try gitRepoWithUpstream()  // one commit on `main`, pushed to `origin/main`
+    sh(
+      """
+      echo two >> a.txt && git commit -qam second
+      git branch feat && git tag v1 && git tag -a v2 -m annotated
+      """, in: dir)
+    let page = try GitProvider().log(root: URL(fileURLWithPath: dir), limit: 10)
+    XCTAssertEqual(page.commits.count, 2)
+    XCTAssertEqual(page.commits[0].summary, "second")
+    XCTAssertEqual(page.commits[0].refs, ["feat", "main", "v1", "v2"])
+    XCTAssertEqual(page.commits[1].refs, [])
+  }
+
   func testGitConflict() async throws {
     let dir = try gitRepoWithUpstream()
     sh(

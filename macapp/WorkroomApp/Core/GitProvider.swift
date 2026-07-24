@@ -17,7 +17,8 @@ struct GitProvider: VCSProviding {
       // Take one extra to learn whether more history exists beyond the page.
       let window = Array(try repo.log().prefix(max(0, limit) + 1))
       let reachedEnd = window.count <= limit
-      let commits = window.prefix(limit).map(Self.map)
+      let decorations = Self.decorations(in: repo)
+      let commits = window.prefix(limit).map { Self.map($0, refs: decorations[$0.id.hex] ?? []) }
       return VCSHistoryPage(commits: Array(commits), reachedEnd: reachedEnd)
     } catch {
       throw VCSError.io("\(error)")
@@ -32,7 +33,7 @@ struct GitProvider: VCSProviding {
         let diff = try repo.diff(commit: commit)
         let (insertions, deletions) = Self.diffLineStats(diff)
         return VCSChangeset(
-          commit: Self.map(commit),
+          commit: Self.map(commit, refs: Self.decorations(in: repo)[commit.id.hex] ?? []),
           fullMessage: commit.message,
           files: diff.changes.map(Self.mapDelta),
           isMerge: ((try? commit.parents.count) ?? 0) > 1,
@@ -279,7 +280,36 @@ struct GitProvider: VCSProviding {
 
   // MARK: - Mapping
 
-  private static func map(_ c: Commit) -> VCSCommit {
+  /// `commit sha -> decoration labels` for the history list: local branch names, then tag names,
+  /// each group sorted. This is git's answer to jj's bookmarks (`bookmark_map` in the Rust core), so
+  /// a git repo's history rows carry refs too.
+  ///
+  /// Remote-tracking refs (`origin/main`) are deliberately excluded: jj surfaces only *local*
+  /// bookmarks, and since every pushed branch has a same-named remote ref, including them would
+  /// double every label for no new information.
+  private static func decorations(in repo: Repository) -> [String: [String]] {
+    var branches: [String: [String]] = [:]
+    for branch in (try? repo.branch.list(.local)) ?? [] {
+      branches[branch.target.id.hex, default: []].append(branch.name)
+    }
+    var map = branches.mapValues { $0.sorted() }
+    var tags: [String: [String]] = [:]
+    for tag in (try? repo.tag.list()) ?? [] {
+      tags[peeledID(tag.target), default: []].append(tag.name)
+    }
+    for (id, names) in tags { map[id, default: []].append(contentsOf: names.sorted()) }
+    return map
+  }
+
+  /// The id of the object a ref ultimately points at, following tag-to-tag chains (an annotated tag
+  /// already exposes its target commit; a lightweight tag can point at another tag object).
+  private static func peeledID(_ object: any Object) -> String {
+    var object = object
+    while let tag = object as? Tag { object = tag.target }
+    return object.id.hex
+  }
+
+  private static func map(_ c: Commit, refs: [String] = []) -> VCSCommit {
     let primary = VCSAuthor(name: c.author.name, email: c.author.email)
     return VCSCommit(
       commitID: c.id.hex,
@@ -291,7 +321,7 @@ struct GitProvider: VCSProviding {
       // trailers (the GitHub convention). Surface both so a co-authored commit shows everyone.
       authors: [primary] + coAuthors(inMessage: c.message, primaryEmail: c.author.email),
       timestamp: c.date,
-      refs: [],  // branch/tag decoration: a later increment
+      refs: refs,  // local branch + tag names (see `decorations`)
       parentIDs: (try? c.parents)?.map { $0.id.hex } ?? [],
       isWorkingCopy: false  // git has no jj-style working-copy commit
     )
