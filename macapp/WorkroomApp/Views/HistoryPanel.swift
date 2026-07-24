@@ -182,12 +182,16 @@ private struct HistoryRow: View {
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
         .accessibilityIdentifier("HistoryRow")
 
-        // Line two — avatars, author, relative time, then any bookmark/branch refs right of the
+        // Line two — author avatars, relative time, then any bookmark/branch refs right of the
         // timestamp — with the "diverging" disclosure trailing on the SAME line. Refs live here (not
         // line one) so a long bookmark/branch never wraps: each is a single truncating capsule, and
         // the timestamp keeps layout priority so the refs give way first. The disclosure is a real
         // button (its own accessibility element), so it toggles the expander without triggering the
         // row's open-changeset tap.
+        //
+        // Authors are avatars ONLY here — the names would crowd the narrow sidebar row and push the
+        // refs out. Each avatar tooltips its own name, the hover card and the changeset detail spell
+        // the names out, and the timestamp carries them as its accessibility label for VoiceOver.
         HStack(spacing: 6) {
           let relative = Self.relative.localizedString(for: commit.timestamp, relativeTo: Date())
           if !commit.authors.isEmpty {
@@ -195,11 +199,12 @@ private struct HistoryRow: View {
               subjects: commit.authors.map { AvatarSubject(author: $0, pixelSize: 42) }, size: 14)
           }
           let names = commit.authorNamesDisplay
-          Text(names.isEmpty ? relative : "\(names) · \(relative)")
+          Text(relative)
             .font(.caption)
             .foregroundStyle(.secondary)
             .lineLimit(1)
             .layoutPriority(1)
+            .accessibilityLabel(names.isEmpty ? relative : "\(names), \(relative)")
           ForEach(commit.refs, id: \.self) { ref in
             Text(ref)
               .font(.caption2)
