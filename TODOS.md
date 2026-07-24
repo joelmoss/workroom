@@ -1,5 +1,9 @@
 # TODOs
 
+> Status note (2026-07-24): **Done & removed:** `add-project --pretend` for the non-create path is
+> now a real dry-run — gated the `Config.AddProject` write behind `!pretend`, mirroring the
+> `--create` dry-run envelope shape (`would_create: false`).
+>
 > Status note (2026-06-24): re-audited against the codebase. **Done & removed:** workroom tab-chip
 > management actions (#23 follow-up — context menu + "+" button shipped in `8eee2b0`), harden-`gh`-auth
 > (#50 follow-up — `#86`/`60af731` added the `--json hosts` + transient-vs-real classification the item
@@ -574,22 +578,6 @@ forking git).
 
 **Priority:** P3 (pre-existing; create-new path inits a valid repo, so not blocking #103).
 
-## Make `add-project --pretend` a real dry-run for the non-create path (CLI) — #103 follow-up
-
-**What:** With #103, `add-project --create --pretend` is a true dry-run (reports `would_create`,
-mutates nothing). But `add-project --pretend` WITHOUT `--create` still writes config — today's
-pre-existing behaviour, left unchanged by #103 to avoid an unrelated behavior change.
-
-**Why:** Leaves an asymmetry in the `--pretend` contract: one mode honors it, the other ignores it.
-Nobody hits it today (the macOS app never sends `--pretend` to `add-project`), but it's inconsistent.
-Surfaced by the Codex outside-voice pass during `/plan-eng-review`.
-
-**How to start:** In `cmd/add_project.go`, gate the no-`--create` path's `Config.AddProject` write
-behind `!pretend`, emitting a dry-run envelope instead (mirror the `--create` dry-run shape).
-
-**Depends on:** nothing.
-
-**Priority:** P3 (unused flag combination; consistency cleanup).
 ## Consolidate terminal focus authority + cross-window reconciliation (macapp) — focus-desync follow-up
 
 **What:** (1) Collapse the ~5 duplicated "make first responder + `setSurfaceFocused`" call sites in

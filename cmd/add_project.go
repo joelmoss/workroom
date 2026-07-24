@@ -60,15 +60,23 @@ var addProjectCmd = &cobra.Command{
 }
 
 // runAddProjectExisting is the default (repo-only) path: PATH must already be a
-// Git/JJ repo, else ErrUnsupportedVCS. This is byte-for-byte the historical
-// add-project behaviour (the only behavioural change for this path is that the
-// now-shared CanonicalPath expands a leading ~).
+// Git/JJ repo, else ErrUnsupportedVCS. Detection still runs under --pretend (so
+// a bad path still errors), but the config write is skipped and a dry-run
+// envelope is reported instead, mirroring runAddProjectCreate's --pretend
+// contract.
 func runAddProjectExisting(svc *workroom.Service, canon string, out io.Writer) error {
 	v, err := vcs.Detect(canon) // rejects non-VCS directories with ErrUnsupportedVCS
 	if err != nil {
 		return err
 	}
 	vcsType := string(v.Type())
+
+	if pretend {
+		return writeJSONSuccess(out, "add-project", map[string]any{
+			"path": canon, "vcs": vcsType, "would_create": false,
+		})
+	}
+
 	if err := svc.Config.AddProject(canon, vcsType); err != nil {
 		return err
 	}

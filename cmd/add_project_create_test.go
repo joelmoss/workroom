@@ -382,3 +382,36 @@ func TestAddProjectCreate_PretendDryRun(t *testing.T) {
 		t.Fatalf("unexpected dry-run envelope: %v", env)
 	}
 }
+
+// TestAddProjectExisting_PretendDryRun proves the non-create path now honors
+// --pretend symmetrically with --create: the repo is detected (so a bad path
+// still errors) but the project is never registered.
+func TestAddProjectExisting_PretendDryRun(t *testing.T) {
+	requireGit(t)
+	old := pretend
+	pretend = true
+	defer func() { pretend = old }()
+
+	svc, cfg := newCreateSvc(t)
+	canon, err := config.CanonicalPath(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run(t, canon, "git", "init", "-q")
+	run(t, canon, "git", "config", "user.email", "t@e.com")
+	run(t, canon, "git", "config", "user.name", "T")
+	run(t, canon, "git", "commit", "-q", "--allow-empty", "-m", "real work")
+
+	var out bytes.Buffer
+	if err := runAddProjectExisting(svc, canon, &out); err != nil {
+		t.Fatalf("pretend dry-run failed: %v", err)
+	}
+	data, _ := cfg.Read()
+	if _, ok := data[canon]; ok {
+		t.Fatal("pretend must not register the project")
+	}
+	env := decodeEnvelope(t, out.Bytes())
+	if env["would_create"] != false || env["vcs"] != "git" {
+		t.Fatalf("unexpected dry-run envelope: %v", env)
+	}
+}
