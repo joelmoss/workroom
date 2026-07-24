@@ -249,6 +249,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       {
         return nil
       }
+      // ⌃⌘S: toggle the Projects sidebar (issue #128). Caught here — not just left to the menu's
+      // key-equivalent — so it fires reliably even with a focused TUI (like ⌘1-9 above).
+      if flags == [.command, .control], event.charactersIgnoringModifiers?.lowercased() == "s" {
+        Task { @MainActor in WindowRegistry.shared.keyStore?.sidebarVisible.toggle() }
+        return nil
+      }
+      // ⌥⌘S: the OS-standard "Toggle Sidebar" shortcut (Finder, Notes, etc. — AppKit's
+      // `toggleSidebar:` first-responder action). We don't bind it to our own "Projects" menu item
+      // (that's ⌃⌘S, above), but RootView's NavigationSplitView still keeps a REAL native sidebar
+      // column, forced `.detailOnly`, purely for toolbar/title-bar layering (see RootView) — and
+      // AppKit auto-wires ITS default toggle to that column regardless of what our menu does. Left
+      // alone, ⌥⌘S pops that column open: truly empty (`Color.clear.frame(width: 0)`), which is the
+      // "opens the sidebar as a thinner bar, with nothing in it" bug (issue #128). Catching it here
+      // and consuming the event stops it from ever reaching AppKit's responder chain; since users
+      // expect ⌥⌘S to mean "toggle the sidebar" regardless of which one, map it onto our real
+      // `sidebarVisible` toggle rather than just swallowing it.
+      if flags == [.command, .option], event.charactersIgnoringModifiers?.lowercased() == "s" {
+        Task { @MainActor in WindowRegistry.shared.keyStore?.sidebarVisible.toggle() }
+        return nil
+      }
       return event
     }
 

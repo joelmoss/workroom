@@ -989,7 +989,14 @@ final class GhosttySurfaceView: NSView {
     if flags == [.command, .shift] {
       return key == "d" || key == "g" || key == "k" || key == "l" || key == "n" || key == "r"
     }
-    if flags == [.command, .option] { return key == "r" }
+    // ⌥⌘C = Changes, ⌥⌘F = Files, ⌥⌘Y = History, ⌥⌘P = Pull Request panel toggles; ⌥⌘S = the
+    // OS-standard Toggle Sidebar shortcut, caught (and aliased to Projects) by the AppDelegate
+    // monitor — reserved here too, defensively, like ⌘1-9 above (issue #128).
+    if flags == [.command, .option] {
+      return key == "r" || key == "c" || key == "f" || key == "y" || key == "p" || key == "s"
+    }
+    // ⌃⌘S = Projects sidebar toggle (issue #128).
+    if flags == [.command, .control] { return key == "s" }
     guard flags == .command else { return false }
     if ("1"..."9").contains(ch) { return true }  // focus tab N
     // ⌘N is New Window (issue #70); ⌘T/⌘W/⌘O/⌘D are real menu commands; ⌘Q/⌘H/⌘M/⌘, are system
