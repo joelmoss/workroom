@@ -65,6 +65,47 @@ final class MarkdownRenderPipelineTests: XCTestCase {
     return (result as? NSNumber)?.boolValue ?? false
   }
 
+  /// Whether the blocks that follow the raw-HTML mention are still **top-level** children of the
+  /// content root.
+  ///
+  /// `textContent` alone is not enough, and that blind spot hid a second instance of this very bug:
+  /// `<select>`/`<dialog>`/`<object>`/`<applet>` don't delete the remainder of the document, they
+  /// *adopt* it as their own children. Every word stays in `textContent` while the page renders a
+  /// bare dropdown (or nothing at all, for `display: none` `<dialog>` and unrendered `<object>`
+  /// fallback content) — the same "file is cut off" symptom the user reported. Only a structural
+  /// assertion catches it, so `document(mentioning:)` docs are checked with this, not just for text.
+  private func topLevelStructureSurvives() async throws -> Bool {
+    let result = try await webView.evaluateJavaScript(
+      """
+      (() => {
+        const root = document.getElementById('content');
+        const last = root.lastElementChild;
+        return root.querySelectorAll(':scope > h2').length === 1
+          && !!last && last.textContent.includes('TAIL');
+      })()
+      """)
+    return (result as? NSNumber)?.boolValue ?? false
+  }
+
+  /// Assert a raw-HTML `mention` neither loses the document's text nor its structure, and that the
+  /// mention itself ends up visible as literal text.
+  private func assertMentionIsHarmless(
+    _ mention: String, line: UInt = #line
+  ) async throws {
+    let text = try await renderedText(document(mentioning: mention))
+    XCTAssertTrue(
+      text.contains("TAIL"), "\(mention) truncated the document", line: line)
+    XCTAssertTrue(
+      text.contains("Later section"), "\(mention) dropped the following section", line: line)
+    XCTAssertTrue(
+      text.contains(mention), "\(mention) should render as visible text", line: line)
+    let structural = try await topLevelStructureSurvives()
+    XCTAssertTrue(
+      structural,
+      "\(mention) reparented the rest of the document into itself (text kept, not rendered)",
+      line: line)
+  }
+
   /// A document whose body sits *between* a raw-HTML mention and the `TAIL` marker, so anything that
   /// eats the remainder of the parse is caught by the marker assertion.
   private func document(mentioning raw: String) -> String {
@@ -89,16 +130,28 @@ final class MarkdownRenderPipelineTests: XCTestCase {
     XCTAssertTrue(text.contains("TAIL"), "content after a <title> mention was dropped: \(text)")
     XCTAssertTrue(text.contains("Later section"))
     XCTAssertTrue(text.contains("<title>"), "the mention should render as visible text")
+    let structural = try await topLevelStructureSurvives()
+    XCTAssertTrue(structural, "the document structure after the <title> mention was destroyed")
   }
 
+  /// Raw-text / RCDATA tags: the remainder became the element's text content and DOMPurify deleted it
+  /// (all of these are in its `FORBID_CONTENTS` set).
   func testRawTextTagMentionsDoNotTruncateDocument() async throws {
     for tag in [
       "<script>", "<style>", "<textarea>", "<xmp>", "<plaintext>", "<noscript>", "<iframe>",
       "<template>", "<noembed>", "<noframes>",
     ] {
-      let text = try await renderedText(document(mentioning: tag))
-      XCTAssertTrue(text.contains("TAIL"), "\(tag) truncated the document")
-      XCTAssertTrue(text.contains(tag), "\(tag) should render as visible text")
+      try await assertMentionIsHarmless(tag)
+    }
+  }
+
+  /// Non-rendering containers: these keep the remainder in the DOM but adopt it as their children,
+  /// and none of them renders arbitrary children — a `<select>` shows a dropdown, a `<dialog>`
+  /// without `open` is `display: none`, `<object>`/`<applet>` children are unrendered fallback. Text
+  /// survives, the page still looks cut off, so they get escaped like the raw-text tags above.
+  func testNonRenderingContainerMentionsDoNotBreakDocument() async throws {
+    for tag in ["<select>", "<dialog>", "<object>", "<applet>"] {
+      try await assertMentionIsHarmless(tag)
     }
   }
 
@@ -208,21 +261,32 @@ final class MarkdownRenderPipelineTests: XCTestCase {
 
 /// Awaits the template's first `didFinish` — JS isn't callable before then (the same gate
 /// `MarkdownWebView.Coordinator` uses in production).
+///
+/// Bounded by an `XCTestExpectation` rather than a bare continuation: CI runs these on a hosted
+/// runner (`make app-test` in `.github/workflows/ci.yml`), and if WebKit never starts or the
+/// WebContent process dies, an unbounded continuation would stall the whole test target instead of
+/// failing this one test.
 private final class TemplateLoader: NSObject, WKNavigationDelegate {
-  private var continuation: CheckedContinuation<Void, Error>?
+  private let loaded = XCTestExpectation(description: "markdown template finished loading")
   private var outcome: Result<Void, Error>?
 
-  func waitForLoad() async throws {
-    if let outcome { return try outcome.get() }
-    try await withCheckedThrowingContinuation { continuation in
-      self.continuation = continuation
+  func waitForLoad(timeout: TimeInterval = 30) async throws {
+    await XCTWaiter().fulfillment(of: [loaded], timeout: timeout)
+    guard let outcome else {
+      throw NSError(
+        domain: "MarkdownRenderPipelineTests", code: 1,
+        userInfo: [
+          NSLocalizedDescriptionKey:
+            "bundled markdown template did not finish loading within \(timeout)s"
+        ])
     }
+    try outcome.get()
   }
 
   private func finish(_ result: Result<Void, Error>) {
+    guard outcome == nil else { return }  // first navigation wins; later loads are no-ops
     outcome = result
-    continuation?.resume(with: result)
-    continuation = nil
+    loaded.fulfill()
   }
 
   func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

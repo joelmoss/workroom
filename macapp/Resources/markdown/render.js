@@ -14,22 +14,30 @@ let mermaidTheme = "default";
 
 marked.setOptions({ gfm: true, breaks: false });
 
-// Markdown may embed raw HTML, and marked passes it through untouched. A handful of tags change how
-// the HTML parser tokenizes everything that FOLLOWS them: <title>/<textarea> hold *escapable raw
-// text*, <script>/<style>/<xmp>/<plaintext> hold *raw text*. An unclosed one therefore swallows the
-// whole rest of the document as its own content — which DOMPurify then deletes wholesale, since every
-// one of them is in its FORBID_CONTENTS set (tag *and* children removed). A bare prose mention like
-// `a label ("Terminal <title>, pane N of M")` is enough to make everything after that line vanish
-// from the preview while the source view still shows the complete file (TODOS.md rendered ~12% of
-// itself). An unbalanced `<!--` eats the remainder the same way.
+// Markdown may embed raw HTML, and marked passes it through untouched. Some tags change how the HTML
+// parser treats everything that FOLLOWS them, so an unclosed one eats the rest of the document. A
+// bare prose mention is enough — `a label ("Terminal <title>, pane N of M")` in TODOS.md made the
+// preview render ~12% of the file while the source view showed all of it. Two distinct mechanisms:
 //
-// So a raw-HTML chunk carrying one of those tags is escaped to visible text instead of passed through
-// as markup. Everything else (GitHub-style <details>, <br>, <img>, <sub>, raw <table>…) still flows
-// to DOMPurify unchanged — it remains the security gate; this only stops the *parser* from eating the
-// document. Escaping is also strictly safer than passing through, so it never widens the attack
-// surface.
+//   1. DELETED. <title>/<textarea> hold *escapable raw text*, <script>/<style>/<xmp>/<plaintext>
+//      hold *raw text* — the remainder of the document becomes that element's text content, and
+//      DOMPurify then drops it wholesale, since all of them are in its FORBID_CONTENTS set (tag
+//      *and* children removed). An unbalanced `<!--` behaves the same way.
+//   2. REPARENTED, then not rendered. <select>/<dialog>/<object>/<applet> keep the text in the DOM
+//      but adopt the remainder as their children, and none of them renders arbitrary children — a
+//      <select> shows a dropdown, a <dialog> without `open` is display:none, <object>/<applet>
+//      children are unrendered fallback content. Same "file is cut off" symptom, so same treatment.
+//
+// A raw-HTML chunk carrying one of those tags is escaped to visible text instead of passed through as
+// markup. Everything else (GitHub-style <details>, <br>, <img>, <sub>, raw <table>…) still flows to
+// DOMPurify unchanged — it remains the security gate; this only stops the *parser* from eating the
+// document. Escaping is strictly safer than passing through, so it never widens the attack surface.
+//
+// Deliberately NOT here: an unclosed <div>/<a>/<ul>/<li>/<code>/<details> also adopts what follows,
+// but still *renders* it (wrapped or styled oddly, not hidden). That is what raw HTML in Markdown
+// means, and GitHub renders it the same way, so escaping those would break real documents.
 const SWALLOWING_TAGS =
-  /<\/?(?:script|style|textarea|title|xmp|plaintext|noembed|noframes|noscript|iframe|template)[\s/>]/i;
+  /<\/?(?:script|style|textarea|title|xmp|plaintext|noembed|noframes|noscript|iframe|template|select|dialog|object|applet)[\s/>]/i;
 
 function escapeHtml(text) {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -44,11 +52,16 @@ function isInertMarkup(raw) {
   return !SWALLOWING_TAGS.test(raw.replace(/<!--[\s\S]*?-->/g, ""));
 }
 
-// Applies to inline *and* block raw-HTML tokens — marked routes both through renderer.html.
+// Applies to inline *and* block raw-HTML tokens — marked routes both through renderer.html. The
+// token/string dance covers both marked signatures: current versions pass a token object, older ones
+// passed the raw HTML string. Without it, re-vendoring an older marked would make `token.text`
+// undefined and throw, degrading every file with raw HTML to unformatted plain text.
 marked.use({
   renderer: {
     html(token) {
-      return isInertMarkup(token.text) ? token.text : escapeHtml(token.text);
+      const raw = typeof token === "string" ? token : token.text;
+      if (typeof raw !== "string") return "";
+      return isInertMarkup(raw) ? raw : escapeHtml(raw);
     },
   },
 });

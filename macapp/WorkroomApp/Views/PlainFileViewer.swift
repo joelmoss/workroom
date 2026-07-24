@@ -239,6 +239,8 @@ struct PlainFileViewer: View {
           .padding(.horizontal, 8).padding(.vertical, 4)
           .background(.regularMaterial, in: Capsule())
           .padding(8)
+          // Decorative: never absorb clicks/scroll from the web view or text view underneath.
+          .allowsHitTesting(false)
       }
     }
   }
