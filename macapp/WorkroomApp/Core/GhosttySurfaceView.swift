@@ -991,9 +991,11 @@ final class GhosttySurfaceView: NSView {
     }
     // ⌥⌘C = Changes, ⌥⌘F = Files, ⌥⌘Y = History, ⌥⌘P = Pull Request panel toggles; ⌥⌘S = the
     // OS-standard Toggle Sidebar shortcut, caught (and aliased to Projects) by the AppDelegate
-    // monitor — reserved here too, defensively, like ⌘1-9 above (issue #128).
+    // monitor — reserved here too, defensively, like ⌘1-9 above (issue #128). ⌥⌘B is the secondary
+    // Projects sidebar toggle, same treatment.
     if flags == [.command, .option] {
       return key == "r" || key == "c" || key == "f" || key == "y" || key == "p" || key == "s"
+        || key == "b"
     }
     // ⌃⌘S = Projects sidebar toggle (issue #128).
     if flags == [.command, .control] { return key == "s" }
@@ -1001,9 +1003,10 @@ final class GhosttySurfaceView: NSView {
     if ("1"..."9").contains(ch) { return true }  // focus tab N
     // ⌘N is New Window (issue #70); ⌘T/⌘W/⌘O/⌘D are real menu commands; ⌘Q/⌘H/⌘M/⌘, are system
     // standards; ⌘[ / ⌘] are Back/Forward navigation (issue #26); ⌘R is Run (issue #7); ⌘F opens the
-    // scrollback find bar and ⌘G / ⇧⌘G step through matches — all reserved so the menu key-equivalent
-    // fires instead of being swallowed by the terminal (a no-op via the menu when no find bar is open).
-    return ["n", "t", "w", "o", "d", "q", "h", "m", ",", "[", "]", "r", "f", "g"].contains(key)
+    // scrollback find bar and ⌘G / ⇧⌘G step through matches; ⌘B toggles the Inspector panel — all
+    // reserved so the menu key-equivalent fires instead of being swallowed by the terminal (a no-op
+    // via the menu when no find bar is open).
+    return ["n", "t", "w", "o", "d", "q", "h", "m", ",", "[", "]", "r", "f", "g", "b"].contains(key)
   }
 
   /// ⌘↑ / ⌘↓ jump the viewport to the top / bottom of the scrollback (issue #42). libghostty has no

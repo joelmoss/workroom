@@ -136,7 +136,8 @@ extension KeyboardShortcutsView {
     ShortcutGroup(
       title: "View",
       items: [
-        ShortcutItem(label: "Toggle Projects sidebar", keys: "⌃⌘S"),
+        ShortcutItem(label: "Toggle Projects sidebar", keys: "⌃⌘S · ⌥⌘B"),
+        ShortcutItem(label: "Toggle Inspector", keys: "⌘B"),
         ShortcutItem(label: "Changes", keys: "⌥⌘C"),
         ShortcutItem(label: "Pull Request", keys: "⌥⌘P"),
         ShortcutItem(label: "Next Notification", keys: "⇧⌘N"),

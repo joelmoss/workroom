@@ -269,6 +269,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         Task { @MainActor in WindowRegistry.shared.keyStore?.sidebarVisible.toggle() }
         return nil
       }
+      // ⌥⌘B: secondary "Projects" sidebar toggle, mirroring ⌃⌘S above — caught here (not just left
+      // to a menu key-equivalent) so it fires reliably with a focused TUI too (issue #128).
+      if flags == [.command, .option], event.charactersIgnoringModifiers?.lowercased() == "b" {
+        Task { @MainActor in WindowRegistry.shared.keyStore?.sidebarVisible.toggle() }
+        return nil
+      }
       return event
     }
 
@@ -706,6 +712,12 @@ struct WorkroomCommands: Commands {
     }
 
     CommandGroup(after: .sidebar) {
+      // View menu: toggle the right-hand inspector panel as a whole (⌘B), independent of which
+      // section is active — the Changes/Files/History/Pull Request toggles below select a section
+      // AND open the inspector; this one just shows/hides whatever section was last active.
+      Toggle("Inspector", isOn: $showInspector)
+        .keyboardShortcut("b", modifiers: [.command])
+
       // View menu: reveal the Changes view. Changes and Pull Request share the **Changes** activity-bar
       // pane (a stack), so "showing" Changes means selecting that pane, opening the inspector, and
       // expanding the Changes sub-section; the checkmark is on only when all three hold. Turning it off
