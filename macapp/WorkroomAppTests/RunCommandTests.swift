@@ -1,3 +1,4 @@
+import AppKit
 import Defaults
 import XCTest
 
@@ -12,6 +13,11 @@ import XCTest
 final class RunCommandTests: XCTestCase {
   private var captured: [String?] = []
   private var signals: [(TerminalTarget.ID, Int32)] = []
+  /// Windows registered on `WindowRegistry.shared` by the owner-focus test below — unlike every
+  /// other test here, that one exercises the real singleton (not an injectable instance), so
+  /// registrations must be unwound in `tearDown` (not just at the end of the test body) or a failed
+  /// assertion could leak a stale registration into a later test (issue #127).
+  private var registeredWindows: [NSWindow] = []
 
   override func setUp() {
     super.setUp()
@@ -22,6 +28,8 @@ final class RunCommandTests: XCTestCase {
 
   override func tearDown() {
     Defaults[.runCommands] = [:]
+    for window in registeredWindows { WindowRegistry.shared.unregister(window: window) }
+    registeredWindows = []
     super.tearDown()
   }
 
@@ -122,6 +130,97 @@ final class RunCommandTests: XCTestCase {
     store.startRunCommand(for: t)
     XCTAssertNil(store.runTabID(for: t.id))
     XCTAssertFalse(store.isRunCommandRunning(for: t.id))
+  }
+
+  /// Issue #127: ⌘R/toolbar Run on a target with no run command configured must not silently
+  /// no-op — it should surface the Project Settings sheet with a warning. This is the mandatory
+  /// regression test for `runOrFocusRunCommand`'s `.armed/.none` branch: none of this file's other
+  /// `runOrFocusRunCommand()` calls exercise the no-command case (they all pre-configure a command).
+  func testRunOrFocusPresentsProjectSettingsWithWarningWhenNoCommand() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    let t = target(store, "/a", "main")
+    store.selectedTargetID = .workroom(project: "/a", name: "main")
+
+    store.runOrFocusRunCommand()
+
+    XCTAssertNil(store.runTabID(for: t.id), "must not start anything without a configured command")
+    XCTAssertFalse(store.isRunCommandRunning(for: t.id))
+    let pending = try! XCTUnwrap(store.pendingProjectSettings)
+    XCTAssertEqual(pending.project.path, "/a")
+    XCTAssertTrue(pending.showsRunWarning)
+  }
+
+  func testPendingProjectSettingsDefaultsNoWarning() {
+    let p = project("/a", workrooms: [])
+    XCTAssertFalse(PendingProjectSettings(project: p).showsRunWarning)
+  }
+
+  /// Found by the review's Testing + Maintainability specialists (independently, same root cause):
+  /// the `pendingProjectSettings == nil` guard added in eng review (issue #127-eng-4) — so a second
+  /// ⌘R for a DIFFERENT no-command target can't silently overwrite an already-open settings sheet —
+  /// had no test proving it actually works.
+  func testRunOrFocusDoesNotClobberAnAlreadyOpenSettingsSheet() {
+    let store = makeStore([project("/a", workrooms: []), project("/b", workrooms: ["main"])])
+    store.pendingProjectSettings = PendingProjectSettings(project: project("/a", workrooms: []))
+    let tB = target(store, "/b", "main")
+    store.selectedTargetID = .workroom(project: "/b", name: "main")
+
+    store.runOrFocusRunCommand()
+
+    XCTAssertEqual(
+      store.pendingProjectSettings?.project.path, "/a",
+      "must not clobber the already-open sheet with a different project")
+    XCTAssertNil(store.runTabID(for: tB.id))
+  }
+
+  /// Found by the Testing specialist: every other test here stops at "the sheet opens" or "no
+  /// warning shown" — none confirmed the fix's actual payoff, that configuring a command from the
+  /// warned sheet lets a subsequent ⌘R really run it.
+  func testRunOrFocusStartsAfterConfiguringCommandFromTheWarnedSheet() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    let t = target(store, "/a", "main")
+    store.selectedTargetID = .workroom(project: "/a", name: "main")
+
+    store.runOrFocusRunCommand()
+    XCTAssertNotNil(store.pendingProjectSettings)
+
+    // Simulates `ProjectSettingsSheet`'s Save button: persist the command, then dismiss.
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.pendingProjectSettings = nil
+
+    store.runOrFocusRunCommand()
+
+    XCTAssertTrue(store.isRunCommandRunning(for: t.id))
+  }
+
+  /// Issue #127-eng-4 (outside-voice review): the owner-elsewhere branch takes precedence over the
+  /// new no-command branch, and unlike every other test in this file, it exercises the real
+  /// `WindowRegistry.shared` singleton `runOrFocusRunCommand` hardcodes — registrations are unwound
+  /// in `tearDown` via `registeredWindows`.
+  func testRunOrFocusFocusesOwnerWindowInsteadOfStartingDuplicate() {
+    let ownerStore = makeStore([project("/a", workrooms: ["main"])])
+    ownerStore.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let ownerTarget = target(ownerStore, "/a", "main")
+    ownerStore.startRunCommand(for: ownerTarget)  // owner is now actually running this target
+
+    let selectingStore = makeStore([project("/a", workrooms: ["main"])])
+    let selectingTarget = target(selectingStore, "/a", "main")
+    selectingStore.selectedTargetID = .workroom(project: "/a", name: "main")
+
+    let winOwner = NSWindow()
+    let winSelecting = NSWindow()
+    WindowRegistry.shared.register(window: winOwner, store: ownerStore)
+    WindowRegistry.shared.register(window: winSelecting, store: selectingStore)
+    registeredWindows = [winOwner, winSelecting]
+
+    selectingStore.runOrFocusRunCommand()
+
+    XCTAssertNil(
+      selectingStore.runTabID(for: selectingTarget.id),
+      "must not start a duplicate run — the owner window already runs it (issue #70)")
+    XCTAssertNil(
+      selectingStore.pendingProjectSettings,
+      "owner-elsewhere takes precedence over the no-command branch — no settings sheet either")
   }
 
   func testStartSingleQuoteEscaping() {

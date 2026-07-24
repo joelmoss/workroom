@@ -6,6 +6,10 @@ import SwiftUI
 /// wrong mid-typing. Styled like `SettingsView` (grouped form, fixed width) so it feels native.
 struct ProjectSettingsSheet: View {
   let project: Project
+  /// True when opened because Run was invoked with no command configured (issue #127) — shows a
+  /// warning explaining why nothing started. False (default) for the plain "Project Settings…"
+  /// entry points, which need no explanation.
+  var showsRunWarning: Bool = false
   @EnvironmentObject var store: AppStore
   @Environment(\.dismiss) private var dismiss
 
@@ -23,6 +27,17 @@ struct ProjectSettingsSheet: View {
     VStack(spacing: 0) {
       Form {
         Section {
+          if showsRunWarning {
+            Label(
+              "No run command is defined yet — you can't run this workroom until you set one.",
+              systemImage: "exclamationmark.triangle.fill"
+            )
+            .foregroundStyle(.orange)
+            // Stable identifier so the XCUITest doesn't match on the exact warning string
+            // (fragile: an em dash, wording that may change) — added after outside-voice review
+            // flagged the risk.
+            .accessibilityIdentifier("projectSettings.runWarning")
+          }
           TextField("Run command", text: $command, prompt: Text("e.g. npm run dev"))
             .lineLimit(1)
             .accessibilityIdentifier("projectSettings.runCommand")

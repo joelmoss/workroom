@@ -67,6 +67,18 @@ struct PendingWorkroomLabel: Identifiable {
   var id: String { TerminalTarget.workroomID(project: project.path, name: workroom.name) }
 }
 
+/// The project-settings sheet's one presentation source (issue #127): used both by the plain
+/// "Project Settings…" entry points (hover button / context menu — `showsRunWarning: false`) and
+/// by Run invoked with no command configured (`showsRunWarning: true`). Unified into ONE
+/// store-level pending state — not one local to `ProjectSidebar` plus a second store-level one —
+/// because ⌘R is a global key monitor that can fire while the sheet is already open from the other
+/// entry point; two independent `.sheet(item:)` presenters would race (eng review issue #127-eng-1).
+struct PendingProjectSettings: Identifiable {
+  let project: Project
+  var showsRunWarning: Bool = false
+  var id: String { project.id }
+}
+
 /// App-wide state and actions. A single shared instance is used so the App, views,
 /// and menu Commands all act on the same store. All CLI work is awaited (it runs off
 /// the main thread inside WorkroomCLI), keeping the UI responsive.
@@ -369,6 +381,12 @@ final class AppStore: ObservableObject {
   /// A workroom awaiting a display-label edit (drives the WorkroomLabelSheet, issue #41). Set by the
   /// sidebar row's / tab chip's "Set Label…"/"Edit Label…" item; cleared when the sheet resolves.
   @Published var pendingWorkroomLabel: PendingWorkroomLabel?
+  /// The project-settings sheet's one presentation source (drives `ProjectSettingsSheet`, issue #7
+  /// origin, issue #127 adds the no-command-Run trigger). Set by the project row's hover button /
+  /// context menu (`showsRunWarning: false`), or by `runOrFocusRunCommand` when Run is invoked with
+  /// no command configured (`showsRunWarning: true`). See `PendingProjectSettings`'s doc comment for
+  /// why this is ONE store-level source rather than a sidebar-local `@State` plus a second one.
+  @Published var pendingProjectSettings: PendingProjectSettings?
   /// A workroom being created in THIS window (issue #116). Non-nil from the moment the user picks a
   /// project until the setup dialog is dismissed (a setup script ran) or auto-dismisses (no script).
   /// Drives the immediate full-pane setup dialog AND the provisional "Creating…" tab chip — both
@@ -1504,6 +1522,34 @@ final class AppStore: ObservableObject {
 
   /// ⌘R / toolbar Run = "ensure running" (OV-B): running → focus it; stopped-but-open → re-run;
   /// none → start. Acts on the current selection.
+  ///
+  /// ```
+  /// runOrFocusRunCommand() — per-target run-state machine (issue #127 adds the middle branch)
+  ///
+  ///         ┌───────────────────┐
+  ///         │ .running(_, true) │──restart──▶ respawn (Stop-then-Run: don't just focus a dying
+  ///         └───────────────────┘             server)
+  ///         ┌───────────────────────────────┐
+  ///         │ .running(_,false)/.restarting │──focus tab──▶ (already visible/running)
+  ///         └───────────────────────────────┘
+  ///         ┌───────────┐
+  ///         │ .stopped  │──restart──▶ respawn (re-run a stopped-but-open pane)
+  ///         └───────────┘
+  ///         ┌──────────────┐
+  ///         │ .armed/.none │
+  ///         └──────┬───────┘
+  ///                │
+  ///        ┌───────┴────────┐
+  ///        │ owner elsewhere?│──yes──▶ focus owner's window + reveal (single-owner across windows)
+  ///        └───────┬────────┘
+  ///                │no
+  ///        ┌───────┴──────────┐
+  ///        │ hasRunCommand?    │──NO───▶  pendingProjectSettings = ⟨project, warning:true⟩  [NEW]
+  ///        └───────┬──────────┘          (only if no sheet is already open — see guard below)
+  ///                │yes
+  ///                ▼
+  ///          startRunCommand(for: target)
+  /// ```
   func runOrFocusRunCommand() {
     guard !isEditingTextField, let target = selectedTarget, !target.isMissing else { return }
     switch runStates[target.id] {
@@ -1524,6 +1570,22 @@ final class AppStore: ObservableObject {
       if let owner = WindowRegistry.shared.runOwner(for: target.id, excluding: self) {
         owner.hostWindow?.makeKeyAndOrderFront(nil)
         owner.revealRunTerminal()
+      } else if let project = project(forTarget: target), !hasRunCommand(forProject: project.path) {
+        // Issue #127: ⌘R on a target with no run command configured used to silently no-op inside
+        // `startRunCommand`'s guard — this is the sole reachable path that could (the toolbar/sidebar
+        // Run buttons are hidden whenever `canRunCommand` is false, so they can't be clicked into this
+        // state). Surface the settings sheet with a warning instead of doing nothing.
+        if pendingProjectSettings == nil {
+          pendingProjectSettings = PendingProjectSettings(project: project, showsRunWarning: true)
+        }
+        // else: a settings sheet is already open (any reason, any project) — intentionally do
+        // nothing further, rather than clobber it. This is deliberate and self-contained (issue
+        // #127-eng-4, adversarial review): a second ⌘R for a DIFFERENT no-command target while a
+        // sheet is already presented would otherwise silently overwrite the pending item, discarding
+        // any unsaved typing with no confirmation — and there's genuine, unverified uncertainty about
+        // whether SwiftUI's `.sheet(item:)` even refreshes the banner correctly when the identity is
+        // unchanged. (Previously this fell through to `startRunCommand`'s own unrelated no-command
+        // guard, which happened to produce the same no-op — but only by coincidence, not by design.)
       } else {
         startRunCommand(for: target)
       }
@@ -1862,10 +1924,20 @@ final class AppStore: ObservableObject {
     // sleeps (stays "running" long enough to assert the Stop/Restart state deterministically).
     if let project = fixtures.first {
       // A test can override the seeded command (`-WorkroomUITestRunCommand`) to drive a deterministic
-      // failure / success / long-running run for the run-status XCUITests (issue #79).
-      setRunConfig(
-        RunConfig(command: UITestFixture.runCommand ?? "echo PROBE_OK; sleep 30", autoRun: false),
-        forProject: project.path)
+      // failure / success / long-running run for the run-status XCUITests (issue #79). A test can
+      // instead opt OUT of any command being seeded (`-WorkroomUITestNoRunCommand`) for the "no run
+      // command configured" state (issue #127) — this must EXPLICITLY clear the config (not just skip
+      // seeding), since the fixture project's path is deterministic and `Defaults[.runCommands]`
+      // persists across launches in the real app's UserDefaults domain: a prior launch that DID seed a
+      // command (e.g. a `RunStatusUITests` run) would otherwise leak a stale command into this state
+      // (found by review, issue #127).
+      if UITestFixture.noRunCommand {
+        setRunConfig(.empty, forProject: project.path)
+      } else {
+        setRunConfig(
+          RunConfig(command: UITestFixture.runCommand ?? "echo PROBE_OK; sleep 30", autoRun: false),
+          forProject: project.path)
+      }
     }
     // The real persisted selection won't resolve against the fixture paths; don't try to restore it.
     pendingRestoreSelection = nil

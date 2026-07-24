@@ -31,9 +31,6 @@ struct ProjectSidebar: View {
   @State private var hoveredTerminal: TerminalTab.ID?
   @State private var themeHovering = false
   @State private var addProjectHovering = false
-  /// The project whose settings sheet is open (issue #7), or nil. Owned here so the trigger (the
-  /// project-row context menu) and the presenter live together.
-  @State private var settingsProject: Project?
   @Default(.theme) private var theme
 
   /// Width of the shared leading icon column on the root/workroom/terminal rows — it holds the
@@ -121,11 +118,10 @@ struct ProjectSidebar: View {
     // sits flush under the title bar via `SidebarColumn`'s `topMargin: 0`). A solid `safeAreaInset`
     // like the footer — reserves an 8pt strip of the card surface, matching the card's side margin.
     .safeAreaInset(edge: .top, spacing: 0) { Color.clear.frame(height: 8) }
-    // Per-project run-command settings (issue #7) stays sidebar-local — it's only ever triggered
-    // from a (visible) project row, so it needs no re-homing.
-    .sheet(item: $settingsProject) { project in
-      ProjectSettingsSheet(project: project).environmentObject(store)
-    }
+    // Per-project run-command settings (issue #7) is presented from `RootView` via
+    // `store.pendingProjectSettings` — re-homed off sidebar-local state (issue #127) so ⌘R (a
+    // global shortcut) can also trigger it reliably, from one source, even when this sidebar isn't
+    // what the user last interacted with.
     // The add-project importer and the delete confirmation are re-homed to RootView (issue #23 OV1)
     // so the ⌘O / ⌘⌫ menu commands present reliably even when this sidebar is collapsed in
     // Workrooms View. Local buttons here route through `store.requestAddProject` / `pendingDeletion`.
@@ -243,7 +239,7 @@ struct ProjectSidebar: View {
       SettingsRowButton(
         help: "Project settings for \(project.displayName)", visible: hovered == id && !busy
       ) {
-        settingsProject = project
+        store.pendingProjectSettings = PendingProjectSettings(project: project)
       }
       CreateRowButton(help: "New workroom in \(project.displayName)") {
         Task { await store.createWorkroom(in: project) }
@@ -268,7 +264,7 @@ struct ProjectSidebar: View {
       }
       Divider()
       Button {
-        settingsProject = project
+        store.pendingProjectSettings = PendingProjectSettings(project: project)
       } label: {
         Label("Project Settings…", systemImage: "gearshape")
       }

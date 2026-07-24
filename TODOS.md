@@ -245,6 +245,56 @@ run-command actions, `Core/TerminalSessions.swift` `addRunTab`).
 
 **Priority:** P3 (deferred from #7 — the feature is useful without it; surfaced by the eng-review).
 
+## Stopped run-tab silently closes instead of warning when its command is cleared (macapp) — #127 follow-up
+
+**What:** `runOrFocusRunCommand()`'s `.stopped` case routes through `restartRunCommand` →
+`respawnRunCommand`, which checks `hasRunCommand` and — if false — just closes the stopped-but-open
+run tab and returns. No settings sheet, no warning, nothing.
+
+**Why:** #127 gave the `.armed/.none` case (nothing has ever run) a "no command configured" warning
+sheet instead of a silent no-op. `.stopped` never got the same treatment, so the gap is now
+inconsistent: repro is run command configured → it stops (pane stays open) → user clears the command
+via Project Settings → next ⌘R on that target silently destroys the stopped pane instead of
+explaining why nothing (re)started. Found by the outside-voice adversarial review during #127 (Codex);
+this branch predates #127 and wasn't touched by it, so it's a pre-existing gap in the original #7
+feature, not a regression — but #127 makes the inconsistency more visible.
+
+**How to start:** Mirror the `.armed/.none` branch's `hasRunCommand` check + `pendingProjectSettings`
+routing inside `respawnRunCommand` (`AppStore.swift`, guard at line ~1465) before it unconditionally
+closes the tab. Needs care around issue #67's focus-preservation semantics (`wasFocused`) — that
+logic wasn't reviewed against this change.
+
+**Depends on:** #127 shipping first (`AppStore.swift`'s `PendingProjectSettings` +
+`pendingProjectSettings`).
+
+**Priority:** P3 (pre-existing, narrow repro — needs a run to have started and stopped, then the
+command cleared before the next ⌘R; surfaced by the #127 eng/outside-voice review, not reported by a
+user).
+
+## Pending sheets not cleared on project delete can leak stale run-config across path reuse (macapp) — #127 follow-up
+
+**What:** `removeProjectLocally()` clears selection, split membership, statuses, and workroom labels
+on project deletion, but does not clear `pendingProjectSettings` (or `pendingWorkroomLabel` — same
+gap, pre-existing). If a Project Settings sheet is open for a project that gets deleted (needs a
+second window, or a fast concurrent delete), clicking Save still calls
+`setRunConfig(forProject: project.path)` for the now-deleted path.
+
+**Why:** A later re-add of that exact same path would silently inherit the stale
+`Defaults[.runCommands]` entry — a persisted-config leak across project identity. `ProjectSettingsSheet`'s
+Save button itself is unchanged by #127 (it's original #7 design); #127 only changed *who* can trigger
+the sheet's opening, so this isn't a #127 regression, but the outside-voice review (Codex) surfaced it
+while auditing the new `pendingProjectSettings` state. Found during #127 eng/outside-voice review.
+
+**How to start:** Clear `pendingProjectSettings` (and `pendingWorkroomLabel`, while in there) inside
+`removeProjectLocally()` (`AppStore.swift`, ~line 2673) when the pending item's project matches the
+one being removed. Small, well-scoped cleanup — touches shared delete-path logic used by every
+project-removal flow, so it deserves its own focused pass rather than a tack-on to #127.
+
+**Depends on:** None.
+
+**Priority:** P3 (narrow multi-window/timing repro, no evidence it's been hit in practice; surfaced by
+the #127 eng/outside-voice review).
+
 ## Workroom split: deferred follow-ups (macapp) — #23
 
 **Shipped:** drag a workroom tab onto a pane edge → a nested, resizable side-by-side split of full

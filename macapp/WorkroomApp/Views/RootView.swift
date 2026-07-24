@@ -299,6 +299,12 @@ struct RootView: View {
           },
           onCancel: { store.pendingWorkroomLabel = nil })
       }
+      // Project Settings sheet (issue #7 origin; issue #127 adds the no-command-Run trigger). One
+      // store-level presenter for both entry points — see `PendingProjectSettings`'s doc comment.
+      .sheet(item: $store.pendingProjectSettings) { pending in
+        ProjectSettingsSheet(project: pending.project, showsRunWarning: pending.showsRunWarning)
+          .environmentObject(store)
+      }
   }
 
   /// The edge-reveal sidebars and the foreground toast overlay — the layers drawn over the split.

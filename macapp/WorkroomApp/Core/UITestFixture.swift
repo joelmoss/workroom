@@ -44,6 +44,15 @@ enum UITestFixture {
     return (cmd?.isEmpty == false) ? cmd : nil
   }
 
+  /// When set (`-WorkroomUITestNoRunCommand 1`), the fixture skips seeding ANY run command — the
+  /// default probe command is otherwise always seeded (`AppStore.loadFixture`), so tests exercising
+  /// the "no run command configured" state (issue #127) need this to opt out (found by review: the
+  /// no-command XCUITest would otherwise always see a command configured and never see the state it
+  /// means to test).
+  static var noRunCommand: Bool {
+    UserDefaults.standard.bool(forKey: "WorkroomUITestNoRunCommand")
+  }
+
   /// When set (`-WorkroomUITestTwoTabs 1`), the fixture seeds a SECOND workroom and the app opens a
   /// terminal for both on launch, so the workroom tab bar (issue #23) shows two chips — the scenario
   /// the drag-to-reorder / window-drag XCUITest (`WindowDragUITests`) needs. Default (unset) keeps the
