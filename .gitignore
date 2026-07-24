@@ -26,3 +26,4 @@ CLAUDE.local.md
 # Python (run-supervisor integration test)
 __pycache__/
 *.pyc
+.gstack/
