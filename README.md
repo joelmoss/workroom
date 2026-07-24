@@ -1109,5 +1109,3 @@ maintainer follows.
 ## License
 
 [MIT](MIT-LICENSE)
-</content>
-</invoke>
