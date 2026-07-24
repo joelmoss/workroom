@@ -1,5 +1,18 @@
 # TODOs
 
+> Status note (2026-07-24): **Done & removed:** serialize jj working-copy snapshots across the
+> status fan-out (VCS-foundation eng-review) — added `JJSnapshotGate` (a per-project-root
+> chain-of-tails actor, `macapp/WorkroomApp/Core/JJSnapshotGate.swift`), threaded through every call
+> site that reaches a jj-mutating snapshot: `WorkroomStatusResolver.resolveJJ` (covering the status
+> sweep, selection refresh, and file-watch lanes), `DiffResolver`'s `.jjWorkingCopy` diff, and
+> `FileTreeModel.list`'s `jj file list` (found ungated by adversarial review after the initial fix —
+> it has no `--ignore-working-copy` either). Fixed the stale "one probe at a time" comments that
+> only ever described one lane. Also closed a real "self-inflicted deadlock" risk both a Claude
+> adversarial pass and Codex independently flagged: a genuinely-hung (never-returning) native jj-lib
+> call would otherwise permanently wedge a project's whole queue — `JJSnapshotGate.maxChainWait`
+> (30s, injectable) bounds this: a new call gives up waiting on a stuck predecessor after the
+> ceiling and proceeds anyway, so the queue self-heals instead of blocking forever.
+>
 > Status note (2026-07-24): **Done & removed:** `add-project --pretend` for the non-create path is
 > now a real dry-run — gated the `Config.AddProject` write behind `!pretend`, mirroring the
 > `--create` dry-run envelope shape (`would_create: false`). Also **done & removed:** pending sheets
@@ -690,43 +703,41 @@ later increment"), so the git History panel shows no branch/tag chips. jj provid
 
 **Priority:** P2 (History UI parity; empty where jj is populated).
 
-## `withTimeout` doesn't bound a wedged synchronous backend read (macapp) — VCS-foundation eng-review
+## `withTimeout` doesn't observe the CALLER's own cancellation (macapp) — VCS-foundation eng-review, /review follow-up
 
-**What:** `Core/Timeout.swift` `withTimeout` delivers `VCSTimeoutError` to `group.next()` promptly, but
-`withThrowingTaskGroup` awaits all children at scope exit, and the operation child is suspended on
-`await Task.detached { … }.value` — a detached task isn't cancelled by the group and `.value` doesn't
-abandon on cancellation. So a truly wedged jj-lib/libgit2 call blocks `withTimeout` for the FULL
-backend duration, not `seconds`. The doc's "one wedged repo abandons only its row" contract is false.
+**Status:** the original version of this entry (a `withThrowingTaskGroup` awaiting a detached
+operation child past its own deadline) is **fixed** — `Core/Timeout.swift` now races via a single
+`withCheckedThrowingContinuation` + a `TimeoutGate`, exactly the fix this entry used to recommend.
+Re-audited during the jj-snapshot-serialization `/review` (2026-07-24, cross-model: Codex found it)
+and found a **different, still-live** gap in that same seam.
 
-**Why:** `WorkroomStatusResolver`/`BranchResolver` rely on this seam to stay responsive when a repo
-hangs. In practice these reads finish in ms so it rarely bites, but the guarantee is not real.
+**What:** `withTimeout`'s `withCheckedThrowingContinuation` only resolves on ITS OWN internal race
+(the operation finishing vs. its own `seconds` deadline firing) — it never wires up
+`withTaskCancellationHandler`, so it does not observe the CALLING task being cancelled from outside.
+Concretely: `AppStore+WorkroomStatus.swift`'s `statusSweepTask?.cancel()` (a new sweep replacing an
+old one) propagates into `runLocalSweep`'s `withTaskGroup` children structurally, but a cancelled
+child's in-flight `withTimeout(seconds:) { … }` call (inside `resolveJJ`/`resolveGit`) keeps running
+to completion (or its own `seconds` timeout) regardless — it doesn't stop early just because the
+enclosing task gave up.
 
-**How to start:** Resolve the deadline against the detached task WITHOUT structurally awaiting it — e.g.
-a `withCheckedThrowingContinuation` that the timeout can resolve first, leaving the detached task to
-finish and drop its result on the floor. Or fix the doc to state the true (weaker) behavior.
+**Why:** Wastes CPU/time re-running a probe nobody wants anymore, and — post the jj-snapshot-gate
+fix — adds unnecessary extra contention pressure on `JJSnapshotGate` (an unwanted, already-abandoned
+caller still occupies a project's queue slot for up to its full timeout). Not corruption-causing
+today: every call site already checks `Task.isCancelled` before merging a stale result
+(`runLocalSweep`'s `if Task.isCancelled { break }`, etc.), so state stays correct — this is a
+responsiveness/efficiency gap, not a data-integrity one.
 
-**Depends on:** —. Touches `Core/Timeout.swift`.
+**How to start:** Wrap `withTimeout`'s continuation in `withTaskCancellationHandler` so cancelling
+the calling task settles the `TimeoutGate` early (same shape `JJSnapshotGate.run` already uses to
+propagate cancellation into its own chained `Task`). Verify the existing "operation keeps running,
+result dropped" contract still holds — this only makes the WAIT responsive to cancellation, not the
+underlying synchronous native call (still uncancellable, unchanged).
 
-**Priority:** P2 (robustness; false safety claim, rare trigger).
+**Depends on:** —. Touches `Core/Timeout.swift`. Broad blast radius (every `withTimeout` caller:
+`WorkroomStatusResolver`, `BranchResolver`, `JJSnapshotGate`'s own internal use) — needs its own
+careful review/testing, not a drive-by fix.
 
-## Serialize jj working-copy snapshots across the status fan-out (macapp) — VCS-foundation eng-review
-
-**What:** `AppStore+WorkroomStatus.swift` fans out local status at concurrency 5 with no jj
-serialization, while `AppStore.swift:~420` comments claim "one jj probe at a time." Each
-`working_status` snapshots + can mutate `@`. Colocated workrooms of the same project share the backing
-`.git` (packed-refs) — observed live as a `packed-refs.lock could not be obtained` error while
-committing during this review.
-
-**Why:** Concurrent snapshot/export can contend on the working-copy lock (per workspace) and on the
-shared git packed-refs (across colocated workspaces of one project), causing transient status errors.
-
-**How to start:** Gate `working_status` calls through a per-project (or global-jj) serial queue /
-actor, or confirm the fan-out only ever hits distinct non-colocated workspaces. Reconcile the stale
-"one probe at a time" comment with reality.
-
-**Depends on:** VCS read foundation. Touches `Core/AppStore+WorkroomStatus.swift`, `Core/AppStore.swift`.
-
-**Priority:** P2 (transient real-world lock errors on colocated repos).
+**Priority:** P2 (efficiency/responsiveness, not correctness; no user-visible bug today).
 
 ## Git working line-counts recompute the whole-worktree diff per refresh (macapp) — VCS-foundation eng-review
 

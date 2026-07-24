@@ -125,6 +125,9 @@ struct RustJJProvider: VCSProviding {
   /// has no non-CLI git-format writer; same as `fileDiff`). `.workingCopy` diffs `@` and MUST snapshot
   /// (no `--ignore-working-copy`) so it reflects on-disk edits; `.parent` diffs `@-` with
   /// `--ignore-working-copy` so it reuses the snapshot and never contends on the working-copy lock.
+  /// The `.workingCopy` case is only ever reached through `DiffResolver.resolveWorking`'s
+  /// `JJSnapshotGate`-gated path — it's the diff-side counterpart of `WorkroomStatusResolver
+  /// .resolveJJ`'s gated snapshot, and shares the same per-project-root serialization.
   func workingFileDiff(root: URL, path: String, base: VCSWorkingDiffBase) async throws -> String {
     try await Self.run("jj", Self.workingDiffArgs(path: path, base: base), cwd: root)
   }

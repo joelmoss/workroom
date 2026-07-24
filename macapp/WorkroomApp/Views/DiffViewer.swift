@@ -16,6 +16,10 @@ struct DiffViewer: View {
   let descriptor: DiffDescriptor
   /// The workroom directory the VCS runs in (resolves the repo-relative path / picks the worktree).
   let directory: String
+  /// The owning project's root (`AppStore.projectRoot(forTarget:)`), or `nil` when `descriptor`
+  /// can't be a `.jjWorkingCopy` source (e.g. the changeset detail view, always `.commit`). Passed
+  /// straight through to `DiffResolver.resolve` to key `JJSnapshotGate` — see that type's doc.
+  let projectRoot: String?
   /// This file's per-tab layout override from the tab toolbar's toggle (issue #66); `nil` ⇒ follow
   /// the global `Defaults[.diffViewMode]` (which additionally falls back to unified in a narrow pane).
   /// Owned by the tab (`TerminalTab.diffViewModeOverride`) and passed in, so the toolbar sets it and
@@ -241,7 +245,7 @@ struct DiffViewer: View {
     let result =
       UITestFixture.isActive
       ? UITestFixture.diff(for: descriptor)
-      : await DiffResolver().resolve(descriptor, in: directory)
+      : await DiffResolver().resolve(descriptor, in: directory, projectRoot: projectRoot)
     switch result {
     case .diff(let diff): state = diff.hunks.isEmpty ? .empty : .loaded(diff)
     case .binary: state = .binary

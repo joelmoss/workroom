@@ -34,14 +34,25 @@ struct WorkroomStatusResolver: Sendable {
   let runner: StatusCommandRunning
   var timeout: TimeInterval  // local git/jj
   var ciTimeout: TimeInterval  // gh (network)
+  /// Serializes jj working-copy snapshots per project root (see `JJSnapshotGate`) — a project's
+  /// workrooms share a backing repo, so concurrent snapshots can contend on it.
+  var gate: JJSnapshotGate
+
+  /// How long `resolveJJ` waits its turn behind other same-project jj snapshots, before the row
+  /// reports `.timeout`. Deliberately larger than `timeout`: with the gate serializing a busy
+  /// project's workrooms, a healthy repo can sit queued behind several real (not contended)
+  /// snapshots — this budgets the *wait*, not any single native call (which stays un-timed inside
+  /// the gate; see `JJSnapshotGate`'s doc on why timing the operation itself would be unsafe).
+  static let jjGatedWaitTimeout: TimeInterval = 15
 
   init(
     runner: StatusCommandRunning = StatusCommandRunner(), timeout: TimeInterval = 3,
-    ciTimeout: TimeInterval = 10
+    ciTimeout: TimeInterval = 10, gate: JJSnapshotGate = .shared
   ) {
     self.runner = runner
     self.timeout = timeout
     self.ciTimeout = ciTimeout
+    self.gate = gate
   }
 
   /// `-c` overrides prepended to every `git` invocation. A workroom can be a clone of an *untrusted*
@@ -53,13 +64,16 @@ struct WorkroomStatusResolver: Sendable {
 
   // MARK: Stage 1 — local VCS status
 
-  func resolveLocal(path: String, vcs: String) async -> WorkroomStatus {
+  /// `projectRoot` is the colocated project root (`StatusWorkItem.projectRoot`) — required, not
+  /// defaulted, so every call site is forced to supply the key `resolveJJ`'s snapshot gate needs;
+  /// `resolveGit` ignores it (git reads are never gated).
+  func resolveLocal(path: String, vcs: String, projectRoot: String) async -> WorkroomStatus {
     guard FileManager.default.fileExists(atPath: path) else {
       return WorkroomStatus(dirty: nil, failure: .missingPath)
     }
     switch vcs {
     case "git": return await resolveGit(path)
-    case "jj": return await resolveJJ(path)
+    case "jj": return await resolveJJ(path, projectRoot: projectRoot)
     default: return WorkroomStatus(dirty: nil, failure: .notRepository)
     }
   }
@@ -86,18 +100,30 @@ struct WorkroomStatusResolver: Sendable {
     }
   }
 
-  private func resolveJJ(_ dir: String) async -> WorkroomStatus {
+  private func resolveJJ(_ dir: String, projectRoot: String) async -> WorkroomStatus {
     // Read the jj working-copy status structurally through the Rust core (jj-lib): it snapshots `@`
     // (so it reflects disk) and returns the `@`/`@-` change sets + CI branch — replacing the old
     // serial-snapshot-then-concurrent-CLI-reads dance. `VCSProviding` has no built-in timeout, so
-    // bound the (synchronous, off-main) read with `withTimeout` — a wedged repo abandons only itself.
+    // bound the (synchronous, off-main) read with `withTimeout` — for `resolveGit` a wedged repo
+    // abandons only its own caller. For THIS jj path that's no longer the full story: the read is
+    // additionally serialized per project root through `gate` (the ONE jj read that mutates — takes
+    // the working-copy lock, can commit a repo-level transaction — and a project's workrooms share
+    // that repo-level store, so concurrent snapshots across them can contend; see `JJSnapshotGate`'s
+    // doc). A genuinely wedged (never-returning) native call therefore doesn't just abandon its own
+    // caller — it can block later same-project calls too, bounded by `JJSnapshotGate.maxChainWait`
+    // (the gate self-heals past a hung predecessor instead of queuing behind it forever). `resolveGit`,
+    // `log`/`changeset`/`currentRef` (`BranchResolver`), and the `--ignore-working-copy` reads below
+    // are read-only and never gated, so they're unaffected.
     let root = URL(fileURLWithPath: dir, isDirectory: true)
     var status: WorkroomStatus
     do {
-      status = try await withTimeout(seconds: timeout) {
-        // `runBlocking` (GCD), NOT `Task.detached` — the blocking, snapshot-taking jj-lib read must
-        // stay off the fixed-width cooperative pool (see `resolveGit` / the `runBlocking` doc).
-        try await runBlocking { try RustJJProvider().workingStatus(root: root) }
+      status = try await withTimeout(seconds: Self.jjGatedWaitTimeout) {
+        try await self.gate.run(projectRoot: projectRoot) {
+          // `runBlocking` (GCD), NOT `Task.detached` — the blocking, snapshot-taking jj-lib read
+          // must stay off the fixed-width cooperative pool (see `resolveGit` / the `runBlocking`
+          // doc). Left un-timed inside the gate on purpose — see `JJSnapshotGate`'s doc.
+          try await runBlocking { try RustJJProvider().workingStatus(root: root) }
+        }
       }
     } catch is VCSTimeoutError {
       return WorkroomStatus(dirty: nil, failure: .timeout)

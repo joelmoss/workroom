@@ -344,6 +344,9 @@ struct ChangesetDetailView: View {
           path: file.path, change: Self.change(file.kind),
           source: .commit(descriptor.commitID), isPreview: false),
         directory: directory,
+        // Always `.commit(...)` here, never `.jjWorkingCopy` — this pane never snapshots, so no
+        // project root is needed to key `JJSnapshotGate`.
+        projectRoot: nil,
         showsFileHeader: true,
         headerModeBinding: $diffMode)
     } else {

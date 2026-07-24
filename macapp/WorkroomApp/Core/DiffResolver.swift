@@ -28,6 +28,9 @@ struct DiffResolver: Sendable {
   /// Cache for immutable **commit** diffs, shared across viewers. Working-copy diffs are never cached
   /// — their content is mutable, so a cache would serve stale hunks after an edit.
   let cache: DiffCache
+  /// Serializes jj working-copy snapshots per project root (see `JJSnapshotGate`) — only the
+  /// `.jjWorkingCopy` source (below) ever reaches a snapshotting call.
+  let gate: JJSnapshotGate
 
   /// Diffs whose git-format text exceeds this render as `.tooLarge` instead of being parsed — a
   /// multi-MB single-file diff is unreadable and slow to lay out. (GitHub Desktop gates whole diffs
@@ -36,25 +39,43 @@ struct DiffResolver: Sendable {
 
   init(
     makeProvider: @escaping @Sendable (URL) throws -> VCSProviding = { try VCS.provider(for: $0) },
-    cache: DiffCache = .shared
+    cache: DiffCache = .shared, gate: JJSnapshotGate = .shared
   ) {
     self.makeProvider = makeProvider
     self.cache = cache
+    self.gate = gate
   }
 
   /// Fetch and parse the diff for `descriptor`, reading the repo rooted at `dir` (the workroom
   /// directory, an absolute path). Every source is read structurally through the VCS backend
   /// (`VCSProviding`) — no diff shells out of this resolver — and the git-format text each returns
   /// feeds the one `UnifiedDiff` pipeline. Returns a `DiffResult` the viewer renders directly.
-  func resolve(_ descriptor: DiffDescriptor, in dir: String) async -> DiffResult {
+  ///
+  /// `projectRoot` is the owning project's root (`AppStore.projectRoot(forTarget:)`) — required so
+  /// a `.jjWorkingCopy` diff (the one source that snapshots `@`, like
+  /// `WorkroomStatusResolver.resolveJJ`) can serialize through `JJSnapshotGate` against the status
+  /// sweep and other lanes for the same project. `nil` is legitimate (and ignored) for every other
+  /// source — `.commit`/`.jjParent`/`.gitWorktree` never snapshot. `.jjWorkingCopy` always gates —
+  /// if the caller couldn't resolve a real project root (e.g. `AppStore.projectRoot(forTarget:)`
+  /// returned nil for a target that no longer matches a live project), it falls back to `dir`
+  /// itself rather than silently skipping the gate: a narrower (per-workroom, not per-project) key
+  /// still beats an ungated snapshot.
+  func resolve(_ descriptor: DiffDescriptor, in dir: String, projectRoot: String?) async
+    -> DiffResult
+  {
     let root = URL(fileURLWithPath: dir, isDirectory: true)
     switch descriptor.source {
     case .commit(let commitID):
       return await resolveCommit(commitID: commitID, path: descriptor.path, root: root)
-    case .jjWorkingCopy, .gitWorktree:
-      return await resolveWorking(path: descriptor.path, base: .workingCopy, root: root)
+    case .jjWorkingCopy:
+      return await resolveWorking(
+        path: descriptor.path, base: .workingCopy, root: root, projectRoot: projectRoot ?? dir)
+    case .gitWorktree:
+      return await resolveWorking(
+        path: descriptor.path, base: .workingCopy, root: root, projectRoot: nil)
     case .jjParent:
-      return await resolveWorking(path: descriptor.path, base: .parent, root: root)
+      return await resolveWorking(
+        path: descriptor.path, base: .parent, root: root, projectRoot: nil)
     }
   }
 
@@ -79,11 +100,23 @@ struct DiffResolver: Sendable {
 
   /// A working-copy diff (jj `@`/`@-`, git worktree) read structurally via
   /// `VCSProviding.workingFileDiff`. Never cached — the working copy is mutable, so a cache would
-  /// serve a stale diff after an on-disk edit.
-  private func resolveWorking(path: String, base: VCSWorkingDiffBase, root: URL) async -> DiffResult
-  {
+  /// serve a stale diff after an on-disk edit. `base == .workingCopy` for a jj repo is the one case
+  /// that snapshots `@` (no `--ignore-working-copy`, unlike `.parent`) — gated per project root
+  /// when `projectRoot` is supplied (always true for `.jjWorkingCopy`, always `nil` for
+  /// `.gitWorktree`/`.jjParent`; see `resolve`'s dispatch) so it can't race the status sweep's own
+  /// snapshot of the same project.
+  private func resolveWorking(
+    path: String, base: VCSWorkingDiffBase, root: URL, projectRoot: String?
+  ) async -> DiffResult {
     do {
-      let text = try await makeProvider(root).workingFileDiff(root: root, path: path, base: base)
+      let text: String
+      if base == .workingCopy, let projectRoot {
+        text = try await gate.run(projectRoot: projectRoot) {
+          try await self.makeProvider(root).workingFileDiff(root: root, path: path, base: base)
+        }
+      } else {
+        text = try await makeProvider(root).workingFileDiff(root: root, path: path, base: base)
+      }
       return Self.interpret(text)
     } catch let error as VCSError {
       return .failed(Self.message(for: error))

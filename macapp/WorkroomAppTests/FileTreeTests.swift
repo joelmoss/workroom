@@ -92,7 +92,7 @@ final class FileTreeTests: XCTestCase {
     let runner = StubRunner(byExecutable: [
       "git": CommandResult(stdout: "a.txt\u{0}b.txt\u{0}", stderr: "", exitCode: 0, timedOut: false)
     ])
-    let paths = await FileTreeModel.list(path: "/repo", runner: runner)
+    let paths = await FileTreeModel.list(path: "/repo", projectRoot: nil, runner: runner)
     XCTAssertEqual(paths, ["a.txt", "b.txt"])
   }
 
@@ -101,14 +101,30 @@ final class FileTreeTests: XCTestCase {
       "git": CommandResult(stdout: "", stderr: "not a repo", exitCode: 128, timedOut: false),
       "jj": CommandResult(stdout: "x.txt\ny.txt\n", stderr: "", exitCode: 0, timedOut: false),
     ])
-    let paths = await FileTreeModel.list(path: "/repo", runner: runner)
+    let paths = await FileTreeModel.list(path: "/repo", projectRoot: nil, runner: runner)
     XCTAssertEqual(paths, ["x.txt", "y.txt"])
   }
 
   func testListReturnsNilWhenNeitherVCSResponds() async {
     let runner = StubRunner(byExecutable: [:])  // every command → not-found
-    let paths = await FileTreeModel.list(path: "/repo", runner: runner)
+    let paths = await FileTreeModel.list(path: "/repo", projectRoot: nil, runner: runner)
     XCTAssertNil(paths)
+  }
+
+  /// `jj file list` has no `--ignore-working-copy` — it snapshots `@`, so same-project calls must
+  /// serialize through `JJSnapshotGate` (VCS-foundation eng-review follow-up: this call site was
+  /// found ungated by adversarial review after the initial fix).
+  func testListGatesJJBranchPerProjectRoot() async {
+    let recorder = ListConcurrencyRecorder()
+    let runner = DelayedJJRunner(recorder: recorder)
+    let gate = JJSnapshotGate()
+    async let first = FileTreeModel.list(
+      path: "/proj/main", projectRoot: "/proj", runner: runner, gate: gate)
+    async let second = FileTreeModel.list(
+      path: "/proj/ws", projectRoot: "/proj", runner: runner, gate: gate)
+    _ = await (first, second)
+    let maxConcurrent = await recorder.maxConcurrent
+    XCTAssertEqual(maxConcurrent, 1, "same-project jj file list calls must be gated")
   }
 
   // MARK: PlainFileViewer.classify (read gating)
@@ -234,5 +250,38 @@ private struct StubRunner: StatusCommandRunning {
   {
     byExecutable[executable]
       ?? CommandResult(stdout: "", stderr: "", exitCode: 127, timedOut: false)
+  }
+}
+
+/// Tracks peak concurrently-running sections, for `testListGatesJJBranchPerProjectRoot`.
+private actor ListConcurrencyRecorder {
+  private(set) var maxConcurrent = 0
+  private var running = 0
+
+  func enter() {
+    running += 1
+    maxConcurrent = max(maxConcurrent, running)
+  }
+
+  func exit() {
+    running -= 1
+  }
+}
+
+/// A `jj file list` stub that holds its slot briefly (to create a measurable overlap window if
+/// ungated) and fails any other command — isolates the test to the `.jj` branch of `list`.
+private struct DelayedJJRunner: StatusCommandRunning {
+  let recorder: ListConcurrencyRecorder
+
+  func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
+    async -> CommandResult
+  {
+    guard executable == "jj" else {
+      return CommandResult(stdout: "", stderr: "not a repo", exitCode: 128, timedOut: false)
+    }
+    await recorder.enter()
+    try? await Task.sleep(nanoseconds: 50_000_000)
+    await recorder.exit()
+    return CommandResult(stdout: "a.txt\n", stderr: "", exitCode: 0, timedOut: false)
   }
 }

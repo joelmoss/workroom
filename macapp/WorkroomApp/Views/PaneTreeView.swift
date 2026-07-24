@@ -463,6 +463,7 @@ private struct PaneLeafView: View {
       // always a live tab while it renders, so the `else` is just a safety fallback.
       let diff = DiffViewer(
         descriptor: descriptor, directory: target.path,
+        projectRoot: store.projectRoot(forTarget: target),
         viewModeOverride: sessions.tab(tabID, for: target)?.diffViewModeOverride
       )
       if let tab = sessions.tab(tabID, for: target) {

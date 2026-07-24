@@ -87,7 +87,7 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
 
   func testGitClean() async throws {
     let dir = try gitRepoWithUpstream()
-    let s = await resolver.resolveLocal(path: dir, vcs: "git")
+    let s = await resolver.resolveLocal(path: dir, vcs: "git", projectRoot: dir)
     XCTAssertEqual(s.dirty, false)
     XCTAssertEqual(s.branchForCI, "main")
     XCTAssertNil(s.failure)
@@ -96,7 +96,7 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
   func testGitModifiedAndUntracked() async throws {
     let dir = try gitRepoWithUpstream()
     sh("echo two >> a.txt && echo new > untr.txt", in: dir)
-    let s = await resolver.resolveLocal(path: dir, vcs: "git")
+    let s = await resolver.resolveLocal(path: dir, vcs: "git", projectRoot: dir)
     XCTAssertEqual(s.dirty, true)
     XCTAssertFalse(s.conflicted)
     let kinds = Set((s.changedFiles ?? []).map(\.change))
@@ -107,7 +107,7 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
   func testGitStagedAdd() async throws {
     let dir = try gitRepoWithUpstream()
     sh("echo s > staged.txt && git add staged.txt", in: dir)
-    let s = await resolver.resolveLocal(path: dir, vcs: "git")
+    let s = await resolver.resolveLocal(path: dir, vcs: "git", projectRoot: dir)
     XCTAssertEqual(s.dirty, true)
     XCTAssertTrue(
       (s.changedFiles ?? []).contains { $0.path == "staged.txt" && $0.change == .added })
@@ -116,14 +116,14 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
   func testGitCommittedIsClean() async throws {
     let dir = try gitRepoWithUpstream()
     sh("echo two >> a.txt && git commit -qam work", in: dir)  // commit locally, don't push
-    let s = await resolver.resolveLocal(path: dir, vcs: "git")
+    let s = await resolver.resolveLocal(path: dir, vcs: "git", projectRoot: dir)
     XCTAssertEqual(s.dirty, false)  // committed → working tree clean
   }
 
   func testGitRename() async throws {
     let dir = try gitRepoWithUpstream()
     sh("git mv a.txt renamed.txt", in: dir)
-    let s = await resolver.resolveLocal(path: dir, vcs: "git")
+    let s = await resolver.resolveLocal(path: dir, vcs: "git", projectRoot: dir)
     XCTAssertEqual(s.dirty, true)
     XCTAssertTrue(
       (s.changedFiles ?? []).contains { $0.path == "renamed.txt" && $0.change == .renamed })
@@ -132,7 +132,7 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
   func testGitDetachedHead() async throws {
     let dir = try gitRepoWithUpstream()
     sh("git checkout -q \"$(git rev-parse HEAD)\"", in: dir)
-    let s = await resolver.resolveLocal(path: dir, vcs: "git")
+    let s = await resolver.resolveLocal(path: dir, vcs: "git", projectRoot: dir)
     XCTAssertNil(s.branchForCI)  // (detached) → no branch for CI
   }
 
@@ -169,7 +169,7 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
       git checkout -q main && echo Y > conf.txt && git add . && git commit -qm mx
       git merge feat >/dev/null 2>&1 || true
       """, in: dir)
-    let s = await resolver.resolveLocal(path: dir, vcs: "git")
+    let s = await resolver.resolveLocal(path: dir, vcs: "git", projectRoot: dir)
     XCTAssertEqual(s.dirty, true)
     XCTAssertTrue(s.conflicted)
     XCTAssertTrue((s.changedFiles ?? []).contains { $0.change == .conflicted })
@@ -178,7 +178,7 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
   func testGitNotARepoIsUnknownNotClean() async throws {
     try requireTool("git")
     let dir = tempDir()  // a plain empty directory, not a git repo
-    let s = await resolver.resolveLocal(path: dir, vcs: "git")
+    let s = await resolver.resolveLocal(path: dir, vcs: "git", projectRoot: dir)
     XCTAssertNil(s.dirty)  // unknown, NOT clean
     XCTAssertEqual(s.failure, .notRepository)
   }
@@ -198,7 +198,7 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
 
   func testJJClean() async throws {
     let dir = try jjRepo()
-    let s = await resolver.resolveLocal(path: dir, vcs: "jj")
+    let s = await resolver.resolveLocal(path: dir, vcs: "jj", projectRoot: dir)
     XCTAssertEqual(s.dirty, false)
     XCTAssertFalse(s.conflicted)
     XCTAssertNil(s.failure)
@@ -207,7 +207,7 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
   func testJJDirtyWithFiles() async throws {
     let dir = try jjRepo()
     sh("echo hello > f1.txt && echo world > f2.txt", in: dir)
-    let s = await resolver.resolveLocal(path: dir, vcs: "jj")
+    let s = await resolver.resolveLocal(path: dir, vcs: "jj", projectRoot: dir)
     XCTAssertEqual(s.dirty, true)
     XCTAssertEqual((s.changedFiles ?? []).count, 2)
     XCTAssertTrue((s.changedFiles ?? []).allSatisfy { $0.change == .added })
@@ -217,7 +217,7 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
     let dir = try jjRepo()
     sh("echo a > f1.txt && echo b > f2.txt && jj commit -m base 2>/dev/null", in: dir)
     sh("echo changed > f1.txt && rm f2.txt", in: dir)
-    let s = await resolver.resolveLocal(path: dir, vcs: "jj")
+    let s = await resolver.resolveLocal(path: dir, vcs: "jj", projectRoot: dir)
     XCTAssertEqual(s.dirty, true)
     let kinds = Set((s.changedFiles ?? []).map(\.change))
     XCTAssertTrue(kinds.contains(.modified))
@@ -231,7 +231,7 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
     sh("echo a > f.txt", in: dir)
     sh("jj describe -m 'my change (#9)' 2>/dev/null", in: dir)
     sh("jj bookmark create mybook -r @ 2>/dev/null", in: dir)
-    let s = await resolver.resolveLocal(path: dir, vcs: "jj")
+    let s = await resolver.resolveLocal(path: dir, vcs: "jj", projectRoot: dir)
     let wc = s.jjWorkingCopy
     XCTAssertEqual(wc?.description, "my change (#9)")
     XCTAssertEqual(wc?.refs, ["mybook"])
@@ -253,9 +253,30 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
     sh("echo a > f.txt && jj describe -m base 2>/dev/null", in: dir)
     sh("jj bookmark create feature/login -r @ 2>/dev/null", in: dir)
     sh("jj new 2>/dev/null", in: dir)  // @ becomes a fresh empty change; the bookmark stays at @-
-    let s = await resolver.resolveLocal(path: dir, vcs: "jj")
+    let s = await resolver.resolveLocal(path: dir, vcs: "jj", projectRoot: dir)
     // git symbolic-ref would fail here (detached HEAD); the revset finds the nearest bookmark.
     XCTAssertEqual(s.branchForCI, "feature/login")
+  }
+
+  /// A primary `main` jj workspace + a secondary `ws` workspace (`jj workspace add`) sharing one
+  /// backing repo — the fixture shape for both `testJJWorkspaceResolvesAsJJ` and
+  /// `testConcurrentJJSnapshotsAcrossWorkspacesOfOneProjectDoNotRace`. Returns their paths;
+  /// `extraSetup` runs (in `main`) after `describe` but before `workspace add`, for a test that
+  /// needs e.g. a bookmark.
+  private func makeJJWorkspaceFixture(extraSetup: String = "") throws -> (main: String, ws: String)
+  {
+    try requireTool("jj")
+    let root = tempDir()
+    sh(
+      """
+      mkdir -p main && cd main
+      jj git init . 2>/dev/null || jj init --git . 2>/dev/null
+      jj config set --repo user.email a@b.c; jj config set --repo user.name t
+      echo hello > f.txt && jj describe -m base 2>/dev/null
+      \(extraSetup)
+      jj workspace add ../ws --name workroom/ws 2>/dev/null
+      """, in: root)
+    return (main: root + "/main", ws: root + "/ws")
   }
 
   /// The reported bug: a jj *workroom* is a `jj workspace add` workspace, not the main repo — and
@@ -265,25 +286,32 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
   /// fallback. Proves a real workspace path reports its dirty state, the jj head, and the ancestor
   /// bookmark — i.e. the Changes panel shows the jj line, not "not a repository" / "detached".
   func testJJWorkspaceResolvesAsJJ() async throws {
-    try requireTool("jj")
-    let root = tempDir()
-    sh(
-      """
-      mkdir -p main && cd main
-      jj git init . 2>/dev/null || jj init --git . 2>/dev/null
-      jj config set --repo user.email a@b.c; jj config set --repo user.name t
-      echo hello > f.txt && jj describe -m base 2>/dev/null
-      jj bookmark create feature/login -r @ 2>/dev/null
-      jj new 2>/dev/null
-      jj workspace add ../ws --name workroom/ws 2>/dev/null
-      """, in: root)
-    let ws = root + "/ws"
+    let (main, ws) = try makeJJWorkspaceFixture(
+      extraSetup: "jj bookmark create feature/login -r @ 2>/dev/null\njj new 2>/dev/null")
     sh("echo dirty >> f.txt", in: ws)
-    let s = await resolver.resolveLocal(path: ws, vcs: "jj")
+    // `projectRoot` is the primary workspace's path (the parent project), NOT `ws` itself — same
+    // convention as `StatusWorkItem.projectRoot` for a workroom.
+    let s = await resolver.resolveLocal(path: ws, vcs: "jj", projectRoot: main)
     XCTAssertNil(s.failure)  // NOT .notRepository
     XCTAssertEqual(s.dirty, true)
     XCTAssertEqual(s.branchForCI, "feature/login")  // ancestor bookmark via the jj revset
     XCTAssertNotNil(s.jjWorkingCopy?.changeID)  // jj head populated → Changes shows the jj line
+  }
 
+  /// Regression for the VCS-foundation eng-review: two of a project's jj workspaces (the primary
+  /// `main` and a secondary `ws`) share one backing repo, so concurrent `resolveLocal` snapshots
+  /// used to be free to race on it (observed live as a `packed-refs.lock could not be obtained`
+  /// error). With `JJSnapshotGate` serializing same-`projectRoot` snapshots, both concurrent probes
+  /// must still resolve cleanly instead of racing. Uses an isolated gate (not `.shared`) so this
+  /// test can't be affected by/affect any other test.
+  func testConcurrentJJSnapshotsAcrossWorkspacesOfOneProjectDoNotRace() async throws {
+    let (main, ws) = try makeJJWorkspaceFixture()
+    let gatedResolver = WorkroomStatusResolver(gate: JJSnapshotGate())
+    async let mainStatus = gatedResolver.resolveLocal(path: main, vcs: "jj", projectRoot: main)
+    async let wsStatus = gatedResolver.resolveLocal(path: ws, vcs: "jj", projectRoot: main)
+    let (m, w) = await (mainStatus, wsStatus)
+    XCTAssertNil(m.failure, "main workspace snapshot must not fail under concurrent contention")
+    XCTAssertNil(
+      w.failure, "secondary workspace snapshot must not fail under concurrent contention")
   }
 }

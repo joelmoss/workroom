@@ -36,12 +36,18 @@ final class FileTreeModel: ObservableObject {
   var rows: [FileTreeRow] { FileTreeBuilder.flatten(roots, expanded: expanded) }
 
   private var currentPath: String?
+  /// The owning project's root for `currentPath` (nil for a root target, where it equals
+  /// `currentPath` itself) — threaded into `list` to key `JJSnapshotGate` for the jj branch, the
+  /// same way `AppStore.projectRoot(forTarget:)` feeds `DiffResolver`.
+  private var currentProjectRoot: String?
   private let runner: StatusCommandRunning
+  private let gate: JJSnapshotGate
   private var watcher: WorkroomFileWatcher?
   private var loadTask: Task<Void, Never>?
 
-  init(runner: StatusCommandRunning = StatusCommandRunner()) {
+  init(runner: StatusCommandRunning = StatusCommandRunner(), gate: JJSnapshotGate = .shared) {
     self.runner = runner
+    self.gate = gate
   }
 
   deinit {
@@ -51,10 +57,13 @@ final class FileTreeModel: ObservableObject {
 
   /// Point the model at a target directory (a workroom/project root), or `nil` to clear. Starts
   /// watching it and lists it. No-op if already on this path (so re-renders don't re-list).
-  func activate(path: String?) {
+  /// `projectRoot` is the owning project's root (nil ⇒ falls back to `path` itself, e.g. for a root
+  /// target where they're the same) — see `currentProjectRoot`.
+  func activate(path: String?, projectRoot: String? = nil) {
     guard path != currentPath else { return }
     loadTask?.cancel()
     currentPath = path
+    currentProjectRoot = projectRoot
     expanded = []
     // A nil path (nothing selected / Files section hidden) or a missing directory (a vanished
     // workroom) clears the tree without spawning git/jj or a watcher.
@@ -78,10 +87,12 @@ final class FileTreeModel: ObservableObject {
   /// existing tree visible while the new listing runs.
   func reload() {
     guard let path = currentPath else { return }
+    let projectRoot = currentProjectRoot
     loadTask?.cancel()
     loadTask = Task { [weak self] in
       guard let self else { return }
-      let paths = await FileTreeModel.list(path: path, runner: self.runner)
+      let paths = await FileTreeModel.list(
+        path: path, projectRoot: projectRoot, runner: self.runner, gate: self.gate)
       guard !Task.isCancelled, self.currentPath == path else { return }
       if let paths {
         self.roots = FileTreeBuilder.build(from: paths)
@@ -116,12 +127,26 @@ final class FileTreeModel: ObservableObject {
 
   /// List the working tree at `path`: try git first (covers git worktrees and colocated jj repos),
   /// then jj (a non-colocated jj workspace has no `.git`). Returns the parsed repo-relative paths, or
-  /// `nil` when neither tool yields a listing (not a repo / tool missing). Static + injectable runner
-  /// so the git→jj fallthrough is testable.
-  static func list(path: String, runner: StatusCommandRunning) async -> [String]? {
+  /// `nil` when neither tool yields a listing (not a repo / tool missing). Static + injectable
+  /// runner so the git→jj fallthrough is testable. `jj file list` has no `--ignore-working-copy` —
+  /// like `WorkroomStatusResolver.resolveJJ`/`DiffResolver`'s `.jjWorkingCopy`, it snapshots `@`, so
+  /// it's serialized per project root through `JJSnapshotGate` (`git ls-files` is read-only and
+  /// never gated). `projectRoot` falls back to `path` itself when unavailable (never skip the gate
+  /// entirely — see `DiffResolver.resolve`'s identical fallback).
+  static func list(
+    path: String, projectRoot: String?, runner: StatusCommandRunning, gate: JJSnapshotGate = .shared
+  ) async -> [String]? {
     for vcs in [FileListVCS.git, .jj] {
       let command = FileListing.command(vcs)
-      let result = await runner.run(command.executable, command.args, in: path, timeout: 10)
+      let result: CommandResult
+      if vcs == .jj {
+        result =
+          (try? await gate.run(projectRoot: projectRoot ?? path) {
+            await runner.run(command.executable, command.args, in: path, timeout: 10)
+          }) ?? CommandResult(stdout: "", stderr: "", exitCode: 1, timedOut: false)
+      } else {
+        result = await runner.run(command.executable, command.args, in: path, timeout: 10)
+      }
       if result.ok { return FileListing.parse(result.stdout, vcs: vcs) }
     }
     return nil

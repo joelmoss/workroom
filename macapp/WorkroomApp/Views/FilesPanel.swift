@@ -43,7 +43,8 @@ struct FilesPanel: View {
     // `activate` no-ops when already on the path, so re-selecting the same target is instant.
     .task(id: activationKey) {
       guard store.activeInspectorSection == .files else { return }
-      model.activate(path: store.inspectorTarget?.path)
+      let target = store.inspectorTarget
+      model.activate(path: target?.path, projectRoot: target.flatMap(store.projectRoot(forTarget:)))
     }
   }
 

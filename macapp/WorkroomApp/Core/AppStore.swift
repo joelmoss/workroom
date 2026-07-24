@@ -437,8 +437,12 @@ final class AppStore: ObservableObject {
   lazy var workroomFileWatcher = WorkroomFileWatcher { [weak self] paths in
     self?.handleWorkroomFileChange(paths)
   }
-  /// The watcher's local-refresh task (cancel-and-replace so the latest change wins and at most one
-  /// jj probe runs at a time — concurrent jj snapshots would contend on the working-copy lock).
+  /// The watcher's local-refresh task — cancel-and-replace so the latest filesystem change wins and
+  /// at most one probe from THIS lane is in flight. That alone does NOT serialize jj snapshots
+  /// overall: the sweep and the selection-refresh lanes (`AppStore+WorkroomStatus.swift`) can still
+  /// reach `resolveLocal` concurrently with this one for the same project. Cross-lane (and
+  /// cross-window) jj snapshot ordering is `JJSnapshotGate`'s job, threaded through
+  /// `WorkroomStatusResolver.resolveLocal`'s `projectRoot` parameter.
   var watchRefreshTask: Task<Void, Never>?
   /// Live root branch/bookmark labels: one filesystem watcher per project, pointed at its VCS
   /// metadata dir (`.git` / `.jj`). A branch switch or bookmark move in the root terminal updates
@@ -1106,6 +1110,15 @@ final class AppStore: ObservableObject {
       p.rootTarget.id == target.id
         || p.workrooms.contains { $0.target(inProject: p.path).id == target.id }
     }
+  }
+
+  /// The owning project's root path for `target` — the same per-project key
+  /// `AppStore+WorkroomStatus.swift`'s `StatusWorkItem.projectRoot` uses, for callers outside that
+  /// extension that also reach a jj-snapshotting call (currently just the Changes panel's
+  /// working-copy diff, which needs it to key `JJSnapshotGate`). `nil` only if `target` no longer
+  /// matches a live project (e.g. deleted mid-render).
+  func projectRoot(forTarget target: TerminalTarget) -> String? {
+    project(forTarget: target)?.path
   }
 
   /// The current branch/bookmark label for a terminal target, for the detail-panel status bar (issue

@@ -144,6 +144,10 @@ final class WorkroomStatusTests: XCTestCase {
     let items = store.statusWorkItems()
     let workroomItem = items.first { $0.sid == .workroom(project: "/p", name: "feat") }
     XCTAssertEqual(workroomItem?.vcs, "jj")  // the project's type, NOT "workroom/feat"
+    // Must be the PROJECT's path ("/p"), not the workroom's own path ("/p/feat") — this is the
+    // JJSnapshotGate key, so a copy-paste regression here would silently defeat cross-workroom
+    // jj snapshot serialization.
+    XCTAssertEqual(workroomItem?.projectRoot, "/p")
     let rootItem = items.first { $0.sid == .root(project: "/p") }
     XCTAssertEqual(rootItem?.vcs, "jj")
   }

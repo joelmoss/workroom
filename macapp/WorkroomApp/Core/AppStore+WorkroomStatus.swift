@@ -5,7 +5,11 @@ import Foundation
 /// statuses refresh on load, on app focus (via reload), on selection (debounced), and never via
 /// a file watcher in Phase 1. The fan-out across all workrooms is bounded (so 50 workrooms
 /// don't fork 50 git + 50 gh processes at once); CI is a second, slower stage that never blocks
-/// the dirty dot, and is gated by a much longer TTL than the local git probe.
+/// the dirty dot, and is gated by a much longer TTL than the local git probe. Three separate lanes
+/// here (this sweep, `scheduleSelectedStatusRefresh`, `handleWorkroomFileChange`) — plus a fourth
+/// outside this file, the Changes panel's working-copy diff (`DiffResolver`) — can all reach a jj
+/// snapshot for the same project concurrently; `JJSnapshotGate` (via `WorkroomStatusResolver`)
+/// serializes same-project jj snapshots across ALL of them, not just within one lane.
 extension AppStore {
   fileprivate static let localStatusTTL: TimeInterval = 15  // git/jj dirty/changed-files
   fileprivate static let ciStatusTTL: TimeInterval = 300  // gh CI (network)
@@ -124,7 +128,8 @@ extension AppStore {
       try? await Task.sleep(nanoseconds: UInt64(Self.selectionDebounce * 1_000_000_000))
       if Task.isCancelled { return }
       guard let self else { return }
-      let fresh = await resolver.resolveLocal(path: item.path, vcs: item.vcs)
+      let fresh = await resolver.resolveLocal(
+        path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
       if Task.isCancelled { return }
       self.mergeLocalStatus(fresh, into: sid)
       // Skip the network CI/PR probes when `gh` isn't usable (the inspector shows a warning instead).
@@ -320,7 +325,12 @@ extension AppStore {
     }
   }
 
-  /// Bounded fan-out: at most `cap` local probes in flight; refill as each completes.
+  /// Bounded fan-out: at most `cap` local probes in flight; refill as each completes. `cap` bounds
+  /// cross-project parallelism and all git probes; it does NOT bound jj snapshots within one
+  /// project — those additionally serialize behind each other through `WorkroomStatusResolver`'s
+  /// `JJSnapshotGate` (keyed on `item.projectRoot`), since a project's workrooms share a backing
+  /// repo a concurrent snapshot can contend on. Workrooms of *different* projects still run fully
+  /// concurrently, up to `cap`.
   private func runLocalSweep(_ items: [StatusWorkItem], resolver: WorkroomStatusResolver, cap: Int)
     async
   {
@@ -331,7 +341,13 @@ extension AppStore {
       while idx < initial {
         let item = items[idx]
         idx += 1
-        group.addTask { (item.sid, await resolver.resolveLocal(path: item.path, vcs: item.vcs)) }
+        group.addTask {
+          (
+            item.sid,
+            await resolver.resolveLocal(
+              path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
+          )
+        }
       }
       while let (sid, fresh) = await group.next() {
         if Task.isCancelled { break }
@@ -339,7 +355,13 @@ extension AppStore {
         if idx < items.count {
           let item = items[idx]
           idx += 1
-          group.addTask { (item.sid, await resolver.resolveLocal(path: item.path, vcs: item.vcs)) }
+          group.addTask {
+            (
+              item.sid,
+              await resolver.resolveLocal(
+                path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
+            )
+          }
         }
       }
     }
@@ -516,7 +538,9 @@ extension AppStore {
   /// React to a filesystem change under the selected workroom: re-probe its *local* status only
   /// (dirty/ahead-behind/changed-files/jj head) and merge. CI/PR stay on their TTLs — a file save
   /// shouldn't fire a `gh` call. Cancel-and-replace so the latest change wins and at most one probe
-  /// runs at a time.
+  /// from THIS lane runs at a time — it does NOT by itself prevent this probe's jj snapshot from
+  /// overlapping the sweep's or the selection-refresh's for the same project; that cross-lane
+  /// ordering is `JJSnapshotGate`'s job (via `WorkroomStatusResolver.resolveLocal`).
   func handleWorkroomFileChange(_ paths: [String]) {
     guard !UITestFixture.isActive, let sid = selectedTargetID,
       let item = selectedStatusWorkItem(for: sid)
@@ -532,7 +556,8 @@ extension AppStore {
     let resolver = statusResolver
     watchRefreshTask?.cancel()
     watchRefreshTask = Task { [weak self] in
-      let fresh = await resolver.resolveLocal(path: item.path, vcs: item.vcs)
+      let fresh = await resolver.resolveLocal(
+        path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
       guard let self, !Task.isCancelled, self.selectedTargetID == sid else { return }
       self.mergeLocalStatus(fresh, into: sid)
     }

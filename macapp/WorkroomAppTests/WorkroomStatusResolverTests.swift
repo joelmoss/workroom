@@ -173,7 +173,8 @@ final class WorkroomStatusResolverTests: XCTestCase {
 
   func testResolveLocalMissingPath() async {
     let r = WorkroomStatusResolver(runner: MockStatusRunner { _, _ in ok("") })
-    let s = await r.resolveLocal(path: "/definitely/not/here-\(UUID().uuidString)", vcs: "git")
+    let missing = "/definitely/not/here-\(UUID().uuidString)"
+    let s = await r.resolveLocal(path: missing, vcs: "git", projectRoot: missing)
     XCTAssertNil(s.dirty)  // unknown, NOT clean
     XCTAssertEqual(s.failure, .missingPath)
   }
@@ -185,7 +186,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     // `existing` is a real directory but NOT a git repo, so the SwiftGitX read fails → notRepository.
     // The regression-critical property: a failed probe is UNKNOWN, never clean.
     let r = WorkroomStatusResolver()
-    let s = await r.resolveLocal(path: existing, vcs: "git")
+    let s = await r.resolveLocal(path: existing, vcs: "git", projectRoot: existing)
     XCTAssertNil(s.dirty)
     XCTAssertFalse(s.isClean)
     XCTAssertTrue(s.isUnknown)
@@ -200,7 +201,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
 
   func testResolveLocalUnknownVCS() async {
     let r = WorkroomStatusResolver(runner: MockStatusRunner { _, _ in ok("anything") })
-    let s = await r.resolveLocal(path: existing, vcs: "hg")
+    let s = await r.resolveLocal(path: existing, vcs: "hg", projectRoot: existing)
     XCTAssertNil(s.dirty)
     XCTAssertEqual(s.failure, .notRepository)
   }
@@ -662,7 +663,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     // throws → notRepository. The regression-critical property: a failed probe is UNKNOWN, never
     // clean.
     let r = WorkroomStatusResolver()
-    let s = await r.resolveLocal(path: existing, vcs: "jj")
+    let s = await r.resolveLocal(path: existing, vcs: "jj", projectRoot: existing)
     XCTAssertNil(s.dirty)  // unknown, NOT clean
     XCTAssertFalse(s.isClean)
     XCTAssertTrue(s.isUnknown)
