@@ -27,6 +27,10 @@ struct PlainFileViewer: View {
   @State private var content = ""
   /// True when the file was longer than `lineCap` and only the head is shown.
   @State private var truncated = false
+  /// Whether the Markdown preview has painted its first render. The `WKWebView` needs a moment to
+  /// spawn its content process and parse ~3.5 MB of bundled script before `__render` can run, and
+  /// until then it is an empty themed rectangle — so the preview shows a loader instead of blankness.
+  @State private var previewRendered = false
   /// The themed, (optionally) syntax-highlighted content the `NSTextView` renders. Plain immediately
   /// on load, upgraded when highlighting arrives / the theme changes.
   @State private var attributed = NSAttributedString()
@@ -88,6 +92,9 @@ struct PlainFileViewer: View {
       // Feed the find model this file's lines when focus arrives (or the file/content changes), so a
       // search runs against what's actually on screen.
       .onChange(of: isFocused) { _, focused in if focused { find.setSource(lines) } }
+      // Toggling Source/Preview swaps which branch of `fileBody` exists, so returning to Preview
+      // builds a fresh `WKWebView` that boots from scratch — the loader has to come back with it.
+      .onChange(of: showingPreview) { _, preview in if preview { previewRendered = false } }
   }
 
   /// Identity of the current highlight: file + theme generation + which load it's for. Any change
@@ -104,6 +111,7 @@ struct PlainFileViewer: View {
     attributed = NSAttributedString()
     content = ""
     truncated = false
+    previewRendered = false  // a new file means a new render to wait for
     let absolute = (directory as NSString).appendingPathComponent(descriptor.path)
     let root = directory
     let outcome = await Task.detached(priority: .utility) { () -> Outcome? in
@@ -219,7 +227,28 @@ struct PlainFileViewer: View {
       if showingPreview {
         // Rendered Markdown in a themed WKWebView — GFM tables, task lists, and mermaid diagrams,
         // all bundled/offline. Read-only, selectable, with externally-opening links.
-        MarkdownWebView(markdown: content, tokens: theme.tokens, generation: theme.generation)
+        MarkdownWebView(
+          markdown: content, tokens: theme.tokens, generation: theme.generation,
+          onFirstRender: {
+            // The UI-test seam pins the loading state on screen; the real loader is far too
+            // short-lived for XCUITest to catch reliably (see UITestFixture.holdPreviewLoader).
+            if !UITestFixture.holdPreviewLoader { previewRendered = true }
+          }
+        )
+        // Cover the web view's boot window (process spawn + ~3.5 MB of script) with the same loader
+        // the file read uses, so opening a Markdown file never shows an empty panel.
+        .overlay {
+          if !previewRendered {
+            centered {
+              ProgressView()
+                .controlSize(.small)
+                .accessibilityIdentifier("file.preview.loading")
+            }
+            .background(theme.tokens.bg)
+            .transition(.opacity)
+          }
+        }
+        .animation(.easeOut(duration: 0.12), value: previewRendered)
       } else {
         // Source: an NSTextView (CodeTextView) — read-only, fully selectable across lines, with a
         // line-number gutter and find-match highlighting.

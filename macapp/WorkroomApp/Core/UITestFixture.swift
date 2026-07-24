@@ -154,6 +154,36 @@ enum UITestFixture {
   /// The distinctive token the XCUITest looks for in the rendered file viewer.
   static let seededFileMarker = "UITEST_FILE_MARKER"
 
+  /// A seeded **Markdown** file, so `MarkdownPreviewUITests` can drive the rendered preview
+  /// (`MarkdownWebView`) rather than the `NSTextView` source path the `Gemfile` covers.
+  static let seededMarkdownFileName = "NOTES.md"
+  /// Deliberately mentions a raw `<title>` in prose *before* the tail marker. That is the exact shape
+  /// that used to make the preview render only the head of the file: the HTML parser adopted the rest
+  /// of the document as the tag's text and DOMPurify deleted it. So asserting the tail marker in the
+  /// rendered web view proves both that the preview rendered at all and that it rendered *completely*.
+  static let seededMarkdownContent = """
+    # UITEST_MARKDOWN_HEAD
+
+    A pane label ("Terminal <title>, pane N of M") mentioned in prose.
+
+    ## Later section
+
+    UITEST_MARKDOWN_TAIL
+    """
+  /// Tokens the XCUITest looks for: the first heading, and the tail that only survives the raw-HTML
+  /// escaping. Single contiguous tokens so no syntax/word splitting can break the match.
+  static let seededMarkdownHeadMarker = "UITEST_MARKDOWN_HEAD"
+  static let seededMarkdownTailMarker = "UITEST_MARKDOWN_TAIL"
+
+  /// When set (`-WorkroomUITestHoldPreviewLoader 1`), `PlainFileViewer` ignores the Markdown preview's
+  /// first-render signal, so the loading state stays on screen. The real loader lives for only a few
+  /// hundred milliseconds (WebContent process spawn + ~3.5 MB of bundled script), which is far too
+  /// racy for an XCUITest to catch — this pins it so the loading state can be asserted deterministically
+  /// instead of being left to manual QA.
+  static var holdPreviewLoader: Bool {
+    UserDefaults.standard.bool(forKey: "WorkroomUITestHoldPreviewLoader")
+  }
+
   /// The fake project list. Idempotent within a launch: the backing temp directories are created if
   /// missing so each target's terminal can start a shell. The project is reported as `git` so the
   /// sidebar's root row renders normally; no real VCS call is ever made (loading is short-circuited
@@ -188,6 +218,10 @@ enum UITestFixture {
     if !FileManager.default.fileExists(atPath: seededGemfile.path) {
       try? seededFileContent.write(to: seededGemfile, atomically: true, encoding: .utf8)
     }
+    // Rewritten every launch, not written-if-absent: this content is an assertion fixture, so a stale
+    // copy left in the temp dir by an older build must not silently outlive a change to it.
+    let seededMarkdown = workroomDir.appendingPathComponent(seededMarkdownFileName)
+    try? seededMarkdownContent.write(to: seededMarkdown, atomically: true, encoding: .utf8)
     return [Project(path: projectDir.path, vcs: "git", workrooms: workrooms)]
   }
 
@@ -297,6 +331,7 @@ enum UITestFixture {
   private static var changedFiles: [ChangedFile] {
     let base = [
       ChangedFile(path: "Gemfile", change: .modified),
+      ChangedFile(path: seededMarkdownFileName, change: .modified),  // drives the preview UI test
       ChangedFile(path: ".env.example", change: .added),
       ChangedFile(path: "app/models/user.rb", change: .modified),
       ChangedFile(path: "app/controllers/sessions_controller.rb", change: .added),

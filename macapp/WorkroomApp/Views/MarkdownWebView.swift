@@ -18,6 +18,13 @@ struct MarkdownWebView: NSViewRepresentable {
   let tokens: ThemeTokens
   /// The theme generation; a change recolours the page (CSS variables + mermaid theme) in place.
   let generation: Int
+  /// Called once, on the main actor, when the first Markdown render has actually *painted*.
+  ///
+  /// Booting the page is not instant — the bundled scripts are ~3.5 MB (mermaid alone is 3.4 MB and
+  /// ~104 ms of the ~117 ms script parse), on top of spawning a fresh WebContent process. Until
+  /// `didFinish` lands and `__render` runs, the web view is an empty themed rectangle, which read as
+  /// "the panel is blank for a short while". The owner uses this to cover that window with a loader.
+  var onFirstRender: () -> Void = {}
 
   /// The bundled template and the directory the web assets live in (read-access scope for the load).
   private static let assetDirectory = Bundle.main.url(
@@ -43,6 +50,7 @@ struct MarkdownWebView: NSViewRepresentable {
     context.coordinator.webView = webView
     context.coordinator.templateURL = Self.templateURL
     context.coordinator.assetDirectory = Self.assetDirectory
+    context.coordinator.onFirstRender = onFirstRender
 
     if let template = Self.templateURL, let dir = Self.assetDirectory {
       webView.loadFileURL(template, allowingReadAccessTo: dir)
@@ -55,6 +63,7 @@ struct MarkdownWebView: NSViewRepresentable {
   func updateNSView(_ webView: WKWebView, context: Context) {
     webView.underPageBackgroundColor = tokens.nsBg
     let coordinator = context.coordinator
+    coordinator.onFirstRender = onFirstRender  // the closure captures a fresh view each update
     // Re-render only when the source actually changed; recolour when the theme generation moves.
     if markdown != coordinator.appliedMarkdown {
       coordinator.render(markdown)
@@ -123,6 +132,14 @@ struct MarkdownWebView: NSViewRepresentable {
     /// What has actually been pushed to the page, so `updateNSView` doesn't re-render needlessly.
     var appliedMarkdown: String?
     var appliedGeneration = Int.min
+    /// Fired once, after the first render paints — see `MarkdownWebView.onFirstRender`.
+    var onFirstRender: () -> Void = {}
+    private var hasReportedFirstRender = false
+
+    /// How long the render round-trip waits for an animation frame before giving up on paint timing
+    /// and reporting anyway. Only reached when WebKit isn't animating the view (not displayed), so it
+    /// bounds the loader's lifetime rather than adding delay to the normal path.
+    static let paintFallbackMilliseconds = 250
 
     /// Web/mail schemes a rendered link may open in the user's browser. A workroom Markdown file is
     /// untrusted, so `file:`/`javascript:`/custom-scheme links must never navigate or reach an app.
@@ -154,12 +171,46 @@ struct MarkdownWebView: NSViewRepresentable {
         pendingMarkdown = markdown
         return
       }
-      guard let json = Self.jsonString(markdown) else { return }
+      // The source travels as a `callAsyncJavaScript` *argument*, not interpolated into the script —
+      // WebKit marshals it, so no JSON-in-string escaping of untrusted file content is involved.
+      //
       // Report failures instead of swallowing them: a silent `__render` throw is indistinguishable
       // from a file that renders blank/short, which is exactly how a truncating render bug hides.
-      webView.evaluateJavaScript("window.__render(\(json));") { _, error in
-        if let error { NSLog("MarkdownWebView: render failed — \(error.localizedDescription)") }
+      //
+      // The double `requestAnimationFrame` is what makes `onFirstRender` mean *painted* rather than
+      // *in the DOM*: the first callback runs before the frame that includes the new content, the
+      // second after it. Hiding the loader on DOM-insertion alone would uncover one blank frame.
+      //
+      // The `setTimeout` is not belt-and-braces, it is load-bearing. WebKit does not run animation
+      // frames for a web view that isn't being displayed — zero-sized, off-screen, in an occluded
+      // window, or in a pane the user has switched away from. Waiting on rAF alone would leave the
+      // loader spinning forever in exactly those cases (caught by MarkdownFirstRenderTests, where the
+      // web view has no window at all). Whichever fires first wins; `resolve` is idempotent.
+      webView.callAsyncJavaScript(
+        """
+        window.__render(source);
+        await new Promise((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(resolve));
+          setTimeout(resolve, \(Self.paintFallbackMilliseconds));
+        });
+        """,
+        arguments: ["source": markdown], in: nil, in: .page
+      ) { [weak self] result in
+        switch result {
+        case .failure(let error):
+          NSLog("MarkdownWebView: render failed — \(error.localizedDescription)")
+        case .success:
+          self?.reportFirstRender()
+        }
       }
+    }
+
+    /// Fire `onFirstRender` exactly once. Later renders (file edits, theme re-render) must not
+    /// re-trigger it — the loader belongs to the initial boot, not to every subsequent update.
+    private func reportFirstRender() {
+      guard !hasReportedFirstRender else { return }
+      hasReportedFirstRender = true
+      onFirstRender()
     }
 
     func applyTheme(_ vars: [String: String]) {
@@ -225,11 +276,6 @@ struct MarkdownWebView: NSViewRepresentable {
       let target = url.deletingFragment().standardizedFileURL.path
       let base = dir.standardizedFileURL.path
       return target == base || target.hasPrefix(base + "/")
-    }
-
-    private static func jsonString(_ value: String) -> String? {
-      guard let data = try? JSONEncoder().encode(value) else { return nil }
-      return String(data: data, encoding: .utf8)
     }
   }
 }
