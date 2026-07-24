@@ -81,7 +81,37 @@ function initMermaid(theme) {
     flowchart: { htmlLabels: false },
   });
 }
-initMermaid(mermaidTheme);
+
+// mermaid is loaded ON DEMAND, the first time a document actually contains a ```mermaid fence, rather
+// than by a <script> tag in template.html. It is 3.4 MB of the ~3.5 MB of bundled script and was
+// ~104 ms of the ~117 ms parse on every Markdown open (13 ms without it) — paid by every file, spent
+// by almost none. The injected <script> is the same sibling file: URL the template used, so the page's
+// `script-src 'self'` CSP covers it exactly as before.
+//
+// The promise is cached, so N diagrams in one document (and later re-renders) load it once. A failure
+// resolves to `false` rather than throwing: a diagram whose engine never arrived must leave its source
+// text on screen, exactly like a diagram that fails to parse — it must never blank the document.
+let mermaidLoad = null;
+function loadMermaid() {
+  if (mermaidLoad) return mermaidLoad;
+  mermaidLoad = new Promise((resolve) => {
+    const script = document.createElement("script");
+    script.src = "mermaid.min.js";
+    script.onload = () => {
+      initMermaid(mermaidTheme);
+      resolve(true);
+    };
+    script.onerror = () => resolve(false);
+    document.head.appendChild(script);
+  });
+  return mermaidLoad;
+}
+
+/// Whether mermaid has been loaded AND initialised — so a theme change knows whether there is an
+/// engine to re-theme, and can skip the work entirely for the common no-diagram document.
+function mermaidIsLoaded() {
+  return typeof mermaid !== "undefined";
+}
 
 function renderMarkdown(source) {
   lastSource = source;
@@ -118,8 +148,10 @@ function promoteMermaidBlocks(root) {
 // diagram labels are attacker-influenced and would otherwise never meet a sanitizer. Each block is
 // caught independently, so one bad diagram is left showing its source text and can't blank the doc.
 let mermaidSeq = 0;
-function renderMermaid(root) {
+async function renderMermaid(root) {
   const holders = root.querySelectorAll("pre.mermaid");
+  if (holders.length === 0) return;  // the common case: no diagrams, so mermaid is never fetched
+  if (!(await loadMermaid())) return;  // engine unavailable — leave every block's source text
   holders.forEach((holder) => {
     const source = holder.textContent;
     mermaid
@@ -154,7 +186,13 @@ window.__applyTheme = function (vars) {
   });
   if (vars.mermaidTheme && vars.mermaidTheme !== mermaidTheme) {
     mermaidTheme = vars.mermaidTheme;
-    initMermaid(mermaidTheme);
-    if (lastSource) renderMarkdown(lastSource); // re-render so diagrams pick up the new theme
+    // Only re-theme when the engine is actually here. For a document with no diagrams mermaid was
+    // never loaded, so there is nothing to re-initialise and nothing a re-render would change — and
+    // re-rendering anyway would drop the theme switch into the CSS-variable path for no reason. When
+    // it IS loaded, mermaid bakes colours into the SVG at render time, so the diagrams must be redrawn.
+    if (mermaidIsLoaded()) {
+      initMermaid(mermaidTheme);
+      if (lastSource) renderMarkdown(lastSource);
+    }
   }
 };

@@ -21,10 +21,16 @@
   </head>
   <body>
     <article id="content" class="markdown-body"></article>
-    <!-- Order matters: parser + sanitizer + diagram engine, then our glue that ties them together. -->
+    <!--
+      Order matters: parser + sanitizer, then our glue that ties them together.
+
+      mermaid.min.js is deliberately NOT here. It is 3.4 MB of the ~3.5 MB of bundled script and
+      accounted for ~104 ms of the ~117 ms parse on a warm cache (13 ms without it) — a cost every
+      Markdown file paid on open, while almost none contain a diagram. render.js injects it on demand,
+      the first time a document actually has a ```mermaid fence.
+    -->
     <script src="marked.min.js"></script>
     <script src="dompurify.min.js"></script>
-    <script src="mermaid.min.js"></script>
     <script src="render.js"></script>
   </body>
 </html>

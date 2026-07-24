@@ -235,6 +235,49 @@ final class MarkdownRenderPipelineTests: XCTestCase {
     XCTAssertTrue(hasCell, "a raw <table> must stay real markup")
   }
 
+  // MARK: - Lazy mermaid
+
+  /// mermaid is 3.4 MB of the ~3.5 MB of bundled script and was ~104 ms of the ~117 ms parse on every
+  /// Markdown open. It is now injected on demand, so a document with no diagram must never fetch it —
+  /// that absence IS the performance fix, and nothing else in the app would notice if it regressed.
+  func testMermaidIsNotLoadedForADocumentWithoutDiagrams() async throws {
+    _ = try await renderedText(
+      "# Heading\n\nJust prose, no diagrams.\n\n```swift\nlet x = 1\n```\n")
+    let type = try await webView.evaluateJavaScript("typeof window.mermaid")
+    XCTAssertEqual(
+      type as? String, "undefined",
+      "mermaid must not be loaded for a document with no ```mermaid fence")
+  }
+
+  /// The other half: a document that does contain a fence loads the engine and renders a real diagram.
+  /// Asserted via an `<svg>` in the DOM — the fence's source text stays put when mermaid never arrives,
+  /// so only the SVG proves the on-demand load actually completed.
+  func testMermaidLoadsOnDemandAndRendersDiagram() async throws {
+    _ = try await renderedText(
+      """
+      # Diagram
+
+      ```mermaid
+      graph TD
+        A[Start] --> B[End]
+      ```
+      """)
+
+    // The load + render is asynchronous by design (it must not block the first paint), so poll.
+    var renderedSVG = false
+    for _ in 0..<100 {
+      if try await renderedHas("svg") {
+        renderedSVG = true
+        break
+      }
+      try await Task.sleep(for: .milliseconds(100))
+    }
+    XCTAssertTrue(renderedSVG, "a ```mermaid fence should load mermaid and render an <svg>")
+
+    let type = try await webView.evaluateJavaScript("typeof window.mermaid")
+    XCTAssertEqual(type as? String, "object", "mermaid should be loaded once a diagram needs it")
+  }
+
   // MARK: - Whole-document sanity
 
   /// A long document with a mid-file `<title>` mention must render essentially all of its blocks —

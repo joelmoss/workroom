@@ -65,6 +65,10 @@ fi
   echo "**Do not edit these files by hand.** Refresh with \`macapp/Scripts/vendor-markdown.sh\`."
   echo "DOMPurify sanitizes untrusted Markdown before it hits the DOM, so keep it current."
   echo
+  echo "\`mermaid.min.js\` is the exception: it is NOT in \`template.html\`. At 3.4 MB it was ~104 ms of"
+  echo "the ~117 ms script parse on every Markdown open (8-10 ms without it), so \`render.js\` injects it"
+  echo "on demand, the first time a document actually contains a \\\`\\\`\\\`mermaid fence."
+  echo
   echo "| File | Package | Version | SHA-256 | Source |"
   echo "|------|---------|---------|---------|--------|"
 } >"$MANIFEST.tmp"
