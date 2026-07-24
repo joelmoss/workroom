@@ -155,7 +155,11 @@ struct MarkdownWebView: NSViewRepresentable {
         return
       }
       guard let json = Self.jsonString(markdown) else { return }
-      webView.evaluateJavaScript("window.__render(\(json));", completionHandler: nil)
+      // Report failures instead of swallowing them: a silent `__render` throw is indistinguishable
+      // from a file that renders blank/short, which is exactly how a truncating render bug hides.
+      webView.evaluateJavaScript("window.__render(\(json));") { _, error in
+        if let error { NSLog("MarkdownWebView: render failed — \(error.localizedDescription)") }
+      }
     }
 
     func applyTheme(_ vars: [String: String]) {

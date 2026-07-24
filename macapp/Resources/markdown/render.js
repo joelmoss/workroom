@@ -14,6 +14,45 @@ let mermaidTheme = "default";
 
 marked.setOptions({ gfm: true, breaks: false });
 
+// Markdown may embed raw HTML, and marked passes it through untouched. A handful of tags change how
+// the HTML parser tokenizes everything that FOLLOWS them: <title>/<textarea> hold *escapable raw
+// text*, <script>/<style>/<xmp>/<plaintext> hold *raw text*. An unclosed one therefore swallows the
+// whole rest of the document as its own content — which DOMPurify then deletes wholesale, since every
+// one of them is in its FORBID_CONTENTS set (tag *and* children removed). A bare prose mention like
+// `a label ("Terminal <title>, pane N of M")` is enough to make everything after that line vanish
+// from the preview while the source view still shows the complete file (TODOS.md rendered ~12% of
+// itself). An unbalanced `<!--` eats the remainder the same way.
+//
+// So a raw-HTML chunk carrying one of those tags is escaped to visible text instead of passed through
+// as markup. Everything else (GitHub-style <details>, <br>, <img>, <sub>, raw <table>…) still flows
+// to DOMPurify unchanged — it remains the security gate; this only stops the *parser* from eating the
+// document. Escaping is also strictly safer than passing through, so it never widens the attack
+// surface.
+const SWALLOWING_TAGS =
+  /<\/?(?:script|style|textarea|title|xmp|plaintext|noembed|noframes|noscript|iframe|template)[\s/>]/i;
+
+function escapeHtml(text) {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Whether a raw-HTML chunk can be handed to the parser as markup without it eating the rest of the
+// document. The trailing `[\s/>]` in SWALLOWING_TAGS keeps `<titlebar>` from matching `<title`.
+function isInertMarkup(raw) {
+  const opened = (raw.match(/<!--/g) || []).length;
+  const closed = (raw.match(/-->/g) || []).length;
+  if (opened !== closed) return false;
+  return !SWALLOWING_TAGS.test(raw.replace(/<!--[\s\S]*?-->/g, ""));
+}
+
+// Applies to inline *and* block raw-HTML tokens — marked routes both through renderer.html.
+marked.use({
+  renderer: {
+    html(token) {
+      return isInertMarkup(token.text) ? token.text : escapeHtml(token.text);
+    },
+  },
+});
+
 // mermaid's generated SVG never passes through the DOMPurify call in renderMarkdown (that pass only
 // ever saw the fenced block as inert text). Two gates cover mermaid output instead: `securityLevel:
 // 'strict'` sanitizes diagram text inside mermaid, and renderMermaid() runs the returned SVG through

@@ -215,26 +215,30 @@ struct PlainFileViewer: View {
   }
 
   @ViewBuilder private var fileBody: some View {
-    if showingPreview {
-      // Rendered Markdown in a themed WKWebView — GFM tables, task lists, and mermaid diagrams,
-      // all bundled/offline. Read-only, selectable, with externally-opening links.
-      MarkdownWebView(markdown: content, tokens: theme.tokens, generation: theme.generation)
-    } else {
-      // Source: an NSTextView (CodeTextView) — read-only, fully selectable across lines, with a
-      // line-number gutter and find-match highlighting.
-      CodeTextView(
-        attributed: attributed, version: version, tokens: theme.tokens, find: find,
-        isFocused: isFocused
-      )
-      .overlay(alignment: .bottomLeading) {
-        if truncated {
-          Text("File truncated — showing the first \(Self.lineCap) lines.")
-            .font(.footnote)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 8).padding(.vertical, 4)
-            .background(.regularMaterial, in: Capsule())
-            .padding(8)
-        }
+    Group {
+      if showingPreview {
+        // Rendered Markdown in a themed WKWebView — GFM tables, task lists, and mermaid diagrams,
+        // all bundled/offline. Read-only, selectable, with externally-opening links.
+        MarkdownWebView(markdown: content, tokens: theme.tokens, generation: theme.generation)
+      } else {
+        // Source: an NSTextView (CodeTextView) — read-only, fully selectable across lines, with a
+        // line-number gutter and find-match highlighting.
+        CodeTextView(
+          attributed: attributed, version: version, tokens: theme.tokens, find: find,
+          isFocused: isFocused
+        )
+      }
+    }
+    // The line cap applies to `content`, which feeds BOTH modes — so the notice belongs to both.
+    // Preview used to cut off at `lineCap` silently, with no cue that anything was missing.
+    .overlay(alignment: .bottomLeading) {
+      if truncated {
+        Text("File truncated — showing the first \(Self.lineCap) lines.")
+          .font(.footnote)
+          .foregroundStyle(.secondary)
+          .padding(.horizontal, 8).padding(.vertical, 4)
+          .background(.regularMaterial, in: Capsule())
+          .padding(8)
       }
     }
   }
