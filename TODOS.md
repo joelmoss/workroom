@@ -2,7 +2,9 @@
 
 > Status note (2026-07-24): **Done & removed:** `add-project --pretend` for the non-create path is
 > now a real dry-run — gated the `Config.AddProject` write behind `!pretend`, mirroring the
-> `--create` dry-run envelope shape (`would_create: false`).
+> `--create` dry-run envelope shape (`would_create: false`). Also **done & removed:** pending sheets
+> (`pendingProjectSettings`/`pendingWorkroomLabel`) now clear in `removeProjectLocally()` when they
+> target the deleted project — closes the #127-follow-up stale-config-leak gap.
 >
 > Status note (2026-06-24): re-audited against the codebase. **Done & removed:** workroom tab-chip
 > management actions (#23 follow-up — context menu + "+" button shipped in `8eee2b0`), harden-`gh`-auth
@@ -274,30 +276,6 @@ logic wasn't reviewed against this change.
 **Priority:** P3 (pre-existing, narrow repro — needs a run to have started and stopped, then the
 command cleared before the next ⌘R; surfaced by the #127 eng/outside-voice review, not reported by a
 user).
-
-## Pending sheets not cleared on project delete can leak stale run-config across path reuse (macapp) — #127 follow-up
-
-**What:** `removeProjectLocally()` clears selection, split membership, statuses, and workroom labels
-on project deletion, but does not clear `pendingProjectSettings` (or `pendingWorkroomLabel` — same
-gap, pre-existing). If a Project Settings sheet is open for a project that gets deleted (needs a
-second window, or a fast concurrent delete), clicking Save still calls
-`setRunConfig(forProject: project.path)` for the now-deleted path.
-
-**Why:** A later re-add of that exact same path would silently inherit the stale
-`Defaults[.runCommands]` entry — a persisted-config leak across project identity. `ProjectSettingsSheet`'s
-Save button itself is unchanged by #127 (it's original #7 design); #127 only changed *who* can trigger
-the sheet's opening, so this isn't a #127 regression, but the outside-voice review (Codex) surfaced it
-while auditing the new `pendingProjectSettings` state. Found during #127 eng/outside-voice review.
-
-**How to start:** Clear `pendingProjectSettings` (and `pendingWorkroomLabel`, while in there) inside
-`removeProjectLocally()` (`AppStore.swift`, ~line 2673) when the pending item's project matches the
-one being removed. Small, well-scoped cleanup — touches shared delete-path logic used by every
-project-removal flow, so it deserves its own focused pass rather than a tack-on to #127.
-
-**Depends on:** None.
-
-**Priority:** P3 (narrow multi-window/timing repro, no evidence it's been hit in practice; surfaced by
-the #127 eng/outside-voice review).
 
 ## Workroom split: deferred follow-ups (macapp) — #23
 

@@ -83,6 +83,102 @@ final class AppStoreDeleteProjectTests: XCTestCase {
       store.workroomStatuses[.workroom(project: "/a", name: "feat")], "workroom status must drop")
   }
 
+  /// #127 follow-up: a pending Project Settings sheet targeting the deleted project must clear, or
+  /// its Save path would still write config for the now-gone path (a re-add of that same path would
+  /// silently inherit the stale config).
+  func testRemoveProjectLocallyClearsPendingProjectSettingsForTheDeletedProject() {
+    let p = project("/a", workrooms: [])
+    let store = makeStore([p])
+    store.pendingProjectSettings = PendingProjectSettings(project: p)
+
+    store.removeProjectLocally(p)
+
+    XCTAssertNil(store.pendingProjectSettings, "pending sheet for the deleted project must clear")
+  }
+
+  /// A pending sheet for a DIFFERENT project must survive an unrelated project's deletion.
+  func testRemoveProjectLocallyPreservesPendingProjectSettingsForAnotherProject() {
+    let p = project("/a", workrooms: [])
+    let other = project("/b", workrooms: [])
+    let store = makeStore([p, other])
+    store.pendingProjectSettings = PendingProjectSettings(project: other)
+
+    store.removeProjectLocally(p)
+
+    XCTAssertEqual(
+      store.pendingProjectSettings?.project.path, "/b",
+      "pending sheet for an unrelated project must not be cleared")
+  }
+
+  /// Same gap, same fix, for the workroom-label sheet (issue #41's pending state).
+  func testRemoveProjectLocallyClearsPendingWorkroomLabelForTheDeletedProject() {
+    let p = project("/a", workrooms: ["feat"])
+    let store = makeStore([p])
+    store.pendingWorkroomLabel = PendingWorkroomLabel(workroom: p.workrooms[0], project: p)
+
+    store.removeProjectLocally(p)
+
+    XCTAssertNil(
+      store.pendingWorkroomLabel, "pending label sheet for the deleted project must clear")
+  }
+
+  // MARK: - Cross-window deletion (adversarial review: removeProjectLocally only covers the
+  // deleting window's own store — another window's reload goes through `apply(_:)` instead)
+
+  /// A pending Project Settings sheet must also clear when the project disappears from a RELOAD
+  /// (e.g. another window deleted it) — not just from this window's own `removeProjectLocally`.
+  /// Otherwise Save would still write `Defaults[.runCommands]` for the now-gone path.
+  func testReloadClearsPendingProjectSettingsForAProjectDeletedElsewhere() async {
+    let p = project("/a", workrooms: [])
+    let fake = FakeWorkroomCLI(canonical: "/a", projects: [p])
+    let store = AppStore(cli: fake)
+    store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
+    await store.reload()
+    store.pendingProjectSettings = PendingProjectSettings(project: p)
+
+    // Simulate another window deleting "/a": the next `list` snapshot no longer contains it.
+    fake.projectsToList = []
+    await store.reload()
+
+    XCTAssertNil(
+      store.pendingProjectSettings,
+      "pending sheet must clear once its project is gone from a reload, not just a local delete")
+  }
+
+  /// A pending workroom-label sheet must likewise clear when its workroom disappears from a reload.
+  func testReloadClearsPendingWorkroomLabelForAWorkroomDeletedElsewhere() async {
+    let p = project("/a", workrooms: ["feat"])
+    let fake = FakeWorkroomCLI(canonical: "/a", projects: [p])
+    let store = AppStore(cli: fake)
+    store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
+    await store.reload()
+    store.pendingWorkroomLabel = PendingWorkroomLabel(workroom: p.workrooms[0], project: p)
+
+    // Simulate another window deleting the "feat" workroom.
+    fake.projectsToList = [project("/a", workrooms: [])]
+    await store.reload()
+
+    XCTAssertNil(
+      store.pendingWorkroomLabel,
+      "pending label sheet must clear once its workroom is gone from a reload")
+  }
+
+  /// A pending sheet for a project that's still live must survive an unrelated reload.
+  func testReloadPreservesPendingProjectSettingsWhenProjectStillLive() async {
+    let p = project("/a", workrooms: [])
+    let fake = FakeWorkroomCLI(canonical: "/a", projects: [p])
+    let store = AppStore(cli: fake)
+    store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
+    await store.reload()
+    store.pendingProjectSettings = PendingProjectSettings(project: p)
+
+    await store.reload()  // same project still in the list
+
+    XCTAssertEqual(
+      store.pendingProjectSettings?.project.path, "/a",
+      "pending sheet must survive a reload where its project is still live")
+  }
+
   // MARK: SidebarID.belongsToProject
 
   func testSidebarIDBelongsToProject() {

@@ -2034,6 +2034,21 @@ final class AppStore: ObservableObject {
     // Forget VCS/CI status for sidebar ids that went away (mirrors rootRefs pruning, issue #24).
     let liveSidebarIDs = Self.liveSidebarIDs(in: fresh)
     workroomStatuses = workroomStatuses.filter { liveSidebarIDs.contains($0.key) }
+    // Drop a pending sheet whose project was deleted from ANOTHER window (issue #127 follow-up,
+    // adversarial review): `removeProjectLocally` only clears these for the deleting window's own
+    // store, but every window's periodic/on-focus reload comes through here. Without this, a second
+    // window's still-open sheet keeps referencing the now-gone project, and Save would silently
+    // write `Defaults[.runCommands]` for a deleted path — the same stale-config leak this diff
+    // otherwise closes, just via a path this fix didn't originally cover.
+    if let pending = pendingProjectSettings, !liveIDs.contains(pending.project.id) {
+      pendingProjectSettings = nil
+    }
+    if let pendingLabel = pendingWorkroomLabel,
+      !liveSidebarIDs.contains(
+        .workroom(project: pendingLabel.project.path, name: pendingLabel.workroom.name))
+    {
+      pendingWorkroomLabel = nil
+    }
     // Keep the live root-branch watchers in sync with the project set (start new, drop departed).
     updateRootBranchWatches()
   }
@@ -2698,6 +2713,11 @@ final class AppStore: ObservableObject {
     // backstop, but clearing here keeps it immediate and prevents a same-named recreate from
     // inheriting a stale label.
     forgetLabels(forProject: project.path, workroomNames: project.workrooms.map(\.name))
+    // Drop any pending sheet targeting this project — otherwise its Save path (e.g.
+    // setRunConfig(forProject:)) still fires for the now-deleted path, and a later re-add of the
+    // same path would silently inherit the stale config (#127 follow-up).
+    if pendingProjectSettings?.project.path == project.path { pendingProjectSettings = nil }
+    if pendingWorkroomLabel?.project.path == project.path { pendingWorkroomLabel = nil }
     return targetIDs
   }
 

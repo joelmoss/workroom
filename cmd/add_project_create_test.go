@@ -415,3 +415,28 @@ func TestAddProjectExisting_PretendDryRun(t *testing.T) {
 		t.Fatalf("unexpected dry-run envelope: %v", env)
 	}
 }
+
+// TestAddProjectExisting_PretendNonRepoStillErrors proves detection still runs
+// under --pretend: a non-repo path errors with ErrUnsupportedVCS, it is never
+// registered, and no dry-run envelope is written for it.
+func TestAddProjectExisting_PretendNonRepoStillErrors(t *testing.T) {
+	old := pretend
+	pretend = true
+	defer func() { pretend = old }()
+
+	svc, cfg := newCreateSvc(t)
+	nonRepo := t.TempDir() // exists, not a repo
+
+	var out bytes.Buffer
+	err := runAddProjectExisting(svc, nonRepo, &out)
+	if !errors.Is(err, errs.ErrUnsupportedVCS) {
+		t.Fatalf("non-repo dir under --pretend should be UnsupportedVCS, got %v", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("no envelope should be written on error, got %q", out.String())
+	}
+	data, _ := cfg.Read()
+	if _, ok := data[nonRepo]; ok {
+		t.Fatal("pretend must not register the project")
+	}
+}

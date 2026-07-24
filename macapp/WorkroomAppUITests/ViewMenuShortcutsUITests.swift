@@ -156,6 +156,55 @@ final class ViewMenuShortcutsUITests: XCTestCase {
     app.typeKey("s", modifierFlags: [.command, .option])
     XCTAssertTrue(waitExists(row, true), "⌥⌘S should show the real Projects sidebar again")
   }
+
+  // MARK: - Bug 3: ⌥⌘B (secondary Projects sidebar toggle) reaches the app with a TUI focused too
+
+  func testSecondaryProjectsShortcutTogglesSidebarWithTerminalFocused() {
+    let app = launchedApp()
+    focusATerminal(app)
+
+    let row = element(app, id: "sidebar.project.\(uiTestFixtureProjectName)")
+    let before = row.exists
+    app.typeKey("b", modifierFlags: [.command, .option])
+    XCTAssertTrue(
+      waitExists(row, !before),
+      "⌥⌘B should toggle the real Projects sidebar even with a terminal focused")
+  }
+
+  func testSecondaryProjectsShortcutTogglesSidebarWithoutTerminalFocused() {
+    let app = launchedApp()
+
+    let row = element(app, id: "sidebar.project.\(uiTestFixtureProjectName)")
+    XCTAssertTrue(row.waitForExistence(timeout: 10), "the fixture project row should render")
+    app.typeKey("b", modifierFlags: [.command, .option])
+    XCTAssertTrue(waitExists(row, false), "⌥⌘B should hide the real Projects sidebar")
+    app.typeKey("b", modifierFlags: [.command, .option])
+    XCTAssertTrue(waitExists(row, true), "⌥⌘B should show the real Projects sidebar again")
+  }
+
+  // MARK: - Bug 4: ⌘B toggles the Inspector as a whole, independent of which section is active
+
+  func testInspectorShortcutTogglesWholeInspectorWithTerminalFocused() {
+    let app = launchedApp()
+    focusATerminal(app)
+
+    // Establish a known section (Changes) and ensure the inspector is open, so ⌘B's effect on the
+    // header is unambiguous regardless of persisted `Defaults` state from a prior run.
+    let header = element(app, id: "inspector.header.Changes")
+    app.typeKey("c", modifierFlags: [.command, .option])
+    XCTAssertTrue(header.waitForExistence(timeout: 6), "Changes section should be open")
+
+    focusATerminal(app)
+    app.typeKey("b", modifierFlags: [.command])
+    XCTAssertTrue(
+      waitExists(header, false), "⌘B should hide the whole inspector, terminal focused")
+
+    focusATerminal(app)
+    app.typeKey("b", modifierFlags: [.command])
+    XCTAssertTrue(
+      waitExists(header, true),
+      "⌘B should restore the inspector back on the Changes section, terminal focused")
+  }
 }
 
 /// Mirrors `UITestFixture.projectName` — kept as a plain literal here so this file doesn't need
