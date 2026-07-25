@@ -158,7 +158,11 @@ with assistive tech.
 
 **Done so far:** the **UI-tree** a11y has landed (commit `f3859f9`) — `PaneTreeView` exposes each
 leaf as `terminal.pane` with a label ("Terminal <title>, pane N of M"), a focused/selected trait, and
-an adjustable split divider (`pane.grip`). What's still missing is the *content* layer: the
+an adjustable split divider (`pane.grip`). **Caveat, added 2026-07-25:** "UI-tree a11y has landed" is
+not fully true for the surrounding chrome — the tab strips' glyph buttons report `isHittable == false`
+to the AX layer while being clickable. See "Chrome buttons report `isHittable == false` to the a11y
+layer" at the end of this file; that's a separate, possibly pre-existing defect, and it doesn't change
+this entry's content-layer scope. What's still missing is the *content* layer: the
 libghostty surface is Metal-rendered, so its text is pixels — invisible to the accessibility system.
 Today the surface view sets `role=.textArea` + a label only; it exposes **no value and no selection**,
 so VoiceOver reads nothing inside the terminal. Accepted regression for the beta (CMT-3). This is also
@@ -1088,3 +1092,43 @@ re-check the tab-bar overflow UI test after.
 
 **Priority:** P3 (generated workroom names are short adjective-noun pairs; this bites on renamed or long
 project-derived names).
+
+## Chrome buttons report `isHittable == false` to the a11y layer (macapp) — partially contradicts CMT-3
+
+**What:** Establish why the tab strips' glyph buttons — `NewTerminal`, `NewWorkroom`, `OpenWorkroom` —
+report `isHittable == false` to the accessibility layer while being demonstrably clickable, and fix the
+frame/traits if the AX geometry is genuinely wrong.
+
+**Why this matters beyond tests:** these are primary actions (new tab, new workroom, open workroom). If
+their accessibility frame is degenerate or mis-placed, VoiceOver users are affected, not just XCUITest.
+And the suite has been quietly routing around it for a while: `WorkroomAppUITests/SplitPaneUITests.swift:115`
+and `:146` use `isHittable` only as a *filter with a fallback* (`?? closeItems.firstMatch`) rather than
+asserting on it — a workaround that hid the signal instead of surfacing it.
+
+**Relationship to CMT-3 (read both together):** CMT-3 ("Terminal *content* accessibility") states that
+the **UI-tree** a11y "has landed" and scopes itself to the terminal's rendered text. This finding is a
+counter-example to that claim in the surrounding **chrome**: a control that the AX layer considers
+un-hittable is a UI-tree problem, not a content one. Neither entry supersedes the other — CMT-3's
+content work stands, but its "UI-tree is done" premise needs re-testing.
+
+**What was verified, and what wasn't (2026-07-25, during #129):** confirmed the *pinned* "+" reports
+not-hittable while `.click()` on the same element works and has its effect — chip count rises
+(`TabStripOverflowUITests.testPinnedAddButtonStillAddsATab`). Same for both pinned workroom controls.
+**Not** established: whether it also happens when those controls are *inline*, so it's still unknown
+whether this is pre-existing for every hover-well glyph button or specific to sitting inside a
+`safeAreaInset` beside a masked sibling. That distinction is step one and it's cheap.
+
+**How to start:**
+- Assert `isHittable` on the inline "+" (the fits case, one tab) to split those two hypotheses.
+- Compare AX frame vs visual frame in Accessibility Inspector, with VoiceOver on.
+- Suspects in order: the `.contentShape(Rectangle())` on the padded glyph label (shared by
+  `addTerminalButton`, `addWorkroomButton`, `openWorkroomButton`, `TabToolbarButton`); the
+  `.contentShape(.interaction, Rectangle())` over the masked scroller added in #129; `safeAreaInset`
+  placement of the pinned controls.
+- If it turns out to be an XCUITest artefact rather than a real AX defect, say so in this entry and
+  delete the `?? firstMatch` workarounds' rationale so the next person doesn't re-derive it.
+
+**Depends on:** nothing. Independent of #129 (which only made it observable).
+
+**Priority:** P3 if it proves to be an XCUITest artefact; **P2 if VoiceOver sees the same thing** —
+decide after step one.
