@@ -54,10 +54,10 @@ final class TabStripOverflowUITests: XCTestCase {
   /// Issue #129, symptom 2: the "+" must never scroll out of view. With the strip overflowing it is
   /// pinned, so it stays on screen inside the window.
   ///
-  /// Asserts geometry, not `isHittable`: XCUITest reports `isHittable == false` for this button even
-  /// when clicking it demonstrably works (`testPinnedAddButtonStillAddsATab` drives the same element
-  /// successfully), so that property is a false negative here and clickability is covered by the click
-  /// test instead.
+  /// Asserts geometry only — deliberately, to keep the failure specific. Hittability of this same
+  /// button is asserted by `testChromeGlyphButtonsAreHittableWhenPinned` and its clickability by
+  /// `testPinnedAddButtonStillAddsATab`. (An earlier version of this comment claimed `isHittable` was a
+  /// false negative for this button; it isn't — see the accessibility section below.)
   func testAddTabButtonStaysVisibleWhenTabsOverflow() {
     let app = launchedApp(terminalTabs: overflowTabs)
     assertCount(terminalChips(app), reaches: overflowTabs)
@@ -121,15 +121,60 @@ final class TabStripOverflowUITests: XCTestCase {
       "with one tab the + must NOT be pinned beside the toolbar")
   }
 
+  // MARK: Accessibility geometry of the chrome glyph buttons
+
+  /// The counter-evidence guard for the "chrome buttons report `isHittable == false`" finding raised
+  /// during #129. That was an environmental XCUITest artefact, **not** an accessibility defect: probing
+  /// inline and pinned, solo and batched, waited and unwaited, every one of these controls resolves to
+  /// exactly ONE element of type `.button`, enabled, with a real on-screen frame, and hittable. So the
+  /// property is safe to assert, and asserting it here is what keeps it that way — a genuinely
+  /// degenerate or mis-placed accessibility frame (which VoiceOver would see too, these being the
+  /// primary new-tab / new-workroom / open-workroom actions) fails this test.
+  ///
+  /// Kept as one focused test rather than sprinkled through the geometry tests above, so a
+  /// hittability failure points at the accessibility layer and not at whatever else that test asserts.
+  private func assertHittableButton(_ app: XCUIApplication, _ id: String, _ state: String) {
+    let matches = app.descendants(matching: .any).matching(identifier: id)
+    XCTAssertTrue(matches.firstMatch.waitForExistence(timeout: 10), "\(state)/\(id) never appeared")
+    XCTAssertEqual(matches.count, 1, "\(state)/\(id) should resolve to exactly one AX element")
+    let element = matches.firstMatch
+    XCTAssertEqual(element.elementType, .button, "\(state)/\(id) should expose the button role")
+    XCTAssertFalse(element.frame.isEmpty, "\(state)/\(id) has a degenerate accessibility frame")
+    XCTAssertTrue(element.isEnabled, "\(state)/\(id) should be enabled")
+    XCTAssertTrue(
+      element.isHittable,
+      "\(state)/\(id) is not hittable — AX frame \(element.frame) vs window "
+        + "\(app.windows.firstMatch.frame)")
+  }
+
+  /// Inline (the row fits): no pinning, no `safeAreaInset`, and the mask's ramp is fully opaque.
+  func testChromeGlyphButtonsAreHittableWhenInline() {
+    let app = launchedApp()
+    XCTAssertTrue(terminalChips(app).firstMatch.waitForExistence(timeout: 10))
+    for id in ["NewTerminal", "tab.toolbar.splitRight", "NewWorkroom", "OpenWorkroom"] {
+      assertHittableButton(app, id, "inline")
+    }
+  }
+
+  /// Pinned (both strips overflow): the controls now sit in a trailing `safeAreaInset` beside a masked
+  /// scroller — the arrangement #129 introduced and the one the finding suspected.
+  func testChromeGlyphButtonsAreHittableWhenPinned() {
+    let app = launchedApp(terminalTabs: overflowTabs, workrooms: overflowWorkrooms)
+    assertCount(terminalChips(app), reaches: overflowTabs)
+    for id in ["NewTerminal", "tab.toolbar.splitRight", "NewWorkroom", "OpenWorkroom"] {
+      assertHittableButton(app, id, "pinned")
+    }
+  }
+
   // MARK: Workroom tab bar (title bar)
 
   /// The `WorkroomTabBar` half: both trailing controls pin as one block, so neither the "+" nor the
   /// open-workroom chevron can be scrolled out of reach.
   ///
-  /// Geometry only, for the same reason as the terminal case: `isHittable` is a false negative for these
-  /// hover-washed SwiftUI buttons. Clickability of a control inside the pinned `safeAreaInset` under the
-  /// trailing mask is proven by `testPinnedAddButtonStillAddsATab`, which exercises the identical
-  /// mechanism in the terminal strip.
+  /// Geometry only, for the same reason as the terminal case — hittability is covered by
+  /// `testChromeGlyphButtonsAreHittableWhenPinned`. Clickability of a control inside the pinned
+  /// `safeAreaInset` under the trailing mask is proven by `testPinnedAddButtonStillAddsATab`, which
+  /// exercises the identical mechanism in the terminal strip.
   func testWorkroomBarControlsStayVisibleWhenChipsOverflow() {
     let app = launchedApp(workrooms: overflowWorkrooms)
     let newWorkroom = element(app, id: "NewWorkroom")
