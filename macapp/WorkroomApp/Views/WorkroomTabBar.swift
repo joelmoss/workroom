@@ -437,10 +437,39 @@ private struct WorkroomTabChip: View {
     workroomName.map { "\(primaryLabel)/\($0)" } ?? primaryLabel
   }
 
+  private var hasActivity: Bool { notifications.count(target: target.id) > 0 }
+  private var hasRunTab: Bool { store.runTabID(for: target.id) != nil }
+  private var runRunning: Bool { store.isRunCommandRunning(for: target.id) }
+
+  // The chip is deliberately built in three stages — `contentRow` (the icons + title), `pill` (its
+  // fills, outline and margin) and `body` (the tooltip, menu and a11y) — rather than one long
+  // modifier chain: as a single expression it tipped Xcode 26.3's solver over the "unable to
+  // type-check this expression in reasonable time" limit and broke CI.
   var body: some View {
-    let hasActivity = notifications.count(target: target.id) > 0
-    let hasRunTab = store.runTabID(for: target.id) != nil
-    let runRunning = store.isRunCommandRunning(for: target.id)
+    pill
+      // The full, untruncated title (mirrors `TerminalTabChip.help(tab.title)`) plus the path on a
+      // second line — genuinely useful on its own (two same-named workrooms across projects stay
+      // distinct), and reads cleanly stacked under the title in a tooltip.
+      .help("\(fullTitle)\n\(target.path)")
+      // The workroom's right-click menu, shared with the split group title bar (issue #112). The tab
+      // keeps "Close" (whole-workroom close), so `closeName` is non-nil: a root chip shows Close
+      // only, a workroom chip shows the full set — same as before the extraction.
+      .contextMenu {
+        workroomContextMenu(
+          store: store, sid: sid, target: target, closeName: workroomName ?? primaryLabel)
+      }
+      .accessibilityElement(children: .combine)
+      .accessibilityLabel(
+        accessibilityLabel(hasActivity: hasActivity, running: hasRunTab && runRunning)
+      )
+      .accessibilityIdentifier("workroom.tab.\(target.id)")
+      .accessibilityAddTraits(isActive ? .isSelected : [])
+      .scaleEffect(isDragging ? 1.04 : 1)
+      .shadow(color: .black.opacity(isDragging ? 0.25 : 0), radius: isDragging ? 6 : 0, y: 2)
+  }
+
+  /// The icons + title row: everything inside the pill's padding.
+  private var contentRow: some View {
     // Icons stay vertically centered (center-aligned outer HStack); only the two texts share a
     // baseline, via the inner `.firstTextBaseline` group below.
     HStack(spacing: 6) {
@@ -495,89 +524,76 @@ private struct WorkroomTabChip: View {
         }
       }
     }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 4)
-    // Selection & hover fill — the same treatment as the terminal tab chips: the selected tab is
-    // filled with the terminal background (`bg`) so it stands distinct from the strip; a hovered idle
-    // tab gets the faint hover wash. Front-most background so a dragged chip's material lift sits
-    // behind it.
-    .background {
-      RoundedRectangle(cornerRadius: 6, style: .continuous)
-        .fill(isActive ? theme.tokens.bg : (isHovered ? theme.tokens.hover : Color.clear))
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: isHovered)
-    }
-    // A solid lifted chip while dragging.
-    .background {
-      RoundedRectangle(cornerRadius: 6)
-        .fill(.thickMaterial)
-        .overlay(
-          RoundedRectangle(cornerRadius: 6)
-            .strokeBorder(theme.tokens.border, lineWidth: 1)
-        )
-        .opacity(isDragging ? 1 : 0)
-    }
-    // Only the selected tab is outlined — a stronger `fgDim` stroke (not the `border` hairline) so it
-    // reads as clearly selected. Mirrors the terminal tab chips.
-    .overlay {
-      if isActive {
+  }
+
+  /// The pill: `contentRow` plus its interior padding, fills, outline, running underline, outer
+  /// margin and the width measurement the drag-reorder math reads.
+  private var pill: some View {
+    contentRow
+      .padding(.horizontal, 10)
+      .padding(.vertical, 4)
+      // Selection & hover fill — the same treatment as the terminal tab chips: the selected tab is
+      // filled with the terminal background (`bg`) so it stands distinct from the strip; a hovered idle
+      // tab gets the faint hover wash. Front-most background so a dragged chip's material lift sits
+      // behind it.
+      .background {
         RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .strokeBorder(theme.tokens.fgDim, lineWidth: 1)
+          .fill(isActive ? theme.tokens.bg : (isHovered ? theme.tokens.hover : Color.clear))
+          .animation(reduceMotion ? nil : .easeInOut(duration: 0.12), value: isHovered)
       }
-    }
-    // A flowing accent underline along the chip's base while any of this workroom's terminals is
-    // working (OSC 9;4) — the same indeterminate-progress animation as the terminal tabs (issue #28).
-    // An overlay so it never enters the width the drag gap math measures.
-    .overlay(alignment: .bottom) {
-      if terminals.isRunning(forTargetID: target.id) {
-        RunningUnderline()
-          .padding(.horizontal, 6)
-          .padding(.bottom, 1)
+      // A solid lifted chip while dragging.
+      .background {
+        RoundedRectangle(cornerRadius: 6)
+          .fill(.thickMaterial)
+          .overlay(
+            RoundedRectangle(cornerRadius: 6)
+              .strokeBorder(theme.tokens.border, lineWidth: 1)
+          )
+          .opacity(isDragging ? 1 : 0)
       }
-    }
-    // The pill (fill + border) is the interactive shape; the margin added below stays dead gap space.
-    .contentShape(Rectangle())
-    // Outer margin OUTSIDE the pill/border — the space reclaimed from the interior padding, so the
-    // pill floats with breathing room from its neighbours. Kept equal to the removed padding so the
-    // chip's total footprint (and thus the drag-reorder pitch) is unchanged.
-    .padding(.horizontal, 2)
-    .padding(.vertical, 3)
-    // Hairline between two idle neighbours, centred in the inter-chip gap. Anchored to the outer box
-    // (after the margin) so it centres in the inter-chip spacing. An overlay so it never enters the
-    // width the drag math measures.
-    .overlay(alignment: .leading) {
-      if showLeadingSeparator {
-        Rectangle()
-          .fill(theme.tokens.border)
-          .frame(width: 1, height: 16)
-          .offset(x: -2)
+      // Only the selected tab is outlined — a stronger `fgDim` stroke (not the `border` hairline) so it
+      // reads as clearly selected. Mirrors the terminal tab chips.
+      .overlay {
+        if isActive {
+          RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .strokeBorder(theme.tokens.fgDim, lineWidth: 1)
+        }
       }
-    }
-    // Measure the chip's full footprint (pill + margin) for the drag gap math — pairs with the
-    // inter-chip spacing to set the reorder pitch.
-    .background {
-      GeometryReader { geo in
-        Color.clear.preference(key: WorkroomTabWidthKey.self, value: [sid: geo.size.width])
+      // A flowing accent underline along the chip's base while any of this workroom's terminals is
+      // working (OSC 9;4) — the same indeterminate-progress animation as the terminal tabs (issue #28).
+      // An overlay so it never enters the width the drag gap math measures.
+      .overlay(alignment: .bottom) {
+        if terminals.isRunning(forTargetID: target.id) {
+          RunningUnderline()
+            .padding(.horizontal, 6)
+            .padding(.bottom, 1)
+        }
       }
-    }
-    // The full, untruncated title (mirrors `TerminalTabChip.help(tab.title)`) plus the path on a
-    // second line — genuinely useful on its own (two same-named workrooms across projects stay
-    // distinct), and reads cleanly stacked under the title in a tooltip.
-    .help("\(fullTitle)\n\(target.path)")
-    // The workroom's right-click menu, shared with the split group title bar (issue #112). The tab
-    // keeps "Close" (whole-workroom close), so `closeName` is non-nil: a root chip shows Close only,
-    // a workroom chip shows the full set — same as before the extraction.
-    .contextMenu {
-      workroomContextMenu(
-        store: store, sid: sid, target: target, closeName: workroomName ?? primaryLabel)
-    }
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel(
-      accessibilityLabel(hasActivity: hasActivity, running: hasRunTab && runRunning)
-    )
-    .accessibilityIdentifier("workroom.tab.\(target.id)")
-    .accessibilityAddTraits(isActive ? .isSelected : [])
-    .scaleEffect(isDragging ? 1.04 : 1)
-    .shadow(color: .black.opacity(isDragging ? 0.25 : 0), radius: isDragging ? 6 : 0, y: 2)
+      // The pill (fill + border) is the interactive shape; the margin added below stays dead gap space.
+      .contentShape(Rectangle())
+      // Outer margin OUTSIDE the pill/border — the space reclaimed from the interior padding, so the
+      // pill floats with breathing room from its neighbours. Kept equal to the removed padding so the
+      // chip's total footprint (and thus the drag-reorder pitch) is unchanged.
+      .padding(.horizontal, 2)
+      .padding(.vertical, 3)
+      // Hairline between two idle neighbours, centred in the inter-chip gap. Anchored to the outer box
+      // (after the margin) so it centres in the inter-chip spacing. An overlay so it never enters the
+      // width the drag math measures.
+      .overlay(alignment: .leading) {
+        if showLeadingSeparator {
+          Rectangle()
+            .fill(theme.tokens.border)
+            .frame(width: 1, height: 16)
+            .offset(x: -2)
+        }
+      }
+      // Measure the chip's full footprint (pill + margin) for the drag gap math — pairs with the
+      // inter-chip spacing to set the reorder pitch.
+      .background {
+        GeometryReader { geo in
+          Color.clear.preference(key: WorkroomTabWidthKey.self, value: [sid: geo.size.width])
+        }
+      }
   }
 
   private func accessibilityLabel(hasActivity: Bool, running: Bool) -> String {
