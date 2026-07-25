@@ -11,8 +11,7 @@
 //! `origin` (push state). Never mix them — see `PUSH_REMOTE` for why counting jj's pseudo-remote `git`
 //! would report every local commit as pushed.
 
-use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -286,36 +285,53 @@ fn to_model_commit(
     commit
 }
 
-// Max-heap ordering by committer timestamp then id, so `pop` yields newest-first. (True jj-log
-// index-position ordering is a Phase-1 refinement; timestamp-desc is close enough for the proof.)
-struct HeapItem(JjCommit);
-impl HeapItem {
-    fn key(&self) -> (i64, &[u8]) {
-        (
-            self.0.committer().timestamp.timestamp.0,
-            self.0.id().as_bytes(),
-        )
-    }
-}
-impl PartialEq for HeapItem {
-    fn eq(&self, other: &Self) -> bool {
-        self.key() == other.key()
-    }
-}
-impl Eq for HeapItem {}
-impl Ord for HeapItem {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.key().cmp(&other.key())
-    }
-}
-impl PartialOrd for HeapItem {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
+/// `::id` as a revset, which is how both ancestry walks in this module get their ORDER.
+///
+/// jj-lib's default index iterates every revset in descending global commit position, and a commit's
+/// position is always greater than its parents' — so the walk is topological, children before
+/// parents, exactly the order `jj log` prints. Committer timestamps are deliberately not consulted:
+/// they are metadata a rewrite carries forward, so an amend, a rebase, an imported commit or plain
+/// clock skew puts them out of graph order. The timestamp-keyed max-heap this replaced would then
+/// interleave the page differently from `jj log` and pick the wrong "nearest" bookmark.
+///
+/// Cheap on large repos, because the walk is LAZY: `Revset::stream` is `stream::iter` over the
+/// index's `RevWalk`, which advances only as far as it is polled (the same incremental property
+/// `pushed_revset` documents). It also yields ids, not commits, so nothing is deserialized for
+/// commits the caller ends up dropping.
+fn ancestors_revset<'a>(
+    repo: &'a dyn Repo,
+    id: &jj_lib::backend::CommitId,
+) -> model::Result<Box<dyn Revset + 'a>> {
+    let expr: Arc<ResolvedRevsetExpression> =
+        RevsetExpression::commits(vec![id.clone()]).ancestors();
+    expr.evaluate(repo).map_err(io)
 }
 
-/// A bounded newest-first page of `::@` ancestry. Only visits ~`limit` + frontier commits (NOT the
-/// whole history), so it's cheap on large repos.
+/// Drive `revset`'s stream to at most `limit` ids, in the revset's own order. The stream is async
+/// only in shape — the walk underneath is synchronous — so it's blocked on with pollster like the
+/// rest of this module. An id that fails to read is an error, never a silently short page.
+fn take_revset_ids<'a, R: Revset + ?Sized + 'a>(
+    revset: &'a R,
+    limit: usize,
+) -> model::Result<Vec<jj_lib::backend::CommitId>> {
+    use futures::StreamExt;
+
+    pollster::block_on(async {
+        let mut ids = Vec::with_capacity(limit);
+        let mut stream = revset.stream();
+        while ids.len() < limit {
+            match stream.next().await {
+                Some(id) => ids.push(id.map_err(io)?),
+                None => break,
+            }
+        }
+        Ok(ids)
+    })
+}
+
+/// A bounded page of `::@` ancestry in `jj log`'s own order — topological, children before parents
+/// (see `ancestors_revset`, which owns that guarantee). Only reads ~`limit` commits (NOT the whole
+/// history), so it's cheap on large repos.
 pub fn log_page(root: &Path, limit: usize) -> model::Result<HistoryPage> {
     let (workspace, repo) = open(root)?;
     let store = repo.store();
@@ -341,37 +357,36 @@ pub fn log_page(root: &Path, limit: usize) -> model::Result<HistoryPage> {
     };
     let scope = push_scope(tip_names);
 
-    let mut heap: BinaryHeap<HeapItem> = BinaryHeap::new();
-    let mut seen: HashSet<Vec<u8>> = HashSet::new();
-    if let Some(id) = &wc_id {
-        seen.insert(id.as_bytes().to_vec());
-        heap.push(HeapItem(store.get_commit(id).map_err(io)?));
-    }
+    let Some(wc_id) = wc_id else {
+        // No working-copy commit (a bare/foreign workspace) — nothing to page over.
+        return Ok(HistoryPage {
+            commits: Vec::new(),
+            reached_end: true,
+            push_scope: scope,
+        });
+    };
 
-    let mut commits = Vec::with_capacity(limit);
-    while commits.len() < limit {
-        let Some(HeapItem(commit)) = heap.pop() else {
-            // Exhausted the reachable graph before filling the page.
-            return Ok(HistoryPage {
-                commits,
-                reached_end: true,
-                push_scope: scope,
-            });
-        };
-        commits.push(to_model_commit(
-            &commit,
-            wc_id.as_ref(),
-            &bookmarks,
-            repo.as_ref(),
-            &push_of,
-        ));
-        for parent_id in commit.parent_ids() {
-            if seen.insert(parent_id.as_bytes().to_vec()) {
-                heap.push(HeapItem(store.get_commit(parent_id).map_err(io)?));
-            }
-        }
-    }
-    let reached_end = heap.is_empty();
+    // Ask for one id PAST the page: getting it proves there's more history (so `reached_end` is
+    // false) and it's then dropped. The revset dedupes, so the `seen` set the heap needed is gone.
+    let revset = ancestors_revset(repo.as_ref(), &wc_id)?;
+    let mut ids = take_revset_ids(revset.as_ref(), limit.saturating_add(1))?;
+    let reached_end = ids.len() <= limit;
+    ids.truncate(limit);
+
+    let commits = ids
+        .iter()
+        .map(|id| {
+            let commit = store.get_commit(id).map_err(io)?;
+            Ok(to_model_commit(
+                &commit,
+                Some(&wc_id),
+                &bookmarks,
+                repo.as_ref(),
+                &push_of,
+            ))
+        })
+        .collect::<model::Result<Vec<_>>>()?;
+
     Ok(HistoryPage {
         commits,
         reached_end,
@@ -381,12 +396,11 @@ pub fn log_page(root: &Path, limit: usize) -> model::Result<HistoryPage> {
 
 /// The repo's current ref for the sidebar label (read-only; no snapshot/lock — same `open` path as
 /// the log). A bookmark directly on the working copy `@` ⇒ `Branch`; else the nearest ancestor
-/// bookmark (walk `@`'s ancestry newest-first, first bookmarked commit wins) ⇒ `Ancestor`; else
+/// bookmark (walk `@`'s ancestry in `jj log` order, first bookmarked commit wins) ⇒ `Ancestor`; else
 /// `None`. jj never reports `Detached` (that's a git concept). When a commit carries several
 /// bookmarks the alphabetically-first is chosen, matching the jj CLI's sorted `bookmarks` template.
 pub fn current_ref(root: &Path) -> model::Result<model::Ref> {
     let (workspace, repo) = open(root)?;
-    let store = repo.store();
     let bookmarks = bookmark_map(&repo);
     let none = model::Ref {
         name: None,
@@ -399,7 +413,7 @@ pub fn current_ref(root: &Path) -> model::Result<model::Ref> {
     else {
         return Ok(none);
     };
-    match nearest_bookmark(store, &wc_id, &bookmarks)? {
+    match nearest_bookmark(repo.as_ref(), &wc_id, &bookmarks)? {
         Some((name, true)) => Ok(model::Ref {
             name: Some(name),
             kind: model::RefKind::Branch,
@@ -413,44 +427,45 @@ pub fn current_ref(root: &Path) -> model::Result<model::Ref> {
 }
 
 /// The nearest bookmark to `@`: `(name, on_working_copy)` — the alphabetically-first bookmark on
-/// `@` itself (`on == true`), else the first bookmarked commit walking `@`'s ancestry newest-first
-/// (`on == false`), else `None`. Shared by `current_ref` (kind) and `working_status` (CI branch).
+/// `@` itself (`on == true`), else the first bookmarked commit walking `@`'s ancestry in `jj log`
+/// order (`on == false`), else `None`. Shared by `current_ref` (kind) and `working_status` (CI
+/// branch).
+///
+/// `@` needs no special case: `::@` is walked children-before-parents and `@` is a descendant of
+/// everything else in the set, so `@` is always the first id out — which is also what makes the
+/// `on_working_copy` flag just an id comparison.
+///
+/// Ordering matters here as much as in the log. Under the timestamp walk this replaced, a bookmark
+/// on a freshly-rewritten commit deeper in the ancestry could outrank a nearer one whose timestamp
+/// the rewrite left behind, so the sidebar named a branch the history didn't show.
+///
+/// Cost: this walks ids only — it stops at the first bookmarked commit and never loads a commit
+/// object, where the old heap deserialized every ancestor it passed. That matters because
+/// `working_status` calls this on every 15s status sweep, fanned out per workroom.
 fn nearest_bookmark(
-    store: &Arc<jj_lib::store::Store>,
+    repo: &dyn Repo,
     wc_id: &jj_lib::backend::CommitId,
     bookmarks: &HashMap<String, Vec<String>>,
 ) -> model::Result<Option<(String, bool)>> {
+    use futures::StreamExt;
+
     if bookmarks.is_empty() {
         return Ok(None);
     }
-    let pick = |id_hex: &str| -> Option<String> {
-        bookmarks
-            .get(id_hex)
-            .and_then(|names| names.iter().min().cloned())
-    };
-    if let Some(name) = pick(&wc_id.hex()) {
-        return Ok(Some((name, true)));
-    }
-    let mut seen: HashSet<Vec<u8>> = HashSet::new();
-    let mut heap: BinaryHeap<HeapItem> = BinaryHeap::new();
-    seen.insert(wc_id.as_bytes().to_vec());
-    let wc_commit = store.get_commit(wc_id).map_err(io)?;
-    for parent_id in wc_commit.parent_ids() {
-        if seen.insert(parent_id.as_bytes().to_vec()) {
-            heap.push(HeapItem(store.get_commit(parent_id).map_err(io)?));
-        }
-    }
-    while let Some(HeapItem(commit)) = heap.pop() {
-        if let Some(name) = pick(&commit.id().hex()) {
-            return Ok(Some((name, false)));
-        }
-        for parent_id in commit.parent_ids() {
-            if seen.insert(parent_id.as_bytes().to_vec()) {
-                heap.push(HeapItem(store.get_commit(parent_id).map_err(io)?));
+    let revset = ancestors_revset(repo, wc_id)?;
+    pollster::block_on(async {
+        let mut stream = revset.stream();
+        while let Some(id) = stream.next().await {
+            let id = id.map_err(io)?;
+            if let Some(name) = bookmarks
+                .get(&id.hex())
+                .and_then(|names| names.iter().min().cloned())
+            {
+                return Ok(Some((name, &id == wc_id)));
             }
         }
-    }
-    Ok(None)
+        Ok(None)
+    })
 }
 
 /// Map a jj commit + its changed files to a `CommitChanges` disclosure record (reuses
@@ -669,7 +684,7 @@ pub fn working_status(root: &Path) -> model::Result<model::WorkingStatus> {
     // NB: the parent `@-` change set is deliberately NOT computed — it would re-walk a second tree
     // diff on every status poll (fanned out per-workroom on a 15s sweep) for a disclosure group the
     // Changes panel no longer shows. If a parent view returns, compute it lazily on demand, not here.
-    let branch_for_ci = nearest_bookmark(store, &wc_id, &bookmarks)?.map(|(name, _)| name);
+    let branch_for_ci = nearest_bookmark(repo.as_ref(), &wc_id, &bookmarks)?.map(|(name, _)| name);
 
     Ok(model::WorkingStatus {
         dirty: !working_copy.files.is_empty() || conflicted,

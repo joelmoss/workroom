@@ -1,5 +1,33 @@
 # TODOs
 
+> Status note (2026-07-25): **Done & removed:** jj log / current-ref ordering by committer timestamp.
+> Both ancestry walks in `jj_backend.rs` now go through one `ancestors_revset` helper — jj-lib's own
+> `::@` revset, which the default index iterates in descending commit position, i.e. topologically.
+> Timestamps are metadata a rewrite carries forward, so they were never a graph order; with a merge in
+> play the old max-heap surfaced a commit ABOVE its own descendants (measured: `[@, E, A, C, B, root]`
+> where `A` is the parent of both `B` and `C`), something `jj log` cannot print. Same walk, same fix
+> for `nearest_bookmark`, so the sidebar's branch label can no longer name a bookmark History doesn't
+> show — the repro is a bookmark on a rewritten ancestor two hops out beating the one on `@`'s own
+> first parent. **Deviated from the plan** on one point: the entry proposed a *generation* walk for
+> `nearest_bookmark`, but jj-lib exposes generation numbers only through `default_index` internals, and
+> the actual requirement was agreement with the log — so both share the one revset order rather than
+> the file carrying two ordering concepts. That also deleted its `@` special case (`@` is simply the
+> first id `::@` yields, being a descendant of the whole set) and made it markedly **cheaper**: it now
+> reads ids and stops at the first bookmark, where the heap deserialized every ancestor it passed —
+> worth having on a call that runs in the 15s status sweep, fanned out per workroom. `log_page` gained
+> git's own "take one extra to learn whether more exists" trick for `reached_end`. Coverage: 5 cargo
+> tests in a new `tests/log_order.rs`, 3 negative-checked against the pre-change core; the other 2
+> guard the rewrite rather than the bug (the `reached_end` peek, and a bookmark on `@` still winning)
+> and say so. **The trap worth knowing before writing another ordering test:** a LINEAR ancestry
+> cannot expose this at all — the heap frontier is size one, so scrambled timestamps still produce
+> identical output. Every fixture needs a merge AND skewed timestamps (`JJ_TIMESTAMP`, which jj maps
+> onto `debug.commit-timestamp`); miss either and the test passes against the bug. **Found on the way,
+> deliberately not "fixed":** git's side reads `repo.log()` with SwiftGitX's default `.none` =
+> libgit2 `GIT_SORT_NONE`, which is reverse-*chronological* — but that is exactly `git log`'s own
+> default (topological is git's opt-in `--topo-order`), so each backend now matches its own CLI and the
+> two can legitimately page a skewed repo differently. Recorded at the `VCSProviding.log` seam so a
+> future conformance test doesn't "unify" them into disagreeing with both tools.
+>
 > Status note (2026-07-25): **Done & removed:** "Real `VcsError` taxonomy across the UniFFI boundary".
 > The entry's premise was half stale and the live half was in a different place than it claimed. Its
 > Swift half — `RustJJProvider.mapError` flattening every case to `.io` — had already shipped in
@@ -915,20 +943,6 @@ patch), or make the badge counts lazy / cache them per (HEAD, worktree-generatio
 **Depends on:** VCS read foundation. Touches `Core/GitProvider.swift`.
 
 **Priority:** P2 (perf on large dirty trees; every refresh).
-
-## jj log/current-ref use timestamp order, not topological order (macapp) — VCS-foundation eng-review
-
-**What:** `jj_backend.rs` orders the log heap by committer timestamp (`HeapItem`, comment: "close
-enough for the proof"), and `nearest_bookmark` walks ancestry newest-timestamp-first. Rebased/amended
-commits or clock skew make History order (and the "nearest ancestor bookmark" pick) diverge from
-`jj log`'s topological/index order.
-
-**How to start:** Order by jj's graph/index position (revset evaluation order) instead of timestamp;
-walk the DAG by generation for `nearest_bookmark`.
-
-**Depends on:** VCS read foundation. Touches `jj_backend.rs`.
-
-**Priority:** P2 (History mis-order + wrong branch label under skew/rebase).
 
 ## Offer to repair a stale jj working copy from the app (macapp) — error-taxonomy follow-up
 

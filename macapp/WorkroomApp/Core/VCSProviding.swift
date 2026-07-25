@@ -15,6 +15,13 @@ enum VCSWorkingDiffBase: Sendable, Equatable {
 /// in `VCSModels.swift`. Views/models depend on this protocol, not on either backend.
 protocol VCSProviding: Sendable {
   /// A bounded, newest-first page of history.
+  ///
+  /// "Newest-first" is deliberately each backend's OWN CLI order, not a shared one — the page is what
+  /// `jj log` / `git log` would print, so History never contradicts the tool the user reaches for:
+  /// jj is topological (children before parents, jj-lib's descending commit position), while git is
+  /// reverse-chronological (libgit2's default `GIT_SORT_NONE`, matching git's date-ordered default
+  /// rather than its opt-in `--topo-order`). So a repo with out-of-order commit timestamps can page
+  /// differently on the two backends by design; don't "unify" it without changing both CLIs' truth.
   func log(root: URL, limit: Int) throws -> VCSHistoryPage
   /// A single changeset: metadata + full message + changed-file list.
   func changeset(root: URL, commitID: String) async throws -> VCSChangeset
