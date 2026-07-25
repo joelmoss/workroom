@@ -451,39 +451,11 @@ private struct ChangedFileRow: View {
     }
   }
 
-  private var letter: String {
-    switch file.change {
-    case .modified: return "M"
-    case .added: return "A"
-    case .deleted: return "D"
-    case .renamed: return "R"
-    case .untracked: return "?"
-    case .conflicted: return "C"
-    case .other: return "\u{2022}"
-    }
-  }
-
-  private var color: Color {
-    switch file.change {
-    case .added: return theme.tokens.diffAddFg
-    case .deleted: return theme.tokens.diffRemoveFg
-    case .conflicted: return theme.tokens.diffRemoveFg
-    case .modified, .renamed: return theme.tokens.warning
-    case .untracked, .other: return theme.tokens.fgMuted
-    }
-  }
-
-  private var changeWord: String {
-    switch file.change {
-    case .modified: return "modified"
-    case .added: return "added"
-    case .deleted: return "deleted"
-    case .renamed: return "renamed"
-    case .untracked: return "untracked"
-    case .conflicted: return "conflicted"
-    case .other: return "changed"
-    }
-  }
+  // Letter / colour / word live in `ChangeBadge` (Core) so the mapping is unit-testable — see its
+  // doc for why `.conflicted` is `"!"` in its own colour rather than `"C"` in deletion's red.
+  private var letter: String { ChangeBadge.letter(file.change) }
+  private var color: Color { ChangeBadge.color(file.change, theme.tokens) }
+  private var changeWord: String { ChangeBadge.word(file.change) }
 }
 
 /// Applies `accessibilityElement(children: .combine)` + an identifier only when `identifier` is

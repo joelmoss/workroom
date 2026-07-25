@@ -489,9 +489,15 @@ pub fn changeset(root: &Path, commit_id_hex: &str) -> model::Result<model::Chang
 }
 
 /// The changed files of `commit` vs its FIRST parent (the jj root commit provides the empty base for
-/// the first real change, so no empty-tree special case is needed). Add/modify/delete from before↔
-/// after presence; rename detection (copy records) is a later refinement. Drives jj-lib's async
-/// tree `diff_stream`, blocked on with pollster.
+/// the first real change, so no empty-tree special case is needed). Conflict from an unresolved
+/// `after` value, then add/modify/delete from before↔after presence; rename detection (copy records)
+/// is a later refinement. Drives jj-lib's async tree `diff_stream`, blocked on with pollster.
+///
+/// Both callers share this: the working copy (`working_status`) *and* a historical changeset
+/// (`changeset`). That's deliberate — jj stores conflicts in the tree, so a *commit* can be
+/// conflicted, which git can't represent. `GitProvider` therefore reports `modified` where this
+/// reports `conflicted` for the same colocated commit; `VCSProviderConformanceTests` asserts that
+/// divergence explicitly rather than treating it as a parity break.
 fn changed_files(
     store: &std::sync::Arc<jj_lib::store::Store>,
     commit: &JjCommit,
@@ -514,10 +520,18 @@ fn changed_files(
             // as clean, the exact "empty diff read as no changes" failure this surfaces instead.
             // `PartialData` is the model's escape hatch for it (plumbed through UniFFI to Swift's
             // `VCSError.partialData`), so the caller shows a recoverable error, not incomplete data.
-            let diff = entry.values.map_err(|e| {
-                VcsError::PartialData(format!("diff read failed for {path}: {e}"))
-            })?;
-            let kind = if diff.before.is_absent() {
+            let diff = entry
+                .values
+                .map_err(|e| VcsError::PartialData(format!("diff read failed for {path}: {e}")))?;
+            // Conflict FIRST: an unresolved merge on the `after` side *is* the conflict, and it
+            // never satisfies `is_absent()` (which is `Some(None)` — a *resolved* absence), so
+            // without this branch a conflicted file reads as a plain `Modified`. Ordering:
+            // - after unresolved + before absent (both sides added) → Conflicted, not Added (git's `AA`)
+            // - before unresolved + after absent (conflict then deleted) → Deleted; nothing to resolve
+            // - before unresolved + after resolved (conflict resolved) → Modified
+            let kind = if !diff.after.is_resolved() {
+                model::ChangeKind::Conflicted
+            } else if diff.before.is_absent() {
                 model::ChangeKind::Added
             } else if diff.after.is_absent() {
                 model::ChangeKind::Deleted

@@ -71,6 +71,13 @@ jobs:
       - name: Build VCS core (Rust → xcframework + Swift bindings)
         run: make app-vcs
 
+      # The Rust core's own tests (jj-lib reads against real throwaway jj repos, incl. the
+      # working-copy snapshot + conflict classification). They ran nowhere in CI before — the Swift
+      # suite only covers what reaches the app through UniFFI. Runs here rather than in its own job
+      # to reuse this one's jj + protobuf install and warm cargo cache.
+      - name: Test VCS core (cargo)
+        run: cargo test --manifest-path vcs/Cargo.toml
+
       # SPM resolves ~15 packages (Sparkle, Sentry, libghostty, the tree-sitter grammars, and
       # swift-syntax pulled transitively) by cloning them from GitHub on every run. Cache the
       # resolved checkouts keyed on project.yml (the sole source of the dependency set — the

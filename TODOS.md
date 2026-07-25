@@ -1,5 +1,25 @@
 # TODOs
 
+> Status note (2026-07-25): **Done & removed:** jj per-file conflict status now reaches the UI.
+> `jj_backend.rs` `changed_files` classifies an unresolved `after` value as
+> `ChangeKind::Conflicted` **before** the presence tests (an unresolved merge never satisfies
+> `is_absent()`, which is a *resolved* `Some(None)` — that's why conflicts read as `Modified`). Kept in
+> the shared `changed_files`, so conflicted *commits* report it too (jj stores conflicts in the tree;
+> git can't, so `VCSProviderConformanceTests.testColocatedConflictedCommitDivergesByDesign` now pins
+> that allowed divergence — a colocated git repo sees jj's `.jjconflict-*` sidecar trees, not the
+> conflicted path). Coverage: 4 new cargo tests (per-file kind + a **no-corruption guard** proving the
+> conflict survives the lock-taking snapshot, both-added → `Conflicted`, conflict-then-deleted →
+> `Deleted`, conflicted changeset) and `WorkroomStatusIntegrationTests.testJJConflict` (the jj twin of
+> `testGitConflict`, covering Rust → UniFFI → `WorkroomStatus`). Two harness fixes found on the way:
+> the cargo tests no longer `unsafe set_var("JJ_CONFIG")` from parallel `#[test]`s (passed per
+> `Command` instead), and **no fixture addresses commits by bookmark** — with jj's
+> `experimental-advance-branches` enabled (as in the author's own config), `jj commit` advances a
+> bookmark onto the new commit, which collapsed the two merge sides and silently produced no conflict
+> at all. Also **UI**: `ChangesPanel` rendered `.conflicted` as `"C"` in `diffRemoveFg` — deletion's
+> red — so it's now `"!"` in a new palette-derived `tokens.conflict` orange, with the letter/colour/word
+> mapping extracted to `Core/ChangeBadge.swift` and unit-tested (7 kinds). And **CI now runs
+> `cargo test`** (`.github/workflows/ci.yml`); the entire `wr-vcs-core` suite had never run there.
+>
 > Status note (2026-07-24): **Done & removed:** serialize jj working-copy snapshots across the
 > status fan-out (VCS-foundation eng-review) — added `JJSnapshotGate` (a per-project-root
 > chain-of-tails actor, `macapp/WorkroomApp/Core/JJSnapshotGate.swift`), threaded through every call
@@ -672,23 +692,66 @@ surface, `RustJJProvider.map`, and `VCSProviderConformanceTests`.
 
 **Priority:** P2 (user-visible wrong file list on renames; a known "later refinement" in the code).
 
-## jj per-file conflict status never reaches the UI (macapp) — VCS-foundation eng-review
+## Conflicted-file diff path is unverified (macapp) — jj conflict-status follow-up
 
-**What:** `jj_backend.rs` `working_status` sets the top-level `conflicted` flag from
-`wc_commit.has_conflict()`, but `changed_files` maps every present-before/present-after entry to
-`.modified` — no per-file `.conflicted` is ever produced. `GitProvider` does emit per-file
-`.conflicted`.
+**What:** Now that a conflicted jj file shows a `!` badge in the Changes panel, clicking that row is
+the obvious next action — and nobody has checked what it produces. The click routes through
+`DiffResolver.resolve` → `.jjWorkingCopy` → `resolveWorking(base: .workingCopy)`
+(`DiffResolver.swift:70-72`), which snapshots `@` and asks the backend for a working file diff of a
+path whose tree value is an *unresolved merge*.
 
-**Why:** In a conflicted jj working copy, the Changes list shows conflicted files as plain "modified",
-losing the conflict affordance that git repos get — another cross-backend divergence.
+**Why:** the badge is an invitation. If the diff errors, or renders jj's conflict markers as
+unreadable noise, the affordance dead-ends exactly where the user needs help most. It may well
+already work (jj materializes markers into the file, so a plain text diff would show them) — the
+point is that nobody has looked.
 
-**How to start:** In `changed_files` (or a working-copy-specific variant), detect a conflicted tree
-value (jj-lib's `MergedTreeValue`/`Conflict`) and map it to `model::ChangeKind::Conflicted`. Add a
-conflicted-`@` case to the cargo `working_status` test.
+**How to start:** build a conflicted jj repo (the fixture in `tests/working_status.rs`
+`conflicted_repo` or `WorkroomStatusIntegrationTests.testJJConflict` does it in ~8 commands), open it
+as a project, click the `!` row. If the diff is wrong, decide whether the viewer should render
+conflict sides explicitly (a real feature) or just show the marker text.
 
-**Depends on:** VCS read foundation. Touches `jj_backend.rs`, cargo tests.
+**Depends on:** the jj per-file conflict status (shipped). Touches `DiffResolver.swift`, possibly
+`DiffViewer`.
 
-**Priority:** P2 (conflicts are important state; currently silently downgraded for jj).
+**Priority:** P2 (the deferred half of a shipped affordance).
+
+## Conflicted working copies inflate the Changes header's +/- counts (macapp) — jj conflict-status follow-up
+
+**What:** `WorkroomStatusResolver.resolveJJ` sources the header's insertions/deletions from one
+`jj diff -r @ --ignore-working-copy --stat` (`WorkroomStatusResolver.swift:137-144`). A conflicted
+working copy has materialized conflict markers on disk, so every marker line counts as a changed
+line — a one-line conflict can read as dozens of changes.
+
+**Why:** cosmetic, and invisible until now because jj conflicts never surfaced. With the `!` badge
+shipped, the number sitting next to it is confidently wrong.
+
+**How to start:** decide the semantics first — should a conflicted path contribute 0, contribute only
+its real hunks, or should the header suppress the delta while `@` is conflicted? Then either exclude
+conflicted paths from the stat parse or annotate the header. The counts are already best-effort (a
+failed stat just drops them), so suppression is cheap.
+
+**Depends on:** nothing. Touches `WorkroomStatusResolver.swift` + its tests.
+
+**Priority:** P3 (cosmetic, newly visible).
+
+## Three independent change-badge palettes (macapp) — jj conflict-status follow-up
+
+**What:** the same change-kind badge is coloured by three separate mappings: `ChangeBadge`
+(`Core/ChangeBadge.swift`, theme tokens — extracted from `ChangesPanel` when the conflict badge was
+fixed), `ChangesetDetailView.badgeColor` (hardcoded `.green`/`.yellow`/`.red`/`.orange`), and
+`DiffViewer.changeColor` (same hardcoded set).
+
+**Why:** this split is *why* the conflict badge diverged in the first place — the panel had no orange
+to reach for, so `.conflicted` borrowed deletion's red and a conflict read as a removal. Two of the
+three mappings also ignore the active theme entirely.
+
+**How to start:** have `ChangesetDetailView` and `DiffViewer` adopt `ChangeBadge.letter`/`.color` (and
+the `tokens.conflict` colour) instead of their own switches. Note this restyles *every* kind in both
+views, so it wants a deliberate visual pass rather than a drive-by change.
+
+**Depends on:** `ChangeBadge` (shipped). Touches `ChangesetDetailView.swift`, `DiffViewer.swift`.
+
+**Priority:** P3 (consistency + theme correctness; no functional bug).
 
 ## Git History branch/tag decoration — `refs: []` (macapp) — VCS-foundation eng-review
 
@@ -808,19 +871,37 @@ another.
 
 **Priority:** P3 (brief count/file skew on a mid-refresh edit; self-heals next refresh).
 
-## Honor a custom `core.excludesFile` in the jj snapshot base_ignores (macapp) — VCS-foundation eng-review
+## The jj snapshot ignores the user's real jj/git config (macapp) — VCS-foundation eng-review
 
-**What:** The base_ignores fix (b7dd9b7d) chains git's default XDG global excludes
-(`~/.config/git/ignore`) + repo `.git/info/exclude`, but does NOT read a custom `core.excludesFile`
-set in git config (that needs a git-config parse). A user who points `core.excludesFile` elsewhere
-still gets those patterns skipped by the auto-status snapshot.
+**What:** `snapshot_working_copy` builds its settings from jj's **built-in defaults only** —
+`UserSettings::from_config(StackedConfig::with_defaults())` (`jj_backend.rs:380`) — and jj-lib derives
+the whole of `TreeStateSettings` from those settings (`local_working_copy.rs`
+`try_from_user_settings`): `ui.conflict-marker-style`, `EolConversionMode`
+(`working-copy.eol-conversion`), `working-copy.exec-bit-change`, and `FsmonitorSettings`. So on the
+one code path that *mutates* the repo, our snapshot can behave differently from the user's own `jj`:
 
-**How to start:** Read `core.excludesFile` from the repo's git config (via jj-lib's git backend / a
-gix-config read) and chain it in `jj_backend.rs::base_ignores` instead of the hardcoded XDG default.
+- **fsmonitor is always off.** A user with Watchman configured (`core.fsmonitor`) still gets a full
+  filesystem crawl — on every 15s status sweep, fanned out per workroom. The perf cost scales with
+  repo size and is invisible to us.
+- **EOL conversion / exec-bit policy are the defaults**, so a repo configured otherwise gets an `@`
+  rewritten on different rules than `jj` itself would use.
+- Originally filed narrower (custom `core.excludesFile`): the base_ignores fix (b7dd9b7d) chains
+  git's default XDG global excludes (`~/.config/git/ignore`) + repo `.git/info/exclude` but never
+  reads a custom `core.excludesFile`, so those patterns are skipped by the auto-status snapshot.
+
+**Not affected (checked):** per-file conflict detection. `ui.conflict-marker-style` is only consumed
+when *materializing* conflicts to disk (the checkout path), which this core never does; snapshot's
+marker parse-back goes through `conflicts::update_from_content`, which keys on the stored
+`materialized_conflict_data` marker length, not the style.
+
+**How to start:** load the real config stack (user + repo) into `UserSettings` the way the jj CLI
+does, instead of `with_defaults()`, and chain a custom `core.excludesFile` in `base_ignores`. Test on
+throwaway repos only — this is the lock-taking, `@`-rewriting path.
 
 **Depends on:** the base_ignores fix (shipped). Touches `jj_backend.rs`.
 
-**Priority:** P3 (residual of a fixed P1; only affects users with a non-default excludesFile).
+**Priority:** P3 for correctness (only bites non-default configs), but the fsmonitor half is a real
+perf item on large repos.
 
 ## Unify `workingStatus` onto the `VCSProviding` protocol (macapp) — VCS-foundation follow-up
 

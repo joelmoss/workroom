@@ -241,6 +241,48 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
     XCTAssertTrue(kinds.contains(.deleted))
   }
 
+  /// The jj twin of `testGitConflict`: a conflicted jj working copy must report the conflict
+  /// **per file**, not as a plain modification. jj stores conflicts in the tree, so this rides the
+  /// whole native path the cargo test can't reach — `jj_backend::changed_files` → UniFFI →
+  /// `RustJJProvider.statusChange` → `WorkroomStatus.changedFiles`, which is what the Changes panel
+  /// renders. A mapping regression anywhere in that chain shows up here and nowhere else.
+  ///
+  /// `jj new <left> <right>` makes `@` a 2-sided merge of two commits that changed `f.txt`
+  /// differently, which is jj's ordinary way to end up with a conflicted working copy.
+  ///
+  /// The two sides are addressed by **commit id**, never by bookmark: these fixtures inherit the
+  /// developer's own `~/.config/jj` (only `user.name`/`user.email` are set per-repo), and with
+  /// `experimental-advance-branches` enabled a `jj commit` silently advances a bookmark onto the new
+  /// commit — which collapsed `jj new base` onto `left` and produced no conflict at all.
+  func testJJConflict() async throws {
+    let dir = try jjRepo()
+    sh(
+      """
+      id() { jj log -r @- --no-graph --ignore-working-copy --color never -T commit_id; }
+      echo base > f.txt && jj commit -m base 2>/dev/null
+      BASE=$(id)
+      echo left > f.txt && jj commit -m left 2>/dev/null
+      LEFT=$(id)
+      jj new "$BASE" -m right 2>/dev/null
+      echo right > f.txt && jj commit -m right 2>/dev/null
+      RIGHT=$(id)
+      jj new "$LEFT" "$RIGHT" 2>/dev/null
+      """, in: dir)
+    // Guard the fixture itself: if jj doesn't consider `@` conflicted, a failure below is the
+    // fixture's fault, not the resolver's.
+    XCTAssertEqual(
+      sh("jj log --no-graph --ignore-working-copy --color never -r @ -T conflict", in: dir).out
+        .trimmingCharacters(in: .whitespacesAndNewlines), "true",
+      "fixture should produce a conflicted @")
+
+    let s = await resolver.resolveLocal(path: dir, vcs: "jj", projectRoot: dir)
+    XCTAssertEqual(s.dirty, true)
+    XCTAssertTrue(s.conflicted)
+    XCTAssertTrue(
+      (s.changedFiles ?? []).contains { $0.path == "f.txt" && $0.change == .conflicted },
+      "f.txt should be .conflicted, not .modified; got \(s.changedFiles ?? [])")
+  }
+
   /// Proves the real jj head template + parse produce the description + bookmark for the Changes
   /// header (the jj "branch name" equivalent).
   func testJJHeadDescriptionAndBookmark() async throws {

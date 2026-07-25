@@ -44,6 +44,12 @@ struct ThemeTokens {
   let warning: Color  // palette[3] (yellow)
   // palette[1] (red) — run-command failure (icon + toast); a distinct token from `warning`.
   let failure: Color
+  // A VCS conflict needs its OWN token: `warning` is already the modified/renamed colour and
+  // `diffRemoveFg` is deletion's, so reusing either makes "needs resolving" read as "changed" or
+  // "removed" (the state the Changes panel used to conflate). Orange — the hue
+  // `DiffViewer`/`ChangesetDetailView` already use for conflicts — has no ANSI slot, so it's mixed
+  // from the palette's red + yellow to stay theme-derived like every other token.
+  let conflict: Color
 
   // Diff / VCS semantics (palette green/red/cyan).
   let diffAddFg: Color
@@ -126,6 +132,14 @@ struct ThemeTokens {
     // ANSI colour 1 is red — the run-failure signal (chip + workroom dot + toast all share it). Same
     // palette slot as `diffRemoveFg`'s red, but a distinct semantic token so the two can't drift.
     failure = Color(nsColor: p(1) ?? .systemRed)
+    // Orange = the palette's red blended halfway toward its yellow (no ANSI orange exists); falls
+    // back to the system orange when a theme defines no palette.
+    let conflictColor: NSColor = {
+      guard let red = p(1)?.usingColorSpace(.sRGB), let yellow = p(3)?.usingColorSpace(.sRGB)
+      else { return .systemOrange }
+      return red.blended(withFraction: 0.5, of: yellow) ?? .systemOrange
+    }()
+    conflict = Color(nsColor: conflictColor)
 
     let addColor = p(2) ?? .systemGreen
     let removeColor = p(1) ?? .systemRed

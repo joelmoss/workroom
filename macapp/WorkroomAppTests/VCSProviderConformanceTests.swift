@@ -52,6 +52,52 @@ final class VCSProviderConformanceTests: XCTestCase {
     XCTAssertEqual(jj.deletions, git.deletions, "deletions differ between jj and git backends")
   }
 
+  /// The ONE place the two backends are *allowed* to disagree, asserted so it can't be mistaken for
+  /// drift: a **conflicted commit**. jj stores conflicts in the tree, so `RustJJProvider` reports the
+  /// conflicted path with `.conflicted`. git has no such concept, and a colocated repo doesn't see a
+  /// conflict at all — jj exports the commit with its internal sidecar representation
+  /// (`.jjconflict-base-0/…`, `.jjconflict-side-N/…`, `JJ-CONFLICT-README`), so `GitProvider` reports
+  /// those paths as ADDs and never mentions the conflicted file.
+  ///
+  /// Consequence for `testColocatedChangesetFileListMatchesAcrossBackends`: its set-equality assertion
+  /// holds for add/modify/delete only. Do NOT add a conflict to `colocatedFixture()` expecting parity —
+  /// conflicted commits are covered here instead.
+  func testColocatedConflictedCommitDivergesByDesign() async throws {
+    try requireTool("git")
+    try requireTool("jj")
+    let root = try colocatedConflictFixture()
+    let url = URL(fileURLWithPath: root)
+
+    // The conflicted merge is now `@-` (the fixture commits it).
+    let cid = sh(
+      "jj log -r @- --no-graph --ignore-working-copy --color never -T 'commit_id'", in: root
+    ).out.trimmingCharacters(in: .whitespacesAndNewlines)
+    XCTAssertFalse(cid.isEmpty, "could not resolve the merge commit id")
+    XCTAssertEqual(
+      sh("jj log --no-graph --ignore-working-copy --color never -r \(cid) -T conflict", in: root)
+        .out.trimmingCharacters(in: .whitespacesAndNewlines), "true",
+      "fixture commit should be conflicted")
+
+    // jj: the conflicted path, reported as such.
+    let jj = try await RustJJProvider().changeset(root: url, commitID: cid)
+    XCTAssertTrue(
+      jj.files.contains { $0.path == "f.txt" && $0.kind == .conflicted },
+      "jj should report f.txt as .conflicted; got \(jj.files.map { "\($0.kind):\($0.path)" })")
+
+    // git: jj's sidecar trees, no conflict, no f.txt.
+    let git = try await GitProvider().changeset(root: url, commitID: cid)
+    let gitPaths = git.files.map(\.path)
+    XCTAssertTrue(
+      gitPaths.contains { $0.hasPrefix(".jjconflict-") },
+      "git should see jj's conflict sidecar trees; got \(gitPaths)")
+    XCTAssertFalse(
+      git.files.contains { $0.kind == .conflicted },
+      "a git commit-to-commit diff can never yield .conflicted; got \(gitPaths)")
+    XCTAssertFalse(
+      gitPaths.contains("f.txt"),
+      "git doesn't see the conflicted path itself in this commit; got \(gitPaths)")
+  }
+
   /// The working-copy per-file diff, read structurally by each backend (git = SwiftGitX/libgit2, jj
   /// = the `jj diff --git` CLI fallback), must reflect an uncommitted on-disk edit — and git must
   /// render an untracked file as an all-added diff from `/dev/null` (the SwiftGitX `patch(from:)`
@@ -218,6 +264,39 @@ final class VCSProviderConformanceTests: XCTestCase {
       echo done
       """, in: root)
     XCTAssertTrue(r.out.contains("done"), "colocated fixture setup failed: \(r.out)")
+    return root
+  }
+
+  /// A colocated jj+git repo whose `@-` is a **conflicted** 2-sided merge commit: `base` → (`left`,
+  /// `right`) both change `f.txt`, `jj new <left> <right>` merges them into a conflict, and the merge
+  /// is then committed so it can be read back by commit-id from both backends.
+  ///
+  /// The sides are addressed by **commit id**, not bookmark: this fixture inherits the developer's
+  /// own `~/.config/jj`, and with `experimental-advance-branches` enabled `jj commit` advances a
+  /// bookmark onto the new commit — which collapses the two sides onto one and yields no conflict.
+  private func colocatedConflictFixture() throws -> String {
+    let root = tempDir()
+    let r = sh(
+      """
+      jj git init . >/dev/null 2>&1 || jj init --git . >/dev/null 2>&1
+      jj config set --repo user.name t >/dev/null 2>&1 || true
+      jj config set --repo user.email a@b.c >/dev/null 2>&1 || true
+      id() { jj log -r @- --no-graph --ignore-working-copy --color never -T commit_id; }
+      printf 'base\\n' > f.txt
+      jj commit -m base >/dev/null 2>&1
+      BASE=$(id)
+      printf 'left\\n' > f.txt
+      jj commit -m left >/dev/null 2>&1
+      LEFT=$(id)
+      jj new "$BASE" -m right >/dev/null 2>&1
+      printf 'right\\n' > f.txt
+      jj commit -m right >/dev/null 2>&1
+      RIGHT=$(id)
+      jj new "$LEFT" "$RIGHT" >/dev/null 2>&1
+      jj commit -m 'merged with conflict' >/dev/null 2>&1
+      echo done
+      """, in: root)
+    XCTAssertTrue(r.out.contains("done"), "colocated conflict fixture setup failed: \(r.out)")
     return root
   }
 
