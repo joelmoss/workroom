@@ -23,10 +23,11 @@ struct WorkroomApp: App {
     // minimal PATH excludes.
     setenv("PATH", ShellEnvironment.path(), 1)
 
-    // UI-test fixture mode only: park the inspector in a known state (open, on the requested
-    // section) before the first `AppStore` seeds `activeInspectorSection` from `Defaults`. Inert in
-    // production — a real user never passes the flag. See `UITestFixture.applyInspectorDefaults`.
-    UITestFixture.applyInspectorDefaults()
+    // UI-test fixture mode only: park the pref-driven UI state (inspector open on the requested
+    // section, diff viewer in the requested layout) in a known state before the first `AppStore`
+    // seeds `activeInspectorSection` from `Defaults`. Inert in production — a real user never passes
+    // the flag. See `UITestFixture.applyFixtureDefaults`.
+    UITestFixture.applyFixtureDefaults()
   }
 
   var body: some Scene {

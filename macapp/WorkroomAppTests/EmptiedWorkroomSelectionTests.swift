@@ -1,4 +1,3 @@
-import Defaults
 import XCTest
 
 @testable import Workroom
@@ -13,28 +12,13 @@ import XCTest
 /// prefix of `deleteWorkroom` — directly, so they never touch `deleteWorkroom`'s async CLI/VCS teardown.
 @MainActor
 final class EmptiedWorkroomSelectionTests: XCTestCase {
-  private let confirmKey = "confirmOnCloseTerminal"
-  private var savedConfirm: Any?
-
-  override func setUp() {
-    super.setUp()
-    savedConfirm = UserDefaults.standard.object(forKey: confirmKey)
-    Defaults[.confirmOnCloseTerminal] = false  // synchronous close, never a modal
-  }
-
-  override func tearDown() {
-    if let savedConfirm {
-      UserDefaults.standard.set(savedConfirm, forKey: confirmKey)
-    } else {
-      UserDefaults.standard.removeObject(forKey: confirmKey)
-    }
-    super.tearDown()
-  }
-
   // MARK: helpers
 
   private func makeStore(_ projects: [Project]) -> AppStore {
     let store = AppStore()
+    // Confirm off per store, not via `Defaults` — the shared key raced the other close classes under
+    // parallel workers (see `AppStore.confirmOnCloseOverrideForTesting`).
+    store.confirmOnCloseOverrideForTesting = false
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }

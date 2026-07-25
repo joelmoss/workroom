@@ -12,11 +12,20 @@ final class DiffViewerUITests: XCTestCase {
 
   /// Launch in fixture mode. `gitWorkroom: true` flips the fixture workroom from the default jj
   /// change to a git working tree (flat changed-file list) so the `.gitWorktree` diff is reachable.
-  private func launchedApp(gitWorkroom: Bool = false) -> XCUIApplication {
+  ///
+  /// `diffViewMode` is passed on EVERY launch, never left implicit. `Defaults[.diffViewMode]` lives in
+  /// the app's real (Dev) UserDefaults domain and is a Settings picker, so a test that says nothing
+  /// inherits the developer's last choice — and the unified assertions here (`diff.line`) then fail on
+  /// a machine sitting on side-by-side, which is exactly how three of them sat red. The fixture mirrors
+  /// this into `Defaults` at launch (`UITestFixture.applyFixtureDefaults`).
+  private func launchedApp(gitWorkroom: Bool = false, diffViewMode: String = "unified")
+    -> XCUIApplication
+  {
     let app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
     // Start each test clean, ignoring persisted window state (cf. NewWindowUITests).
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+    app.launchArguments += ["-WorkroomUITestDiffViewMode", diffViewMode]
     if gitWorkroom { app.launchArguments += ["-WorkroomUITestGitWorkroom", "1"] }
     app.launch()
     app.activate()
@@ -167,15 +176,7 @@ final class DiffViewerUITests: XCTestCase {
   /// two-column STRUCTURE — not the async-applied highlight a11y value, which XCUITest can't observe
   /// reliably (a documented false-negative; see `DiffHighlightUITests`).
   func testSideBySideRendersTwoColumns() throws {
-    let app = XCUIApplication()
-    app.launchArguments += ["-WorkroomUITestFixture", "1"]
-    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
-    // NSArgumentDomain override drives `Defaults[.diffViewMode]` (bare raw string via
-    // `DiffViewMode: PreferRawRepresentable`), so the viewer opens in side-by-side.
-    app.launchArguments += ["-diffViewMode", "sideBySide"]
-    app.launch()
-    app.activate()
-
+    let app = launchedApp(diffViewMode: "sideBySide")
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
     XCTAssertTrue(element(app, id: "changes.workingCopy").waitForExistence(timeout: 10))
 
@@ -205,7 +206,7 @@ final class DiffViewerUITests: XCTestCase {
   /// The tab toolbar's diff view-mode toggle starts on the global default (unified) and flips THIS
   /// tab to side-by-side when its side-by-side button is clicked — without changing the global setting.
   func testTabToolbarToggleSwitchesThisFileToSideBySide() throws {
-    let app = launchedApp()  // global default mode (unified)
+    let app = launchedApp(diffViewMode: "unified")  // the global default this toggle overrides
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
     XCTAssertTrue(element(app, id: "changes.workingCopy").waitForExistence(timeout: 10))
 

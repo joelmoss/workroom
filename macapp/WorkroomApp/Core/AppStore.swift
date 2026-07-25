@@ -2869,13 +2869,26 @@ final class AppStore: ObservableObject {
     requestCloseOtherTerminalTabs(active.id, for: target)
   }
 
+  /// Test seam: pin whether a close prompts, per store, instead of writing the shared
+  /// `confirmOnCloseTerminal` setting. `nil` (production) reads the real setting.
+  ///
+  /// Close-behaviour tests need the confirm **off** (an AppKit modal isn't unit-testable), but the
+  /// obvious way to get that — writing the `Defaults` key — is not test-local: `-parallel-testing`
+  /// gives each worker its own host process and they all share ONE UserDefaults domain, so one class
+  /// flipping the key lands inside another class's body and turns its close into a modal. That was a
+  /// roughly 1-in-4 red suite whose victim moved between runs. This override is per-`AppStore`, so it
+  /// cannot leak across workers; `ConfirmOnCloseTerminalTests` still asserts on the real key, and is
+  /// now its only writer.
+  var confirmOnCloseOverrideForTesting: Bool?
+
   /// Whether closing `tabs` needs the confirm modal: the setting is on, we're not in a UI-test
   /// fixture (those close synchronously so teardown never blocks on an alert — the launch-arg
   /// override can't reliably reach a Defaults Bool), and at least one tab still has a live process
   /// to lose. A content/diff tab has no surface and an exited run tab has nothing running, so a
   /// `?? true` ("has exited") batch of only those never prompts (issue #7).
   private func closeNeedsConfirm(_ tabs: [TerminalTab]) -> Bool {
-    Defaults[.confirmOnCloseTerminal] && !UITestFixture.isActive
+    let wantsConfirm = confirmOnCloseOverrideForTesting ?? Defaults[.confirmOnCloseTerminal]
+    return wantsConfirm && !UITestFixture.isActive
       && tabs.contains { !($0.surface?.processHasExited ?? true) }
   }
 

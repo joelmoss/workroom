@@ -16,6 +16,10 @@ final class DiffHighlightUITests: XCTestCase {
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
     // Start each test clean, ignoring persisted window state (cf. NewWindowUITests).
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+    // Every assertion below is on `diff.line`, which only the UNIFIED renderer emits — so pin the
+    // layout instead of inheriting `Defaults[.diffViewMode]` from the developer's Dev domain (a
+    // machine left on side-by-side turned these red; see `UITestFixture.applyFixtureDefaults`).
+    app.launchArguments += ["-WorkroomUITestDiffViewMode", "unified"]
     app.launch()
     app.activate()
     return app

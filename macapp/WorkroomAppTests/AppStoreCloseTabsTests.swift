@@ -1,4 +1,3 @@
-import Defaults
 import XCTest
 
 @testable import Workroom
@@ -8,29 +7,17 @@ import XCTest
 /// **off** so the synchronous teardown path is exercised without the AppKit modal (which isn't
 /// unit-testable). One test keeps confirm **on** to prove a diff-only batch never prompts (a content
 /// tab has no live process to lose), so it still closes synchronously here with no modal.
+///
+/// The confirm state is pinned per store (`confirmOnCloseOverrideForTesting`), never by writing
+/// `Defaults[.confirmOnCloseTerminal]` — see that seam for why the shared key raced the other close
+/// classes under parallel workers.
 @MainActor
 final class AppStoreCloseTabsTests: XCTestCase {
   private let target = TerminalTarget(id: "wr|/p|foo", title: "foo", path: "/tmp", isMissing: false)
-  private let confirmKey = "confirmOnCloseTerminal"
-  private var savedConfirm: Any?
 
-  override func setUp() {
-    super.setUp()
-    savedConfirm = UserDefaults.standard.object(forKey: confirmKey)
-    Defaults[.confirmOnCloseTerminal] = false  // synchronous close, never a modal
-  }
-
-  override func tearDown() {
-    if let savedConfirm {
-      UserDefaults.standard.set(savedConfirm, forKey: confirmKey)
-    } else {
-      UserDefaults.standard.removeObject(forKey: confirmKey)
-    }
-    super.tearDown()
-  }
-
-  private func makeStore() -> AppStore {
+  private func makeStore(confirmOnClose: Bool = false) -> AppStore {
     let store = AppStore()
+    store.confirmOnCloseOverrideForTesting = confirmOnClose
     // Factory seam: a GhosttySurfaceView only spawns its PTY on entering a window, so this is inert.
     store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     return store
@@ -88,8 +75,7 @@ final class AppStoreCloseTabsTests: XCTestCase {
   /// A batch of only diff/content tabs never prompts — even with confirm ON — because a content tab
   /// has no live process to lose, so the modal gate is skipped and it closes synchronously here.
   func testDiffOnlyBatchClosesWithoutPromptEvenWhenConfirmOn() {
-    Defaults[.confirmOnCloseTerminal] = true
-    let store = makeStore()
+    let store = makeStore(confirmOnClose: true)
     store.terminals.openDiffPersistent(persistentDiff("a.swift"), for: target)
     store.terminals.openDiffPersistent(persistentDiff("b.swift"), for: target)
     store.requestCloseAllTerminalTabs(for: target)

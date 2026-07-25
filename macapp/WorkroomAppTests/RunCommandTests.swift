@@ -35,6 +35,10 @@ final class RunCommandTests: XCTestCase {
 
   private func makeStore(_ projects: [Project]) -> AppStore {
     let store = AppStore()
+    // No close-confirm modal in a unit test. Per store, NOT via `Defaults[.confirmOnCloseTerminal]`:
+    // parallel workers share one UserDefaults domain, so writing that key reached into the other
+    // close-behaviour classes mid-body (see `AppStore.confirmOnCloseOverrideForTesting`).
+    store.confirmOnCloseOverrideForTesting = false
     store.terminals.makeView = { [weak self] _, cwd, command in
       self?.captured.append(command)
       return GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
@@ -51,6 +55,7 @@ final class RunCommandTests: XCTestCase {
   /// `restartRunCommand` to take the respawn path rather than the signal path.
   private func makeStoreDeadSupervisor(_ projects: [Project]) -> AppStore {
     let store = AppStore()
+    store.confirmOnCloseOverrideForTesting = false  // as in `makeStore`: never a modal
     store.terminals.makeView = { [weak self] _, cwd, command in
       self?.captured.append(command)
       return GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
@@ -574,14 +579,8 @@ final class RunCommandTests: XCTestCase {
     let view = try! XCTUnwrap(runView(store, t))
     view.liveProcessOverrideForTesting = true  // a dev server still running
 
-    // Request close while the process is alive — must wait, not close immediately. Restore whatever
-    // was there rather than assuming the default: parallel test workers share ONE UserDefaults domain,
-    // so writing a hardcoded `true` here reaches into other classes (`AppStoreCloseTabsTests` and
-    // `EmptiedWorkroomSelectionTests` both need this key false for a whole test body, and get a modal
-    // instead of a close if it flips under them mid-test).
-    let previous = Defaults[.confirmOnCloseTerminal]
-    Defaults[.confirmOnCloseTerminal] = false
-    defer { Defaults[.confirmOnCloseTerminal] = previous }
+    // Request close while the process is alive — must wait, not close immediately. (`makeStore` has
+    // already pinned the confirm off for this store.)
     store.requestCloseTerminalTab(tab, for: t)
     XCTAssertEqual(
       store.runTabID(for: t.id), tab, "close must wait while the process is alive")
@@ -593,11 +592,7 @@ final class RunCommandTests: XCTestCase {
   }
 
   func testRequestCloseWaitsForLiveRunCommand() {
-    let previous = Defaults[.confirmOnCloseTerminal]
-    Defaults[.confirmOnCloseTerminal] = false  // skip the modal (can't run in a unit test)
-    defer { Defaults[.confirmOnCloseTerminal] = previous }
-
-    let store = makeStore([project("/a", workrooms: ["main"])])
+    let store = makeStore([project("/a", workrooms: ["main"])])  // confirm pinned off in makeStore
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)

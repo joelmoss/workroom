@@ -68,7 +68,7 @@ enum UITestFixture {
   /// to 1...16 so a typo can't spawn an unbounded number of shells. Unset keeps the single-tab fixture.
   ///
   /// `integer(forKey:)` coerces the argument domain's string, the same coercion the `bool(forKey:)`
-  /// flags above rely on (see `applyInspectorDefaults` for why arguments arrive as strings).
+  /// flags above rely on (see `applyFixtureDefaults` for why arguments arrive as strings).
   static var terminalTabs: Int {
     let n = UserDefaults.standard.integer(forKey: "WorkroomUITestTerminalTabs")
     return n <= 0 ? 1 : min(n, 16)
@@ -253,14 +253,31 @@ enum UITestFixture {
     return ActivitySection(rawValue: raw) ?? .changes
   }
 
-  /// Force a deterministic **inspector** state in fixture mode: pane open, parked on
-  /// `inspectorSection`. Must be called before any `AppStore` is built (`WorkroomApp.init`), because
-  /// `activeInspectorSection` seeds itself from `Defaults` at construction.
+  /// The diff layout every fixture launch starts in
+  /// (`-WorkroomUITestDiffViewMode unified|sideBySide`). Unset (or unrecognised) = `.unified`, the
+  /// shipped default — so a test that doesn't care gets the shipped behaviour rather than the
+  /// developer's last Settings choice (see `applyFixtureDefaults`).
+  static var diffViewMode: DiffViewMode {
+    let raw = UserDefaults.standard.string(forKey: "WorkroomUITestDiffViewMode") ?? ""
+    return DiffViewMode(rawValue: raw) ?? .unified
+  }
+
+  /// Force a deterministic **UI** state in fixture mode: the inspector open and parked on
+  /// `inspectorSection`, the diff viewer in `diffViewMode`. Must be called before any `AppStore` is
+  /// built (`WorkroomApp.init`), because `activeInspectorSection` seeds itself from `Defaults` at
+  /// construction.
   ///
-  /// The inspector's visibility and active section are `Defaults` keys in the app's real (Dev)
-  /// UserDefaults domain, so without this every test that opens something *inside* the inspector
-  /// inherits whatever pane the developer last left behind — a machine sitting on History has no
-  /// Changes rows, and a closed inspector has nothing at all.
+  /// These are all `Defaults` keys in the app's real (Dev) UserDefaults domain, so without this a
+  /// test inherits whatever the developer last left behind. That is not hypothetical: a machine
+  /// sitting on History has no Changes rows and a closed inspector has nothing at all, and a `Dev`
+  /// domain holding `diffViewMode = sideBySide` turned three `DiffViewerUITests` + two
+  /// `DiffHighlightUITests` red for weeks — they assert on `diff.line`, which only the *unified*
+  /// renderer emits, and read "the global default" from a pref the developer can change in Settings.
+  ///
+  /// The cost of pinning is that a fixture launch **overwrites** these keys in the Dev domain (it
+  /// can't be a plain read: the views take them from `Defaults`). Dev is its own domain, so this
+  /// never touches the release app's preferences — but a UI-test run does reset the Dev app's
+  /// inspector and diff-mode choices, which is the deliberate trade for hermetic tests.
   ///
   /// A launch argument can't do this job. Argument-domain values arrive as **strings**
   /// (`-showNotificationsInspector 1` stores `"1"`, not `true`), and `Defaults` reads a natively
@@ -270,10 +287,11 @@ enum UITestFixture {
   /// later write (`AppStore.apply(.iconClick)`), leaving the pane unopenable for the whole run.
   /// `UITestFixture`'s own flags survive that only because `UserDefaults.bool(forKey:)` coerces
   /// strings. Hence a fixture-namespaced argument mirrored into `Defaults` here instead.
-  static func applyInspectorDefaults() {
+  static func applyFixtureDefaults() {
     guard isActive else { return }
     Defaults[.showInspector] = true
     Defaults[.activeInspectorSection] = inspectorSection
+    Defaults[.diffViewMode] = diffViewMode
   }
 
   /// The fake project list. Idempotent within a launch: the backing temp directories are created if

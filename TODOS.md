@@ -808,76 +808,23 @@ badge assertions need the notification a11y identifiers to be queryable — add 
 **Priority:** P3 (the smoke + opportunistic suites cover the basics; these harden the notification
 flows).
 
-### Four unit classes race over `confirmOnCloseTerminal` (macapp) — found 2026-07-25
+### Three test classes still write shared inspector `Defaults` keys (macapp) — found 2026-07-26
 
-**What:** `AppStoreCloseTabsTests`, `EmptiedWorkroomSelectionTests`, `ConfirmOnCloseTerminalTests` and
-`RunCommandTests` all write the single `Defaults[.confirmOnCloseTerminal]` key, and `-parallel-testing`
-gives each worker its own host process but **one shared UserDefaults domain** (the hazard the `Makefile`
-already warns about). One class flipping the key mid-body makes another's close path raise a modal
-instead of closing, or makes the defaults-value assertions read someone else's write.
+**What:** `UITestFixtureDefaultsTests`, `HistoryLiveRefreshTests` and `HistoryPushRefreshTests` all write
+`Defaults[.showInspector]` (two of them `activeInspectorSection` too), and `-parallel-testing` gives each
+worker its own host process but **one shared UserDefaults domain**. Same shape as the
+`confirmOnCloseTerminal` race that produced a roughly 1-in-4 red suite (now fixed — see **Recently done**).
 
-**Reproduce it in ~2 min** (it is otherwise a roughly 1-in-4 full-suite flake):
+**Why it hasn't bitten:** each of these writes the key and reads it back within a few statements, so the
+window another worker can land in is small — where the close-behaviour classes held their value across a
+whole test body. Small is not zero, and the failure mode is the worst kind: a red suite on a test that
+looks unrelated to whoever's diff is in flight.
 
-```
-make app-test APP_TEST_FLAGS="-parallel-testing-enabled YES \
-  -only-testing:WorkroomAppTests/RunCommandTests \
-  -only-testing:WorkroomAppTests/AppStoreCloseTabsTests \
-  -only-testing:WorkroomAppTests/EmptiedWorkroomSelectionTests \
-  -only-testing:WorkroomAppTests/ConfirmOnCloseTerminalTests \
-  -test-iterations 20 -run-tests-until-failure"
-```
+**How to fix:** the same move that closed the close-confirm race — read the pref through an override the
+test can set per object rather than through the global key. `UITestFixtureDefaultsTests` is the exception
+and should keep writing the real keys: it exists to test `applyFixtureDefaults`, which writes them.
 
-It fails on a *different* test almost every run — `AppStoreCloseTabsTests.testCloseOthersCollapsesASplit`
-(3 tabs left instead of 1), `.testCloseAllEmptiesTheTarget`,
-`EmptiedWorkroomSelectionTests.testCloseAllMixedTerminalAndDiffSelectsRightmostTab`,
-`ConfirmOnCloseTerminalTests.testRespectsStoredValue` / `.testEnabledByDefaultWhenUnset`. That the victim
-moves is the tell: it's the shared key, not any one test. Verified pre-existing (reproduces at
-`4a468215`, before the wait-shape fixes).
-
-**Partly mitigated already:** `RunCommandTests` no longer restores a hardcoded `true` — it puts back
-whatever it found, so it can't invent a value other classes never set. That removes one writer's worst
-behaviour but does **not** close the race: any write to a shared key can still land inside another
-class's body.
-
-**How to fix properly:** stop routing test intent through global state. Give the close path an
-override seam like the ones already in the codebase (`liveProcessOverrideForTesting`,
-`signalSupervisorForTesting`, `terminals.makeView`) — e.g. an optional `confirmOnCloseOverrideForTesting`
-on `AppStore` that `requestCloseTerminalTab` prefers over `Defaults` — and have the three close-behaviour
-classes inject it instead of writing the key. `ConfirmOnCloseTerminalTests` legitimately tests the real
-default and should keep using the real key; once it's the only writer, it stops losing races. Rejected
-alternative: `-disable-test-parallelization`, which trades a ~40% slower suite for hiding the problem.
-
-**Priority:** P2 — a ~1-in-4 red full suite is worse than a rare flake; it trains everyone to re-run.
-
-### Three `DiffViewerUITests` tests are RED (macapp) — found 2026-07-25
-
-**What:** `testJJWorkingCopyFileOpensDiffTab` (:76), `testGitWorktreeFileOpensDiff` (:93) and
-`testTabToolbarToggleSwitchesThisFileToSideBySide` (:216) all fail. Each opens a diff tab fine, then
-times out waiting for a `diff.line` element whose label contains the expected marker
-(`jj-working-copy` / `git-worktree` / `removed`).
-
-**Why it matters:** these are **not** flakes. They fail deterministically, scoped and in a batch,
-identically on `master` (verified at `236087b5`) — so they are pre-existing red, not a regression from
-recent work, and the UI suite has evidently not been run for a while (it needs a GUI login session and
-is excluded from the `make app-test` gate, which is exactly how three tests rot unnoticed).
-
-**The narrowing already done:** the fixture data is fine — `UITestFixture.rubyDiffText` still emits
-`# removed <tag>` / `# added line for <tag>`, and `DiffViewer.accessibilityLabel` still returns
-`"removed: …"`. And the *side-by-side* renderer is fine: `testSideBySideRendersTwoColumns` passes
-asserting the same content markers on `diff.side.left/right` cells. So the fault is specific to the
-**unified** renderer's `diff.line` a11y leaf being unqueryable, not to the diff pipeline or the labels.
-`accessibilityIdentifier("diff.line")` itself hasn't changed since `ca48fa15`.
-
-**How to start:** dump the a11y hierarchy for an open unified diff (the failure's own hierarchy snapshot
-in the `.xcresult` attachments, or an `XCUIApplication.debugDescription`) and find what swallowed the
-leaves. Prime suspect is a parent accessibility container collapsing them — the hazard
-`ChangesetDetailView.swift:200` already documents ("propagate onto and clobber the `ChangesetFileRow` /
-`diff.line` leaves in the sibling HSplitView"), reintroduced somewhere on the unified path. Fix the
-renderer if the leaves really are gone (a11y regression = a real accessibility bug, not just a test
-one); only re-anchor the tests if the element genuinely moved by design.
-
-**Priority:** P2 — three dead tests on a core flow, and if the leaves are truly gone it's an
-accessibility regression in the diff viewer, not merely a test problem.
+**Priority:** P3 — latent, no observed failure; worth doing the next time someone touches these classes.
 
 ## P3 — CLI
 
@@ -908,6 +855,39 @@ forking git).
 
 Condensed from the long status notes this file used to carry at the top; the full write-ups are in git
 history. Kept here for the parts that stay useful: what changed, and the traps found doing it.
+
+**2026-07-26 — the red tests were both a shared-state bug, not the bug they looked like.** Two entries
+retired from *P3 — Tests and tooling*; the diagnosis in each was wrong, which is the part worth keeping.
+
+- **Five diff UI tests were red because they read the developer's preferences.** The filed suspicion was
+  an accessibility regression — `diff.line` leaves swallowed by a parent container. It wasn't: dumping
+  `XCUIApplication.debugDescription` for an open diff showed a fully populated tree of
+  `diff.side.left`/`diff.side.right` cells and `tab.toolbar.diffSideBySide` marked `Selected`. The app was
+  simply **in side-by-side**, and `diff.line` is emitted only by the *unified* renderer. Cause:
+  `Defaults[.diffViewMode]` is a Settings picker persisted in the app's real (Dev) UserDefaults domain,
+  this machine's held `sideBySide`, and the tests asserted on "the global default" without pinning it.
+  Fixed at the source — `UITestFixture.applyInspectorDefaults` (which already existed to stop exactly this
+  leak for the inspector) is now `applyFixtureDefaults` and pins the diff layout too, defaulting to
+  unified with a `-WorkroomUITestDiffViewMode` opt-out; `DiffViewerUITests` passes the layout on **every**
+  launch, and `DiffHighlightUITests` pins unified. All 7 + 2 tests in the two classes pass.
+  Verification that matters: set the Dev domain **back** to `sideBySide` and re-run — still green, so the
+  tests are hermetic rather than merely agreeing with the machine. Trap: three of those tests were filed
+  as red and the other two were never noticed, because the UI suite needs a GUI login session and is
+  excluded from the `make app-test` gate — the exact way tests rot unseen. Cost of pinning: a fixture
+  launch overwrites these keys in the **Dev** domain (the release app's are untouched), so a UI-test run
+  resets the Dev app's inspector + diff-mode choices. Deliberate trade, documented on the seam.
+- **The `confirmOnCloseTerminal` race is closed** by `AppStore.confirmOnCloseOverrideForTesting` — a
+  per-store override the close-behaviour tests set instead of writing the shared key. `AppStoreCloseTabsTests`,
+  `EmptiedWorkroomSelectionTests` and `RunCommandTests` no longer touch `Defaults` for it at all (both
+  classes' save/restore `setUp`/`tearDown` pairs are gone; the value now lives in each `makeStore`), leaving
+  `ConfirmOnCloseTerminalTests` — which legitimately asserts the shipped default — as the only writer. The
+  four-class × 20-iteration `-run-tests-until-failure` repro that used to fail on a *different* test almost
+  every run is now clean, and the mechanism is gone, not just quiet. Residual same-shape hazard on
+  `showInspector` is filed above as P3.
+
+Full unit suite after both: **1279 passed / 0 failed / 1 skipped** (+3 tests — `UITestFixtureInspectorTests`
+is now `UITestFixtureDefaultsTests` and covers the diff-mode half of the seam, including the assertion that
+would have caught this: a persisted `sideBySide` must not survive a fixture launch).
 
 **2026-07-25 — two timing flakes killed (a unit one and a UI one).** Both were the same mistake in two
 dialects: a *fixed* wait standing in for an event that has no fixed arrival time.
