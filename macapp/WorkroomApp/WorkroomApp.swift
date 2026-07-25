@@ -22,6 +22,11 @@ struct WorkroomApp: App {
     // binary and the terminals) can find git/jj, which a Finder-launched .app's
     // minimal PATH excludes.
     setenv("PATH", ShellEnvironment.path(), 1)
+
+    // UI-test fixture mode only: park the inspector in a known state (open, on the requested
+    // section) before the first `AppStore` seeds `activeInspectorSection` from `Defaults`. Inert in
+    // production — a real user never passes the flag. See `UITestFixture.applyInspectorDefaults`.
+    UITestFixture.applyInspectorDefaults()
   }
 
   var body: some Scene {

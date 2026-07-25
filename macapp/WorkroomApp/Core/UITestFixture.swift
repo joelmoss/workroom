@@ -1,3 +1,4 @@
+import Defaults
 import Foundation
 
 /// UI-testing fixture seam (issue #3 UI tests). When the app is launched with
@@ -182,6 +183,36 @@ enum UITestFixture {
   /// instead of being left to manual QA.
   static var holdPreviewLoader: Bool {
     UserDefaults.standard.bool(forKey: "WorkroomUITestHoldPreviewLoader")
+  }
+
+  /// Which inspector section the fixture parks on
+  /// (`-WorkroomUITestInspectorSection changes|history|files`). Unset (or unrecognised) = `.changes`.
+  static var inspectorSection: ActivitySection {
+    let raw = UserDefaults.standard.string(forKey: "WorkroomUITestInspectorSection") ?? ""
+    return ActivitySection(rawValue: raw) ?? .changes
+  }
+
+  /// Force a deterministic **inspector** state in fixture mode: pane open, parked on
+  /// `inspectorSection`. Must be called before any `AppStore` is built (`WorkroomApp.init`), because
+  /// `activeInspectorSection` seeds itself from `Defaults` at construction.
+  ///
+  /// The inspector's visibility and active section are `Defaults` keys in the app's real (Dev)
+  /// UserDefaults domain, so without this every test that opens something *inside* the inspector
+  /// inherits whatever pane the developer last left behind — a machine sitting on History has no
+  /// Changes rows, and a closed inspector has nothing at all.
+  ///
+  /// A launch argument can't do this job. Argument-domain values arrive as **strings**
+  /// (`-showNotificationsInspector 1` stores `"1"`, not `true`), and `Defaults` reads a natively
+  /// supported type with `as? Bool`, which fails on a string and hands back the key's default
+  /// (`false`) — so the argument doesn't just fail to force the pane open, it *pins it shut*: the
+  /// argument domain outranks the app domain, so it also shadows the persisted value AND every
+  /// later write (`AppStore.apply(.iconClick)`), leaving the pane unopenable for the whole run.
+  /// `UITestFixture`'s own flags survive that only because `UserDefaults.bool(forKey:)` coerces
+  /// strings. Hence a fixture-namespaced argument mirrored into `Defaults` here instead.
+  static func applyInspectorDefaults() {
+    guard isActive else { return }
+    Defaults[.showInspector] = true
+    Defaults[.activeInspectorSection] = inspectorSection
   }
 
   /// The fake project list. Idempotent within a launch: the backing temp directories are created if

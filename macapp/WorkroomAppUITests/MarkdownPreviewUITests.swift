@@ -28,13 +28,13 @@ final class MarkdownPreviewUITests: XCTestCase {
     let app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
-    // Force the inspector visible and parked on Changes through the *argument* domain, which outranks
-    // the persisted values. `showNotificationsInspector` defaults to false and both it and
-    // `inspector.activeSection` live in the Dev app's real UserDefaults domain, so without this the
-    // test inherits whatever pane the developer (or a previous test) last left behind — which silently
-    // removes the Changes rows this test opens the file from.
-    app.launchArguments += ["-showNotificationsInspector", "1"]
-    app.launchArguments += ["-inspector.activeSection", "changes"]
+    // Force the inspector visible and parked on Changes. Both live in the Dev app's real UserDefaults
+    // domain, so without this the test inherits whatever pane the developer (or a previous test) last
+    // left behind — which silently removes the Changes rows this test opens the file from. The fixture
+    // applies it (`UITestFixture.applyInspectorDefaults`) rather than the test setting the `Defaults`
+    // keys directly: an argument-domain value is a *string*, which `Defaults` can't read as a `Bool`,
+    // and it shadows both the persisted value and every later write — pinning the pane shut.
+    app.launchArguments += ["-WorkroomUITestInspectorSection", "changes"]
     if holdLoader {
       app.launchArguments += ["-WorkroomUITestHoldPreviewLoader", "1"]
     }
