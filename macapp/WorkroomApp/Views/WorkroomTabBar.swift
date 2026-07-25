@@ -419,7 +419,9 @@ struct WorkroomTabBar: View {
 /// A single Workrooms View tab chip: a leading glyph, the project name, then run / unread / active
 /// styling. A workroom chip leads with a cube glyph and trails its own name in secondary text; a root
 /// chip leads with a house glyph (its branch is dropped from the chip; it lives in the inspector). The
-/// full path is the tooltip, so two same-named workrooms across projects stay distinct. Reads the
+/// title is capped so a long project or workroom name tail-truncates instead of stretching the chip
+/// (mirrors `TerminalTabChip`); the tooltip carries the full title AND the path, so a truncated chip
+/// still reveals its whole name and two same-named workrooms across projects stay distinct. Reads the
 /// store for unread + run-command state; the bar wraps it with the gestures.
 private struct WorkroomTabChip: View {
   let sid: SidebarID
@@ -435,6 +437,11 @@ private struct WorkroomTabChip: View {
   @EnvironmentObject var terminals: TerminalSessions
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   private let theme = ThemeService.shared
+
+  /// The widest the title (project name + `/` + workroom name) renders before it tail-truncates.
+  /// Beyond this the chip would keep stretching for a long workroom name; the ellipsis + `.help`
+  /// tooltip carry the rest. Mirrors `TerminalTabChip.maxTitleWidth` (same 180pt).
+  private static let maxTitleWidth: CGFloat = 180
 
   private var isRoot: Bool {
     if case .root = sid { return true }
@@ -464,6 +471,13 @@ private struct WorkroomTabChip: View {
   private var branchLabel: String? {
     guard case .root(let project) = sid else { return nil }
     return RootPresentation.make(store.rootRefs[project] ?? .unresolved).label
+  }
+
+  /// The full, untruncated rendered title — `primaryLabel`, plus `/` + `workroomName` for a workroom —
+  /// exactly what the (possibly capped) title HStack shows. Feeds the tooltip so a tail-truncated chip
+  /// still reveals its whole name on hover, mirroring `TerminalTabChip.help(tab.title)`.
+  private var fullTitle: String {
+    workroomName.map { "\(primaryLabel)/\($0)" } ?? primaryLabel
   }
 
   var body: some View {
@@ -498,6 +512,12 @@ private struct WorkroomTabChip: View {
       }
       .font(.subheadline)
       .lineLimit(1)
+      .truncationMode(.tail)
+      // Cap the WHOLE title group (not each `Text` individually) so a long name tail-truncates as
+      // one unit: per-`Text` caps would let the project name and workroom name truncate
+      // independently and eat the workroom name — the more identifying half — first. A short title
+      // stays tight (leading alignment, the HStack sizes to its ideal width up to the cap).
+      .frame(maxWidth: Self.maxTitleWidth, alignment: .leading)
       // VCS dirty status is carried by the leading house/cube tint above (no separate dot here).
       // Run-command dot (issue #7), trailing-most: green play while running; a red octagon if the
       // last run FAILED (#79 — distinct glyph, not just a red tint, for colourblind safety); hidden
@@ -582,7 +602,10 @@ private struct WorkroomTabChip: View {
         Color.clear.preference(key: WorkroomTabWidthKey.self, value: [sid: geo.size.width])
       }
     }
-    .help(target.path)
+    // The full, untruncated title (mirrors `TerminalTabChip.help(tab.title)`) plus the path on a
+    // second line — genuinely useful on its own (two same-named workrooms across projects stay
+    // distinct), and reads cleanly stacked under the title in a tooltip.
+    .help("\(fullTitle)\n\(target.path)")
     // The workroom's right-click menu, shared with the split group title bar (issue #112). The tab
     // keeps "Close" (whole-workroom close), so `closeName` is non-nil: a root chip shows Close only,
     // a workroom chip shows the full set — same as before the extraction.

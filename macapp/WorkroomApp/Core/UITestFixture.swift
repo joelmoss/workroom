@@ -95,6 +95,20 @@ enum UITestFixture {
     return (2...workroomCount).map { "uitest-room-\($0)" }
   }
 
+  /// When set (`-WorkroomUITestLongWorkroomName 1`), the fixture's FIRST seeded workroom is named
+  /// `longWorkroomNameValue` instead of `workroomName` — a real oversized name for `WorkroomTabChip`'s
+  /// title-cap XCUITest (mirrors `TerminalTabChip`'s, issue #129 follow-up) to clip. Any extra
+  /// workrooms `workroomCount` seeds keep their normal short names. Unset keeps the short
+  /// `workroomName`.
+  static var longWorkroomName: Bool {
+    UserDefaults.standard.bool(forKey: "WorkroomUITestLongWorkroomName")
+  }
+
+  /// The oversized name seeded under `longWorkroomName` — comfortably past `WorkroomTabChip
+  /// .maxTitleWidth` (180pt) at `.subheadline`, so the chip's tail-truncation is exercised
+  /// deterministically instead of depending on a real long name existing somewhere on disk.
+  static let longWorkroomNameValue = String(repeating: "abcdefghij", count: 13)  // 130 chars
+
   /// When set (`-WorkroomUITestWorkroomSplit 1`), the fixture starts already in a workroom-into-
   /// workroom split of the project ROOT + the first workroom, so the split group title bar (issue
   /// #112) renders on launch WITHOUT an XCUITest drag (which is flaky). One split covers both menu
@@ -277,8 +291,12 @@ enum UITestFixture {
     // A second workroom only for the drag/reorder scenario, so the tab bar has two chips to swap.
     let workroomDir2 = workroomsBase.appendingPathComponent(workroomName2, isDirectory: true)
     var dirs = [projectDir, workroomDir]
+    // The on-disk dir keeps the short `workroomName` regardless (it's just a temp path); only the
+    // MODEL's name — what the chip actually renders — swaps to the oversized value.
     var workrooms = [
-      Workroom(name: workroomName, path: workroomDir.path, vcsName: "git", warnings: [])
+      Workroom(
+        name: longWorkroomName ? longWorkroomNameValue : workroomName, path: workroomDir.path,
+        vcsName: "git", warnings: [])
     ]
     if twoTabs {
       dirs.append(workroomDir2)

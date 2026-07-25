@@ -19,7 +19,9 @@ final class TabStripOverflowUITests: XCTestCase {
   /// Enough workroom chips to overflow the title bar's tab area.
   private let overflowWorkrooms = 10
 
-  private func launchedApp(terminalTabs: Int? = nil, workrooms: Int? = nil) -> XCUIApplication {
+  private func launchedApp(
+    terminalTabs: Int? = nil, workrooms: Int? = nil, longWorkroomName: Bool = false
+  ) -> XCUIApplication {
     let app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
@@ -27,6 +29,7 @@ final class TabStripOverflowUITests: XCTestCase {
       app.launchArguments += ["-WorkroomUITestTerminalTabs", "\(terminalTabs)"]
     }
     if let workrooms { app.launchArguments += ["-WorkroomUITestWorkroomCount", "\(workrooms)"] }
+    if longWorkroomName { app.launchArguments += ["-WorkroomUITestLongWorkroomName", "1"] }
     app.launch()
     app.activate()
     return app
@@ -166,6 +169,15 @@ final class TabStripOverflowUITests: XCTestCase {
     }
   }
 
+  /// Every workroom tab chip carries a `workroom.tab.<target.id>` identifier and is ONE combined
+  /// accessibility element (`.accessibilityElement(children: .combine)`) — unlike the terminal chips,
+  /// whose identifier cascades onto the title `StaticText` and are therefore counted via
+  /// `terminalChips`'s `staticTexts` query above. Match the chip itself by identifier prefix instead.
+  private func workroomChips(_ app: XCUIApplication) -> XCUIElementQuery {
+    app.descendants(matching: .any)
+      .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workroom.tab."))
+  }
+
   // MARK: Workroom tab bar (title bar)
 
   /// The `WorkroomTabBar` half: both trailing controls pin as one block, so neither the "+" nor the
@@ -190,5 +202,44 @@ final class TabStripOverflowUITests: XCTestCase {
     XCTAssertLessThanOrEqual(
       newWorkroom.frame.minX - openWorkroom.frame.maxX, 12,
       "open + new should remain adjacent when pinned")
+  }
+
+  /// The workroom chip's title is capped (mirrors `TerminalTabChip.maxTitleWidth`, issue #129
+  /// follow-up): a workroom whose real name is 130 characters must still render a bounded chip
+  /// instead of one that stretches wider than the window. `-WorkroomUITestLongWorkroomName 1` seeds
+  /// that oversized name on the fixture's sole (auto-selected) workroom, so the cap has a real long
+  /// name to clip rather than relying on one existing on disk.
+  ///
+  /// Upper-bound arithmetic, read off `WorkroomTabChip`'s modifiers: the capped title HStack
+  /// (`maxTitleWidth` 180) + the chip's inner horizontal padding (10 * 2 = 20) + its outer margin
+  /// horizontal padding (2 * 2 = 4) + the outer HStack's one inter-element gap between the leading
+  /// cube glyph and the title group (spacing 6 — this fixture workroom has no missing-directory
+  /// triangle and no run-tab icon, so the title group is the glyph's only sibling) + the cube glyph's
+  /// own rendered width at font size 10 (~14pt, rounded up to 20 for slack) = 180 + 20 + 4 + 6 + 20 =
+  /// 230. The 260 bound below adds ~30pt of margin for font-metric/rounding variance while staying far
+  /// below what an uncapped 130-character `.subheadline` title would render (several hundred points),
+  /// so the assertion still fails if the cap regresses.
+  func testWorkroomChipTitleCapsALongName() {
+    let app = launchedApp(longWorkroomName: true)
+    let chip = workroomChips(app).firstMatch
+    XCTAssertTrue(chip.waitForExistence(timeout: 10))
+    XCTAssertLessThanOrEqual(
+      chip.frame.width, 260,
+      "a long workroom name must tail-truncate, not stretch the chip past the window")
+    // The load-bearing half: without it this test passes vacuously whenever the fixture flag fails to
+    // apply, since a SHORT name also satisfies the bound above. The oversized name must actually have
+    // reached the cap, so the chip has to be wider than a short-named one — those render ~150pt
+    // (`UITestProject/uitest-room-1` at `.subheadline` plus the chrome above), so 200 separates the two
+    // without pinning an exact font metric.
+    XCTAssertGreaterThan(
+      chip.frame.width, 200,
+      "the long-name fixture didn't apply — the chip is short-name width, so the cap is untested")
+    let newWorkroom = element(app, id: "NewWorkroom")
+    let openWorkroom = element(app, id: "OpenWorkroom")
+    XCTAssertTrue(newWorkroom.waitForExistence(timeout: 10))
+    XCTAssertTrue(openWorkroom.waitForExistence(timeout: 10))
+    let window = app.windows.firstMatch.frame
+    XCTAssertTrue(window.contains(newWorkroom.frame), "the + left the window")
+    XCTAssertTrue(window.contains(openWorkroom.frame), "the chevron left the window")
   }
 }
