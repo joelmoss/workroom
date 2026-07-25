@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [master]
 
+# Superseded PR pushes stop burning a macOS runner. Master keeps every run so each commit on the
+# release branch has its own signal.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   cli:
     runs-on: ubuntu-latest
@@ -54,21 +60,46 @@ jobs:
       - name: Lint (swift-format --strict)
         run: make app-lint
 
-      # The Rust VCS core (jj-lib via UniFFI) the app links. Cache the heavy jj-lib build + the crate
-      # registry keyed on the lockfile so an unchanged dep set skips recompiling. `make app-vcs` runs
+      # The Rust VCS core (jj-lib via UniFFI) the app links. `make app-vcs` runs
       # vcs/scripts/build-apple.sh to produce the WrVcs package's xcframework + Swift bindings, and
       # MUST run before SPM resolves that local package below. Rust is preinstalled on the runner.
-      - name: Cache Rust build
+      #
+      # Cache the *outputs*, not cargo's state: they only change when vcs/ (or the compiler) does,
+      # which most commits don't touch, so the whole ~4min crate-graph build is skipped outright.
+      # The key mirrors the input hash build-apple.sh stamps, so a restored set is also a no-op for
+      # the app-vcs dep of `make app-test` below. rustc's version is in the key because it's in that
+      # hash — leaving it out would mean a toolchain bump hits the cache, rebuilds anyway, and (the
+      # primary key having hit) never saves the result.
+      - name: Rust toolchain version (cache key input)
+        id: rust
+        run: |
+          # e.g. "rustc 1.96.1 (31fca3adb 2026-06-26)" → "1.96.1-31fca3adb" (cache-key-safe).
+          echo "version=$(rustc --version | awk '{print $2 "-" $3}' | tr -d '()')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache VCS core outputs
+        id: vcs-core
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            vcs/target
-          key: cargo-${{ runner.os }}-${{ hashFiles('vcs/Cargo.lock') }}
-          restore-keys: cargo-${{ runner.os }}-
+            vcs/swift/WrVcs/Frameworks
+            vcs/swift/WrVcs/Sources/WrVcs/wr_vcs_uniffi.swift
+            vcs/swift/WrVcs/Sources/wr_vcs_uniffiFFI/include
+          key: >-
+            wrvcs-${{ runner.os }}-${{ steps.rust.outputs.version }}-${{
+            hashFiles('vcs/**/*.rs', 'vcs/**/Cargo.toml', 'vcs/Cargo.lock', 'vcs/scripts/build-apple.sh') }}
+
+      # Cold path only (vcs/ changed): keep cargo itself incremental. Swatinem/rust-cache rather than
+      # a hand-rolled actions/cache of ~/.cargo + vcs/target, which restored a target/ whose
+      # fingerprints were always stale — every run recompiled all 257 crates on a cache *hit*, and
+      # the hit meant the useless cache was never re-saved.
+      - name: Cache cargo (cold path)
+        if: steps.vcs-core.outputs.cache-hit != 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: vcs
 
       - name: Build VCS core (Rust → xcframework + Swift bindings)
+        if: steps.vcs-core.outputs.cache-hit != 'true'
         run: make app-vcs
 
       # The Rust core's own tests (jj-lib reads against real throwaway jj repos, incl. the
