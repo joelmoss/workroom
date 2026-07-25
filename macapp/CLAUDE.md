@@ -37,10 +37,10 @@ VCS-first IDE — issue #59 is the first brick):
   only jj needs the Rust/UniFFI bridge. (An all-Rust core with gix was tried and dropped: gix bought
   no real unification and libgit2 is the more complete git engine.)
 
-**Two reads reach past SwiftGitX**, both linking the `libgit2` C API **directly** (its own SPM package
+**Three reads reach past SwiftGitX**, all linking the `libgit2` C API **directly** (its own SPM package
 in `project.yml`, URL + version identical to SwiftGitX's own dependency so SwiftPM sees one package
 identity). `Core/LibGit2.swift` owns the single `git_libgit2_init` and hands out raw `git_repository`
-handles (SwiftGitX inits inside `Repository.open`, which a direct C caller can't rely on); these three
+handles (SwiftGitX inits inside `Repository.open`, which a direct C caller can't rely on); these four
 files are the only ones in the app touching raw libgit2:
 
 - **Push state — `Core/GitGraph.swift`.** SwiftGitX cannot express a commit *range*: its
@@ -58,6 +58,16 @@ files are the only ones in the app touching raw libgit2:
   Renames only, not copies — matching git's CLI default. `GitProvider.changeset`/`.fileDiff` both read
   through it, so the History file list and the patch text can't disagree. Working-copy status was never
   affected: it gets pairing from libgit2's `.renamesIndex`/`.renamesWorkingTree` status options.
+- **Working-tree ± line counts — `Core/GitDiffStats.swift`**, via `git_diff_get_stats`. SwiftGitX
+  surfaces no diffstat, and its `Diff` is **eager**: `Diff.init` builds a `Patch` per delta and
+  materializes every hunk line into a Swift `String` before the caller sees it. Summing those for the
+  badge cost one `String` per changed line of the whole worktree on **every** status refresh, so the
+  counts moved to libgit2, which counts in C and allocates nothing Swift-side. The diff itself is
+  irreducible — that's what `git diff --shortstat` costs too. With `changeset` now counting through
+  `GitCommitDiff`, **no** `+N −M` in the app is summed off SwiftGitX hunk lines any more, which also
+  ends a real bug: that sum counted the EOFNL markers (`\ No newline at end of file`) as lines, so
+  changing only a file's trailing newline reported two deletions where git reports `1 insertion(+),
+  1 deletion(-)`. libgit2 skips them, as `git diff --shortstat`/`--numstat` do.
 
 **Read surface & routing.** `Core/VCSProviding.swift` is the one Swift protocol; `VCS.provider(for:)`
 routes by repo kind. `RustJJProvider` maps `WrVcs.*` → app-native models, `GitProvider` wraps

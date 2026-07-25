@@ -300,7 +300,11 @@ struct GitProvider: VCSProviding {
       }
       // Current branch for CI (nil when detached / unborn) — `branch.current` throws when detached.
       let branch = (try? repo.branch.current.name)
-      let (insertions, deletions) = Self.workingLineStats(repo)
+      // `git diff HEAD` line counts, on raw libgit2 rather than a second SwiftGitX `Diff`: deriving them
+      // from one would materialize every patch line of the whole worktree on every refresh, for two
+      // integers. See `GitDiffStats`. `nil` (a failed read) means the badge shows no count.
+      let stats = GitDiffStats.workingTree(root: root)
+      let (insertions, deletions) = (stats?.insertions, stats?.deletions)
       return GitWorkingStatus(
         dirty: !files.isEmpty, conflicted: conflicted, files: files, branch: branch,
         insertions: insertions, deletions: deletions)
@@ -455,33 +459,6 @@ struct GitProvider: VCSProviding {
     }
   }
 
-  /// `git diff HEAD` line counts (staged + unstaged tracked changes; untracked files excluded, as
-  /// git's `--shortstat HEAD` does). `nil` when there's no diff to read. Summed from patch lines
-  /// since libgit2's diff-stats aren't surfaced by SwiftGitX.
-  private static func workingLineStats(_ repo: Repository) -> (insertions: Int?, deletions: Int?) {
-    guard let diff = try? repo.diff(to: [.workingTree, .index]) else { return (nil, nil) }
-    let (ins, del) = diffLineStats(diff)
-    return (ins, del)
-  }
-
-  /// Sum added/removed lines across a whole diff (git has no surfaced diffstat in SwiftGitX, so count
-  /// the hunk lines) — the changeset header's `+N −M` and the working-tree line counts share this.
-  private static func diffLineStats(_ diff: Diff) -> (insertions: Int, deletions: Int) {
-    var insertions = 0
-    var deletions = 0
-    for patch in diff.patches {
-      for hunk in patch.hunks {
-        for line in hunk.lines {
-          switch line.type {
-          case .addition, .additionEOF: insertions += 1
-          case .deletion, .deletionEOF: deletions += 1
-          default: break
-          }
-        }
-      }
-    }
-    return (insertions, deletions)
-  }
 }
 
 /// The git working-tree status behind the sidebar/Changes badges (issue #59), read via SwiftGitX.

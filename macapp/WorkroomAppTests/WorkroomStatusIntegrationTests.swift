@@ -159,6 +159,64 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
     XCTAssertFalse(ws.dirty)
     XCTAssertTrue(ws.files.isEmpty)
     XCTAssertEqual(ws.branch, "main")
+    // A clean tree is a real `(0, 0)` read, NOT an unanswerable `nil` — `nil` is reserved for a failed
+    // read, and the badge presentation distinguishes them.
+    XCTAssertEqual(ws.insertions, 0)
+    XCTAssertEqual(ws.deletions, 0)
+  }
+
+  /// The working counts must match `git diff --shortstat` on the one case where a hand-rolled sum over
+  /// SwiftGitX's hunk lines does NOT: a change to a file's trailing newline. libgit2 emits an EOFNL
+  /// marker line (`\ No newline at end of file`) alongside the real deletion, and the old code counted
+  /// it as a second deletion. git counts one, and so does `GitDiffStats` (via `git_diff_get_stats`).
+  func testGitProviderWorkingStatusIgnoresEOFNLMarkers() throws {
+    let dir = try gitRepoWithUpstream()
+    // Commit b.txt with NO trailing newline, then add ONLY that newline.
+    sh("printf 'one\\ntwo' > b.txt && git add b.txt && git commit -qm b", in: dir)
+    sh("printf 'one\\ntwo\\n' > b.txt", in: dir)
+
+    // Anchor the expectation to git itself rather than to this test's arithmetic.
+    let numstat = sh("git diff --numstat", in: dir).out.trimmingCharacters(
+      in: .whitespacesAndNewlines)
+    XCTAssertEqual(numstat, "1\t1\tb.txt", "git's own count for a trailing-newline-only change")
+
+    let ws = try GitProvider().workingStatus(root: URL(fileURLWithPath: dir))
+    XCTAssertEqual(ws.insertions, 1, "the EOFNL marker must not count as an insertion")
+    XCTAssertEqual(ws.deletions, 1, "the EOFNL marker must not count as a deletion")
+  }
+
+  /// The same EOFNL rule on the changeset (commit) path, which still sums SwiftGitX's hunk lines —
+  /// that `Diff` is needed anyway for the file list, so it isn't worth a second libgit2 read, but it
+  /// must agree with `git show --shortstat` all the same.
+  func testGitProviderChangesetIgnoresEOFNLMarkers() async throws {
+    let dir = try gitRepoWithUpstream()
+    sh("printf 'one\\ntwo' > b.txt && git add b.txt && git commit -qm b", in: dir)
+    sh("printf 'one\\ntwo\\n' > b.txt && git commit -qam newline", in: dir)
+    let sha = sh("git rev-parse HEAD", in: dir).out.trimmingCharacters(in: .whitespacesAndNewlines)
+
+    let numstat = sh("git show --numstat --format= HEAD", in: dir).out
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    XCTAssertEqual(numstat, "1\t1\tb.txt", "git's own count for the committed newline change")
+
+    let cs = try await GitProvider().changeset(root: URL(fileURLWithPath: dir), commitID: sha)
+    XCTAssertEqual(cs.insertions, 1)
+    XCTAssertEqual(cs.deletions, 1)
+  }
+
+  /// A repo with no commits yet: there is no HEAD tree to diff against, so the counts come from the
+  /// empty tree and a staged file reads as insertions. git has no comparison to offer here — `git diff
+  /// HEAD` is fatal without a HEAD — but the badge must not go blank or throw on a fresh project.
+  func testGitProviderWorkingStatusUnbornHEAD() throws {
+    try requireTool("git")
+    let dir = tempDir()
+    sh("git init -q . && git config user.email a@b.c && git config user.name t", in: dir)
+    sh("printf 'one\\ntwo\\n' > a.txt && git add a.txt", in: dir)
+
+    let ws = try GitProvider().workingStatus(root: URL(fileURLWithPath: dir))
+    XCTAssertTrue(ws.dirty)
+    XCTAssertNil(ws.branch, "an unborn branch has no commit for CI to look up")
+    XCTAssertEqual(ws.insertions, 2, "both staged lines count against the empty tree")
+    XCTAssertEqual(ws.deletions, 0)
   }
 
   /// History rows carry branch/tag decoration on git, the way they carry bookmarks on jj: the tip

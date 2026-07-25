@@ -174,20 +174,6 @@ careful review/testing, not a drive-by fix.
 
 **Priority:** P2 (efficiency/responsiveness, not correctness; no user-visible bug today).
 
-### Git working line-counts recompute the whole-worktree diff per refresh (macapp) — VCS-foundation eng-review
-
-**What:** `GitProvider.workingLineStats` (`GitProvider.swift:~317`) runs `repo.diff(to: [.workingTree,
-.index])` — the ENTIRE worktree diff — on every status refresh (focus/appear/manual), just to sum
-±line counts for the badge. The per-file diff path was carefully kept per-file; this reintroduces
-whole-worktree work for a cosmetic count.
-
-**How to start:** Prefer libgit2's diff stats API if SwiftGitX surfaces it (avoids materializing every
-patch), or make the badge counts lazy / cache them per (HEAD, worktree-generation).
-
-**Depends on:** VCS read foundation. Touches `Core/GitProvider.swift`.
-
-**Priority:** P2 (perf on large dirty trees; every refresh).
-
 ## P3 — VCS engine, diffs, and status
 
 ### Structured diff model (`FileDiff` hunks) for the diff viewer (macapp) — 47b / VCS-foundation follow-up
@@ -875,6 +861,36 @@ readers. Two things fell out of replacing that call: a rename's `+N −M` shrink
 **root commits list their files at all** — SwiftGitX diffs a first commit against itself, so History had
 been showing none. The cross-backend divergence test is now
 `testColocatedCommitRenameMatchesAcrossBackends` (parity, both directions, patch text included).
+
+**2026-07-25 — git working ± line counts moved off SwiftGitX.**
+- The badge counts read `git_diff_get_stats` through raw libgit2 (`Core/GitDiffStats.swift`) instead of
+  summing a SwiftGitX `Diff`. The cost wasn't the diff — that's irreducible, it's what
+  `git diff --shortstat` costs too — it was that **SwiftGitX's `Diff.init` is eager**: it builds a
+  `Patch` per delta and materializes every hunk line into a Swift `String` before the caller sees the
+  value. So two integers cost one `String` + a `Line` struct per changed line of the whole worktree, on
+  every status refresh (sweep/focus/appear). libgit2 counts in C and allocates nothing Swift-side.
+  **Measured, don't estimate: 1.7× (115ms → 68ms)** on 300 files × 200 lines with every line changed
+  (60k insertions / 60k deletions), both engines returning identical counts. Modest on purpose — the
+  diff dominates and can't be removed; what's gone is the Swift materialization on top of it. On a
+  small dirty tree the saving is proportionally small, which is why the entry was scoped to large ones.
+- **It was also wrong, and that's the part worth remembering.** The hand-rolled sum counted SwiftGitX's
+  `.additionEOF`/`.deletionEOF` — the `\ No newline at end of file` markers — as real lines. They're
+  always paired with a genuine addition/deletion, so a file whose trailing newline changed reported
+  **2 deletions where git reports 1**. libgit2's `git_patch_line_stats` skips them and says why in its
+  own source comment; `git diff --numstat` agrees. This landed alongside the rename work above, which had
+  already moved the `changeset` counts onto the same C call, so `diffLineStats` — the hand-rolled sum, and
+  the last EOFNL over-counter — lost its final caller and is **deleted**: no `+N −M` in the app is summed
+  off SwiftGitX hunk lines any more. Pinned by two tests that assert against real `git --numstat` output
+  rather than against arithmetic in the test.
+- `GitDiffStats` opens its handle through `Core/LibGit2.swift` (the rename work's shared owner of
+  `git_libgit2_init`), now serving three raw readers. **Residual, deliberately not chased:**
+  `workingStatus` opens two repo handles per refresh (SwiftGitX's for the file list, ours for the counts).
+  Cheap next to the diff, and it collapses on its own if that read ever goes raw-libgit2 — SwiftGitX keeps
+  its `git_repository` pointer `internal`, so there's no way to borrow one today.
+- Trap: an unborn HEAD has no tree to diff, and libgit2 spells "empty tree" as a NULL `git_tree *` —
+  the same choice SwiftGitX made, kept so a just-initialized project's badge doesn't go blank. There's
+  no git answer to check it against (`git diff HEAD` is fatal without a HEAD), which is exactly why it
+  needs its own test.
 
 **2026-07-25 — tab strips (#129 follow-ups) and the pane floor.**
 - **`WorkroomTabChip`'s title is capped** at 180pt like the terminal chip, with the full title in the
