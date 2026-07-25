@@ -338,15 +338,16 @@ final class VCSProviderConformanceTests: XCTestCase {
       "jj pairs the delete into the rename row; got \((jj.changedFiles ?? []).map(\.id))")
   }
 
-  /// The rename divergence that remains, asserted so it can't be mistaken for drift: for a **commit**
-  /// (History), jj reports one `.renamed` row and git reports delete + add.
+  /// The **commit** (History) counterpart of the working-copy test above — the last rename divergence
+  /// between the backends, and the reason `GitCommitDiff` exists: jj pairs renames natively, while a
+  /// SwiftGitX `repo.diff(commit:)` is a plain tree-to-tree diff that no `git_diff_find_similar` ever
+  /// touched, so git used to report delete + add here. git's own CLI defaults to `diff.renames=true`,
+  /// so `git show` on this commit has always shown one rename row; this asserts our two backends now
+  /// agree with it and with each other.
   ///
-  /// Not a jj bug — the opposite. `GitProvider.changeset` goes through SwiftGitX's
-  /// `repo.diff(commit:)`, a plain tree-to-tree diff, and SwiftGitX exposes no
-  /// `git_diff_find_similar`, so libgit2 is never asked to pair rewrites. (git's own CLI defaults to
-  /// `diff.renames=true`, so `git show` on this same commit DOES show a rename — this is a gap in our
-  /// git read, tracked in TODOS.md.) Update this test when that lands; don't "fix" jj to match.
-  func testColocatedCommitRenameDivergesUntilGitDetectsIt() async throws {
+  /// The per-file diff text is checked too: a file list that says "renamed" while its diff renders a
+  /// whole-file add is the half-fixed state, so both sides must carry `rename from` for the parser.
+  func testColocatedCommitRenameMatchesAcrossBackends() async throws {
     try requireTool("git")
     try requireTool("jj")
     let root = try colocatedRenameFixture()
@@ -366,8 +367,18 @@ final class VCSProviderConformanceTests: XCTestCase {
 
     let git = try await GitProvider().changeset(root: url, commitID: cid)
     XCTAssertEqual(
-      Set(git.files.map { "\($0.kind):\($0.path)" }), Set(["deleted:old.txt", "added:new.txt"]),
-      "git's commit diff has no rename detection wired up yet")
+      Set(git.files.map { "\($0.kind):\($0.path)" }), Set(["renamed:new.txt"]),
+      "git must pair a committed rename too; got \(git.files)")
+    XCTAssertEqual(git.files.first?.oldPath, "old.txt")
+
+    for (name, text) in [
+      ("git", try await GitProvider().fileDiff(root: url, commitID: cid, path: "new.txt")),
+      ("jj", try await RustJJProvider().fileDiff(root: url, commitID: cid, path: "new.txt")),
+    ] {
+      XCTAssertEqual(
+        UnifiedDiff.parse(text).renamedFrom, "old.txt",
+        "\(name)'s per-file diff should name the pre-move path: \(text)")
+    }
   }
 
   // MARK: - Fixture helpers (mirror WorkroomStatusIntegrationTests)

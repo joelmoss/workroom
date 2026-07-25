@@ -243,30 +243,6 @@ the unified type; drop the `GitWorkingStatus` bridge in `WorkroomStatusResolver`
 
 **Priority:** P3 (consistency/cleanup; the hand-bridged path works today).
 
-### git commit diffs have no rename detection (macapp) — jj-rename follow-up
-
-**What:** `GitProvider.changeset` reads `repo.diff(commit:)` (SwiftGitX → `git_diff_tree_to_tree`)
-and never calls `git_diff_find_similar`, so a **committed** rename reports as delete-old + add-new.
-`workingStatus` is fine — it passes `.renamesIndex`/`.renamesWorkingTree` — so the same rename pairs
-in the Changes panel and splits in History.
-
-**Why:** git's own CLI defaults to `diff.renames=true`, so `git show` on that commit DOES show one
-rename row; our History disagrees with git itself. It's now also the ONE remaining cross-backend
-rename divergence: jj reports the commit as one `.renamed` row (shipped), pinned by
-`VCSProviderConformanceTests.testColocatedCommitRenameDivergesUntilGitDetectsIt` — which should be
-rewritten into a parity assertion when this lands, NOT "fixed" by making jj match git.
-
-**How to start:** SwiftGitX exposes no find-similar API and only vends its `SwiftGitX` product, so
-this needs either an upstream addition or depending on its `libgit2` package product directly (mind
-the modulemap collision noted in `macapp/CLAUDE.md` → VCS core). Then apply
-`git_diff_find_similar` to the changeset diff before mapping deltas, and set `oldPath` for the
-renamed delta (`mapDelta` already handles `.renamed`/`.copied`).
-
-**Depends on:** nothing in-app. Touches `Core/GitProvider.swift` (+ possibly `project.yml`).
-
-**Priority:** P3 (History file list wrong on committed renames; the diff content itself is correct,
-and the Changes panel already pairs them).
-
 ### Git-side errors still flatten to `.io` (macapp) — error-taxonomy follow-up
 
 **What:** `GitProvider` throws `VCSError.io("\(error)")` from every catch, so nothing on the git path
@@ -887,6 +863,18 @@ forking git).
 
 Condensed from the long status notes this file used to carry at the top; the full write-ups are in git
 history. Kept here for the parts that stay useful: what changed, and the traps found doing it.
+
+**2026-07-25 — git commit diffs detect renames.** `Core/GitCommitDiff.swift` builds a commit's diff on
+raw libgit2 (`git_diff_tree_to_tree` + `git_diff_find_similar`, renames only, matching git's
+`diff.renames=true` default) and `GitProvider.changeset`/`.fileDiff` both read through it, so History's
+file list and its patch text can't disagree. The stated blocker in the old entry was stale — the
+`libgit2` product was already linked directly for `GitGraph`; what's real is that a SwiftGitX `Diff`
+can't be post-processed (deltas materialized in an `internal` init, the `git_diff` freed in a `defer`,
+repo pointer `internal`). `Core/LibGit2.swift` now owns the single `git_libgit2_init` for both raw
+readers. Two things fell out of replacing that call: a rename's `+N −M` shrinks to git's numbers, and
+**root commits list their files at all** — SwiftGitX diffs a first commit against itself, so History had
+been showing none. The cross-backend divergence test is now
+`testColocatedCommitRenameMatchesAcrossBackends` (parity, both directions, patch text included).
 
 **2026-07-25 — tab strips (#129 follow-ups) and the pane floor.**
 - **`WorkroomTabChip`'s title is capped** at 180pt like the terminal chip, with the full title in the

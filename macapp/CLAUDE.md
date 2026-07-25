@@ -37,16 +37,27 @@ VCS-first IDE — issue #59 is the first brick):
   only jj needs the Rust/UniFFI bridge. (An all-Rust core with gix was tried and dropped: gix bought
   no real unification and libgit2 is the more complete git engine.)
 
-**One read reaches past SwiftGitX: push state.** `Core/GitGraph.swift` links the `libgit2` C API
-**directly** (its own SPM package in `project.yml`, URL + version identical to SwiftGitX's own
-dependency so SwiftPM sees one package identity). SwiftGitX cannot express a commit *range* — its
-`CommitSequence` only calls `git_revwalk_push`, never `git_revwalk_hide`, it exposes no
-merge-base/graph helper, and its repository pointer is `internal` — so "which commits aren't on
-`origin` yet" (`HEAD --not refs/remotes/origin/*`) needs the C API. `GitGraph` owns its own
-`git_libgit2_init` (SwiftGitX inits inside `Repository.open`, which a direct caller can't rely on) and
-is the only file in the app touching raw libgit2. The jj side answers the same question natively with
-one `ancestors(<tracked @origin tips>)` revset. Push state is **origin-scoped** and any unreadable ref
-degrades the WHOLE page to "unknown" (no badge) rather than a partial answer.
+**Two reads reach past SwiftGitX**, both linking the `libgit2` C API **directly** (its own SPM package
+in `project.yml`, URL + version identical to SwiftGitX's own dependency so SwiftPM sees one package
+identity). `Core/LibGit2.swift` owns the single `git_libgit2_init` and hands out raw `git_repository`
+handles (SwiftGitX inits inside `Repository.open`, which a direct C caller can't rely on); these three
+files are the only ones in the app touching raw libgit2:
+
+- **Push state — `Core/GitGraph.swift`.** SwiftGitX cannot express a commit *range*: its
+  `CommitSequence` only calls `git_revwalk_push`, never `git_revwalk_hide`, it exposes no
+  merge-base/graph helper, and its repository pointer is `internal` — so "which commits aren't on
+  `origin` yet" (`HEAD --not refs/remotes/origin/*`) needs the C API. The jj side answers the same
+  question natively with one `ancestors(<tracked @origin tips>)` revset. Push state is
+  **origin-scoped** and any unreadable ref degrades the WHOLE page to "unknown" (no badge) rather than
+  a partial answer.
+- **Commit diffs — `Core/GitCommitDiff.swift`.** Rename detection is `git_diff_find_similar` run over a
+  live `git_diff`, and a SwiftGitX `Diff` materializes its deltas/patches in an `internal` init and
+  frees the `git_diff` before returning, so there's nothing left to detect on. Without it a committed
+  rename read as delete + add while `git show` showed one rename row (git defaults to
+  `diff.renames=true`), and a root commit's diff came back empty (SwiftGitX diffs it against itself).
+  Renames only, not copies — matching git's CLI default. `GitProvider.changeset`/`.fileDiff` both read
+  through it, so the History file list and the patch text can't disagree. Working-copy status was never
+  affected: it gets pairing from libgit2's `.renamesIndex`/`.renamesWorkingTree` status options.
 
 **Read surface & routing.** `Core/VCSProviding.swift` is the one Swift protocol; `VCS.provider(for:)`
 routes by repo kind. `RustJJProvider` maps `WrVcs.*` → app-native models, `GitProvider` wraps

@@ -4,8 +4,10 @@ import SwiftGitX
 /// git-backed `VCSProviding`, over SwiftGitX (libgit2). Maps `SwiftGitX.*` types into the app-native
 /// models. Pure Swift — no Rust involved for git.
 ///
-/// One read reaches *past* SwiftGitX: push state, via `GitGraph` (raw libgit2). SwiftGitX cannot express
-/// a commit RANGE, which is what "not on origin yet" is — see `GitGraph`'s doc for the details.
+/// Two reads reach *past* SwiftGitX, both on raw libgit2 (see each type's doc): push state via
+/// `GitGraph`, because SwiftGitX cannot express the commit RANGE that "not on origin yet" is; and
+/// commit diffs via `GitCommitDiff`, because rename detection has to run on a live `git_diff` and
+/// SwiftGitX's `Diff` is already materialized and freed by the time we see it.
 ///
 /// Errors are caught untyped (`catch { … "\(error)" }`) on purpose: binding SwiftGitX's typed-throws
 /// error (`catch let e as SwiftGitXError`) trips a Swift 6 SIL ownership error across the async
@@ -43,8 +45,12 @@ struct GitProvider: VCSProviding {
       do {
         let repo = try Repository.open(at: root)
         let commit: Commit = try repo.show(id: OID(hex: commitID))
-        let diff = try repo.diff(commit: commit)
-        let (insertions, deletions) = Self.diffLineStats(diff)
+        // The file list and line counts come from `GitCommitDiff`, not SwiftGitX: its `repo.diff(commit:)`
+        // is a plain tree-to-tree diff with no `git_diff_find_similar`, so a committed rename split into
+        // delete + add (and a root commit came back empty). See that type's doc.
+        guard let diff = GitCommitDiff.read(root: root, commitID: commit.id.hex) else {
+          throw VCSError.io("could not read the diff for \(commit.id.hex)")
+        }
         // One-commit push state: `git_graph_reachable_from_any` against the origin tips. There's no page
         // here to bound a walk with, which is exactly why this form exists.
         let push = GitGraph.isPushed(root: root, commitID: commit.id.hex)
@@ -53,12 +59,14 @@ struct GitProvider: VCSProviding {
             commit, refs: Self.decorations(in: repo)[commit.id.hex] ?? [],
             pushState: push.map { $0.pushed ? .pushed : .unpushed } ?? .unknown),
           fullMessage: commit.message,
-          files: diff.changes.map(Self.mapDelta),
+          files: diff.files,
           isMerge: ((try? commit.parents.count) ?? 0) > 1,
-          insertions: insertions,
-          deletions: deletions,
+          insertions: diff.insertions,
+          deletions: diff.deletions,
           pushScope: Self.scope(push?.scope)
         )
+      } catch let error as VCSError {
+        throw error  // already classified (the diff read above) — don't re-wrap it
       } catch {
         throw VCSError.io("\(error)")
       }
@@ -93,18 +101,15 @@ struct GitProvider: VCSProviding {
       do {
         let repo = try Repository.open(at: root)
         let commit: Commit = try repo.show(id: OID(hex: commitID))
-        let diff = try repo.diff(commit: commit)
-        guard
-          let patch = diff.patches.first(where: {
-            $0.delta.newFile.path == path || $0.delta.oldFile.path == path
-          })
-        else {
-          return ""  // path unchanged in this changeset
+        // Same rename-detected diff the file list is built from (`changeset`), so a row that reads
+        // "renamed" renders as a rename here too — libgit2 prints the patch in git's own format,
+        // `rename from`/`rename to` headers included. `""` ⇒ path unchanged in this changeset.
+        guard let text = GitCommitDiff.patch(root: root, commitID: commit.id.hex, path: path) else {
+          throw VCSError.io("could not read the diff for \(path) in \(commit.id.hex)")
         }
-        let d = patch.delta
-        let oldPath = d.oldFile.path.isEmpty ? d.newFile.path : d.oldFile.path
-        let newPath = d.newFile.path.isEmpty ? d.oldFile.path : d.newFile.path
-        return Self.gitFormat(patch, oldPath: oldPath, newPath: newPath, type: d.type)
+        return text
+      } catch let error as VCSError {
+        throw error  // already classified (the diff read above) — don't re-wrap it
       } catch {
         throw VCSError.io("\(error)")
       }
@@ -395,22 +400,6 @@ struct GitProvider: VCSProviding {
       result.append(VCSAuthor(name: name.isEmpty ? email : name, email: email))
     }
     return result
-  }
-
-  private static func mapDelta(_ d: Diff.Delta) -> VCSChangedFile {
-    let path = d.newFile.path.isEmpty ? d.oldFile.path : d.newFile.path
-    let kind: VCSChangeKind =
-      switch d.type {
-      case .added: .added
-      case .deleted: .deleted
-      case .modified: .modified
-      case .renamed: .renamed
-      case .copied: .copied
-      case .conflicted: .conflicted
-      default: .other
-      }
-    let oldPath = (d.type == .renamed || d.type == .copied) ? d.oldFile.path : nil
-    return VCSChangedFile(path: path, oldPath: oldPath, kind: kind)
   }
 
   /// Reconstruct git-format unified-diff text from a SwiftGitX `Patch` so the existing `UnifiedDiff`

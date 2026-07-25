@@ -2,15 +2,15 @@ import XCTest
 
 @testable import Workroom
 
-/// `GitGraph` unit tests against REAL throwaway git repos. This is the only file in the app that
-/// exercises raw libgit2, and what matters is not the graph math (libgit2 owns that) but the CONTRACT:
+/// `GitGraph` unit tests against REAL throwaway git repos (`GitCommitDiffTests` covers the other raw
+/// libgit2 reader). What matters is not the graph math — libgit2 owns that — but the CONTRACT:
 ///
 /// - `origin` only — a commit on some other remote is still unpushed.
 /// - Every failure returns `nil`, never a partial answer. A caller turns `nil` into "no badge on any
 ///   row"; a partial set would badge a pushed commit as unpushed, which is the one outcome the feature
 ///   forbids.
 /// - It works when called FIRST in the process, with no `SwiftGitX.Repository` ever opened — proof that
-///   `GitGraph` owns its own `git_libgit2_init` rather than free-riding on SwiftGitX's.
+///   `LibGit2` owns a `git_libgit2_init` of its own rather than free-riding on SwiftGitX's.
 ///
 /// Repos are created fresh under `NSTemporaryDirectory()` and removed in `tearDown`; these never touch
 /// a developer's own repository.

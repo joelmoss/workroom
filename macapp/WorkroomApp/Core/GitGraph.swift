@@ -1,8 +1,8 @@
 import Foundation
 import libgit2
 
-/// Reachability reads against a git repo's `origin` refs, straight on libgit2's C API — the ONLY place
-/// in the app that touches it directly.
+/// Reachability reads against a git repo's `origin` refs, straight on libgit2's C API (one of only two
+/// readers that do — see `GitCommitDiff` for the other; both open their handles through `LibGit2`).
 ///
 /// Why not SwiftGitX (which the rest of `GitProvider` uses)? It cannot express a commit RANGE: its
 /// `CommitSequence` only calls `git_revwalk_push` and never `git_revwalk_hide`, it surfaces no
@@ -40,7 +40,7 @@ enum GitGraph {
   /// the first `decide.count` steps and we quit. Ids never yielded before the walk ends are reachable
   /// from origin, hence pushed.
   static func unpushed(root: URL, decide: Set<String>) -> PageRead? {
-    withRepository(root) { repo in
+    LibGit2.withRepository(root) { repo in
       guard let tips = originTips(repo), !tips.isEmpty else { return nil }
       guard var head = resolve("HEAD", in: repo) else { return nil }
 
@@ -63,7 +63,7 @@ enum GitGraph {
         // Any OTHER failure mid-walk (corrupt object in the odb) has to invalidate the read: the ids we
         // haven't yielded yet would otherwise be reported "pushed" purely because the walk stopped.
         guard status == 0 else { return nil }
-        let hex = hexString(&oid)
+        let hex = LibGit2.hexString(&oid)
         if decide.contains(hex) { found.insert(hex) }
       }
       return PageRead(unpushed: found, scope: scope(of: tips))
@@ -73,9 +73,9 @@ enum GitGraph {
   /// Whether one arbitrary commit is reachable from any `origin` tip — the single-commit form for the
   /// changeset detail, where there's no page to bound a walk with. `nil` ⇒ unanswerable.
   static func isPushed(root: URL, commitID: String) -> (pushed: Bool, scope: Scope)? {
-    withRepository(root) { repo in
+    LibGit2.withRepository(root) { repo in
       guard let tips = originTips(repo), !tips.isEmpty else { return nil }
-      guard var oid = oid(fromHex: commitID) else { return nil }
+      guard var oid = LibGit2.oid(fromHex: commitID) else { return nil }
       let oids = tips.map(\.oid)
       let status = oids.withUnsafeBufferPointer { buf in
         git_graph_reachable_from_any(repo, &oid, buf.baseAddress, buf.count)
@@ -91,24 +91,6 @@ enum GitGraph {
   private struct Tip {
     let name: String
     let oid: git_oid
-  }
-
-  /// libgit2's global state. SwiftGitX initializes it inside `Repository.open`
-  /// (`SwiftGitXRuntime.initialize()`), but this type is entry-point-independent — a direct unit test
-  /// can call it before any `Repository` exists — so it owns its own refcounted `+1`. Deliberately never
-  /// paired with `git_libgit2_shutdown()`: the count must stay above zero for the app's lifetime, and
-  /// tearing it down while SwiftGitX holds live repositories would pull the rug out from under them.
-  private static let initialized: Bool = {
-    git_libgit2_init() >= 0
-  }()
-
-  /// Open the repo, run `body`, always free the handle. Returns `nil` if libgit2 or the open failed.
-  private static func withRepository<T>(_ root: URL, _ body: (OpaquePointer) -> T?) -> T? {
-    guard initialized else { return nil }
-    var repo: OpaquePointer?
-    guard git_repository_open(&repo, root.path) == 0, let repo else { return nil }
-    defer { git_repository_free(repo) }
-    return body(repo)
   }
 
   /// Every `refs/remotes/origin/*` tip, resolved to a commit id. `nil` on an iteration failure (damaged
@@ -162,16 +144,5 @@ enum GitGraph {
     var oid = git_oid()
     guard git_reference_name_to_id(&oid, repo, refName) == 0 else { return nil }
     return oid
-  }
-
-  private static func oid(fromHex hex: String) -> git_oid? {
-    var oid = git_oid()
-    guard git_oid_fromstr(&oid, hex) == 0 else { return nil }
-    return oid
-  }
-
-  private static func hexString(_ oid: UnsafePointer<git_oid>) -> String {
-    guard let raw = git_oid_tostr_s(oid) else { return "" }
-    return String(cString: raw)
   }
 }
