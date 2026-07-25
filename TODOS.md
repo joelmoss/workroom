@@ -1,5 +1,20 @@
 # TODOs
 
+> Status note (2026-07-25): **Done & removed:** the working-copy diff for a **merge** `@`. Reported
+> live right after the conflict badge shipped — clicking a conflicted row opened a tab reading "No
+> changes". Root cause was NOT conflict-specific: `jj diff -r @` diffs a merge against its
+> *auto-merged parents*, while the Changes list comes from `changed_files`, a tree diff against the
+> FIRST parent. Any file differing only from the first parent therefore listed but reported no diff —
+> every conflicted file (a conflict *is* the auto-merge result, so the diff is always empty) and also
+> an ordinary file arriving from the other side of a *clean* merge, which reproduced on a
+> non-conflicted fixture. `RustJJProvider.workingFileDiff` now resolves `@`'s first parent
+> (`firstParentID`, one read-only `--ignore-working-copy` log) and diffs `--from <id> --to @`;
+> `--from @- --to @` can't express it, since `@-` on a merge resolves to several revisions and jj
+> errors. Identical to `-r @` for a single-parent `@`, and it falls back to `-r @` if the parent can't
+> be read. Covered by `testMergeWorkingCopyFileDiffsAreNotEmpty` (conflict markers render AND the
+> other-side file renders — both empty before the fix) plus an args unit test. The `.parent` axis has
+> the same latent ambiguity and is left as-is: it's unreachable from the UI.
+>
 > Status note (2026-07-25): **Done & removed:** jj per-file conflict status now reaches the UI.
 > `jj_backend.rs` `changed_files` classifies an unresolved `after` value as
 > `ChangeKind::Conflicted` **before** the presence tests (an unresolved merge never satisfies
@@ -691,29 +706,6 @@ but its fixture has no rename — so this divergence passes the guard falsely.
 surface, `RustJJProvider.map`, and `VCSProviderConformanceTests`.
 
 **Priority:** P2 (user-visible wrong file list on renames; a known "later refinement" in the code).
-
-## Conflicted-file diff path is unverified (macapp) — jj conflict-status follow-up
-
-**What:** Now that a conflicted jj file shows a `!` badge in the Changes panel, clicking that row is
-the obvious next action — and nobody has checked what it produces. The click routes through
-`DiffResolver.resolve` → `.jjWorkingCopy` → `resolveWorking(base: .workingCopy)`
-(`DiffResolver.swift:70-72`), which snapshots `@` and asks the backend for a working file diff of a
-path whose tree value is an *unresolved merge*.
-
-**Why:** the badge is an invitation. If the diff errors, or renders jj's conflict markers as
-unreadable noise, the affordance dead-ends exactly where the user needs help most. It may well
-already work (jj materializes markers into the file, so a plain text diff would show them) — the
-point is that nobody has looked.
-
-**How to start:** build a conflicted jj repo (the fixture in `tests/working_status.rs`
-`conflicted_repo` or `WorkroomStatusIntegrationTests.testJJConflict` does it in ~8 commands), open it
-as a project, click the `!` row. If the diff is wrong, decide whether the viewer should render
-conflict sides explicitly (a real feature) or just show the marker text.
-
-**Depends on:** the jj per-file conflict status (shipped). Touches `DiffResolver.swift`, possibly
-`DiffViewer`.
-
-**Priority:** P2 (the deferred half of a shipped affordance).
 
 ## Conflicted working copies inflate the Changes header's +/- counts (macapp) — jj conflict-status follow-up
 

@@ -140,6 +140,39 @@ final class VCSProviderConformanceTests: XCTestCase {
     XCTAssertTrue(jjModified.contains("+three"), "jj missing the edit: \(jjModified)")
   }
 
+  /// A **merge** working copy must still produce real per-file diffs. `jj diff -r @` diffs a merge
+  /// against its *auto-merged parents*, so it returns NOTHING for a file that differs only from the
+  /// first parent — which is precisely what the Changes panel lists (`changed_files` diffs the first
+  /// parent). Reported live: clicking a conflicted row opened a tab reading "No changes".
+  ///
+  /// Both halves are asserted because the bug is not conflict-specific:
+  ///   - the conflicted file must render its conflict markers, and
+  ///   - an ordinary file arriving from the OTHER side of the merge must render its content too.
+  func testMergeWorkingCopyFileDiffsAreNotEmpty() async throws {
+    try requireTool("jj")
+    let root = try jjMergeFixture()
+    let url = URL(fileURLWithPath: root)
+    let jj = RustJJProvider()
+
+    // The conflicted file: markers, not emptiness.
+    let conflicted = try await jj.workingFileDiff(root: url, path: "f.txt", base: .workingCopy)
+    XCTAssertFalse(conflicted.isEmpty, "a conflicted file must produce a diff, not nothing")
+    XCTAssertTrue(
+      conflicted.contains("<<<<<<<"), "the conflict markers should render; got \(conflicted)")
+
+    // A file that exists only on the right side — no conflict, still invisible to `jj diff -r @`.
+    let fromOtherSide = try await jj.workingFileDiff(
+      root: url, path: "right.txt", base: .workingCopy)
+    XCTAssertFalse(
+      fromOtherSide.isEmpty, "a file from the merge's other side must produce a diff")
+    XCTAssertTrue(
+      fromOtherSide.contains("right only"), "its content should render; got \(fromOtherSide)")
+
+    // And the first-parent id the diff anchors to is resolvable on a merge (where `@-` is ambiguous).
+    let first = try await RustJJProvider.firstParentID(root: url)
+    XCTAssertEqual(first?.count, 40, "a full commit id for @'s first parent; got \(first ?? "nil")")
+  }
+
   /// `fileContent` (the new-side content that feeds syntax highlighting) must return the file's
   /// bytes at a committed revision from both backends (git = tree-walk to blob, jj = `jj file show`),
   /// and `nil` for a path absent at that revision.
@@ -358,6 +391,36 @@ final class VCSProviderConformanceTests: XCTestCase {
       echo done
       """, in: root)
     XCTAssertTrue(r.out.contains("done"), "colocated conflict fixture setup failed: \(r.out)")
+    return root
+  }
+
+  /// A jj repo whose `@` is a 2-sided merge that is BOTH conflicted (`f.txt`, changed differently on
+  /// each side) and carries a file present only on the right side (`right.txt`). Sides are addressed
+  /// by commit id, not bookmark — `experimental-advance-branches` would otherwise advance a bookmark
+  /// onto the new commit and collapse the two sides into one.
+  private func jjMergeFixture() throws -> String {
+    let root = tempDir()
+    let r = sh(
+      """
+      jj git init . >/dev/null 2>&1 || jj init --git . >/dev/null 2>&1
+      jj config set --repo user.name t >/dev/null 2>&1 || true
+      jj config set --repo user.email a@b.c >/dev/null 2>&1 || true
+      id() { jj log -r @- --no-graph --ignore-working-copy --color never -T commit_id; }
+      printf 'base\\n' > f.txt
+      jj commit -m base >/dev/null 2>&1
+      BASE=$(id)
+      printf 'left\\n' > f.txt
+      jj commit -m left >/dev/null 2>&1
+      LEFT=$(id)
+      jj new "$BASE" -m right >/dev/null 2>&1
+      printf 'right\\n' > f.txt
+      printf 'right only\\n' > right.txt
+      jj commit -m right >/dev/null 2>&1
+      RIGHT=$(id)
+      jj new "$LEFT" "$RIGHT" >/dev/null 2>&1
+      echo done
+      """, in: root)
+    XCTAssertTrue(r.out.contains("done"), "jj merge fixture setup failed: \(r.out)")
     return root
   }
 

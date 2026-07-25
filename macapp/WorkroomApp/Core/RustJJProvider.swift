@@ -131,17 +131,53 @@ struct RustJJProvider: VCSProviding {
   /// The `.workingCopy` case is only ever reached through `DiffResolver.resolveWorking`'s
   /// `JJSnapshotGate`-gated path — it's the diff-side counterpart of `WorkroomStatusResolver
   /// .resolveJJ`'s gated snapshot, and shares the same per-project-root serialization.
+  /// When `@` is a **merge**, `jj diff -r @` diffs it against its *auto-merged parents*, so any file
+  /// that differs only from the FIRST parent reads as unchanged and the viewer renders "No changes" —
+  /// even though the Changes panel lists it. The panel's list comes from `jj_backend::changed_files`,
+  /// a tree diff against the first parent, so the two must share that base or rows dead-end. Every
+  /// conflicted file hits this (a conflict IS the auto-merge result, so the diff is always empty), and
+  /// so does an ordinary file arriving from the other side of a clean merge.
+  ///
+  /// `--from @- --to @` can't express it: on a merge `@-` resolves to several revisions and jj errors
+  /// out. So resolve the first parent's commit id and diff from that — identical to `-r @` when `@`
+  /// has one parent, correct when it has more.
   func workingFileDiff(root: URL, path: String, base: VCSWorkingDiffBase) async throws -> String {
-    try await Self.run("jj", Self.workingDiffArgs(path: path, base: base), cwd: root)
+    let from = base == .workingCopy ? try? await Self.firstParentID(root: root) : nil
+    return try await Self.run(
+      "jj", Self.workingDiffArgs(path: path, base: base, from: from), cwd: root)
   }
 
-  /// Pure `jj diff` args for a working-copy file diff (unit-tested — the invariant is which rev and
+  /// `@`'s FIRST parent commit id, or `nil` when it can't be read (the caller then falls back to
+  /// `-r @`, which is correct for the common single-parent case). Read-only: `--ignore-working-copy`,
+  /// so it neither snapshots nor takes the working-copy lock — a snapshot rewrites `@` but never
+  /// changes its parents, so reading this before the diff's own snapshot is safe.
+  static func firstParentID(root: URL) async throws -> String? {
+    let out = try await run(
+      "jj",
+      [
+        "log", "-r", "@", "--no-graph", "--ignore-working-copy", "--color", "never",
+        "-T", #"parents.map(|c| c.commit_id()).join(" ")"#,
+      ],
+      cwd: root)
+    return out.split(whereSeparator: { $0 == " " || $0.isNewline }).first.map(String.init)
+  }
+
+  /// Pure `jj diff` args for a working-copy file diff (unit-tested — the invariants are which rev and
   /// whether `--ignore-working-copy` is present, since that governs the working-copy lock).
-  static func workingDiffArgs(path: String, base: VCSWorkingDiffBase) -> [String] {
+  ///
+  /// `from` is `@`'s first parent (see `workingFileDiff`); `nil` falls back to `-r @`.
+  static func workingDiffArgs(path: String, base: VCSWorkingDiffBase, from: String? = nil)
+    -> [String]
+  {
     switch base {
     case .workingCopy:
-      return ["diff", "--git", "-r", "@", "--color", "never", "--", path]
+      guard let from else {
+        return ["diff", "--git", "-r", "@", "--color", "never", "--", path]
+      }
+      return ["diff", "--git", "--from", from, "--to", "@", "--color", "never", "--", path]
     case .parent:
+      // `@-` has the same merge ambiguity, but this axis is unreachable from the UI (the Changes
+      // panel dropped the jj parent group) — fix it the same way if it ever comes back.
       return ["diff", "--git", "-r", "@-", "--ignore-working-copy", "--color", "never", "--", path]
     }
   }

@@ -136,11 +136,31 @@ final class DiffResolverTests: XCTestCase {
   // MARK: - jj working-copy args (pure; the invariant the deleted command(for:) tests guarded)
 
   func testJJWorkingCopyArgsSnapshot() {
+    // No first parent resolved → the `-r @` fallback (correct whenever `@` has a single parent).
     let args = RustJJProvider.workingDiffArgs(path: "src/foo.swift", base: .workingCopy)
     XCTAssertEqual(
       args, ["diff", "--git", "-r", "@", "--color", "never", "--", "src/foo.swift"])
     // Must NOT ignore the working copy — `.workingCopy` has to snapshot `@` to reflect disk.
     XCTAssertFalse(args.contains("--ignore-working-copy"))
+  }
+
+  /// With a first parent supplied, the diff is anchored to it explicitly. That's what makes a MERGE
+  /// working copy diffable: `jj diff -r @` would diff against the auto-merged parents and report
+  /// nothing for a file that differs only from the first parent (every conflicted file, plus files
+  /// arriving from the other side of a clean merge), while the Changes panel lists exactly those.
+  func testJJWorkingCopyArgsAnchorToFirstParent() {
+    let args = RustJJProvider.workingDiffArgs(
+      path: "src/foo.swift", base: .workingCopy, from: "deadbeef")
+    XCTAssertEqual(
+      args,
+      [
+        "diff", "--git", "--from", "deadbeef", "--to", "@", "--color", "never", "--",
+        "src/foo.swift",
+      ])
+    // Still snapshots: the `--to @` side must reflect on-disk edits.
+    XCTAssertFalse(args.contains("--ignore-working-copy"))
+    // `@-` is never used here — on a merge it resolves to several revisions and jj errors out.
+    XCTAssertFalse(args.contains("@-"))
   }
 
   func testJJParentArgsIgnoreWorkingCopy() {
