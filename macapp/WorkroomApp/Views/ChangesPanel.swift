@@ -317,7 +317,9 @@ private struct ChangedFileRow: View {
 
   var body: some View {
     let (dir, name) = ChangesPanel.splitPath(file.path)
-    HStack(spacing: 6) {
+    // Baseline-aligned, not centered: the path is a smaller face than the filename, so centering
+    // would float it off the name's baseline.
+    HStack(alignment: .firstTextBaseline, spacing: 6) {
       Text(letter)
         .font(.system(.callout, design: .monospaced))
         .foregroundStyle(color)
@@ -328,8 +330,10 @@ private struct ChangedFileRow: View {
         .lineLimit(1).truncationMode(.middle)
         .layoutPriority(1)
       if !dir.isEmpty {
+        // Same face as the History detail file list's path line (ChangesetDetailView.fileRow), so a
+        // path reads identically in both places.
         Text(dir)
-          .font(.callout)
+          .font(.system(.caption, design: .monospaced))
           .foregroundStyle(.secondary)
           .lineLimit(1).truncationMode(.head)
       }
