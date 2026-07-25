@@ -12,7 +12,8 @@ import SwiftUI
 /// once they overflow it lifts out of the scroller and pins at the strip's trailing edge, so it's
 /// never scrolled out of reach. The scroller's trailing edge carries an alpha ramp in that state, so
 /// a clipped chip dissolves instead of being cut mid-glyph. The decision itself is
-/// `TabStripOverflow.pinsControls` (shared with `WorkroomTabBar`, which mirrors this behaviour).
+/// `TabStripOverflow.pinsControls`, wired up by the shared `OverflowingTabScroller` (which
+/// `WorkroomTabBar` uses too, so the two strips can't drift).
 struct TerminalTabStrip: View {
   let tabs: [TerminalTab]
   let activeID: TerminalTab.ID?
@@ -52,25 +53,6 @@ struct TerminalTabStrip: View {
   @State private var dragTranslation: CGFloat = 0
   @State private var widths: [TerminalTab.ID: CGFloat] = [:]
 
-  // Overflow measurements (issue #129). Each is read from something that CANNOT change as a result of
-  // the decision it feeds, which is what makes the inline↔pinned choice unable to oscillate on resize:
-  //
-  //   chipRunWidth ─┐
-  //   addWidth ─────┼─► TabStripOverflow.pinsControls ─► inline "+" | pinned "+" + trailing fade
-  //   availableWidth┘
-  //
-  /// Natural width of the chip run — measured INSIDE the scroller, so it's the content's width and not
-  /// the viewport's. Includes the trailing divider, which is toggled by opacity and so always laid out.
-  @State private var chipRunWidth: CGFloat = 0
-  /// The "+"'s own intrinsic width, measured before any positioning pad — identical inline or pinned.
-  @State private var addWidth: CGFloat = 0
-  /// Width available to the chips + "+". This is the scroller's own width: it's the flexible child
-  /// beside the `fixedSize` toolbar, so it already equals "strip minus toolbar" (and the full strip
-  /// when there's no active tab and the toolbar renders nothing). Crucially it does NOT change when
-  /// the "+" pins — `safeAreaInset` reduces the scroller's safe area, not its frame — so feeding it
-  /// back into the predicate can't create a layout feedback loop.
-  @State private var availableWidth: CGFloat = 0
-
   private let tabSpacing: CGFloat = 4
   /// The strip's own right inset. Lives here rather than on `tabToolbar` (which renders *nothing* when
   /// there's no active tab) so a pinned "+" is never flush against the pane edge.
@@ -79,15 +61,6 @@ struct TerminalTabStrip: View {
   /// The strip's leading inset: in a workroom-split group the leftmost tab lines up with the group's
   /// terminal panel below (issue #110); solo keeps 8pt.
   private var leadingInset: CGFloat { compact ? 4 : 8 }
-
-  /// Whether the tabs no longer fit with the "+" inline, so it pins at the trailing edge and the
-  /// scroller takes its fade (issue #129). See `TabStripOverflow.pinsControls` for why this can't
-  /// oscillate. `inlineAddLead` is the real inline gap: the row's spacing plus the button's own pad.
-  private var overflowing: Bool {
-    TabStripOverflow.pinsControls(
-      runWidth: chipRunWidth, add: addWidth, available: availableWidth,
-      leadingInset: leadingInset, inlineAddLead: tabSpacing + TabStripMetrics.inlineAddLead)
-  }
 
   var body: some View {
     // Resolve the drag once per layout: which tab is dragging, and where it would land.
@@ -101,9 +74,20 @@ struct TerminalTabStrip: View {
     let groupMembers = splitMemberSet
 
     HStack(spacing: 0) {
-      tabScroller(
-        tabs, draggedIndex: draggedIndex, dropIndex: dropIndex, draggedWidth: draggedWidth,
-        groupMembers: groupMembers)
+      // The scrolling chips plus the adaptive "+" (issue #129), assembled by the shared
+      // `OverflowingTabScroller`. The width it measures for the overflow predicate is the scroller's
+      // own: it's the flexible child beside the `fixedSize` toolbar, so it already equals "strip minus
+      // toolbar" (and the full strip when there's no active tab and the toolbar renders nothing).
+      OverflowingTabScroller(
+        leadingInset: leadingInset, spacing: tabSpacing,
+        inlineLead: TabStripMetrics.inlineAddLead
+      ) { overflowing in
+        chipRun(
+          tabs, draggedIndex: draggedIndex, dropIndex: dropIndex, draggedWidth: draggedWidth,
+          groupMembers: groupMembers, overflowing: overflowing)
+      } controls: {
+        addTerminalButton
+      }
       // Per-current-tab actions (issue #72), pinned to the strip's right edge as a fixed-size layout
       // sibling of the scrolling tabs — so the chip area yields first in a cramped split pane and the
       // toolbar never overlaps the chips. An overflowing strip's "+" now sits between the two, pinned
@@ -120,86 +104,16 @@ struct TerminalTabStrip: View {
     .padding(.trailing, Self.stripTrailingInset)
   }
 
-  /// The scrolling chip run, plus the "+" in whichever position the overflow state calls for.
-  ///
-  /// Always a `ScrollView` — in BOTH states — so no chip ever changes branch: their hover state, open
-  /// popovers, `RunningUnderline` animations and any in-flight `DragGesture` all survive a flip, and
-  /// the dragged chip's `.offset` stays clipped to the strip. Only the "+"'s position and the mask's
-  /// ramp colour change, which are value changes (matching the "always-applied, value-only" convention
-  /// in `WorkroomSplitView`).
-  @ViewBuilder
-  private func tabScroller(
-    _ tabs: [TerminalTab], draggedIndex: Int?, dropIndex: Int?, draggedWidth: CGFloat,
-    groupMembers: Set<TerminalTab.ID>
-  ) -> some View {
-    ScrollView(.horizontal, showsIndicators: false) {
-      HStack(spacing: tabSpacing) {
-        chipRun(
-          tabs, draggedIndex: draggedIndex, dropIndex: dropIndex, draggedWidth: draggedWidth,
-          groupMembers: groupMembers)
-        // Fits: the "+" stays inline, hugging the last chip — today's look, unchanged.
-        if !overflowing {
-          addTerminalButton.padding(.leading, TabStripMetrics.inlineAddLead)
-        }
-      }
-      // In a split group the leftmost tab lines up with the group's terminal panel below (4pt compact
-      // gutter, issue #110); solo keeps the 8pt inset.
-      .padding(.leading, leadingInset)
-    }
-    // The scroll content's trailing inset, as a *content margin* rather than padding inside the row:
-    // padding inside the content only manifests once you've scrolled to the very end, which is exactly
-    // why a clipped chip used to abut the toolbar (issue #129). Sized to the fade so at full scroll-end
-    // the ramp lands on this empty margin and the last chip renders crisp.
-    .contentMargins(.trailing, TabStripMetrics.fade, for: .scrollContent)
-    // Hug the chips' height; otherwise the horizontal ScrollView grabs all the vertical slack
-    // when there's no terminal below it (the empty state), ballooning the tab bar.
-    .fixedSize(horizontal: false, vertical: true)
-    .mask { trailingFade }
-    // `mask` composites away hit testing in its transparent region, so restore the full-rect
-    // interaction shape — a partially faded chip must keep its tap/close/drag targets.
-    .contentShape(.interaction, Rectangle())
-    // Overflowing: the "+" lifts OUT of the scroller and pins here, always visible (issue #129).
-    // `safeAreaInset` both places it and *reserves* its width, so the chips stop before it rather than
-    // sliding underneath (the idiom's documented behaviour — see `ProjectSidebar`'s footer), and
-    // `spacing:` is the gutter, so there's no second constant to keep in sync with the button's width.
-    .safeAreaInset(edge: .trailing, spacing: TabStripMetrics.gutter) {
-      if overflowing { addTerminalButton }
-    }
-    // Read AFTER the inset: `safeAreaInset` doesn't change the modified view's frame, so this is the
-    // width the strip granted the chips + "+" either way — the branch-independent input the predicate
-    // needs.
-    .onGeometryChange(for: CGFloat.self, of: { $0.size.width }, action: { availableWidth = $0 })
-  }
-
-  /// The alpha ramp over the scroller's trailing edge, so a clipped chip DISSOLVES instead of being cut
-  /// mid-glyph (issue #129). ALWAYS applied — only the ramp's end colour changes with `overflowing` —
-  /// so switching states is a value change, not a structural one, and no chip loses its identity. The
-  /// leading `Rectangle` fills the rest of the frame: anything *outside* a mask's bounds reads as alpha
-  /// 0, so this has to be a filling shape and not a bare gradient.
-  ///
-  /// A mask rather than a painted scrim because the strip's backdrop isn't one flat colour: solo it's
-  /// `tokens.panel`, but in a workroom split it's panel *plus* the group fill (accent-tinted when
-  /// focused, `WorkroomSplitView`), and `WorkroomTerminalsView` fades the whole strip to 0.45 opacity
-  /// for a backgrounded pane — a scrim would go translucent along with the chip it's meant to hide.
-  private var trailingFade: some View {
-    HStack(spacing: 0) {
-      Rectangle()
-      LinearGradient(
-        colors: [.black, overflowing ? .clear : .black],
-        startPoint: .leading, endPoint: .trailing
-      )
-      .frame(width: TabStripMetrics.fade)
-    }
-  }
-
   /// The chips themselves plus the hairline that sets the inline "+" apart — everything that scrolls
-  /// and stays put across an overflow flip. Measured as one run for the overflow predicate, and the
-  /// split bracket is drawn behind it (leading-aligned, so x = 0 is the first chip's leading edge,
-  /// which is what `splitRunRect` computes against).
+  /// and stays put across an overflow flip. Measured as one run for the overflow predicate (by
+  /// `OverflowingTabScroller`, which also lays the row out with the leading inset: in a split group the
+  /// leftmost tab lines up with the group's terminal panel below — 4pt compact gutter, issue #110 —
+  /// while solo keeps the 8pt inset). The split bracket is drawn behind it (leading-aligned, so x = 0
+  /// is the first chip's leading edge, which is what `splitRunRect` computes against).
   @ViewBuilder
   private func chipRun(
     _ tabs: [TerminalTab], draggedIndex: Int?, dropIndex: Int?, draggedWidth: CGFloat,
-    groupMembers: Set<TerminalTab.ID>
+    groupMembers: Set<TerminalTab.ID>, overflowing: Bool
   ) -> some View {
     HStack(spacing: tabSpacing) {
       ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
@@ -311,14 +225,13 @@ struct TerminalTabStrip: View {
     }
     .background(alignment: .leading) { splitWell(tabs) }
     .onPreferenceChange(TabWidthKey.self) { widths = $0 }
-    .onGeometryChange(for: CGFloat.self, of: { $0.size.width }, action: { chipRunWidth = $0 })
   }
 
   /// The "new terminal" (+) button, rendered in one of two positions (issue #129): inline as the last
   /// element of the scrolling row while the tabs fit, so it hugs the rightmost tab; or lifted out and
   /// pinned to the scroller's trailing edge once they overflow, so it can't be scrolled out of reach.
-  /// The same view either way, and its positioning pad is applied by the call site so `addWidth` stays
-  /// a pure intrinsic measurement.
+  /// The same view either way; `OverflowingTabScroller` applies its inline positioning pad and takes
+  /// its width measurement, so that width stays a pure intrinsic measurement.
   private var addTerminalButton: some View {
     Button {
       sessions.addTab(for: target)
@@ -340,7 +253,6 @@ struct TerminalTabStrip: View {
     .help("New terminal (⌘T)")
     .accessibilityLabel("New terminal")
     .accessibilityIdentifier("NewTerminal")
-    .onGeometryChange(for: CGFloat.self, of: { $0.size.width }, action: { addWidth = $0 })
   }
 
   /// Icon-only actions for the *current* (active) tab (issue #72): the diff view-mode toggle + "Open
