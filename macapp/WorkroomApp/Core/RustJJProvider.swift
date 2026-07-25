@@ -39,10 +39,13 @@ struct RustJJProvider: VCSProviding {
     // would materialize every file), so — jayjay-style, like `WorkroomStatusResolver.resolveJJ` — one
     // read-only `jj diff --stat` fills it. `--ignore-working-copy` never locks `@`. Best-effort: a
     // failure leaves the counts nil and the header just omits the summary.
+    //
+    // Anchored to the first parent like `fileDiff`, so the header's totals describe the SAME files the
+    // list shows. On a merge, `-r <commit>` stats the auto-merged-parents diff instead: the header
+    // counted files the list doesn't have and omitted the conflicted file's lines entirely.
+    let statFrom = try? await Self.firstParentID(root: root, rev: commitID)
     if let stat = try? await Self.run(
-      "jj",
-      ["diff", "-r", commitID, "--ignore-working-copy", "--stat", "--color", "never"],
-      cwd: root
+      "jj", Self.commitStatArgs(commitID: commitID, from: statFrom), cwd: root
     ) {
       let parsed = WorkroomStatusResolver.parseDiffStat(stat)
       changeset.insertions = parsed.insertions
@@ -99,10 +102,13 @@ struct RustJJProvider: VCSProviding {
     return text
   }
 
-  /// Old-side content at the commit's parent (`<commitID>-`), for highlighting deleted lines. A
-  /// merge (`X-` resolves to >1 revision) makes `jj file show` error → `fileContent` returns nil.
+  /// Old-side content at the commit's parent, for highlighting deleted lines. Resolved to the FIRST
+  /// parent's id rather than the `<commitID>-` revset, which errors on a merge (it resolves to >1
+  /// revision) and left merge diffs with unhighlighted deletions — the same first-parent anchoring
+  /// `fileDiff` uses, so the highlighted old side matches the patch's old side.
   func commitParentFileContent(root: URL, commitID: String, path: String) async throws -> String? {
-    try await fileContent(root: root, rev: "\(commitID)-", path: path)
+    let rev = (try? await Self.firstParentID(root: root, rev: commitID)) ?? "\(commitID)-"
+    return try await fileContent(root: root, rev: rev, path: path)
   }
 
   /// Old-side content for a working-copy diff base: `@-` (`.workingCopy`) or `@--` (`.parent`).
@@ -117,11 +123,43 @@ struct RustJJProvider: VCSProviding {
     // than reimplement unified-diff formatting, use the jj CLI for the per-file patch text — the
     // plan's sanctioned CLI fallback for ops jj-lib doesn't expose ergonomically. `--git` gives the
     // git-format patch the UnifiedDiff parser wants; `--ignore-working-copy` never locks `@`.
-    try await Self.run(
-      "jj",
-      ["diff", "--git", "-r", commitID, "--ignore-working-copy", "--color", "never", "--", path],
-      cwd: root
-    )
+    //
+    // Anchored to the commit's FIRST parent for the same reason as `workingFileDiff`: `-r <merge>`
+    // diffs against the auto-merged parents, so a History row for a merge commit renders "No changes"
+    // for every file that differs only from the first parent — which is exactly what `changeset`
+    // lists (`changed_files` diffs the first parent), and always the case for a conflicted file.
+    let from = try? await Self.firstParentID(root: root, rev: commitID)
+    return try await Self.run(
+      "jj", Self.commitDiffArgs(commitID: commitID, path: path, from: from),
+      cwd: root)
+  }
+
+  /// Pure `jj diff --stat` args for a commit's line-count summary — same first-parent anchoring as
+  /// `commitDiffArgs`, so the header's totals and the file list describe the same diff.
+  static func commitStatArgs(commitID: String, from: String? = nil) -> [String] {
+    guard let from else {
+      return ["diff", "-r", commitID, "--ignore-working-copy", "--stat", "--color", "never"]
+    }
+    return [
+      "diff", "--from", from, "--to", commitID, "--ignore-working-copy", "--stat", "--color",
+      "never",
+    ]
+  }
+
+  /// Pure `jj diff` args for a per-file COMMIT diff. `from` is the commit's first parent; `nil` falls
+  /// back to `-r <commitID>` (identical for a single-parent commit). Always `--ignore-working-copy`:
+  /// a committed diff must never take the working-copy lock.
+  static func commitDiffArgs(commitID: String, path: String, from: String? = nil) -> [String] {
+    guard let from else {
+      return [
+        "diff", "--git", "-r", commitID, "--ignore-working-copy", "--color", "never", "--", path,
+      ]
+    }
+    return [
+      "diff", "--git", "--from", from, "--to", commitID, "--ignore-working-copy", "--color",
+      "never",
+      "--", path,
+    ]
   }
 
   /// Working-copy per-file diff, as git-format text (the `jj diff --git` sanctioned CLI fallback — jj
@@ -147,15 +185,15 @@ struct RustJJProvider: VCSProviding {
       "jj", Self.workingDiffArgs(path: path, base: base, from: from), cwd: root)
   }
 
-  /// `@`'s FIRST parent commit id, or `nil` when it can't be read (the caller then falls back to
-  /// `-r @`, which is correct for the common single-parent case). Read-only: `--ignore-working-copy`,
-  /// so it neither snapshots nor takes the working-copy lock — a snapshot rewrites `@` but never
-  /// changes its parents, so reading this before the diff's own snapshot is safe.
-  static func firstParentID(root: URL) async throws -> String? {
+  /// `rev`'s FIRST parent commit id, or `nil` when it can't be read / has none (the caller then falls
+  /// back to `-r <rev>`, which is correct for the common single-parent case). Read-only:
+  /// `--ignore-working-copy`, so it neither snapshots nor takes the working-copy lock — a snapshot
+  /// rewrites `@` but never changes its parents, so reading this before a diff's own snapshot is safe.
+  static func firstParentID(root: URL, rev: String = "@") async throws -> String? {
     let out = try await run(
       "jj",
       [
-        "log", "-r", "@", "--no-graph", "--ignore-working-copy", "--color", "never",
+        "log", "-r", rev, "--no-graph", "--ignore-working-copy", "--color", "never",
         "-T", #"parents.map(|c| c.commit_id()).join(" ")"#,
       ],
       cwd: root)

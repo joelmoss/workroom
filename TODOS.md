@@ -707,6 +707,31 @@ surface, `RustJJProvider.map`, and `VCSProviderConformanceTests`.
 
 **Priority:** P2 (user-visible wrong file list on renames; a known "later refinement" in the code).
 
+## The Changes header's +/- still stats the wrong base for a merge `@` (macapp) — merge-diff follow-up
+
+**What:** `WorkroomStatusResolver.resolveJJ` fills the Changes header's insertions/deletions from
+`jj diff -r @ --ignore-working-copy --stat` (`WorkroomStatusResolver.swift:137-144`). For a **merge**
+`@` that stats the auto-merged-parents diff, so the totals describe a different set of files than the
+list beside them — the same bug fixed for `fileDiff`/`workingFileDiff`/`changeset` (75465a38 + the
+commit-path follow-up), left alone here on purpose.
+
+**Why not fixed with the others:** the fix needs `@`'s first-parent id, and this read runs in the 15s
+status sweep fanned out per workroom — adding a second `jj` process per row to every sweep is the
+wrong trade. The right fix is to stop paying for it at all: `working_status` already loads `@` in
+jj-lib, so expose its parent ids on `WrVcs.WorkingStatus` (free) and pass the first one into the stat
+args (`RustJJProvider.commitStatArgs` already takes a `from`).
+
+**How to start:** add `parent_ids` to `model::CommitChanges` (or `WorkingStatus`) in
+`wr-vcs-model`/`jj_backend.rs`, thread it through the UniFFI surface into `RustJJProvider
+.workingStatus`, then anchor the resolver's `--stat` call. Cargo + Swift tests both have merge
+fixtures to reuse (`conflicted_repo`, `jjMergeFixture`).
+
+**Depends on:** the merge-base diff fix (shipped). Touches `jj_backend.rs`, `wr-vcs-model`,
+`wr-vcs-uniffi`, `RustJJProvider.swift`, `WorkroomStatusResolver.swift`.
+
+**Priority:** P3 (wrong-but-plausible numbers on merge working copies only; the file list and every
+per-file diff are now correct).
+
 ## Conflicted working copies inflate the Changes header's +/- counts (macapp) — jj conflict-status follow-up
 
 **What:** `WorkroomStatusResolver.resolveJJ` sources the header's insertions/deletions from one

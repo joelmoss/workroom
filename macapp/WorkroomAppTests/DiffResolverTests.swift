@@ -163,6 +163,28 @@ final class DiffResolverTests: XCTestCase {
     XCTAssertFalse(args.contains("@-"))
   }
 
+  /// A per-file COMMIT diff anchors to the commit's first parent for the same reason as the
+  /// working-copy one (`-r <merge>` diffs the auto-merged parents → "No changes" in History), and must
+  /// ALWAYS pass `--ignore-working-copy`: reading committed history never takes the working-copy lock.
+  func testJJCommitDiffArgsAnchorToFirstParent() {
+    let anchored = RustJJProvider.commitDiffArgs(commitID: "cafe", path: "a.txt", from: "beef")
+    XCTAssertEqual(
+      anchored,
+      [
+        "diff", "--git", "--from", "beef", "--to", "cafe", "--ignore-working-copy", "--color",
+        "never", "--", "a.txt",
+      ])
+
+    // No parent resolved → the `-r <commitID>` fallback, still never locking the working copy.
+    let fallback = RustJJProvider.commitDiffArgs(commitID: "cafe", path: "a.txt")
+    XCTAssertEqual(
+      fallback,
+      [
+        "diff", "--git", "-r", "cafe", "--ignore-working-copy", "--color", "never", "--", "a.txt",
+      ])
+    XCTAssertTrue(fallback.contains("--ignore-working-copy"))
+  }
+
   func testJJParentArgsIgnoreWorkingCopy() {
     let args = RustJJProvider.workingDiffArgs(path: "lib/bar.swift", base: .parent)
     XCTAssertTrue(args.contains("@-"))

@@ -173,6 +173,48 @@ final class VCSProviderConformanceTests: XCTestCase {
     XCTAssertEqual(first?.count, 40, "a full commit id for @'s first parent; got \(first ?? "nil")")
   }
 
+  /// The same first-parent anchoring must apply to a COMMITTED merge, which is what the History
+  /// detail pane reads through `fileDiff`. Reported live: after the working-copy diff was fixed,
+  /// opening the same conflicted file from its history row still rendered "No changes".
+  ///
+  /// Also covers the old-side content read (`commitParentFileContent`), which fed the deleted-line
+  /// syntax highlighting the `<commitID>-` revset couldn't resolve on a merge.
+  func testMergeCommitFileDiffIsNotEmpty() async throws {
+    try requireTool("jj")
+    let root = try jjMergeFixture()
+    let url = URL(fileURLWithPath: root)
+    let jj = RustJJProvider()
+
+    // Commit the conflicted merge so it becomes a history entry, then read it back by id.
+    let r = sh("jj commit -m 'merged with conflict' >/dev/null 2>&1; echo done", in: root)
+    XCTAssertTrue(r.out.contains("done"), "committing the merge failed: \(r.out)")
+    let cid = sh(
+      "jj log -r @- --no-graph --ignore-working-copy --color never -T commit_id", in: root
+    ).out.trimmingCharacters(in: .whitespacesAndNewlines)
+    XCTAssertFalse(cid.isEmpty, "could not resolve the merge commit id")
+
+    let conflicted = try await jj.fileDiff(root: url, commitID: cid, path: "f.txt")
+    XCTAssertFalse(conflicted.isEmpty, "a conflicted file in a merge COMMIT must produce a diff")
+    XCTAssertTrue(
+      conflicted.contains("<<<<<<<"), "the conflict markers should render; got \(conflicted)")
+
+    let fromOtherSide = try await jj.fileDiff(root: url, commitID: cid, path: "right.txt")
+    XCTAssertFalse(fromOtherSide.isEmpty, "a file from the merge's other side must produce a diff")
+
+    // The old side resolves too — `<commitID>-` would error on a merge, leaving deletions unhighlighted.
+    let oldSide = try await jj.commitParentFileContent(root: url, commitID: cid, path: "f.txt")
+    XCTAssertEqual(oldSide, "left\n", "the old side is the FIRST parent's content")
+
+    // The header's +/- must describe the same diff as the file list: on the auto-merged-parents base
+    // the conflicted file contributes nothing, so the counts disagreed with the rows beside them.
+    let changeset = try await jj.changeset(root: url, commitID: cid)
+    XCTAssertTrue(
+      changeset.files.contains { $0.path == "f.txt" }, "the conflicted file is listed")
+    let insertions = try XCTUnwrap(changeset.insertions, "the header should carry a line count")
+    XCTAssertGreaterThan(
+      insertions, 1, "the totals should include the conflicted file's lines; got \(insertions)")
+  }
+
   /// `fileContent` (the new-side content that feeds syntax highlighting) must return the file's
   /// bytes at a committed revision from both backends (git = tree-walk to blob, jj = `jj file show`),
   /// and `nil` for a path absent at that revision.
