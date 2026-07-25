@@ -58,6 +58,12 @@ before `app-build`/`app-test`/`app-generate`** (a Makefile prerequisite). Requir
 - arm64 by default; **`make app-release` builds universal** (`VCS_APPLE_FLAGS=--universal`), which
   needs **rustup `stable` ≥ 1.93** + `rustup target add x86_64-apple-darwin aarch64-apple-darwin`
   (Homebrew's rust can't cross-compile; the script preflights this and errors clearly).
+- **Unchanged inputs are a no-op.** The script hashes the Rust sources, manifests/lockfile, itself,
+  `rustc --version` and the arch flavour into `vcs/swift/WrVcs/Frameworks/.build-stamp`, and exits
+  early when that matches and the outputs exist. `WR_VCS_FORCE=1 make app-vcs` rebuilds regardless.
+  CI leans on this: it caches the *outputs* keyed on the same inputs, so a commit that doesn't touch
+  `vcs/` skips the ~4-minute crate-graph build (and `make app-test`'s own `app-vcs` prerequisite
+  stays free).
 
 The xcframework + generated Swift are **gitignored and regenerated**; only `Package.swift` + a
 `shim.c` are tracked. Packaging note: the xcframework is **library-only** (no headers) and the FFI
