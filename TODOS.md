@@ -296,6 +296,18 @@ remaining gap, called out explicitly in `WorkroomWorkflowUITests.swift` ("Still 
 the existing fixture launch arg and the `sidebar.*` / `terminal.tab.*` accessibility identifiers. The
 badge assertions need the notification a11y identifiers to be queryable — add them if missing.
 
+**Also: stabilise a known flake (observed 2026-07-25, during #129).**
+`TabActionsUITests.testContextMenuSplitRightCreatesTwoPanes` failed once at
+`WorkroomAppUITests/TabActionsUITests.swift:62` ("diff tab should open") when run in a batch with two
+other classes, then passed in isolation and passed again on a batch re-run — so it's timing, not a
+regression. The suspect is visible in the helper: `openDiffPreview` waits **10s** for the Changes row to
+exist, then `row.click()`s it and waits only **6s** for the diff tab. Two thin spots in that sequence —
+existence is not the same as being hit-testable, so the click can land before the row accepts it and be
+swallowed silently; and 6s is the tightest budget in a helper that otherwise allows 10s, which is the
+first thing to give under batch load. Fix by waiting for the row to be interactive before clicking (or
+retrying the click once) and raising the diff-tab wait to match the 10s used elsewhere. Worth doing
+because a flaky UI test erodes trust in the whole suite, and this one gates several toolbar tests.
+
 **Depends on:** the fixture seam + accessibility identifiers already in place
 (`macapp/WorkroomApp/Core/UITestFixture.swift`, `Views/ProjectSidebar.swift`,
 `Views/TerminalTabStrip.swift`).
