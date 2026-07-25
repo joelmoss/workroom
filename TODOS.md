@@ -753,19 +753,6 @@ views, so it wants a deliberate visual pass rather than a drive-by change.
 
 **Priority:** P3 (consistency + theme correctness; no functional bug).
 
-## Git History branch/tag decoration — `refs: []` (macapp) — VCS-foundation eng-review
-
-**What:** `GitProvider.map` always returns `refs: []` for commits (comment: "branch/tag decoration: a
-later increment"), so the git History panel shows no branch/tag chips. jj provides them and the shared
-`VCSCommit` model promises them.
-
-**How to start:** Build a `commit-id → [ref names]` map from SwiftGitX branches + tags (mirror
-`jj_backend.rs` `bookmark_map`) and populate `VCSCommit.refs` in `GitProvider.map`.
-
-**Depends on:** VCS read foundation. Touches `Core/GitProvider.swift`.
-
-**Priority:** P2 (History UI parity; empty where jj is populated).
-
 ## `withTimeout` doesn't observe the CALLER's own cancellation (macapp) — VCS-foundation eng-review, /review follow-up
 
 **Status:** the original version of this entry (a `withThrowingTaskGroup` awaiting a detached
