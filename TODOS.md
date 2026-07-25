@@ -808,6 +808,47 @@ badge assertions need the notification a11y identifiers to be queryable — add 
 **Priority:** P3 (the smoke + opportunistic suites cover the basics; these harden the notification
 flows).
 
+### Four unit classes race over `confirmOnCloseTerminal` (macapp) — found 2026-07-25
+
+**What:** `AppStoreCloseTabsTests`, `EmptiedWorkroomSelectionTests`, `ConfirmOnCloseTerminalTests` and
+`RunCommandTests` all write the single `Defaults[.confirmOnCloseTerminal]` key, and `-parallel-testing`
+gives each worker its own host process but **one shared UserDefaults domain** (the hazard the `Makefile`
+already warns about). One class flipping the key mid-body makes another's close path raise a modal
+instead of closing, or makes the defaults-value assertions read someone else's write.
+
+**Reproduce it in ~2 min** (it is otherwise a roughly 1-in-4 full-suite flake):
+
+```
+make app-test APP_TEST_FLAGS="-parallel-testing-enabled YES \
+  -only-testing:WorkroomAppTests/RunCommandTests \
+  -only-testing:WorkroomAppTests/AppStoreCloseTabsTests \
+  -only-testing:WorkroomAppTests/EmptiedWorkroomSelectionTests \
+  -only-testing:WorkroomAppTests/ConfirmOnCloseTerminalTests \
+  -test-iterations 20 -run-tests-until-failure"
+```
+
+It fails on a *different* test almost every run — `AppStoreCloseTabsTests.testCloseOthersCollapsesASplit`
+(3 tabs left instead of 1), `.testCloseAllEmptiesTheTarget`,
+`EmptiedWorkroomSelectionTests.testCloseAllMixedTerminalAndDiffSelectsRightmostTab`,
+`ConfirmOnCloseTerminalTests.testRespectsStoredValue` / `.testEnabledByDefaultWhenUnset`. That the victim
+moves is the tell: it's the shared key, not any one test. Verified pre-existing (reproduces at
+`4a468215`, before the wait-shape fixes).
+
+**Partly mitigated already:** `RunCommandTests` no longer restores a hardcoded `true` — it puts back
+whatever it found, so it can't invent a value other classes never set. That removes one writer's worst
+behaviour but does **not** close the race: any write to a shared key can still land inside another
+class's body.
+
+**How to fix properly:** stop routing test intent through global state. Give the close path an
+override seam like the ones already in the codebase (`liveProcessOverrideForTesting`,
+`signalSupervisorForTesting`, `terminals.makeView`) — e.g. an optional `confirmOnCloseOverrideForTesting`
+on `AppStore` that `requestCloseTerminalTab` prefers over `Defaults` — and have the three close-behaviour
+classes inject it instead of writing the key. `ConfirmOnCloseTerminalTests` legitimately tests the real
+default and should keep using the real key; once it's the only writer, it stops losing races. Rejected
+alternative: `-disable-test-parallelization`, which trades a ~40% slower suite for hiding the problem.
+
+**Priority:** P2 — a ~1-in-4 red full suite is worse than a rare flake; it trains everyone to re-run.
+
 ### Three `DiffViewerUITests` tests are RED (macapp) — found 2026-07-25
 
 **What:** `testJJWorkingCopyFileOpensDiffTab` (:76), `testGitWorktreeFileOpensDiff` (:93) and

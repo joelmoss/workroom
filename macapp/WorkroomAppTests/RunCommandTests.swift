@@ -574,9 +574,14 @@ final class RunCommandTests: XCTestCase {
     let view = try! XCTUnwrap(runView(store, t))
     view.liveProcessOverrideForTesting = true  // a dev server still running
 
-    // Request close while the process is alive — must wait, not close immediately.
+    // Request close while the process is alive — must wait, not close immediately. Restore whatever
+    // was there rather than assuming the default: parallel test workers share ONE UserDefaults domain,
+    // so writing a hardcoded `true` here reaches into other classes (`AppStoreCloseTabsTests` and
+    // `EmptiedWorkroomSelectionTests` both need this key false for a whole test body, and get a modal
+    // instead of a close if it flips under them mid-test).
+    let previous = Defaults[.confirmOnCloseTerminal]
     Defaults[.confirmOnCloseTerminal] = false
-    defer { Defaults[.confirmOnCloseTerminal] = true }
+    defer { Defaults[.confirmOnCloseTerminal] = previous }
     store.requestCloseTerminalTab(tab, for: t)
     XCTAssertEqual(
       store.runTabID(for: t.id), tab, "close must wait while the process is alive")
