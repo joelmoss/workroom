@@ -190,9 +190,24 @@ final class TerminalSessions: ObservableObject {
     GhosttySurfaceView(workingDirectory: cwd, command: command)
   }
 
-  /// Smallest usable pane edge (points). A split is refused when it would shrink a pane below this; the
-  /// renderer applies the same minimum as its divider clamp.
-  static let minPaneSize: CGFloat = 120
+  /// Smallest usable pane WIDTH (points). A split is refused when it would shrink a pane below this;
+  /// the renderer applies the same minimum as its divider clamp.
+  ///
+  /// Width and height need different floors because a pane's chrome is horizontal: the tab strip's own
+  /// furniture is what sets the width floor, and it is wider than people guess. Measured on a real
+  /// window: the *widest* toolbar a pane can show is a diff tab's (~145pt — the unified/side-by-side
+  /// switch, Open File, split right, split down, close all), plus the pinned "+" (~28pt), the 8pt
+  /// gutter, the 4pt leading inset, one ~100pt chip and the strip's 4pt trailing inset = ~293pt. Below
+  /// that a pane cannot render the strip it must show, never mind its content — at the old 120pt floor
+  /// a terminal tab left ~12pt for chips and a diff tab's toolbar alone overflowed the pane. The floor
+  /// has to hold for whatever tab the pane switches to, so it is sized for the widest one.
+  ///
+  /// 300pt is also about 41 terminal columns, which is the first width where a terminal is honestly
+  /// usable rather than merely non-degenerate.
+  static let minPaneWidth: CGFloat = 300
+  /// Smallest usable pane HEIGHT (points) — unchanged at 120, which is the tab strip plus roughly seven
+  /// rows. Height has no equivalent of the strip's horizontal furniture, so it needs no larger floor.
+  static let minPaneHeight: CGFloat = 120
   /// Inter-pane gutter thickness (points), shared by the fit guard and the renderer. No separator
   /// rule is drawn anymore, so this is just the gap between panes and the width of the (invisible)
   /// resize hit-zone — kept tight, since the panes' own rounded borders mark the boundary.
@@ -1020,7 +1035,8 @@ final class TerminalSessions: ObservableObject {
 
   // MARK: Internals
 
-  /// Whether splitting `view` in `orientation` would leave both halves ≥ `minPaneSize` (D4). When the
+  /// Whether splitting `view` in `orientation` would leave both halves ≥ the floor for the axis being
+  /// divided — `minPaneWidth` for a side-by-side split, `minPaneHeight` for a stacked one (D4). When the
   /// pane has no laid-out size yet (e.g. in tests, or before first layout) the guard can't evaluate, so
   /// it permits the split and lets the renderer's clamp handle sizing.
   private func fits(splitting surface: GhosttySurfaceView?, orientation: SplitOrientation) -> Bool {
@@ -1029,7 +1045,7 @@ final class TerminalSessions: ObservableObject {
     guard let surface else { return true }
     let available = orientation == .horizontal ? surface.bounds.width : surface.bounds.height
     guard available > 0 else { return true }
-    return (available - Self.dividerThickness) / 2 >= Self.minPaneSize
+    return (available - Self.dividerThickness) / 2 >= PaneTreeLayout.minPane(along: orientation)
   }
 
   /// The tab to focus after `tabID` is closed: the on-screen neighbour that slides into its slot, else

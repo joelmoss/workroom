@@ -279,10 +279,28 @@ final class TerminalSessionsTests: XCTestCase {
     let s = makeSessions()
     s.addTab(for: target)
     let view = s.tabs(for: target).first!.surface!
-    view.frame = CGRect(x: 0, y: 0, width: 100, height: 100)  // < 2 × minPaneSize
+    view.frame = CGRect(x: 0, y: 0, width: 100, height: 100)  // < 2 × either axis floor
     s.splitFocusedPane(for: target, orientation: .horizontal)
     XCTAssertEqual(s.tabs(for: target).count, 1)  // refused — no sliver
     XCTAssertNil(s.split(for: target))
+  }
+
+  /// The guard reads the floor for the axis it is dividing, so the same pane can refuse one split and
+  /// permit the other. A tall, narrow pane (400 × 600) can't seat two 300pt-wide halves but seats two
+  /// 120pt-tall ones — before the floors were split per axis, 400pt wide was "fine" and produced a pane
+  /// too narrow to render its own tab strip.
+  func testSplitRefusalFollowsTheAxisBeingDivided() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    let view = s.tabs(for: target).first!.surface!
+    view.frame = CGRect(x: 0, y: 0, width: 400, height: 600)
+    s.splitFocusedPane(for: target, orientation: .horizontal)  // (400-4)/2 = 198 < 300
+    XCTAssertEqual(
+      s.tabs(for: target).count, 1, "a 400pt-wide pane must refuse a side-by-side split")
+    XCTAssertNil(s.split(for: target))
+    s.splitFocusedPane(for: target, orientation: .vertical)  // (600-4)/2 = 298 ≥ 120
+    XCTAssertEqual(s.tabs(for: target).count, 2, "the same pane must still stack")
+    XCTAssertNotNil(s.split(for: target))
   }
 
   func testClosePaneCollapsesSplitToSibling() {

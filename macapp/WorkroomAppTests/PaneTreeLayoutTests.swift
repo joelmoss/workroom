@@ -5,42 +5,68 @@ import XCTest
 /// Pure split-geometry math used by the pane renderer (plan D5). Extracting it keeps the trickiest
 /// arithmetic in the feature unit-testable even though the SwiftUI views themselves aren't.
 final class PaneTreeLayoutTests: XCTestCase {
-  private let divider = TerminalSessions.dividerThickness  // 7
-  private let minPane = TerminalSessions.minPaneSize  // 120
+  private let divider = TerminalSessions.dividerThickness  // 4
+  private let minW = TerminalSessions.minPaneWidth  // 300 — the tab strip's furniture sets this
+  private let minH = TerminalSessions.minPaneHeight  // 120
 
   func testLengthsSumToUsableAndSplitEvenly() {
-    let (a, b) = PaneTreeLayout.lengths(total: 1000, ratio: 0.5)
+    let (a, b) = PaneTreeLayout.lengths(total: 1000, ratio: 0.5, along: .horizontal)
     XCTAssertEqual(a + b, 1000 - divider, accuracy: 0.5)
     XCTAssertEqual(a, b, accuracy: 1.5)  // even ±rounding
   }
 
   func testLengthsClampSecondToMinPane() {
-    let (a, b) = PaneTreeLayout.lengths(total: 1000, ratio: 0.95)
-    XCTAssertEqual(b, minPane, accuracy: 0.5)  // second can't go below minPane
+    let (a, b) = PaneTreeLayout.lengths(total: 1000, ratio: 0.95, along: .horizontal)
+    XCTAssertEqual(b, minW, accuracy: 0.5)  // second can't go below the width floor
     XCTAssertEqual(a + b, 1000 - divider, accuracy: 0.5)
   }
 
   func testLengthsClampFirstToMinPane() {
-    let (a, _) = PaneTreeLayout.lengths(total: 1000, ratio: 0.01)
-    XCTAssertEqual(a, minPane, accuracy: 0.5)
+    let (a, _) = PaneTreeLayout.lengths(total: 1000, ratio: 0.01, along: .horizontal)
+    XCTAssertEqual(a, minW, accuracy: 0.5)
   }
 
   func testLengthsTooSmallFallsBackToEven() {
-    let (a, b) = PaneTreeLayout.lengths(total: 200, ratio: 0.9)
-    XCTAssertEqual(a + b, 200 - divider, accuracy: 0.5)
-    XCTAssertEqual(a, b, accuracy: 1.5)  // ignores ratio when it can't honor minPane
+    let (a, b) = PaneTreeLayout.lengths(total: 500, ratio: 0.9, along: .horizontal)
+    XCTAssertEqual(a + b, 500 - divider, accuracy: 0.5)
+    XCTAssertEqual(a, b, accuracy: 1.5)  // ignores ratio when it can't honor the floor
+  }
+
+  /// The point of splitting the floor per axis: the SAME container and ratio resolve differently
+  /// depending on which axis is being divided. 496pt of usable space can't seat two 300pt-wide panes
+  /// (so a side-by-side split gives up and centres) but seats two 120pt-tall ones comfortably.
+  func testTheFloorFollowsTheAxisBeingDivided() {
+    let stacked = PaneTreeLayout.lengths(total: 500, ratio: 0.9, along: .vertical)
+    XCTAssertEqual(stacked.second, minH, accuracy: 0.5)  // honours the ratio, clamped to 120
+    let sideBySide = PaneTreeLayout.lengths(total: 500, ratio: 0.9, along: .horizontal)
+    XCTAssertEqual(sideBySide.first, sideBySide.second, accuracy: 1.5)  // too narrow → even
   }
 
   func testClampRatioKeepsBothPanesUsable() {
     let usable = 1000 - divider
-    let minR = minPane / usable
-    XCTAssertEqual(PaneTreeLayout.clampRatio(0.99, total: 1000), 1 - minR, accuracy: 0.001)
-    XCTAssertEqual(PaneTreeLayout.clampRatio(0.0, total: 1000), minR, accuracy: 0.001)
-    XCTAssertEqual(PaneTreeLayout.clampRatio(0.5, total: 1000), 0.5, accuracy: 0.001)
+    let minR = minW / usable
+    XCTAssertEqual(
+      PaneTreeLayout.clampRatio(0.99, total: 1000, along: .horizontal), 1 - minR, accuracy: 0.001)
+    XCTAssertEqual(
+      PaneTreeLayout.clampRatio(0.0, total: 1000, along: .horizontal), minR, accuracy: 0.001)
+    XCTAssertEqual(
+      PaneTreeLayout.clampRatio(0.5, total: 1000, along: .horizontal), 0.5, accuracy: 0.001)
   }
 
   func testClampRatioTooSmallCentres() {
-    XCTAssertEqual(PaneTreeLayout.clampRatio(0.9, total: 200), 0.5, accuracy: 0.001)
+    XCTAssertEqual(
+      PaneTreeLayout.clampRatio(0.9, total: 500, along: .horizontal), 0.5, accuracy: 0.001)
+  }
+
+  /// The clamp's half of `testTheFloorFollowsTheAxisBeingDivided`: at 500pt a dragged divider centres
+  /// on the width axis but still travels on the height axis.
+  func testClampRatioFloorFollowsTheAxis() {
+    let usable = 500 - divider
+    XCTAssertEqual(
+      PaneTreeLayout.clampRatio(0.9, total: 500, along: .vertical), 1 - minH / usable,
+      accuracy: 0.001)
+    XCTAssertEqual(
+      PaneTreeLayout.clampRatio(0.9, total: 500, along: .horizontal), 0.5, accuracy: 0.001)
   }
 
   // MARK: Drop targeting (Phase 2)

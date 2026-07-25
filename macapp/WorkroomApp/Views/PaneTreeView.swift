@@ -173,7 +173,15 @@ enum PaneTreeLayout {
   typealias Plan<Leaf: Hashable> = (panes: [Leaf: CGRect], dividers: [PaneDividerFrame])
 
   static var dividerThickness: CGFloat { TerminalSessions.dividerThickness }
-  static var minPane: CGFloat { TerminalSessions.minPaneSize }
+  static var minPaneWidth: CGFloat { TerminalSessions.minPaneWidth }
+  static var minPaneHeight: CGFloat { TerminalSessions.minPaneHeight }
+
+  /// The pane floor along the axis a split divides: width for side-by-side, height for stacked. The two
+  /// differ because the tab strip's furniture only constrains width — see `TerminalSessions.minPaneWidth`.
+  /// Every clamp and fit guard reads the floor through here, so the axis can never be picked twice.
+  static func minPane(along orientation: SplitOrientation) -> CGFloat {
+    orientation == .horizontal ? minPaneWidth : minPaneHeight
+  }
   /// Draggable hit-zone thickness for the resize divider (issue #83). The visible gutter stays
   /// `dividerThickness` (4pt); the hit zone is widened to this so the divider is easier to grab. It is
   /// capped at `dividerThickness + 2pt pane padding on each side` (= 8pt) — the widest band that stays
@@ -184,23 +192,30 @@ enum PaneTreeLayout {
 
   /// Lengths of the first/second child along the split axis for a container of `total` points. Rounds
   /// the first child to whole points (avoids sub-pixel seams) and clamps so neither child falls below
-  /// `minPane`; when the container is too small to honor that, falls back to an even split.
-  static func lengths(total: CGFloat, ratio: CGFloat) -> (first: CGFloat, second: CGFloat) {
+  /// the axis's floor (`minPane(along:)`); when the container is too small to honor that, falls back to
+  /// an even split.
+  static func lengths(total: CGFloat, ratio: CGFloat, along orientation: SplitOrientation) -> (
+    first: CGFloat, second: CGFloat
+  ) {
+    let floor = minPane(along: orientation)
     let usable = max(0, total - dividerThickness)
-    guard usable > 2 * minPane else {
+    guard usable > 2 * floor else {
       let half = (usable / 2).rounded()
       return (half, usable - half)
     }
     let raw = (usable * ratio).rounded()
-    let first = min(usable - minPane, max(minPane, raw))
+    let first = min(usable - floor, max(floor, raw))
     return (first, usable - first)
   }
 
-  /// Clamp a proposed divider ratio to keep both panes ≥ `minPane` (the single, view-owned clamp).
-  static func clampRatio(_ ratio: CGFloat, total: CGFloat) -> CGFloat {
+  /// Clamp a proposed divider ratio to keep both panes ≥ the axis's floor (the single, view-owned clamp).
+  static func clampRatio(_ ratio: CGFloat, total: CGFloat, along orientation: SplitOrientation)
+    -> CGFloat
+  {
+    let floor = minPane(along: orientation)
     let usable = max(1, total - dividerThickness)
-    guard usable > 2 * minPane else { return 0.5 }
-    let minR = minPane / usable
+    guard usable > 2 * floor else { return 0.5 }
+    let minR = floor / usable
     return min(1 - minR, max(minR, ratio))
   }
 
@@ -211,7 +226,7 @@ enum PaneTreeLayout {
       return ([id: rect], [])
     case .split(let sid, let orientation, let ratio, let first, let second):
       let axis = orientation == .horizontal ? rect.width : rect.height
-      let (firstLen, secondLen) = lengths(total: axis, ratio: ratio)
+      let (firstLen, secondLen) = lengths(total: axis, ratio: ratio, along: orientation)
       let div = dividerThickness
       let firstRect: CGRect
       let dividerRect: CGRect
@@ -666,7 +681,8 @@ private struct SplitDivider: View {
             let usable = max(1, total - PaneTreeLayout.dividerThickness)
             let delta =
               orientation == .horizontal ? value.translation.width : value.translation.height
-            onRatio(PaneTreeLayout.clampRatio(start + delta / usable, total: total))
+            onRatio(
+              PaneTreeLayout.clampRatio(start + delta / usable, total: total, along: orientation))
           }
           .onEnded { _ in startRatio = nil }
       )
@@ -687,8 +703,10 @@ private struct SplitDivider: View {
       .accessibilityAdjustableAction { direction in
         let step: CGFloat = 0.05
         switch direction {
-        case .increment: onRatio(PaneTreeLayout.clampRatio(ratio + step, total: total))
-        case .decrement: onRatio(PaneTreeLayout.clampRatio(ratio - step, total: total))
+        case .increment:
+          onRatio(PaneTreeLayout.clampRatio(ratio + step, total: total, along: orientation))
+        case .decrement:
+          onRatio(PaneTreeLayout.clampRatio(ratio - step, total: total, along: orientation))
         @unknown default: break
         }
       }

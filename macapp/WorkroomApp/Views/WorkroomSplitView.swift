@@ -340,7 +340,8 @@ private struct WorkroomSplitDivider: View {
             let usable = max(1, total - PaneTreeLayout.dividerThickness)
             let delta =
               orientation == .horizontal ? value.translation.width : value.translation.height
-            onRatio(PaneTreeLayout.clampRatio(start + delta / usable, total: total))
+            onRatio(
+              PaneTreeLayout.clampRatio(start + delta / usable, total: total, along: orientation))
           }
           .onEnded { _ in startRatio = nil }
       )
@@ -360,8 +361,10 @@ private struct WorkroomSplitDivider: View {
       .accessibilityAdjustableAction { direction in
         let step: CGFloat = 0.05
         switch direction {
-        case .increment: onRatio(PaneTreeLayout.clampRatio(ratio + step, total: total))
-        case .decrement: onRatio(PaneTreeLayout.clampRatio(ratio - step, total: total))
+        case .increment:
+          onRatio(PaneTreeLayout.clampRatio(ratio + step, total: total, along: orientation))
+        case .decrement:
+          onRatio(PaneTreeLayout.clampRatio(ratio - step, total: total, along: orientation))
         @unknown default: break
         }
       }
