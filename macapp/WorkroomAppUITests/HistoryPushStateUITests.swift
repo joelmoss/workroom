@@ -1,0 +1,156 @@
+import XCTest
+
+/// UI tests for the unpushed badge on History rows and in the changeset detail header.
+///
+/// The fixture (`FixtureVCSProvider`) seeds all three push states plus both suppression rules, so the
+/// pane must show **exactly one** badge: commit 1 is unpushed but is the working copy `@` (suppressed),
+/// commit 2 is the only badged row, commit 3 is pushed, commit 4 is unknown, and the two divergent
+/// siblings are unpushed but never badge. The exact count is the assertion that matters — a plain
+/// `.exists` check would pass a badge-on-every-row bug just as happily.
+///
+/// The hover card is NOT covered here: XCUITest can't drive `.onHover`. It's covered at the view level
+/// by `HistoryCommitCardTests`.
+///
+/// Run with `make app-uitest` on a real GUI login session.
+final class HistoryPushStateUITests: XCTestCase {
+  override func setUpWithError() throws { continueAfterFailure = false }
+
+  private func launchedApp() -> XCUIApplication {
+    let app = XCUIApplication()
+    app.launchArguments += ["-WorkroomUITestFixture", "1"]
+    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+    app.launch()
+    app.activate()
+    return app
+  }
+
+  private func selectWorkroom(_ app: XCUIApplication) {
+    let row = app.buttons.matching(
+      NSPredicate(
+        format: "identifier == %@ AND label == %@", "sidebar.workroom.uitest-room", "uitest-room")
+    ).firstMatch
+    if row.waitForExistence(timeout: 10) { row.click() }
+  }
+
+  private func el(_ app: XCUIApplication, _ id: String) -> XCUIElement {
+    app.descendants(matching: .any).matching(identifier: id).firstMatch
+  }
+
+  private func els(_ app: XCUIApplication, _ id: String) -> XCUIElementQuery {
+    app.descendants(matching: .any).matching(identifier: id)
+  }
+
+  @discardableResult
+  private func waitExists(_ e: XCUIElement, _ want: Bool = true, _ timeout: TimeInterval = 8)
+    -> Bool
+  {
+    let p = NSPredicate(format: "exists == %@", NSNumber(value: want))
+    return XCTWaiter().wait(
+      for: [XCTNSPredicateExpectation(predicate: p, object: e)], timeout: timeout) == .completed
+  }
+
+  /// Mirrors `ChangesetDetailUITests.openHistory`: prime with Files so the History click is always a
+  /// switch, select the workroom after History is showing so the selection re-triggers the load.
+  private func openHistory(_ app: XCUIApplication) {
+    XCTAssertTrue(el(app, "activitySection.files").waitForExistence(timeout: 10))
+    el(app, "activitySection.files").click()
+    XCTAssertTrue(waitExists(el(app, "activitySection.history")))
+    el(app, "activitySection.history").click()
+    XCTAssertTrue(
+      el(app, "inspector.header.History").waitForExistence(timeout: 8), "History pane renders")
+
+    selectWorkroom(app)
+
+    if !els(app, "HistoryRow").element(boundBy: 0).waitForExistence(timeout: 6) {
+      let refresh = el(app, "arrow.clockwise")
+      if refresh.exists { refresh.click() }
+    }
+    XCTAssertTrue(
+      els(app, "HistoryRow").element(boundBy: 0).waitForExistence(timeout: 8),
+      "fixture history rows render")
+  }
+
+  /// Exactly one row badges, and it isn't every row: this is the suppression proof. `@` (unpushed),
+  /// pushed and unknown rows must all stay clean.
+  func testExactlyOneRowShowsTheUnpushedBadge() throws {
+    let app = launchedApp()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    openHistory(app)
+
+    XCTAssertTrue(
+      els(app, "HistoryRowUnpushed").element(boundBy: 0).waitForExistence(timeout: 8),
+      "the unpushed row badges")
+    let badges = els(app, "HistoryRowUnpushed").count
+    let rows = els(app, "HistoryRow").count
+    XCTAssertEqual(badges, 1, "only the one genuinely-unpushed non-@ commit badges")
+    XCTAssertLessThan(badges, rows, "the badge is per-commit, not decoration on the whole list")
+  }
+
+  /// Expanding the divergence disclosure must not add badges: the sibling copies are unpushed in the
+  /// fixture, but they sit off the `::@` line and their rows deliberately don't carry the marker.
+  func testDivergentSiblingsDoNotBadge() throws {
+    let app = launchedApp()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    openHistory(app)
+    XCTAssertTrue(
+      els(app, "HistoryRowUnpushed").element(boundBy: 0).waitForExistence(timeout: 8))
+    XCTAssertEqual(els(app, "HistoryRowUnpushed").count, 1)
+
+    let toggle = el(app, "HistoryRowDiverges")
+    XCTAssertTrue(toggle.waitForExistence(timeout: 8))
+    toggle.click()
+    XCTAssertTrue(
+      els(app, "HistoryDivergentSibling").element(boundBy: 1).waitForExistence(timeout: 6),
+      "the sibling copies appear")
+
+    XCTAssertEqual(
+      els(app, "HistoryRowUnpushed").count, 1,
+      "expanding the divergence expander adds rows but no badges")
+  }
+
+  /// Matched app-wide on `value`, not by identifier and not scoped to the detail element.
+  ///
+  /// Two facts about how SwiftUI exposes this header, both verified by dumping the tree: the element
+  /// carrying `identifier: 'ChangesetDetail'` is a LEAF `StaticText` whose value is just the commit
+  /// summary — the metadata line is a sibling, not a descendant — and that metadata line is one combined
+  /// `StaticText` whose VALUE concatenates its children ("…, Not pushed, …"). So a scoped or
+  /// identifier-based query finds nothing (the same reason `ChangesetDetailUITests` matches the `+N −M`
+  /// summary on `value CONTAINS`).
+  ///
+  /// Matching on `value` and not `label` is what keeps this honest: the History row's badge carries
+  /// "Not pushed" as its accessibility LABEL, so a label match would find the row and pass regardless of
+  /// what the header shows.
+  private func headerSaysNotPushed(_ app: XCUIApplication) -> XCUIElement {
+    app.descendants(matching: .any).matching(
+      NSPredicate(format: "value CONTAINS %@", "Not pushed")
+    ).firstMatch
+  }
+
+  /// Opening the badged commit states the same fact in the detail header — a badge that vanishes when
+  /// you click the row would read as a bug.
+  func testChangesetHeaderShowsTheUnpushedMarker() throws {
+    let app = launchedApp()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    openHistory(app)
+
+    // Fixture commit 2 is the badged one; open it (row order is newest-first, so index 1).
+    els(app, "HistoryRow").element(boundBy: 1).click()
+    XCTAssertTrue(waitExists(el(app, "ChangesetDetail")), "the changeset detail opens")
+    XCTAssertTrue(
+      waitExists(headerSaysNotPushed(app)), "the detail header states the commit isn't pushed")
+  }
+
+  /// And the pushed commit's detail says nothing: the marker is a claim about this commit, not a
+  /// permanent header fixture.
+  func testChangesetHeaderOmitsTheMarkerForAPushedCommit() throws {
+    let app = launchedApp()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    openHistory(app)
+
+    // Fixture commit 3 is `.pushed`.
+    els(app, "HistoryRow").element(boundBy: 2).click()
+    XCTAssertTrue(waitExists(el(app, "ChangesetDetail")), "the changeset detail opens")
+    XCTAssertFalse(
+      headerSaysNotPushed(app).exists, "a pushed commit's header carries no unpushed marker")
+  }
+}

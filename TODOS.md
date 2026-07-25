@@ -934,3 +934,33 @@ foundation (this file's other VCS entries) is the prerequisite; land the deferre
 `Core/VCSProviding.swift` + both providers, and new write-flow UI.
 
 **Priority:** P2 (the product direction; large, sequenced after the read follow-ups — see the plan for the real breakdown).
+
+## Background fetch so push state isn't stale (macapp) — unpushed-badge follow-up
+
+**What:** A periodic / on-focus `git fetch` (and `jj git fetch`) so remote-tracking refs — and
+therefore the History pane's unpushed badge — reflect the server rather than the last manual fetch.
+
+**Why:** Every push-state answer in the app is local knowledge: `GitGraph` walks
+`HEAD --not refs/remotes/origin/*` and the jj core evaluates `ancestors(<tracked @origin tips>)`.
+Neither touches the network. So a commit pushed from another machine keeps its badge until you fetch,
+and a commit that was force-pushed away still reads as pushed. The badge tooltip is honest about this
+("based on your local remote-tracking refs"), but admitting it isn't fixing it.
+
+**Pros:** The badge (and anything later built on the same reads — ahead/behind counts, a push action)
+becomes truthful without the user doing anything.
+
+**Cons:** This turns a pure local read into a network feature: auth prompts for private remotes, rate
+limits, timeouts, and partial failures on a path that today cannot fail. It needs a cadence policy and
+almost certainly a Settings toggle — "just add a fetch" is the wrong shape.
+
+**Context / how to start:** The read path itself needs no change — a fetch only has to write refs; the
+per-project watcher (`AppStore.handleRootBranchChange`, which watches each project's `.git`/`.jj`) then
+repaints History automatically, exactly as it does after a local push. So the work is entirely about
+*when* to fetch and how to fail quietly: pick the trigger (app focus + an interval), keep it off the
+synchronous log-read path, decide the credential story (the status sweep already shells `gh`, so there
+is precedent for network reads), and surface failure without a modal. Deliberately NOT done as part of
+the badge: see the "Staleness" trap in the unpushed-badge plan.
+
+**Depends on:** the unpushed badge (shipped). Likely wants a `Defaults` key + Settings row.
+
+**Priority:** P3 (the badge is useful without it; multi-machine users feel this first).

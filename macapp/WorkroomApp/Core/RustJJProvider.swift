@@ -11,7 +11,9 @@ struct RustJJProvider: VCSProviding {
     } catch {
       throw Self.mapError(error)
     }
-    return VCSHistoryPage(commits: page.commits.map(Self.map), reachedEnd: page.reachedEnd)
+    return VCSHistoryPage(
+      commits: page.commits.map(Self.map), reachedEnd: page.reachedEnd,
+      pushScope: Self.map(page.pushScope))
   }
 
   func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
@@ -26,7 +28,8 @@ struct RustJJProvider: VCSProviding {
           commit: Self.map(cs.commit),
           fullMessage: cs.fullMessage,
           files: cs.files.map(Self.map),
-          isMerge: cs.isMerge
+          isMerge: cs.isMerge,
+          pushScope: Self.map(cs.pushScope)
         )
       }
     } catch {
@@ -180,8 +183,21 @@ struct RustJJProvider: VCSProviding {
       parentIDs: c.parentIds,
       isWorkingCopy: c.isWorkingCopy,
       changeOffset: c.changeOffset.map(Int.init),
-      divergentSiblings: c.divergentSiblings.map(Self.map)
+      divergentSiblings: c.divergentSiblings.map(Self.map),
+      pushState: map(c.pushState)
     )
+  }
+
+  private static func map(_ s: WrVcs.PushState) -> VCSPushState {
+    switch s {
+    case .pushed: return .pushed
+    case .unpushed: return .unpushed
+    case .unknown: return .unknown
+    }
+  }
+
+  private static func map(_ s: WrVcs.PushScope?) -> VCSPushScope? {
+    s.map { VCSPushScope(refName: $0.refName, count: Int($0.count)) }
   }
 
   private static func map(_ f: WrVcs.ChangedFile) -> VCSChangedFile {

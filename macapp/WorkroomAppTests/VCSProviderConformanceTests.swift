@@ -230,6 +230,67 @@ final class VCSProviderConformanceTests: XCTestCase {
 
   // MARK: - Fixture helpers (mirror WorkroomStatusIntegrationTests)
 
+  /// Push state must mean the SAME thing in both backends. They compute it differently — git walks
+  /// `HEAD --not refs/remotes/origin/*` in libgit2, jj evaluates `ancestors(<tracked @origin tips>)` in
+  /// jj-lib — so this is the only test that catches them drifting apart (e.g. one silently widening to
+  /// "any remote").
+  ///
+  /// A colocated `jj git push` exports `refs/remotes/origin/main` into the git repo, so both backends
+  /// genuinely see the same tip. Only shas present in BOTH pages are compared: jj's page starts at the
+  /// working-copy commit `@`, which git's HEAD (pointed at `@-`) never sees.
+  func testColocatedPushStateMatchesAcrossBackends() async throws {
+    try requireTool("git")
+    try requireTool("jj")
+    let root = try colocatedWithOriginFixture()
+    let url = URL(fileURLWithPath: root)
+
+    let jjPage = try RustJJProvider().log(root: url, limit: 20)
+    let gitPage = try GitProvider().log(root: url, limit: 20)
+
+    let jjStates = Dictionary(
+      uniqueKeysWithValues: jjPage.commits.map { ($0.commitID, $0.pushState) })
+    var compared = 0
+    for row in gitPage.commits {
+      guard let jjState = jjStates[row.commitID] else { continue }
+      XCTAssertEqual(
+        row.pushState, jjState,
+        "backends disagree on \(row.summary) (\(row.commitID.prefix(8)))")
+      compared += 1
+    }
+    XCTAssertGreaterThanOrEqual(compared, 2, "both a pushed and an unpushed commit were compared")
+
+    // And both must have actually decided something — an all-`.unknown` page would make the equality
+    // above vacuously true.
+    XCTAssertTrue(gitPage.commits.contains { $0.pushState == .pushed })
+    XCTAssertTrue(gitPage.commits.contains { $0.pushState == .unpushed })
+    XCTAssertEqual(gitPage.pushScope?.refName, "origin/main")
+    XCTAssertEqual(jjPage.pushScope?.refName, "origin/main")
+  }
+
+  /// A colocated jj+git repo with a bare `origin`: `first` is pushed to `origin/main`, `second` is
+  /// local-only. Both backends read the same refs.
+  private func colocatedWithOriginFixture() throws -> String {
+    let root = tempDir()
+    let r = sh(
+      """
+      git init -q --bare origin.git
+      mkdir -p work && cd work
+      jj git init --colocate . >/dev/null 2>&1 || jj init --git . >/dev/null 2>&1
+      jj config set --repo user.name t >/dev/null 2>&1 || true
+      jj config set --repo user.email a@b.c >/dev/null 2>&1 || true
+      printf 'one\\n' > a.txt
+      jj commit -m first >/dev/null 2>&1
+      jj bookmark create main -r @- >/dev/null 2>&1
+      jj git remote add origin ../origin.git >/dev/null 2>&1
+      jj git push -b main >/dev/null 2>&1
+      printf 'two\\n' > b.txt
+      jj commit -m second >/dev/null 2>&1
+      echo done
+      """, in: root)
+    XCTAssertTrue(r.out.contains("done"), "colocated+origin fixture setup failed: \(r.out)")
+    return root + "/work"
+  }
+
   private struct MissingTool: Error { let name: String }
 
   private func requireTool(_ name: String) throws {

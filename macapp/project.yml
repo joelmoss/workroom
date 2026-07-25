@@ -32,6 +32,14 @@ packages:
   SwiftGitX:
     url: https://github.com/ibrahimcetin/SwiftGitX
     exactVersion: "0.4.0"
+  # Raw libgit2, linked DIRECTLY as well as through SwiftGitX. SwiftGitX cannot express a commit RANGE
+  # (its CommitSequence only calls git_revwalk_push, never git_revwalk_hide) and keeps its repository
+  # pointer internal, so push-state reachability (Core/GitGraph.swift) needs the C API itself. URL and
+  # version match SwiftGitX's own dependency EXACTLY (`.git` suffix included) so SwiftPM resolves one
+  # package identity, not two.
+  libgit2:
+    url: https://github.com/ibrahimcetin/libgit2.git
+    exactVersion: "1.9.2"
   Sparkle:
     # Auto-update framework: polls the appcast feed and installs EdDSA-signed DMGs.
     # See WorkroomApp/Core/Updater.swift and the SU* Info.plist keys below.
@@ -168,6 +176,9 @@ targets:
       - package: WrVcs
       - package: SwiftGitX
         product: SwiftGitX
+      # The C API behind SwiftGitX, for the reachability reads it doesn't expose (Core/GitGraph.swift).
+      - package: libgit2
+        product: libgit2
       # libghostty: link the raw C API product (GhosttyKit). Its package links c++ + Carbon;
       # the static Ghostty archive additionally needs these system frameworks at final link
       # (GPU renderer + CoreText font backend + HID).

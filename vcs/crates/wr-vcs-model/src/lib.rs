@@ -34,6 +34,28 @@ pub struct Author {
     pub email: String,
 }
 
+/// Whether a commit has reached the remote. `Unknown` is NOT "no": it means there was nothing to
+/// compare against (no `origin` remote / no tracked origin bookmarks) or the reachability read failed,
+/// so the UI must render nothing rather than guess. `Pushed` means "reachable from a tip of the
+/// project's `origin`" — computed from LOCAL remote-tracking state, so it reflects whatever your last
+/// fetch or push wrote, never the server's live state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PushState {
+    Pushed,
+    Unpushed,
+    Unknown,
+}
+
+/// What `PushState` was measured against, so the UI can name it in a tooltip. `ref_name` is set only
+/// when `origin` has exactly one bookmark/branch (then the tooltip can say "not on origin/main");
+/// otherwise `count` drives "not on any of origin's N branches". `count` is 0 when there was nothing
+/// to compare against — the `PushState::Unknown` case.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PushScope {
+    pub ref_name: Option<String>,
+    pub count: u32,
+}
+
 /// One row in the history log. `commit_id` is the stable identity used for dedupe + diffing;
 /// `change_id` is jj-only (display). Timestamp is split into epoch millis + tz offset so the UI can
 /// render in the commit's own zone or local, its choice.
@@ -64,6 +86,8 @@ pub struct Commit {
     /// be invisible; surfacing them here is what lets the History pane reveal a change's divergence.
     /// Never nested (a sibling's own `divergent_siblings` is always empty).
     pub divergent_siblings: Vec<Commit>,
+    /// Whether this commit is on the project's `origin`. See `PushState` — `Unknown` renders nothing.
+    pub push_state: PushState,
 }
 
 /// A page of history. `reached_end` is true when the backend yielded fewer than the requested count.
@@ -71,6 +95,8 @@ pub struct Commit {
 pub struct HistoryPage {
     pub commits: Vec<Commit>,
     pub reached_end: bool,
+    /// What the page's `push_state`s were measured against (tooltip copy). `None` ⇒ nothing to compare.
+    pub push_scope: Option<PushScope>,
 }
 
 /// The kind of a repo's current ref (the sidebar root-row label). `Ancestor` is jj-only (the nearest
@@ -127,6 +153,8 @@ pub struct Changeset {
     pub files: Vec<ChangedFile>,
     /// >1 parent ⇒ a merge; the diff basis is the first parent (documented in the UI).
     pub is_merge: bool,
+    /// What `commit.push_state` was measured against (tooltip copy). `None` ⇒ nothing to compare.
+    pub push_scope: Option<PushScope>,
 }
 
 /// The kind of a single diff line.

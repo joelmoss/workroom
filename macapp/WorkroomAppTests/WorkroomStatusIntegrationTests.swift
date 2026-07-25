@@ -178,6 +178,117 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
     XCTAssertEqual(page.commits[1].refs, [])
   }
 
+  // MARK: git push state
+  //
+  // `GitGraphTests` covers the reachability contract itself; these prove the PROVIDER wires it onto
+  // every row of a real page, and that the tri-state reaches the model intact.
+
+  /// The split: commits above `origin/main` are unpushed, the pushed base is pushed, and the page
+  /// carries the comparison scope so the tooltip can name the branch.
+  func testGitProviderLogPushStateSplitsAtOrigin() throws {
+    let dir = try gitRepoWithUpstream()  // one commit on `main`, pushed to `origin/main`
+    sh("echo two >> a.txt && git commit -qam second", in: dir)
+    sh("echo three >> a.txt && git commit -qam third", in: dir)
+
+    let page = try GitProvider().log(root: URL(fileURLWithPath: dir), limit: 10)
+    XCTAssertEqual(page.commits.map(\.summary), ["third", "second", "init"])
+    XCTAssertEqual(page.commits[0].pushState, .unpushed)
+    XCTAssertEqual(page.commits[1].pushState, .unpushed)
+    XCTAssertEqual(page.commits[2].pushState, .pushed)
+    XCTAssertEqual(page.pushScope?.refName, "origin/main")
+    XCTAssertEqual(page.pushScope?.count, 1)
+    // The badge shows for exactly the unpushed rows (git has no working-copy commit to suppress).
+    XCTAssertEqual(page.commits.filter(\.showsUnpushedBadge).map(\.summary), ["third", "second"])
+  }
+
+  /// No origin ⇒ `.unknown` on every row, NOT `.unpushed`. A repo you never pushed anywhere shows no
+  /// badges at all rather than badging its entire history.
+  func testGitProviderLogPushStateUnknownWithoutOrigin() throws {
+    try requireTool("git")
+    let dir = tempDir()
+    sh(
+      """
+      git init -q . && git config user.email a@b.c && git config user.name t \
+        && echo one > a.txt && git add . && git commit -qm init
+      """, in: dir)
+    let page = try GitProvider().log(root: URL(fileURLWithPath: dir), limit: 10)
+    XCTAssertEqual(page.commits.map(\.pushState), [.unknown])
+    XCTAssertNil(page.pushScope)
+    XCTAssertTrue(page.commits.allSatisfy { !$0.showsUnpushedBadge })
+  }
+
+  /// Origin-scoped, not any-remote: a commit pushed only to `backup` is still unpushed.
+  func testGitProviderLogPushStateIgnoresNonOriginRemotes() throws {
+    let dir = try gitRepoWithUpstream()
+    sh("echo two >> a.txt && git commit -qam second", in: dir)
+    sh(
+      """
+      git init -q --bare ../backup.git && git remote add backup ../backup.git \
+        && git push -q backup HEAD:refs/heads/main
+      """, in: dir)
+
+    let page = try GitProvider().log(root: URL(fileURLWithPath: dir), limit: 10)
+    XCTAssertEqual(page.commits[0].summary, "second")
+    XCTAssertEqual(page.commits[0].pushState, .unpushed, "`backup` is not the project's remote")
+    XCTAssertEqual(page.pushScope?.count, 1, "only origin's branch is in scope")
+  }
+
+  /// Reachability, not "at or below HEAD": a local tip behind what origin has is still pushed.
+  func testGitProviderLogPushStateWhenBehindOrigin() throws {
+    let dir = try gitRepoWithUpstream()
+    sh("echo two >> a.txt && git commit -qam second && git push -q origin main", in: dir)
+    sh("git reset -q --hard HEAD~1", in: dir)
+
+    let page = try GitProvider().log(root: URL(fileURLWithPath: dir), limit: 10)
+    XCTAssertEqual(page.commits.map(\.pushState), [.pushed])
+  }
+
+  /// A merge of an unpushed side branch: the merge and the side commit are unpushed, the pushed base
+  /// isn't. Guards a future "walk first-parent only" optimization, which would get this wrong.
+  func testGitProviderLogPushStateAcrossAMerge() throws {
+    let dir = try gitRepoWithUpstream()
+    sh(
+      """
+      git checkout -q -b side && echo s > s.txt && git add . && git commit -qm sidework
+      git checkout -q main && git merge -q --no-ff -m merged side
+      """, in: dir)
+
+    let page = try GitProvider().log(root: URL(fileURLWithPath: dir), limit: 10)
+    let bySummary = Dictionary(
+      uniqueKeysWithValues: page.commits.map { ($0.summary, $0.pushState) })
+    XCTAssertEqual(bySummary["merged"], .unpushed)
+    XCTAssertEqual(bySummary["sidework"], .unpushed)
+    XCTAssertEqual(bySummary["init"], .pushed)
+  }
+
+  /// Amending a pushed commit makes a NEW object, so the row reads unpushed even though "the same
+  /// work" is on origin. Intended: the alternative (patch-id matching) would make the badge lie in the
+  /// worse direction.
+  func testGitProviderLogPushStateAfterAmend() throws {
+    let dir = try gitRepoWithUpstream()
+    sh("git commit -q --amend -m amended", in: dir)
+
+    let page = try GitProvider().log(root: URL(fileURLWithPath: dir), limit: 10)
+    XCTAssertEqual(page.commits[0].summary, "amended")
+    XCTAssertEqual(page.commits[0].pushState, .unpushed)
+  }
+
+  /// The changeset path (the detail header) must agree with the row it was opened from — a badge that
+  /// vanishes when you click the commit reads as a bug.
+  func testGitProviderChangesetPushStateMatchesTheRow() async throws {
+    let dir = try gitRepoWithUpstream()
+    sh("echo two >> a.txt && git commit -qam second", in: dir)
+    let provider = GitProvider()
+    let page = try provider.log(root: URL(fileURLWithPath: dir), limit: 10)
+
+    for row in page.commits {
+      let cs = try await provider.changeset(
+        root: URL(fileURLWithPath: dir), commitID: row.commitID)
+      XCTAssertEqual(cs.commit.pushState, row.pushState, "\(row.summary) agrees")
+      XCTAssertEqual(cs.pushScope?.refName, "origin/main")
+    }
+  }
+
   func testGitConflict() async throws {
     let dir = try gitRepoWithUpstream()
     sh(

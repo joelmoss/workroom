@@ -4,6 +4,9 @@ import SwiftGitX
 /// git-backed `VCSProviding`, over SwiftGitX (libgit2). Maps `SwiftGitX.*` types into the app-native
 /// models. Pure Swift — no Rust involved for git.
 ///
+/// One read reaches *past* SwiftGitX: push state, via `GitGraph` (raw libgit2). SwiftGitX cannot express
+/// a commit RANGE, which is what "not on origin yet" is — see `GitGraph`'s doc for the details.
+///
 /// Errors are caught untyped (`catch { … "\(error)" }`) on purpose: binding SwiftGitX's typed-throws
 /// error (`catch let e as SwiftGitXError`) trips a Swift 6 SIL ownership error across the async
 /// boundary.
@@ -18,8 +21,18 @@ struct GitProvider: VCSProviding {
       let window = Array(try repo.log().prefix(max(0, limit) + 1))
       let reachedEnd = window.count <= limit
       let decorations = Self.decorations(in: repo)
-      let commits = window.prefix(limit).map { Self.map($0, refs: decorations[$0.id.hex] ?? []) }
-      return VCSHistoryPage(commits: Array(commits), reachedEnd: reachedEnd)
+      let page = Array(window.prefix(limit))
+      // Push state for the whole page in one libgit2 revwalk (`HEAD --not refs/remotes/origin/*`).
+      // A `nil` read is unanswerable — no origin, or a ref we couldn't trust — and EVERY row then reads
+      // `.unknown`, never a partial answer (a skipped tip could badge a pushed commit as unpushed).
+      let push = GitGraph.unpushed(root: root, decide: Set(page.map { $0.id.hex }))
+      let commits = page.map {
+        Self.map(
+          $0, refs: decorations[$0.id.hex] ?? [],
+          pushState: Self.pushState($0.id.hex, in: push))
+      }
+      return VCSHistoryPage(
+        commits: commits, reachedEnd: reachedEnd, pushScope: Self.scope(push?.scope))
     } catch {
       throw VCSError.io("\(error)")
     }
@@ -32,13 +45,19 @@ struct GitProvider: VCSProviding {
         let commit: Commit = try repo.show(id: OID(hex: commitID))
         let diff = try repo.diff(commit: commit)
         let (insertions, deletions) = Self.diffLineStats(diff)
+        // One-commit push state: `git_graph_reachable_from_any` against the origin tips. There's no page
+        // here to bound a walk with, which is exactly why this form exists.
+        let push = GitGraph.isPushed(root: root, commitID: commit.id.hex)
         return VCSChangeset(
-          commit: Self.map(commit, refs: Self.decorations(in: repo)[commit.id.hex] ?? []),
+          commit: Self.map(
+            commit, refs: Self.decorations(in: repo)[commit.id.hex] ?? [],
+            pushState: push.map { $0.pushed ? .pushed : .unpushed } ?? .unknown),
           fullMessage: commit.message,
           files: diff.changes.map(Self.mapDelta),
           isMerge: ((try? commit.parents.count) ?? 0) > 1,
           insertions: insertions,
-          deletions: deletions
+          deletions: deletions,
+          pushScope: Self.scope(push?.scope)
         )
       } catch {
         throw VCSError.io("\(error)")
@@ -284,9 +303,10 @@ struct GitProvider: VCSProviding {
   /// each group sorted. This is git's answer to jj's bookmarks (`bookmark_map` in the Rust core), so
   /// a git repo's history rows carry refs too.
   ///
-  /// Remote-tracking refs (`origin/main`) are deliberately excluded: jj surfaces only *local*
-  /// bookmarks, and since every pushed branch has a same-named remote ref, including them would
-  /// double every label for no new information.
+  /// Remote-tracking refs (`origin/main`) are deliberately excluded *as labels*: jj surfaces only
+  /// *local* bookmarks, and since every pushed branch has a same-named remote ref, showing them would
+  /// double every label for no new information. They ARE read elsewhere — `GitGraph` uses
+  /// `refs/remotes/origin/*` to answer push state — so this exclusion is about decoration, not access.
   private static func decorations(in repo: Repository) -> [String: [String]] {
     var branches: [String: [String]] = [:]
     for branch in (try? repo.branch.list(.local)) ?? [] {
@@ -301,6 +321,17 @@ struct GitProvider: VCSProviding {
     return map
   }
 
+  /// One page commit's push state. An unanswerable read (`nil`) makes every row `.unknown`; otherwise a
+  /// sha in the walk's output is unpushed and anything else was reachable from origin.
+  private static func pushState(_ sha: String, in read: GitGraph.PageRead?) -> VCSPushState {
+    guard let read else { return .unknown }
+    return read.unpushed.contains(sha) ? .unpushed : .pushed
+  }
+
+  private static func scope(_ scope: GitGraph.Scope?) -> VCSPushScope? {
+    scope.map { VCSPushScope(refName: $0.refName, count: $0.count) }
+  }
+
   /// The id of the object a ref ultimately points at, following tag-to-tag chains (an annotated tag
   /// already exposes its target commit; a lightweight tag can point at another tag object).
   private static func peeledID(_ object: any Object) -> String {
@@ -309,7 +340,9 @@ struct GitProvider: VCSProviding {
     return object.id.hex
   }
 
-  private static func map(_ c: Commit, refs: [String] = []) -> VCSCommit {
+  private static func map(
+    _ c: Commit, refs: [String] = [], pushState: VCSPushState = .unknown
+  ) -> VCSCommit {
     let primary = VCSAuthor(name: c.author.name, email: c.author.email)
     return VCSCommit(
       commitID: c.id.hex,
@@ -323,7 +356,8 @@ struct GitProvider: VCSProviding {
       timestamp: c.date,
       refs: refs,  // local branch + tag names (see `decorations`)
       parentIDs: (try? c.parents)?.map { $0.id.hex } ?? [],
-      isWorkingCopy: false  // git has no jj-style working-copy commit
+      isWorkingCopy: false,  // git has no jj-style working-copy commit
+      pushState: pushState
     )
   }
 

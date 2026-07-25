@@ -26,6 +26,9 @@ final class HistoryModel: ObservableObject {
   @Published private(set) var commits: [VCSCommit] = []
   @Published private(set) var reachedEnd = false
   @Published private(set) var state: State = .idle
+  /// What the page's push states were measured against — page-level, so the rows can word their
+  /// unpushed tooltip with the actual origin branch name. `nil` ⇒ nothing to compare against.
+  @Published private(set) var pushScope: VCSPushScope?
 
   private let pageSize: Int
   private let resolve: @Sendable (URL) throws -> VCSProviding
@@ -100,6 +103,7 @@ final class HistoryModel: ObservableObject {
         guard let self else { return }
         self.commits = page.commits
         self.reachedEnd = page.reachedEnd
+        self.pushScope = page.pushScope
         self.state = .loaded
       } catch {
         if Task.isCancelled { return }

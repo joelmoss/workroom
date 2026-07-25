@@ -16,6 +16,22 @@ pub struct Author {
     pub email: String,
 }
 
+/// Mirrors `model::PushState`. `Unknown` = nothing to compare against (no `origin`) or the read
+/// failed — the UI renders nothing for it, never a badge.
+#[derive(uniffi::Enum)]
+pub enum PushState {
+    Pushed,
+    Unpushed,
+    Unknown,
+}
+
+/// Mirrors `model::PushScope` — what push state was measured against, for tooltip copy.
+#[derive(uniffi::Record)]
+pub struct PushScope {
+    pub ref_name: Option<String>,
+    pub count: u32,
+}
+
 #[derive(uniffi::Record)]
 pub struct Commit {
     pub commit_id: String,
@@ -34,12 +50,15 @@ pub struct Commit {
     /// jj-only: the other visible commits sharing this change-id (the divergent copies). Empty
     /// unless divergent; never nested.
     pub divergent_siblings: Vec<Commit>,
+    /// Whether this commit is on the project's `origin`.
+    pub push_state: PushState,
 }
 
 #[derive(uniffi::Record)]
 pub struct HistoryPage {
     pub commits: Vec<Commit>,
     pub reached_end: bool,
+    pub push_scope: Option<PushScope>,
 }
 
 #[derive(uniffi::Enum)]
@@ -66,6 +85,7 @@ pub struct Changeset {
     pub full_message: String,
     pub files: Vec<ChangedFile>,
     pub is_merge: bool,
+    pub push_scope: Option<PushScope>,
 }
 
 #[derive(uniffi::Enum)]
@@ -127,6 +147,26 @@ impl From<model::Author> for Author {
     }
 }
 
+impl From<model::PushState> for PushState {
+    fn from(s: model::PushState) -> Self {
+        use model::PushState as M;
+        match s {
+            M::Pushed => PushState::Pushed,
+            M::Unpushed => PushState::Unpushed,
+            M::Unknown => PushState::Unknown,
+        }
+    }
+}
+
+impl From<model::PushScope> for PushScope {
+    fn from(s: model::PushScope) -> Self {
+        PushScope {
+            ref_name: s.ref_name,
+            count: s.count,
+        }
+    }
+}
+
 impl From<model::Commit> for Commit {
     fn from(c: model::Commit) -> Self {
         Commit {
@@ -143,6 +183,7 @@ impl From<model::Commit> for Commit {
             is_working_copy: c.is_working_copy,
             change_offset: c.change_offset,
             divergent_siblings: c.divergent_siblings.into_iter().map(Commit::from).collect(),
+            push_state: c.push_state.into(),
         }
     }
 }
@@ -152,6 +193,7 @@ impl From<model::HistoryPage> for HistoryPage {
         HistoryPage {
             commits: p.commits.into_iter().map(Commit::from).collect(),
             reached_end: p.reached_end,
+            push_scope: p.push_scope.map(PushScope::from),
         }
     }
 }
@@ -188,6 +230,7 @@ impl From<model::Changeset> for Changeset {
             full_message: c.full_message,
             files: c.files.into_iter().map(ChangedFile::from).collect(),
             is_merge: c.is_merge,
+            push_scope: c.push_scope.map(PushScope::from),
         }
     }
 }

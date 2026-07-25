@@ -5,6 +5,11 @@
 //! `jj-concurrent-probes-working-copy-lock`: jj takes the working-copy lock only on ops that *write*
 //! `@`). The exception is `working_status` (`snapshot_working_copy`), which MUST snapshot `@` so it
 //! reflects on-disk edits — so it takes the lock + rewrites `@`, exactly like every `jj` command.
+//!
+//! Two different ref reads live here, and they are NOT interchangeable: `bookmark_map` reads LOCAL
+//! bookmarks (the history rows' labels), while `origin_tips` reads the tracked bookmarks on remote
+//! `origin` (push state). Never mix them — see `PUSH_REMOTE` for why counting jj's pseudo-remote `git`
+//! would report every local commit as pushed.
 
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -20,6 +25,7 @@ use jj_lib::id_prefix::IdPrefixIndex;
 use jj_lib::matchers::{EverythingMatcher, NothingMatcher};
 use jj_lib::object_id::ObjectId;
 use jj_lib::repo::{ReadonlyRepo, Repo, StoreFactories};
+use jj_lib::revset::{ResolvedRevsetExpression, Revset, RevsetExpression};
 use jj_lib::settings::UserSettings;
 use jj_lib::working_copy::SnapshotOptions;
 use jj_lib::workspace::{default_working_copy_factories, Workspace};
@@ -59,7 +65,9 @@ fn author_of(sig: &jj_lib::backend::Signature) -> (Author, i64, i32) {
     )
 }
 
-/// Build `commit_id_hex -> [bookmark names]` from the repo view's local bookmarks.
+/// Build `commit_id_hex -> [bookmark names]` from the repo view's LOCAL bookmarks (display labels for
+/// history rows). Remote bookmarks are deliberately absent here; push state reads them via
+/// `origin_tips`.
 fn bookmark_map(repo: &ReadonlyRepo) -> HashMap<String, Vec<String>> {
     let mut map: HashMap<String, Vec<String>> = HashMap::new();
     for (name, target) in repo.view().local_bookmarks() {
@@ -69,6 +77,73 @@ fn bookmark_map(repo: &ReadonlyRepo) -> HashMap<String, Vec<String>> {
         }
     }
     map
+}
+
+/// The remote whose bookmarks define "pushed". Deliberately just `origin`, not every remote: a commit
+/// sitting on a stale backup/fork remote is NOT on the project's shared repo, and the badge claims the
+/// latter. Origin-only also excludes jj's pseudo-remote `git` by construction — in a colocated repo
+/// every LOCAL git branch is mirrored as `<name>@git` and marked tracked, so counting that remote would
+/// make every local commit read `Pushed`.
+const PUSH_REMOTE: &str = "origin";
+
+/// `origin`'s tracked, present bookmark tips + their names (for the tooltip scope). Untracked remote
+/// bookmarks are skipped: jj only reconciles a remote bookmark with its local counterpart while it's
+/// tracked, so an untracked one says nothing about where local work lives.
+fn origin_tips(repo: &ReadonlyRepo) -> (Vec<jj_lib::backend::CommitId>, Vec<String>) {
+    let mut tips = Vec::new();
+    let mut names = Vec::new();
+    for (symbol, remote_ref) in repo.view().all_remote_bookmarks() {
+        if symbol.remote.as_str() != PUSH_REMOTE || !remote_ref.is_tracked() {
+            continue;
+        }
+        if !remote_ref.is_present() {
+            continue;
+        }
+        names.push(format!("{}/{}", PUSH_REMOTE, symbol.name.as_str()));
+        tips.extend(remote_ref.target.added_ids().cloned());
+    }
+    (tips, names)
+}
+
+/// The comparison scope for tooltip copy: name the single origin bookmark when there is exactly one,
+/// otherwise just the count. `None` when there is nothing to compare against (⇒ `PushState::Unknown`).
+fn push_scope(names: Vec<String>) -> Option<model::PushScope> {
+    if names.is_empty() {
+        return None;
+    }
+    let count = names.len() as u32;
+    let ref_name = if names.len() == 1 {
+        names.into_iter().next()
+    } else {
+        None
+    };
+    Some(model::PushScope { ref_name, count })
+}
+
+/// `ancestors(tips)` evaluated ONCE, so membership is a cheap per-commit lookup instead of an
+/// N-commits × M-tips `is_ancestor` sweep. The default index's `PositionsAccumulator` consumes the
+/// underlying walk INCREMENTALLY and stops at the queried position, so this never materializes the
+/// whole history. `None` ⇒ nothing to compare against, or the revset failed to evaluate; either way the
+/// caller must report `Unknown` (never `Unpushed` — a missing badge beats a wrong one).
+///
+/// The returned revset borrows `repo`, and `Revset::containing_fn` in turn borrows the revset, so the
+/// caller has to keep this value alive while it queries. Hence two steps rather than one helper
+/// returning the closure.
+fn pushed_revset<'a>(
+    repo: &'a dyn Repo,
+    tips: &[jj_lib::backend::CommitId],
+) -> Option<Box<dyn Revset + 'a>> {
+    if tips.is_empty() {
+        return None;
+    }
+    let expr: Arc<ResolvedRevsetExpression> = RevsetExpression::commits(tips.to_vec()).ancestors();
+    expr.evaluate(repo).ok()
+}
+
+/// `push_of` for the call paths that don't measure push state (the working-copy `CommitChanges`
+/// disclosure, which has no such field).
+fn unknown_push(_: &jj_lib::backend::CommitId) -> model::PushState {
+    model::PushState::Unknown
 }
 
 /// jj's short change-id for display: the reverse-hex ("z-k" digit) form truncated to the shortest
@@ -87,12 +162,16 @@ fn short_change_id(repo: &dyn Repo, change_id: &ChangeId) -> String {
 /// Build one model commit from a jj commit, WITHOUT resolving divergence (`divergent_siblings`
 /// empty). `change_offset` is the caller-supplied `/N` offset (set only for members of a divergent
 /// set). Used both for page commits and for the sibling copies nested under them.
+///
+/// `push_of` is threaded down rather than applied by the caller afterwards: divergent siblings are
+/// built in here, so a post-hoc assignment on the returned commit would leave every sibling `Unknown`.
 fn build_commit(
     c: &JjCommit,
     wc_id: Option<&jj_lib::backend::CommitId>,
     bookmarks: &HashMap<String, Vec<String>>,
     repo: &dyn Repo,
     change_offset: Option<u32>,
+    push_of: &dyn Fn(&jj_lib::backend::CommitId) -> model::PushState,
 ) -> Commit {
     let commit_id = c.id().hex();
     let (author, ts_ms, tz) = author_of(c.author());
@@ -118,6 +197,7 @@ fn build_commit(
         is_working_copy: wc_id.map(|w| w == c.id()).unwrap_or(false),
         change_offset,
         divergent_siblings: Vec::new(),
+        push_state: push_of(c.id()),
         commit_id,
     }
 }
@@ -127,6 +207,7 @@ fn to_model_commit(
     wc_id: Option<&jj_lib::backend::CommitId>,
     bookmarks: &HashMap<String, Vec<String>>,
     repo: &dyn Repo,
+    push_of: &dyn Fn(&jj_lib::backend::CommitId) -> model::PushState,
 ) -> Commit {
     // Divergence: does this change-id resolve to more than one *visible* commit? Only one copy of a
     // divergent change is an ancestor of `@`, so the `::@` walk shows just that one; jj addresses
@@ -145,6 +226,7 @@ fn to_model_commit(
         bookmarks,
         repo,
         if divergent { self_offset } else { None },
+        push_of,
     );
     // Surface the OTHER visible copies (the divergent siblings) so the UI can reveal them — they sit
     // off `::@` and are otherwise invisible in the log. Load each and carry its own `/N` offset.
@@ -162,6 +244,7 @@ fn to_model_commit(
                         bookmarks,
                         repo,
                         Some(offset as u32),
+                        push_of,
                     ));
                 }
             }
@@ -209,6 +292,21 @@ pub fn log_page(root: &Path, limit: usize) -> model::Result<HistoryPage> {
         .cloned();
 
     let bookmarks = bookmark_map(&repo);
+    // Push state: one `ancestors(origin tips)` revset for the whole page (see `pushed_revset`). Held in
+    // this scope because `containing_fn` borrows it.
+    let (tips, tip_names) = origin_tips(&repo);
+    let pushed = pushed_revset(repo.as_ref(), &tips);
+    let contains = pushed.as_ref().map(|r| r.containing_fn());
+    let push_of = |id: &jj_lib::backend::CommitId| match &contains {
+        None => model::PushState::Unknown,
+        Some(f) => match f(id) {
+            Ok(true) => model::PushState::Pushed,
+            Ok(false) => model::PushState::Unpushed,
+            // A membership read that errors is unknown, never "unpushed".
+            Err(_) => model::PushState::Unknown,
+        },
+    };
+    let scope = push_scope(tip_names);
 
     let mut heap: BinaryHeap<HeapItem> = BinaryHeap::new();
     let mut seen: HashSet<Vec<u8>> = HashSet::new();
@@ -224,6 +322,7 @@ pub fn log_page(root: &Path, limit: usize) -> model::Result<HistoryPage> {
             return Ok(HistoryPage {
                 commits,
                 reached_end: true,
+                push_scope: scope,
             });
         };
         commits.push(to_model_commit(
@@ -231,6 +330,7 @@ pub fn log_page(root: &Path, limit: usize) -> model::Result<HistoryPage> {
             wc_id.as_ref(),
             &bookmarks,
             repo.as_ref(),
+            &push_of,
         ));
         for parent_id in commit.parent_ids() {
             if seen.insert(parent_id.as_bytes().to_vec()) {
@@ -242,6 +342,7 @@ pub fn log_page(root: &Path, limit: usize) -> model::Result<HistoryPage> {
     Ok(HistoryPage {
         commits,
         reached_end,
+        push_scope: scope,
     })
 }
 
@@ -327,7 +428,7 @@ fn commit_changes(
     bookmarks: &HashMap<String, Vec<String>>,
     repo: &dyn Repo,
 ) -> model::CommitChanges {
-    let c = to_model_commit(commit, None, bookmarks, repo);
+    let c = to_model_commit(commit, None, bookmarks, repo, &unknown_push);
     model::CommitChanges {
         change_id: c.change_id,
         commit_id: Some(c.short_id),
@@ -479,12 +580,25 @@ pub fn changeset(root: &Path, commit_id_hex: &str) -> model::Result<model::Chang
     let commit = store.get_commit(&id).map_err(io)?;
     let bookmarks = bookmark_map(&repo);
     let files = changed_files(store, &commit)?;
-    let model_commit = to_model_commit(&commit, None, &bookmarks, repo.as_ref());
+    // Same push-state read as the log, for one commit — the detail header shows it too.
+    let (tips, tip_names) = origin_tips(&repo);
+    let pushed = pushed_revset(repo.as_ref(), &tips);
+    let contains = pushed.as_ref().map(|r| r.containing_fn());
+    let push_of = |id: &jj_lib::backend::CommitId| match &contains {
+        None => model::PushState::Unknown,
+        Some(f) => match f(id) {
+            Ok(true) => model::PushState::Pushed,
+            Ok(false) => model::PushState::Unpushed,
+            Err(_) => model::PushState::Unknown,
+        },
+    };
+    let model_commit = to_model_commit(&commit, None, &bookmarks, repo.as_ref(), &push_of);
     Ok(model::Changeset {
         is_merge: commit.parent_ids().len() > 1,
         full_message: commit.description().to_string(),
         files,
         commit: model_commit,
+        push_scope: push_scope(tip_names),
     })
 }
 

@@ -81,6 +81,9 @@ struct HistoryPanel: View {
         ForEach(model.commits) { commit in
           HistoryRow(
             commit: commit,
+            // Page-level, so an unpushed row's tooltip can name the origin branch it was measured
+            // against instead of saying "origin" generically.
+            pushScope: model.pushScope,
             // Open any commit's changeset — the row itself, or one of its divergent siblings. Preview
             // on a single click, persist on a quick double-click (siblings only ever preview).
             open: { target, persist in
@@ -138,6 +141,8 @@ struct HistoryPanel: View {
 /// time) with any bookmark/branch refs, and a `@` marker for the jj working copy.
 private struct HistoryRow: View {
   let commit: VCSCommit
+  /// What this page's push states were compared against, for the unpushed badge's tooltip.
+  let pushScope: VCSPushScope?
   /// Open a commit's changeset detail as a tab — the row's own commit or one of its divergent
   /// siblings. `persist` false previews (single click), true persists (quick double-click).
   let open: (_ commit: VCSCommit, _ persist: Bool) -> Void
@@ -183,11 +188,12 @@ private struct HistoryRow: View {
         .accessibilityIdentifier("HistoryRow")
 
         // Line two — author avatars, relative time, then any bookmark/branch refs right of the
-        // timestamp — with the "diverging" disclosure trailing on the SAME line. Refs live here (not
-        // line one) so a long bookmark/branch never wraps: each is a single truncating capsule, and
-        // the timestamp keeps layout priority so the refs give way first. The disclosure is a real
-        // button (its own accessibility element), so it toggles the expander without triggering the
-        // row's open-changeset tap.
+        // timestamp, then the unpushed marker — with the "diverging" disclosure trailing on the SAME
+        // line. Refs live here (not line one) so a long bookmark/branch never wraps: each is a single
+        // truncating capsule, and the timestamp keeps layout priority so the refs give way first (the
+        // unpushed chip is a fixed ~16pt, so it never gives way). The disclosure is a real button (its
+        // own accessibility element), so it toggles the expander without triggering the row's
+        // open-changeset tap.
         //
         // Authors are avatars ONLY here — the names would crowd the narrow sidebar row and push the
         // refs out. Each avatar tooltips its own name, the hover card and the changeset detail spell
@@ -214,6 +220,7 @@ private struct HistoryRow: View {
               .background(.quaternary, in: Capsule())
               .help("Bookmark / branch")
           }
+          if commit.showsUnpushedBadge { unpushedBadge }
           Spacer(minLength: 6)
           if commit.isDivergent {
             divergingToggle
@@ -238,7 +245,7 @@ private struct HistoryRow: View {
       // reads the same on hover as when opened. Anchored leading — the inspector sits at the window's
       // trailing edge, so the card opens inward over the detail area rather than off-screen.
       .popover(isPresented: $showCard, arrowEdge: .leading) {
-        HistoryCommitCard(commit: commit)
+        HistoryCommitCard(commit: commit, pushScope: pushScope)
       }
       // Dwell gate: reveal only after the pointer rests ~0.5s, and hide the instant it leaves. Flipping
       // `hovering` re-runs this task (SwiftUI cancels the prior one), so a quick pass over the row
@@ -274,6 +281,21 @@ private struct HistoryRow: View {
           .transition(.opacity)
       }
     }
+  }
+
+  /// The "not on origin yet" marker: an arrow-up in a warning-tinted capsule, padded exactly like the
+  /// ref chips beside it so line two reads as one row of chips. Same glyph and weight as the sidebar's
+  /// "ahead" marker (`ProjectSidebar`), so "ahead of the remote" looks the same in both surfaces. Shown
+  /// only for a definite `.unpushed` and never on jj's `@` — that rule lives in `showsUnpushedBadge`.
+  private var unpushedBadge: some View {
+    Image(systemName: "arrow.up")
+      .font(.system(size: 9, weight: .semibold))
+      .padding(.horizontal, 5).padding(.vertical, 1)
+      .background(theme.tokens.warning.opacity(0.18), in: Capsule())
+      .foregroundStyle(theme.tokens.warning)
+      .help(VCSPushScope.unpushedHelp(pushScope))
+      .accessibilityLabel("Not pushed")
+      .accessibilityIdentifier("HistoryRowUnpushed")
   }
 
   /// The "diverging (N)" disclosure on the author/time line. jj shows only the copy that's an
@@ -328,9 +350,20 @@ private struct HistoryRow: View {
 /// as a headline, an identity/author/date/refs line, then the full description body. Built purely from
 /// the `VCSCommit` already in hand — no changeset fetch — so it omits the detail's diff `+N −M` stat
 /// and file list (those need the resolved changeset). Rendered inside a `.popover`.
-private struct HistoryCommitCard: View {
+///
+/// Deliberately `internal`, not `private`: XCUITest can't drive `.onHover`, so the card's contents are
+/// covered by a view-level test that constructs it directly (`HistoryCommitCardTests`).
+struct HistoryCommitCard: View {
   let commit: VCSCommit
+  /// What push state was measured against, for the unpushed marker's tooltip.
+  var pushScope: VCSPushScope?
   private let theme = ThemeService.shared
+
+  /// Whether the card states "Not pushed" — the same rule the row's chip uses. A named property rather
+  /// than an inline condition because a unit-test process has no accessibility tree for a hosted
+  /// SwiftUI view (macOS builds it only for a live AX client), so this is the only way to assert the
+  /// card's wiring; `HistoryCommitCardTests` covers it, and the row's XCUITest covers the visual.
+  var showsUnpushedMarker: Bool { commit.showsUnpushedBadge }
 
   private static let dateFormatter: DateFormatter = {
     let f = DateFormatter()
@@ -368,6 +401,14 @@ private struct HistoryCommitCard: View {
         Label(Self.dateFormatter.string(from: commit.timestamp), systemImage: "clock")
         if commit.parentIDs.count > 1 {
           Label("Merge", systemImage: "arrow.triangle.merge")
+        }
+        if showsUnpushedMarker {
+          // Spelled out here rather than reusing the row's icon capsule: the card has room for words,
+          // and it mirrors how the changeset detail header states the same fact.
+          Label("Not pushed", systemImage: "arrow.up")
+            .foregroundStyle(theme.tokens.warning)
+            .help(VCSPushScope.unpushedHelp(pushScope))
+            .accessibilityIdentifier("HistoryCardUnpushed")
         }
         Spacer(minLength: 0)
         // Bookmarks/branches, styled like the detail header's refs (accent, medium).

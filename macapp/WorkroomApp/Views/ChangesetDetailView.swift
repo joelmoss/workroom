@@ -149,6 +149,17 @@ struct ChangesetDetailView: View {
           Label("Merge", systemImage: "arrow.triangle.merge")
         }
         diffStat(changeset)
+        if commit.showsUnpushedBadge {
+          // Made its own accessibility element so the header container's `ChangesetDetail` id (below)
+          // can't swallow it — a container id propagates onto child leaves, and an XCUITest query for
+          // this marker found nothing until it became a leaf in its own right.
+          Label("Not pushed", systemImage: "arrow.up")
+            .foregroundStyle(theme.tokens.warning)
+            .help(VCSPushScope.unpushedHelp(changeset.pushScope))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Not pushed")
+            .accessibilityIdentifier("ChangesetDetailUnpushed")
+        }
         Spacer(minLength: 0)
         // Bookmarks/branches, styled like the Changes panel's header refs (accent, medium) rather
         // than gray capsules, so a commit's refs read the same in both surfaces.

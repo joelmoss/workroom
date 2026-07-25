@@ -14,6 +14,49 @@ struct VCSAuthor: Equatable, Hashable, Sendable {
   let email: String
 }
 
+/// Whether a commit has reached the project's remote. `.unknown` is NOT "no": it means there was
+/// nothing to compare against (no `origin`) or the reachability read failed, so the UI renders NOTHING
+/// for it — a missing badge beats a wrong one.
+///
+/// "Pushed" = reachable from a tip of `origin` (git `refs/remotes/origin/*`, jj tracked `@origin`
+/// bookmarks). Deliberately origin-scoped, not any-remote: a commit sitting on a backup remote or a
+/// fork isn't on the shared repo, which is what the badge claims. Deliberately not `@{u}` either —
+/// workrooms are `git worktree add -b` branches with no upstream, so the badge would never appear
+/// where it matters most.
+///
+/// Computed from LOCAL remote-tracking state, so it reflects whatever the last fetch or push wrote —
+/// never the server's live state.
+enum VCSPushState: Equatable, Sendable {
+  case pushed, unpushed, unknown
+}
+
+/// What a page's/changeset's push state was measured against, for tooltip copy. `refName` is set only
+/// when `origin` has exactly one branch (so the tooltip can say "not on origin/main"); otherwise
+/// `count` drives "not on any of origin's N branches".
+struct VCSPushScope: Equatable, Sendable {
+  let refName: String?
+  let count: Int
+
+  /// The tooltip for an unpushed badge, shared by every surface that shows one (history row, hover
+  /// card, changeset header) so the claim is worded identically in all three.
+  ///
+  /// It says "local remote-tracking refs", NOT "your last fetch": a local `git push` updates those refs
+  /// too, so naming only fetch would be wrong half the time. Either way the badge is a statement about
+  /// what this machine knows, never about the server's current state.
+  static func unpushedHelp(_ scope: VCSPushScope?) -> String {
+    let target: String
+    switch scope {
+    case let scope? where scope.refName != nil:
+      target = scope.refName!
+    case let scope? where scope.count > 1:
+      target = "any of origin's \(scope.count) branches"
+    default:
+      target = "origin"
+    }
+    return "Not pushed — this commit isn't on \(target), based on your local remote-tracking refs."
+  }
+}
+
 /// One row of history. `commitID` is the stable identity (git SHA / jj commit-id) used for dedupe
 /// and diffing; `changeID` is jj-only (display). `refs` are jj bookmarks / git branch+tag names.
 struct VCSCommit: Equatable, Identifiable, Sendable {
@@ -35,6 +78,9 @@ struct VCSCommit: Equatable, Identifiable, Sendable {
   /// live off the `::@` history line. Empty unless divergent; never nested. Defaulted so non-jj /
   /// test call sites needn't pass it.
   var divergentSiblings: [VCSCommit] = []
+  /// Whether this commit is on `origin` — see `VCSPushState`. Defaulted so the many existing call
+  /// sites (fixtures, tests, the changeset paths) needn't pass it and read as `.unknown`.
+  var pushState: VCSPushState = .unknown
   var id: String { commitID }
   /// jj-only: true when this commit's change ID diverges — it resolves to more than one visible
   /// commit, so `divergentSiblings` carries the other copies. Always false for git (no change ID).
@@ -45,12 +91,18 @@ struct VCSCommit: Equatable, Identifiable, Sendable {
     guard let changeID, let changeOffset else { return nil }
     return "\(changeID)/\(changeOffset)"
   }
+  /// The single place both badge-suppression rules live: render only for a DEFINITE `.unpushed`, and
+  /// never for jj's working-copy `@` (a pending change, not a commit you'd push).
+  var showsUnpushedBadge: Bool { pushState == .unpushed && !isWorkingCopy }
 }
 
 struct VCSHistoryPage: Equatable, Sendable {
   let commits: [VCSCommit]
   /// True when the backend yielded fewer than the requested count (no older commits).
   let reachedEnd: Bool
+  /// What the page's `pushState`s were measured against (tooltip copy). `nil` ⇒ nothing to compare, so
+  /// every commit is `.unknown` and no badge renders.
+  var pushScope: VCSPushScope? = nil
 }
 
 /// The kind of a repo's current ref (the sidebar root-row label). `ancestor` is jj-only (the nearest
@@ -87,6 +139,8 @@ struct VCSChangeset: Equatable, Sendable {
   /// header omits the summary rather than showing a misleading zero.
   var insertions: Int? = nil
   var deletions: Int? = nil
+  /// What `commit.pushState` was measured against (tooltip copy). `nil` ⇒ nothing to compare.
+  var pushScope: VCSPushScope? = nil
 }
 
 /// Typed VCS failures. Each maps to a distinct, recoverable UI state (inline message + retry),

@@ -504,7 +504,7 @@ struct FixtureVCSProvider: VCSProviding {
         commitID: "fixturediv1", shortID: "fixdiv01", changeID: "wqp",
         summary: "Divergent copy A", body: "", authors: [author],
         timestamp: Date(timeIntervalSince1970: 1_699_990_000), refs: [], parentIDs: [],
-        isWorkingCopy: false, changeOffset: 1),
+        isWorkingCopy: false, changeOffset: 1, pushState: .unpushed),
       VCSCommit(
         commitID: "fixturediv2", shortID: "fixdiv02", changeID: "wqp",
         summary: "Divergent copy B", body: "", authors: [author],
@@ -523,18 +523,28 @@ struct FixtureVCSProvider: VCSProviding {
       // Commit 2's change-id (`wqp`) is divergent: it resolves to more than one visible commit, so
       // its row exercises the "diverges (2)" disclosure and its expanded sibling list.
       let changeID: String? = n == 1 ? "zqxyparent" : (n == 2 ? "wqp" : nil)
+      // Push state covers all three cases plus both suppression rules, so the History pane shows
+      // EXACTLY ONE badge: commit 1 is `.unpushed` but is the working copy `@` (suppressed), commit 2
+      // is the only badged row (and proves the badge coexists with the "diverges" toggle), commit 3 is
+      // pushed, commit 4 is unknown. The divergent siblings are `.unpushed` too and must still never
+      // badge once the expander is open.
+      let push: VCSPushState = n <= 2 ? .unpushed : (n == 3 ? .pushed : .unknown)
       return VCSCommit(
         commitID: "fixturecommit\(n)", shortID: "fixc000\(n)",
         changeID: changeID, summary: "Fixture commit \(n)",
         body: n == 1 ? "Extended fixture description.\nA second line of detail." : "",
         authors: [author], timestamp: ts, refs: refs, parentIDs: parents, isWorkingCopy: n == 1,
-        divergentSiblings: n == 2 ? divergentSiblings : [])
+        divergentSiblings: n == 2 ? divergentSiblings : [], pushState: push)
     }
   }()
 
+  /// One origin branch, so the badge tooltips name it rather than counting.
+  static let pushScope = VCSPushScope(refName: "origin/main", count: 1)
+
   func log(root: URL, limit: Int) throws -> VCSHistoryPage {
     let slice = Array(Self.commits.prefix(limit))
-    return VCSHistoryPage(commits: slice, reachedEnd: slice.count >= Self.commits.count)
+    return VCSHistoryPage(
+      commits: slice, reachedEnd: slice.count >= Self.commits.count, pushScope: Self.pushScope)
   }
 
   func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
@@ -547,7 +557,7 @@ struct FixtureVCSProvider: VCSProviding {
     ]
     return VCSChangeset(
       commit: commit, fullMessage: commit.summary + "\n\nFixture commit body.", files: files,
-      isMerge: false, insertions: 24, deletions: 8)
+      isMerge: false, insertions: 24, deletions: 8, pushScope: Self.pushScope)
   }
 
   func fileDiff(root: URL, commitID: String, path: String) async throws -> String {

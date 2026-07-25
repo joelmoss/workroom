@@ -44,7 +44,9 @@ final class VCSCommitTests: XCTestCase {
     XCTAssertNil(c.divergentLabel)
   }
 
-  /// Defaulted fields: a commit built without the divergence args is non-divergent with no siblings.
+  /// Defaulted fields: a commit built without the divergence args is non-divergent with no siblings,
+  /// and its push state is `.unknown` — the guard that adding `pushState` didn't quietly start badging
+  /// every commit built by an older call site.
   func testDefaultsAreNonDivergent() {
     let c = VCSCommit(
       commitID: "c1", shortID: "c1", changeID: "xl", summary: "s", body: "",
@@ -53,5 +55,30 @@ final class VCSCommitTests: XCTestCase {
     XCTAssertFalse(c.isDivergent)
     XCTAssertTrue(c.divergentSiblings.isEmpty)
     XCTAssertNil(c.divergentLabel)
+    XCTAssertEqual(c.pushState, .unknown)
+    XCTAssertFalse(c.showsUnpushedBadge)
+  }
+
+  // MARK: - push state
+
+  private func commit(pushState: VCSPushState, isWorkingCopy: Bool) -> VCSCommit {
+    VCSCommit(
+      commitID: "c1", shortID: "c1", changeID: nil, summary: "s", body: "", authors: [],
+      timestamp: Date(timeIntervalSince1970: 0), refs: [], parentIDs: [],
+      isWorkingCopy: isWorkingCopy, pushState: pushState)
+  }
+
+  /// The badge renders for exactly one of the six (state × working-copy) combinations. `.unknown` must
+  /// behave like `.pushed` here, NOT like `.unpushed`: it means "couldn't tell", and guessing would put
+  /// a wrong badge on every row of a repo with no `origin`.
+  func testShowsUnpushedBadgeTruthTable() {
+    XCTAssertTrue(commit(pushState: .unpushed, isWorkingCopy: false).showsUnpushedBadge)
+    // jj's `@` is a real commit and really is unpushed, but it's a pending change, not something you'd
+    // push — the row would carry a permanent badge.
+    XCTAssertFalse(commit(pushState: .unpushed, isWorkingCopy: true).showsUnpushedBadge)
+    XCTAssertFalse(commit(pushState: .pushed, isWorkingCopy: false).showsUnpushedBadge)
+    XCTAssertFalse(commit(pushState: .pushed, isWorkingCopy: true).showsUnpushedBadge)
+    XCTAssertFalse(commit(pushState: .unknown, isWorkingCopy: false).showsUnpushedBadge)
+    XCTAssertFalse(commit(pushState: .unknown, isWorkingCopy: true).showsUnpushedBadge)
   }
 }
