@@ -106,7 +106,13 @@ jobs:
       # working-copy snapshot + conflict classification). They ran nowhere in CI before — the Swift
       # suite only covers what reaches the app through UniFFI. Runs here rather than in its own job
       # to reuse this one's jj + protobuf install and warm cargo cache.
+      #
+      # Gated on the same cache miss as the build: the key covers every Rust source (tests included),
+      # the manifests and the toolchain, so a hit means these tests already passed on this exact
+      # input — and running them anyway would recompile the whole graph in the test profile (3min),
+      # with no cargo cache restored on that path.
       - name: Test VCS core (cargo)
+        if: steps.vcs-core.outputs.cache-hit != 'true'
         run: cargo test --manifest-path vcs/Cargo.toml
 
       # SPM resolves ~15 packages (Sparkle, Sentry, libghostty, the tree-sitter grammars, and
