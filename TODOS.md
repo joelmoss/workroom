@@ -594,8 +594,21 @@ workroom bar's chain (`WindowDragUITests.testDraggingEmptyTitlebarMovesWindow` p
 verified `.mask` + `.contentShape` pairing intact — that combination is confirmed to preserve descendant
 hit-testing, and re-deriving it costs a manual real-mouse QA pass.
 
-**Depends on:** #129 (shipped). Best done *before* the toolbar-collapse follow-up above, which adds a
-third thing measuring the same strip.
+One divergence is *not* shared and has to be decided rather than copied: `WorkroomTabBar.swift:120`
+applies `.frame(maxWidth: .infinity, alignment: .leading)` between the trailing inset and the width read,
+and `TerminalTabStrip` has no such call — it gets its width from being the flexible sibling of the
+`fixedSize()` toolbar. Unifying on the frame is expected to be a no-op for the terminal strip but is
+unverified; `testAddButtonStaysInlineWhenTabsFit` and `testPinnedAddButtonKeepsGutterFromToolbar` are the
+gate, and if either shifts, parameterise the frame rather than reordering anything else. Note also that
+both strips already render the *same* controls view inline and pinned, each measuring it from an
+`onGeometryChange` inside the control itself (`TerminalTabStrip.swift:343`, `WorkroomTabBar.swift:161`) —
+so the container can take one controls builder and decide the position, which is what removes
+`overflowing` from the call sites entirely.
+
+**Depends on:** #129 (shipped). Best done *before* the toolbar-collapse follow-up below, which adds a
+third thing measuring the same strip, and *after* the `WorkroomTabChip` width cap below — that one is ~15
+lines and shifts the same overflow threshold this refactor's gate tests read, so landing them together
+makes a failure ambiguous.
 
 **Priority:** P3 — pure refactor, no user-visible change. The cost of deferring is paid by the next
 person who adds a strip or changes the fade.
@@ -613,16 +626,32 @@ space. Split out of #129 so a two-symptom layout fix didn't have to carry native
 
 **Current state:** #129 shipped the adaptive "+" and the trailing fade. The toolbar always renders
 expanded. `TabStripMetrics`/`TabStripOverflow` (in `Views/TabReorderMath.swift`) are the shared home for
-the breakpoint and the predicate.
+the breakpoint and the predicate. The breakpoint's *input*, though, does not exist yet: nothing measures
+the strip's own width, and `availableWidth` (`TerminalTabStrip.swift:72`, read at `:171`) is *strip minus
+toolbar* — downstream of the very thing being collapsed, so it cannot drive the decision. This needs a
+fresh `onGeometryChange` on the outer `HStack` (`TerminalTabStrip.swift:103`), kept independent of
+`availableWidth`.
 
-**How to start (two verified prerequisites, both found the hard way in review):**
+**How to start (verified prerequisites, all found the hard way in review):**
 - `TabToolbarButton` (`Views/TabToolbarButton.swift:8`) is a concrete `View`, **not** a `ButtonStyle` or
   label style — a `Menu` can't wear it as-is. Extract the glyph + hover-well into a small shared label
-  first, used by both the button and the menu trigger.
+  first, used by both the button and the menu trigger. `TabToolbarButton.swift:18-25` is the label part
+  (11pt glyph + hover well); `:17` and `:27-31` are the button part (action, hover, help, identifier). It
+  is also used by `ChangesPanel.swift:408`, which must come out unchanged.
 - A SwiftUI `Menu` on macOS becomes **native menu infrastructure**, so identifiers on inner `Button`s do
   not reliably surface as `app.buttons["tab.toolbar.splitRight"]`. Assert collapsed actions via
-  `app.menuItems` by title. Existing `TabActionsUITests` assertions query real buttons and only run at
-  normal width, so they stay valid.
+  `app.menuItems` by title — `TabActionsUITests.swift:66-67` is the idiom, though it is currently only
+  used for `.contextMenu` and the menu bar; no in-app `Menu` carries an identifier today and no test
+  drives one, so give the `⋯` trigger its own. `ChangesPanel.swift:169-203` (`prActionsMenu`) is the
+  trigger to copy: it already uses the `ellipsis` glyph with `.menuStyle(.button)`,
+  `.menuIndicator(.hidden)` and `.fixedSize()`.
+- **Ten UI tests query the toolbar as real buttons, and not one of them sets a window width.** Six in
+  `TabActionsUITests` click `tab.toolbar.splitRight`/`splitDown`/`closeAll`/`openFile`; four in
+  `TabStripOverflowUITests` use `tab.toolbar.splitRight` as a *geometry anchor*
+  (`testPinnedAddButtonKeepsGutterFromToolbar`, `testAddButtonStaysInlineWhenTabsFit`, and both
+  `testChromeGlyphButtonsAreHittable…`). They stay valid only while the fixture window's strip is wider
+  than the breakpoint — confirm that *before* writing the collapse, and if one of them breaks afterwards,
+  the breakpoint is wrong, not the test.
 - Add `collapsesToolbar(stripWidth:)` to `TabStripOverflow` as a **pure width breakpoint**. Keyed on the
   strip's own width (not on the width of the thing being collapsed), it composes with the existing
   pinning predicate as a DAG with no feedback edge: `stripWidth → collapse → toolbarWidth → available →
@@ -646,13 +675,28 @@ visible feedback — the strip looks unchanged, so it reads as "the shortcut did
 more noticeable, not less: overflow is now a deliberately designed state, so these bars get scrolled
 more. Every other scrolling list in the app reveals its selection.
 
-**How to start:** both entry points are already located. ⌘1-9 is handled by the `AppDelegate` `NSEvent`
-monitor (see `macapp/CLAUDE.md`), and ⌥⌘1-9 routes through `AppStore.orderedWorkroomTargets` indexing
-(`Core/AppStore.swift:783-791`) — each just needs to publish a scroll target the strip's
-`ScrollViewReader` can act on. The two halves are separable: scroll-on-select is cheap; drag
-auto-scrolling interacts with `TabReorder`'s translation math and `clampReorder`, so land it separately.
+**How to start:** no per-shortcut plumbing is needed — an earlier version of this entry said each entry
+point "just needs to publish a scroll target", which is wrong and made the item look bigger than it is.
+Every terminal-tab selection path funnels through `TerminalSessions.setFocused`
+(`Core/TerminalSessions.swift:767`, the sole writer of `focusedTabByTarget`) and every workroom path
+through `AppStore.selectedTargetID`, so one `.onChange` inside each strip already sees ⌘1-9, ⌥⌘1-9,
+⇧⌥⌘←/→, chip taps, sidebar taps, close-reselection, new-tab creation and the surface-focus routing in
+`AppStore.focusWorkroomMemberFromSurface`. What's actually required: a `ScrollViewReader` around each
+scroller and `.id(…)` on the chips (`TerminalTabStrip.swift:205`, `WorkroomTabBar.swift:172`). The ids are
+`UUID` (`TerminalTab.ID`) and the `SidebarID` enum — prefer a generic `Hashable` scroll target over
+`AnyHashable`, which can silently fail to match a `.id()`-tagged view. Gate the animation on
+`reduceMotion` *and* skip it while `draggingID != nil`, because the per-chip gap animation
+(`TerminalTabStrip.swift:290`, `WorkroomTabBar.swift:221`) animates the same tree;
+`ThemePicker.swift:60-93` and `ScriptLogContent.swift:58-88` are the in-app patterns.
 
-**Depends on:** nothing (independent of #129, though cleaner after its restructure).
+The two halves are separable: scroll-on-select is cheap; drag auto-scrolling interacts with `TabReorder`'s
+translation math and `clampReorder`, so land it separately. Nothing caches a position at drag start and
+`clampReorder` recomputes from live widths on every call, so auto-scroll is safe in principle — but
+`clampReorder` (`WorkroomTabBar.swift:329-338`) has **no unit tests at all**, so it needs tests before it
+is perturbed.
+
+**Depends on:** nothing functionally, but do it *after* the scaffolding extraction above — that container
+owns the `ScrollView` the `ScrollViewReader` has to wrap, so doing this first means writing it twice.
 
 **Priority:** P3.
 
@@ -672,10 +716,18 @@ adding it would have turned that test into one that passes while asserting nothi
 seeds N workroom targets instead (`-WorkroomUITestWorkroomCount`), so nothing depends on the quirk now.
 
 **How to start:** mirror `TerminalTabChip`'s title `frame(maxWidth:)` + `.help(fullTitle)` in
-`WorkroomTabChip`. Note it shifts measured chip widths, which the #129 overflow predicate reads, so
-re-check the tab-bar overflow UI test after.
+`WorkroomTabChip` — `c6a88a75` is +13/−0 in one file and touched no tests, so it is the whole pattern.
+Two details the mirror has to account for: the workroom title is *two* `Text`s joined by a literal
+`Text("/")` inside a nested `HStack` that carries the `.font`/`.lineLimit(1)`
+(`WorkroomTabBar.swift:491-500`), so the cap belongs on that HStack — capping each `Text` truncates the
+project and workroom names independently and eats the workroom name first. And a `.help` already exists
+(`WorkroomTabBar.swift:585`), showing `target.path` rather than the rendered title, so it needs changing,
+not adding. It shifts measured chip widths, which the #129 overflow predicate reads (and
+`clampReorder`/`splitRunRect` alongside it), so re-check the tab-bar overflow UI test after.
 
-**Depends on:** #129 (shipped) — only to avoid conflicting edits in `WorkroomTabBar.swift`.
+**Depends on:** #129 (shipped) — only to avoid conflicting edits in `WorkroomTabBar.swift`. Land this
+*first* of the strip items: it is the smallest, and it moves the overflow threshold that the scaffolding
+refactor's gate tests assert on.
 
 **Priority:** P3 (generated workroom names are short adjective-noun pairs; this bites on renamed or long
 project-derived names).
