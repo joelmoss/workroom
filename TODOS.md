@@ -615,14 +615,29 @@ person who adds a strip or changes the fade.
 
 ### Collapse the terminal tab toolbar when the strip is cramped (macapp) — #129 follow-up
 
-**What:** Below a strip width of roughly 220pt, collapse `TerminalTabStrip`'s trailing per-tab toolbar
-into a single `⋯` overflow `Menu` instead of 3-5 separate icon buttons.
+**What:** Below a strip width of roughly 260-300pt, collapse `TerminalTabStrip`'s trailing per-tab
+toolbar into a single `⋯` overflow `Menu` instead of 3-5 separate icon buttons.
 
-**Why:** A workroom-split member can be dragged to 120pt wide (`TerminalSessions.minPaneSize = 120`,
-clamped through `PaneTreeLayout.clampRatio`). At that width the toolbar is ~61pt — three times the
-pinned "+" — so it, not the "+", is what leaves the chips with a sliver. #129 shipped the always-visible
-"+" and explicitly **accepted** the cramped-pane sliver; this is the change that actually reclaims the
-space. Split out of #129 so a two-symptom layout fix didn't have to carry native-menu semantics.
+**Why:** #129 shipped the always-visible "+" and explicitly **accepted** the cramped-pane sliver; at a
+narrow strip the toolbar, not the "+", is what leaves the chips with a sliver. Split out of #129 so a
+two-symptom layout fix didn't have to carry native-menu semantics.
+
+**Re-scoped (2026-07-25): the premise was a bug, and the bug is fixed.** This entry used to argue from
+"a pane can be dragged to 120pt wide", which was true and was the real defect — `minPaneSize` was one
+120pt constant serving both axes, so the width floor sat *below* the width the strip needs to draw its
+own chrome. Measured: the three always-present toolbar buttons are ~64pt and a diff tab's toolbar is
+~145pt, so with the pinned "+" (~28), the gutter (8), the leading inset (4), one ~100pt chip and the
+strip's 4pt trailing inset, a pane needs ~293pt just to render its strip. At 120pt a terminal tab left
+~12pt for chips and a diff tab's toolbar overflowed the pane outright. That is now
+`TerminalSessions.minPaneWidth = 300` / `minPaneHeight = 120`, with the axis threaded through
+`PaneTreeLayout.minPane(along:)`.
+
+So this is no longer "the change that reclaims the space" — it is a moderate-width nicety. At 300pt a
+terminal tab already fits its toolbar, the "+" and a truncated chip; collapsing buys ~36pt of chip room
+there, and more on a diff tab, whose toolbar is still ~145pt of the 300. Worth doing for diff/markdown
+tabs in a two-column split; not worth doing to rescue a degenerate pane, because there are no longer
+degenerate panes. Priority drops accordingly, and the breakpoint moves from ~220 (below the floor, so
+unreachable) to ~260-300.
 
 **Current state:** #129 shipped the adaptive "+" and the trailing fade. The toolbar always renders
 expanded. `TabStripMetrics`/`TabStripOverflow` (in `Views/TabReorderMath.swift`) are the shared home for
@@ -660,9 +675,11 @@ fresh `onGeometryChange` on the outer `HStack` (`TerminalTabStrip.swift:103`), k
 - Reaching a cramped strip in XCUITest needs a divider drag (flaky); prefer unit-testing the breakpoint
   and verifying the rendering by hand.
 
-**Depends on:** #129 (shipped — owns the shared metrics type and the pinned "+").
+**Depends on:** #129 (shipped — owns the shared metrics type and the pinned "+") and the per-axis pane
+floors (shipped — they are what moved the breakpoint and demoted this).
 
-**Priority:** P3 (only bites at the divider's minimum width, where the strip is already marginal).
+**Priority:** P3, and now the *weakest* of the strip items — with a 300pt floor no pane is degenerate, so
+this only buys chip room on a diff/markdown tab in a narrow split. Do the other strip follow-ups first.
 
 ### Scroll a selected tab into view in both tab bars (macapp) — #129 follow-up
 
@@ -1061,6 +1078,23 @@ forking git).
 
 Condensed from the long status notes this file used to carry at the top; the full write-ups are in git
 history. Kept here for the parts that stay useful: what changed, and the traps found doing it.
+
+**2026-07-25 — tab strips (#129 follow-ups) and the pane floor.**
+- **`WorkroomTabChip`'s title is capped** at 180pt like the terminal chip, with the full title in the
+  tooltip. Trap: the workroom title is two `Text`s plus a separator, so the cap goes on the wrapping
+  `HStack` — per-`Text` caps truncate the halves independently and eat the workroom name first. A cap test
+  needs a *lower* bound too, or it passes vacuously whenever the long-name fixture fails to apply.
+- **The overflow scaffolding is one container** (`Views/OverflowingTabScroller.swift`): both strips'
+  width measurements, the predicate, the fade and the load-bearing modifier order now live in one file.
+  The content closure still receives `overflowing` because both strips gate a hairline on it.
+  `WindowMovableController` stays in `WorkroomTabBar`, outermost. The one real change was unifying on
+  `.frame(maxWidth: .infinity)` for the terminal strip, which its two geometry tests confirm is inert.
+- **Panes have a per-axis floor:** `minPaneWidth` 300, `minPaneHeight` 120, threaded through
+  `PaneTreeLayout.minPane(along:)`. One 120pt constant had been serving both axes, which put the width
+  floor below the width the strip needs for its own chrome — measured, a diff tab's toolbar alone is
+  ~145pt and the whole strip needs ~293pt. Trap: measure this furniture, don't estimate it; the AX frames
+  report the *glyph*, so each toolbar button is glyph + 8pt of padding. Side-by-side splits now need
+  604pt of pane, which is the honest number.
 
 **2026-07-25 — jj native reads (all five in `vcs/crates/wr-vcs-core/src/jj_backend.rs`).**
 - **± line counts** now come from ONE `materialized_diff_stream` per read, so the change kind and the
