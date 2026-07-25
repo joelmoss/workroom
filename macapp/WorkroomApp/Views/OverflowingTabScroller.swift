@@ -81,6 +81,9 @@ struct OverflowingTabScroller<Content: View, Controls: View, ScrollID: Hashable>
   /// change when the controls pin — `safeAreaInset` reduces the scroller's safe area, not its frame —
   /// so feeding it back into the predicate can't create a layout feedback loop.
   @State private var availableWidth: CGFloat = 0
+  /// Whether the one-shot reveal of an already-selected chip has run for this strip — see the
+  /// `initialScrollReady` handler in `body`.
+  @State private var didInitialScroll = false
 
   /// Whether the chips no longer fit with the controls inline, so they pin at the trailing edge and the
   /// scroller takes its fade (issue #129). See `TabStripOverflow.pinsControls` for why this can't
@@ -156,8 +159,28 @@ struct OverflowingTabScroller<Content: View, Controls: View, ScrollID: Hashable>
           proxy.scrollTo(newValue, anchor: .center)
         }
       }
+      // The other door into the same problem: `.onChange` fires on *change*, so a strip that MOUNTS
+      // with a selection already set would render at the start of its run with that chip possibly out
+      // of sight. It isn't only a launch case — switching workrooms mounts a fresh terminal strip
+      // whose focused tab is whatever was left focused there, and a second window mounts a workroom
+      // bar with `selectedTargetID` already set.
+      //
+      // Hung off the width measurements rather than `onAppear` deliberately: at first appear the
+      // scroll content isn't measured yet and `scrollTo` is a silent no-op. Both widths being non-zero
+      // is the signal that a real layout pass has happened, and it's already computed here. Fires once
+      // (`didInitialScroll`) and WITHOUT animation — an appearing view should already be scrolled, not
+      // animate into position in front of the user.
+      .onChange(of: initialScrollReady) { _, ready in
+        guard ready, !didInitialScroll, let target = scrollTarget else { return }
+        didInitialScroll = true
+        proxy.scrollTo(target, anchor: .center)
+      }
     }
   }
+
+  /// Whether a real layout pass has produced both measurements the initial scroll waits on. Combined
+  /// into one value so the `.onChange` above has a single edge to fire on, rather than racing two.
+  private var initialScrollReady: Bool { chipRunWidth > 0 && availableWidth > 0 }
 
   /// The trailing controls carrying the width measurement the predicate reads. Attached outside the
   /// control but INSIDE the inline positioning pad, so the number excludes that pad and is therefore

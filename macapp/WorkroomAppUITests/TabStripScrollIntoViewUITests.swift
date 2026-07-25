@@ -142,6 +142,42 @@ final class TabStripScrollIntoViewUITests: XCTestCase {
     XCTAssertTrue(lastChip.isHittable, "the scrolled-to tab should be hittable")
   }
 
+  /// The other door into the same defect: `.onChange` fires on *change*, so a strip that MOUNTS with a
+  /// selection already set renders at the start of its run with the selected chip possibly out of
+  /// sight. Launch is the easiest way to reproduce it, but it is not the interesting case — switching
+  /// workrooms mounts a fresh terminal strip whose focused tab is whatever you left focused there, and
+  /// a second window mounts a workroom bar with `selectedTargetID` already set.
+  ///
+  /// The fixture reproduces it directly: `AppStore` seeds tabs 2…N with `TerminalSessions.addTab`
+  /// (`AppStore.swift:1981`), which focuses every tab it creates (pinned by
+  /// `TerminalSessionsTests.testAddTabAppendsAndActivates`), so tab N is focused before the strip ever
+  /// appears.
+  ///
+  /// The chip's focused-ness is asserted by position, not by the accessibility `selected` trait: the
+  /// chips do carry `.accessibilityAddTraits(.isSelected)`, but on macOS that does not surface as a
+  /// queryable AX selected attribute for these elements — a `selected == YES` predicate matches
+  /// nothing, which was checked rather than assumed. So the test proves the chip it measures is the
+  /// LAST one (via its identifier) and takes "last == focused" from the fixture above; if that ever
+  /// changes, this fails loudly rather than passing vacuously.
+  func testTheFocusedTabIsVisibleWhenTheStripFirstAppears() {
+    let manyTabs = 16
+    let app = launchedApp(terminalTabs: manyTabs)
+    assertCount(terminalChips(app), reaches: manyTabs)
+    let plus = app.descendants(matching: .any).matching(identifier: "NewTerminal").firstMatch
+    XCTAssertTrue(plus.waitForExistence(timeout: 10))
+
+    let focused = terminalChips(app).element(boundBy: manyTabs - 1)
+    XCTAssertTrue(focused.waitForExistence(timeout: 10))
+    XCTAssertEqual(
+      focused.identifier, "terminal.tab.Terminal \(manyTabs)",
+      "expected the last chip in run order to be the fixture's focused tab")
+
+    XCTAssertLessThanOrEqual(
+      focused.frame.maxX, plus.frame.minX,
+      "the focused tab must be visible when the strip first appears, not left off the trailing edge "
+        + "of an unscrolled run")
+  }
+
   // MARK: Workroom tab bar (title bar)
 
   /// Drives ⌥⌘1 then ⌥⌘9 — two directly addressable targets — rather than the wrapping cycle
