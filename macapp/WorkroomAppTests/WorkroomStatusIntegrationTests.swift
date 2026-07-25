@@ -394,6 +394,59 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
       "f.txt should be .conflicted, not .modified; got \(s.changedFiles ?? [])")
   }
 
+  /// The Changes header's `+N −M` must describe the SAME diff as the rows beside it, on a **merge** `@`
+  /// — end to end through the native read (`changed_files`' per-file counts → UniFFI →
+  /// `RustJJProvider.workingStatus` → `WorkroomStatus.insertions`).
+  ///
+  /// `@` is a clean 2-sided merge: `left` edited `a.txt`, `right` added a 3-line `right.txt`. The file
+  /// list is a tree diff against the FIRST parent, so `right.txt` is listed. The totals used to come
+  /// from a separate `jj diff -r @ --stat` process, and `-r @` on a merge diffs the *auto-merged
+  /// parents* — empty here — so the panel showed a listed 3-line file with no line delta at all. This
+  /// asserts both halves: our count, and that the old read really does report nothing.
+  ///
+  /// Sides are addressed by **commit id**, never by bookmark: with `experimental-advance-branches`
+  /// enabled (as in the author's own config) `jj commit` advances a bookmark onto the new commit, which
+  /// collapses the two sides and leaves no merge to test.
+  func testJJMergeWorkingCopyCountsMatchTheFileList() async throws {
+    let dir = try jjRepo()
+    sh(
+      """
+      id() { jj log -r @- --no-graph --ignore-working-copy --color never -T commit_id; }
+      printf 'one\\ntwo\\n' > a.txt && jj commit -m base 2>/dev/null
+      BASE=$(id)
+      printf 'ONE\\ntwo\\n' > a.txt && jj commit -m left 2>/dev/null
+      LEFT=$(id)
+      jj new "$BASE" -m right 2>/dev/null
+      printf 'r1\\nr2\\nr3\\n' > right.txt && jj commit -m right 2>/dev/null
+      RIGHT=$(id)
+      jj new "$LEFT" "$RIGHT" 2>/dev/null
+      """, in: dir)
+    // Guard the fixture: without a real merge `@` this test cannot fail, since the two diff bases
+    // coincide on a single-parent commit.
+    XCTAssertEqual(
+      sh("jj log --no-graph --ignore-working-copy --color never -r @ -T 'parents.len()'", in: dir)
+        .out
+        .trimmingCharacters(in: .whitespacesAndNewlines), "2",
+      "fixture should produce a 2-parent @")
+
+    let s = await resolver.resolveLocal(path: dir, vcs: "jj", projectRoot: dir)
+    XCTAssertTrue(
+      (s.changedFiles ?? []).contains { $0.path == "right.txt" },
+      "the file arriving from the merge's other side is listed; got \(s.changedFiles ?? [])")
+    XCTAssertEqual(s.insertions, 3, "…so its three lines must be in the header's total")
+    XCTAssertEqual(s.deletions, 0)
+
+    // The read this replaced, still reproducible through the CLI: against the auto-merged parents this
+    // merge changed NOTHING, so the header used to show no delta beside a listed 3-line file. (jj still
+    // prints its summary line at zero — "0 files changed, 0 insertions(+), 0 deletions(-)" — so match
+    // the file count, not the presence of the word "insertions".)
+    let stale = sh("jj diff -r @ --ignore-working-copy --stat --color never", in: dir).out
+    XCTAssertTrue(
+      stale.contains("0 files changed"),
+      "`-r @` on a merge is the wrong base this fixed — if it now reports files, re-derive this test; got \(stale)"
+    )
+  }
+
   /// A jj command the user runs in a workroom terminal holds the working-copy lock, and the status
   /// sweep must report that as a distinct, self-explaining state — end to end: `jj_backend`'s
   /// non-blocking lock probe → `VcsError::LockContention` → UniFFI → `RustJJProvider.mapError` →

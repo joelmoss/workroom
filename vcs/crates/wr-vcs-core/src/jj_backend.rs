@@ -18,17 +18,27 @@ use std::sync::Arc;
 use jj_lib::backend::ChangeId;
 use jj_lib::commit::Commit as JjCommit;
 use jj_lib::config::StackedConfig;
+use jj_lib::conflict_labels::ConflictLabels;
+use jj_lib::conflicts::{
+    materialize_merge_result_to_bytes, materialized_diff_stream, ConflictMaterializeOptions,
+    MaterializedTreeValue,
+};
 use jj_lib::copies::{CopyOperation, CopyRecords};
+use jj_lib::diff::DiffHunkKind;
+use jj_lib::diff_presentation::{diff_by_line, LineCompareMode};
 use jj_lib::gitignore::GitIgnoreFile;
 use jj_lib::hex_util::encode_reverse_hex;
 use jj_lib::id_prefix::IdPrefixIndex;
 use jj_lib::local_working_copy::LocalWorkingCopy;
 use jj_lib::lock::FileLock;
 use jj_lib::matchers::{EverythingMatcher, NothingMatcher};
+use jj_lib::merge::Diff;
 use jj_lib::object_id::ObjectId;
 use jj_lib::repo::{ReadonlyRepo, Repo, StoreFactories, StoreLoadError};
+use jj_lib::repo_path::RepoPath;
 use jj_lib::revset::{ResolvedRevsetExpression, Revset, RevsetExpression};
 use jj_lib::settings::UserSettings;
+use jj_lib::tree_merge::MergeOptions;
 use jj_lib::working_copy::{SnapshotOptions, WorkingCopyFreshness};
 use jj_lib::workspace::{default_working_copy_factories, Workspace, WorkspaceLoadError};
 
@@ -750,9 +760,23 @@ fn changed_files(
     };
     let copy_records = copy_records(store, &parent_id, commit.id());
 
+    let materialize = materialize_options()?;
+
     pollster::block_on(async {
         let mut files = Vec::new();
-        let mut stream = before.diff_stream_with_copies(&after, &EverythingMatcher, &copy_records);
+        // MATERIALIZED, not raw tree values: the same stream has to answer both questions this
+        // function reports — the change kind (tree values would do) and the ± line counts (which need
+        // content). Reading content on a second pass is what the app used to do via a separate
+        // `jj diff --stat` process, and that's precisely the bug: two reads of a moving working copy
+        // disagree, and `-r @` on a merge doesn't even use the same base as this tree diff.
+        let tree_diff = before
+            .diff_stream_with_copies(&after, &EverythingMatcher, &copy_records)
+            .boxed();
+        let labels = Diff {
+            before: &UNLABELED_CONFLICT,
+            after: &UNLABELED_CONFLICT,
+        };
+        let mut stream = materialized_diff_stream(store, tree_diff, labels);
         while let Some(entry) = stream.next().await {
             // With copy records in play, an entry's identity is its TARGET path; `source()` is the
             // pre-rename path (and returns the target when the path wasn't renamed/copied, hence the
@@ -785,7 +809,13 @@ fn changed_files(
             // `Added` at the new path + a `Conflicted` at the old one (pinned by
             // `a_conflicted_rename_does_not_pair_into_one_row`). If a future jj-lib does pair them,
             // this branch keeps the conflict badge rather than downgrading it to `Renamed`.
-            let kind = if !diff.after.is_resolved() {
+            //
+            // Reading the kind off MATERIALIZED values keeps every one of those branches intact: an
+            // unresolved merge materializes to `FileConflict`/`OtherConflict` (never to `Absent`, the
+            // same reason `is_absent()` didn't catch it), and an absent side to `Absent`. `AccessDenied`
+            // is a present-but-unreadable value, so it stays a `Modified` as before — with `None`
+            // counts, since there's no content to compare.
+            let kind = if is_conflict(&diff.after) {
                 model::ChangeKind::Conflicted
             } else if let Some(op) = copy_op {
                 match op {
@@ -802,14 +832,142 @@ fn changed_files(
             let old_path = copy_op
                 .map(|_| entry.path.source().as_internal_file_string().to_string())
                 .filter(|source| *source != path);
+            let stats =
+                line_stats(entry.path.source(), entry.path.target(), diff, &materialize).await;
             files.push(model::ChangedFile {
                 path,
                 old_path,
                 kind,
+                insertions: stats.map(|(ins, _)| ins),
+                deletions: stats.map(|(_, del)| del),
             });
         }
         Ok(files)
     })
+}
+
+/// Conflict sides are materialized WITHOUT labels: labels change the text inside a conflict marker,
+/// never the number of marker lines, so they can't move a line count — and leaving them off keeps
+/// this path independent of `ui.conflict-marker-style` labelling.
+const UNLABELED_CONFLICT: ConflictLabels = ConflictLabels::unlabeled();
+
+/// Byte ceiling for counting one file's changed lines. A file over it reports `None` (like a binary
+/// one) instead of being read whole: `changed_files` runs in the 15s status sweep, fanned out per
+/// workroom, so an unbounded read is a memory spike per generated/vendored blob. Read bounded — the
+/// cap is enforced BEFORE the bytes are buffered, not after.
+const MAX_COUNTED_BYTES: u64 = 4 * 1024 * 1024;
+
+/// jj's own binary heuristic, mirrored from `diff_presentation::file_content_for_diff`: a NUL byte in
+/// the first 8k. (That helper isn't used directly because it reads the whole file before deciding,
+/// which is exactly what `MAX_COUNTED_BYTES` exists to avoid.)
+fn looks_binary(content: &[u8]) -> bool {
+    const PEEK_SIZE: usize = 8000;
+    content[..PEEK_SIZE.min(content.len())].contains(&b'\0')
+}
+
+fn is_conflict(value: &MaterializedTreeValue) -> bool {
+    matches!(
+        value,
+        MaterializedTreeValue::FileConflict(_) | MaterializedTreeValue::OtherConflict { .. }
+    )
+}
+
+/// jj's DEFAULT conflict-materialization options (its bundled `misc.toml`: `marker-style = "diff"`,
+/// `merge.hunk-level = "line"`, `merge.same-change = "accept"`), read through `UserSettings` rather
+/// than hardcoded so a jj-lib default change carries over.
+///
+/// Defaults-only, consistent with `snapshot_working_copy` — a user config stack would change what
+/// gets counted here, and that's tracked as its own item ("The jj snapshot ignores the user's real
+/// jj/git config"). Marker STYLE can change a conflict's line count, so if that item lands, this
+/// call site wants the real settings too.
+fn materialize_options() -> model::Result<ConflictMaterializeOptions> {
+    let settings = UserSettings::from_config(StackedConfig::with_defaults()).map_err(io)?;
+    Ok(ConflictMaterializeOptions {
+        marker_style: settings.get("ui.conflict-marker-style").map_err(io)?,
+        marker_len: None,
+        merge: MergeOptions::from_settings(&settings).map_err(io)?,
+    })
+}
+
+/// The content of one side of a diff entry, or `None` when it deliberately isn't counted: a binary
+/// file, one over `MAX_COUNTED_BYTES`, or a non-file entry (symlink target changes, submodule
+/// pointers, tree/type conflicts, an unreadable value). `None` propagates to BOTH counts on the file
+/// — a half-counted diff would read as a real number while being wrong.
+async fn side_content(
+    path: &RepoPath,
+    value: MaterializedTreeValue,
+    options: &ConflictMaterializeOptions,
+) -> Option<Vec<u8>> {
+    use futures::AsyncReadExt as _;
+
+    match value {
+        // An absent side is empty content, which is what makes a whole-file add or delete count as
+        // all of its lines — the same answer `jj diff --stat` gives.
+        MaterializedTreeValue::Absent => Some(Vec::new()),
+        MaterializedTreeValue::File(mut file) => {
+            let mut buf = Vec::new();
+            (&mut file.reader)
+                .take(MAX_COUNTED_BYTES + 1)
+                .read_to_end(&mut buf)
+                .await
+                .ok()?;
+            if buf.len() as u64 > MAX_COUNTED_BYTES || looks_binary(&buf) {
+                return None;
+            }
+            Some(buf)
+        }
+        // A conflict counts its MATERIALIZED text — the markers are what the file's content is, both
+        // on disk in a conflicted working copy and in what `jj diff --stat`/`git diff` report for the
+        // same state. The app's Changes header says so when `@` is conflicted rather than quietly
+        // reporting a one-line conflict as dozens of changed lines.
+        MaterializedTreeValue::FileConflict(conflict) => {
+            let text =
+                materialize_merge_result_to_bytes(&conflict.contents, &conflict.labels, options);
+            let bytes = text.to_vec();
+            (!looks_binary(&bytes)).then_some(bytes)
+        }
+        MaterializedTreeValue::AccessDenied(_)
+        | MaterializedTreeValue::Symlink { .. }
+        | MaterializedTreeValue::OtherConflict { .. }
+        | MaterializedTreeValue::GitSubmodule(_)
+        | MaterializedTreeValue::Tree(_) => {
+            let _ = path; // only used for the reader's error reporting on the File arm
+            None
+        }
+    }
+}
+
+/// `(insertions, deletions)` for one changed file, or `None` when either side isn't countable.
+///
+/// This is the fold the jj CLI does in its own `DiffStats` (`jj-cli`'s `diff_util`, not in `jj-lib`):
+/// line-tokenize both sides, then every `Different` hunk contributes its left lines as deletions and
+/// its right lines as insertions. A `Matching` hunk is context. Counting `split_inclusive('\n')`
+/// segments — rather than `'\n'` occurrences — is what makes a final line with no trailing newline
+/// count as a line, matching git and `GitProvider.diffLineStats` on the same file.
+async fn line_stats(
+    before_path: &RepoPath,
+    after_path: &RepoPath,
+    values: Diff<MaterializedTreeValue>,
+    options: &ConflictMaterializeOptions,
+) -> Option<(u32, u32)> {
+    let before = side_content(before_path, values.before, options).await?;
+    let after = side_content(after_path, values.after, options).await?;
+
+    let mut insertions: u32 = 0;
+    let mut deletions: u32 = 0;
+    for hunk in diff_by_line([&before, &after], &LineCompareMode::Exact).hunks() {
+        if hunk.kind != DiffHunkKind::Different {
+            continue;
+        }
+        let [left, right] = hunk.contents[..].try_into().ok()?;
+        deletions += count_lines(left);
+        insertions += count_lines(right);
+    }
+    Some((insertions, deletions))
+}
+
+fn count_lines(content: &[u8]) -> u32 {
+    content.split_inclusive(|b| *b == b'\n').count() as u32
 }
 
 /// The backend's copy/rename records for `parent → commit`, used to turn a delete+add pair into one

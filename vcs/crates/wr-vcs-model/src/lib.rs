@@ -24,6 +24,13 @@ pub struct ChangedFile {
     pub path: String,
     pub old_path: Option<String>,
     pub kind: ChangeKind,
+    /// Changed lines vs the same base the `kind` was computed against (the commit's FIRST parent).
+    /// `None` means "deliberately not counted", never zero: a binary file (jj's own NUL heuristic), a
+    /// file over the backend's size ceiling, or a non-file entry (symlink/tree/submodule/unreadable).
+    /// A conflicted file counts its MATERIALIZED marker text, matching what `jj diff --stat` and a
+    /// git worktree diff both report for the same state.
+    pub insertions: Option<u32>,
+    pub deletions: Option<u32>,
 }
 
 /// A commit author (git) or the author of a jj change. Plural authors on a `Commit` come from
@@ -130,9 +137,13 @@ pub struct CommitChanges {
 }
 
 /// The jj working-copy status for the sidebar/Changes badges. Reading it first SNAPSHOTS the working
-/// copy so `@` reflects on-disk edits (jj's own behavior on every command). `insertions`/`deletions`
-/// (the diffstat) are NOT here — jayjay-style, the Swift layer adds them from one `jj diff --stat`
-/// call (a native line count would mean materializing every file, which jj's `--stat` does faster).
+/// copy so `@` reflects on-disk edits (jj's own behavior on every command).
+///
+/// The diffstat lives PER FILE on each `ChangedFile`, and there is deliberately no aggregate field:
+/// a total stored beside the rows is a second representation that can disagree with them, which is
+/// exactly the bug this replaced (the app used to add the totals from a separate `jj diff --stat`
+/// process, so a merge `@` stated them against a different base than the file list, and an edit
+/// between the two reads skewed them). Callers sum the rows they display.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkingStatus {
     /// `true` when `@` has changed files or a conflict.

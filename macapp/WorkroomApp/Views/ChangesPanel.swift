@@ -222,10 +222,7 @@ struct RightInspector: View {
     guard let s = selectedStatus else { return AnyView(EmptyView()) }
     let ins = s.insertions ?? 0
     let del = s.deletions ?? 0
-    if ins > 0 || del > 0 {
-      var help = ""
-      if s.conflicted { help += "conflicted, " }
-      help += "\(ins) insertions, \(del) deletions"
+    if let help = VCSStatusPresentation.lineCountsHelp(s) {
       return AnyView(
         HStack(spacing: 5) {
           if s.conflicted {
@@ -249,11 +246,7 @@ struct RightInspector: View {
 
   private var changesIndicatorLabel: String {
     guard let s = selectedStatus else { return "" }
-    let ins = s.insertions ?? 0
-    let del = s.deletions ?? 0
-    if ins > 0 || del > 0 {
-      return (s.conflicted ? "conflicted, " : "") + "\(ins) insertions, \(del) deletions"
-    }
+    if let help = VCSStatusPresentation.lineCountsHelp(s) { return help }
     return VCSStatusPresentation.dot(s)?.accessibility ?? ""
   }
 }

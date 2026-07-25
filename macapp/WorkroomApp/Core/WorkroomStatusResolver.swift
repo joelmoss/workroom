@@ -121,8 +121,11 @@ struct WorkroomStatusResolver: Sendable {
 
   private func resolveJJ(_ dir: String, projectRoot: String) async -> WorkroomStatus {
     // Read the jj working-copy status structurally through the Rust core (jj-lib): it snapshots `@`
-    // (so it reflects disk) and returns the `@`/`@-` change sets + CI branch — replacing the old
-    // serial-snapshot-then-concurrent-CLI-reads dance. `VCSProviding` has no built-in timeout, so
+    // (so it reflects disk) and returns the `@`/`@-` change sets, the ± line counts and the CI branch
+    // — replacing the old serial-snapshot-then-concurrent-CLI-reads dance. ONE read, deliberately: the
+    // counts used to come from a `jj diff -r @ --stat` process fired after this one, which stated them
+    // against a merge `@`'s auto-merged parents (a different base than the file list) and could be
+    // read across an intervening edit. `VCSProviding` has no built-in timeout, so
     // bound the (synchronous, off-main) read with `withTimeout` — for `resolveGit` a wedged repo
     // abandons only its own caller. For THIS jj path that's no longer the full story: the read is
     // additionally serialized per project root through `gate` (the ONE jj read that mutates — takes
@@ -130,13 +133,12 @@ struct WorkroomStatusResolver: Sendable {
     // that repo-level store, so concurrent snapshots across them can contend; see `JJSnapshotGate`'s
     // doc). A genuinely wedged (never-returning) native call therefore doesn't just abandon its own
     // caller — it can block later same-project calls too, bounded by `JJSnapshotGate.maxChainWait`
-    // (the gate self-heals past a hung predecessor instead of queuing behind it forever). `resolveGit`,
-    // `log`/`changeset`/`currentRef` (`BranchResolver`), and the `--ignore-working-copy` reads below
-    // are read-only and never gated, so they're unaffected.
+    // (the gate self-heals past a hung predecessor instead of queuing behind it forever). `resolveGit`
+    // and `log`/`changeset`/`currentRef` (`BranchResolver`) are read-only and never gated, so they're
+    // unaffected.
     let root = URL(fileURLWithPath: dir, isDirectory: true)
-    var status: WorkroomStatus
     do {
-      status = try await withTimeout(seconds: Self.jjGatedWaitTimeout) {
+      return try await withTimeout(seconds: Self.jjGatedWaitTimeout) {
         try await self.gate.run(projectRoot: projectRoot) {
           // `runBlocking` (GCD), NOT `Task.detached` — the blocking, snapshot-taking jj-lib read
           // must stay off the fixed-width cooperative pool (see `resolveGit` / the `runBlocking`
@@ -151,19 +153,6 @@ struct WorkroomStatusResolver: Sendable {
     } catch {
       return WorkroomStatus(dirty: nil, failure: .notRepository)
     }
-
-    // Line counts: jayjay-style, one `jj diff --stat` (the native read intentionally omits it — a
-    // line count would materialize every file). `--ignore-working-copy` reuses the snapshot the read
-    // just took, so it neither re-snapshots nor re-locks. Best-effort: a failure just drops the delta.
-    let statR = await runner.run(
-      "jj", ["diff", "-r", "@", "--ignore-working-copy", "--stat", "--color", "never"],
-      in: dir, timeout: timeout)
-    if statR.ok {
-      let stat = Self.parseDiffStat(statR.stdout)
-      status.insertions = stat.insertions
-      status.deletions = stat.deletions
-    }
-    return status
   }
 
   // MARK: Stage 2 — CI (slow, network; never blocks stage 1)
@@ -490,19 +479,6 @@ struct WorkroomStatusResolver: Sendable {
   static func isGitHubAuthFailure(_ error: String?) -> Bool {
     guard let e = error?.lowercased() else { return false }
     return e.contains("http 401") || e.contains("bad credentials")
-  }
-
-  /// Sum the totals from a jj `--stat` summary line, e.g.
-  /// "3 files changed, 12 insertions(+), 4 deletions(-)". Either clause may be absent (→ 0); empty
-  /// input (a clean tree) ⇒ (0, 0).
-  static func parseDiffStat(_ text: String) -> (insertions: Int, deletions: Int) {
-    func count(before noun: String) -> Int {
-      guard let r = text.range(of: "\\d+(?= \(noun))", options: .regularExpression) else {
-        return 0
-      }
-      return Int(text[r]) ?? 0
-    }
-    return (count(before: "insertion"), count(before: "deletion"))
   }
 
   /// Shared preflight for the two `gh` read probes (CI runs, PR list): distinguishes a transient

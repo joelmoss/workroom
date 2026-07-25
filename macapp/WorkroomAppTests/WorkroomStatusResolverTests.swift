@@ -58,38 +58,10 @@ final class WorkroomStatusResolverTests: XCTestCase {
   // The jj working-copy read (summary/head/parent) is now native (jj-lib) via RustJJProvider; its
   // CLI parsers are gone. Real-repo coverage: WorkroomStatusIntegrationTests.testJJ*.
 
-  // MARK: - parseDiffStat (jj --stat totals)
-
-  func testParseDiffStatGitFull() {
-    let s = WorkroomStatusResolver.parseDiffStat(" 2 files changed, 5 insertions(+), 1 deletion(-)")
-    XCTAssertEqual(s.insertions, 5)
-    XCTAssertEqual(s.deletions, 1)
-  }
-
-  func testParseDiffStatInsertionsOnly() {
-    let s = WorkroomStatusResolver.parseDiffStat("1 file changed, 5 insertions(+)")
-    XCTAssertEqual(s.insertions, 5)
-    XCTAssertEqual(s.deletions, 0)
-  }
-
-  func testParseDiffStatDeletionsOnly() {
-    let s = WorkroomStatusResolver.parseDiffStat("1 file changed, 1 deletion(-)")
-    XCTAssertEqual(s.insertions, 0)
-    XCTAssertEqual(s.deletions, 1)
-  }
-
-  func testParseDiffStatJJSummary() {
-    let s = WorkroomStatusResolver.parseDiffStat(
-      "PLAN.md | 428 ++++++\n1 file changed, 428 insertions(+), 0 deletions(-)")
-    XCTAssertEqual(s.insertions, 428)
-    XCTAssertEqual(s.deletions, 0)
-  }
-
-  func testParseDiffStatCleanIsZero() {
-    let s = WorkroomStatusResolver.parseDiffStat("")
-    XCTAssertEqual(s.insertions, 0)
-    XCTAssertEqual(s.deletions, 0)
-  }
+  // The `--stat` summary parser is gone too: the jj ± line counts come from the same native read as
+  // the file list (per-file, in `jj_backend::changed_files`), so there is no `jj diff --stat` process
+  // and no summary line to parse. Real-repo coverage: the cargo suite `line_stats.rs` for the counting
+  // itself, and WorkroomStatusIntegrationTests.testJJ* end-to-end.
 
   // MARK: - classifyCheckRollup (#76: sidebar CI from GitHub's status-check rollup)
 

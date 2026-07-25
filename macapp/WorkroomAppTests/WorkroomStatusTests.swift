@@ -82,6 +82,34 @@ final class WorkroomStatusTests: XCTestCase {
       VCSStatusPresentation.dot(WorkroomStatus(dirty: nil, failure: .notRepository))?.accessibility)
   }
 
+  // MARK: - VCSStatusPresentation.lineCountsHelp (the Changes header's +/- text)
+
+  func testLineCountsHelpNilWithoutADelta() {
+    // Only untracked files, or a clean tree: the header shows its status dot instead.
+    XCTAssertNil(VCSStatusPresentation.lineCountsHelp(WorkroomStatus(dirty: true)))
+    XCTAssertNil(
+      VCSStatusPresentation.lineCountsHelp(
+        WorkroomStatus(dirty: true, insertions: 0, deletions: 0)))
+  }
+
+  func testLineCountsHelpReadsTheDelta() {
+    let help = VCSStatusPresentation.lineCountsHelp(
+      WorkroomStatus(dirty: true, insertions: 12, deletions: 4))
+    XCTAssertEqual(help, "12 insertions, 4 deletions")
+  }
+
+  /// A conflicted working copy's counts INCLUDE its materialized conflict markers (jj, git and our own
+  /// changeset header all count them), so a one-line conflict can read as many. The number is left
+  /// alone and explained — this string is the whole reason the count is allowed to stay inclusive, so
+  /// it has to name the markers, not just say "conflicted".
+  func testLineCountsHelpNamesTheConflictMarkers() {
+    let help = VCSStatusPresentation.lineCountsHelp(
+      WorkroomStatus(dirty: true, conflicted: true, insertions: 30, deletions: 2))
+    XCTAssertEqual(help, "conflicted — counts include conflict markers, 30 insertions, 2 deletions")
+    XCTAssertTrue(
+      help?.contains("conflict markers") == true, "the marker caveat must be spelled out")
+  }
+
   /// A busy/stale row must count toward the project aggregate the same way the other probe failures
   /// do — unknown outranks clean, dirty outranks unknown.
   func testAggregateWeightCoversTheNewFailures() {

@@ -1,5 +1,48 @@
 # TODOs
 
+> Status note (2026-07-25): **Done & removed — three entries, one root cause:** the Changes header's
+> `+/-` stating the wrong base for a merge `@`, the file-list-vs-diffstat skew across two reads, and
+> conflicted working copies inflating the counts. All three were the same 8 lines: `resolveJJ` got the
+> file list natively and then shelled `jj diff -r @ --ignore-working-copy --stat` for the numbers. Two
+> reads of a moving working copy can't agree, and `-r @` on a merge diffs the **auto-merged parents**
+> while the list is a tree diff against the FIRST parent — measured on a clean merge, jj reports
+> `0 files changed` next to a listed 3-line file. Fixed at the source: `changed_files`
+> (`jj_backend.rs`) now runs ONE `materialized_diff_stream`, so the change kind and the ± counts come
+> from the same entry, per file, first-parent-anchored by construction; Swift sums the rows it
+> displays. jj-lib 0.43 has everything for it (`materialized_diff_stream`,
+> `materialize_merge_result_to_bytes`, `diff_presentation::diff_by_line`); only `DiffStats` is
+> CLI-only, so the hunk→count fold is ours. **Deviated from the plan** on the shape: no aggregate
+> field on `WorkingStatus`/`CommitChanges` — a stored total beside the rows is a second representation
+> that can disagree with them, which is the bug class being removed — and classification moved onto
+> the materialized values rather than keeping a second pass (the four conflict/rename ordering tests
+> are what made that safe; they passed unchanged). `None` counts mean **not counted, never zero**:
+> binary (jj's own NUL heuristic), over 4 MiB (bounded read — the cap is enforced *before* the bytes
+> are buffered, unlike jj's own helper), or a non-file entry. **Conflicts deliberately still count
+> their markers.** The materialized markers really are the file's content, `jj diff --stat` and a git
+> worktree diff both count them, and our own commit header asserts it
+> (`VCSProviderConformanceTests.testMergeCommitFileDiffIsNotEmpty`) — so suppressing on the jj working
+> copy alone would have split the two backends AND the two halves of our own UI. The header says so
+> instead: one `VCSStatusPresentation.lineCountsHelp` now feeds both the tooltip and the VoiceOver
+> label ("conflicted — counts include conflict markers, …"), which were two copies of the same string.
+> **Deleted:** `WorkroomStatusResolver.parseDiffStat` (+5 unit tests), `RustJJProvider.commitStatArgs`,
+> and `changeset`'s `firstParentID` + `--stat` pair — **3 fewer `jj` processes** (one per workroom per
+> 15s sweep, two per History selection); `firstParentID` stays, `fileDiff` still needs it. Coverage: 7
+> cargo tests in a new `tests/line_stats.rs`, 3 mechanically negative-checked (binary detection off,
+> counting `'\n'` occurrences instead of `split_inclusive` segments, conflict counting suppressed — each
+> failed the intended test and only that one), 3 unit tests on the header text, and one end-to-end
+> XCTest on a merge `@` (`WorkroomStatusIntegrationTests.testJJMergeWorkingCopyCountsMatchTheFileList`).
+> **Traps worth knowing:** (1) a SINGLE-PARENT fixture cannot expose the merge half at all — the two
+> bases coincide — the same shape as the log-order trap above, so any regression test needs a real
+> merge, guarded by asserting `parents.len() == 2`; (2) `jj diff --stat` prints its summary line even
+> when nothing changed (`0 files changed, 0 insertions(+), 0 deletions(-)`), so a test asserting the
+> *absence* of the word "insertions" passes for the wrong reason — assert the file count (this one bit
+> during the work); (3) conflict marker counting depends on marker STYLE, so if "The jj snapshot
+> ignores the user's real jj/git config" below ever lands, `materialize_options()` wants the real
+> settings too — it reads jj's defaults today, consistent with `snapshot_working_copy`. **Left alone:**
+> git's `workingLineStats` still recomputes the whole-worktree diff per refresh (its own entry below);
+> the cross-backend changeset-count parity test (`VCSProviderConformanceTests:47-51`) passes unchanged,
+> which is the guard that our native fold matches git's per-line counting.
+>
 > Status note (2026-07-25): **Done & removed:** jj log / current-ref ordering by committer timestamp.
 > Both ancestry walks in `jj_backend.rs` now go through one `ancestors_revset` helper — jj-lib's own
 > `::@` revset, which the default index iterates in descending commit position, i.e. topologically.
@@ -831,50 +874,6 @@ renamed delta (`mapDelta` already handles `.renamed`/`.copied`).
 **Priority:** P3 (History file list wrong on committed renames; the diff content itself is correct,
 and the Changes panel already pairs them).
 
-## The Changes header's +/- still stats the wrong base for a merge `@` (macapp) — merge-diff follow-up
-
-**What:** `WorkroomStatusResolver.resolveJJ` fills the Changes header's insertions/deletions from
-`jj diff -r @ --ignore-working-copy --stat` (`WorkroomStatusResolver.swift:137-144`). For a **merge**
-`@` that stats the auto-merged-parents diff, so the totals describe a different set of files than the
-list beside them — the same bug fixed for `fileDiff`/`workingFileDiff`/`changeset` (75465a38 + the
-commit-path follow-up), left alone here on purpose.
-
-**Why not fixed with the others:** the fix needs `@`'s first-parent id, and this read runs in the 15s
-status sweep fanned out per workroom — adding a second `jj` process per row to every sweep is the
-wrong trade. The right fix is to stop paying for it at all: `working_status` already loads `@` in
-jj-lib, so expose its parent ids on `WrVcs.WorkingStatus` (free) and pass the first one into the stat
-args (`RustJJProvider.commitStatArgs` already takes a `from`).
-
-**How to start:** add `parent_ids` to `model::CommitChanges` (or `WorkingStatus`) in
-`wr-vcs-model`/`jj_backend.rs`, thread it through the UniFFI surface into `RustJJProvider
-.workingStatus`, then anchor the resolver's `--stat` call. Cargo + Swift tests both have merge
-fixtures to reuse (`conflicted_repo`, `jjMergeFixture`).
-
-**Depends on:** the merge-base diff fix (shipped). Touches `jj_backend.rs`, `wr-vcs-model`,
-`wr-vcs-uniffi`, `RustJJProvider.swift`, `WorkroomStatusResolver.swift`.
-
-**Priority:** P3 (wrong-but-plausible numbers on merge working copies only; the file list and every
-per-file diff are now correct).
-
-## Conflicted working copies inflate the Changes header's +/- counts (macapp) — jj conflict-status follow-up
-
-**What:** `WorkroomStatusResolver.resolveJJ` sources the header's insertions/deletions from one
-`jj diff -r @ --ignore-working-copy --stat` (`WorkroomStatusResolver.swift:137-144`). A conflicted
-working copy has materialized conflict markers on disk, so every marker line counts as a changed
-line — a one-line conflict can read as dozens of changes.
-
-**Why:** cosmetic, and invisible until now because jj conflicts never surfaced. With the `!` badge
-shipped, the number sitting next to it is confidently wrong.
-
-**How to start:** decide the semantics first — should a conflicted path contribute 0, contribute only
-its real hunks, or should the header suppress the delta while `@` is conflicted? Then either exclude
-conflicted paths from the stat parse or annotate the header. The counts are already best-effort (a
-failed stat just drops them), so suppression is cheap.
-
-**Depends on:** nothing. Touches `WorkroomStatusResolver.swift` + its tests.
-
-**Priority:** P3 (cosmetic, newly visible).
-
 ## Three independent change-badge palettes (macapp) — jj conflict-status follow-up
 
 **What:** the same change-kind badge is coloured by three separate mappings: `ChangeBadge`
@@ -997,20 +996,6 @@ rather than picking one status delta.
 
 **Priority:** P3 (partial-staging is uncommon in the workroom flow; content still shown, just one side).
 
-## jj file list + diffstat can skew across two reads (macapp) — VCS-foundation eng-review
-
-**What:** `WorkroomStatusResolver.resolveJJ` reads the working-copy file list via native
-`workingStatus` and then the ±line counts via a separate `jj diff --stat --ignore-working-copy`. An
-on-disk edit (or a concurrent snapshot) between the two gives files from one `@` and counts from
-another.
-
-**How to start:** Return the diffstat from the same native snapshot (add insertions/deletions to
-`working_status` in `jj_backend.rs`) so the file list and counts come from one read.
-
-**Depends on:** VCS read foundation. Touches `jj_backend.rs`, `WorkroomStatusResolver.swift`.
-
-**Priority:** P3 (brief count/file skew on a mid-refresh edit; self-heals next refresh).
-
 ## The jj snapshot ignores the user's real jj/git config (macapp) — VCS-foundation eng-review
 
 **What:** `snapshot_working_copy` builds its settings from jj's **built-in defaults only** —
@@ -1034,11 +1019,18 @@ when *materializing* conflicts to disk (the checkout path), which this core neve
 marker parse-back goes through `conflicts::update_from_content`, which keys on the stored
 `materialized_conflict_data` marker length, not the style.
 
+**Second site, added later:** the native ± line counts (`changed_files` → `materialize_options()`)
+materialize a conflicted file to count its marker lines, so `ui.conflict-marker-style` and
+`merge.hunk-level`/`merge.same-change` DO change that number. It reads jj's defaults today, on purpose
+and for the same reason as the snapshot; when this entry lands, both call sites want the real settings,
+not just the snapshot.
+
 **How to start:** load the real config stack (user + repo) into `UserSettings` the way the jj CLI
 does, instead of `with_defaults()`, and chain a custom `core.excludesFile` in `base_ignores`. Test on
 throwaway repos only — this is the lock-taking, `@`-rewriting path.
 
-**Depends on:** the base_ignores fix (shipped). Touches `jj_backend.rs`.
+**Depends on:** the base_ignores fix (shipped). Touches `jj_backend.rs` (`snapshot_working_copy` +
+`materialize_options`).
 
 **Priority:** P3 for correctness (only bites non-default configs), but the fsmonitor half is a real
 perf item on large repos.

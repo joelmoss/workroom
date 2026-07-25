@@ -77,6 +77,10 @@ pub struct ChangedFile {
     pub path: String,
     pub old_path: Option<String>,
     pub kind: ChangeKind,
+    /// Changed lines vs the same (first-parent) base as `kind`. `None` = not counted (binary,
+    /// oversized, or a non-file entry) — never zero. See `model::ChangedFile`.
+    pub insertions: Option<u32>,
+    pub deletions: Option<u32>,
 }
 
 #[derive(uniffi::Record)]
@@ -219,6 +223,8 @@ impl From<model::ChangedFile> for ChangedFile {
             path: f.path,
             old_path: f.old_path,
             kind: f.kind.into(),
+            insertions: f.insertions,
+            deletions: f.deletions,
         }
     }
 }
@@ -505,10 +511,16 @@ mod tests {
             path: "a/b.txt".into(),
             old_path: Some("a/old.txt".into()),
             kind: model::ChangeKind::Conflicted,
+            insertions: Some(3),
+            deletions: None,
         });
         assert_eq!(file.path, "a/b.txt");
         assert_eq!(file.old_path.as_deref(), Some("a/old.txt"));
         assert_eq!(change_kind_name(&file.kind), "Conflicted");
+        // The counts are `Option`s carrying a real distinction (`None` = not counted, not zero), so
+        // the mapping has to preserve BOTH shapes, not default them.
+        assert_eq!(file.insertions, Some(3));
+        assert_eq!(file.deletions, None);
 
         let bare = |id: &str| model::Commit {
             commit_id: id.into(),

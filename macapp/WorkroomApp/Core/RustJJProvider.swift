@@ -20,38 +20,29 @@ struct RustJJProvider: VCSProviding {
     // The jj-lib read + mapping is synchronous, blocking UniFFI work — run it on GCD (`runBlocking`),
     // never the fixed-width cooperative pool. Map to the (Sendable) app model inside the closure so no
     // non-Sendable `WrVcs.*` type crosses the boundary.
-    var changeset: VCSChangeset
+    //
+    // The detail header's `+N −M` is summed from the SAME per-file counts that produced the rows
+    // (`jj_backend::changed_files`), so the totals can't describe a different diff than the list. This
+    // used to be a second read — `firstParentID` + `jj diff --stat`, two more `jj` processes per
+    // History selection — anchored by hand to the first parent because `-r <commit>` stats a merge
+    // against its auto-merged parents. The native counts are first-parent-anchored by construction.
     do {
-      changeset = try await runBlocking {
+      return try await runBlocking {
         let cs = try WrVcs.changeset(root: root.path, commitId: commitID)
+        let stats = Self.lineTotals(cs.files)
         return VCSChangeset(
           commit: Self.map(cs.commit),
           fullMessage: cs.fullMessage,
           files: cs.files.map(Self.map),
           isMerge: cs.isMerge,
+          insertions: stats.insertions,
+          deletions: stats.deletions,
           pushScope: Self.map(cs.pushScope)
         )
       }
     } catch {
       throw Self.mapError(error)
     }
-    // Line counts for the detail header: the native changeset read omits the diffstat (a line count
-    // would materialize every file), so — jayjay-style, like `WorkroomStatusResolver.resolveJJ` — one
-    // read-only `jj diff --stat` fills it. `--ignore-working-copy` never locks `@`. Best-effort: a
-    // failure leaves the counts nil and the header just omits the summary.
-    //
-    // Anchored to the first parent like `fileDiff`, so the header's totals describe the SAME files the
-    // list shows. On a merge, `-r <commit>` stats the auto-merged-parents diff instead: the header
-    // counted files the list doesn't have and omitted the conflicted file's lines entirely.
-    let statFrom = try? await Self.firstParentID(root: root, rev: commitID)
-    if let stat = try? await Self.run(
-      "jj", Self.commitStatArgs(commitID: commitID, from: statFrom), cwd: root
-    ) {
-      let parsed = WorkroomStatusResolver.parseDiffStat(stat)
-      changeset.insertions = parsed.insertions
-      changeset.deletions = parsed.deletions
-    }
-    return changeset
   }
 
   func currentRef(root: URL) async throws -> VCSRef {
@@ -68,11 +59,14 @@ struct RustJJProvider: VCSProviding {
   }
 
   /// The jj working-copy status via the native Rust core (jj-lib): snapshots `@` (so it reflects
-  /// disk), then reads its change set and the CI branch — mapped to the app's `WorkroomStatus`. (The
-  /// core also returns the parent `@-` state, no longer surfaced app-side.) `insertions`/`deletions`
-  /// are left nil here; `WorkroomStatusResolver.resolveJJ`
-  /// fills them from one `jj diff --stat` (jayjay-style — a native line count would materialize every
-  /// file). Synchronous (blocking jj-lib work); the resolver runs it off-main under a timeout.
+  /// disk), then reads its change set, its per-file line counts and the CI branch — mapped to the
+  /// app's `WorkroomStatus`. (The core also returns the parent `@-` state, no longer surfaced
+  /// app-side.) Synchronous (blocking jj-lib work); the resolver runs it off-main under a timeout.
+  ///
+  /// `insertions`/`deletions` are summed from the same read as `changedFiles`, which is the point:
+  /// they used to come from a separate `jj diff -r @ --stat` process in `WorkroomStatusResolver
+  /// .resolveJJ`, so on a merge `@` they described the auto-merged-parents diff rather than the rows
+  /// beside them, and an edit landing between the two reads skewed them.
   func workingStatus(root: URL) throws -> WorkroomStatus {
     let w: WrVcs.WorkingStatus
     do {
@@ -81,9 +75,23 @@ struct RustJJProvider: VCSProviding {
       throw Self.mapError(error)
     }
     let workingCopy = Self.jjCommitChanges(w.workingCopy)
+    let stats = Self.lineTotals(w.workingCopy.files)
     return WorkroomStatus(
       dirty: w.dirty, conflicted: w.conflicted, changedFiles: workingCopy.files,
+      insertions: stats.insertions, deletions: stats.deletions,
       branchForCI: w.branchForCi, jjWorkingCopy: workingCopy)
+  }
+
+  /// Sum the per-file counts for a header total. A file the core declined to count — binary,
+  /// oversized, or not a file — carries `nil` and contributes nothing, the same way git and jj both
+  /// leave a binary out of a diffstat. All-`nil` therefore reads as `0`, not as "unknown": the rows
+  /// exist and are known to contain no countable lines.
+  private static func lineTotals(_ files: [WrVcs.ChangedFile]) -> (insertions: Int, deletions: Int)
+  {
+    files.reduce(into: (insertions: 0, deletions: 0)) { totals, f in
+      totals.insertions += Int(f.insertions ?? 0)
+      totals.deletions += Int(f.deletions ?? 0)
+    }
   }
 
   /// The content of `path` at revision `rev` (a commit id or a revset like `@-`), for
@@ -132,18 +140,6 @@ struct RustJJProvider: VCSProviding {
     return try await Self.run(
       "jj", Self.commitDiffArgs(commitID: commitID, path: path, from: from),
       cwd: root)
-  }
-
-  /// Pure `jj diff --stat` args for a commit's line-count summary — same first-parent anchoring as
-  /// `commitDiffArgs`, so the header's totals and the file list describe the same diff.
-  static func commitStatArgs(commitID: String, from: String? = nil) -> [String] {
-    guard let from else {
-      return ["diff", "-r", commitID, "--ignore-working-copy", "--stat", "--color", "never"]
-    }
-    return [
-      "diff", "--from", from, "--to", commitID, "--ignore-working-copy", "--stat", "--color",
-      "never",
-    ]
   }
 
   /// Pure `jj diff` args for a per-file COMMIT diff. `from` is the commit's first parent; `nil` falls

@@ -224,8 +224,14 @@ struct WorkroomStatus: Equatable, Sendable {
   var dirty: Bool?
   var conflicted: Bool = false
   var changedFiles: [ChangedFile]?
-  /// Working-tree line counts vs the last commit (git: `diff --shortstat HEAD`; jj: `diff --stat`).
+  /// Working-tree line counts vs the last commit (git: summed per-file patch stats; jj: summed from
+  /// the same native per-file counts that produced `changedFiles`, so the totals and the rows always
+  /// describe one diff — see `RustJJProvider.workingStatus`).
   /// `nil` ⇒ not resolved; both 0 ⇒ no line delta (e.g. only untracked files, which git omits).
+  ///
+  /// While `conflicted`, the totals INCLUDE the materialized conflict markers, because those lines
+  /// really are in the file — git reports the same for a conflicted worktree. The header says so
+  /// rather than quietly under- or over-reporting; see `VCSStatusPresentation.lineCountsHelp`.
   var insertions: Int?
   var deletions: Int?
   var ci: CIState?
@@ -334,6 +340,25 @@ enum VCSStatusPresentation {
     case .neutral:
       return CIGlyph(symbol: "minus.circle", semantic: .neutral, accessibility: "CI cancelled")
     }
+  }
+
+  /// Tooltip / VoiceOver text for the Changes header's `+N −M`, or `nil` when there's no line delta to
+  /// describe (the header falls back to the status dot). One helper because the tooltip and the
+  /// VoiceOver label must say the same thing — they were two copies of the same string before.
+  ///
+  /// A conflicted working copy has its conflict markers materialized ON DISK, so those lines really are
+  /// in the file, and every tool that measures the same state counts them: `jj diff --stat`, `git diff`
+  /// on a conflicted worktree, and our own changeset header (pinned by
+  /// `VCSProviderConformanceTests.testMergeCommitFileDiffIsNotEmpty`). So the count stays inclusive and
+  /// SAYS so — suppressing it on the jj working copy alone would make the two backends, and the two
+  /// halves of our own UI, disagree about the same file.
+  static func lineCountsHelp(_ s: WorkroomStatus) -> String? {
+    let ins = s.insertions ?? 0
+    let del = s.deletions ?? 0
+    guard ins > 0 || del > 0 else { return nil }
+    let counts = "\(ins) insertions, \(del) deletions"
+    guard s.conflicted else { return counts }
+    return "conflicted — counts include conflict markers, \(counts)"
   }
 
   /// The full composed VoiceOver phrase for a row/chip, e.g. "dirty, CI failing".
