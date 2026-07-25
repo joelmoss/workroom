@@ -1,222 +1,13 @@
 # TODOs
 
-> Status note (2026-07-25): **Done & removed — three entries, one root cause:** the Changes header's
-> `+/-` stating the wrong base for a merge `@`, the file-list-vs-diffstat skew across two reads, and
-> conflicted working copies inflating the counts. All three were the same 8 lines: `resolveJJ` got the
-> file list natively and then shelled `jj diff -r @ --ignore-working-copy --stat` for the numbers. Two
-> reads of a moving working copy can't agree, and `-r @` on a merge diffs the **auto-merged parents**
-> while the list is a tree diff against the FIRST parent — measured on a clean merge, jj reports
-> `0 files changed` next to a listed 3-line file. Fixed at the source: `changed_files`
-> (`jj_backend.rs`) now runs ONE `materialized_diff_stream`, so the change kind and the ± counts come
-> from the same entry, per file, first-parent-anchored by construction; Swift sums the rows it
-> displays. jj-lib 0.43 has everything for it (`materialized_diff_stream`,
-> `materialize_merge_result_to_bytes`, `diff_presentation::diff_by_line`); only `DiffStats` is
-> CLI-only, so the hunk→count fold is ours. **Deviated from the plan** on the shape: no aggregate
-> field on `WorkingStatus`/`CommitChanges` — a stored total beside the rows is a second representation
-> that can disagree with them, which is the bug class being removed — and classification moved onto
-> the materialized values rather than keeping a second pass (the four conflict/rename ordering tests
-> are what made that safe; they passed unchanged). `None` counts mean **not counted, never zero**:
-> binary (jj's own NUL heuristic), over 4 MiB (bounded read — the cap is enforced *before* the bytes
-> are buffered, unlike jj's own helper), or a non-file entry. **Conflicts deliberately still count
-> their markers.** The materialized markers really are the file's content, `jj diff --stat` and a git
-> worktree diff both count them, and our own commit header asserts it
-> (`VCSProviderConformanceTests.testMergeCommitFileDiffIsNotEmpty`) — so suppressing on the jj working
-> copy alone would have split the two backends AND the two halves of our own UI. The header says so
-> instead: one `VCSStatusPresentation.lineCountsHelp` now feeds both the tooltip and the VoiceOver
-> label ("conflicted — counts include conflict markers, …"), which were two copies of the same string.
-> **Deleted:** `WorkroomStatusResolver.parseDiffStat` (+5 unit tests), `RustJJProvider.commitStatArgs`,
-> and `changeset`'s `firstParentID` + `--stat` pair — **3 fewer `jj` processes** (one per workroom per
-> 15s sweep, two per History selection); `firstParentID` stays, `fileDiff` still needs it. Coverage: 7
-> cargo tests in a new `tests/line_stats.rs`, 3 mechanically negative-checked (binary detection off,
-> counting `'\n'` occurrences instead of `split_inclusive` segments, conflict counting suppressed — each
-> failed the intended test and only that one), 3 unit tests on the header text, and one end-to-end
-> XCTest on a merge `@` (`WorkroomStatusIntegrationTests.testJJMergeWorkingCopyCountsMatchTheFileList`).
-> **Traps worth knowing:** (1) a SINGLE-PARENT fixture cannot expose the merge half at all — the two
-> bases coincide — the same shape as the log-order trap above, so any regression test needs a real
-> merge, guarded by asserting `parents.len() == 2`; (2) `jj diff --stat` prints its summary line even
-> when nothing changed (`0 files changed, 0 insertions(+), 0 deletions(-)`), so a test asserting the
-> *absence* of the word "insertions" passes for the wrong reason — assert the file count (this one bit
-> during the work); (3) conflict marker counting depends on marker STYLE, so if "The jj snapshot
-> ignores the user's real jj/git config" below ever lands, `materialize_options()` wants the real
-> settings too — it reads jj's defaults today, consistent with `snapshot_working_copy`. **Left alone:**
-> git's `workingLineStats` still recomputes the whole-worktree diff per refresh (its own entry below);
-> the cross-backend changeset-count parity test (`VCSProviderConformanceTests:47-51`) passes unchanged,
-> which is the guard that our native fold matches git's per-line counting.
->
-> Status note (2026-07-25): **Done & removed:** jj log / current-ref ordering by committer timestamp.
-> Both ancestry walks in `jj_backend.rs` now go through one `ancestors_revset` helper — jj-lib's own
-> `::@` revset, which the default index iterates in descending commit position, i.e. topologically.
-> Timestamps are metadata a rewrite carries forward, so they were never a graph order; with a merge in
-> play the old max-heap surfaced a commit ABOVE its own descendants (measured: `[@, E, A, C, B, root]`
-> where `A` is the parent of both `B` and `C`), something `jj log` cannot print. Same walk, same fix
-> for `nearest_bookmark`, so the sidebar's branch label can no longer name a bookmark History doesn't
-> show — the repro is a bookmark on a rewritten ancestor two hops out beating the one on `@`'s own
-> first parent. **Deviated from the plan** on one point: the entry proposed a *generation* walk for
-> `nearest_bookmark`, but jj-lib exposes generation numbers only through `default_index` internals, and
-> the actual requirement was agreement with the log — so both share the one revset order rather than
-> the file carrying two ordering concepts. That also deleted its `@` special case (`@` is simply the
-> first id `::@` yields, being a descendant of the whole set) and made it markedly **cheaper**: it now
-> reads ids and stops at the first bookmark, where the heap deserialized every ancestor it passed —
-> worth having on a call that runs in the 15s status sweep, fanned out per workroom. `log_page` gained
-> git's own "take one extra to learn whether more exists" trick for `reached_end`. Coverage: 5 cargo
-> tests in a new `tests/log_order.rs`, 3 negative-checked against the pre-change core; the other 2
-> guard the rewrite rather than the bug (the `reached_end` peek, and a bookmark on `@` still winning)
-> and say so. **The trap worth knowing before writing another ordering test:** a LINEAR ancestry
-> cannot expose this at all — the heap frontier is size one, so scrambled timestamps still produce
-> identical output. Every fixture needs a merge AND skewed timestamps (`JJ_TIMESTAMP`, which jj maps
-> onto `debug.commit-timestamp`); miss either and the test passes against the bug. **Found on the way,
-> deliberately not "fixed":** git's side reads `repo.log()` with SwiftGitX's default `.none` =
-> libgit2 `GIT_SORT_NONE`, which is reverse-*chronological* — but that is exactly `git log`'s own
-> default (topological is git's opt-in `--topo-order`), so each backend now matches its own CLI and the
-> two can legitimately page a skewed repo differently. Recorded at the `VCSProviding.log` seam so a
-> future conformance test doesn't "unify" them into disagreeing with both tools.
->
-> Status note (2026-07-25): **Done & removed:** "Real `VcsError` taxonomy across the UniFFI boundary".
-> The entry's premise was half stale and the live half was in a different place than it claimed. Its
-> Swift half — `RustJJProvider.mapError` flattening every case to `.io` — had already shipped in
-> `6b6461e2` (case-by-case), and `DiffResolver.message(for:)` is live + tested, not dead code. The real
-> gap was that the taxonomy was dead **at the source**: `jj_backend.rs` funnelled every jj-lib error
-> through one `fn io()`, so only `NotFound` and `PartialData` were ever produced and 4 of the 7 cases
-> could not occur end-to-end. Fixed by classifying where the errors arise: `Workspace::load`'s
-> `NoWorkspaceHere`/`RepoDoesNotExist` → `UnsupportedRepo`, `StoreLoadError::UnsupportedType` →
-> `BackendVersion` (a repo written by a newer jj than our pinned `jj-lib`). The two remaining cases
-> needed real behaviour, not labels, and both were **latent bugs** on the one mutating path
-> (`snapshot_working_copy`): (1) `LockContention` cannot come from jj-lib at all — `FileLock::lock`
-> blocks on `flock` **forever** and never reports contention — so a `jj` command in a workroom terminal
-> used to stall the status sweep for its whole duration, pinning a GCD thread and the project's
-> `JJSnapshotGate` slot; a non-blocking `FileLock::try_lock` probe now turns that into an instant typed
-> failure (proven: the new cargo test **hangs >60s** against the old code). (2) we never ran jj's own
-> staleness guard, so a working copy another workspace had rewritten got snapshotted from a stale base —
-> `WorkingCopyFreshness::check_stale` now runs, with jj's own handling: `Updated` reloads the repo at the
-> working copy's operation (so a racing `jj` doesn't flash a failure), `WorkingCopyStale`/
-> `SiblingOperation` → `StaleSnapshot`. App side, the status path stopped flattening too:
-> `WorkroomStatusResolver.resolveJJ`/`resolveGit` caught everything into `.notRepository`, so a busy or
-> out-of-date working copy read as "not a repository" — there are now `VCSStatusFailure.busy` /
-> `.staleWorkingCopy`, fed by a pure `failure(for:)` mapper, with their own sidebar tooltip and Changes
-> panel text. Coverage: 4 cargo tests (all negative-checked against the pre-change core), 1 end-to-end
-> XCTest holding jj's lock with `flock(2)` (jj-lib → UniFFI → resolver → `.busy`, 0.2s not 15s), and 3
-> unit tests. **Deliberately left:** git's side still flattens to `.io` (a documented Swift 6 SIL crash
-> blocks binding SwiftGitX's typed error) and a stale working copy is reported but not repaired — both
-> now their own TODOs below. Also noticed and left alone: `aggregateWeight` excludes `.timeout` from the
-> unknown-weight branch (pre-existing; the new cases follow `missingPath`/`notRepository`).
->
-> Status note (2026-07-25): **Done & removed:** "Chrome buttons report `isHittable == false` to the
-> a11y layer" — investigated and **closed as an environmental XCUITest artefact, not an accessibility
-> defect**, so the P2-if-VoiceOver-sees-it branch does not apply. Probing `NewTerminal`, `NewWorkroom`,
-> `OpenWorkroom` and `tab.toolbar.splitRight` across every axis the entry left open — inline **and**
-> pinned, run solo **and** batched with `TabActionsUITests`, and read **without** a prior
-> `waitForExistence` (the leading hypothesis, since `isHittable` is false for a not-yet-existent element
-> while `.click()` auto-waits) — each resolves to exactly ONE element, `elementType == .button`,
-> enabled, with a correct on-screen frame, and `isHittable == true`. Nothing was changed in the app: the
-> AX geometry was already right. Two documentation defects fixed instead. First, the entry's claim that
-> the suite "has been quietly routing around it" was **wrong** — `SplitPaneUITests.swift:115` and `:146`
-> filter on `isHittable` to pick the on-screen **context-menu item** over its zero-frame collapsed
-> menu-bar duplicate, an unrelated and correct idiom (their own comments say so); they are left alone.
-> Second, the two comments in `TabStripOverflowUITests` asserting `isHittable` was "a false negative for
-> these hover-washed SwiftUI buttons" are removed, since that is what sent the next reader down this
-> path. Replaced by two real guards — `testChromeGlyphButtonsAreHittableWhenInline` /
-> `…WhenPinned` — which assert match count, role, frame, enabled and hittability, so a genuinely
-> degenerate AX frame (which VoiceOver *would* see, these being the primary new-tab / new-workroom /
-> open-workroom actions) now fails a test instead of being explained away in a comment.
-> Negative-checked with `.accessibilityHidden(true)` on the "+" (fails as intended). Two facts found
-> while hunting a *sharper* negative check explain the original sighting, and are worth knowing before
-> anyone re-opens this: XCUITest's `isHittable` uses **accessibility** hit-testing, so neither a
-> covering non-AX overlay (`Color.clear.contentShape(Rectangle())` over the whole strip) nor collapsing
-> the button to a `0×0` frame turns it false — only a real AX element or another window over the point
-> can. So a window that wasn't frontmost, or was obscured, during that #129 session is by far the most
-> likely cause of an observation that no longer reproduces on any axis.
->
-> Status note (2026-07-25): **Done & removed:** jj vs git **rename detection** divergence. A renamed
-> file now reads as one `Renamed` row carrying `old_path` instead of delete-old + add-new, in both the
-> Changes panel and History. `changed_files` (`jj_backend.rs`) drives
-> `diff_stream_with_copies` and feeds it the backend's copy records (new `copy_records` helper), so
-> jj-lib owns the rename-vs-copy call: a surviving source is `Copied`, a vanished one `Renamed`, and
-> jj-lib suppresses the paired delete entry itself. Backend-dependent **by design** — the git backend
-> implements records (gix rewrite tracking, 50% similarity, 1000 candidates), jj's own
-> `simple_backend` returns none, so a non-colocated repo keeps reporting delete+add rather than
-> erroring; a per-record error is skipped for the same reason (it costs the rename *label*, never a
-> file). `Conflicted` still wins over rename, but that ordering is **defensive only**: probing showed a
-> conflicted path can't carry a copy record at all, because records come from each commit's *git* tree
-> and jj exports a conflict as `.jjconflict-*` sidecar trees — so a conflicted rename decomposes into
-> `Added` + `Conflicted` (pinned, with the reason, by `a_conflicted_rename_does_not_pair_into_one_row`).
-> App side: `ChangedFile` gained `oldPath` (filled by BOTH providers — git's was being dropped), the
-> changeset detail row and its tooltip read `old → new` via a new testable `ChangeBadge.pathLine`, and
-> the single-line panel row carries the old path in its tooltip + VoiceOver label. Coverage: 4 cargo
-> tests (working copy, committed rename with an edit, copy-not-rename, the conflict decomposition), 2
-> conformance tests, 2 `ChangeBadge` unit tests, 1 XCUITest — all negative-checked. **Found on the
-> way:** git *commit* diffs never had rename detection either (`repo.diff(commit:)` with no
-> `find_similar`), which inverts the divergence for History; that's now its own TODO below, with the
-> conformance test pinning the gap instead of asserting a parity that doesn't hold.
->
-> Status note (2026-07-25): **Done & removed:** the working-copy diff for a **merge** `@`. Reported
-> live right after the conflict badge shipped — clicking a conflicted row opened a tab reading "No
-> changes". Root cause was NOT conflict-specific: `jj diff -r @` diffs a merge against its
-> *auto-merged parents*, while the Changes list comes from `changed_files`, a tree diff against the
-> FIRST parent. Any file differing only from the first parent therefore listed but reported no diff —
-> every conflicted file (a conflict *is* the auto-merge result, so the diff is always empty) and also
-> an ordinary file arriving from the other side of a *clean* merge, which reproduced on a
-> non-conflicted fixture. `RustJJProvider.workingFileDiff` now resolves `@`'s first parent
-> (`firstParentID`, one read-only `--ignore-working-copy` log) and diffs `--from <id> --to @`;
-> `--from @- --to @` can't express it, since `@-` on a merge resolves to several revisions and jj
-> errors. Identical to `-r @` for a single-parent `@`, and it falls back to `-r @` if the parent can't
-> be read. Covered by `testMergeWorkingCopyFileDiffsAreNotEmpty` (conflict markers render AND the
-> other-side file renders — both empty before the fix) plus an args unit test. The `.parent` axis has
-> the same latent ambiguity and is left as-is: it's unreachable from the UI.
->
-> Status note (2026-07-25): **Done & removed:** jj per-file conflict status now reaches the UI.
-> `jj_backend.rs` `changed_files` classifies an unresolved `after` value as
-> `ChangeKind::Conflicted` **before** the presence tests (an unresolved merge never satisfies
-> `is_absent()`, which is a *resolved* `Some(None)` — that's why conflicts read as `Modified`). Kept in
-> the shared `changed_files`, so conflicted *commits* report it too (jj stores conflicts in the tree;
-> git can't, so `VCSProviderConformanceTests.testColocatedConflictedCommitDivergesByDesign` now pins
-> that allowed divergence — a colocated git repo sees jj's `.jjconflict-*` sidecar trees, not the
-> conflicted path). Coverage: 4 new cargo tests (per-file kind + a **no-corruption guard** proving the
-> conflict survives the lock-taking snapshot, both-added → `Conflicted`, conflict-then-deleted →
-> `Deleted`, conflicted changeset) and `WorkroomStatusIntegrationTests.testJJConflict` (the jj twin of
-> `testGitConflict`, covering Rust → UniFFI → `WorkroomStatus`). Two harness fixes found on the way:
-> the cargo tests no longer `unsafe set_var("JJ_CONFIG")` from parallel `#[test]`s (passed per
-> `Command` instead), and **no fixture addresses commits by bookmark** — with jj's
-> `experimental-advance-branches` enabled (as in the author's own config), `jj commit` advances a
-> bookmark onto the new commit, which collapsed the two merge sides and silently produced no conflict
-> at all. Also **UI**: `ChangesPanel` rendered `.conflicted` as `"C"` in `diffRemoveFg` — deletion's
-> red — so it's now `"!"` in a new palette-derived `tokens.conflict` orange, with the letter/colour/word
-> mapping extracted to `Core/ChangeBadge.swift` and unit-tested (7 kinds). And **CI now runs
-> `cargo test`** (`.github/workflows/ci.yml`); the entire `wr-vcs-core` suite had never run there.
->
-> Status note (2026-07-24): **Done & removed:** serialize jj working-copy snapshots across the
-> status fan-out (VCS-foundation eng-review) — added `JJSnapshotGate` (a per-project-root
-> chain-of-tails actor, `macapp/WorkroomApp/Core/JJSnapshotGate.swift`), threaded through every call
-> site that reaches a jj-mutating snapshot: `WorkroomStatusResolver.resolveJJ` (covering the status
-> sweep, selection refresh, and file-watch lanes), `DiffResolver`'s `.jjWorkingCopy` diff, and
-> `FileTreeModel.list`'s `jj file list` (found ungated by adversarial review after the initial fix —
-> it has no `--ignore-working-copy` either). Fixed the stale "one probe at a time" comments that
-> only ever described one lane. Also closed a real "self-inflicted deadlock" risk both a Claude
-> adversarial pass and Codex independently flagged: a genuinely-hung (never-returning) native jj-lib
-> call would otherwise permanently wedge a project's whole queue — `JJSnapshotGate.maxChainWait`
-> (30s, injectable) bounds this: a new call gives up waiting on a stuck predecessor after the
-> ceiling and proceeds anyway, so the queue self-heals instead of blocking forever.
->
-> Status note (2026-07-24): **Done & removed:** `add-project --pretend` for the non-create path is
-> now a real dry-run — gated the `Config.AddProject` write behind `!pretend`, mirroring the
-> `--create` dry-run envelope shape (`would_create: false`). Also **done & removed:** pending sheets
-> (`pendingProjectSettings`/`pendingWorkroomLabel`) now clear in `removeProjectLocally()` when they
-> target the deleted project — closes the #127-follow-up stale-config-leak gap.
->
-> Status note (2026-06-24): re-audited against the codebase. **Done & removed:** workroom tab-chip
-> management actions (#23 follow-up — context menu + "+" button shipped in `8eee2b0`), harden-`gh`-auth
-> (#50 follow-up — `#86`/`60af731` added the `--json hosts` + transient-vs-real classification the item
-> asked for), and **live branch-label refresh** (per-project FSEvents watchers on each root's
-> `.git`/`.jj` now update the sidebar label live; `BranchResolver` resolves jj read-only via
-> `--ignore-working-copy`). **Narrowed (partial):** at-a-glance review status (the `reviewDecision`
-> label + PR-state badge shipped; only the sidebar glyph + PR sweep stage remain), and the
-> workroom-split per-pane activity flash. **Dropped (won't do):** persist per-file diff view-mode — the
-> in-memory per-tab toggle is enough; per-file persistence isn't worth the unbounded-map upkeep. Items
-> are ordered roughly by priority: the before-GA work (CMT-2, CMT-3) first, then the P3 niceties.
->
-> Earlier (2026-06-09): the **splits** feature (A5) and the **UI-test fixture seam** shipped, and the
-> **terminal notifications** feature (#10) landed — unblocking auto-emit OSC and notification preferences.
+> Grouped by priority, then by area. Within a group, cheaper/higher-leverage first. Each entry states
+> what it is, why, how to start, what it depends on, and its priority. Completed work is summarised in
+> **Recently done** at the bottom — including the traps found while doing it, which are the parts worth
+> reading before touching the same code. Full write-ups for finished items live in git history.
 
-## Own the GhosttyKit xcframework (macapp) — CMT-2
+## P1 — before GA
+
+### Own the GhosttyKit xcframework (macapp) — CMT-2
 
 **What:** Stop depending on the third-party `libghostty-spm` (Lakr233) package as the source of
 truth. Build our own universal `GhosttyKit.xcframework` (`macos-arm64_x86_64`) + version-matched
@@ -276,7 +67,7 @@ trigger** hits, and treat it as the **next infra task after the beta stabilizes*
 third-party pin), but it's the next infra task once the beta is stable — and the observed packager
 lag (1.2.3 vs ghostty 1.3.1) means leaning sooner beats waiting on the packager.
 
-## Terminal *content* accessibility (macapp) — CMT-3
+### Terminal *content* accessibility (macapp) — CMT-3
 
 **What:** VoiceOver support for the terminal's *rendered text* on `GhosttySurfaceView` — accessible
 value (screen text), selected text, and change notifications — so the terminal content is navigable
@@ -284,10 +75,9 @@ with assistive tech.
 
 **Done so far:** the **UI-tree** a11y has landed (commit `f3859f9`) — `PaneTreeView` exposes each
 leaf as `terminal.pane` with a label ("Terminal <title>, pane N of M"), a focused/selected trait, and
-an adjustable split divider (`pane.grip`). (A caveat added here on 2026-07-25 — that the tab strips'
-glyph buttons report `isHittable == false` to the AX layer — was investigated the same day and closed
-as an XCUITest artefact, so it does **not** qualify the "UI-tree a11y has landed" claim; see the status
-note at the top of this file.) What's still missing is the *content* layer: the
+an adjustable split divider (`pane.grip`). That claim is unqualified: the one caveat raised against it
+(the tab strips' glyph buttons reporting `isHittable == false`) was investigated and closed as an
+XCUITest artefact — see **Recently done**. What's still missing is the *content* layer: the
 libghostty surface is Metal-rendered, so its text is pixels — invisible to the accessibility system.
 Today the surface view sets `role=.textArea` + a label only; it exposes **no value and no selection**,
 so VoiceOver reads nothing inside the terminal. Accepted regression for the beta (CMT-3). This is also
@@ -322,578 +112,33 @@ best done after CMT-2 to use ghostty's `selection_changed` hook.
 
 **Priority:** P2 (accessibility regression — address before GA, not blocking the beta).
 
-## Auto-emit OSC notifications on command completion (macapp)
+## P2 — perf, correctness, and the next VCS phase
 
-**What:** An opt-in shell hook (zsh `precmd`/`preexec`, or OSC 133 prompt markers) that emits
-`printf '\e]9;<cmd> finished\a'` after a command that ran longer than N seconds, so notifications
-fire automatically without the user wrapping commands.
+### VCS write actions — Phase 2 (macapp) — roadmap pointer
 
-**Why:** Notification detection is explicit-only (issue #10 review, decision 1.1b): we notify on
-OSC 9/99/777 + bell, not raw output. That's precise but silent for a bare `make test` that emits
-nothing. A shell hook closes that gap so the common "my build finished" case just works.
+**What:** The next VCS phase: turn the read-only foundation into a full in-app VCS UI. Write methods
+behind `VCSProviding` — commit/amend, push/pull/fetch, branch (git) / bookmark (jj) management — then
+the deep jj ops (undo/op-log, split, absorb, evolog, interdiff). A `CLIVCSProvider` fallback is
+introduced here for ops the libraries don't expose ergonomically (each with tests), NOT as a parallel
+read path.
 
-**How to start:** Source a hook into the login shell launched by
-`TerminalSessions.makeTerminal` (`-l`), or document it for the user to add. Decide OSC 133 vs a
-`precmd` that emits OSC 9. Keep it opt-in (injecting into the user's shell is invasive). Note the
-OSC 133 *command-finished* marker is already parsed app-side
-(`GhosttyRuntimeAdapter` handles `GHOSTTY_ACTION_COMMAND_FINISHED`, used today to clear the
-running-command title) — so this task is about *emitting* OSC 9 on completion, not parsing it.
+**Why:** This is a roadmap phase, not a tactical follow-up — it's tracked in full in the issue #59
+plan (Phase 2 section) + the `vcs-foundation-rust-core` design notes. This entry is only a pointer so
+Phase 2 is discoverable from `TODOS.md`; the authoritative scope + sequencing live in the plan.
 
-**Depends on:** the notifications feature (#10) — **now landed**; the OSC 9 desktop-notification
-handler exists to receive it (`GhosttyRuntimeAdapter` `GHOSTTY_ACTION_DESKTOP_NOTIFICATION` →
-`AppStore.handleActivity`).
+**How to start:** Read the plan's "Phase 2 — VCS write actions" section and issue #59. The read
+foundation (this file's other VCS entries) is the prerequisite; land the deferred read follow-ups
+first where they'd otherwise bite the write UI. All three that gated this — jj **rename detection**,
+**conflict status**, and the **error taxonomy** — have now shipped, so nothing in the read layer blocks
+Phase 2. What's left of the taxonomy is one-sided (git still flattens to `.io`) and the stale-working-copy
+**repair** is itself a write, so it belongs to this phase, not before it.
 
-**Priority:** P3 (amplifies the shipped feature; the feature is useful without it for tools that
-already emit OSC/bell).
+**Depends on:** the VCS read foundation (shipped, Phase 1). Spans `vcs/` (Rust), `WrVcs` UniFFI,
+`Core/VCSProviding.swift` + both providers, and new write-flow UI.
 
-## Notification preferences (macapp)
+**Priority:** P2 (the product direction; large, sequenced after the read follow-ups — see the plan for the real breakdown).
 
-**What:** Per-workroom (or per-terminal) mute, a notification-sound toggle, and respecting macOS
-Focus / Do-Not-Disturb.
-
-**Why:** Now that notifications exist, a noisy cooperating tool (a watcher firing OSC on every
-rebuild) will need silencing without losing notifications from other terminals. Focus/DND respect is
-largely automatic via `UNUserNotificationCenter` (the system honors Focus at delivery time);
-per-workroom mute is app logic.
-
-**How to start:** A mute set keyed on `TerminalTarget.ID`, checked in
-`NotificationCenterStore.record(...)` before creating an item / posting. Persist with a
-`Defaults.Keys` entry in `Core/DefaultsKeys.swift` (the app uses `sindresorhus/Defaults` now —
-consistent with `theme` / `copyOnSelect`, not `@AppStorage`). A sound toggle gates `content.sound`
-in `SystemNotifier.post()` (today hardcoded to `.default`).
-
-**Depends on:** the notifications feature (#10) — **now landed**
-(`macapp/WorkroomApp/Core/NotificationCenterStore.swift`, `Core/SystemNotifier.swift`).
-
-**Priority:** P3 (the feature is usable without it; add when a real terminal proves too chatty).
-
-## Memory / live-surface diagnostics (macapp)
-
-**What:** Lightweight instrumentation of live `ghostty_surface_t` count and process memory, to
-catch leaks/growth at high tab counts.
-
-**Why:** Each surface is a GPU-backed Metal layer; the plan flags the 50–100-tab surface budget as
-"measure, don't assume." Occlusion is wired (A4) so off-screen surfaces idle, but magnitude at
-Workroom's tab counts is unverified. Muxy ships a 458-line `MemoryDiagnostics` for this reason.
-
-**How to start:** A periodic sampler logging `tabsByTarget` leaf count + `mach_task_basic_info`
-resident size via `os.Logger`; optionally a debug overlay. Keep it far lighter than Muxy's — a
-counter + a memory read, not crash-crumb recovery (D1). (None of this exists yet — no
-`mach_task_basic_info` read, no surface-count logging.)
-
-**Depends on:** `TerminalSessions` (surface inventory), `GhosttyApp` (`os.Logger` already set up).
-
-**Priority:** P3 (diagnostic aid; pair with the manual surface-budget QA pass).
-
-## OSC 52 clipboard-confirmation policy (macapp)
-
-**What:** A real policy/UI for terminal-app clipboard access (OSC 52) — the runtime's
-`read_clipboard_cb` / `write_clipboard_cb`. Today writes are gated to `text/*` mime and reads use
-Ghostty's permissive default (auto-allow); `confirmReadClipboard` is a stub, so a deliberate
-prompt/allowlist is deferred.
-
-**Why:** Code-review finding #7. OSC 52 lets a remote program read/write the system pasteboard;
-the permissive default is fine for a beta (it matches Ghostty's own default) but a security-minded
-user should be able to require confirmation.
-
-**How to start:** Implement `confirm_read_clipboard_cb` to surface a prompt (or consult a
-`Defaults.Keys` policy: allow / prompt / deny); gate `write_clipboard_cb` similarly. Decide the
-default (Ghostty = allow).
-
-**Depends on:** the clipboard callbacks already wired
-(`macapp/WorkroomApp/Core/GhosttyRuntimeAdapter.swift`, `Core/GhosttyApp.swift`).
-
-**Priority:** P3 (permissive default is acceptable for the beta).
-
-## Deferred UI workflow tests (macapp)
-
-**What:** The two workflow UI tests left to write on top of the now-landed fixture seam:
-1. **Notification badge + click-to-navigate** — drive a terminal to `printf '\e]9;…\a'`, assert the
-   sidebar/tab badge appears, click it, assert it navigates to (and clears on) the right terminal.
-2. **Delete-workroom-clears-badges** — assert deleting a workroom withdraws its notifications/badges.
-
-**Why:** The fixture seam itself is done (`Core/UITestFixture.swift` + `-WorkroomUITestFixture 1`
-gives deterministic, CI-able state — see `AppStore.loadFixture()`), and the split-pane + basic
-workflow suites pass deterministically (no `XCTSkip`). These two notification/delete flows are the
-remaining gap, called out explicitly in `WorkroomWorkflowUITests.swift` ("Still to add: …").
-
-**How to start:** Add the tests to `macapp/WorkroomAppUITests/WorkroomWorkflowUITests.swift` using
-the existing fixture launch arg and the `sidebar.*` / `terminal.tab.*` accessibility identifiers. The
-badge assertions need the notification a11y identifiers to be queryable — add them if missing.
-
-**Also: stabilise a known flake (observed 2026-07-25, during #129).**
-`TabActionsUITests.testContextMenuSplitRightCreatesTwoPanes` failed once at
-`WorkroomAppUITests/TabActionsUITests.swift:62` ("diff tab should open") when run in a batch with two
-other classes, then passed in isolation and passed again on a batch re-run — so it's timing, not a
-regression. The suspect is visible in the helper: `openDiffPreview` waits **10s** for the Changes row to
-exist, then `row.click()`s it and waits only **6s** for the diff tab. Two thin spots in that sequence —
-existence is not the same as being hit-testable, so the click can land before the row accepts it and be
-swallowed silently; and 6s is the tightest budget in a helper that otherwise allows 10s, which is the
-first thing to give under batch load. Fix by waiting for the row to be interactive before clicking (or
-retrying the click once) and raising the diff-tab wait to match the 10s used elsewhere. Worth doing
-because a flaky UI test erodes trust in the whole suite, and this one gates several toolbar tests.
-
-**Depends on:** the fixture seam + accessibility identifiers already in place
-(`macapp/WorkroomApp/Core/UITestFixture.swift`, `Views/ProjectSidebar.swift`,
-`Views/TerminalTabStrip.swift`).
-
-**Priority:** P3 (the smoke + opportunistic suites cover the basics; these harden the notification
-flows).
-
-## Run-terminal persistence / auto-restart across relaunch (macapp) — #7 follow-up
-
-**What:** Restore (or auto-restart) a workroom's run command when the app relaunches, rather than
-losing it. Optionally remember which workroom had a running run command and offer/auto-run it on next
-launch.
-
-**Why:** The run-command feature (#7) keeps run terminals in-memory (consistent with all terminals —
-`TerminalSessions` is session-only), and auto-run fires only at workroom *creation*. So quitting the
-app with a dev server running loses it, and there's no auto-restart on launch. For a long-lived
-"always have my dev server up" workflow that's a gap.
-
-**How to start:** Persist a small per-target marker (e.g. `Defaults` set of target ids that had a
-running run command), and on launch — after the project list loads and a workroom is selected — offer
-or auto-start its run command. Decide the policy (auto vs prompt) and how it interacts with the
-existing creation-time auto-run. Reuse `AppStore.startRunCommand(for:)` and the run-state model
-(`runTabIDByTarget` / `runningTargets`).
-
-**Depends on:** the #7 run-command feature shipping first (`macapp/WorkroomApp/Core/AppStore.swift`
-run-command actions, `Core/TerminalSessions.swift` `addRunTab`).
-
-**Priority:** P3 (deferred from #7 — the feature is useful without it; surfaced by the eng-review).
-
-## Stopped run-tab silently closes instead of warning when its command is cleared (macapp) — #127 follow-up
-
-**What:** `runOrFocusRunCommand()`'s `.stopped` case routes through `restartRunCommand` →
-`respawnRunCommand`, which checks `hasRunCommand` and — if false — just closes the stopped-but-open
-run tab and returns. No settings sheet, no warning, nothing.
-
-**Why:** #127 gave the `.armed/.none` case (nothing has ever run) a "no command configured" warning
-sheet instead of a silent no-op. `.stopped` never got the same treatment, so the gap is now
-inconsistent: repro is run command configured → it stops (pane stays open) → user clears the command
-via Project Settings → next ⌘R on that target silently destroys the stopped pane instead of
-explaining why nothing (re)started. Found by the outside-voice adversarial review during #127 (Codex);
-this branch predates #127 and wasn't touched by it, so it's a pre-existing gap in the original #7
-feature, not a regression — but #127 makes the inconsistency more visible.
-
-**How to start:** Mirror the `.armed/.none` branch's `hasRunCommand` check + `pendingProjectSettings`
-routing inside `respawnRunCommand` (`AppStore.swift`, guard at line ~1465) before it unconditionally
-closes the tab. Needs care around issue #67's focus-preservation semantics (`wasFocused`) — that
-logic wasn't reviewed against this change.
-
-**Depends on:** #127 shipping first (`AppStore.swift`'s `PendingProjectSettings` +
-`pendingProjectSettings`).
-
-**Priority:** P3 (pre-existing, narrow repro — needs a run to have started and stopped, then the
-command cleared before the next ⌘R; surfaced by the #127 eng/outside-voice review, not reported by a
-user).
-
-## Workroom split: deferred follow-ups (macapp) — #23
-
-**Shipped:** drag a workroom tab onto a pane edge → a nested, resizable side-by-side split of full
-terminal UIs, same feel as the ⌘D terminal panes (`Views/WorkroomSplitView.swift`,
-`Core/AppStore+WorkroomSplit.swift`, generic `PaneLayout<Leaf>` / `PaneTreeLayout`). The bar always
-shows; `RootView` always routes the detail through `WorkroomSplitView` (single = `.leaf(selected)`).
-The pieces below were explicitly deferred — each small, none blocking.
-
-- **⌥⌘-arrow focus between workroom panes** — `PaneTreeLayout.adjacentPane` is already generic and
-  ready; only the key-monitor wiring is missing. Deferred to avoid clashing with the terminal-level
-  ⌥⌘arrows (which navigate the focused workroom's *terminal* split) — needs a precedence decision.
-- **Drag-a-pane-out-to-dissolve** — removal today is the per-pane ✕ (strip trailing) + clicking a
-  non-member tab; the terminal split's "drag the grip up out of the panes" gesture isn't wired for
-  workroom panes.
-- **Cross-relaunch persistence of the split** — `workroomSplit` is session-only (the terminal split
-  isn't persisted either). Add a `Defaults` key + restore-on-load if wanted.
-- **Per-pane activity border-flash** (partial) — the *terminals hosted inside* a workroom pane flash
-  via `PaneLeafView`'s `activityPulses` handler, but the workroom **pane itself** doesn't flash the way
-  a terminal split pane does; workroom-level activity surfaces via `WorkroomTabChip` tinting instead. A
-  presentation difference, not a missing signal.
-- **Queued first-responder stale-state recheck** (`Views/TerminalContainerView.swift:78`) — `applyFocus`
-  enqueues `makeFirstResponder(view)` on `DispatchQueue.main.async` and re-checks only
-  `firstResponder !== view`, not a *fresh* focus condition, so a stale enqueue could in theory flip
-  focus cross-target. Largely defused already by the `surfaceActive` gate (a non-focused workroom pane
-  passes `isFocusedPane=false` → never enqueues); this is the residual race within terminal-pane splits.
-  Fix would re-read live focus state inside the async block rather than relying on the captured value.
-
-**Priority:** P3 (polish on a shipped feature).
-
-## Theming: auto-pair user `~/.config` themes into families (macapp) — #36 follow-up
-
-**What:** Let loose theme files a user drops into `~/.config/ghostty/themes` surface as first-class
-theme *families* (a light + dark pair) in the picker.
-
-**Why:** #36 ships a curated set of pair-complete bundled families only — the picker lists those.
-A user with their own theme files in `~/.config/ghostty/themes` currently has no way to pick them
-from the picker (ghostty still resolves them for the *terminal* when a bundled name collides, since
-`themePreview`/resolution favour `~/.config`, but they aren't selectable). Inferring families from
-user files would make them first-class.
-
-**How to start:** In `Core/ThemeService.swift`, add discovery of `~/.config/ghostty/themes` and
-infer families from loose user files — e.g. name-suffix heuristics (`X` / `X Light`, `X Dark` /
-`X Light`), or read an optional user manifest. Merge inferred families into the picker's family
-list. Handle the ambiguous cases: a single-variant user theme (no obvious partner); a name that
-collides with a bundled family.
-
-**Depends on:** the #36 families model shipping first (done).
-
-**Priority:** P3 (bundled families cover the common case; this is for users with custom schemes).
-
-## Per-reviewer comment counts in the PR panel (macapp) — #52 follow-up
-
-**What:** Show a per-reviewer comment count next to each reviewer row in the Pull Request panel,
-e.g. `iainad approved · 3 comments` — the `[N comments]` part of the issue #52 mockup.
-
-**Current state:** #52 shipped the per-reviewer rows (state + bot-aware "in progress" label) by
-riding the existing `gh pr list --head … --json …` probe, which carries `latestReviews` /
-`reviewRequests` but **no review-comment counts**. The rows show state only.
-
-**Why:** richer signal at a glance — how much feedback a reviewer left, not just their verdict.
-
-**How to start:** counts aren't in `latestReviews`, so this needs a second call —
-`gh api repos/{owner}/{repo}/pulls/{number}/comments` (review/diff comments) grouped by
-`user.login` — added to `resolvePR` (`Core/WorkroomStatusResolver.swift`) and surfaced on
-`Reviewer` (e.g. an optional `commentCount`). Weigh the extra network round-trip on the already-slow,
-TTL-throttled PR probe; consider fetching counts lazily/only for the selected PR. Map counts onto
-the existing identity-keyed fold; teams won't have counts.
-
-**Depends on:** the #52 reviewer rows (shipped).
-
-**Priority:** P3 (nice-to-have; deliberately deferred from #52 to keep that change to free data).
-
-## At-a-glance review status in the sidebar / collapsed PR header (macapp) — #52 follow-up
-
-**What:** Surface a compact review-status glyph (the aggregate `reviewDecision` — approved /
-changes-requested / review-required) on the sidebar workroom row or the collapsed "Pull Request"
-section header, next to the existing CI glyph — so review state is visible without expanding the
-panel. Directly serves issue #52's framing ("so we can go visit the PR when needed").
-
-**Current state (2026-06-24):** still expanded-panel only. `#77` added a PR-state badge to the PR
-header (`ChangesPanel.swift` `prNumberLink`) and the `reviewDecision` aggregate label sits above the
-reviewer rows in the inspector (`PullRequestPanel.swift` `PRPresentation.reviewLabel`) — but the
-sidebar workroom row still shows dirty/CI only (`ProjectSidebar.swift` → `VCSStatusCluster`), and the
-background sweep still skips PR resolution. The aggregate is the natural feed for a glyph.
-
-**Why:** a glance from the sidebar beats expanding the panel per workroom; matches how CI status
-already reads at a glance.
-
-**How to start:** the blocker is data freshness — the PR (and thus `reviewDecision`) is resolved
-**only on selection** (`scheduleSelectedStatusRefresh`), not in the bounded background sweep
-(`refreshWorkroomStatuses` / `runCISweep` in `Core/AppStore+WorkroomStatus.swift`). A sidebar glyph
-needs PR resolution added to the sweep (a third probe stage, bounded like CI, with its own TTL), then
-a `VCSStatusPresentation`-style mapper for the review glyph reused by the sidebar row + collapsed
-header (`ChangesPanel.prIndicator`).
-
-**Depends on:** the #52 `reviewDecision` aggregate (shipped). Bigger than a UI tweak — it adds a PR
-sweep stage.
-
-**Priority:** P3 (strong UX win, but the background-sweep work makes it its own chunk, not part of #52).
-
-## Keyboard + VoiceOver parity for the edge-hover reveal (macapp) — #56 follow-up
-
-**What:** Make the edge-hover sidebar reveal (issue #56) first-class for keyboard / VoiceOver users:
-move keyboard focus into the panel when it reveals, restore focus when it hides, and post a
-VoiceOver announcement on reveal/hide.
-
-**Current state:** The reveal ships pointer-first (`Views/EdgeRevealSidebar.swift`). Escape-to-dismiss
-is wired (`.onExitCommand`) and the panels carry `sidebar.reveal.{leading,trailing}` accessibility
-identifiers, but there's no focus management or VO announce. Persistent keyboard/AX access already
-exists via the View-menu toggles (`View ▸ Projects`, `View ▸ Notifications`) and the toolbar
-sidebar/inspector buttons, so the docked sidebars remain fully reachable without a pointer — this is
-polish, not an accessibility blocker.
-
-**Why:** a hover-only affordance is invisible to keyboard-only and VoiceOver users; focus + announce
-make the transient panel behave like a real sidebar for them too.
-
-**How to start:** drive first-responder when `EdgeRevealReducer.revealed` flips (focus the panel's
-list, restore the prior responder on hide); post `NSAccessibility.post(element:notification:)` on
-reveal/hide. Focus management in a transient overlay is finicky (focus stealing, restore-on-hide
-races) — prototype carefully and test with VoiceOver on.
-
-**Depends on:** the #56 reveal panel (shipped).
-
-**Priority:** P3 (polish; persistent keyboard/AX access already exists via the menu/toolbar toggles).
-
-## Profile inspector pane body during live divider-drag (macapp) — NSSplitView inspector follow-up
-
-**What:** Verify there's no stutter when dragging an inspector section divider with a large Changes
-set. The NSSplitView inspector (shipped) hosts each section body inside a native `NSScrollView`, so
-a vertical divider drag changes only the pane's *viewport height* — the body's `NSHostingView` keeps
-its intrinsic (content) height and its width is unchanged, so SwiftUI should NOT re-lay-out per
-frame. This TODO is to confirm that under profiling, not a known regression.
-
-**Why:** `ChangesPanel` can render up to ~200 file rows **per list** — and for jj repos it now shows
-**two** lists (Working Copy `@` + Parent Commit `@-`), so the worst case is ~400 non-lazy rows in the
-pane (softened in practice: Parent Commit is collapsed by default, rendering 0 of its rows until
-expanded). The original eng-review of the migration plan flagged per-frame re-layout as a risk; the
-scroll-view pane design should avoid it (drag = viewport change, not document re-layout), but it
-hasn't been profiled — and the two-list change raises the ceiling.
-
-**How to start:** Instruments (Time Profiler / SwiftUI body re-evaluation) while dragging the
-Changes divider on a jj fixture with both groups expanded (~400 rows). Only if jank shows: coalesce
-resize → re-layout, or `.drawingGroup()` the body for the drag duration. Note `LazyVStack` won't help
-here — the pane scrolls via AppKit `NSScrollView` with an intrinsic-size host, so there's no SwiftUI
-clip rect to virtualize against.
-
-**Priority:** P3 (likely already a non-issue by construction; confirm before optimizing).
-
-## Own the main-window column layout so the inspector can be dragged wide (macapp)
-
-**What:** Let the right inspector resize wider than its current 520 cap without crushing the left
-sidebar, by taking the three-column layout (sidebar | detail | inspector) off SwiftUI's
-`NavigationSplitView` + `.inspector` and onto a layout we control.
-
-**Why:** `NavigationSplitView` manages its `sidebar | detail` columns through a *private*
-`NSSplitView` subclass, and `.inspector` rides the same machinery. When the inspector grows SwiftUI
-shrinks that inner split **proportionally**, so the sidebar loses width and its labels clip — even
-when there's plenty of room (reproduced at a 1900px window). It can't be overridden: `setDelegate:`
-and `setHoldingPriority:forSubviewAtIndex:` both *assert/crash* on the private subclass, and
-frame-managed panes ignore Auto Layout width constraints. So 520 is only a safe ceiling, not a fix —
-the inspector divider can't go wider without squeezing the sidebar.
-
-**How to start:** Two shapes —
-- **3a (most control, recommended):** replace `NavigationSplitView` + `.inspector` with one
-  `NSSplitView` we own via `NSViewControllerRepresentable`, hosting three `NSHostingController`s.
-  Our own split view accepts per-pane `minimumThickness` + holding priority, so the sidebar holds
-  its floor, the detail yields, and the inspector resizes to any width.
-- **3b (simpler, less native):** drop `NavigationSplitView` and lay the columns out in pure SwiftUI
-  (`HStack` + explicit `@State` widths + drag-gesture dividers), enforcing min/max ourselves.
-
-**Cost / risk:** medium-large, touches the app's primary window layout. `NavigationSplitView` gives
-a lot for free that must be rebuilt: the unified toolbar spanning columns (back/forward over the
-sidebar, bell over the inspector), native sidebar material + column show/hide animations, the system
-sidebar toggle wired to `columnVisibility` (and the `View ▸ Projects` checkmark), `.detailOnly`/
-`.all` visibility, and keyboard column nav. The edge-hover reveal (`EdgeRevealSidebar`, issue #56) is
-built around `NavigationSplitView` collapse and would need rework. Put the toolbar / reveal /
-visibility-menu regressions explicitly on the test list.
-
-**Depends on:** nothing; supersedes the 520 inspector-width cap + the 240–360 sidebar bound, which
-are the interim safe state.
-
-**Priority:** P3 (only worth it if a wide inspector is a real workflow need; the current cap is a
-zero-risk shipped state).
-
-## Per-workroom collapse persistence for the jj Changes groups (macapp) — Working/Parent-commit follow-up
-
-**What:** Scope the Working Copy / Parent Commit disclosure-group collapse state per workroom, instead
-of the two global flags shipped today.
-
-**Why:** The two groups persist their collapse state in global `Defaults`
-(`changes.workingCopyCollapsed` / `changes.parentCommitCollapsed`, in `Core/DefaultsKeys.swift`), so
-expanding/collapsing in one repo carries to every other repo. The inspector's three *sections* are
-already per-workroom (`inspectorPaneStates`), so the inner groups are the odd one out. Surfaced by the
-eng-review outside voice (codex).
-
-**How to start:** Either add the two flags to the per-workroom `InspectorPaneState`
-(`Core/DefaultsKeys.swift`) keyed by `targetIDString`, or a parallel `[String: …]` map like
-`collapsedProjects`. They're global `@Published` flags on `AppStore` today
-(`changesWorkingCopyCollapsed` / `changesParentCommitCollapsed`, Defaults-backed via `didSet`);
-switch to a per-target lookup keyed by `store.selectedTargetID`.
-
-**Depends on:** the shipped two-group panel (`Views/ChangesPanel.swift`).
-
-**Priority:** P3 (global is acceptable for v1; revisit if the cross-repo carryover annoys).
-
-## Structured diff model (`FileDiff` hunks) for the diff viewer (macapp) — 47b / VCS-foundation follow-up
-
-**What:** Give `VCSProviding` a structured per-file diff (a `FileDiff` of hunks/lines) instead of the
-current git-format unified-diff **text**, and rewrite `DiffViewer` to consume it — unlocking
-ignore-whitespace, word/intra-line diff, per-hunk/line staging, and diff-edit (the jayjay feature set).
-
-**Why:** The diff viewer today parses git-format text (`UnifiedDiff.parse`) fed by `GitProvider`
-(SwiftGitX `Patch` → text) and `RustJJProvider` (`jj diff --git` CLI text). That's the deliberate
-Option-1 first cut — it works and keeps one renderer — but text is a lossy intermediate for the
-features above. Both backends already expose structured diffs natively (libgit2 hunk callbacks;
-jj-lib diff regions / a `computeNativeDiff` over old+new content, as jayjay does), so a structured
-model would be lib-native end-to-end. Deferred because no shipped feature needs it yet, and the
-rewrite touches the whole diff UI (regression surface).
-
-> Note: the earlier "evaluate libgit2 for git diffs" framing is obsolete — git already reads through
-> SwiftGitX/libgit2 (status, changeset, working + commit diff, `fileContent`). The open question is no
-> longer *which* git library, but *text vs structured hunks* at the `VCSProviding` seam.
-
-**How to start:** Add a structured `FileDiff`/`Hunk`/`Line` model + a `VCSProviding.structuredDiff`
-(or evolve `fileDiff`/`workingFileDiff` to return it); git via `git_diff`/`git_patch` hunk callbacks,
-jj via jj-lib regions or `compute(old,new)` fed by `fileContent`. Reuse the existing `DiffCache` +
-`maxDiffBytes` gate. Rewrite `DiffViewer` (and `IntraLineDiff`/side-by-side pairing) to consume hunks.
-
-**Depends on:** the shipped Option-1 diff pipeline (`VCSProviding.fileDiff`/`workingFileDiff` +
-`DiffResolver` + `DiffViewer`). Touches `Core/VCSProviding.swift`, `GitProvider`, `RustJJProvider`,
-`jj_backend.rs` (+ UniFFI), `Core/DiffResolver.swift`, `Views/DiffViewer.swift`.
-
-**Priority:** P3 (build when a feature — ignore-whitespace / word-diff / staging / diff-edit — needs it).
-
-## AppKit tracking-handle divider for an even wider resize target (macapp) — #83 follow-up
-
-**What:** Replace the SwiftUI invisible-`Rectangle` resize divider (`SplitDivider` in
-`Views/PaneTreeView.swift`, `WorkroomSplitDivider` in `Views/WorkroomSplitView.swift`) with a
-dedicated AppKit tracking/drag handle (pattern: the existing `InspectorResizeHandle`) so the grab
-target can extend *over* the terminal surface without stealing its mouse input.
-
-**Why:** Issue #83 widened the hit zone to `PaneTreeLayout.dividerHitThickness` (8pt = the 4pt gutter
-plus the 2pt pane padding on each side). That's the safe ceiling for the overlay approach — any wider
-would overhang the live libghostty surface and intercept text selection, OSC8 link clicks, the
-right-click menu, and TUI mouse reporting near the gutter. A real AppKit handle owns its own tracking
-area, so it can be larger and still not fight the terminal NSView.
-
-**How to start:** Model it on `InspectorResizeHandle`; mount one per `PaneDividerFrame`, positioned on
-`d.rect`, calling the same `onRatio`/`setRatio` path the current divider uses. Keep the visual gutter
-invisible (the panes' own borders mark the boundary).
-
-**Depends on:** shipping #83 first, then real-use feedback that 8pt still feels fiddly. Surfaced by the
-Codex outside-voice pass during `/plan-eng-review`.
-
-**Priority:** P3 (8pt already doubles the old 4pt target; only revisit if users still find it tight).
-
-## Harden `vcs.Detect` to validate a real repo (CLI) — #103 follow-up
-
-**What:** `vcs.Detect` (`internal/vcs/vcs.go`) currently treats a directory as a repo if `.jj` is a
-dir OR `.git` merely *exists* (file or dir). A bogus/empty `.git` therefore registers as a project
-via `add-project` and only fails later, at workroom creation.
-
-**Why:** Surfaced by the Codex outside-voice pass during `/plan-eng-review` of issue #103 (the
-create-project work). It's a pre-existing robustness gap — the existing-path `add-project` already
-has it; #103's create flow inits a real repo so its happy path is unaffected — but a stricter check
-would fail fast with a clear error instead of a confusing late failure. Re-confirmed by the Codex
-pass during the jj→git stale-vcs fix: the new reconcile-on-list (`Service.effectiveVCS`) also uses
-marker-file truth, so a *present-but-broken* `.jj` dir would still reconcile as jj — hardening
-`Detect` fixes both the late-failure gap and the reconcile accuracy in one place.
-
-**How to start:** In `Detect`, validate beyond existence — e.g. `git rev-parse --git-dir` (or read
-`.git`/`HEAD`) for git, and confirm `.jj/repo` for jj. Weigh that `Detect` runs on every
-create/list/delete (now also list-reconcile), so keep it cheap (a stat-level check may suffice over
-forking git).
-
-**Depends on:** nothing; touches all VCS consumers (`create`, `list`, `delete`, `add-project`).
-
-**Priority:** P3 (pre-existing; create-new path inits a valid repo, so not blocking #103).
-
-## Consolidate terminal focus authority + cross-window reconciliation (macapp) — focus-desync follow-up
-
-**What:** (1) Collapse the ~5 duplicated "make first responder + `setSurfaceFocused`" call sites in
-`GhosttySurfaceView`/`TerminalContainerView` into one guarded helper; (2) add window key-gain focus
-reconciliation so the focused pane's surface reclaims first responder when the app window
-reactivates (Cmd-Tab / Mission Control) and first responder had drifted to a non-terminal view.
-
-**Current state:** The reported bug — arrows/letters dead when a TUI selection prompt appears in a
-freshly-mounted/unfocused-looking pane — is **fixed**: `createSurface` now re-syncs the libghostty
-focus flag when the surface is created while the view already holds first responder
-(`GhosttySurfaceView.adoptFocusIfFirstResponder`, tested by `TerminalFocusAdoptionTests` +
-`TerminalFocusAdoptionLiveSurfaceTests`). Focus-set logic still lives in several places
-(`becomeFirstResponder`, `mouseDown`, search hand-back `:171`, `viewDidMoveToWindow`, `applyFocus`),
-and `WindowRegistry`'s `didBecomeKeyNotification` observer still only updates `lastActiveStore`, not
-terminal focus.
-
-**Why:** The duplication has produced repeated focus-race fixes (#3 splits, the diff-pane fix, the
-`viewDidMoveToWindow` backstop, and now this one) — each patch adds another copy and the next race
-slips through the gap. One guarded helper removes that class. Cross-window reconciliation is the one
-drift trigger the createSurface fix does not cover (surface already exists; first responder moved
-away). Surfaced by `/plan-eng-review` (DRY finding) and the Codex outside-voice pass, deliberately
-deferred to avoid refactoring focus timing before the root cause was confirmed.
-
-**How to start:** Extract `focusTerminal(surface:)` with a single guard set; route the existing call
-sites through it. For reconciliation, extend the `WindowRegistry` `didBecomeKeyNotification` handler
-(`Core/WindowRegistry.swift:50`) to restore first responder to the focused pane **only** when no
-sheet is open AND the current first responder is nil/the window/a removed responder (NOT a live text
-field or sidebar table — codex's caveat: "no sheet" alone is insufficient). Unit-test the guard as a
-pure decision.
-
-**Depends on:** the shipped createSurface focus-sync; also relates to the queued first-responder
-stale-state recheck noted under "Workroom split: deferred follow-ups" (`TerminalContainerView`
-`applyFocus`) — fold both into the one helper.
-
-**Priority:** P3 (primary bug fixed; this is the DRY/robustness follow-up that prevents the next
-focus race).
-
-## Stream the inline terminal agent's diagnosis into the banner — #49 follow-up
-
-**What:** Show the diagnosis appearing live in the banner (claude `--output-format stream-json`)
-instead of a spinner during the (blocking) call.
-
-**Why:** Nicer perceived latency. Deferred deliberately, not dropped: (1) the diagnosis output is a
-structured JSON object (`{summary, fix, detail}`) — that's what makes the "Insert fix" button
-reliable (the on-demand eval validates it) — and streaming emits partial JSON deltas that don't
-render nicely; (2) the inline diagnosis now runs on Haiku 4.5 (~2-3s), so the spinner is brief and
-the payoff is marginal.
-
-**How to start:** The clean approach that preserves the structured fix is to change the model's
-output to "one-line prose summary, then a delimiter, then the JSON fix", stream the prose live while
-parsing the JSON tail on completion. Needs: an incremental-stdout streaming runner (the current
-`StatusCommandRunner` buffers to completion), a stream-json NDJSON delta parser, the split prompt +
-parser, banner partial-text state, and its own entry in `AgentDiagnosisEvalTests`.
-
-**Depends on:** the inline agent (#49, merged). Touches `AgentRunner`, `AgentPrompt`,
-`TerminalAgentManager`, `TerminalAgentBanner`.
-
-**Priority:** P3 (polish; marginal over a 2-3s spinner, and must not regress the structured fix).
-
-## Search section for the right activity bar (macapp) — activity-bar follow-up
-
-**What:** A functional Search pane (find in files / content) as a new right-activity-bar section.
-
-**Why:** The activity bar (`ActivitySection` + per-section `subSections`) is built to grow; Search
-was the first candidate but has no functionality yet, so it was dropped from the initial bar (v1
-shipped Changes + Files) to avoid a visibly-empty icon reading as unfinished.
-
-**How to start:** Add a `.search` case to `Core/ActivitySection.swift` (label +
-`systemImage: "magnifyingglass"` + its `subSections`) and a real Search pane body, wired into
-`RightInspector.sectionBody(for:)`. A new `InspectorSectionKind` may be needed for the sub-section
-identity. The DEBUG-only feature-flag staging pattern (considered and rejected for v1) is one option
-to ship the scaffold before the search is real.
-
-**Depends on:** the right activity bar (shipped). Touches `Core/ActivitySection.swift`,
-`Views/ChangesPanel.swift` (`RightInspector`), a new `Views/SearchPanel.swift`.
-
-**Priority:** P3 (new feature; not blocking).
-
-<!-- The following were surfaced by /plan-eng-review of the unpushed VCS-foundation stack
-     (2026-07-13), cross-model with a Codex outside-voice pass. The bug cluster (jj CLI pipe
-     deadlock, snapshot file-size cap, base_ignores) was fixed in that review (b7dd9b7d); the
-     items below were explicitly deferred. -->
-
-## git commit diffs have no rename detection (macapp) — jj-rename follow-up
-
-**What:** `GitProvider.changeset` reads `repo.diff(commit:)` (SwiftGitX → `git_diff_tree_to_tree`)
-and never calls `git_diff_find_similar`, so a **committed** rename reports as delete-old + add-new.
-`workingStatus` is fine — it passes `.renamesIndex`/`.renamesWorkingTree` — so the same rename pairs
-in the Changes panel and splits in History.
-
-**Why:** git's own CLI defaults to `diff.renames=true`, so `git show` on that commit DOES show one
-rename row; our History disagrees with git itself. It's now also the ONE remaining cross-backend
-rename divergence: jj reports the commit as one `.renamed` row (shipped), pinned by
-`VCSProviderConformanceTests.testColocatedCommitRenameDivergesUntilGitDetectsIt` — which should be
-rewritten into a parity assertion when this lands, NOT "fixed" by making jj match git.
-
-**How to start:** SwiftGitX exposes no find-similar API and only vends its `SwiftGitX` product, so
-this needs either an upstream addition or depending on its `libgit2` package product directly (mind
-the modulemap collision noted in `macapp/CLAUDE.md` → VCS core). Then apply
-`git_diff_find_similar` to the changeset diff before mapping deltas, and set `oldPath` for the
-renamed delta (`mapDelta` already handles `.renamed`/`.copied`).
-
-**Depends on:** nothing in-app. Touches `Core/GitProvider.swift` (+ possibly `project.yml`).
-
-**Priority:** P3 (History file list wrong on committed renames; the diff content itself is correct,
-and the Changes panel already pairs them).
-
-## Three independent change-badge palettes (macapp) — jj conflict-status follow-up
-
-**What:** the same change-kind badge is coloured by three separate mappings: `ChangeBadge`
-(`Core/ChangeBadge.swift`, theme tokens — extracted from `ChangesPanel` when the conflict badge was
-fixed), `ChangesetDetailView.badgeColor` (hardcoded `.green`/`.yellow`/`.red`/`.orange`), and
-`DiffViewer.changeColor` (same hardcoded set).
-
-**Why:** this split is *why* the conflict badge diverged in the first place — the panel had no orange
-to reach for, so `.conflicted` borrowed deletion's red and a conflict read as a removal. Two of the
-three mappings also ignore the active theme entirely.
-
-**How to start:** have `ChangesetDetailView` and `DiffViewer` adopt `ChangeBadge.letter`/`.color` (and
-the `tokens.conflict` colour) instead of their own switches. Note this restyles *every* kind in both
-views, so it wants a deliberate visual pass rather than a drive-by change.
-
-**Depends on:** `ChangeBadge` (shipped). Touches `ChangesetDetailView.swift`, `DiffViewer.swift`.
-
-**Priority:** P3 (consistency + theme correctness; no functional bug).
-
-## `withTimeout` doesn't observe the CALLER's own cancellation (macapp) — VCS-foundation eng-review, /review follow-up
+### `withTimeout` doesn't observe the CALLER's own cancellation (macapp) — VCS-foundation eng-review, /review follow-up
 
 **Status:** the original version of this entry (a `withThrowingTaskGroup` awaiting a detached
 operation child past its own deadline) is **fixed** — `Core/Timeout.swift` now races via a single
@@ -929,7 +174,7 @@ careful review/testing, not a drive-by fix.
 
 **Priority:** P2 (efficiency/responsiveness, not correctness; no user-visible bug today).
 
-## Git working line-counts recompute the whole-worktree diff per refresh (macapp) — VCS-foundation eng-review
+### Git working line-counts recompute the whole-worktree diff per refresh (macapp) — VCS-foundation eng-review
 
 **What:** `GitProvider.workingLineStats` (`GitProvider.swift:~317`) runs `repo.diff(to: [.workingTree,
 .index])` — the ENTIRE worktree diff — on every status refresh (focus/appear/manual), just to sum
@@ -943,25 +188,86 @@ patch), or make the badge counts lazy / cache them per (HEAD, worktree-generatio
 
 **Priority:** P2 (perf on large dirty trees; every refresh).
 
-## Offer to repair a stale jj working copy from the app (macapp) — error-taxonomy follow-up
+## P3 — VCS engine, diffs, and status
 
-**What:** When a workroom reports `.staleWorkingCopy`, offer the repair inline (a button that runs
-`jj workspace update-stale`) instead of only naming it in the Changes panel's text.
+### Structured diff model (`FileDiff` hunks) for the diff viewer (macapp) — 47b / VCS-foundation follow-up
 
-**Why:** the taxonomy work made the state *visible* and *honest* — the row no longer claims "not a
-repository", and the panel says what to run — but the fix is still a manual trip to a terminal. The
-state is reachable in ordinary use: workrooms of one project are jj **workspaces** of one repo, so a
-`jj rebase`/`jj abandon` in workroom A can rewrite workroom B's `@` and leave B stale until B is
-updated. Deliberately not done with the read work: recovering a working copy is a **write**, and every
-VCS write belongs to the Phase-2 write-actions chunk (its own confirmation + undo story), not to a
-status probe. jj-lib exposes `Workspace::recover`/`RecoverWorkspaceError` for it.
+**What:** Give `VCSProviding` a structured per-file diff (a `FileDiff` of hunks/lines) instead of the
+current git-format unified-diff **text**, and rewrite `DiffViewer` to consume it — unlocking
+ignore-whitespace, word/intra-line diff, per-hunk/line staging, and diff-edit (the jayjay feature set).
 
-**Depends on:** the shipped `StaleSnapshot` classification (`jj_backend.rs` `snapshot_working_copy`)
-and `VCSStatusFailure.staleWorkingCopy`. Relates to "VCS write actions — Phase 2".
+**Why:** The diff viewer today parses git-format text (`UnifiedDiff.parse`) fed by `GitProvider`
+(SwiftGitX `Patch` → text) and `RustJJProvider` (`jj diff --git` CLI text). That's the deliberate
+Option-1 first cut — it works and keeps one renderer — but text is a lossy intermediate for the
+features above. Both backends already expose structured diffs natively (libgit2 hunk callbacks;
+jj-lib diff regions / a `computeNativeDiff` over old+new content, as jayjay does), so a structured
+model would be lib-native end-to-end. Deferred because no shipped feature needs it yet, and the
+rewrite touches the whole diff UI (regression surface).
 
-**Priority:** P3 (the state is now self-explaining; this saves the trip to a terminal).
+> Note: the earlier "evaluate libgit2 for git diffs" framing is obsolete — git already reads through
+> SwiftGitX/libgit2 (status, changeset, working + commit diff, `fileContent`). The open question is no
+> longer *which* git library, but *text vs structured hunks* at the `VCSProviding` seam.
 
-## Git-side errors still flatten to `.io` (macapp) — error-taxonomy follow-up
+**How to start:** Add a structured `FileDiff`/`Hunk`/`Line` model + a `VCSProviding.structuredDiff`
+(or evolve `fileDiff`/`workingFileDiff` to return it); git via `git_diff`/`git_patch` hunk callbacks,
+jj via jj-lib regions or `compute(old,new)` fed by `fileContent`. Reuse the existing `DiffCache` +
+`maxDiffBytes` gate. Rewrite `DiffViewer` (and `IntraLineDiff`/side-by-side pairing) to consume hunks.
+
+**Depends on:** the shipped Option-1 diff pipeline (`VCSProviding.fileDiff`/`workingFileDiff` +
+`DiffResolver` + `DiffViewer`). Touches `Core/VCSProviding.swift`, `GitProvider`, `RustJJProvider`,
+`jj_backend.rs` (+ UniFFI), `Core/DiffResolver.swift`, `Views/DiffViewer.swift`.
+
+**Priority:** P3 (build when a feature — ignore-whitespace / word-diff / staging / diff-edit — needs it).
+
+### Unify `workingStatus` onto the `VCSProviding` protocol (macapp) — VCS-foundation follow-up
+
+**What:** `workingStatus` is the one VCS read that never made it onto the `VCSProviding` protocol.
+`GitProvider.workingStatus` returns a git-shaped `GitWorkingStatus`; `RustJJProvider.workingStatus`
+returns the app `WorkroomStatus`. Both are concrete, off-protocol, and differently-shaped, so
+`WorkroomStatusResolver` bridges each backend by hand (`resolveGit` maps `GitWorkingStatus` →
+`WorkroomStatus`; `resolveJJ` calls the jj one directly).
+
+**Why:** Every other read (log/changeset/fileDiff/workingFileDiff/fileContent/currentRef) is on the
+protocol with one app-native return; `workingStatus` is the odd one out. Unifying it removes the
+special-casing in the resolver and lets a future backend (or a mock) satisfy status through the same
+seam. `GitWorkingStatus` (`GitProvider.swift:335`) is explicitly a placeholder — its own doc says the
+jj status "unifies onto a shared `VCSProviding.workingStatus` in the follow-on."
+
+**How to start:** Define a backend-neutral working-status return (the app already has `WorkroomStatus`
++ the jj `@`/`@-` disclosure model; give git the same shape, `.parent`/`jjWorkingCopy` fields nil for
+git). Add `func workingStatus(root:) async throws -> …` to `VCSProviding`; have both providers return
+the unified type; drop the `GitWorkingStatus` bridge in `WorkroomStatusResolver`.
+
+**Depends on:** the VCS read foundation (shipped). Touches `Core/VCSProviding.swift`, `GitProvider`,
+`RustJJProvider`, `Core/WorkroomStatusResolver.swift`.
+
+**Priority:** P3 (consistency/cleanup; the hand-bridged path works today).
+
+### git commit diffs have no rename detection (macapp) — jj-rename follow-up
+
+**What:** `GitProvider.changeset` reads `repo.diff(commit:)` (SwiftGitX → `git_diff_tree_to_tree`)
+and never calls `git_diff_find_similar`, so a **committed** rename reports as delete-old + add-new.
+`workingStatus` is fine — it passes `.renamesIndex`/`.renamesWorkingTree` — so the same rename pairs
+in the Changes panel and splits in History.
+
+**Why:** git's own CLI defaults to `diff.renames=true`, so `git show` on that commit DOES show one
+rename row; our History disagrees with git itself. It's now also the ONE remaining cross-backend
+rename divergence: jj reports the commit as one `.renamed` row (shipped), pinned by
+`VCSProviderConformanceTests.testColocatedCommitRenameDivergesUntilGitDetectsIt` — which should be
+rewritten into a parity assertion when this lands, NOT "fixed" by making jj match git.
+
+**How to start:** SwiftGitX exposes no find-similar API and only vends its `SwiftGitX` product, so
+this needs either an upstream addition or depending on its `libgit2` package product directly (mind
+the modulemap collision noted in `macapp/CLAUDE.md` → VCS core). Then apply
+`git_diff_find_similar` to the changeset diff before mapping deltas, and set `oldPath` for the
+renamed delta (`mapDelta` already handles `.renamed`/`.copied`).
+
+**Depends on:** nothing in-app. Touches `Core/GitProvider.swift` (+ possibly `project.yml`).
+
+**Priority:** P3 (History file list wrong on committed renames; the diff content itself is correct,
+and the Changes panel already pairs them).
+
+### Git-side errors still flatten to `.io` (macapp) — error-taxonomy follow-up
 
 **What:** `GitProvider` throws `VCSError.io("\(error)")` from every catch, so nothing on the git path
 can reach `.lockContention` / `.notFound` / `.unsupportedRepo`. The jj path is now classified at the
@@ -983,7 +289,7 @@ libgit2's `GIT_ELOCKED`/`GIT_ENOTFOUND`/`GIT_ENOTREPO`-shaped cases onto the tax
 
 **Priority:** P3 (no wrong diagnosis today, only a coarse one).
 
-## Git diff shows one side when a file is both staged and re-modified (macapp) — VCS-foundation eng-review
+### Git diff shows one side when a file is both staged and re-modified (macapp) — VCS-foundation eng-review
 
 **What:** `GitProvider` working diff/status use `entry.workingTree ?? entry.index`, so a file that is
 staged AND further modified in the worktree renders only the working-tree (index→worktree) delta, not
@@ -996,7 +302,7 @@ rather than picking one status delta.
 
 **Priority:** P3 (partial-staging is uncommon in the workroom flow; content still shown, just one side).
 
-## The jj snapshot ignores the user's real jj/git config (macapp) — VCS-foundation eng-review
+### The jj snapshot ignores the user's real jj/git config (macapp) — VCS-foundation eng-review
 
 **What:** `snapshot_working_copy` builds its settings from jj's **built-in defaults only** —
 `UserSettings::from_config(StackedConfig::with_defaults())` (`jj_backend.rs:380`) — and jj-lib derives
@@ -1035,53 +341,25 @@ throwaway repos only — this is the lock-taking, `@`-rewriting path.
 **Priority:** P3 for correctness (only bites non-default configs), but the fsmonitor half is a real
 perf item on large repos.
 
-## Unify `workingStatus` onto the `VCSProviding` protocol (macapp) — VCS-foundation follow-up
+### Offer to repair a stale jj working copy from the app (macapp) — error-taxonomy follow-up
 
-**What:** `workingStatus` is the one VCS read that never made it onto the `VCSProviding` protocol.
-`GitProvider.workingStatus` returns a git-shaped `GitWorkingStatus`; `RustJJProvider.workingStatus`
-returns the app `WorkroomStatus`. Both are concrete, off-protocol, and differently-shaped, so
-`WorkroomStatusResolver` bridges each backend by hand (`resolveGit` maps `GitWorkingStatus` →
-`WorkroomStatus`; `resolveJJ` calls the jj one directly).
+**What:** When a workroom reports `.staleWorkingCopy`, offer the repair inline (a button that runs
+`jj workspace update-stale`) instead of only naming it in the Changes panel's text.
 
-**Why:** Every other read (log/changeset/fileDiff/workingFileDiff/fileContent/currentRef) is on the
-protocol with one app-native return; `workingStatus` is the odd one out. Unifying it removes the
-special-casing in the resolver and lets a future backend (or a mock) satisfy status through the same
-seam. `GitWorkingStatus` (`GitProvider.swift:335`) is explicitly a placeholder — its own doc says the
-jj status "unifies onto a shared `VCSProviding.workingStatus` in the follow-on."
+**Why:** the taxonomy work made the state *visible* and *honest* — the row no longer claims "not a
+repository", and the panel says what to run — but the fix is still a manual trip to a terminal. The
+state is reachable in ordinary use: workrooms of one project are jj **workspaces** of one repo, so a
+`jj rebase`/`jj abandon` in workroom A can rewrite workroom B's `@` and leave B stale until B is
+updated. Deliberately not done with the read work: recovering a working copy is a **write**, and every
+VCS write belongs to the Phase-2 write-actions chunk (its own confirmation + undo story), not to a
+status probe. jj-lib exposes `Workspace::recover`/`RecoverWorkspaceError` for it.
 
-**How to start:** Define a backend-neutral working-status return (the app already has `WorkroomStatus`
-+ the jj `@`/`@-` disclosure model; give git the same shape, `.parent`/`jjWorkingCopy` fields nil for
-git). Add `func workingStatus(root:) async throws -> …` to `VCSProviding`; have both providers return
-the unified type; drop the `GitWorkingStatus` bridge in `WorkroomStatusResolver`.
+**Depends on:** the shipped `StaleSnapshot` classification (`jj_backend.rs` `snapshot_working_copy`)
+and `VCSStatusFailure.staleWorkingCopy`. Relates to "VCS write actions — Phase 2".
 
-**Depends on:** the VCS read foundation (shipped). Touches `Core/VCSProviding.swift`, `GitProvider`,
-`RustJJProvider`, `Core/WorkroomStatusResolver.swift`.
+**Priority:** P3 (the state is now self-explaining; this saves the trip to a terminal).
 
-**Priority:** P3 (consistency/cleanup; the hand-bridged path works today).
-
-## VCS write actions — Phase 2 (macapp) — roadmap pointer
-
-**What:** The next VCS phase: turn the read-only foundation into a full in-app VCS UI. Write methods
-behind `VCSProviding` — commit/amend, push/pull/fetch, branch (git) / bookmark (jj) management — then
-the deep jj ops (undo/op-log, split, absorb, evolog, interdiff). A `CLIVCSProvider` fallback is
-introduced here for ops the libraries don't expose ergonomically (each with tests), NOT as a parallel
-read path.
-
-**Why:** This is a roadmap phase, not a tactical follow-up — it's tracked in full in the issue #59
-plan (Phase 2 section) + the `vcs-foundation-rust-core` design notes. This entry is only a pointer so
-Phase 2 is discoverable from `TODOS.md`; the authoritative scope + sequencing live in the plan.
-
-**How to start:** Read the plan's "Phase 2 — VCS write actions" section and issue #59. The read
-foundation (this file's other VCS entries) is the prerequisite; land the deferred read follow-ups
-first where they'd otherwise bite the write UI — of the three that gated this, jj **rename detection**
-and **conflict status** have now shipped, leaving the **error taxonomy** entry below.
-
-**Depends on:** the VCS read foundation (shipped, Phase 1). Spans `vcs/` (Rust), `WrVcs` UniFFI,
-`Core/VCSProviding.swift` + both providers, and new write-flow UI.
-
-**Priority:** P2 (the product direction; large, sequenced after the read follow-ups — see the plan for the real breakdown).
-
-## Background fetch so push state isn't stale (macapp) — unpushed-badge follow-up
+### Background fetch so push state isn't stale (macapp) — unpushed-badge follow-up
 
 **What:** A periodic / on-focus `git fetch` (and `jj git fetch`) so remote-tracking refs — and
 therefore the History pane's unpushed badge — reflect the server rather than the last manual fetch.
@@ -1111,87 +389,178 @@ the badge: see the "Staleness" trap in the unpushed-badge plan.
 
 **Priority:** P3 (the badge is useful without it; multi-machine users feel this first).
 
-## Collapse the terminal tab toolbar when the strip is cramped (macapp) — #129 follow-up
+### Three independent change-badge palettes (macapp) — jj conflict-status follow-up
 
-**What:** Below a strip width of roughly 220pt, collapse `TerminalTabStrip`'s trailing per-tab toolbar
-into a single `⋯` overflow `Menu` instead of 3-5 separate icon buttons.
+**What:** the same change-kind badge is coloured by three separate mappings: `ChangeBadge`
+(`Core/ChangeBadge.swift`, theme tokens — extracted from `ChangesPanel` when the conflict badge was
+fixed), `ChangesetDetailView.badgeColor` (hardcoded `.green`/`.yellow`/`.red`/`.orange`), and
+`DiffViewer.changeColor` (same hardcoded set).
 
-**Why:** A workroom-split member can be dragged to 120pt wide (`TerminalSessions.minPaneSize = 120`,
-clamped through `PaneTreeLayout.clampRatio`). At that width the toolbar is ~61pt — three times the
-pinned "+" — so it, not the "+", is what leaves the chips with a sliver. #129 shipped the always-visible
-"+" and explicitly **accepted** the cramped-pane sliver; this is the change that actually reclaims the
-space. Split out of #129 so a two-symptom layout fix didn't have to carry native-menu semantics.
+**Why:** this split is *why* the conflict badge diverged in the first place — the panel had no orange
+to reach for, so `.conflicted` borrowed deletion's red and a conflict read as a removal. Two of the
+three mappings also ignore the active theme entirely.
 
-**Current state:** #129 shipped the adaptive "+" and the trailing fade. The toolbar always renders
-expanded. `TabStripMetrics`/`TabStripOverflow` (in `Views/TabReorderMath.swift`) are the shared home for
-the breakpoint and the predicate.
+**How to start:** have `ChangesetDetailView` and `DiffViewer` adopt `ChangeBadge.letter`/`.color` (and
+the `tokens.conflict` colour) instead of their own switches. Note this restyles *every* kind in both
+views, so it wants a deliberate visual pass rather than a drive-by change.
 
-**How to start (two verified prerequisites, both found the hard way in review):**
-- `TabToolbarButton` (`Views/TabToolbarButton.swift:8`) is a concrete `View`, **not** a `ButtonStyle` or
-  label style — a `Menu` can't wear it as-is. Extract the glyph + hover-well into a small shared label
-  first, used by both the button and the menu trigger.
-- A SwiftUI `Menu` on macOS becomes **native menu infrastructure**, so identifiers on inner `Button`s do
-  not reliably surface as `app.buttons["tab.toolbar.splitRight"]`. Assert collapsed actions via
-  `app.menuItems` by title. Existing `TabActionsUITests` assertions query real buttons and only run at
-  normal width, so they stay valid.
-- Add `collapsesToolbar(stripWidth:)` to `TabStripOverflow` as a **pure width breakpoint**. Keyed on the
-  strip's own width (not on the width of the thing being collapsed), it composes with the existing
-  pinning predicate as a DAG with no feedback edge: `stripWidth → collapse → toolbarWidth → available →
-  pinsControls`. Do not make it depend on the expanded toolbar's measured width, or it will oscillate.
-- The two segmented switches (diff view mode, markdown source/preview) become `Picker`s in the menu.
-- Reaching a cramped strip in XCUITest needs a divider drag (flaky); prefer unit-testing the breakpoint
-  and verifying the rendering by hand.
+**Depends on:** `ChangeBadge` (shipped). Touches `ChangesetDetailView.swift`, `DiffViewer.swift`.
 
-**Depends on:** #129 (shipped — owns the shared metrics type and the pinned "+").
+**Priority:** P3 (consistency + theme correctness; no functional bug).
 
-**Priority:** P3 (only bites at the divider's minimum width, where the strip is already marginal).
+## P3 — Terminal, panes, and focus
 
-## Scroll a selected tab into view in both tab bars (macapp) — #129 follow-up
+### Consolidate terminal focus authority + cross-window reconciliation (macapp) — focus-desync follow-up
 
-**What:** Add a `ScrollViewReader` to `TerminalTabStrip` and `WorkroomTabBar` so (a) a chip selected by
-⌘1-9, ⌥⌘1-9 or from the sidebar is scrolled into view, and (b) a chip drag near either edge auto-scrolls
-the run.
+**What:** (1) Collapse the ~5 duplicated "make first responder + `setSurfaceFocused`" call sites in
+`GhosttySurfaceView`/`TerminalContainerView` into one guarded helper; (2) add window key-gain focus
+reconciliation so the focused pane's surface reclaims first responder when the app window
+reactivates (Cmd-Tab / Mission Control) and first responder had drifted to a non-terminal view.
 
-**Why:** Neither bar has one. Selecting a tab that's scrolled out of view swaps the pane content with no
-visible feedback — the strip looks unchanged, so it reads as "the shortcut did nothing". #129 makes this
-more noticeable, not less: overflow is now a deliberately designed state, so these bars get scrolled
-more. Every other scrolling list in the app reveals its selection.
+**Current state:** The reported bug — arrows/letters dead when a TUI selection prompt appears in a
+freshly-mounted/unfocused-looking pane — is **fixed**: `createSurface` now re-syncs the libghostty
+focus flag when the surface is created while the view already holds first responder
+(`GhosttySurfaceView.adoptFocusIfFirstResponder`, tested by `TerminalFocusAdoptionTests` +
+`TerminalFocusAdoptionLiveSurfaceTests`). Focus-set logic still lives in several places
+(`becomeFirstResponder`, `mouseDown`, search hand-back `:171`, `viewDidMoveToWindow`, `applyFocus`),
+and `WindowRegistry`'s `didBecomeKeyNotification` observer still only updates `lastActiveStore`, not
+terminal focus.
 
-**How to start:** both entry points are already located. ⌘1-9 is handled by the `AppDelegate` `NSEvent`
-monitor (see `macapp/CLAUDE.md`), and ⌥⌘1-9 routes through `AppStore.orderedWorkroomTargets` indexing
-(`Core/AppStore.swift:783-791`) — each just needs to publish a scroll target the strip's
-`ScrollViewReader` can act on. The two halves are separable: scroll-on-select is cheap; drag
-auto-scrolling interacts with `TabReorder`'s translation math and `clampReorder`, so land it separately.
+**Why:** The duplication has produced repeated focus-race fixes (#3 splits, the diff-pane fix, the
+`viewDidMoveToWindow` backstop, and now this one) — each patch adds another copy and the next race
+slips through the gap. One guarded helper removes that class. Cross-window reconciliation is the one
+drift trigger the createSurface fix does not cover (surface already exists; first responder moved
+away). Surfaced by `/plan-eng-review` (DRY finding) and the Codex outside-voice pass, deliberately
+deferred to avoid refactoring focus timing before the root cause was confirmed.
 
-**Depends on:** nothing (independent of #129, though cleaner after its restructure).
+**How to start:** Extract `focusTerminal(surface:)` with a single guard set; route the existing call
+sites through it. For reconciliation, extend the `WindowRegistry` `didBecomeKeyNotification` handler
+(`Core/WindowRegistry.swift:50`) to restore first responder to the focused pane **only** when no
+sheet is open AND the current first responder is nil/the window/a removed responder (NOT a live text
+field or sidebar table — codex's caveat: "no sheet" alone is insufficient). Unit-test the guard as a
+pure decision.
 
-**Priority:** P3.
+**Depends on:** the shipped createSurface focus-sync; also relates to the queued first-responder
+stale-state recheck noted under "Workroom split: deferred follow-ups" (`TerminalContainerView`
+`applyFocus`) — fold both into the one helper.
 
-## Cap `WorkroomTabChip`'s title width (macapp) — #129 follow-up
+**Priority:** P3 (primary bug fixed; this is the DRY/robustness follow-up that prevents the next
+focus race).
 
-**What:** Cap the workroom chip's title width the way terminal chips already are
-(`TerminalTabChip.maxTitleWidth = 180`, `Views/TerminalTabStrip.swift`), with the same truncation +
-full-title tooltip treatment.
+### Workroom split: deferred follow-ups (macapp) — #23
 
-**Why:** `WorkroomTabChip` has **no** cap at all, so a single long workroom name produces a chip wider
-than the window and monopolises the title bar. Terminal tabs got this treatment in `c6a88a75` ("cap
-terminal tab titles with truncation + full-title tooltip"); the workroom bar never did.
+**Shipped:** drag a workroom tab onto a pane edge → a nested, resizable side-by-side split of full
+terminal UIs, same feel as the ⌘D terminal panes (`Views/WorkroomSplitView.swift`,
+`Core/AppStore+WorkroomSplit.swift`, generic `PaneLayout<Leaf>` / `PaneTreeLayout`). The bar always
+shows; `RootView` always routes the detail through `WorkroomSplitView` (single = `.leaf(selected)`).
+The pieces below were explicitly deferred — each small, none blocking.
 
-**Current state:** unblocked. This was briefly load-bearing: an earlier #129 test plan forced tab-bar
-overflow with a ~200-character fixture workroom name, which only works *because* the cap is missing —
-adding it would have turned that test into one that passes while asserting nothing. The shipped fixture
-seeds N workroom targets instead (`-WorkroomUITestWorkroomCount`), so nothing depends on the quirk now.
+- **⌥⌘-arrow focus between workroom panes** — `PaneTreeLayout.adjacentPane` is already generic and
+  ready; only the key-monitor wiring is missing. Deferred to avoid clashing with the terminal-level
+  ⌥⌘arrows (which navigate the focused workroom's *terminal* split) — needs a precedence decision.
+- **Drag-a-pane-out-to-dissolve** — removal today is the per-pane ✕ (strip trailing) + clicking a
+  non-member tab; the terminal split's "drag the grip up out of the panes" gesture isn't wired for
+  workroom panes.
+- **Cross-relaunch persistence of the split** — `workroomSplit` is session-only (the terminal split
+  isn't persisted either). Add a `Defaults` key + restore-on-load if wanted.
+- **Per-pane activity border-flash** (partial) — the *terminals hosted inside* a workroom pane flash
+  via `PaneLeafView`'s `activityPulses` handler, but the workroom **pane itself** doesn't flash the way
+  a terminal split pane does; workroom-level activity surfaces via `WorkroomTabChip` tinting instead. A
+  presentation difference, not a missing signal.
+- **Queued first-responder stale-state recheck** (`Views/TerminalContainerView.swift:78`) — `applyFocus`
+  enqueues `makeFirstResponder(view)` on `DispatchQueue.main.async` and re-checks only
+  `firstResponder !== view`, not a *fresh* focus condition, so a stale enqueue could in theory flip
+  focus cross-target. Largely defused already by the `surfaceActive` gate (a non-focused workroom pane
+  passes `isFocusedPane=false` → never enqueues); this is the residual race within terminal-pane splits.
+  Fix would re-read live focus state inside the async block rather than relying on the captured value.
 
-**How to start:** mirror `TerminalTabChip`'s title `frame(maxWidth:)` + `.help(fullTitle)` in
-`WorkroomTabChip`. Note it shifts measured chip widths, which the #129 overflow predicate reads, so
-re-check the tab-bar overflow UI test after.
+**Priority:** P3 (polish on a shipped feature).
 
-**Depends on:** #129 (shipped) — only to avoid conflicting edits in `WorkroomTabBar.swift`.
+### AppKit tracking-handle divider for an even wider resize target (macapp) — #83 follow-up
 
-**Priority:** P3 (generated workroom names are short adjective-noun pairs; this bites on renamed or long
-project-derived names).
+**What:** Replace the SwiftUI invisible-`Rectangle` resize divider (`SplitDivider` in
+`Views/PaneTreeView.swift`, `WorkroomSplitDivider` in `Views/WorkroomSplitView.swift`) with a
+dedicated AppKit tracking/drag handle (pattern: the existing `InspectorResizeHandle`) so the grab
+target can extend *over* the terminal surface without stealing its mouse input.
 
-## Share the tab strips' overflow scaffolding, not just its constants (macapp) — #129 follow-up
+**Why:** Issue #83 widened the hit zone to `PaneTreeLayout.dividerHitThickness` (8pt = the 4pt gutter
+plus the 2pt pane padding on each side). That's the safe ceiling for the overlay approach — any wider
+would overhang the live libghostty surface and intercept text selection, OSC8 link clicks, the
+right-click menu, and TUI mouse reporting near the gutter. A real AppKit handle owns its own tracking
+area, so it can be larger and still not fight the terminal NSView.
+
+**How to start:** Model it on `InspectorResizeHandle`; mount one per `PaneDividerFrame`, positioned on
+`d.rect`, calling the same `onRatio`/`setRatio` path the current divider uses. Keep the visual gutter
+invisible (the panes' own borders mark the boundary).
+
+**Depends on:** shipping #83 first, then real-use feedback that 8pt still feels fiddly. Surfaced by the
+Codex outside-voice pass during `/plan-eng-review`.
+
+**Priority:** P3 (8pt already doubles the old 4pt target; only revisit if users still find it tight).
+
+### Memory / live-surface diagnostics (macapp)
+
+**What:** Lightweight instrumentation of live `ghostty_surface_t` count and process memory, to
+catch leaks/growth at high tab counts.
+
+**Why:** Each surface is a GPU-backed Metal layer; the plan flags the 50–100-tab surface budget as
+"measure, don't assume." Occlusion is wired (A4) so off-screen surfaces idle, but magnitude at
+Workroom's tab counts is unverified. Muxy ships a 458-line `MemoryDiagnostics` for this reason.
+
+**How to start:** A periodic sampler logging `tabsByTarget` leaf count + `mach_task_basic_info`
+resident size via `os.Logger`; optionally a debug overlay. Keep it far lighter than Muxy's — a
+counter + a memory read, not crash-crumb recovery (D1). (None of this exists yet — no
+`mach_task_basic_info` read, no surface-count logging.)
+
+**Depends on:** `TerminalSessions` (surface inventory), `GhosttyApp` (`os.Logger` already set up).
+
+**Priority:** P3 (diagnostic aid; pair with the manual surface-budget QA pass).
+
+### OSC 52 clipboard-confirmation policy (macapp)
+
+**What:** A real policy/UI for terminal-app clipboard access (OSC 52) — the runtime's
+`read_clipboard_cb` / `write_clipboard_cb`. Today writes are gated to `text/*` mime and reads use
+Ghostty's permissive default (auto-allow); `confirmReadClipboard` is a stub, so a deliberate
+prompt/allowlist is deferred.
+
+**Why:** Code-review finding #7. OSC 52 lets a remote program read/write the system pasteboard;
+the permissive default is fine for a beta (it matches Ghostty's own default) but a security-minded
+user should be able to require confirmation.
+
+**How to start:** Implement `confirm_read_clipboard_cb` to surface a prompt (or consult a
+`Defaults.Keys` policy: allow / prompt / deny); gate `write_clipboard_cb` similarly. Decide the
+default (Ghostty = allow).
+
+**Depends on:** the clipboard callbacks already wired
+(`macapp/WorkroomApp/Core/GhosttyRuntimeAdapter.swift`, `Core/GhosttyApp.swift`).
+
+**Priority:** P3 (permissive default is acceptable for the beta).
+
+### Stream the inline terminal agent's diagnosis into the banner — #49 follow-up
+
+**What:** Show the diagnosis appearing live in the banner (claude `--output-format stream-json`)
+instead of a spinner during the (blocking) call.
+
+**Why:** Nicer perceived latency. Deferred deliberately, not dropped: (1) the diagnosis output is a
+structured JSON object (`{summary, fix, detail}`) — that's what makes the "Insert fix" button
+reliable (the on-demand eval validates it) — and streaming emits partial JSON deltas that don't
+render nicely; (2) the inline diagnosis now runs on Haiku 4.5 (~2-3s), so the spinner is brief and
+the payoff is marginal.
+
+**How to start:** The clean approach that preserves the structured fix is to change the model's
+output to "one-line prose summary, then a delimiter, then the JSON fix", stream the prose live while
+parsing the JSON tail on completion. Needs: an incremental-stdout streaming runner (the current
+`StatusCommandRunner` buffers to completion), a stream-json NDJSON delta parser, the split prompt +
+parser, banner partial-text state, and its own entry in `AgentDiagnosisEvalTests`.
+
+**Depends on:** the inline agent (#49, merged). Touches `AgentRunner`, `AgentPrompt`,
+`TerminalAgentManager`, `TerminalAgentBanner`.
+
+**Priority:** P3 (polish; marginal over a 2-3s spinner, and must not regress the structured fix).
+
+## P3 — Tab strips (#129 follow-ups)
+
+### Share the tab strips' overflow scaffolding, not just its constants (macapp) — #129 follow-up
 
 **What:** Extract the overflow *assembly* both tab strips now hand-maintain into one container view —
 say `OverflowingTabScroller<Content, Controls>` — taking `leadingInset`, `spacing`, a chip-run builder
@@ -1231,3 +600,476 @@ third thing measuring the same strip.
 **Priority:** P3 — pure refactor, no user-visible change. The cost of deferring is paid by the next
 person who adds a strip or changes the fade.
 
+### Collapse the terminal tab toolbar when the strip is cramped (macapp) — #129 follow-up
+
+**What:** Below a strip width of roughly 220pt, collapse `TerminalTabStrip`'s trailing per-tab toolbar
+into a single `⋯` overflow `Menu` instead of 3-5 separate icon buttons.
+
+**Why:** A workroom-split member can be dragged to 120pt wide (`TerminalSessions.minPaneSize = 120`,
+clamped through `PaneTreeLayout.clampRatio`). At that width the toolbar is ~61pt — three times the
+pinned "+" — so it, not the "+", is what leaves the chips with a sliver. #129 shipped the always-visible
+"+" and explicitly **accepted** the cramped-pane sliver; this is the change that actually reclaims the
+space. Split out of #129 so a two-symptom layout fix didn't have to carry native-menu semantics.
+
+**Current state:** #129 shipped the adaptive "+" and the trailing fade. The toolbar always renders
+expanded. `TabStripMetrics`/`TabStripOverflow` (in `Views/TabReorderMath.swift`) are the shared home for
+the breakpoint and the predicate.
+
+**How to start (two verified prerequisites, both found the hard way in review):**
+- `TabToolbarButton` (`Views/TabToolbarButton.swift:8`) is a concrete `View`, **not** a `ButtonStyle` or
+  label style — a `Menu` can't wear it as-is. Extract the glyph + hover-well into a small shared label
+  first, used by both the button and the menu trigger.
+- A SwiftUI `Menu` on macOS becomes **native menu infrastructure**, so identifiers on inner `Button`s do
+  not reliably surface as `app.buttons["tab.toolbar.splitRight"]`. Assert collapsed actions via
+  `app.menuItems` by title. Existing `TabActionsUITests` assertions query real buttons and only run at
+  normal width, so they stay valid.
+- Add `collapsesToolbar(stripWidth:)` to `TabStripOverflow` as a **pure width breakpoint**. Keyed on the
+  strip's own width (not on the width of the thing being collapsed), it composes with the existing
+  pinning predicate as a DAG with no feedback edge: `stripWidth → collapse → toolbarWidth → available →
+  pinsControls`. Do not make it depend on the expanded toolbar's measured width, or it will oscillate.
+- The two segmented switches (diff view mode, markdown source/preview) become `Picker`s in the menu.
+- Reaching a cramped strip in XCUITest needs a divider drag (flaky); prefer unit-testing the breakpoint
+  and verifying the rendering by hand.
+
+**Depends on:** #129 (shipped — owns the shared metrics type and the pinned "+").
+
+**Priority:** P3 (only bites at the divider's minimum width, where the strip is already marginal).
+
+### Scroll a selected tab into view in both tab bars (macapp) — #129 follow-up
+
+**What:** Add a `ScrollViewReader` to `TerminalTabStrip` and `WorkroomTabBar` so (a) a chip selected by
+⌘1-9, ⌥⌘1-9 or from the sidebar is scrolled into view, and (b) a chip drag near either edge auto-scrolls
+the run.
+
+**Why:** Neither bar has one. Selecting a tab that's scrolled out of view swaps the pane content with no
+visible feedback — the strip looks unchanged, so it reads as "the shortcut did nothing". #129 makes this
+more noticeable, not less: overflow is now a deliberately designed state, so these bars get scrolled
+more. Every other scrolling list in the app reveals its selection.
+
+**How to start:** both entry points are already located. ⌘1-9 is handled by the `AppDelegate` `NSEvent`
+monitor (see `macapp/CLAUDE.md`), and ⌥⌘1-9 routes through `AppStore.orderedWorkroomTargets` indexing
+(`Core/AppStore.swift:783-791`) — each just needs to publish a scroll target the strip's
+`ScrollViewReader` can act on. The two halves are separable: scroll-on-select is cheap; drag
+auto-scrolling interacts with `TabReorder`'s translation math and `clampReorder`, so land it separately.
+
+**Depends on:** nothing (independent of #129, though cleaner after its restructure).
+
+**Priority:** P3.
+
+### Cap `WorkroomTabChip`'s title width (macapp) — #129 follow-up
+
+**What:** Cap the workroom chip's title width the way terminal chips already are
+(`TerminalTabChip.maxTitleWidth = 180`, `Views/TerminalTabStrip.swift`), with the same truncation +
+full-title tooltip treatment.
+
+**Why:** `WorkroomTabChip` has **no** cap at all, so a single long workroom name produces a chip wider
+than the window and monopolises the title bar. Terminal tabs got this treatment in `c6a88a75` ("cap
+terminal tab titles with truncation + full-title tooltip"); the workroom bar never did.
+
+**Current state:** unblocked. This was briefly load-bearing: an earlier #129 test plan forced tab-bar
+overflow with a ~200-character fixture workroom name, which only works *because* the cap is missing —
+adding it would have turned that test into one that passes while asserting nothing. The shipped fixture
+seeds N workroom targets instead (`-WorkroomUITestWorkroomCount`), so nothing depends on the quirk now.
+
+**How to start:** mirror `TerminalTabChip`'s title `frame(maxWidth:)` + `.help(fullTitle)` in
+`WorkroomTabChip`. Note it shifts measured chip widths, which the #129 overflow predicate reads, so
+re-check the tab-bar overflow UI test after.
+
+**Depends on:** #129 (shipped) — only to avoid conflicting edits in `WorkroomTabBar.swift`.
+
+**Priority:** P3 (generated workroom names are short adjective-noun pairs; this bites on renamed or long
+project-derived names).
+
+## P3 — Inspector, window layout, and theming
+
+### Search section for the right activity bar (macapp) — activity-bar follow-up
+
+**What:** A functional Search pane (find in files / content) as a new right-activity-bar section.
+
+**Why:** The activity bar (`ActivitySection` + per-section `subSections`) is built to grow; Search
+was the first candidate but has no functionality yet, so it was dropped from the initial bar (v1
+shipped Changes + Files) to avoid a visibly-empty icon reading as unfinished.
+
+**How to start:** Add a `.search` case to `Core/ActivitySection.swift` (label +
+`systemImage: "magnifyingglass"` + its `subSections`) and a real Search pane body, wired into
+`RightInspector.sectionBody(for:)`. A new `InspectorSectionKind` may be needed for the sub-section
+identity. The DEBUG-only feature-flag staging pattern (considered and rejected for v1) is one option
+to ship the scaffold before the search is real.
+
+**Depends on:** the right activity bar (shipped). Touches `Core/ActivitySection.swift`,
+`Views/ChangesPanel.swift` (`RightInspector`), a new `Views/SearchPanel.swift`.
+
+**Priority:** P3 (new feature; not blocking).
+
+### Profile inspector pane body during live divider-drag (macapp) — NSSplitView inspector follow-up
+
+**What:** Verify there's no stutter when dragging an inspector section divider with a large Changes
+set. The NSSplitView inspector (shipped) hosts each section body inside a native `NSScrollView`, so
+a vertical divider drag changes only the pane's *viewport height* — the body's `NSHostingView` keeps
+its intrinsic (content) height and its width is unchanged, so SwiftUI should NOT re-lay-out per
+frame. This TODO is to confirm that under profiling, not a known regression.
+
+**Why:** `ChangesPanel` can render up to ~200 non-lazy file rows. (An earlier version of this entry
+put the worst case at ~400 across **two** lists — the jj Parent Commit group, its disclosure state and
+its `Defaults` collapse flags are all gone; the panel is now one unified working-copy list for both
+backends, so the ceiling is back to one list's worth.) The original eng-review of the migration plan
+flagged per-frame re-layout as a risk; the scroll-view pane design should avoid it (drag = viewport
+change, not document re-layout), but it hasn't been profiled.
+
+**How to start:** Instruments (Time Profiler / SwiftUI body re-evaluation) while dragging the
+Changes divider on a fixture with ~200 changed files. Only if jank shows: coalesce
+resize → re-layout, or `.drawingGroup()` the body for the drag duration. Note `LazyVStack` won't help
+here — the pane scrolls via AppKit `NSScrollView` with an intrinsic-size host, so there's no SwiftUI
+clip rect to virtualize against.
+
+**Priority:** P3 (likely already a non-issue by construction; confirm before optimizing).
+
+### Raise the inspector's 520pt width cap (macapp) — column-layout follow-up
+
+**What:** Decide whether `InspectorColumn`'s `maxWidth = 520` (and `SidebarColumn`'s 240-360) is still
+the bound we want, now that the layout no longer forces the trade-off.
+
+**Why:** 520 was inherited from the `NavigationSplitView` era, where it was a *safety* ceiling, not a
+design choice: the native split shrank the `sidebar | detail` columns **proportionally** as the
+inspector grew, so a wide inspector clipped the sidebar's labels even at a 1900px window, and the
+private `NSSplitView` subclass refused `setDelegate:`/`setHoldingPriority:`. That machinery is gone —
+`RootView.splitView` lays the three columns out itself (`SidebarColumn` | detail | `InspectorColumn` +
+`ActivityBar`, inside a detail-only `NavigationSplitView` kept purely for the toolbar/hover context),
+each column with its own min/max and its own persisted `Defaults` width. The sidebar holds its floor
+and only the detail yields, so a wider inspector is now a one-constant change.
+
+**How to start:** raise or drop `maxWidth` (`Views/InspectorColumn.swift:23`) and check the widest
+panes at the new size (`DiffViewer` side-by-side, `ChangesetDetailView`, `HistoryPanel`) against the
+detail column's own floor — a usable terminal width is the real constraint now, not the sidebar.
+
+**Depends on:** the hand-rolled column layout (shipped: `RootView.splitView`, `SidebarColumn`,
+`InspectorColumn`, `Defaults.sidebarWidth`/`inspectorWidth`).
+
+**Priority:** P3 (only worth changing if a wide inspector is a real workflow need; 520 is a fine
+default and the squeeze that made it load-bearing is fixed).
+
+### Keyboard + VoiceOver parity for the edge-hover reveal (macapp) — #56 follow-up
+
+**What:** Make the edge-hover sidebar reveal (issue #56) first-class for keyboard / VoiceOver users:
+move keyboard focus into the panel when it reveals, restore focus when it hides, and post a
+VoiceOver announcement on reveal/hide.
+
+**Current state:** The reveal ships pointer-first (`Views/EdgeRevealSidebar.swift`). Escape-to-dismiss
+is wired (`.onExitCommand`) and the panels carry `sidebar.reveal.{leading,trailing}` accessibility
+identifiers, but there's no focus management or VO announce. Persistent keyboard/AX access already
+exists via the View-menu toggles (`View ▸ Projects`, `View ▸ Notifications`) and the toolbar
+sidebar/inspector buttons, so the docked sidebars remain fully reachable without a pointer — this is
+polish, not an accessibility blocker.
+
+**Why:** a hover-only affordance is invisible to keyboard-only and VoiceOver users; focus + announce
+make the transient panel behave like a real sidebar for them too.
+
+**How to start:** drive first-responder when `EdgeRevealReducer.revealed` flips (focus the panel's
+list, restore the prior responder on hide); post `NSAccessibility.post(element:notification:)` on
+reveal/hide. Focus management in a transient overlay is finicky (focus stealing, restore-on-hide
+races) — prototype carefully and test with VoiceOver on.
+
+**Depends on:** the #56 reveal panel (shipped).
+
+**Priority:** P3 (polish; persistent keyboard/AX access already exists via the menu/toolbar toggles).
+
+### Theming: auto-pair user `~/.config` themes into families (macapp) — #36 follow-up
+
+**What:** Let loose theme files a user drops into `~/.config/ghostty/themes` surface as first-class
+theme *families* (a light + dark pair) in the picker.
+
+**Why:** #36 ships a curated set of pair-complete bundled families only — the picker lists those.
+A user with their own theme files in `~/.config/ghostty/themes` currently has no way to pick them
+from the picker (ghostty still resolves them for the *terminal* when a bundled name collides, since
+`themePreview`/resolution favour `~/.config`, but they aren't selectable). Inferring families from
+user files would make them first-class.
+
+**How to start:** In `Core/ThemeService.swift`, add discovery of `~/.config/ghostty/themes` and
+infer families from loose user files — e.g. name-suffix heuristics (`X` / `X Light`, `X Dark` /
+`X Light`), or read an optional user manifest. Merge inferred families into the picker's family
+list. Handle the ambiguous cases: a single-variant user theme (no obvious partner); a name that
+collides with a bundled family.
+
+**Depends on:** the #36 families model shipping first (done).
+
+**Priority:** P3 (bundled families cover the common case; this is for users with custom schemes).
+
+## P3 — Pull requests and GitHub
+
+### At-a-glance review status in the sidebar / collapsed PR header (macapp) — #52 follow-up
+
+**What:** Surface a compact review-status glyph (the aggregate `reviewDecision` — approved /
+changes-requested / review-required) on the sidebar workroom row or the collapsed "Pull Request"
+section header, next to the existing CI glyph — so review state is visible without expanding the
+panel. Directly serves issue #52's framing ("so we can go visit the PR when needed").
+
+**Current state (re-verified 2026-07-25):** still expanded-panel only. `#77` added a PR-state badge to
+the PR header (`ChangesPanel.swift` `prNumberLink`) and the `reviewDecision` aggregate label sits above
+the reviewer rows in the inspector (`PullRequestPanel.swift` `PRPresentation.reviewLabel`) — but the
+sidebar workroom row still shows dirty/CI only (`ProjectSidebar.swift`, via `VCSStatusPresentation`),
+and the background sweep still skips PR resolution (`resolvePRRaw` is called only from
+`scheduleSelectedStatusRefresh`; `refreshWorkroomStatuses` runs local + CI). The aggregate is the
+natural feed for a glyph.
+
+**Why:** a glance from the sidebar beats expanding the panel per workroom; matches how CI status
+already reads at a glance.
+
+**How to start:** the blocker is data freshness — the PR (and thus `reviewDecision`) is resolved
+**only on selection** (`scheduleSelectedStatusRefresh`), not in the bounded background sweep
+(`refreshWorkroomStatuses` / `runCISweep` in `Core/AppStore+WorkroomStatus.swift`). A sidebar glyph
+needs PR resolution added to the sweep (a third probe stage, bounded like CI, with its own TTL), then
+a `VCSStatusPresentation`-style mapper for the review glyph reused by the sidebar row + collapsed
+header (`ChangesPanel.prIndicator`).
+
+**Depends on:** the #52 `reviewDecision` aggregate (shipped). Bigger than a UI tweak — it adds a PR
+sweep stage.
+
+**Priority:** P3 (strong UX win, but the background-sweep work makes it its own chunk, not part of #52).
+
+### Per-reviewer comment counts in the PR panel (macapp) — #52 follow-up
+
+**What:** Show a per-reviewer comment count next to each reviewer row in the Pull Request panel,
+e.g. `iainad approved · 3 comments` — the `[N comments]` part of the issue #52 mockup.
+
+**Current state:** #52 shipped the per-reviewer rows (state + bot-aware "in progress" label) by
+riding the existing `gh pr list --head … --json …` probe, which carries `latestReviews` /
+`reviewRequests` but **no review-comment counts**. The rows show state only.
+
+**Why:** richer signal at a glance — how much feedback a reviewer left, not just their verdict.
+
+**How to start:** counts aren't in `latestReviews`, so this needs a second call —
+`gh api repos/{owner}/{repo}/pulls/{number}/comments` (review/diff comments) grouped by
+`user.login` — added to `resolvePR` (`Core/WorkroomStatusResolver.swift`) and surfaced on
+`Reviewer` (e.g. an optional `commentCount`). Weigh the extra network round-trip on the already-slow,
+TTL-throttled PR probe; consider fetching counts lazily/only for the selected PR. Map counts onto
+the existing identity-keyed fold; teams won't have counts.
+
+**Depends on:** the #52 reviewer rows (shipped).
+
+**Priority:** P3 (nice-to-have; deliberately deferred from #52 to keep that change to free data).
+
+## P3 — Notifications and run commands
+
+### Auto-emit OSC notifications on command completion (macapp)
+
+**What:** An opt-in shell hook (zsh `precmd`/`preexec`, or OSC 133 prompt markers) that emits
+`printf '\e]9;<cmd> finished\a'` after a command that ran longer than N seconds, so notifications
+fire automatically without the user wrapping commands.
+
+**Why:** Notification detection is explicit-only (issue #10 review, decision 1.1b): we notify on
+OSC 9/99/777 + bell, not raw output. That's precise but silent for a bare `make test` that emits
+nothing. A shell hook closes that gap so the common "my build finished" case just works.
+
+**How to start:** Source a hook into the login shell launched by
+`TerminalSessions.makeTerminal` (`-l`), or document it for the user to add. Decide OSC 133 vs a
+`precmd` that emits OSC 9. Keep it opt-in (injecting into the user's shell is invasive). Note the
+OSC 133 *command-finished* marker is already parsed app-side
+(`GhosttyRuntimeAdapter` handles `GHOSTTY_ACTION_COMMAND_FINISHED`, used today to clear the
+running-command title) — so this task is about *emitting* OSC 9 on completion, not parsing it.
+
+**Depends on:** the notifications feature (#10) — **now landed**; the OSC 9 desktop-notification
+handler exists to receive it (`GhosttyRuntimeAdapter` `GHOSTTY_ACTION_DESKTOP_NOTIFICATION` →
+`AppStore.handleActivity`).
+
+**Priority:** P3 (amplifies the shipped feature; the feature is useful without it for tools that
+already emit OSC/bell).
+
+### Notification preferences (macapp)
+
+**What:** Per-workroom (or per-terminal) mute, a notification-sound toggle, and respecting macOS
+Focus / Do-Not-Disturb.
+
+**Why:** Now that notifications exist, a noisy cooperating tool (a watcher firing OSC on every
+rebuild) will need silencing without losing notifications from other terminals. Focus/DND respect is
+largely automatic via `UNUserNotificationCenter` (the system honors Focus at delivery time);
+per-workroom mute is app logic.
+
+**How to start:** A mute set keyed on `TerminalTarget.ID`, checked in
+`NotificationCenterStore.record(...)` before creating an item / posting. Persist with a
+`Defaults.Keys` entry in `Core/DefaultsKeys.swift` (the app uses `sindresorhus/Defaults` now —
+consistent with `theme` / `copyOnSelect`, not `@AppStorage`). A sound toggle gates `content.sound`
+in `SystemNotifier.post()` (today hardcoded to `.default`).
+
+**Depends on:** the notifications feature (#10) — **now landed**
+(`macapp/WorkroomApp/Core/NotificationCenterStore.swift`, `Core/SystemNotifier.swift`).
+
+**Priority:** P3 (the feature is usable without it; add when a real terminal proves too chatty).
+
+### Run-terminal persistence / auto-restart across relaunch (macapp) — #7 follow-up
+
+**What:** Restore (or auto-restart) a workroom's run command when the app relaunches, rather than
+losing it. Optionally remember which workroom had a running run command and offer/auto-run it on next
+launch.
+
+**Why:** The run-command feature (#7) keeps run terminals in-memory (consistent with all terminals —
+`TerminalSessions` is session-only), and auto-run fires only at workroom *creation*. So quitting the
+app with a dev server running loses it, and there's no auto-restart on launch. For a long-lived
+"always have my dev server up" workflow that's a gap.
+
+**How to start:** Persist a small per-target marker (e.g. `Defaults` set of target ids that had a
+running run command), and on launch — after the project list loads and a workroom is selected — offer
+or auto-start its run command. Decide the policy (auto vs prompt) and how it interacts with the
+existing creation-time auto-run. Reuse `AppStore.startRunCommand(for:)` and the run-state model
+(`runTabIDByTarget` / `runningTargets`).
+
+**Depends on:** the #7 run-command feature shipping first (`macapp/WorkroomApp/Core/AppStore.swift`
+run-command actions, `Core/TerminalSessions.swift` `addRunTab`).
+
+**Priority:** P3 (deferred from #7 — the feature is useful without it; surfaced by the eng-review).
+
+### Stopped run-tab silently closes instead of warning when its command is cleared (macapp) — #127 follow-up
+
+**What:** `runOrFocusRunCommand()`'s `.stopped` case routes through `restartRunCommand` →
+`respawnRunCommand`, which checks `hasRunCommand` and — if false — just closes the stopped-but-open
+run tab and returns. No settings sheet, no warning, nothing.
+
+**Why:** #127 gave the `.armed/.none` case (nothing has ever run) a "no command configured" warning
+sheet instead of a silent no-op. `.stopped` never got the same treatment, so the gap is now
+inconsistent: repro is run command configured → it stops (pane stays open) → user clears the command
+via Project Settings → next ⌘R on that target silently destroys the stopped pane instead of
+explaining why nothing (re)started. Found by the outside-voice adversarial review during #127 (Codex);
+this branch predates #127 and wasn't touched by it, so it's a pre-existing gap in the original #7
+feature, not a regression — but #127 makes the inconsistency more visible.
+
+**How to start:** Mirror the `.armed/.none` branch's `hasRunCommand` check + `pendingProjectSettings`
+routing inside `respawnRunCommand` (`AppStore.swift`, guard at line ~1465) before it unconditionally
+closes the tab. Needs care around issue #67's focus-preservation semantics (`wasFocused`) — that
+logic wasn't reviewed against this change.
+
+**Depends on:** #127 shipping first (`AppStore.swift`'s `PendingProjectSettings` +
+`pendingProjectSettings`).
+
+**Priority:** P3 (pre-existing, narrow repro — needs a run to have started and stopped, then the
+command cleared before the next ⌘R; surfaced by the #127 eng/outside-voice review, not reported by a
+user).
+
+## P3 — Tests and tooling
+
+### Deferred UI workflow tests (macapp)
+
+**What:** The two workflow UI tests left to write on top of the now-landed fixture seam:
+1. **Notification badge + click-to-navigate** — drive a terminal to `printf '\e]9;…\a'`, assert the
+   sidebar/tab badge appears, click it, assert it navigates to (and clears on) the right terminal.
+2. **Delete-workroom-clears-badges** — assert deleting a workroom withdraws its notifications/badges.
+
+**Why:** The fixture seam itself is done (`Core/UITestFixture.swift` + `-WorkroomUITestFixture 1`
+gives deterministic, CI-able state — see `AppStore.loadFixture()`), and the split-pane + basic
+workflow suites pass deterministically (no `XCTSkip`). These two notification/delete flows are the
+remaining gap, called out explicitly in `WorkroomWorkflowUITests.swift` ("Still to add: …").
+
+**How to start:** Add the tests to `macapp/WorkroomAppUITests/WorkroomWorkflowUITests.swift` using
+the existing fixture launch arg and the `sidebar.*` / `terminal.tab.*` accessibility identifiers. The
+badge assertions need the notification a11y identifiers to be queryable — add them if missing.
+
+**Also: stabilise a known flake (observed 2026-07-25, during #129).**
+`TabActionsUITests.testContextMenuSplitRightCreatesTwoPanes` failed once at
+`WorkroomAppUITests/TabActionsUITests.swift:62` ("diff tab should open") when run in a batch with two
+other classes, then passed in isolation and passed again on a batch re-run — so it's timing, not a
+regression. The suspect is visible in the helper: `openDiffPreview` waits **10s** for the Changes row to
+exist, then `row.click()`s it and waits only **6s** for the diff tab. Two thin spots in that sequence —
+existence is not the same as being hit-testable, so the click can land before the row accepts it and be
+swallowed silently; and 6s is the tightest budget in a helper that otherwise allows 10s, which is the
+first thing to give under batch load. Fix by waiting for the row to be interactive before clicking (or
+retrying the click once) and raising the diff-tab wait to match the 10s used elsewhere. Worth doing
+because a flaky UI test erodes trust in the whole suite, and this one gates several toolbar tests.
+
+**Depends on:** the fixture seam + accessibility identifiers already in place
+(`macapp/WorkroomApp/Core/UITestFixture.swift`, `Views/ProjectSidebar.swift`,
+`Views/TerminalTabStrip.swift`).
+
+**Priority:** P3 (the smoke + opportunistic suites cover the basics; these harden the notification
+flows).
+
+## P3 — CLI
+
+### Harden `vcs.Detect` to validate a real repo (CLI) — #103 follow-up
+
+**What:** `vcs.Detect` (`internal/vcs/vcs.go`) currently treats a directory as a repo if `.jj` is a
+dir OR `.git` merely *exists* (file or dir). A bogus/empty `.git` therefore registers as a project
+via `add-project` and only fails later, at workroom creation.
+
+**Why:** Surfaced by the Codex outside-voice pass during `/plan-eng-review` of issue #103 (the
+create-project work). It's a pre-existing robustness gap — the existing-path `add-project` already
+has it; #103's create flow inits a real repo so its happy path is unaffected — but a stricter check
+would fail fast with a clear error instead of a confusing late failure. Re-confirmed by the Codex
+pass during the jj→git stale-vcs fix: the new reconcile-on-list (`Service.effectiveVCS`) also uses
+marker-file truth, so a *present-but-broken* `.jj` dir would still reconcile as jj — hardening
+`Detect` fixes both the late-failure gap and the reconcile accuracy in one place.
+
+**How to start:** In `Detect`, validate beyond existence — e.g. `git rev-parse --git-dir` (or read
+`.git`/`HEAD`) for git, and confirm `.jj/repo` for jj. Weigh that `Detect` runs on every
+create/list/delete (now also list-reconcile), so keep it cheap (a stat-level check may suffice over
+forking git).
+
+**Depends on:** nothing; touches all VCS consumers (`create`, `list`, `delete`, `add-project`).
+
+**Priority:** P3 (pre-existing; create-new path inits a valid repo, so not blocking #103).
+
+## Recently done
+
+Condensed from the long status notes this file used to carry at the top; the full write-ups are in git
+history. Kept here for the parts that stay useful: what changed, and the traps found doing it.
+
+**2026-07-25 — jj native reads (all five in `vcs/crates/wr-vcs-core/src/jj_backend.rs`).**
+- **± line counts** now come from ONE `materialized_diff_stream` per read, so the change kind and the
+  counts are the same entry, first-parent-anchored by construction. Deliberately **no** aggregate field
+  on `WorkingStatus`/`CommitChanges` — a stored total beside the rows is the second representation that
+  caused the bug. `None` counts mean *not counted, never zero* (binary, >4 MiB, non-file). Conflicts
+  **do** count their markers, matching `jj diff --stat`, a git worktree diff, and our own commit header;
+  `VCSStatusPresentation.lineCountsHelp` says so in both the tooltip and the VoiceOver label. Deleted
+  `parseDiffStat`, `commitStatArgs`, and `changeset`'s `--stat` pair: **3 fewer `jj` processes**.
+- **Log + branch-label order** go through one `ancestors_revset` helper (jj-lib's `::@`, descending
+  commit position = topological). Timestamps were never a graph order; the old max-heap could surface a
+  commit above its own descendants. `nearest_bookmark` shares that walk, so the sidebar can't name a
+  bookmark History doesn't show — and it now stops at the first bookmark instead of deserializing every
+  ancestor. git's side keeps libgit2 `GIT_SORT_NONE` (= `git log`'s own default), so each backend
+  matches its own CLI; do not "unify" them.
+- **Error taxonomy** is classified at the source instead of one `fn io()`. Two were latent bugs, not
+  labels: `FileLock::lock` blocks on `flock` forever (a `jj` command in a terminal used to stall the
+  status sweep and hold a `JJSnapshotGate` slot) — now a non-blocking `try_lock` probe; and
+  `WorkingCopyFreshness::check_stale` now runs, so a working copy another workspace rewrote reports
+  `StaleSnapshot` instead of being snapshotted from a stale base. App side: `VCSStatusFailure.busy` /
+  `.staleWorkingCopy` replace "not a repository" for both.
+- **Rename detection** via `diff_stream_with_copies` + the backend's copy records: one `Renamed` row
+  with `old_path`, in the Changes panel and History. Backend-dependent by design (jj's `simple_backend`
+  returns no records). `Conflicted` beats rename, but defensively only — a conflicted path can't carry a
+  copy record, so a conflicted rename decomposes into `Added` + `Conflicted`.
+- **Per-file conflict status** classifies an unresolved `after` value as `Conflicted` *before* the
+  presence tests (an unresolved merge never satisfies `is_absent()`, which is a *resolved* `Some(None)`
+  — why conflicts read as `Modified`). UI: `"!"` in `tokens.conflict`, mapped in `Core/ChangeBadge.swift`.
+  CI now runs `cargo test` at all.
+- **Merge working-copy diffs**: `jj diff -r @` diffs a merge against its *auto-merged* parents while the
+  file list is a tree diff against the FIRST parent, so any file differing only from the first parent
+  listed but showed "No changes". `workingFileDiff` resolves `@`'s first parent and diffs `--from <id>
+  --to @` (`--from @-` can't express it — `@-` on a merge is several revisions).
+- **Chrome glyph buttons' `isHittable == false`** — closed as an environmental XCUITest artefact, not an
+  a11y defect; nothing in the app was wrong. Two misleading comments removed, replaced by real guards
+  (`testChromeGlyphButtonsAreHittableWhenInline` / `…WhenPinned`).
+
+**Traps worth knowing before touching the same code:**
+- A **single-parent or linear fixture cannot expose** the merge/ordering bugs at all — the two bases
+  coincide, the heap frontier is size one. Ordering tests need a merge AND skewed timestamps
+  (`JJ_TIMESTAMP`); merge tests should assert `parents.len() == 2`.
+- `jj diff --stat` prints its summary line even when nothing changed, so a test asserting the *absence*
+  of "insertions" passes for the wrong reason — assert the file count.
+- No jj fixture may address commits **by bookmark**: with `experimental-advance-branches` (as in the
+  author's config) `jj commit` advances the bookmark onto the new commit, collapsing the two merge sides
+  and silently producing no conflict. Also: don't `unsafe set_var("JJ_CONFIG")` from parallel `#[test]`s.
+- XCUITest's `isHittable` uses **accessibility** hit-testing: neither a covering non-AX overlay nor a
+  `0×0` frame turns it false — only a real AX element or another window over the point. A window that
+  wasn't frontmost explains the original sighting.
+- Conflict-marker counting depends on marker **style**, so "The jj snapshot ignores the user's real
+  jj/git config" must fix `materialize_options()` too, not just `snapshot_working_copy`.
+
+**2026-07-24.** `JJSnapshotGate` (per-project-root chain-of-tails actor) serializes every jj-mutating
+snapshot across the status fan-out — status sweep, selection refresh, file-watch, `.jjWorkingCopy`
+diffs, and `FileTreeModel.list`'s ungated `jj file list`; `maxChainWait` (30s) stops one hung native
+call wedging a project's whole queue. `add-project --pretend` is a real dry-run on the non-create path.
+Pending sheets clear in `removeProjectLocally()` when they target the deleted project.
+
+**2026-06-24 audit.** Shipped: workroom tab-chip management actions (#23), hardened `gh` auth (#86),
+live branch-label refresh (per-project FSEvents on each root's `.git`/`.jj`). Narrowed: at-a-glance
+review status (label + PR badge shipped; glyph + sweep stage remain), per-pane activity flash.
+**Dropped (won't do):** per-file diff view-mode persistence — the in-memory per-tab toggle is enough.
+
+**2026-06-09.** Splits (A5), the UI-test fixture seam, and terminal notifications (#10) landed.
