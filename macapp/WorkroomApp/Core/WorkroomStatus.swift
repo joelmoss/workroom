@@ -78,6 +78,8 @@ enum VCSStatusFailure: Equatable, Sendable {
   case missingPath  // workroom directory gone
   case notRepository  // path exists but isn't the expected VCS repo (git exit 128)
   case timeout  // probe exceeded its deadline (slow disk, index.lock contention)
+  case busy  // another process holds the working-copy lock (a `jj` command in a terminal)
+  case staleWorkingCopy  // `@` was rewritten/abandoned elsewhere; needs `jj workspace update-stale`
 }
 
 /// One changed path in the working tree, with its change kind (for the detail panel grouping).
@@ -263,7 +265,11 @@ struct WorkroomStatus: Equatable, Sendable {
   /// missingPath/notRepository(unknown) > conflicted > dirty > clean/unresolved.
   var aggregateWeight: Int {
     if conflicted { return 3 }
-    if failure == .missingPath || failure == .notRepository { return 1 }  // unknown, low
+    switch failure {
+    // Unknown-because-the-probe-failed: above clean, below dirty. `.timeout` is left out, as before.
+    case .missingPath, .notRepository, .busy, .staleWorkingCopy: return 1
+    case .timeout, nil: break
+    }
     if dirty == true { return 2 }
     return 0
   }
@@ -301,6 +307,8 @@ enum VCSStatusPresentation {
       case .missingPath: why = "status unavailable, directory missing"
       case .notRepository: why = "status unavailable, not a repository"
       case .timeout: why = "status unavailable, timed out"
+      case .busy: why = "status unavailable, repository is busy"
+      case .staleWorkingCopy: why = "status unavailable, working copy is out of date"
       default: why = "status unavailable"
       }
       return StatusDot(symbol: "questionmark.circle", semantic: .unknown, accessibility: why)

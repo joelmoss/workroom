@@ -206,6 +206,25 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertEqual(s.failure, .notRepository)
   }
 
+  // MARK: - typed backend error → status failure
+
+  /// Every `VCSError` the backends can raise must land on a badge deliberately, since a probe failure
+  /// is the one status the user can't verify by looking at the row. The two retryable jj states get
+  /// their own badge; the rest keep `.notRepository`, which is what the git side needs — `GitProvider`
+  /// can't bind SwiftGitX's typed error, so a missing/broken repo arrives as `.io`.
+  func testFailureMappingPerVCSError() {
+    XCTAssertEqual(WorkroomStatusResolver.failure(for: .lockContention), .busy)
+    XCTAssertEqual(WorkroomStatusResolver.failure(for: .staleSnapshot), .staleWorkingCopy)
+    XCTAssertEqual(
+      WorkroomStatusResolver.failure(for: .unsupportedRepo("no jj repo")), .notRepository)
+    XCTAssertEqual(WorkroomStatusResolver.failure(for: .notFound("f.txt")), .notRepository)
+    XCTAssertEqual(
+      WorkroomStatusResolver.failure(for: .partialData("diff read failed")), .notRepository)
+    XCTAssertEqual(
+      WorkroomStatusResolver.failure(for: .backendVersion("from-the-future")), .notRepository)
+    XCTAssertEqual(WorkroomStatusResolver.failure(for: .io("boom")), .notRepository)
+  }
+
   // MARK: - resolveCI (end-to-end via the mock)
 
   func testResolveCIPassing() async {

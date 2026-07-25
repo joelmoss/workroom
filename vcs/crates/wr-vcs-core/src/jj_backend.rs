@@ -23,19 +23,51 @@ use jj_lib::copies::{CopyOperation, CopyRecords};
 use jj_lib::gitignore::GitIgnoreFile;
 use jj_lib::hex_util::encode_reverse_hex;
 use jj_lib::id_prefix::IdPrefixIndex;
+use jj_lib::local_working_copy::LocalWorkingCopy;
+use jj_lib::lock::FileLock;
 use jj_lib::matchers::{EverythingMatcher, NothingMatcher};
 use jj_lib::object_id::ObjectId;
-use jj_lib::repo::{ReadonlyRepo, Repo, StoreFactories};
+use jj_lib::repo::{ReadonlyRepo, Repo, StoreFactories, StoreLoadError};
 use jj_lib::revset::{ResolvedRevsetExpression, Revset, RevsetExpression};
 use jj_lib::settings::UserSettings;
-use jj_lib::working_copy::SnapshotOptions;
-use jj_lib::workspace::{default_working_copy_factories, Workspace};
+use jj_lib::working_copy::{SnapshotOptions, WorkingCopyFreshness};
+use jj_lib::workspace::{default_working_copy_factories, Workspace, WorkspaceLoadError};
 
 use wr_vcs_model as model;
 use wr_vcs_model::{Author, Commit, HistoryPage, VcsError};
 
 fn io<E: std::fmt::Display>(e: E) -> VcsError {
     VcsError::Io(e.to_string())
+}
+
+/// Classify a `Workspace::load` failure instead of flattening it to `Io`, so the app can tell
+/// "this isn't a jj repo (any more)" from "we can't read this repo". Each arm reaches a distinct
+/// Swift `VCSError` case and from there a distinct UI state — see `RustJJProvider.mapError`.
+///
+/// - the two "no repo at this path" variants → `UnsupportedRepo`: the `.jj` dir (or the `repo` dir a
+///   secondary workspace's `.jj/repo` file points at) is gone, so the path the app has registered as
+///   a jj project no longer is one. Swift maps this to the sidebar's "not a repository", the same
+///   honest answer git already gives.
+/// - `StoreLoadError::UnsupportedType` → `BackendVersion`: the repo names a backend (commit / op /
+///   index / working-copy store) that this build's `StoreFactories` doesn't know — the signature of a
+///   repo written by a newer jj than the `jj-lib` we pin. Retrying can't help; the message names the
+///   store and type so the user can see which.
+/// - everything else (unreadable paths, undecodable repo path, working-copy state, other store load
+///   failures) stays `Io`: a real I/O-shaped failure with nothing more specific to say.
+fn workspace_load_err(e: WorkspaceLoadError) -> VcsError {
+    match e {
+        WorkspaceLoadError::NoWorkspaceHere(path) => {
+            VcsError::UnsupportedRepo(format!("no jj repo at {}", path.display()))
+        }
+        WorkspaceLoadError::RepoDoesNotExist(path) => {
+            VcsError::UnsupportedRepo(format!("jj repo no longer at {}", path.display()))
+        }
+        WorkspaceLoadError::StoreLoadError(StoreLoadError::UnsupportedType {
+            store,
+            store_type,
+        }) => VcsError::BackendVersion(format!("unsupported {store} backend type '{store_type}'")),
+        other => io(other),
+    }
 }
 
 /// Open a workspace read-only and load the repo at the current operation head.
@@ -47,7 +79,7 @@ fn open(root: &Path) -> model::Result<(Workspace, Arc<ReadonlyRepo>)> {
         &StoreFactories::default(),
         &default_working_copy_factories(),
     )
-    .map_err(io)?;
+    .map_err(workspace_load_err)?;
     let repo = pollster::block_on(workspace.repo_loader().load_at_head()).map_err(io)?;
     Ok((workspace, repo))
 }
@@ -470,6 +502,42 @@ fn base_ignores(root: &Path) -> Arc<GitIgnoreFile> {
     chain(ignores, root.join(".git/info/exclude"))
 }
 
+/// Is the working-copy lock currently held by someone else?
+///
+/// `Workspace::start_working_copy_mutation` takes that lock through jj-lib's `FileLock::lock`, which
+/// **blocks on `flock` forever** and never reports contention — so a `jj` command the user runs in a
+/// workroom terminal (a long `jj rebase`, or `jj log` in a huge repo) would stall the status sweep's
+/// snapshot for its whole duration, holding a GCD thread and the project's `JJSnapshotGate` slot,
+/// with every other workroom of that project queued behind it. A non-blocking `try_lock` probe first
+/// turns that into an instant, typed `LockContention` — the row reports "busy" and the next refresh
+/// (15s) tries again.
+///
+/// Best-effort by construction, and safe in both directions: a `None` (held) answer can only be
+/// produced by a real holder, and a `Some` answer can go stale the moment we drop the probe lock —
+/// in which case we simply block as before. Dropping our own probe lock deletes the lock file, which
+/// is jj's own protocol (its `FileLock::drop` does the same, and waiters re-create it).
+///
+/// Skipped unless this is a `LocalWorkingCopy`: the lock path is jj's on-disk layout for the local
+/// backend (`<workspace>/.jj/working_copy/working_copy.lock`, `DefaultWorkspaceLoader` in the pinned
+/// jj-lib), which a custom working-copy backend needn't share. A missing lock file means nobody has
+/// locked it, so the common case costs one `exists()`.
+fn lock_is_held(workspace: &Workspace) -> bool {
+    if workspace.working_copy().name() != LocalWorkingCopy::name() {
+        return false;
+    }
+    let path = workspace
+        .workspace_root()
+        .join(".jj")
+        .join("working_copy")
+        .join("working_copy.lock");
+    if !path.exists() {
+        return false;
+    }
+    // `Err` ⇒ we couldn't probe (permissions, an odd filesystem); don't invent contention — let
+    // `start_working_copy_mutation` produce the real error (or block, as it did before).
+    matches!(FileLock::try_lock(path), Ok(None))
+}
+
 /// Snapshot the working copy so `@` reflects on-disk edits, returning the repo at the resulting
 /// operation. Unlike the read-only `open`, this MUTATES (exactly like every `jj` command): it takes
 /// the working-copy lock, and when disk differs from `@`'s tree it rewrites `@`, rebases descendants,
@@ -486,17 +554,57 @@ fn snapshot_working_copy(root: &Path) -> model::Result<(Workspace, Arc<ReadonlyR
         &StoreFactories::default(),
         &default_working_copy_factories(),
     )
-    .map_err(io)?;
-    let repo = pollster::block_on(workspace.repo_loader().load_at_head()).map_err(io)?;
+    .map_err(workspace_load_err)?;
+    let mut repo = pollster::block_on(workspace.repo_loader().load_at_head()).map_err(io)?;
 
     let wc_name = workspace.workspace_name().to_owned();
     let Some(wc_commit_id) = repo.view().get_wc_commit_id(&wc_name).cloned() else {
         // No working-copy commit (e.g. a bare/foreign workspace) — nothing to snapshot.
         return Ok((workspace, repo));
     };
-    let wc_commit = repo.store().get_commit(&wc_commit_id).map_err(io)?;
+    let mut wc_commit = repo.store().get_commit(&wc_commit_id).map_err(io)?;
+
+    // Fail fast when someone else holds the working-copy lock (see `lock_is_held`) — a blocking
+    // `flock` here would pin this thread, and a gate slot, for as long as the other process runs.
+    if lock_is_held(&workspace) {
+        return Err(VcsError::LockContention);
+    }
 
     let mut locked_ws = pollster::block_on(workspace.start_working_copy_mutation()).map_err(io)?;
+
+    // jj's own staleness guard, which every `jj` command runs and this read used to skip. The lock is
+    // taken AFTER the repo was loaded, so between the two another process (the user's `jj` in a
+    // terminal, or a sibling *workspace* of the same repo — i.e. another workroom — rewriting this
+    // `@`) can have moved things underneath us. Snapshotting anyway would write a new `@` from a base
+    // that no longer describes this working copy, which is how work gets clobbered.
+    let freshness = pollster::block_on(WorkingCopyFreshness::check_stale(
+        locked_ws.locked_wc(),
+        &wc_commit,
+        &repo,
+    ))
+    .map_err(io)?;
+    match freshness {
+        WorkingCopyFreshness::Fresh => {}
+        // The working copy is AHEAD of the repo we loaded (something updated it in the gap). Not an
+        // error — reload the repo at the working copy's own operation and carry on, exactly as the jj
+        // CLI does, so a `jj` command racing the status sweep doesn't flash a failure in the sidebar.
+        WorkingCopyFreshness::Updated(wc_operation) => {
+            repo = pollster::block_on(repo.reload_at(&wc_operation)).map_err(io)?;
+            let Some(id) = repo.view().get_wc_commit_id(&wc_name).cloned() else {
+                drop(locked_ws); // release the lock before handing the workspace back
+                return Ok((workspace, repo));
+            };
+            wc_commit = repo.store().get_commit(&id).map_err(io)?;
+        }
+        // Genuinely stale (`@` was rewritten/abandoned by another workspace) or divergent. Both are
+        // `StaleSnapshot`: reporting a recoverable error beats snapshotting from a stale base. The
+        // stale case is what `jj workspace update-stale` exists to repair — we deliberately don't run
+        // it here, since recovering a working copy is a write the user hasn't asked for.
+        WorkingCopyFreshness::WorkingCopyStale | WorkingCopyFreshness::SiblingOperation => {
+            return Err(VcsError::StaleSnapshot);
+        }
+    }
+
     let options = SnapshotOptions {
         base_ignores: base_ignores(root),
         progress: None,

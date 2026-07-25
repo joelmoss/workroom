@@ -394,6 +394,43 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
       "f.txt should be .conflicted, not .modified; got \(s.changedFiles ?? [])")
   }
 
+  /// A jj command the user runs in a workroom terminal holds the working-copy lock, and the status
+  /// sweep must report that as a distinct, self-explaining state — end to end: `jj_backend`'s
+  /// non-blocking lock probe → `VcsError::LockContention` → UniFFI → `RustJJProvider.mapError` →
+  /// `WorkroomStatusResolver.failure(for:)` → the row's `.busy` badge. Nothing else in the suite
+  /// covers that chain, and the failure mode without the probe is the worst kind: jj-lib's `flock`
+  /// blocks with no timeout, so the row would sit on the sweep's 15s ceiling and report `.timeout`
+  /// while pinning the project's snapshot gate.
+  ///
+  /// The lock is taken the way another process takes it — `flock(2)` on jj's own lock file — since
+  /// `flock` is per open file description, so this really does contend with the probe's `try_lock`.
+  func testJJLockContentionReportsBusy() async throws {
+    let dir = try jjRepo()
+    sh("echo a > f.txt", in: dir)
+    // Baseline: a snapshot succeeds while nothing holds the lock, so `.busy` below can only be the lock.
+    let before = await resolver.resolveLocal(path: dir, vcs: "jj", projectRoot: dir)
+    XCTAssertEqual(before.dirty, true)
+    XCTAssertNil(before.failure)
+
+    let lockPath = (dir as NSString).appendingPathComponent(".jj/working_copy/working_copy.lock")
+    let fd = open(lockPath, O_CREAT | O_RDWR, 0o600)
+    try XCTSkipIf(fd < 0, "could not open jj's working-copy lock file at \(lockPath)")
+    XCTAssertEqual(flock(fd, LOCK_EX), 0, "hold the working-copy lock")
+
+    let busy = await resolver.resolveLocal(path: dir, vcs: "jj", projectRoot: dir)
+    XCTAssertEqual(
+      busy.failure, .busy, "a held working-copy lock reads as busy, not timeout/notRepo")
+    XCTAssertNil(busy.dirty)  // unknown, never clean
+
+    flock(fd, LOCK_UN)
+    close(fd)
+
+    // And it recovers: the probe must not have disturbed the repo or the lock file it touched.
+    let after = await resolver.resolveLocal(path: dir, vcs: "jj", projectRoot: dir)
+    XCTAssertEqual(after.dirty, true)
+    XCTAssertNil(after.failure)
+  }
+
   /// Proves the real jj head template + parse produce the description + bookmark for the Changes
   /// header (the jj "branch name" equivalent).
   func testJJHeadDescriptionAndBookmark() async throws {

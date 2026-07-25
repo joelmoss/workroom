@@ -78,6 +78,23 @@ struct WorkroomStatusResolver: Sendable {
     }
   }
 
+  /// Which "unknown" badge a typed backend error earns. Pure, so the mapping is unit-tested without
+  /// a repo.
+  ///
+  /// Only the two states a *retry* can clear get their own badge: the working-copy lock being held
+  /// (`.busy`) and a working copy that moved under the read (`.staleWorkingCopy`) — both raised by
+  /// the jj core's snapshot, both self-describing in the sidebar tooltip and the Changes panel.
+  /// Everything else stays `.notRepository`, which is also the honest answer for the common git case:
+  /// `GitProvider` can't bind SwiftGitX's typed error (a Swift 6 SIL crash — see its doc), so a
+  /// missing/broken repo arrives as `.io` and must keep reading as "not a repository".
+  static func failure(for error: VCSError) -> VCSStatusFailure {
+    switch error {
+    case .lockContention: return .busy
+    case .staleSnapshot: return .staleWorkingCopy
+    case .unsupportedRepo, .notFound, .partialData, .backendVersion, .io: return .notRepository
+    }
+  }
+
   private func resolveGit(_ dir: String) async -> WorkroomStatus {
     // Read git status structurally through libgit2 (SwiftGitX) instead of shelling `git status` +
     // `git diff --shortstat`. `VCSProviding` has no built-in timeout, so bound the (synchronous,
@@ -95,6 +112,8 @@ struct WorkroomStatusResolver: Sendable {
         insertions: ws.insertions, deletions: ws.deletions, branchForCI: ws.branch)
     } catch is VCSTimeoutError {
       return WorkroomStatus(dirty: nil, failure: .timeout)
+    } catch let error as VCSError {
+      return WorkroomStatus(dirty: nil, failure: Self.failure(for: error))
     } catch {
       return WorkroomStatus(dirty: nil, failure: .notRepository)
     }
@@ -127,6 +146,8 @@ struct WorkroomStatusResolver: Sendable {
       }
     } catch is VCSTimeoutError {
       return WorkroomStatus(dirty: nil, failure: .timeout)
+    } catch let error as VCSError {
+      return WorkroomStatus(dirty: nil, failure: Self.failure(for: error))
     } catch {
       return WorkroomStatus(dirty: nil, failure: .notRepository)
     }

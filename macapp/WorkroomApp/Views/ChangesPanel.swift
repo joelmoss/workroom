@@ -727,6 +727,8 @@ struct ChangesPanel: View {
     case .missingPath: return "Directory not found."
     case .notRepository: return "Not a repository."
     case .timeout: return "Status unavailable (timed out)."
+    case .busy: return "Repository is busy — another VCS command is running."
+    case .staleWorkingCopy: return "Working copy is out of date. Run `jj workspace update-stale`."
     }
   }
 }

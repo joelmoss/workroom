@@ -65,6 +65,35 @@ final class WorkroomStatusTests: XCTestCase {
     XCTAssertEqual(dot?.semantic, .unknown)  // never .conflict/.dirty → never alarming
   }
 
+  /// The two retryable backend failures must SAY what they are. Both used to arrive as
+  /// `.notRepository`, so a busy or out-of-date working copy read as "not a repository" — a wrong
+  /// diagnosis for a repo that is fine and will answer on the next refresh. The glyph stays the quiet
+  /// unknown one; only the (tooltip / VoiceOver) text differentiates.
+  func testDotBusyAndStaleExplainThemselves() {
+    let busy = VCSStatusPresentation.dot(WorkroomStatus(dirty: nil, failure: .busy))
+    XCTAssertEqual(busy?.symbol, "questionmark.circle")
+    XCTAssertEqual(busy?.semantic, .unknown)
+    XCTAssertEqual(busy?.accessibility, "status unavailable, repository is busy")
+
+    let stale = VCSStatusPresentation.dot(WorkroomStatus(dirty: nil, failure: .staleWorkingCopy))
+    XCTAssertEqual(stale?.accessibility, "status unavailable, working copy is out of date")
+    XCTAssertNotEqual(
+      stale?.accessibility,
+      VCSStatusPresentation.dot(WorkroomStatus(dirty: nil, failure: .notRepository))?.accessibility)
+  }
+
+  /// A busy/stale row must count toward the project aggregate the same way the other probe failures
+  /// do — unknown outranks clean, dirty outranks unknown.
+  func testAggregateWeightCoversTheNewFailures() {
+    let dirty = WorkroomStatus(dirty: true)
+    let clean = WorkroomStatus(dirty: false)
+    for failure in [VCSStatusFailure.busy, .staleWorkingCopy] {
+      let unknown = WorkroomStatus(dirty: nil, failure: failure)
+      XCTAssertGreaterThan(dirty.aggregateWeight, unknown.aggregateWeight, "\(failure)")
+      XCTAssertGreaterThan(unknown.aggregateWeight, clean.aggregateWeight, "\(failure)")
+    }
+  }
+
   // MARK: - VCSStatusPresentation.ci
 
   func testCIGlyphs() {

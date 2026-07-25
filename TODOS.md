@@ -1,5 +1,34 @@
 # TODOs
 
+> Status note (2026-07-25): **Done & removed:** "Real `VcsError` taxonomy across the UniFFI boundary".
+> The entry's premise was half stale and the live half was in a different place than it claimed. Its
+> Swift half — `RustJJProvider.mapError` flattening every case to `.io` — had already shipped in
+> `6b6461e2` (case-by-case), and `DiffResolver.message(for:)` is live + tested, not dead code. The real
+> gap was that the taxonomy was dead **at the source**: `jj_backend.rs` funnelled every jj-lib error
+> through one `fn io()`, so only `NotFound` and `PartialData` were ever produced and 4 of the 7 cases
+> could not occur end-to-end. Fixed by classifying where the errors arise: `Workspace::load`'s
+> `NoWorkspaceHere`/`RepoDoesNotExist` → `UnsupportedRepo`, `StoreLoadError::UnsupportedType` →
+> `BackendVersion` (a repo written by a newer jj than our pinned `jj-lib`). The two remaining cases
+> needed real behaviour, not labels, and both were **latent bugs** on the one mutating path
+> (`snapshot_working_copy`): (1) `LockContention` cannot come from jj-lib at all — `FileLock::lock`
+> blocks on `flock` **forever** and never reports contention — so a `jj` command in a workroom terminal
+> used to stall the status sweep for its whole duration, pinning a GCD thread and the project's
+> `JJSnapshotGate` slot; a non-blocking `FileLock::try_lock` probe now turns that into an instant typed
+> failure (proven: the new cargo test **hangs >60s** against the old code). (2) we never ran jj's own
+> staleness guard, so a working copy another workspace had rewritten got snapshotted from a stale base —
+> `WorkingCopyFreshness::check_stale` now runs, with jj's own handling: `Updated` reloads the repo at the
+> working copy's operation (so a racing `jj` doesn't flash a failure), `WorkingCopyStale`/
+> `SiblingOperation` → `StaleSnapshot`. App side, the status path stopped flattening too:
+> `WorkroomStatusResolver.resolveJJ`/`resolveGit` caught everything into `.notRepository`, so a busy or
+> out-of-date working copy read as "not a repository" — there are now `VCSStatusFailure.busy` /
+> `.staleWorkingCopy`, fed by a pure `failure(for:)` mapper, with their own sidebar tooltip and Changes
+> panel text. Coverage: 4 cargo tests (all negative-checked against the pre-change core), 1 end-to-end
+> XCTest holding jj's lock with `flock(2)` (jj-lib → UniFFI → resolver → `.busy`, 0.2s not 15s), and 3
+> unit tests. **Deliberately left:** git's side still flattens to `.io` (a documented Swift 6 SIL crash
+> blocks binding SwiftGitX's typed error) and a stale working copy is reported but not repaired — both
+> now their own TODOs below. Also noticed and left alone: `aggregateWeight` excludes `.timeout` from the
+> unknown-weight branch (pre-existing; the new cases follow `missingPath`/`notRepository`).
+>
 > Status note (2026-07-25): **Done & removed:** "Chrome buttons report `isHittable == false` to the
 > a11y layer" — investigated and **closed as an environmental XCUITest artefact, not an accessibility
 > defect**, so the P2-if-VoiceOver-sees-it branch does not apply. Probing `NewTerminal`, `NewWorkroom`,
@@ -901,19 +930,45 @@ walk the DAG by generation for `nearest_bookmark`.
 
 **Priority:** P2 (History mis-order + wrong branch label under skew/rebase).
 
-## Real `VcsError` taxonomy across the UniFFI boundary (macapp) — VCS-foundation eng-review
+## Offer to repair a stale jj working copy from the app (macapp) — error-taxonomy follow-up
 
-**What:** `RustJJProvider.mapError` flattens every `WrVcs.VcsError` to `.io`, so
-`WorkroomStatusResolver` reports lock-contention / stale-snapshot as `.notRepository`, and
-`DiffResolver`'s `.lockContention`/`.staleSnapshot` handling + messages are dead code.
+**What:** When a workroom reports `.staleWorkingCopy`, offer the repair inline (a button that runs
+`jj workspace update-stale`) instead of only naming it in the Changes panel's text.
 
-**How to start:** Map each `WrVcs.VcsError` case → the matching `VCSError` case in
-`RustJJProvider.mapError` (and the `GitProvider` catch). Then the resolvers' typed recovery states
-light up. This is the "error taxonomy" work from the Phase-1 plan (CQ2).
+**Why:** the taxonomy work made the state *visible* and *honest* — the row no longer claims "not a
+repository", and the panel says what to run — but the fix is still a manual trip to a terminal. The
+state is reachable in ordinary use: workrooms of one project are jj **workspaces** of one repo, so a
+`jj rebase`/`jj abandon` in workroom A can rewrite workroom B's `@` and leave B stale until B is
+updated. Deliberately not done with the read work: recovering a working copy is a **write**, and every
+VCS write belongs to the Phase-2 write-actions chunk (its own confirmation + undo story), not to a
+status probe. jj-lib exposes `Workspace::recover`/`RecoverWorkspaceError` for it.
 
-**Depends on:** VCS read foundation. Touches `Core/RustJJProvider.swift`, `Core/GitProvider.swift`.
+**Depends on:** the shipped `StaleSnapshot` classification (`jj_backend.rs` `snapshot_working_copy`)
+and `VCSStatusFailure.staleWorkingCopy`. Relates to "VCS write actions — Phase 2".
 
-**Priority:** P2 (typed recovery UI currently unreachable).
+**Priority:** P3 (the state is now self-explaining; this saves the trip to a terminal).
+
+## Git-side errors still flatten to `.io` (macapp) — error-taxonomy follow-up
+
+**What:** `GitProvider` throws `VCSError.io("\(error)")` from every catch, so nothing on the git path
+can reach `.lockContention` / `.notFound` / `.unsupportedRepo`. The jj path is now classified at the
+source; git isn't.
+
+**Why it wasn't done with the jj half:** the blocker is deliberate and documented in `GitProvider`'s
+own header — binding SwiftGitX's typed error (`catch let e as SwiftGitXError`) trips a **Swift 6 SIL
+ownership error** across the async boundary, so the provider catches untyped on purpose. Classifying
+would mean sniffing error *strings* (fragile, locale-adjacent) or getting the typed catch to compile.
+Note the status path depends on today's behaviour: `.io` → `.notRepository` is the honest answer for
+git's most common failure (a path that isn't a repo), so this is not a silent lie the way the jj cases
+were — it's a missing distinction (`index.lock` contention in particular, which would map to `.busy`).
+
+**How to start:** re-test the typed catch on the current toolchain (the SIL bug may be fixed); if it
+still crashes, isolate the typed binding in a small synchronous helper the async path calls. Then map
+libgit2's `GIT_ELOCKED`/`GIT_ENOTFOUND`/`GIT_ENOTREPO`-shaped cases onto the taxonomy.
+
+**Depends on:** nothing. Touches `Core/GitProvider.swift`.
+
+**Priority:** P3 (no wrong diagnosis today, only a coarse one).
 
 ## Git diff shows one side when a file is both staged and re-modified (macapp) — VCS-foundation eng-review
 
