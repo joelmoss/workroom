@@ -74,7 +74,12 @@ struct WorkroomTabBar: View {
     // container's trailing content margin is sized against (`TabStripMetrics.fade` is the same 8pt), so
     // nothing moves in the fits case. The controls' block carries its own leading pad inside its
     // measured width, so it needs no positioning pad of its own (`inlineLead: 0`).
-    OverflowingTabScroller(leadingInset: 8, spacing: tabSpacing, inlineLead: 0) { overflowing in
+    OverflowingTabScroller(
+      leadingInset: 8, spacing: tabSpacing, inlineLead: 0,
+      // Scroll the selected workroom into view on selection (issue #129 follow-up); suspended
+      // mid-drag, like the reorder gap animation below.
+      scrollTarget: selectedID, scrollSuspended: draggingID != nil
+    ) { overflowing in
       chipRun(
         draggedIndex: draggedIndex, dropIndex: dropIndex, draggedWidth: draggedWidth,
         overflowing: overflowing)
@@ -168,7 +173,11 @@ struct WorkroomTabBar: View {
         .offset(x: offsetX)
         .zIndex(isDragging ? 1 : 0)
         .animation(
-          isDragging || reduceMotion ? nil : .easeInOut(duration: 0.18), value: offsetX)
+          isDragging || reduceMotion ? nil : .easeInOut(duration: 0.18), value: offsetX
+        )
+        // Scroll target for `OverflowingTabScroller`'s `ScrollViewReader` (issue #129 follow-up) — the
+        // same id `ForEach` already keys identity on.
+        .id(tab.sid)
       }
       // A provisional "Creating…" chip while a workroom is being created in this window (issue
       // #116), shown from the first click until its real named chip resolves into `tabs`. Tapping it

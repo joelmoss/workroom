@@ -80,7 +80,10 @@ struct TerminalTabStrip: View {
       // toolbar" (and the full strip when there's no active tab and the toolbar renders nothing).
       OverflowingTabScroller(
         leadingInset: leadingInset, spacing: tabSpacing,
-        inlineLead: TabStripMetrics.inlineAddLead
+        inlineLead: TabStripMetrics.inlineAddLead,
+        // Scroll the focused tab into view on selection (issue #129 follow-up); suspended mid-drag,
+        // like the reorder gap animation below.
+        scrollTarget: activeID, scrollSuspended: draggingID != nil
       ) { overflowing in
         chipRun(
           tabs, draggedIndex: draggedIndex, dropIndex: dropIndex, draggedWidth: draggedWidth,
@@ -202,7 +205,11 @@ struct TerminalTabStrip: View {
         .offset(x: offsetX)
         .zIndex(isDragging ? 1 : 0)
         .animation(
-          isDragging || reduceMotion ? nil : .easeInOut(duration: 0.18), value: offsetX)
+          isDragging || reduceMotion ? nil : .easeInOut(duration: 0.18), value: offsetX
+        )
+        // Scroll target for `OverflowingTabScroller`'s `ScrollViewReader` (issue #129 follow-up) — the
+        // same id `ForEach` already keys identity on.
+        .id(tab.id)
       }
       // A divider sets the new-terminal (+) button apart from the last tab (mirrors the workroom
       // tab bar). Hidden when the last tab is set apart on its own — focused or hovered — to match
