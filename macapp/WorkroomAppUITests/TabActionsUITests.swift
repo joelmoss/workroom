@@ -50,16 +50,37 @@ final class TabActionsUITests: XCTestCase {
       "the fixture workroom should render a terminal pane on launch")
   }
 
+  /// Wait for `element` to become hittable, returning whether it got there. Existing in the
+  /// accessibility tree is NOT the same as accepting a hit: a SwiftUI row can be present a frame or
+  /// two before its layout settles, and a click that lands early is swallowed silently — no error,
+  /// no effect. The result is advisory (a row that never reports hittable is still worth clicking),
+  /// which is why callers pair this with a retry rather than asserting on it.
+  private func waitForHittable(_ element: XCUIElement, timeout: TimeInterval = 10) -> Bool {
+    let exp = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "isHittable == true"), object: element)
+    return XCTWaiter().wait(for: [exp], timeout: timeout) == .completed
+  }
+
   /// Open the jj working-copy diff for `app/models/user.rb` as a preview tab; returns once its diff
   /// tab chip ("user.rb") exists.
+  ///
+  /// Deliberately patient, because this helper gates most of the class: it waits for the row to be
+  /// hittable before clicking, allows the diff tab the same 10s as every other wait here (6s was the
+  /// tightest budget in the sequence and the first thing to give under batch load), and clicks a
+  /// second time if the first produced nothing — re-clicking the same row just re-opens the same
+  /// preview, so the retry is free. That combination is what this flaked on when run in a batch.
   private func openDiffPreview(_ app: XCUIApplication) {
     XCTAssertTrue(
       element(app, id: "changes.workingCopy").waitForExistence(timeout: 10),
       "jj Working Copy header should render")
     let row = fileRow(app, "app/models/user.rb")
     XCTAssertTrue(row.waitForExistence(timeout: 10))
+    _ = waitForHittable(row)
     row.click()
-    XCTAssertTrue(diffTab(app, "user.rb").waitForExistence(timeout: 6), "diff tab should open")
+    let tab = diffTab(app, "user.rb")
+    guard !tab.waitForExistence(timeout: 10) else { return }
+    row.click()  // the first click was swallowed
+    XCTAssertTrue(tab.waitForExistence(timeout: 10), "diff tab should open")
   }
 
   /// A right-click menu item, by exact title.

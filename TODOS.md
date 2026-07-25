@@ -801,24 +801,42 @@ remaining gap, called out explicitly in `WorkroomWorkflowUITests.swift` ("Still 
 the existing fixture launch arg and the `sidebar.*` / `terminal.tab.*` accessibility identifiers. The
 badge assertions need the notification a11y identifiers to be queryable — add them if missing.
 
-**Also: stabilise a known flake (observed 2026-07-25, during #129).**
-`TabActionsUITests.testContextMenuSplitRightCreatesTwoPanes` failed once at
-`WorkroomAppUITests/TabActionsUITests.swift:62` ("diff tab should open") when run in a batch with two
-other classes, then passed in isolation and passed again on a batch re-run — so it's timing, not a
-regression. The suspect is visible in the helper: `openDiffPreview` waits **10s** for the Changes row to
-exist, then `row.click()`s it and waits only **6s** for the diff tab. Two thin spots in that sequence —
-existence is not the same as being hit-testable, so the click can land before the row accepts it and be
-swallowed silently; and 6s is the tightest budget in a helper that otherwise allows 10s, which is the
-first thing to give under batch load. Fix by waiting for the row to be interactive before clicking (or
-retrying the click once) and raising the diff-tab wait to match the 10s used elsewhere. Worth doing
-because a flaky UI test erodes trust in the whole suite, and this one gates several toolbar tests.
-
 **Depends on:** the fixture seam + accessibility identifiers already in place
 (`macapp/WorkroomApp/Core/UITestFixture.swift`, `Views/ProjectSidebar.swift`,
 `Views/TerminalTabStrip.swift`).
 
 **Priority:** P3 (the smoke + opportunistic suites cover the basics; these harden the notification
 flows).
+
+### Three `DiffViewerUITests` tests are RED (macapp) — found 2026-07-25
+
+**What:** `testJJWorkingCopyFileOpensDiffTab` (:76), `testGitWorktreeFileOpensDiff` (:93) and
+`testTabToolbarToggleSwitchesThisFileToSideBySide` (:216) all fail. Each opens a diff tab fine, then
+times out waiting for a `diff.line` element whose label contains the expected marker
+(`jj-working-copy` / `git-worktree` / `removed`).
+
+**Why it matters:** these are **not** flakes. They fail deterministically, scoped and in a batch,
+identically on `master` (verified at `236087b5`) — so they are pre-existing red, not a regression from
+recent work, and the UI suite has evidently not been run for a while (it needs a GUI login session and
+is excluded from the `make app-test` gate, which is exactly how three tests rot unnoticed).
+
+**The narrowing already done:** the fixture data is fine — `UITestFixture.rubyDiffText` still emits
+`# removed <tag>` / `# added line for <tag>`, and `DiffViewer.accessibilityLabel` still returns
+`"removed: …"`. And the *side-by-side* renderer is fine: `testSideBySideRendersTwoColumns` passes
+asserting the same content markers on `diff.side.left/right` cells. So the fault is specific to the
+**unified** renderer's `diff.line` a11y leaf being unqueryable, not to the diff pipeline or the labels.
+`accessibilityIdentifier("diff.line")` itself hasn't changed since `ca48fa15`.
+
+**How to start:** dump the a11y hierarchy for an open unified diff (the failure's own hierarchy snapshot
+in the `.xcresult` attachments, or an `XCUIApplication.debugDescription`) and find what swallowed the
+leaves. Prime suspect is a parent accessibility container collapsing them — the hazard
+`ChangesetDetailView.swift:200` already documents ("propagate onto and clobber the `ChangesetFileRow` /
+`diff.line` leaves in the sibling HSplitView"), reintroduced somewhere on the unified path. Fix the
+renderer if the leaves really are gone (a11y regression = a real accessibility bug, not just a test
+one); only re-anchor the tests if the element genuinely moved by design.
+
+**Priority:** P2 — three dead tests on a core flow, and if the leaves are truly gone it's an
+accessibility regression in the diff viewer, not merely a test problem.
 
 ## P3 — CLI
 
@@ -849,6 +867,28 @@ forking git).
 
 Condensed from the long status notes this file used to carry at the top; the full write-ups are in git
 history. Kept here for the parts that stay useful: what changed, and the traps found doing it.
+
+**2026-07-25 — two timing flakes killed (a unit one and a UI one).** Both were the same mistake in two
+dialects: a *fixed* wait standing in for an event that has no fixed arrival time.
+
+- **`RunCommandTests`' graceful-teardown tests** asserted "the tab closed" / "the completion ran" after a
+  flat `settle(0.2)`, but `AppStore.pollUntilExited` only notices an exit on a 0.1s main-queue timer, and
+  under the parallel suite that timer can slip past the sleep. A new `waitUntil` helper pumps the runloop
+  until the outcome holds (5s ceiling), and all four positive assertions in the section now use it; the
+  one *negative* assertion keeps its dwell, because showing nothing happened needs one. Also raised that
+  test's `gracefullyStopAllRunCommands(timeout:)` from 2s to an unreachable 300s: the test is about the
+  wait ending because the processes exited, so a slow machine hitting the fallback was a second way to
+  fail (and, on the last assertion, a way to pass for the wrong reason). The timeout path has its own test.
+- **`TabActionsUITests.openDiffPreview`** clicked the Changes row as soon as it *existed*, which isn't the
+  same as being hit-testable — an early click is swallowed silently. It now waits for hittability
+  (advisory), retries the click once if no diff tab appears, and allows the tab the same 10s as every
+  other wait in the helper (6s was the tightest budget in the sequence and the first to give under load).
+
+Traps worth keeping: **CPU starvation does not reproduce this class of flake** — 12 hogs × 25 iterations
+left the *old* code green, because timer slippage here comes from main-queue coalescing in a
+non-foreground test host, not from CPU pressure. What does verify the fix is a probe of the property
+itself: schedule a flag 1.2s out, confirm `settle(0.2)` can't see it and `waitUntil` can. And once fixed,
+the UI test held up in the exact three-class batch that had flaked it.
 
 **2026-07-25 — git commit diffs detect renames.** `Core/GitCommitDiff.swift` builds a commit's diff on
 raw libgit2 (`git_diff_tree_to_tree` + `git_diff_find_similar`, renames only, matching git's

@@ -534,10 +534,32 @@ final class RunCommandTests: XCTestCase {
   // for a live child process.
 
   /// A small async settle so a scheduled `pollUntilExited` tick (asyncAfter 0.1s) runs before asserting.
+  /// Only for asserting something has NOT happened — a dwell is the only way to show that. For the
+  /// positive direction use `waitUntil`.
   private func settle(_ seconds: TimeInterval = 0.25) {
     let done = expectation(description: "settle")
     DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { done.fulfill() }
     wait(for: [done], timeout: seconds + 1)
+  }
+
+  /// Pump the main runloop in short slices until `condition` holds, then assert it did.
+  ///
+  /// `pollUntilExited` notices an exit on a 0.1s main-queue timer, so every "…once the process has
+  /// exited" assertion here is really waiting on a timer tick. Sleeping a flat interval instead makes
+  /// the test a race against machine load: under the parallel suite a 0.1s tick can slip past a 0.2s
+  /// sleep, which is exactly how this suite flaked (a one-off failure of the graceful-stop-all test
+  /// that then passed 60/60 in isolation). Waiting on the OUTCOME is load-proof — a generous ceiling
+  /// can absorb any delay, and the wait still returns the moment the tick lands, so it costs no time
+  /// in the common case.
+  private func waitUntil(
+    timeout: TimeInterval = 5, _ message: String, _ condition: () -> Bool,
+    file: StaticString = #filePath, line: UInt = #line
+  ) {
+    let deadline = Date().addingTimeInterval(timeout)
+    while !condition() && Date() < deadline {
+      settle(0.02)
+    }
+    XCTAssertTrue(condition(), message, file: file, line: line)
   }
 
   func testSecondStopWaitsForLiveProcessThenCloses() {
@@ -561,8 +583,7 @@ final class RunCommandTests: XCTestCase {
     XCTAssertTrue(signals.contains { $0.1 == SIGTERM }, "close must send SIGTERM to supervisor")
 
     view.liveProcessOverrideForTesting = false  // process exits
-    settle()
-    XCTAssertNil(store.runTabID(for: t.id), "tab closes once the process has exited")
+    waitUntil("tab closes once the process has exited") { store.runTabID(for: t.id) == nil }
     XCTAssertFalse(store.isRunCommandRunning(for: t.id))
   }
 
@@ -584,8 +605,7 @@ final class RunCommandTests: XCTestCase {
     XCTAssertTrue(signals.contains { $0.1 == SIGTERM }, "close must send SIGTERM to supervisor")
 
     view.liveProcessOverrideForTesting = false
-    settle()
-    XCTAssertNil(store.runTabID(for: t.id), "tab closes once the process has exited")
+    waitUntil("tab closes once the process has exited") { store.runTabID(for: t.id) == nil }
   }
 
   func testGracefullyStopAllWaitsForEveryLiveCommandThenCompletes() {
@@ -602,7 +622,10 @@ final class RunCommandTests: XCTestCase {
     XCTAssertTrue(store.hasLiveRunCommand)
 
     var completed = false
-    store.gracefullyStopAllRunCommands(timeout: 2) { completed = true }
+    // A deliberately unreachable timeout: this test is about the wait ENDING because both processes
+    // exited, so the fallback firing on a slow machine would be a false pass on the last assertion —
+    // and a false failure on the two "still waiting" ones. The timeout path has its own test below.
+    store.gracefullyStopAllRunCommands(timeout: 300) { completed = true }
     XCTAssertFalse(completed, "waits while processes are alive")
     // SIGTERM must be sent to both supervisors.
     XCTAssertTrue(
@@ -610,12 +633,11 @@ final class RunCommandTests: XCTestCase {
       "SIGTERM must be sent to each live supervisor")
 
     v1.liveProcessOverrideForTesting = false  // only one exited
-    settle(0.2)
+    settle(0.2)  // a dwell, not a race: several poll ticks pass and must NOT complete
     XCTAssertFalse(completed, "still waiting on the second run command")
 
     v2.liveProcessOverrideForTesting = false  // both exited
-    settle(0.2)
-    XCTAssertTrue(completed, "completes once every run command has exited")
+    waitUntil("completes once every run command has exited") { completed }
   }
 
   func testGracefullyStopAllCompletesImmediatelyWhenNothingLive() {
@@ -640,8 +662,7 @@ final class RunCommandTests: XCTestCase {
     var completed = false
     store.gracefullyStopAllRunCommands(timeout: 0.2) { completed = true }
     XCTAssertFalse(completed)
-    settle(0.5)
-    XCTAssertTrue(completed, "a wedged process still proceeds after the timeout (SIGHUP fallback)")
+    waitUntil("a wedged process still proceeds after the timeout (SIGHUP fallback)") { completed }
   }
 
   // MARK: Background run, status outcomes, run toast (issue #67)
