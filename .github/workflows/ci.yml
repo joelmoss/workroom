@@ -35,6 +35,35 @@ jobs:
       - name: Test
         run: go test ./...
 
+  # The Rust VCS core's own tests (jj-lib reads against real throwaway jj repos, incl. the
+  # working-copy snapshot + conflict classification). Its own Linux job rather than a step in `app`:
+  # off the macOS critical path (it was ~3min of it on a cold run), Linux minutes are 10x cheaper,
+  # and it's the only thing testing the core away from Apple targets.
+  vcs-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # protoc is a build-time dep of jj-lib. The `jj` CLI is what the working_status fixtures shell
+      # out to for repo setup (and the test SKIPS silently without it, so it must be installed) —
+      # apt has no jj package, hence the release tarball. Pinned to the jj-lib version in
+      # vcs/Cargo.toml: bump both together.
+      - name: Install protoc + jj
+        env:
+          JJ_VERSION: 0.43.0
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+          curl -fsSL "https://github.com/jj-vcs/jj/releases/download/v$JJ_VERSION/jj-v$JJ_VERSION-x86_64-unknown-linux-musl.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin ./jj
+          jj --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: vcs
+
+      - name: Test
+        run: cargo test --manifest-path vcs/Cargo.toml
+
   app:
     runs-on: macos-15
     steps:
@@ -102,19 +131,6 @@ jobs:
         if: steps.vcs-core.outputs.cache-hit != 'true'
         run: make app-vcs
 
-      # The Rust core's own tests (jj-lib reads against real throwaway jj repos, incl. the
-      # working-copy snapshot + conflict classification). They ran nowhere in CI before — the Swift
-      # suite only covers what reaches the app through UniFFI. Runs here rather than in its own job
-      # to reuse this one's jj + protobuf install and warm cargo cache.
-      #
-      # Gated on the same cache miss as the build: the key covers every Rust source (tests included),
-      # the manifests and the toolchain, so a hit means these tests already passed on this exact
-      # input — and running them anyway would recompile the whole graph in the test profile (3min),
-      # with no cargo cache restored on that path.
-      - name: Test VCS core (cargo)
-        if: steps.vcs-core.outputs.cache-hit != 'true'
-        run: cargo test --manifest-path vcs/Cargo.toml
-
       # SPM resolves ~15 packages (Sparkle, Sentry, libghostty, the tree-sitter grammars, and
       # swift-syntax pulled transitively) by cloning them from GitHub on every run. Cache the
       # resolved checkouts keyed on project.yml (the sole source of the dependency set — the
@@ -122,16 +138,47 @@ jobs:
       # entirely. The restore-keys fallback reuses an older cache after a dep change so only the
       # delta is fetched.
       - name: Cache SPM packages
+        id: spm
         uses: actions/cache@v4
         with:
           path: macapp/DerivedData/SourcePackages
           key: spm-${{ runner.os }}-${{ hashFiles('macapp/project.yml') }}
           restore-keys: spm-${{ runner.os }}-
 
+      # Compiling the dependency graph — libgit2 (429 tasks), SwiftGitX, the tree-sitter grammars,
+      # Sentry, Sparkle, swift-syntax — is ~60% of the build's work and none of it changes between
+      # runs. Caching the build dir lets xcodebuild's incremental check reuse those objects; only our
+      # own sources rebuild (checkout gives them fresh mtimes, while the restored dep checkouts keep
+      # their original ones, so the dependency objects stay up to date).
+      #
+      # Deliberately NO run-id suffix or restore-keys: the key is exactly what the dep objects depend
+      # on (compiler + the dependency set), so the first run saves and every later run hits without
+      # paying to re-upload ~500MB each time. actions/cache is post-if success(), so a failed build's
+      # dir is never saved.
+      - name: Xcode version (cache key input)
+        id: xcode
+        run: |
+          # e.g. "Xcode 26.0" + "Build version 17A324" → "26.0-17A324".
+          echo "version=$(xcodebuild -version | awk 'NR==1{v=$2} NR==2{b=$NF} END{print v "-" b}')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Xcode build dir
+        uses: actions/cache@v4
+        with:
+          path: macapp/DerivedData/Build
+          key: >-
+            xcbuild-${{ runner.os }}-${{ steps.xcode.outputs.version }}-${{
+            hashFiles('macapp/project.yml') }}
+
       # Resolve up front with retries so a transient github.com blip mid-clone can't fail the whole
       # run (it did: swift-syntax clone hit "Couldn't connect to server"). The subsequent app-test
       # build reuses these checkouts via the same -clonedSourcePackagesDirPath, so it won't re-clone.
+      #
+      # Skipped on an exact cache hit: there's nothing to clone, so the whole step (~25s, including an
+      # xcodegen run that `make app-test` does again anyway) is pure overhead. A restore-keys-only
+      # (partial) restore reports no cache-hit, so a dependency change still resolves here, retries
+      # and all.
       - name: Resolve SPM packages (retry on network flake)
+        if: steps.spm.outputs.cache-hit != 'true'
         working-directory: macapp
         run: |
           xcodegen generate
