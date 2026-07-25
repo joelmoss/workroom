@@ -12,7 +12,7 @@ root, not `macapp/`):
 ```bash
 make app-run        # canonical local loop: xcodegen → xcodebuild (Debug) → relaunch
 make app-build      # xcodegen → xcodebuild (Debug)
-make app-test       # xcodebuild test (WorkroomAppTests)
+make app-test       # xcodebuild test (WorkroomAppTests) — parallel; APP_TEST_FLAGS= to serialize
 make app-generate   # force-regenerate the (gitignored) .xcodeproj from project.yml
 make app-vcs        # build the Rust VCS core → WrVcs SwiftPM package (auto-run before app builds)
 make app-format     # swift-format, rewrite sources in place
