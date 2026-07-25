@@ -71,6 +71,20 @@ enum UITestFixture {
     UserDefaults.standard.bool(forKey: "WorkroomUITestWorkroomSplit")
   }
 
+  /// When set (`-WorkroomUITestConflict 1`), the fixture workroom is **conflicted**: its changed-file
+  /// list gains a `.conflicted` entry (`conflictedFilePath`) and the status carries the top-level
+  /// `conflicted` flag. Covers the jj per-file conflict status end-to-end in the UI — the Changes row
+  /// for a conflicted file must read as conflicted (its own badge, not deletion's or modification's)
+  /// and the project status badge must report the conflict. Applies to both the jj and git variants,
+  /// since both backends produce per-file conflicts.
+  static var conflicted: Bool {
+    UserDefaults.standard.bool(forKey: "WorkroomUITestConflict")
+  }
+
+  /// The path seeded as conflicted under `-WorkroomUITestConflict 1`. Distinct from every other
+  /// fixture path so a test can address its row by id without matching a neighbour.
+  static let conflictedFilePath = "app/models/merge_me.rb"
+
   /// When set (`-WorkroomUITestGitWorkroom 1`), the fixture workroom reports a **git** working tree
   /// (a flat changed-file list, no jj groups) instead of the default jj change — so the diff-viewer
   /// UI tests can exercise the `.gitWorktree` diff source. Default (unset) keeps the jj scenario the
@@ -271,7 +285,8 @@ enum UITestFixture {
   /// and its rows open `.gitWorktree` diffs.
   static var gitWorkroomStatus: WorkroomStatus {
     WorkroomStatus(
-      dirty: true, changedFiles: changedFiles, insertions: 411, deletions: 222, ci: .passing,
+      dirty: true, conflicted: conflicted, changedFiles: changedFiles, insertions: 411,
+      deletions: 222, ci: .passing,
       branchForCI: "feature/login",
       lastChecked: Self.checkedAt, ciCheckedAt: Self.checkedAt, prCheckedAt: Self.checkedAt)
   }
@@ -279,6 +294,7 @@ enum UITestFixture {
   private static var jjWorkroomStatus: WorkroomStatus {
     WorkroomStatus(
       dirty: true,
+      conflicted: conflicted,
       changedFiles: changedFiles,
       insertions: 411, deletions: 222,
       ci: .passing,
@@ -358,9 +374,11 @@ enum UITestFixture {
   }
 
   /// The fixture's changed-file list: a small representative set, or a long one (`manyChanges`) so
-  /// the Changes section overflows the inspector for the disclosure-animation repro.
+  /// the Changes section overflows the inspector for the disclosure-animation repro. Under
+  /// `conflicted` it also carries one `.conflicted` entry so the conflict badge has something to
+  /// render (the other kinds stay, so a test can contrast conflicted against modified/added).
   private static var changedFiles: [ChangedFile] {
-    let base = [
+    var base = [
       ChangedFile(path: "Gemfile", change: .modified),
       ChangedFile(path: seededMarkdownFileName, change: .modified),  // drives the preview UI test
       ChangedFile(path: ".env.example", change: .added),
@@ -369,6 +387,9 @@ enum UITestFixture {
       ChangedFile(path: "config/routes.rb", change: .modified),
       ChangedFile(path: "test/models/user_test.rb", change: .added),
     ]
+    if conflicted {
+      base.append(ChangedFile(path: conflictedFilePath, change: .conflicted))
+    }
     guard manyChanges else { return base }
     let extra = (0..<20).map {
       ChangedFile(path: "app/views/layouts/v\($0).html.erb", change: .modified)

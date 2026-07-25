@@ -13,11 +13,12 @@ import XCTest
 final class ChangesPanelUITests: XCTestCase {
   override func setUpWithError() throws { continueAfterFailure = false }
 
-  private func launchedApp() -> XCUIApplication {
+  private func launchedApp(extraArguments: [String] = []) -> XCUIApplication {
     let app = XCUIApplication()
     app.launchArguments += ["-WorkroomUITestFixture", "1"]
     // Start each test clean, ignoring persisted window state (cf. NewWindowUITests).
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+    app.launchArguments += extraArguments
     app.launch()
     app.activate()
     return app
@@ -67,6 +68,95 @@ final class ChangesPanelUITests: XCTestCase {
     XCTAssertFalse(
       element(app, id: "changes.group.parentCommit").exists,
       "the Parent Commit group is no longer shown")
+  }
+
+  // MARK: conflicted files (jj per-file conflict status)
+
+  /// A conflicted file must render as its OWN state in the Changes panel, all the way from the VCS
+  /// layer to the row: the jj backend now classifies an unresolved tree value as `.conflicted`, and
+  /// the row's composed accessibility label must say so.
+  ///
+  /// The badge glyph/colour themselves are NOT assertable here — the row is
+  /// `.accessibilityElement(children: .ignore)`, so the `Text(letter)` inside it never reaches the
+  /// accessibility tree. `ChangeBadgeTests` pins the `"!"` + `tokens.conflict` mapping (including that
+  /// it differs from deletion's and modification's); this test pins that the conflicted KIND survives
+  /// the trip into the panel, which a unit test on the mapping can't show.
+  func testConflictedFileRendersAsConflicted() throws {
+    let app = launchedApp(extraArguments: ["-WorkroomUITestConflict", "1"])
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    XCTAssertTrue(element(app, id: "changes.workingCopy").waitForExistence(timeout: 10))
+
+    let conflictedRow = element(app, id: "changes.file.app/models/merge_me.rb")
+    XCTAssertTrue(conflictedRow.waitForExistence(timeout: 10), "the conflicted row should render")
+    XCTAssertTrue(
+      conflictedRow.label.contains("conflicted"),
+      "the conflicted row reads as conflicted; got \(conflictedRow.label)")
+
+    // Negative control: a neighbouring modified row must NOT read as conflicted — proves the label
+    // tracks the file's kind rather than the panel being conflicted wholesale.
+    let modifiedRow = element(app, id: "changes.file.Gemfile")
+    XCTAssertTrue(modifiedRow.waitForExistence(timeout: 6), "the modified row should render")
+    XCTAssertTrue(
+      modifiedRow.label.contains("modified"), "Gemfile reads as modified; got \(modifiedRow.label)")
+    XCTAssertFalse(
+      modifiedRow.label.contains("conflicted"),
+      "a modified file must not read as conflicted; got \(modifiedRow.label)")
+  }
+
+  /// Without the conflict fixture flag, no row reads as conflicted — the guard that the assertion
+  /// above is actually driven by the seeded conflict and not by something always present.
+  func testNoConflictedRowInTheDefaultFixture() throws {
+    let app = launchedApp()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    XCTAssertTrue(element(app, id: "changes.workingCopy").waitForExistence(timeout: 10))
+    XCTAssertTrue(element(app, id: "changes.file.Gemfile").waitForExistence(timeout: 10))
+
+    XCTAssertFalse(
+      element(app, id: "changes.file.app/models/merge_me.rb").exists,
+      "the conflicted row is seeded only by -WorkroomUITestConflict")
+    XCTAssertFalse(
+      app.descendants(matching: .any)
+        .matching(NSPredicate(format: "label CONTAINS %@", "conflicted")).firstMatch.exists,
+      "nothing reads as conflicted in the default fixture")
+  }
+
+  /// The conflict must also reach the sidebar's aggregate signal: a conflicted workroom outranks
+  /// dirty in `WorkroomStatus.aggregateWeight`, so a **collapsed** project row shows
+  /// `VCSAggregateDot` reading "project conflicted" rather than "project changes".
+  ///
+  /// The dot renders only while collapsed (`ProjectSidebar`: expanded projects show each row's own
+  /// dot), and the fixture starts every project expanded — so the test collapses it first by clicking
+  /// the project-name disclosure button.
+  func testCollapsedProjectRowAggregatesTheConflict() throws {
+    let app = launchedApp(extraArguments: ["-WorkroomUITestConflict", "1"])
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    XCTAssertTrue(element(app, id: "changes.workingCopy").waitForExistence(timeout: 10))
+
+    // Expanded: no aggregate dot yet.
+    let dot = app.descendants(matching: .any)
+      .matching(NSPredicate(format: "label CONTAINS %@", "project conflicted")).firstMatch
+    XCTAssertFalse(dot.exists, "the aggregate dot belongs to a collapsed row only")
+
+    let workroomRow = element(app, id: "sidebar.workroom.uitest-room")
+    XCTAssertTrue(
+      workroomRow.waitForExistence(timeout: 6), "the workroom row renders while expanded")
+
+    // EXACT label: the disclosure button's label is just the project name, while the row's other
+    // buttons carry it inside their help text ("New workroom in UITestProject", "Project settings
+    // for UITestProject") — a CONTAINS match picks one of those and would click *create*.
+    let disclosure = app.buttons
+      .matching(NSPredicate(format: "label == %@", "UITestProject")).firstMatch
+    XCTAssertTrue(disclosure.waitForExistence(timeout: 6), "the project row should render")
+    disclosure.click()
+
+    // Prove the click actually collapsed the project — otherwise a no-op click would make the dot
+    // assertion below fail for the wrong reason (or pass for one).
+    XCTAssertTrue(
+      waitExists(workroomRow, false), "clicking the project name collapses its children")
+
+    XCTAssertTrue(
+      dot.waitForExistence(timeout: 6),
+      "a collapsed project with a conflicted workroom reads as conflicted")
   }
 
   // MARK: in-app "Open File" (issue #117)
