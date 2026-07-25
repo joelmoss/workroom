@@ -101,4 +101,21 @@ final class ChangeBadgeTests: XCTestCase {
     XCTAssertEqual(rgb(ChangeBadge.color(.conflicted, t)), rgb(t.conflict))
     XCTAssertNotEqual(rgb(ChangeBadge.color(.conflicted, t)), rgb(t.diffRemoveFg))
   }
+
+  /// A moved file is ONE row, so its old path has nowhere to live except this line — `old → new`.
+  func testPathLineShowsWhereAMovedFileCameFrom() {
+    XCTAssertEqual(
+      ChangeBadge.pathLine(path: "lib/moved.rb", oldPath: "src/moved.rb"),
+      "src/moved.rb \u{2192} lib/moved.rb")
+  }
+
+  /// Everything that didn't move renders as the bare path — including the degenerate inputs a backend
+  /// can hand us: no old path (every non-rename kind), an empty one, or one equal to the new path
+  /// (libgit2 populates `oldFile` for plain modifications too, so this is a real shape, not a
+  /// hypothetical). None of them may produce a bogus "x → x" arrow.
+  func testPathLineFallsBackToTheBarePath() {
+    XCTAssertEqual(ChangeBadge.pathLine(path: "a/b.txt", oldPath: nil), "a/b.txt")
+    XCTAssertEqual(ChangeBadge.pathLine(path: "a/b.txt", oldPath: ""), "a/b.txt")
+    XCTAssertEqual(ChangeBadge.pathLine(path: "a/b.txt", oldPath: "a/b.txt"), "a/b.txt")
+  }
 }

@@ -38,6 +38,16 @@ enum ChangeBadge {
     }
   }
 
+  /// The path line for a changed-file row: `old → new` when the file moved, otherwise just the path.
+  ///
+  /// A moved file is one row (both backends pair the delete with the add), so the old path has
+  /// nowhere else to appear — without this the move is invisible and the row looks like a plain add
+  /// at a path the user never created. A no-op move (`old == new`) renders as the bare path.
+  static func pathLine(path: String, oldPath: String?) -> String {
+    guard let oldPath, !oldPath.isEmpty, oldPath != path else { return path }
+    return "\(oldPath) \u{2192} \(path)"
+  }
+
   /// The change kind spelled out, for the row's accessibility label and tooltip.
   static func word(_ change: ChangedFile.Change) -> String {
     switch change {

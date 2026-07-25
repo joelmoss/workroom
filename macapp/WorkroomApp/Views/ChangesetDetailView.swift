@@ -279,9 +279,11 @@ struct ChangesetDetailView: View {
       VStack(alignment: .leading, spacing: 1) {
         // File name on top, the full relative path dimmed beneath it — so a row reads even when the
         // list is narrow. The path truncates from the middle, keeping the leading dirs + the name.
+        // A moved file's line reads `old → new`: the two paths are one row, so this is the only place
+        // the rename is visible at all.
         Text((file.path as NSString).lastPathComponent)
           .lineLimit(1).truncationMode(.middle)
-        Text(file.path)
+        Text(ChangeBadge.pathLine(path: file.path, oldPath: file.oldPath))
           .font(.system(.caption, design: .monospaced)).foregroundStyle(.tertiary)
           .lineLimit(1).truncationMode(.middle)
       }
@@ -304,7 +306,7 @@ struct ChangesetDetailView: View {
       }
     }
     .onTapGesture { store.selectChangesetFile(file.path, tab: tabID, in: target) }
-    .help(file.path)
+    .help(ChangeBadge.pathLine(path: file.path, oldPath: file.oldPath))
     .accessibilityElement(children: .combine)
     .accessibilityIdentifier("ChangesetFileRow")
     .accessibilityAddTraits(isSelected ? .isSelected : [])

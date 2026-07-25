@@ -1,5 +1,27 @@
 # TODOs
 
+> Status note (2026-07-25): **Done & removed:** jj vs git **rename detection** divergence. A renamed
+> file now reads as one `Renamed` row carrying `old_path` instead of delete-old + add-new, in both the
+> Changes panel and History. `changed_files` (`jj_backend.rs`) drives
+> `diff_stream_with_copies` and feeds it the backend's copy records (new `copy_records` helper), so
+> jj-lib owns the rename-vs-copy call: a surviving source is `Copied`, a vanished one `Renamed`, and
+> jj-lib suppresses the paired delete entry itself. Backend-dependent **by design** — the git backend
+> implements records (gix rewrite tracking, 50% similarity, 1000 candidates), jj's own
+> `simple_backend` returns none, so a non-colocated repo keeps reporting delete+add rather than
+> erroring; a per-record error is skipped for the same reason (it costs the rename *label*, never a
+> file). `Conflicted` still wins over rename, but that ordering is **defensive only**: probing showed a
+> conflicted path can't carry a copy record at all, because records come from each commit's *git* tree
+> and jj exports a conflict as `.jjconflict-*` sidecar trees — so a conflicted rename decomposes into
+> `Added` + `Conflicted` (pinned, with the reason, by `a_conflicted_rename_does_not_pair_into_one_row`).
+> App side: `ChangedFile` gained `oldPath` (filled by BOTH providers — git's was being dropped), the
+> changeset detail row and its tooltip read `old → new` via a new testable `ChangeBadge.pathLine`, and
+> the single-line panel row carries the old path in its tooltip + VoiceOver label. Coverage: 4 cargo
+> tests (working copy, committed rename with an edit, copy-not-rename, the conflict decomposition), 2
+> conformance tests, 2 `ChangeBadge` unit tests, 1 XCUITest — all negative-checked. **Found on the
+> way:** git *commit* diffs never had rename detection either (`repo.diff(commit:)` with no
+> `find_similar`), which inverts the divergence for History; that's now its own TODO below, with the
+> conformance test pinning the gap instead of asserting a parity that doesn't hold.
+>
 > Status note (2026-07-25): **Done & removed:** the working-copy diff for a **merge** `@`. Reported
 > live right after the conflict badge shipped — clicking a conflicted row opened a tab reading "No
 > changes". Root cause was NOT conflict-specific: `jj diff -r @` diffs a merge against its
@@ -687,25 +709,29 @@ to ship the scaffold before the search is real.
      deadlock, snapshot file-size cap, base_ignores) was fixed in that review (b7dd9b7d); the
      items below were explicitly deferred. -->
 
-## jj vs git rename detection divergence (macapp) — VCS-foundation eng-review
+## git commit diffs have no rename detection (macapp) — jj-rename follow-up
 
-**What:** `RustJJProvider`/`jj_backend.rs` `changed_files` classifies only Added/Modified/Deleted;
-`GitProvider` emits `.renamed`/`.copied` with `oldPath`. For the SAME colocated commit (or working
-copy) containing a rename, jj shows delete-old + add-new while git shows one rename row.
+**What:** `GitProvider.changeset` reads `repo.diff(commit:)` (SwiftGitX → `git_diff_tree_to_tree`)
+and never calls `git_diff_find_similar`, so a **committed** rename reports as delete-old + add-new.
+`workingStatus` is fine — it passes `.renamesIndex`/`.renamesWorkingTree` — so the same rename pairs
+in the Changes panel and splits in History.
 
-**Why:** Cross-backend inconsistency the hybrid architecture is supposed to hide (both should map to
-one app model). The `VCSProviderConformanceTests` asserts the two backends produce equal file lists,
-but its fixture has no rename — so this divergence passes the guard falsely.
+**Why:** git's own CLI defaults to `diff.renames=true`, so `git show` on that commit DOES show one
+rename row; our History disagrees with git itself. It's now also the ONE remaining cross-backend
+rename divergence: jj reports the commit as one `.renamed` row (shipped), pinned by
+`VCSProviderConformanceTests.testColocatedCommitRenameDivergesUntilGitDetectsIt` — which should be
+rewritten into a parity assertion when this lands, NOT "fixed" by making jj match git.
 
-**How to start:** Add rename detection to `changed_files` in `vcs/crates/wr-vcs-core/src/jj_backend.rs`
-(jj-lib exposes copy/rename records via the tree `diff_stream`'s copy sources, or a follow-up
-`CopiesTreeDiffEntry`). Add a renamed-file case to the conformance fixture to lock parity. Emit
-`old_path` so the UI can show `old → new`.
+**How to start:** SwiftGitX exposes no find-similar API and only vends its `SwiftGitX` product, so
+this needs either an upstream addition or depending on its `libgit2` package product directly (mind
+the modulemap collision noted in `macapp/CLAUDE.md` → VCS core). Then apply
+`git_diff_find_similar` to the changeset diff before mapping deltas, and set `oldPath` for the
+renamed delta (`mapDelta` already handles `.renamed`/`.copied`).
 
-**Depends on:** the VCS read foundation (shipped). Touches `jj_backend.rs`, `wr-vcs-model`, the UniFFI
-surface, `RustJJProvider.map`, and `VCSProviderConformanceTests`.
+**Depends on:** nothing in-app. Touches `Core/GitProvider.swift` (+ possibly `project.yml`).
 
-**Priority:** P2 (user-visible wrong file list on renames; a known "later refinement" in the code).
+**Priority:** P3 (History file list wrong on committed renames; the diff content itself is correct,
+and the Changes panel already pairs them).
 
 ## The Changes header's +/- still stats the wrong base for a merge `@` (macapp) — merge-diff follow-up
 
@@ -945,7 +971,8 @@ Phase 2 is discoverable from `TODOS.md`; the authoritative scope + sequencing li
 
 **How to start:** Read the plan's "Phase 2 — VCS write actions" section and issue #59. The read
 foundation (this file's other VCS entries) is the prerequisite; land the deferred read follow-ups
-(rename, conflict status, error taxonomy) first where they'd otherwise bite the write UI.
+first where they'd otherwise bite the write UI — of the three that gated this, jj **rename detection**
+and **conflict status** have now shipped, leaving the **error taxonomy** entry below.
 
 **Depends on:** the VCS read foundation (shipped, Phase 1). Spans `vcs/` (Rust), `WrVcs` UniFFI,
 `Core/VCSProviding.swift` + both providers, and new write-flow UI.

@@ -81,13 +81,25 @@ enum VCSStatusFailure: Equatable, Sendable {
 }
 
 /// One changed path in the working tree, with its change kind (for the detail panel grouping).
+///
+/// `oldPath` is the pre-move path, set only for `.renamed` (both backends detect renames: git via
+/// libgit2's status rename options, jj via the backend copy records `changed_files` reads). It stays
+/// out of `id` on purpose — a row's identity is where the file is NOW, so a rename doesn't reshuffle
+/// selection when the old path changes.
 struct ChangedFile: Equatable, Hashable, Identifiable, Sendable {
   enum Change: String, Equatable, Sendable {
     case modified, added, deleted, renamed, untracked, conflicted, other
   }
   let path: String
   let change: Change
+  var oldPath: String?
   var id: String { "\(change.rawValue):\(path)" }
+
+  init(path: String, change: Change, oldPath: String? = nil) {
+    self.path = path
+    self.change = change
+    self.oldPath = oldPath
+  }
 }
 
 /// One jj revision's changes + identity, as shown by a Changes-panel disclosure group (the working

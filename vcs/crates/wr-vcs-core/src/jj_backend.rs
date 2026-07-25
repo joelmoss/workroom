@@ -19,6 +19,7 @@ use std::sync::Arc;
 use jj_lib::backend::ChangeId;
 use jj_lib::commit::Commit as JjCommit;
 use jj_lib::config::StackedConfig;
+use jj_lib::copies::{CopyOperation, CopyRecords};
 use jj_lib::gitignore::GitIgnoreFile;
 use jj_lib::hex_util::encode_reverse_hex;
 use jj_lib::id_prefix::IdPrefixIndex;
@@ -604,8 +605,9 @@ pub fn changeset(root: &Path, commit_id_hex: &str) -> model::Result<model::Chang
 
 /// The changed files of `commit` vs its FIRST parent (the jj root commit provides the empty base for
 /// the first real change, so no empty-tree special case is needed). Conflict from an unresolved
-/// `after` value, then add/modify/delete from before↔after presence; rename detection (copy records)
-/// is a later refinement. Drives jj-lib's async tree `diff_stream`, blocked on with pollster.
+/// `after` value, then rename/copy from the backend's copy records, then add/modify/delete from
+/// before↔after presence. Drives jj-lib's async tree `diff_stream_with_copies`, blocked on with
+/// pollster.
 ///
 /// Both callers share this: the working copy (`working_status`) *and* a historical changeset
 /// (`changeset`). That's deliberate — jj stores conflicts in the tree, so a *commit* can be
@@ -619,16 +621,20 @@ fn changed_files(
     use futures::StreamExt;
 
     let after = commit.tree();
-    let before = match commit.parent_ids().first() {
-        Some(pid) => store.get_commit(pid).map_err(io)?.tree(),
+    let (before, parent_id) = match commit.parent_ids().first() {
+        Some(pid) => (store.get_commit(pid).map_err(io)?.tree(), pid.clone()),
         None => return Ok(Vec::new()), // the jj root commit itself
     };
+    let copy_records = copy_records(store, &parent_id, commit.id());
 
     pollster::block_on(async {
         let mut files = Vec::new();
-        let mut stream = before.diff_stream(&after, &EverythingMatcher);
+        let mut stream = before.diff_stream_with_copies(&after, &EverythingMatcher, &copy_records);
         while let Some(entry) = stream.next().await {
-            let path = entry.path.as_internal_file_string().to_string();
+            // With copy records in play, an entry's identity is its TARGET path; `source()` is the
+            // pre-rename path (and returns the target when the path wasn't renamed/copied, hence the
+            // `copy_operation()` gate below).
+            let path = entry.path.target().as_internal_file_string().to_string();
             // A diff-stream entry that errors (corrupt/unreadable object, backend read failure) must
             // NOT be silently skipped: dropping it reports a changed file as absent — a dirty commit
             // as clean, the exact "empty diff read as no changes" failure this surfaces instead.
@@ -637,14 +643,32 @@ fn changed_files(
             let diff = entry
                 .values
                 .map_err(|e| VcsError::PartialData(format!("diff read failed for {path}: {e}")))?;
+            let copy_op = entry.path.copy_operation();
             // Conflict FIRST: an unresolved merge on the `after` side *is* the conflict, and it
             // never satisfies `is_absent()` (which is `Some(None)` — a *resolved* absence), so
             // without this branch a conflicted file reads as a plain `Modified`. Ordering:
             // - after unresolved + before absent (both sides added) → Conflicted, not Added (git's `AA`)
             // - before unresolved + after absent (conflict then deleted) → Deleted; nothing to resolve
             // - before unresolved + after resolved (conflict resolved) → Modified
+            //
+            // Rename/copy comes SECOND, ahead of the presence tests: a rename's target is absent in
+            // `before`, so without this branch it reads as a plain `Added` (and jj-lib has already
+            // dropped the paired delete entry, so the old path would vanish entirely).
+            //
+            // Conflicted-before-rename is defensive ordering only: a conflicted path can't currently
+            // carry a copy record at all, because records come from each commit's *git* tree and jj
+            // exports a conflicted commit as `.jjconflict-*` sidecar trees — so gix's rewrite
+            // detection finds no blob to pair. A conflicted rename therefore decomposes into an
+            // `Added` at the new path + a `Conflicted` at the old one (pinned by
+            // `a_conflicted_rename_does_not_pair_into_one_row`). If a future jj-lib does pair them,
+            // this branch keeps the conflict badge rather than downgrading it to `Renamed`.
             let kind = if !diff.after.is_resolved() {
                 model::ChangeKind::Conflicted
+            } else if let Some(op) = copy_op {
+                match op {
+                    CopyOperation::Rename => model::ChangeKind::Renamed,
+                    CopyOperation::Copy => model::ChangeKind::Copied,
+                }
             } else if diff.before.is_absent() {
                 model::ChangeKind::Added
             } else if diff.after.is_absent() {
@@ -652,12 +676,42 @@ fn changed_files(
             } else {
                 model::ChangeKind::Modified
             };
+            let old_path = copy_op
+                .map(|_| entry.path.source().as_internal_file_string().to_string())
+                .filter(|source| *source != path);
             files.push(model::ChangedFile {
                 path,
-                old_path: None,
+                old_path,
                 kind,
             });
         }
         Ok(files)
     })
+}
+
+/// The backend's copy/rename records for `parent → commit`, used to turn a delete+add pair into one
+/// rename row (jj-lib's `CopiesTreeDiffStream` suppresses the delete once a record exists).
+///
+/// Backend-dependent by design, and **degrading is correct here**: the git backend implements this
+/// (gix rewrite detection, 50% similarity, 1000-candidate limit), while jj's own `simple_backend`
+/// returns an empty stream — a non-colocated jj repo therefore reports delete+add, exactly as it does
+/// today, rather than erroring. Individual record errors are skipped for the same reason: a lost
+/// record costs only the rename *label*, never a file — both paths still appear in the diff, so
+/// there's no silent-data-loss risk of the kind the entry-level `PartialData` guard exists to catch.
+fn copy_records(
+    store: &std::sync::Arc<jj_lib::store::Store>,
+    parent_id: &jj_lib::backend::CommitId,
+    commit_id: &jj_lib::backend::CommitId,
+) -> CopyRecords {
+    use futures::StreamExt;
+
+    let mut records = CopyRecords::default();
+    if let Ok(stream) = store.get_copy_records(None, parent_id, commit_id) {
+        records.add_records(pollster::block_on(
+            stream
+                .filter_map(|r| std::future::ready(r.ok()))
+                .collect::<Vec<_>>(),
+        ));
+    }
+    records
 }

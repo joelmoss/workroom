@@ -183,4 +183,30 @@ final class ChangesetDetailUITests: XCTestCase {
     XCTAssertTrue(
       waitExists(el(app, "ChangesetDetail")), "clicking a divergent sibling opens its changeset")
   }
+
+  /// A moved file's row reads `old → new`. The rename is ONE row (both backends pair the delete with
+  /// the add), so this dimmed path line is the only place the old path appears — if it regressed to
+  /// the bare path, the row would look like a plain add at a path the user never created.
+  ///
+  /// Matched on the row's spoken content rather than its `Text`: `ChangesetFileRow` combines its
+  /// children, so the name + path line surface as the row element's own label/value.
+  func testRenamedFileRowShowsWhereItMovedFrom() throws {
+    let app = launchedApp()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    openHistory(app)
+
+    els(app, "HistoryRow").element(boundBy: 0).click()
+    XCTAssertTrue(waitExists(el(app, "ChangesetDetail")), "the changeset detail opens as a tab")
+    XCTAssertTrue(
+      els(app, "ChangesetFileRow").element(boundBy: 0).waitForExistence(timeout: 8),
+      "the changed-file list renders")
+
+    // The fixture's renamed entry: src/moved.rb → lib/moved.rb.
+    let moved = app.descendants(matching: .any).matching(
+      NSPredicate(
+        format: "label CONTAINS %@ OR value CONTAINS %@", "src/moved.rb \u{2192} lib/moved.rb",
+        "src/moved.rb \u{2192} lib/moved.rb")
+    ).firstMatch
+    XCTAssertTrue(waitExists(moved), "the renamed row shows `old → new`, not just the new path")
+  }
 }

@@ -554,6 +554,8 @@ struct FixtureVCSProvider: VCSProviding {
     let files = [
       VCSChangedFile(path: "src/session.rb", oldPath: nil, kind: .modified),
       VCSChangedFile(path: "docs/notes.txt", oldPath: nil, kind: .added),
+      // A moved file, so the `old → new` path line has something to render.
+      VCSChangedFile(path: "lib/moved.rb", oldPath: "src/moved.rb", kind: .renamed),
     ]
     return VCSChangeset(
       commit: commit, fullMessage: commit.summary + "\n\nFixture commit body.", files: files,

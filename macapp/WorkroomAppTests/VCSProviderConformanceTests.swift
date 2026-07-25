@@ -303,6 +303,73 @@ final class VCSProviderConformanceTests: XCTestCase {
     XCTAssertEqual(ref.kind, .branch)
   }
 
+  /// Renames, which `testColocatedChangesetFileListMatchesAcrossBackends`'s fixture has none of — so
+  /// its set-equality guard passed while jj reported delete+add and git reported one rename row.
+  ///
+  /// **Working-copy** state, where both backends can pair: git needs the rename staged (libgit2's
+  /// `.renamesIndex` — an unstaged `mv` is a delete + an untracked file, with nothing to pair), jj
+  /// pairs it from the backend's copy records either way. Both must land on `.renamed` at the NEW
+  /// path, carry the old one, and NOT also list the old path as a separate delete.
+  func testColocatedWorkingCopyRenameMatchesAcrossBackends() async throws {
+    try requireTool("git")
+    try requireTool("jj")
+    let root = try colocatedRenameFixture()
+    let url = URL(fileURLWithPath: root)
+
+    // git first: jj's status read snapshots `@`, which would rewrite the state git is describing.
+    let git = try GitProvider().workingStatus(root: url)
+    let gitRow = try XCTUnwrap(
+      git.files.first { $0.path == "new.txt" },
+      "git should report the renamed path; got \(git.files.map(\.id))")
+    XCTAssertEqual(gitRow.change, .renamed, "git rename detection is on for status")
+    XCTAssertEqual(gitRow.oldPath, "old.txt", "git carries the pre-move path")
+    XCTAssertFalse(
+      git.files.contains { $0.path == "old.txt" },
+      "git pairs the delete into the rename row; got \(git.files.map(\.id))")
+
+    let jj = try await RustJJProvider().workingStatus(root: url)
+    let jjRow = try XCTUnwrap(
+      (jj.changedFiles ?? []).first { $0.path == "new.txt" },
+      "jj should report the renamed path; got \((jj.changedFiles ?? []).map(\.id))")
+    XCTAssertEqual(jjRow.change, .renamed, "jj must not report a rename as a plain add")
+    XCTAssertEqual(jjRow.oldPath, "old.txt", "jj carries the pre-move path")
+    XCTAssertFalse(
+      (jj.changedFiles ?? []).contains { $0.path == "old.txt" },
+      "jj pairs the delete into the rename row; got \((jj.changedFiles ?? []).map(\.id))")
+  }
+
+  /// The rename divergence that remains, asserted so it can't be mistaken for drift: for a **commit**
+  /// (History), jj reports one `.renamed` row and git reports delete + add.
+  ///
+  /// Not a jj bug — the opposite. `GitProvider.changeset` goes through SwiftGitX's
+  /// `repo.diff(commit:)`, a plain tree-to-tree diff, and SwiftGitX exposes no
+  /// `git_diff_find_similar`, so libgit2 is never asked to pair rewrites. (git's own CLI defaults to
+  /// `diff.renames=true`, so `git show` on this same commit DOES show a rename — this is a gap in our
+  /// git read, tracked in TODOS.md.) Update this test when that lands; don't "fix" jj to match.
+  func testColocatedCommitRenameDivergesUntilGitDetectsIt() async throws {
+    try requireTool("git")
+    try requireTool("jj")
+    let root = try colocatedRenameFixture()
+    let url = URL(fileURLWithPath: root)
+    // Commit the staged rename so both backends can read it back by id.
+    _ = sh("jj commit -m 'rename old.txt' >/dev/null 2>&1; echo done", in: root)
+    let cid = sh(
+      "jj log -r @- --no-graph --ignore-working-copy --color never -T 'commit_id'", in: root
+    ).out.trimmingCharacters(in: .whitespacesAndNewlines)
+    XCTAssertFalse(cid.isEmpty, "could not resolve the rename commit id")
+
+    let jj = try await RustJJProvider().changeset(root: url, commitID: cid)
+    XCTAssertEqual(
+      Set(jj.files.map { "\($0.kind):\($0.path)" }), Set(["renamed:new.txt"]),
+      "jj reports a committed rename as one row")
+    XCTAssertEqual(jj.files.first?.oldPath, "old.txt")
+
+    let git = try await GitProvider().changeset(root: url, commitID: cid)
+    XCTAssertEqual(
+      Set(git.files.map { "\($0.kind):\($0.path)" }), Set(["deleted:old.txt", "added:new.txt"]),
+      "git's commit diff has no rename detection wired up yet")
+  }
+
   // MARK: - Fixture helpers (mirror WorkroomStatusIntegrationTests)
 
   /// Push state must mean the SAME thing in both backends. They compute it differently — git walks
@@ -400,6 +467,26 @@ final class VCSProviderConformanceTests: XCTestCase {
       echo done
       """, in: root)
     XCTAssertTrue(r.out.contains("done"), "colocated fixture setup failed: \(r.out)")
+    return root
+  }
+
+  /// A colocated jj+git repo with `old.txt` committed, then renamed to `new.txt` and **staged**
+  /// (`git mv`). Staging is what lets libgit2's status pair the rename; jj pairs it from the git
+  /// backend's copy records regardless. The body is 8 distinct lines so the two blobs are an exact
+  /// match — gix and libgit2 both pair identical content outright, no similarity threshold involved.
+  private func colocatedRenameFixture() throws -> String {
+    let root = tempDir()
+    let r = sh(
+      """
+      jj git init . >/dev/null 2>&1 || jj init --git . >/dev/null 2>&1
+      jj config set --repo user.name t >/dev/null 2>&1 || true
+      jj config set --repo user.email a@b.c >/dev/null 2>&1 || true
+      printf 'one\\ntwo\\nthree\\nfour\\nfive\\nsix\\nseven\\neight\\n' > old.txt
+      jj commit -m 'add old.txt' >/dev/null 2>&1
+      git mv old.txt new.txt >/dev/null 2>&1
+      echo done
+      """, in: root)
+    XCTAssertTrue(r.out.contains("done"), "rename fixture setup failed: \(r.out)")
     return root
   }
 

@@ -356,7 +356,9 @@ private struct ChangedFileRow: View {
     // so it scopes to the row content only — the trailing "Open file" button, painted on top, keeps
     // its OWN tooltip. A `.help` applied after the overlay covers the whole row and occludes the
     // button's, so hovering the button wrongly showed "Open diff for …" (issue #117 follow-up).
-    .help("Open diff")
+    // A moved file's old path has nowhere to go in this single-line row, so the tooltip carries it
+    // (`old → new`); the wider changeset detail list shows it inline.
+    .help(file.oldPath == nil ? "Open diff" : "Open diff — \(renamePath)")
     // Hover toolbar (issue #93): a content-sized cluster pinned to the trailing edge, painted over
     // the path. Only the button area intercepts clicks (it opens the file) — the rest of the row
     // still opens the diff. Built only while hovering, so the editor-name lookup runs on hover only.
@@ -382,8 +384,7 @@ private struct ChangedFileRow: View {
     .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
     .accessibilityIdentifier("changes.file.\(file.path)")
     .accessibilityLabel(
-      dir.isEmpty
-        ? "\(name), \(changeWord), open diff" : "\(name), \(changeWord), in \(dir), open diff"
+      accessibilityLabel(name: name, dir: dir)
     )
     // A non-pointer path to the open-file actions (the hover toolbar is mouse-only): keyboard /
     // VoiceOver reach them here. "Open File" opens the in-app viewer (issue #117); "Open File in …"
@@ -456,6 +457,18 @@ private struct ChangedFileRow: View {
   private var letter: String { ChangeBadge.letter(file.change) }
   private var color: Color { ChangeBadge.color(file.change, theme.tokens) }
   private var changeWord: String { ChangeBadge.word(file.change) }
+  /// `old → new`, for the tooltip and accessibility label of a moved file.
+  private var renamePath: String {
+    ChangeBadge.pathLine(path: file.path, oldPath: file.oldPath)
+  }
+
+  /// The row's spoken label. A moved file says where it came from — VoiceOver has no tooltip to fall
+  /// back on, and the row only shows the new path.
+  private func accessibilityLabel(name: String, dir: String) -> String {
+    let place = dir.isEmpty ? "" : ", in \(dir)"
+    let from = file.oldPath.map { ", from \($0)" } ?? ""
+    return "\(name), \(changeWord)\(place)\(from), open diff"
+  }
 }
 
 /// Applies `accessibilityElement(children: .combine)` + an identifier only when `identifier` is

@@ -284,7 +284,14 @@ struct GitProvider: VCSProviding {
         guard let delta = entry.workingTree ?? entry.index,
           let change = Self.change(delta.type), let path = Self.statusPath(entry)
         else { continue }
-        files.append(ChangedFile(path: path, change: change))
+        // The pre-move path, for the rename rows the options above enable. Guarded on the delta type
+        // because libgit2 fills `oldFile` for every delta (it's the HEAD/index side of a plain
+        // modification too), so an unguarded read would label every row a rename.
+        let oldPath =
+          (delta.type == .renamed || delta.type == .copied) ? delta.oldFile.path : nil
+        files.append(
+          ChangedFile(path: path, change: change, oldPath: oldPath?.isEmpty == true ? nil : oldPath)
+        )
       }
       // Current branch for CI (nil when detached / unborn) — `branch.current` throws when detached.
       let branch = (try? repo.branch.current.name)

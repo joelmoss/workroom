@@ -296,6 +296,211 @@ fn deleted_beats_conflict_when_the_path_is_gone_from_the_working_copy() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Content big enough that a rename is a rename and not a coincidence: gix's rewrite tracking pairs
+/// an identical blob exactly, and needs ≥50% similarity when the content also changed.
+const RENAME_BODY: &[u8] = b"one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\n";
+
+/// A renamed file must read as ONE `Renamed` row carrying `old_path`, not a delete + an add. jj-lib
+/// itself has no similarity detection — the *backend* supplies copy records, and the git backend
+/// (gix rewrite tracking) is what every colocated workroom uses. A pure-jj repo on
+/// `simple_backend` returns no records and still reports delete+add; that degradation is deliberate
+/// (see `copy_records`), and can't be exercised here since `jj git init` is always git-backed.
+#[test]
+fn working_status_reports_a_rename_with_its_old_path() {
+    if !have_jj() {
+        eprintln!("skipping rename test: `jj` not on PATH");
+        return;
+    }
+    let (dir, cfg) = init_repo("rename");
+    std::fs::write(dir.join("old.txt"), RENAME_BODY).unwrap();
+    jj(&["commit", "-m", "add old.txt"], &dir, &cfg);
+    // Rename on disk only — the snapshot inside `working_status` is what has to notice.
+    std::fs::rename(dir.join("old.txt"), dir.join("new.txt")).unwrap();
+
+    let status = wr_vcs_core::working_status(&dir).expect("working_status");
+    let files = &status.working_copy.files;
+    let new = files
+        .iter()
+        .find(|f| f.path == "new.txt")
+        .unwrap_or_else(|| panic!("new.txt missing from {files:?}"));
+    assert_eq!(
+        new.kind,
+        wr_vcs_core::model::ChangeKind::Renamed,
+        "a renamed file must not read as a plain Added; got {files:?}"
+    );
+    assert_eq!(
+        new.old_path.as_deref(),
+        Some("old.txt"),
+        "the rename must carry its old path"
+    );
+    // The paired delete is jj-lib's to suppress — if it leaks, the panel shows the file twice.
+    assert!(
+        !files.iter().any(|f| f.path == "old.txt"),
+        "the old path must not also appear as a separate delete; got {files:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The same classification through `changeset` (History), not just the working copy — both callers
+/// share `changed_files`, and a rename that survives an edit (≈75% similar here) still has to pair up
+/// rather than fall back to delete+add.
+#[test]
+fn changeset_reports_a_rename_with_an_edit() {
+    if !have_jj() {
+        eprintln!("skipping rename-changeset test: `jj` not on PATH");
+        return;
+    }
+    let (dir, cfg) = init_repo("rename-changeset");
+    std::fs::write(dir.join("old.txt"), RENAME_BODY).unwrap();
+    jj(&["commit", "-m", "add old.txt"], &dir, &cfg);
+    std::fs::remove_file(dir.join("old.txt")).unwrap();
+    std::fs::write(
+        dir.join("new.txt"),
+        b"one\ntwo\nthree\nfour\nfive\nsix\nEDITED\n",
+    )
+    .unwrap();
+    jj(&["commit", "-m", "rename with an edit"], &dir, &cfg);
+    let cid = parent_id(&dir, &cfg);
+    assert!(!cid.is_empty(), "could not resolve the rename commit id");
+
+    let cs = wr_vcs_core::changeset(&dir, &cid).expect("changeset");
+    let new = cs
+        .files
+        .iter()
+        .find(|f| f.path == "new.txt")
+        .unwrap_or_else(|| panic!("new.txt missing from {:?}", cs.files));
+    assert_eq!(
+        new.kind,
+        wr_vcs_core::model::ChangeKind::Renamed,
+        "an edited rename is still a rename; got {:?}",
+        cs.files
+    );
+    assert_eq!(new.old_path.as_deref(), Some("old.txt"));
+    assert!(
+        !cs.files.iter().any(|f| f.path == "old.txt"),
+        "no separate delete row; got {:?}",
+        cs.files
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Copy vs rename: when the source SURVIVES, the same copy record must classify as `Copied`, not
+/// `Renamed` — the distinction jj-lib draws by checking whether the source is still present in the
+/// target tree. The source is also modified on purpose: gix only looks for copy sources among
+/// modified files (`CopySource::FromSetOfModifiedFiles`), so an untouched source yields no record at
+/// all and the new file is a plain `Added`.
+#[test]
+fn a_surviving_source_is_copied_not_renamed() {
+    if !have_jj() {
+        eprintln!("skipping copy test: `jj` not on PATH");
+        return;
+    }
+    let (dir, cfg) = init_repo("copy");
+    std::fs::write(dir.join("src.txt"), RENAME_BODY).unwrap();
+    jj(&["commit", "-m", "add src.txt"], &dir, &cfg);
+    std::fs::write(dir.join("dup.txt"), RENAME_BODY).unwrap();
+    std::fs::write(
+        dir.join("src.txt"),
+        b"one\ntwo\nthree\nfour\nfive\nsix\nseven\nEDITED\n",
+    )
+    .unwrap();
+
+    let status = wr_vcs_core::working_status(&dir).expect("working_status");
+    let files = &status.working_copy.files;
+    let dup = files
+        .iter()
+        .find(|f| f.path == "dup.txt")
+        .unwrap_or_else(|| panic!("dup.txt missing from {files:?}"));
+    assert_eq!(
+        dup.kind,
+        wr_vcs_core::model::ChangeKind::Copied,
+        "a copy whose source survives must not read as Renamed; got {files:?}"
+    );
+    assert_eq!(dup.old_path.as_deref(), Some("src.txt"));
+    // The surviving source is still its own modification — a copy suppresses nothing.
+    assert!(
+        files
+            .iter()
+            .any(|f| f.path == "src.txt" && f.kind == wr_vcs_core::model::ChangeKind::Modified),
+        "the copy source is still listed as Modified; got {files:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A conflicted path is never ALSO a rename, which is worth pinning because it's the opposite of
+/// what the classifier's branch order implies. Fixture: `base` has `old.txt`; `left` edits it in
+/// place; `right` renames it to `new.txt` with a different edit. `@ = jj new left right` then holds a
+/// delete/modify conflict on `old.txt` plus `new.txt`.
+///
+/// Observed (not assumed) result: `new.txt` is a plain `Added` with NO `old_path`, and `old.txt` is
+/// `Conflicted` — no pairing. The reason is the backend: copy records come from the *git* tree of each
+/// commit, and jj exports a conflicted commit as its `.jjconflict-base-N`/`.jjconflict-side-N` sidecar
+/// trees, so gix's rewrite detection has no plain blob at the conflicted path to match against. The
+/// `Conflicted`-before-rename branch in `changed_files` is therefore defensive ordering, not a case
+/// this backend can currently reach — if a future jj-lib pairs them, this test flips and the branch
+/// keeps the conflict badge instead of silently downgrading it to `Renamed`.
+#[test]
+fn a_conflicted_rename_does_not_pair_into_one_row() {
+    if !have_jj() {
+        eprintln!("skipping conflicted-rename test: `jj` not on PATH");
+        return;
+    }
+    let (dir, cfg) = init_repo("conflict-rename");
+    std::fs::write(dir.join("old.txt"), RENAME_BODY).unwrap();
+    jj(&["commit", "-m", "base"], &dir, &cfg);
+    let base = parent_id(&dir, &cfg);
+    // left: keep old.txt where it is, edit its last line.
+    std::fs::write(
+        dir.join("old.txt"),
+        b"one\ntwo\nthree\nfour\nfive\nsix\nseven\nLEFT\n",
+    )
+    .unwrap();
+    jj(&["commit", "-m", "left edits in place"], &dir, &cfg);
+    let left = parent_id(&dir, &cfg);
+    // right: rename it, with a conflicting edit on that same last line.
+    jj(&["new", &base, "-m", "right renames"], &dir, &cfg);
+    std::fs::remove_file(dir.join("old.txt")).unwrap();
+    std::fs::write(
+        dir.join("new.txt"),
+        b"one\ntwo\nthree\nfour\nfive\nsix\nseven\nRIGHT\n",
+    )
+    .unwrap();
+    jj(&["commit", "-m", "right renames"], &dir, &cfg);
+    let right = parent_id(&dir, &cfg);
+    jj(&["new", &left, &right], &dir, &cfg);
+    assert!(
+        jj_says_conflicted(&dir, &cfg),
+        "fixture is not conflicted — the fixture is wrong, not the classifier"
+    );
+
+    let status = wr_vcs_core::working_status(&dir).expect("working_status");
+    let files = &status.working_copy.files;
+    assert!(
+        files
+            .iter()
+            .any(|f| f.path == "old.txt" && f.kind == wr_vcs_core::model::ChangeKind::Conflicted),
+        "the conflicted path must still report the conflict; got {files:?}"
+    );
+    let new = files
+        .iter()
+        .find(|f| f.path == "new.txt")
+        .unwrap_or_else(|| panic!("new.txt missing from {files:?}"));
+    assert_eq!(
+        new.kind,
+        wr_vcs_core::model::ChangeKind::Added,
+        "a conflict's sidecar trees defeat rename pairing; got {files:?}"
+    );
+    assert_eq!(
+        new.old_path, None,
+        "no copy record means no old path; got {files:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn working_status_snapshots_disk_edits_without_corrupting() {
     if !have_jj() {

@@ -308,7 +308,7 @@ struct RustJJProvider: VCSProviding {
   }
 
   private static func changedFile(_ f: WrVcs.ChangedFile) -> ChangedFile {
-    ChangedFile(path: f.path, change: statusChange(f.kind))
+    ChangedFile(path: f.path, change: statusChange(f.kind), oldPath: f.oldPath)
   }
 
   /// WrVcs change kind → the app's working-tree change kind (jj commits have no `untracked`).
