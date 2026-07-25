@@ -7,6 +7,12 @@ import SwiftUI
 /// selection-driven command (⌘T/⌘W/splits/run/notifications/⌥⌘1–9) operates on the focused workroom.
 /// No per-chip close button: a tab vanishes when its terminals are closed, and closing-as-kill would
 /// defeat the parallel-monitoring purpose.
+///
+/// The trailing controls (open-workroom + "+") are **adaptive** (issue #129), mirroring
+/// `TerminalTabStrip`: they sit inline hugging the last chip while everything fits, and pin at the
+/// bar's trailing edge once the chips overflow, so the "+" is never scrolled out of reach. They move as
+/// one block — they share a size/style and ⌘O/⌘N, and a chevron left behind in the scroller would be
+/// the first thing to scroll away. The decision is the shared `TabStripOverflow.pinsControls`.
 struct WorkroomTabBar: View {
   let tabs: [(sid: SidebarID, target: TerminalTarget)]
   let selectedID: SidebarID?
@@ -35,7 +41,40 @@ struct WorkroomTabBar: View {
   @State private var dragTranslation: CGFloat = 0
   @State private var widths: [SidebarID: CGFloat] = [:]
 
+  // Overflow measurements (issue #129), mirroring `TerminalTabStrip`. Each is read from something that
+  // can't change as a result of the decision it feeds, so the inline↔pinned choice can't oscillate.
+  /// Natural width of the chip run — measured INSIDE the scroller, so it's the content's width, not the
+  /// viewport's. Covers the provisional "Creating…" chip and the trailing hairline too, since both live
+  /// in the measured row (which is why neither needs its own bookkeeping — notably the provisional chip
+  /// is deliberately absent from `WorkroomTabWidthKey`).
+  @State private var chipRunWidth: CGFloat = 0
+  /// The trailing controls block's intrinsic width — the same view in both positions, so one number.
+  @State private var controlsWidth: CGFloat = 0
+  /// Width the title-bar HStack grants this bar. Measured *after* `.frame(maxWidth: .infinity)`, so it
+  /// is the allocation the bar received and never its content's ideal width — read before that frame it
+  /// would report the chips' own width and overflow would never trigger.
+  @State private var availableWidth: CGFloat = 0
+
   private let tabSpacing: CGFloat = 4
+
+  /// Whether the chips no longer fit with the controls inline, so the block pins at the trailing edge
+  /// and the scroller takes its fade (issue #129). `inlineAddLead` is just the row's spacing: the
+  /// block's own leading pad is inside its measured width.
+  private var overflowing: Bool {
+    TabStripOverflow.pinsControls(
+      runWidth: chipRunWidth, add: controlsWidth, available: availableWidth,
+      leadingInset: 8, inlineAddLead: tabSpacing)
+  }
+
+  /// Whether the hairline before the trailing controls shows. Hidden when the last tab stands apart on
+  /// its own (selected or hovered — its filled pill already separates it), when it's in a split group
+  /// (the `splitWell` bracket frames it, so a divider would double against its rounded edge), and once
+  /// the controls have pinned (issue #129): the fade and gutter already separate the regions.
+  private var showsTrailingDivider: Bool {
+    guard !overflowing else { return false }
+    guard let last = tabs.last else { return true }
+    return !splitMemberSet.contains(last.sid) && last.sid != selectedID && last.sid != hoveredID
+  }
 
   var body: some View {
     let draggedIndex = draggingID.flatMap { id in tabs.firstIndex { $0.sid == id } }
@@ -53,107 +92,165 @@ struct WorkroomTabBar: View {
 
     ScrollView(.horizontal, showsIndicators: false) {
       HStack(spacing: tabSpacing) {
-        ForEach(Array(tabs.enumerated()), id: \.element.sid) { index, tab in
-          let isDragging = draggingID == tab.sid
-          let isHovered = hoveredID == tab.sid && draggingID == nil
-          let offsetX =
-            isDragging
-            ? dragTranslation
-            : TabReorder.gapShift(
-              index: index, draggedIndex: draggedIndex, target: dropIndex,
-              amount: draggedWidth + tabSpacing)
-          WorkroomTabChip(
-            sid: tab.sid, target: tab.target, isActive: tab.sid == selectedID,
-            isHovered: isHovered, isDragging: isDragging,
-            showLeadingSeparator: showsLeadingSeparator(at: index)
-          )
-          .onHover { inside in
-            if inside { hoveredID = tab.sid } else if hoveredID == tab.sid { hoveredID = nil }
-          }
-          .onTapGesture { onSelect(tab.sid) }
-          // Measure in .global space (a .local drag reads coordinates relative to the chip, which
-          // itself moves via .offset — that feedback loop lags the cursor). Mirrors TerminalTabStrip.
-          .gesture(
-            DragGesture(minimumDistance: 6, coordinateSpace: .global)
-              .onChanged { value in
-                if draggingID == nil { draggingID = tab.sid }
-                guard draggingID == tab.sid else { return }
-                // Clamp the reorder so the dragged chip stops at the leading and trailing ends of the
-                // tab run — it can't be pulled left into the leading controls or right across the empty
-                // fill (the bar spans the full title-bar width). Vertical drag-into-a-split is
-                // unaffected (that reads `value.location`, below).
-                dragTranslation = clampReorder(value.translation.width, draggedIndex: index)
-                // Dragged into the detail content → preview a drop-into-pane split (the strip stops
-                // gapping); otherwise it's a plain reorder.
-                chipPaneDrag = localize(value.location).map {
-                  WorkroomPaneDrag(sid: tab.sid, location: $0)
-                }
-              }
-              .onEnded { value in
-                if let drop = dropTarget(value.location) {
-                  store.insertWorkroomSplit(tab.sid, beside: drop.sid, edge: drop.edge)
-                  draggingID = nil
-                  dragTranslation = 0
-                } else {
-                  commitDrag()  // a plain strip reorder
-                }
-                chipPaneDrag = nil
-              }
-          )
-          .offset(x: offsetX)
-          .zIndex(isDragging ? 1 : 0)
-          .animation(
-            isDragging || reduceMotion ? nil : .easeInOut(duration: 0.18), value: offsetX)
-        }
-        // A provisional "Creating…" chip while a workroom is being created in this window (issue
-        // #116), shown from the first click until its real named chip resolves into `tabs`. Tapping it
-        // refocuses the creating slot (its loader/dialog); it takes no part in drag/reorder.
-        if let creating = provisionalCreation {
-          ProvisionalWorkroomChip(
-            project: creating.project, isActive: store.isCreationFocused,
-            onSelect: {
-              if let name = creating.name {
-                store.selectedTargetID = .workroom(project: creating.project.path, name: name)
-              } else {
-                store.selectedTargetID = nil
-              }
-              store.selectedProjectID = creating.project.id
-            })
-        }
-        // A divider sets the "new workroom" (+) button apart from the last tab. Hidden when the last
-        // tab is selected or hovered (its filled pill stands apart, mirroring the inter-chip dividers)
-        // or is in a split group (the `splitWell` bracket already frames it, so a divider would double
-        // against its rounded edge). Toggled via OPACITY (not removed) so the "+" never shifts. Negative
-        // leading trims the gap to the last tab to ~2pt (HStack `tabSpacing` 4 − 2), matching the
-        // inter-chip dividers.
-        Rectangle()
-          .fill(ThemeService.shared.tokens.border)
-          .frame(width: 1, height: 16)
-          .padding(.leading, -2)
-          .padding(.trailing, 4)
-          .opacity(
-            tabs.last.map {
-              !splitMemberSet.contains($0.sid) && $0.sid != selectedID && $0.sid != hoveredID
-            } ?? true ? 1 : 0)
-        // Open-workroom + new-workroom buttons, immediately after the last chip (scroll with them).
-        // Open sits to the left of the "+" and shares its exact size/style.
-        openWorkroomButton
-        addWorkroomButton
+        chipRun(draggedIndex: draggedIndex, dropIndex: dropIndex, draggedWidth: draggedWidth)
+        // Fits: the controls stay inline, hugging the last chip — today's look, unchanged.
+        if !overflowing { trailingControls }
       }
-      .background(alignment: .leading) { splitWell }
-      .padding(.horizontal, 8)
-      .onPreferenceChange(WorkroomTabWidthKey.self) { widths = $0 }
+      .padding(.leading, 8)
     }
+    // The trailing inset as a *content margin*, not padding inside the row: padding inside the content
+    // only manifests once scrolled to the very end, so it can't hold a clipped chip off the controls
+    // (issue #129). Same 8pt as the leading inset, so nothing moves in the fits case.
+    .contentMargins(.trailing, TabStripMetrics.fade, for: .scrollContent)
     // The bar fills the gap between the leading and trailing title-bar controls
     // (`frame(maxWidth: .infinity)`), chips left-aligned; it scrolls horizontally when the chips
     // overflow that gap — the chips are never resized (issue #23). `fixedSize` (vertical) hugs the chip
     // height so the parent title-bar HStack centres the bar on the traffic-light line.
     .fixedSize(horizontal: false, vertical: true)
+    .mask { trailingFade }
+    // `mask` composites away hit testing in its transparent region; restore the full-rect interaction
+    // shape so a partially faded chip keeps its tap/hover/drag targets.
+    .contentShape(.interaction, Rectangle())
+    // Overflowing: the controls lift OUT of the scroller and pin here, always visible (issue #129).
+    // `safeAreaInset` places them AND reserves their width, so chips stop before them rather than
+    // sliding underneath, and `spacing:` is the gutter — no separate constant to keep in sync.
+    .safeAreaInset(edge: .trailing, spacing: TabStripMetrics.gutter) {
+      if overflowing { trailingControls }
+    }
     .frame(maxWidth: .infinity, alignment: .leading)
+    // Measured AFTER the frame above, so this is the width the title bar GRANTED the bar — the
+    // branch-independent input the predicate needs. Read before the frame it would report the chips'
+    // own ideal width, and overflow would never trigger.
+    .onGeometryChange(for: CGFloat.self, of: { $0.size.width }, action: { availableWidth = $0 })
     // Disable AppKit's title-bar window drag only while the cursor is over (or dragging) a chip, so a
     // chip drag reorders instead of moving the window — the empty bar still drags it. See
-    // `WindowMovableController`.
+    // `WindowMovableController`. Deliberately NOT widened to the trailing buttons: they already work
+    // while the window is movable, and churning a window-wide flag on button hover buys nothing.
     .background(WindowMovableController(movable: draggingID == nil && hoveredID == nil))
+  }
+
+  /// The alpha ramp over the scroller's trailing edge, so a clipped chip dissolves instead of being cut
+  /// mid-glyph (issue #129). ALWAYS applied — only the ramp's end colour changes — so a flip is a value
+  /// change and no chip loses identity. Mirrors `TerminalTabStrip.trailingFade`.
+  private var trailingFade: some View {
+    HStack(spacing: 0) {
+      Rectangle()
+      LinearGradient(
+        colors: [.black, overflowing ? .clear : .black],
+        startPoint: .leading, endPoint: .trailing
+      )
+      .frame(width: TabStripMetrics.fade)
+    }
+  }
+
+  /// The open-workroom + new-workroom buttons as ONE block, rendered inline as the last element of the
+  /// scrolling row while everything fits, or pinned at the bar's trailing edge once the chips overflow
+  /// (issue #129). Both move together: they share a size/style (see `openWorkroomButton`) and ⌘O/⌘N, and
+  /// a chevron left behind in the scroller would sit under the fade as the first thing to scroll away.
+  ///
+  /// `fixedSize` so the block keeps its intrinsic width and the scrolling chip area yields first in a
+  /// cramped window — the same reason `TerminalTabStrip.tabToolbar` is fixed-size. Its width is measured
+  /// here and feeds `overflowing`; the internal spacing is identical in both positions, so that one
+  /// number is valid either way, which is what keeps the predicate branch-independent.
+  private var trailingControls: some View {
+    HStack(spacing: tabSpacing) {
+      openWorkroomButton
+      addWorkroomButton
+    }
+    .fixedSize()
+    .onGeometryChange(for: CGFloat.self, of: { $0.size.width }, action: { controlsWidth = $0 })
+  }
+
+  /// The chips themselves, the provisional "Creating…" chip, and the hairline that sets the trailing
+  /// controls apart — everything that scrolls, and everything that stays put across an overflow flip.
+  /// Measured as one run for the overflow predicate, with the split bracket drawn behind it
+  /// (leading-aligned, so x = 0 is the first chip's leading edge, which is what `splitRunRect` computes
+  /// against).
+  @ViewBuilder
+  private func chipRun(draggedIndex: Int?, dropIndex: Int?, draggedWidth: CGFloat) -> some View {
+    HStack(spacing: tabSpacing) {
+      ForEach(Array(tabs.enumerated()), id: \.element.sid) { index, tab in
+        let isDragging = draggingID == tab.sid
+        let isHovered = hoveredID == tab.sid && draggingID == nil
+        let offsetX =
+          isDragging
+          ? dragTranslation
+          : TabReorder.gapShift(
+            index: index, draggedIndex: draggedIndex, target: dropIndex,
+            amount: draggedWidth + tabSpacing)
+        WorkroomTabChip(
+          sid: tab.sid, target: tab.target, isActive: tab.sid == selectedID,
+          isHovered: isHovered, isDragging: isDragging,
+          showLeadingSeparator: showsLeadingSeparator(at: index)
+        )
+        .onHover { inside in
+          if inside { hoveredID = tab.sid } else if hoveredID == tab.sid { hoveredID = nil }
+        }
+        .onTapGesture { onSelect(tab.sid) }
+        // Measure in .global space (a .local drag reads coordinates relative to the chip, which
+        // itself moves via .offset — that feedback loop lags the cursor). Mirrors TerminalTabStrip.
+        .gesture(
+          DragGesture(minimumDistance: 6, coordinateSpace: .global)
+            .onChanged { value in
+              if draggingID == nil { draggingID = tab.sid }
+              guard draggingID == tab.sid else { return }
+              // Clamp the reorder so the dragged chip stops at the leading and trailing ends of the
+              // tab run — it can't be pulled left into the leading controls or right across the empty
+              // fill (the bar spans the full title-bar width). Vertical drag-into-a-split is
+              // unaffected (that reads `value.location`, below).
+              dragTranslation = clampReorder(value.translation.width, draggedIndex: index)
+              // Dragged into the detail content → preview a drop-into-pane split (the strip stops
+              // gapping); otherwise it's a plain reorder.
+              chipPaneDrag = localize(value.location).map {
+                WorkroomPaneDrag(sid: tab.sid, location: $0)
+              }
+            }
+            .onEnded { value in
+              if let drop = dropTarget(value.location) {
+                store.insertWorkroomSplit(tab.sid, beside: drop.sid, edge: drop.edge)
+                draggingID = nil
+                dragTranslation = 0
+              } else {
+                commitDrag()  // a plain strip reorder
+              }
+              chipPaneDrag = nil
+            }
+        )
+        .offset(x: offsetX)
+        .zIndex(isDragging ? 1 : 0)
+        .animation(
+          isDragging || reduceMotion ? nil : .easeInOut(duration: 0.18), value: offsetX)
+      }
+      // A provisional "Creating…" chip while a workroom is being created in this window (issue
+      // #116), shown from the first click until its real named chip resolves into `tabs`. Tapping it
+      // refocuses the creating slot (its loader/dialog); it takes no part in drag/reorder.
+      if let creating = provisionalCreation {
+        ProvisionalWorkroomChip(
+          project: creating.project, isActive: store.isCreationFocused,
+          onSelect: {
+            if let name = creating.name {
+              store.selectedTargetID = .workroom(project: creating.project.path, name: name)
+            } else {
+              store.selectedTargetID = nil
+            }
+            store.selectedProjectID = creating.project.id
+          })
+      }
+      // A divider sets the trailing controls apart from the last tab — see `showsTrailingDivider` for
+      // when it hides. Toggled via OPACITY (not removed) so the controls never shift as hover and
+      // selection come and go, which also keeps the measured run width stable across those
+      // transitions. Negative leading trims the gap to the last tab to ~2pt (HStack `tabSpacing` 4 − 2),
+      // matching the inter-chip dividers.
+      Rectangle()
+        .fill(ThemeService.shared.tokens.border)
+        .frame(width: 1, height: 16)
+        .padding(.leading, -2)
+        .padding(.trailing, 4)
+        .opacity(showsTrailingDivider ? 1 : 0)
+    }
+    .background(alignment: .leading) { splitWell }
+    .onPreferenceChange(WorkroomTabWidthKey.self) { widths = $0 }
+    .onGeometryChange(for: CGFloat.self, of: { $0.size.width }, action: { chipRunWidth = $0 })
   }
 
   /// The in-progress create whose chip isn't yet a real tab (issue #116): shown as a provisional
@@ -212,19 +309,16 @@ struct WorkroomTabBar: View {
   }
 
   /// The x-offset and width of the split members' contiguous run within the chip row (x = 0 at the
-  /// first chip), from the measured chip widths — or nil when there's no split. Mirrors
-  /// `TerminalTabStrip.splitRunRect`.
+  /// first chip), from the measured chip widths — or nil when there's no split. Maps this bar's model to
+  /// position-indexed widths and delegates the arithmetic to the shared `TabStripSplitRun` (unit-tested
+  /// there), exactly as `TerminalTabStrip.splitRunRect` does.
   private func splitRunRect() -> (x: CGFloat, width: CGFloat)? {
     guard let members = store.workroomSplit?.tabIDs, members.count >= 2 else { return nil }
     let memberSet = Set(members)
-    let idxs = tabs.indices.filter { memberSet.contains(tabs[$0].sid) }
-    guard let first = idxs.first, let last = idxs.last else { return nil }
-    var x: CGFloat = 0
-    for i in 0..<first { x += (widths[tabs[i].sid] ?? 0) + tabSpacing }
-    var width: CGFloat = 0
-    for i in first...last { width += widths[tabs[i].sid] ?? 0 }
-    width += tabSpacing * CGFloat(last - first)
-    return (x, width)
+    return TabStripSplitRun.rect(
+      widths: tabs.map { widths[$0.sid] ?? 0 },
+      memberIndices: tabs.indices.filter { memberSet.contains(tabs[$0].sid) },
+      spacing: tabSpacing)
   }
 
   /// Clamp a reorder translation so the dragged chip stays within the tab run: its leading edge can't

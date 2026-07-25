@@ -87,3 +87,201 @@ final class TabReorderMathTests: XCTestCase {
     XCTAssertEqual(TabReorder.gapShift(index: 2, draggedIndex: 2, target: 0, amount: 104), 0)
   }
 }
+
+/// Unit tests for the overflow/pinning math both tab strips share (issue #129): when the chip run plus
+/// the trailing controls no longer fit, the controls pin at the trailing edge so the "+" is never
+/// scrolled out of reach.
+final class TabStripOverflowTests: XCTestCase {
+  private let spacing: CGFloat = 4
+
+  // MARK: runWidth
+
+  func testRunWidthOfNoChipsIsZero() {
+    XCTAssertEqual(TabStripOverflow.runWidth([], spacing: spacing), 0)
+  }
+
+  func testRunWidthOfOneChipHasNoSpacing() {
+    XCTAssertEqual(TabStripOverflow.runWidth([100], spacing: spacing), 100)
+  }
+
+  func testRunWidthCountsOneFewerGapThanChips() {
+    // 3 chips → 2 gaps: 300 + 8.
+    XCTAssertEqual(TabStripOverflow.runWidth([100, 100, 100], spacing: spacing), 308)
+  }
+
+  // MARK: pinsControls — the boundary
+
+  /// The inline layout is exactly `leadingInset + run + inlineAddLead + add + gutter` wide. With
+  /// `epsilon: 0` an exact fit must NOT pin (the comparison is strictly greater-than).
+  func testExactFitDoesNotPin() {
+    // 8 + 300 + 6 + 20 + 8 = 342.
+    XCTAssertFalse(
+      TabStripOverflow.pinsControls(
+        runWidth: 300, add: 20, available: 342, leadingInset: 8, inlineAddLead: 6, gutter: 8,
+        epsilon: 0))
+  }
+
+  func testOnePointOverPins() {
+    XCTAssertTrue(
+      TabStripOverflow.pinsControls(
+        runWidth: 301, add: 20, available: 342, leadingInset: 8, inlineAddLead: 6, gutter: 8,
+        epsilon: 0))
+  }
+
+  // MARK: pinsControls — epsilon absorbs resize jitter
+
+  func testEpsilonAbsorbsSubPixelOvershoot() {
+    // 0.4pt over the boundary is rounding noise during a live resize, not a real overflow.
+    XCTAssertFalse(
+      TabStripOverflow.pinsControls(
+        runWidth: 300.4, add: 20, available: 342, leadingInset: 8, inlineAddLead: 6, gutter: 8))
+  }
+
+  func testEpsilonDoesNotSwallowARealPoint() {
+    XCTAssertTrue(
+      TabStripOverflow.pinsControls(
+        runWidth: 301, add: 20, available: 342, leadingInset: 8, inlineAddLead: 6, gutter: 8))
+  }
+
+  // MARK: pinsControls — the gutter is load-bearing
+
+  /// The gutter is what stops a clipped chip abutting the trailing controls — symptom 1 of issue #129.
+  /// The same run must fit without it and overflow with it, or the strip would only pin once a chip is
+  /// already touching.
+  func testGutterIsLoadBearing() {
+    let fits = TabStripOverflow.pinsControls(
+      runWidth: 308, add: 20, available: 342, leadingInset: 8, inlineAddLead: 6, gutter: 0,
+      epsilon: 0)
+    let overflows = TabStripOverflow.pinsControls(
+      runWidth: 308, add: 20, available: 342, leadingInset: 8, inlineAddLead: 6, gutter: 8,
+      epsilon: 0)
+    XCTAssertFalse(fits)
+    XCTAssertTrue(overflows)
+  }
+
+  // MARK: pinsControls — the compact (split-member) inset shifts the threshold
+
+  /// A workroom-split member tightens the leading inset to 4pt (issue #110), which is 4pt more room for
+  /// chips. The same run must be able to flip on that alone. With `available: 342` the solo inset fits
+  /// runs up to 300pt and the compact one up to 304pt, so 302 sits in the window where only the inset
+  /// decides.
+  func testCompactLeadingInsetFitsARunTheSoloInsetDoesNot() {
+    XCTAssertTrue(
+      TabStripOverflow.pinsControls(
+        runWidth: 302, add: 20, available: 342, leadingInset: 8, inlineAddLead: 6, gutter: 8,
+        epsilon: 0))
+    XCTAssertFalse(
+      TabStripOverflow.pinsControls(
+        runWidth: 302, add: 20, available: 342, leadingInset: 4, inlineAddLead: 6, gutter: 8,
+        epsilon: 0))
+  }
+
+  // MARK: pinsControls — never pin before anything is measured
+
+  /// On the first layout pass the `@State` widths are still 0. Pinning then would flash the controls
+  /// across the bar; the guard renders inline instead and the single correction follows.
+  func testUnmeasuredInputsNeverPin() {
+    XCTAssertFalse(
+      TabStripOverflow.pinsControls(
+        runWidth: 300, add: 20, available: 0, leadingInset: 8, inlineAddLead: 6))
+    XCTAssertFalse(
+      TabStripOverflow.pinsControls(
+        runWidth: 0, add: 20, available: 342, leadingInset: 8, inlineAddLead: 6))
+    XCTAssertFalse(
+      TabStripOverflow.pinsControls(
+        runWidth: 300, add: 0, available: 342, leadingInset: 8, inlineAddLead: 6))
+  }
+
+  // MARK: pinsControls — monotonic, and stable once pinned
+
+  func testShrinkingAvailableWidthNeverUnpins() {
+    var pinned = false
+    for available in stride(from: CGFloat(400), through: 100, by: -10) {
+      let now = TabStripOverflow.pinsControls(
+        runWidth: 308, add: 20, available: available, leadingInset: 8, inlineAddLead: 6)
+      if pinned { XCTAssertTrue(now, "un-pinned at available=\(available) after pinning") }
+      pinned = pinned || now
+    }
+    XCTAssertTrue(pinned, "a 308pt run should pin somewhere between 400pt and 100pt")
+  }
+
+  /// The anti-oscillation property, as a test rather than a comment. Once the controls pin they stop
+  /// occupying the scroller's viewport, so a predicate written against the *viewport* would see the
+  /// smaller number and might un-pin, then re-pin. This predicate reads the width the strip was
+  /// granted, which the pinning does not change — so re-evaluating with the same inputs is stable, and
+  /// feeding it the (smaller) post-pin viewport is not something the API permits: there is no such
+  /// parameter. This test pins the intent so a later "simplification" to content-vs-viewport fails here.
+  func testDecisionIsStableAcrossReevaluation() {
+    let inputs = (runWidth: CGFloat(308), add: CGFloat(20), available: CGFloat(320))
+    let first = TabStripOverflow.pinsControls(
+      runWidth: inputs.runWidth, add: inputs.add, available: inputs.available, leadingInset: 8,
+      inlineAddLead: 6)
+    XCTAssertTrue(first)
+    for _ in 0..<5 {
+      XCTAssertEqual(
+        TabStripOverflow.pinsControls(
+          runWidth: inputs.runWidth, add: inputs.add, available: inputs.available, leadingInset: 8,
+          inlineAddLead: 6),
+        first, "the decision must not depend on how many times it is evaluated")
+    }
+  }
+}
+
+/// Unit tests for the split-group bracket's geometry, lifted out of `TerminalTabStrip.splitRunRect`
+/// (issue #129 review). REGRESSION COVERAGE: this arithmetic had none, and the #129 restructure moves
+/// the bracket's `background` from the scroll-content row onto the chip run — a mis-alignment there is
+/// silent and no other test would catch it.
+final class TabStripSplitRunTests: XCTestCase {
+  private let widths: [CGFloat] = [100, 100, 100, 100]
+  private let spacing: CGFloat = 4
+
+  func testNoMembersDrawsNoBracket() {
+    XCTAssertNil(TabStripSplitRun.rect(widths: widths, memberIndices: [], spacing: spacing))
+  }
+
+  /// One member is not a split — the bracket would frame a lone chip and read as selection.
+  func testSingleMemberDrawsNoBracket() {
+    XCTAssertNil(TabStripSplitRun.rect(widths: widths, memberIndices: [1], spacing: spacing))
+  }
+
+  func testGroupAtRunStartHasZeroOffset() {
+    let rect = TabStripSplitRun.rect(widths: widths, memberIndices: [0, 1], spacing: spacing)
+    XCTAssertEqual(rect?.x, 0)
+    // Two chips, one gap between them.
+    XCTAssertEqual(rect?.width, 204)
+  }
+
+  func testGroupInRunMiddleOffsetsByPrecedingChipsAndGaps() {
+    let rect = TabStripSplitRun.rect(widths: widths, memberIndices: [1, 2], spacing: spacing)
+    // One preceding chip plus the gap that follows it.
+    XCTAssertEqual(rect?.x, 104)
+    XCTAssertEqual(rect?.width, 204)
+  }
+
+  func testGroupAtRunEnd() {
+    let rect = TabStripSplitRun.rect(widths: widths, memberIndices: [2, 3], spacing: spacing)
+    XCTAssertEqual(rect?.x, 208)
+    XCTAssertEqual(rect?.width, 204)
+  }
+
+  func testThreeMemberGroupSpansTwoGaps() {
+    let rect = TabStripSplitRun.rect(widths: widths, memberIndices: [1, 2, 3], spacing: spacing)
+    XCTAssertEqual(rect?.x, 104)
+    XCTAssertEqual(rect?.width, 308)
+  }
+
+  /// Members are contiguous by construction (the display order guarantees it), but a stale index set
+  /// mid-update must span rather than crash or return a negative width.
+  func testNonContiguousMembersSpanTheWholeRun() {
+    let rect = TabStripSplitRun.rect(widths: widths, memberIndices: [0, 3], spacing: spacing)
+    XCTAssertEqual(rect?.x, 0)
+    XCTAssertEqual(rect?.width, 412)
+  }
+
+  /// A member index past the end means the caller's widths haven't caught up with its model yet — draw
+  /// nothing rather than reading out of bounds.
+  func testOutOfRangeMemberDrawsNoBracket() {
+    XCTAssertNil(TabStripSplitRun.rect(widths: widths, memberIndices: [2, 9], spacing: spacing))
+    XCTAssertNil(TabStripSplitRun.rect(widths: [], memberIndices: [0, 1], spacing: spacing))
+  }
+}

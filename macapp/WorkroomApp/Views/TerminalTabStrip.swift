@@ -7,6 +7,12 @@ import SwiftUI
 /// the pane content, so `WorkroomTerminalsView` passes a `chipPaneDrag` binding (the live preview the
 /// pane tree renders) plus `localize`/`dropTarget` closures that resolve a cursor point against the
 /// pane area (which only the coordinator knows the frame of).
+///
+/// The "+" is **adaptive** (issue #129): while the tabs fit it sits inline, hugging the last chip;
+/// once they overflow it lifts out of the scroller and pins at the strip's trailing edge, so it's
+/// never scrolled out of reach. The scroller's trailing edge carries an alpha ramp in that state, so
+/// a clipped chip dissolves instead of being cut mid-glyph. The decision itself is
+/// `TabStripOverflow.pinsControls` (shared with `WorkroomTabBar`, which mirrors this behaviour).
 struct TerminalTabStrip: View {
   let tabs: [TerminalTab]
   let activeID: TerminalTab.ID?
@@ -46,7 +52,42 @@ struct TerminalTabStrip: View {
   @State private var dragTranslation: CGFloat = 0
   @State private var widths: [TerminalTab.ID: CGFloat] = [:]
 
+  // Overflow measurements (issue #129). Each is read from something that CANNOT change as a result of
+  // the decision it feeds, which is what makes the inline↔pinned choice unable to oscillate on resize:
+  //
+  //   chipRunWidth ─┐
+  //   addWidth ─────┼─► TabStripOverflow.pinsControls ─► inline "+" | pinned "+" + trailing fade
+  //   availableWidth┘
+  //
+  /// Natural width of the chip run — measured INSIDE the scroller, so it's the content's width and not
+  /// the viewport's. Includes the trailing divider, which is toggled by opacity and so always laid out.
+  @State private var chipRunWidth: CGFloat = 0
+  /// The "+"'s own intrinsic width, measured before any positioning pad — identical inline or pinned.
+  @State private var addWidth: CGFloat = 0
+  /// Width available to the chips + "+". This is the scroller's own width: it's the flexible child
+  /// beside the `fixedSize` toolbar, so it already equals "strip minus toolbar" (and the full strip
+  /// when there's no active tab and the toolbar renders nothing). Crucially it does NOT change when
+  /// the "+" pins — `safeAreaInset` reduces the scroller's safe area, not its frame — so feeding it
+  /// back into the predicate can't create a layout feedback loop.
+  @State private var availableWidth: CGFloat = 0
+
   private let tabSpacing: CGFloat = 4
+  /// The strip's own right inset. Lives here rather than on `tabToolbar` (which renders *nothing* when
+  /// there's no active tab) so a pinned "+" is never flush against the pane edge.
+  private static let stripTrailingInset: CGFloat = 4
+
+  /// The strip's leading inset: in a workroom-split group the leftmost tab lines up with the group's
+  /// terminal panel below (issue #110); solo keeps 8pt.
+  private var leadingInset: CGFloat { compact ? 4 : 8 }
+
+  /// Whether the tabs no longer fit with the "+" inline, so it pins at the trailing edge and the
+  /// scroller takes its fade (issue #129). See `TabStripOverflow.pinsControls` for why this can't
+  /// oscillate. `inlineAddLead` is the real inline gap: the row's spacing plus the button's own pad.
+  private var overflowing: Bool {
+    TabStripOverflow.pinsControls(
+      runWidth: chipRunWidth, add: addWidth, available: availableWidth,
+      leadingInset: leadingInset, inlineAddLead: tabSpacing + TabStripMetrics.inlineAddLead)
+  }
 
   var body: some View {
     // Resolve the drag once per layout: which tab is dragging, and where it would land.
@@ -60,128 +101,14 @@ struct TerminalTabStrip: View {
     let groupMembers = splitMemberSet
 
     HStack(spacing: 0) {
-      ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: tabSpacing) {
-          ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
-            let isDragging = draggingID == tab.id
-            let isHovered = hoveredTab == tab.id && draggingID == nil
-            // Activity in an unfocused tab highlights the tab itself (accent title + faint accent
-            // fill) instead of a count — a tab is too narrow for a number.
-            let hasActivity = notifications.count(tab: tab.id) > 0
-            // Run-command state for this tab's chip icon (issue #7): only the dedicated run tab
-            // carries one — running (green) vs failed (red octagon, #79) vs stopped/exited (dim).
-            // Process-based, distinct from the OSC-9;4 RunningUnderline below.
-            let runState: TerminalTabChip.RunState? =
-              store.runTabID(for: target.id) == tab.id
-              ? (store.isRunCommandRunning(for: target.id)
-                ? .running : (store.runFailed(for: target.id) ? .failed : .stopped))
-              : nil
-            // Dragged chip tracks the cursor; the rest shift to open the gap.
-            let offsetX =
-              isDragging
-              ? dragTranslation
-              : gapShift(
-                for: index, draggedIndex: draggedIndex, target: dropIndex,
-                amount: draggedWidth + tabSpacing)
-            // A ✦ badge marks any tab with a live diagnosis (issue #49) — the per-tab signal that
-            // complements the active tab's diagnosis shown in the detail-panel status bar.
-            let agentBadge = agentManager.banners[tab.id] != nil
-            TerminalTabChip(
-              tab: tab, isActive: tab.id == activeID, isHovered: isHovered,
-              isDragging: isDragging, hasActivity: hasActivity, runState: runState,
-              showLeadingSeparator: showsLeadingSeparator(at: index),
-              isGrouped: groupMembers.contains(tab.id),
-              agentBadge: agentBadge, onAgentTap: { agentPopoverTab = tab.id }
-            ) {
-              store.requestCloseTerminalTab(tab.id, for: target)
-            }
-            .popover(
-              isPresented: Binding(
-                get: { agentPopoverTab == tab.id },
-                set: { if !$0 { agentPopoverTab = nil } })
-            ) {
-              agentPopover(for: tab)
-            }
-            .onHover { inside in
-              if inside { hoveredTab = tab.id } else if hoveredTab == tab.id { hoveredTab = nil }
-            }
-            .onTapGesture {
-              // Eager: select on the first click (changes `active.id`; the view's .onChange hook
-              // marks the tab read). A quick second click on the same chip promotes a preview content
-              // tab to persisted (#66) — `persist` no-ops on terminal/persisted tabs, so this is safe
-              // for every chip and never delays the select.
-              let now = Date()
-              sessions.select(tab.id, for: target)
-              if let last = lastChipClick, last.id == tab.id, now.timeIntervalSince(last.at) < 0.35
-              {
-                sessions.persist(tab.id, for: target)
-                lastChipClick = nil
-              } else {
-                lastChipClick = ChipClick(id: tab.id, at: now)
-              }
-            }
-            .tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions)
-            // Measure in .global space: a .local drag reads coordinates relative to the
-            // chip, which itself moves via .offset(dragTranslation) — that feedback loop
-            // dampens the translation so the chip lags the cursor. Global space is fixed.
-            .gesture(
-              DragGesture(minimumDistance: 6, coordinateSpace: .global)
-                .onChanged { value in
-                  if draggingID == nil { draggingID = tab.id }
-                  guard draggingID == tab.id else { return }
-                  dragTranslation = value.translation.width
-                  // Dragged down over the pane area → preview a drop-into-pane (the strip stops gapping).
-                  chipPaneDrag = localize(value.location)
-                    .map { PaneDragState(tabID: tab.id, location: $0) }
-                }
-                .onEnded { value in
-                  if let drop = dropTarget(value.location) {
-                    sessions.moveTabIntoSplit(
-                      tab.id, ontoEdge: drop.edge, of: drop.tab, for: target)
-                    draggingID = nil
-                    dragTranslation = 0
-                  } else {
-                    commitDrag()  // a plain strip reorder
-                  }
-                  chipPaneDrag = nil
-                }
-            )
-            .offset(x: offsetX)
-            .zIndex(isDragging ? 1 : 0)
-            .animation(
-              isDragging || reduceMotion ? nil : .easeInOut(duration: 0.18), value: offsetX)
-          }
-          // A divider sets the new-terminal (+) button apart from the last tab (mirrors the workroom
-          // tab bar). Hidden when the last tab is set apart on its own — focused or hovered — to match
-          // the "no divider beside the focused/hovered tab" rule above. Toggled via OPACITY (not
-          // removed) so it stays laid out and the "+" never shifts as the hover/focus comes and goes.
-          // Only present at all with ≥1 tab (a split member's empty strip is just the "+" and close ✕).
-          // Negative leading trims the gap to the last tab to ~2pt (HStack `tabSpacing` 4 − 2), matching
-          // the inter-tab dividers.
-          if !tabs.isEmpty {
-            Rectangle()
-              .fill(ThemeService.shared.tokens.border)
-              .frame(width: 1, height: 14)
-              .padding(.leading, -2)
-              .padding(.trailing, 4)
-              .opacity(showsTrailingDivider ? 1 : 0)
-          }
-          addTerminalButton
-        }
-        .background(alignment: .leading) { splitWell(tabs) }
-        // In a split group the leftmost tab lines up with the group's terminal panel below (2pt compact
-        // gutter, issue #110); solo keeps the 8pt inset. Trailing stays 8pt either way.
-        .padding(.leading, compact ? 4 : 8)
-        .padding(.trailing, 8)
-        .onPreferenceChange(TabWidthKey.self) { widths = $0 }
-      }
-      // Hug the chips' height; otherwise the horizontal ScrollView grabs all the vertical slack
-      // when there's no terminal below it (the empty state), ballooning the tab bar.
-      .fixedSize(horizontal: false, vertical: true)
+      tabScroller(
+        tabs, draggedIndex: draggedIndex, dropIndex: dropIndex, draggedWidth: draggedWidth,
+        groupMembers: groupMembers)
       // Per-current-tab actions (issue #72), pinned to the strip's right edge as a fixed-size layout
       // sibling of the scrolling tabs — so the chip area yields first in a cramped split pane and the
-      // toolbar never overlaps the chips. The remove-from-split ✕ used to sit to its right; it now
-      // lives in the workroom-split group title bar (issue #110).
+      // toolbar never overlaps the chips. An overflowing strip's "+" now sits between the two, pinned
+      // to the scroller's trailing edge (issue #129). The remove-from-split ✕ used to sit to its
+      // right; it now lives in the workroom-split group title bar (issue #110).
       tabToolbar
     }
     // No top padding: the strip sits flush at the top of the detail pane so the terminal tabs align
@@ -190,11 +117,208 @@ struct TerminalTabStrip: View {
     // Flush with the content below — the active tab's `bg` fill bridges the panel→bg colour step so
     // the strip reads as part of the terminal panel (Chrome-style). No bottom gap.
     .padding(.bottom, 0)
+    .padding(.trailing, Self.stripTrailingInset)
   }
 
-  /// The "new terminal" (+) button. Lives inside the scrolling tab row, immediately after the last tab
-  /// (it scrolls with the tabs), rather than pinned to the far right of the strip — so it sits next to
-  /// the rightmost tab and never collides with the trailing remove-from-split control.
+  /// The scrolling chip run, plus the "+" in whichever position the overflow state calls for.
+  ///
+  /// Always a `ScrollView` — in BOTH states — so no chip ever changes branch: their hover state, open
+  /// popovers, `RunningUnderline` animations and any in-flight `DragGesture` all survive a flip, and
+  /// the dragged chip's `.offset` stays clipped to the strip. Only the "+"'s position and the mask's
+  /// ramp colour change, which are value changes (matching the "always-applied, value-only" convention
+  /// in `WorkroomSplitView`).
+  @ViewBuilder
+  private func tabScroller(
+    _ tabs: [TerminalTab], draggedIndex: Int?, dropIndex: Int?, draggedWidth: CGFloat,
+    groupMembers: Set<TerminalTab.ID>
+  ) -> some View {
+    ScrollView(.horizontal, showsIndicators: false) {
+      HStack(spacing: tabSpacing) {
+        chipRun(
+          tabs, draggedIndex: draggedIndex, dropIndex: dropIndex, draggedWidth: draggedWidth,
+          groupMembers: groupMembers)
+        // Fits: the "+" stays inline, hugging the last chip — today's look, unchanged.
+        if !overflowing {
+          addTerminalButton.padding(.leading, TabStripMetrics.inlineAddLead)
+        }
+      }
+      // In a split group the leftmost tab lines up with the group's terminal panel below (4pt compact
+      // gutter, issue #110); solo keeps the 8pt inset.
+      .padding(.leading, leadingInset)
+    }
+    // The scroll content's trailing inset, as a *content margin* rather than padding inside the row:
+    // padding inside the content only manifests once you've scrolled to the very end, which is exactly
+    // why a clipped chip used to abut the toolbar (issue #129). Sized to the fade so at full scroll-end
+    // the ramp lands on this empty margin and the last chip renders crisp.
+    .contentMargins(.trailing, TabStripMetrics.fade, for: .scrollContent)
+    // Hug the chips' height; otherwise the horizontal ScrollView grabs all the vertical slack
+    // when there's no terminal below it (the empty state), ballooning the tab bar.
+    .fixedSize(horizontal: false, vertical: true)
+    .mask { trailingFade }
+    // `mask` composites away hit testing in its transparent region, so restore the full-rect
+    // interaction shape — a partially faded chip must keep its tap/close/drag targets.
+    .contentShape(.interaction, Rectangle())
+    // Overflowing: the "+" lifts OUT of the scroller and pins here, always visible (issue #129).
+    // `safeAreaInset` both places it and *reserves* its width, so the chips stop before it rather than
+    // sliding underneath (the idiom's documented behaviour — see `ProjectSidebar`'s footer), and
+    // `spacing:` is the gutter, so there's no second constant to keep in sync with the button's width.
+    .safeAreaInset(edge: .trailing, spacing: TabStripMetrics.gutter) {
+      if overflowing { addTerminalButton }
+    }
+    // Read AFTER the inset: `safeAreaInset` doesn't change the modified view's frame, so this is the
+    // width the strip granted the chips + "+" either way — the branch-independent input the predicate
+    // needs.
+    .onGeometryChange(for: CGFloat.self, of: { $0.size.width }, action: { availableWidth = $0 })
+  }
+
+  /// The alpha ramp over the scroller's trailing edge, so a clipped chip DISSOLVES instead of being cut
+  /// mid-glyph (issue #129). ALWAYS applied — only the ramp's end colour changes with `overflowing` —
+  /// so switching states is a value change, not a structural one, and no chip loses its identity. The
+  /// leading `Rectangle` fills the rest of the frame: anything *outside* a mask's bounds reads as alpha
+  /// 0, so this has to be a filling shape and not a bare gradient.
+  ///
+  /// A mask rather than a painted scrim because the strip's backdrop isn't one flat colour: solo it's
+  /// `tokens.panel`, but in a workroom split it's panel *plus* the group fill (accent-tinted when
+  /// focused, `WorkroomSplitView`), and `WorkroomTerminalsView` fades the whole strip to 0.45 opacity
+  /// for a backgrounded pane — a scrim would go translucent along with the chip it's meant to hide.
+  private var trailingFade: some View {
+    HStack(spacing: 0) {
+      Rectangle()
+      LinearGradient(
+        colors: [.black, overflowing ? .clear : .black],
+        startPoint: .leading, endPoint: .trailing
+      )
+      .frame(width: TabStripMetrics.fade)
+    }
+  }
+
+  /// The chips themselves plus the hairline that sets the inline "+" apart — everything that scrolls
+  /// and stays put across an overflow flip. Measured as one run for the overflow predicate, and the
+  /// split bracket is drawn behind it (leading-aligned, so x = 0 is the first chip's leading edge,
+  /// which is what `splitRunRect` computes against).
+  @ViewBuilder
+  private func chipRun(
+    _ tabs: [TerminalTab], draggedIndex: Int?, dropIndex: Int?, draggedWidth: CGFloat,
+    groupMembers: Set<TerminalTab.ID>
+  ) -> some View {
+    HStack(spacing: tabSpacing) {
+      ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
+        let isDragging = draggingID == tab.id
+        let isHovered = hoveredTab == tab.id && draggingID == nil
+        // Activity in an unfocused tab highlights the tab itself (accent title + faint accent
+        // fill) instead of a count — a tab is too narrow for a number.
+        let hasActivity = notifications.count(tab: tab.id) > 0
+        // Run-command state for this tab's chip icon (issue #7): only the dedicated run tab
+        // carries one — running (green) vs failed (red octagon, #79) vs stopped/exited (dim).
+        // Process-based, distinct from the OSC-9;4 RunningUnderline below.
+        let runState: TerminalTabChip.RunState? =
+          store.runTabID(for: target.id) == tab.id
+          ? (store.isRunCommandRunning(for: target.id)
+            ? .running : (store.runFailed(for: target.id) ? .failed : .stopped))
+          : nil
+        // Dragged chip tracks the cursor; the rest shift to open the gap.
+        let offsetX =
+          isDragging
+          ? dragTranslation
+          : gapShift(
+            for: index, draggedIndex: draggedIndex, target: dropIndex,
+            amount: draggedWidth + tabSpacing)
+        // A ✦ badge marks any tab with a live diagnosis (issue #49) — the per-tab signal that
+        // complements the active tab's diagnosis shown in the detail-panel status bar.
+        let agentBadge = agentManager.banners[tab.id] != nil
+        TerminalTabChip(
+          tab: tab, isActive: tab.id == activeID, isHovered: isHovered,
+          isDragging: isDragging, hasActivity: hasActivity, runState: runState,
+          showLeadingSeparator: showsLeadingSeparator(at: index),
+          isGrouped: groupMembers.contains(tab.id),
+          agentBadge: agentBadge, onAgentTap: { agentPopoverTab = tab.id }
+        ) {
+          store.requestCloseTerminalTab(tab.id, for: target)
+        }
+        .popover(
+          isPresented: Binding(
+            get: { agentPopoverTab == tab.id },
+            set: { if !$0 { agentPopoverTab = nil } })
+        ) {
+          agentPopover(for: tab)
+        }
+        .onHover { inside in
+          if inside { hoveredTab = tab.id } else if hoveredTab == tab.id { hoveredTab = nil }
+        }
+        .onTapGesture {
+          // Eager: select on the first click (changes `active.id`; the view's .onChange hook
+          // marks the tab read). A quick second click on the same chip promotes a preview content
+          // tab to persisted (#66) — `persist` no-ops on terminal/persisted tabs, so this is safe
+          // for every chip and never delays the select.
+          let now = Date()
+          sessions.select(tab.id, for: target)
+          if let last = lastChipClick, last.id == tab.id, now.timeIntervalSince(last.at) < 0.35 {
+            sessions.persist(tab.id, for: target)
+            lastChipClick = nil
+          } else {
+            lastChipClick = ChipClick(id: tab.id, at: now)
+          }
+        }
+        .tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions)
+        // Measure in .global space: a .local drag reads coordinates relative to the
+        // chip, which itself moves via .offset(dragTranslation) — that feedback loop
+        // dampens the translation so the chip lags the cursor. Global space is fixed.
+        .gesture(
+          DragGesture(minimumDistance: 6, coordinateSpace: .global)
+            .onChanged { value in
+              if draggingID == nil { draggingID = tab.id }
+              guard draggingID == tab.id else { return }
+              dragTranslation = value.translation.width
+              // Dragged down over the pane area → preview a drop-into-pane (the strip stops gapping).
+              chipPaneDrag = localize(value.location)
+                .map { PaneDragState(tabID: tab.id, location: $0) }
+            }
+            .onEnded { value in
+              if let drop = dropTarget(value.location) {
+                sessions.moveTabIntoSplit(
+                  tab.id, ontoEdge: drop.edge, of: drop.tab, for: target)
+                draggingID = nil
+                dragTranslation = 0
+              } else {
+                commitDrag()  // a plain strip reorder
+              }
+              chipPaneDrag = nil
+            }
+        )
+        .offset(x: offsetX)
+        .zIndex(isDragging ? 1 : 0)
+        .animation(
+          isDragging || reduceMotion ? nil : .easeInOut(duration: 0.18), value: offsetX)
+      }
+      // A divider sets the new-terminal (+) button apart from the last tab (mirrors the workroom
+      // tab bar). Hidden when the last tab is set apart on its own — focused or hovered — to match
+      // the "no divider beside the focused/hovered tab" rule above, and when the "+" has pinned
+      // (issue #129): the fade and the gutter already separate the two regions, and a hairline beside
+      // a dissolving edge reads as a cut. Toggled via OPACITY (not removed) so it stays laid out and
+      // the "+" never shifts as the hover/focus comes and goes — which also keeps the measured run
+      // width stable across those transitions.
+      // Only present at all with ≥1 tab (a split member's empty strip is just the "+" and close ✕).
+      // Negative leading trims the gap to the last tab to ~2pt (HStack `tabSpacing` 4 − 2), matching
+      // the inter-tab dividers.
+      if !tabs.isEmpty {
+        Rectangle()
+          .fill(ThemeService.shared.tokens.border)
+          .frame(width: 1, height: 14)
+          .padding(.leading, -2)
+          .padding(.trailing, 4)
+          .opacity(showsTrailingDivider && !overflowing ? 1 : 0)
+      }
+    }
+    .background(alignment: .leading) { splitWell(tabs) }
+    .onPreferenceChange(TabWidthKey.self) { widths = $0 }
+    .onGeometryChange(for: CGFloat.self, of: { $0.size.width }, action: { chipRunWidth = $0 })
+  }
+
+  /// The "new terminal" (+) button, rendered in one of two positions (issue #129): inline as the last
+  /// element of the scrolling row while the tabs fit, so it hugs the rightmost tab; or lifted out and
+  /// pinned to the scroller's trailing edge once they overflow, so it can't be scrolled out of reach.
+  /// The same view either way, and its positioning pad is applied by the call site so `addWidth` stays
+  /// a pure intrinsic measurement.
   private var addTerminalButton: some View {
     Button {
       sessions.addTab(for: target)
@@ -213,10 +337,10 @@ struct TerminalTabStrip: View {
     }
     .buttonStyle(.plain)
     .onHover { addHovering = $0 }
-    .padding(.leading, 2)
     .help("New terminal (⌘T)")
     .accessibilityLabel("New terminal")
     .accessibilityIdentifier("NewTerminal")
+    .onGeometryChange(for: CGFloat.self, of: { $0.size.width }, action: { addWidth = $0 })
   }
 
   /// Icon-only actions for the *current* (active) tab (issue #72): the diff view-mode toggle + "Open
@@ -275,7 +399,6 @@ struct TerminalTabStrip: View {
           store.requestCloseAllTerminalTabs(for: target)
         }
       }
-      .padding(.trailing, 4)
       .fixedSize()
     }
   }
@@ -297,18 +420,16 @@ struct TerminalTabStrip: View {
 
   /// The x-offset and width of the split members' contiguous run within the chip strip, in the chips'
   /// coordinate space (x = 0 at the first chip). `nil` when there's no split. Members are guaranteed
-  /// contiguous by `displayedTabIDs`.
+  /// contiguous by `displayedTabIDs`. Maps this strip's model to position-indexed widths and delegates
+  /// the arithmetic to `TabStripSplitRun` (unit-tested there, and sharing one summation with the
+  /// overflow predicate's `runWidth`).
   private func splitRunRect(_ tabs: [TerminalTab]) -> (x: CGFloat, width: CGFloat)? {
     guard let members = sessions.split(for: target)?.tabIDs, members.count >= 2 else { return nil }
     let memberSet = Set(members)
-    let idxs = tabs.indices.filter { memberSet.contains(tabs[$0].id) }
-    guard let first = idxs.first, let last = idxs.last else { return nil }
-    var x: CGFloat = 0
-    for i in 0..<first { x += (widths[tabs[i].id] ?? 0) + tabSpacing }
-    var width: CGFloat = 0
-    for i in first...last { width += widths[tabs[i].id] ?? 0 }
-    width += tabSpacing * CGFloat(last - first)
-    return (x, width)
+    return TabStripSplitRun.rect(
+      widths: tabs.map { widths[$0.id] ?? 0 },
+      memberIndices: tabs.indices.filter { memberSet.contains(tabs[$0].id) },
+      spacing: tabSpacing)
   }
 
   /// Where the dragged tab would land given its current translation (delegates to the shared

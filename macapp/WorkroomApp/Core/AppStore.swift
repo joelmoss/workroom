@@ -1976,6 +1976,18 @@ final class AppStore: ObservableObject {
         if UITestFixture.twoTabs, project.workrooms.count > 1 {
           terminals.ensureTab(for: project.workrooms[1].target(inProject: project.path))
         }
+        // Terminal-strip overflow scenario (pinned "+" XCUITest, issue #129): `ensureTab` opened the
+        // first tab, so add the rest.
+        for _ in 1..<UITestFixture.terminalTabs { _ = terminals.addTab(for: target) }
+        // Workroom-bar overflow scenario (issue #129): make every seeded workroom an *active target*
+        // so the title-bar tab bar shows a chip for each. `ensureTab` only registers a tab; the shell
+        // is created by the pane's view when it mounts, and only the selected workroom's does — so
+        // this costs N tab models and one terminal, not N terminals.
+        if UITestFixture.workroomCount > 1 {
+          for workroom in project.workrooms.dropFirst() {
+            terminals.ensureTab(for: workroom.target(inProject: project.path))
+          }
+        }
         // Workroom-split scenario (context-menu XCUITest, issue #112): start already in a
         // root + workroom split so the group title bar renders on launch without a flaky drag.
         // The selected workroom is a member, so `visibleWorkroomLayout` shows the split; open the

@@ -62,6 +62,39 @@ enum UITestFixture {
     UserDefaults.standard.bool(forKey: "WorkroomUITestTwoTabs")
   }
 
+  /// When set (`-WorkroomUITestTerminalTabs <n>`), the fixture opens `n` terminal tabs in the
+  /// auto-selected workroom instead of one, so the **terminal** tab strip overflows on launch — the
+  /// scenario the pinned-"+" XCUITests need (issue #129) without a dozen flaky ⌘T round-trips. Clamped
+  /// to 1...16 so a typo can't spawn an unbounded number of shells. Unset keeps the single-tab fixture.
+  ///
+  /// `integer(forKey:)` coerces the argument domain's string, the same coercion the `bool(forKey:)`
+  /// flags above rely on (see `applyInspectorDefaults` for why arguments arrive as strings).
+  static var terminalTabs: Int {
+    let n = UserDefaults.standard.integer(forKey: "WorkroomUITestTerminalTabs")
+    return n <= 0 ? 1 : min(n, 16)
+  }
+
+  /// When set (`-WorkroomUITestWorkroomCount <n>`), the fixture seeds `n` workrooms and makes each an
+  /// *active target*, so the title-bar **workroom** tab bar shows `n` chips and overflows on launch —
+  /// the `WorkroomTabBar` half of issue #129. Clamped to 1...16. Unset keeps the single workroom.
+  ///
+  /// This is cheap despite the chip count: a workroom chip only needs its target to be active
+  /// (`AppStore.orderedWorkroomTargets` reads `terminals.activeTargetIDs`), and `TerminalSessions.addTab`
+  /// merely registers a tab — the real shell is created by the *view*
+  /// (`GhosttySurfaceView.createSurface`, off `viewDidMoveToWindow`), and only the selected workroom
+  /// mounts a pane. So `n` chips cost `n` tab models and ONE terminal, not `n` terminals.
+  static var workroomCount: Int {
+    let n = UserDefaults.standard.integer(forKey: "WorkroomUITestWorkroomCount")
+    return n <= 0 ? 1 : min(n, 16)
+  }
+
+  /// Names of the extra workrooms seeded by `workroomCount` (beyond `workroomName`), stable so a test
+  /// can address a chip by id. Empty unless the flag is set.
+  static var extraWorkroomNames: [String] {
+    guard workroomCount > 1 else { return [] }
+    return (2...workroomCount).map { "uitest-room-\($0)" }
+  }
+
   /// When set (`-WorkroomUITestWorkroomSplit 1`), the fixture starts already in a workroom-into-
   /// workroom split of the project ROOT + the first workroom, so the split group title bar (issue
   /// #112) renders on launch WITHOUT an XCUITest drag (which is flaky). One split covers both menu
@@ -251,6 +284,13 @@ enum UITestFixture {
       dirs.append(workroomDir2)
       workrooms.append(
         Workroom(name: workroomName2, path: workroomDir2.path, vcsName: "git", warnings: []))
+    }
+    // Extra workrooms for the tab-bar overflow scenario (issue #129). `twoTabs` already contributes
+    // `workroomName2`, so skip any name it seeded rather than listing a duplicate.
+    for name in extraWorkroomNames where !workrooms.contains(where: { $0.name == name }) {
+      let dir = workroomsBase.appendingPathComponent(name, isDirectory: true)
+      dirs.append(dir)
+      workrooms.append(Workroom(name: name, path: dir.path, vcsName: "git", warnings: []))
     }
     for dir in dirs {
       try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

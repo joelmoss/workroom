@@ -1008,3 +1008,83 @@ the badge: see the "Staleness" trap in the unpushed-badge plan.
 **Depends on:** the unpushed badge (shipped). Likely wants a `Defaults` key + Settings row.
 
 **Priority:** P3 (the badge is useful without it; multi-machine users feel this first).
+
+## Collapse the terminal tab toolbar when the strip is cramped (macapp) — #129 follow-up
+
+**What:** Below a strip width of roughly 220pt, collapse `TerminalTabStrip`'s trailing per-tab toolbar
+into a single `⋯` overflow `Menu` instead of 3-5 separate icon buttons.
+
+**Why:** A workroom-split member can be dragged to 120pt wide (`TerminalSessions.minPaneSize = 120`,
+clamped through `PaneTreeLayout.clampRatio`). At that width the toolbar is ~61pt — three times the
+pinned "+" — so it, not the "+", is what leaves the chips with a sliver. #129 shipped the always-visible
+"+" and explicitly **accepted** the cramped-pane sliver; this is the change that actually reclaims the
+space. Split out of #129 so a two-symptom layout fix didn't have to carry native-menu semantics.
+
+**Current state:** #129 shipped the adaptive "+" and the trailing fade. The toolbar always renders
+expanded. `TabStripMetrics`/`TabStripOverflow` (in `Views/TabReorderMath.swift`) are the shared home for
+the breakpoint and the predicate.
+
+**How to start (two verified prerequisites, both found the hard way in review):**
+- `TabToolbarButton` (`Views/TabToolbarButton.swift:8`) is a concrete `View`, **not** a `ButtonStyle` or
+  label style — a `Menu` can't wear it as-is. Extract the glyph + hover-well into a small shared label
+  first, used by both the button and the menu trigger.
+- A SwiftUI `Menu` on macOS becomes **native menu infrastructure**, so identifiers on inner `Button`s do
+  not reliably surface as `app.buttons["tab.toolbar.splitRight"]`. Assert collapsed actions via
+  `app.menuItems` by title. Existing `TabActionsUITests` assertions query real buttons and only run at
+  normal width, so they stay valid.
+- Add `collapsesToolbar(stripWidth:)` to `TabStripOverflow` as a **pure width breakpoint**. Keyed on the
+  strip's own width (not on the width of the thing being collapsed), it composes with the existing
+  pinning predicate as a DAG with no feedback edge: `stripWidth → collapse → toolbarWidth → available →
+  pinsControls`. Do not make it depend on the expanded toolbar's measured width, or it will oscillate.
+- The two segmented switches (diff view mode, markdown source/preview) become `Picker`s in the menu.
+- Reaching a cramped strip in XCUITest needs a divider drag (flaky); prefer unit-testing the breakpoint
+  and verifying the rendering by hand.
+
+**Depends on:** #129 (shipped — owns the shared metrics type and the pinned "+").
+
+**Priority:** P3 (only bites at the divider's minimum width, where the strip is already marginal).
+
+## Scroll a selected tab into view in both tab bars (macapp) — #129 follow-up
+
+**What:** Add a `ScrollViewReader` to `TerminalTabStrip` and `WorkroomTabBar` so (a) a chip selected by
+⌘1-9, ⌥⌘1-9 or from the sidebar is scrolled into view, and (b) a chip drag near either edge auto-scrolls
+the run.
+
+**Why:** Neither bar has one. Selecting a tab that's scrolled out of view swaps the pane content with no
+visible feedback — the strip looks unchanged, so it reads as "the shortcut did nothing". #129 makes this
+more noticeable, not less: overflow is now a deliberately designed state, so these bars get scrolled
+more. Every other scrolling list in the app reveals its selection.
+
+**How to start:** both entry points are already located. ⌘1-9 is handled by the `AppDelegate` `NSEvent`
+monitor (see `macapp/CLAUDE.md`), and ⌥⌘1-9 routes through `AppStore.orderedWorkroomTargets` indexing
+(`Core/AppStore.swift:783-791`) — each just needs to publish a scroll target the strip's
+`ScrollViewReader` can act on. The two halves are separable: scroll-on-select is cheap; drag
+auto-scrolling interacts with `TabReorder`'s translation math and `clampReorder`, so land it separately.
+
+**Depends on:** nothing (independent of #129, though cleaner after its restructure).
+
+**Priority:** P3.
+
+## Cap `WorkroomTabChip`'s title width (macapp) — #129 follow-up
+
+**What:** Cap the workroom chip's title width the way terminal chips already are
+(`TerminalTabChip.maxTitleWidth = 180`, `Views/TerminalTabStrip.swift`), with the same truncation +
+full-title tooltip treatment.
+
+**Why:** `WorkroomTabChip` has **no** cap at all, so a single long workroom name produces a chip wider
+than the window and monopolises the title bar. Terminal tabs got this treatment in `c6a88a75` ("cap
+terminal tab titles with truncation + full-title tooltip"); the workroom bar never did.
+
+**Current state:** unblocked. This was briefly load-bearing: an earlier #129 test plan forced tab-bar
+overflow with a ~200-character fixture workroom name, which only works *because* the cap is missing —
+adding it would have turned that test into one that passes while asserting nothing. The shipped fixture
+seeds N workroom targets instead (`-WorkroomUITestWorkroomCount`), so nothing depends on the quirk now.
+
+**How to start:** mirror `TerminalTabChip`'s title `frame(maxWidth:)` + `.help(fullTitle)` in
+`WorkroomTabChip`. Note it shifts measured chip widths, which the #129 overflow predicate reads, so
+re-check the tab-bar overflow UI test after.
+
+**Depends on:** #129 (shipped) — only to avoid conflicting edits in `WorkroomTabBar.swift`.
+
+**Priority:** P3 (generated workroom names are short adjective-noun pairs; this bites on renamed or long
+project-derived names).
