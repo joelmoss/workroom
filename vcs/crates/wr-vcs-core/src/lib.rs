@@ -48,3 +48,77 @@ pub fn current_ref(root: &Path) -> model::Result<model::Ref> {
 pub fn working_status(root: &Path) -> model::Result<model::WorkingStatus> {
     jj_backend::working_status(root)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    /// A scratch directory named after the caller's line, matching the convention in
+    /// `tests/working_status.rs` — no `tempfile` dev-dependency for a workspace that pins its deps
+    /// exactly.
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("wr-probe-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn probe_repo_classifies_a_plain_git_checkout() {
+        let dir = scratch("git");
+        std::fs::create_dir(dir.join(".git")).unwrap();
+        assert_eq!(probe_repo(&dir), RepoKind::PlainGit);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The load-bearing case for THIS product: every workroom is a git worktree, and a worktree's
+    /// `.git` is a FILE (`gitdir: …`) pointing back at the main repo, not a directory. That's why the
+    /// git probe is `exists()` while the jj probe is `is_dir()` — swap it to `is_dir()` and every
+    /// workroom classifies as `Unsupported`.
+    #[test]
+    fn probe_repo_classifies_a_git_worktree_whose_dot_git_is_a_file() {
+        let dir = scratch("worktree");
+        std::fs::write(dir.join(".git"), b"gitdir: /elsewhere/.git/worktrees/wt\n").unwrap();
+        assert_eq!(probe_repo(&dir), RepoKind::PlainGit);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn probe_repo_classifies_colocated_and_standalone_jj() {
+        let dir = scratch("colocated");
+        std::fs::create_dir(dir.join(".jj")).unwrap();
+        std::fs::create_dir(dir.join(".git")).unwrap();
+        assert_eq!(probe_repo(&dir), RepoKind::JjColocated);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let dir = scratch("jj-only");
+        std::fs::create_dir(dir.join(".jj")).unwrap();
+        assert_eq!(probe_repo(&dir), RepoKind::JjNonColocated);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn probe_repo_rejects_a_directory_with_neither_and_names_the_path() {
+        let dir = scratch("bare");
+        match probe_repo(&dir) {
+            RepoKind::Unsupported(reason) => assert!(
+                reason.contains(&dir.display().to_string()),
+                "the reason should name the path it looked at; got {reason:?}"
+            ),
+            other => panic!("expected Unsupported, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A jj *workspace* always has `.jj` as a directory, so a stray `.jj` file is not one — the
+    /// `is_dir()` check must not be loosened to `exists()` to match the git side.
+    #[test]
+    fn probe_repo_does_not_treat_a_dot_jj_file_as_a_jj_repo() {
+        let dir = scratch("jj-file");
+        std::fs::write(dir.join(".jj"), b"not a workspace\n").unwrap();
+        assert!(matches!(probe_repo(&dir), RepoKind::Unsupported(_)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

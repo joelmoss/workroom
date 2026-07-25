@@ -57,9 +57,26 @@ jobs:
             | sudo tar -xz -C /usr/local/bin ./jj
           jj --version
 
+      # Pinned for the lint gates below, unlike the `app` job (which deliberately tracks the runner's
+      # rustc so a toolchain bump invalidates its output cache). rustfmt's layout and clippy's lint set
+      # both change between releases, so an unpinned toolchain makes `--check` and `-D warnings` fail
+      # when GitHub rolls its image rather than when someone's code is wrong. Same reasoning as the
+      # pinned golangci-lint in `cli`. Keep in step with the local toolchain.
+      - name: Install Rust 1.96.1
+        run: |
+          rustup toolchain install 1.96.1 --profile minimal --component rustfmt,clippy
+          rustup default 1.96.1
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: vcs
+
+      # Ordered cheapest-first so a formatting nit doesn't wait on the jj-lib crate graph.
+      - name: Format
+        run: cargo fmt --manifest-path vcs/Cargo.toml --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --manifest-path vcs/Cargo.toml --workspace --all-targets -- -D warnings
 
       - name: Test
         run: cargo test --manifest-path vcs/Cargo.toml

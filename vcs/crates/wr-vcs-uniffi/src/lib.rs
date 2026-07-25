@@ -333,3 +333,223 @@ pub fn working_status(root: String) -> Result<WorkingStatus, VcsError> {
         .map(WorkingStatus::from)
         .map_err(VcsError::from)
 }
+
+/// These cover the one hazard this file has: it is a hand-written mirror of `wr-vcs-model`, so every
+/// variant is a copy-paste site where an arm can silently point at the wrong case or drop a payload.
+/// Nothing here type-checks that `M::Renamed` maps to `Renamed` rather than `Copied` — a test has to.
+///
+/// The `name_of` helpers are exhaustive matches on BOTH sides, so adding a variant to either enum
+/// breaks compilation here and forces this file to be revisited.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn change_kind_name(k: &ChangeKind) -> &'static str {
+        match k {
+            ChangeKind::Added => "Added",
+            ChangeKind::Modified => "Modified",
+            ChangeKind::Deleted => "Deleted",
+            ChangeKind::Renamed => "Renamed",
+            ChangeKind::Copied => "Copied",
+            ChangeKind::Conflicted => "Conflicted",
+            ChangeKind::Other => "Other",
+        }
+    }
+
+    fn model_change_kind_name(k: &model::ChangeKind) -> &'static str {
+        match k {
+            model::ChangeKind::Added => "Added",
+            model::ChangeKind::Modified => "Modified",
+            model::ChangeKind::Deleted => "Deleted",
+            model::ChangeKind::Renamed => "Renamed",
+            model::ChangeKind::Copied => "Copied",
+            model::ChangeKind::Conflicted => "Conflicted",
+            model::ChangeKind::Other => "Other",
+        }
+    }
+
+    #[test]
+    fn change_kind_maps_every_variant_to_its_namesake() {
+        let all = [
+            model::ChangeKind::Added,
+            model::ChangeKind::Modified,
+            model::ChangeKind::Deleted,
+            model::ChangeKind::Renamed,
+            model::ChangeKind::Copied,
+            model::ChangeKind::Conflicted,
+            model::ChangeKind::Other,
+        ];
+        for kind in all {
+            let want = model_change_kind_name(&kind);
+            let got = change_kind_name(&ChangeKind::from(kind));
+            assert_eq!(got, want, "model::ChangeKind::{want} mapped to {got}");
+        }
+    }
+
+    fn push_state_name(s: &PushState) -> &'static str {
+        match s {
+            PushState::Pushed => "Pushed",
+            PushState::Unpushed => "Unpushed",
+            PushState::Unknown => "Unknown",
+        }
+    }
+
+    fn model_push_state_name(s: &model::PushState) -> &'static str {
+        match s {
+            model::PushState::Pushed => "Pushed",
+            model::PushState::Unpushed => "Unpushed",
+            model::PushState::Unknown => "Unknown",
+        }
+    }
+
+    /// `Pushed` and `Unpushed` are one arm apart and drive an inverted UI decision — a swap here shows
+    /// the unpushed badge on exactly the commits that ARE pushed, and hides it on the ones that aren't.
+    #[test]
+    fn push_state_maps_every_variant_to_its_namesake() {
+        let all = [
+            model::PushState::Pushed,
+            model::PushState::Unpushed,
+            model::PushState::Unknown,
+        ];
+        for state in all {
+            let want = model_push_state_name(&state);
+            let got = push_state_name(&PushState::from(state));
+            assert_eq!(got, want, "model::PushState::{want} mapped to {got}");
+        }
+    }
+
+    fn ref_kind_name(k: &RefKind) -> &'static str {
+        match k {
+            RefKind::Branch => "Branch",
+            RefKind::Ancestor => "Ancestor",
+            RefKind::Detached => "Detached",
+            RefKind::None => "None",
+        }
+    }
+
+    fn model_ref_kind_name(k: &model::RefKind) -> &'static str {
+        match k {
+            model::RefKind::Branch => "Branch",
+            model::RefKind::Ancestor => "Ancestor",
+            model::RefKind::Detached => "Detached",
+            model::RefKind::None => "None",
+        }
+    }
+
+    #[test]
+    fn ref_kind_maps_every_variant_to_its_namesake() {
+        let all = [
+            model::RefKind::Branch,
+            model::RefKind::Ancestor,
+            model::RefKind::Detached,
+            model::RefKind::None,
+        ];
+        for kind in all {
+            let want = model_ref_kind_name(&kind);
+            let got = ref_kind_name(&RefKind::from(kind));
+            assert_eq!(got, want, "model::RefKind::{want} mapped to {got}");
+        }
+    }
+
+    /// Errors carry the payload the Swift side shows in its inline recovery UI, so this asserts the
+    /// variant AND that the message survives — a mapping that lands on the right case but drops the
+    /// detail is the same class of bug as flattening every error to `Io`.
+    #[test]
+    fn vcs_error_maps_every_variant_and_keeps_its_payload() {
+        let cases = [
+            (
+                model::VcsError::UnsupportedRepo("why".into()),
+                "UnsupportedRepo",
+                Some("why"),
+            ),
+            (
+                model::VcsError::NotFound("what".into()),
+                "NotFound",
+                Some("what"),
+            ),
+            (model::VcsError::LockContention, "LockContention", None),
+            (model::VcsError::StaleSnapshot, "StaleSnapshot", None),
+            (
+                model::VcsError::PartialData("detail".into()),
+                "PartialData",
+                Some("detail"),
+            ),
+            (
+                model::VcsError::BackendVersion("ver".into()),
+                "BackendVersion",
+                Some("ver"),
+            ),
+            (model::VcsError::Io("boom".into()), "Io", Some("boom")),
+        ];
+        for (err, want_variant, want_payload) in cases {
+            let mapped = VcsError::from(err);
+            let (variant, payload) = match &mapped {
+                VcsError::UnsupportedRepo { reason } => ("UnsupportedRepo", Some(reason.as_str())),
+                VcsError::NotFound { what } => ("NotFound", Some(what.as_str())),
+                VcsError::LockContention => ("LockContention", None),
+                VcsError::StaleSnapshot => ("StaleSnapshot", None),
+                VcsError::PartialData { detail } => ("PartialData", Some(detail.as_str())),
+                VcsError::BackendVersion { detail } => ("BackendVersion", Some(detail.as_str())),
+                VcsError::Io { message } => ("Io", Some(message.as_str())),
+            };
+            assert_eq!(variant, want_variant, "{want_variant} mapped to {variant}");
+            assert_eq!(payload, want_payload, "{want_variant} lost its payload");
+        }
+    }
+
+    /// The nested mappings: a `ChangedFile`'s kind must go through the enum mapping above (not be
+    /// defaulted), and a `Commit`'s divergent siblings must survive the recursive `From`.
+    #[test]
+    fn nested_records_map_through_their_children() {
+        let file = ChangedFile::from(model::ChangedFile {
+            path: "a/b.txt".into(),
+            old_path: Some("a/old.txt".into()),
+            kind: model::ChangeKind::Conflicted,
+        });
+        assert_eq!(file.path, "a/b.txt");
+        assert_eq!(file.old_path.as_deref(), Some("a/old.txt"));
+        assert_eq!(change_kind_name(&file.kind), "Conflicted");
+
+        let bare = |id: &str| model::Commit {
+            commit_id: id.into(),
+            short_id: id.into(),
+            change_id: None,
+            summary: String::new(),
+            body: String::new(),
+            authors: Vec::new(),
+            timestamp_ms: 0,
+            tz_offset_secs: 0,
+            refs: Vec::new(),
+            parent_ids: Vec::new(),
+            is_working_copy: false,
+            change_offset: None,
+            divergent_siblings: Vec::new(),
+            push_state: model::PushState::Unpushed,
+        };
+        let sibling = model::Commit {
+            change_offset: Some(1),
+            ..bare("sib")
+        };
+        let commit = Commit::from(model::Commit {
+            authors: vec![model::Author {
+                name: "A".into(),
+                email: "a@example.com".into(),
+            }],
+            divergent_siblings: vec![sibling],
+            ..bare("root")
+        });
+        assert_eq!(commit.commit_id, "root");
+        assert_eq!(commit.authors.len(), 1);
+        assert_eq!(commit.authors[0].email, "a@example.com");
+        assert_eq!(commit.divergent_siblings.len(), 1);
+        assert_eq!(commit.divergent_siblings[0].commit_id, "sib");
+        assert_eq!(commit.divergent_siblings[0].change_offset, Some(1));
+        // Scalar-ish fields are easy to drop when a new one is added to the model; this is the one the
+        // History badge reads, and it must survive on the nested siblings too, not just the root.
+        assert_eq!(push_state_name(&commit.push_state), "Unpushed");
+        assert_eq!(
+            push_state_name(&commit.divergent_siblings[0].push_state),
+            "Unpushed"
+        );
+    }
+}
