@@ -1105,6 +1105,46 @@ re-check the tab-bar overflow UI test after.
 **Priority:** P3 (generated workroom names are short adjective-noun pairs; this bites on renamed or long
 project-derived names).
 
+## Share the tab strips' overflow scaffolding, not just its constants (macapp) — #129 follow-up
+
+**What:** Extract the overflow *assembly* both tab strips now hand-maintain into one container view —
+say `OverflowingTabScroller<Content, Controls>` — taking `leadingInset`, `spacing`, a chip-run builder
+and a trailing-controls builder, and handing `overflowing` back to the content closure.
+
+**Why:** #129 shared the numbers (`TabStripMetrics`, `TabStripOverflow` in `Views/TabReorderMath.swift`)
+but not the wiring, and the wiring is where the traps are. `TerminalTabStrip` and `WorkroomTabBar` each
+carry, independently:
+
+- three `@State` widths — `chipRunWidth`, `availableWidth`, and the trailing-control width
+  (`addWidth` / `controlsWidth`)
+- a `overflowing` computed property calling the same predicate, differing only in `leadingInset`
+- `trailingFade` — an identical body; `WorkroomTabBar.swift:134` says as much in a comment
+  ("Mirrors `TerminalTabStrip.trailingFade`")
+- the same four modifiers in a **load-bearing order**: `.contentMargins(.trailing, …, for:
+  .scrollContent)` → `.mask { trailingFade }` → `.contentShape(.interaction, Rectangle())` →
+  `.safeAreaInset(edge: .trailing, spacing:)`, with `.onGeometryChange` attached *after* the inset
+
+Two of those orderings are silent failures if inverted: masking after the inset lets the ramp dissolve
+the pinned control itself, and reading the strip's width before its `.frame(maxWidth: .infinity)`
+reports the ideal content width, so overflow never fires (this one was actually got wrong once, by codex,
+while reasoning about the plan). `TabReorderMath.swift:3-5` states the charter — "so the two strips can't
+drift" — and shared constants don't deliver it when a wrong modifier order in one bar is invisible from
+the other. Both bars are on screen at the same time (window title bar + terminal pane), so any drift in
+fade or gutter is directly comparable.
+
+**How to start:** the existing tests are the safety net — `WorkroomAppUITests/TabStripOverflowUITests.swift`
+covers both bars in pinned *and* inline states, and `TabStripSplitRunTests` covers the split bracket the
+refactor moves again. Keep `WindowMovableController`'s gate expression untouched when lifting the
+workroom bar's chain (`WindowDragUITests.testDraggingEmptyTitlebarMovesWindow` pins it), and keep the
+verified `.mask` + `.contentShape` pairing intact — that combination is confirmed to preserve descendant
+hit-testing, and re-deriving it costs a manual real-mouse QA pass.
+
+**Depends on:** #129 (shipped). Best done *before* the toolbar-collapse follow-up above, which adds a
+third thing measuring the same strip.
+
+**Priority:** P3 — pure refactor, no user-visible change. The cost of deferring is paid by the next
+person who adds a strip or changes the fade.
+
 ## Chrome buttons report `isHittable == false` to the a11y layer (macapp) — partially contradicts CMT-3
 
 **What:** Establish why the tab strips' glyph buttons — `NewTerminal`, `NewWorkroom`, `OpenWorkroom` —
