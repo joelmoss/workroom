@@ -75,6 +75,13 @@ before `app-build`/`app-test`/`app-generate`** (a Makefile prerequisite). Requir
   CI leans on this: it caches the *outputs* keyed on the same inputs, so a commit that doesn't touch
   `vcs/` skips the ~4-minute crate-graph build (and `make app-test`'s own `app-vcs` prerequisite
   stays free).
+- **Xcode-driven builds are gated, not auto-fixed.** ⌘R/⌘U (and a raw `xcodebuild`) skip the
+  Makefile, so they'd otherwise link the last-built core. A `Rust VCS core up to date` pre-build
+  phase runs `build-apple.sh --check` and **fails the build** with `run 'make app-vcs'` when the
+  stamp doesn't match `vcs/`. It can't rebuild for you: SPM extracts the binaryTarget's xcframework
+  before target build phases run, so a fresh `.a` wouldn't reach that build's link. Silently linking
+  a stale core cost a debugging session once — conflicted files read as `.modified` because the
+  linked core predated a merged per-file-conflict fix.
 
 The xcframework + generated Swift are **gitignored and regenerated**; only `Package.swift` + a
 `shim.c` are tracked. Packaging note: the xcframework is **library-only** (no headers) and the FFI

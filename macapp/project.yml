@@ -312,6 +312,18 @@ targets:
           OTHER_CODE_SIGN_FLAGS: "--timestamp"
           CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
     preBuildScripts:
+      # Fail fast when the linked Rust VCS core is older than vcs/. `make app-build`/`app-test`
+      # rebuild it via their app-vcs prerequisite, but ⌘R/⌘U in Xcode (and a raw `xcodebuild`) don't
+      # — so without this gate they link the last-built core and silently exercise a stale engine.
+      # Only a check, never a build: SPM extracts the binaryTarget's xcframework before target build
+      # phases run, so a rebuild here couldn't reach this build's link (see build-apple.sh --check).
+      - name: Rust VCS core up to date
+        basedOnDependencyAnalysis: false
+        script: |
+          if ! out=$("${SRCROOT}/../vcs/scripts/build-apple.sh" --check 2>&1); then
+            echo "error: ${out}"
+            exit 1
+          fi
       - name: swift-format lint
         # Surfaces swift-format violations as build warnings (non-fatal — won't block local
         # builds). `make app-lint` (repo root) runs `--strict` for a hard gate.

@@ -3,6 +3,7 @@
 #
 #   build-apple.sh              # arm64 (host) — for local dev on Apple Silicon
 #   build-apple.sh --universal  # arm64 + x86_64 (release/distribution; needs rustup targets)
+#   build-apple.sh --check      # build nothing; exit 1 if the outputs are stale/missing
 #
 # Outputs into the local SwiftPM package vcs/swift/WrVcs (Package.swift is tracked; these two are
 # gitignored + regenerated). Wrapping the static xcframework in an SPM binaryTarget namespaces its
@@ -23,7 +24,11 @@ cd "$vcs"
 
 LIBNAME=libwr_vcs_uniffi.a
 universal=false
-[[ "${1:-}" == "--universal" ]] && universal=true
+check_only=false
+case "${1:-}" in
+  --universal) universal=true ;;
+  --check) check_only=true ;;
+esac
 
 PKG="$repo/vcs/swift/WrVcs"
 XC="$PKG/Frameworks/WrVcsFFI.xcframework"
@@ -49,8 +54,26 @@ input_hash() {
 }
 
 WANT=$(input_hash)
-if [ -z "${WR_VCS_FORCE:-}" ] && [ -d "$XC" ] && [ -f "$GEN/wr_vcs_uniffi.swift" ] &&
-  [ -f "$FFI/wr_vcs_uniffiFFI.h" ] && [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$WANT" ]; then
+up_to_date=false
+if [ -d "$XC" ] && [ -f "$GEN/wr_vcs_uniffi.swift" ] && [ -f "$FFI/wr_vcs_uniffiFFI.h" ] &&
+  [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$WANT" ]; then
+  up_to_date=true
+fi
+
+# --check reports, never builds. It's the Xcode pre-build gate (see macapp/project.yml): an
+# Xcode-driven build (⌘R/⌘U) or a raw `xcodebuild` has no `app-vcs` prerequisite, so it would
+# happily link whatever core was built last — silently testing a stale engine (that cost a real
+# debugging session: conflicted files read as `.modified` after a merge brought in a jj fix).
+# Deliberately does NOT rebuild: SPM extracts a binaryTarget's xcframework before target build
+# phases run, so replacing the .a here wouldn't reach *this* build's link anyway — better to stop
+# with an actionable message than to look fixed while still linking the old core.
+if $check_only; then
+  $up_to_date && { echo "up to date: $XC"; exit 0; }
+  echo "stale: the Rust VCS core doesn't match vcs/ — run 'make app-vcs'" >&2
+  exit 1
+fi
+
+if [ -z "${WR_VCS_FORCE:-}" ] && $up_to_date; then
   echo "up to date: $XC (inputs unchanged; WR_VCS_FORCE=1 to rebuild)"
   exit 0
 fi
