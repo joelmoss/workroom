@@ -49,6 +49,14 @@ APP_XCODEBUILD := xcodebuild -project $(APP_PROJECT) -scheme WorkroomApp -config
 # `make app-test APP_SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM="`).
 APP_SIGN_FLAGS ?=
 
+# Extra xcodebuild options for app-test. Parallel execution by default: the suite is dominated by a
+# few slow integration classes (Markdown WebView renders, real git/jj repos), so spreading classes
+# across worker processes cuts the run ~40% (48s -> ~29s). Each worker gets its own host-app process
+# but they share one UserDefaults domain, so a test mutating a `Defaults` key another class reads
+# would race — override with `make app-test APP_TEST_FLAGS=` to bisect a suspected parallel-only
+# failure. Test dirs are already UUID-scoped under NSTemporaryDirectory, so those don't collide.
+APP_TEST_FLAGS ?= -parallel-testing-enabled YES
+
 # The Rust VCS core (jj-lib via UniFFI) the app links, built into the local WrVcs SwiftPM package
 # (vcs/swift/WrVcs). Must run before xcodegen so the package's xcframework + generated Swift exist.
 # arm64 by default; release/distribution sets VCS_APPLE_FLAGS=--universal (needs rustup stable >=
@@ -71,7 +79,7 @@ app-build: app-vcs ## Build the app (Debug)
 	cd macapp && xcodegen generate && $(APP_XCODEBUILD) build $(APP_SIGN_FLAGS)
 
 app-test: app-vcs ## Run the app's unit tests
-	cd macapp && xcodegen generate && $(APP_XCODEBUILD) -destination 'platform=macOS' test $(APP_SIGN_FLAGS)
+	cd macapp && xcodegen generate && $(APP_XCODEBUILD) -destination 'platform=macOS' $(APP_TEST_FLAGS) test $(APP_SIGN_FLAGS)
 
 app-uitest: app-vcs ## Run the app's UI tests (XCUITest — needs a real GUI login session, not headless)
 	cd macapp && xcodegen generate && xcodebuild -project $(APP_PROJECT) -scheme WorkroomAppUITests -configuration Debug -derivedDataPath DerivedData -clonedSourcePackagesDirPath DerivedData/SourcePackages -destination 'platform=macOS' test $(APP_SIGN_FLAGS)
