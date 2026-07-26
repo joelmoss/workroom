@@ -690,7 +690,12 @@ final class TerminalSessions: ObservableObject {
   /// workroom to the focused member of a workroom split (#23); then splits the now-focused anchor (a
   /// diff anchor splits into a second diff pane, a terminal into a new shell — see `newPaneTab`).
   func splitTab(_ tabID: TerminalTab.ID, on edge: PaneEdge, for target: TerminalTarget) {
-    guard tabsByTarget[target.id]?[tabID] != nil else { return }
+    guard let tab = tabsByTarget[target.id]?[tabID] else { return }
+    // Check the fit BEFORE `select`, not after. `splitFocusedPane` refuses silently when the pane is
+    // too small to halve, and `select` has already moved the focused tab and promoted this workroom
+    // to the focused split member by then — so a refused split still visibly changed the selection,
+    // with nothing to explain why. The anchor `splitFocusedPane` would evaluate is this same tab.
+    guard fits(splitting: tab.surface, orientation: edge.orientation) else { return }
     select(tabID, for: target)
     splitFocusedPane(for: target, edge: edge)
   }
@@ -704,8 +709,14 @@ final class TerminalSessions: ObservableObject {
     for target: TerminalTarget
   ) {
     guard movedID != destID, tabsByTarget[target.id]?[movedID] != nil,
-      tabsByTarget[target.id]?[destID] != nil
+      let dest = tabsByTarget[target.id]?[destID]
     else { return }
+    // Same floor ⌘D obeys. Without this the two paths disagree by the whole floor: ⌘D refuses to
+    // halve a pane under `minPaneWidth`, while dragging a chip onto that same pane's edge split it
+    // anyway. Rearranging *within* an existing split is exempt — the pane count doesn't change, so
+    // nothing new has to fit; only a drop that adds a member to this pane is measured.
+    let addsAMember = !(splitByTarget[target.id]?.contains(movedID) ?? false)
+    if addsAMember, !fits(splitting: dest.surface, orientation: edge.orientation) { return }
 
     // Base = the current split with `movedID` removed if it was in it; else the existing split when it
     // holds `destID`; else just the destination leaf (a fresh split, dissolving any unrelated one).
