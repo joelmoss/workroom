@@ -160,13 +160,19 @@ final class TabStripOverflowUITests: XCTestCase {
       window.contains(element.frame),
       "\(state)/\(id) sits outside the window — AX frame \(element.frame) vs window \(window)")
     XCTAssertGreaterThanOrEqual(
-      min(element.frame.width, element.frame.height), Self.minimumHitTarget,
-      "\(state)/\(id) is too small to aim at — AX frame \(element.frame)")
+      min(element.frame.width, element.frame.height), Self.collapseFloor,
+      "\(state)/\(id) has collapsed — AX frame \(element.frame)")
   }
 
-  /// Floor for a pointer-sized hit target. Well under the glyph buttons' real size, so it fails only
-  /// on a genuine collapse rather than on ordinary layout drift.
-  private static let minimumHitTarget: CGFloat = 12
+  /// A collapse tripwire, NOT a hit-target audit — deliberately far below any real control.
+  ///
+  /// These buttons report the *glyph's* frame, not the padded `Button`'s: `TabToolbarButton` draws an
+  /// 11pt SF Symbol inside `.padding(4)`, so the pointer target is roughly 19×18 while AX describes
+  /// the ~13×10 image. Measured, not assumed — a 12pt floor failed here on a healthy build
+  /// (`tab.toolbar.splitRight` at 13.0×10.0). So this can only catch a control crushed to nothing,
+  /// which `frame.isEmpty` alone misses at 1×1; anything stricter would be asserting a hit-target
+  /// size the AX frame isn't reporting.
+  private static let collapseFloor: CGFloat = 6
 
   /// Inline (the row fits): no pinning, no `safeAreaInset`, and the mask's ramp is fully opaque.
   func testChromeGlyphButtonsAreHittableWhenInline() {
