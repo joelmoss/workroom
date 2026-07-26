@@ -21,7 +21,16 @@ final class RunSettingsPromptUITests: XCTestCase {
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
     // Explicitly select the fixture workroom before sending ⌘R — `runningForeground` proves the
     // window is up, not that a target is selected/ready (outside-voice review flagged this).
-    let row = app.otherElements["sidebar.workroom.uitest-room"]
+    //
+    // `.buttons`, NOT `.otherElements`: the sidebar row carries
+    // `.accessibilityAddTraits(.isButton)` (`ProjectSidebar.swift`), so XCUITest resolves it as a
+    // button and an `otherElements` query matches nothing — which is what silently failed both
+    // tests in this file. Same form as `ChangesetDetailUITests`/`HistoryPushStateUITests`, the two
+    // other places that select this row.
+    let row = app.buttons.matching(
+      NSPredicate(
+        format: "identifier == %@ AND label == %@", "sidebar.workroom.uitest-room", "uitest-room")
+    ).firstMatch
     XCTAssertTrue(row.waitForExistence(timeout: 10), "fixture workroom row should exist")
     row.click()
     return app

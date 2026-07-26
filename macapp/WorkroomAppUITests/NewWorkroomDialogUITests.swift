@@ -13,6 +13,13 @@ import XCTest
 /// Run with `make app-uitest` on a real GUI login session (XCUITest can't drive a headless run), so
 /// this is excluded from the `make app-test` unit gate.
 final class NewWorkroomDialogUITests: XCTestCase {
+  /// The File-menu item's exact title. **The ellipsis is load-bearing** — XCUITest matches menu
+  /// items by exact title, so the plain "New Workroom" these tests used to query matched nothing
+  /// once `8e34748a` renamed the item to "New Workroom…" (the standard macOS marker for an action
+  /// that opens a dialog). All three tests here failed on it for a month. Held in one constant so a
+  /// future rename is a one-line fix rather than three, and named so the reason survives.
+  private static let newWorkroomTitle = "New Workroom…"
+
   override func setUpWithError() throws {
     continueAfterFailure = false
   }
@@ -38,7 +45,7 @@ final class NewWorkroomDialogUITests: XCTestCase {
   }
 
   private func newWorkroomMenuItem(_ app: XCUIApplication) -> XCUIElement {
-    app.menuBars.menuBarItems["File"].menuItems["New Workroom"]
+    app.menuBars.menuBarItems["File"].menuItems[Self.newWorkroomTitle]
   }
 
   /// The File menu carries an enabled "New Workroom" item (the fixture has one project).
@@ -47,7 +54,7 @@ final class NewWorkroomDialogUITests: XCTestCase {
     waitForLaunchWindow(app)
     let file = app.menuBars.menuBarItems["File"]
     file.click()
-    let item = file.menuItems["New Workroom"]
+    let item = file.menuItems[Self.newWorkroomTitle]
     XCTAssertTrue(item.waitForExistence(timeout: 4), "File ▸ New Workroom should exist")
     XCTAssertTrue(item.isEnabled, "New Workroom is enabled when ≥1 project exists")
     app.typeKey(.escape, modifierFlags: [])
@@ -63,7 +70,7 @@ final class NewWorkroomDialogUITests: XCTestCase {
     let file = app.menuBars.menuBarItems["File"]
     XCTAssertTrue(file.waitForExistence(timeout: 4), "File menu should exist")
     file.click()
-    let item = file.menuItems["New Workroom"]
+    let item = file.menuItems[Self.newWorkroomTitle]
     XCTAssertTrue(item.waitForExistence(timeout: 4), "the item still exists when disabled")
     XCTAssertFalse(item.isEnabled, "New Workroom is disabled with no projects (issue #81 D3)")
     app.typeKey(.escape, modifierFlags: [])
