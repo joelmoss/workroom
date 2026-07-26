@@ -148,7 +148,25 @@ final class TabStripOverflowUITests: XCTestCase {
       element.isHittable,
       "\(state)/\(id) is not hittable — AX frame \(element.frame) vs window "
         + "\(app.windows.firstMatch.frame)")
+
+    // `isHittable` alone cannot see the failure this test is named for. It answers an
+    // *accessibility* hit test, so it stays true for a control collapsed to 1×1, and for one pushed
+    // clean outside the window's visible bounds by a `safeAreaInset` regression — which is precisely
+    // the pinned arrangement #129 was about. `frame.isEmpty` only rejects a literally zero-area
+    // frame. So assert the two things a pointer or VoiceOver user actually needs: the control is
+    // inside the window, and it is big enough to aim at.
+    let window = app.windows.firstMatch.frame
+    XCTAssertTrue(
+      window.contains(element.frame),
+      "\(state)/\(id) sits outside the window — AX frame \(element.frame) vs window \(window)")
+    XCTAssertGreaterThanOrEqual(
+      min(element.frame.width, element.frame.height), Self.minimumHitTarget,
+      "\(state)/\(id) is too small to aim at — AX frame \(element.frame)")
   }
+
+  /// Floor for a pointer-sized hit target. Well under the glyph buttons' real size, so it fails only
+  /// on a genuine collapse rather than on ordinary layout drift.
+  private static let minimumHitTarget: CGFloat = 12
 
   /// Inline (the row fits): no pinning, no `safeAreaInset`, and the mask's ramp is fully opaque.
   func testChromeGlyphButtonsAreHittableWhenInline() {

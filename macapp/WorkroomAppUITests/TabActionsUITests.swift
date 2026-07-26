@@ -79,7 +79,14 @@ final class TabActionsUITests: XCTestCase {
     row.click()
     let tab = diffTab(app, "user.rb")
     guard !tab.waitForExistence(timeout: 10) else { return }
-    row.click()  // the first click was swallowed
+    // The first click produced nothing. Record it before retrying: a one-frame layout race and a
+    // permanent first-click regression look identical from here, and this app has shipped the
+    // permanent kind — `.textSelection(.enabled)` text swallowing real mouseDown, which no synthetic
+    // click reproduces. Without the attachment the retry turns that regression into a green run.
+    XCTContext.runActivity(named: "first click on the Changes row was swallowed") { activity in
+      activity.add(XCTAttachment(string: "row: app/models/user.rb, expected diff tab: user.rb"))
+    }
+    row.click()
     XCTAssertTrue(tab.waitForExistence(timeout: 10), "diff tab should open")
   }
 

@@ -2887,9 +2887,25 @@ final class AppStore: ObservableObject {
   /// to lose. A content/diff tab has no surface and an exited run tab has nothing running, so a
   /// `?? true` ("has exited") batch of only those never prompts (issue #7).
   private func closeNeedsConfirm(_ tabs: [TerminalTab]) -> Bool {
-    let wantsConfirm = confirmOnCloseOverrideForTesting ?? Defaults[.confirmOnCloseTerminal]
-    return wantsConfirm && !UITestFixture.isActive
+    Self.resolveConfirmOnClose(override: confirmOnCloseOverrideForTesting)
+      && !UITestFixture.isActive
       && tabs.contains { !($0.surface?.processHasExited ?? true) }
+  }
+
+  /// The override-or-setting half of `closeNeedsConfirm`, lifted out as a pure static so it can be
+  /// pinned without a store.
+  ///
+  /// It needs its own test because the seam above hid the setting: once every close-behaviour class
+  /// injects `confirmOnCloseOverrideForTesting`, NO test reaches the `Defaults` side any more, and
+  /// changing this to `?? false` would leave the whole unit suite green while the shipped "Confirm
+  /// before closing a terminal" checkbox silently stopped working. Pinning it here rather than
+  /// through an `AppStore` is deliberate: `ConfirmOnCloseTerminalTests` is the only writer of the
+  /// shared key, and keeping it that way is what makes the parallel workers safe (see the override's
+  /// doc above).
+  /// `nonisolated` because it touches no actor state — just its argument and a `Defaults` read — so
+  /// the test above doesn't have to hop onto the main actor to ask what the setting resolves to.
+  nonisolated static func resolveConfirmOnClose(override: Bool?) -> Bool {
+    override ?? Defaults[.confirmOnCloseTerminal]
   }
 
   /// Tear down a set of tabs for a target. Each live run command is stopped gracefully (Ctrl-C +
