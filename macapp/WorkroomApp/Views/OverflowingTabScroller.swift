@@ -84,6 +84,9 @@ struct OverflowingTabScroller<Content: View, Controls: View, ScrollID: Hashable>
   /// Whether the one-shot reveal of an already-selected chip has run for this strip — see the
   /// `initialScrollReady` handler in `body`.
   @State private var didInitialScroll = false
+  /// A selection whose reveal may not have landed: the chip wasn't in the run yet, or a drag was in
+  /// flight. Retried once — see the `chipRunWidth` and `scrollSuspended` handlers in `body`.
+  @State private var pendingTarget: ScrollID?
 
   /// Whether the chips no longer fit with the controls inline, so they pin at the trailing edge and the
   /// scroller takes its fade (issue #129). See `TabStripOverflow.pinsControls` for why this can't
@@ -162,9 +165,39 @@ struct OverflowingTabScroller<Content: View, Controls: View, ScrollID: Hashable>
       // a real-mouse-only fault — XCUITest re-resolves an element's frame on every `.click()`, so
       // synthetic double-clicks pass straight through it.
       .onChange(of: scrollTarget) { _, newValue in
+        pendingTarget = newValue
         guard let newValue, !scrollSuspended else { return }
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
           proxy.scrollTo(newValue)
+        }
+      }
+      // `scrollTo` is a silent no-op against an id that isn't in the content yet, and the handler
+      // above can fire before the chip exists. A workroom's chip only appears once the workroom has a
+      // terminal (`orderedWorkroomTargets` reads `terminals.activeTargetIDs`), so ⌘O or a sidebar tap
+      // on a terminal-less workroom selects it, finds nothing to scroll to, and then
+      // `ensureInitialTerminal` appends the chip at the end of the run — off-screen, with no further
+      // selection change to reveal it. The mount-time one-shot can't help either: `didInitialScroll`
+      // is already spent for that bar.
+      //
+      // So retry once on the next change in the chip run's width — the signal that the run gained or
+      // lost a chip. Redundant when the first scroll already worked, but harmless: minimum-scroll is
+      // a no-op on a chip that's visible. The retry is one-shot, so a later unrelated chip can't yank
+      // the run back. `chipRunWidth` doesn't depend on the scroll offset (it's measured on the
+      // content, inside a scroller proposing an unspecified width), so this can't feed back.
+      .onChange(of: chipRunWidth) { _, _ in
+        guard let target = pendingTarget, !scrollSuspended else { return }
+        pendingTarget = nil
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
+          proxy.scrollTo(target)
+        }
+      }
+      // The drag case: a selection made while `scrollSuspended` was true was dropped, not deferred —
+      // the pre-drag tap selects, and the reveal never came back. Flush it when the drag ends.
+      .onChange(of: scrollSuspended) { _, suspended in
+        guard !suspended, let target = pendingTarget else { return }
+        pendingTarget = nil
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
+          proxy.scrollTo(target)
         }
       }
       // The other door into the same problem: `.onChange` fires on *change*, so a strip that MOUNTS
@@ -181,7 +214,9 @@ struct OverflowingTabScroller<Content: View, Controls: View, ScrollID: Hashable>
       .onChange(of: initialScrollReady) { _, ready in
         guard ready, !didInitialScroll, let target = scrollTarget else { return }
         didInitialScroll = true
-        proxy.scrollTo(target, anchor: .center)
+        // Minimum scroll here too: a strip that appears already showing its focused chip must not
+        // move at all, which `anchor: .center` would not have honoured.
+        proxy.scrollTo(target)
       }
     }
   }

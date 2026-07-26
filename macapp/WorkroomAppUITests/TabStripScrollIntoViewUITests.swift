@@ -68,17 +68,6 @@ final class TabStripScrollIntoViewUITests: XCTestCase {
       "count did not reach \(n) within \(timeout)s")
   }
 
-  /// Waits for `element`'s frame to land fully inside `window` — the scroll-into-view animation
-  /// (`.easeInOut(duration: 0.18)`) is still in flight for a moment after the keystroke that triggers
-  /// it, so a bare synchronous check here would be racy.
-  private func waitUntilContained(
-    _ window: CGRect, _ element: XCUIElement, timeout: TimeInterval = 10
-  ) -> Bool {
-    let predicate = NSPredicate { _, _ in window.contains(element.frame) }
-    let exp = XCTNSPredicateExpectation(predicate: predicate, object: nil)
-    return XCTWaiter().wait(for: [exp], timeout: timeout) == .completed
-  }
-
   /// Waits for `element` to sit entirely before `boundary`'s leading edge — the containment test for a
   /// strip whose visible trailing edge is NOT the window's (see the terminal test below). Same reason
   /// for waiting rather than checking once: the scroll is animated.
@@ -114,6 +103,12 @@ final class TabStripScrollIntoViewUITests: XCTestCase {
     assertCount(terminalChips(app), reaches: manyTabs)
     let lastChip = terminalChips(app).element(boundBy: manyTabs - 1)
     XCTAssertTrue(lastChip.waitForExistence(timeout: 10))
+    // Pin WHICH chip this is, the way the sibling test does. `boundBy:` trusts XCUITest's element
+    // ordering to match run order; if that ever stops holding, this would silently measure a
+    // different chip and still pass.
+    XCTAssertEqual(
+      lastChip.identifier, "terminal.tab.Terminal \(manyTabs)",
+      "expected the last chip in run order")
     let plus = app.descendants(matching: .any).matching(identifier: "NewTerminal").firstMatch
     XCTAssertTrue(plus.waitForExistence(timeout: 10))
 
