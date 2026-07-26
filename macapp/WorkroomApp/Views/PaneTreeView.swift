@@ -209,12 +209,21 @@ enum PaneTreeLayout {
   }
 
   /// Clamp a proposed divider ratio to keep both panes ≥ the axis's floor (the single, view-owned clamp).
+  ///
+  /// Below the floor the proposed ratio is returned UNCHANGED, not centred. Every caller feeds the
+  /// result straight to a persisting setter (`TerminalSessions.setRatio`,
+  /// `AppStore.setWorkroomSplitRatio`), so returning `0.5` here doesn't just freeze the divider — it
+  /// overwrites the user's stored ratio, and widening the window back out can't bring it back. The
+  /// container being too small is a transient of the CURRENT geometry; the stored ratio outlives it.
+  /// Rendering is unaffected either way: `lengths` independently ignores the ratio and splits evenly
+  /// under the same condition, so a too-small container still draws centred — it just no longer
+  /// forgets what to go back to.
   static func clampRatio(_ ratio: CGFloat, total: CGFloat, along orientation: SplitOrientation)
     -> CGFloat
   {
     let floor = minPane(along: orientation)
     let usable = max(1, total - dividerThickness)
-    guard usable > 2 * floor else { return 0.5 }
+    guard usable > 2 * floor else { return ratio }
     let minR = floor / usable
     return min(1 - minR, max(minR, ratio))
   }

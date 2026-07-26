@@ -53,20 +53,44 @@ final class PaneTreeLayoutTests: XCTestCase {
       PaneTreeLayout.clampRatio(0.5, total: 1000, along: .horizontal), 0.5, accuracy: 0.001)
   }
 
-  func testClampRatioTooSmallCentres() {
+  /// Too small to honour the floor → the ratio passes through untouched. It must NOT centre: the
+  /// caller persists whatever comes back, so centring would erase the user's split the moment the
+  /// window got narrow. `lengths` is what makes it *render* centred (asserted above).
+  func testClampRatioTooSmallPassesTheRatioThrough() {
     XCTAssertEqual(
-      PaneTreeLayout.clampRatio(0.9, total: 500, along: .horizontal), 0.5, accuracy: 0.001)
+      PaneTreeLayout.clampRatio(0.9, total: 500, along: .horizontal), 0.9, accuracy: 0.001)
   }
 
-  /// The clamp's half of `testTheFloorFollowsTheAxisBeingDivided`: at 500pt a dragged divider centres
-  /// on the width axis but still travels on the height axis.
+  /// The regression behind the pass-through: narrowing a container below the floor and nudging the
+  /// divider used to write `0.5` over a stored 70/30, unrecoverably. Round-trip the stored ratio
+  /// through a narrow container and back out to a wide one — it has to survive.
+  ///
+  /// 1400pt for the wide leg, not 1000: at 1000 the second pane of a 70/30 is 996×0.3 = 298.8pt, so
+  /// the floor legitimately trims 0.7 and the round-trip would be measuring the ordinary clamp
+  /// instead of the pass-through.
+  func testANarrowContainerDoesNotErodeTheStoredRatio() {
+    let stored: CGFloat = 0.7
+    let whileNarrow = PaneTreeLayout.clampRatio(stored, total: 500, along: .horizontal)
+    XCTAssertEqual(whileNarrow, stored, accuracy: 0.001)
+    // …and once there's room again the divider is right back where the user left it.
+    XCTAssertEqual(
+      PaneTreeLayout.clampRatio(whileNarrow, total: 1400, along: .horizontal), stored,
+      accuracy: 0.001)
+    // Meanwhile the narrow container still DRAWS evenly — the floor is honoured by `lengths`.
+    let (a, b) = PaneTreeLayout.lengths(total: 500, ratio: stored, along: .horizontal)
+    XCTAssertEqual(a, b, accuracy: 1.5)
+  }
+
+  /// The clamp's half of `testTheFloorFollowsTheAxisBeingDivided`: at 500pt a dragged divider is
+  /// clamped on the height axis but unconstrained on the width axis (which can't seat two panes at
+  /// all, so it defers to `lengths` rather than clamping).
   func testClampRatioFloorFollowsTheAxis() {
     let usable = 500 - divider
     XCTAssertEqual(
       PaneTreeLayout.clampRatio(0.9, total: 500, along: .vertical), 1 - minH / usable,
       accuracy: 0.001)
     XCTAssertEqual(
-      PaneTreeLayout.clampRatio(0.9, total: 500, along: .horizontal), 0.5, accuracy: 0.001)
+      PaneTreeLayout.clampRatio(0.9, total: 500, along: .horizontal), 0.9, accuracy: 0.001)
   }
 
   // MARK: Drop targeting (Phase 2)
