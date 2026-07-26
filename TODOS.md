@@ -834,24 +834,6 @@ badge assertions need the notification a11y identifiers to be queryable — add 
 **Priority:** P3 (the smoke + opportunistic suites cover the basics; these harden the notification
 flows).
 
-### Three test classes still write shared inspector `Defaults` keys (macapp) — found 2026-07-26
-
-**What:** `UITestFixtureDefaultsTests`, `HistoryLiveRefreshTests` and `HistoryPushRefreshTests` all write
-`Defaults[.showInspector]` (two of them `activeInspectorSection` too), and `-parallel-testing` gives each
-worker its own host process but **one shared UserDefaults domain**. Same shape as the
-`confirmOnCloseTerminal` race that produced a roughly 1-in-4 red suite (now fixed — see **Recently done**).
-
-**Why it hasn't bitten:** each of these writes the key and reads it back within a few statements, so the
-window another worker can land in is small — where the close-behaviour classes held their value across a
-whole test body. Small is not zero, and the failure mode is the worst kind: a red suite on a test that
-looks unrelated to whoever's diff is in flight.
-
-**How to fix:** the same move that closed the close-confirm race — read the pref through an override the
-test can set per object rather than through the global key. `UITestFixtureDefaultsTests` is the exception
-and should keep writing the real keys: it exists to test `applyFixtureDefaults`, which writes them.
-
-**Priority:** P3 — latent, no observed failure; worth doing the next time someone touches these classes.
-
 ## P3 — CLI
 
 ### Harden `vcs.Detect` to validate a real repo (CLI) — #103 follow-up
@@ -882,6 +864,34 @@ forking git).
 Condensed from the long status notes this file used to carry at the top; the full write-ups are in git
 history. Kept here for the parts that stay useful: what changed, and the traps found doing it.
 
+**2026-07-26 — the shared inspector prefs are out of the test suite, and the fix went one class further
+than filed.** The entry this retires was about three classes writing `Defaults[.showInspector]` /
+`inspector.activeSection` into a domain all the parallel workers share.
+
+- **The two History classes now pin both halves of the gate per store** —
+  `AppStore.inspectorVisibleOverrideForTesting` (routing the two `Defaults[.showInspector]` reads in
+  `handleRootBranchChange` / `refreshHistoryIfActive` through `inspectorIsVisible`) and
+  `isolatesInspectorSectionForTesting` (which suppresses the `activeInspectorSection` didSet's persist).
+  `EmptiedWorkroomSelectionTests` was a fourth writer the entry hadn't spotted, and takes the same flag.
+  Both hidden `Defaults` sides keep a test, for the reason `resolveConfirmOnClose` has one.
+- **`HistoryLiveRefreshTests`' save/restore couldn't have worked anyway:** it restored
+  `"activeInspectorSection"`, and the key is `"inspector.activeSection"`. A save/restore pair is only as
+  good as its key string, and nothing type-checks that string.
+- **The entry's carve-out was wrong.** It said the fixture class "should keep writing the real keys",
+  which is fine in isolation but not while `ActivitySectionTests` also wrote
+  `inspector.activeSection`: **two** legitimate writers race each other just as badly. That reproduced —
+  a `.files` write landing between the fixture seam's write and its read failed
+  `testUnknownSectionArgumentFallsBackToChanges` about once in five 8-iteration parallel batches. So the
+  real invariant is *one* writer per key, and XCTest parallelises per **class**, which makes it
+  structural rather than documentary: all of it now lives in `SharedPrefDefaultsTests` (the old
+  `UITestFixtureDefaultsTests`, absorbing the visibility + persistence guards), and
+  `ActivitySectionTests` asserts the raw-string round-trip and the unknown-value fallback against a
+  private probe key — those are properties of the *type*, so a key nobody reads proves them identically.
+- **The verification that matters** (the shape the diff-mode fix used): pin the Dev domain to the values
+  the tests used to overwrite — `showNotificationsInspector=0`, `inspector.activeSection=files` — and run
+  the affected classes 8× parallel. Green, and the two keys still read `0`/`files` afterwards, so the
+  tests are hermetic *and* no longer leak. Full unit suite **1292 passed / 0 failed / 1 skipped**.
+
 **2026-07-26 — the red tests were both a shared-state bug, not the bug they looked like.** Two entries
 retired from *P3 — Tests and tooling*; the diagnosis in each was wrong, which is the part worth keeping.
 
@@ -908,12 +918,13 @@ retired from *P3 — Tests and tooling*; the diagnosis in each was wrong, which 
   classes' save/restore `setUp`/`tearDown` pairs are gone; the value now lives in each `makeStore`), leaving
   `ConfirmOnCloseTerminalTests` — which legitimately asserts the shipped default — as the only writer. The
   four-class × 20-iteration `-run-tests-until-failure` repro that used to fail on a *different* test almost
-  every run is now clean, and the mechanism is gone, not just quiet. Residual same-shape hazard on
-  `showInspector` is filed above as P3.
+  every run is now clean, and the mechanism is gone, not just quiet. The residual same-shape hazard on
+  `showInspector` was filed as P3 and is now closed too — see the 2026-07-26 entry above it.
 
 Full unit suite after both: **1279 passed / 0 failed / 1 skipped** (+3 tests — `UITestFixtureInspectorTests`
-is now `UITestFixtureDefaultsTests` and covers the diff-mode half of the seam, including the assertion that
-would have caught this: a persisted `sideBySide` must not survive a fixture launch).
+became `UITestFixtureDefaultsTests`, since renamed again to `SharedPrefDefaultsTests`, and covers the
+diff-mode half of the seam, including the assertion that would have caught this: a persisted `sideBySide`
+must not survive a fixture launch).
 
 **2026-07-25 — two timing flakes killed (a unit one and a UI one).** Both were the same mistake in two
 dialects: a *fixed* wait standing in for an event that has no fixed arrival time.

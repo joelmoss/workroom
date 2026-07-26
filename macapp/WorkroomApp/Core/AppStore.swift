@@ -310,7 +310,9 @@ final class AppStore: ObservableObject {
   @Published var activeInspectorSection: ActivitySection = Defaults[.activeInspectorSection] {
     didSet {
       if activeInspectorSection != oldValue {
-        Defaults[.activeInspectorSection] = activeInspectorSection
+        if !isolatesInspectorSectionForTesting {
+          Defaults[.activeInspectorSection] = activeInspectorSection
+        }
         // Entering History with a workroom already selected: point the model now so the pane shows
         // its loader immediately, instead of flashing the `.idle` ("Select a workroom") placeholder
         // until the panel's `.task` catches up. `focus` is idempotent (no-op if already there).
@@ -319,6 +321,32 @@ final class AppStore: ObservableObject {
         }
       }
     }
+  }
+  /// Test seam: keep an `activeInspectorSection` change in THIS store instead of persisting it to the
+  /// shared `inspector.activeSection` setting. Same hazard as `confirmOnCloseOverrideForTesting`
+  /// (which see for the full account): `-parallel-testing` gives each worker its own host process but
+  /// ONE UserDefaults domain, so a class that wants its store on History leaves every store another
+  /// worker builds meanwhile starting on History too — and the `selectedTargetID` didSet then focuses
+  /// `commitHistory` (a real VCS read on a fixture path) in a test that never asked for History.
+  var isolatesInspectorSectionForTesting = false
+  /// Test seam: pin whether the inspector pane counts as visible, per store, instead of writing the
+  /// shared `showInspector` setting. `nil` (production) reads the real setting.
+  ///
+  /// The live-History triggers gate on the pane being *visible*, so the tests that drive them have to
+  /// control it — and writing the key to do that is the same cross-worker leak as above, one key over.
+  /// Those windows were short enough never to have gone red, which is not the same as being safe.
+  var inspectorVisibleOverrideForTesting: Bool?
+  /// Whether the inspector pane is open: a test's pinned value if there is one, else the setting.
+  var inspectorIsVisible: Bool {
+    Self.resolveInspectorVisible(override: inspectorVisibleOverrideForTesting)
+  }
+  /// The override-or-setting half of `inspectorIsVisible`, lifted out as a pure static for the same
+  /// reason `resolveConfirmOnClose` is one: once the History classes inject the override, no test
+  /// reaches the `Defaults` side, so hard-coding this `true` would leave the suite green while the
+  /// live-History refresh quietly started reading VCS behind a closed pane. `nonisolated` because it
+  /// touches no actor state — just its argument and a `Defaults` read.
+  nonisolated static func resolveInspectorVisible(override: Bool?) -> Bool {
+    override ?? Defaults[.showInspector]
   }
   /// The repo file tree behind the inspector's Files section. Re-pointed at the selected target's
   /// directory whenever the selection changes (see `selectedTargetID.didSet`); the `FilesPanel`
@@ -2207,7 +2235,7 @@ final class AppStore: ObservableObject {
     // usually leaves the branch/bookmark label unchanged, so gating this on the label actually
     // changing (the `unchanged → return` at the end) would skip the main case. The read is a
     // read-only `load_at_head` (no working-copy lock, no write), so it can't re-fire this watcher.
-    if Defaults[.showInspector], activeInspectorSection == .history,
+    if inspectorIsVisible, activeInspectorSection == .history,
       inspectorTargetID?.belongsToProject(p.path) == true
     {
       commitHistory.refresh()
@@ -3488,7 +3516,7 @@ final class AppStore: ObservableObject {
   /// watcher may have been coalesced/idle across deactivation). Same visibility gate as the live
   /// trigger; cheap + cancel-and-replace. Called from `RootView`'s `didBecomeActive` hook.
   func refreshHistoryIfActive() {
-    if Defaults[.showInspector], activeInspectorSection == .history { commitHistory.refresh() }
+    if inspectorIsVisible, activeInspectorSection == .history { commitHistory.refresh() }
   }
 
   /// Human-readable origin for a notification: the project name, plus the workroom for a

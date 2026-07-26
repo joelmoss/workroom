@@ -8,25 +8,25 @@ import XCTest
 /// reorder would move the icons), the `subSections` mapping is exact (it decides what the Changes vs
 /// Files pane renders and how the per-workroom collapse/weight vectors are sliced), and a stored raw
 /// string matching no case falls back to `.changes` (a rename or corrupt `Defaults` value must not
-/// crash or blank the inspector). The fallback is provided by `Defaults` + `PreferRawRepresentable`.
+/// crash or blank the inspector). The fallback is provided by `Defaults` + `PreferRawRepresentable`,
+/// and is asserted here against a private probe key rather than the shipped one — see `probe`.
 final class ActivitySectionTests: XCTestCase {
 
-  /// The raw UserDefaults key behind `Defaults.Keys.activeInspectorSection` — saved/restored so the
-  /// test never leaks into real defaults, and used to inject a corrupt value.
-  private let key = "inspector.activeSection"
-  private var saved: Any?
-
-  override func setUp() {
-    super.setUp()
-    saved = UserDefaults.standard.object(forKey: key)
-  }
+  /// A private probe key of the same shape as `Defaults.Keys.activeInspectorSection`, because what the
+  /// serialization tests below actually assert is a property of the **type** (`PreferRawRepresentable`
+  /// storing the bare raw string, and an unknown one falling back to the key's default) — which a key
+  /// nobody else reads proves identically.
+  ///
+  /// Deliberately not the shipped key: the parallel test workers share one UserDefaults domain, and
+  /// writing `inspector.activeSection` from a second class raced `SharedPrefDefaultsTests` (a `.files`
+  /// write from here landing between that seam's write and its read — about one failure in five 6-class
+  /// parallel iterations). That class is now the suite's only writer of the real key, and it covers the
+  /// shipped default. See its class doc.
+  private let probe = Defaults.Key<ActivitySection>("test.activeSectionProbe", default: .changes)
+  private let probeKey = "test.activeSectionProbe"
 
   override func tearDown() {
-    if let saved {
-      UserDefaults.standard.set(saved, forKey: key)
-    } else {
-      UserDefaults.standard.removeObject(forKey: key)
-    }
+    UserDefaults.standard.removeObject(forKey: probeKey)
     super.tearDown()
   }
 
@@ -63,18 +63,21 @@ final class ActivitySectionTests: XCTestCase {
   }
 
   func testDefaultsToChangesWhenUnset() {
-    UserDefaults.standard.removeObject(forKey: key)
-    XCTAssertEqual(Defaults[.activeInspectorSection], .changes)
+    UserDefaults.standard.removeObject(forKey: probeKey)
+    XCTAssertEqual(Defaults[probe], .changes)
   }
 
-  func testRoundTripsAValidValue() {
-    Defaults[.activeInspectorSection] = .files
-    XCTAssertEqual(Defaults[.activeInspectorSection], .files)
+  /// Stored as the **bare raw string** (`PreferRawRepresentable`), not a JSON-encoded value — that's
+  /// what makes a launch argument / hand-written pref readable, and what the fallback below keys on.
+  func testRoundTripsAValidValueAsItsRawString() {
+    Defaults[probe] = .files
+    XCTAssertEqual(Defaults[probe], .files)
+    XCTAssertEqual(UserDefaults.standard.string(forKey: probeKey), "files")
   }
 
   /// A corrupt/renamed raw string deserialises to `nil`, and `Defaults` falls back to `.changes`.
   func testCorruptStoredValueFallsBackToChanges() {
-    UserDefaults.standard.set("bogus", forKey: key)
-    XCTAssertEqual(Defaults[.activeInspectorSection], .changes)
+    UserDefaults.standard.set("bogus", forKey: probeKey)
+    XCTAssertEqual(Defaults[probe], .changes)
   }
 }

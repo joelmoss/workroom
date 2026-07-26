@@ -1,4 +1,3 @@
-import Defaults
 import XCTest
 
 @testable import Workroom
@@ -19,7 +18,6 @@ final class HistoryPushRefreshTests: XCTestCase {
   private var dirs: [String] = []
 
   override func tearDown() {
-    Defaults[.showInspector] = false
     for d in dirs { try? FileManager.default.removeItem(atPath: d) }
     dirs = []
     super.tearDown()
@@ -75,7 +73,9 @@ final class HistoryPushRefreshTests: XCTestCase {
   }
 
   /// A store whose History pane is live on `path` (inspector visible, section History, the workroom has
-  /// a tab so `inspectorTargetID` resolves) reading through the real `GitProvider`.
+  /// a tab so `inspectorTargetID` resolves) reading through the real `GitProvider`. Both halves of that
+  /// gate are pinned per store rather than written to the shared inspector settings — see
+  /// `AppStore.inspectorVisibleOverrideForTesting`.
   private func liveHistoryStore(on path: String) async -> AppStore {
     let store = AppStore(commitHistory: HistoryModel(resolve: { _ in GitProvider() }))
     store.terminals.makeView = { _, cwd, command in
@@ -90,7 +90,8 @@ final class HistoryPushRefreshTests: XCTestCase {
           Workroom(name: "repo", path: path, vcsName: "main", warnings: [])
         ])
     ]
-    Defaults[.showInspector] = true
+    store.inspectorVisibleOverrideForTesting = true
+    store.isolatesInspectorSectionForTesting = true
     store.activeInspectorSection = .history
     let id = SidebarID.workroom(project: path, name: "repo")
     store.terminals.addTab(for: store.target(for: id)!)

@@ -1,4 +1,3 @@
-import Defaults
 import XCTest
 
 @testable import Workroom
@@ -12,32 +11,15 @@ import XCTest
 /// The commit log itself is driven through an injected `HistoryModel` backed by a counting provider,
 /// so "did a refresh fire?" is observable as a `log` call count — no real repo needed for the gating
 /// logic. `runBlocking` reads run off-main, so each assertion awaits `commitHistory.awaitCurrentLoad`.
+///
+/// Both halves of the gate are pinned **per store** — `inspectorVisibleOverrideForTesting` and
+/// `isolatesInspectorSectionForTesting` — never by writing the shared inspector settings: the parallel
+/// workers share one UserDefaults domain, so this class used to leave its `showInspector` /
+/// `inspector.activeSection` values inside whatever unrelated class ran beside it. (The old
+/// save/restore here couldn't have helped even in serial: it restored `"activeInspectorSection"`,
+/// which is not the key — the real one is `"inspector.activeSection"`.)
 @MainActor
 final class HistoryLiveRefreshTests: XCTestCase {
-  private var savedShow: Any?
-  private var savedSection: Any?
-  private let showKey = "showNotificationsInspector"
-  private let sectionKey = "activeInspectorSection"
-
-  override func setUp() {
-    super.setUp()
-    savedShow = UserDefaults.standard.object(forKey: showKey)
-    savedSection = UserDefaults.standard.object(forKey: sectionKey)
-  }
-
-  override func tearDown() {
-    restore(showKey, savedShow)
-    restore(sectionKey, savedSection)
-    super.tearDown()
-  }
-
-  private func restore(_ key: String, _ value: Any?) {
-    if let value {
-      UserDefaults.standard.set(value, forKey: key)
-    } else {
-      UserDefaults.standard.removeObject(forKey: key)
-    }
-  }
 
   // MARK: harness
 
@@ -88,7 +70,8 @@ final class HistoryLiveRefreshTests: XCTestCase {
       GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
     }
     store.projects = projects
-    Defaults[.showInspector] = true
+    store.inspectorVisibleOverrideForTesting = true
+    store.isolatesInspectorSectionForTesting = true
     store.activeInspectorSection = .history
     // Give the selection a tab so `selectionHasTabs` (and thus `inspectorTargetID`) is non-nil.
     store.terminals.addTab(for: store.target(for: wr(name, in: path))!)
@@ -132,7 +115,7 @@ final class HistoryLiveRefreshTests: XCTestCase {
   func testMetadataChangeWhileInspectorHiddenDoesNotRefresh() async {
     let (store, provider) = await activeHistoryStore(
       projects: [project("/a", workrooms: ["solo"])], select: "/a", workroom: "solo")
-    Defaults[.showInspector] = false  // section is still .history, but the pane is hidden
+    store.inspectorVisibleOverrideForTesting = false  // still on .history, but the pane is hidden
     let before = provider.logCount
 
     store.handleRootBranchChange(projectID: store.projects[0].id)
@@ -165,7 +148,7 @@ final class HistoryLiveRefreshTests: XCTestCase {
     await store.commitHistory.awaitCurrentLoad()
     XCTAssertEqual(provider.logCount, before + 1)
 
-    Defaults[.showInspector] = false
+    store.inspectorVisibleOverrideForTesting = false
     store.refreshHistoryIfActive()  // hidden → no-op
     await store.commitHistory.awaitCurrentLoad()
     XCTAssertEqual(

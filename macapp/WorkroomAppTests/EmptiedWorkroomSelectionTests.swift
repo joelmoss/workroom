@@ -285,6 +285,7 @@ final class EmptiedWorkroomSelectionTests: XCTestCase {
   /// `.task`, which lagged until an app refocus forced a re-render (the "History delay" bug).
   func testHistoryFocusesWhenSelectedWorkroomGainsFirstTab() {
     let store = makeStore([project("/a", workrooms: ["main"])])
+    store.isolatesInspectorSectionForTesting = true  // don't leak History to the parallel workers
     store.activeInspectorSection = .history
     store.selectedTargetID = wr("main")
     XCTAssertNil(store.commitHistory.root, "no tab yet → History has no target to load")
