@@ -153,10 +153,18 @@ struct OverflowingTabScroller<Content: View, Controls: View, ScrollID: Hashable>
       // (`scrollSuspended`): a reorder drag already moves the run, and scrolling under the cursor
       // would fight it. Duration matches the reorder gap's `.easeInOut(duration: 0.18)` so a selection
       // that also reorders reads as one motion, not two.
+      //
+      // `anchor: nil` — the minimum scroll that makes the chip visible — NOT `.center`. An anchor
+      // re-centres unconditionally, so selecting an already-visible chip slides the whole run out
+      // from under the pointer. That breaks the two interactions that click the same place twice:
+      // double-click-to-persist (0.35s window, `TerminalTabStrip`) lands its second click on whatever
+      // chip slid under the cursor, and closing tabs in a row moves the next ✕ away mid-gesture. It's
+      // a real-mouse-only fault — XCUITest re-resolves an element's frame on every `.click()`, so
+      // synthetic double-clicks pass straight through it.
       .onChange(of: scrollTarget) { _, newValue in
         guard let newValue, !scrollSuspended else { return }
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
-          proxy.scrollTo(newValue, anchor: .center)
+          proxy.scrollTo(newValue)
         }
       }
       // The other door into the same problem: `.onChange` fires on *change*, so a strip that MOUNTS
