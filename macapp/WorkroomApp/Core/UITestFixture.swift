@@ -16,16 +16,54 @@ enum UITestFixture {
   /// The launch-argument / `UserDefaults` key the tests set (highest-priority argument domain).
   static let defaultsKey = "WorkroomUITestFixture"
 
-  /// Whether the app was launched in UI-test fixture mode.
+  /// **DEBUG-only, by construction.** Every fixture flag below reads through `flag`/`number`/`text`,
+  /// and outside a Debug build they return the inert default without touching `UserDefaults` at all.
+  ///
+  /// The flags are read from `UserDefaults.standard`, which is the app's *persisted* domain and not
+  /// just the launch-argument domain the tests use. So without this gate a single
+  /// `defaults write <bundle id> WorkroomUITestFixture -bool YES` latched a shipping build into
+  /// fixture mode permanently: fake projects instead of the user's real `~/.config/workroom`,
+  /// `applyFixtureDefaults` overwriting their inspector and diff-mode preferences on every launch,
+  /// and `.terminateNow` on quit skipping the graceful run-command teardown — with no in-app way
+  /// back out. Several flags (`agentStub`, `forceWhatsNew`, `updateAvailableVersion`) are read
+  /// WITHOUT consulting `isActive`, so gating `isActive` alone would not have been enough; the gate
+  /// belongs on the reads.
+  ///
+  /// Nothing in the test suite loses anything: both `WorkroomAppTests` and `WorkroomAppUITests` build
+  /// against the Debug configuration (`project.yml`), which is the only one that defines `DEBUG`.
+  private static var enabled: Bool {
+    #if DEBUG
+      return true
+    #else
+      return false
+    #endif
+  }
+
+  /// A fixture-namespaced boolean. `bool(forKey:)` rather than `Defaults` on purpose — it coerces the
+  /// STRING an argument-domain value arrives as (`-WorkroomUITestFixture 1` stores `"1"`), which a
+  /// typed `Defaults` read would reject. See `applyFixtureDefaults` for the trap that implies.
+  private static func flag(_ key: String) -> Bool {
+    enabled && UserDefaults.standard.bool(forKey: key)
+  }
+
+  private static func number(_ key: String) -> Int {
+    enabled ? UserDefaults.standard.integer(forKey: key) : 0
+  }
+
+  private static func text(_ key: String) -> String? {
+    enabled ? UserDefaults.standard.string(forKey: key) : nil
+  }
+
+  /// Whether the app was launched in UI-test fixture mode. Always `false` in a release build.
   static var isActive: Bool {
-    UserDefaults.standard.bool(forKey: defaultsKey)
+    flag(defaultsKey)
   }
 
   /// When set (`-WorkroomUITestNoProjects 1`), the fixture loads an EMPTY project list — the
   /// fresh-install / nothing-configured state. Used by `NewWorkroomDialogUITests` to assert File ▸
   /// New Workroom is disabled when there's nothing to pick (issue #81 D3).
   static var noProjects: Bool {
-    UserDefaults.standard.bool(forKey: "WorkroomUITestNoProjects")
+    flag("WorkroomUITestNoProjects")
   }
 
   /// When set (`-WorkroomUITestManyChanges 1`), the fixture workroom reports a long changed-file
@@ -33,7 +71,7 @@ enum UITestFixture {
   /// inspector's section-disclosure animation misbehaves (the header title swims relative to its
   /// bar). Used by `InspectorAnimationUITests`.
   static var manyChanges: Bool {
-    UserDefaults.standard.bool(forKey: "WorkroomUITestManyChanges")
+    flag("WorkroomUITestManyChanges")
   }
 
   /// When set (`-WorkroomUITestRunCommand "<cmd>"`), the fixture seeds this as the workroom's run
@@ -41,7 +79,7 @@ enum UITestFixture {
   /// deterministic failure (`exit 7`), success (`exit 0`), or long-running (`sleep 30`) command and
   /// assert the run icon / Ctrl-C behaviour end-to-end against a real libghostty surface.
   static var runCommand: String? {
-    let cmd = UserDefaults.standard.string(forKey: "WorkroomUITestRunCommand")
+    let cmd = text("WorkroomUITestRunCommand")
     return (cmd?.isEmpty == false) ? cmd : nil
   }
 
@@ -51,7 +89,7 @@ enum UITestFixture {
   /// no-command XCUITest would otherwise always see a command configured and never see the state it
   /// means to test).
   static var noRunCommand: Bool {
-    UserDefaults.standard.bool(forKey: "WorkroomUITestNoRunCommand")
+    flag("WorkroomUITestNoRunCommand")
   }
 
   /// When set (`-WorkroomUITestTwoTabs 1`), the fixture seeds a SECOND workroom and the app opens a
@@ -59,7 +97,7 @@ enum UITestFixture {
   /// the drag-to-reorder / window-drag XCUITest (`WindowDragUITests`) needs. Default (unset) keeps the
   /// single-workroom fixture the other tests rely on.
   static var twoTabs: Bool {
-    UserDefaults.standard.bool(forKey: "WorkroomUITestTwoTabs")
+    flag("WorkroomUITestTwoTabs")
   }
 
   /// When set (`-WorkroomUITestTerminalTabs <n>`), the fixture opens `n` terminal tabs in the
@@ -70,7 +108,7 @@ enum UITestFixture {
   /// `integer(forKey:)` coerces the argument domain's string, the same coercion the `bool(forKey:)`
   /// flags above rely on (see `applyFixtureDefaults` for why arguments arrive as strings).
   static var terminalTabs: Int {
-    let n = UserDefaults.standard.integer(forKey: "WorkroomUITestTerminalTabs")
+    let n = number("WorkroomUITestTerminalTabs")
     return n <= 0 ? 1 : min(n, 16)
   }
 
@@ -84,7 +122,7 @@ enum UITestFixture {
   /// (`GhosttySurfaceView.createSurface`, off `viewDidMoveToWindow`), and only the selected workroom
   /// mounts a pane. So `n` chips cost `n` tab models and ONE terminal, not `n` terminals.
   static var workroomCount: Int {
-    let n = UserDefaults.standard.integer(forKey: "WorkroomUITestWorkroomCount")
+    let n = number("WorkroomUITestWorkroomCount")
     return n <= 0 ? 1 : min(n, 16)
   }
 
@@ -101,7 +139,7 @@ enum UITestFixture {
   /// workrooms `workroomCount` seeds keep their normal short names. Unset keeps the short
   /// `workroomName`.
   static var longWorkroomName: Bool {
-    UserDefaults.standard.bool(forKey: "WorkroomUITestLongWorkroomName")
+    flag("WorkroomUITestLongWorkroomName")
   }
 
   /// The oversized name seeded under `longWorkroomName` — comfortably past `WorkroomTabChip
@@ -115,7 +153,7 @@ enum UITestFixture {
   /// branches: the workroom member gets the full menu, the root member gets none. Default (unset)
   /// keeps the single-pane fixture the other tests rely on.
   static var workroomSplit: Bool {
-    UserDefaults.standard.bool(forKey: "WorkroomUITestWorkroomSplit")
+    flag("WorkroomUITestWorkroomSplit")
   }
 
   /// When set (`-WorkroomUITestConflict 1`), the fixture workroom is **conflicted**: its changed-file
@@ -125,7 +163,7 @@ enum UITestFixture {
   /// and the project status badge must report the conflict. Applies to both the jj and git variants,
   /// since both backends produce per-file conflicts.
   static var conflicted: Bool {
-    UserDefaults.standard.bool(forKey: "WorkroomUITestConflict")
+    flag("WorkroomUITestConflict")
   }
 
   /// The path seeded as conflicted under `-WorkroomUITestConflict 1`. Distinct from every other
@@ -137,7 +175,7 @@ enum UITestFixture {
   /// UI tests can exercise the `.gitWorktree` diff source. Default (unset) keeps the jj scenario the
   /// other tests rely on.
   static var gitWorkroomMode: Bool {
-    UserDefaults.standard.bool(forKey: "WorkroomUITestGitWorkroom")
+    flag("WorkroomUITestGitWorkroom")
   }
 
   /// When set (`-WorkroomUITestAgentStub 1`), the inline terminal agent (issue #49) is enabled with
@@ -146,7 +184,7 @@ enum UITestFixture {
   /// parse → banner render) with no network and no cost. Pairs with auto-diagnose so no click is
   /// needed to surface the banner.
   static var agentStub: Bool {
-    UserDefaults.standard.bool(forKey: "WorkroomUITestAgentStub")
+    flag("WorkroomUITestAgentStub")
   }
 
   /// The canned claude `--output-format json` envelope the stub agent returns. Its inner JSON is the
@@ -163,13 +201,13 @@ enum UITestFixture {
   /// When set (`-WorkroomUITestUpdateAvailable 1`), `Updater` seeds a fake available-update version so
   /// the toolbar "Update" pill renders for visual QA without a live Sparkle update.
   static var updateAvailableVersion: String? {
-    UserDefaults.standard.bool(forKey: "WorkroomUITestUpdateAvailable") ? "9.9.9" : nil
+    flag("WorkroomUITestUpdateAvailable") ? "9.9.9" : nil
   }
 
   /// When set (`-WorkroomUITestWhatsNew 1`), `WhatsNewService.checkOnLaunch` returns `whatsNewNotes`
   /// so the What's-New dialog renders for visual QA without hitting GitHub.
   static var forceWhatsNew: Bool {
-    UserDefaults.standard.bool(forKey: "WorkroomUITestWhatsNew")
+    flag("WorkroomUITestWhatsNew")
   }
 
   /// Canned release notes for the What's-New dialog under `forceWhatsNew` — a couple of versions with
@@ -243,13 +281,13 @@ enum UITestFixture {
   /// racy for an XCUITest to catch — this pins it so the loading state can be asserted deterministically
   /// instead of being left to manual QA.
   static var holdPreviewLoader: Bool {
-    UserDefaults.standard.bool(forKey: "WorkroomUITestHoldPreviewLoader")
+    flag("WorkroomUITestHoldPreviewLoader")
   }
 
   /// Which inspector section the fixture parks on
   /// (`-WorkroomUITestInspectorSection changes|history|files`). Unset (or unrecognised) = `.changes`.
   static var inspectorSection: ActivitySection {
-    let raw = UserDefaults.standard.string(forKey: "WorkroomUITestInspectorSection") ?? ""
+    let raw = text("WorkroomUITestInspectorSection") ?? ""
     return ActivitySection(rawValue: raw) ?? .changes
   }
 
@@ -258,7 +296,7 @@ enum UITestFixture {
   /// shipped default — so a test that doesn't care gets the shipped behaviour rather than the
   /// developer's last Settings choice (see `applyFixtureDefaults`).
   static var diffViewMode: DiffViewMode {
-    let raw = UserDefaults.standard.string(forKey: "WorkroomUITestDiffViewMode") ?? ""
+    let raw = text("WorkroomUITestDiffViewMode") ?? ""
     return DiffViewMode(rawValue: raw) ?? .unified
   }
 
@@ -287,8 +325,17 @@ enum UITestFixture {
   /// later write (`AppStore.apply(.iconClick)`), leaving the pane unopenable for the whole run.
   /// `UITestFixture`'s own flags survive that only because `UserDefaults.bool(forKey:)` coerces
   /// strings. Hence a fixture-namespaced argument mirrored into `Defaults` here instead.
-  static func applyFixtureDefaults() {
-    guard isActive else { return }
+  ///
+  /// `active` is a parameter, defaulting to the real flag, purely so its unit tests never have to
+  /// WRITE `WorkroomUITestFixture`. Around 47 production sites branch on that key, including
+  /// `AppStore.handleRootBranchChange`'s `guard !UITestFixture.isActive`, and `-parallel-testing`
+  /// workers are separate processes sharing one on-disk defaults domain — so a class holding the key
+  /// true for the length of a test body silently early-returns another class's history refresh, in a
+  /// worker whose diff has nothing to do with any of this. That is the same cross-worker hazard
+  /// `AppStore.confirmOnCloseOverrideForTesting` exists for; passing the state in avoids it at the
+  /// source instead of racing and cleaning up.
+  static func applyFixtureDefaults(active: Bool = isActive) {
+    guard active else { return }
     Defaults[.showInspector] = true
     Defaults[.activeInspectorSection] = inspectorSection
     Defaults[.diffViewMode] = diffViewMode
