@@ -32,7 +32,7 @@ use jj_lib::id_prefix::IdPrefixIndex;
 use jj_lib::local_working_copy::LocalWorkingCopy;
 use jj_lib::lock::FileLock;
 use jj_lib::matchers::{EverythingMatcher, NothingMatcher};
-use jj_lib::merge::Diff;
+use jj_lib::merge::{Diff, MergedTreeValue};
 use jj_lib::object_id::ObjectId;
 use jj_lib::repo::{ReadonlyRepo, Repo, StoreFactories, StoreLoadError};
 use jj_lib::repo_path::RepoPath;
@@ -663,7 +663,8 @@ fn snapshot_working_copy(root: &Path) -> model::Result<(Workspace, Arc<ReadonlyR
 
 /// The jj working-copy status: snapshot `@` (so it reflects disk), then read its change set, the
 /// parent `@-` state, and the CI branch. `dirty` is set when `@` has changed files or a conflict.
-/// (`insertions`/`deletions` are added Swift-side from one `jj diff --stat`, jayjay-style.)
+/// (`insertions`/`deletions` come from this same read via `changed_files` — there is no second
+/// `jj diff --stat` pass, Swift-side or otherwise.)
 pub fn working_status(root: &Path) -> model::Result<model::WorkingStatus> {
     let (workspace, repo) = snapshot_working_copy(root)?;
     let store = repo.store();
@@ -782,14 +783,6 @@ fn changed_files(
             // pre-rename path (and returns the target when the path wasn't renamed/copied, hence the
             // `copy_operation()` gate below).
             let path = entry.path.target().as_internal_file_string().to_string();
-            // A diff-stream entry that errors (corrupt/unreadable object, backend read failure) must
-            // NOT be silently skipped: dropping it reports a changed file as absent — a dirty commit
-            // as clean, the exact "empty diff read as no changes" failure this surfaces instead.
-            // `PartialData` is the model's escape hatch for it (plumbed through UniFFI to Swift's
-            // `VCSError.partialData`), so the caller shows a recoverable error, not incomplete data.
-            let diff = entry
-                .values
-                .map_err(|e| VcsError::PartialData(format!("diff read failed for {path}: {e}")))?;
             let copy_op = entry.path.copy_operation();
             // Conflict FIRST: an unresolved merge on the `after` side *is* the conflict, and it
             // never satisfies `is_absent()` (which is `Some(None)` — a *resolved* absence), so
@@ -815,25 +808,63 @@ fn changed_files(
             // same reason `is_absent()` didn't catch it), and an absent side to `Absent`. `AccessDenied`
             // is a present-but-unreadable value, so it stays a `Modified` as before — with `None`
             // counts, since there's no content to compare.
-            let kind = if is_conflict(&diff.after) {
-                model::ChangeKind::Conflicted
-            } else if let Some(op) = copy_op {
-                match op {
-                    CopyOperation::Rename => model::ChangeKind::Renamed,
-                    CopyOperation::Copy => model::ChangeKind::Copied,
-                }
-            } else if diff.before.is_absent() {
-                model::ChangeKind::Added
-            } else if diff.after.is_absent() {
-                model::ChangeKind::Deleted
-            } else {
-                model::ChangeKind::Modified
-            };
             let old_path = copy_op
                 .map(|_| entry.path.source().as_internal_file_string().to_string())
                 .filter(|source| *source != path);
-            let stats =
-                line_stats(entry.path.source(), entry.path.target(), diff, &materialize).await;
+            // `entry.values` folds BOTH failures into one `Err`: the tree walk couldn't read the
+            // entry at all, or it could but materializing the file's CONTENT failed. They deserve
+            // different answers, so they're told apart here rather than both aborting the read.
+            //
+            // Materializing is what made content failures reachable in the first place — the tree
+            // diff this replaced only ever read tree objects. A single unreadable blob (blobless or
+            // partial clone, a pruned object, a gc/repack race) would otherwise fail the WHOLE
+            // status read, and `WorkroomStatusResolver.failure(for:)` maps `.partialData` to
+            // `.notRepository` — so one bad object made the sidebar and Changes panel both report
+            // "Not a repository." for a workroom that is fine apart from that one file.
+            let (kind, stats) = match entry.values {
+                Ok(diff) => {
+                    let kind = if is_conflict(&diff.after) {
+                        model::ChangeKind::Conflicted
+                    } else if let Some(op) = copy_op {
+                        match op {
+                            CopyOperation::Rename => model::ChangeKind::Renamed,
+                            CopyOperation::Copy => model::ChangeKind::Copied,
+                        }
+                    } else if diff.before.is_absent() {
+                        model::ChangeKind::Added
+                    } else if diff.after.is_absent() {
+                        model::ChangeKind::Deleted
+                    } else {
+                        model::ChangeKind::Modified
+                    };
+                    let stats =
+                        line_stats(entry.path.source(), entry.path.target(), diff, &materialize)
+                            .await;
+                    (kind, stats)
+                }
+                // Re-read the two sides as raw tree values: that's tree objects only, no blob, so it
+                // succeeds exactly when the failure was the content. The row still lands with its
+                // real kind and `None` counts — which is already what `None` means everywhere else
+                // here (binary, oversized, unreadable). If the TREE read fails too, the entry really
+                // is unreadable and `PartialData` is right: dropping it would report a changed file
+                // as absent, i.e. a dirty commit as clean.
+                Err(content_err) => {
+                    let unreadable = |e| {
+                        VcsError::PartialData(format!(
+                            "diff read failed for {path}: {e} (after: {content_err})"
+                        ))
+                    };
+                    let before_value = before
+                        .path_value(entry.path.source())
+                        .await
+                        .map_err(unreadable)?;
+                    let after_value = after
+                        .path_value(entry.path.target())
+                        .await
+                        .map_err(unreadable)?;
+                    (raw_kind(&before_value, &after_value, copy_op), None)
+                }
+            };
             files.push(model::ChangedFile {
                 path,
                 old_path,
@@ -870,6 +901,31 @@ fn is_conflict(value: &MaterializedTreeValue) -> bool {
         value,
         MaterializedTreeValue::FileConflict(_) | MaterializedTreeValue::OtherConflict { .. }
     )
+}
+
+/// The change kind read off RAW tree values — the fallback in `changed_files` for a file whose
+/// content wouldn't materialize. Same ladder, same order, same reasoning as the materialized one
+/// (see the comment there); only the two predicates differ, because a conflict is an *unresolved*
+/// merge before materialization rather than a `FileConflict`/`OtherConflict` value after it.
+fn raw_kind(
+    before: &MergedTreeValue,
+    after: &MergedTreeValue,
+    copy_op: Option<CopyOperation>,
+) -> model::ChangeKind {
+    if !after.is_resolved() {
+        model::ChangeKind::Conflicted
+    } else if let Some(op) = copy_op {
+        match op {
+            CopyOperation::Rename => model::ChangeKind::Renamed,
+            CopyOperation::Copy => model::ChangeKind::Copied,
+        }
+    } else if before.is_absent() {
+        model::ChangeKind::Added
+    } else if after.is_absent() {
+        model::ChangeKind::Deleted
+    } else {
+        model::ChangeKind::Modified
+    }
 }
 
 /// jj's DEFAULT conflict-materialization options (its bundled `misc.toml`: `marker-style = "diff"`,

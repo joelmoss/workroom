@@ -381,3 +381,80 @@ fn counts_match_jj_diff_stat_for_a_linear_working_copy() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// One unreadable BLOB degrades that one row — it must not fail the whole read.
+///
+/// Counting lines is what made this reachable: the tree diff `changed_files` replaced only ever read
+/// tree objects, whereas materializing content reads the file's blob on both sides. jj-lib folds a
+/// content failure into the same `entry.values` error as a tree failure, so treating every error as
+/// `PartialData` meant a single missing object (blobless/partial clone, a pruned object, a gc/repack
+/// race) took out the entire status read — and Swift maps `.partialData` to `.notRepository`, so the
+/// sidebar and the Changes panel both claimed the workroom wasn't a repository at all.
+///
+/// The blob is deleted straight out of jj's backing git store, which is what a pruned object IS.
+#[test]
+fn an_unreadable_blob_degrades_one_row_not_the_whole_read() {
+    if !have_jj() {
+        eprintln!("skipping unreadable-blob test: `jj` not on PATH");
+        return;
+    }
+    let (dir, cfg) = init_repo("unreadable-blob");
+    std::fs::write(dir.join("a.txt"), b"one\ntwo\nthree\n").unwrap();
+    std::fs::write(dir.join("b.txt"), b"untouched\n").unwrap();
+    jj(&["commit", "-m", "base"], &dir, &cfg);
+    std::fs::write(dir.join("a.txt"), b"ONE\ntwo\nthree\nfour\n").unwrap();
+    std::fs::write(dir.join("b.txt"), b"untouched\nplus one\n").unwrap();
+
+    // jj's backing git repo, via the `git_target` pointer rather than a hardcoded path (it's
+    // relative to the store dir, and differs between a colocated repo and this one).
+    let store_dir = dir.join(".jj/repo/store");
+    let target = std::fs::read_to_string(store_dir.join("git_target")).unwrap();
+    let store = std::fs::canonicalize(store_dir.join(target.trim())).unwrap();
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("--git-dir")
+            .arg(&store)
+            .args(args)
+            .output()
+            .unwrap_or_else(|e| panic!("run git {args:?}: {e}"))
+    };
+    if !git(&["--version"]).status.success() {
+        eprintln!("skipping unreadable-blob test: `git` not on PATH");
+        return;
+    }
+    // `ls-tree`, not `rev-parse <commit>:a.txt` — with no work tree, rev-parse reads that form as a
+    // path and fails. Output is `<mode> blob <sha>\t<path>`.
+    let parent = id_of("@-", &dir, &cfg);
+    let listed = git(&["ls-tree", &parent, "a.txt"]);
+    let listed = String::from_utf8_lossy(&listed.stdout);
+    let blob = listed.split_whitespace().nth(2).unwrap_or_default();
+    assert_eq!(
+        blob.len(),
+        40,
+        "could not resolve the parent blob for a.txt from {listed:?}"
+    );
+    let object = store.join("objects").join(&blob[..2]).join(&blob[2..]);
+    assert!(object.exists(), "expected a loose object at {object:?}");
+    std::fs::remove_file(&object).unwrap();
+
+    let status =
+        wr_vcs_core::working_status(&dir).expect("one missing blob must not fail the read");
+    assert!(status.dirty, "the working copy is still dirty");
+    let files = status.working_copy.files;
+
+    // The damaged file keeps its row and its real kind; only the counts go missing — which is
+    // already what `None` means here (binary, oversized, unreadable).
+    let a = file(&files, "a.txt");
+    assert_eq!(a.kind, ChangeKind::Modified, "kind survives; got {a:?}");
+    assert_eq!(
+        (a.insertions, a.deletions),
+        (None, None),
+        "an unreadable blob can't be counted; got {a:?}"
+    );
+    // …and the file beside it is unaffected, counts included.
+    let b = file(&files, "b.txt");
+    assert_eq!((b.insertions, b.deletions), (Some(1), Some(0)), "got {b:?}");
+    assert_eq!(totals(&files), (1, 0));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
