@@ -330,11 +330,19 @@ private struct ChangedFileRow: View {
         .lineLimit(1).truncationMode(.middle)
         .layoutPriority(1)
       if !dir.isEmpty {
-        // Same face as the History detail file list's path line (ChangesetDetailView.fileRow), so a
-        // path reads identically in both places.
+        // Same face as the History detail file list's path line (`ChangesetDetailView.fileRow`):
+        // caption, monospaced, `.tertiary`. Matching the tint matters — the two panels sit one tab
+        // apart, and `.secondary` beside `.tertiary` reads as two different kinds of text rather
+        // than the same one.
+        //
+        // Truncation is the one thing that deliberately differs. History stacks the full path UNDER
+        // the name and truncates it in the middle; here the directory sits INLINE before a
+        // `layoutPriority(1)` name, where the tail (the directory the file is actually in) is the
+        // part that identifies it — so it truncates from the head. Middle-truncation on a one-line
+        // inline dir would clip both ends and leave the least useful segment.
         Text(dir)
           .font(.system(.caption, design: .monospaced))
-          .foregroundStyle(.secondary)
+          .foregroundStyle(.tertiary)
           .lineLimit(1).truncationMode(.head)
       }
       Spacer(minLength: 0)

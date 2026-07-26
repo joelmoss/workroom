@@ -499,10 +499,17 @@ private struct WorkroomTabChip: View {
       .font(.subheadline)
       .lineLimit(1)
       .truncationMode(.tail)
-      // Cap the WHOLE title group (not each `Text` individually) so a long name tail-truncates as
-      // one unit: per-`Text` caps would let the project name and workroom name truncate
-      // independently and eat the workroom name — the more identifying half — first. A short title
-      // stays tight (leading alignment, the HStack sizes to its ideal width up to the cap).
+      // Cap the title group as a whole rather than each `Text`, so the pair shares one budget
+      // instead of each name getting its own. Note this does NOT make them truncate as a single
+      // unit: an `HStack` satisfies its least-flexible children first, so the longer of the two
+      // names absorbs the shortfall and both can end up clipped (`verylongproj…/verylongwo…`). That
+      // is the intended trade — the alternative, a fixed per-`Text` cap, clips a short name beside a
+      // long one for no reason. A short title stays tight (leading alignment, the HStack sizes to
+      // its ideal width up to the cap).
+      //
+      // The cap matches `TerminalTabChip`'s, so a workroom chip is never wider than a terminal one;
+      // it is shared by two names here against that chip's one, which is why a workroom chip starts
+      // truncating at a shorter combined length.
       .frame(maxWidth: Self.maxTitleWidth, alignment: .leading)
       // VCS dirty status is carried by the leading house/cube tint above (no separate dot here).
       // Run-command dot (issue #7), trailing-most: green play while running; a red octagon if the

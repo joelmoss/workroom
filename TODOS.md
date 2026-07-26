@@ -438,6 +438,32 @@ The pieces below were explicitly deferred — each small, none blocking.
 
 **Priority:** P3 (polish on a shipped feature).
 
+### Two split paths still bypass the pane floor (macapp) — pane-min-width follow-up
+
+**What:** `TerminalSessions.fits` is the single floor guard (`minPaneWidth` 300 / `minPaneHeight` 120,
+`eb762b87`). Two paths don't consult it, and can't today, because it measures a
+`GhosttySurfaceView`'s bounds and neither path has one:
+
+- **`AppStore.insertWorkroomSplit`** (`Core/AppStore+WorkroomSplit.swift`) — no fit guard at all, and
+  workroom panes are the one place each pane renders its *own* `TerminalTabStrip`, whose diff toolbar
+  alone is ~145pt (the measurement 300 was derived from). With ~700pt of content, dragging a third
+  workroom chip in nests a split at `total: 348`, which trips `lengths`' even-split fallback and
+  yields two 172pt panes.
+- **`TerminalSessions.fits` exempts content panes** — `guard let surface else { return true }`, so
+  every diff / file / changeset pane is outside the floor that exists *because of* the diff toolbar.
+  ⌘D on a diff pane in a 400pt split is permitted and gives two ~198pt panes.
+
+**Why it's still open:** both need a measured pane rect where only a surface is available today. The
+views already compute one (`PaneTreeLayout.plan(_:in:)` → `plan.panes`), so the fix is to pass the
+destination pane's size in at the call site rather than store frames in the model — but the workroom
+drop path threads its target through a `dropTarget: (CGPoint) -> (sid, edge)?` closure owned by
+`RootView` and handed down through `WorkroomSplitView` → `WorkroomPaneLeaf` → the tab bar, so it's a
+signature change across several files on a drag path that only XCUITest can exercise.
+
+`splitTab` and `moveTabIntoSplit` — the two that only needed the surface already in hand — are fixed.
+
+**Priority:** P3 (bad layout, recoverable by resizing; no data loss).
+
 ### AppKit tracking-handle divider for an even wider resize target (macapp) — #83 follow-up
 
 **What:** Replace the SwiftUI invisible-`Rectangle` resize divider (`SplitDivider` in
@@ -1001,7 +1027,7 @@ been showing none. The cross-backend divergence test is now
   `parseDiffStat`, `commitStatArgs`, and `changeset`'s `--stat` pair: **3 fewer `jj` processes**.
 - **Log + branch-label order** go through one `ancestors_revset` helper (jj-lib's `::@`, descending
   commit position = topological). Timestamps were never a graph order; the old max-heap could surface a
-  commit above its own descendants. `nearest_bookmark` shares that walk, so the sidebar can't name a
+  commit above its own descendants. `first_bookmark_in_log_order` shares that walk, so the sidebar can't name a
   bookmark History doesn't show — and it now stops at the first bookmark instead of deserializing every
   ancestor. git's side keeps libgit2 `GIT_SORT_NONE` (= `git log`'s own default), so each backend
   matches its own CLI; do not "unify" them.
