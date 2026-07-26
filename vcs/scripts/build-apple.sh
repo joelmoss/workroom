@@ -37,8 +37,12 @@ GEN="$PKG/Sources/WrVcs"
 # In Frameworks/ so it's covered by the same gitignore entry — and by CI's output cache.
 STAMP="$PKG/Frameworks/.build-stamp"
 
-# Everything that can change the outputs: Rust sources, manifests + lockfile, this script, the
-# compiler, and the arch flavour (a host-arch build must never satisfy a --universal request).
+# Everything that can change the *content* of the outputs: Rust sources, manifests + lockfile, this
+# script, and the compiler. The arch flavour is deliberately NOT hashed — it's stamped as a separate
+# field (below), because the two callers judge it differently: a build must not let a host-arch core
+# satisfy --universal, while --check has no way to know which flavour was built and shouldn't care
+# (a universal core is exactly as fresh as a host one). Hashing it made every `make app-release`
+# stamp universal and then fail its own Xcode gate, which checks the host flavour.
 input_hash() {
   {
     # Relative paths (cwd is vcs/) so the hash doesn't move when the repo does — every workroom
@@ -47,16 +51,23 @@ input_hash() {
       -not -path './target/*' -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256
     shasum -a 256 < "$self"   # content only: the path itself varies with how we were invoked
     rustc --version
-    # Tolerate a missing rustup here so the friendlier MSRV error below still gets to fire.
-    if $universal; then rustup run stable rustc --version 2>/dev/null || echo "rustup: none"; fi
-    echo "universal=$universal"
   } | shasum -a 256 | awk '{print $1}'
 }
 
+# Stamp format: line 1 = input_hash, line 2 = `universal=<bool>` (absent in the pre-two-field
+# format, which simply reads as a hash mismatch and rebuilds once).
 WANT=$(input_hash)
-up_to_date=false
+fresh=false          # outputs exist and match the current inputs
+stamp_universal=false # ...and were built with --universal
 if [ -d "$XC" ] && [ -f "$GEN/wr_vcs_uniffi.swift" ] && [ -f "$FFI/wr_vcs_uniffiFFI.h" ] &&
-  [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$WANT" ]; then
+  [ -f "$STAMP" ] && [ "$(sed -n 1p "$STAMP")" = "$WANT" ]; then
+  fresh=true
+  [ "$(sed -n 2p "$STAMP")" = "universal=true" ] && stamp_universal=true
+fi
+
+# A build request is satisfied only if the stamped flavour covers it; --check ignores the flavour.
+up_to_date=false
+if $fresh && { ! $universal || $stamp_universal; }; then
   up_to_date=true
 fi
 
@@ -68,7 +79,7 @@ fi
 # phases run, so replacing the .a here wouldn't reach *this* build's link anyway — better to stop
 # with an actionable message than to look fixed while still linking the old core.
 if $check_only; then
-  $up_to_date && { echo "up to date: $XC"; exit 0; }
+  $fresh && { echo "up to date: $XC"; exit 0; }
   echo "stale: the Rust VCS core doesn't match vcs/ — run 'make app-vcs'" >&2
   exit 1
 fi
@@ -130,7 +141,7 @@ cp "$BIND/wr_vcs_uniffi.swift" "$GEN/wr_vcs_uniffi.swift"
 
 # Outputs complete — vouch for them. Re-hashed rather than reusing $WANT so a source edit made
 # mid-build doesn't get stamped as built.
-input_hash > "$STAMP"
+{ input_hash; echo "universal=$universal"; } > "$STAMP"
 
 echo "built: $XC"
 echo "       $GEN/wr_vcs_uniffi.swift"
