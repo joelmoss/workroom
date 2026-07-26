@@ -37,8 +37,9 @@ pub fn changeset(root: &Path, commit_id_hex: &str) -> model::Result<model::Chang
     jj_backend::changeset(root, commit_id_hex)
 }
 
-/// The repo's current ref (the `@` bookmark, nearest ancestor bookmark, or none) for the sidebar
-/// root-row label. Read-only; no working-copy snapshot/lock.
+/// The repo's current ref (a bookmark on `@`, else the first ancestor bookmark in `::@` log order —
+/// not necessarily the graph-nearest, see `jj_backend::first_bookmark_in_log_order` — else none) for
+/// the sidebar root-row label. Read-only; no working-copy snapshot/lock.
 pub fn current_ref(root: &Path) -> model::Result<model::Ref> {
     jj_backend::current_ref(root)
 }

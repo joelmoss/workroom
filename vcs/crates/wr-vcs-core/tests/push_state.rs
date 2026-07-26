@@ -12,7 +12,8 @@
 //! - Nothing to compare against ⇒ `Unknown`, which the UI renders as no badge (never `Unpushed`).
 //!
 //! These are read-only reads (`load_at_head`, no working-copy lock), so unlike the `working_status`
-//! suite there's no corruption risk. Skips if `jj` or `git` isn't on PATH.
+//! suite there's no corruption risk. Skips if `jj` or `git` isn't on PATH — a missing `jj` says so
+//! out loud, a missing `git` doesn't; see `tests/common/mod.rs` for both and why they differ.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -20,13 +21,7 @@ use std::sync::OnceLock;
 
 use wr_vcs_model::PushState;
 
-fn have(tool: &str) -> bool {
-    Command::new(tool)
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
+mod common;
 
 fn run(bin: &str, args: &[&str], dir: &Path) -> std::process::Output {
     Command::new(bin)
@@ -125,8 +120,7 @@ fn state_of(page: &wr_vcs_model::HistoryPage, summary: &str) -> PushState {
 
 #[test]
 fn push_state_splits_at_the_origin_bookmark() {
-    if !have("jj") || !have("git") {
-        eprintln!("skipping: jj/git not on PATH");
+    if common::skip_without(&["jj", "git"], "origin-split push test") {
         return;
     }
     let work = repo_with_pushed_main("split");
@@ -151,8 +145,7 @@ fn push_state_splits_at_the_origin_bookmark() {
 
 #[test]
 fn push_state_is_unknown_without_a_remote() {
-    if !have("jj") {
-        eprintln!("skipping: jj not on PATH");
+    if common::skip_without(&["jj"], "no-remote push test") {
         return;
     }
     init_jj_config();
@@ -179,8 +172,7 @@ fn push_state_is_unknown_without_a_remote() {
 /// `Pushed` for commits that were never pushed anywhere.
 #[test]
 fn push_state_never_pushed_via_the_pseudo_remote_git() {
-    if !have("jj") || !have("git") {
-        eprintln!("skipping: jj/git not on PATH");
+    if common::skip_without(&["jj", "git"], "pseudo-remote `git` push test") {
         return;
     }
     init_jj_config();
@@ -206,8 +198,7 @@ fn push_state_never_pushed_via_the_pseudo_remote_git() {
 
 #[test]
 fn push_state_is_unknown_when_the_origin_bookmark_is_untracked() {
-    if !have("jj") || !have("git") {
-        eprintln!("skipping: jj/git not on PATH");
+    if common::skip_without(&["jj", "git"], "untracked-bookmark push test") {
         return;
     }
     let work = repo_with_pushed_main("untracked");
@@ -222,8 +213,7 @@ fn push_state_is_unknown_when_the_origin_bookmark_is_untracked() {
 /// Origin-scoping: a commit pushed only to a *different* remote is still unpushed.
 #[test]
 fn push_state_ignores_non_origin_remotes() {
-    if !have("jj") || !have("git") {
-        eprintln!("skipping: jj/git not on PATH");
+    if common::skip_without(&["jj", "git"], "non-origin remote push test") {
         return;
     }
     let work = repo_with_pushed_main("backup");
@@ -252,8 +242,7 @@ fn push_state_ignores_non_origin_remotes() {
 /// threaded down instead.
 #[test]
 fn push_state_covers_divergent_siblings() {
-    if !have("jj") || !have("git") {
-        eprintln!("skipping: jj/git not on PATH");
+    if common::skip_without(&["jj", "git"], "divergent-sibling push test") {
         return;
     }
     let work = repo_with_pushed_main("divergent");
@@ -297,8 +286,7 @@ fn push_state_covers_divergent_siblings() {
 
 #[test]
 fn changeset_push_state_matches_the_log_row() {
-    if !have("jj") || !have("git") {
-        eprintln!("skipping: jj/git not on PATH");
+    if common::skip_without(&["jj", "git"], "changeset/log push parity test") {
         return;
     }
     let work = repo_with_pushed_main("changeset");

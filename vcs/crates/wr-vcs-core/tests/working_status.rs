@@ -1,19 +1,14 @@
 //! Integration test for `working_status` against a REAL throwaway jj repo. The point is the
 //! snapshot: `working_status` must pick up an on-disk edit that jj hasn't snapshotted yet (proving
 //! it takes the working-copy lock + rewrites `@`), and leave the repo consistent (a second read + a
-//! `jj status` agree — no corruption). Skips if `jj` isn't on PATH.
+//! `jj status` agree — no corruption). Skips if `jj` isn't on PATH — and says so out loud; see
+//! `tests/common/mod.rs`.
 
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
-fn have_jj() -> bool {
-    Command::new("jj")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
+mod common;
 
 /// Run `jj` in `dir` with `config` as its ONLY config file.
 ///
@@ -131,8 +126,7 @@ fn jj_says_conflicted(dir: &Path, cfg: &Path) -> bool {
 /// marker-bearing normal file could pass unnoticed.
 #[test]
 fn working_status_reports_per_file_conflict_and_leaves_it_intact() {
-    if !have_jj() {
-        eprintln!("skipping conflict test: `jj` not on PATH");
+    if common::skip_without(&["jj"], "conflict test") {
         return;
     }
     let (dir, cfg) = conflicted_repo("conflict");
@@ -181,8 +175,7 @@ fn working_status_reports_per_file_conflict_and_leaves_it_intact() {
 /// shape `AA`/`DU`). Locks the branch ORDER in `changed_files`, not just the branch's existence.
 #[test]
 fn conflict_beats_added_when_the_first_parent_lacks_the_path() {
-    if !have_jj() {
-        eprintln!("skipping delete/modify conflict test: `jj` not on PATH");
+    if common::skip_without(&["jj"], "delete/modify conflict test") {
         return;
     }
     let (dir, cfg) = init_repo("conflict-added");
@@ -227,8 +220,7 @@ fn conflict_beats_added_when_the_first_parent_lacks_the_path() {
 /// (`VCSProviderConformanceTests` asserts that divergence app-side).
 #[test]
 fn changeset_reports_a_conflicted_commit() {
-    if !have_jj() {
-        eprintln!("skipping conflicted-changeset test: `jj` not on PATH");
+    if common::skip_without(&["jj"], "conflicted-changeset test") {
         return;
     }
     let (dir, cfg) = conflicted_repo("conflict-changeset");
@@ -270,8 +262,7 @@ fn changeset_reports_a_conflicted_commit() {
 /// that tests `before` for a conflict too.
 #[test]
 fn deleted_beats_conflict_when_the_path_is_gone_from_the_working_copy() {
-    if !have_jj() {
-        eprintln!("skipping conflict-then-deleted test: `jj` not on PATH");
+    if common::skip_without(&["jj"], "conflict-then-deleted test") {
         return;
     }
     let (dir, cfg) = conflicted_repo("conflict-deleted");
@@ -307,8 +298,7 @@ const RENAME_BODY: &[u8] = b"one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\n";
 /// (see `copy_records`), and can't be exercised here since `jj git init` is always git-backed.
 #[test]
 fn working_status_reports_a_rename_with_its_old_path() {
-    if !have_jj() {
-        eprintln!("skipping rename test: `jj` not on PATH");
+    if common::skip_without(&["jj"], "rename test") {
         return;
     }
     let (dir, cfg) = init_repo("rename");
@@ -347,8 +337,7 @@ fn working_status_reports_a_rename_with_its_old_path() {
 /// rather than fall back to delete+add.
 #[test]
 fn changeset_reports_a_rename_with_an_edit() {
-    if !have_jj() {
-        eprintln!("skipping rename-changeset test: `jj` not on PATH");
+    if common::skip_without(&["jj"], "rename-changeset test") {
         return;
     }
     let (dir, cfg) = init_repo("rename-changeset");
@@ -393,8 +382,7 @@ fn changeset_reports_a_rename_with_an_edit() {
 /// all and the new file is a plain `Added`.
 #[test]
 fn a_surviving_source_is_copied_not_renamed() {
-    if !have_jj() {
-        eprintln!("skipping copy test: `jj` not on PATH");
+    if common::skip_without(&["jj"], "copy test") {
         return;
     }
     let (dir, cfg) = init_repo("copy");
@@ -444,8 +432,7 @@ fn a_surviving_source_is_copied_not_renamed() {
 /// keeps the conflict badge instead of silently downgrading it to `Renamed`.
 #[test]
 fn a_conflicted_rename_does_not_pair_into_one_row() {
-    if !have_jj() {
-        eprintln!("skipping conflicted-rename test: `jj` not on PATH");
+    if common::skip_without(&["jj"], "conflicted-rename test") {
         return;
     }
     let (dir, cfg) = init_repo("conflict-rename");
@@ -503,8 +490,7 @@ fn a_conflicted_rename_does_not_pair_into_one_row() {
 
 #[test]
 fn working_status_snapshots_disk_edits_without_corrupting() {
-    if !have_jj() {
-        eprintln!("skipping working_status test: `jj` not on PATH");
+    if common::skip_without(&["jj"], "working_status test") {
         return;
     }
     let (dir, cfg) = init_repo("snapshot");
@@ -568,8 +554,7 @@ fn working_status_snapshots_disk_edits_without_corrupting() {
 /// hex. Guards the "use short refs for jj" behavior the Changes-panel header depends on.
 #[test]
 fn working_status_change_id_is_short_reverse_hex() {
-    if !have_jj() {
-        eprintln!("skipping change-id test: `jj` not on PATH");
+    if common::skip_without(&["jj"], "change-id test") {
         return;
     }
     let (dir, cfg) = init_repo("change-id");

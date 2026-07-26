@@ -2,22 +2,17 @@
 //! state for must be *reachable* from a real repo. Until these existed the backend funnelled almost
 //! everything through `VcsError::Io`, so Swift's case-by-case `RustJJProvider.mapError` (and the
 //! recovery messages behind it) could never fire — a correct mapping of errors that were never
-//! produced. Skips if `jj` isn't on PATH.
+//! produced. Skips if `jj` isn't on PATH — and says so out loud; see `tests/common/mod.rs`.
 
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use jj_lib::lock::FileLock;
 use wr_vcs_model::VcsError;
 
-fn have_jj() -> bool {
-    Command::new("jj")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
+mod common;
 
 /// Run `jj` in `dir` with `config` as its ONLY config file. `JJ_CONFIG` goes per-`Command` (never
 /// `set_var`) because cargo runs `#[test]`s in parallel threads of one process — see
@@ -87,8 +82,7 @@ fn a_non_jj_directory_reports_unsupported_repo() {
 /// retry; `BackendVersion` says the build is the problem, and names the type.
 #[test]
 fn an_unknown_working_copy_backend_reports_backend_version() {
-    if !have_jj() {
-        eprintln!("skipping backend-version test: `jj` not on PATH");
+    if common::skip_without(&["jj"], "backend-version test") {
         return;
     }
     let (dir, _cfg) = init_repo("backend");
@@ -105,6 +99,13 @@ fn an_unknown_working_copy_backend_reports_backend_version() {
     }
 }
 
+/// The wall-clock budget for the contended read below. Generous by two orders of magnitude against
+/// what the `try_lock` probe costs (an `exists()` plus a non-blocking `flock`, microseconds) and
+/// still far under any plausible blocking wait — a real `jj rebase` or `jj log` in a big repo holds
+/// that lock for seconds to minutes, which is the whole reason the probe exists. Sized to be immune
+/// to a loaded CI box: the entire file currently runs in ~5s, of which this test is a fraction.
+const CONTENTION_BUDGET: Duration = Duration::from_secs(1);
+
 /// A held working-copy lock must report `LockContention` **immediately**, not block.
 ///
 /// This is the case the taxonomy could never produce: jj-lib's `FileLock::lock` blocks on `flock`
@@ -112,10 +113,17 @@ fn an_unknown_working_copy_backend_reports_backend_version() {
 /// stall the status sweep for its whole duration. The lock here is taken exactly the way another
 /// process would take it, then released — and the release must leave the repo readable, proving the
 /// probe neither corrupts nor wedges the lock file it touches.
+///
+/// **The elapsed-time assertion is not decoration — it is the actual claim.** The variant on its own
+/// pins almost nothing: swap `lock_is_held`'s non-blocking `FileLock::try_lock` probe for a blocking
+/// `FileLock::lock` with a timeout, map the timeout to `LockContention`, and a variant-only test
+/// stays green while the original defect is fully restored — a GCD thread and the project's
+/// `JJSnapshotGate` slot pinned for as long as the user's `jj` command runs, with every other
+/// workroom of that project queued behind it. Speed *is* the fix; the error type is just how it's
+/// reported.
 #[test]
 fn a_held_working_copy_lock_reports_lock_contention() {
-    if !have_jj() {
-        eprintln!("skipping lock-contention test: `jj` not on PATH");
+    if common::skip_without(&["jj"], "lock-contention test") {
         return;
     }
     let (dir, _cfg) = init_repo("lock");
@@ -124,11 +132,23 @@ fn a_held_working_copy_lock_reports_lock_contention() {
 
     let lock_path = dir.join(".jj/working_copy/working_copy.lock");
     let held = FileLock::lock(lock_path).expect("take the working-copy lock");
-    match wr_vcs_core::working_status(&dir) {
+    // Timed around the call alone: the fixture above builds a repo with the `jj` CLI, which is
+    // orders of magnitude slower than the thing being measured.
+    let started = Instant::now();
+    let contended = wr_vcs_core::working_status(&dir);
+    let elapsed = started.elapsed();
+    // Release before asserting, so a failure can't leave the lock held for the rest of the binary.
+    drop(held);
+
+    match contended {
         Err(VcsError::LockContention) => {}
         other => panic!("expected LockContention, got {other:?}"),
     }
-    drop(held);
+    assert!(
+        elapsed < CONTENTION_BUDGET,
+        "contention must be detected without waiting on the lock, but the read took {elapsed:?} \
+         (budget {CONTENTION_BUDGET:?}) — the probe is blocking again"
+    );
 
     wr_vcs_core::working_status(&dir).expect("readable again once the lock is released");
 }
@@ -143,8 +163,7 @@ fn a_held_working_copy_lock_reports_lock_contention() {
 /// `@` from the stale base.
 #[test]
 fn a_stale_second_workspace_reports_stale_snapshot() {
-    if !have_jj() {
-        eprintln!("skipping stale test: `jj` not on PATH");
+    if common::skip_without(&["jj"], "stale test") {
         return;
     }
     let (dir, cfg) = init_repo("stale");

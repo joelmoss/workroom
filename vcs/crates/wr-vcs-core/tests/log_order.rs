@@ -1,7 +1,8 @@
 //! Integration tests for the ORDER of the jj backend's two ancestry walks — `log_page` (History) and
-//! `nearest_bookmark` (the sidebar's branch label, via `current_ref`) — against REAL throwaway jj
-//! repos. Read-only reads (`load_at_head`, no working-copy lock), so unlike the `working_status` suite
-//! there's no corruption risk. Skips if `jj` isn't on PATH.
+//! `first_bookmark_in_log_order` (the sidebar's branch label, via `current_ref`) — against REAL
+//! throwaway jj repos. Read-only reads (`load_at_head`, no working-copy lock), so unlike the
+//! `working_status` suite there's no corruption risk. Skips if `jj` isn't on PATH — and says so out
+//! loud; see `tests/common/mod.rs`.
 //!
 //! Both walks used to be keyed on the **committer timestamp**. That is metadata, not graph structure:
 //! a rewrite carries it forward, so an amend, a rebase, an imported git commit or plain clock skew
@@ -22,13 +23,7 @@ use std::process::Command;
 
 use wr_vcs_model::{Commit, HistoryPage, RefKind};
 
-fn have_jj() -> bool {
-    Command::new("jj")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
+mod common;
 
 /// Run `jj` in `dir` with `config` as its ONLY config file, and `stamp` as the committer timestamp of
 /// anything it writes.
@@ -130,9 +125,11 @@ fn jj_log_ids(dir: &Path, cfg: &Path) -> Vec<String> {
 /// - **History order.** Popping newest-timestamp-first reaches `A` (2030) straight after `E` (2021),
 ///   i.e. BEFORE `A`'s own descendants `C` and `B` — a parent printed above its child, which no
 ///   topological order permits and `jj log` never prints.
-/// - **Branch label.** The nearest bookmark to `@` is `main`, sitting on `@`'s own first parent `C`.
-///   The timestamp walk instead surfaces `deep` on `A`, two hops away, purely because a rewrite left
-///   `A` with a later timestamp.
+/// - **Branch label.** The first bookmark `::@` reaches is `main`, on `@`'s own first parent `C`.
+///   The timestamp walk instead surfaces `deep` on `A`, deeper in the ancestry, purely because a
+///   rewrite left `A` with a later timestamp. (Log order and graph distance happen to agree in THIS
+///   graph; `current_ref_takes_the_first_bookmark_in_log_order_even_when_another_is_nearer` builds
+///   the one where they don't.)
 ///
 /// The sides are addressed by **commit id**, never by bookmark: with jj's
 /// `experimental-advance-branches` enabled, `jj commit` advances a bookmark onto the commit it just
@@ -192,8 +189,7 @@ fn assert_children_before_parents(commits: &[Commit]) {
 
 #[test]
 fn log_page_puts_children_before_parents_despite_newer_ancestor_timestamps() {
-    if !have_jj() {
-        eprintln!("skipping: jj not on PATH");
+    if common::skip_without(&["jj"], "topological-order test") {
         return;
     }
     let (dir, _cfg) = skewed_merge_repo("logtopo");
@@ -220,8 +216,7 @@ fn log_page_puts_children_before_parents_despite_newer_ancestor_timestamps() {
 
 #[test]
 fn log_page_order_matches_jj_log() {
-    if !have_jj() {
-        eprintln!("skipping: jj not on PATH");
+    if common::skip_without(&["jj"], "log-order parity test") {
         return;
     }
     let (dir, cfg) = skewed_merge_repo("logparity");
@@ -241,8 +236,7 @@ fn log_page_order_matches_jj_log() {
 /// their own guard: a short page must not claim to be the end, and an over-long limit must.
 #[test]
 fn log_page_reports_reached_end_only_when_the_page_holds_everything() {
-    if !have_jj() {
-        eprintln!("skipping: jj not on PATH");
+    if common::skip_without(&["jj"], "paging test") {
         return;
     }
     let (dir, cfg) = skewed_merge_repo("logpaging");
@@ -262,18 +256,99 @@ fn log_page_reports_reached_end_only_when_the_page_holds_everything() {
     assert_eq!(summaries(&short.commits), summaries(&full.commits)[..3]);
 }
 
+/// Named for what the walk promises — the first bookmark in LOG order — not "the nearest", which it
+/// deliberately isn't (see `first_bookmark_in_log_order`, and the test below this one for a graph
+/// where the two answers differ). Here they coincide, and the defect being pinned is the timestamp
+/// walk this replaced.
 #[test]
-fn current_ref_picks_the_nearest_bookmark_not_the_newest_timestamped_one() {
-    if !have_jj() {
-        eprintln!("skipping: jj not on PATH");
+fn current_ref_picks_the_first_log_order_bookmark_not_the_newest_timestamped_one() {
+    if common::skip_without(&["jj"], "log-order-vs-timestamp label test") {
         return;
     }
-    let (dir, _cfg) = skewed_merge_repo("nearest");
+    let (dir, _cfg) = skewed_merge_repo("logorder");
     let r = wr_vcs_core::current_ref(&dir).expect("current_ref");
     assert_eq!(
         r.name.as_deref(),
         Some("main"),
-        "`main` sits on `@`'s own first parent; `deep` is two hops away and only wins on timestamp"
+        "`main` is the first bookmark `::@` reaches; `deep` is deeper and only wins on timestamp"
+    );
+    assert_eq!(
+        r.kind,
+        RefKind::Ancestor,
+        "`@` itself carries no bookmark, so the label is an ancestor's"
+    );
+}
+
+/// LOG ORDER IS NOT GRAPH DISTANCE, and the label follows log order. This is the graph where the two
+/// disagree, pinned because `first_bookmark_in_log_order`'s name and doc now promise exactly which
+/// one it answers — and because the obvious "improvement", a breadth-first walk returning the
+/// genuinely closest bookmark, would quietly make the sidebar name a commit that isn't the first
+/// bookmarked row in History.
+///
+/// ```text
+///   base ─┬─ P1 [main] ────────────┐
+///         └─ Q [feature] ── P2 ────┴─ @ = merge(P1, P2)
+/// ```
+///
+/// `main` is ONE hop from `@`, on its own first parent. `feature` is TWO, down the second parent.
+/// `jj log -r ::@` still prints `feature` first — the revset walks descending index position, and at
+/// a merge that drains the higher-positioned side before the other — so `feature` is the first
+/// bookmark a user meets scrolling down History, and therefore what the label must say. Both halves
+/// are asserted: jj's own order (so the premise is measured, not assumed) and ours agreeing with it.
+///
+/// `working_status`'s `branch_for_ci` is this very same value, which is why its call-site comment
+/// warns against reading it as "the branch this work will land on".
+#[test]
+fn current_ref_takes_the_first_bookmark_in_log_order_even_when_another_is_nearer() {
+    if common::skip_without(&["jj"], "log-order-vs-graph-distance label test") {
+        return;
+    }
+    let (dir, cfg) = init_repo("logorder-vs-distance");
+    std::fs::write(dir.join("base.txt"), b"base\n").unwrap();
+    jj(&["commit", "-m", "base"], &dir, &cfg);
+    let base = id_of("@-", &dir, &cfg);
+
+    // The first-parent side: one commit off `base`, bookmarked `main`.
+    std::fs::write(dir.join("p1.txt"), b"p1\n").unwrap();
+    jj(&["commit", "-m", "P1"], &dir, &cfg);
+    let p1 = id_of("@-", &dir, &cfg);
+
+    // The second-parent side: two commits off `base`, with `feature` on the LOWER of them.
+    jj(&["new", &base], &dir, &cfg);
+    std::fs::write(dir.join("q.txt"), b"q\n").unwrap();
+    jj(&["commit", "-m", "Q"], &dir, &cfg);
+    let q = id_of("@-", &dir, &cfg);
+    std::fs::write(dir.join("p2.txt"), b"p2\n").unwrap();
+    jj(&["commit", "-m", "P2"], &dir, &cfg);
+    let p2 = id_of("@-", &dir, &cfg);
+
+    jj(&["bookmark", "create", "main", "-r", &p1], &dir, &cfg);
+    jj(&["bookmark", "create", "feature", "-r", &q], &dir, &cfg);
+    // Sides by commit id, never by bookmark — `experimental-advance-branches` would otherwise move a
+    // bookmark onto the merge and dissolve the whole question.
+    jj(&["new", &p1, &p2], &dir, &cfg);
+
+    // The premise, straight from jj: `feature`'s commit really is reached before `main`'s. Without
+    // this the assertion below could pass on a graph that never posed the question.
+    let order = jj_log_ids(&dir, &cfg);
+    let at = |id: &str| {
+        order
+            .iter()
+            .position(|x| x == id)
+            .unwrap_or_else(|| panic!("{id} is not in ::@: {order:?}"))
+    };
+    assert!(
+        at(&q) < at(&p1),
+        "fixture: `jj log -r ::@` must reach Q[feature] before P1[main], else there is nothing to \
+         test; got {order:?}"
+    );
+
+    let r = wr_vcs_core::current_ref(&dir).expect("current_ref");
+    assert_eq!(
+        r.name.as_deref(),
+        Some("feature"),
+        "the label is the first bookmark in LOG order (`feature`, two hops down the second parent), \
+         not the graph-nearest one (`main`, on `@`'s own first parent)"
     );
     assert_eq!(
         r.kind,
@@ -286,8 +361,7 @@ fn current_ref_picks_the_nearest_bookmark_not_the_newest_timestamped_one() {
 /// simply the first id `::@` yields, being a descendant of the whole set), so that has to be pinned.
 #[test]
 fn current_ref_prefers_a_bookmark_on_the_working_copy_itself() {
-    if !have_jj() {
-        eprintln!("skipping: jj not on PATH");
+    if common::skip_without(&["jj"], "bookmark-on-@ label test") {
         return;
     }
     let (dir, cfg) = skewed_merge_repo("onwc");

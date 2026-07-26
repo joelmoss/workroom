@@ -151,8 +151,14 @@ pub struct WorkingStatus {
     pub conflicted: bool,
     /// The working copy `@`'s change set (metadata + files vs `@-`).
     pub working_copy: CommitChanges,
-    /// The nearest bookmark in `@`'s ancestry (the branch pushed to origin) for CI/PR lookup, since
-    /// jj's `@` is a detached git HEAD. `None` ⇒ no bookmark.
+    /// The bookmark to look a CI run / PR up by, since jj's `@` is a detached git HEAD. `None` ⇒ no
+    /// bookmark in `@`'s ancestry at all.
+    ///
+    /// Specifically the FIRST bookmark in `::@` log order — the same one the sidebar labels the
+    /// workroom with, so the two can't disagree. Not the graph-nearest one: past a merge, log order
+    /// can reach a bookmark down the second parent before one sitting on `@`'s own first parent (the
+    /// backend's `first_bookmark_in_log_order` documents the case). Treat it as a label, not as
+    /// "the branch this commit will land on".
     pub branch_for_ci: Option<String>,
 }
 

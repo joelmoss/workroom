@@ -405,10 +405,12 @@ pub fn log_page(root: &Path, limit: usize) -> model::Result<HistoryPage> {
 }
 
 /// The repo's current ref for the sidebar label (read-only; no snapshot/lock — same `open` path as
-/// the log). A bookmark directly on the working copy `@` ⇒ `Branch`; else the nearest ancestor
-/// bookmark (walk `@`'s ancestry in `jj log` order, first bookmarked commit wins) ⇒ `Ancestor`; else
-/// `None`. jj never reports `Detached` (that's a git concept). When a commit carries several
-/// bookmarks the alphabetically-first is chosen, matching the jj CLI's sorted `bookmarks` template.
+/// the log). A bookmark directly on the working copy `@` ⇒ `Branch`; else the bookmark on the first
+/// bookmarked commit the `::@` walk reaches, in `jj log` order ⇒ `Ancestor`; else `None`. That is the
+/// first bookmark History shows, which is not necessarily the graph-nearest one — see
+/// `first_bookmark_in_log_order`. jj never reports `Detached` (that's a git concept). When a commit
+/// carries several bookmarks the alphabetically-first is chosen, matching the jj CLI's sorted
+/// `bookmarks` template.
 pub fn current_ref(root: &Path) -> model::Result<model::Ref> {
     let (workspace, repo) = open(root)?;
     let bookmarks = bookmark_map(&repo);
@@ -423,7 +425,7 @@ pub fn current_ref(root: &Path) -> model::Result<model::Ref> {
     else {
         return Ok(none);
     };
-    match nearest_bookmark(repo.as_ref(), &wc_id, &bookmarks)? {
+    match first_bookmark_in_log_order(repo.as_ref(), &wc_id, &bookmarks)? {
         Some((name, true)) => Ok(model::Ref {
             name: Some(name),
             kind: model::RefKind::Branch,
@@ -436,23 +438,35 @@ pub fn current_ref(root: &Path) -> model::Result<model::Ref> {
     }
 }
 
-/// The nearest bookmark to `@`: `(name, on_working_copy)` — the alphabetically-first bookmark on
-/// `@` itself (`on == true`), else the first bookmarked commit walking `@`'s ancestry in `jj log`
-/// order (`on == false`), else `None`. Shared by `current_ref` (kind) and `working_status` (CI
-/// branch).
+/// The first bookmark in `::@`'s **log order**: `(name, on_working_copy)` — the alphabetically-first
+/// bookmark on `@` itself (`on == true`), else the one on the first bookmarked commit the `::@` walk
+/// reaches (`on == false`), else `None`. Shared by `current_ref` (the sidebar label) and
+/// `working_status` (`branch_for_ci`).
+///
+/// **The guarantee is log order, not graph distance**, and the name says so because the two really do
+/// differ. `::@` is iterated in descending index position (see `ancestors_revset`) — topological, but
+/// not breadth-first: at a merge the walk drains whichever side holds the higher positions before it
+/// touches the other. Worked example, verified against `jj log -r ::@`: given `base → P1[main]` and
+/// `base → Q[feature] → P2`, with `@ = merge(P1, P2)`, this answers `feature` — two hops away, down
+/// the SECOND parent — even though `main` sits on `@`'s own first parent, one hop away.
+///
+/// That answer is the intended one: it is precisely the first bookmark the user sees walking down
+/// History, so the sidebar's label always names a row that is visibly there. What it is NOT is a
+/// proximity guarantee, and the one consumer that could be misread as needing one is
+/// `working_status`'s `branch_for_ci` — see the note at that call site.
 ///
 /// `@` needs no special case: `::@` is walked children-before-parents and `@` is a descendant of
 /// everything else in the set, so `@` is always the first id out — which is also what makes the
 /// `on_working_copy` flag just an id comparison.
 ///
 /// Ordering matters here as much as in the log. Under the timestamp walk this replaced, a bookmark
-/// on a freshly-rewritten commit deeper in the ancestry could outrank a nearer one whose timestamp
+/// on a freshly-rewritten commit deeper in the ancestry could outrank an earlier one whose timestamp
 /// the rewrite left behind, so the sidebar named a branch the history didn't show.
 ///
 /// Cost: this walks ids only — it stops at the first bookmarked commit and never loads a commit
 /// object, where the old heap deserialized every ancestor it passed. That matters because
 /// `working_status` calls this on every 15s status sweep, fanned out per workroom.
-fn nearest_bookmark(
+fn first_bookmark_in_log_order(
     repo: &dyn Repo,
     wc_id: &jj_lib::backend::CommitId,
     bookmarks: &HashMap<String, Vec<String>>,
@@ -695,7 +709,15 @@ pub fn working_status(root: &Path) -> model::Result<model::WorkingStatus> {
     // NB: the parent `@-` change set is deliberately NOT computed — it would re-walk a second tree
     // diff on every status poll (fanned out per-workroom on a 15s sweep) for a disclosure group the
     // Changes panel no longer shows. If a parent view returns, compute it lazily on demand, not here.
-    let branch_for_ci = nearest_bookmark(repo.as_ref(), &wc_id, &bookmarks)?.map(|(name, _)| name);
+    // Read this as "the branch History labels this workroom with", NOT "the branch nearest `@`" and
+    // NOT "the branch this work will land on". It is the first bookmark in `::@` log order, which
+    // down a merge's second parent can be strictly farther away in hops than a bookmark on `@`'s own
+    // first parent (worked example in `first_bookmark_in_log_order`). Deliberately the very same call
+    // the sidebar label makes: one answer from one place, so a CI/PR badge can never contradict the
+    // branch name printed beside it. A consumer that genuinely needs the closest bookmark wants a
+    // different walk, not this one.
+    let branch_for_ci =
+        first_bookmark_in_log_order(repo.as_ref(), &wc_id, &bookmarks)?.map(|(name, _)| name);
 
     Ok(model::WorkingStatus {
         dirty: !working_copy.files.is_empty() || conflicted,
@@ -882,10 +904,31 @@ fn changed_files(
 /// this path independent of `ui.conflict-marker-style` labelling.
 const UNLABELED_CONFLICT: ConflictLabels = ConflictLabels::unlabeled();
 
-/// Byte ceiling for counting one file's changed lines. A file over it reports `None` (like a binary
-/// one) instead of being read whole: `changed_files` runs in the 15s status sweep, fanned out per
-/// workroom, so an unbounded read is a memory spike per generated/vendored blob. Read bounded — the
-/// cap is enforced BEFORE the bytes are buffered, not after.
+/// Byte ceiling for counting one file's changed lines. A side over it reports `None` (like a binary
+/// one) instead of being diffed: `changed_files` runs in the 15s status sweep, fanned out per
+/// workroom, so line-tokenizing a generated/vendored blob on every poll is a per-workroom CPU and
+/// memory spike for a number nobody reads.
+///
+/// **What this actually bounds, and what it doesn't.** It bounds what we KEEP and what we DIFF, not
+/// what the backend reads. jj exposes no length-before-read API, so by the time a size is knowable
+/// the bytes already exist:
+///
+/// - `MaterializedTreeValue::File` hands us an `AsyncRead`, but for the git backend that reader is a
+///   `Cursor` over a `Vec` the backend already filled — `GitBackend::read_file` calls
+///   `read_file_sync`, which fetches the whole blob (`git_backend.rs`). The
+///   `.take(MAX_COUNTED_BYTES + 1)` in `side_content` therefore caps only the COPY into our buffer
+///   (the `+ 1` being the byte that proves "over"); it cannot un-read the blob.
+/// - `MaterializedTreeValue::FileConflict` is worse: `extract_as_single_hunk` has already read EVERY
+///   conflict side in full before we see the value, and the text we measure is the merge of them.
+///   So the check on that arm is purely "don't diff this", and it's applied after the materialize.
+///
+/// jj has the same gap and says so — `diff_presentation::file_content_for_diff` carries a TODO that
+/// it looks "at the whole file, even though for binary files we only need to know the file size. To
+/// change that we'd have to extend all the data backends to support getting the length." Closing it
+/// here would mean the same backend change, so this is a deliberate ceiling on the expensive half
+/// (retention + the O(lines) diff), not a guarantee about peak allocation during the read. The
+/// transient copy is bounded in practice by the object being one file in one tree entry, processed
+/// one at a time and dropped at the end of the arm.
 const MAX_COUNTED_BYTES: u64 = 4 * 1024 * 1024;
 
 /// jj's own binary heuristic, mirrored from `diff_presentation::file_content_for_diff`: a NUL byte in
@@ -976,11 +1019,21 @@ async fn side_content(
         // on disk in a conflicted working copy and in what `jj diff --stat`/`git diff` report for the
         // same state. The app's Changes header says so when `@` is conflicted rather than quietly
         // reporting a one-line conflict as dozens of changed lines.
+        //
+        // Size-capped like the `File` arm, and for the same reason — a 100 MB conflicted lockfile is
+        // no cheaper to line-diff than a 100 MB clean one. The cap can only be applied HERE, after
+        // materializing: the sides arrive already read in full (`extract_as_single_hunk`), and it's
+        // the merged text — sides plus marker lines — that would be counted, so that is the thing
+        // whose length has to clear the bar. See `MAX_COUNTED_BYTES` for what that does and doesn't
+        // buy us.
         MaterializedTreeValue::FileConflict(conflict) => {
             let text =
                 materialize_merge_result_to_bytes(&conflict.contents, &conflict.labels, options);
             let bytes = text.to_vec();
-            (!looks_binary(&bytes)).then_some(bytes)
+            if bytes.len() as u64 > MAX_COUNTED_BYTES || looks_binary(&bytes) {
+                return None;
+            }
+            Some(bytes)
         }
         MaterializedTreeValue::AccessDenied(_)
         | MaterializedTreeValue::Symlink { .. }

@@ -1,5 +1,6 @@
 //! Integration tests for the per-file ± line counts `changed_files` now returns, against REAL
-//! throwaway jj repos. Skips if `jj` isn't on PATH.
+//! throwaway jj repos. Skips if `jj` isn't on PATH — and says so out loud; see
+//! `tests/common/mod.rs`.
 //!
 //! These counts used to be added app-side from a SECOND read — one `jj diff -r @ --stat` process,
 //! run after the native file list. Three separate defects came out of that split, and the tests below
@@ -26,13 +27,7 @@ use std::process::Command;
 use wr_vcs_core::model::ChangeKind;
 use wr_vcs_core::model::ChangedFile;
 
-fn have_jj() -> bool {
-    Command::new("jj")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
+mod common;
 
 /// Run `jj` in `dir` with `config` as its ONLY config file. Passed per-`Command` rather than through
 /// `std::env::set_var`, which would race the other tests in this parallel process.
@@ -133,11 +128,40 @@ fn working_files(dir: &Path) -> Vec<ChangedFile> {
         .files
 }
 
+/// `jj_backend::MAX_COUNTED_BYTES`, mirrored because a private const can't be imported from an
+/// integration test. Not a duplicate to keep in sync by hand: the two size fixtures below are built
+/// *from* this value and assert they clear it, so if the backend's cap ever moves upward the fixture
+/// stops being oversized and its test fails — which is exactly the right failure, since the claim
+/// being pinned is "content over the cap is not counted".
+const MAX_COUNTED_BYTES: usize = 4 * 1024 * 1024;
+
+/// At least `bytes` of plain, NUL-free text, every line distinct and tagged with `marker`.
+///
+/// Distinct lines matter twice over: nothing here may look binary (`looks_binary` would otherwise
+/// answer before the size check, and the size tests would pass without a size check existing at
+/// all), and nothing may coincidentally collapse in a diff.
+///
+/// Lines are ~512 bytes, which is both realistic and cheap. Realistic because the files that
+/// actually hit this cap are generated and minified ones — long lines are their shape. Cheap because
+/// the line count, not the byte count, is what `diff_by_line` and jj's conflict merge scale on:
+/// at ~80 bytes per line the conflict fixture below spent an extra second tokenizing 50k lines to
+/// prove nothing the 8k-line version doesn't.
+fn text_of_size(bytes: usize, marker: &str) -> Vec<u8> {
+    let filler = "-".repeat(480);
+    let mut out = Vec::with_capacity(bytes + 128);
+    let mut n: u64 = 0;
+    while out.len() < bytes {
+        out.extend_from_slice(format!("{marker} line {n:012} {filler}\n").as_bytes());
+        n += 1;
+    }
+    assert!(!out.contains(&0), "the fixture must be TEXT, not binary");
+    out
+}
+
 /// The ordinary case: an edit that adds two lines and removes one.
 #[test]
 fn counts_match_a_simple_edit() {
-    if !have_jj() {
-        eprintln!("skipping simple-edit stats test: `jj` not on PATH");
+    if common::skip_without(&["jj"], "simple-edit stats test") {
         return;
     }
     let (dir, cfg) = init_repo("simple");
@@ -159,8 +183,7 @@ fn counts_match_a_simple_edit() {
 /// the diff has to behave as empty content, not as "uncountable".
 #[test]
 fn whole_file_add_and_delete_count_every_line() {
-    if !have_jj() {
-        eprintln!("skipping add/delete stats test: `jj` not on PATH");
+    if common::skip_without(&["jj"], "add/delete stats test") {
         return;
     }
     let (dir, cfg) = init_repo("add-delete");
@@ -191,8 +214,7 @@ fn whole_file_add_and_delete_count_every_line() {
 /// stat.
 #[test]
 fn merge_working_copy_counts_against_the_first_parent() {
-    if !have_jj() {
-        eprintln!("skipping merge stats test: `jj` not on PATH");
+    if common::skip_without(&["jj"], "merge stats test") {
         return;
     }
     let (dir, cfg) = init_repo("merge");
@@ -246,8 +268,7 @@ fn merge_working_copy_counts_against_the_first_parent() {
 /// still be a conflict afterwards.
 #[test]
 fn conflicted_file_counts_its_materialized_markers() {
-    if !have_jj() {
-        eprintln!("skipping conflict stats test: `jj` not on PATH");
+    if common::skip_without(&["jj"], "conflict stats test") {
         return;
     }
     let (dir, cfg) = init_repo("conflict");
@@ -287,8 +308,7 @@ fn conflicted_file_counts_its_materialized_markers() {
 /// `None` is not zero: zero would claim "changed nothing".
 #[test]
 fn binary_file_reports_no_counts() {
-    if !have_jj() {
-        eprintln!("skipping binary stats test: `jj` not on PATH");
+    if common::skip_without(&["jj"], "binary stats test") {
         return;
     }
     let (dir, cfg) = init_repo("binary");
@@ -317,8 +337,7 @@ fn binary_file_reports_no_counts() {
 /// twice, which is what a delete+add pair would have reported.
 #[test]
 fn rename_with_an_edit_counts_on_the_renamed_row() {
-    if !have_jj() {
-        eprintln!("skipping rename stats test: `jj` not on PATH");
+    if common::skip_without(&["jj"], "rename stats test") {
         return;
     }
     let (dir, cfg) = init_repo("rename");
@@ -358,8 +377,7 @@ fn rename_with_an_edit_counts_on_the_renamed_row() {
 /// drift from jj's own counting — a file with no trailing newline, and a mixed edit.
 #[test]
 fn counts_match_jj_diff_stat_for_a_linear_working_copy() {
-    if !have_jj() {
-        eprintln!("skipping stat-parity test: `jj` not on PATH");
+    if common::skip_without(&["jj"], "stat-parity test") {
         return;
     }
     let (dir, cfg) = init_repo("parity");
@@ -394,8 +412,8 @@ fn counts_match_jj_diff_stat_for_a_linear_working_copy() {
 /// The blob is deleted straight out of jj's backing git store, which is what a pruned object IS.
 #[test]
 fn an_unreadable_blob_degrades_one_row_not_the_whole_read() {
-    if !have_jj() {
-        eprintln!("skipping unreadable-blob test: `jj` not on PATH");
+    // `git` as well as `jj`: the damage is inflicted with the git CLI, straight into jj's store.
+    if common::skip_without(&["jj", "git"], "unreadable-blob test") {
         return;
     }
     let (dir, cfg) = init_repo("unreadable-blob");
@@ -418,10 +436,6 @@ fn an_unreadable_blob_degrades_one_row_not_the_whole_read() {
             .output()
             .unwrap_or_else(|e| panic!("run git {args:?}: {e}"))
     };
-    if !git(&["--version"]).status.success() {
-        eprintln!("skipping unreadable-blob test: `git` not on PATH");
-        return;
-    }
     // `ls-tree`, not `rev-parse <commit>:a.txt` — with no work tree, rev-parse reads that form as a
     // path and fails. Output is `<mode> blob <sha>\t<path>`.
     let parent = id_of("@-", &dir, &cfg);
@@ -458,3 +472,231 @@ fn an_unreadable_blob_degrades_one_row_not_the_whole_read() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A plain TEXT file over `MAX_COUNTED_BYTES` reports `None`, exactly like a binary one.
+///
+/// The size arm had no coverage at all — `binary_file_reports_no_counts` exercises the other
+/// predicate in the same `if`, so inverting the comparison (`<` for `>`), dropping it, or quietly
+/// raising the cap all shipped green. Text, with no NUL anywhere, is the whole point: a binary
+/// oversized fixture would be rejected by `looks_binary` first and prove nothing about the size.
+///
+/// The file is committed SMALL and then grown on disk, which is not incidental. Our snapshot (and
+/// the jj CLI's) refuses to start tracking a *new* file over 1 MiB — `SnapshotOptions`'
+/// `max_new_file_size`, the CLI's own `snapshot.max-new-file-size` default — so a born-oversized
+/// fixture would never be tracked and never reach the diff at all. jj's gate applies only to files
+/// it isn't already tracking, so growing a tracked one is snapshotted without complaint.
+#[test]
+fn a_text_file_over_the_size_cap_reports_no_counts() {
+    if common::skip_without(&["jj"], "oversized-text stats test") {
+        return;
+    }
+    let (dir, cfg) = init_repo("oversized");
+    std::fs::write(dir.join("huge.txt"), text_of_size(64 * 1024, "seed")).unwrap();
+    std::fs::write(dir.join("small.txt"), b"hello\n").unwrap();
+    jj(&["commit", "-m", "base"], &dir, &cfg);
+
+    // A quarter over the cap: clear of it by megabytes, so this can never turn into an off-by-one
+    // test, and clear enough that a modest future raise of the cap fails loudly rather than subtly.
+    let huge = text_of_size(MAX_COUNTED_BYTES + MAX_COUNTED_BYTES / 4, "grown");
+    assert!(
+        huge.len() > MAX_COUNTED_BYTES,
+        "fixture ({} bytes) must exceed the cap ({MAX_COUNTED_BYTES} bytes) — if the backend raised \
+         it, raise this fixture too",
+        huge.len()
+    );
+    std::fs::write(dir.join("huge.txt"), &huge).unwrap();
+    std::fs::write(dir.join("small.txt"), b"hello\nworld\n").unwrap();
+
+    let files = working_files(&dir);
+    let big = file(&files, "huge.txt");
+    assert_eq!(
+        big.kind,
+        ChangeKind::Modified,
+        "an oversized file is still a listed change; got {big:?}"
+    );
+    assert_eq!(
+        (big.insertions, big.deletions),
+        (None, None),
+        "over the cap is not counted — `None`, never a partial count from the truncated read; got \
+         {big:?}"
+    );
+    // And it poisons neither its neighbour nor the header total.
+    assert_eq!(file(&files, "small.txt").insertions, Some(1));
+    assert_eq!(totals(&files), (1, 0));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// One side of the conflict fixture below. Under the cap on its own, deliberately — see the test.
+const CONFLICT_SIDE_BYTES: usize = (MAX_COUNTED_BYTES / 8) * 3;
+
+/// The two properties the conflict fixture's design rests on, checked at COMPILE time — they're
+/// constants, so this is a build error rather than a test failure if either ever flips (and clippy
+/// rightly refuses a runtime `assert!` on a constant). Between them they say: no single side can be
+/// the reason the counts come back `None`, but the materialized markers that embed all three must
+/// be. Get the first wrong and the plain `File` arm answers for the before-side, the conflict arm is
+/// never consulted, and the test passes with the code under test deleted — which is exactly what the
+/// first draft of it did.
+const _: () = {
+    assert!(
+        CONFLICT_SIDE_BYTES < MAX_COUNTED_BYTES,
+        "each conflict side must be UNDER the cap on its own"
+    );
+    assert!(
+        3 * CONFLICT_SIDE_BYTES > MAX_COUNTED_BYTES,
+        "…but the three sides the materialized markers embed must together exceed it"
+    );
+};
+
+/// A CONFLICTED file whose MATERIALIZED text is over the cap reports `None` too — the arm that had no
+/// size check at all.
+///
+/// `conflicted_file_counts_its_materialized_markers` pins the opposite for a small conflict (it IS
+/// counted, markers and all), so until now the conflict arm's only bound was `looks_binary`: a
+/// multi-megabyte conflicted lockfile got read, merged and line-diffed whole on every 15s status
+/// sweep, per workroom.
+///
+/// **The fixture's whole design is about not testing the wrong arm.** `line_stats` short-circuits on
+/// the FIRST side that yields `None`, and the *before* side here is a plain `File` — `@`'s first
+/// parent, `left`. Sizing the sides at 4 MiB each (the obvious way to build an oversized conflict)
+/// makes `left` alone breach the cap, so the `File` arm answers, the conflict arm is never consulted,
+/// and the test passes whether or not the check under test exists. Confirmed the hard way: the first
+/// draft did exactly that and stayed green with the check deleted.
+///
+/// So each side is kept comfortably UNDER the cap, and it's their SUM that goes over: with all three
+/// sides mutually different, the whole file is one conflicting region, and a materialized region
+/// carries every side (`marker-style = "diff"` renders base→left as a diff, then right in full).
+/// Three × 1.5 MiB ⇒ ~4.5 MiB of markers out of 1.5 MiB inputs — only the conflict arm can see that.
+#[test]
+fn a_conflicted_file_over_the_size_cap_reports_no_counts() {
+    if common::skip_without(&["jj"], "oversized-conflict stats test") {
+        return;
+    }
+    let (dir, cfg) = init_repo("oversized-conflict");
+    // Track both files while they're small (see the `max_new_file_size` note above), then grow
+    // `f.txt` in a commit of its own — that commit is the conflict's base.
+    std::fs::write(dir.join("f.txt"), b"seed\n").unwrap();
+    std::fs::write(dir.join("note.txt"), b"one\n").unwrap();
+    jj(&["commit", "-m", "seed"], &dir, &cfg);
+
+    // Three mutually different bodies: every line differs on every side, so the merge finds no
+    // common ground and the conflicting region is the entire file.
+    std::fs::write(dir.join("f.txt"), text_of_size(CONFLICT_SIDE_BYTES, "base")).unwrap();
+    jj(&["commit", "-m", "base"], &dir, &cfg);
+    let base = id_of("@-", &dir, &cfg);
+
+    std::fs::write(dir.join("f.txt"), text_of_size(CONFLICT_SIDE_BYTES, "left")).unwrap();
+    jj(&["commit", "-m", "left"], &dir, &cfg);
+    let left = id_of("@-", &dir, &cfg);
+    // By commit id, never by bookmark — `experimental-advance-branches` would otherwise collapse the
+    // two sides and leave no merge (the same reason the other merge fixtures here do this).
+    jj(&["new", &base, "-m", "right"], &dir, &cfg);
+    std::fs::write(
+        dir.join("f.txt"),
+        text_of_size(CONFLICT_SIDE_BYTES, "right"),
+    )
+    .unwrap();
+    jj(&["commit", "-m", "right"], &dir, &cfg);
+    let right = id_of("@-", &dir, &cfg);
+    jj(&["new", &left, &right], &dir, &cfg);
+    // An ordinary edit alongside it, so "nothing was counted" can't be trivially true of the read.
+    std::fs::write(dir.join("note.txt"), b"one\ntwo\n").unwrap();
+
+    let files = working_files(&dir);
+    let f = file(&files, "f.txt");
+    assert_eq!(
+        f.kind,
+        ChangeKind::Conflicted,
+        "the fixture must actually be conflicted, or this measures nothing; got {files:?}"
+    );
+    assert_eq!(
+        (f.insertions, f.deletions),
+        (None, None),
+        "an oversized conflict is not counted, materialized markers or not; got {f:?}"
+    );
+    assert_eq!(file(&files, "note.txt").insertions, Some(1));
+    assert_eq!(totals(&files), (1, 0));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Symlink entries report `None`: there is no file content to diff, only a target string.
+///
+/// `side_content` groups `Symlink` with `Tree`/`GitSubmodule`/`OtherConflict`/`AccessDenied` in a
+/// single `None` arm, and nothing pinned that. `Symlink` is the plausible one to lose — its `target`
+/// is right there in the value, and "count the target as one line" reads like a fix — so moving it
+/// into a counting arm would have shipped green.
+///
+/// Both shapes are covered because they reach `side_content` differently: a RETARGETED link is
+/// `Symlink → Symlink`, while a NEW link is `Absent → Symlink`, and only the second proves the
+/// `Absent` arm's "empty content" answer doesn't rescue an uncountable other side (`line_stats`
+/// short-circuits on the FIRST `None`, so a regression could easily be visible on one and not the
+/// other).
+///
+/// Unix-only: a symlink is the subject, and `std::os::unix::fs::symlink` is how you make one on the
+/// two platforms this crate is built for (macOS locally, Linux on CI).
+#[cfg(unix)]
+#[test]
+fn symlink_changes_report_no_counts() {
+    if common::skip_without(&["jj"], "symlink stats test") {
+        return;
+    }
+    let (dir, cfg) = init_repo("symlink");
+    std::fs::write(dir.join("a.txt"), b"a\n").unwrap();
+    std::fs::write(dir.join("b.txt"), b"b\n").unwrap();
+    std::fs::write(dir.join("c.txt"), b"one\n").unwrap();
+    std::os::unix::fs::symlink("a.txt", dir.join("link")).unwrap();
+    jj(&["commit", "-m", "base"], &dir, &cfg);
+
+    // Retarget the tracked link, add a brand-new one, and make one ordinary edit beside them — the
+    // edit is what keeps "nothing was counted" from being trivially true of the whole read.
+    std::fs::remove_file(dir.join("link")).unwrap();
+    std::os::unix::fs::symlink("b.txt", dir.join("link")).unwrap();
+    std::os::unix::fs::symlink("a.txt", dir.join("fresh")).unwrap();
+    std::fs::write(dir.join("c.txt"), b"one\ntwo\n").unwrap();
+
+    let files = working_files(&dir);
+    let link = file(&files, "link");
+    assert_eq!(
+        link.kind,
+        ChangeKind::Modified,
+        "a retargeted symlink is still a listed change; got {link:?}"
+    );
+    assert_eq!(
+        (link.insertions, link.deletions),
+        (None, None),
+        "a symlink has a target, not lines; got {link:?}"
+    );
+    let fresh = file(&files, "fresh");
+    assert_eq!(
+        fresh.kind,
+        ChangeKind::Added,
+        "a new symlink is an Added row; got {fresh:?}"
+    );
+    assert_eq!(
+        (fresh.insertions, fresh.deletions),
+        (None, None),
+        "an absent before-side must not rescue an uncountable after-side; got {fresh:?}"
+    );
+    assert_eq!(file(&files, "c.txt").insertions, Some(1));
+    assert_eq!(totals(&files), (1, 0));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// The fourth `None` producer, `MaterializedTreeValue::AccessDenied`, is deliberately NOT tested
+// here, because reaching it would cost more truth than it buys. In jj-lib 0.43.0 the only source of
+// the `BackendError::ReadAccessDenied` it wraps is `secret_backend.rs` ("Provides a backend for
+// testing ACLs") — the git and simple backends never produce it — and `StoreFactories::default()`,
+// which is what `open`/`snapshot_working_copy` pass, registers that backend only under jj-lib's
+// `testing` feature. Turning that on would mean:
+//
+//   1. `jj-lib = { features = ["testing"] }` in dev-dependencies, which feature-unifies across every
+//      dev-profile build (`cargo check --all-targets`, `clippy`, `test`) — so the jj-lib under test
+//      would be configured differently from the jj-lib we ship;
+//   2. a fixture that overwrites `.jj/repo/store/type` with "secret", which makes the repo
+//      unreadable by the `jj` CLI every other fixture in this file cross-checks against.
+//
+// The arm is also the least losable of the four: unlike `Symlink`, an `AccessDenied` value carries
+// no content anyone could plausibly decide to count, and deleting the arm outright is a
+// non-exhaustive `match` — a compile error, not a silent regression.
