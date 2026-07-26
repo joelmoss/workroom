@@ -4,10 +4,12 @@ import SwiftGitX
 /// git-backed `VCSProviding`, over SwiftGitX (libgit2). Maps `SwiftGitX.*` types into the app-native
 /// models. Pure Swift — no Rust involved for git.
 ///
-/// Two reads reach *past* SwiftGitX, both on raw libgit2 (see each type's doc): push state via
-/// `GitGraph`, because SwiftGitX cannot express the commit RANGE that "not on origin yet" is; and
-/// commit diffs via `GitCommitDiff`, because rename detection has to run on a live `git_diff` and
-/// SwiftGitX's `Diff` is already materialized and freed by the time we see it.
+/// Three reads reach *past* SwiftGitX, all on raw libgit2 (see each type's doc): push state via
+/// `GitGraph`, because SwiftGitX cannot express the commit RANGE that "not on origin yet" is; commit
+/// diffs via `GitCommitDiff`, because rename detection has to run on a live `git_diff` and
+/// SwiftGitX's `Diff` is already materialized and freed by the time we see it; and the working tree's
+/// ± line counts via `GitDiffStats`, because SwiftGitX's eager `Diff` materializes every changed line
+/// into a Swift `String` to derive two integers.
 ///
 /// Errors are caught untyped (`catch { … "\(error)" }`) on purpose: binding SwiftGitX's typed-throws
 /// error (`catch let e as SwiftGitXError`) trips a Swift 6 SIL ownership error across the async

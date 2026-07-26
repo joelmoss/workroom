@@ -1,8 +1,9 @@
 import Foundation
 import libgit2
 
-/// Reachability reads against a git repo's `origin` refs, straight on libgit2's C API (one of only two
-/// readers that do — see `GitCommitDiff` for the other; both open their handles through `LibGit2`).
+/// Reachability reads against a git repo's `origin` refs, straight on libgit2's C API (one of only
+/// three readers that do — `GitCommitDiff` does rename-detected commit diffs and `GitDiffStats` the
+/// working-tree line counts; all three open their handles through `LibGit2`).
 ///
 /// Why not SwiftGitX (which the rest of `GitProvider` uses)? It cannot express a commit RANGE: its
 /// `CommitSequence` only calls `git_revwalk_push` and never `git_revwalk_hide`, it surfaces no

@@ -185,9 +185,38 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
     XCTAssertEqual(ws.deletions, 1, "the EOFNL marker must not count as a deletion")
   }
 
-  /// The same EOFNL rule on the changeset (commit) path, which still sums SwiftGitX's hunk lines —
-  /// that `Diff` is needed anyway for the file list, so it isn't worth a second libgit2 read, but it
-  /// must agree with `git show --shortstat` all the same.
+  /// A staged pure rename costs ZERO lines. The two halves of `workingStatus` are built from separate
+  /// diffs — the file list from libgit2's status (which pairs renames) and the counts from
+  /// `GitDiffStats` — so until the stat diff ran `git_diff_find_similar` too, a moved file was a
+  /// delete plus an add there and its whole content landed in the badge: one row reading "renamed"
+  /// beside `+8 −8`. git says nothing changed, and the expectation is anchored to git, not to this
+  /// test's arithmetic.
+  func testGitProviderWorkingStatusPairsStagedRenames() throws {
+    let dir = try gitRepoWithUpstream()
+    // Committed first so the rename is HEAD→worktree; 8 lines is plenty for the 50% similarity
+    // default to measure, and `git mv` alone edits nothing.
+    sh(
+      """
+      printf '1\\n2\\n3\\n4\\n5\\n6\\n7\\n8\\n' > big.txt
+      git add big.txt && git commit -qm big
+      git mv big.txt moved.txt
+      """, in: dir)
+
+    let numstat = sh("git diff HEAD --numstat", in: dir).out.trimmingCharacters(
+      in: .whitespacesAndNewlines)
+    XCTAssertEqual(
+      numstat, "0\t0\tbig.txt => moved.txt", "git pairs the rename and counts no lines for it")
+
+    let ws = try GitProvider().workingStatus(root: URL(fileURLWithPath: dir))
+    XCTAssertEqual(ws.files.map(\.change), [.renamed], "the file list pairs it: \(ws.files)")
+    XCTAssertEqual(ws.insertions, 0, "a rename inserts nothing")
+    XCTAssertEqual(ws.deletions, 0, "a rename deletes nothing")
+  }
+
+  /// The same EOFNL rule on the changeset (commit) path, which reads its counts through
+  /// `GitCommitDiff` — the same `git_diff_get_stats` call, on the commit's rename-detected diff. No
+  /// `+N −M` in the app is summed off SwiftGitX hunk lines any more; this pins that down against
+  /// `git show --numstat`.
   func testGitProviderChangesetIgnoresEOFNLMarkers() async throws {
     let dir = try gitRepoWithUpstream()
     sh("printf 'one\\ntwo' > b.txt && git add b.txt && git commit -qm b", in: dir)

@@ -8,9 +8,13 @@ import XCTest
 ///
 /// - a committed rename is ONE row carrying both paths, matching what `git show` prints, because git's
 ///   CLI has `diff.renames=true` by default;
+/// - the pairing follows the REPO's `diff.renames`, not a flag we hard-code, so a repo that turns
+///   detection off gets exactly the two rows its own `git show` prints;
 /// - the per-file patch is git-format text with the `rename from`/`rename to` headers `UnifiedDiff`
 ///   parses;
-/// - a root commit diffs against the empty tree (all files added), not against itself;
+/// - a root commit diffs against the empty tree (all files added), not against itself, and so does a
+///   shallow clone's boundary commit — a missing parent is the end of our history, not a failure;
+/// - a type change (file → symlink) is ONE row for the path, never two rows sharing an id;
 /// - a failed read is `nil` — never an empty diff, which the caller would render as "no changes".
 ///
 /// Repos are created fresh under `NSTemporaryDirectory()` and removed in `tearDown`; these never touch
@@ -141,6 +145,30 @@ final class GitCommitDiffTests: XCTestCase {
     XCTAssertTrue(text.contains("rename to new.txt"), "got \(text)")
   }
 
+  /// `diff.renames=false` has to be obeyed. libgit2 reads that config ONLY when
+  /// `git_diff_find_similar` is given NULL options — spell `GIT_DIFF_FIND_RENAMES` out and
+  /// `normalize_find_opts` skips the config read altogether, so the app would pair a rename that a
+  /// `git show` in the very same repo splits in two.
+  func testRenameDetectionObeysTheRepoConfig() throws {
+    let root = try repoWithFile()
+    sh(
+      """
+      git config diff.renames false
+      git mv old.txt new.txt && git commit -qm 'rename old.txt'
+      """, in: root)
+
+    // git's own read of this commit under this config: two entries, not one.
+    XCTAssertEqual(
+      sh("git show --name-status --format= HEAD", in: root).out.trimmingCharacters(
+        in: .whitespacesAndNewlines), "A\tnew.txt\nD\told.txt")
+
+    let read = try XCTUnwrap(
+      GitCommitDiff.read(root: URL(fileURLWithPath: root), commitID: head(root)))
+    XCTAssertEqual(
+      read.files.map { "\($0.kind):\($0.path)" }, ["added:new.txt", "deleted:old.txt"],
+      "the repo turned detection off; we must not pair behind its back")
+  }
+
   // MARK: - the ordinary cases detection must not disturb
 
   func testPlainModifyIsUntouched() throws {
@@ -178,6 +206,71 @@ final class GitCommitDiffTests: XCTestCase {
     XCTAssertEqual(read.insertions, 8)
   }
 
+  /// A file that becomes a symlink is ONE row. Without `GIT_DIFF_INCLUDE_TYPECHANGE` libgit2 splits
+  /// the change into DELETED + ADDED for the SAME path — two `VCSChangedFile`s sharing one `id`, since
+  /// the id IS the path, which is exactly what the History list's `ForEach` over `Identifiable`
+  /// cannot render. git calls the same change one entry (`T`), which is what this asserts against.
+  func testTypeChangeIsOneRowNotASelfRename() throws {
+    let root = try repoWithFile()
+    sh(
+      """
+      printf '#!/bin/sh\\necho hi\\n' > tool
+      git add tool && git commit -qm 'add tool'
+      rm tool && ln -s old.txt tool
+      git add tool && git commit -qm 'tool becomes a symlink'
+      """, in: root)
+
+    // git's own read of the same commit: one entry, status `T`.
+    XCTAssertEqual(
+      sh("git show --name-status --format= HEAD", in: root).out.trimmingCharacters(
+        in: .whitespacesAndNewlines), "T\ttool")
+
+    let read = try XCTUnwrap(
+      GitCommitDiff.read(root: URL(fileURLWithPath: root), commitID: head(root)))
+    XCTAssertEqual(read.files.count, 1, "one row for one path: \(read.files)")
+    XCTAssertEqual(
+      Set(read.files.map(\.id)).count, read.files.count, "rows must have distinct ids for ForEach")
+    let row = try XCTUnwrap(read.files.first)
+    XCTAssertEqual(row.path, "tool")
+    XCTAssertNil(row.oldPath, "nothing moved, so there is no old path to show")
+    XCTAssertEqual(
+      row.kind, .modified,
+      "`VCSChangeKind` has no type-change case; `.modified` is the mapping — update this if git's `T` "
+        + "ever gets one of its own")
+  }
+
+  /// A shallow clone's oldest commit names a first parent this odb doesn't have. That's the end of the
+  /// history we were given, not a failure: it diffs against the empty tree, exactly like a root commit.
+  /// Before that degrade, `GitProvider.changeset` threw `VCSError.io` and History errored on the oldest
+  /// row instead of listing its files.
+  func testShallowBoundaryCommitListsItsFilesAsAdded() throws {
+    let source = try repoWithFile()
+    sh("echo nine >> old.txt && git commit -qam second", in: source)
+    let parent = tempDir()
+    // `--depth` needs the file:// transport; a plain path clone hardlinks the whole odb and ignores it.
+    sh("git clone -q --depth 1 \"file://\(source)\" shallow", in: parent)
+    let shallow = parent + "/shallow"
+    XCTAssertTrue(
+      FileManager.default.fileExists(atPath: shallow + "/.git/shallow"), "clone must be shallow")
+    let sha = head(shallow)
+
+    // libgit2 reads `.git/shallow` as grafts when it opens the repo, so the boundary commit reports
+    // zero parents here and takes the root-commit path.
+    let grafted = try XCTUnwrap(
+      GitCommitDiff.read(root: URL(fileURLWithPath: shallow), commitID: sha))
+    XCTAssertEqual(grafted.files.map { "\($0.kind):\($0.path)" }, ["added:old.txt"])
+    XCTAssertEqual(grafted.insertions, 9)
+
+    // The same boundary WITHOUT the graft file — a partial clone, a stale `.git/shallow`, a pruned
+    // odb. The commit still records its first parent, the lookup now misses with `GIT_ENOTFOUND`, and
+    // the answer must be identical rather than `nil`.
+    try FileManager.default.removeItem(atPath: shallow + "/.git/shallow")
+    let ungrafted = try XCTUnwrap(
+      GitCommitDiff.read(root: URL(fileURLWithPath: shallow), commitID: sha))
+    XCTAssertEqual(ungrafted.files.map { "\($0.kind):\($0.path)" }, ["added:old.txt"])
+    XCTAssertEqual(ungrafted.insertions, 9)
+  }
+
   /// A merge diffs against its FIRST parent, which is what `git show` does — so the side branch's own
   /// change isn't reported as part of the merge.
   func testMergeDiffsAgainstTheFirstParent() throws {
@@ -204,6 +297,20 @@ final class GitCommitDiffTests: XCTestCase {
         commitID: "0000000000000000000000000000000000000000"))
     XCTAssertNil(
       GitCommitDiff.read(root: URL(fileURLWithPath: root), commitID: "not-a-sha"))
+  }
+
+  /// The patch entry point has to fail the same way `read` does. `""` is reserved for "this commit
+  /// didn't touch that path" (see below) — a commit that doesn't exist is a failed read, and the
+  /// caller renders the two very differently.
+  func testUnknownCommitPatchIsNil() throws {
+    let root = try repoWithFile()
+    XCTAssertNil(
+      GitCommitDiff.patch(
+        root: URL(fileURLWithPath: root),
+        commitID: "0000000000000000000000000000000000000000", path: "old.txt"))
+    XCTAssertNil(
+      GitCommitDiff.patch(
+        root: URL(fileURLWithPath: root), commitID: "not-a-sha", path: "old.txt"))
   }
 
   func testNonRepoIsNil() throws {
