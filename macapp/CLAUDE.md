@@ -79,9 +79,11 @@ on-disk edits don't exist to jj-lib until snapshotted — a working-copy status 
 snapshot `@` first: it takes the working-copy lock and rewrites `@` (modeled on jayjay's
 `refresh_working_copy`). Everything else (log/changeset/currentRef) is a read-only `load_at_head`
 with no lock. Because it mutates, **only test snapshot changes on throwaway repos** (corruption
-risk). Line counts still come from one `jj diff --stat` CLI call in `resolveJJ` — the native read
-omits the delta on purpose (a line count would materialize every file). Cargo coverage:
-`vcs/crates/wr-vcs-core/tests/working_status.rs`; Swift coverage: `WorkroomStatusIntegrationTests.testJJ*`.
+risk). Line counts come from the SAME native read — `changed_files` materializes each changed file's
+two sides and counts them, so `resolveJJ` fires no `jj diff --stat` process (it used to; see
+`40456bae`). Oversized and binary files report no count rather than being read whole. Cargo coverage:
+`vcs/crates/wr-vcs-core/tests/working_status.rs` + `line_stats.rs`; Swift coverage:
+`WorkroomStatusIntegrationTests.testJJ*`.
 
 `make app-vcs` (→ `vcs/scripts/build-apple.sh`) builds the Rust artifacts and **runs automatically
 before `app-build`/`app-test`/`app-generate`** (a Makefile prerequisite). Requirements:
