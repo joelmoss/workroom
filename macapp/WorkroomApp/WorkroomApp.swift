@@ -883,8 +883,8 @@ struct WorkroomCommands: Commands {
     // File ▸ New Workroom (⌘N, issue #81) + New Window. New Workroom raises the project-picker
     // dialog (RootView observes `requestNewWorkroomPicker`); picking a project creates + opens a
     // workroom in it. It takes ⌘N — the more frequent action — so New Window keeps its menu item but
-    // loses the accelerator (the ⌘N/⌥⌘N/⇧⌘N "N" family is already spent on the notifications feature:
-    // ⌥⌘N = View ▸ Notifications, ⇧⌘N = Next Notification — no clean key was free). New Workroom is
+    // loses the accelerator rather than taking a second-choice "N" combo (⇧⌘N is Next Notification;
+    // ⌥⌘N went unbound when issue #118 removed the Notifications inspector). New Workroom is
     // disabled with no projects, so ⌘N is a silent no-op rather than an empty dialog (issue #81 D3).
     // Replaces the standard WindowGroup item so the labels are explicit.
     CommandGroup(replacing: .newItem) {
