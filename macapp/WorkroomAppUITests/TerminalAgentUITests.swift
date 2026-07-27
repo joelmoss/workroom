@@ -103,8 +103,9 @@ final class TerminalAgentUITests: XCTestCase {
       "dismiss also clears the tab badge")
   }
 
-  /// A diff pane carries a branch-only status bar (no cwd/run/diagnosis).
-  func testDiffPaneHasBranchBar() {
+  /// A diff pane carries a status bar too — the path + branch variant, with no cwd/run/diagnosis
+  /// (those are terminal-only). What the path segment says is asserted in `DiffViewerUITests`.
+  func testDiffPaneHasStatusBar() {
     let app = launchedApp(runCommand: "true")
     let row = app.descendants(matching: .any)["changes.file.app/models/user.rb"]
     XCTAssertTrue(row.waitForExistence(timeout: 15), "a changed-file row renders")

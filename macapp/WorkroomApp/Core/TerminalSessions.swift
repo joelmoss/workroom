@@ -46,6 +46,15 @@ struct TerminalTab: Identifiable {
     }
   }
 
+  /// The full repo-relative path of the file this tab shows (issue #136) — what the pane footer
+  /// names, and the chip's tooltip. Nil for a terminal (its footer shows the cwd instead) and for a
+  /// changeset (its in-pane `DiffViewer` header already carries the path).
+  ///
+  /// Deliberately adjacent to `title`: both read `d.path`/`f.path`, but `title` keeps only the
+  /// `lastPathComponent`. That divergence IS issue #136 — two `user.rb` chips from different
+  /// directories were indistinguishable — so the two answers stay in one screenful.
+  var filePath: String? { content.filePath }
+
   /// A content tab still in VS-Code-style preview mode (italic chip, replaced by the next preview);
   /// always false for terminals. A diff and a file share the target's single preview slot.
   var isPreview: Bool {
@@ -94,6 +103,22 @@ enum TabContent {
   case diff(DiffDescriptor)
   case file(FileDescriptor)
   case changeset(ChangesetDescriptor)
+
+  /// The full repo-relative path of the file this content shows (issue #136) — see
+  /// `TerminalTab.filePath`, which forwards here. Every kind that HAS a file already carries the
+  /// whole path (`DiffDescriptor.path`, `FileDescriptor.path`), so nothing is resolved or rebuilt.
+  ///
+  /// The cases are enumerated rather than defaulted on purpose: a fifth `TabContent` kind must be a
+  /// compile error here, not a footer that silently shows nothing.
+  var filePath: String? {
+    switch self {
+    case .diff(let d): return d.path
+    case .file(let f): return f.path
+    // A terminal's footer shows its cwd instead; a changeset's in-pane `DiffViewer` header already
+    // names the selected file (`showsFileHeader`), so a footer path would just duplicate it.
+    case .terminal, .changeset: return nil
+    }
+  }
 }
 
 /// A non-terminal content-tab payload the preview/persist openers drive uniformly (issue #59). Diffs,

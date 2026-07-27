@@ -635,9 +635,11 @@ private struct TerminalTabChip: View {
       }
     }
     .contentShape(Rectangle())
-    // The full, untruncated title as a tooltip — so a tail-truncated chip still reveals its whole
-    // name on hover. The close button's own `.help` (inner) wins when the cursor is over the ✕.
-    .help(tab.title)
+    // The full, untruncated name as a tooltip — so a tail-truncated chip still reveals it on hover.
+    // For a content tab the full name is its PATH (issue #136): the chip shows only the basename, so
+    // two `user.rb` tabs from different directories are otherwise indistinguishable without opening
+    // each one. The close button's own `.help` (inner) wins when the cursor is over the ✕.
+    .help(tab.filePath ?? tab.title)
     .accessibilityIdentifier("terminal.tab.\(tab.title)")
     .scaleEffect(isDragging ? 1.04 : 1)
     .shadow(color: .black.opacity(isDragging ? 0.25 : 0), radius: isDragging ? 6 : 0, y: 2)

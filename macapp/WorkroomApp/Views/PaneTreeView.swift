@@ -492,9 +492,10 @@ private struct PaneLeafView: View {
       )
       if let tab = sessions.tab(tabID, for: target) {
         contentPanel(
-          diff.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions))
+          diff.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions),
+          filePath: content.filePath)
       } else {
-        contentPanel(diff)
+        contentPanel(diff, filePath: content.filePath)
       }
     case .file(let descriptor):
       // Read-only file viewer (Files inspector section). Same rounded clip + chip context menu as the
@@ -506,9 +507,10 @@ private struct PaneLeafView: View {
       )
       if let tab = sessions.tab(tabID, for: target) {
         contentPanel(
-          file.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions))
+          file.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions),
+          filePath: content.filePath)
       } else {
-        contentPanel(file)
+        contentPanel(file, filePath: content.filePath)
       }
     case .changeset(let descriptor):
       // A whole commit's detail (issue #59): metadata + file list + the selected file's diff (which
@@ -516,22 +518,30 @@ private struct PaneLeafView: View {
       // content leaves, so "Keep Open"/Close/split behave identically.
       let detail = ChangesetDetailView(
         descriptor: descriptor, directory: target.path, tabID: tabID, target: target)
+      // `content.filePath` is nil for a changeset: its own `DiffViewer` header (`showsFileHeader`)
+      // already names the selected file, so a footer path would just say it twice.
       if let tab = sessions.tab(tabID, for: target) {
         contentPanel(
-          detail.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions))
+          detail.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions),
+          filePath: content.filePath)
       } else {
-        contentPanel(detail)
+        contentPanel(detail, filePath: content.filePath)
       }
     }
   }
 
-  /// Wrap a non-terminal content pane (diff / file) with a branch-only status bar (issue #49), so
+  /// Wrap a non-terminal content pane (diff / file / changeset) with its status bar (issue #49), so
   /// every pane — terminal or not — carries the same bottom chrome. The content rounds its top with
   /// the bar's bottom into one panel, matching the terminal leaf.
-  private func contentPanel(_ content: some View) -> some View {
+  ///
+  /// `filePath` is passed in rather than read off `self.content`: the parameter below would shadow
+  /// the `content` property, so `content.filePath` inside here silently resolves against the View.
+  /// The call sites in `paneContent` already hold the descriptor, so they name it explicitly.
+  private func contentPanel(_ view: some View, filePath: String?) -> some View {
     VStack(spacing: 0) {
-      content
-      TerminalStatusBar(target: target, tabID: tabID, state: nil, sessions: sessions)
+      view
+      TerminalStatusBar(
+        target: target, tabID: tabID, state: nil, filePath: filePath, sessions: sessions)
     }
     .clipShape(
       RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius, style: .continuous))

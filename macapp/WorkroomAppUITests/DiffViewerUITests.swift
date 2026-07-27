@@ -46,6 +46,26 @@ final class DiffViewerUITests: XCTestCase {
     element(app, id: "terminal.tab.\(basename)")
   }
 
+  /// The pane footer's path segment naming `path` (issue #136). Matched on the text as well as the
+  /// id, because a split shows one bar per pane and the id alone can't say WHICH file. The segment's
+  /// string arrives as the element's `value`, not its `label` — macOS exposes a SwiftUI `Text`'s
+  /// accessibility string that way — so match either and don't depend on which.
+  private func footerPath(_ app: XCUIApplication, _ path: String) -> XCUIElement {
+    app.descendants(matching: .any)
+      .matching(
+        NSPredicate(
+          format: "identifier == %@ AND (label CONTAINS %@ OR value CONTAINS %@)",
+          "terminal.statusBar.path", path, path)
+      )
+      .firstMatch
+  }
+
+  private func footerPathExists(_ app: XCUIApplication, _ path: String, _ timeout: Double = 6)
+    -> Bool
+  {
+    footerPath(app, path).waitForExistence(timeout: timeout)
+  }
+
   /// True once a rendered diff line carries `marker` in its label — proves the diff body rendered
   /// the expected source's content (the canned diff tags each line with its `DiffSource`).
   private func diffLineExists(
@@ -107,6 +127,12 @@ final class DiffViewerUITests: XCTestCase {
 
   /// A single click opens a PREVIEW tab; clicking a second file replaces it in place (≤1 preview):
   /// the first file's tab is gone, the second's is present.
+  ///
+  /// Doubles as the coverage for the footer's path segment (issue #136), because retarget is the
+  /// hard case: `openContentPreview` mutates `tab.content` and keeps the tab id, so the pane view is
+  /// NOT rebuilt — the same stale-content-on-a-stable-view shape as the DiffViewer `.task` re-fire
+  /// loop. Both files are nested, so these also prove a DIRECTORY reaches the footer, which the
+  /// basename-only chip id can't show.
   func testSingleClickPreviewIsReplacedInPlace() throws {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
@@ -114,12 +140,20 @@ final class DiffViewerUITests: XCTestCase {
 
     fileRow(app, "app/models/user.rb").click()
     XCTAssertTrue(diffTab(app, "user.rb").waitForExistence(timeout: 6))
+    XCTAssertTrue(
+      footerPathExists(app, "app/models/user.rb"),
+      "the pane footer names the whole path, not just the chip's `user.rb`")
 
     fileRow(app, "config/routes.rb").click()
     XCTAssertTrue(diffTab(app, "routes.rb").waitForExistence(timeout: 6))
     XCTAssertTrue(
       waitExists(diffTab(app, "user.rb"), false),
       "the preview tab retargets in place — the first file's tab is replaced, not kept")
+    XCTAssertTrue(
+      footerPathExists(app, "config/routes.rb"), "the footer follows the retarget")
+    XCTAssertTrue(
+      waitExists(footerPath(app, "app/models/user.rb"), false),
+      "and stops naming the file the pane no longer shows")
   }
 
   /// The changed-file row whose diff is focused reads as selected, and selection follows focus:

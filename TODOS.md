@@ -464,6 +464,32 @@ signature change across several files on a drag path that only XCUITest can exer
 
 **Priority:** P3 (bad layout, recoverable by resizing; no data loss).
 
+### Pane-footer truncation is manual-verify only (macapp) — #136 follow-up
+
+**What:** The pane footer's path segment (`TerminalStatusBar.pathSegment`) carries two deliberate
+layout decisions that **no test covers**: `.truncationMode(.head)` (keep the tail, because a
+repo-relative path's discriminating part is its filename and immediate directory) and
+`.layoutPriority(1)` (the branch yields space before the path does).
+
+**Why it's open:** neither test layer can see it.
+
+- The **unit gate** can't assert SwiftUI text at all: macOS only materializes SwiftUI's a11y elements
+  for a live AX client, so an `NSHostingView` in a test process reports an `AXGroup` with 0 children
+  (documented at `macapp/WorkroomAppTests/HistoryCommitCardTests.swift:9-13`). `PaneRenderingTests`
+  works only because `GhosttySurfaceView` is a real `NSView` it can count.
+- **XCUITest** reads the accessibility *label*, which carries the full untruncated string no matter
+  what is actually drawn — so a test passes while the branch has collapsed to nothing on screen.
+
+Automating it would need image-snapshot testing, which this repo has none of and which would churn
+on every theme and font change. So it's an eyeball check in the #136 verification steps: split a diff
+pane narrow and confirm the path keeps its filename while the branch truncates first.
+
+**Depends on:** nothing, but the entry above shrinks it — content panes are exempt from the 300pt
+pane floor (`TerminalSessions.fits` returns `true` when there's no surface), which is what makes a
+~198pt content pane reachable in the first place. Fix that and this gap mostly stops mattering.
+
+**Priority:** P3 (degraded legibility in a narrow split; no data loss, no wrong information).
+
 ### AppKit tracking-handle divider for an even wider resize target (macapp) — #83 follow-up
 
 **What:** Replace the SwiftUI invisible-`Rectangle` resize divider (`SplitDivider` in
