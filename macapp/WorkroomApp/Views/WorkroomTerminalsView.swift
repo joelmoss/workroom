@@ -123,14 +123,20 @@ struct WorkroomTerminalsView: View {
     .onChange(of: surfaceActive) { _, nowFocused in
       if nowFocused, let id = active?.id { notifications.dismiss(tab: id) }
     }
+    // All three AND in `!store.hasModalPresentation` for the same reason RootView's booleans do: a
+    // menu key equivalent still fires while a dialog or sheet is up, so ⌘W / ⌘F / ⌘↑ / ⌘↓ / ⌘D would
+    // otherwise act on the terminal behind it. Disabling the item drops the key equivalent.
+    //
     // Drive the "Close Terminal" menu command's enabled state.
-    .focusedSceneValue(\.hasTerminal, !tabs.isEmpty)
+    .focusedSceneValue(\.hasTerminal, !tabs.isEmpty && !store.hasModalPresentation)
     // Drive the Go-menu Previous/Next Terminal Tab items (issue #29) — only meaningful with ≥2 tabs.
-    .focusedSceneValue(\.multipleTerminalTabs, tabs.count > 1)
+    .focusedSceneValue(\.multipleTerminalTabs, tabs.count > 1 && !store.hasModalPresentation)
     // Drive View ▸ "Resize Splits Evenly" (issue #83) — only when a terminal split is on screen. This
     // view mounts only in the single-workroom path and only once a blocking setup script clears, so
     // the item can never act on a hidden split.
-    .focusedSceneValue(\.terminalSplitVisible, sessions.isSplitVisible(for: target))
+    .focusedSceneValue(
+      \.terminalSplitVisible,
+      sessions.isSplitVisible(for: target) && !store.hasModalPresentation)
   }
 
   /// The layout the content area renders: the split when it's visible, else the focused solo tab.

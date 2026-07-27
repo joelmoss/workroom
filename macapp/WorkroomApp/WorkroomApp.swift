@@ -136,6 +136,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
   deinit { hotkeyObservation?.cancel() }
 
+  /// The store a shortcut in the key monitor below may act on: the one owning the window the event is
+  /// actually headed for, and only while that window has no command-palette dialog up.
+  ///
+  /// Deliberately **not** `WindowRegistry.keyStore`. That resolves
+  /// `store(for: NSApp.keyWindow) ?? lastActiveStore ?? allStores.first` (WindowRegistry.swift:113),
+  /// so it falls back *past* a foreign key window — which is right for its other three callers (the
+  /// menu-bar popover, where `store(for:)` is legitimately nil; notification-click routing; the
+  /// terminal context menu) but wrong here: it fires ⌘R / ⌘1-9 / ⌥⌘S into a *background* workroom
+  /// whenever a sheet, Settings, About, Sparkle's updater or the quick terminal is key. Those windows
+  /// are all unregistered, so `store(for:)` returns nil for them with no extra checks — which is what
+  /// lets every branch below simply no-op instead of needing a swallow-with-allowlist (an allowlist
+  /// was the first design; it was the sole source of a ⌘⌫ gap, broken ⌘V on non-Latin layouts, and a
+  /// ⌘↑/⌘↓ collision with the Scroll to Top/Bottom menu items).
+  /// `registry` is injectable purely so tests don't have to mutate the `WindowRegistry.shared`
+  /// singleton — registering on it leaks window registrations into later tests unless every test pairs
+  /// its cleanup in tearDown. Production always takes the default.
+  @MainActor static func shortcutStore(
+    for window: NSWindow?, in registry: WindowRegistry = .shared
+  ) -> AppStore? {
+    guard let store = registry.store(for: window), store.activePicker == nil else { return nil }
+    return store
+  }
+
+  /// Whether `window` is one of ours *and* has a command-palette dialog open — the case where a
+  /// shortcut must be actively swallowed rather than merely no-op'd, because the branch doesn't
+  /// consult a store at all (⌘` window cycling).
+  @MainActor static func hasModalPicker(
+    _ window: NSWindow?, in registry: WindowRegistry = .shared
+  ) -> Bool {
+    registry.store(for: window)?.activePicker != nil
+  }
+
   func applicationDidFinishLaunching(_ notification: Notification) {
     // Disable native macOS window tabbing. It tabs whole app windows (each with its own
     // sidebar) — a level above our per-workroom terminal tabs and a poor fit for a
@@ -175,12 +207,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         keyWindow.performClose(nil)
         return nil
       }
+      // The window this event is headed for, resolved once for every branch below. `event.window` is
+      // nil for ⌘ key-equivalents, hence the `?? NSApp.keyWindow` — same idiom as the two ⌘W branches
+      // above. Those two run BEFORE this point on purpose: ⌘W acts on the modal in front (a sheet, the
+      // quick terminal), not on the window behind it, so it must keep working while a dialog is up.
+      let window = event.window ?? NSApp.keyWindow
       // ⌘` / ⇧⌘`: cycle key focus through the app's windows incl. the quick terminal (issue #87) —
       // the standard "Move focus to next window" shortcut. Caught here, like ⌘1–9, so the focused
       // terminal surface doesn't swallow the backtick as input. keyCode 50 is the grave (`) key,
       // matched by code (not char) so it's layout-stable and ⇧⌘` reads as backward despite the "~".
       // Consumed regardless (window cycling has no terminal use we want to preserve).
       if event.keyCode == 50, flags == .command || flags == [.command, .shift] {
+        // Alone among the branches here this one consults no store, so `shortcutStore` returning nil
+        // wouldn't stop it — swallow explicitly while a dialog is up.
+        if MainActor.assumeIsolated({ Self.hasModalPicker(window) }) { return nil }
         let forward = flags == .command
         MainActor.assumeIsolated { WindowRegistry.shared.cycleWindows(forward: forward) }
         return nil
@@ -189,7 +229,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       if flags == .command, let chars = event.charactersIgnoringModifiers,
         let digit = Int(chars), (1...9).contains(digit)
       {
-        Task { @MainActor in WindowRegistry.shared.keyStore?.focusTerminalTab(at: digit - 1) }
+        Task { @MainActor in Self.shortcutStore(for: window)?.focusTerminalTab(at: digit - 1) }
         return nil  // consume so it doesn't reach the terminal
       }
       // ⌥⌘1–9: switch to the Nth workroom tab (issue #23), the workroom-level counterpart to ⌘1–9.
@@ -199,7 +239,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       if flags == [.command, .option], let chars = event.charactersIgnoringModifiers,
         let digit = Int(chars), (1...9).contains(digit),
         MainActor.assumeIsolated({
-          WindowRegistry.shared.keyStore?.focusWorkroomTab(at: digit - 1) ?? false
+          Self.shortcutStore(for: window)?.focusWorkroomTab(at: digit - 1) ?? false
         })
       {
         return nil
@@ -209,21 +249,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       // we want to preserve); a no-op when nothing's selected, but no command configured now opens the
       // Project Settings sheet with a warning instead of doing nothing (issue #127).
       if flags == .command, event.charactersIgnoringModifiers?.lowercased() == "r" {
-        Task { @MainActor in WindowRegistry.shared.keyStore?.runOrFocusRunCommand() }
+        Task { @MainActor in Self.shortcutStore(for: window)?.runOrFocusRunCommand() }
         return nil
       }
       // ⇧⌘R: stop the selected workroom's run command if it's running (issue #7). Caught here (not
       // just the menu key-equivalent) so it fires reliably before the terminal, like ⌘R. No-op when
       // nothing's running; consumed regardless (it's reserved in `isAppShortcut` anyway).
       if flags == [.command, .shift], event.charactersIgnoringModifiers?.lowercased() == "r" {
-        Task { @MainActor in WindowRegistry.shared.keyStore?.stopSelectedRunCommand() }
+        Task { @MainActor in Self.shortcutStore(for: window)?.stopSelectedRunCommand() }
         return nil
       }
       // ⌥⌘R: restart the selected workroom's run command if it's running (issue #7). Caught here for
       // reliability, like ⌘R/⇧⌘R. No-op when nothing's running. (The arrow-key checks below match by
       // keyCode, so "r" doesn't collide with tab/pane navigation.)
       if flags == [.command, .option], event.charactersIgnoringModifiers?.lowercased() == "r" {
-        Task { @MainActor in WindowRegistry.shared.keyStore?.restartSelectedRunCommand() }
+        Task { @MainActor in Self.shortcutStore(for: window)?.restartSelectedRunCommand() }
         return nil
       }
       // ⌥⌘←/→: previous/next terminal tab (issue #29). Caught here like ⌘1–9 so it fires before the
@@ -231,7 +271,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       // reaches the terminal as input. (⌥⌘↑/↓ are unbound — they pass through to the terminal.)
       if flags == [.command, .option], event.keyCode == 123 || event.keyCode == 124,
         MainActor.assumeIsolated({
-          WindowRegistry.shared.keyStore?.cycleTerminalTab(forward: event.keyCode == 124) ?? false
+          Self.shortcutStore(for: window)?.cycleTerminalTab(forward: event.keyCode == 124) ?? false
         })
       {
         return nil
@@ -240,7 +280,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       // Consumed when it switches; reserved in `isAppShortcut` anyway, like ⌥⌘←/→.
       if flags == [.command, .option, .shift], event.keyCode == 123 || event.keyCode == 124,
         MainActor.assumeIsolated({
-          WindowRegistry.shared.keyStore?.cycleWorkroomTab(forward: event.keyCode == 124) ?? false
+          Self.shortcutStore(for: window)?.cycleWorkroomTab(forward: event.keyCode == 124) ?? false
         })
       {
         return nil
@@ -251,14 +291,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       // down 125 / up 126.)
       let arrows: [UInt16: PaneDirection] = [123: .left, 124: .right, 125: .down, 126: .up]
       if flags == [.command, .control], let direction = arrows[event.keyCode],
-        MainActor.assumeIsolated({ WindowRegistry.shared.keyStore?.focusPane(direction) ?? false })
+        MainActor.assumeIsolated({ Self.shortcutStore(for: window)?.focusPane(direction) ?? false })
       {
         return nil
       }
       // ⌃⌘S: toggle the Projects sidebar (issue #128). Caught here — not just left to the menu's
       // key-equivalent — so it fires reliably even with a focused TUI (like ⌘1-9 above).
       if flags == [.command, .control], event.charactersIgnoringModifiers?.lowercased() == "s" {
-        Task { @MainActor in WindowRegistry.shared.keyStore?.sidebarVisible.toggle() }
+        Task { @MainActor in Self.shortcutStore(for: window)?.sidebarVisible.toggle() }
         return nil
       }
       // ⌥⌘S: the OS-standard "Toggle Sidebar" shortcut (Finder, Notes, etc. — AppKit's
@@ -272,13 +312,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       // expect ⌥⌘S to mean "toggle the sidebar" regardless of which one, map it onto our real
       // `sidebarVisible` toggle rather than just swallowing it.
       if flags == [.command, .option], event.charactersIgnoringModifiers?.lowercased() == "s" {
-        Task { @MainActor in WindowRegistry.shared.keyStore?.sidebarVisible.toggle() }
+        Task { @MainActor in Self.shortcutStore(for: window)?.sidebarVisible.toggle() }
         return nil
       }
       // ⌥⌘B: secondary "Projects" sidebar toggle, mirroring ⌃⌘S above — caught here (not just left
       // to a menu key-equivalent) so it fires reliably with a focused TUI too (issue #128).
       if flags == [.command, .option], event.charactersIgnoringModifiers?.lowercased() == "b" {
-        Task { @MainActor in WindowRegistry.shared.keyStore?.sidebarVisible.toggle() }
+        Task { @MainActor in Self.shortcutStore(for: window)?.sidebarVisible.toggle() }
         return nil
       }
       return event
@@ -565,6 +605,14 @@ struct WorkroomSplitVisibleKey: FocusedValueKey {
   typealias Value = Bool
 }
 
+/// Whether a modal presentation owns the focused window (`AppStore.hasModalPresentation`). Backs the
+/// menu items that have no other enablement boolean to fold it into — the `@Default`-bound toggles
+/// (⌘B, ⌥⌘C/F/Y/P, ⇧⌘K, ⇧⌘L) and Quick Terminal, which is "always enabled" and whose ⌥§ carries no
+/// ⌘ at all, so nothing in the key monitor would ever gate it.
+struct ModalPresentedKey: FocusedValueKey {
+  typealias Value = Bool
+}
+
 extension FocusedValues {
   var workroomSelected: Bool? {
     get { self[WorkroomSelectedKey.self] }
@@ -614,6 +662,10 @@ extension FocusedValues {
     get { self[CanOpenInEditorKey.self] }
     set { self[CanOpenInEditorKey.self] = newValue }
   }
+  var modalPresented: Bool? {
+    get { self[ModalPresentedKey.self] }
+    set { self[ModalPresentedKey.self] = newValue }
+  }
   var terminalSplitVisible: Bool? {
     get { self[TerminalSplitVisibleKey.self] }
     set { self[TerminalSplitVisibleKey.self] = newValue }
@@ -628,8 +680,14 @@ extension FocusedValues {
 /// regardless of which pane has focus.
 struct WorkroomCommands: Commands {
   @ObservedObject var updater: Updater
-  /// The focused window's store (issue #70). Optional — nil when no Workroom window is key (e.g. a
-  /// dialog is frontmost); actions then no-op and toggle bindings read false. `@FocusedObject`
+  /// The focused window's store (issue #70). Optional — nil when no Workroom window is key, in which
+  /// case actions no-op and toggle bindings read false.
+  ///
+  /// It does **NOT** go nil merely because a dialog is up, contrary to what this comment used to
+  /// claim: verified on the real build, with the Add Project sheet attached every File-menu item still
+  /// read `enabled=true` and ⌘T created a second terminal tab behind it. That is why enablement has to
+  /// AND in `AppStore.hasModalPresentation` explicitly (see `modalBlocked` and `MenuStateValues`).
+  /// `@FocusedObject`
   /// re-evaluates this `Commands` body when the focused store changes, so checkmarks like Projects
   /// track the focused window's `sidebarVisible` live (the role the old `@ObservedObject` played).
   @FocusedObject private var store: AppStore?
@@ -647,6 +705,7 @@ struct WorkroomCommands: Commands {
   @FocusedValue(\.canOpenInEditor) private var canOpenInEditor
   @FocusedValue(\.terminalSplitVisible) private var terminalSplitVisible
   @FocusedValue(\.workroomSplitVisible) private var workroomSplitVisible
+  @FocusedValue(\.modalPresented) private var modalPresented
   // Shared with RootView's inspector + toolbar toggle (same key) so all three stay in sync.
   @Default(.showInspector) private var showInspector
   // Same key as the Settings checkbox so the two stay in sync; GhosttySurfaceView reads it
@@ -667,6 +726,13 @@ struct WorkroomCommands: Commands {
 
   /// A `Binding<Bool>` onto a `Bool` property of the focused store — reads false and ignores writes
   /// when no window is focused (issue #70). Backs the menu toggles that drive per-window state.
+  /// True while a modal presentation owns the focused window. Items whose enablement flows through a
+  /// `MenuStateValues` boolean already have this ANDed in at the publication site; the ones below have
+  /// no such boolean (the `@Default`-bound View-menu toggles, and Quick Terminal, which is documented
+  /// "always enabled"), so they AND it in here. Without this their key equivalents fire straight
+  /// through a dialog — verified: ⌘T behind the Add Project sheet really did open a terminal tab.
+  private var modalBlocked: Bool { modalPresented == true }
+
   private func storeFlag(_ keyPath: ReferenceWritableKeyPath<AppStore, Bool>) -> Binding<Bool> {
     Binding(
       get: { store?[keyPath: keyPath] ?? false },
@@ -715,6 +781,7 @@ struct WorkroomCommands: Commands {
     CommandGroup(replacing: .sidebar) {
       Toggle("Projects", isOn: storeFlag(\.sidebarVisible))
         .keyboardShortcut("s", modifiers: [.command, .control])
+        .disabled(modalBlocked)
     }
 
     CommandGroup(after: .sidebar) {
@@ -723,6 +790,7 @@ struct WorkroomCommands: Commands {
       // AND open the inspector; this one just shows/hides whatever section was last active.
       Toggle("Inspector", isOn: $showInspector)
         .keyboardShortcut("b", modifiers: [.command])
+        .disabled(modalBlocked)
 
       // View menu: reveal the Changes view. Changes and Pull Request share the **Changes** activity-bar
       // pane (a stack), so "showing" Changes means selecting that pane, opening the inspector, and
@@ -746,6 +814,7 @@ struct WorkroomCommands: Commands {
           })
       )
       .keyboardShortcut("c", modifiers: [.command, .option])
+      .disabled(modalBlocked)
 
       // View menu: reveal the Files view (the repo file tree) — its own single-section activity-bar
       // pane, so showing it selects the Files pane and opens the inspector; turning it off hides the
@@ -761,6 +830,7 @@ struct WorkroomCommands: Commands {
           })
       )
       .keyboardShortcut("f", modifiers: [.command, .option])
+      .disabled(modalBlocked)
 
       // View menu: reveal the History view (the commit log) — its own single-section activity-bar
       // pane, like Files. (⌥⌘Y — ⌥⌘H is macOS "Hide Others".)
@@ -774,6 +844,7 @@ struct WorkroomCommands: Commands {
           })
       )
       .keyboardShortcut("y", modifiers: [.command, .option])
+      .disabled(modalBlocked)
 
       // View menu: reveal the Pull Request view — the second sub-section of the Changes pane, so it
       // selects that pane, opens the inspector, and expands the Pull Request sub-section.
@@ -795,12 +866,14 @@ struct WorkroomCommands: Commands {
           })
       )
       .keyboardShortcut("p", modifiers: [.command, .option])
+      .disabled(modalBlocked)
 
       // Theme chooser (issue #36). A menu command can't anchor a popover, so it posts a
       // notification RootView observes to present the picker as a sheet.
       Divider()
       Button("Theme…") { NotificationCenter.default.post(name: .showThemePicker, object: nil) }
         .keyboardShortcut("k", modifiers: [.command, .shift])
+        .disabled(modalBlocked)
 
       // Quick dark/light toggle (issue #57): flip the *currently visible* appearance. From System
       // it resolves the live OS appearance first, so it always inverts what's on screen and lands on
@@ -810,6 +883,7 @@ struct WorkroomCommands: Commands {
         theme = theme.toggledLightDark
       }
       .keyboardShortcut("l", modifiers: [.command, .shift])
+      .disabled(modalBlocked)
 
       // Split the focused pane with a new terminal beside it (issue #3): ⌘D right, ⇧⌘D down; left/up
       // have no standard key, so they're menu-only.
@@ -925,6 +999,9 @@ struct WorkroomCommands: Commands {
         NotificationCenter.default.post(name: .showQuickTerminal, object: nil)
       }
       .keyboardShortcut("§", modifiers: .option)
+      // ⌥§ carries no ⌘, so the key monitor's `flags.contains(.command)` path never sees it and
+      // nothing else would stop it opening a whole new window from behind a dialog.
+      .disabled(modalBlocked)
 
       // ⌘W: "Close Terminal" sits above the standard File ▸ Close, so it wins the ⌘W
       // equivalent while enabled (Close keeps no shortcut).

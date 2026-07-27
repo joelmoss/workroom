@@ -441,7 +441,13 @@ private struct PaneLeafView: View {
       // (gating on `focused` would flip the modifier's structural branch on every focus, tearing
       // down and rebuilding the DiffViewer — a reload flash + lag). A terminal pane skips this
       // entirely; its surface eats SwiftUI gestures and focuses via first responder.
-      .modifier(ActivateOnPress(enabled: !isTerminal, onActivate: onActivate))
+      // `isBlocked` is checked when a click FIRES rather than folded into `enabled` above, precisely
+      // to preserve the invariant that comment describes.
+      .modifier(
+        ActivateOnPress(
+          enabled: !isTerminal, onActivate: onActivate,
+          isBlocked: { store.activePicker != nil })
+      )
       .onHover { hovering = $0 }
       .onChange(of: sessions.activityPulses[tabID]) { _, _ in
         // Flash a backgrounded pane on activity — a split-mate, or any pane of a co-displayed
@@ -457,7 +463,14 @@ private struct PaneLeafView: View {
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier("terminal.pane")
       .accessibilityLabel(Text(accessibilityLabel))
-      .accessibilityAddTraits(focused && multiPane ? .isSelected : [])
+      // `multiPane || UITestFixture.isActive`: with one pane there's normally no need to mark it
+      // selected, but that left single-pane keyboard focus with NO queryable signal, so a UI test
+      // asserting "the terminal has focus" could only ever be vacuous — and focus races here are a
+      // recurring bug class (the ⌘F find-bar hatch in TerminalContainerView, DiffPaneFocusUITests, and
+      // the dialog-vs-terminal race this trait now covers). Fixture-gated rather than unconditional:
+      // a lone pane announcing itself "selected" to VoiceOver would be wrong for real users.
+      .accessibilityAddTraits(
+        focused && (multiPane || UITestFixture.isActive) ? .isSelected : [])
   }
 
   /// The pane's centre: a hosted terminal surface, or a diff viewer for a content tab. Clipped to the
@@ -469,14 +482,24 @@ private struct PaneLeafView: View {
       // only its top corners, the enclosing clip rounds the bar's bottom, so every pane — including
       // each split member — carries its own bar as part of the pane.
       VStack(spacing: 0) {
-        TerminalContainerView(view: s.view, isFocusedPane: focused, roundsBottomCorners: false)
-          // Scrollback find bar (⌘F), pinned top-trailing over the focused pane only — search state
-          // is per-surface, and only the focused pane can be searched. Nothing until active.
-          .overlay(alignment: .topTrailing) {
-            if focused {
-              TerminalSearchBar(model: s.view.searchModel)
-            }
+        // `activePicker != nil` reports the pane as UNfocused while a New/Open Workroom dialog is up,
+        // which makes `applyFocus` resign the surface's first responder so the dialog's search field
+        // can hold it (issue: the dialog was not blocking). Deliberately folded into `isFocusedPane`
+        // rather than added as a second parameter: the container's existing not-focused branch already
+        // does exactly the right resign, guard included, so a `suspendsFocus` flag would have been a
+        // byte-for-byte duplicate of it. PaneTreeView's own `focused` still drives the focus ring, the
+        // find bar and the a11y trait, so only the AppKit responder follows the dialog.
+        TerminalContainerView(
+          view: s.view, isFocusedPane: focused && store.activePicker == nil,
+          roundsBottomCorners: false
+        )
+        // Scrollback find bar (⌘F), pinned top-trailing over the focused pane only — search state
+        // is per-surface, and only the focused pane can be searched. Nothing until active.
+        .overlay(alignment: .topTrailing) {
+          if focused {
+            TerminalSearchBar(model: s.view.searchModel)
           }
+        }
         TerminalStatusBar(target: target, tabID: tabID, state: s, sessions: sessions)
       }
       .clipShape(
@@ -610,10 +633,17 @@ private struct PaneLeafView: View {
 private struct ActivateOnPress: ViewModifier {
   let enabled: Bool
   let onActivate: () -> Void
+  /// Consulted when a click fires, NOT folded into `enabled`. A modal dialog's dimmed backdrop owns
+  /// clicks that land on it (it dismisses), so this pane must not also focus itself — but `enabled`
+  /// drives the structural branch below, and flipping it mid-life would tear down and rebuild the
+  /// DiffViewer (see the call site's comment). Checking at fire time costs one bool per click and
+  /// keeps the view's identity stable.
+  let isBlocked: () -> Bool
 
   func body(content: Content) -> some View {
     if enabled {
-      content.background(PaneClickFocusCatcher(onActivate: onActivate))
+      content.background(
+        PaneClickFocusCatcher(onActivate: onActivate, isBlocked: isBlocked))
     } else {
       content
     }
@@ -626,13 +656,15 @@ private struct ActivateOnPress: ViewModifier {
 /// purely via the monitor, leaving the diff's own text selection and scrolling untouched.
 private struct PaneClickFocusCatcher: NSViewRepresentable {
   let onActivate: () -> Void
+  let isBlocked: () -> Bool
 
   func makeNSView(context: Context) -> ClickFocusCatchView {
-    ClickFocusCatchView(onActivate: onActivate)
+    ClickFocusCatchView(onActivate: onActivate, isBlocked: isBlocked)
   }
 
   func updateNSView(_ view: ClickFocusCatchView, context: Context) {
     view.onActivate = onActivate  // keep the closure fresh so a stale target is never focused
+    view.isBlocked = isBlocked  // ditto — a stale capture would read yesterday's dialog state
   }
 
   static func dismantleNSView(_ view: ClickFocusCatchView, coordinator: ()) {
@@ -641,10 +673,12 @@ private struct PaneClickFocusCatcher: NSViewRepresentable {
 
   final class ClickFocusCatchView: NSView {
     var onActivate: () -> Void
+    var isBlocked: () -> Bool
     private var monitor: Any?
 
-    init(onActivate: @escaping () -> Void) {
+    init(onActivate: @escaping () -> Void, isBlocked: @escaping () -> Bool) {
       self.onActivate = onActivate
+      self.isBlocked = isBlocked
       super.init(frame: .zero)
     }
 
@@ -660,6 +694,11 @@ private struct PaneClickFocusCatcher: NSViewRepresentable {
       guard window != nil else { return }
       monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
         guard let self, let window = self.window, event.window === window else { return event }
+        // A modal dialog is up: its backdrop owns this click and will dismiss. Bail BEFORE the bounds
+        // test — this monitor sees every click regardless of hit-testing, which is the whole point of
+        // the catcher (the diff's selectable text swallows mouseDown before SwiftUI sees it) and also
+        // why the backdrop covering the pane isn't enough on its own.
+        if self.isBlocked() { return event }
         if self.bounds.contains(self.convert(event.locationInWindow, from: nil)) {
           self.onActivate()
         }

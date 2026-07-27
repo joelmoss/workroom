@@ -420,6 +420,29 @@ final class AppStore: ObservableObject {
   /// Drives the immediate full-pane setup dialog AND the provisional "Creating…" tab chip — both
   /// appear before the CLI has even reported the (generated) name. Per-window, like selection.
   @Published var creation: WorkroomCreation?
+  /// Mirrors whether one of RootView's *view-local* sheets is up (Add Project, Theme Picker, Keyboard
+  /// Shortcuts, What's New). Those four are `@State` in RootView rather than store-level like the
+  /// `pending*` ones, so `hasModalPresentation` can't see them directly; RootView keeps this in sync
+  /// with a single `onChange`. Deliberately a mirror rather than re-homing the four flags onto the
+  /// store: re-homing a local sheet flag to a store-level published item needs a clobber guard to stop
+  /// a second trigger silently overwriting an open sheet's in-progress input, and none of that
+  /// complexity buys anything here — all this needs is "is something up".
+  @Published var auxSheetPresented = false
+
+  /// Whether ANY modal presentation owns this window: a command-palette dialog, a confirmation, an
+  /// alert, or one of the sheets. The single source of truth for making shortcuts inert behind a
+  /// dialog — read by the key monitor's routing (via `activePicker`), by RootView's menu-enablement
+  /// values, and by `WorkroomTerminalsView`'s terminal-scoped ones, so all three can't drift.
+  ///
+  /// Needed because a sheet does NOT make menu commands inert on its own: verified on the real build,
+  /// with the Add Project sheet attached every File-menu item still read `enabled=true` and ⌘T
+  /// actually created a second terminal tab behind it.
+  var hasModalPresentation: Bool {
+    activePicker != nil || auxSheetPresented || pendingDeletion != nil
+      || pendingWorkroomClose != nil
+      || pendingProjectDeletion != nil || pendingWorkroomLabel != nil
+      || pendingProjectSettings != nil || errorMessage != nil
+  }
 
   let terminals = TerminalSessions()
   /// In-memory notification spine driving the badges + inspector (issue #10). Owned here,

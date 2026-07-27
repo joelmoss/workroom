@@ -13,6 +13,8 @@ struct RootView: View {
   @EnvironmentObject var updater: Updater
   @EnvironmentObject var whatsNew: WhatsNewService
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  /// Drives the title-bar accessory's dim while a dialog is up, matched to `DialogOverlay`'s backdrop.
+  @Environment(\.colorScheme) private var colorScheme
   @Default(.theme) private var theme
   /// Whether the right-hand inspector (Changes / Files / Pull Request) is open. `@Default` (not
   /// `@State`) so the View-menu command (WorkroomCommands) toggles the same value.
@@ -91,7 +93,11 @@ struct RootView: View {
     // via `TitlebarAccessoryHost` in `rootWindowChrome`), not a content top-strip and not SwiftUI
     // `.toolbar` items — so AppKit owns the bar height (an empty NSToolbar; see WindowBackgroundThemer)
     // and centers the traffic lights alongside the controls.
-    rootWindowChrome(rootLifecycle(rootReveals(rootModals(splitView))))
+    // `rootModals` sits OUTSIDE `rootReveals` so the command-palette dialogs — which are `.overlay`s,
+    // not sheets — render above the toast stack and above an edge-revealed sidebar. Inside, an
+    // arriving toast drew on top of the dialog. Only the overlay presenters care about this ordering;
+    // `.sheet` / `.alert` are position-independent.
+    rootWindowChrome(rootLifecycle(rootModals(rootReveals(splitView))))
   }
 
   /// The full title-bar bar hosted in the `.left` titlebar accessory: leading controls, the workroom
@@ -112,6 +118,21 @@ struct RootView: View {
     .environmentObject(notifications)
     .environmentObject(terminals)
     .environmentObject(updater)
+    // The accessory is a window-level AppKit hosting tree, so the dialog's own backdrop — an overlay
+    // on the content below — can never cover it. Left alone, the workroom tab strip's New/Open buttons
+    // and its chips stay clickable through a "modal" dialog, and the bar stays undimmed while
+    // everything beneath it darkens. Both halves read the same opacity + curve from
+    // `DialogOverlayStyle` so they can't drift.
+    .disabled(store.activePicker != nil)
+    .overlay {
+      Color.black
+        .opacity(
+          store.activePicker != nil ? DialogOverlayStyle.backdropOpacity(for: colorScheme) : 0
+        )
+        .allowsHitTesting(false)
+    }
+    .animation(
+      reduceMotion ? nil : DialogOverlayStyle.revealAnimation, value: store.activePicker != nil)
   }
 
   @ViewBuilder private var workroomTabsBar: some View {
@@ -405,28 +426,49 @@ struct RootView: View {
       // Publish selection state for menu-command enablement (see WorkroomCommands). Grouped into one
       // modifier so the long publisher chain stays a single, fast-to-type-check expression (SwiftUI
       // chokes on ~12 `.focusedSceneValue` calls inline).
+      // Keep the store's mirror of the four view-local sheet flags current, so
+      // `hasModalPresentation` is a complete answer for every reader (see its doc comment).
+      .onChange(of: auxSheetPresented, initial: true) { _, presented in
+        store.auxSheetPresented = presented
+      }
       .modifier(
         MenuStateValues(
           // `workroomSelected`: while a setup script blocks the selected workroom's terminal, report
           // false so ⌘T can't open a (hidden) terminal behind the setup pane (Open/Reveal still work).
-          workroomSelected: terminalInteractionAvailable,
-          hasNotifications: !notifications.items.isEmpty,
-          // `hasProjects`: "New Workroom" (⌘N) disabled with no projects (#81).
+          //
+          // Every boolean here also ANDs in `!store.hasModalPresentation`: a menu item's key
+          // equivalent fires even while a dialog or sheet is up (⌘T behind the Add Project sheet
+          // really did open a tab), and a disabled item drops its key equivalent — the same mechanism
+          // `hasProjects` already relies on for ⌘N. Doing it here rather than per-item keeps it to one
+          // site, and greying the item out tells the user WHY the key did nothing, which swallowing
+          // the event in the key monitor cannot.
+          workroomSelected: terminalInteractionAvailable && !store.hasModalPresentation,
+          hasNotifications: !notifications.items.isEmpty && !store.hasModalPresentation,
+          // `hasProjects`: "New Workroom" (⌘N) disabled with no projects (#81). Deliberately NOT gated
+          // on `hasModalPresentation` — ⌘N/⌘O must still work while a picker is open, because raising
+          // one picker replaces the other and that's the documented behaviour (issue #94).
           hasProjects: !store.projects.isEmpty,
           // Go-menu Back/Forward (issue #26).
-          canNavigateBack: store.canGoBack,
-          canNavigateForward: store.canGoForward,
+          canNavigateBack: store.canGoBack && !store.hasModalPresentation,
+          canNavigateForward: store.canGoForward && !store.hasModalPresentation,
           // Run/Stop/Restart (issue #7) — run-state lives on the store, so these stay live.
-          hasRunCommand: selectedHasRunCommand,
-          runCommandActive: selectedRunCommandActive,
-          hasRunTerminal: store.hasAnyRunTerminal,
+          hasRunCommand: selectedHasRunCommand && !store.hasModalPresentation,
+          runCommandActive: selectedRunCommandActive && !store.hasModalPresentation,
+          hasRunTerminal: store.hasAnyRunTerminal && !store.hasModalPresentation,
           // Go-menu Previous/Next Workroom Tab (issue #29) — only meaningful with ≥2 tabs.
-          multipleWorkroomTabs: store.orderedWorkroomTargets().count > 1,
+          multipleWorkroomTabs: store.orderedWorkroomTargets().count > 1
+            && !store.hasModalPresentation,
           // Go-menu "Open in…" + ⌘O — enabled only with an editor and a valid selection.
-          canOpenInEditor: store.canOpenInEditor,
+          canOpenInEditor: store.canOpenInEditor && !store.hasModalPresentation,
           // View ▸ "Resize Workroom Splits Evenly" (#83) — only when the selected workroom is a live
           // member of a workroom-into-workroom split.
-          workroomSplitVisible: store.isWorkroomSplitVisible))
+          workroomSplitVisible: store.isWorkroomSplitVisible && !store.hasModalPresentation,
+          modalPresented: store.hasModalPresentation))
+  }
+
+  /// The four sheets RootView owns as `@State` rather than store state, ORed for the store mirror.
+  private var auxSheetPresented: Bool {
+    showAddProject || showThemePicker || showKeyboardShortcuts || whatsNewContent != nil
   }
 
   /// The project path of the selected root or workroom (nil for no selection) — the run command is
@@ -636,9 +678,13 @@ private struct MenuStateValues: ViewModifier {
   let multipleWorkroomTabs: Bool
   let canOpenInEditor: Bool
   let workroomSplitVisible: Bool
+  /// Published for the items that have no other boolean to fold it into (see `ModalPresentedKey`).
+  /// The booleans above already have it ANDed in at the call site, so they need nothing here.
+  let modalPresented: Bool
 
   func body(content: Content) -> some View {
     content
+      .focusedSceneValue(\.modalPresented, modalPresented)
       .focusedSceneValue(\.workroomSelected, workroomSelected)
       .focusedSceneValue(\.hasNotifications, hasNotifications)
       .focusedSceneValue(\.hasProjects, hasProjects)

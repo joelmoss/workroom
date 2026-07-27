@@ -151,7 +151,17 @@ struct EdgeRevealSidebar<Content: View>: View {
     }
     .onChange(of: enabled) { _, isEnabled in
       // When the docked sidebar opens, force the reveal hidden so nothing lingers.
-      if !isEnabled { reset() }
+      if !isEnabled {
+        reset()
+      }
+      // …and on the way back, re-sync from the live hover. Without this the reveal stays dead until
+      // the cursor leaves and re-enters the toggle: `reset()` cleared `sensorHover`, but `.disabled()`
+      // does NOT suppress `.onHover`, so a hover arriving while disabled still set the store flag and
+      // the `guard enabled` above dropped it. `toggleHover` would then already be true, so no further
+      // `onChange(of: toggleHover)` ever fires to re-arm it.
+      else {
+        apply { $0.setSensorHover(toggleHover) }
+      }
     }
     .onDisappear {
       hideTask?.cancel()
@@ -307,7 +317,12 @@ struct EdgeRevealSidebars: ViewModifier {
       content
       .overlay {
         EdgeRevealSidebar(
-          side: .leading, enabled: !sidebarVisible, width: panelWidth
+          // Also off while a command-palette dialog is up: the trigger is the title-bar toggle button
+          // (see this file's header), which lives in the window-level accessory the dialog's backdrop
+          // can never cover — so without this a hover would slide the Projects panel out over the
+          // dialog. Folded into `enabled` rather than added beside it because `enabled` already has the
+          // reset path this needs (`onChange(of: enabled)` below).
+          side: .leading, enabled: !sidebarVisible && store.activePicker == nil, width: panelWidth
         ) {
           ProjectSidebar(
             paneDrag: paneDrag,
