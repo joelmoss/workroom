@@ -106,15 +106,21 @@ private struct ActivityBarButton: View {
       }
     }
     .onHover { hovering = $0 }
-    .help(
-      badged
-        ? "\(section.label) (\(section.shortcutHint)) — working tree has changes"
-        : "\(section.label) (\(section.shortcutHint))"
-    )
+    .help(helpText)
     .accessibilityLabel(section.label)
     .accessibilityValue(badged ? "has changes" : "")
     .accessibilityIdentifier("activitySection.\(section.rawValue)")
     .accessibilityAddTraits(active ? [.isSelected] : [])
+  }
+
+  /// Tooltip: what the click does plus the View-menu shortcut that does the same thing. Names the
+  /// *action*, not the state — while the pane is showing, a click collapses it, so the tooltip says
+  /// "Hide" (matching the title bar's sidebar button). The Changes icon appends the dirty-tree state
+  /// so the dot has words.
+  private var helpText: String {
+    let action = active ? "Hide \(section.label)" : "Show \(section.label)"
+    let base = "\(action) (\(section.shortcutHint))"
+    return badged ? "\(base) — working tree has changes" : base
   }
 }
 
@@ -160,7 +166,13 @@ private struct NotificationsBarButton: View {
     }
     .onHover { hovering = $0 }
     .disabled(notifications.total == 0)
-    .help(notifications.total > 0 ? "Show notifications (⌘-click for next)" : "No notifications")
+    // The popover itself has no key equivalent (⌥⌘N was retired with issue #118), so the tooltip
+    // advertises ⇧⌘N — the View-menu "Next Notification" the ⌘-click mirrors.
+    .help(
+      notifications.total > 0
+        ? "Show notifications (⌘-click or ⇧⌘N for next)"
+        : "No notifications"
+    )
     .accessibilityLabel(
       notifications.total > 0 ? "Notifications, \(notifications.total) unread" : "Notifications"
     )
