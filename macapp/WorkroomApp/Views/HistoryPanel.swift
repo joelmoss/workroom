@@ -422,13 +422,6 @@ struct HistoryCommitCard: View {
             .accessibilityIdentifier("HistoryCardUnpushed")
         }
         Spacer(minLength: 0)
-        // Bookmarks/branches, styled like the detail header's refs (accent, medium).
-        ForEach(commit.refs, id: \.self) { ref in
-          Text(ref)
-            .fontWeight(.medium)
-            .foregroundStyle(theme.tokens.accent)
-            .lineLimit(1)
-        }
       }
       .font(.caption).foregroundStyle(.secondary).lineLimit(1)
       if !commit.body.isEmpty {

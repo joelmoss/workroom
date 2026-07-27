@@ -663,9 +663,15 @@ struct ChangesPanel: View {
             Text(commitID).font(.system(.callout, design: .monospaced))
               .foregroundStyle(.blue).help("Commit ID")
           }
+          // The same gray capsules the History list rows and changeset header use, one step down
+          // from the ids beside them (`.caption` under `.callout`, as the list's `.caption2` sits
+          // under its `.caption`) so the pill doesn't outweigh this header's larger type.
           ForEach(meta.refs, id: \.self) { ref in
-            Text(ref).font(.callout).fontWeight(.medium)
-              .foregroundStyle(theme.tokens.accent).lineLimit(1).help("Bookmark / branch")
+            Text(ref).font(.caption)
+              .lineLimit(1).truncationMode(.tail)
+              .padding(.horizontal, 5).padding(.vertical, 1)
+              .background(.quaternary, in: Capsule())
+              .help("Bookmark / branch")
           }
         }
         Spacer(minLength: 0)
