@@ -390,6 +390,17 @@ struct HistoryCommitCard: View {
         Text(commit.shortID)
           .font(.system(.caption, design: .monospaced))
           .foregroundStyle(.blue)
+        // Bookmarks/branches, as the same gray capsules the rows use, left of the author — mirrors
+        // `ChangesetDetailView.header`.
+        ForEach(commit.refs, id: \.self) { ref in
+          Text(ref)
+            .font(.caption2)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .padding(.horizontal, 5).padding(.vertical, 1)
+            .background(.quaternary, in: Capsule())
+            .help("Bookmark / branch")
+        }
         if !commit.authorNamesDisplay.isEmpty {
           Label {
             Text(commit.authorNamesDisplay)

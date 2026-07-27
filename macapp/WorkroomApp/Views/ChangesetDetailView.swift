@@ -136,6 +136,18 @@ struct ChangesetDetailView: View {
           .font(.system(.caption, design: .monospaced))
           .foregroundStyle(.blue)
           .help("Commit ID")
+        // Bookmarks/branches, as the same gray capsules the History list rows use, and in the same
+        // reading order as the identity that precedes them — left of the author rather than pushed to
+        // the far right, so a commit's refs sit beside the ids they belong to in both surfaces.
+        ForEach(commit.refs, id: \.self) { ref in
+          Text(ref)
+            .font(.caption2)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .padding(.horizontal, 5).padding(.vertical, 1)
+            .background(.quaternary, in: Capsule())
+            .help("Bookmark / branch")
+        }
         if !commit.authorNamesDisplay.isEmpty {
           Label {
             Text(commit.authorNamesDisplay)
@@ -161,15 +173,6 @@ struct ChangesetDetailView: View {
             .accessibilityIdentifier("ChangesetDetailUnpushed")
         }
         Spacer(minLength: 0)
-        // Bookmarks/branches, styled like the Changes panel's header refs (accent, medium) rather
-        // than gray capsules, so a commit's refs read the same in both surfaces.
-        ForEach(commit.refs, id: \.self) { ref in
-          Text(ref)
-            .fontWeight(.medium)
-            .foregroundStyle(theme.tokens.accent)
-            .lineLimit(1)
-            .help("Bookmark / branch")
-        }
       }
       .font(.caption).foregroundStyle(.secondary).lineLimit(1)
       if let body = Self.messageBody(changeset.fullMessage), !body.isEmpty {
