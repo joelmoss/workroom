@@ -652,8 +652,16 @@ struct ChangesPanel: View {
   {
     VStack(alignment: .leading, spacing: 2) {
       HStack(alignment: .firstTextBaseline, spacing: 6) {
-        Text(name).font(.body).fontWeight(.semibold)
+        // The branch/bookmark the working copy is on, as the same gray pill the History list rows and
+        // the changeset detail header give a ref — it names the same kind of thing, so it shouldn't
+        // read as a bold title in one surface and a capsule in the others. Truncates in the MIDDLE
+        // (unlike the ref pills beside it): a long branch name's distinguishing part is often its
+        // tail (`joel/history-refs-pill`), so tail-truncating it would hide what tells it apart.
+        Text(name).font(.caption)
           .lineLimit(1).truncationMode(.middle)
+          .padding(.horizontal, 5).padding(.vertical, 1)
+          .background(.quaternary, in: Capsule())
+          .help("Bookmark / branch")
         if let meta {
           if let changeID = meta.changeID {
             Text(changeID).font(.system(.callout, design: .monospaced))
