@@ -177,8 +177,12 @@ final class WorkroomCLI: WorkroomCLIProtocol {
     onLog: ((String) -> Void)? = nil,
     onReady: ((_ name: String, _ path: String, _ hasSetup: Bool) -> Void)? = nil
   ) async throws -> CreateResponse {
+    // Setup scripts run inside this call, so resolve the user's environment first — freshly, in
+    // case a tool was installed or a dotfile edited since launch. Usually already warm: the New
+    // Workroom dialog kicks the same single-flighted probe when it opens.
+    await ShellEnvironment.refresh()
     let result = try await run(
-      ["create", "--json", "--no-editor", "--project", project], timeout: 600
+      ["create", "--json", "--no-editor", "--project", project], timeout: 600, userInitiated: true
     ) { event in
       switch event.type {
       case "log": if let text = event.text { onLog?(text) }
@@ -193,8 +197,10 @@ final class WorkroomCLI: WorkroomCLIProtocol {
   }
 
   func delete(name: String, project: String, onLog: ((String) -> Void)? = nil) async throws {
+    await ShellEnvironment.refresh()  // a teardown script may run inside this call
     let result = try await run(
-      ["delete", name, "--json", "--project", project, "--confirm", name], timeout: 600
+      ["delete", name, "--json", "--project", project, "--confirm", name], timeout: 600,
+      userInitiated: true
     ) { event in
       if event.type == "log", let text = event.text { onLog?(text) }
     }
@@ -211,6 +217,14 @@ final class WorkroomCLI: WorkroomCLIProtocol {
   ///
   /// `--confirm` echoes the path (the type-to-confirm guard lives in the sheet; this just
   /// satisfies the CLI gate).
+  /// Whether a `delete-project` in this mode will run per-workroom teardown scripts. Only the
+  /// cascading modes do; plain config-only removal touches nothing on disk, so it must not pay for
+  /// a shell probe. Keyed on the same condition as the timeout below, and factored out so the
+  /// gating decision is testable without spawning the bundled binary.
+  static func deleteProjectRunsScripts(withWorkrooms: Bool, fromDisk: Bool) -> Bool {
+    withWorkrooms || fromDisk
+  }
+
   @discardableResult
   func deleteProject(
     _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: ((String) -> Void)? = nil
@@ -218,7 +232,12 @@ final class WorkroomCLI: WorkroomCLIProtocol {
     var args = ["delete-project", path, "--json", "--confirm", path]
     if withWorkrooms { args.append("--with-workrooms") }
     if fromDisk { args.append("--from-disk") }
-    let result = try await run(args, timeout: (withWorkrooms || fromDisk) ? 600 : 15) { event in
+    let runsScripts = Self.deleteProjectRunsScripts(
+      withWorkrooms: withWorkrooms, fromDisk: fromDisk)
+    if runsScripts { await ShellEnvironment.refresh() }
+    let result = try await run(
+      args, timeout: runsScripts ? 600 : 15, userInitiated: runsScripts
+    ) { event in
       if event.type == "log", let text = event.text { onLog?(text) }
     }
     guard fromDisk else {
@@ -281,17 +300,28 @@ final class WorkroomCLI: WorkroomCLIProtocol {
   /// envelope) and stderr (read incrementally so `onLog` fires per NDJSON line as the
   /// script runs) concurrently, and enforcing a timeout. On timeout the process is
   /// terminated then killed.
-  private func run(_ args: [String], timeout: TimeInterval, onEvent: ((StreamEvent) -> Void)? = nil)
-    async throws -> CLIResult
-  {
+  ///
+  /// `userInitiated` selects the environment the child gets. The commands that run the user's own
+  /// setup/teardown scripts get the full probed environment, so those scripts see the shell they
+  /// were written against. Everything else (`list`, `add-project`) takes PATH only — a cheap,
+  /// frequent read has no reason to carry the user's whole environment.
+  private func run(
+    _ args: [String], timeout: TimeInterval, userInitiated: Bool = false,
+    onEvent: ((StreamEvent) -> Void)? = nil
+  ) async throws -> CLIResult {
     let url = try Self.bundledBinaryURL()
     return try await withCheckedThrowingContinuation { continuation in
       let proc = Process()
       proc.executableURL = url
       proc.arguments = args
 
-      var env = ProcessInfo.processInfo.environment
-      env["PATH"] = ShellEnvironment.path()
+      var env: [String: String]
+      if userInitiated {
+        env = ShellEnvironment.environment()
+      } else {
+        env = ProcessInfo.processInfo.environment
+        env["PATH"] = ShellEnvironment.path()
+      }
       env["GIT_TERMINAL_PROMPT"] = "0"
       env["GIT_OPTIONAL_LOCKS"] = "0"
       proc.environment = env

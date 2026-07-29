@@ -151,6 +151,11 @@ struct NewWorkroomPresenter: ViewModifier {
         if request {
           store.activePicker = .new
           store.requestNewWorkroomPicker = false
+          // Warm the shell-environment probe while the dialog is open. `create` awaits the same
+          // single-flighted refresh, so by the time a project is picked the shell has usually
+          // already reported — spending the latency the user was spending anyway. Purely an
+          // optimization: if they pick fast, `create` just waits on this very task.
+          Task.detached(priority: .userInitiated) { await ShellEnvironment.refresh() }
         }
       }
       // A dismissable overlay (not a `.sheet`) so a click outside the dialog closes it.

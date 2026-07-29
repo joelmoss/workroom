@@ -451,6 +451,29 @@ dropdb "myapp_${WORKROOM_NAME}" 2>/dev/null || true
 The same environment variables are available to **both** the setup and teardown scripts. The script
 runs with its **working directory set to the workroom directory**.
 
+Scripts also inherit **your login shell's environment**, so the tools and settings you've configured
+in your dotfiles are available — `psql` from Postgres.app, version-manager shims, `$PNPM_HOME`, and
+anything else you export. Run from the terminal, the CLI simply passes its own environment through.
+The macOS app has to work harder: a Finder-launched app starts with a minimal `PATH`, so the app
+reads `/etc/paths` and `/etc/paths.d` (the same files `path_helper` reads) and additionally runs one
+`$SHELL -lic` to pick up what only an interactive login shell knows. That runs fresh each time a
+workroom is created or deleted, so a tool you installed a minute ago is already visible.
+
+Two things worth knowing:
+
+- **Your environment includes your secrets.** A setup script is code from the repository, and it
+  runs with everything your shell exports. That's the same trust you extend by running the script
+  at all, but it's worth being deliberate about for repositories you haven't read.
+- **`WORKROOM_SHELL_PROBE=1`** is set while the app is reading your environment. Guard slow or
+  interactive blocks in your `.zshrc` with it if shell startup is expensive:
+  ```bash
+  [ -n "$WORKROOM_SHELL_PROBE" ] || eval "$(something-slow init)"
+  ```
+
+If the probe fails — a `.zshrc` that ends in `exec tmux`, a prompt waiting on input, `fish` or
+`nushell` as your `$SHELL` — the app falls back to the `/etc/paths.d` layer, which still resolves
+everything the system knows about. You lose the dotfile extras, not the basics.
+
 | Variable | Meaning |
 | --- | --- |
 | `WORKROOM_NAME` | The name of the workroom being created or deleted. |

@@ -20,8 +20,28 @@ struct WorkroomApp: App {
 
     // Ensure the in-process environment (inherited by the bundled `workroom`
     // binary and the terminals) can find git/jj, which a Finder-launched .app's
-    // minimal PATH excludes.
+    // minimal PATH excludes. This is the PATH floor — `/etc/paths` + `/etc/paths.d`
+    // + well-known tool dirs — so it is already correct, just not yet enriched.
+    //
+    // The ONLY `setenv` for PATH in the app's lifetime, and it runs here because
+    // `init` is single-threaded: `setenv` can reallocate `environ`, and the status
+    // sweep reads `ProcessInfo.processInfo.environment` from background threads
+    // constantly. A later write would be a use-after-free race. Everything that
+    // needs the enriched value reads `ShellEnvironment.path()` / `.environment()`.
     setenv("PATH", ShellEnvironment.path(), 1)
+
+    // Enrich it in the background: one `$SHELL -ilc` for what only an interactive
+    // login shell knows (`.zshrc`-exported PATH entries, version-manager shims).
+    // Detached so launch never waits on someone's dotfiles; the floor above holds
+    // until it lands, and holds permanently if the probe fails.
+    //
+    // Not under XCTest: the test bundle is hosted by this app, so this would spawn
+    // a real login shell that lands at an arbitrary point and overwrites the cache
+    // mid-test — `ShellEnvironmentTests` drives the probe against stub shells and
+    // needs the cache to hold only what it put there.
+    if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+      Task.detached(priority: .utility) { await ShellEnvironment.refresh() }
+    }
 
     // UI-test fixture mode only: park the pref-driven UI state (inspector open on the requested
     // section, diff viewer in the requested layout) in a known state before the first `AppStore`

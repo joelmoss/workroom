@@ -129,6 +129,28 @@ final class RunCommandTests: XCTestCase {
     XCTAssertTrue(cmd.contains(".status"), "no status file path in command: \(cmd)")
   }
 
+  /// Regression guard for moving `runCommandLine`'s shell-dialect decision into the shared
+  /// `ShellEnvironment.loginShellInvocation` (which the environment probe also uses, so the two
+  /// can't drift). The dialect branch itself — POSIX `$SHELL` gets `-lic`, fish/nu/csh fall back to
+  /// a login `/bin/sh -lc` — is covered per-shell in `ShellEnvironmentTests`; that fallback had no
+  /// test at all before, and this refactor made it load-bearing for the run command too. What can
+  /// only be checked here is the composition: that the wrap the supervisor receives is byte-for-byte
+  /// what the shared helper produces, rather than a second hand-rolled copy that happens to agree
+  /// on this machine's shell.
+  func testRunWrapComesFromTheSharedLoginShellHelper() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+
+    store.startRunCommand(for: t)
+
+    let cmd = try! XCTUnwrap(captured.last as? String)
+    let q = CommandLineInstaller.shellQuoted
+    let inner = "exec \(q(ShellEnvironment.loginShellExecutable())) -c \(q("echo hi"))"
+    let expected = ShellEnvironment.loginShellInvocation(script: inner).commandString
+    XCTAssertTrue(cmd.hasSuffix(expected), "wrap is not the shared helper's output: \(cmd)")
+  }
+
   func testStartIsNoOpWithoutCommand() {
     let store = makeStore([project("/a", workrooms: ["main"])])
     let t = target(store, "/a", "main")

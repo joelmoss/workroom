@@ -1226,17 +1226,15 @@ final class AppStore: ObservableObject {
   /// supervisor becomes the session-leader PTY child (its `kill -INT 0` group-stop stays scoped to the
   /// run's own session).
   private func runCommandLine(_ raw: String, pidPath: String) -> String {
-    let shell = ShellEnvironment.loginShell()
-    let name = (shell as NSString).lastPathComponent
-    let isPOSIX = ["zsh", "bash", "sh", "dash", "ksh"].contains(name)
-    let runner = isPOSIX ? shell : "/bin/sh"
     let q = CommandLineInstaller.shellQuoted
     // The child the supervisor runs: the user's login-interactive shell, which `exec`s the command
     // through the runner with `-c` (so compound commands — `cd web && npm run dev`, `FOO=bar rails s`,
     // pipes — work, and the exec keeps the pid stable so the supervisor's `$!` is the live server).
+    // The POSIX-vs-fallback decision lives in `ShellEnvironment.loginShellInvocation`, shared with
+    // the environment probe so the two can't drift; `commandString` is the form libghostty needs.
+    let runner = ShellEnvironment.loginShellExecutable()
     let innerScript = "exec \(q(runner)) -c \(q(raw))"
-    let childOuter =
-      isPOSIX ? "\(q(shell)) -lic \(q(innerScript))" : "/bin/sh -lc \(q(innerScript))"
+    let childOuter = ShellEnvironment.loginShellInvocation(script: innerScript).commandString
     // config.command = /bin/sh <supervisor> <controlFile> <statusFile> <childArgv…>
     let sup = q(Self.supervisorScriptPath())
     let ctl = q(pidPath)

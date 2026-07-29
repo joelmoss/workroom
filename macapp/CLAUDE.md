@@ -162,6 +162,21 @@ that surfaces violations as **warnings** (non-fatal — `make app-lint` is the h
   (`GhosttyApp`/`GhosttyRuntimeAdapter`) are ours; the bundled `Resources/ghostty` (terminfo +
   shell-integration) must ship for the engine to start. Pre-GA, the plan is to move to a
   self-built xcframework from a pinned Ghostty fork.
+- **The child environment has two layers, and only one of them is reliable** (`Core/ShellEnvironment.swift`).
+  A Finder-launched `.app` gets a minimal PATH, so: the **floor** (`floorPath()`) reads `/etc/paths`
+  + `/etc/paths.d/*` — `path_helper`'s own inputs — with no shell at all, and that alone resolves
+  Postgres.app's `psql`; the **probe** (`refresh()`) then runs one `$SHELL -ilc` for what only an
+  interactive login shell knows (`.zshrc` PATH entries, mise shims). The probe is best-effort by
+  design: its failures degrade to the floor, so a `.zshrc` that ends `exec tmux` costs enrichment
+  and never the bug. Three traps worth knowing: **`path_helper` APPENDS** the PATH it's handed, so
+  the probe must be spawned with a *cleared* `PATH=/usr/bin:/bin:/usr/sbin:/sbin` or Homebrew ends
+  up at the tail; the payload is a **raw `env -0` stream between UUID markers** because command
+  substitution strips NULs and the user's `base64` may be GNU's (wraps at 76 cols); and the deadline
+  is a `DispatchWorkItem` **inside** the blocking closure, because `withTimeout` cannot cancel a
+  `runBlocking` call and would leak a shell per invocation. `setenv("PATH", …)` happens exactly once,
+  in `WorkroomApp.init` — a later write would race the status sweep's `ProcessInfo.environment`
+  reads. Everything else reads `ShellEnvironment.path()` (PATH only, for the automatic sweep) or
+  `.environment()` (the full environment, for setup/teardown scripts).
 - **Menu enable/disable must flow through `focusedSceneValue` + `@FocusedValue`**
   (see `WorkroomApp.swift`); a `Commands` body does not re-evaluate when the shared
   `AppStore` mutates. ⌘1–9 are handled by an `NSEvent` local monitor in `AppDelegate`,
