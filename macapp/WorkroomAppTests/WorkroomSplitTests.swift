@@ -402,6 +402,31 @@ final class WorkroomSplitTests: XCTestCase {
       store.selectedTargetID, a, "selecting within the focused member keeps it selected")
   }
 
+  func testSurfaceFocusIsIgnoredWhileTheSplitIsHidden() {
+    // The reported two-clicks-to-select fault. The split PERSISTS while a non-member workroom is shown
+    // solo, so a member pane's `applyFocus` block — queued by the previous render, drained from a nested
+    // run loop after the selection already moved — still reports its surface as focused. That must NOT
+    // read as a workroom choice: it yanked the selection back to the split member, so selecting a
+    // non-member chip only stuck on the second click.
+    let store = store3()
+    let a = wr("main")
+    let b = wr("feature")
+    let outsider = wr("bugfix")
+    store.terminals.addTab(for: store.target(for: a)!)
+    store.terminals.addTab(for: store.target(for: b)!)
+    store.terminals.addTab(for: store.target(for: outsider)!)
+    store.insertWorkroomSplit(b, beside: a, edge: .right)  // split [a, b]
+    store.selectedTargetID = outsider  // a non-member → the split is hidden, `bugfix` shows solo
+    XCTAssertFalse(store.isWorkroomSplitVisible, "precondition: the split is off screen")
+
+    store.terminals.onSurfaceFocused?(store.target(for: b)!.id)
+
+    XCTAssertEqual(
+      store.selectedTargetID, outsider,
+      "a hidden split member's stale focus must not steal the selection back")
+    XCTAssertNotNil(store.workroomSplit, "and the split itself is untouched — it persists")
+  }
+
   func testSurfaceFocusIsNoOpWithoutSplit() {
     let store = store3()
     let a = wr("main")

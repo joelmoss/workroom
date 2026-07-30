@@ -692,13 +692,23 @@ final class AppStore: ObservableObject {
     }
   }
 
-  /// Route a terminal surface's first-responder focus up to the workroom selection — but only while a
-  /// workroom split is active and the focused surface belongs to one of its members. Sets
+  /// Route a terminal surface's first-responder focus up to the workroom selection — but only while the
+  /// split is **on screen** and the focused surface belongs to one of its members. Sets
   /// `selectedTargetID` with history recording suppressed (issue #23 T3): clicking between co-displayed
   /// panes targets the right workroom for ⌘T/Run/notifications, without flooding ⌘[/⌘] back-forward.
   /// A no-op outside a split (the single selected target is already focused).
+  ///
+  /// `isWorkroomSplitVisible` — not merely "a split exists" — is what makes this safe. The split
+  /// PERSISTS while you view a non-member workroom (`visibleWorkroomLayout` shows that one solo), so a
+  /// member's surface can still report focus long after the user has selected someone else: the pane's
+  /// `applyFocus` claims first responder from a `DispatchQueue.main.async` block holding the *previous*
+  /// render's `isFocusedPane`, and that block can drain from a nested run loop (a blocking
+  /// `Process.waitUntilExit` on the main thread spins one) before SwiftUI has committed the new layout.
+  /// Without this gate that stale claim read as "the user picked this workroom" and yanked the selection
+  /// straight back to the split member — so selecting a non-member chip took two clicks. A first
+  /// responder change is only ever a *user's* pane choice when the split is actually being displayed.
   private func focusWorkroomMemberFromSurface(_ targetID: TerminalTarget.ID) {
-    guard let split = workroomSplit,
+    guard let split = workroomSplit, isWorkroomSplitVisible,
       let sid = Self.sidebarID(forTargetID: targetID, in: projects), split.contains(sid),
       selectedTargetID != sid
     else { return }
