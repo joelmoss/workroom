@@ -147,8 +147,8 @@ struct PullRequestPanel: View {
     HStack(spacing: 6) {
       AvatarView(
         subject: AvatarSubject(
-          reviewer: reviewer.identity, displayName: reviewer.displayName, pixelSize: 32),
-        size: 16)
+          reviewer: reviewer.identity, displayName: reviewer.displayName, pixelSize: 54),
+        size: 18)
       Image(systemName: reviewer.symbol).foregroundStyle(reviewer.semantic.color)
       Text(reviewer.displayName).font(.footnote).lineLimit(1).truncationMode(.tail)
       Text(reviewer.stateLabel).font(.footnote).foregroundStyle(.secondary)

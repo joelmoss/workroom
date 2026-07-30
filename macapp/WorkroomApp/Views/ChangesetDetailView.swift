@@ -153,7 +153,7 @@ struct ChangesetDetailView: View {
             Text(commit.authorNamesDisplay)
           } icon: {
             AvatarStack(
-              subjects: commit.authors.map { AvatarSubject(author: $0, pixelSize: 48) }, size: 16)
+              subjects: commit.authors.map { AvatarSubject(author: $0, pixelSize: 54) }, size: 18)
           }
         }
         Label(Self.dateFormatter.string(from: commit.timestamp), systemImage: "clock")

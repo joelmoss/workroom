@@ -210,7 +210,7 @@ private struct HistoryRow: View {
           let relative = Self.relative.localizedString(for: commit.timestamp, relativeTo: Date())
           if !commit.authors.isEmpty {
             AvatarStack(
-              subjects: commit.authors.map { AvatarSubject(author: $0, pixelSize: 42) }, size: 14)
+              subjects: commit.authors.map { AvatarSubject(author: $0, pixelSize: 48) }, size: 16)
           }
           let names = commit.authorNamesDisplay
           Text(relative)
@@ -453,7 +453,7 @@ struct HistoryCommitCard: View {
             Text(commit.authorNamesDisplay)
           } icon: {
             AvatarStack(
-              subjects: commit.authors.map { AvatarSubject(author: $0, pixelSize: 48) }, size: 16)
+              subjects: commit.authors.map { AvatarSubject(author: $0, pixelSize: 54) }, size: 18)
           }
         }
         Label(Self.dateFormatter.string(from: commit.timestamp), systemImage: "clock")
