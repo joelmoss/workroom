@@ -46,6 +46,37 @@ final class StatusCommandRunnerTests: XCTestCase {
     XCTAssertLessThan(Date().timeIntervalSince(start), 8)  // not the 30s sleep
   }
 
+  func testCancellingAProbeDoesNotBlockTheCancellingThread() async {
+    // `withTaskCancellationHandler`'s `onCancel` runs synchronously on whichever thread calls
+    // `cancel()`, and the hottest canceller is the MAIN thread — every selection change supersedes the
+    // in-flight status probe. The kill walks the child's process tree with a blocking `pgrep -P` per
+    // node, so inline it stalled that thread for the whole walk (and a blocking wait spins a nested run
+    // loop, reordering queued main-queue work against SwiftUI's update — how this surfaced).
+    //
+    // A wide child tree makes the difference unmissable: ~40 children means ~41 sequential `pgrep`
+    // spawns, several hundred ms inline. The bound below sits well under that and far above the cost of
+    // simply enqueueing the work.
+    let runner = self.runner
+    let tmp = self.tmp
+    let task = Task {
+      await runner.run(
+        "sh", ["-c", "for i in $(seq 40); do sleep 30 & done; wait"], in: tmp, timeout: 30)
+    }
+    // Let the tree actually spawn, or the walk would have nothing to traverse and this would pass
+    // against the blocking version too.
+    try? await Task.sleep(nanoseconds: 700_000_000)
+
+    let start = Date()
+    task.cancel()
+    let blocked = Date().timeIntervalSince(start)
+
+    XCTAssertLessThan(blocked, 0.3, "cancelling a probe blocked the cancelling thread on the kill")
+    // And the kill still lands: the probe resumes instead of running out its 30s sleep.
+    let r = await task.value
+    XCTAssertFalse(r.ok, "a cancelled probe's result is abandoned, not a success")
+    XCTAssertLessThan(Date().timeIntervalSince(start), 10, "not the 30s sleep")
+  }
+
   func testLaunchFailureInMissingDirIsCommandNotFound() async {
     let r = await runner.run(
       "git", ["status"], in: "/no/such/dir-\(UUID().uuidString)", timeout: 5)

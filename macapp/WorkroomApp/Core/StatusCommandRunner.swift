@@ -169,8 +169,23 @@ private final class ProcessBox: @unchecked Sendable {
   init(_ process: Process) { self.process = process }
   /// SIGKILL the child (and any descendants it spawned) if still running — the cancellation path
   /// abandons the result, so kill promptly rather than wait out a SIGTERM grace.
+  ///
+  /// Hopped to a global queue because `withTaskCancellationHandler`'s `onCancel` runs **synchronously
+  /// on whichever thread called `cancel()`**, and the hottest canceller is the main thread:
+  /// `selectedTargetID.didSet` → `scheduleSelectedStatusRefresh` → `selectionStatusTask?.cancel()`
+  /// supersedes the in-flight probe on *every* selection change. `ProcessTree.killTree` walks the tree
+  /// by spawning a `pgrep -P` per node and blocking on `waitUntilExit` for each, so inline it stalled
+  /// the main thread for the length of that walk while switching workroom tabs — and a blocking wait
+  /// spins a nested run loop, which drains queued main-queue blocks at a point SwiftUI hasn't committed
+  /// its update yet (that reordering is what surfaced the split-member selection snap-back). Deferring
+  /// the kill costs nothing: the continuation resumes from `terminationHandler`, never from here, and
+  /// the cancelled caller discards the result. Matches `killItem`, which already kills off a global
+  /// queue.
   func terminate() {
-    if process.isRunning { ProcessTree.killTree(process.processIdentifier) }
+    let process = self.process
+    DispatchQueue.global(qos: .userInitiated).async {
+      if process.isRunning { ProcessTree.killTree(process.processIdentifier) }
+    }
   }
 }
 
