@@ -421,6 +421,11 @@ enum UITestFixture {
       changedFiles: changedFiles,
       insertions: 411, deletions: 222,
       ci: .passing,
+      // A real jj workroom whose `@` carries the bookmark reports it BOTH ways — as `branchForCI`
+      // (the first bookmark in `::@` log order) and in the working copy's `refs` — so the fixture
+      // sets both. It used to set only `refs`, which is why the fixture never showed the Changes
+      // header rendering one bookmark twice.
+      branchForCI: "feature/login",
       jjWorkingCopy: JJCommitChanges(
         changeID: "pw", commitID: "7d74470b", refs: ["feature/login"],
         description: "feat: add session login (#42)", files: changedFiles),

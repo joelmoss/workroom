@@ -70,6 +70,29 @@ final class ChangesPanelUITests: XCTestCase {
       "the Parent Commit group is no longer shown")
   }
 
+  /// The bookmark on `@` must appear ONCE in the header. jj reports it twice — as the status'
+  /// `branchForCI` (the first bookmark in `::@` log order, which is `@`'s own when it has one) and in
+  /// the working copy's `refs` — and the header used to render both, putting one bookmark on screen
+  /// as two identical capsules. Asserted through the combined header's text rather than by counting
+  /// capsules, since the pills are plain `Text` inside one `.combine`d a11y element.
+  func testWorkingCopyBookmarkRendersOnce() throws {
+    let app = launchedApp()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+
+    let header = element(app, id: "changes.workingCopy")
+    XCTAssertTrue(header.waitForExistence(timeout: 10))
+
+    // The combined header resolves to a `StaticText` that carries its children's text as the
+    // element's VALUE, with an empty label. Fall back to the label rather than concatenating the
+    // two: were AppKit to expose the same text both ways, a concatenation would double every hit
+    // and fail this test on correct code.
+    let value = (header.value as? String) ?? ""
+    let text = value.isEmpty ? header.label : value
+    let hits = text.components(separatedBy: "feature/login").count - 1
+    XCTAssertEqual(
+      hits, 1, "the bookmark should render once in the Changes header; got \(hits) in \(text)")
+  }
+
   // MARK: conflicted files (jj per-file conflict status)
 
   /// A conflicted file must render as its OWN state in the Changes panel, all the way from the VCS

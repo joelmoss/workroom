@@ -598,7 +598,12 @@ struct ChangesPanel: View {
       // so failures fall to the git path (which renders the failure under a branch header, as before).
       let name = branchLabel(sid: sid, status: status)
       if let workingCopy = status.jjWorkingCopy {
-        jjContent(name: name, workingCopy: workingCopy)
+        // A jj bookmark that names an ANCESTOR of `@` (rather than `@` itself) is a different thing
+        // to the reader, and only the resolved `branchForCI` — not the `detached` fallback — can be
+        // one, so the distinction is drawn here where the status is in hand.
+        let ancestor =
+          (status.branchForCI.map { !$0.isEmpty } ?? false) && !workingCopy.refs.contains(name)
+        jjContent(name: name, workingCopy: workingCopy, ancestorBookmark: ancestor)
       } else {
         gitContent(name: name, status: status)
       }
@@ -628,9 +633,13 @@ struct ChangesPanel: View {
   /// `gitContent`. The working copy's parent (`@-`) is no longer shown here; the History panel now
   /// surfaces it.
   @ViewBuilder
-  private func jjContent(name: String, workingCopy: JJCommitChanges) -> some View {
+  private func jjContent(name: String, workingCopy: JJCommitChanges, ancestorBookmark: Bool)
+    -> some View
+  {
     VStack(alignment: .leading, spacing: 10) {
-      changesHeader(name: name, meta: workingCopy, identifier: "changes.workingCopy")
+      changesHeader(
+        name: name, meta: workingCopy, identifier: "changes.workingCopy",
+        ancestorBookmark: ancestorBookmark)
       Divider()
       if workingCopy.files.isEmpty {
         cleanState
@@ -641,15 +650,24 @@ struct ChangesPanel: View {
     .padding(12)
   }
 
-  /// The shared Changes header: the bold branch/bookmark name, plus (for jj, whose working copy is a
-  /// commit) its change-id (purple) / commit-id (blue) / refs and the description line. `meta == nil`
-  /// (git) renders just the name — git's working tree isn't a commit, so it carries no refs or
-  /// message. `identifier` combines the header into one a11y element (jj only; the panel's render
-  /// sentinel).
+  /// The shared Changes header: the branch/bookmark name, plus (for jj, whose working copy is a
+  /// commit) its change-id (purple) / commit-id (blue) / the refs the name pill doesn't already show,
+  /// and the description line. `meta == nil` (git) renders just the name — git's working tree isn't a
+  /// commit, so it carries no refs or message. `ancestorBookmark` says the name pill points at an
+  /// ancestor of `@` rather than `@` itself, which only its tooltip distinguishes. `identifier`
+  /// combines the header into one a11y element (jj only; the panel's render sentinel).
   @ViewBuilder
-  private func changesHeader(name: String, meta: JJCommitChanges?, identifier: String?)
-    -> some View
-  {
+  private func changesHeader(
+    name: String, meta: JJCommitChanges?, identifier: String?, ancestorBookmark: Bool = false
+  ) -> some View {
+    // jj's `branch_for_ci` (the left pill) is the first bookmark in `::@` log order, and `@` is the
+    // first commit that walk emits — so whenever `@` itself is bookmarked, the left pill's name is
+    // by construction also in `meta.refs`, and rendering both put ONE bookmark on screen as two
+    // identical capsules. Chip only what the left pill isn't already showing. The case the left
+    // pill exists for is untouched: when `@` carries no bookmark it names an ancestor's and `refs`
+    // is empty. A multi-bookmark `@` still reads right — left pill = the alphabetically first,
+    // chips = the rest.
+    let extraRefs = (meta?.refs ?? []).filter { $0 != name }
     VStack(alignment: .leading, spacing: 2) {
       HStack(alignment: .firstTextBaseline, spacing: 6) {
         // The branch/bookmark the working copy is on, as the same gray pill the History list rows and
@@ -661,7 +679,11 @@ struct ChangesPanel: View {
           .lineLimit(1).truncationMode(.middle)
           .padding(.horizontal, 5).padding(.vertical, 1)
           .background(.quaternary, in: Capsule())
-          .help("Bookmark / branch")
+          // NOT "nearest": `branch_for_ci` is the first bookmark in `::@`'s LOG order, which at a
+          // merge can be further away in the graph than one on another parent (see
+          // `first_bookmark_in_log_order`'s doc). It is the first one walking down History, so that's
+          // what the tooltip says.
+          .help(ancestorBookmark ? "First ancestor bookmark in history" : "Bookmark / branch")
         if let meta {
           if let changeID = meta.changeID {
             Text(changeID).font(.system(.callout, design: .monospaced))
@@ -674,7 +696,7 @@ struct ChangesPanel: View {
           // The same gray capsules the History list rows and changeset header use, one step down
           // from the ids beside them (`.caption` under `.callout`, as the list's `.caption2` sits
           // under its `.caption`) so the pill doesn't outweigh this header's larger type.
-          ForEach(meta.refs, id: \.self) { ref in
+          ForEach(extraRefs, id: \.self) { ref in
             Text(ref).font(.caption)
               .lineLimit(1).truncationMode(.tail)
               .padding(.horizontal, 5).padding(.vertical, 1)
