@@ -237,6 +237,10 @@ fn build_commit(
         refs: bookmarks.get(&commit_id).cloned().unwrap_or_default(),
         parent_ids: c.parent_ids().iter().map(|id| id.hex()).collect(),
         is_working_copy: wc_id.map(|w| w == c.id()).unwrap_or(false),
+        // The virtual root commit, asked of the store rather than pattern-matched on an all-zero hex
+        // id — that spelling is the git backend's encoding of it, not the definition. Set here (not in
+        // `log_page`) so every path that builds a jj commit carries it.
+        is_root: c.id() == repo.store().root_commit_id(),
         change_offset,
         divergent_siblings: Vec::new(),
         push_state: push_of(c.id()),

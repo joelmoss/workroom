@@ -23,11 +23,12 @@ fn main() {
             );
             for c in &page.commits {
                 println!(
-                    "{}  change={}  {}  wc={}  refs={:?}  | {}",
+                    "{}  change={}  {}  wc={}  root={}  refs={:?}  | {}",
                     c.short_id,
                     c.change_id.as_deref().unwrap_or("-"),
                     c.authors.first().map(|a| a.name.as_str()).unwrap_or("?"),
                     c.is_working_copy,
+                    c.is_root,
                     c.refs,
                     c.summary,
                 );

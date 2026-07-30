@@ -256,6 +256,57 @@ fn log_page_reports_reached_end_only_when_the_page_holds_everything() {
     assert_eq!(summaries(&short.commits), summaries(&full.commits)[..3]);
 }
 
+/// jj's virtual **root commit** is on `::@`, so it IS on the page — deliberately, for parity with
+/// `jj log`. What it must not be is indistinguishable from a real commit: it has no author, no
+/// description and an epoch timestamp, so the History pane renders it as `root()` off `is_root`
+/// rather than as "(no description), 56 yr ago". This pins both halves: the flag is set on exactly
+/// the last row, and the page still holds everything `jj log -r ::@` prints.
+#[test]
+fn log_page_flags_the_root_commit() {
+    if common::skip_without(&["jj"], "root-commit flag test") {
+        return;
+    }
+    let (dir, cfg) = init_repo("logroot");
+    std::fs::write(dir.join("a.txt"), b"a\n").unwrap();
+    jj(&["commit", "-m", "only"], &dir, &cfg);
+
+    let page = page(&dir, 20);
+    assert_eq!(
+        page.commits.len(),
+        jj_log_ids(&dir, &cfg).len(),
+        "the root commit stays on the page — `jj log -r ::@` prints it too"
+    );
+    let root = page.commits.last().expect("a non-empty page");
+    assert!(
+        root.is_root,
+        "the oldest row of a jj page is `root()`: {:?}",
+        summaries(&page.commits)
+    );
+    assert!(
+        root.commit_id.chars().all(|c| c == '0'),
+        "the git-backed root commit's id is all zeros, got {}",
+        root.commit_id
+    );
+    // Why the flag is needed at all: root's own fields are empty (the signature is present but
+    // blank, and the timestamp is the epoch), so nothing about the DATA distinguishes it from a
+    // description-less commit authored by nobody in 1970 — which is precisely how the pane used to
+    // render it, `?` avatar included.
+    assert!(root.summary.is_empty(), "root has no description");
+    assert!(
+        root.authors
+            .iter()
+            .all(|a| a.name.is_empty() && a.email.is_empty()),
+        "root's author signature is blank, got {:?}",
+        root.authors
+    );
+    assert_eq!(root.timestamp_ms, 0, "root is stamped at the epoch");
+    assert_eq!(
+        page.commits.iter().filter(|c| c.is_root).count(),
+        1,
+        "only `root()` is flagged; the real commits must not be"
+    );
+}
+
 /// Named for what the walk promises — the first bookmark in LOG order — not "the nearest", which it
 /// deliberately isn't (see `first_bookmark_in_log_order`, and the test below this one for a graph
 /// where the two answers differ). Here they coincide, and the defect being pinned is the timestamp

@@ -79,21 +79,29 @@ struct HistoryPanel: View {
     ScrollView {
       VStack(alignment: .leading, spacing: 0) {
         ForEach(model.commits) { commit in
-          HistoryRow(
-            commit: commit,
-            // Page-level, so an unpushed row's tooltip can name the origin branch it was measured
-            // against instead of saying "origin" generically.
-            pushScope: model.pushScope,
-            // Open any commit's changeset — the row itself, or one of its divergent siblings. Preview
-            // on a single click, persist on a quick double-click (siblings only ever preview).
-            open: { target, persist in
-              if persist {
-                store.openChangesetPersistent(commitID: target.commitID, title: title(target))
-              } else {
-                store.openChangesetPreview(commitID: target.commitID, title: title(target))
-              }
-            },
-            sessions: store.terminals)
+          if commit.isRoot {
+            // jj's `root()` shares almost nothing with a real commit row — no author, time, refs,
+            // push state, divergence or changeset to open — so it gets its own view rather than a
+            // `HistoryRow` body threaded with suppressions.
+            HistoryRootRow(commit: commit)
+          } else {
+            HistoryRow(
+              commit: commit,
+              // Page-level, so an unpushed row's tooltip can name the origin branch it was measured
+              // against instead of saying "origin" generically.
+              pushScope: model.pushScope,
+              // Open any commit's changeset — the row itself, or one of its divergent siblings.
+              // Preview on a single click, persist on a quick double-click (siblings only ever
+              // preview).
+              open: { target, persist in
+                if persist {
+                  store.openChangesetPersistent(commitID: target.commitID, title: title(target))
+                } else {
+                  store.openChangesetPreview(commitID: target.commitID, title: title(target))
+                }
+              },
+              sessions: store.terminals)
+          }
         }
         if !model.reachedEnd {
           Button {
@@ -342,6 +350,45 @@ private struct HistoryRow: View {
       return descriptor.commitID == commit.commitID
     }
     return false
+  }
+}
+
+/// jj's virtual **root commit**, rendered the way `jj log` prints it: `◆ root() 00000000`.
+///
+/// Every jj history terminates in it (`::@` includes `root()`, so it's on the log page for parity with
+/// `jj log`), but it is not a commit anyone authored: no author, no description, no changes, and an
+/// epoch timestamp. Mapped through `HistoryRow` it therefore read as "(no description) · 56 yr ago"
+/// behind a `?` avatar — a broken-looking commit rather than the end of the graph. So this row states
+/// what it is and shows nothing it doesn't have.
+///
+/// **Inert on purpose**: no hover highlight and no tap. There is no changeset to open (root's diff is
+/// empty by definition), so the row must not look or behave like it opens one.
+private struct HistoryRootRow: View {
+  let commit: VCSCommit
+
+  var body: some View {
+    HStack(spacing: 6) {
+      // jj's own glyph for the commit, in the same leading slot `HistoryRow` puts the `@` marker —
+      // so the graph column lines up down the list.
+      Text("◆")
+        .font(.system(.body, design: .monospaced))
+      Text("root()")
+        .font(.system(.callout, design: .monospaced))
+      Text(commit.shortID)
+        .font(.system(.caption, design: .monospaced))
+      Spacer(minLength: 0)
+    }
+    .foregroundStyle(.secondary)
+    .padding(.vertical, 6).padding(.horizontal, 8)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .help(
+      "root() — the virtual empty commit every jj repo starts from. It has no author, description or "
+        + "changes, so there is nothing to open."
+    )
+    .accessibilityElement(children: .combine)
+    // A DIFFERENT identifier from `HistoryRow` on purpose: the row is not a commit row, and the UI
+    // tests index `HistoryRow` positionally / count it against the unpushed badges.
+    .accessibilityIdentifier("HistoryRootRow")
   }
 }
 

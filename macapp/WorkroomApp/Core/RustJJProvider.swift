@@ -254,7 +254,8 @@ struct RustJJProvider: VCSProviding {
       isWorkingCopy: c.isWorkingCopy,
       changeOffset: c.changeOffset.map(Int.init),
       divergentSiblings: c.divergentSiblings.map(Self.map),
-      pushState: map(c.pushState)
+      pushState: map(c.pushState),
+      isRoot: c.isRoot
     )
   }
 

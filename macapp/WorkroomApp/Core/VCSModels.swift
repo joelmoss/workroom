@@ -81,6 +81,12 @@ struct VCSCommit: Equatable, Identifiable, Sendable {
   /// Whether this commit is on `origin` — see `VCSPushState`. Defaulted so the many existing call
   /// sites (fixtures, tests, the changeset paths) needn't pass it and read as `.unknown`.
   var pushState: VCSPushState = .unknown
+  /// jj-only: the repo's virtual **root commit** (`◆ root() 00000000` in `jj log`) — the all-zero-id
+  /// commit every jj history terminates in. It's a real row on the log page (`::@` includes it, so
+  /// `jj log` prints it), but it carries no author, description or changes, and is stamped at the
+  /// epoch — so `HistoryRootRow` renders it as `root()` rather than letting it read as a
+  /// description-less commit from 1970. Defaulted false: git has no such pseudo-commit.
+  var isRoot: Bool = false
   var id: String { commitID }
   /// jj-only: true when this commit's change ID diverges — it resolves to more than one visible
   /// commit, so `divergentSiblings` carries the other copies. Always false for git (no change ID).

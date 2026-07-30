@@ -621,8 +621,8 @@ enum UITestFixture {
 /// diffs are NOT sourced here: `DiffViewer` serves `UITestFixture.diff(for:)` directly in fixture
 /// mode, so `fileDiff` is only a protocol stub.
 struct FixtureVCSProvider: VCSProviding {
-  /// Four newest-first commits; the first is the working copy (`@`) and carries the `main` ref, so the
-  /// History rows exercise the ref chip + `@` marker.
+  /// Four newest-first commits plus jj's `root()` (see `rootCommit`); the first is the working copy
+  /// (`@`) and carries the `main` ref, so the History rows exercise the ref chip + `@` marker.
   /// The two divergent copies of commit 2's change (`wqp`) — off the `::@` line, so they only appear
   /// when the History row's "diverges" disclosure is expanded. Each carries its own `/N` offset.
   static let divergentSiblings: [VCSCommit] = {
@@ -641,13 +641,24 @@ struct FixtureVCSProvider: VCSProviding {
     ]
   }()
 
+  /// jj's virtual root commit, as `RustJJProvider` really reports it: the all-zero id, a BLANK author
+  /// signature (present, not absent — hence the `?` avatar the old row drew), no description, and the
+  /// epoch timestamp. The oldest row of every jj page, and the one `HistoryRootRow` must render as
+  /// `◆ root() 00000000`.
+  static let rootCommit = VCSCommit(
+    commitID: String(repeating: "0", count: 40), shortID: "00000000", changeID: "zzzzzzzz",
+    summary: "", body: "", authors: [VCSAuthor(name: "", email: "")],
+    timestamp: Date(timeIntervalSince1970: 0), refs: [], parentIDs: [], isWorkingCopy: false,
+    isRoot: true)
+
   static let commits: [VCSCommit] = {
     let author = VCSAuthor(name: "Ada Fixture", email: "ada@example.com")
-    return (1...4).map { (n: Int) -> VCSCommit in
+    let real = (1...4).map { (n: Int) -> VCSCommit in
       let base: TimeInterval = 1_700_000_000
       let ts = Date(timeIntervalSince1970: base - TimeInterval(n * 3600))
       let refs: [String] = n == 1 ? ["main"] : []
-      let parents: [String] = n < 4 ? ["fixturecommit\(n + 1)"] : []
+      // The oldest real commit descends from `root()`, like every jj history.
+      let parents: [String] = n < 4 ? ["fixturecommit\(n + 1)"] : [rootCommit.commitID]
       // Commit 2's change-id (`wqp`) is divergent: it resolves to more than one visible commit, so
       // its row exercises the "diverges (2)" disclosure and its expanded sibling list.
       let changeID: String? = n == 1 ? "zqxyparent" : (n == 2 ? "wqp" : nil)
@@ -664,6 +675,8 @@ struct FixtureVCSProvider: VCSProviding {
         authors: [author], timestamp: ts, refs: refs, parentIDs: parents, isWorkingCopy: n == 1,
         divergentSiblings: n == 2 ? divergentSiblings : [], pushState: push)
     }
+    // `root()` terminates the page, exactly where a real jj log puts it.
+    return real + [rootCommit]
   }()
 
   /// One origin branch, so the badge tooltips name it rather than counting.

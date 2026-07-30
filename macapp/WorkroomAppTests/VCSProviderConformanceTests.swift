@@ -298,6 +298,16 @@ final class VCSProviderConformanceTests: XCTestCase {
     XCTAssertTrue(
       page.commits.contains { $0.isWorkingCopy }, "jj log should include the @ working-copy commit")
 
+    // jj's `root()` is on `::@`, so it's the page's last row — and the app end of the UniFFI hop must
+    // receive it FLAGGED, or `HistoryPanel` renders it as a description-less commit from 1970 (which
+    // is what it looked like before `isRoot` existed). Only root may carry the flag.
+    XCTAssertEqual(
+      page.commits.filter(\.isRoot).count, 1, "exactly one row is root(): \(summaries)")
+    XCTAssertTrue(page.commits.last?.isRoot == true, "root() is the oldest row")
+    XCTAssertTrue(
+      page.commits.last?.commitID.allSatisfy { $0 == "0" } == true,
+      "root()'s commit id is all zeros: \(page.commits.last?.commitID ?? "-")")
+
     let ref = try await RustJJProvider().currentRef(root: url)
     XCTAssertEqual(ref.name, "feature", "the bookmark on @ is the current ref")
     XCTAssertEqual(ref.kind, .branch)

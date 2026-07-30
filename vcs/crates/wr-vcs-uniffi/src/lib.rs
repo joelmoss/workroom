@@ -45,6 +45,9 @@ pub struct Commit {
     pub refs: Vec<String>,
     pub parent_ids: Vec<String>,
     pub is_working_copy: bool,
+    /// jj-only: the repo's virtual root commit (`root()`) — no author, message or changes. Always
+    /// false for git.
+    pub is_root: bool,
     /// jj-only: this commit's `/N` offset within its divergent set. `None` unless divergent.
     pub change_offset: Option<u32>,
     /// jj-only: the other visible commits sharing this change-id (the divergent copies). Empty
@@ -185,6 +188,7 @@ impl From<model::Commit> for Commit {
             refs: c.refs,
             parent_ids: c.parent_ids,
             is_working_copy: c.is_working_copy,
+            is_root: c.is_root,
             change_offset: c.change_offset,
             divergent_siblings: c.divergent_siblings.into_iter().map(Commit::from).collect(),
             push_state: c.push_state.into(),
@@ -534,6 +538,7 @@ mod tests {
             refs: Vec::new(),
             parent_ids: Vec::new(),
             is_working_copy: false,
+            is_root: false,
             change_offset: None,
             divergent_siblings: Vec::new(),
             push_state: model::PushState::Unpushed,
@@ -548,6 +553,7 @@ mod tests {
                 email: "a@example.com".into(),
             }],
             divergent_siblings: vec![sibling],
+            is_root: true,
             ..bare("root")
         });
         assert_eq!(commit.commit_id, "root");
@@ -562,6 +568,13 @@ mod tests {
         assert_eq!(
             push_state_name(&commit.divergent_siblings[0].push_state),
             "Unpushed"
+        );
+        // Same trap for the root flag: the History pane renders a whole different row off it, so a
+        // dropped `is_root` would silently turn `root()` back into a 1970 commit with no author.
+        assert!(commit.is_root, "the root flag must cross the FFI boundary");
+        assert!(
+            !commit.divergent_siblings[0].is_root,
+            "a sibling's own flag must not inherit the parent's"
         );
     }
 }

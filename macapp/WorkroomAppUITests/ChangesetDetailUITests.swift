@@ -209,4 +209,35 @@ final class ChangesetDetailUITests: XCTestCase {
     ).firstMatch
     XCTAssertTrue(waitExists(moved), "the renamed row shows `old → new`, not just the new path")
   }
+
+  /// jj's virtual root commit gets its own row: `◆ root() 00000000`, with nothing it doesn't have (no
+  /// author, no relative time) and nothing to click. Before it existed, the oldest row of every jj
+  /// history read "(no description) · 56 yr ago" behind a `?` avatar — root's blank signature and epoch
+  /// timestamp rendered as if someone had authored it in 1970.
+  ///
+  /// Two halves: the row states what it is, and it is INERT (root has no diff, so a click must not open
+  /// a changeset tab). Its own identifier, not `HistoryRow` — the commit rows are indexed positionally
+  /// and counted against the unpushed badges elsewhere in this suite.
+  func testRootRowRendersAsRootAndOpensNothing() throws {
+    let app = launchedApp()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+    openHistory(app)
+
+    let row = el(app, "HistoryRootRow")
+    XCTAssertTrue(row.waitForExistence(timeout: 8), "the page's oldest row is the root() row")
+
+    // The row combines its children, so `root()` + the zero short id surface as its own content.
+    let spoken = "\(row.label) \(row.value as? String ?? "")"
+    XCTAssertTrue(spoken.contains("root()"), "the row names itself root(): \(spoken)")
+    XCTAssertTrue(spoken.contains("00000000"), "the row shows the zero short id: \(spoken)")
+    XCTAssertFalse(
+      spoken.contains("no description"), "root() must not read as a description-less commit")
+
+    // Inert: clicking it opens no changeset (and no tab chip for it).
+    row.click()
+    XCTAssertFalse(
+      waitExists(el(app, "ChangesetDetail"), true, 3), "root() has no changeset to open")
+    XCTAssertFalse(el(app, "terminal.tab.root()").exists, "no tab is opened for root()")
+    XCTAssertFalse(el(app, "terminal.tab.00000000").exists, "no tab is opened for root()")
+  }
 }

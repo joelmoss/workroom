@@ -83,6 +83,12 @@ pub struct Commit {
     pub parent_ids: Vec<String>,
     /// jj working copy (`@`).
     pub is_working_copy: bool,
+    /// jj-only: the repo's virtual **root commit** — the all-zero-id, author-less, message-less,
+    /// epoch-timestamped commit every jj history terminates in (`◆ root() 00000000` in `jj log`).
+    /// It sits on `::@` like any ancestor, so the log page carries it; the flag is what lets the UI
+    /// render it as `root()` instead of a commit with no author, no description and a 1970 date.
+    /// Always false for git — a git repo's first commit is a real commit.
+    pub is_root: bool,
     /// jj-only: this commit's offset among all commits sharing its change-id (the `/N` jj appends,
     /// e.g. the `0` in `xl/0`) — hidden commits count, so it can be non-contiguous. `None` unless the
     /// change-id is divergent. Set on both a divergent commit and each of its `divergent_siblings`.
