@@ -2318,6 +2318,15 @@ final class AppStore: ObservableObject {
     creation = WorkroomCreation(session: session, project: project)
     selectedProjectID = project.id
 
+    // The landing runs on the main actor and `await reload()`s before it records anything, so it can
+    // still be in flight when `cli.create` returns — while EVERYTHING below keys on what it records
+    // (`creation?.targetID`, `creation?.hasSetup`). So hold its task and await it rather than racing it:
+    // when the ready→exit gap was short enough (a fast setup script; the fake CLI in the tests) the
+    // flow read `targetID == nil`, re-landed with `setup: false`, and then cleared `creation` — losing
+    // the setup dialog and its log, which is the whole point of a setup script. The `catch` awaits it
+    // too, so a setup *failure* can't lose its dialog the same way.
+    let landing = CreationLandingBox()
+
     do {
       let created = try await cli.create(
         project: project.path,
@@ -2328,13 +2337,17 @@ final class AppStore: ObservableObject {
           // The workroom now exists: land on it (the provisional chip becomes the real named chip, and
           // the detail moves from the loader to the new workroom's slot). A setup script shows its
           // dialog there; a no-setup workroom keeps the loader until the create completes.
-          DispatchQueue.main.async {
+          //
+          // Registered SYNCHRONOUSLY — no `DispatchQueue.main.async` wrapper, since `Task { @MainActor }`
+          // already hops to the main actor. That extra hop meant the task might not be *registered* yet
+          // when `create` returned, so there was nothing for the `await` below to wait on.
+          landing.set(
             Task { @MainActor in
               await self.landOnCreatedWorkroom(name: name, project: project, setup: setup)
-            }
-          }
+            })
         }
       )
+      await landing.finish()
       session.finish()
       // Land now if the early "created" event never arrived (older CLI) — no setup flag to read.
       if creation?.targetID == nil {
@@ -2359,6 +2372,7 @@ final class AppStore: ObservableObject {
         creation = nil
       }
     } catch {
+      await landing.finish()  // as above: read the landing's state, don't race it
       // Even on (partial) failure, reload so a "created but setup failed" workroom shows up.
       await reload()
       if let name = creation?.name, let id = creation?.targetID {
@@ -3710,6 +3724,31 @@ struct WorkroomCreation {
   /// Whether a setup script is (or was) running — set from the "created" event, and forced true on a
   /// post-create failure so the dialog stays up with a Dismiss button.
   var hasSetup = false
+}
+
+/// Hands the "landed on the created workroom" task from `createWorkroom`'s `onReady` closure back to
+/// `createWorkroom` itself, so the flow can await the landing instead of racing it (see the call site).
+/// A box is needed because `onReady` is a *synchronous* callback the CLI invokes from whichever thread
+/// it is parsing on — it can start the task but cannot await it. Locked rather than actor-isolated so
+/// `set` stays synchronous: registration has to be complete when `onReady` returns.
+private final class CreationLandingBox: @unchecked Sendable {
+  private let lock = NSLock()
+  private var task: Task<Void, Never>?
+
+  func set(_ task: Task<Void, Never>) {
+    lock.lock()
+    defer { lock.unlock() }
+    self.task = task
+  }
+
+  /// Await the registered landing. A no-op when the CLI never fired its "created" event (an older CLI,
+  /// or a failure before the workroom existed) — `createWorkroom`'s own fallback covers that case.
+  func finish() async {
+    lock.lock()
+    let pending = task
+    lock.unlock()
+    await pending?.value
+  }
 }
 
 /// The live log for one create/delete run. Lines stream in from the CLI's NDJSON

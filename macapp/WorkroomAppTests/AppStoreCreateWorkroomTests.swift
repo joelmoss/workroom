@@ -45,8 +45,12 @@ private final class CreatingFakeCLI: WorkroomCLIProtocol {
   ) async throws -> CreateResponse {
     for line in logLines { onLog?(line) }
     onReady?(workroomName, workroomAbsPath, hasSetup)
-    // Let the main-queue onReady work (name/target/hasSetup + mount) settle before returning.
-    try? await Task.sleep(nanoseconds: 40_000_000)
+    // Returns IMMEDIATELY after the ready event — the worst case for the create flow, and the whole
+    // point of this fake. There used to be a 40ms sleep here "to let the main-queue onReady work
+    // settle", which papered over a real ordering hazard: the landing is async, so a create whose
+    // ready→exit gap is short read `creation?.targetID == nil`, re-landed with `setup: false` and
+    // cleared the dialog. 40ms only made that rare (it still flaked ~1 run in 6). `createWorkroom`
+    // now awaits the landing, so no sleep is needed and this gap is a deterministic assertion.
     if failAfterReady { throw WorkroomCLIError.timedOut }
     return CreateResponse(
       name: workroomName, path: workroomAbsPath, vcs: "git", project: project)
