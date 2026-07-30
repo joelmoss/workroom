@@ -392,11 +392,13 @@ private struct HistoryRootRow: View {
   }
 }
 
-/// The history row's hover card — the same header layout the changeset detail view uses
-/// (`ChangesetDetailView.header`), so a commit reads identically on hover as when opened: the summary
-/// as a headline, an identity/author/date/refs line, then the full description body. Built purely from
-/// the `VCSCommit` already in hand — no changeset fetch — so it omits the detail's diff `+N −M` stat
-/// and file list (those need the resolved changeset). Rendered inside a `.popover`.
+/// The history row's hover card — a peek, not the whole commit: the summary, then the same
+/// identity/refs/author/date line the changeset detail view heads with (`ChangesetDetailView.header`),
+/// so those facts read identically on hover as when opened. The description is deliberately left out
+/// along with the detail's diff `+N −M` stat and file list — the stat and files need a resolved
+/// changeset (the card is built purely from the `VCSCommit` already in hand, no fetch), and an
+/// unclamped body grew the card arbitrarily tall on a long commit message. All of it is one click
+/// away in the detail view. Rendered inside a `.popover`.
 ///
 /// Deliberately `internal`, not `private`: XCUITest can't drive `.onHover`, so the card's contents are
 /// covered by a view-level test that constructs it directly (`HistoryCommitCardTests`).
@@ -422,7 +424,7 @@ struct HistoryCommitCard: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 5) {
       Text(commit.summary.isEmpty ? "(no description)" : commit.summary)
-        .font(.headline)
+        .font(.callout.weight(.semibold))
         .foregroundStyle(commit.summary.isEmpty ? .secondary : .primary)
         .textSelection(.enabled)
         .fixedSize(horizontal: false, vertical: true)
@@ -471,13 +473,6 @@ struct HistoryCommitCard: View {
         Spacer(minLength: 0)
       }
       .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-      if !commit.body.isEmpty {
-        Text(commit.body)
-          .font(.callout).foregroundStyle(.secondary)
-          .textSelection(.enabled)
-          .fixedSize(horizontal: false, vertical: true)
-          .frame(maxWidth: .infinity, alignment: .leading)
-      }
     }
     .padding(.horizontal, 12).padding(.vertical, 10)
     .frame(width: 420, alignment: .leading)
