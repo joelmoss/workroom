@@ -156,6 +156,14 @@ enum UITestFixture {
     flag("WorkroomUITestWorkroomSplit")
   }
 
+  /// When set (`-WorkroomUITestSecondWorkroomSplit 1`, alongside `-WorkroomUITestWorkroomSplit 1` and
+  /// `-WorkroomUITestWorkroomCount 3`), the fixture seeds a SECOND split group from the 2nd + 3rd
+  /// workrooms — a window holds several groups at once, and only the one containing the selection is
+  /// shown. Lets the XCUITest hop between groups and prove neither dissolves, without a flaky drag.
+  static var secondWorkroomSplit: Bool {
+    flag("WorkroomUITestSecondWorkroomSplit")
+  }
+
   /// When set (`-WorkroomUITestConflict 1`), the fixture workroom is **conflicted**: its changed-file
   /// list gains a `.conflicted` entry (`conflictedFilePath`) and the status carries the top-level
   /// `conflicted` flag. Covers the jj per-file conflict status end-to-end in the UI — the Changes row

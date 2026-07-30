@@ -108,6 +108,22 @@ final class PaneLayoutTests: XCTestCase {
     }
   }
 
+  func testContainsSplitFindsRootAndNestedNodesOnly() {
+    // The lookup a holder of SEVERAL trees uses to find which one owns a dragged divider
+    // (`AppStore.setWorkroomSplitRatio` over `workroomSplits`).
+    let outer = UUID()
+    let inner = UUID()
+    let tree = PaneLayout.split(
+      id: outer, orientation: .horizontal, ratio: 0.5,
+      first: .leaf(a),
+      second: .split(
+        id: inner, orientation: .vertical, ratio: 0.5, first: .leaf(b), second: .leaf(c)))
+    XCTAssertTrue(tree.containsSplit(outer))
+    XCTAssertTrue(tree.containsSplit(inner), "nested nodes count too")
+    XCTAssertFalse(tree.containsSplit(UUID()), "an id from another tree must not match")
+    XCTAssertFalse(PaneLayout.leaf(a).containsSplit(outer), "a lone leaf owns no split node")
+  }
+
   func testRatioSanitizeClampsOpenInterval() {
     XCTAssertEqual(PaneRatio.sanitize(0), 0.001, accuracy: 0.0001)
     XCTAssertEqual(PaneRatio.sanitize(1), 0.999, accuracy: 0.0001)

@@ -237,13 +237,16 @@ final class AppStore: ObservableObject {
   /// the inspector is a custom column now, not the native NavigationSplitView one, so nothing writes
   /// this on every layout pass. `nil` until first set this session; falls back to `Defaults`.
   @Published var dockedInspectorWidth: CGFloat?
-  /// The workroom-into-workroom split (issue #23 follow-up): two+ workrooms shown side by side, each a
-  /// full `TargetTerminalDetail`. `nil` = the single `selectedTarget` (the normal case). Leaves are
-  /// `SidebarID`; the focused member IS `selectedTargetID`. Always ≥2 *live* leaves when non-nil (a lone
-  /// leaf is "no split", mirroring the terminal-split invariant). Session-only (not persisted, like the
-  /// terminal split). All edits go through the helpers in `AppStore+WorkroomSplit.swift`; stale leaves
-  /// resolve away in `resolvedSplitLeaves`, so it's self-healing. See that file for the transforms.
-  @Published var workroomSplit: PaneLayout<SidebarID>?
+  /// The workroom-into-workroom split groups (issue #23 follow-up): each entry is two+ workrooms shown
+  /// side by side, every one a full `TargetTerminalDetail`. Empty = the single `selectedTarget` (the
+  /// normal case). Leaves are `SidebarID`; the focused member IS `selectedTargetID`. **Several groups can
+  /// coexist** — grouping two solo workrooms leaves the other groups alone — and they're disjoint (a
+  /// workroom is in at most one) with ≥2 leaves each (a lone leaf is "no split", mirroring the
+  /// terminal-split invariant). At most one group is *visible*: the one holding the selection.
+  /// Session-only (not persisted, like the terminal split). All edits go through the helpers in
+  /// `AppStore+WorkroomSplit.swift`; stale leaves resolve away in `resolvedSplitLeaves(of:)`, so it's
+  /// self-healing. See that file for the transforms.
+  @Published var workroomSplits: [PaneLayout<SidebarID>] = []
   /// Terminal targets whose terminal subtree is *expanded* in the sidebar (issue #30). Inverse
   /// polarity to `collapsedProjects`: terminals are collapsed by default, so the set holds only the
   /// expanded ones (empty = all collapsed). Session-only and deliberately NOT persisted — the
@@ -707,9 +710,11 @@ final class AppStore: ObservableObject {
   /// Without this gate that stale claim read as "the user picked this workroom" and yanked the selection
   /// straight back to the split member — so selecting a non-member chip took two clicks. A first
   /// responder change is only ever a *user's* pane choice when the split is actually being displayed.
+  /// Scoping to the *visible* group (`visibleWorkroomSplit`) covers the same fault across groups: a
+  /// member of some OTHER group is equally off screen, and its stale claim must not select it either.
   private func focusWorkroomMemberFromSurface(_ targetID: TerminalTarget.ID) {
-    guard let split = workroomSplit, isWorkroomSplitVisible,
-      let sid = Self.sidebarID(forTargetID: targetID, in: projects), split.contains(sid),
+    guard let group = visibleWorkroomSplit, isWorkroomSplitVisible,
+      let sid = Self.sidebarID(forTargetID: targetID, in: projects), group.contains(sid),
       selectedTargetID != sid
     else { return }
     isNavigatingHistory = true
@@ -2053,10 +2058,24 @@ final class AppStore: ObservableObject {
         // root's terminal too so its pane mounts.
         if UITestFixture.workroomSplit {
           terminals.ensureTab(for: project.rootTarget)
-          workroomSplit = .split(
-            id: UUID(), orientation: .horizontal, ratio: 0.5,
-            first: .leaf(.root(project: project.path)),
-            second: .leaf(.workroom(project: project.path, name: workroom.name)))
+          workroomSplits = [
+            .split(
+              id: UUID(), orientation: .horizontal, ratio: 0.5,
+              first: .leaf(.root(project: project.path)),
+              second: .leaf(.workroom(project: project.path, name: workroom.name)))
+          ]
+          // Second-group scenario: a window holds SEVERAL split groups, so seed a second one from two
+          // more workrooms (needs `-WorkroomUITestWorkroomCount 3`). Both groups persist; the visible
+          // one follows the selection, which is why the test can hop between them.
+          if UITestFixture.secondWorkroomSplit, project.workrooms.count >= 3 {
+            let pair = Array(project.workrooms[1...2])
+            for member in pair { terminals.ensureTab(for: member.target(inProject: project.path)) }
+            workroomSplits.append(
+              .split(
+                id: UUID(), orientation: .horizontal, ratio: 0.5,
+                first: .leaf(.workroom(project: project.path, name: pair[0].name)),
+                second: .leaf(.workroom(project: project.path, name: pair[1].name))))
+          }
         }
         // Seed a representative notification history (the inspector's Notifications panel is otherwise
         // empty in fixture mode) so it gets visual + UI-test coverage. Keyed to the workroom target
@@ -2107,11 +2126,15 @@ final class AppStore: ObservableObject {
     // Keep the selected target only if it still exists. `validatedSelection` can only
     // return the existing selection or nil — it never fabricates one, so a load/refresh
     // can't auto-select a root or workroom the user didn't pick (D4).
+    // Remember what was selected before validation nils a dead one: it's the only record of which split
+    // group the user was viewing, and the prune's re-point needs it to land on THAT group's survivor
+    // rather than some other group's.
+    let formerSelection = selectedTargetID
     selectedTargetID = Self.validatedSelection(selectedTargetID, in: fresh)
     // Drop any split leaf whose workroom went away on reload (issue #23 follow-up self-heal); collapses
     // to a survivor / dissolves below two, re-pointing selection. Runs after selection is validated so
     // history/notifications/run-toolbar (all keyed on `selectedTargetID`) follow the survivor.
-    pruneWorkroomSplitToLiveLeaves()
+    pruneWorkroomSplitToLiveLeaves(formerSelection: formerSelection)
     // Forget labels for projects that went away.
     let liveIDs = Set(fresh.map(\.id))
     rootRefs = rootRefs.filter { liveIDs.contains($0.key) }
@@ -3514,10 +3537,14 @@ final class AppStore: ObservableObject {
   /// member is `selectedTarget`, but the *other* members render beside it (issue #23), so their
   /// terminals are equally on screen. `handleActivity` uses this to drive the on-screen border pulse
   /// (issue #82) for a visible non-cursor pane, and to tell an on-screen pane from an off-screen one
-  /// when deciding whether the activity is "seen". nil if not shown.
+  /// when deciding whether the activity is "seen". nil if not shown. Resolves the visible group ONCE
+  /// (`isWorkroomSplitVisible` + `resolvedSplitLeaves()` would each re-walk every group's leaves) — this
+  /// runs per activity event per pane.
   func onScreenTarget(forID targetID: TerminalTarget.ID) -> TerminalTarget? {
     if let selected = selectedTarget, selected.id == targetID { return selected }
-    guard isWorkroomSplitVisible, let leaves = resolvedSplitLeaves() else { return nil }
+    guard let group = visibleWorkroomSplit, let leaves = resolvedSplitLeaves(of: group) else {
+      return nil
+    }
     return leaves.first { $0.target.id == targetID }?.target
   }
 

@@ -5,7 +5,8 @@ import Foundation
 /// - `PaneLayout<TerminalTab.ID>` (alias `TerminalPaneLayout`) — a terminal target's split of tabs.
 /// - `PaneLayout<SidebarID>` — the workroom-into-workroom split (issue #23 follow-up).
 ///
-/// The model is **single-layout**: a container has at most ONE split at a time, plus solo leaves. A
+/// A terminal target holds at most ONE such tree (plus solo tabs); a window holds a LIST of them for
+/// the workroom split (several groups at once, `AppStore.workroomSplits`). Either way a
 /// leaf REFERENCES its content by id — it does not own the view/surface (the tab / target detail does).
 /// That keeps this a pure value tree: `Equatable`, and unit-testable with no AppKit/libghostty in sight.
 ///
@@ -68,6 +69,18 @@ indirect enum PaneLayout<Leaf: Hashable>: Equatable {
   var firstTabID: Leaf { tabIDs[0] }
 
   func contains(_ id: Leaf) -> Bool { tabIDs.contains(id) }
+
+  /// Whether this (sub)tree holds the split NODE `splitID` — the divider-addressing counterpart to
+  /// `contains(_:)`. Lets a caller holding several trees (the window's workroom split groups, issue #23
+  /// follow-up) find which one owns the divider being dragged, instead of rewriting them all.
+  func containsSplit(_ splitID: UUID) -> Bool {
+    switch self {
+    case .leaf:
+      return false
+    case .split(let id, _, _, let first, let second):
+      return id == splitID || first.containsSplit(splitID) || second.containsSplit(splitID)
+    }
+  }
 
   // MARK: Pure transforms
 

@@ -249,4 +249,66 @@ final class SplitPaneUITests: XCTestCase {
     XCTAssertNotNil(hittableMenuItem(app, "Remove Label"), "…and Remove Label")
     XCTAssertNil(hittableMenuItem(app, "Set Label…"))
   }
+
+  // MARK: Several split groups at once
+
+  /// A workroom tab chip by workroom name — the chip's identifier is `workroom.tab.wr|<path>|<name>`,
+  /// and the fixture's temp project path isn't known to the test, so match the trailing name.
+  private func workroomChip(_ app: XCUIApplication, named name: String) -> XCUIElement {
+    app.descendants(matching: .any)
+      .matching(NSPredicate(format: "identifier ENDSWITH %@", "|\(name)")).firstMatch
+  }
+
+  /// Two split groups coexist: grouping a second pair of workrooms must NOT un-split the first group.
+  /// The fixture starts with group A (root + fixture workroom, selected → visible) and group B (the 2nd
+  /// + 3rd workrooms, off screen). Selecting into B shows B's two panes; selecting back into A shows A's
+  /// two panes — with a single stored split, A would have been replaced and would render solo (1 pane).
+  func testTwoSplitGroupsBothPersistAcrossSelection() throws {
+    let app = XCUIApplication()
+    app.launchArguments += [
+      "-WorkroomUITestFixture", "1",
+      "-WorkroomUITestWorkroomSplit", "1",
+      "-WorkroomUITestSecondWorkroomSplit", "1",
+      "-WorkroomUITestWorkroomCount", "3",
+      "-ApplePersistenceIgnoreState", "YES",
+    ]
+    app.launch()
+    try openWorkroom(app)
+
+    assertCount(titlebars(app), reaches: 2)  // group A is visible (root + fixture workroom)
+
+    // Hop to group B by selecting one of its members' chips → B renders, both its panes grouped.
+    // Assert on the MEMBER LABELS, not just the count: the count is already 2 before the click, so a
+    // `count == 2` expectation alone would be satisfied by the pre-click state and a regression that
+    // dissolved the group after the click would slip past it.
+    let roomTwo = workroomChip(app, named: "uitest-room-2")
+    XCTAssertTrue(
+      roomTwo.waitForExistence(timeout: 6), "the 2nd workroom's chip should be in the bar")
+    roomTwo.click()
+    XCTAssertTrue(
+      memberTitleBar(app, labelled: "uitest-room-3").waitForExistence(timeout: 6),
+      "group B's other member renders beside the selected one")
+    XCTAssertTrue(
+      memberTitleBar(app, labelled: "uitest-room-2").exists,
+      "…and the selected member renders too — B is a split, not a solo pane")
+    XCTAssertFalse(
+      rootTitleBar(app).exists,
+      "group A is off screen while B is shown — one visible group at a time")
+
+    // Back to group A: it must still be a split, not a dissolved solo pane. The root member is the
+    // load-bearing assertion — it only renders if A survived B being created.
+    workroomChip(app, named: "uitest-room").click()
+    XCTAssertTrue(
+      rootTitleBar(app).waitForExistence(timeout: 6),
+      "group A still holds the project root beside its workroom — the second group didn't replace it"
+    )
+    XCTAssertTrue(
+      memberTitleBar(app, labelled: "uitest-room").exists, "…beside the fixture workroom member")
+    assertCount(titlebars(app), reaches: 2)  // exactly A's two members, nothing from B
+  }
+
+  /// A split group title bar addressed by its member's name (labels are `"<project>, workroom <name>"`).
+  private func memberTitleBar(_ app: XCUIApplication, labelled name: String) -> XCUIElement {
+    titlebars(app).matching(NSPredicate(format: "label CONTAINS[c] %@", name)).firstMatch
+  }
 }

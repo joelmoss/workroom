@@ -181,7 +181,8 @@ final class EmptiedWorkroomSelectionTests: XCTestCase {
 
     store.terminals.closeTab(fTab.id, for: featureTarget)
 
-    XCTAssertNil(store.workroomSplit, "emptying a 2-member split's pane dissolves it (issue #55)")
+    XCTAssertTrue(
+      store.workroomSplits.isEmpty, "emptying a 2-member split's pane dissolves it (issue #55)")
     XCTAssertEqual(
       store.selectedTargetID, wr("main"),
       "yields to the split survivor, NOT the rightmost tab (bugfix) — no double-jump")
