@@ -80,6 +80,12 @@ enum TabStripMetrics {
   /// Sub-pixel slack in the overflow comparison, so a live window resize can't thrash the mode on
   /// rounding alone.
   static let epsilon: CGFloat = 0.5
+  /// Widest a chip's title renders before it tail-truncates (the ellipsis + tooltip carry the rest).
+  /// One number for both strips *and* the workroom pane header, which deliberately matches them: all
+  /// three can be on screen at once, so a per-view copy — this was three, each cross-referenced only by
+  /// comment — is directly comparable and drifts visibly. Note a workroom chip spends it on two names
+  /// (project + workroom) against a terminal chip's one, so it starts truncating sooner.
+  static let maxChipTitle: CGFloat = 180
 }
 
 /// The overflow decision for a horizontal tab strip (issue #129): does the *inline* layout — the chip

@@ -178,7 +178,8 @@ private struct WorkroomPaneLeaf: View {
       // Every workroom is identified by its own header (issue #139), which in a split also names
       // *which* member this is and offers the way back out of the group.
       WorkroomPaneTitleBar(
-        target: target, projectPath: projectPath, workroomName: workroomName, focused: focused,
+        target: target, projectPath: projectPath, projectLabel: projectLabel,
+        workroomName: workroomName, focused: focused,
         controls: toolbarControls, onClose: onClose
       )
       // Drag the group by its title bar to move the whole member within the split (issue #110) —
@@ -340,6 +341,9 @@ enum WorkroomPaneToolbarPresentation {
 private struct WorkroomPaneTitleBar: View {
   let target: TerminalTarget
   let projectPath: String?
+  /// The project name, derived (with `workroomName`) by the leaf — which needs it for the close prompt
+  /// anyway, so deriving it a second time here would be two copies of one format to keep in step.
+  let projectLabel: String
   let workroomName: String?
   let focused: Bool
   /// Resolved by the leaf, which has the store — this view stays store-free on purpose (see
@@ -348,10 +352,6 @@ private struct WorkroomPaneTitleBar: View {
   let onClose: () -> Void
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   private let theme = ThemeService.shared
-
-  /// Matches the tab chip's `maxTitleWidth`, so the identity yields to the actions under width
-  /// pressure instead of squeezing them out of a narrow split member.
-  private static let maxTitleWidth: CGFloat = 180
 
   var body: some View {
     HStack(spacing: 6) {
@@ -379,7 +379,9 @@ private struct WorkroomPaneTitleBar: View {
       }
       .font(.subheadline)
       .lineLimit(1)
-      .frame(maxWidth: Self.maxTitleWidth, alignment: .leading)
+      // The tab chips' cap, so the identity yields to the actions under width pressure instead of
+      // squeezing them out of a narrow split member.
+      .frame(maxWidth: TabStripMetrics.maxChipTitle, alignment: .leading)
       // The full name and path, for a label the 180pt cap has truncated.
       .help("\(fullTitle)\n\(target.path)")
       Spacer(minLength: 8)
@@ -432,11 +434,6 @@ private struct WorkroomPaneTitleBar: View {
     )
   }
 
-  /// The project name — the chip's primary label format, derived from the path we were handed.
-  private var projectLabel: String {
-    projectPath.map { ($0 as NSString).lastPathComponent } ?? ""
-  }
-
   private var fullTitle: String {
     workroomName.map { "\(projectLabel) / \($0)" } ?? projectLabel
   }
@@ -457,7 +454,6 @@ private struct WorkroomSplitDivider: View {
   /// The final ratio, once, on mouse-up — this is the one that persists.
   let onCommit: (CGFloat) -> Void
   @State private var startRatio: CGFloat?
-  @State private var latest: CGFloat?
 
   var body: some View {
     Rectangle()
@@ -468,18 +464,15 @@ private struct WorkroomSplitDivider: View {
           .onChanged { value in
             let start = startRatio ?? ratio
             if startRatio == nil { startRatio = start }
-            let usable = max(1, total - PaneTreeLayout.dividerThickness)
-            let delta =
-              orientation == .horizontal ? value.translation.width : value.translation.height
-            let next = PaneTreeLayout.clampRatio(
-              start + delta / usable, total: total, along: orientation)
-            latest = next
-            onLive(next)
+            onLive(dragged(from: start, by: value.translation))
           }
-          .onEnded { _ in
-            if let latest { onCommit(latest) }
+          // `startRatio` is set by `onChanged`, so a nil one means the gesture never moved — commit
+          // nothing rather than republishing the ratio it already has. The final translation comes from
+          // this closure's own value; there's no need to mirror each tick into a second `@State`.
+          .onEnded { value in
+            guard let start = startRatio else { return }
+            onCommit(dragged(from: start, by: value.translation))
             startRatio = nil
-            latest = nil
           }
       )
       .onHover { inside in
@@ -506,5 +499,13 @@ private struct WorkroomSplitDivider: View {
         @unknown default: break
         }
       }
+  }
+
+  /// The ratio a drag of `translation` from `start` lands on — one formula for both gesture phases, so
+  /// the committed value can't drift from the live one it followed.
+  private func dragged(from start: CGFloat, by translation: CGSize) -> CGFloat {
+    let usable = max(1, total - PaneTreeLayout.dividerThickness)
+    let delta = orientation == .horizontal ? translation.width : translation.height
+    return PaneTreeLayout.clampRatio(start + delta / usable, total: total, along: orientation)
   }
 }

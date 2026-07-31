@@ -424,11 +424,6 @@ private struct WorkroomTabChip: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   private let theme = ThemeService.shared
 
-  /// The widest the title (project name + `/` + workroom name) renders before it tail-truncates.
-  /// Beyond this the chip would keep stretching for a long workroom name; the ellipsis + `.help`
-  /// tooltip carry the rest. Mirrors `TerminalTabChip.maxTitleWidth` (same 180pt).
-  private static let maxTitleWidth: CGFloat = 180
-
   private var isRoot: Bool {
     if case .root = sid { return true }
     return false
@@ -536,10 +531,10 @@ private struct WorkroomTabChip: View {
       // long one for no reason. A short title stays tight (leading alignment, the HStack sizes to
       // its ideal width up to the cap).
       //
-      // The cap matches `TerminalTabChip`'s, so a workroom chip is never wider than a terminal one;
-      // it is shared by two names here against that chip's one, which is why a workroom chip starts
-      // truncating at a shorter combined length.
-      .frame(maxWidth: Self.maxTitleWidth, alignment: .leading)
+      // The cap is the shared one, so a workroom chip is never wider than a terminal one; it is spent
+      // on two names here against that chip's one, which is why a workroom chip starts truncating at a
+      // shorter combined length.
+      .frame(maxWidth: TabStripMetrics.maxChipTitle, alignment: .leading)
       // VCS dirty status is carried by the leading house/cube tint above (no separate dot here).
       // Run-command dot (issue #7), trailing-most: green play while running; a red octagon if the
       // last run FAILED (#79 — distinct glyph, not just a red tint, for colourblind safety); hidden

@@ -249,14 +249,14 @@ final class TabStripOverflowUITests: XCTestCase {
       "open + new should remain adjacent when pinned")
   }
 
-  /// The workroom chip's title is capped (mirrors `TerminalTabChip.maxTitleWidth`, issue #129
+  /// The workroom chip's title is capped (`TabStripMetrics.maxChipTitle`, issue #129
   /// follow-up): a workroom whose real name is 130 characters must still render a bounded chip
   /// instead of one that stretches wider than the window. `-WorkroomUITestLongWorkroomName 1` seeds
   /// that oversized name on the fixture's sole (auto-selected) workroom, so the cap has a real long
   /// name to clip rather than relying on one existing on disk.
   ///
   /// Upper-bound arithmetic, read off `WorkroomTabChip`'s modifiers: the capped title HStack
-  /// (`maxTitleWidth` 180) + the chip's inner horizontal padding (10 * 2 = 20) + its outer margin
+  /// (`maxChipTitle` 180) + the chip's inner horizontal padding (10 * 2 = 20) + its outer margin
   /// horizontal padding (2 * 2 = 4) + the outer HStack's one inter-element gap between the leading
   /// cube glyph and the title group (spacing 6 — this fixture workroom has no missing-directory
   /// triangle and no run-tab icon, so the title group is the glyph's only sibling) + the cube glyph's

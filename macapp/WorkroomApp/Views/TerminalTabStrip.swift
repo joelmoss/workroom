@@ -482,10 +482,6 @@ private struct TerminalTabChip: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   private let theme = ThemeService.shared
 
-  /// The widest a tab title renders before it tail-truncates (~25 chars at `.callout`). Beyond this
-  /// the chip would keep stretching; the ellipsis + `.help` tooltip carry the rest.
-  private static let maxTitleWidth: CGFloat = 180
-
   /// Glyph + colour + a11y/help word for the run-state chip icon. Failure is carried by BOTH the
   /// glyph (octagon vs play) and the colour, so it survives red/green colourblindness (#79).
   private func runIconSpec(_ state: RunState) -> (glyph: String, color: Color, label: String) {
@@ -566,11 +562,11 @@ private struct TerminalTabChip: View {
         .italic(tab.isPreview)
         .lineLimit(1)
         .truncationMode(.tail)
-        // Cap the title so a long name (a file path, a shell-set terminal title) tail-truncates with
-        // an ellipsis instead of stretching the chip arbitrarily wide; the full title rides in the
-        // chip's `.help` tooltip below. A short title stays tight (leading alignment, Text sizes to
-        // its ideal width up to the cap).
-        .frame(maxWidth: Self.maxTitleWidth, alignment: .leading)
+        // Cap the title (~25 chars at `.callout`) so a long name (a file path, a shell-set terminal
+        // title) tail-truncates with an ellipsis instead of stretching the chip arbitrarily wide; the
+        // full title rides in the chip's `.help` tooltip below. A short title stays tight (leading
+        // alignment, Text sizes to its ideal width up to the cap).
+        .frame(maxWidth: TabStripMetrics.maxChipTitle, alignment: .leading)
       // The ✕ is always shown (every tab is closable at a glance), so the chip width is constant.
       TabCloseButton(action: onClose)
         .help("Close \(tab.title)")

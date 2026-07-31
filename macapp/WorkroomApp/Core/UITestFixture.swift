@@ -142,8 +142,8 @@ enum UITestFixture {
     flag("WorkroomUITestLongWorkroomName")
   }
 
-  /// The oversized name seeded under `longWorkroomName` — comfortably past `WorkroomTabChip
-  /// .maxTitleWidth` (180pt) at `.subheadline`, so the chip's tail-truncation is exercised
+  /// The oversized name seeded under `longWorkroomName` — comfortably past the chips' shared title
+  /// cap (`TabStripMetrics.maxChipTitle`, 180pt) at `.subheadline`, so tail-truncation is exercised
   /// deterministically instead of depending on a real long name existing somewhere on disk.
   static let longWorkroomNameValue = String(repeating: "abcdefghij", count: 13)  // 130 chars
 

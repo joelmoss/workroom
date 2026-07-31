@@ -1615,8 +1615,7 @@ final class AppStore: ObservableObject {
     guard selectedTarget?.id != target.id,
       let sid = Self.sidebarID(forTargetID: target.id, in: projects)
     else { return }
-    selectedTargetID = sid
-    selectedProjectID = Self.projectPath(of: sid)
+    focusWorkroomMember(sid)
   }
 
   /// "Ensure running" for an **explicit** target: running → focus it; stopped-but-open → re-run;
