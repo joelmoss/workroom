@@ -31,7 +31,7 @@ final class ActivitySectionTests: XCTestCase {
   }
 
   func testAllCasesOrderMatchesBarOrder() {
-    XCTAssertEqual(ActivitySection.allCases, [.changes, .history, .files])
+    XCTAssertEqual(ActivitySection.allCases, [.changes, .files])
   }
 
   func testEveryCaseHasNonEmptyLabelSystemImageAndShortcut() {
@@ -42,15 +42,23 @@ final class ActivitySectionTests: XCTestCase {
     }
   }
 
-  /// The pane composition: Changes stacks Changes + Pull Request; Files is solo. Every listed
-  /// sub-section must be non-empty (a pane with no sub-sections would render blank).
+  /// The pane composition: Changes stacks Changes + History + Pull Request, in that display order
+  /// (History sits between the two — the whole point of it no longer being a bar section of its own);
+  /// Files is solo. Every listed sub-section must be non-empty (a pane with no sub-sections would
+  /// render blank).
   func testSubSectionsMapping() {
-    XCTAssertEqual(ActivitySection.changes.subSections, [.changes, .pullRequest])
+    XCTAssertEqual(ActivitySection.changes.subSections, [.changes, .history, .pullRequest])
     XCTAssertEqual(ActivitySection.files.subSections, [.files])
-    XCTAssertEqual(ActivitySection.history.subSections, [.history])
     for section in ActivitySection.allCases {
       XCTAssertFalse(section.subSections.isEmpty, "\(section) pane has no sub-sections")
     }
+  }
+
+  /// History is not a bar section any more — a `Defaults` value left behind by a build where it was
+  /// falls back to `.changes`, the pane it now lives in (rather than blanking the inspector).
+  func testStoredHistorySectionFallsBackToChanges() {
+    UserDefaults.standard.set("history", forKey: probeKey)
+    XCTAssertEqual(Defaults[probe], .changes)
   }
 
   /// The collapse/weight vectors are stored in `InspectorSectionKind.allCases` order; a pane

@@ -49,12 +49,12 @@ final class ViewMenuShortcutsUITests: XCTestCase {
     chip.click()
   }
 
-  /// Asserts a keyboard shortcut flips a section's "shown" state. `Files`/`History` are solo panes
-  /// whose "off" path closes the WHOLE inspector (`SectionHeader`'s header has no chevron/collapse
-  /// binding), so their header's existence toggles cleanly. `Changes`/`Pull Request` collapse IN
-  /// PLACE (their header stays in the tree either way) — `SectionHeader` gives their header an
+  /// Asserts a keyboard shortcut flips a section's "shown" state. `Files` is a solo pane whose "off"
+  /// path closes the WHOLE inspector (`SectionHeader`'s header has no chevron/collapse binding), so
+  /// its header's existence toggles cleanly. `Changes`/`History`/`Pull Request` collapse IN PLACE
+  /// (their header stays in the tree either way) — `SectionHeader` gives their header an
   /// accessibility label of `"<title> section, collapsed"` / `"...expanded"`
-  /// (`InspectorSplitView.swift`), so those two are asserted by label instead of existence.
+  /// (`InspectorSplitView.swift`), so those three are asserted by label instead of existence.
   private func assertShortcutTogglesSection(
     _ app: XCUIApplication, headerID: String, key: String, modifiers: XCUIElement.KeyModifierFlags,
     collapsible: Bool
@@ -99,7 +99,7 @@ final class ViewMenuShortcutsUITests: XCTestCase {
     focusATerminal(app)
     assertShortcutTogglesSection(
       app, headerID: "inspector.header.History", key: "y", modifiers: [.command, .option],
-      collapsible: false)
+      collapsible: true)
     focusATerminal(app)
     assertShortcutTogglesSection(
       app, headerID: "inspector.header.Pull Request", key: "p", modifiers: [.command, .option],

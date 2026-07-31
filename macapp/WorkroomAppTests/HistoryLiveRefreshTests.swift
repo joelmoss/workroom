@@ -4,7 +4,7 @@ import XCTest
 
 /// Live History refresh (issue #59 follow-up): a commit / bookmark / ref move in a project's VCS
 /// metadata dir trips the per-project watcher → `handleRootBranchChange`, which now repaints the
-/// History log **when the inspector is visible, on History, and its target belongs to that project** —
+/// History log **when the inspector is visible, showing History, and its target is in that project** —
 /// independent of whether the branch label changed (a plain commit usually leaves it unchanged). Also
 /// covers the app-refocus safety net `refreshHistoryIfActive`.
 ///
@@ -12,8 +12,9 @@ import XCTest
 /// so "did a refresh fire?" is observable as a `log` call count — no real repo needed for the gating
 /// logic. `runBlocking` reads run off-main, so each assertion awaits `commitHistory.awaitCurrentLoad`.
 ///
-/// Both halves of the gate are pinned **per store** — `inspectorVisibleOverrideForTesting` and
-/// `isolatesInspectorSectionForTesting` — never by writing the shared inspector settings: the parallel
+/// All three halves of the gate are pinned **per store** — `inspectorVisibleOverrideForTesting`,
+/// `isolatesInspectorSectionForTesting` and `isolatesInspectorLayoutForTesting` (the collapse flag,
+/// added when History joined the Changes stack) — never by writing the shared inspector settings: the parallel
 /// workers share one UserDefaults domain, so this class used to leave its `showInspector` /
 /// `inspector.activeSection` values inside whatever unrelated class ran beside it. (The old
 /// save/restore here couldn't have helped even in serial: it restored `"activeInspectorSection"`,
@@ -59,8 +60,11 @@ final class HistoryLiveRefreshTests: XCTestCase {
   }
 
   /// A store with a counting `commitHistory`, one workroom-with-a-tab selected, the inspector visible
-  /// and on History (so `inspectorTargetID` is non-nil and the model is focused → `root != nil`, the
-  /// precondition for `refresh` to actually load). Returns the store + the counting provider.
+  /// and showing History (so `inspectorTargetID` is non-nil and the model is focused → `root != nil`,
+  /// the precondition for `refresh` to actually load). History is a sub-section of the **Changes**
+  /// pane, so "showing" is that pane being active AND the section expanded — the collapse flag is
+  /// pinned here rather than trusted, because it hydrates from the shared `inspectorLayout` pref that
+  /// any other class (or worker) may have left collapsed. Returns the store + the counting provider.
   private func activeHistoryStore(
     projects: [Project], select path: String, workroom name: String
   ) async -> (AppStore, CountingProvider) {
@@ -72,10 +76,12 @@ final class HistoryLiveRefreshTests: XCTestCase {
     store.projects = projects
     store.inspectorVisibleOverrideForTesting = true
     store.isolatesInspectorSectionForTesting = true
-    store.activeInspectorSection = .history
+    store.isolatesInspectorLayoutForTesting = true
+    store.activeInspectorSection = .changes
+    store.historySectionCollapsed = false
     // Give the selection a tab so `selectionHasTabs` (and thus `inspectorTargetID`) is non-nil.
     store.terminals.addTab(for: store.target(for: wr(name, in: path))!)
-    // Selecting fires the didSet that focuses `commitHistory` (section == .history) → the first load.
+    // Selecting fires the didSet that focuses `commitHistory` (History showing) → the first load.
     store.selectedTargetID = wr(name, in: path)
     await store.commitHistory.awaitCurrentLoad()
     return (store, provider)
@@ -125,16 +131,63 @@ final class HistoryLiveRefreshTests: XCTestCase {
       provider.logCount, before, "a hidden inspector must not run background History reads")
   }
 
-  func testMetadataChangeWhileNotOnHistoryDoesNotRefresh() async {
+  /// Off-History has two shapes now that History is a section of the Changes stack: a pane that
+  /// doesn't stack it at all (Files), and its own collapsed disclosure. Neither may read VCS.
+  func testMetadataChangeWhileNotShowingHistoryDoesNotRefresh() async {
     let (store, provider) = await activeHistoryStore(
       projects: [project("/a", workrooms: ["solo"])], select: "/a", workroom: "solo")
-    store.activeInspectorSection = .changes  // switched off History
+    store.activeInspectorSection = .files  // a pane that doesn't stack History
     let before = provider.logCount
 
     store.handleRootBranchChange(projectID: store.projects[0].id)
     await store.commitHistory.awaitCurrentLoad()
 
-    XCTAssertEqual(provider.logCount, before, "off-History must not refresh the log")
+    XCTAssertEqual(provider.logCount, before, "a pane without History must not refresh the log")
+
+    store.activeInspectorSection = .changes  // back on the pane, but collapse the section
+    store.historySectionCollapsed = true
+    await store.commitHistory.awaitCurrentLoad()
+    let beforeCollapsed = provider.logCount
+
+    store.handleRootBranchChange(projectID: store.projects[0].id)
+    await store.commitHistory.awaitCurrentLoad()
+
+    XCTAssertEqual(
+      provider.logCount, beforeCollapsed, "a collapsed History section must not refresh the log")
+  }
+
+  // MARK: re-expanding the section
+
+  /// Why `historySectionCollapsed`'s `didSet` eagerly focuses: while the section is collapsed the
+  /// selection didSet skips its focus (correctly — no VCS reads for a hidden log), so the model is
+  /// left pointing at the workroom the user was on BEFORE the switch. Without the eager focus,
+  /// re-expanding would show that stale workroom's commits until `HistoryPanel`'s `.task` caught up.
+  ///
+  /// The collapse-then-re-expand-on-the-SAME-workroom case is deliberately not asserted here: `focus`
+  /// no-ops on an unchanged root, so it would pass with the `didSet` deleted. The root has to move
+  /// while the section is shut for the assertion to mean anything.
+  func testReExpandingHistoryAfterAWorkroomSwitchRepointsTheModel() async {
+    let (store, provider) = await activeHistoryStore(
+      projects: [project("/a", workrooms: ["solo", "other"])], select: "/a", workroom: "solo")
+    XCTAssertEqual(store.commitHistory.root, URL(fileURLWithPath: "/a/solo"))
+
+    store.historySectionCollapsed = true
+    let other = wr("other", in: "/a")
+    store.terminals.addTab(for: store.target(for: other)!)
+    store.selectedTargetID = other
+    await store.commitHistory.awaitCurrentLoad()
+    XCTAssertEqual(
+      store.commitHistory.root, URL(fileURLWithPath: "/a/solo"),
+      "a collapsed section must not read the newly selected workroom's log")
+    let before = provider.logCount
+
+    store.historySectionCollapsed = false
+    await store.commitHistory.awaitCurrentLoad()
+
+    XCTAssertEqual(
+      store.commitHistory.root, URL(fileURLWithPath: "/a/other"),
+      "re-expanding must re-point the model at the workroom selected meanwhile")
+    XCTAssertEqual(provider.logCount, before + 1, "…and load it, rather than show stale commits")
   }
 
   // MARK: app-refocus safety net

@@ -172,9 +172,7 @@ final class AppStore: ObservableObject {
       // mirroring HistoryPanel's own guard) so the list clears + shows its loader immediately,
       // instead of lingering on the previous workroom's commits until the panel's `.task` catches
       // up. `focus` is idempotent, so the panel's later re-focus to the same root no-ops.
-      if selectedTargetID != oldValue, activeInspectorSection == .history {
-        commitHistory.focus(inspectorTarget.map { URL(fileURLWithPath: $0.path) })
-      }
+      if selectedTargetID != oldValue { focusHistoryIfShown() }
     }
   }
 
@@ -286,7 +284,7 @@ final class AppStore: ObservableObject {
 
   // Inspector section collapse (issue #24). Held on the store rather than as `@Default` in the
   // inspector view: the `.inspector` content doesn't observe `@Default` changes, but it DOES observe
-  // this `@EnvironmentObject`. These three are the *live* state for the currently selected workroom;
+  // this `@EnvironmentObject`. These are the *live* state for the currently selected workroom;
   // they're the GLOBAL layout, loaded once at launch and persisted on every change to
   // `Defaults[.inspectorLayout]` via `loadInspectorState()` / `persistInspectorState()` — shared
   // across all workrooms, so a workroom switch never changes them.
@@ -300,9 +298,49 @@ final class AppStore: ObservableObject {
   @Published var prSectionCollapsed = false {
     didSet { persistInspectorState() }
   }
-  /// Relative heights of the three inspector panes for the selected workroom (issue #24), ordered as
-  /// `InspectorSectionKind.allCases`. Equal == the default three-equal-sections layout; updated when
-  /// the user drags a divider (via `updateInspectorSizeWeights`) and persisted per workroom. Not set
+  /// Collapse state of the History section (the commit log) — the middle section of the Changes
+  /// stack, between Changes and Pull Request.
+  @Published var historySectionCollapsed = false {
+    didSet {
+      persistInspectorState()
+      // Expanding it with a workroom already selected: point the model now (same reason the
+      // section-switch didSet does) so the pane shows its loader instead of the `.idle` placeholder
+      // until `HistoryPanel`'s `.task` catches up. `focus` is idempotent, so this only does work when
+      // the selection MOVED while the section was shut (the selection didSet skips its focus then).
+      //
+      // `isLoadingInspectorState` guards this the same way it guards the persist above, for the other
+      // direction: `loadInspectorState()` runs inside `init` and would otherwise fire a real VCS read
+      // from a didSet during construction. It happens to be inert today (`inspectorTarget` is nil until
+      // a selection has tabs) — the guard is what stops that accident from becoming load-bearing.
+      if !isLoadingInspectorState, !historySectionCollapsed { focusHistoryIfShown() }
+    }
+  }
+  /// Whether the History section is on screen: its pane is the active one and the section isn't
+  /// collapsed. The gate for every History load trigger (the eager focuses via `focusHistoryIfShown`,
+  /// the live watcher refresh, the app-refocus safety net, and `HistoryPanel`'s own activation task) —
+  /// a collapsed or swapped-out section must not run VCS reads for a log nobody can see.
+  var historySectionShown: Bool {
+    activeInspectorSection.subSections.contains(.history) && !historySectionCollapsed
+  }
+  /// Point History's model at the inspector's active target, but only when that log is genuinely on
+  /// screen: the section shown AND the inspector open.
+  ///
+  /// The visibility half matters because History lives in the DEFAULT pane now. A `focus` is not a
+  /// cheap "point at" — it runs a full page read (`HistoryModel.load` → `VCSProviding.log`, which for
+  /// git is a repo open, a 101-commit revwalk, a ref enumeration and an unpushed-range walk), so
+  /// without this gate every selection change would read a repo for a pane nobody can see, for every
+  /// user, in the shipped default state.
+  ///
+  /// Nothing has to re-trigger this when the inspector opens: `RootView` builds `InspectorColumn`
+  /// inside `if showInspector`, so opening it CONSTRUCTS `HistoryPanel`, whose `.task` calls
+  /// `HistoryModel.activate` — the same load, at the moment it's first worth doing.
+  private func focusHistoryIfShown() {
+    guard inspectorIsVisible, historySectionShown else { return }
+    commitHistory.focus(inspectorTarget.map { URL(fileURLWithPath: $0.path) })
+  }
+  /// Relative heights of the inspector panes (issue #24), ordered as `InspectorSectionKind.allCases`.
+  /// Equal == the default equal-sections layout; updated when the user drags a divider (via
+  /// `updateInspectorSizeWeights`) and persisted globally, like the collapse flags above. Not set
   /// directly by the view — the `NSSplitView` reports drag results back through the store.
   @Published var inspectorSizeWeights: [Double] = [1, 1, 1, 1]
   /// The selected top-level section in the right activity bar (issue: activity bar). Drives which
@@ -316,15 +354,20 @@ final class AppStore: ObservableObject {
         if !isolatesInspectorSectionForTesting {
           Defaults[.activeInspectorSection] = activeInspectorSection
         }
-        // Entering History with a workroom already selected: point the model now so the pane shows
-        // its loader immediately, instead of flashing the `.idle` ("Select a workroom") placeholder
-        // until the panel's `.task` catches up. `focus` is idempotent (no-op if already there).
-        if activeInspectorSection == .history {
-          commitHistory.focus(inspectorTarget.map { URL(fileURLWithPath: $0.path) })
-        }
+        // Switching to a pane that stacks History, with a workroom already selected: point the model
+        // now so the pane shows its loader immediately, instead of flashing the `.idle` ("Select a
+        // workroom") placeholder until the panel's `.task` catches up. `focus` is idempotent (no-op if
+        // already there).
+        focusHistoryIfShown()
       }
     }
   }
+  /// Test seam: keep collapse/size changes in THIS store instead of persisting them to the shared
+  /// `inspector.layout.v2` setting — the third half of the gate `inspectorVisibleOverrideForTesting`
+  /// and `isolatesInspectorSectionForTesting` cover, and the same cross-worker hazard: a class that
+  /// needs History expanded (or collapsed) would otherwise leave that value inside whatever unrelated
+  /// class runs beside it, since `-parallel-testing` workers share one UserDefaults domain.
+  var isolatesInspectorLayoutForTesting = false
   /// Test seam: keep an `activeInspectorSection` change in THIS store instead of persisting it to the
   /// shared `inspector.activeSection` setting. Same hazard as `confirmOnCloseOverrideForTesting`
   /// (which see for the full account): `-parallel-testing` gives each worker its own host process but
@@ -365,7 +408,7 @@ final class AppStore: ObservableObject {
   /// Shared in-file find state for the read-only file viewer (⌘F in a file pane). Only the focused
   /// `PlainFileViewer` feeds + shows it; routed to from `startFindInFocusedPane`.
   let fileFind = FileFindModel()
-  /// True while `loadInspectorState` is writing the three collapse flags + weights, so their
+  /// True while `loadInspectorState` is writing the four collapse flags + weights, so their
   /// `didSet`s don't persist the values straight back (and the load isn't mistaken for a user edit).
   private var isLoadingInspectorState = false
 
@@ -748,9 +791,7 @@ final class AppStore: ObservableObject {
     // waiting on the panel's own `.task` to re-fire — which doesn't happen reliably across the
     // `NSHostingController`-hosted inspector, so History lagged until an app refocus (`reloadIfStale`)
     // forced a re-render. `focus` is idempotent (no-op when the root is unchanged).
-    if activeInspectorSection == .history {
-      commitHistory.focus(inspectorTarget.map { URL(fileURLWithPath: $0.path) })
-    }
+    focusHistoryIfShown()
   }
 
   /// Whether there's a usable editor and a valid selected target to open — drives the ⌘O command and
@@ -2317,7 +2358,7 @@ final class AppStore: ObservableObject {
     // usually leaves the branch/bookmark label unchanged, so gating this on the label actually
     // changing (the `unchanged → return` at the end) would skip the main case. The read is a
     // read-only `load_at_head` (no working-copy lock, no write), so it can't re-fire this watcher.
-    if inspectorIsVisible, activeInspectorSection == .history,
+    if inspectorIsVisible, historySectionShown,
       inspectorTargetID?.belongsToProject(p.path) == true
     {
       commitHistory.refresh()
@@ -3616,7 +3657,7 @@ final class AppStore: ObservableObject {
   /// watcher may have been coalesced/idle across deactivation). Same visibility gate as the live
   /// trigger; cheap + cancel-and-replace. Called from `RootView`'s `didBecomeActive` hook.
   func refreshHistoryIfActive() {
-    if inspectorIsVisible, activeInspectorSection == .history { commitHistory.refresh() }
+    if inspectorIsVisible, historySectionShown { commitHistory.refresh() }
   }
 
   /// Human-readable origin for a notification: the project name, plus the workroom for a
@@ -3672,15 +3713,17 @@ final class AppStore: ObservableObject {
     let (collapsed, weights) = Self.reconcileInspectorState(
       Defaults[.inspectorLayout], sectionCount: InspectorSectionKind.allCases.count)
     isLoadingInspectorState = true
-    changesSectionCollapsed = collapsed[0]
-    filesSectionCollapsed = collapsed[1]
-    prSectionCollapsed = collapsed[2]
+    changesSectionCollapsed = collapsed[InspectorSectionKind.changes.storeIndex]
+    filesSectionCollapsed = collapsed[InspectorSectionKind.files.storeIndex]
+    prSectionCollapsed = collapsed[InspectorSectionKind.pullRequest.storeIndex]
+    historySectionCollapsed = collapsed[InspectorSectionKind.history.storeIndex]
     inspectorSizeWeights = weights
     isLoadingInspectorState = false
   }
 
   /// Reconcile a persisted inspector layout against the current section count. The count has changed
-  /// twice — a Files section was added (3 → 4), then Notifications was removed (4 → 3, issue #118).
+  /// three times — a Files section was added (3 → 4), Notifications was removed (4 → 3, issue #118),
+  /// then History became a section of its own (3 → 4).
   /// Any layout whose element count doesn't match the current section count is discarded to the
   /// all-expanded / equal-weight default rather than mis-mapped onto the new ordering. `nonisolated`
   /// + pure so the migration is unit-testable without an `AppStore` / `Defaults` (issue #24).
@@ -3694,14 +3737,16 @@ final class AppStore: ObservableObject {
   }
 
   /// Persist the live inspector layout to the global store. No-op while loading (so a load's `didSet`s
-  /// don't write the values straight back).
+  /// don't write the values straight back), and no-op for a store that isolates its layout for testing.
   func persistInspectorState() {
-    guard !isLoadingInspectorState else { return }
+    guard !isLoadingInspectorState, !isolatesInspectorLayoutForTesting else { return }
+    var collapsed = [Bool](repeating: false, count: InspectorSectionKind.allCases.count)
+    collapsed[InspectorSectionKind.changes.storeIndex] = changesSectionCollapsed
+    collapsed[InspectorSectionKind.files.storeIndex] = filesSectionCollapsed
+    collapsed[InspectorSectionKind.pullRequest.storeIndex] = prSectionCollapsed
+    collapsed[InspectorSectionKind.history.storeIndex] = historySectionCollapsed
     Defaults[.inspectorLayout] = InspectorPaneState(
-      collapsed: [
-        changesSectionCollapsed, filesSectionCollapsed, prSectionCollapsed, false,
-      ],
-      weights: inspectorSizeWeights)
+      collapsed: collapsed, weights: inspectorSizeWeights)
   }
 
   /// Record new pane weights reported by the inspector's `NSSplitView` after a divider drag, and

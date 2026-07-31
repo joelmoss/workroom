@@ -123,7 +123,7 @@ final class SharedPrefDefaultsTests: XCTestCase {
 
   /// Picking a section must still persist it — the pane reopens where you left it. Guarded because
   /// `isolatesInspectorSectionForTesting` suppresses that write (the History classes set it so their
-  /// `.history` doesn't leak into a store another worker is building): widen the suppression to
+  /// picked section doesn't leak into a store another worker is building): widen the suppression to
   /// always-on and the section silently stops persisting with the suite still green.
   @MainActor
   func testAStoresSectionChangePersistsUnlessTheStoreIsIsolatedForTesting() {
@@ -145,7 +145,7 @@ final class SharedPrefDefaultsTests: XCTestCase {
   /// assume, whatever the developer's machine last persisted.
   func testFixtureModeOpensTheInspectorOnChanges() {
     Defaults[.showInspector] = false
-    Defaults[.activeInspectorSection] = .history
+    Defaults[.activeInspectorSection] = .files
 
     UITestFixture.applyFixtureDefaults(active: true)
 
@@ -156,12 +156,12 @@ final class SharedPrefDefaultsTests: XCTestCase {
   /// `-WorkroomUITestInspectorSection <raw>` picks the pane. The flag is read with
   /// `UserDefaults.string(forKey:)`, which is exactly what makes a launch argument usable here.
   func testSectionArgumentSelectsThePane() {
-    UserDefaults.standard.set("history", forKey: sectionArgKey)
+    UserDefaults.standard.set("files", forKey: sectionArgKey)
 
     UITestFixture.applyFixtureDefaults(active: true)
 
     XCTAssertTrue(Defaults[.showInspector])
-    XCTAssertEqual(Defaults[.activeInspectorSection], .history)
+    XCTAssertEqual(Defaults[.activeInspectorSection], .files)
   }
 
   /// An unrecognised section falls back to Changes rather than leaving the pane on whatever was
@@ -215,13 +215,13 @@ final class SharedPrefDefaultsTests: XCTestCase {
   /// they closed, the section they left, and the diff layout they picked in Settings.
   func testDoesNothingWhenNotInFixtureMode() {
     Defaults[.showInspector] = false
-    Defaults[.activeInspectorSection] = .history
+    Defaults[.activeInspectorSection] = .files
     Defaults[.diffViewMode] = .sideBySide
 
     UITestFixture.applyFixtureDefaults(active: false)
 
     XCTAssertFalse(Defaults[.showInspector], "a normal launch keeps the user's closed pane")
-    XCTAssertEqual(Defaults[.activeInspectorSection], .history, "and their active section")
+    XCTAssertEqual(Defaults[.activeInspectorSection], .files, "and their active section")
     XCTAssertEqual(Defaults[.diffViewMode], .sideBySide, "and their diff layout")
   }
 }

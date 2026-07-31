@@ -812,10 +812,11 @@ struct WorkroomCommands: Commands {
         .keyboardShortcut("b", modifiers: [.command])
         .disabled(modalBlocked)
 
-      // View menu: reveal the Changes view. Changes and Pull Request share the **Changes** activity-bar
-      // pane (a stack), so "showing" Changes means selecting that pane, opening the inspector, and
-      // expanding the Changes sub-section; the checkmark is on only when all three hold. Turning it off
-      // just collapses the sub-section (the pane stays open if Pull Request is still showing).
+      // View menu: reveal the Changes view. Changes, History and Pull Request share the **Changes**
+      // activity-bar pane (a stack), so "showing" Changes means selecting that pane, opening the
+      // inspector, and expanding the Changes sub-section; the checkmark is on only when all three
+      // hold. Turning it off just collapses the sub-section (the pane stays open if its siblings are
+      // still showing).
       Toggle(
         "Changes",
         isOn: Binding(
@@ -836,37 +837,29 @@ struct WorkroomCommands: Commands {
       .keyboardShortcut("c", modifiers: [.command, .option])
       .disabled(modalBlocked)
 
-      // View menu: reveal the Files view (the repo file tree) — its own single-section activity-bar
-      // pane, so showing it selects the Files pane and opens the inspector; turning it off hides the
-      // pane (Files has no sub-section to collapse). Assigning `activeInspectorSection` in both
-      // branches forces the bar + inspector to re-render synchronously (see `AppStore.apply`).
-      Toggle(
-        "Files",
-        isOn: Binding(
-          get: { showInspector && store?.activeInspectorSection == .files },
-          set: { on in
-            store?.activeInspectorSection = .files
-            showInspector = on
-          })
-      )
-      .keyboardShortcut("f", modifiers: [.command, .option])
-      .disabled(modalBlocked)
-
-      // View menu: reveal the History view (the commit log) — its own single-section activity-bar
-      // pane, like Files. (⌥⌘Y — ⌥⌘H is macOS "Hide Others".)
+      // View menu: reveal the History view (the commit log) — the middle sub-section of the Changes
+      // pane, so it collapses in place like its siblings. (⌥⌘Y — ⌥⌘H is macOS "Hide Others".)
       Toggle(
         "History",
         isOn: Binding(
-          get: { showInspector && store?.activeInspectorSection == .history },
+          get: {
+            showInspector && store?.activeInspectorSection == .changes
+              && !(store?.historySectionCollapsed ?? true)
+          },
           set: { on in
-            store?.activeInspectorSection = .history
-            showInspector = on
+            if on {
+              store?.activeInspectorSection = .changes
+              showInspector = true
+              store?.historySectionCollapsed = false
+            } else {
+              store?.historySectionCollapsed = true
+            }
           })
       )
       .keyboardShortcut("y", modifiers: [.command, .option])
       .disabled(modalBlocked)
 
-      // View menu: reveal the Pull Request view — the second sub-section of the Changes pane, so it
+      // View menu: reveal the Pull Request view — the last sub-section of the Changes pane, so it
       // selects that pane, opens the inspector, and expands the Pull Request sub-section.
       Toggle(
         "Pull Request",
@@ -886,6 +879,22 @@ struct WorkroomCommands: Commands {
           })
       )
       .keyboardShortcut("p", modifiers: [.command, .option])
+      .disabled(modalBlocked)
+
+      // View menu: reveal the Files view (the repo file tree) — its own single-section activity-bar
+      // pane, so showing it selects the Files pane and opens the inspector; turning it off hides the
+      // pane (Files has no sub-section to collapse). Assigning `activeInspectorSection` in both
+      // branches forces the bar + inspector to re-render synchronously (see `AppStore.apply`).
+      Toggle(
+        "Files",
+        isOn: Binding(
+          get: { showInspector && store?.activeInspectorSection == .files },
+          set: { on in
+            store?.activeInspectorSection = .files
+            showInspector = on
+          })
+      )
+      .keyboardShortcut("f", modifiers: [.command, .option])
       .disabled(modalBlocked)
 
       // Theme chooser (issue #36). A menu command can't anchor a popover, so it posts a

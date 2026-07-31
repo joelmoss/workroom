@@ -72,10 +72,10 @@ final class HistoryPushRefreshTests: XCTestCase {
     return root + "/work"
   }
 
-  /// A store whose History pane is live on `path` (inspector visible, section History, the workroom has
-  /// a tab so `inspectorTargetID` resolves) reading through the real `GitProvider`. Both halves of that
-  /// gate are pinned per store rather than written to the shared inspector settings — see
-  /// `AppStore.inspectorVisibleOverrideForTesting`.
+  /// A store whose History pane is live on `path` (inspector visible, the Changes pane active with its
+  /// History section expanded, the workroom has a tab so `inspectorTargetID` resolves) reading through
+  /// the real `GitProvider`. Both halves of that gate are pinned per store rather than written to the
+  /// shared inspector settings — see `AppStore.inspectorVisibleOverrideForTesting`.
   private func liveHistoryStore(on path: String) async -> AppStore {
     let store = AppStore(commitHistory: HistoryModel(resolve: { _ in GitProvider() }))
     store.terminals.makeView = { _, cwd, command in
@@ -92,7 +92,9 @@ final class HistoryPushRefreshTests: XCTestCase {
     ]
     store.inspectorVisibleOverrideForTesting = true
     store.isolatesInspectorSectionForTesting = true
-    store.activeInspectorSection = .history
+    store.isolatesInspectorLayoutForTesting = true
+    store.activeInspectorSection = .changes
+    store.historySectionCollapsed = false
     let id = SidebarID.workroom(project: path, name: "repo")
     store.terminals.addTab(for: store.target(for: id)!)
     store.selectedTargetID = id

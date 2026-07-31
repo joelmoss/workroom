@@ -9,7 +9,10 @@ import XCTest
 /// `Text`), so there is no animated translation left to glitch.
 ///
 /// XCUITest sees accessibility *geometry* (layout frames), which is exactly what this asserts: the
-/// Pull Request header's vertical position before/after collapsing Changes.
+/// vertical position of the header **directly below** Changes before/after collapsing it. That
+/// neighbour is History (the Changes pane stacks Changes → History → Pull Request), and it has to be
+/// the immediate one: `InspectorPanePolicy.reallocateOnToggle` hands the freed space to the nearest
+/// expanded neighbour below, so History absorbs all of it and the Pull Request header never moves.
 final class InspectorAnimationUITests: XCTestCase {
   override func setUpWithError() throws {
     continueAfterFailure = false
@@ -38,22 +41,26 @@ final class InspectorAnimationUITests: XCTestCase {
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
 
     let changes = header(app, "Changes")
-    let pr = header(app, "Pull Request")
+    let history = header(app, "History")
     XCTAssertTrue(changes.waitForExistence(timeout: 10), "Changes header should exist")
-    XCTAssertTrue(pr.waitForExistence(timeout: 10), "Pull Request header should exist")
+    XCTAssertTrue(history.waitForExistence(timeout: 10), "History header should exist")
 
-    let expandedY = pr.frame.minY
+    // Both sections arrive expanded: collapse state is global + persisted (and other classes flip it
+    // with ⌥⌘C/⌥⌘Y), so `UITestFixture.applyFixtureDefaults` pins `inspectorLayout` to all-expanded at
+    // launch. Without that the first click below would expand instead of collapse, or a collapsed
+    // History would never absorb the freed space.
+    let expandedY = history.frame.minY
 
-    // Collapse the (tall) Changes section: it pins to its header, so the Pull Request header rises.
+    // Collapse the (tall) Changes section: it pins to its header, so the History header rises.
     changes.click()
-    let collapsedY = pr.frame.minY
+    let collapsedY = history.frame.minY
     XCTAssertLessThan(
-      collapsedY, expandedY, "collapsing Changes should move the Pull Request header up")
+      collapsedY, expandedY, "collapsing Changes should move the History header up")
 
     // Expand it again: the equal distribution returns and the header drops back to ~where it was.
     changes.click()
     XCTAssertEqual(
-      pr.frame.minY, expandedY, accuracy: 2,
-      "re-expanding Changes should restore the Pull Request header position")
+      history.frame.minY, expandedY, accuracy: 2,
+      "re-expanding Changes should restore the History header position")
   }
 }

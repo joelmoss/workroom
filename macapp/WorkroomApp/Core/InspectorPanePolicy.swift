@@ -1,14 +1,15 @@
 import AppKit
 
-/// Which inspector section a pane hosts. Mirrors the `RightInspector` sections, top to bottom:
-/// Changes, Files, Pull Request. Used for ordering and the section count. (Notifications moved to
-/// the left sidebar, issue #118.)
+/// Which inspector section a pane hosts. The Changes pane stacks Changes → History → Pull Request
+/// (that display order is `ActivitySection.subSections`, not this one); Files is a solo pane. Used
+/// for the persisted collapse/weight vector order and the section count. (Notifications moved to the
+/// left sidebar, issue #118.)
 enum InspectorSectionKind: CaseIterable {
   case changes
   case files
   case pullRequest
-  // Appended last (not in bar order) so the existing storeIndex mapping 0/1/2 for
-  // changes/files/pullRequest stays stable; History is a solo pane, so it never collapses.
+  // Appended last (not display order) so the storeIndex mapping 0/1/2 for changes/files/pullRequest
+  // stays stable — History joined the Changes stack later and takes index 3.
   case history
 }
 

@@ -126,8 +126,8 @@ final class InspectorPaneViewController: NSViewController {
 /// - **Collapsing** a single section keeps the other panes' heights and flexes only a neighbour
 ///   (`reallocateOnToggle`), so a divider the user dragged between two unrelated sections survives a
 ///   collapse elsewhere. **Expanding** a section re-splits the expanded panes **equally**
-///   (`allocate`) — re-opening a collapsed section returns the stack to equal heights (half each for
-///   Changes + Pull Request) rather than the minimum floor.
+///   (`allocate`) — re-opening a collapsed section returns the stack to equal heights (a third each
+///   for Changes + History + Pull Request) rather than the minimum floor.
 /// `NSSplitView` whose dividers use a themed hairline. The system's thin divider can render a hard,
 /// near-black line between the section panes — most visible while the inspector collapses/expands —
 /// so we override `dividerColor` to force our subtle border colour on every draw, mid-animation
@@ -143,8 +143,8 @@ final class InspectorSplitContainerController: NSViewController, NSSplitViewDele
   private(set) var panes: [InspectorPaneViewController] = []
   private var heightConstraints: [NSLayoutConstraint] = []
   // Sized to the installed pane count, which is dynamic: the active activity-bar section decides how
-  // many sub-sections its pane stacks (2 for Changes + Pull Request, 1 for Files). Empty until the
-  // first `install`.
+  // many sub-sections its pane stacks (3 for Changes + History + Pull Request, 1 for Files). Empty
+  // until the first `install`.
   private var collapsedFlags: [Bool] = []
   private var weights: [CGFloat] = []
   private var workroomKey = ""
@@ -307,8 +307,8 @@ final class InspectorSplitContainerController: NSViewController, NSSplitViewDele
         capacity: splitView.bounds.height, dividerThickness: splitView.dividerThickness)
     } else {
       // Expand: split the space EQUALLY among the now-expanded panes, so re-opening a collapsed
-      // section returns the stack to equal heights (half each for Changes + Pull Request) rather than
-      // re-opening at the minimum floor with its neighbour hogging the rest.
+      // section returns the stack to equal heights (a third each for Changes + History + Pull Request)
+      // rather than re-opening at the minimum floor with its neighbour hogging the rest.
       heights = InspectorPanePolicy.allocate(
         collapsed: collapsedFlags, weights: nil,
         capacity: splitView.bounds.height, dividerThickness: splitView.dividerThickness)

@@ -49,10 +49,10 @@ struct HistoryPanel: View {
     // combined `HistoryRow` leaves, clobbering their own id. The rows carry "HistoryRow"; that the
     // pane is showing is asserted via `inspector.header.History` (the canonical section marker).
     // Point the model at the inspector's active target (nil once all its tabs close → History
-    // clears), only while History is the active section. Mirrors FilesPanel; `focus` no-ops when
-    // already on the path.
+    // clears), only while the History section is showing (its pane active and the section expanded).
+    // Mirrors FilesPanel; `focus` no-ops when already on the path.
     .task(id: activationKey) {
-      guard store.activeInspectorSection == .history else { return }
+      guard store.historySectionShown else { return }
       // `activate` (not `focus`): on re-entry with the same workroom it pulls fresh (and retries a
       // prior failure), so switching away and back after a terminal commit shows the new log — where
       // `focus` would no-op on the unchanged root. The store's eager `focus` on selection still fires
@@ -63,7 +63,7 @@ struct HistoryPanel: View {
 
   private var activationKey: String {
     "\(AppStore.targetIDString(for: store.inspectorTargetID) ?? "")"
-      + "\u{1F}\(store.activeInspectorSection == .history)"
+      + "\u{1F}\(store.historySectionShown)"
   }
 
   /// The changeset tab's title for a commit — its summary, or the short id when it has none.

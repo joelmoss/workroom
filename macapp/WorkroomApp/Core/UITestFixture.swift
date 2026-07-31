@@ -293,7 +293,7 @@ enum UITestFixture {
   }
 
   /// Which inspector section the fixture parks on
-  /// (`-WorkroomUITestInspectorSection changes|history|files`). Unset (or unrecognised) = `.changes`.
+  /// (`-WorkroomUITestInspectorSection changes|files`). Unset (or unrecognised) = `.changes`.
   static var inspectorSection: ActivitySection {
     let raw = text("WorkroomUITestInspectorSection") ?? ""
     return ActivitySection(rawValue: raw) ?? .changes
@@ -308,14 +308,14 @@ enum UITestFixture {
     return DiffViewMode(rawValue: raw) ?? .unified
   }
 
-  /// Force a deterministic **UI** state in fixture mode: the inspector open and parked on
-  /// `inspectorSection`, the diff viewer in `diffViewMode`. Must be called before any `AppStore` is
-  /// built (`WorkroomApp.init`), because `activeInspectorSection` seeds itself from `Defaults` at
-  /// construction.
+  /// Force a deterministic **UI** state in fixture mode: the inspector open, parked on
+  /// `inspectorSection` with every section expanded, and the diff viewer in `diffViewMode`. Must be
+  /// called before any `AppStore` is built (`WorkroomApp.init`), because `activeInspectorSection` and
+  /// the layout both seed themselves from `Defaults` at construction.
   ///
   /// These are all `Defaults` keys in the app's real (Dev) UserDefaults domain, so without this a
-  /// test inherits whatever the developer last left behind. That is not hypothetical: a machine
-  /// sitting on History has no Changes rows and a closed inspector has nothing at all, and a `Dev`
+  /// test inherits whatever the developer last left behind. That is not hypothetical: a collapsed
+  /// section renders only its header, a closed inspector has nothing at all, and a `Dev`
   /// domain holding `diffViewMode = sideBySide` turned three `DiffViewerUITests` + two
   /// `DiffHighlightUITests` red for weeks — they assert on `diff.line`, which only the *unified*
   /// renderer emits, and read "the global default" from a pref the developer can change in Settings.
@@ -347,6 +347,11 @@ enum UITestFixture {
     Defaults[.showInspector] = true
     Defaults[.activeInspectorSection] = inspectorSection
     Defaults[.diffViewMode] = diffViewMode
+    // Every section expanded, equal heights. Not optional book-keeping: collapse state decides whether
+    // a section's BODY renders at all (a collapsed section keeps only its header), and it's global +
+    // persisted, so without this a test inherits whichever sections the developer — or the last UI test
+    // to press ⌥⌘C/⌥⌘Y — left shut, and reads as "the panel is broken".
+    Defaults[.inspectorLayout] = .default
   }
 
   /// The fake project list. Idempotent within a launch: the backing temp directories are created if

@@ -310,19 +310,44 @@ final class WorkroomStatusTests: XCTestCase {
       Defaults[.inspectorLayout].weights, [300, 100, 200, 150], "and are persisted globally")
   }
 
-  /// A fresh store hydrates its live collapse/size from the persisted global layout at launch.
+  /// A fresh store hydrates its live collapse/size from the persisted global layout at launch. Each
+  /// flag is asserted against its OWN `storeIndex` slot — History sits at 3 (appended last so the
+  /// changes/files/pullRequest indices stayed stable), and it's the slot a mis-mapped load would
+  /// silently swap, since the vector is four bools with no names in it.
   @MainActor
   func testInspectorLayoutHydratesFromGlobalStateAtLaunch() {
     let original = Defaults[.inspectorLayout]
     defer { Defaults[.inspectorLayout] = original }
     Defaults[.inspectorLayout] = InspectorPaneState(
-      collapsed: [true, false, true, false], weights: [300, 100, 200, 150])
+      collapsed: [true, false, true, true], weights: [300, 100, 200, 150])
 
     let store = AppStore()
     XCTAssertTrue(store.changesSectionCollapsed)
     XCTAssertFalse(store.filesSectionCollapsed)
     XCTAssertTrue(store.prSectionCollapsed)
+    XCTAssertTrue(store.historySectionCollapsed)
     XCTAssertEqual(store.inspectorSizeWeights, [300, 100, 200, 150])
+  }
+
+  /// …and the write side round-trips to the same slot. Asserted through `storeIndex` rather than a
+  /// literal 3 so the test follows the canonical order instead of re-encoding it: a reorder of
+  /// `InspectorSectionKind.allCases` then fails the *load* test (which pins the literal vector)
+  /// rather than passing both by moving in lockstep with the bug.
+  @MainActor
+  func testHistoryCollapsePersistsToItsOwnSlot() {
+    let original = Defaults[.inspectorLayout]
+    defer { Defaults[.inspectorLayout] = original }
+    Defaults[.inspectorLayout] = .default
+
+    let store = AppStore()
+    store.historySectionCollapsed = true
+
+    let stored = Defaults[.inspectorLayout].collapsed
+    XCTAssertEqual(stored.count, InspectorSectionKind.allCases.count)
+    XCTAssertTrue(stored[InspectorSectionKind.history.storeIndex])
+    XCTAssertFalse(
+      stored[InspectorSectionKind.pullRequest.storeIndex],
+      "collapsing History must not touch its neighbour's slot")
   }
 
   // MARK: - PRPresentation (Phase 2 pull-request badge)

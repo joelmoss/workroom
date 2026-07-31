@@ -32,14 +32,19 @@ final class HistoryModel: ObservableObject {
 
   private let pageSize: Int
   private let resolve: @Sendable (URL) throws -> VCSProviding
+  /// Trailing debounce in front of every read — see `load`. Matches the selected-workroom status
+  /// probe's own coalesce window (`AppStore.selectionDebounce`); injectable so tests needn't wait.
+  private let debounce: TimeInterval
   private(set) var root: URL?
   private var task: Task<Void, Never>?
 
   init(
     pageSize: Int = 100,
+    debounce: TimeInterval = 0.3,
     resolve: @escaping @Sendable (URL) throws -> VCSProviding = { try VCS.provider(for: $0) }
   ) {
     self.pageSize = pageSize
+    self.debounce = debounce
     self.resolve = resolve
   }
 
@@ -87,12 +92,29 @@ final class HistoryModel: ObservableObject {
   /// Await the in-flight load — for tests and for a view that wants to sequence after a refresh.
   func awaitCurrentLoad() async { await task?.value }
 
+  /// Load `limit` commits, **debounced**. The loading state is published immediately (so the pane shows
+  /// its loader the instant it's asked) but the read itself waits out `debounce` first, and a superseding
+  /// call cancels this one before it ever dispatches.
+  ///
+  /// The debounce lives HERE, not at the call sites, because every caller can burst: arrow-key cycling
+  /// the sidebar re-points the model per row, `HistoryPanel`'s `.task` re-fires per activation-key
+  /// change, and the VCS-metadata watcher fires per ref write. It has to be a *pre-dispatch* wait
+  /// because cancelling doesn't stop work already handed to GCD — `runBlocking`'s read can't be
+  /// interrupted mid-flight (see `Timeout.swift`), so a cancelled load still holds a global-queue
+  /// thread to completion. Without the wait, N rapid selections meant N concurrent full revwalks
+  /// competing with the status sweep for the same pool: the shape of the "History pane loads forever"
+  /// bug this model was already fixed for once.
   private func load(limit: Int) {
     guard let root else { return }
     task?.cancel()
     state = .loading
     let resolve = self.resolve
+    let debounce = self.debounce
     task = Task { [weak self] in
+      if debounce > 0 {
+        try? await Task.sleep(nanoseconds: UInt64(debounce * 1_000_000_000))
+        if Task.isCancelled { return }
+      }
       do {
         // The provider's log read blocks its thread (jj-lib over UniFFI / libgit2). Run it on GCD via
         // `runBlocking`, NOT `Task.detached` — the cooperative pool is fixed-width and the

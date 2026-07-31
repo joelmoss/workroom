@@ -48,24 +48,31 @@ final class ChangesetDetailUITests: XCTestCase {
       for: [XCTNSPredicateExpectation(predicate: p, object: e)], timeout: timeout) == .completed
   }
 
-  /// Open the History section and wait for its fixture-canned rows. Priming with Files guarantees the
-  /// History click is a SWITCH (which always opens), independent of the section the shared defaults
-  /// launched active. The workroom is selected AFTER History is showing, so the selection change
-  /// re-triggers the pane's load (avoids the race where the pane's first load ran with no selection).
+  /// Open the History section and wait for its fixture-canned rows. History is a section of the
+  /// **Changes** pane, so this switches to that pane (priming with Files guarantees the click is a
+  /// SWITCH, which always opens, independent of the section the shared defaults launched active). The
+  /// section is expanded on arrival because `UITestFixture.applyFixtureDefaults` pins
+  /// `inspectorLayout` to all-expanded at launch — nothing to click here. The workroom is selected
+  /// AFTER History is showing, so the selection change re-triggers the pane's load (avoids the race
+  /// where the pane's first load ran with no selection).
   private func openHistory(_ app: XCUIApplication) {
     XCTAssertTrue(el(app, "activitySection.files").waitForExistence(timeout: 10))
     el(app, "activitySection.files").click()
-    XCTAssertTrue(waitExists(el(app, "activitySection.history")))
-    el(app, "activitySection.history").click()
+    XCTAssertTrue(waitExists(el(app, "activitySection.changes")))
+    el(app, "activitySection.changes").click()
     XCTAssertTrue(
-      el(app, "inspector.header.History").waitForExistence(timeout: 8), "History pane renders")
+      el(app, "inspector.header.History").waitForExistence(timeout: 8),
+      "the History section renders")
 
     selectWorkroom(app)
 
     // Rows load asynchronously once a workroom is selected; the header's Refresh button forces a
     // reload if the first render lagged — belt-and-braces so the click-through isn't gated on timing.
+    // Matched by its a11y label, not the glyph: the Changes section header in the same pane carries an
+    // identical `arrow.clockwise` refresh button.
     if !els(app, "HistoryRow").element(boundBy: 0).waitForExistence(timeout: 6) {
-      let refresh = el(app, "arrow.clockwise")
+      let refresh = app.descendants(matching: .any)
+        .matching(NSPredicate(format: "label == %@", "Refresh history")).firstMatch
       if refresh.exists { refresh.click() }
     }
     XCTAssertTrue(
@@ -87,8 +94,10 @@ final class ChangesetDetailUITests: XCTestCase {
 
     // The header shows the changeset's +/- line-count summary (fixture: 24 insertions, 8 deletions).
     // It renders as a combined StaticText whose content is its `value` (the header's `ChangesetDetail`
-    // id propagates onto the leaf, so match on the spoken count text, not the id).
-    let summary = app.descendants(matching: .any).matching(
+    // id propagates onto the leaf, so match on the spoken count text, not the id). Scoped to
+    // `staticTexts` rather than every element — see `HistoryPushStateUITests.headerSaysNotPushed` for
+    // why an unscoped predicate query times out now that the inspector stacks three sections.
+    let summary = app.staticTexts.matching(
       NSPredicate(format: "value CONTAINS %@", "24 insertions, 8 deletions")
     ).firstMatch
     XCTAssertTrue(waitExists(summary), "the header shows the +/- line-count summary")
@@ -173,7 +182,9 @@ final class ChangesetDetailUITests: XCTestCase {
     XCTAssertTrue(
       els(app, "HistoryDivergentSibling").element(boundBy: 1).waitForExistence(timeout: 6),
       "expanding reveals the divergent sibling copies")
-    let labelled = app.descendants(matching: .any).matching(
+    // Scoped to the sibling rows themselves (they combine their children, so the offset surfaces as the
+    // row's own label/value) — an unscoped predicate query over every element times out now.
+    let labelled = els(app, "HistoryDivergentSibling").matching(
       NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "wqp/1", "wqp/1")
     ).firstMatch
     XCTAssertTrue(waitExists(labelled), "a sibling is labelled with its id/offset (wqp/1)")
@@ -201,8 +212,9 @@ final class ChangesetDetailUITests: XCTestCase {
       els(app, "ChangesetFileRow").element(boundBy: 0).waitForExistence(timeout: 8),
       "the changed-file list renders")
 
-    // The fixture's renamed entry: src/moved.rb → lib/moved.rb.
-    let moved = app.descendants(matching: .any).matching(
+    // The fixture's renamed entry: src/moved.rb → lib/moved.rb. Scoped to the file rows (which carry it
+    // as their own spoken content) — an unscoped predicate query over every element times out now.
+    let moved = els(app, "ChangesetFileRow").matching(
       NSPredicate(
         format: "label CONTAINS %@ OR value CONTAINS %@", "src/moved.rb \u{2192} lib/moved.rb",
         "src/moved.rb \u{2192} lib/moved.rb")

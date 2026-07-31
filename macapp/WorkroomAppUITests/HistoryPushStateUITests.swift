@@ -49,20 +49,25 @@ final class HistoryPushStateUITests: XCTestCase {
       for: [XCTNSPredicateExpectation(predicate: p, object: e)], timeout: timeout) == .completed
   }
 
-  /// Mirrors `ChangesetDetailUITests.openHistory`: prime with Files so the History click is always a
-  /// switch, select the workroom after History is showing so the selection re-triggers the load.
+  /// Mirrors `ChangesetDetailUITests.openHistory`: History is a section of the **Changes** pane, so
+  /// prime with Files (making the Changes click always a switch), then select the workroom so the
+  /// selection re-triggers the load. The section arrives expanded — the fixture pins `inspectorLayout`.
   private func openHistory(_ app: XCUIApplication) {
     XCTAssertTrue(el(app, "activitySection.files").waitForExistence(timeout: 10))
     el(app, "activitySection.files").click()
-    XCTAssertTrue(waitExists(el(app, "activitySection.history")))
-    el(app, "activitySection.history").click()
+    XCTAssertTrue(waitExists(el(app, "activitySection.changes")))
+    el(app, "activitySection.changes").click()
     XCTAssertTrue(
-      el(app, "inspector.header.History").waitForExistence(timeout: 8), "History pane renders")
+      el(app, "inspector.header.History").waitForExistence(timeout: 8),
+      "the History section renders")
 
     selectWorkroom(app)
 
+    // Matched by its a11y label, not the glyph: the Changes section header in the same pane carries an
+    // identical `arrow.clockwise` refresh button.
     if !els(app, "HistoryRow").element(boundBy: 0).waitForExistence(timeout: 6) {
-      let refresh = el(app, "arrow.clockwise")
+      let refresh = app.descendants(matching: .any)
+        .matching(NSPredicate(format: "label == %@", "Refresh history")).firstMatch
       if refresh.exists { refresh.click() }
     }
     XCTAssertTrue(
@@ -120,10 +125,14 @@ final class HistoryPushStateUITests: XCTestCase {
   /// Matching on `value` and not `label` is what keeps this honest: the History row's badge carries
   /// "Not pushed" as its accessibility LABEL, so a label match would find the row and pass regardless of
   /// what the header shows.
+  ///
+  /// Scoped to `staticTexts`, not `descendants(matching: .any)`: a predicate query over EVERY element
+  /// has to evaluate the whole snapshot, and since History joined the Changes stack the inspector holds
+  /// three sections' worth of rows at once — the unscoped version started failing with "Timed out while
+  /// evaluating UI query" (identifier queries are indexed and stayed fast, which is why only the
+  /// predicate ones broke).
   private func headerSaysNotPushed(_ app: XCUIApplication) -> XCUIElement {
-    app.descendants(matching: .any).matching(
-      NSPredicate(format: "value CONTAINS %@", "Not pushed")
-    ).firstMatch
+    app.staticTexts.matching(NSPredicate(format: "value CONTAINS %@", "Not pushed")).firstMatch
   }
 
   /// Opening the badged commit states the same fact in the detail header — a badge that vanishes when

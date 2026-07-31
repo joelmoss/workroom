@@ -3,10 +3,11 @@ import Defaults
 import SwiftUI
 
 /// The right inspector (issue #24). macOS 14 supports only one `.inspector` per view, so the
-/// inspector composes three collapsible sections — **Changes** (the selected workroom's VCS
-/// detail), **Files** (the repo tree), and **Pull Request** — rather than separate inspectors.
-/// The toolbar `sidebar.right` toggle shows/hides the whole inspector; each section's disclosure
-/// handles its own visibility (persisted). (Notifications moved to the left sidebar, issue #118.)
+/// inspector composes four collapsible sections — **Changes** (the selected workroom's VCS detail),
+/// **History** (its commit log), **Files** (the repo tree), and **Pull Request** — rather than
+/// separate inspectors. The toolbar `sidebar.right` toggle shows/hides the whole inspector; each
+/// section's disclosure handles its own visibility (persisted). (Notifications moved to the left
+/// sidebar, issue #118.)
 struct RightInspector: View {
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
@@ -16,8 +17,8 @@ struct RightInspector: View {
 
   var body: some View {
     // The active activity-bar section decides which sub-sections this pane stacks (Changes stacks
-    // Changes + Pull Request; Files is solo). Each sub-section's header + body are handed to the
-    // NSSplitView bridge (see InspectorSplitView) as environment-injected AnyViews — the hosted tree
+    // Changes + History + Pull Request; Files is solo). Each sub-section's header + body are handed
+    // to the NSSplitView bridge (see InspectorSplitView) as environment-injected AnyViews — the tree
     // does NOT inherit our `@EnvironmentObject`s across NSHostingController. Collapse flags +
     // size-weights persist as full `InspectorSectionKind.allCases`-ordered vectors on the store; we
     // slice out — and write back — the entries for the sub-sections actually shown, by `storeIndex`.
@@ -64,7 +65,7 @@ struct RightInspector: View {
     case .changes: return store.changesSectionCollapsed
     case .files: return false
     case .pullRequest: return store.prSectionCollapsed
-    case .history: return false  // solo pane, never collapses (like Files)
+    case .history: return store.historySectionCollapsed
     }
   }
 
@@ -100,8 +101,17 @@ struct RightInspector: View {
         .environmentObject(store).environmentObject(notifications))
     case .history:
       return AnyView(
-        SectionHeader(title: "History", collapsed: nil, shortcut: "⌥⌘Y") {
-          InspectorHeaderButton(systemImage: "arrow.clockwise", help: "Refresh history") {
+        SectionHeader(
+          title: "History", collapsed: $store.historySectionCollapsed, shortcut: "⌥⌘Y"
+        ) {
+          // Disabled while collapsed: a collapsed section deliberately stops tracking the selection
+          // (`historySectionShown` gates the re-point), so the model still points at whatever workroom
+          // was selected when it shut — clicking Refresh there would read THAT repo's log, not the
+          // selected one, for a list nobody can see. Expanding re-points first, then loads.
+          InspectorHeaderButton(
+            systemImage: "arrow.clockwise", help: "Refresh history",
+            disabled: store.historySectionCollapsed
+          ) {
             store.commitHistory.refresh()
           }
         }

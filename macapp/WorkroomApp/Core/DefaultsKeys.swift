@@ -131,15 +131,23 @@ extension Defaults.Keys {
   /// hint applied to whatever is currently active — stale ids resolve away harmlessly.
   static let workroomTabOrder = Key<[String]>("workroomsView.tabOrder", default: [])
 
-  /// Global inspector layout (issue #24): which of the inspector's sections (Changes / Files / Pull
-  /// Request) are collapsed and the relative heights of the panes, ordered as
-  /// `InspectorSectionKind.allCases`. Shared across ALL workrooms and windows — switching the selected
+  /// Global inspector layout (issue #24): which of the inspector's sections are collapsed and the
+  /// relative heights of the panes, ordered as `InspectorSectionKind.allCases` — Changes, Files, Pull
+  /// Request, History. That is NOT the on-screen order (the Changes pane stacks Changes → History →
+  /// Pull Request); it's the canonical `storeIndex` order, and the vector is four unnamed bools, so
+  /// the two must not be confused. Shared across ALL workrooms and windows — switching the selected
   /// workroom changes the inspector's *content* but never its section collapse/size (a single global
   /// shape, not per-workroom). A stored layout whose entry count doesn't match the current section
   /// count is discarded to the default on load. (Was a per-workroom map keyed by `targetIDString`; a
   /// new key string means old per-workroom data is simply ignored.)
+  ///
+  /// `.v2` because History moved *into* the Changes stack: the entry count didn't change (History
+  /// already held index 3 as a solo pane), so the count check couldn't catch it, yet the stored
+  /// weights are meaningless for the new stack — a machine that had dragged the Changes/Pull Request
+  /// divider carries a never-dragged weight of 1 for History and would open it squeezed to its floor.
+  /// The rename discards those once, so the three sections start at equal heights.
   static let inspectorLayout = Key<InspectorPaneState>(
-    "inspector.layout", default: .default)
+    "inspector.layout.v2", default: .default)
 
   /// The app `CFBundleShortVersionString` whose release notes the user has already seen (issue: What's
   /// New). nil on a fresh install / first launch after this feature shipped — recorded silently with
@@ -183,8 +191,8 @@ extension Defaults.Keys {
 }
 
 /// The global persisted inspector layout: the collapse state and relative pane heights of the
-/// sections, ordered as `InspectorSectionKind.allCases` (Changes, Files, Pull Request). `weights`
-/// are relative (renormalised among the expanded panes at layout time), so they survive
+/// sections, ordered as `InspectorSectionKind.allCases` (Changes, Files, Pull Request, History —
+/// `storeIndex` order, not display order). `weights` are relative (renormalised among the expanded panes at layout time), so they survive
 /// inspector-width/height changes; equal weights == the equal-sections default. A layout whose entry
 /// count doesn't match the current section count (e.g. a pre-Files 3-entry layout, or a pre-#118
 /// 4-entry layout that still had Notifications) is discarded to this default on load.
