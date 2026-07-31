@@ -164,15 +164,36 @@ final class TabStripOverflowUITests: XCTestCase {
       "\(state)/\(id) has collapsed — AX frame \(element.frame)")
   }
 
-  /// A collapse tripwire, NOT a hit-target audit — deliberately far below any real control.
-  ///
-  /// These buttons report the *glyph's* frame, not the padded `Button`'s: `TabToolbarButton` draws an
-  /// 11pt SF Symbol inside `.padding(4)`, so the pointer target is roughly 19×18 while AX describes
-  /// the ~13×10 image. Measured, not assumed — a 12pt floor failed here on a healthy build
-  /// (`tab.toolbar.splitRight` at 13.0×10.0). So this can only catch a control crushed to nothing,
-  /// which `frame.isEmpty` alone misses at 1×1; anything stricter would be asserting a hit-target
-  /// size the AX frame isn't reporting.
+  /// A collapse tripwire, NOT a hit-target audit — deliberately far below any real control, so this
+  /// assertion keeps meaning "crushed to nothing" (which `frame.isEmpty` alone misses at 1×1) even for
+  /// a control whose target is legitimately small. The real target size is audited separately by
+  /// `testChromeGlyphButtonsClaimTheirWholeWell`.
   private static let collapseFloor: CGFloat = 6
+
+  /// A glyph button's AX frame is the shape it HIT-TESTS, so it doubles as the pointer target — and a
+  /// button that claims only its SF Symbol leaves the rest of its drawn hover well dead: no well fill,
+  /// no `.help` tooltip, no click, in a ring several points wide around a target the user is aiming at.
+  /// `TabToolbarButton` shipped that way (measured 13.0×10.0 inside a ~24×20 well) until it took a
+  /// `.contentShape(Rectangle())`, which is what this locks in.
+  ///
+  /// The floor is the drawn well minus a point of slack — an 11pt symbol in `.padding(4)` is ~19–20pt
+  /// on its short side across these glyphs — and deliberately NOT the exact measured numbers, which
+  /// differ per symbol (splitRight 24×20, closeAll 21×20, the strip's "+" 20×19). A `.frame` does not
+  /// satisfy it: only a content shape moves this number.
+  func testChromeGlyphButtonsClaimTheirWholeWell() {
+    let app = launchedApp()
+    XCTAssertTrue(terminalChips(app).firstMatch.waitForExistence(timeout: 10))
+    for id in [
+      "NewTerminal", "tab.toolbar.splitRight", "tab.toolbar.splitDown", "tab.toolbar.closeAll",
+    ] {
+      let button = element(app, id: id)
+      XCTAssertTrue(button.waitForExistence(timeout: 10), "\(id) never appeared")
+      XCTAssertGreaterThanOrEqual(
+        min(button.frame.width, button.frame.height), 18,
+        "\(id) claims less than its drawn hover well — AX frame \(button.frame). Did it lose its "
+          + "`.contentShape(Rectangle())`? Hover, tooltip and clicks all die in the padding ring.")
+    }
+  }
 
   /// Inline (the row fits): no pinning, no `safeAreaInset`, and the mask's ramp is fully opaque.
   func testChromeGlyphButtonsAreHittableWhenInline() {
