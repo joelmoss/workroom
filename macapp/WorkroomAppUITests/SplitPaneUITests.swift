@@ -317,4 +317,57 @@ final class SplitPaneUITests: XCTestCase {
   private func memberTitleBar(_ app: XCUIApplication, labelled name: String) -> XCUIElement {
     titlebars(app).matching(NSPredicate(format: "label CONTAINS[c] %@", name)).firstMatch
   }
+
+  /// Each group's chip bracket must sit ON its own members, with two groups in the bar. It regressed the
+  /// moment a window could hold several groups: the brackets are `ForEach` children of ONE background,
+  /// whose implicit stack centres them, so the narrower bracket was drawn `(widest − mine) / 2` too far
+  /// right — over its neighbour's chips and, in the reported case, cutting through a chip's name. The
+  /// widest bracket landed correctly either way, which is why one group never showed it.
+  ///
+  /// Asserted against the member chips' own frames rather than absolute geometry: the bracket wraps the
+  /// group's contiguous run, so it starts at the first member's leading edge and ends at the last's
+  /// trailing edge. The tolerance is a couple of points (stroke width + rounding); the fault it catches
+  /// was ~48pt.
+  func testEachSplitGroupBracketFramesItsOwnChips() throws {
+    let app = XCUIApplication()
+    app.launchArguments += [
+      "-WorkroomUITestFixture", "1",
+      "-WorkroomUITestWorkroomSplit", "1",
+      "-WorkroomUITestSecondWorkroomSplit", "1",
+      "-WorkroomUITestWorkroomCount", "3",
+      "-ApplePersistenceIgnoreState", "YES",
+    ]
+    app.launch()
+    try openWorkroom(app)
+
+    let bracketA = app.descendants(matching: .any)["workroom.tab.splitBracket.0"]
+    let bracketB = app.descendants(matching: .any)["workroom.tab.splitBracket.1"]
+    XCTAssertTrue(bracketA.waitForExistence(timeout: 8), "group A's bracket is in the bar")
+    XCTAssertTrue(bracketB.exists, "group B's bracket too — two groups, two brackets")
+
+    // Group A = project root + the fixture workroom; group B = the 2nd + 3rd workrooms. `tabs` order
+    // is root, uitest-room, uitest-room-2, uitest-room-3 (each group contiguous).
+    let root = app.descendants(matching: .any)
+      .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workroom.tab.root|")).firstMatch
+    let roomOne = workroomChip(app, named: "uitest-room")
+    let roomTwo = workroomChip(app, named: "uitest-room-2")
+    let roomThree = workroomChip(app, named: "uitest-room-3")
+    for chip in [root, roomOne, roomTwo, roomThree] {
+      XCTAssertTrue(chip.exists, "every member chip is in the bar")
+    }
+
+    let tolerance: CGFloat = 3
+    XCTAssertEqual(
+      bracketA.frame.minX, root.frame.minX, accuracy: tolerance,
+      "group A's bracket starts at its first member's chip, not inside a neighbour")
+    XCTAssertEqual(
+      bracketA.frame.maxX, roomOne.frame.maxX, accuracy: tolerance,
+      "…and ends at its last member's chip")
+    XCTAssertEqual(
+      bracketB.frame.minX, roomTwo.frame.minX, accuracy: tolerance,
+      "group B's bracket starts at ITS first member — the two brackets don't overlap")
+    XCTAssertEqual(
+      bracketB.frame.maxX, roomThree.frame.maxX, accuracy: tolerance,
+      "…and ends at its last member's chip, short of the trailing controls")
+  }
 }

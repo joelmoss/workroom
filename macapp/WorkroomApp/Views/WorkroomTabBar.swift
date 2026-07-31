@@ -255,13 +255,33 @@ struct WorkroomTabBar: View {
   /// `TerminalTabStrip.splitWell` — an outline, not a fill, so it doesn't compete with the active-chip
   /// fill. Hidden during a drag. One bracket per group: `displayedWorkroomTargets` keeps each group's
   /// members contiguous, so every group is one block.
+  ///
+  /// The `ZStack(alignment: .leading)` is load-bearing and NOT redundant with the caller's
+  /// `.background(alignment: .leading)`: that alignment places the background *content as a whole*, and
+  /// several `ForEach` brackets are wrapped in an implicit stack whose own alignment is the default
+  /// `.center` — so every bracket narrower than the widest one was centred inside it and drawn
+  /// `(widest − mine) / 2` too far right, while the widest one alone landed correctly. With one group
+  /// (all this bar could hold before several groups per window) the sole bracket *was* the widest, so
+  /// the fault was invisible until then. `TabStripSplitRun.rect` was right all along — each `run.x` is
+  /// relative to the first chip's leading edge, which is what this stack restores as every bracket's
+  /// origin.
   @ViewBuilder private func splitWell(groupOf: [SidebarID: Int]) -> some View {
     if draggingID == nil {
-      ForEach(Array(splitRunRects(groupOf: groupOf).enumerated()), id: \.offset) { _, run in
-        RoundedRectangle(cornerRadius: 7)
-          .strokeBorder(ThemeService.shared.tokens.border, lineWidth: 1)
-          .frame(width: run.width)
-          .offset(x: run.x)
+      ZStack(alignment: .leading) {
+        ForEach(Array(splitRunRects(groupOf: groupOf).enumerated()), id: \.offset) { index, run in
+          RoundedRectangle(cornerRadius: 7)
+            .strokeBorder(ThemeService.shared.tokens.border, lineWidth: 1)
+            .frame(width: run.width)
+            .offset(x: run.x)
+            // A frame XCUITest can read, so the misalignment above is testable at all — a stroked
+            // shape is otherwise invisible to it, and the arithmetic was never the faulty half. Kept
+            // OUT of the a11y tree in a normal run (`accessibilityHidden`): it's pure decoration, and
+            // VoiceOver users get the grouping from each chip's own label. Same fixture-gated handle
+            // idea as `PaneTreeView`'s single-pane `.isSelected`.
+            .accessibilityElement()
+            .accessibilityHidden(!UITestFixture.isActive)
+            .accessibilityIdentifier("workroom.tab.splitBracket.\(index)")
+        }
       }
     }
   }
