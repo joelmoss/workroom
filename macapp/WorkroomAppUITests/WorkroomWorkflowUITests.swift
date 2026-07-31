@@ -138,8 +138,11 @@ final class WorkroomWorkflowUITests: XCTestCase {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
 
-    // Assert run-state via the toolbar buttons (existence is reliable even if a narrow window
-    // collapses them into the toolbar overflow); drive Run via the always-hittable menu item.
+    // Assert run-state via the run buttons, and drive Run via the always-hittable menu item. Since
+    // issue #139 those buttons live in the workroom PANE's title bar rather than the window title bar,
+    // one set per visible workroom — so these unscoped lookups hold only because this fixture shows a
+    // single workroom. A future split fixture here would need scoping to a `workroom.pane` element (see
+    // `WorkroomPaneHeaderUITests`), or `XCTAssertFalse(run.exists)` below would match the other member.
     let run = app.buttons["runCommand.run"]
     let stop = app.buttons["runCommand.stop"]
     let restart = app.buttons["runCommand.restart"]

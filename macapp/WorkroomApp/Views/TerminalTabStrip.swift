@@ -19,9 +19,6 @@ struct TerminalTabStrip: View {
   let activeID: TerminalTab.ID?
   let target: TerminalTarget
   @ObservedObject var sessions: TerminalSessions
-  /// In a workroom-split group (issue #110) the strip tightens its leading inset so the leftmost tab
-  /// lines up with the left edge of the group's terminal panel below it. Default (solo) keeps 8pt.
-  var compact: Bool = false
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
   @EnvironmentObject var agentManager: TerminalAgentManager
@@ -58,9 +55,9 @@ struct TerminalTabStrip: View {
   /// there's no active tab) so a pinned "+" is never flush against the pane edge.
   private static let stripTrailingInset: CGFloat = 4
 
-  /// The strip's leading inset: in a workroom-split group the leftmost tab lines up with the group's
-  /// terminal panel below (issue #110); solo keeps 8pt.
-  private var leadingInset: CGFloat { compact ? 4 : 8 }
+  /// The strip's leading inset, lining the leftmost tab up with the terminal panel below it: the pane
+  /// tree is inset 2pt inside the workroom's card and each pane leaf pads another 2pt.
+  private static let leadingInset: CGFloat = 4
 
   var body: some View {
     // Resolve the drag once per layout: which tab is dragging, and where it would land.
@@ -73,13 +70,21 @@ struct TerminalTabStrip: View {
     // *inside* the `splitWell` bracket rather than overrunning it.
     let groupMembers = splitMemberSet
 
-    HStack(spacing: 0) {
+    // `spacing` is the gutter between the scroller region and the per-tab toolbar, and it has to be a
+    // real gutter rather than leftover slack. `OverflowingTabScroller`'s pinned "+" rides a
+    // `safeAreaInset(edge: .trailing)`, which puts its `spacing:` between the CHIPS and the "+" and
+    // leaves the "+" itself flush with the scroller's trailing edge — so at `spacing: 0` a pinned "+"
+    // abutted the first toolbar button exactly (measured: both at x=1123), which is symptom 1 of issue
+    // #129. It went unnoticed because at the old strip width the default fixture's tabs still fit
+    // INLINE, where the gap happened to be leftover slack; issue #139's card geometry narrowed the strip
+    // enough to pin, and `TabStripOverflowUITests.testPinnedAddButtonKeepsGutterFromToolbar` caught it.
+    HStack(spacing: TabStripMetrics.gutter) {
       // The scrolling chips plus the adaptive "+" (issue #129), assembled by the shared
       // `OverflowingTabScroller`. The width it measures for the overflow predicate is the scroller's
       // own: it's the flexible child beside the `fixedSize` toolbar, so it already equals "strip minus
       // toolbar" (and the full strip when there's no active tab and the toolbar renders nothing).
       OverflowingTabScroller(
-        leadingInset: leadingInset, spacing: tabSpacing,
+        leadingInset: Self.leadingInset, spacing: tabSpacing,
         inlineLead: TabStripMetrics.inlineAddLead,
         // Scroll the focused tab into view on selection (issue #129 follow-up); suspended mid-drag,
         // like the reorder gap animation below.
@@ -110,8 +115,7 @@ struct TerminalTabStrip: View {
   /// The chips themselves plus the hairline that sets the inline "+" apart — everything that scrolls
   /// and stays put across an overflow flip. Measured as one run for the overflow predicate (by
   /// `OverflowingTabScroller`, which also lays the row out with the leading inset: in a split group the
-  /// leftmost tab lines up with the group's terminal panel below — 4pt compact gutter, issue #110 —
-  /// while solo keeps the 8pt inset). The split bracket is drawn behind it (leading-aligned, so x = 0
+  /// leftmost tab lines up with the terminal panel below it). The split bracket is drawn behind it (leading-aligned, so x = 0
   /// is the first chip's leading edge, which is what `splitRunRect` computes against).
   @ViewBuilder
   private func chipRun(
@@ -814,12 +818,16 @@ private struct MarkdownModeSwitch: View {
   }
 }
 
-/// The remove-from-split (✕) control for a workroom split member. Hosted in the split-group title bar
-/// (`WorkroomSplitGroupTitleBar`, issue #110) — present above every member regardless of its terminal
-/// count or a blocking setup script, which is why it no longer needs to ride the tab strip or a
-/// setup-overlay corner. A view (not an inline button) so it carries its own `onHover` — which both
-/// gives the subtle hover feedback the other strip controls have AND ensures the `.help` tooltip's
-/// tracking area is installed (a bare `.help` without any hover tracking can silently fail to show).
+/// The remove-from-split (✕) control for a workroom split member. Hosted in the workroom pane title bar
+/// (`WorkroomPaneTitleBar`, issue #110) — present above every member regardless of its terminal count or
+/// a blocking setup script, which is why it no longer needs to ride the tab strip or a setup-overlay
+/// corner. A view (not an inline button) so it carries its own `onHover`, which ensures the `.help`
+/// tooltip's tracking area is installed (a bare `.help` without any hover tracking can silently fail to
+/// show).
+///
+/// Takes the group's inherited `ToolbarIconButtonStyle` and glyph size rather than styling itself: it
+/// used to be `.plain` with its own 8pt horizontal padding, so it was the one control in the header
+/// whose well was a different size and shape from its neighbours'.
 struct CloseWorkroomPaneButton: View {
   let action: () -> Void
   @State private var hovering = false
@@ -829,12 +837,8 @@ struct CloseWorkroomPaneButton: View {
       // `pip.exit` (a pane with an arrow leaving its corner) reads as "pop this workroom out of the
       // split", not "close the workroom" — the ✕ was ambiguous (issue #110).
       Image(systemName: "pip.exit")
-        .font(.system(size: 10))
         .foregroundStyle(hovering ? .primary : .secondary)
     }
-    .buttonStyle(.plain)
-    .padding(.horizontal, 8)
-    .contentShape(Rectangle())
     .onHover { hovering = $0 }
     .help("Remove this workroom from the split")
     .accessibilityLabel("Remove workroom from split")

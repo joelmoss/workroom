@@ -250,6 +250,108 @@ final class RunCommandTests: XCTestCase {
       "owner-elsewhere takes precedence over the no-command branch — no settings sheet either")
   }
 
+  // MARK: Per-target Run (issue #139)
+
+  /// The whole reason `runOrFocusRunCommand(for:)` exists. Each workroom pane now owns a Run button, so
+  /// pressing one on a co-displayed but non-selected split member must run THAT workroom's command —
+  /// the selection-scoped door would silently have run the selected one instead.
+  func testRunOrFocusForTargetActsOnThePassedTargetNotTheSelection() {
+    let store = makeStore([project("/a", workrooms: ["main", "other"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let selected = target(store, "/a", "main")
+    let pressed = target(store, "/a", "other")
+    store.selectedTargetID = .workroom(project: "/a", name: "main")
+
+    store.runOrFocusRunCommand(for: pressed)
+
+    XCTAssertTrue(
+      store.isRunCommandRunning(for: pressed.id), "the pressed workroom should be running")
+    XCTAssertNil(
+      store.runTabID(for: selected.id),
+      "the SELECTED workroom must be untouched — that was the bug this overload fixes")
+  }
+
+  /// Pressing Run on a non-selected member also raises it. Without this, `.running`'s focus branch
+  /// switches a tab inside a dimmed, non-focused pane and the click looks like it did nothing.
+  func testRunOrFocusForTargetRaisesThePressedPane() {
+    let store = makeStore([project("/a", workrooms: ["main", "other"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    store.selectedTargetID = .workroom(project: "/a", name: "main")
+
+    store.runOrFocusRunCommand(for: target(store, "/a", "other"))
+
+    XCTAssertEqual(store.selectedTargetID, .workroom(project: "/a", name: "other"))
+    XCTAssertEqual(store.selectedProjectID, "/a")
+  }
+
+  /// `isEditingTextField` guards the AMBIENT ⌘R — it must not reach a deliberate button click. The
+  /// guard lives on the selection-scoped overload only, so the per-target one runs regardless of what
+  /// holds first responder. Proven here by driving the overload directly (a unit test can't make a real
+  /// field editor first responder, which is exactly why this seam has to be structural, not conditional).
+  func testRunOrFocusForTargetIgnoresTheTextFieldGuard() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.selectedTargetID = nil  // no selection at all: the ⌘R path would bail here
+
+    store.runOrFocusRunCommand(for: t)
+
+    XCTAssertTrue(
+      store.isRunCommandRunning(for: t.id),
+      "a button press carries its own target and must not depend on the selection")
+  }
+
+  /// The selection-scoped door still works — it just delegates now.
+  func testRunOrFocusSelectionOverloadDelegatesToThePerTargetOne() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.selectedTargetID = .workroom(project: "/a", name: "main")
+
+    store.runOrFocusRunCommand()
+
+    XCTAssertTrue(store.isRunCommandRunning(for: t.id))
+  }
+
+  /// A missing directory is refused on the per-target path too, not just via the selection.
+  func testRunOrFocusForTargetRefusesAMissingWorkroom() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let live = target(store, "/a", "main")
+    let missing = TerminalTarget(
+      id: live.id, title: live.title, path: live.path, isMissing: true)
+
+    store.runOrFocusRunCommand(for: missing)
+
+    XCTAssertNil(store.runTabID(for: missing.id))
+  }
+
+  /// The single-owner-across-windows hop keys on the PASSED target. Same scenario as
+  /// `testRunOrFocusFocusesOwnerWindowInsteadOfStartingDuplicate`, but pressed on a workroom that isn't
+  /// the selection — the branch reads `runStates[target.id]`, so a regression that reverted it to the
+  /// selection would fork a second dev server on the same port.
+  func testRunOrFocusForTargetChecksOwnerForThePassedTarget() {
+    let ownerStore = makeStore([project("/a", workrooms: ["main", "other"])])
+    ownerStore.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    ownerStore.startRunCommand(for: target(ownerStore, "/a", "other"))
+
+    let pressingStore = makeStore([project("/a", workrooms: ["main", "other"])])
+    let pressed = target(pressingStore, "/a", "other")
+    pressingStore.selectedTargetID = .workroom(project: "/a", name: "main")
+
+    let winOwner = NSWindow()
+    let winPressing = NSWindow()
+    WindowRegistry.shared.register(window: winOwner, store: ownerStore)
+    WindowRegistry.shared.register(window: winPressing, store: pressingStore)
+    registeredWindows = [winOwner, winPressing]
+
+    pressingStore.runOrFocusRunCommand(for: pressed)
+
+    XCTAssertNil(
+      pressingStore.runTabID(for: pressed.id),
+      "the other window already runs THIS workroom — no duplicate (issue #70)")
+  }
+
   func testStartSingleQuoteEscaping() {
     let store = makeStore([project("/a", workrooms: ["main"])])
     store.setRunConfig(RunConfig(command: "echo 'x'", autoRun: false), forProject: "/a")
@@ -540,8 +642,15 @@ final class RunCommandTests: XCTestCase {
     XCTAssertFalse(store.isRunCommandRunning(for: t.id))
   }
 
-  /// Run controls show only for a present target whose project has a command — not for a missing
-  /// directory (where startRunCommand silently no-ops), and not without a command (review #9/#14).
+  /// The gate the **sidebar** row buttons use: a present target whose project has a command — not a
+  /// missing directory (where startRunCommand silently no-ops), and not a project without a command
+  /// (review #9/#14).
+  ///
+  /// Note this is no longer the gate the workroom pane header uses. Its Run button is always shown for a
+  /// present target (issue #139 follow-up) and a press with no command configured opens Project Settings
+  /// with the warning, exactly as ⌘R does — a visible button that teaches you how to configure it beats
+  /// no button at all. A sidebar *row* is a different case: it's a list of many workrooms, where a button
+  /// per row that only opens a settings sheet would be noise.
   func testCanRunCommandGate() {
     let store = makeStore([])
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")

@@ -137,12 +137,12 @@ struct LeadingTitlebarBar: View {
   }
 }
 
-/// Trailing title-bar controls: the quick terminal (issue #39) and the selected target's run/open-in
-/// actions (issue #7). (Notifications + inspector visibility now live in the activity bar, so no bell
-/// or toggle here.) `RunControls`/`OpenInControl` render nothing when not applicable, so the group
-/// collapses to just the quick terminal in the empty state.
+/// Trailing title-bar controls: the update pill and the quick terminal (issue #39) — both
+/// **window-level**, which is now the whole point. Everything workroom-scoped has left: notifications
+/// and inspector visibility moved to the activity bar, and issue #139 moved the selected target's
+/// run/open-in actions into each workroom pane's own title bar, where a co-displayed split member's
+/// are reachable too. With no update pending this collapses to just the quick terminal.
 struct TrailingTitlebarBar: View {
-  @EnvironmentObject var store: AppStore
   @EnvironmentObject var updater: Updater
 
   var body: some View {
@@ -157,19 +157,9 @@ struct TrailingTitlebarBar: View {
         TitlebarDivider()
       }
 
-      // The selected target's open-in + run actions (a group). Open In leads it, swapped with the
-      // Quick Terminal that used to sit here — Quick Terminal now trails at the window edge.
-      if let target = store.selectedTarget, !target.isMissing {
-        OpenInControl(path: target.path)
-        if let projectPath = AppStore.projectPath(of: store.selectedTargetID) {
-          RunControls(target: target, projectPath: projectPath)
-        }
-        // Separate the target's actions from the always-present quick terminal — a different group.
-        TitlebarDivider()
-      }
-
-      // Quick Terminal (⌥§) — a ~/ shell in its own window. Always present; sits at the window's
-      // trailing edge, after the target's run/open-in actions.
+      // Quick Terminal (⌥§) — a ~/ shell in its own window. Always present, and since issue #139 moved
+      // the selected target's run/open-in actions into the workroom pane title bars, the only control
+      // left at the window's trailing edge besides the update pill.
       Button {
         NotificationCenter.default.post(name: .showQuickTerminal, object: nil)
       } label: {

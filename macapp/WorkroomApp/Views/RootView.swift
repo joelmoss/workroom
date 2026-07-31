@@ -51,43 +51,6 @@ struct RootView: View {
     return true
   }
 
-  /// The single, full-width title-bar bar (issue #23), hosted as one `NSTitlebarAccessoryViewController`
-  /// stretched from just right of the traffic lights to the window's trailing edge (`fillsWidth`). It
-  /// lays out, left to right: the leading controls (sidebar toggle + history nav), then — when any
-  /// workroom/root has a terminal — a divider and the **workroom tab bar, which fills all the space
-  /// between** the leading and trailing controls; then the trailing controls (run/open-in + bell +
-  /// inspector toggle), hugging the right edge. One accessory rather than two because both halves can't
-  /// claim the trailing edge while a stretchable bar fills the middle. Env objects + the chip-drag
-  /// plumbing are injected/captured inside the closure because the hosted tree lives outside the
-  /// WindowGroup's environment.
-  private var titlebarBar: some View {
-    let tabs = store.displayedWorkroomTargets()
-    return HStack(spacing: 6) {
-      LeadingTitlebarBar()
-      if !tabs.isEmpty {
-        WorkroomTabBar(
-          tabs: tabs, selectedID: store.selectedTargetID,
-          onSelect: { selectWorkroomTab($0) },
-          chipPaneDrag: $workroomChipDrag,
-          localize: { workroomChipLocal($0) },
-          dropTarget: { workroomChipDropTarget(at: $0) }
-        )
-      } else {
-        Spacer(minLength: 0)
-      }
-      TrailingTitlebarBar()
-    }
-    // Clear the traffic-light cluster on the leading edge (the bar now spans the full window width
-    // as the top strip of the content, not an accessory placed after the lights by AppKit).
-    .padding(.leading, WorkroomTitlebar.trafficLightInset)
-    .frame(height: WorkroomTitlebar.height)
-    .frame(maxWidth: .infinity)
-    // Empty regions of the bar drag the window; the panel colour reads as one surface with the
-    // title bar / tab bar / gutters (it sits behind the transparent drag layer).
-    .background(WindowDragBackground())
-    .background(ThemeService.shared.tokens.panel)
-  }
-
   var body: some View {
     // The custom chrome lives in a full-width `.left` titlebar accessory (`accessoryBarContent`, hosted
     // via `TitlebarAccessoryHost` in `rootWindowChrome`), not a content top-strip and not SwiftUI
@@ -539,8 +502,20 @@ struct RootView: View {
   /// be mistaken for a split — the chips could never be reordered).
   private func workroomChipLocal(_ global: CGPoint) -> CGPoint? {
     guard global.y >= WorkroomTitlebar.height else { return nil }
-    guard detailContentFrame.contains(global) else { return nil }
-    return CGPoint(x: global.x - detailContentFrame.minX, y: global.y - detailContentFrame.minY)
+    let space = workroomPaneSpace
+    guard space.contains(global) else { return nil }
+    return CGPoint(x: global.x - space.minX, y: global.y - space.minY)
+  }
+
+  /// The rect the split renderer actually lays its panes out in: the detail content inset by
+  /// `WorkroomSplitView.outerGutter` left and right, because that padding is applied OUTSIDE the
+  /// renderer's `GeometryReader`, so its pane coordinates start at the inset edge. Hit-testing against
+  /// the unpadded frame puts every drop 6pt off the pane that was drawn — worst in the gutter itself,
+  /// where the drop would land (RootView's rect contains it) with no edge preview ever shown (the
+  /// renderer's rect does not). Solo used to be exempt because it had no gutter; since issue #139 it
+  /// has one too.
+  private var workroomPaneSpace: CGRect {
+    detailContentFrame.insetBy(dx: WorkroomSplitView.outerGutter, dy: 0)
   }
 
   /// The layout a chip drop targets — the same one the detail is rendering, so the drop edges match
@@ -557,7 +532,7 @@ struct RootView: View {
     guard let local = workroomChipLocal(global), let layout = workroomDropLayout() else {
       return nil
     }
-    let plan = PaneTreeLayout.plan(layout, in: CGRect(origin: .zero, size: detailContentFrame.size))
+    let plan = PaneTreeLayout.plan(layout, in: CGRect(origin: .zero, size: workroomPaneSpace.size))
     guard let hit = PaneTreeLayout.dropTarget(at: local, panes: plan.panes) else { return nil }
     return (sid: hit.tab, edge: hit.edge)
   }
@@ -568,6 +543,11 @@ struct RootView: View {
   /// it reappears when a member is reselected (`visibleWorkroomLayout`). The split dissolves only by
   /// removing members below two.
   private func selectWorkroomTab(_ sid: SidebarID) {
+    // Re-selecting the current workroom is a no-op, not a republish. Since issue #139 every pane has a
+    // title bar, and a click anywhere on it falls through to the leaf's focus tap — so without this
+    // guard, clicking your own workroom's header rewrites unchanged `@Published` selection state and
+    // re-renders the whole tree.
+    guard store.selectedTargetID != sid else { return }
     store.selectedTargetID = sid
     store.selectedProjectID = AppStore.projectPath(of: sid)
   }
@@ -578,28 +558,30 @@ struct RootView: View {
       // The creating slot owns the detail (issue #116): a loader through the pre-name phase (and all
       // the way to the terminal for a no-setup workroom), swapped for the streaming setup dialog once
       // a setup script starts. Scoped to this focused slot — selecting another workroom shows it.
+      //
+      // Deliberately chrome-less: no pane card, no title bar, no run/open-in. There is no workroom to
+      // act on yet, and the setup dialog owns this moment. So issue #139's "always" means every
+      // workroom with a mounted pane, not every state the detail can be in — a *non-focused* member
+      // still being created does get its header, because its pane is mounted (the terminal inside it is
+      // what's withheld).
       creationDetail(creation)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    } else if let target = store.selectedTarget {
-      if target.isMissing {
-        ContentUnavailableView(
-          "Directory not found",
-          systemImage: "questionmark.folder",
-          description: Text(
-            "\(target.title) points at a path that no longer exists.\n\(target.path)")
-        )
-      } else {
-        // The focused target's terminal body — ALWAYS rendered through `WorkroomSplitView` (a no-split
-        // case is just `.leaf(selected)`), so single↔split is a leaf-set change, never a structural swap
-        // that would re-parent the surface and blank a pane (issue #23, the same lesson as
-        // `WorkroomTerminalsView` always rendering through `PaneTreeView`). Title/toolbar follow the
-        // focused member (`selectedTarget`).
-        // The run/stop/restart + "Open in…" controls now live in the title-bar toolbar
-        // (`TrailingTitlebarBar`, driven by `store.selectedTarget`), not a detail `.toolbar`. The
-        // window title/subtitle are dropped too — the workroom tabs already name the current workroom.
-        workroomSplitBody(focused: target)
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
-      }
+    } else if store.selectedTarget != nil {
+      // The focused target's terminal body — ALWAYS rendered through `WorkroomSplitView` (a no-split
+      // case is just `.leaf(selected)`), so single↔split is a leaf-set change, never a structural swap
+      // that would re-parent the surface and blank a pane (issue #23, the same lesson as
+      // `WorkroomTerminalsView` always rendering through `PaneTreeView`).
+      //
+      // A missing directory routes through here too, since issue #139: it used to get its own
+      // `ContentUnavailableView` branch at this level, which meant a SOLO missing workroom never
+      // reached the pane at all and so had no title bar — while a missing *split member* did.
+      // `TargetTerminalDetail` now owns that state for every pane, focused or not.
+      //
+      // The run/stop/restart + "Open in…" controls live in each workroom pane's own title bar
+      // (`WorkroomPaneTitleBar`), not the window title bar and not a detail `.toolbar`. The window
+      // title/subtitle are dropped too — the workroom tabs already name the current workroom.
+      workroomSplitBody
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     } else {
       ContentUnavailableView(
         "Nothing selected",
@@ -626,9 +608,14 @@ struct RootView: View {
   /// The workroom body: always `WorkroomSplitView`, with the layout being the split when the selected
   /// workroom is a member, else `.leaf(selected)` — the split is shown only when a member is focused but
   /// persists otherwise (`visibleWorkroomLayout`, mirroring the terminal split). One render path → no
-  /// reparent on single↔split. Falls back to the bare terminal body if somehow there's no selection id.
+  /// reparent on single↔split.
+  ///
+  /// Only the selection *id* is needed: `selectedTarget` is `selectedTargetID.flatMap(target(for:))`,
+  /// so the caller having resolved a target already guarantees the id is there. (There used to be a
+  /// bare-terminal-body fallback here for the other case; it was unreachable, and a header-less render
+  /// path that can't happen is worse than none.)
   @ViewBuilder
-  private func workroomSplitBody(focused: TerminalTarget) -> some View {
+  private var workroomSplitBody: some View {
     if let selected = store.selectedTargetID {
       WorkroomSplitView(
         store: store,
@@ -643,19 +630,6 @@ struct RootView: View {
         onClose: { store.removeWorkroomSplitMember($0) },
         onMove: { store.insertWorkroomSplit($0, beside: $1, edge: $2) }
       )
-    } else {
-      targetTerminalBody(focused)
-    }
-  }
-
-  /// One target's terminal body. While this workroom is being created with a setup script
-  /// (`isCreationBlocking`), the terminal is withheld — `WorkroomTerminalsView` mounts (and `.task`
-  /// creates the first terminal) only once the setup dialog is dismissed. The dialog itself is drawn
-  /// window-level over the whole detail (see `detail`), not here, so this is just the terminal.
-  @ViewBuilder
-  private func targetTerminalBody(_ target: TerminalTarget) -> some View {
-    if !store.isCreationBlocking(target.id) {
-      WorkroomTerminalsView(target: target, sessions: store.terminals)
     }
   }
 }

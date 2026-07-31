@@ -159,13 +159,17 @@ final class TabStripOverflowTests: XCTestCase {
     XCTAssertTrue(overflows)
   }
 
-  // MARK: pinsControls — the compact (split-member) inset shifts the threshold
+  // MARK: pinsControls — the leading inset shifts the threshold
 
-  /// A workroom-split member tightens the leading inset to 4pt (issue #110), which is 4pt more room for
-  /// chips. The same run must be able to flip on that alone. With `available: 342` the solo inset fits
-  /// runs up to 300pt and the compact one up to 304pt, so 302 sits in the window where only the inset
-  /// decides.
-  func testCompactLeadingInsetFitsARunTheSoloInsetDoesNot() {
+  /// The leading inset is a term in the fit, so a wider one must be able to flip the decision on its
+  /// own. With `available: 342` a 4pt inset fits runs up to 304pt and an 8pt one up to 300pt, so 302
+  /// sits in the window where only the inset decides.
+  ///
+  /// (This used to be the solo-8pt vs split-member-4pt comparison. Issue #139 gave every workroom the
+  /// same card geometry, so the strip has ONE inset — 4pt — and the old test was asserting a
+  /// distinction the app no longer draws. The arithmetic is still worth pinning; the product claim it
+  /// carried is gone.)
+  func testAWiderLeadingInsetCanFlipTheOverflowDecision() {
     XCTAssertTrue(
       TabStripOverflow.pinsControls(
         runWidth: 302, add: 20, available: 342, leadingInset: 8, inlineAddLead: 6, gutter: 8,

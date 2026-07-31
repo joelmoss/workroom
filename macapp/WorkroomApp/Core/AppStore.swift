@@ -1597,11 +1597,35 @@ final class AppStore: ObservableObject {
   /// the terminal surface is a plain `NSView`, so this stays false when a terminal is focused.
   private var isEditingTextField: Bool { NSApp.keyWindow?.firstResponder is NSText }
 
-  /// ⌘R / toolbar Run = "ensure running" (OV-B): running → focus it; stopped-but-open → re-run;
-  /// none → start. Acts on the current selection.
+  /// ⌘R / the Run menu = "ensure running" (OV-B), acting on the current **selection**. The state
+  /// machine itself lives in the per-target overload below; this is the selection-scoped door, and the
+  /// only one that consults `isEditingTextField` — the ambient shortcut must not fire behind an
+  /// editor, but a deliberate button *click* must (issue #139).
+  func runOrFocusRunCommand() {
+    guard !isEditingTextField, let target = selectedTarget else { return }
+    runOrFocusRunCommand(for: target)
+  }
+
+  /// Raise `target`'s pane so a run started from it is actually visible. A workroom's own Run button
+  /// (issue #139) can be pressed on a co-displayed but NON-focused split member, which renders
+  /// `surfaceActive: false` and is dimmed — so focusing a tab inside it, or spawning a run tab in it,
+  /// would otherwise look like nothing happened. A no-op for the selection-scoped path, where
+  /// `target` already *is* the selection.
+  private func focusTargetPane(_ target: TerminalTarget) {
+    guard selectedTarget?.id != target.id,
+      let sid = Self.sidebarID(forTargetID: target.id, in: projects)
+    else { return }
+    selectedTargetID = sid
+    selectedProjectID = Self.projectPath(of: sid)
+  }
+
+  /// "Ensure running" for an **explicit** target: running → focus it; stopped-but-open → re-run;
+  /// none → start. A workroom's own Run button calls this with ITS target, so in a split each member
+  /// runs its own command rather than the selected workroom's (issue #139). Carries no
+  /// `isEditingTextField` guard — that belongs to the ambient shortcut, not to a click.
   ///
   /// ```
-  /// runOrFocusRunCommand() — per-target run-state machine (issue #127 adds the middle branch)
+  /// runOrFocusRunCommand(for:) — per-target run-state machine (issue #127 adds the middle branch)
   ///
   ///         ┌───────────────────┐
   ///         │ .running(_, true) │──restart──▶ respawn (Stop-then-Run: don't just focus a dying
@@ -1627,8 +1651,9 @@ final class AppStore: ObservableObject {
   ///                ▼
   ///          startRunCommand(for: target)
   /// ```
-  func runOrFocusRunCommand() {
-    guard !isEditingTextField, let target = selectedTarget, !target.isMissing else { return }
+  func runOrFocusRunCommand(for target: TerminalTarget) {
+    guard !target.isMissing else { return }
+    focusTargetPane(target)
     switch runStates[target.id] {
     case .running(_, true):
       // Stop-then-Run (issue #7): the user stopped it (a Ctrl-C is in flight, the server is draining)
@@ -1649,9 +1674,13 @@ final class AppStore: ObservableObject {
         owner.revealRunTerminal()
       } else if let project = project(forTarget: target), !hasRunCommand(forProject: project.path) {
         // Issue #127: ⌘R on a target with no run command configured used to silently no-op inside
-        // `startRunCommand`'s guard — this is the sole reachable path that could (the toolbar/sidebar
-        // Run buttons are hidden whenever `canRunCommand` is false, so they can't be clicked into this
-        // state). Surface the settings sheet with a warning instead of doing nothing.
+        // `startRunCommand`'s guard. Surface the settings sheet with a warning instead of doing nothing.
+        //
+        // Reached by BOTH ⌘R and a click now: the workroom pane header's Run button is always shown for a
+        // present target (issue #139 follow-up) precisely so this branch can teach you how to configure a
+        // command. It was written when every Run button hid itself behind `canRunCommand` and only the
+        // keyboard could get here — so this is a widening of an existing path, not a new one. (The
+        // sidebar's per-row buttons still hide.)
         if pendingProjectSettings == nil {
           pendingProjectSettings = PendingProjectSettings(project: project, showsRunWarning: true)
         }

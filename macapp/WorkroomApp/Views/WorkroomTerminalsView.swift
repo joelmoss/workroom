@@ -15,10 +15,6 @@ struct WorkroomTerminalsView: View {
   /// Whether this workroom's terminal may hold keyboard focus — `false` for a co-displayed but
   /// non-focused split member, so it doesn't steal first responder (and the workroom selection) on mount.
   var surfaceActive: Bool = true
-  /// A workroom-split member (issue #110) draws the terminal with a tighter gutter to its group card,
-  /// so the lighter group fill reads as a thin frame, not a wide margin. Solo targets keep the wider
-  /// gutter that lines the terminal up with the sidebar cards.
-  var compact: Bool = false
   @EnvironmentObject var notifications: NotificationCenterStore
   @EnvironmentObject var store: AppStore
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -50,15 +46,6 @@ struct WorkroomTerminalsView: View {
             Color.clear.preference(key: ContentFrameKey.self, value: geo.frame(in: .global))
           }
         )
-        // Solo: 6pt gutter left/right; the bottom uses 4pt so the terminal pane's bottom edge lines up
-        // with the left/right sidebar cards — the detail content carries a little extra bottom inset of
-        // its own, so a 6pt gutter sat ~2pt high vs the sidebars (measured). A split member (`compact`,
-        // issue #110) tightens this to a thin 2pt frame inside its group card. Top is always 0 so the
-        // tab strip sits flush on the content (the active tab bridges the panel→bg colour step) — the
-        // Chrome-style merge with the strip above.
-        .padding(.horizontal, compact ? 2 : 6)
-        .padding(.bottom, compact ? 2 : 4)
-        .padding(.top, 0)
       } else {
         ContentUnavailableView {
           Label("No terminal", systemImage: "terminal")
@@ -73,17 +60,23 @@ struct WorkroomTerminalsView: View {
         }
       }
     }
+    // A thin 2pt frame inside the workroom's card, so the card's lighter fill reads as a border rather
+    // than a margin. Top is 0 so the tab strip sits flush on the content (the active tab bridges the
+    // panel→bg colour step) — the Chrome-style merge with the strip above. Applied to the whole Group,
+    // not just the pane tree, so the "No terminal" empty state is inset by the same gutter.
+    .padding(.horizontal, 2)
+    .padding(.bottom, 2)
+    .padding(.top, 0)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .onPreferenceChange(ContentFrameKey.self) { contentFrame = $0 }
     .safeAreaInset(edge: .top, spacing: 0) {
       // No tab bar when there are no terminals: the empty state's "New Terminal" button (and ⌘T) cover
       // adding one, so the strip and its "+" would be redundant. A split member's remove-from-split ✕
-      // now lives in its group title bar (issue #110), drawn by the leaf above this view and present
+      // now lives in its pane title bar (issue #110), drawn by the leaf above this view and present
       // even with zero tabs — so the strip no longer needs to stay alive just to host the ✕.
       if !tabs.isEmpty {
         TerminalTabStrip(
           tabs: tabs, activeID: active?.id, target: target, sessions: sessions,
-          compact: compact,
           chipPaneDrag: $chipPaneDrag,
           localize: { chipLocal($0) },
           dropTarget: { chipDropTarget(at: $0) }
@@ -131,9 +124,11 @@ struct WorkroomTerminalsView: View {
     .focusedSceneValue(\.hasTerminal, !tabs.isEmpty && !store.hasModalPresentation)
     // Drive the Go-menu Previous/Next Terminal Tab items (issue #29) — only meaningful with ≥2 tabs.
     .focusedSceneValue(\.multipleTerminalTabs, tabs.count > 1 && !store.hasModalPresentation)
-    // Drive View ▸ "Resize Splits Evenly" (issue #83) — only when a terminal split is on screen. This
-    // view mounts only in the single-workroom path and only once a blocking setup script clears, so
-    // the item can never act on a hidden split.
+    // Drive View ▸ "Resize Splits Evenly" (issue #83) — only when a terminal split is on screen. Note
+    // that in a workroom split EVERY member mounts this view, so all three of these are written by
+    // several instances at once and the last writer wins; the menu items they drive are all
+    // "is such a thing on screen at all", for which any visible member is an acceptable answer. A
+    // blocking setup script withholds this view, so no item can act on a hidden split.
     .focusedSceneValue(
       \.terminalSplitVisible,
       sessions.isSplitVisible(for: target) && !store.hasModalPresentation)

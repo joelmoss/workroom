@@ -49,6 +49,28 @@ final class RunSettingsPromptUITests: XCTestCase {
       "the run-command field should be present so the user can define one")
   }
 
+  /// The same branch, reached by CLICK. Since issue #139's follow-up the workroom pane header's Run button
+  /// is shown even with no command configured — it exists precisely to lead you here, so a button that
+  /// silently did nothing (or wasn't there at all) would be the regression. Written as its own test rather
+  /// than folded into the ⌘R one because the keyboard and the click take different doors into
+  /// `runOrFocusRunCommand`: the shortcut goes through the selection-scoped overload, the button through
+  /// the per-target one.
+  func testHeaderRunButtonPresentsRunSettingsWhenNoCommandConfigured() {
+    let app = launchedApp()
+
+    let pane = app.descendants(matching: .any).matching(identifier: "workroom.pane").firstMatch
+    XCTAssertTrue(pane.waitForExistence(timeout: 10))
+    let run = pane.buttons["runCommand.run"]
+    XCTAssertTrue(
+      run.waitForExistence(timeout: 10),
+      "Run should be shown even though this project has no run command configured")
+    run.click()
+
+    XCTAssertTrue(
+      app.staticTexts["projectSettings.runWarning"].waitForExistence(timeout: 10),
+      "clicking Run with nothing configured should open Project Settings, warned")
+  }
+
   /// Regression check for unifying to one sheet presenter (issue #127-eng-1): the pre-existing
   /// "Project Settings…" context-menu entry must keep opening with NO warning banner.
   func testProjectSettingsContextMenuShowsNoWarningBanner() {

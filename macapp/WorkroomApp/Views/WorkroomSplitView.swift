@@ -44,13 +44,26 @@ struct WorkroomSplitView: View {
   let onMove: (SidebarID, SidebarID, PaneEdge) -> Void
 
   private static let space = "workroomSplitContent"
+  /// The gutter holding the pane cards off the left/right sidebars (issue #110). Unconditional since
+  /// issue #139 — a solo workroom is a card too. **Shared** because `RootView`'s chip-drop hit-testing
+  /// plans against the *unpadded* detail rect and must subtract this, or every drop lands 6pt off the
+  /// pane the renderer actually drew (a drop inside the gutter would split with no preview shown).
+  static let outerGutter: CGFloat = 6
   private let theme = ThemeService.shared
+
+  /// The divider ratio being dragged right now — held here rather than written to the store on every
+  /// mouse-moved tick. `store.setWorkroomSplitRatio` publishes `workroomSplits`, which invalidates
+  /// `RootView` and rebuilds every pane (and every pane title bar) at cursor rate; local state keeps
+  /// the churn inside this view and commits once on mouse-up. Same pattern as `SidebarColumn`'s
+  /// resize handle.
+  @State private var liveRatio: (split: UUID, ratio: CGFloat)?
 
   var body: some View {
     let leaves = layout.tabIDs
     let multi = leaves.count >= 2
+    let shown = displayedLayout
     GeometryReader { geo in
-      let plan = PaneTreeLayout.plan(layout, in: CGRect(origin: .zero, size: geo.size))
+      let plan = PaneTreeLayout.plan(shown, in: CGRect(origin: .zero, size: geo.size))
       ZStack(alignment: .topLeading) {
         ForEach(leaves, id: \.self) { sid in
           if let target = resolve(sid), let rect = plan.panes[sid] {
@@ -68,9 +81,14 @@ struct WorkroomSplitView: View {
           }
         }
         ForEach(plan.dividers) { d in
-          WorkroomSplitDivider(orientation: d.orientation, ratio: d.ratio, total: d.total) {
-            onSetRatio($0, d.id)
-          }
+          WorkroomSplitDivider(
+            orientation: d.orientation, ratio: d.ratio, total: d.total,
+            onLive: { liveRatio = (d.id, $0) },
+            onCommit: {
+              liveRatio = nil
+              onSetRatio($0, d.id)
+            }
+          )
           .frame(width: d.hitRect.width, height: d.hitRect.height)
           .position(x: d.rect.midX, y: d.rect.midY)
         }
@@ -78,9 +96,15 @@ struct WorkroomSplitView: View {
       }
       .coordinateSpace(.named(Self.space))
     }
-    // When split, hold the group cards off the left/right sidebars with an outer gutter (issue #110) —
-    // applied outside the GeometryReader so the panes reflow within the inset. Solo is flush as before.
-    .padding(.horizontal, multi ? 6 : 0)
+    // Applied outside the GeometryReader so the panes reflow within the inset.
+    .padding(.horizontal, Self.outerGutter)
+  }
+
+  /// The layout to draw: the stored one, with the in-flight divider ratio overlaid while a drag is
+  /// live. Once committed, `liveRatio` clears and the store's own value takes over.
+  private var displayedLayout: PaneLayout<SidebarID> {
+    guard let liveRatio else { return layout }
+    return layout.settingRatio(liveRatio.ratio, forSplit: liveRatio.split)
   }
 
   /// The accent band previewing where a dragged workroom tab will land (mirrors `PaneTreeView`).
@@ -117,9 +141,10 @@ enum WorkroomSplitTitlePresentation {
   }
 }
 
-/// One workroom pane: the full terminal body + a focus border and a hover ✕ (remove from split). Solo
-/// (`multi == false`) it's just the bare `TargetTerminalDetail`, so the single-workroom case renders
-/// identically to the old `targetDetail` content.
+/// One workroom pane: a title bar naming the workroom and carrying its own actions, above the full
+/// terminal body, the pair wrapped in a rounded card. Identical solo and split since issue #139 — only
+/// the remove-from-split ✕, its menu item, and the group-drag gesture are `multi`-only, because only a
+/// real member has a group to leave or move within.
 private struct WorkroomPaneLeaf: View {
   /// Plain (non-observed) store reference for the group title bar's context menu (issue #112) —
   /// see `WorkroomSplitView.store`. NOT `@EnvironmentObject`: this view hosts a live terminal and
@@ -135,93 +160,110 @@ private struct WorkroomPaneLeaf: View {
   let dropTarget: (CGPoint) -> (sid: SidebarID, edge: PaneEdge)?
   let onClose: () -> Void
   let onMove: (SidebarID, SidebarID, PaneEdge) -> Void
-  private let theme = ThemeService.shared
 
   var body: some View {
-    // `content` MUST stay at ONE structural position across solo↔split (it's the second child of this
-    // VStack in both cases) — the group title bar is a toggled *sibling* above it, never a wrapper
-    // around it, and all card styling is applied as always-present modifiers whose *values* go neutral
-    // when solo. A structural `if multi { VStack { titleBar; content } } else { content }` would swap
-    // SwiftUI's `_ConditionalContent` branch when a 2-member split dissolves to solo (survivor flips
-    // `multi: true→false`), tearing down + rebuilding `TargetTerminalDetail` and re-parenting the
-    // libghostty surface — the blank/stranded-pane bug. This mirrors `PaneLeafView`, which keeps its
-    // content in one slot and expresses the `multiPane` chrome as always-mounted overlays (issue #3).
+    // `content` MUST stay at ONE structural position (the second child of this VStack) — the title bar
+    // is a *sibling* above it, never a wrapper around it. A structural
+    // `if multi { VStack { titleBar; content } } else { content }` would swap SwiftUI's
+    // `_ConditionalContent` branch when a 2-member split dissolves to solo, tearing down + rebuilding
+    // `TargetTerminalDetail` and re-parenting the libghostty surface — the blank/stranded-pane bug.
+    // This mirrors `PaneLeafView`, which keeps its content in one slot and expresses the `multiPane`
+    // chrome as always-mounted overlays (issue #3).
+    //
+    // Since issue #139 the title bar is UNCONDITIONAL, which strengthens that invariant rather than
+    // straining it: with no `if` there is no branch left to flip on this axis. The hazard of the same
+    // shape that remains is the missing-directory choice, which is why `TargetTerminalDetail` owns it
+    // as a ZStack sibling rather than this view branching on it.
     VStack(spacing: 0) {
-      if multi {
-        // A real split member: a group header (issue #110) tops the pane, identifying which workroom
-        // this is, with the whole pane wrapped in a rounded card so members read as distinct units.
-        WorkroomSplitGroupTitleBar(
-          projectLabel: projectLabel, workroomName: workroomName, focused: focused,
-          isMissing: target.isMissing, onClose: onClose
-        )
-        // Drag the group by its title bar to move the whole member within the split (issue #110) —
-        // the SAME gesture/closures the tab-bar chip uses, so it drops onto the same panes and shows
-        // the same drop-edge highlight. A plain click (no movement past `minimumDistance`) still
-        // falls through to the leaf's focus tap.
-        .gesture(
-          DragGesture(minimumDistance: 6, coordinateSpace: .global)
-            .onChanged { value in
-              externalDrag = localize(value.location).map {
-                WorkroomPaneDrag(sid: sid, location: $0)
-              }
+      // Every workroom is identified by its own header (issue #139), which in a split also names
+      // *which* member this is and offers the way back out of the group.
+      WorkroomPaneTitleBar(
+        target: target, projectPath: projectPath, workroomName: workroomName, focused: focused,
+        controls: toolbarControls, onClose: onClose
+      )
+      // Drag the group by its title bar to move the whole member within the split (issue #110) —
+      // the SAME gesture/closures the tab-bar chip uses, so it drops onto the same panes and shows
+      // the same drop-edge highlight. A plain click (no movement past `minimumDistance`) still
+      // falls through to the leaf's focus tap.
+      //
+      // `including:` MUST be `.subviews` (not `.none`) when solo: `GestureMask.none` disables every
+      // gesture in the SUBVIEW hierarchy as well as the added one, which would kill this bar's own
+      // Run / Open-in buttons in exactly the single-workroom case issue #139 exists to serve — and
+      // `ToolbarIconButtonStyle`'s hover well is `.onHover`, not a gesture, so they would still light
+      // up and look alive. `.subviews` drops only the drag.
+      .gesture(
+        DragGesture(minimumDistance: 6, coordinateSpace: .global)
+          .onChanged { value in
+            externalDrag = localize(value.location).map {
+              WorkroomPaneDrag(sid: sid, location: $0)
             }
-            .onEnded { value in
-              if let drop = dropTarget(value.location), drop.sid != sid {
-                onMove(sid, drop.sid, drop.edge)
-              }
-              externalDrag = nil
+          }
+          .onEnded { value in
+            if let drop = dropTarget(value.location), drop.sid != sid {
+              onMove(sid, drop.sid, drop.edge)
             }
-        )
-        // The workroom's right-click menu (issue #112) — the SAME items as the tab chip (incl.
-        // "Close"), PLUS a "Remove from Split" item (the menu equivalent of the title bar's ✕),
-        // wired to the same `onClose` the ✕ uses. `closeName` matches the chip's `workroomName ??
-        // primaryLabel`. Attached AFTER `.gesture` so both share the bar's `.contentShape`;
-        // secondary-click (menu) and the primary-button drag coexist. The ✕ is its own hit target,
-        // so a right-click directly on it won't raise this menu (expected — the menu covers the
-        // rest of the bar).
-        .contextMenu {
-          workroomContextMenu(
-            store: store, sid: sid, target: target, closeName: workroomName ?? projectLabel,
-            onRemoveFromSplit: onClose)
-        }
+            externalDrag = nil
+          },
+        including: multi ? .all : .subviews
+      )
+      // The workroom's right-click menu (issue #112) — the SAME items as the tab chip (incl.
+      // "Close"). "Remove from Split" (the menu equivalent of the ✕) is offered only for a real
+      // member; `workroomContextMenu` drops the item and its divider on a nil closure. `closeName`
+      // matches the chip's `workroomName ?? primaryLabel`. Attached AFTER `.gesture` so both share
+      // the bar's `.contentShape`; secondary-click (menu) and the primary-button drag coexist.
+      // The bar's own controls are separate hit targets, so a right-click landing directly on one may
+      // not raise this menu (already true of the ✕ before issue #139 added its neighbours) — the
+      // leading label region always does, and that is the region to aim for.
+      .contextMenu {
+        workroomContextMenu(
+          store: store, sid: sid, target: target, closeName: workroomName ?? projectLabel,
+          onRemoveFromSplit: multi ? onClose : nil)
       }
-      // Solo: `compact == false` → the bordered terminals inside do the framing and the card modifiers
-      // below all go neutral, so the single-workroom case renders identically to before.
-      content(compact: multi)
+      // One unconditional slot. The "Directory not found" state and the withheld-during-setup state
+      // both live INSIDE `TargetTerminalDetail`'s own ZStack, so nothing here ever swaps branches.
+      TargetTerminalDetail(target: target, surfaceActive: focused)
     }
-    // No border in the split: the group reads as a unit by a subtle raised fill over the `panel` base
-    // plus the shadow + rounded corners (issue #110). The focused member's fill is accent-tinted so
-    // focus reads as a colour; the rest take a faint neutral lift — both dedicated theme tokens. Solo
-    // takes `.clear`/no-shadow so these always-applied modifiers are visual no-ops (identity-stable).
-    .background(
-      multi
-        ? (focused ? theme.tokens.splitGroupFocusedFill : theme.tokens.splitGroupFill) : Color.clear
-    )
-    .background(multi ? theme.tokens.panel : Color.clear)
-    .clipShape(RoundedRectangle(cornerRadius: multi ? 8 : 0, style: .continuous))
+    // No border: the pane reads as a unit by a subtle raised fill over the `panel` base plus the
+    // shadow + rounded corners (issue #110). The focused member's fill is accent-tinted so focus reads
+    // as a colour; the rest take a faint neutral lift. Unconditional since issue #139 — a solo pane is
+    // always the focused one, so it takes the accent fill with no special case.
+    .background(WorkroomPaneCardBackground(focused: focused))
+    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     .shadow(
-      color: .black.opacity(multi ? (focused ? 0.18 : 0.10) : 0),
-      radius: multi ? (focused ? 6 : 3) : 0, y: multi ? 2 : 0
+      color: .black.opacity(focused ? 0.18 : 0.10), radius: focused ? 6 : 3, y: 2
     )
-    // Split: a clear inter-group gutter on every side (the title bar sits at the pane's top). Solo:
-    // the 2pt gutter on sides + bottom but NOT the top, so the terminal tab strip aligns with the top
-    // of the sidebar. Always-applied (value-only change) so it never flips a structural branch.
-    .padding(
-      multi
-        ? EdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4)
-        : EdgeInsets(top: 0, leading: 2, bottom: 2, trailing: 2)
-    )
+    // A clear gutter on every side — between the cards of a split, and between a solo card and the
+    // window. The title bar sits at the pane's top, inside this inset.
+    .padding(EdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4))
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("workroom.pane")
-    .accessibilityLabel(Text("Workroom \(target.title)"))
+    // Roots aren't workrooms — say what this pane actually is (the chip makes the same distinction).
+    .accessibilityLabel(
+      Text(workroomName.map { "Workroom \($0)" } ?? "Project \(target.title)")
+    )
+    // Only meaningful with peers to be selected *among*: this trait tracks MODEL focus, and a solo
+    // pane reporting `.isSelected` would say nothing while breaking how tests read it.
     .accessibilityAddTraits(focused && multi ? .isSelected : [])
   }
 
+  /// The owning project's path. Handed to the title bar (rather than the `sid`) so a presentation view
+  /// doesn't take a dependency on `SidebarID`, and so the lookup happens once for both the label and
+  /// the run controls' `hasRunCommand` check.
+  private var projectPath: String? { AppStore.projectPath(of: sid) }
+
+  /// Which trailing controls the header shows — resolved in one pass so the group's divider can't
+  /// disagree with the buttons on either side of it. The editor list is cached, so this is cheap enough
+  /// to compute per render.
+  private var toolbarControls: WorkroomPaneToolbarPresentation.Controls {
+    WorkroomPaneToolbarPresentation.controls(
+      isMissing: target.isMissing, projectPath: projectPath,
+      hasEditor: !ExternalEditor.installed.isEmpty, multi: multi)
+  }
+
   /// The project name — the chip's primary label format (`AppStore.projectPath` last component),
-  /// matching `WorkroomTabChip.primaryLabel`. Empty only if the sid resolves no project (never for a
-  /// real split member).
+  /// matching `WorkroomTabChip.primaryLabel`. Empty only if the sid resolves no project.
   private var projectLabel: String {
-    AppStore.projectPath(of: sid).map { ($0 as NSString).lastPathComponent } ?? ""
+    projectPath.map { ($0 as NSString).lastPathComponent } ?? ""
   }
 
   /// This member's own display name (nil for a project root) — the label-aware `target.title`,
@@ -232,50 +274,93 @@ private struct WorkroomPaneLeaf: View {
     WorkroomSplitTitlePresentation.workroomName(sid: sid, target: target)
   }
 
-  @ViewBuilder
-  private func content(compact: Bool) -> some View {
-    if target.isMissing {
-      // The workroom's directory has gone away (deleted on disk). Don't mount a terminal over a dead
-      // path — show the same "Directory not found" state the solo detail uses. A co-displayed member
-      // must be guarded here: `RootView`'s solo `isMissing` branch only covers the *selected* target,
-      // so without this a non-focused member with a vanished path would render live terminal chrome
-      // (issue #23 follow-up). The way out of the split is the title bar's ✕ (issue #110), which the
-      // leaf draws above this content for every split member.
-      ContentUnavailableView {
-        Label("Directory not found", systemImage: "questionmark.folder")
-      } description: {
-        Text("\(target.title) points at a path that no longer exists.\n\(target.path)")
-      }
-      .frame(maxWidth: .infinity, maxHeight: .infinity)
-    } else {
-      // `surfaceActive: focused` so only the focused workroom pane's terminal grabs first responder —
-      // a co-displayed non-focused pane must not steal focus (and retarget the selection) as it mounts.
-      // The remove-from-split control now lives in the leaf's title bar (issue #110), not on the strip.
-      TargetTerminalDetail(target: target, surfaceActive: focused, compact: compact)
+}
+
+/// The pane card's fill. Its own view rather than an inline `.background(…)` value for two reasons: it
+/// reads `\.controlActiveState` so the accent tint drops when the window isn't key (issue #139 — an
+/// inactive window holding a saturated accent band reads as active and is against macOS convention),
+/// and as a child it absorbs those activation re-renders itself, keeping them off `WorkroomPaneLeaf`
+/// and the libghostty surface it hosts.
+private struct WorkroomPaneCardBackground: View {
+  let focused: Bool
+  @Environment(\.controlActiveState) private var activeState
+  private let theme = ThemeService.shared
+
+  var body: some View {
+    ZStack {
+      theme.tokens.panel
+      activeState == .inactive || !focused
+        ? theme.tokens.splitGroupFill : theme.tokens.splitGroupFocusedFill
     }
   }
 }
 
-/// The group header atop each workroom-split member (issue #110): a leading cube glyph, the
-/// `project / workroom` label (matching the tab chip's format), and the relocated remove-from-split ✕.
-/// Shown only for a real split member (`multi`), it spans the pane's full width and — together with the
-/// leaf's rounded card — makes each member read as a distinct, identifiable group. Reflects focus by
-/// colour (accent + full-strength text when focused, muted otherwise), the pane's selection signal.
-private struct WorkroomSplitGroupTitleBar: View {
-  let projectLabel: String
+/// Which trailing controls a pane title bar offers. Pure and separate from the view (same rationale as
+/// `WorkroomSplitTitlePresentation`) so the matrix — a missing directory has nothing to open, a target
+/// with no owning project has no run command to look up, and only a real split member can be removed
+/// from one — is unit-testable without instantiating SwiftUI.
+///
+/// It takes the "is there anything to show" facts as inputs rather than letting each control decide for
+/// itself, because the group divider depends on **both** its neighbours: a separator with nothing on one
+/// side of it is worse than no separator. Deriving every flag here, in one pass, is what makes it
+/// impossible for the divider to disagree with the buttons it separates.
+enum WorkroomPaneToolbarPresentation {
+  struct Controls: Equatable {
+    let run: Bool
+    let openIn: Bool
+    /// The rule between the run group and "Open in…" — only when both are actually there.
+    let divider: Bool
+    let removeFromSplit: Bool
+  }
+
+  static func controls(
+    isMissing: Bool, projectPath: String?, hasEditor: Bool, multi: Bool
+  ) -> Controls {
+    // Run is deliberately NOT gated on a configured command: the button is always there for a present
+    // target, and pressing it with nothing configured opens Project Settings with the warning, the same
+    // as ⌘R (issue #139 follow-up). It still needs an owning project, since that's what a command would
+    // be keyed to. "Open in…" is gated, because with no editor installed there is nowhere to open.
+    let run = !isMissing && projectPath != nil
+    let openIn = !isMissing && hasEditor
+    return Controls(
+      run: run, openIn: openIn, divider: run && openIn, removeFromSplit: multi)
+  }
+}
+
+/// The header atop **every** workroom pane (issue #110 for split members, issue #139 for all of them):
+/// a leading identity glyph, the `project / workroom` label (matching the tab chip's format), and a
+/// trailing toolbar carrying this workroom's own actions — "Open in…", run/stop/restart, and (for a
+/// real split member) the remove-from-split ✕. It spans the pane's full width and, together with the
+/// leaf's rounded card, makes each pane read as a distinct, identifiable unit. Reflects focus by colour
+/// (accent + full-strength text when focused, muted otherwise), the pane's selection signal.
+///
+/// The run/open-in controls used to live in the window title bar keyed on the *selected* target, so a
+/// co-displayed split member's were unreachable; here each pane owns its own and acts on its own
+/// target.
+private struct WorkroomPaneTitleBar: View {
+  let target: TerminalTarget
+  let projectPath: String?
   let workroomName: String?
   let focused: Bool
-  let isMissing: Bool
+  /// Resolved by the leaf, which has the store — this view stays store-free on purpose (see
+  /// `WorkroomSplitView.store`).
+  let controls: WorkroomPaneToolbarPresentation.Controls
   let onClose: () -> Void
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   private let theme = ThemeService.shared
+
+  /// Matches the tab chip's `maxTitleWidth`, so the identity yields to the actions under width
+  /// pressure instead of squeezing them out of a narrow split member.
+  private static let maxTitleWidth: CGFloat = 180
 
   var body: some View {
     HStack(spacing: 6) {
-      // Leading glyph mirrors the workroom tab chip's cube; accent on the focused member, muted else.
-      Image(systemName: "cube")
+      // Leading glyph mirrors the tab chip's: a house for a project root, a cube for a workroom
+      // (`workroomName` is nil only for a root). Accent on the focused pane, muted otherwise.
+      Image(systemName: workroomName == nil ? "house" : "cube")
         .font(.system(size: 10))
         .foregroundStyle(focused ? theme.tokens.accent : theme.tokens.fgMuted)
-      if isMissing {
+      if target.isMissing {
         Image(systemName: "exclamationmark.triangle.fill")
           .font(.system(size: 10))
           .foregroundStyle(.orange)
@@ -294,11 +379,42 @@ private struct WorkroomSplitGroupTitleBar: View {
       }
       .font(.subheadline)
       .lineLimit(1)
+      .frame(maxWidth: Self.maxTitleWidth, alignment: .leading)
+      // The full name and path, for a label the 180pt cap has truncated.
+      .help("\(fullTitle)\n\(target.path)")
       Spacer(minLength: 8)
-      CloseWorkroomPaneButton(action: onClose)
+      // This workroom's own actions. `RunControls` reads the store via `@EnvironmentObject`, which
+      // invalidates only ITSELF — `WorkroomPaneLeaf` and the terminal it hosts stay unsubscribed from
+      // store churn, the invariant `WorkroomSplitView.store` exists for.
+      // ONE styled group, so every control in it — including the ✕, which used to style itself — gets
+      // the same 22pt well and the same glyph size. The two numbers live on `ToolbarIconButtonStyle`
+      // and `PaneToolbarIcon`; nothing here restates them.
+      HStack(spacing: 6) {
+        if controls.run, let projectPath {
+          RunControls(target: target, projectPath: projectPath)
+        }
+        // Only when there is something on both sides of it — a rule with nothing to separate reads as a
+        // stray mark, and either group can be absent (no run command configured, no editor installed).
+        if controls.divider { TitlebarDivider() }
+        if controls.openIn { OpenInControl(path: target.path) }
+        if controls.removeFromSplit {
+          TitlebarDivider()
+          CloseWorkroomPaneButton(action: onClose)
+        }
+      }
+      .buttonStyle(ToolbarIconButtonStyle())
+      .font(.system(size: PaneToolbarIcon.glyph))
+      // Recede with the pane, the way the terminal tab strip below already does (`WorkroomTerminalsView`
+      // fades to the same 0.45 on `!surfaceActive`): a non-focused member's actions are still there and
+      // still clickable — opacity doesn't block hit-testing, which matters for the ✕, the way out of a
+      // cramped split — they just stop competing with the focused pane's. Matching curve and duration so
+      // the header, the strip, and the per-pane scrim all fade as one.
+      .opacity(focused ? 1 : 0.45)
+      .animation(reduceMotion ? nil : .easeInOut(duration: 0.07), value: focused)
     }
-    // Trailing inset is tighter than the leading so the remove-from-split ✕ sits closer to the group's
-    // right edge (the button carries its own 8pt hit padding).
+    // Trailing inset is tighter than the leading so the trailing-most control lines up with the
+    // terminal tab strip's own toolbar below it (both land 4pt inside the card's trailing edge; the
+    // buttons carry their own hit padding).
     .padding(.leading, 10)
     .padding(.trailing, 4)
     .frame(height: 28)
@@ -306,13 +422,23 @@ private struct WorkroomSplitGroupTitleBar: View {
     // No own background and no bottom rule — inherit the card's raised lighter fill (issue #110) so the
     // header and the terminal body below read as one continuous surface.
     // So a tap/drag on the bar's empty area is hit-tested: a tap bubbles to the leaf's focus tap and a
-    // drag (handled by the leaf's gesture on this bar) moves the group; the ✕ consumes its own click.
+    // drag (handled by the leaf's gesture on this bar) moves the group; each button consumes its own
+    // click.
     .contentShape(Rectangle())
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("workroom.pane.titlebar")
     .accessibilityLabel(
       Text(workroomName.map { "\(projectLabel), workroom \($0)" } ?? projectLabel)
     )
+  }
+
+  /// The project name — the chip's primary label format, derived from the path we were handed.
+  private var projectLabel: String {
+    projectPath.map { ($0 as NSString).lastPathComponent } ?? ""
+  }
+
+  private var fullTitle: String {
+    workroomName.map { "\(projectLabel) / \($0)" } ?? projectLabel
   }
 }
 
@@ -325,8 +451,13 @@ private struct WorkroomSplitDivider: View {
   let orientation: SplitOrientation
   let ratio: CGFloat
   let total: CGFloat
-  let onRatio: (CGFloat) -> Void
+  /// The in-flight ratio, per mouse-moved tick. The parent parks it in local `@State`; it must NOT
+  /// reach the store, whose `@Published` write would rebuild every pane at cursor rate (issue #139).
+  let onLive: (CGFloat) -> Void
+  /// The final ratio, once, on mouse-up — this is the one that persists.
+  let onCommit: (CGFloat) -> Void
   @State private var startRatio: CGFloat?
+  @State private var latest: CGFloat?
 
   var body: some View {
     Rectangle()
@@ -340,10 +471,16 @@ private struct WorkroomSplitDivider: View {
             let usable = max(1, total - PaneTreeLayout.dividerThickness)
             let delta =
               orientation == .horizontal ? value.translation.width : value.translation.height
-            onRatio(
-              PaneTreeLayout.clampRatio(start + delta / usable, total: total, along: orientation))
+            let next = PaneTreeLayout.clampRatio(
+              start + delta / usable, total: total, along: orientation)
+            latest = next
+            onLive(next)
           }
-          .onEnded { _ in startRatio = nil }
+          .onEnded { _ in
+            if let latest { onCommit(latest) }
+            startRatio = nil
+            latest = nil
+          }
       )
       .onHover { inside in
         if inside {
@@ -358,13 +495,14 @@ private struct WorkroomSplitDivider: View {
         orientation == .horizontal ? "Vertical workroom divider" : "Horizontal workroom divider"
       )
       .accessibilityValue("\(Int((ratio * 100).rounded()))%")
+      // A discrete step is already the final value — commit it straight away, no live phase.
       .accessibilityAdjustableAction { direction in
         let step: CGFloat = 0.05
         switch direction {
         case .increment:
-          onRatio(PaneTreeLayout.clampRatio(ratio + step, total: total, along: orientation))
+          onCommit(PaneTreeLayout.clampRatio(ratio + step, total: total, along: orientation))
         case .decrement:
-          onRatio(PaneTreeLayout.clampRatio(ratio - step, total: total, along: orientation))
+          onCommit(PaneTreeLayout.clampRatio(ratio - step, total: total, along: orientation))
         @unknown default: break
         }
       }

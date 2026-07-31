@@ -183,8 +183,11 @@ final class SplitPaneUITests: XCTestCase {
     XCTAssertNil(hittableMenuItem(app, "Set Label…"), "and aren't labelled")
   }
 
-  /// "Remove from Split" pops the member out of the split — the split collapses to a solo view, so
-  /// its group title bars disappear (a solo pane has none). The workroom keeps running.
+  /// "Remove from Split" pops the member out of the split — the split collapses to a solo view. Since
+  /// issue #139 a solo pane keeps its title bar, so the count goes 2 → **1**, not 2 → 0; what actually
+  /// distinguishes "collapsed" from "still split" is the remove-from-split ✕, which only a real member
+  /// has. Assert both, or the count alone would be satisfied by a regression that left one member.
+  /// The workroom keeps running.
   func testSplitTitleBarRemoveFromSplitCollapses() throws {
     let app = launchedApp(workroomSplit: true)
     try openWorkroom(app)
@@ -195,7 +198,10 @@ final class SplitPaneUITests: XCTestCase {
     XCTAssertNotNil(remove, "Remove from Split should be offered")
     remove?.click()
 
-    assertCount(titlebars(app), reaches: 0)  // collapsed to solo → no group title bars
+    assertCount(titlebars(app), reaches: 1)  // collapsed to solo → the survivor's own title bar
+    XCTAssertTrue(
+      app.buttons["workroom.pane.close"].waitForNonExistence(timeout: 6),
+      "no split left to remove from, so the ✕ goes away")
     XCTAssertTrue(panes(app).firstMatch.waitForExistence(timeout: 6), "the survivor still renders")
   }
 

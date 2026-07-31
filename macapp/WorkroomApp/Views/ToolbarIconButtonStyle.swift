@@ -8,6 +8,14 @@ import SwiftUI
 /// A `ButtonStyle` (not a per-button `.onHover` + manual background) so one modifier on each title-bar
 /// bar covers all its buttons, including nested ones, and the hover rect sizes itself to each glyph.
 struct ToolbarIconButtonStyle: ButtonStyle {
+  /// Minimum well side — a uniform square tap target for every glyph that wears this style.
+  static let wellSize: CGFloat = 22
+  static let horizontalPadding: CGFloat = 3
+
+  /// One well's full horizontal footprint, for callers that must reserve space for a control which
+  /// isn't rendered yet (see `RunControls.reservedWidth`).
+  static var footprint: CGFloat { wellSize + horizontalPadding * 2 }
+
   func makeBody(configuration: Configuration) -> some View {
     Chrome(configuration: configuration)
   }
@@ -24,8 +32,10 @@ struct ToolbarIconButtonStyle: ButtonStyle {
       configuration.label
         // A uniform tap target so every glyph gets the same square hover well, matching the sidebar's
         // 28pt buttons in spirit while staying compact enough for the 28pt-tall title-bar row.
-        .frame(minWidth: 22, minHeight: 22)
-        .padding(.horizontal, 3)
+        .frame(
+          minWidth: ToolbarIconButtonStyle.wellSize, minHeight: ToolbarIconButtonStyle.wellSize
+        )
+        .padding(.horizontal, ToolbarIconButtonStyle.horizontalPadding)
         .background(
           // Animate ONLY the hover fill's opacity — never the whole button. A view-tree
           // `.animation(.easeOut, value: hovering)` at the end of this chain would also animate the
