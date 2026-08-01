@@ -196,12 +196,48 @@ final class VCSWritingTests: XCTestCase {
     XCTAssertFalse(args.contains("-s"))
   }
 
-  /// The ahead revset must be exactly what bare `jj git push` sends, so the count and the button agree.
+  /// The ahead revset must be exactly what a push would send, so the count and the button agree: every
+  /// remote bookmark in scope (already pushed anywhere isn't ahead), minus the empty-and-undescribed
+  /// commit jj refuses to push — which is what a fresh workroom `@` is.
   func testJJAheadRevsetMatchesWhatPushWouldSend() {
+    let ahead = CLIVCSWriter.jjAheadRevset(remote: "origin")
+    XCTAssertTrue(ahead.contains(#"remote_bookmarks(remote="origin")..@"#))
+    XCTAssertTrue(
+      ahead.contains(#"~(empty() & description(exact:""))"#),
+      "a clean workroom's `@` would otherwise read as 1 to push; got \(ahead)")
+    XCTAssertFalse(
+      ahead.contains("& ~empty()"),
+      "`~empty()` alone undercounts — jj pushes an empty commit that HAS a description")
+  }
+
+  /// **Behind is measured against `trunk()`, never against every remote bookmark.**
+  ///
+  /// `@..remote_bookmarks(remote=…)` counts every commit on every remote branch that isn't in `@`'s
+  /// ancestry, so a repo with unmerged feature branches reported their commits as "to pull" while
+  /// sitting on the tip of master. `VCSRemoteIntegrationTests` proves the count against real jj; this
+  /// pins the shape, and that the count and the rebase share one base.
+  func testJJBehindRevsetIsScopedToTrunk() {
+    XCTAssertEqual(CLIVCSWriter.jjBehindRevset, "@..trunk()")
+    XCTAssertFalse(
+      CLIVCSWriter.jjBehindRevset.contains("remote_bookmarks"),
+      "every-bookmark scope is the bug: other branches' work is not ours to pull")
+    XCTAssertTrue(
+      CLIVCSWriter.jjBehindRevset.contains(CLIVCSWriter.jjTrunkRevset),
+      "the count must be measured from the base the rebase targets")
+  }
+
+  /// A bookmarked `@` rebases onto its counterpart; an unbookmarked one onto `trunk()`. The sentinel for
+  /// "no counterpart" is `comparedTo` carrying the bare remote name, which is what `jjRemoteState` sets.
+  func testJJPullRebaseDestinationFallsBackToTrunk() {
     XCTAssertEqual(
-      CLIVCSWriter.jjAheadRevset(remote: "origin"), #"remote_bookmarks(remote="origin")..@"#)
+      CLIVCSWriter.jjRebaseDestination(comparedTo: "main@origin", remote: "origin"), "main@origin")
     XCTAssertEqual(
-      CLIVCSWriter.jjBehindRevset(remote: "origin"), #"@..remote_bookmarks(remote="origin")"#)
+      CLIVCSWriter.jjRebaseDestination(comparedTo: "origin", remote: "origin"),
+      CLIVCSWriter.jjTrunkRevset,
+      "an unbookmarked `@` must still rebase — returning early left Pull as a fetch")
+    XCTAssertEqual(
+      CLIVCSWriter.jjRebaseDestination(comparedTo: nil, remote: "origin"),
+      CLIVCSWriter.jjTrunkRevset)
   }
 
   /// Interpolating a remote name bare is a parse bug. Verified against jj 0.43: `a b`, `a)b` and `a:b`
@@ -216,14 +252,13 @@ final class VCSWritingTests: XCTestCase {
     XCTAssertEqual(CLIVCSWriter.jjQuote(#"a\b"#), #""a\\b""#)
     XCTAssertEqual(CLIVCSWriter.jjQuote(#"a\"b"#), #""a\\\"b""#)
 
+    // Only the ahead revset interpolates a remote at all — behind is scoped to `trunk()`, which names
+    // no remote, so there is nothing there left to quote.
     for name in ["a b", "a)b", "a:b", "a|b", #"a"b"#] {
-      for revset in [
-        CLIVCSWriter.jjAheadRevset(remote: name), CLIVCSWriter.jjBehindRevset(remote: name),
-      ] {
-        XCTAssertTrue(
-          revset.contains("remote=\(CLIVCSWriter.jjQuote(name))"),
-          "the name must reach the revset quoted: \(revset)")
-      }
+      let revset = CLIVCSWriter.jjAheadRevset(remote: name)
+      XCTAssertTrue(
+        revset.contains("remote=\(CLIVCSWriter.jjQuote(name))"),
+        "the name must reach the revset quoted: \(revset)")
     }
   }
 

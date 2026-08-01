@@ -409,12 +409,55 @@ struct CLIVCSWriter: VCSWriting, Sendable {
     return "\"\(escaped)\""
   }
 
-  /// What bare `jj git push` would send, so the ahead count and the Push button agree by construction.
+  /// The base an unbookmarked `@` is measured — and rebased — against.
+  ///
+  /// `trunk()` is jj's own alias, so this defers to the user's `revset-aliases.'trunk()'` when they've
+  /// set one and to jj's default (the latest of `main`/`master`/`trunk` on a remote) when they haven't.
+  /// Verified to degrade quietly: in a repo whose only remote bookmark was `weird-name`, `trunk()`
+  /// resolved without error and `@..trunk()` counted 0, so an unusual repo reports "not behind" rather
+  /// than a failure.
+  ///
+  /// One literal, shared by `jjBehindRevset` and `jjRebaseDestination`, because the count and the button
+  /// have to mean the same thing.
+  static let jjTrunkRevset = "trunk()"
+
+  /// Commits of ours that no remote bookmark has — what a push would send.
+  ///
+  /// Scoped to ALL of the remote's bookmarks on purpose, unlike `jjBehindRevset`: a commit already
+  /// reachable from some other remote branch IS pushed, so it must not count as ahead.
+  ///
+  /// The `~(empty() && description(exact:""))` filter is `jjPushRevision`'s rule expressed as a revset —
+  /// jj won't push a commit with no changes AND no description, and a workroom's `@` after `jj new` is
+  /// exactly that, so without this every clean workroom read as "1 to push". `~empty()` alone is NOT
+  /// equivalent and undercounts: describe an empty `@` and jj will push it while `~empty()` reports 0.
+  /// Both measured on jj 0.43.
   static func jjAheadRevset(remote: String) -> String {
-    "remote_bookmarks(remote=\(jjQuote(remote)))..@"
+    "(remote_bookmarks(remote=\(jjQuote(remote)))..@) & ~(empty() & description(exact:\"\"))"
   }
-  static func jjBehindRevset(remote: String) -> String {
-    "@..remote_bookmarks(remote=\(jjQuote(remote)))"
+
+  /// Commits on the main line that we don't have — what a pull would bring.
+  ///
+  /// **Measured against `trunk()`, not against every remote bookmark.** It used to be
+  /// `@..remote_bookmarks(remote=…)`, which counts every commit on every remote branch that isn't in
+  /// `@`'s ancestry — so a repo with unmerged feature branches reported their commits as "to pull" while
+  /// sitting exactly on the tip of master. Reproduced on jj 0.43: with `@-` equal to `master@origin`,
+  /// origin holding master and one unmerged `feat`, that revset counted 3 and named `feat1`/`feat2`/
+  /// `feat3`; `@..trunk()` counted 0. The equivalent git query has always been scoped to one branch
+  /// (`HEAD...refs/remotes/<remote>/<branch>`), so this also ends an asymmetry between the backends.
+  static let jjBehindRevset = "@..\(jjTrunkRevset)"
+
+  /// Where a jj pull rebases `@`.
+  ///
+  /// A bookmarked `@` goes onto its own remote counterpart. An unbookmarked one has no counterpart —
+  /// `VCSTracking.comparedTo` carries the bare remote name as the sentinel for that state — and goes onto
+  /// `trunk()`, the same base its behind count is measured from.
+  ///
+  /// That second case used to return early without rebasing at all, so Pull fetched and stopped: the
+  /// toolbar offered "Pull" beside a count the button could not act on. git's Pull has always been
+  /// pull-and-rebase, and this is what makes jj's the same operation.
+  static func jjRebaseDestination(comparedTo: String?, remote: String) -> String {
+    guard let comparedTo, comparedTo != remote else { return jjTrunkRevset }
+    return comparedTo
   }
 
   static func jjFetchArgs(remote: String) -> [String] {
@@ -813,23 +856,31 @@ struct CLIVCSWriter: VCSWriting, Sendable {
         tracking = current.name.flatMap { name in
           parsed.bookmarks.first { $0.name == name }?.tracking
         }
-      case .ancestor:
+      // `.none` belongs with `.ancestor`, and leaving it out was a bug that hid the exact case this
+      // toolbar exists for. `jj git fetch` fast-forwards a tracked local bookmark, so as soon as the
+      // main line moves, an unbookmarked `@`'s ancestry contains no bookmark at all and `currentRef`
+      // drops from `.ancestor` to `.none`. Sending that to `tracking = nil` meant the counts, the pills
+      // and `canPull` all vanished at the moment the workroom first became behind — the toolbar went
+      // quiet precisely when it had something to say. The revsets below never needed a bookmark to
+      // begin with; `.detached` still yields nil, since that's git's shape and has no jj meaning.
+      case .ancestor, .none:
         // `@` carries no bookmark — the normal workroom state, since `jj workspace add --name` creates
         // no bookmark. The bookmark row's counts would describe the ANCESTOR, not the user's work, so
-        // count the actual revsets instead. `remote_bookmarks(remote=…)..@` is exactly what bare
-        // `jj git push` sends, so the number and the button agree by construction.
+        // count the actual revsets instead. The two are deliberately scoped differently: ahead against
+        // every remote bookmark (anything already pushed anywhere isn't ahead), behind against `trunk()`
+        // alone (see `jjBehindRevset` — the all-bookmarks form counted other branches' work as ours to
+        // pull). Both agree with what the buttons do: `jjPushRevision` and `jjRebaseDestination`.
         let ahead = await run(
           Self.jjRevsetCountArgs(Self.jjAheadRevset(remote: primary)), in: path, timeout: refTimeout
         )
         let behind = await run(
-          Self.jjRevsetCountArgs(Self.jjBehindRevset(remote: primary)), in: path,
-          timeout: refTimeout)
+          Self.jjRevsetCountArgs(Self.jjBehindRevset), in: path, timeout: refTimeout)
         tracking = VCSTracking(
           comparedTo: primary,
           ahead: ahead.ok ? Self.countLines(ahead.stdout) : nil,
           behind: behind.ok ? Self.countLines(behind.stdout) : nil,
           gone: false)
-      case .detached, .none:
+      case .detached:
         tracking = nil
       }
     }
@@ -933,12 +984,12 @@ struct CLIVCSWriter: VCSWriting, Sendable {
     let dir = Self.opDirectory(.pull, path: path, vcs: vcs, projectRoot: projectRoot)
     let args: [String]
     if vcs == "jj" {
-      guard let destination = tracking?.comparedTo, destination != remote else {
-        // An unbookmarked `@` has no single remote bookmark to rebase onto; jj's own fetch already
-        // moved the remote bookmarks and jj auto-rebases descendants, so there is nothing more to do.
-        return .ok(summary: "Fetched \(remote)")
-      }
-      args = Self.jjRebaseArgs(onto: destination)
+      // Always rebases now. An unbookmarked `@` falls back to `trunk()` rather than returning early:
+      // fetching moves the remote bookmarks but does NOT move `@`, so stopping there left the workroom
+      // as far behind as it started while the toolbar went on offering Pull. Already a descendant of the
+      // destination is not an error — jj prints "Nothing changed." and exits 0.
+      args = Self.jjRebaseArgs(
+        onto: Self.jjRebaseDestination(comparedTo: tracking?.comparedTo, remote: remote))
     } else {
       guard let branch = Self.pullBranch(current: current, tracking: tracking) else {
         return .failed(.other("no remote branch to pull from."))

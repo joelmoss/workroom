@@ -421,6 +421,96 @@ final class VCSRemoteIntegrationTests: XCTestCase {
       "both backends must describe the same situation identically")
   }
 
+  /// **The bug this suite existed to catch and didn't.** An unbookmarked `@` counted behind as
+  /// `@..remote_bookmarks(remote=…)`, which is every commit on every remote branch that isn't ours — so a
+  /// repo with unmerged feature branches reported their work as "to pull" while sitting exactly on the
+  /// tip of the main line. On a real project that read "97 to pull" from a clean checkout.
+  ///
+  /// The fixture is the minimum that shows it: `side@origin` holds one commit that `main` doesn't, and
+  /// `@` is a fresh child of `main`. Behind must be 0. The old revset counted 1.
+  func testBehindIgnoresOtherRemoteBookmarks() async throws {
+    try requireTool("git")
+    try requireTool("jj")
+    guard let j = jjFixture() else { throw XCTSkip("jj fixture could not be created") }
+    let env = "JJ_CONFIG=\(j.config)"
+    // A side branch with a commit of its own, pushed — unmerged into main, and nothing to do with us.
+    sh("\(env) jj new main -m side-work && echo s > s.txt", in: j.project)
+    sh("\(env) jj bookmark create side -r @", in: j.project)
+    sh("\(env) jj git push --bookmark side", in: j.project)
+    // Back onto main, unbookmarked: the normal workroom shape, and NOT behind by anything.
+    sh("\(env) jj new main -m mine", in: j.project)
+
+    let s = try await state(writer("jj"), path: j.project, projectRoot: j.project)
+    XCTAssertEqual(
+      s.current.kind, .ancestor, "`@` must be unbookmarked for this to be the right path")
+    XCTAssertEqual(
+      s.tracking?.behind, 0,
+      "another bookmark's unmerged commits are not ours to pull — behind must be measured against "
+        + "trunk() alone")
+  }
+
+  /// A clean workroom must not claim work to push. `jj new` leaves `@` empty and undescribed, which jj
+  /// refuses to push at all, yet it was counted — so every untouched workroom showed "1 ↑".
+  func testAnEmptyWorkingCopyIsNotCountedAsAhead() async throws {
+    try requireTool("git")
+    try requireTool("jj")
+    guard let j = jjFixture() else { throw XCTSkip("jj fixture could not be created") }
+    sh("JJ_CONFIG=\(j.config) jj new main", in: j.project)  // no -m, no edits
+
+    let s = try await state(writer("jj"), path: j.project, projectRoot: j.project)
+    XCTAssertEqual(s.tracking?.ahead, 0, "an empty, undescribed `@` is not pushable and not ahead")
+  }
+
+  /// **Pull must actually rebase an unbookmarked `@`.** It used to fetch and return `.ok` — jj moves the
+  /// remote bookmarks on fetch but does NOT move `@`, so the workroom stayed exactly as far behind as it
+  /// started while the toolbar went on offering Pull. git's Pull has always been pull-and-rebase.
+  ///
+  /// Asserts behind BEFORE as well as after: without the before-assertion this would pass on a fixture
+  /// that was never behind in the first place.
+  func testPullRebasesAnUnbookmarkedWorkingCopyOntoTrunk() async throws {
+    try requireTool("git")
+    try requireTool("jj")
+    guard let j = jjFixture() else { throw XCTSkip("jj fixture could not be created") }
+    let env = "JJ_CONFIG=\(j.config)"
+    // Our own unbookmarked work, off the current main.
+    sh("\(env) jj new main -m mine && echo w > w.txt", in: j.project)
+    // The remote main moves on, from a plain git clone of the same bare origin.
+    //
+    // `-b main` is required, unlike the git fixtures' bare `git clone`: jj pushed `main`, but the bare
+    // repo's HEAD is whatever `git init --bare` chose (`master` here), so a plain clone warns "remote
+    // HEAD refers to nonexistent ref", checks nothing out, and commits onto an unborn branch. The push
+    // then fails as a non-fast-forward and the remote never moves — which made this test's own
+    // precondition fail rather than the code under test.
+    sh("git clone -q -b main origin.git other", in: j.root)
+    sh(
+      "git commit -q --allow-empty -m remote-side && git push -q origin HEAD:main",
+      in: j.root + "/other")
+    // Fetch first, exactly as the git tests do: `remoteState` reads local refs and never fetches, so
+    // without this `main@origin` is still the old tip and the repo is legitimately not behind yet.
+    sh("\(env) jj git fetch --remote origin", in: j.project)
+
+    let w = writer("jj")
+    let before = try await state(w, path: j.project, projectRoot: j.project)
+    // `.none`, not `.ancestor`: the fetch fast-forwarded the local `main` past `@`, so `@`'s ancestry
+    // holds no bookmark at all. Asserted rather than assumed, because this kind used to route to
+    // `tracking = nil` — the counts and Pull disappeared at exactly this moment.
+    XCTAssertEqual(before.current.kind, VCSRefKind.none)
+    XCTAssertEqual(
+      before.tracking?.behind, 1,
+      "an unbookmarked `@` whose base moved must still report behind — got "
+        + "\(String(describing: before.tracking))")
+
+    let result = await w.pullRebase(
+      path: j.project, projectRoot: j.project, current: before.current, remote: "origin",
+      tracking: before.tracking)
+    guard case .ok = result else { return XCTFail("jj pull failed: \(result)") }
+
+    let after = try await state(w, path: j.project, projectRoot: j.project)
+    XCTAssertEqual(
+      after.tracking?.behind, 0, "pull must land `@` on top of trunk, not merely fetch")
+    XCTAssertEqual(after.tracking?.ahead, 1, "and must keep our own commit")
+  }
+
   /// jj's fetch passes `--no-write-fetch-head`, so `FETCH_HEAD` is never written. This encodes the
   /// finding so nobody "simplifies" the op-log scan away by reading `FETCH_HEAD` for jj too.
   func testJJFetchDoesNotWriteFetchHead() async throws {
