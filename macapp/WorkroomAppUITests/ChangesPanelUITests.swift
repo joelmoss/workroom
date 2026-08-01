@@ -70,12 +70,16 @@ final class ChangesPanelUITests: XCTestCase {
       "the Parent Commit group is no longer shown")
   }
 
-  /// The bookmark on `@` must appear ONCE in the header. jj reports it twice — as the status'
-  /// `branchForCI` (the first bookmark in `::@` log order, which is `@`'s own when it has one) and in
-  /// the working copy's `refs` — and the header used to render both, putting one bookmark on screen
-  /// as two identical capsules. Asserted through the combined header's text rather than by counting
-  /// capsules, since the pills are plain `Text` inside one `.combine`d a11y element.
-  func testWorkingCopyBookmarkRendersOnce() throws {
+  /// The bookmark on `@` must appear exactly ONCE on screen — in the toolbar segment, not also in the
+  /// Changes header below it.
+  ///
+  /// jj reports a bookmarked `@`'s name twice (as the status' `branchForCI` and again in the working
+  /// copy's `refs`), so this row has always needed a filter or one bookmark rendered as two identical
+  /// capsules. The reference point has moved twice: first the branch-name pill beside the chips, then —
+  /// briefly, when that pill went — nothing, which put the name back on screen twice ~40pt apart. Now
+  /// the chips are filtered against the toolbar's own `branchName(for:)` answer, so this asserts both
+  /// halves: present above, absent below.
+  func testWorkingCopyBookmarkRendersOnceInTheToolbarNotTheHeader() throws {
     let app = launchedApp()
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
 
@@ -90,7 +94,16 @@ final class ChangesPanelUITests: XCTestCase {
     let text = value.isEmpty ? header.label : value
     let hits = text.components(separatedBy: "feature/login").count - 1
     XCTAssertEqual(
-      hits, 1, "the bookmark should render once in the Changes header; got \(hits) in \(text)")
+      hits, 0,
+      "the toolbar names the bookmark; the Changes header must not repeat it — got \(hits) in \(text)"
+    )
+
+    // …and it really is on screen, so the filter removed a duplicate rather than the only copy.
+    let branch = element(app, id: "vcs.toolbar.branch")
+    XCTAssertTrue(branch.waitForExistence(timeout: 10))
+    XCTAssertTrue(
+      branch.label.contains("feature/login"),
+      "the toolbar's bookmark segment must name it; got \(branch.label)")
   }
 
   // MARK: conflicted files (jj per-file conflict status)

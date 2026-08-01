@@ -255,13 +255,20 @@ struct RightInspector: View {
     return store.workroomStatuses[sid]
   }
 
-  /// Changes header indicator: how many files changed (a capsule count), the working-tree line counts
-  /// (`+N` green / `-M` red) when there's a delta, and otherwise the status dot (untracked-only dirty,
-  /// conflict, or unknown). Nothing at all if clean.
+  /// Changes header indicator: how many files changed (a capsule count) and the working-tree line counts
+  /// (`+N` green / `-M` red) when there's a delta. Nothing at all if clean.
   ///
   /// The file count is deliberately NOT inside the line-counts branch. `lineCountsHelp` is nil for an
   /// untracked-only dirty tree, which is exactly a case where files changed and no `+/−` can be
   /// computed — the count is the only thing there is to say, so it has to render on its own.
+  ///
+  /// **The dirty dot is gone; the unknown one is not.** `VCSStatusPresentation.dot` answers three
+  /// different questions, and the count only replaces one of them. Its `.dirty` circle said "this tree
+  /// has changes", which is now the capsule beside it saying so with a number; its conflict triangle is
+  /// already rendered here in its own right. But its `questionmark.circle` says the probe FAILED —
+  /// timed out, busy, not a repository — and a failed probe reports no files and no line counts, so
+  /// dropping it wholesale would render "status unavailable" identically to "clean". That case keeps its
+  /// glyph, and with it the specific reason in the tooltip.
   private var changesIndicator: AnyView {
     guard let s = selectedStatus else { return AnyView(EmptyView()) }
     let ins = s.insertions ?? 0
@@ -270,8 +277,9 @@ struct RightInspector: View {
     // this is the same number for both backends and matches the rows rendered below.
     let files = s.changedFiles?.count ?? 0
     let countsHelp = VCSStatusPresentation.lineCountsHelp(s)
-    // Unchanged precedence: the dot is the fallback for when there are no line counts to show.
-    let dot = countsHelp == nil ? VCSStatusPresentation.dot(s) : nil
+    // `!s.conflicted` because `dot` checks conflict FIRST and would hand back the triangle this row
+    // already draws — a status that is both conflicted and unreadable would otherwise show two.
+    let dot = s.isUnknown && !s.conflicted ? VCSStatusPresentation.dot(s) : nil
     if files == 0, countsHelp == nil, dot == nil { return AnyView(EmptyView()) }
     return AnyView(
       HStack(spacing: 5) {
@@ -306,8 +314,11 @@ struct RightInspector: View {
     let files = (s.changedFiles?.count).flatMap {
       $0 > 0 ? ChangedFileCountBadge.phrase(count: $0) : nil
     }
+    // Mirrors what the row now draws: line counts, or the unavailable reason, and no longer "working
+    // tree has changes" — the count phrase above already says that, in files rather than in prose.
     let detail =
-      VCSStatusPresentation.lineCountsHelp(s) ?? VCSStatusPresentation.dot(s)?.accessibility
+      VCSStatusPresentation.lineCountsHelp(s)
+      ?? (s.isUnknown ? VCSStatusPresentation.dot(s)?.accessibility : nil)
     return [files, detail].compactMap { $0 }.joined(separator: ", ")
   }
 }
@@ -686,7 +697,7 @@ struct ChangesPanel: View {
       // and keeps its change-id/commit-id/refs + description header. `jjWorkingCopy != nil` is the
       // discriminator — a failed probe leaves it nil, so failures fall to the git path.
       if let workingCopy = status.jjWorkingCopy {
-        jjContent(workingCopy: workingCopy)
+        jjContent(workingCopy: workingCopy, sid: sid)
       } else {
         gitContent(status: status)
       }
@@ -715,9 +726,9 @@ struct ChangesPanel: View {
   /// and description — over the flat change list. The working copy's parent (`@-`) is no longer shown
   /// here; the History panel now surfaces it.
   @ViewBuilder
-  private func jjContent(workingCopy: JJCommitChanges) -> some View {
+  private func jjContent(workingCopy: JJCommitChanges, sid: SidebarID) -> some View {
     VStack(alignment: .leading, spacing: 10) {
-      changesHeader(meta: workingCopy, identifier: "changes.workingCopy")
+      changesHeader(meta: workingCopy, identifier: "changes.workingCopy", sid: sid)
       Divider()
       if workingCopy.files.isEmpty {
         cleanState
@@ -732,8 +743,22 @@ struct ChangesPanel: View {
   /// description line. **jj only** — git's working tree isn't a commit, so it carries no refs and no
   /// message and now renders headerless. `identifier` combines this into one a11y element; it is also
   /// the panel's render sentinel, which a dozen UI tests wait on before asserting anything else.
+  /// The refs worth chipping: every bookmark on `@` EXCEPT the one the toolbar's bookmark segment is
+  /// already showing, which is the only one most workrooms have.
+  ///
+  /// Filtered against `branchName(for:)` — the same accessor the toolbar reads — rather than against
+  /// `meta.refs.first`, so the two can't disagree about which chip is the redundant one. A commit can
+  /// carry several bookmarks and the toolbar names exactly one, so the rest still chip here; this
+  /// removes a duplicate, not the information.
+  private func extraRefs(_ meta: JJCommitChanges, sid: SidebarID) -> [String] {
+    guard let shown = store.branchName(for: sid) else { return meta.refs }
+    return meta.refs.filter { $0 != shown }
+  }
+
   @ViewBuilder
-  private func changesHeader(meta: JJCommitChanges, identifier: String?) -> some View {
+  private func changesHeader(meta: JJCommitChanges, identifier: String?, sid: SidebarID)
+    -> some View
+  {
     VStack(alignment: .leading, spacing: 2) {
       HStack(alignment: .firstTextBaseline, spacing: 6) {
         if let changeID = meta.changeID {
@@ -744,17 +769,17 @@ struct ChangesPanel: View {
           Text(commitID).font(.system(.callout, design: .monospaced))
             .foregroundStyle(.blue).help("Commit ID")
         }
-        // EVERY ref chips now. These used to be filtered against the branch-name pill that stood to
-        // their left, because jj reports a bookmarked `@`'s name twice — once as the status'
-        // `branchForCI` and again in `refs` — and rendering both put one bookmark on screen as two
-        // identical capsules. With the pill gone that filter would do the opposite of its job and
-        // HIDE the bookmark, so it went with it. `testWorkingCopyBookmarkRendersOnce` still pins the
-        // once-only outcome, now through the chips.
+        // The bookmark the toolbar shows does NOT chip here — see `extraRefs`. jj reports a bookmarked
+        // `@`'s name twice (as the status' `branchForCI` and again in `refs`), so this row has always
+        // needed a filter to avoid one bookmark reading as two capsules; what changed is the reference
+        // point. It used to be the branch-name pill that stood to the left of these chips. That pill is
+        // gone, and for one commit in between so was the filter — which put the bookmark back on screen
+        // twice, ~40pt below the toolbar segment that names it. Now it's the toolbar's own answer.
         //
         // The same gray capsules the History list rows and changeset header use, one step down from
         // the ids beside them (`.caption` under `.callout`, as the list's `.caption2` sits under its
         // `.caption`) so a pill doesn't outweigh this header's larger type.
-        ForEach(meta.refs, id: \.self) { ref in
+        ForEach(extraRefs(meta, sid: sid), id: \.self) { ref in
           Text(ref).font(.caption)
             .lineLimit(1).truncationMode(.tail)
             .padding(.horizontal, 5).padding(.vertical, 1)
