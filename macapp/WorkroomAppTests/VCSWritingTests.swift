@@ -490,15 +490,163 @@ final class VCSWritingTests: XCTestCase {
       .noRemote)
   }
 
+  // MARK: Lock files
+
+  /// The path comes from git's OWN message. A repo has several lock files meaning different things
+  /// (`index.lock`, `packed-refs.lock`, `HEAD.lock`, `config.lock`), so guessing which one is the problem
+  /// would send someone to delete a file that isn't.
+  func testParseLockPathReadsTheQuotedPath() {
+    XCTAssertEqual(
+      CLIVCSWriter.parseLockPath("fatal: Unable to create '/r/.git/index.lock': File exists."),
+      "/r/.git/index.lock")
+  }
+
+  /// The ref-update phrasing nests TWO quoted strings and the lock path is the second — matching the
+  /// first would yield `refs/heads/main`, which is not a file anyone can delete.
+  func testParseLockPathTakesTheLockNotTheRefName() {
+    let err = """
+      error: cannot lock ref 'refs/heads/main': Unable to create \
+      '/r/.git/refs/heads/main.lock': File exists
+      """
+    XCTAssertEqual(CLIVCSWriter.parseLockPath(err), "/r/.git/refs/heads/main.lock")
+  }
+
+  func testParseLockPathRejectsWhatItCannotUse() {
+    XCTAssertNil(
+      CLIVCSWriter.parseLockPath("Internal error: Failed to take lock for Git import/export"),
+      "jj's lock message names no path")
+    XCTAssertNil(
+      CLIVCSWriter.parseLockPath("fatal: Unable to create '.git/index.lock': File exists."),
+      "a relative path is meaningless in a tooltip")
+    XCTAssertNil(
+      CLIVCSWriter.parseLockPath("fatal: Unable to create '/r/.git/index': File exists."),
+      "not a .lock — the phrasing wasn't what we assumed, so don't report a path")
+    XCTAssertNil(CLIVCSWriter.parseLockPath(""))
+    XCTAssertNil(
+      CLIVCSWriter.parseLockPath("fatal: Unable to create '/r/.git/index.lock"),
+      "an unterminated quote must not crash or return a truncated path")
+  }
+
+  /// **The distinction the whole feature turns on.** A lock file that is really there means every retry
+  /// fails identically; one that has already cleared was transient contention. Only the on-disk check can
+  /// tell them apart, so it is done against a real file.
+  func testLockFileIsLocatedOnlyWhenItActuallyExists() throws {
+    let dir = FileManager.default.temporaryDirectory
+      .appendingPathComponent("wr-lock-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let lock = dir.appendingPathComponent("index.lock")
+    try Data().write(to: lock)
+
+    let found = CLIVCSWriter.lockFile(in: "fatal: Unable to create '\(lock.path)': File exists.")
+    XCTAssertEqual(found?.path, lock.path)
+    XCTAssertEqual(found?.filename, "index.lock")
+    XCTAssertNotNil(found?.modifiedAt, "the age is what lets a user judge whether it's abandoned")
+
+    try FileManager.default.removeItem(at: lock)
+    XCTAssertNil(
+      CLIVCSWriter.lockFile(in: "fatal: Unable to create '\(lock.path)': File exists."),
+      "a lock that cleared between the failure and the check WAS transient")
+  }
+
+  /// End to end: a real leftover lock must reach `classify` as a LOCATED lock, because that payload is
+  /// what withholds the Retry button further up.
+  func testClassifyCarriesARealLockFile() throws {
+    let dir = FileManager.default.temporaryDirectory
+      .appendingPathComponent("wr-lock-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let lock = dir.appendingPathComponent("packed-refs.lock")
+    try Data().write(to: lock)
+
+    let failure = CLIVCSWriter.classify(
+      failed("fatal: Unable to create '\(lock.path)': File exists."), action: .fetch, tool: "git")
+    guard case .locked(let file) = failure else {
+      return XCTFail("expected .locked, got \(String(describing: failure))")
+    }
+    XCTAssertEqual(file?.path, lock.path)
+  }
+
+  /// **The case message-parsing alone misses.** Which message git prints depends on which internal step
+  /// hit the lock: a fast-forward pull names the file, but a pull that must really REBASE fails in
+  /// autostash first and says only `error: could not write index` / `fatal: Cannot autostash` — no path
+  /// and no "lock" anywhere. That's the diverged pull, i.e. what the Pull button is for, and it used to
+  /// land in `.other` with raw stderr. Verified against real git 2.55 by `VCSRemoteIntegrationTests`.
+  func testAPathlessLockFailureIsFoundOnDisk() throws {
+    let dir = FileManager.default.temporaryDirectory
+      .appendingPathComponent("wr-gitdir-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    try Data().write(to: dir.appendingPathComponent("index.lock"))
+
+    let stderr = "error: could not write index\nfatal: Cannot autostash"
+    let failure = CLIVCSWriter.classify(
+      failed(stderr), action: .pull, tool: "git", gitDir: dir)
+    guard case .locked(let file) = failure else {
+      return XCTFail("expected .locked, got \(String(describing: failure))")
+    }
+    XCTAssertEqual(file?.filename, "index.lock")
+  }
+
+  /// The disk probe must not invent a cause. Same symptoms, no lock file ⇒ the failure was something
+  /// else and keeps its own (unhelpful, but honest) classification.
+  func testAPathlessFailureWithNoLockOnDiskIsNotBlamedOnALock() throws {
+    let dir = FileManager.default.temporaryDirectory
+      .appendingPathComponent("wr-gitdir-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    let failure = CLIVCSWriter.classify(
+      failed("error: could not write index"), action: .pull, tool: "git", gitDir: dir)
+    guard case .other = failure else {
+      return XCTFail("expected .other, got \(String(describing: failure))")
+    }
+  }
+
+  /// Narrow on purpose: a lock file that happens to exist must not be blamed for an unrelated failure.
+  func testLockSymptomOnlyMatchesLockShapedFailures() {
+    XCTAssertTrue(CLIVCSWriter.lockSymptom("error: could not write index"))
+    XCTAssertTrue(CLIVCSWriter.lockSymptom("fatal: Cannot autostash"))
+    XCTAssertTrue(CLIVCSWriter.lockSymptom("error: cannot lock ref 'refs/heads/main'"))
+    XCTAssertFalse(CLIVCSWriter.lockSymptom("fatal: couldn't find remote ref main"))
+    XCTAssertFalse(CLIVCSWriter.lockSymptom("Permission denied (publickey)."))
+    XCTAssertFalse(CLIVCSWriter.lockSymptom(""))
+  }
+
+  /// A workroom is a `git worktree`, so its `index.lock` and the repo's `packed-refs.lock` live in
+  /// DIFFERENT directories — the worktree's own `<common>/worktrees/<name>` and the shared common dir.
+  /// Checking only one would miss half the locks that can block a workroom.
+  func testExistingLockFileChecksBothTheWorktreeAndCommonGitDirs() throws {
+    let common = FileManager.default.temporaryDirectory
+      .appendingPathComponent("wr-common-\(UUID().uuidString)", isDirectory: true)
+    let worktree = common.appendingPathComponent("worktrees/room", isDirectory: true)
+    try FileManager.default.createDirectory(at: worktree, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: common) }
+
+    XCTAssertNil(CLIVCSWriter.existingLockFile(gitDir: worktree), "nothing planted yet")
+
+    // Only in the COMMON dir — reachable only by walking up out of `worktrees/<name>`.
+    try Data().write(to: common.appendingPathComponent("packed-refs.lock"))
+    XCTAssertEqual(
+      CLIVCSWriter.existingLockFile(gitDir: worktree)?.filename, "packed-refs.lock",
+      "a workroom must see the shared repo's lock, not just its own")
+
+    // The worktree's own lock wins when both exist: it's the one blocking THIS workroom's index.
+    try Data().write(to: worktree.appendingPathComponent("index.lock"))
+    XCTAssertEqual(CLIVCSWriter.existingLockFile(gitDir: worktree)?.filename, "index.lock")
+  }
+
   func testLockedForBothBackends() {
     XCTAssertEqual(
       CLIVCSWriter.classify(
         failed("fatal: Unable to create '/r/.git/packed-refs.lock': File exists"),
-        action: .fetch, tool: "git"), .locked)
+        action: .fetch, tool: "git"), .locked(nil),
+      "a path that isn't on disk means the lock already cleared — transient, so Retry is right")
     XCTAssertEqual(
       CLIVCSWriter.classify(
         failed("Internal error: Failed to take lock for Git import/export"),
-        action: .fetch, tool: "jj"), .locked)
+        action: .fetch, tool: "jj"), .locked(nil),
+      "jj's import/export lock message carries no path at all")
   }
 
   /// A failed pull that left a rebase behind must report `.rebaseInProgress`, because that state needs

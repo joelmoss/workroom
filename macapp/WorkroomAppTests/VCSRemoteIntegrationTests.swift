@@ -294,6 +294,59 @@ final class VCSRemoteIntegrationTests: XCTestCase {
     XCTAssertEqual(after.tracking?.ahead, 1, "our own commit rebased on top")
   }
 
+  /// A leftover `index.lock` must be REPORTED, with the file located, against real git.
+  ///
+  /// This is the whole reason the failure carries a payload: a located lock withholds the Retry button,
+  /// because retrying fails identically for as long as the file is there. The unit tests pin the parsing
+  /// and the presentation; only this proves the two halves meet — that real git's actual message is one
+  /// `parseLockPath` can read.
+  ///
+  /// It very nearly wasn't. git's index-lock failure leads with "Another git process seems to be running
+  /// in this repository, or the lock file may be stale", which names no path; the path arrives on a later
+  /// line as `error: Unable to create '<abs path>': File exists.` A parser written against the headline
+  /// would find nothing and silently degrade every real lock to "busy, try again".
+  ///
+  /// The pull must have REAL work to do. With the branch already up to date, git short-circuits before it
+  /// ever takes the index lock and the pull SUCCEEDS with the lock file sitting right there — so a version
+  /// of this test without `commitsAhead` and a remote-side commit passes while proving nothing.
+  func testALeftoverIndexLockIsReportedWithItsPath() async throws {
+    try requireTool("git")
+    let f = gitFixture(commitsAhead: 1)
+    sh("git clone -q origin.git other", in: f.root)
+    sh(
+      "git commit -q --allow-empty -m remote-side && git push -q origin HEAD:\(f.branch)",
+      in: f.root + "/other")
+    sh("echo 'work in progress' > wip.txt && git add wip.txt", in: f.project)
+
+    let lockPath = f.project + "/.git/index.lock"
+    XCTAssertTrue(
+      FileManager.default.createFile(atPath: lockPath, contents: Data()), "couldn't plant the lock")
+
+    let w = writer("git")
+    let before = try await state(w, path: f.project, projectRoot: f.project)
+    let result = await w.pullRebase(
+      path: f.project, projectRoot: f.project, current: before.current, remote: "origin",
+      tracking: before.tracking)
+
+    guard case .failed(let failure) = result else {
+      return XCTFail("a planted index.lock must fail the pull; got \(result)")
+    }
+    guard case .locked(let file) = failure else {
+      return XCTFail("expected .locked, got \(failure)")
+    }
+    let located = try XCTUnwrap(file, "the path is in git's stderr, so it must be located")
+    XCTAssertEqual(located.path, lockPath)
+    XCTAssertEqual(located.filename, "index.lock")
+
+    // The consequence that matters: no Retry, because there is nothing a retry could achieve.
+    XCTAssertNil(
+      VCSSyncPresenter.retryAction(for: failure, lastAction: .pull),
+      "a located lock must offer no retry")
+    XCTAssertTrue(
+      VCSSyncPresenter.explain(failure, now: Date()).contains(lockPath),
+      "the tooltip has to name the file the user must delete")
+  }
+
   func testPushIsRejectedWhenTheRemoteHasMovedOn() async throws {
     try requireTool("git")
     let f = gitFixture(commitsAhead: 1)

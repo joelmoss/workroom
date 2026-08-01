@@ -169,11 +169,78 @@ final class VCSSyncPresentationTests: XCTestCase {
     XCTAssertEqual(p.action, .push, "retries the action that failed")
   }
 
+  // MARK: Lock failures
+
+  private func lock(_ path: String = "/r/.git/index.lock", ageSeconds: TimeInterval = 900)
+    -> VCSLockFile
+  {
+    VCSLockFile(path: path, modifiedAt: now.addingTimeInterval(-ageSeconds))
+  }
+
+  /// **The defect this fixes.** A lock file that is sitting on disk cannot be retried away: the button
+  /// would fail identically every time it's pressed. Same reasoning as `.rebaseInProgress`, which has
+  /// always refused to offer a retry.
+  func testALocatedLockOffersNoRetry() {
+    let p = VCSSyncPresenter.make(
+      state: state(ahead: 5), hasTarget: true, failure: .locked(lock()), lastAction: .push, now: now
+    )
+    XCTAssertNil(p.action, "a lock file on disk makes every retry fail identically")
+    XCTAssertFalse(p.isEnabled)
+    XCTAssertTrue(
+      p.titleVariants.isEmpty,
+      "with no recovery to offer, the title must not read as a button; got \(p.titleVariants)")
+    XCTAssertEqual(p.tone, .failure)
+  }
+
+  /// The other half: a lock we could NOT locate had already cleared, which is ordinary contention. Retry
+  /// is the correct offer there, and withholding it would make a self-healing case look fatal.
+  func testAnUnlocatableLockStillOffersRetry() {
+    let p = VCSSyncPresenter.make(
+      state: state(ahead: 5), hasTarget: true, failure: .locked(nil), lastAction: .push, now: now)
+    XCTAssertEqual(p.action, .push)
+    XCTAssertTrue(p.isEnabled)
+    XCTAssertEqual(p.subtitle, "The repository was busy. Try again.")
+  }
+
+  func testLockedCopyNamesTheFile() {
+    let p = VCSSyncPresenter.make(
+      state: state(), hasTarget: true, failure: .locked(lock()), lastAction: .fetch, now: now)
+    XCTAssertEqual(p.subtitle, "A leftover index.lock is blocking git.")
+    XCTAssertFalse(
+      p.subtitle.contains("Try again"), "the one thing it must never say for a located lock")
+  }
+
+  /// The subtitle is one line in a 36pt bar, so the actual remedy lives in the tooltip — and it has to be
+  /// complete, because Workroom deliberately won't remove the file itself.
+  func testTheTooltipCarriesThePathAgeAndRemedy() {
+    let p = VCSSyncPresenter.make(
+      state: state(), hasTarget: true, failure: .locked(lock(ageSeconds: 900)), lastAction: .fetch,
+      now: now)
+    XCTAssertTrue(p.help.contains("/r/.git/index.lock"), "got \(p.help)")
+    XCTAssertTrue(p.help.contains("15 minutes ago"), "the age is the judgement call; got \(p.help)")
+    XCTAssertTrue(p.help.contains("rm "), "the remedy must be copy-pasteable; got \(p.help)")
+    XCTAssertTrue(
+      p.help.contains("If no git command is running"),
+      "the caveat is what makes removal safe advice rather than reckless advice")
+  }
+
+  /// The path rides on the presentation so the segment can offer Copy / Reveal — retyping a path out of
+  /// a tooltip is exactly the friction that makes people give up and ignore the error.
+  func testTheLockPathIsCarriedForTheContextMenu() {
+    let located = VCSSyncPresenter.make(
+      state: state(), hasTarget: true, failure: .locked(lock()), lastAction: .fetch, now: now)
+    XCTAssertEqual(located.lockPath, "/r/.git/index.lock")
+
+    let transient = VCSSyncPresenter.make(
+      state: state(), hasTarget: true, failure: .locked(nil), lastAction: .fetch, now: now)
+    XCTAssertNil(transient.lockPath, "nothing to copy or reveal when there's no file")
+  }
+
   /// An in-flight action outranks a stale failure — otherwise clicking Retry would keep showing the old
   /// error while the retry ran.
   func testInFlightOutranksAFailure() {
     let p = VCSSyncPresenter.make(
-      state: state(), hasTarget: true, activity: .running(.push), failure: .locked,
+      state: state(), hasTarget: true, activity: .running(.push), failure: .locked(nil),
       lastAction: .push, now: now)
     XCTAssertEqual(p.tone, .normal)
     XCTAssertEqual(p.title, "Pushing…")

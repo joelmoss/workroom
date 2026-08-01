@@ -113,7 +113,7 @@ final class RemoteStateModelTests: XCTestCase {
   }
 
   func testActivateRetriesAfterAFailure() async {
-    let writer = StubWriter(state: .failed(.locked))
+    let writer = StubWriter(state: .failed(.locked(nil)))
     let m = model(writer, ttl: 0)
     m.focus(target)
     await m.awaitCurrentLoad()
@@ -281,7 +281,7 @@ final class RemoteStateModelTests: XCTestCase {
   }
 
   func testMutationCallbackDoesNotFireOnFailure() async {
-    let writer = StubWriter(state: .state(state()), action: .failed(.locked))
+    let writer = StubWriter(state: .state(state()), action: .failed(.locked(nil)))
     let m = model(writer, ttl: 0)
     m.focus(target)
     await m.awaitCurrentLoad()

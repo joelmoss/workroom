@@ -289,6 +289,21 @@ private struct VCSSyncSegment: View {
     .accessibilityLabel(presentation.accessibility)
     .accessibilityValue(presentation.accessibilityValue)
     .accessibilityIdentifier("vcs.toolbar.sync")
+    // Only when a lock file is blocking the repo. Workroom deliberately doesn't delete it — telling a
+    // live git's lock from an abandoned one isn't possible from outside the process, and deleting a live
+    // one corrupts the index — so the fix is the user's to make, and these hand them the file rather
+    // than making them retype a path out of a tooltip.
+    .contextMenu {
+      if let lockPath = presentation.lockPath {
+        Button("Copy Lock File Path") {
+          NSPasteboard.general.clearContents()
+          NSPasteboard.general.setString(lockPath, forType: .string)
+        }
+        Button("Reveal Lock File in Finder") {
+          NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: lockPath)])
+        }
+      }
+    }
   }
 
   private var isRunning: Bool { presentation.title?.hasSuffix("…") == true }

@@ -46,9 +46,33 @@ enum VCSRemoteFailure: Equatable, Sendable {
   /// `git rebase --abort`, so the UI must offer that instead of a retry that will fail identically.
   case rebaseInProgress
   /// A repo lock was held — git `index.lock`/`packed-refs.lock`, or jj's `git_import_export.lock`.
-  /// Transient; the UI offers Retry.
-  case locked
+  ///
+  /// The payload is the lock file itself when we could find it on disk, and that distinction decides
+  /// what the UI offers. **`nil` ⇒ transient contention**, so Retry is genuine: another command held the
+  /// lock briefly and by the next click it is likely gone. **Non-nil ⇒ a lock file is sitting there
+  /// right now**, and retrying fails identically every time — the same reasoning that makes
+  /// `rebaseInProgress` offer Abort instead of Retry.
+  ///
+  /// A leftover lock is what a SIGKILLed git leaves: the runner escalates to `killTree` two seconds
+  /// after SIGTERM, and SIGKILL cannot be caught, so git's own cleanup never runs.
+  ///
+  /// Workroom does NOT delete it. Whether a lock is truly abandoned or held by a git running right now
+  /// is not knowable from outside the process — `lsof` can't be trusted for it, and removing a live
+  /// lock corrupts the index — so this reports and explains, and the removal stays the user's call.
+  /// That is also what git's own message tells you to do.
+  case locked(VCSLockFile?)
   case other(String)
+}
+
+/// A lock file found blocking a VCS operation.
+///
+/// Located by parsing the path out of git's own error, which names it exactly, then stat-ing it — so the
+/// file reported is the one git actually complained about rather than a guess at which lock it might be.
+struct VCSLockFile: Equatable, Sendable {
+  let path: String
+  let modifiedAt: Date
+
+  var filename: String { (path as NSString).lastPathComponent }
 }
 
 /// What a remote-state read decided. Mirrors `CIResolution`/`PRResolution`, `keepPrior` included: a
@@ -533,9 +557,19 @@ struct CLIVCSWriter: VCSWriting, Sendable {
         && (err.contains("could not be obtained") || err.contains("File exists")
           || err.contains("Unable to create")))
     {
-      return .locked
+      return .locked(lockFile(in: err))
     }
     if action == .pull, rebaseInProgress(gitDir: gitDir) { return .rebaseInProgress }
+    // A lock failure that never names a lock. git's message depends on WHICH internal step hit the lock:
+    // a fast-forward pull reports `Unable to create '<path>': File exists.`, but a pull that must really
+    // rebase fails in autostash first and says only `error: could not write index` / `fatal: Cannot
+    // autostash` — no path, no "lock", nothing the checks above can match. That is the diverged pull,
+    // i.e. exactly what the toolbar's Pull button is for, and it was landing in `.other` with raw stderr.
+    //
+    // So when the symptoms are lock-shaped, ask the DISK instead of the message. Deliberately last: any
+    // failure git explains properly keeps its own classification, and this only speaks for the ones it
+    // doesn't.
+    if lockSymptom(err), let lock = existingLockFile(gitDir: gitDir) { return .locked(lock) }
     let trimmed = err.trimmingCharacters(in: .whitespacesAndNewlines)
     return .other(trimmed.isEmpty ? "\(tool) exited \(result.exitCode)" : trimmed)
   }
@@ -547,6 +581,78 @@ struct CLIVCSWriter: VCSWriting, Sendable {
     let fm = FileManager.default
     return fm.fileExists(atPath: gitDir.appendingPathComponent("rebase-merge").path)
       || fm.fileExists(atPath: gitDir.appendingPathComponent("rebase-apply").path)
+  }
+
+  /// The lock file a failure is complaining about, or nil if we can't point at one.
+  ///
+  /// The path is taken from git's OWN message rather than guessed: git names the exact file it couldn't
+  /// create (`fatal: Unable to create '<path>': File exists.`), and a repo has several lock files that
+  /// mean different things — `index.lock`, `packed-refs.lock`, `HEAD.lock`, `config.lock`. Naming the
+  /// wrong one would send someone to delete a file that isn't the problem.
+  ///
+  /// Returns nil for jj's import/export lock, whose message carries no path, and — deliberately — when
+  /// the named file no longer exists: a lock that cleared between the failure and this check WAS
+  /// transient contention, which is exactly the case where Retry is the right offer.
+  static func lockFile(in stderr: String) -> VCSLockFile? {
+    guard let path = parseLockPath(stderr) else { return nil }
+    guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+      let modified = attrs[.modificationDate] as? Date
+    else { return nil }
+    return VCSLockFile(path: path, modifiedAt: modified)
+  }
+
+  /// Whether a failure LOOKS like it was caused by a lock, without saying so.
+  ///
+  /// Narrow on purpose. These are the symptoms git reports when it fails to take a lock through a path
+  /// that doesn't print the lock's name; anything broader would start blaming a lock file that happens to
+  /// exist for failures it had nothing to do with.
+  static func lockSymptom(_ stderr: String) -> Bool {
+    stderr.contains("could not write index") || stderr.contains("Cannot autostash")
+      || stderr.contains("cannot lock ref") || stderr.contains("Unable to write")
+  }
+
+  /// The lock files a repo can be blocked by, newest-relevant first. `index.lock` lives in the WORKTREE's
+  /// own git dir; `packed-refs.lock` and `config.lock` live in the COMMON dir that every worktree shares.
+  static let knownLockNames = ["index.lock", "packed-refs.lock", "HEAD.lock", "config.lock"]
+
+  /// The first lock file actually present in this repo, checking both the worktree's git dir and the
+  /// common one — a workroom is a `git worktree`, so its `index.lock` and the repo's `packed-refs.lock`
+  /// are in different directories.
+  static func existingLockFile(gitDir: URL?) -> VCSLockFile? {
+    guard let gitDir else { return nil }
+    let fm = FileManager.default
+    var dirs = [gitDir]
+    // `<common>/worktrees/<name>` → `<common>`. Cheap and string-only; `commonGitDir` does the same trip
+    // from a path rather than from an already-resolved git dir.
+    if gitDir.deletingLastPathComponent().lastPathComponent == "worktrees" {
+      dirs.append(gitDir.deletingLastPathComponent().deletingLastPathComponent())
+    }
+    for dir in dirs {
+      for name in knownLockNames {
+        let candidate = dir.appendingPathComponent(name)
+        guard let attrs = try? fm.attributesOfItem(atPath: candidate.path),
+          let modified = attrs[.modificationDate] as? Date
+        else { continue }
+        return VCSLockFile(path: candidate.path, modifiedAt: modified)
+      }
+    }
+    return nil
+  }
+
+  /// The quoted path out of git's lock errors. Pure, so the parsing is testable without a repo.
+  ///
+  /// Covers both phrasings that quote a path — the bare `Unable to create '<path>'` and the ref-update
+  /// form (`error: cannot lock ref 'refs/…': Unable to create '<path>.lock': File exists`), which nests
+  /// two quoted strings and must yield the second.
+  static func parseLockPath(_ stderr: String) -> String? {
+    guard let marker = stderr.range(of: "Unable to create '") else { return nil }
+    let rest = stderr[marker.upperBound...]
+    guard let close = rest.firstIndex(of: "'") else { return nil }
+    let path = String(rest[..<close])
+    // Only ever report an absolute path to a `.lock`: a relative one would be meaningless to a user
+    // reading it out of a tooltip, and a non-`.lock` match means the phrasing wasn't what we assumed.
+    guard path.hasPrefix("/"), path.hasSuffix(".lock") else { return nil }
+    return path
   }
 
   /// This worktree's OWN git directory — `<common>/worktrees/<name>` for a workroom, the same as the
@@ -713,7 +819,11 @@ struct CLIVCSWriter: VCSWriting, Sendable {
           await run(args, in: dir, timeout: fetchTimeout, network: true)
         })
     else { return .failed(.other("fetch was cancelled")) }
-    if let failure = Self.classify(result, action: .fetch, tool: vcs) { return .failed(failure) }
+    if let failure = Self.classify(
+      result, action: .fetch, tool: vcs, gitDir: Self.worktreeGitDir(at: path))
+    {
+      return .failed(failure)
+    }
     return .ok(summary: "Fetched \(remote)")
   }
 
@@ -743,7 +853,11 @@ struct CLIVCSWriter: VCSWriting, Sendable {
           await run(args, in: dir, timeout: pushTimeout, network: true)
         })
     else { return .failed(.other("push was cancelled")) }
-    if let failure = Self.classify(result, action: .push, tool: vcs) { return .failed(failure) }
+    if let failure = Self.classify(
+      result, action: .push, tool: vcs, gitDir: Self.worktreeGitDir(at: path))
+    {
+      return .failed(failure)
+    }
     return .ok(summary: "Pushed to \(remote)")
   }
 
@@ -754,6 +868,8 @@ struct CLIVCSWriter: VCSWriting, Sendable {
     // Both backends fetch first, at the project root, for the reasons `opDirectory` documents. For git
     // `pull` would fetch too, but doing it explicitly at the root keeps `FETCH_HEAD` — and so the
     // "last fetched" label — correct for every workroom of the project.
+    // Hoisted above the fetch: BOTH steps classify against it, since a lock can block either one.
+    let gitDir = Self.worktreeGitDir(at: path)
     let fetchDir = Self.opDirectory(.fetch, path: path, vcs: vcs, projectRoot: projectRoot)
     let fetchArgs =
       vcs == "jj" ? Self.jjFetchArgs(remote: remote) : Self.gitFetchArgs(remote: remote)
@@ -764,10 +880,11 @@ struct CLIVCSWriter: VCSWriting, Sendable {
           await run(fetchArgs, in: fetchDir, timeout: fetchTimeout, network: true)
         })
     else { return .failed(.other("pull was cancelled")) }
-    if let failure = Self.classify(fetched, action: .pull, tool: vcs) { return .failed(failure) }
+    if let failure = Self.classify(fetched, action: .pull, tool: vcs, gitDir: gitDir) {
+      return .failed(failure)
+    }
 
     let dir = Self.opDirectory(.pull, path: path, vcs: vcs, projectRoot: projectRoot)
-    let gitDir = Self.worktreeGitDir(at: path)
     let args: [String]
     if vcs == "jj" {
       guard let destination = tracking?.comparedTo, destination != remote else {

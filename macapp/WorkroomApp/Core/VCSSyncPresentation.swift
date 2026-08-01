@@ -29,6 +29,10 @@ struct VCSSyncPresentation: Equatable, Sendable {
   /// Spoken label. The count pills are `accessibilityHidden`, so their information has to arrive here.
   var accessibility: String
   var accessibilityValue: String = ""
+  /// The blocking lock file, when there is one. Carried so the segment can offer to copy or reveal it —
+  /// the fix is a file operation the user performs, so the least Workroom can do is hand them the path
+  /// rather than make them transcribe it out of a tooltip.
+  var lockPath: String?
 
   struct Badge: Equatable, Sendable {
     enum Direction: Equatable, Sendable { case ahead, behind }
@@ -91,14 +95,20 @@ enum VCSSyncPresenter {
     // burying it under a count would leave the user with no idea the action didn't happen.
     if let failure, case .idle = activity {
       let message = describe(failure)
+      let recovery = retryAction(for: failure, lastAction: lastAction)
       return VCSSyncPresentation(
-        titleVariants: (lastAction?.label).map { [$0] } ?? ["Retry"],
+        // With no recovery to offer, the title must not read as a button. "Retry" over a failure that
+        // cannot be retried is the whole defect this branch fixes.
+        titleVariants: recovery == nil ? [] : (lastAction?.label).map { [$0] } ?? ["Retry"],
         subtitle: message, subtitleShort: message,
         symbol: "exclamationmark.triangle.fill",
-        action: retryAction(for: failure, lastAction: lastAction),
-        isEnabled: retryAction(for: failure, lastAction: lastAction) != nil,
-        tone: .failure, help: message,
-        accessibility: "\(lastAction?.label ?? "Action") failed. \(message)")
+        action: recovery,
+        isEnabled: recovery != nil,
+        // The tooltip is where a failure gets room to explain itself — one line fits the 36pt bar, the
+        // remedy usually doesn't.
+        tone: .failure, help: explain(failure, now: now),
+        accessibility: "\(lastAction?.label ?? "Action") failed. \(explain(failure, now: now))",
+        lockPath: lockPath(of: failure))
     }
 
     // [10/11/12] In flight — one action at a time, so this can't collide with a second.
@@ -227,6 +237,11 @@ enum VCSSyncPresenter {
     case .rebaseInProgress: return .abortRebase
     case .rejected: return .pull  // the fix for a rejection is to pull, never to force
     case .toolMissing, .noRemote: return nil
+    // A LOCATED lock file offers nothing, for `rebaseInProgress`'s reason: the file is sitting there, so
+    // every retry fails identically and the button is a promise that can't be kept. Removing it is the
+    // only fix and Workroom won't do that for you (see `VCSRemoteFailure.locked`), so the recovery is
+    // explained rather than offered. An unlocatable lock was transient contention — retry away.
+    case .locked(let file): return file == nil ? lastAction : nil
     default: return lastAction
     }
   }
@@ -253,11 +268,43 @@ enum VCSSyncPresenter {
       return "Uncommitted changes are in the way. Commit or stash them first."
     case .rebaseInProgress:
       return "A rebase is in progress. Abort it to continue."
-    case .locked:
-      return "The repository was busy. Try again."
+    case .locked(let file):
+      // Two different facts, so two different sentences. Saying "busy, try again" over a lock file that
+      // is still there sends the user round a loop that cannot terminate.
+      guard let file else { return "The repository was busy. Try again." }
+      return "A leftover \(file.filename) is blocking git."
     case .other(let message):
       return message.split(whereSeparator: \.isNewline).first.map(String.init) ?? "Failed."
     }
+  }
+
+  /// The blocking lock file's path, when the failure has one.
+  static func lockPath(of failure: VCSRemoteFailure) -> String? {
+    guard case .locked(let file) = failure else { return nil }
+    return file?.path
+  }
+
+  /// The tooltip form of a failure: `describe`'s one-liner plus, where there is one, the remedy.
+  ///
+  /// Only `.locked` currently says more than its subtitle, because it's the only failure whose fix is a
+  /// thing the user must do OUTSIDE Workroom — and the app deliberately won't do it for them, so the
+  /// message has to be complete enough to act on: which file, how old, and the caveat that makes the age
+  /// worth printing. A minutes-old lock with no git running is abandoned; a seconds-old one probably
+  /// isn't, and that judgement is the user's to make.
+  static func explain(_ failure: VCSRemoteFailure, now: Date) -> String {
+    guard case .locked(let file) = failure, let file else { return describe(failure) }
+    let age = fullFormatter.localizedString(for: file.modifiedAt, relativeTo: now)
+    return """
+      A leftover lock file is blocking git.
+
+      \(file.path)
+      Created \(age).
+
+      A git command that was force-stopped leaves this behind. If no git command is running for this \
+      repository, deleting the file is safe:
+
+      rm "\(file.path)"
+      """
   }
 
   // MARK: Vocabulary
