@@ -94,6 +94,54 @@ final class VCSWritingTests: XCTestCase {
       XCTAssertFalse(args.contains("--force"))
       XCTAssertFalse(args.contains("--force-with-lease"))
       XCTAssertFalse(args.contains("-f"))
+      XCTAssertTrue(
+        args.contains("--porcelain"),
+        "the rejection must be readable from the flag column, not from translated prose")
+    }
+  }
+
+  /// The flag column is `!` for a rejected ref, and only for that.
+  func testPushRejectionIsReadFromThePorcelainFlagColumn() {
+    let rejected = """
+      To ../origin.git
+      !\trefs/heads/master:refs/heads/master\t[rejected] (fetch first)
+      Done
+      """
+    XCTAssertTrue(CLIVCSWriter.gitPushRejected(stdout: rejected))
+
+    for ok in [
+      " \trefs/heads/master:refs/heads/master\t327c4e6..896d14c",  // updated
+      "*\trefs/heads/feat:refs/heads/feat\t[new branch]",  // new ref
+      "=\trefs/heads/feat:refs/heads/feat\t[up to date]",  // nothing to do
+    ] {
+      XCTAssertFalse(
+        CLIVCSWriter.gitPushRejected(stdout: "To ../origin.git\n\(ok)\nDone"),
+        "not a rejection: \(ok)")
+    }
+    XCTAssertFalse(CLIVCSWriter.gitPushRejected(stdout: ""))
+    XCTAssertFalse(
+      CLIVCSWriter.gitPushRejected(stdout: "! not a porcelain line"),
+      "the flag is one character followed by a TAB — a bare ! is prose")
+  }
+
+  /// The point of the flag column: classification must survive a translated stderr. This is the exact
+  /// pairing Homebrew git 2.55 produces under `fr_FR.UTF-8` — no English anywhere in the message.
+  func testARejectedPushClassifiesWithNoEnglishInTheMessage() {
+    let result = CommandResult(
+      stdout: """
+        To ../origin.git
+        !\trefs/heads/master:refs/heads/master\t[rejected] (fetch first)
+        Done
+        """,
+      stderr: """
+        erreur : impossible de pousser des références vers '../origin.git'
+        astuce : Les mises à jour ont été rejetées car le distant contient du travail que vous
+        astuce : n'avez pas localement.
+        """,
+      exitCode: 1, timedOut: false)
+    let failure = CLIVCSWriter.classify(result, action: .push, tool: "git")
+    guard case .rejected = failure else {
+      return XCTFail("expected .rejected, got \(String(describing: failure))")
     }
   }
 
@@ -151,9 +199,32 @@ final class VCSWritingTests: XCTestCase {
   /// The ahead revset must be exactly what bare `jj git push` sends, so the count and the button agree.
   func testJJAheadRevsetMatchesWhatPushWouldSend() {
     XCTAssertEqual(
-      CLIVCSWriter.jjAheadRevset(remote: "origin"), "remote_bookmarks(remote=origin)..@")
+      CLIVCSWriter.jjAheadRevset(remote: "origin"), #"remote_bookmarks(remote="origin")..@"#)
     XCTAssertEqual(
-      CLIVCSWriter.jjBehindRevset(remote: "origin"), "@..remote_bookmarks(remote=origin)")
+      CLIVCSWriter.jjBehindRevset(remote: "origin"), #"@..remote_bookmarks(remote="origin")"#)
+  }
+
+  /// Interpolating a remote name bare is a parse bug. Verified against jj 0.43: `a b`, `a)b` and `a:b`
+  /// fail with `Failed to parse revset`, and `a|b` silently parses as a UNION of two patterns — a wrong
+  /// count with no error. Every one of them parses once quoted.
+  func testRevsetRemoteNamesAreQuotedAndEscaped() {
+    XCTAssertEqual(CLIVCSWriter.jjQuote("origin"), #""origin""#)
+    XCTAssertEqual(CLIVCSWriter.jjQuote("a b"), #""a b""#)
+    XCTAssertEqual(CLIVCSWriter.jjQuote("a|b"), #""a|b""#)
+    // `\` before `"`, so the quote pass's own escapes don't get re-escaped.
+    XCTAssertEqual(CLIVCSWriter.jjQuote(#"a"b"#), #""a\"b""#)
+    XCTAssertEqual(CLIVCSWriter.jjQuote(#"a\b"#), #""a\\b""#)
+    XCTAssertEqual(CLIVCSWriter.jjQuote(#"a\"b"#), #""a\\\"b""#)
+
+    for name in ["a b", "a)b", "a:b", "a|b", #"a"b"#] {
+      for revset in [
+        CLIVCSWriter.jjAheadRevset(remote: name), CLIVCSWriter.jjBehindRevset(remote: name),
+      ] {
+        XCTAssertTrue(
+          revset.contains("remote=\(CLIVCSWriter.jjQuote(name))"),
+          "the name must reach the revset quoted: \(revset)")
+      }
+    }
   }
 
   /// jj refuses to push a commit with an empty description, and a fresh `@` after `jj new` has neither

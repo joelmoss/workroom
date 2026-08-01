@@ -364,9 +364,15 @@ final class VCSRemoteIntegrationTests: XCTestCase {
     guard case .failed(let failure) = result else {
       return XCTFail("a non-fast-forward push must be rejected, got \(result)")
     }
-    guard case .rejected = failure else {
+    guard case .rejected(let message) = failure else {
       return XCTFail("expected .rejected, got \(failure)")
     }
+    // Pins the `--porcelain` flag against REAL git, not a fixture string: if the flag is ever dropped
+    // from `gitPushArgs` this line goes, and the classification silently falls back to matching English
+    // prose that a French locale would defeat.
+    XCTAssertTrue(
+      message.split(whereSeparator: \.isNewline).contains { $0.hasPrefix("!\t") },
+      "the porcelain flag column must be present in the output we classified: \(message)")
   }
 
   // MARK: - jj

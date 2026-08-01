@@ -315,9 +315,27 @@ struct CLIVCSWriter: VCSWriting, Sendable {
   /// `--set-upstream` only when there is no counterpart yet; passing it on every push would rewrite
   /// `branch.<name>.remote`/`.merge` each time. **Never** `--force`/`--force-with-lease`: a rejection
   /// becomes `.rejected` and the UI offers Pull.
+  ///
+  /// `--porcelain` is what makes the rejection detectable without reading prose — see
+  /// `gitPushRejected(stdout:)`. It moves a machine-readable per-ref line onto stdout and leaves
+  /// stderr's hints alone, so nothing else about the failure path changes.
   static func gitPushArgs(branch: String, remote: String, setUpstream: Bool) -> [String] {
-    WorkroomStatusResolver.gitHardening + ["push"]
+    WorkroomStatusResolver.gitHardening + ["push", "--porcelain"]
       + (setUpstream ? ["--set-upstream"] : []) + [remote, branch]
+  }
+
+  /// Whether `push --porcelain` reported a rejected ref.
+  ///
+  /// Each porcelain line is `<flag>\t<from>:<to>\t<summary>`, and the flag is the contract: `!`
+  /// rejected, ` ` updated, `*` new ref, `=` up to date, `-` deleted, `+` forced (we never force).
+  ///
+  /// This exists because the prose we used to match is translated and the flag is not. Homebrew git
+  /// 2.55 under `fr_FR.UTF-8` answers `Les mises à jour ont été rejetées …` on stderr while stdout
+  /// still reads `!\trefs/heads/master:refs/heads/master\t[rejected] (fetch first)` — measured, both
+  /// locales. `StatusCommandRunner` pins `LC_ALL=C` so the prose match works today; this stops
+  /// `.rejected` — the one failure whose recovery is a *different action* — depending on that pin.
+  static func gitPushRejected(stdout: String) -> Bool {
+    stdout.split(whereSeparator: \.isNewline).contains { $0.hasPrefix("!\t") }
   }
 
   /// `--autostash` is mandatory, not a nicety: workroom trees are essentially always dirty, and
@@ -377,12 +395,26 @@ struct CLIVCSWriter: VCSWriting, Sendable {
     ["log", "--no-graph"] + jjReadFlags + ["-r", revset, "-T", #""x\n""#]
   }
 
+  /// Quote a name for interpolation into a revset.
+  ///
+  /// Bare interpolation is a real parse bug, not a hypothetical. Verified against jj 0.43: a remote
+  /// named `a b`, `a)b` or `a:b` fails outright (`Failed to parse revset: Syntax error`), and — worse —
+  /// `a|b` *succeeds* as the UNION of two patterns, so the count comes back wrong with no error to
+  /// notice. Quoting fixes all of them.
+  ///
+  /// `\` is escaped before `"`, so the backslash pass cannot re-escape the escapes the quote pass adds.
+  static func jjQuote(_ name: String) -> String {
+    let escaped = name.replacingOccurrences(of: "\\", with: "\\\\")
+      .replacingOccurrences(of: "\"", with: "\\\"")
+    return "\"\(escaped)\""
+  }
+
   /// What bare `jj git push` would send, so the ahead count and the Push button agree by construction.
   static func jjAheadRevset(remote: String) -> String {
-    "remote_bookmarks(remote=\(remote))..@"
+    "remote_bookmarks(remote=\(jjQuote(remote)))..@"
   }
   static func jjBehindRevset(remote: String) -> String {
-    "@..remote_bookmarks(remote=\(remote))"
+    "@..remote_bookmarks(remote=\(jjQuote(remote)))"
   }
 
   static func jjFetchArgs(remote: String) -> [String] {
@@ -558,7 +590,12 @@ struct CLIVCSWriter: VCSWriting, Sendable {
     {
       return .noRemote
     }
-    if err.contains("Updates were rejected") || err.contains("! [rejected]") {
+    // Flag column first, prose second. The string checks stay as a fallback rather than being replaced:
+    // `--porcelain` is ours to pass on the push path only, so a rejection surfaced by any other route
+    // (a remote helper, a future caller that forgets the flag) still classifies.
+    if gitPushRejected(stdout: result.stdout) || err.contains("Updates were rejected")
+      || err.contains("! [rejected]")
+    {
       return .rejected(err)
     }
     if err.contains("Failed to take lock for Git import/export")
