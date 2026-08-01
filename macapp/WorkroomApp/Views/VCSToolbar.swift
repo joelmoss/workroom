@@ -7,14 +7,22 @@ import SwiftUI
 /// centre and the branch name's left edge exactly where `SectionHeader`'s chevron centre and title land
 /// (`InspectorSplitView.headerLabel` uses the same 12 / 12 / 7).
 enum VCSToolbarMetrics {
-  /// 11pt semibold title (13pt line) + 1pt + 10pt caption (12pt line) = 26, plus 5pt above and below.
-  /// Two lines genuinely don't fit the section headers' 34pt, and 36 also reads as a distinct band.
+  /// The tallest thing a text cell stacks: an 11pt semibold title row over a 10pt caption (12pt line),
+  /// 1pt apart. The title row is 13pt bare but as tall as a `.caption2` capsule — about 15 — whenever a
+  /// count pill rides it, which is the case this has to budget for.
+  static let contentHeight: CGFloat = 28
+  /// Breathing room above and below a cell's content.
   ///
-  /// The count pills sit on the title line, so that row is as tall as a `.caption2` capsule rather than
-  /// 13pt whenever one is shown. That takes the stack a couple of points past 26 and leaves the band
-  /// unchanged — the slack was already there, which is why the pills could move up without this number
-  /// moving with them.
-  static let height: CGFloat = 36
+  /// Expressed as band height rather than as `.padding(.vertical)` on the cells, and that is not a
+  /// shortcut: `vcsToolbarSegment` fills its cell with `maxHeight: .infinity`, so the content is
+  /// vertically CENTRED in a fixed-height frame. Padding inside a centred fixed frame is absorbed by the
+  /// centring and changes nothing on screen — only the band's height actually moves the text off the
+  /// hairlines. Anyone adding a `.padding(.vertical)` here to "fix the spacing" will see no difference
+  /// and should change this instead.
+  static let contentVerticalPadding: CGFloat = 6
+  /// 40. Two lines genuinely don't fit the section headers' 34pt, so this must exceed them — being
+  /// taller is also what makes the bar read as its own band rather than a fourth section header.
+  static let height: CGFloat = contentHeight + contentVerticalPadding * 2
   static let outerInset: CGFloat = 12
   /// Inner edges of the segments — tighter than `outerInset` so the middle segment isn't starved.
   static let innerInset: CGFloat = 8

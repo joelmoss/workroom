@@ -45,13 +45,21 @@ final class VCSToolbarMetricsTests: XCTestCase {
     XCTAssertEqual(textLeadingEdge, 31, "text must start where the header's title does")
   }
 
-  /// 11pt semibold (13pt line) + 1pt + 10pt (12pt line) = 26, plus 5pt above and below. The section
-  /// headers are 34pt, which two lines don't fit — so this must be taller than them, not equal.
-  func testHeightFitsTwoLinesAndExceedsASectionHeader() {
+  /// The section headers are 34pt, which two stacked lines don't fit — so this must be taller than them,
+  /// not equal. Asserted as the derivation rather than as the literal 40: the padding is only real
+  /// because the band is content + 2×padding, and a future tweak that edits `height` alone would silence
+  /// a bare equality check while quietly cancelling the breathing room.
+  func testHeightIsContentPlusPaddingAndExceedsASectionHeader() {
     XCTAssertGreaterThan(
       VCSToolbarMetrics.height, InspectorPanePolicy.headerHeight,
       "two stacked lines don't fit a section header's height")
-    XCTAssertEqual(VCSToolbarMetrics.height, 36)
+    XCTAssertGreaterThan(
+      VCSToolbarMetrics.contentVerticalPadding, 0,
+      "the content would sit against the band's hairlines")
+    XCTAssertEqual(
+      VCSToolbarMetrics.height,
+      VCSToolbarMetrics.contentHeight + VCSToolbarMetrics.contentVerticalPadding * 2,
+      "the band must be exactly its content plus the padding above and below it")
   }
 
   /// The fetch cell has to hold a standard 22pt hover well.
