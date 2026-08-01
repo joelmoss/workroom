@@ -18,28 +18,21 @@ final class VCSWritingTests: XCTestCase {
   /// fetch runs at the project root for BOTH backends: jj because a secondary workspace has no `.git`,
   /// git because `FETCH_HEAD` is per-worktree and the root is the one answer every workroom shares.
   func testFetchAlwaysRunsAtTheProjectRoot() {
-    for vcs in ["git", "jj"] {
-      XCTAssertEqual(
-        CLIVCSWriter.opDirectory(.fetch, path: "/w/room", vcs: vcs, projectRoot: "/p"), "/p",
-        "\(vcs) fetch must run at the project root")
-    }
+    XCTAssertEqual(CLIVCSWriter.opDirectory(.fetch, path: "/w/room", projectRoot: "/p"), "/p")
   }
 
-  /// jj bookmarks are repo-global, so its push runs at the root; a git push acts on this worktree.
-  func testPushDirectoryDiffersByBackend() {
-    XCTAssertEqual(
-      CLIVCSWriter.opDirectory(.push, path: "/w/room", vcs: "git", projectRoot: "/p"), "/w/room")
-    XCTAssertEqual(
-      CLIVCSWriter.opDirectory(.push, path: "/w/room", vcs: "jj", projectRoot: "/p"), "/p")
-  }
-
-  func testPullAndAbortRunInTheWorkroom() {
-    for vcs in ["git", "jj"] {
+  /// **Push must run in the WORKROOM, for jj too.** It used to run jj's push at the project root because
+  /// bookmarks are repo-global. Bookmarks are — but `@` is workspace-scoped, so `jj git push --change @`
+  /// at the root published the ROOT workspace's working copy and left the workroom's commit at home,
+  /// reporting success. Measured: the push created `push-<root's change id>` carrying the root's commit.
+  ///
+  /// `path` and `projectRoot` are deliberately DIFFERENT here — `VCSRemoteIntegrationTests` passes the
+  /// same directory for both, which is exactly why it could not catch this.
+  func testEveryActionExceptFetchRunsInTheWorkroom() {
+    for action in [VCSRemoteAction.push, .pull, .abortRebase] {
       XCTAssertEqual(
-        CLIVCSWriter.opDirectory(.pull, path: "/w/room", vcs: vcs, projectRoot: "/p"), "/w/room")
-      XCTAssertEqual(
-        CLIVCSWriter.opDirectory(.abortRebase, path: "/w/room", vcs: vcs, projectRoot: "/p"),
-        "/w/room")
+        CLIVCSWriter.opDirectory(action, path: "/w/room", projectRoot: "/p"), "/w/room",
+        "\(action.label) must act on the selected workroom, not the project root")
     }
   }
 
@@ -100,6 +93,43 @@ final class VCSWritingTests: XCTestCase {
     }
   }
 
+  /// **No repo-derived name may occupy a bare argv slot.** An argv array stops SHELL injection and does
+  /// nothing about OPTION injection, and git parses options that appear after the positional remote.
+  ///
+  /// Verified on git 2.55: `refs/heads/--all` is a legal refname, a malicious remote pointing its HEAD at
+  /// it makes `git clone` name the LOCAL branch `--all`, and `push <remote> --all` then pushed every
+  /// branch in the repo — every workroom's branch — to that remote. `--mirror` can delete remote refs
+  /// outright. A `refs/heads/…` refspec can never present as an option.
+  func testNoRepoDerivedNameLandsInABareArgvSlot() {
+    let hostile = "--all"
+    let push = CLIVCSWriter.gitPushArgs(branch: hostile, remote: "origin", setUpstream: false)
+    XCTAssertFalse(
+      push.contains(hostile), "a bare `--all` in argv is a mirror/all-branches push: \(push)")
+    XCTAssertTrue(push.contains("refs/heads/--all:refs/heads/--all"))
+
+    // `--` is enough for push and fetch but NOT for pull — `git pull` forwards the refspec to fetch in a
+    // way that still parses it as an option (measured: the `--upload-pack=` payload ran even after `--`).
+    // So pull is pinned on the refspec form, which is the only thing that held.
+    let pull = CLIVCSWriter.gitPullArgs(remote: "origin", branch: hostile)
+    XCTAssertFalse(pull.contains(hostile), "got \(pull)")
+    XCTAssertTrue(pull.contains("refs/heads/--all"))
+
+    // Every builder closes its option list. `fetch -- --all` is SAFE and deliberately allowed: after
+    // `--`, git reads `--all` as the remote's name, which is the point. What must never happen is a
+    // dash-leading operand with no `--` ahead of it.
+    for args in [push, pull, CLIVCSWriter.gitFetchArgs(remote: hostile)] {
+      guard let separator = args.firstIndex(of: "--") else {
+        return XCTFail("every builder must close its option list: \(args)")
+      }
+      let dashLeadingBeforeSeparator = args[..<separator].dropFirst(2).contains {
+        $0.hasPrefix("-") && $0 != "--porcelain" && $0 != "--set-upstream" && $0 != "--rebase"
+          && $0 != "--autostash"
+      }
+      XCTAssertFalse(
+        dashLeadingBeforeSeparator, "an operand reached the option side of `--`: \(args)")
+    }
+  }
+
   /// The flag column is `!` for a rejected ref, and only for that.
   func testPushRejectionIsReadFromThePorcelainFlagColumn() {
     let rejected = """
@@ -151,7 +181,8 @@ final class VCSWritingTests: XCTestCase {
     let args = CLIVCSWriter.gitPullArgs(remote: "origin", branch: "main")
     XCTAssertTrue(args.contains("--rebase"))
     XCTAssertTrue(args.contains("--autostash"))
-    XCTAssertEqual(Array(args.suffix(2)), ["origin", "main"])
+    // Fully qualified, not bare — see `testNoRepoDerivedNameLandsInABareArgvSlot`.
+    XCTAssertEqual(Array(args.suffix(2)), ["origin", "refs/heads/main"])
   }
 
   // MARK: - jj argument builders

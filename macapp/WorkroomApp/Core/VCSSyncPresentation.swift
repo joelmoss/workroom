@@ -100,7 +100,11 @@ enum VCSSyncPresenter {
       return VCSSyncPresentation(
         // With no recovery to offer, the title must not read as a button. "Retry" over a failure that
         // cannot be retried is the whole defect this branch fixes.
-        titleVariants: recovery == nil ? [] : (lastAction?.label).map { [$0] } ?? ["Retry"],
+        //
+        // The title names the RECOVERY, not the action that failed. It used to read `lastAction?.label`
+        // while `action:` below was `recovery` — so a rejected push rendered a button labelled "Push"
+        // that performed a Pull. The two must be the same verb or the button lies about what it does.
+        titleVariants: recovery.map { [$0.label] } ?? [],
         subtitle: message, subtitleShort: message,
         symbol: "exclamationmark.triangle.fill",
         action: recovery,
