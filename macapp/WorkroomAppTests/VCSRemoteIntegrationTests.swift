@@ -190,6 +190,26 @@ final class VCSRemoteIntegrationTests: XCTestCase {
     XCTAssertEqual(s.primaryRemote, "origin")
   }
 
+  /// git's half of the same bug: `git remote add` writes config and no `refs/remotes/*`, so a
+  /// ref-derived remotes list reads as "No remote configured" on a repo that can publish.
+  func testGitRemoteAddedButNeverFetchedIsStillARemote() async throws {
+    try requireTool("git")
+    let root = tempDir()
+    sh("git init -q --bare origin.git", in: root)
+    sh("git init -q app", in: root)
+    let project = root + "/app"
+    sh("git commit -q --allow-empty -m initial", in: project)
+    sh("git remote add origin ../origin.git", in: project)
+    XCTAssertTrue(
+      sh("git for-each-ref refs/remotes", in: project).out.isEmpty,
+      "precondition: no remote-tracking ref exists yet")
+
+    let s = try await state(writer("git"), path: project, projectRoot: project)
+    XCTAssertEqual(s.remotes, ["origin"])
+    XCTAssertEqual(s.primaryRemote, "origin")
+    XCTAssertEqual(s.tracking?.gone, true, "no counterpart yet — this is the Publish state")
+  }
+
   /// `refs/remotes/origin/HEAD` is a symref whose short name is the bare remote — without dropping it,
   /// `origin` looks like a branch. Real repos DO have it (verified), so this is not hypothetical.
   func testOriginHeadSymrefIsNotMistakenForABranch() async throws {
@@ -537,6 +557,42 @@ final class VCSRemoteIntegrationTests: XCTestCase {
       FileManager.default.fileExists(atPath: fetchHead),
       "jj fetches with --no-write-fetch-head; reading FETCH_HEAD for jj would report a stale or "
         + "absent time forever")
+  }
+
+  /// **The reported bug.** `jj git remote add origin …` configures a remote and creates NO remote
+  /// bookmark, so a remotes list derived from `bookmark list --all-remotes` was empty and the toolbar
+  /// said "No remote configured" while `jj git remote list` showed origin — on a repo that could push.
+  func testJJRemoteAddedButNeverFetchedIsStillARemote() async throws {
+    try requireTool("git")
+    try requireTool("jj")
+    let root = tempDir()
+    let config = root + "/jjconfig.toml"
+    try "[user]\nname=\"T\"\nemail=\"t@e.com\"\n".write(
+      toFile: config, atomically: true, encoding: .utf8)
+    let env = "JJ_CONFIG=\(config)"
+    sh("git init -q --bare origin.git", in: root)
+    guard sh("\(env) jj git init --colocate app", in: root).exit == 0 else {
+      throw XCTSkip("jj repo could not be created")
+    }
+    let project = root + "/app"
+    sh("echo hi > a.txt && \(env) jj describe -m first", in: project)
+    sh("\(env) jj bookmark create main -r @", in: project)
+    // Configured, never pushed and never fetched — so no `main@origin` row exists anywhere.
+    sh("\(env) jj git remote add origin ../origin.git", in: project)
+    XCTAssertFalse(
+      sh("\(env) jj bookmark list --all-remotes --ignore-working-copy", in: project).out
+        .contains("@origin"),
+      "precondition: no remote bookmark exists, which is what made this invisible")
+
+    let s = try await state(writer("jj"), path: project, projectRoot: project)
+    XCTAssertEqual(
+      s.remotes, ["origin"], "the configured remote must be seen without any ref for it")
+    XCTAssertEqual(s.primaryRemote, "origin")
+    XCTAssertEqual(s.current.kind, .branch, "precondition: `@` carries the `main` bookmark")
+    XCTAssertEqual(
+      s.tracking?.gone, true,
+      "a bookmark with no `@origin` row has never been pushed — that's Publish, not a Fetch that "
+        + "could never create the counterpart")
   }
 
   /// The `git` pseudo-remote a colocated repo exposes is not a remote, and must never appear.

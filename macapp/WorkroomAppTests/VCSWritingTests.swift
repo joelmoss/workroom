@@ -572,6 +572,43 @@ final class VCSWritingTests: XCTestCase {
     XCTAssertNil(CLIVCSWriter.primaryRemote([]))
   }
 
+  // MARK: - remote lists
+
+  func testParseGitRemoteList() {
+    XCTAssertEqual(
+      CLIVCSWriter.parseGitRemoteList("origin\nupstream\n\n"), ["origin", "upstream"])
+    XCTAssertEqual(CLIVCSWriter.parseGitRemoteList(""), [])
+  }
+
+  func testParseJJRemoteList() {
+    XCTAssertEqual(
+      CLIVCSWriter.parseJJRemoteList(
+        "origin https://example.com/x.git\nupstream ../bare.git\n"), ["origin", "upstream"])
+    XCTAssertEqual(CLIVCSWriter.parseJJRemoteList(""), [])
+  }
+
+  /// jj permits a remote name containing spaces, so the split must be on the LAST space — the URL has
+  /// none. Splitting on the first would report a remote called `my`.
+  func testParseJJRemoteListSplitsOnTheLastSpace() {
+    XCTAssertEqual(
+      CLIVCSWriter.parseJJRemoteList("my remote ../bare.git\n"), ["my remote"])
+  }
+
+  /// `git` is jj's colocated pseudo-remote, not a server.
+  func testParseJJRemoteListDropsTheGitPseudoRemote() {
+    XCTAssertEqual(
+      CLIVCSWriter.parseJJRemoteList("git /some/path\norigin ../bare.git\n"), ["origin"])
+  }
+
+  func testMergeRemotesPutsConfiguredFirstAndKeepsRefOnlyNames() {
+    XCTAssertEqual(
+      CLIVCSWriter.mergeRemotes(configured: ["origin"], derived: ["origin", "stale"]),
+      ["origin", "stale"], "a ref-only remote still counts; config order wins")
+    XCTAssertEqual(
+      CLIVCSWriter.mergeRemotes(configured: [], derived: ["origin"]), ["origin"],
+      "a failed remote-list call must degrade to the ref-derived answer, not blank the toolbar")
+  }
+
   // MARK: - pullBranch
 
   func testPullBranchStripsTheRemotePrefix() {
