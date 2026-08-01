@@ -246,6 +246,56 @@ final class VCSSyncPresentationTests: XCTestCase {
     XCTAssertEqual(p.title, "Pushing…")
   }
 
+  // MARK: - [14] a pull that landed conflicts
+
+  /// jj's rebase commits conflicts and exits 0, so a conflicted pull is a SUCCESS the segment still has
+  /// to report. Before this it said nothing: behind returns to 0, so the count tiers rendered "Push
+  /// origin" over a conflicted tree.
+  func testAConflictedPullIsReportedAndOffersNoAction() {
+    let p = VCSSyncPresenter.make(
+      state: state(ahead: 1), hasTarget: true, lastAction: .pull, pullConflicted: true, now: now)
+    XCTAssertEqual(p.subtitle, "Pulled with conflicts")
+    XCTAssertEqual(p.tone, .warning, "an outcome needing work, not a failed operation")
+    XCTAssertNil(p.action, "resolving conflicts is work in an editor; a button can't do it")
+    XCTAssertFalse(p.isEnabled)
+    XCTAssertTrue(p.help.contains("Resolve"), "the remedy belongs in the tooltip; got \(p.help)")
+  }
+
+  /// It must outrank the counts — the whole point — but yield to both an in-flight action (a running
+  /// action's progress beats a previous outcome) and a failure (which has recovery to offer).
+  func testConflictedPullOutranksCountsButYieldsToFlightAndFailure() {
+    let counts = VCSSyncPresenter.make(
+      state: state(ahead: 3), hasTarget: true, pullConflicted: true, now: now)
+    XCTAssertEqual(
+      counts.subtitle, "Pulled with conflicts", "a push offer would hide the conflicts")
+    XCTAssertNil(counts.badge, "no count pill competing with the conflict message")
+
+    let running = VCSSyncPresenter.make(
+      state: state(), hasTarget: true, activity: .running(.fetch), pullConflicted: true, now: now)
+    XCTAssertEqual(running.title, "Fetching…")
+
+    let failed = VCSSyncPresenter.make(
+      state: state(), hasTarget: true, failure: .authRequired("nope"), lastAction: .pull,
+      pullConflicted: true, now: now)
+    XCTAssertEqual(failed.tone, .failure)
+  }
+
+  /// Both flags are required. `lastPullConflicted` alone would attribute a terminal-side merge conflict
+  /// to Workroom's Pull; the live status alone would let the message outlive the conflicts, since the
+  /// flag is cleared only by a new action or a workroom switch.
+  func testPullConflictedNeedsBothOurPullAndAStillConflictedTree() {
+    XCTAssertTrue(
+      VCSSyncPresenter.pullConflicted(lastPullConflicted: true, statusConflicted: true))
+    XCTAssertFalse(
+      VCSSyncPresenter.pullConflicted(lastPullConflicted: true, statusConflicted: false),
+      "resolved in a terminal — the message must clear on the next sweep")
+    XCTAssertFalse(
+      VCSSyncPresenter.pullConflicted(lastPullConflicted: false, statusConflicted: true),
+      "conflicted, but not by our pull — don't claim the credit")
+    XCTAssertFalse(
+      VCSSyncPresenter.pullConflicted(lastPullConflicted: false, statusConflicted: false))
+  }
+
   /// A parked rebase must offer ABORT, never a retry — a retry fails identically until it's cleared.
   func testRebaseInProgressOffersAbortNotRetry() {
     let p = VCSSyncPresenter.make(

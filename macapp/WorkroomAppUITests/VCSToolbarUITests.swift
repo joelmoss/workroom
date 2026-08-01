@@ -285,6 +285,38 @@ class VCSToolbarUITestsBase: XCTestCase {
       "the sync segment reports the in-flight fetch; got \(sync(app).label)")
   }
 
+  /// The end of the conflicted-pull path, and the only tier whose outcome is neither a success nor a
+  /// failure. jj's rebase exits 0 WITH conflicts, so nothing in the failure taxonomy fires — and behind
+  /// returns to 0, so before this the count tiers rendered "Push origin" over a conflicted tree and said
+  /// nothing at all about it.
+  ///
+  /// The whole chain runs here: click → dirty-tree confirmation → fixture writer returns `.ok` → the
+  /// forced status sweep lands → `noteConflictState` → this tier. A unit test can pin the tier but not
+  /// that the flag ever reaches it.
+  func testAPullThatLandsConflictsIsReported() {
+    let app = launchedApp(syncState: "behind", extraArguments: ["-WorkroomUITestConflict", "1"])
+    XCTAssertTrue(waitExists(sync(app)))
+    XCTAssertTrue(waitLabel(sync(app), contains: "Pull"))
+    XCTAssertTrue(button(app, id: "vcs.toolbar.sync").isHittable)
+    button(app, id: "vcs.toolbar.sync").click()
+
+    // The fixture workroom is dirty, so the autostash confirmation comes first. Matched by exact label:
+    // the sync segment itself is spoken "Pull origin with rebase", so this can only be the dialog.
+    //
+    // Matched by an EXACT-label predicate, not `app.buttons["Pull"]`: that subscript matches identifier
+    // as well as label and resolved to several elements, which fails the click with "Multiple matching
+    // elements found". Exactly one button is labelled "Pull" — the sync segment is spoken "Pull origin
+    // with rebase" — so this can only be the dialog's confirm.
+    let confirm = app.buttons.matching(NSPredicate(format: "label == %@", "Pull")).firstMatch
+    XCTAssertTrue(waitExists(confirm, true, 8), "the dirty-tree confirmation should appear")
+    confirm.click()
+
+    XCTAssertTrue(
+      waitLabel(sync(app), contains: "Pulled with conflicts", 15),
+      "a conflicted pull must be reported, not left reading as a push offer; got \(sync(app).label)"
+    )
+  }
+
   /// A failed action must NOT blank the toolbar — the ref is still known, and the repo is unchanged.
   func testAFailedActionKeepsTheBranchVisible() {
     let app = launchedApp(syncState: "ahead", extraArguments: ["-WorkroomUITestSyncFailure", "1"])

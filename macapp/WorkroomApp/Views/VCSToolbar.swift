@@ -91,7 +91,21 @@ struct VCSToolbar: View {
       // `activeAction`, not `inFlight`: the label must describe THIS workroom. `inFlight` is the
       // model-wide lock, so rendering it directly showed "Pushing…" on a workroom that wasn't pushing.
       activity: model.activeAction.map { .running($0) } ?? .idle,
-      failure: model.lastFailure, lastAction: model.lastAction, now: now)
+      failure: model.lastFailure, lastAction: model.lastAction,
+      pullConflicted: pullConflicted, now: now)
+  }
+
+  /// Whether our own pull left conflicts that are still unresolved.
+  ///
+  /// The live half is read from the store rather than the model because the model has no view of
+  /// working status — `noteConflictState` is pushed into it once, after the sweep that follows a pull,
+  /// and is never revised. Reading `workroomStatuses` here means resolving the conflicts in a terminal
+  /// clears the message on the next sweep, instead of it lingering until the next action.
+  private var pullConflicted: Bool {
+    guard let sid = model.target?.sid else { return false }
+    return VCSSyncPresenter.pullConflicted(
+      lastPullConflicted: model.lastPullConflicted,
+      statusConflicted: store.workroomStatuses[sid]?.conflicted == true)
   }
 
   var body: some View {

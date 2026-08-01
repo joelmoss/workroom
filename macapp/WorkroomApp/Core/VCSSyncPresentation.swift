@@ -89,7 +89,8 @@ enum VCSSyncPresenter {
   static func make(
     state: VCSRemoteState?, hasTarget: Bool, toolsUsable: Bool = true,
     activity: VCSSyncActivity = .idle, failure: VCSRemoteFailure? = nil,
-    lastAction: VCSRemoteAction? = nil, pullRebase: Bool = true, now: Date
+    lastAction: VCSRemoteAction? = nil, pullRebase: Bool = true, pullConflicted: Bool = false,
+    now: Date
   ) -> VCSSyncPresentation {
     // [13] A failure outranks everything: it's the only state with something to recover from, and
     // burying it under a count would leave the user with no idea the action didn't happen.
@@ -126,6 +127,29 @@ enum VCSSyncPresenter {
         symbol: nil, badge: badge(ahead: state?.tracking?.ahead),
         action: nil, isEnabled: false, help: "\(title) \(subtitle)",
         accessibility: "\(title) \(subtitle)")
+    }
+
+    // [14] The pull we ran landed conflicts.
+    //
+    // BELOW the in-flight tier, deliberately: a running action's progress outranks a previous action's
+    // outcome. ABOVE the counts, equally deliberately — a conflicted pull leaves behind at 0, so the
+    // count tiers would render "Push origin" and say nothing at all about the tree being conflicted,
+    // which is both the more urgent fact and a prerequisite for that push making sense.
+    //
+    // Reached only by jj in practice: git's rebase stops on a conflict and exits non-zero, so a
+    // conflicted git pull is already a `.rebaseInProgress` failure offering Abort. jj's rebase commits
+    // the conflict and exits 0, which is why the outcome had to be read from working status at all.
+    //
+    // No action offered, for `.locked`'s reason: resolving conflicts is work in an editor, and a button
+    // that can't do it is a promise broken on click.
+    if pullConflicted {
+      let remedy =
+        "The rebase completed with conflicts. Resolve them in this workroom — the Changes list marks "
+        + "each conflicted file."
+      return VCSSyncPresentation(
+        subtitle: "Pulled with conflicts", subtitleShort: "Conflicts",
+        symbol: "exclamationmark.triangle.fill", action: nil, isEnabled: false,
+        tone: .warning, help: remedy, accessibility: "Pulled with conflicts. \(remedy)")
     }
 
     // [1] Nothing selected.
@@ -244,6 +268,17 @@ enum VCSSyncPresenter {
     case .locked(let file): return file == nil ? lastAction : nil
     default: return lastAction
     }
+  }
+
+  /// Whether the pull **we** ran has conflicts still outstanding — the `[14]` tier's condition.
+  ///
+  /// Both halves are load-bearing. `lastPullConflicted` says the conflicts came from Workroom's own
+  /// pull: a workroom can be conflicted from a merge the user ran in a terminal, and attributing that to
+  /// the Pull button would be a lie. The live status says they are still there: the flag is cleared only
+  /// by a new action or a workroom switch, so on its own the message would outlive the conflicts and go
+  /// on calling a resolved tree broken.
+  static func pullConflicted(lastPullConflicted: Bool, statusConflicted: Bool) -> Bool {
+    lastPullConflicted && statusConflicted
   }
 
   /// One-line, actionable copy per failure. The raw stderr is legible for some cases and baffling for
