@@ -172,7 +172,10 @@ final class AppStore: ObservableObject {
       // mirroring HistoryPanel's own guard) so the list clears + shows its loader immediately,
       // instead of lingering on the previous workroom's commits until the panel's `.task` catches
       // up. `focus` is idempotent, so the panel's later re-focus to the same root no-ops.
-      if selectedTargetID != oldValue { focusHistoryIfShown() }
+      if selectedTargetID != oldValue {
+        focusHistoryIfShown()
+        focusRemoteStateIfShown()
+      }
     }
   }
 
@@ -338,6 +341,58 @@ final class AppStore: ObservableObject {
     guard inspectorIsVisible, historySectionShown else { return }
     commitHistory.focus(inspectorTarget.map { URL(fileURLWithPath: $0.path) })
   }
+
+  /// Whether the VCS toolbar is on screen. It sits above the section stack rather than inside a
+  /// section, so only the activity section matters — not a collapse flag.
+  var remoteToolbarShown: Bool { activeInspectorSection == .changes }
+
+  /// Point the toolbar's model at the inspector's active target, but only when it's genuinely visible.
+  ///
+  /// Same gate, and the same reason, as `focusHistoryIfShown`: a `focus` here is not a cheap pointer
+  /// move but two or three `git`/`jj` processes, so without this every selection change would read a
+  /// repo for a toolbar nobody can see.
+  private func focusRemoteStateIfShown() {
+    guard inspectorIsVisible, remoteToolbarShown else {
+      remoteState.focus(nil)
+      return
+    }
+    remoteState.focus(remoteTarget())
+  }
+
+  /// The toolbar's target, resolved from the inspector's active target. `nil` when nothing statusable
+  /// is selected, or when the target's project has gone away.
+  ///
+  /// A `.project` row is deliberately not statusable — it's the collapsible header, not a working copy —
+  /// so it resolves to nil and the toolbar shows its "no workroom selected" state.
+  func remoteTarget() -> RemoteStateModel.Target? {
+    guard let sid = inspectorTargetID else { return nil }
+    let projectPath: String
+    let path: String
+    switch sid {
+    case .project:
+      return nil
+    case .root(let p):
+      projectPath = p
+      path = p
+    case .workroom(let p, let name):
+      guard let project = projects.first(where: { $0.path == p }),
+        let workroom = project.workrooms.first(where: { $0.name == name })
+      else { return nil }
+      projectPath = p
+      path = workroom.path
+    }
+    guard let project = projects.first(where: { $0.path == projectPath }) else { return nil }
+    return RemoteStateModel.Target(
+      sid: sid, path: path, vcs: project.vcs, projectRoot: project.path)
+  }
+
+  /// App-refocus safety net, mirroring `refreshHistoryIfActive`: a `git fetch` or a branch change made
+  /// in another app while Workroom was backgrounded won't have reached the metadata watcher.
+  func refreshRemoteStateIfActive() {
+    guard inspectorIsVisible, remoteToolbarShown else { return }
+    remoteState.refresh(force: true)
+    remoteState.autoFetchIfDue()
+  }
   /// Relative heights of the inspector panes (issue #24), ordered as `InspectorSectionKind.allCases`.
   /// Equal == the default equal-sections layout; updated when the user drags a divider (via
   /// `updateInspectorSizeWeights`) and persisted globally, like the collapse flags above. Not set
@@ -359,6 +414,7 @@ final class AppStore: ObservableObject {
         // workroom") placeholder until the panel's `.task` catches up. `focus` is idempotent (no-op if
         // already there).
         focusHistoryIfShown()
+        focusRemoteStateIfShown()
       }
     }
   }
@@ -405,6 +461,9 @@ final class AppStore: ObservableObject {
   /// in `init` (not inline) so tests can inject a stub and assert the live-refresh triggers fire —
   /// see the `commitHistory:` init parameter (a `@MainActor` type can't be a nonisolated default arg).
   let commitHistory: HistoryModel
+  /// Store-owned state for the VCS toolbar (branch, divergence, last fetch, fetch/push/pull). Third
+  /// sibling to `fileTree` and `commitHistory`.
+  let remoteState: RemoteStateModel
   /// Shared in-file find state for the read-only file viewer (⌘F in a file pane). Only the focused
   /// `PlainFileViewer` feeds + shows it; routed to from `startFindInFocusedPane`.
   let fileFind = FileFindModel()
@@ -507,6 +566,92 @@ final class AppStore: ObservableObject {
   /// `UNUserNotificationCenter`.
   let systemNotifier: SystemNotifying = SystemNotifier()
 
+  /// Branch/bookmark names from the VCS toolbar's remote-state read, keyed by `SidebarID`.
+  ///
+  /// Written by `RemoteStateModel` (the only writer) and read by `branchName(for:)`, which every
+  /// branch-showing surface goes through. This is the "one shared cache" half of unifying those
+  /// surfaces: the resolver publishes here, nobody else calls it, and no surface calls a provider.
+  @Published private(set) var resolvedBranchNames: [SidebarID: String] = [:]
+
+  /// Record (or clear) the resolver's branch answer for a target. Called only by `RemoteStateModel`.
+  func setResolvedBranchName(_ name: String?, for sid: SidebarID) {
+    if let name, !name.isEmpty {
+      guard resolvedBranchNames[sid] != name else { return }
+      resolvedBranchNames[sid] = name
+    } else {
+      guard resolvedBranchNames[sid] != nil else { return }
+      resolvedBranchNames.removeValue(forKey: sid)
+    }
+  }
+
+  /// Whether the `git`/`jj` on PATH are new enough for the VCS remote actions (see
+  /// `VCSToolVersions`). `nil` until the background probe lands — treated as usable, so a slow probe
+  /// never disables a working feature.
+  @Published private(set) var vcsToolReport: VCSToolVersions.Report?
+  /// Tool warnings the user has dismissed this session, by tool name. The condition is standing (an
+  /// old binary doesn't fix itself), so the warning would otherwise reappear on every reload.
+  @Published private(set) var dismissedToolWarnings: Set<String> = []
+
+  /// Whether remote actions are permitted for a project of this VCS. Optimistic before the probe
+  /// lands and for `.unknown` — never cry wolf.
+  func vcsAllowsRemoteActions(vcs: String) -> Bool {
+    vcsToolReport?.allowsRemoteActions(vcs: vcs) ?? true
+  }
+
+  /// Undismissed tool warnings, rendered as toasts by `ToastStack`. jj is only ever mentioned when a
+  /// jj project is actually registered.
+  var vcsToolWarnings: [VCSToolVersions.ToolWarning] {
+    guard let report = vcsToolReport else { return [] }
+    return report.warnings(hasJJProject: projects.contains { $0.vcs == "jj" })
+      .filter { !dismissedToolWarnings.contains($0.tool) }
+  }
+
+  func dismissToolWarning(tool: String) { dismissedToolWarnings.insert(tool) }
+
+  /// Run a VCS remote action for the toolbar's current target, supplying the two facts only the store
+  /// knows.
+  ///
+  /// `setUpstream` for git: a workroom is `git worktree add -b`, so it has no counterpart on the remote
+  /// until its first push — that first push is the one that should establish tracking, and later ones
+  /// must not keep rewriting `branch.<name>.remote`.
+  ///
+  /// `anonymousRevision` for jj: `jj workspace add --name` creates no bookmark, so `@` is unbookmarked
+  /// and the push goes through jj's `--change` path. Pushing a bare `@` fails when the working copy is
+  /// empty AND undescribed — exactly the state a fresh workroom sits in — so the revision falls back to
+  /// its parent. The working-copy facts come from the status sweep, at no extra cost.
+  func performRemoteAction(_ action: VCSRemoteAction) {
+    guard let target = remoteState.target else { return }
+    guard vcsAllowsRemoteActions(vcs: target.vcs) else { return }
+    let workingCopy = workroomStatuses[target.sid]?.jjWorkingCopy
+    let revision = CLIVCSWriter.jjPushRevision(
+      hasChanges: !(workingCopy?.files.isEmpty ?? true),
+      hasDescription: !((workingCopy?.description ?? "").isEmpty))
+    remoteState.perform(
+      action, setUpstream: remoteState.snapshot?.tracking?.gone == true,
+      anonymousRevision: revision)
+  }
+
+  /// Probe the tool versions, sharing one process-wide probe across windows.
+  ///
+  /// Called when projects land (so "is any project jj?" is answerable) rather than from `init`. Inert
+  /// in fixture mode: a UI test's PATH is whatever the runner inherited, and a version toast would
+  /// overlay the surfaces under test.
+  ///
+  /// Also inert under XCTest — `apply` runs in dozens of unit tests, and each would otherwise spawn a
+  /// real `git --version` and mutate the process-wide cache. Same guard, and the same reason, as the
+  /// `ShellEnvironment.refresh()` skip in `WorkroomApp.init`. `VCSToolVersionsTests` drives the probe
+  /// directly with a stub runner.
+  func refreshVCSToolReport() {
+    guard !UITestFixture.isActive,
+      ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
+    else { return }
+    let probeJJ = projects.contains { $0.vcs == "jj" }
+    Task { [weak self] in
+      let report = await VCSToolVersionCache.shared.report(probeJJ: probeJJ)
+      self?.vcsToolReport = report
+    }
+  }
+
   /// Browser-style back/forward history of visited `(target, tab)` locations (issue #26).
   /// `@Published` so toolbar/menu enablement (`canGoBack`/`canGoForward`) re-evaluates when it
   /// changes. Session-only — deliberately not persisted across launches. `private(set)` so unit
@@ -565,7 +710,7 @@ final class AppStore: ObservableObject {
   /// recording/navigation paths. `init` does no CLI work (only `bootstrap()`/`load()` do).
   init(
     projectStore: ProjectStore? = nil, cli: WorkroomCLIProtocol? = nil,
-    commitHistory: HistoryModel? = nil
+    commitHistory: HistoryModel? = nil, remoteState: RemoteStateModel? = nil
   ) {
     // Default to a fresh, isolated store (so `AppStore()` in tests never touches the singleton);
     // production passes `.shared`. Constructed here in the main-actor init body, not as a default
@@ -580,10 +725,29 @@ final class AppStore: ObservableObject {
       ?? (UITestFixture.isActive
         ? HistoryModel(resolve: { _ in UITestFixture.vcsProvider })
         : HistoryModel())
+    // Same seam as `commitHistory` above: fixture mode serves seeded state and records actions instead
+    // of running git/jj, since the fixture's paths aren't real repos. Auto-fetch is disabled outright —
+    // an automatic action would race whatever the test is asserting.
+    self.remoteState =
+      remoteState
+      ?? (UITestFixture.isActive
+        ? RemoteStateModel(
+          makeWriter: { _ in FixtureVCSWriter() }, debounce: 0, ttl: 0,
+          autoFetchInterval: .greatestFiniteMagnitude)
+        : RemoteStateModel())
     // Re-publish the shared project store's changes so views and menus observing THIS store
     // re-render when the proxied `projects` / `rootRefs` / `workroomStatuses` / … change (issue #70).
     projectStoreObservation = store.objectWillChange.sink { [weak self] _ in
       self?.objectWillChange.send()
+    }
+    // Wired post-init (the `workroomFileWatcher` idiom) so `RemoteStateModel` needs no `AppStore` to be
+    // unit-tested. `onBranchResolved` makes this model the single writer of the shared branch cache
+    // every branch-showing surface reads through `branchName(for:)`.
+    self.remoteState.onBranchResolved = { [weak self] sid, name in
+      self?.setResolvedBranchName(name, for: sid)
+    }
+    self.remoteState.onDidMutate = { [weak self] action in
+      self?.handleRemoteMutation(action)
     }
     pendingRestoreSelection = Defaults[.sidebarSelection]
     // Route each terminal's activity (OSC/bell) through the notification spine, gated on
@@ -792,6 +956,7 @@ final class AppStore: ObservableObject {
     // `NSHostingController`-hosted inspector, so History lagged until an app refocus (`reloadIfStale`)
     // forced a re-render. `focus` is idempotent (no-op when the root is unchanged).
     focusHistoryIfShown()
+    focusRemoteStateIfShown()
   }
 
   /// Whether there's a usable editor and a valid selected target to open — drives the ⌘O command and
@@ -1233,24 +1398,49 @@ final class AppStore: ObservableObject {
   /// and the project root's `RootRef` — so it adds no new VCS calls. Nil until those resolve, or when
   /// no branch is resolvable (the status bar then just omits the segment).
   func branchLabel(for target: TerminalTarget) -> String? {
+    guard let sid = sidebarID(forTarget: target) else { return nil }
+    return branchName(for: sid)
+  }
+
+  /// The `SidebarID` a terminal target belongs to, or nil when the target no longer resolves.
+  func sidebarID(forTarget target: TerminalTarget) -> SidebarID? {
     guard let project = project(forTarget: target) else { return nil }
-    let sid: SidebarID
     if TerminalTarget.rootID(project: project.path) == target.id {
-      sid = .root(project: project.path)
-    } else if let workroom = project.workrooms.first(where: {
+      return .root(project: project.path)
+    }
+    if let workroom = project.workrooms.first(where: {
       TerminalTarget.workroomID(project: project.path, name: $0.name) == target.id
     }) {
-      sid = .workroom(project: project.path, name: workroom.name)
-    } else {
-      return nil
+      return .workroom(project: project.path, name: workroom.name)
     }
+    return nil
+  }
+
+  /// **The** answer to "what branch/bookmark is this?", for every surface that shows one: the status
+  /// bar (`branchLabel(for:)`), the Changes panel header, the sidebar's project root row, and the VCS
+  /// toolbar. Four surfaces previously each derived it, which meant they could disagree on screen.
+  ///
+  /// **Reads only caches — never calls a VCS provider, and must stay that way.** Every source here is
+  /// already resolved by something else on its own schedule. This is load-bearing, not incidental: the
+  /// sidebar and status bar render this for every row, and the recorded pitfall
+  /// `history-eager-focus-is-a-full-vcs-read` is exactly what happens when a per-row read turns out to
+  /// open a repo. `BranchLabelTests` pins it with a counting stub that fails if a provider is touched.
+  ///
+  /// Source order, freshest first:
+  /// 1. `resolvedBranchNames` — the VCS toolbar's remote-state read, which is force-refreshed the
+  ///    moment anything changes it, so it leads whenever it has an answer.
+  /// 2. `branchForCI` from the per-workroom status sweep (15s TTL).
+  /// 3. A jj workroom's `@` bookmark, when no CI branch resolved.
+  /// 4. The project root's `RootRef`, resolved by `BranchResolver`.
+  func branchName(for sid: SidebarID) -> String? {
+    if let resolved = resolvedBranchNames[sid], !resolved.isEmpty { return resolved }
     let status = workroomStatuses[sid]
     if let branch = status?.branchForCI, !branch.isEmpty { return branch }
     // jj: the working copy's own bookmark (`@`) is the label when no CI branch is resolved — matches
     // what the Changes panel shows for a jj workroom.
     if let ref = status?.jjWorkingCopy?.refs.first, !ref.isEmpty { return ref }
-    if case .root = sid {
-      let label = RootPresentation.make(rootRefs[project.path] ?? .unresolved).label
+    if case .root(let project) = sid {
+      let label = RootPresentation.make(rootRefs[project] ?? .unresolved).label
       return label.isEmpty ? nil : label
     }
     return nil
@@ -2180,6 +2370,10 @@ final class AppStore: ObservableObject {
     // resurrect a just-deleted workroom. Cleared from `deletingWorkrooms` when the teardown ends.
     let fresh = applyingDeletionTombstones(sorted)
     projects = fresh
+    // Tool-version floor (see `VCSToolVersions`). Here rather than in `init` because whether to probe
+    // `jj` at all depends on the project list, which only exists now. Single-flighted process-wide, so
+    // repeat calls on later reloads are free once it has landed.
+    refreshVCSToolReport()
     // First load after launch: restore last session's selection (issue #14) before it's
     // validated below. Resolved against the live projects, so a since-deleted target — or a
     // restore that loses the race to a user click — resolves to nil and falls through.
@@ -2362,6 +2556,15 @@ final class AppStore: ObservableObject {
       inspectorTargetID?.belongsToProject(p.path) == true
     {
       commitHistory.refresh()
+    }
+    // The VCS toolbar keys on the same writes, and for exactly the same reason: a fetch lands
+    // `FETCH_HEAD` + `refs/remotes/*`, a push moves a ref, a commit moves the branch tip — all inside
+    // this watched dir, for the project AND every workroom of it. Forced, because the watcher has
+    // already coalesced the burst and the toolbar's own TTL would otherwise swallow the update.
+    if inspectorIsVisible, remoteToolbarShown,
+      inspectorTargetID?.belongsToProject(p.path) == true
+    {
+      remoteState.refresh(force: true)
     }
     let resolver = self.resolver
     rootBranchRefreshTasks[projectID]?.cancel()
@@ -3656,6 +3859,28 @@ final class AppStore: ObservableObject {
   /// commit made in an external terminal while the app was backgrounded (the live per-project metadata
   /// watcher may have been coalesced/idle across deactivation). Same visibility gate as the live
   /// trigger; cheap + cancel-and-replace. Called from `RootView`'s `didBecomeActive` hook.
+  /// After a successful fetch/push/pull: refresh everything downstream of it.
+  ///
+  /// The metadata watcher would get here on its own, but its coalesce window is ~1s and these surfaces
+  /// should move the moment the action lands.
+  ///
+  /// The status refresh is also how a conflicted jj pull is detected: jj records conflicts inside
+  /// commits and its rebase exits 0, so the exit code can't tell — and the writer cannot re-read the
+  /// working copy itself, because that would re-enter `JJSnapshotGate` for the same project root, which
+  /// that type documents as a deadlock. So the read happens HERE, after the gate has released.
+  private func handleRemoteMutation(_ action: VCSRemoteAction) {
+    refreshWorkroomStatuses(force: true)
+    if historySectionShown { commitHistory.refresh() }
+    guard action == .pull, let sid = remoteState.target?.sid else { return }
+    // The forced sweep above is async; read the conflict flag once it has landed.
+    let sweep = statusSweepTask
+    Task { [weak self] in
+      await sweep?.value
+      guard let self else { return }
+      self.remoteState.noteConflictState(self.workroomStatuses[sid]?.conflicted == true)
+    }
+  }
+
   func refreshHistoryIfActive() {
     if inspectorIsVisible, historySectionShown { commitHistory.refresh() }
   }

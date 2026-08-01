@@ -82,4 +82,96 @@ final class StatusCommandRunnerTests: XCTestCase {
       "git", ["status"], in: "/no/such/dir-\(UUID().uuidString)", timeout: 5)
     XCTAssertEqual(r.exitCode, CommandResult.commandNotFound)
   }
+
+  // MARK: stdin
+
+  /// A child must never inherit the app's stdin. Unpinned it does, and under `make app-run` that is a
+  /// real terminal — so a prompting `git`/`ssh` could block on a tty the Finder-launched build won't
+  /// have. Pinned to /dev/null, any read is an immediate EOF. `read` returns non-zero at EOF, so the
+  /// assertion is that this returns AT ALL rather than hitting the timeout.
+  func testStdinIsNullDeviceSoAPromptingChildGetsEOF() async {
+    let r = await runner.run(
+      "sh", ["-c", "read x; printf 'got=[%s]' \"$x\""], in: tmp, timeout: 5)
+    XCTAssertFalse(r.timedOut, "a child reading stdin must hit EOF, not block until the timeout")
+    XCTAssertEqual(r.stdout, "got=[]")
+  }
+
+  // MARK: network environment (pure)
+
+  func testNetworkEnvironmentForwardsAuthVarsFromTheProbe() {
+    let env = StatusCommandRunner.networkEnvironment(
+      base: ["PATH": "/usr/bin"],
+      probed: [
+        "SSH_AUTH_SOCK": "/tmp/agent.sock", "SSH_AGENT_PID": "42",
+        "GIT_CONFIG_GLOBAL": "/home/me/.gitconfig", "XDG_CONFIG_HOME": "/home/me/.config",
+        "IRRELEVANT": "nope",
+      ])
+    XCTAssertEqual(env["SSH_AUTH_SOCK"], "/tmp/agent.sock")
+    XCTAssertEqual(env["SSH_AGENT_PID"], "42")
+    XCTAssertEqual(env["GIT_CONFIG_GLOBAL"], "/home/me/.gitconfig")
+    XCTAssertEqual(env["XDG_CONFIG_HOME"], "/home/me/.config")
+    XCTAssertNil(env["IRRELEVANT"], "only the allowlist is forwarded, not the whole probed env")
+  }
+
+  func testNetworkEnvironmentPinsBatchModeAndAskpassRequire() {
+    let env = StatusCommandRunner.networkEnvironment(base: [:], probed: [:])
+    XCTAssertEqual(env["GIT_SSH_COMMAND"], "ssh -o BatchMode=yes")
+    XCTAssertEqual(env["SSH_ASKPASS_REQUIRE"], "never")
+  }
+
+  /// A user's own `GIT_SSH_COMMAND` commonly carries `-i <key>` or a proxy command. It must survive.
+  func testNetworkEnvironmentAppendsToAUserGitSshCommand() {
+    let env = StatusCommandRunner.networkEnvironment(
+      base: [:], probed: ["GIT_SSH_COMMAND": "ssh -i /home/me/.ssh/work"])
+    XCTAssertEqual(env["GIT_SSH_COMMAND"], "ssh -i /home/me/.ssh/work -o BatchMode=yes")
+  }
+
+  /// If the app was launched from a shell that already had the variable, that value is at least as
+  /// current as the probe's — the inherited one wins.
+  func testNetworkEnvironmentPrefersInheritedOverProbed() {
+    let env = StatusCommandRunner.networkEnvironment(
+      base: ["SSH_AUTH_SOCK": "/inherited.sock"], probed: ["SSH_AUTH_SOCK": "/probed.sock"])
+    XCTAssertEqual(env["SSH_AUTH_SOCK"], "/inherited.sock")
+  }
+
+  func testNetworkEnvironmentClearsAskpassAndDisplay() {
+    let env = StatusCommandRunner.networkEnvironment(
+      base: ["SSH_ASKPASS": "/usr/bin/gui-prompt", "DISPLAY": ":0"], probed: [:])
+    XCTAssertNil(env["SSH_ASKPASS"], "ssh must not find a graphical prompt helper")
+    XCTAssertNil(env["DISPLAY"])
+  }
+
+  func testNetworkEnvironmentIgnoresEmptyProbedValues() {
+    let env = StatusCommandRunner.networkEnvironment(base: [:], probed: ["SSH_AUTH_SOCK": ""])
+    XCTAssertNil(env["SSH_AUTH_SOCK"], "an empty value is worse than absent — it looks configured")
+  }
+
+  // MARK: network environment (reaches the child)
+
+  func testRunNetworkSetsBatchModeInTheChild() async {
+    let r = await runner.runNetwork(
+      "sh", ["-c", "printf '%s|%s' \"$GIT_SSH_COMMAND\" \"$SSH_ASKPASS_REQUIRE\""],
+      in: tmp, timeout: 5)
+    XCTAssertTrue(r.ok)
+    XCTAssertTrue(r.stdout.hasSuffix("|never"), "got \(r.stdout)")
+    XCTAssertTrue(r.stdout.contains("-o BatchMode=yes"), "got \(r.stdout)")
+  }
+
+  /// The hardening is scoped to network ops: a plain status read keeps the environment it always had,
+  /// so the automatic sweep's behaviour is unchanged by this feature.
+  ///
+  /// Asserted differentially rather than against a literal empty string — `run` inherits the process
+  /// environment, so a machine that legitimately exports `GIT_SSH_COMMAND` would fail an absolute
+  /// assertion. The invariant that actually matters is that only `runNetwork` adds the BatchMode flag.
+  func testOnlyRunNetworkAddsBatchMode() async {
+    let script = "printf '%s' \"$GIT_SSH_COMMAND\""
+    let plain = await runner.run("sh", ["-c", script], in: tmp, timeout: 5)
+    let network = await runner.runNetwork("sh", ["-c", script], in: tmp, timeout: 5)
+    XCTAssertTrue(plain.ok)
+    XCTAssertTrue(network.ok)
+    XCTAssertFalse(
+      plain.stdout.contains("-o BatchMode=yes"), "plain run must not be hardened: \(plain.stdout)")
+    let expectedBase = plain.stdout.isEmpty ? "ssh" : plain.stdout
+    XCTAssertEqual(network.stdout, "\(expectedBase) -o BatchMode=yes")
+  }
 }

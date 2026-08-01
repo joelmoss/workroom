@@ -24,6 +24,29 @@ struct CommandResult: Sendable, Equatable {
 protocol StatusCommandRunning: Sendable {
   func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
     async -> CommandResult
+
+  /// Like `run`, but for a command that will touch the **network** and therefore may want to
+  /// authenticate — `git fetch/push/pull`, `jj git fetch/push`.
+  ///
+  /// A read like `git status` can never prompt, so it wants the minimal, predictable environment
+  /// `run` gives it. A push can: it may need an SSH agent the GUI environment can't see, and it may
+  /// try to ask for a passphrase or a host-key confirmation with nowhere to ask. See
+  /// `StatusCommandRunner.networkEnvironment` for what changes and why.
+  func runNetwork(
+    _ executable: String, _ args: [String], in directory: String,
+    timeout: TimeInterval
+  ) async -> CommandResult
+}
+
+extension StatusCommandRunning {
+  /// Test doubles never reach a real network, so the distinction is meaningless for them — forward
+  /// and let them stay two-line stubs. Only `StatusCommandRunner` overrides this.
+  func runNetwork(
+    _ executable: String, _ args: [String], in directory: String,
+    timeout: TimeInterval
+  ) async -> CommandResult {
+    await run(executable, args, in: directory, timeout: timeout)
+  }
 }
 
 /// Default `StatusCommandRunning`: spawns via `/usr/bin/env` (augmented PATH finds Homebrew
@@ -39,9 +62,72 @@ protocol StatusCommandRunning: Sendable {
 struct StatusCommandRunner: StatusCommandRunning, Sendable {
   var maxBytes: Int = 4 * 1024 * 1024
 
+  /// Auth-relevant variables forwarded from the user's shell for network commands only.
+  ///
+  /// A Finder- or Dock-launched `.app` inherits launchd's environment, not the user's shell, and this
+  /// runner otherwise overrides only PATH. That was harmless while it ran `git status` and `gh` (which
+  /// carries its own token), but it breaks authentication outright: `SSH_AUTH_SOCK` is how a process
+  /// finds an SSH agent, and for anyone using 1Password's agent, gpg-agent, or a custom socket it is
+  /// set in `.zshrc` and nowhere else. Without it their `git push` cannot reach the agent, and the
+  /// error would tell them to configure a credential helper they already have.
+  ///
+  /// Deliberately an allowlist, not the whole probed environment (which `ShellEnvironment.environment()`
+  /// hands to setup/teardown scripts): network ops now run automatically on inspector focus, and a
+  /// wholesale transplant would put every variable in the user's shell — secrets included — into a
+  /// child on an automatic path.
+  static let forwardedAuthKeys = [
+    "SSH_AUTH_SOCK", "SSH_AGENT_PID", "GIT_SSH_COMMAND", "GIT_CONFIG_GLOBAL", "XDG_CONFIG_HOME",
+  ]
+
+  /// Variables removed for network commands so `ssh` cannot find a graphical prompt helper.
+  static let networkClearedKeys = ["SSH_ASKPASS", "DISPLAY"]
+
+  /// The environment for a network command: `base` plus forwarded auth vars, with ssh pinned to
+  /// fail fast instead of asking a human.
+  ///
+  /// `GIT_TERMINAL_PROMPT=0` (set by `run`) governs **git's own** credential prompts and says nothing
+  /// to `ssh`. So an SSH remote with a passphrase-protected key and no agent, or a host whose key
+  /// isn't in `known_hosts`, would otherwise stall until the timeout — 120s for fetch/push, 300s for
+  /// pull. `BatchMode=yes` turns both into an immediate, classifiable failure, and
+  /// `SSH_ASKPASS_REQUIRE=never` stops ssh reaching for a GUI helper (OpenSSH 8.4+; macOS ships 10.x).
+  ///
+  /// A user's own `GIT_SSH_COMMAND` is preserved and appended to rather than replaced — it commonly
+  /// carries `-i <key>` or a proxy command that must survive.
+  ///
+  /// Pure and static so the whole policy is unit-testable without spawning anything.
+  static func networkEnvironment(base: [String: String], probed: [String: String])
+    -> [String: String]
+  {
+    var env = base
+    for key in forwardedAuthKeys {
+      // The inherited environment wins: if it's already set, the app was launched from a shell that
+      // had it, and that value is at least as current as the probe's.
+      if env[key] == nil, let value = probed[key], !value.isEmpty { env[key] = value }
+    }
+    for key in networkClearedKeys { env.removeValue(forKey: key) }
+    let ssh = env["GIT_SSH_COMMAND"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+    env["GIT_SSH_COMMAND"] = (ssh?.isEmpty == false ? ssh! : "ssh") + " -o BatchMode=yes"
+    env["SSH_ASKPASS_REQUIRE"] = "never"
+    return env
+  }
+
   func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
     async -> CommandResult
   {
+    await run(executable, args, in: directory, timeout: timeout, network: false)
+  }
+
+  func runNetwork(
+    _ executable: String, _ args: [String], in directory: String,
+    timeout: TimeInterval
+  ) async -> CommandResult {
+    await run(executable, args, in: directory, timeout: timeout, network: true)
+  }
+
+  private func run(
+    _ executable: String, _ args: [String], in directory: String,
+    timeout: TimeInterval, network: Bool
+  ) async -> CommandResult {
     let proc = Process()
     proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
     proc.arguments = [executable] + args
@@ -55,12 +141,19 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
     // on load/focus/selection. `git diff` would otherwise run an inherited external-diff program;
     // unset it so only the explicit `--no-ext-diff` flag (see WorkroomStatusResolver) governs diffs.
     env.removeValue(forKey: "GIT_EXTERNAL_DIFF")
+    if network { env = Self.networkEnvironment(base: env, probed: ShellEnvironment.environment()) }
     proc.environment = env
 
     let outPipe = Pipe()
     let errPipe = Pipe()
     proc.standardOutput = outPipe
     proc.standardError = errPipe
+    // Never let a child read the app's stdin. Unset, it INHERITS ours — which under `make app-run`
+    // (or `Scripts/run.sh`) is a real terminal, so a prompting `ssh` or `git` could sit waiting on a
+    // tty that the same binary won't have when launched from Finder. Pinning it makes the two launch
+    // contexts behave identically and turns any prompt into an immediate EOF. `ShellEnvironment.probe`
+    // already does this for the same reason.
+    proc.standardInput = FileHandle.nullDevice
 
     // `proc` is shared with the @Sendable cancellation handler; box it so the non-Sendable Process
     // can cross that boundary (mirrors the @unchecked Sendable helpers below).

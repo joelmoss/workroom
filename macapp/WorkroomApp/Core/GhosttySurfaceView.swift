@@ -967,17 +967,31 @@ final class GhosttySurfaceView: NSView {
   /// only where Ghostty's behavior would diverge from Workroom's). ⌘1-9 are also caught by the
   /// AppDelegate monitor; included here defensively. ⌘C/⌘V/etc. fall through to libghostty.
   private func isAppShortcut(_ event: NSEvent) -> Bool {
-    let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
+    Self.isAppShortcut(
+      modifierFlags: event.modifierFlags, keyCode: event.keyCode,
+      charactersIgnoringModifiers: event.charactersIgnoringModifiers)
+  }
+
+  /// The reservation decision, as a pure function of the three things an `NSEvent` contributes.
+  ///
+  /// Split out of the instance method so it can be unit-tested without fabricating an `NSEvent`. This
+  /// list is load-bearing and easy to forget: a menu shortcut that ISN'T here reaches the terminal, and
+  /// a TUI in an enhanced keyboard mode (Claude/Codex) consumes it, so the menu's key equivalent never
+  /// fires. That has shipped as a bug twice (most recently issue #128), which is why it now has tests.
+  static func isAppShortcut(
+    modifierFlags: NSEvent.ModifierFlags, keyCode: UInt16, charactersIgnoringModifiers: String?
+  ) -> Bool {
+    let flags = modifierFlags.intersection([.command, .shift, .option, .control])
     // The arrow-key tab-navigation menu shortcuts, matched by keyCode (charactersIgnoringModifiers
     // returns a function-key sentinel, not a letter, so the char checks below can't see them):
     // ⌥⌘←/→ = prev/next terminal tab; ⇧⌥⌘←/→ = prev/next workroom tab (issue #29). Reserved like the
     // Run keys so the menu key-equivalent wins over a TUI in an enhanced keyboard mode (Claude/Codex).
     // ⌃⌘arrows (split-pane focus, issue #3) is monitor-only with no menu item, so it's deliberately
     // NOT reserved — it passes through to the terminal at a split's edge, exactly as it did on ⌥⌘arrows.
-    if event.keyCode == 123 || event.keyCode == 124 {  // ← / →
+    if keyCode == 123 || keyCode == 124 {  // ← / →
       if flags == [.command, .option] || flags == [.command, .option, .shift] { return true }
     }
-    guard let chars = event.charactersIgnoringModifiers, let ch = chars.first else { return false }
+    guard let chars = charactersIgnoringModifiers, let ch = chars.first else { return false }
     let key = Character(ch.lowercased())
     // Menu commands that pair Command with Shift or Option fail the command-only guard below, so
     // reserve them explicitly. Without this they reach the terminal, and a TUI in an enhanced
@@ -986,8 +1000,15 @@ final class GhosttySurfaceView: NSView {
     // toggle (issue #57); ⇧⌘N = Next Notification; ⇧⌘R = Stop run; ⌥⌘R = Restart run (issue #7).
     // (⌥⌘N was the Notifications inspector toggle; removed with issue #118, so it's no longer
     // reserved and passes through to the terminal.)
+    // ⇧⌘P = Push (Source Control) joins the list for the same reason as the rest.
     if flags == [.command, .shift] {
       return key == "d" || key == "g" || key == "k" || key == "l" || key == "n" || key == "r"
+        || key == "p"
+    }
+    // ⌥⇧⌘F = Fetch, ⌥⇧⌘P = Pull with Rebase (Source Control). Three-modifier combinations fail every
+    // guard below, so they need their own branch.
+    if flags == [.command, .shift, .option] {
+      return key == "f" || key == "p"
     }
     // ⌥⌘C = Changes, ⌥⌘F = Files, ⌥⌘Y = History, ⌥⌘P = Pull Request panel toggles; ⌥⌘S = the
     // OS-standard Toggle Sidebar shortcut, caught (and aliased to Projects) by the AppDelegate

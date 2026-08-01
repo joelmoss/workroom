@@ -166,3 +166,80 @@ enum VCSRepoKind: Equatable, Sendable {
   case plainGit, jjColocated, jjNonColocated
   case unsupported(String)
 }
+
+// MARK: - Remote state (the VCS inspector's toolbar)
+
+/// How far a local ref has diverged from the remote ref its push/pull actually acts on.
+///
+/// `comparedTo` is the short form the backend itself prints — git `origin/main`, jj `main@origin` —
+/// because the toolbar's tooltip quotes it verbatim (the `VCSPushScope.unpushedHelp` rule: name the
+/// ref, don't make the user guess what "behind" is behind).
+///
+/// Counts are always from the LOCAL ref's point of view: `ahead` = local commits the remote doesn't
+/// have (what Push sends), `behind` = remote commits we don't have (what Pull brings). **jj states its
+/// own counts from the REMOTE ref's perspective and they are swapped on ingest** — see
+/// `CLIVCSWriter.parseJJBookmarks`.
+///
+/// `nil` counts mean "unanswerable", never zero: an untracked jj remote bookmark, or a git branch with
+/// no counterpart under `refs/remotes/`. A missing badge beats a wrong one (same rule as
+/// `VCSPushState.unknown`).
+///
+/// Counts come from an explicit `git rev-list --left-right --count`, **not** from git's
+/// `%(push:track)` / `%(upstream:track)` for-each-ref fields. Those resolve to nothing for a branch
+/// with no upstream under `push.default=simple` (git's built-in default) — which is *every* workroom,
+/// since a workroom is `git worktree add -b`. Deriving counts from them leaves the badge permanently
+/// blank on any machine not set to `push.default=current`.
+///
+/// Like every push-state answer in this app, this is computed from LOCAL remote-tracking refs, so it
+/// reflects the last fetch — never the server's live state. That's why the toolbar shows "last fetched
+/// N ago" beside it.
+struct VCSTracking: Equatable, Sendable {
+  let comparedTo: String
+  let ahead: Int?
+  let behind: Int?
+  /// The counterpart ref is gone from the remote (or was never pushed). Counts are meaningless; the
+  /// toolbar offers Publish rather than Push.
+  let gone: Bool
+
+  var isInSync: Bool { !gone && ahead == 0 && behind == 0 }
+  var isDiverged: Bool { (ahead ?? 0) > 0 && (behind ?? 0) > 0 }
+}
+
+/// When the repo last fetched. Three-way rather than `Date?` because the copy differs per case and
+/// "can't tell" must never render as "no" (the `VCSPushState.unknown` rule).
+enum VCSLastFetch: Equatable, Sendable {
+  case at(Date)
+  /// No fetch has ever been recorded: git has no `FETCH_HEAD` (`clone`/`init` never write one), or
+  /// jj's op log holds no fetch op within the scanned window.
+  case never
+  /// Unanswerable — the git dir couldn't be located, `FETCH_HEAD`'s attributes were unreadable, the
+  /// user has `fetch.writeFetchHEAD=false`, or the jj op-log read failed. Renders NO timestamp, and
+  /// specifically never the word "never".
+  case unknown
+}
+
+/// Everything the VCS inspector's toolbar renders, read as ONE coherent snapshot so the branch name
+/// and the counts beside it can't come from two different reads of a moving repo.
+struct VCSRemoteState: Equatable, Sendable {
+  /// The current branch/bookmark, straight from `VCSProviding.currentRef` — the app's existing
+  /// canonical answer, including jj `.ancestor` (an unbookmarked `@`) and git `.detached`.
+  let current: VCSRef
+  /// Divergence for `current`. `nil` ⇒ nothing to compare against (no counterpart on the remote,
+  /// detached HEAD, untracked bookmark) ⇒ no counts render.
+  let tracking: VCSTracking?
+  /// Configured remote names, first-listed first. Empty ⇒ no remote ⇒ every action is disabled.
+  /// Derived from the ref list (git `refs/remotes/<remote>/*`, jj `<name>@<remote>`), so it costs no
+  /// extra process — and deliberately NOT from `jj git remote list`, which takes the repo's
+  /// git import/export lock even to read.
+  let remotes: [String]
+  /// The remote fetch/push/pull act on: `origin` when present, else the first remote, else `nil`.
+  /// Interpolated into every UI string — the copy must never hardcode "origin", because
+  /// `remote.pushDefault` can legitimately make that the wrong name.
+  let primaryRemote: String?
+  /// Per-PROJECT, not per-workroom: fetch always runs at the project root, so every workroom of a
+  /// project shares one answer. (git's `FETCH_HEAD` is per-worktree, so this is read from the COMMON
+  /// git dir — see `CLIVCSWriter.commonGitDir`.)
+  let lastFetch: VCSLastFetch
+  /// When this snapshot was read — the TTL key, and the `now` reference for the relative label.
+  let resolvedAt: Date
+}

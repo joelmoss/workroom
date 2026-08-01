@@ -586,6 +586,21 @@ struct RunCommandActiveKey: FocusedValueKey {
   typealias Value = Bool
 }
 
+/// Whether the VCS toolbar's fetch / push / pull are currently possible — published by RootView so the
+/// Source Control menu items disable in step with the toolbar's own segments.
+///
+/// Three separate keys rather than one, because they genuinely differ: pull needs a counterpart that
+/// exists on the remote (a fresh workroom has none), while push is what creates it.
+struct VCSCanFetchKey: FocusedValueKey {
+  typealias Value = Bool
+}
+struct VCSCanPushKey: FocusedValueKey {
+  typealias Value = Bool
+}
+struct VCSCanPullKey: FocusedValueKey {
+  typealias Value = Bool
+}
+
 /// Whether any run terminal exists to jump to (issue #7) — published by RootView, so the
 /// View ▸ Run Terminal item disables when there's none.
 struct HasRunTerminalKey: FocusedValueKey {
@@ -666,6 +681,18 @@ extension FocusedValues {
     get { self[RunCommandActiveKey.self] }
     set { self[RunCommandActiveKey.self] = newValue }
   }
+  var vcsCanFetch: Bool? {
+    get { self[VCSCanFetchKey.self] }
+    set { self[VCSCanFetchKey.self] = newValue }
+  }
+  var vcsCanPush: Bool? {
+    get { self[VCSCanPushKey.self] }
+    set { self[VCSCanPushKey.self] = newValue }
+  }
+  var vcsCanPull: Bool? {
+    get { self[VCSCanPullKey.self] }
+    set { self[VCSCanPullKey.self] = newValue }
+  }
   var hasRunTerminal: Bool? {
     get { self[HasRunTerminalKey.self] }
     set { self[HasRunTerminalKey.self] = newValue }
@@ -719,6 +746,9 @@ struct WorkroomCommands: Commands {
   @FocusedValue(\.canNavigateForward) private var canNavigateForward
   @FocusedValue(\.hasRunCommand) private var hasRunCommand
   @FocusedValue(\.runCommandActive) private var runCommandActive
+  @FocusedValue(\.vcsCanFetch) private var vcsCanFetch
+  @FocusedValue(\.vcsCanPush) private var vcsCanPush
+  @FocusedValue(\.vcsCanPull) private var vcsCanPull
   @FocusedValue(\.hasRunTerminal) private var hasRunTerminal
   @FocusedValue(\.multipleTerminalTabs) private var multipleTerminalTabs
   @FocusedValue(\.multipleWorkroomTabs) private var multipleWorkroomTabs
@@ -945,16 +975,36 @@ struct WorkroomCommands: Commands {
     // handled by the AppDelegate monitor so they fire before the terminal; shown here for
     // discoverability (the monitor consumes them, so no double-fire). Run is disabled when no command
     // is configured; Restart/Stop only while it's running.
-    CommandMenu("Run") {
-      Button("Run") { store?.runOrFocusRunCommand() }
-        .keyboardShortcut("r", modifiers: .command)
-        .disabled(hasRunCommand != true)
-      Button("Restart") { store?.restartSelectedRunCommand() }
-        .keyboardShortcut("r", modifiers: [.command, .option])
-        .disabled(runCommandActive != true)
-      Button("Stop") { store?.stopSelectedRunCommand() }
-        .keyboardShortcut("r", modifiers: [.command, .shift])
-        .disabled(runCommandActive != true)
+    // `@CommandsBuilder` accepts at most 10 children and this scene has 11, so the two action menus
+    // are wrapped in a Group. Purely a builder-arity workaround — it changes nothing about the menus.
+    Group {
+      CommandMenu("Run") {
+        Button("Run") { store?.runOrFocusRunCommand() }
+          .keyboardShortcut("r", modifiers: .command)
+          .disabled(hasRunCommand != true)
+        Button("Restart") { store?.restartSelectedRunCommand() }
+          .keyboardShortcut("r", modifiers: [.command, .option])
+          .disabled(runCommandActive != true)
+        Button("Stop") { store?.stopSelectedRunCommand() }
+          .keyboardShortcut("r", modifiers: [.command, .shift])
+          .disabled(runCommandActive != true)
+      }
+
+      // These are actions, not view toggles, so they get their own menu rather than joining View.
+      // Every shortcut here is ALSO reserved in `GhosttySurfaceView.isAppShortcut` — without that a
+      // focused TUI in an enhanced keyboard mode (Claude/Codex) swallows the keystroke and the menu's
+      // key equivalent never fires.
+      CommandMenu("Source Control") {
+        Button("Fetch") { store?.performRemoteAction(.fetch) }
+          .keyboardShortcut("f", modifiers: [.command, .shift, .option])
+          .disabled(vcsCanFetch != true)
+        Button("Push") { store?.performRemoteAction(.push) }
+          .keyboardShortcut("p", modifiers: [.command, .shift])
+          .disabled(vcsCanPush != true)
+        Button("Pull with Rebase") { store?.performRemoteAction(.pull) }
+          .keyboardShortcut("p", modifiers: [.command, .shift, .option])
+          .disabled(vcsCanPull != true)
+      }
     }
 
     CommandGroup(after: .pasteboard) {
