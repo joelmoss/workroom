@@ -175,6 +175,10 @@ final class AppStore: ObservableObject {
       if selectedTargetID != oldValue {
         focusHistoryIfShown()
         focusRemoteStateIfShown()
+        // A confirmation asking about the OLD workroom's dirty tree is meaningless once the selection
+        // moves. `runRemoteAction` re-checks the sid so answering it couldn't misfire anyway, but leaving
+        // the dialog up would ask about a workroom the user is no longer looking at.
+        if pendingRemoteConfirm != nil { pendingRemoteConfirm = nil }
       }
     }
   }
@@ -520,6 +524,14 @@ final class AppStore: ObservableObject {
   /// no command configured (`showsRunWarning: true`). See `PendingProjectSettings`'s doc comment for
   /// why this is ONE store-level source rather than a sidebar-local `@State` plus a second one.
   @Published var pendingProjectSettings: PendingProjectSettings?
+  /// A remote action awaiting confirmation — currently only a pull over a dirty working tree, where
+  /// `--autostash` will stash and reapply.
+  ///
+  /// Store-level rather than a `RightInspector` `@State` for the same reason `pendingProjectSettings` is:
+  /// there are two entry points (the toolbar segment and the Source Control menu's ⌥⇧⌘P), and a gate
+  /// owned by one view can only guard that view. It carries the `SidebarID` it was raised for so the
+  /// confirmed action can't be redirected onto whatever is selected by the time the dialog is answered.
+  @Published var pendingRemoteConfirm: PendingVCSAction?
   /// A workroom being created in THIS window (issue #116). Non-nil from the moment the user picks a
   /// project until the setup dialog is dismissed (a setup script ran) or auto-dismisses (no script).
   /// Drives the immediate full-pane setup dialog AND the provisional "Creating…" tab chip — both
@@ -547,6 +559,9 @@ final class AppStore: ObservableObject {
       || pendingWorkroomClose != nil
       || pendingProjectDeletion != nil || pendingWorkroomLabel != nil
       || pendingProjectSettings != nil || errorMessage != nil
+      // Included so the Source Control shortcuts are inert while the confirmation is up — otherwise
+      // ⌥⇧⌘P could queue a second pull behind the dialog asking about the first.
+      || pendingRemoteConfirm != nil
   }
 
   let terminals = TerminalSessions()
@@ -619,8 +634,30 @@ final class AppStore: ObservableObject {
   /// and the push goes through jj's `--change` path. Pushing a bare `@` fails when the working copy is
   /// empty AND undescribed — exactly the state a fresh workroom sits in — so the revision falls back to
   /// its parent. The working-copy facts come from the status sweep, at no extra cost.
+  /// Request a remote action, confirming first when one is needed.
+  ///
+  /// **The confirmation gate lives HERE, not in the toolbar.** It used to sit in `VCSToolbar.perform`,
+  /// which meant the Source Control menu's ⌥⇧⌘P went straight past it: the button warned before
+  /// autostashing a dirty tree and the keyboard shortcut didn't. A safety gate that only one of two
+  /// entry points honours isn't a gate, so every caller funnels through this.
   func performRemoteAction(_ action: VCSRemoteAction) {
     guard let target = remoteState.target else { return }
+    // A pull rewrites the working copy, and workroom trees are essentially always dirty — `--autostash`
+    // will stash and reapply, which is worth saying before it happens.
+    if action == .pull, workroomStatuses[target.sid]?.dirty == true {
+      pendingRemoteConfirm = PendingVCSAction(action: action, sid: target.sid)
+      return
+    }
+    runRemoteAction(action, on: target.sid)
+  }
+
+  /// Run a confirmed action against the workroom it was confirmed FOR.
+  ///
+  /// The `sid` is checked rather than trusted: the confirmation dialog is not modal to the sidebar, so
+  /// the selection can move while it is open. Re-deriving the target at click time would silently run
+  /// the pull against a different workroom than the one the dirty-tree warning described.
+  func runRemoteAction(_ action: VCSRemoteAction, on sid: SidebarID) {
+    guard let target = remoteState.target, target.sid == sid else { return }
     guard vcsAllowsRemoteActions(vcs: target.vcs) else { return }
     let workingCopy = workroomStatuses[target.sid]?.jjWorkingCopy
     let revision = CLIVCSWriter.jjPushRevision(
@@ -746,8 +783,8 @@ final class AppStore: ObservableObject {
     self.remoteState.onBranchResolved = { [weak self] sid, name in
       self?.setResolvedBranchName(name, for: sid)
     }
-    self.remoteState.onDidMutate = { [weak self] action in
-      self?.handleRemoteMutation(action)
+    self.remoteState.onDidMutate = { [weak self] action, sid in
+      self?.handleRemoteMutation(action, on: sid)
     }
     pendingRestoreSelection = Defaults[.sidebarSelection]
     // Route each terminal's activity (OSC/bell) through the notification spine, gated on
@@ -3106,6 +3143,14 @@ final class AppStore: ObservableObject {
     // backstop, but clearing here keeps it immediate and prevents a same-named recreate from
     // inheriting a stale label.
     forgetLabels(forProject: project.path, workroomNames: project.workrooms.map(\.name))
+    // Drop this project's recorded fetch stamp for the same reason the labels go: it is keyed by
+    // project ROOT PATH in a persisted dictionary with no other pruning, so without this it survives
+    // for the life of the install and a re-add of the same path inherits a stale "last fetched".
+    if Defaults[.vcsLastFetch][project.path] != nil {
+      var stamps = Defaults[.vcsLastFetch]
+      stamps[project.path] = nil
+      Defaults[.vcsLastFetch] = stamps
+    }
     // Drop any pending sheet targeting this project — otherwise its Save path (e.g.
     // setRunConfig(forProject:)) still fires for the now-deleted path, and a later re-add of the
     // same path would silently inherit the stale config (#127 follow-up).
@@ -3868,16 +3913,21 @@ final class AppStore: ObservableObject {
   /// commits and its rebase exits 0, so the exit code can't tell — and the writer cannot re-read the
   /// working copy itself, because that would re-enter `JJSnapshotGate` for the same project root, which
   /// that type documents as a deadlock. So the read happens HERE, after the gate has released.
-  private func handleRemoteMutation(_ action: VCSRemoteAction) {
+  /// `sid` is the workroom the action RAN in, handed over by the model rather than read back off it.
+  ///
+  /// It used to read `remoteState.target?.sid` here, which is whatever is selected by the time the action
+  /// finishes — so a pull in one workroom completing after the user moved to another read the SECOND
+  /// workroom's conflict flag and attributed it to the first one's pull.
+  private func handleRemoteMutation(_ action: VCSRemoteAction, on sid: SidebarID) {
     refreshWorkroomStatuses(force: true)
     if historySectionShown { commitHistory.refresh() }
-    guard action == .pull, let sid = remoteState.target?.sid else { return }
+    guard action == .pull else { return }
     // The forced sweep above is async; read the conflict flag once it has landed.
     let sweep = statusSweepTask
     Task { [weak self] in
       await sweep?.value
       guard let self else { return }
-      self.remoteState.noteConflictState(self.workroomStatuses[sid]?.conflicted == true)
+      self.remoteState.noteConflictState(self.workroomStatuses[sid]?.conflicted == true, for: sid)
     }
   }
 

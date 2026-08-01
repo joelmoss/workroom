@@ -137,6 +137,22 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
     env["PATH"] = ShellEnvironment.path()
     env["GIT_OPTIONAL_LOCKS"] = "0"
     env["GIT_TERMINAL_PROMPT"] = "0"
+    // Pin the message locale: EVERY consumer of this runner classifies failures by matching English
+    // substrings of git's stderr (`CLIVCSWriter.classify`, `WorkroomStatusResolver`), and git ships
+    // translated message catalogs. Homebrew git 2.55 under a French locale answers
+    // `erreur : le spécificateur de chemin …`, so without this a non-English user loses the ENTIRE
+    // failure taxonomy at once — auth, host-key, rejected-push, dirty-tree and leftover-lock all
+    // collapse to `.other(rawStderr)` with no recovery offered.
+    //
+    // `LC_ALL`, not `LC_MESSAGES`: this env is seeded from `ProcessInfo.environment`, so the user's own
+    // `LC_ALL` may be inherited, and it OUTRANKS `LC_MESSAGES` — setting the narrower variable is
+    // silently defeated (measured: `LC_ALL=fr_FR.UTF-8 LC_MESSAGES=C git …` still answers in French).
+    //
+    // Safe for paths despite forcing the C charset: git writes pathnames as raw bytes (and quotes
+    // non-ASCII per `core.quotePath` regardless of locale), so `LC_ALL=C` renders a `café-ünï.txt`
+    // byte-identically to the user's own locale — verified, not assumed. jj and gh are unaffected
+    // either way; neither localizes.
+    env["LC_ALL"] = "C"
     // A workroom can be a clone of an *untrusted* repo, and the status sweep runs git automatically
     // on load/focus/selection. `git diff` would otherwise run an inherited external-diff program;
     // unset it so only the explicit `--no-ext-diff` flag (see WorkroomStatusResolver) governs diffs.

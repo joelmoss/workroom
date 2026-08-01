@@ -192,6 +192,110 @@ final class VCSRemoteTriggerTests: XCTestCase {
     store.selectedTargetID = .workroom(project: "/p", name: "gone")
     XCTAssertNil(store.remoteTarget())
   }
+
+  // MARK: The dirty-tree confirmation gate
+
+  private func markDirty(_ store: AppStore, _ sid: SidebarID) {
+    store.workroomStatuses[sid] = WorkroomStatus(dirty: true, lastChecked: Date())
+  }
+
+  /// **The gate must live in the STORE, not the toolbar.** It used to sit in `VCSToolbar.perform`, so the
+  /// Source Control menu's ⌥⇧⌘P — which calls `performRemoteAction` directly — autostashed a dirty tree
+  /// with no warning while the button warned. This asserts the gate from the store's own entry point,
+  /// which is the one the menu uses.
+  func testPullOverADirtyTreeRaisesAConfirmationInsteadOfActing() async {
+    let (store, writer) = makeStore(visible: true, section: .changes)
+    let sid = SidebarID.workroom(project: "/p", name: "feat")
+    await select(store, sid)
+    markDirty(store, sid)
+
+    store.performRemoteAction(.pull)
+    await store.remoteState.awaitCurrentLoad()
+
+    XCTAssertEqual(store.pendingRemoteConfirm?.action, .pull)
+    XCTAssertEqual(store.pendingRemoteConfirm?.sid, sid)
+    XCTAssertNil(store.remoteState.inFlight, "nothing may run until the user answers")
+    let pulls = await writer.pulls
+    XCTAssertEqual(pulls, 0, "the engine must not be reached before confirmation")
+  }
+
+  /// A clean tree has nothing to stash, so the confirmation would be a speed bump.
+  func testPullOverACleanTreeActsWithoutConfirming() async {
+    let (store, writer) = makeStore(visible: true, section: .changes)
+    let sid = SidebarID.workroom(project: "/p", name: "feat")
+    await select(store, sid)
+    store.workroomStatuses[sid] = WorkroomStatus(dirty: false, lastChecked: Date())
+
+    store.performRemoteAction(.pull)
+    await store.remoteState.awaitCurrentLoad()
+
+    XCTAssertNil(store.pendingRemoteConfirm)
+    let pulls = await writer.pulls
+    XCTAssertEqual(pulls, 1)
+  }
+
+  /// The confirmation isn't modal to the sidebar, so the selection can move while it's open. Confirming
+  /// then must NOT silently redirect the pull onto whatever is selected now — the dirty-tree warning was
+  /// about a specific workroom.
+  func testAConfirmedPullIsRejectedIfTheSelectionMoved() async {
+    let (store, writer) = makeStore(visible: true, section: .changes)
+    store.projects = [
+      Project(
+        path: "/p", vcs: "git",
+        workrooms: [
+          Workroom(name: "feat", path: "/p/feat", vcsName: "workroom/feat", warnings: []),
+          Workroom(name: "other", path: "/p/other", vcsName: "workroom/other", warnings: []),
+        ])
+    ]
+    let first = SidebarID.workroom(project: "/p", name: "feat")
+    let second = SidebarID.workroom(project: "/p", name: "other")
+    await select(store, first)
+    markDirty(store, first)
+    store.performRemoteAction(.pull)
+    let pending = try? XCTUnwrap(store.pendingRemoteConfirm)
+    XCTAssertEqual(pending?.sid, first)
+
+    await select(store, second)
+    // Answer the dialog that was raised for `first` while `second` is selected.
+    store.runRemoteAction(.pull, on: first)
+    await store.remoteState.awaitCurrentLoad()
+
+    let pulls = await writer.pulls
+    XCTAssertEqual(pulls, 0, "a pull confirmed for one workroom must not run against another")
+  }
+
+  /// And the stale dialog is dismissed rather than left asking about a workroom nobody is looking at.
+  func testChangingSelectionDismissesAPendingConfirmation() async {
+    let (store, _) = makeStore(visible: true, section: .changes)
+    store.projects = [
+      Project(
+        path: "/p", vcs: "git",
+        workrooms: [
+          Workroom(name: "feat", path: "/p/feat", vcsName: "workroom/feat", warnings: []),
+          Workroom(name: "other", path: "/p/other", vcsName: "workroom/other", warnings: []),
+        ])
+    ]
+    let first = SidebarID.workroom(project: "/p", name: "feat")
+    await select(store, first)
+    markDirty(store, first)
+    store.performRemoteAction(.pull)
+    XCTAssertNotNil(store.pendingRemoteConfirm)
+
+    await select(store, .workroom(project: "/p", name: "other"))
+    XCTAssertNil(store.pendingRemoteConfirm)
+  }
+
+  /// A confirmation up means the Source Control shortcuts must be inert, or ⌥⇧⌘P could queue a second
+  /// pull behind the dialog asking about the first.
+  func testAPendingConfirmationCountsAsAModalPresentation() async {
+    let (store, _) = makeStore(visible: true, section: .changes)
+    let sid = SidebarID.workroom(project: "/p", name: "feat")
+    await select(store, sid)
+    markDirty(store, sid)
+    XCTAssertFalse(store.hasModalPresentation)
+    store.performRemoteAction(.pull)
+    XCTAssertTrue(store.hasModalPresentation)
+  }
 }
 
 /// Counts reads and actions. Returns a usable snapshot so the model reaches `.loaded` and its derived
@@ -199,6 +303,7 @@ final class VCSRemoteTriggerTests: XCTestCase {
 private actor CountingWriter: VCSWriting {
   private(set) var stateReads = 0
   private(set) var fetches = 0
+  private(set) var pulls = 0
 
   func remoteState(path: String, projectRoot: String) async -> VCSRemoteResolution {
     stateReads += 1
@@ -221,7 +326,10 @@ private actor CountingWriter: VCSWriting {
 
   func pullRebase(
     path: String, projectRoot: String, current: VCSRef, remote: String, tracking: VCSTracking?
-  ) async -> VCSRemoteActionResult { .ok(summary: "") }
+  ) async -> VCSRemoteActionResult {
+    pulls += 1
+    return .ok(summary: "")
+  }
 
   func abortRebase(path: String, projectRoot: String) async -> VCSRemoteActionResult {
     .ok(summary: "")

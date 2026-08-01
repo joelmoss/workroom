@@ -14,9 +14,6 @@ struct RightInspector: View {
   @Environment(\.openURL) private var openURL
   /// A PR action awaiting confirmation (close), surfaced via a confirmation dialog.
   @State private var pendingConfirm: PendingPRAction?
-  /// A VCS remote action awaiting confirmation — currently only a pull over a dirty working tree, where
-  /// `--autostash` will stash and reapply. Shares this view's confirmation mechanism with the PR one.
-  @State private var pendingVCSConfirm: PendingVCSAction?
 
   var body: some View {
     // The active activity-bar section decides which sub-sections this pane stacks (Changes stacks
@@ -31,20 +28,23 @@ struct RightInspector: View {
       // Changes section. Only for the Changes activity section: branch/remote state is what that section
       // is about, and showing it over the Files tree would jump the layout on every activity-bar click.
       if store.activeInspectorSection == .changes {
-        VCSToolbar(
-          onNeedsConfirmation: { action, sid in
-            pendingVCSConfirm = PendingVCSAction(action: action, sid: sid)
-          }, model: store.remoteState)
+        VCSToolbar(model: store.remoteState)
       }
       inspectorSplit(subs: subs)
     }
+    // Bound to the STORE, not a local `@State`: the gate that raises this lives in
+    // `AppStore.performRemoteAction` so the Source Control menu's ⌥⇧⌘P goes through it too. When the
+    // toolbar owned the gate, the shortcut autostashed a dirty tree with no warning at all.
     .confirmationDialog(
-      pendingVCSConfirm.map { "\($0.action.label) with uncommitted changes?" } ?? "",
+      store.pendingRemoteConfirm.map { "\($0.action.label) with uncommitted changes?" } ?? "",
       isPresented: Binding(
-        get: { pendingVCSConfirm != nil }, set: { if !$0 { pendingVCSConfirm = nil } }),
-      presenting: pendingVCSConfirm
+        get: { store.pendingRemoteConfirm != nil },
+        set: { if !$0 { store.pendingRemoteConfirm = nil } }),
+      presenting: store.pendingRemoteConfirm
     ) { item in
-      Button(item.action.label) { store.performRemoteAction(item.action) }
+      // `runRemoteAction(on:)`, which re-checks `item.sid` — the dialog isn't modal to the sidebar, so
+      // the selection can move while it's open and `performRemoteAction` would re-derive the target.
+      Button(item.action.label) { store.runRemoteAction(item.action, on: item.sid) }
       Button("Cancel", role: .cancel) {}
     } message: { _ in
       Text("Your uncommitted changes will be stashed and reapplied after the rebase.")
@@ -318,15 +318,6 @@ private struct PendingPRAction: Identifiable {
   let number: Int
   let sid: SidebarID
   var id: String { "\(action.rawValue)-\(number)" }
-}
-
-/// A VCS remote action queued behind a confirmation. Only a pull over a dirty working tree needs one:
-/// `--autostash` stashes and reapplies, and workroom trees are essentially always dirty, so this fires
-/// most times someone pulls — the copy has to be worth reading rather than a speed bump.
-private struct PendingVCSAction: Identifiable {
-  let action: VCSRemoteAction
-  let sid: SidebarID
-  var id: String { "\(action.rawValue)-\(sid.hashValue)" }
 }
 
 /// The Changes section header's changed-file count.

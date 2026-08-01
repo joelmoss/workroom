@@ -58,13 +58,21 @@ final class RemoteStateModel: ObservableObject {
   private let now: @Sendable () -> Date
   private var task: Task<Void, Never>?
   private var actionTask: Task<Void, Never>?
+  /// Which workroom the in-flight action belongs to.
+  ///
+  /// `inFlight` is a model-WIDE lock — one action at a time, because the writer and `JJSnapshotGate` are
+  /// shared — but the toolbar renders per selection, so "an action is running" and "an action is running
+  /// *here*" are different questions. Without this, switching workrooms mid-push left the newly selected
+  /// one showing "Pushing…" with every segment disabled until the other workroom's action finished (up to
+  /// 300s for a pull).
+  private var inFlightTarget: Target?
   /// When each project last auto-fetched, in-memory (a relaunch may legitimately fetch again).
   private var lastAutoFetch: [String: Date] = [:]
 
   /// Fired after a successful mutation so the store can refresh everything downstream — workroom
   /// status (the dirty/conflict badge), the commit history, and this model itself. Wired post-init so
   /// the model needs no `AppStore` to be unit-tested (the `workroomFileWatcher` idiom).
-  var onDidMutate: (@MainActor (VCSRemoteAction) -> Void)?
+  var onDidMutate: (@MainActor (VCSRemoteAction, SidebarID) -> Void)?
   /// Publishes the resolved branch name so `AppStore.branchName(for:)` — the one accessor every
   /// branch-showing surface reads — can lead with it. This model is the only writer.
   var onBranchResolved: (@MainActor (SidebarID, String?) -> Void)?
@@ -195,6 +203,13 @@ final class RemoteStateModel: ObservableObject {
 
   // MARK: Derived
 
+  /// The in-flight action IF it belongs to the workroom currently on screen — what the toolbar renders.
+  ///
+  /// Distinct from `inFlight`, which is the model-wide lock and is what `canFetch`/`canPush`/`canPull`
+  /// gate on: a second action must be blocked even when it was started from another workroom, because
+  /// the writer and the gate are shared. Only the LABEL is per-target.
+  var activeAction: VCSRemoteAction? { inFlightTarget == target ? inFlight : nil }
+
   var canFetch: Bool { snapshot?.primaryRemote != nil && inFlight == nil }
   var canPush: Bool { snapshot?.primaryRemote != nil && inFlight == nil }
   /// Pull needs something to pull FROM: a counterpart that exists on the remote.
@@ -234,6 +249,7 @@ final class RemoteStateModel: ObservableObject {
       return
     }
     inFlight = action
+    inFlightTarget = target
     lastAction = action
     lastFailure = nil
     lastPullConflicted = false
@@ -269,15 +285,27 @@ final class RemoteStateModel: ObservableObject {
 
   private func finish(_ action: VCSRemoteAction, result: VCSRemoteActionResult, for target: Target)
   {
+    // Always cleared: the action really is over, and this is the model-wide single-action lock. What is
+    // NOT unconditional is the RESULT, below.
     inFlight = nil
+    inFlightTarget = nil
+    // The work happened in `target`'s repo whatever is selected now, so the fetch stamp and the
+    // downstream refresh belong to it and fire regardless.
+    if case .ok = result {
+      if action == .fetch || action == .pull { recordOwnFetch(projectRoot: target.projectRoot) }
+      onDidMutate?(action, target.sid)
+    }
+    // Everything past here writes PUBLISHED state that the toolbar renders for whatever is selected NOW,
+    // so it needs the same guard `apply` has. Without it, starting a push in one workroom and switching
+    // to another put the first one's failure — and its action label — on the second one's toolbar,
+    // reporting a failure for a workroom where nothing was attempted.
+    guard self.target == target else { return }
     switch result {
     case .ok:
       lastFailure = nil
-      if action == .fetch || action == .pull { recordOwnFetch(projectRoot: target.projectRoot) }
       // Re-read immediately AND let the store refresh everything downstream. The metadata watcher
       // would get there on its own, but its coalesce window is ~1s and the toolbar should feel instant.
       refresh(force: true)
-      onDidMutate?(action)
     case .failed(let failure):
       // Deliberately leaves `snapshot` intact: a failed action tells you nothing new about the repo.
       lastFailure = failure
@@ -293,8 +321,10 @@ final class RemoteStateModel: ObservableObject {
 
   /// Called by the store after the post-mutation status refresh lands: a pull that reported success may
   /// still have produced conflicts (jj writes them into commits and exits 0).
-  func noteConflictState(_ conflicted: Bool) {
-    guard lastAction == .pull, lastFailure == nil else { return }
+  /// `sid` is the workroom the pull ran in — checked, not trusted, for the same reason `finish` checks it:
+  /// the sweep this waits on is async, so the selection can move before it lands.
+  func noteConflictState(_ conflicted: Bool, for sid: SidebarID) {
+    guard target?.sid == sid, lastAction == .pull, lastFailure == nil else { return }
     lastPullConflicted = conflicted
   }
 

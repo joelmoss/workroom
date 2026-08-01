@@ -42,6 +42,9 @@ enum VCSToolbarMetrics {
   /// Verbatim from `PRNumberBadge`, so the toolbar's pill matches the ref pill 40pt below it.
   static let pillHorizontalPadding: CGFloat = 5
   static let pillVerticalPadding: CGFloat = 1
+  /// The pill's ↑/↓ glyph. Smaller than `glyph` on purpose — it sits inside a `.caption2` capsule and
+  /// has to read as a direction marker beside the count, not as an icon in its own right.
+  static let pillArrowGlyph: CGFloat = 7
 }
 
 /// The VCS toolbar: current branch, a sync segment that shows and performs the right remote action, and
@@ -52,11 +55,6 @@ enum VCSToolbarMetrics {
 /// modifier: the window toolbar is kept an empty AppKit `NSToolbar` because a SwiftUI toolbar item's
 /// overflow `menuFormRepresentation` caused a multi-second app hang.
 struct VCSToolbar: View {
-  /// Raised when an action needs confirming first — currently only a pull over a dirty working tree.
-  /// The dialog lives in `RightInspector` beside the PR one rather than here, so the inspector keeps
-  /// one confirmation mechanism.
-  let onNeedsConfirmation: (VCSRemoteAction, SidebarID) -> Void
-
   /// Observed EXPLICITLY, like `HistoryPanel`'s and `FilesPanel`'s models.
   ///
   /// `RemoteStateModel` is its own `ObservableObject`; `AppStore` merely holds it and does not forward
@@ -77,7 +75,9 @@ struct VCSToolbar: View {
     VCSSyncPresenter.make(
       state: model.snapshot, hasTarget: model.target != nil,
       toolsUsable: store.vcsAllowsRemoteActions(vcs: model.target?.vcs ?? "git"),
-      activity: model.inFlight.map { .running($0) } ?? .idle,
+      // `activeAction`, not `inFlight`: the label must describe THIS workroom. `inFlight` is the
+      // model-wide lock, so rendering it directly showed "Pushing…" on a workroom that wasn't pushing.
+      activity: model.activeAction.map { .running($0) } ?? .idle,
       failure: model.lastFailure, lastAction: model.lastAction, now: now)
   }
 
@@ -101,7 +101,7 @@ struct VCSToolbar: View {
           .frame(minWidth: VCSToolbarMetrics.segmentMinWidth, maxWidth: .infinity)
         divider
         VCSFetchSegment(
-          isRunning: model.inFlight == .fetch,
+          isRunning: model.activeAction == .fetch,
           isEnabled: model.canFetch
             && store.vcsAllowsRemoteActions(vcs: model.target?.vcs ?? "git"),
           onFetch: { perform(.fetch) }
@@ -130,14 +130,13 @@ struct VCSToolbar: View {
     model.target.flatMap { store.branchName(for: $0.sid) }
   }
 
+  /// Hands straight to the store, which owns the dirty-tree confirmation gate.
+  ///
+  /// The gate used to live here, and that was the bug: the Source Control menu calls
+  /// `performRemoteAction` directly, so ⌥⇧⌘P autostashed a dirty tree with no warning while this button
+  /// warned. A gate only one of two entry points honours isn't a gate.
   private func perform(_ action: VCSRemoteAction?) {
-    guard let action, let target = model.target else { return }
-    // A pull rewrites the working copy, and workroom trees are essentially always dirty — `--autostash`
-    // will stash and reapply, which is worth saying before it happens.
-    if action == .pull, store.workroomStatuses[target.sid]?.dirty == true {
-      onNeedsConfirmation(action, target.sid)
-      return
-    }
+    guard let action else { return }
     store.performRemoteAction(action)
   }
 }
@@ -396,7 +395,7 @@ private struct VCSCountPill: View {
     HStack(spacing: 2) {
       Text("\(badge.count)").font(.caption2).fontWeight(.semibold).monospacedDigit()
       Image(systemName: badge.direction == .ahead ? "arrow.up" : "arrow.down")
-        .font(.system(size: 7, weight: .semibold))
+        .font(.system(size: VCSToolbarMetrics.pillArrowGlyph, weight: .semibold))
     }
     .foregroundStyle(theme.fgMuted)
     .padding(.horizontal, VCSToolbarMetrics.pillHorizontalPadding)

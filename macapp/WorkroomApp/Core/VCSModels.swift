@@ -200,9 +200,6 @@ struct VCSTracking: Equatable, Sendable {
   /// The counterpart ref is gone from the remote (or was never pushed). Counts are meaningless; the
   /// toolbar offers Publish rather than Push.
   let gone: Bool
-
-  var isInSync: Bool { !gone && ahead == 0 && behind == 0 }
-  var isDiverged: Bool { (ahead ?? 0) > 0 && (behind ?? 0) > 0 }
 }
 
 /// When the repo last fetched. Three-way rather than `Date?` because the copy differs per case and

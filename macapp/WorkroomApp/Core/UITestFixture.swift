@@ -836,7 +836,7 @@ struct StubAgentRunner: AgentRunning {
 }
 
 /// The `VCSWriting` used under `-WorkroomUITestFixture`: serves the seeded `UITestFixture.remoteState`
-/// and RECORDS which actions were requested, without running git or jj.
+/// and answers every action without running git or jj.
 ///
 /// What no other tier can see is the button→engine seam: whether clicking "Push origin" actually asks
 /// for a push, whether the confirmation dialog swallows the click, and whether a second click while one
@@ -848,10 +848,6 @@ struct StubAgentRunner: AgentRunning {
 /// makes the failed action's own label the one shown — both of which name the action that was
 /// requested, in the accessibility tree, without a side channel.
 actor FixtureVCSWriter: VCSWriting {
-  /// Actions requested, oldest first. Exposed to the app under test via `lastActionLabel` so an
-  /// XCUITest can read it out of the accessibility tree — a test process cannot reach into this actor.
-  private(set) var requested: [VCSRemoteAction] = []
-
   /// Set for `-WorkroomUITestSyncFailure`, so the error tier renders.
   private let failing: Bool
   /// Delays each action so the in-flight state is observable rather than instantaneous.
@@ -891,7 +887,6 @@ actor FixtureVCSWriter: VCSWriting {
   }
 
   private func record(_ action: VCSRemoteAction) async -> VCSRemoteActionResult {
-    requested.append(action)
     if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
     return failing
       ? .failed(.authRequired("fixture: authentication refused"))

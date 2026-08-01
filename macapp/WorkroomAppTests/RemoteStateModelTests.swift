@@ -239,7 +239,7 @@ final class RemoteStateModelTests: XCTestCase {
     m.focus(target)
     await m.awaitCurrentLoad()
     var mutations: [VCSRemoteAction] = []
-    m.onDidMutate = { mutations.append($0) }
+    m.onDidMutate = { action, _ in mutations.append(action) }
     m.perform(.push)
     await m.awaitCurrentLoad()
     XCTAssertNil(m.inFlight)
@@ -286,7 +286,7 @@ final class RemoteStateModelTests: XCTestCase {
     m.focus(target)
     await m.awaitCurrentLoad()
     var mutations: [VCSRemoteAction] = []
-    m.onDidMutate = { mutations.append($0) }
+    m.onDidMutate = { action, _ in mutations.append(action) }
     m.perform(.fetch)
     await m.awaitCurrentLoad()
     XCTAssertTrue(mutations.isEmpty)
@@ -352,7 +352,7 @@ final class RemoteStateModelTests: XCTestCase {
     m.perform(.pull)
     await m.awaitCurrentLoad()
     XCTAssertFalse(m.lastPullConflicted)
-    m.noteConflictState(true)
+    m.noteConflictState(true, for: target.sid)
     XCTAssertTrue(m.lastPullConflicted)
   }
 
@@ -363,8 +363,78 @@ final class RemoteStateModelTests: XCTestCase {
     await m.awaitCurrentLoad()
     m.perform(.push)
     await m.awaitCurrentLoad()
-    m.noteConflictState(true)
+    m.noteConflictState(true, for: target.sid)
     XCTAssertFalse(m.lastPullConflicted, "a push can't produce a rebase conflict")
+  }
+
+  // MARK: Stale target
+
+  /// **The regression this pins.** `apply` has always guarded against a read landing after the model
+  /// moved on; `finish` did not. So starting a push in one workroom and switching to another put the
+  /// FIRST workroom's failure — and its action label — on the SECOND workroom's toolbar, reporting a
+  /// failure for a workroom where nothing was attempted.
+  func testAFailedActionDoesNotLandOnAWorkroomSwitchedToMidFlight() async {
+    let writer = StubWriter(
+      state: .state(state(ahead: 1)), action: .failed(.authRequired("nope")))
+    let m = model(writer, ttl: 0)
+    m.focus(target)
+    await m.awaitCurrentLoad()
+    m.perform(.push)
+    // Switch while the push is in flight, then let it finish.
+    m.focus(otherTarget)
+    await m.awaitCurrentLoad()
+    XCTAssertNil(
+      m.lastFailure,
+      "the other workroom's push failure must not surface on this one; got "
+        + String(describing: m.lastFailure))
+  }
+
+  /// The successful path is target-scoped too — a completed push must not clear or re-read state for a
+  /// workroom it had nothing to do with.
+  func testASuccessfulActionStillReportsItsOwnWorkroomDownstream() async {
+    let writer = StubWriter(state: .state(state(ahead: 1)), action: .ok(summary: "pushed"))
+    let m = model(writer, ttl: 0)
+    var mutated: [SidebarID] = []
+    m.onDidMutate = { _, sid in mutated.append(sid) }
+    m.focus(target)
+    await m.awaitCurrentLoad()
+    m.perform(.push)
+    m.focus(otherTarget)
+    await m.awaitCurrentLoad()
+    XCTAssertEqual(
+      mutated, [target.sid],
+      "the mutation must be attributed to the workroom it ran in, not the one now selected")
+  }
+
+  /// `inFlight` is the model-wide lock (a second action must be blocked wherever it was started from),
+  /// but the LABEL is per-workroom: rendering `inFlight` directly left a freshly selected workroom
+  /// showing "Pushing…" with every segment disabled until someone else's action finished.
+  func testTheInFlightLabelIsScopedToItsOwnWorkroom() async {
+    let writer = StubWriter(state: .state(state(ahead: 1)), action: .ok(summary: "pushed"))
+    let m = model(writer, ttl: 0)
+    m.focus(target)
+    await m.awaitCurrentLoad()
+    m.perform(.push)
+    XCTAssertEqual(m.activeAction, .push, "the acting workroom shows its own action")
+
+    m.focus(otherTarget)
+    XCTAssertNil(m.activeAction, "a different workroom must not claim someone else's action")
+    XCTAssertNotNil(m.inFlight, "but the model-wide lock still holds — one action at a time")
+    XCTAssertFalse(m.canPush, "so a second action stays blocked")
+    await m.awaitCurrentLoad()
+  }
+
+  /// The conflict upgrade arrives from an async sweep, so the selection can move before it lands.
+  func testConflictUpgradeIsIgnoredForADifferentWorkroom() async {
+    let writer = StubWriter(state: .state(state(behind: 1)))
+    let m = model(writer, ttl: 0)
+    m.focus(target)
+    await m.awaitCurrentLoad()
+    m.perform(.pull)
+    await m.awaitCurrentLoad()
+    m.noteConflictState(true, for: otherTarget.sid)
+    XCTAssertFalse(
+      m.lastPullConflicted, "another workroom's conflict flag must not attach to this pull")
   }
 
   // MARK: Auto-fetch
