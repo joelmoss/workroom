@@ -215,6 +215,70 @@ careful review/testing, not a drive-by fix.
 
 **Priority:** P2 (efficiency/responsiveness, not correctness; no user-visible bug today).
 
+### VCS toolbar: ten confirmed findings the `/review` pass didn't fix (macapp)
+
+**What:** Everything the toolbar review verified but left standing. Each was reproduced or read off the
+code; none is speculative. Ordered by what a user hits first.
+
+1. **A configured remote with NO refs reads as "No remote configured".** `primaryRemote` is derived
+   purely from `refs/remotes` rows, and a fresh empty remote has none (verified: `for-each-ref
+   refs/remotes` = 0 lines; jj's `bookmark list --all-remotes` likewise empty). So `canPush` is false and
+   publishing to a brand-new empty GitHub repo — the case where "Publish branch" matters most — is
+   impossible from the app. Fix: take the remote LIST from config (`git remote`, and jj's remotes) while
+   leaving the counts ref-derived.
+2. **jj Pull guesses `trunk()` as the base for an unbookmarked `@`.** Right for a workroom off trunk,
+   wrong for one off a feature branch: it reports "N behind" counting trunk's commits and the rebase
+   then refuses (`immutableHistory`, now typed and retry-free, so it fails honestly rather than looping).
+   The real fix is remembering each workroom's own base rather than deriving it — `::@ &
+   remote_bookmarks()` can't, because the base stops being an ancestor the moment it advances.
+3. **jj bookmark names that need quoting never match.** jj's template pre-quotes non-identifier names
+   (verified: `"main|evil"` comes back WITH the quotes), so `parsed.bookmarks.first { $0.name == name }`
+   compares `"main|evil"` against jj-lib's raw `main|evil` and always fails — tracking, counts and Pull
+   go silently nil. Parse names unquoted, and build the rebase destination from `(name, remote)` with
+   `jjQuote` on each rather than reusing the pre-joined `comparedTo` display string.
+4. **jj multi-remote: the wrong remote's tracking row wins.** `trackingByName[name] = …` overwrites by
+   name with no `primaryRemote` filter, so with `origin` + `upstream` both tracking `main` the last row
+   read decides the counts while every UI string interpolates `primaryRemote`. The git path builds
+   `"\(primary)/\(branch)"` explicitly; jj is the asymmetry. Same root cause makes `@..trunk()` capable
+   of counting against a different remote than the one it names and fetches.
+5. **`resolvedBranchNames` is stale-wins and never pruned.** It's now source #1 for every
+   branch-showing surface but is written only for the focused target, never removed on workroom/project
+   delete, and its refresh is gated on the inspector being visible AND on Changes. So `git switch` in a
+   workroom's terminal leaves the sidebar and status bar showing the old name indefinitely.
+6. **A failure is discarded if the selection moved.** `finish` guards the `lastFailure` write on target
+   identity (correct for rendering), and there is no toast for VCS action failures — so a push that
+   fails after you switch workrooms is recorded nowhere. You saw a spinner and never learn it didn't
+   happen.
+7. **A failed remote READ renders "No repository".** Nothing renders `model.state`; the toolbar reads
+   `snapshot` (nil'd on failure) and `lastFailure` (set only by actions). So a read blocked by
+   `packed-refs.lock`, or any `.other`, shows tier `[2]` with no diagnosis and no retry. Compounding it,
+   `RemoteStateModel.activate` — documented as "the panel's `.task`" and the only non-forced refresh
+   caller — is called by no view at all.
+8. **A workroom deleted mid-action reports "git isn't on Workroom's PATH".** `StatusCommandRunner`
+   returns `commandNotFound` for a launch failure ("cwd vanished" per its own comment) and `classify`
+   maps that exit code to `.toolMissing`, which offers no recovery — while the version toast
+   simultaneously says git is fine. Launch failure needs its own sentinel.
+9. **`JJSnapshotGate`'s 30s self-heal is far below the write timeouts it guards.** The gate accepts
+   re-admitting the original race past `maxChainWait`, justified as "the rare genuine-wedge case, not
+   routine contention" — but fetch is budgeted at 120s and pull at 300s, so exceeding 30s is routine.
+   Two windows, each with its own `AppStore` and its own `inFlight`, can queue two writes on one project
+   root; the second gives up and runs concurrently with a live `pull --rebase` on the shared `.git`.
+10. **Colocated jj root: "Abort rebase" reports success, changes nothing, loops.** `classify` can hand a
+    colocated root `.rebaseInProgress` from a `rebase-merge` left by a `git rebase` in its terminal, and
+    the jj branch of `abortRebase` returns `.ok(summary: "Nothing to abort")` — so `finish` clears the
+    failure, the user pulls, and the identical failure returns.
+
+Plus one doc correction: `gitLastFetch`'s comment claims `FETCH_HEAD`'s mtime covers "one the user ran in
+a terminal". It doesn't, for the terminals this app opens — a fetch inside a worktree writes
+`worktrees/<n>/FETCH_HEAD` while the common one stays put (measured), so counts update from the shared
+`refs/remotes` while the timestamp doesn't. Either read both and take the max, or stop claiming it.
+
+**Why:** These are the residue of a five-pass review (critical + 4 specialists + Claude adversarial +
+Codex) whose P0s — argv option injection and jj push publishing the wrong workspace's commit — are
+already fixed. What's left is real but none of it is a security hole or silent data loss.
+
+**Priority:** P2. (1), (5) and (7) are the ones a user notices.
+
 ### Gate git VCS *reads*, not just writes (macapp) — VCS-toolbar eng-review follow-up
 
 **What:** Route git status reads through the same per-project `JJSnapshotGate` the writes now use.
