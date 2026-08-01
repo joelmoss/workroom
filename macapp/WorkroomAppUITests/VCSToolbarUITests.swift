@@ -109,6 +109,22 @@ class VCSToolbarUITestsBase: XCTestCase {
       for: [XCTNSPredicateExpectation(predicate: p, object: el)], timeout: timeout) == .completed
   }
 
+  /// Wait for an element's label OR value to contain `text`.
+  ///
+  /// Both, because which of the two carries a `Text`'s string is not ours to choose: AppKit maps some
+  /// SwiftUI text elements to a static text whose LABEL is empty and whose VALUE holds the string (the
+  /// same mapping the Changes header's combined element runs into). Asserting on `label` alone read as
+  /// "the dialog says nothing" for a dialog that said everything.
+  @discardableResult
+  private func waitText(_ el: XCUIElement, contains text: String, _ timeout: TimeInterval = 6)
+    -> Bool
+  {
+    let p = NSPredicate(
+      format: "label CONTAINS[c] %@ OR value CONTAINS[c] %@", text, text)
+    return XCTWaiter().wait(
+      for: [XCTNSPredicateExpectation(predicate: p, object: el)], timeout: timeout) == .completed
+  }
+
   // MARK: Placement
 
   /// **The test that pins the requirement.** The toolbar must sit ABOVE the Changes section header —
@@ -319,6 +335,48 @@ class VCSToolbarUITestsBase: XCTestCase {
       waitLabel(sync(app), contains: "Pulled with conflicts", 15),
       "a conflicted pull must be reported, not left reading as a push offer; got \(sync(app).label)"
     )
+  }
+
+  // MARK: The failure dialog
+
+  /// **The reported defect, end to end.** The segment can only ever show a truncated notice, so a failure
+  /// has to raise a dialog carrying the whole message and the actions. Only this tier can see that the
+  /// sheet actually presents itself — a unit test can pin the copy but not that anything shows it.
+  func testAFailedActionRaisesTheFailureDialog() {
+    let app = launchedApp(syncState: "ahead", extraArguments: ["-WorkroomUITestSyncFailure", "1"])
+    XCTAssertTrue(waitExists(sync(app)))
+    XCTAssertTrue(waitLabel(sync(app), contains: "Push"))
+    button(app, id: "vcs.toolbar.sync").click()
+
+    let sheet = element(app, id: "vcs.failure.sheet")
+    XCTAssertTrue(waitExists(sheet, true, 10), "a failed push must put its message on screen")
+    let title = element(app, id: "vcs.failure.title")
+    XCTAssertTrue(
+      waitText(title, contains: "Push failed"),
+      "the dialog names what failed; got \(title.label) / \(String(describing: title.value))")
+    // The full sentence, not the bar's truncation — the whole point of the dialog.
+    let message = element(app, id: "vcs.failure.message")
+    XCTAssertTrue(waitExists(message))
+    XCTAssertTrue(
+      waitText(message, contains: "ssh-add"),
+      "the remedy must be readable in full, not hidden in a tooltip; got \(message.label) / "
+        + String(describing: message.value))
+  }
+
+  /// Dismissing closes the dialog and leaves the toolbar's notice standing — the failure hasn't stopped
+  /// being true just because the sheet was closed.
+  func testDismissingTheDialogLeavesTheToolbarReporting() {
+    let app = launchedApp(syncState: "ahead", extraArguments: ["-WorkroomUITestSyncFailure", "1"])
+    XCTAssertTrue(waitExists(sync(app)))
+    XCTAssertTrue(waitLabel(sync(app), contains: "Push"))
+    button(app, id: "vcs.toolbar.sync").click()
+    XCTAssertTrue(waitExists(element(app, id: "vcs.failure.sheet"), true, 10))
+
+    button(app, id: "vcs.failure.dismiss").click()
+    XCTAssertTrue(waitExists(element(app, id: "vcs.failure.sheet"), false, 6))
+    XCTAssertTrue(
+      waitLabel(sync(app), contains: "authenticate"),
+      "the bar goes on reporting the failure; got \(sync(app).label)")
   }
 
   /// A failed action must NOT blank the toolbar — the ref is still known, and the repo is unchanged.

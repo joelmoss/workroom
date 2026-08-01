@@ -214,6 +214,14 @@ struct RootView: View {
           },
           onCancel: { showAddProject = false })
       }
+      // VCS failure dialog. Hosted here rather than on the inspector because ⌥⇧⌘P and the rest of the
+      // Source Control menu work with the inspector hidden, and a failure they raise still has to be
+      // readable. `performRemoteAction`, not `runRemoteAction`, so a Pull recovery meets the dirty-tree
+      // confirmation — and the sheet is window-modal, so the selection cannot have moved under it.
+      .modifier(
+        VCSFailurePresenter(
+          model: store.remoteState, onRecover: { store.performRemoteAction($0) })
+      )
       // New Workroom picker (⌘N, issue #81): same store-flag bridge as the importer above, packaged as
       // a modifier so this large `body` stays within the type-checker's budget (like EdgeRevealSidebars).
       // The menu command gates on `hasProjects`, so it only fires with ≥1 project; the dialog itself

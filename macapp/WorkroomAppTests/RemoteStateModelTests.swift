@@ -447,6 +447,105 @@ final class RemoteStateModelTests: XCTestCase {
       m.lastPullConflicted, "another workroom's conflict flag must not attach to this pull")
   }
 
+  // MARK: The failure dialog
+
+  /// **The reported defect.** The toolbar's sync segment is one truncating line, so a failure rendered as
+  /// "Describe the change bef…" with the rest only reachable by hovering. Anything the user asked for and
+  /// that failed now raises a report the dialog presents in full.
+  func testAUserInitiatedFailureRaisesAReport() async {
+    let writer = StubWriter(
+      state: .state(state(ahead: 1)), action: .failed(.needsDescription("no description")))
+    let m = model(writer, ttl: 0)
+    m.focus(target)
+    await m.awaitCurrentLoad()
+    m.perform(.push)
+    await m.awaitCurrentLoad()
+    XCTAssertEqual(m.failureReport?.failure, .needsDescription("no description"))
+    XCTAssertEqual(m.failureReport?.action, .push, "the dialog's title names what was attempted")
+  }
+
+  /// The automatic fetch is a network call nobody asked for, so failing it must be as quiet as
+  /// succeeding it. It still records `lastFailure` — the toolbar tells the story — but never interrupts.
+  func testAnAutomaticFetchFailureRaisesNoDialog() async {
+    let writer = StubWriter(state: .state(state()), action: .failed(.authRequired("nope")))
+    let m = model(writer, ttl: 0)
+    m.focus(target)
+    await m.awaitCurrentLoad()
+    m.autoFetchIfDue()
+    await m.awaitCurrentLoad()
+    XCTAssertNil(m.failureReport, "an unrequested fetch must not put a dialog on screen")
+    XCTAssertEqual(m.lastFailure, .authRequired("nope"), "but the toolbar still reports it")
+  }
+
+  /// Dismissing is about the dialog, not about the failure: the bar goes on reporting until the next
+  /// action or refresh. Erasing `lastFailure` here would make the failure vanish on a click.
+  func testDismissingTheDialogKeepsTheToolbarsFailure() async {
+    let writer = StubWriter(
+      state: .state(state(ahead: 1)), action: .failed(.rejected("! rejected")))
+    let m = model(writer, ttl: 0)
+    m.focus(target)
+    await m.awaitCurrentLoad()
+    m.perform(.push)
+    await m.awaitCurrentLoad()
+    m.dismissFailureReport()
+    XCTAssertNil(m.failureReport)
+    XCTAssertEqual(m.lastFailure, .rejected("! rejected"))
+  }
+
+  /// The segment's "Show Error Details…" path. The re-raised report needs a NEW id: `.sheet(item:)` keys
+  /// on identity, so re-presenting the same failure under the same id would silently do nothing.
+  func testDetailsCanBeReopenedAfterDismissal() async {
+    let writer = StubWriter(state: .state(state(ahead: 1)), action: .failed(.authRequired("nope")))
+    let m = model(writer, ttl: 0)
+    m.focus(target)
+    await m.awaitCurrentLoad()
+    m.perform(.push)
+    await m.awaitCurrentLoad()
+    let first = m.failureReport?.id
+    m.dismissFailureReport()
+
+    m.presentFailureDetails()
+    XCTAssertEqual(m.failureReport?.failure, .authRequired("nope"))
+    XCTAssertEqual(m.failureReport?.action, .push)
+    XCTAssertNotEqual(m.failureReport?.id, first, "a re-presentation needs a fresh identity")
+  }
+
+  func testReopeningDoesNothingWithoutAFailure() async {
+    let writer = StubWriter(state: .state(state()))
+    let m = model(writer, ttl: 0)
+    m.focus(target)
+    await m.awaitCurrentLoad()
+    m.presentFailureDetails()
+    XCTAssertNil(m.failureReport)
+  }
+
+  /// Pushing with no remote fails before anything runs, and that path sets `lastFailure` directly rather
+  /// than going through `finish` — so it needs its own raise, or the one failure with a written remedy
+  /// would be the one that never showed it.
+  func testPushingWithNoRemoteRaisesTheDialogToo() async {
+    let writer = StubWriter(state: .state(state(remotes: [])))
+    let m = model(writer, ttl: 0)
+    m.focus(target)
+    await m.awaitCurrentLoad()
+    m.perform(.push)
+    XCTAssertEqual(m.failureReport?.failure, .noRemote)
+    XCTAssertEqual(m.failureReport?.action, .push)
+  }
+
+  /// A dialog left open over a workroom the user has moved away from is reporting someone else's problem.
+  func testSwitchingWorkroomsClosesTheDialog() async {
+    let writer = StubWriter(state: .state(state(ahead: 1)), action: .failed(.authRequired("nope")))
+    let m = model(writer, ttl: 0)
+    m.focus(target)
+    await m.awaitCurrentLoad()
+    m.perform(.push)
+    await m.awaitCurrentLoad()
+    XCTAssertNotNil(m.failureReport)
+    m.focus(otherTarget)
+    XCTAssertNil(m.failureReport)
+    await m.awaitCurrentLoad()
+  }
+
   // MARK: Auto-fetch
 
   func testAutoFetchRunsOnceThenRespectsTheInterval() async {

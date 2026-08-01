@@ -87,6 +87,23 @@ struct PendingVCSAction: Identifiable, Equatable, Sendable {
   var id: String { "\(action.rawValue)-\(sid.hashValue)" }
 }
 
+/// A failure raised for the user's attention, carried to the failure dialog.
+///
+/// Only ever raised for a **user-initiated** action. The automatic fetch deliberately doesn't raise one:
+/// it's a network call nobody asked for, so failing it must stay as quiet as succeeding it
+/// (`RemoteStateModel.autoFetchIfDue`). It still records `lastFailure`, so the toolbar tells the story.
+///
+/// `sequence` is the identity, not the failure: presenting the same failure twice — a retry that fails
+/// identically, or the user re-opening the details — must count as a NEW presentation, and a `.sheet(item:)`
+/// keyed on the failure's own value would silently skip the second one.
+struct VCSFailureReport: Identifiable, Equatable, Sendable {
+  let failure: VCSRemoteFailure
+  /// What was attempted, so the dialog's title can name it.
+  let action: VCSRemoteAction?
+  let sequence: Int
+  var id: Int { sequence }
+}
+
 /// A lock file found blocking a VCS operation.
 ///
 /// Located by parsing the path out of git's own error, which names it exactly, then stat-ing it — so the

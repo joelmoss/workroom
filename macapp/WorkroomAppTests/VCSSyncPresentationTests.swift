@@ -283,6 +283,72 @@ final class VCSSyncPresentationTests: XCTestCase {
       p.title, "Pull", "the button said \"Push\" and performed a Pull; got \(p.title ?? "nil")")
   }
 
+  // MARK: - the failure dialog
+
+  /// **What the one-line segment could never do.** The bar truncated `describe`'s sentence
+  /// ("Describe the change bef…") and hid the remedy in a tooltip. The dialog carries the whole thing.
+  func testTheDialogCarriesTheRemedyTheBarCannot() {
+    let d = VCSSyncPresenter.failureDialog(
+      .needsDescription("Error: Won't push commit 050e657d3c36 since it has no description"),
+      action: .push, now: now)
+    XCTAssertEqual(d.title, "Push failed", "the dialog names what was attempted")
+    XCTAssertTrue(d.message.contains("Describe the change"), "got \(d.message)")
+    XCTAssertTrue(d.message.contains("jj describe"), "the remedy must be copy-pasteable")
+    XCTAssertNil(d.recovery, "a permanent failure must not get a default button either")
+  }
+
+  /// The tool's own words, kept apart from ours. For `.other` this is the ONLY complete account — the
+  /// segment shows that output's first line and nothing else.
+  func testTheDialogCarriesTheToolsOwnOutput() {
+    let raw = "error: failed to push some refs\nhint: Updates were rejected\nhint: pull first"
+    let d = VCSSyncPresenter.failureDialog(.other(raw), action: .push, now: now)
+    XCTAssertEqual(d.details, raw, "the whole output, not the first line the bar shows")
+    XCTAssertEqual(
+      d.message, "error: failed to push some refs",
+      "we have no advice to add to raw output, so the message stays the one-liner")
+  }
+
+  /// Failures Workroom raises itself ran no command, so there is nothing to put under Details.
+  func testFailuresWithNoToolOutputHaveNoDetails() {
+    XCTAssertNil(VCSSyncPresenter.rawOutput(of: .noRemote))
+    XCTAssertNil(VCSSyncPresenter.rawOutput(of: .timedOut(.fetch)))
+    XCTAssertNil(VCSSyncPresenter.rawOutput(of: .rebaseInProgress))
+    XCTAssertNil(
+      VCSSyncPresenter.rawOutput(of: .authRequired("   ")), "whitespace is not evidence")
+  }
+
+  /// The dialog's default button comes from the same `retryAction` the bar uses, so the two can't
+  /// disagree about whether a retry is worth offering — and a doomed command can't end up under Return.
+  func testTheDialogsRecoveryMatchesTheBars() {
+    let rejected = VCSSyncPresenter.failureDialog(
+      .rejected("! [rejected]"), action: .push, now: now)
+    XCTAssertEqual(rejected.recovery, .pull, "the fix for a rejection is to pull, never to force")
+
+    let auth = VCSSyncPresenter.failureDialog(.authRequired("nope"), action: .fetch, now: now)
+    XCTAssertEqual(auth.recovery, .fetch)
+
+    let lock = VCSSyncPresenter.failureDialog(
+      .locked(lock()), action: .fetch, now: now)
+    XCTAssertNil(lock.recovery, "a lock file on disk makes every retry fail identically")
+  }
+
+  /// A located lock's tooltip text is already the complete account — path, age, remedy, caveat — so the
+  /// dialog uses it whole rather than re-assembling a half-duplicate of it.
+  func testALocatedLockKeepsItsFullExplanationAndOffersTheFile() {
+    let d = VCSSyncPresenter.failureDialog(.locked(lock()), action: .fetch, now: now)
+    XCTAssertEqual(d.lockPath, "/r/.git/index.lock", "so the dialog can reveal it in Finder")
+    XCTAssertTrue(d.message.contains("/r/.git/index.lock"), "got \(d.message)")
+    XCTAssertTrue(d.message.contains("rm "), "got \(d.message)")
+    XCTAssertTrue(d.message.contains("If no git command is running"), "the caveat must survive")
+  }
+
+  /// The one failure whose remedy is a command the user has to run before anything else can work.
+  func testNoRemoteTellsYouHowToAddOne() {
+    let d = VCSSyncPresenter.failureDialog(.noRemote, action: .push, now: now)
+    XCTAssertTrue(d.message.contains("git remote add origin"), "got \(d.message)")
+    XCTAssertTrue(d.message.contains("jj git remote add origin"), "both backends; got \(d.message)")
+  }
+
   // MARK: - an action running for another workroom
 
   /// `inFlight` is a model-wide lock but `activity` is per-target, so another workroom's action left this

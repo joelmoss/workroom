@@ -42,6 +42,10 @@ final class RemoteStateModel: ObservableObject {
   @Published private(set) var lastFailure: VCSRemoteFailure?
   /// Which action produced `lastFailure`, so the segment can offer the right retry.
   @Published private(set) var lastAction: VCSRemoteAction?
+  /// The failure the dialog is showing, or nil. Raised only for user-initiated actions — see
+  /// `VCSFailureReport` — and cleared by `dismissFailureReport`. Separate from `lastFailure`, which is the
+  /// toolbar's persistent notice: dismissing the dialog must not erase the bar's report of what happened.
+  @Published private(set) var failureReport: VCSFailureReport?
   /// Set when a pull succeeded but left conflicts. jj records conflicts INSIDE commits and its rebase
   /// exits 0, so the exit code can't tell — this is raised by `noteConflictState` from the status
   /// refresh that follows a mutation, i.e. after the gate has released (re-reading inside it would
@@ -68,6 +72,8 @@ final class RemoteStateModel: ObservableObject {
   private var inFlightTarget: Target?
   /// When each project last auto-fetched, in-memory (a relaunch may legitimately fetch again).
   private var lastAutoFetch: [String: Date] = [:]
+  /// Monotonic id for `failureReport`. See `VCSFailureReport.sequence` for why a repeat needs a new one.
+  private var failureSequence = 0
 
   /// Fired after a successful mutation so the store can refresh everything downstream — workroom
   /// status (the dirty/conflict badge), the commit history, and this model itself. Wired post-init so
@@ -98,6 +104,9 @@ final class RemoteStateModel: ObservableObject {
     self.target = target
     snapshot = nil
     lastFailure = nil
+    // A dialog left open over a workroom the user has moved away from is reporting someone else's
+    // problem — the same reasoning that makes `finish` check the target before publishing anything.
+    failureReport = nil
     lastPullConflicted = false
     guard target != nil else {
       task?.cancel()
@@ -236,8 +245,11 @@ final class RemoteStateModel: ObservableObject {
   /// `anonymousRevision` matters only for a jj workroom whose `@` carries no bookmark: pushing a bare
   /// `@` fails when the working copy is empty and undescribed, which is exactly the state a fresh
   /// workroom sits in. Callers pass `CLIVCSWriter.jjPushRevision(hasChanges:hasDescription:)`.
+  ///
+  /// `userInitiated` decides whether a failure gets a dialog. Only `autoFetchIfDue` passes `false`.
   func perform(
-    _ action: VCSRemoteAction, setUpstream: Bool = false, anonymousRevision: String = "@"
+    _ action: VCSRemoteAction, setUpstream: Bool = false, anonymousRevision: String = "@",
+    userInitiated: Bool = true
   ) {
     guard inFlight == nil, let target, let snapshot else { return }
     // Aborting a rebase is purely local — requiring a remote would leave a workroom wedged in a rebase
@@ -246,12 +258,14 @@ final class RemoteStateModel: ObservableObject {
     if remote.isEmpty, action != .abortRebase {
       lastFailure = .noRemote
       lastAction = action
+      if userInitiated { raiseFailureReport(.noRemote, action: action) }
       return
     }
     inFlight = action
     inFlightTarget = target
     lastAction = action
     lastFailure = nil
+    failureReport = nil
     lastPullConflicted = false
     let makeWriter = self.makeWriter
     let current = snapshot.current
@@ -279,12 +293,14 @@ final class RemoteStateModel: ObservableObject {
       } catch {
         result = .failed(.other("\(error)"))
       }
-      self?.finish(action, result: result, for: target)
+      self?.finish(action, result: result, for: target, userInitiated: userInitiated)
     }
   }
 
-  private func finish(_ action: VCSRemoteAction, result: VCSRemoteActionResult, for target: Target)
-  {
+  private func finish(
+    _ action: VCSRemoteAction, result: VCSRemoteActionResult, for target: Target,
+    userInitiated: Bool
+  ) {
     // Always cleared: the action really is over, and this is the model-wide single-action lock. What is
     // NOT unconditional is the RESULT, below.
     inFlight = nil
@@ -309,7 +325,29 @@ final class RemoteStateModel: ObservableObject {
     case .failed(let failure):
       // Deliberately leaves `snapshot` intact: a failed action tells you nothing new about the repo.
       lastFailure = failure
+      if userInitiated { raiseFailureReport(failure, action: action) }
     }
+  }
+
+  /// Put a failure in front of the user. The toolbar's one truncating line can't carry the message, so
+  /// anything the user asked for and that failed gets the dialog.
+  private func raiseFailureReport(_ failure: VCSRemoteFailure, action: VCSRemoteAction?) {
+    failureSequence += 1
+    failureReport = VCSFailureReport(
+      failure: failure, action: action, sequence: failureSequence)
+  }
+
+  /// Re-open the dialog for the failure the toolbar is currently reporting — the segment's "Show Error
+  /// Details…" item. No-op when there is nothing to show.
+  func presentFailureDetails() {
+    guard let lastFailure else { return }
+    raiseFailureReport(lastFailure, action: lastAction)
+  }
+
+  /// Close the dialog. `lastFailure` deliberately survives: the bar goes on reporting the failure until
+  /// the next action or refresh, so dismissing the dialog doesn't erase the fact that something failed.
+  func dismissFailureReport() {
+    failureReport = nil
   }
 
   /// Stamp Workroom's own fetch time for this project. See `merging` for why this exists.
@@ -332,9 +370,9 @@ final class RemoteStateModel: ObservableObject {
 
   /// Fetch when the inspector gains focus, at most once per `autoFetchInterval` per project.
   ///
-  /// Automatic, so it must be quiet: a failure sets `lastFailure` for the tooltip but raises no alert
-  /// and never blocks the read path. Callers gate on the inspector being visible with the Changes
-  /// section active, so a hidden toolbar never triggers a network call.
+  /// Automatic, so it must be quiet: a failure sets `lastFailure` for the toolbar but raises no dialog
+  /// (`userInitiated: false`) and never blocks the read path. Callers gate on the inspector being visible
+  /// with the Changes section active, so a hidden toolbar never triggers a network call.
   func autoFetchIfDue() {
     guard let target, inFlight == nil, let snapshot, snapshot.primaryRemote != nil else { return }
     if let last = lastAutoFetch[target.projectRoot],
@@ -343,6 +381,6 @@ final class RemoteStateModel: ObservableObject {
       return
     }
     lastAutoFetch[target.projectRoot] = now()
-    perform(.fetch)
+    perform(.fetch, userInitiated: false)
   }
 }

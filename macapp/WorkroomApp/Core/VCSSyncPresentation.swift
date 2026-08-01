@@ -46,6 +46,27 @@ struct VCSSyncPresentation: Equatable, Sendable {
   var isSingleLine: Bool { titleVariants.isEmpty }
 }
 
+/// Everything the failure dialog renders, resolved from one failure.
+///
+/// The toolbar segment is **one truncating line** — it has to be, it's a 114pt cell — so it can only ever
+/// be a notice that something failed. Anything longer than "Describe the change bef…" was unreadable, and
+/// the tooltip that held the rest is a hover away and can't be copied, clicked or kept open while you fix
+/// the problem. This is where the whole message lives instead.
+struct VCSFailureDialog: Equatable, Sendable {
+  /// Names the action, so the dialog says what failed without the bar for context.
+  var title: String
+  /// The full explanation: what happened, then how to fix it. Multi-paragraph, never truncated.
+  var message: String
+  /// The tool's own output, when there is any. Kept apart from `message` because it's evidence, not
+  /// instruction — and for `.other` it is the ONLY complete account, since the segment's copy is that
+  /// output's first line.
+  var details: String?
+  /// The action to offer as the dialog's default button, from `retryAction` — so the dialog can't offer a
+  /// retry the toolbar has already decided is doomed.
+  var recovery: VCSRemoteAction?
+  var lockPath: String?
+}
+
 /// Maps a `VCSRemoteState` to what the sync segment shows.
 ///
 /// ```
@@ -358,6 +379,108 @@ enum VCSSyncPresenter {
     case .other(let message):
       return message.split(whereSeparator: \.isNewline).first.map(String.init) ?? "Failed."
     }
+  }
+
+  /// The dialog form of a failure: the one-liner, the remedy, the tool's own output, and the recovery.
+  ///
+  /// `action` is what was attempted (`RemoteStateModel.lastAction`), which is what lets the title name it.
+  static func failureDialog(
+    _ failure: VCSRemoteFailure, action: VCSRemoteAction?, now: Date
+  ) -> VCSFailureDialog {
+    // A located lock's `explain` is already the complete account — path, age, remedy and the caveat that
+    // makes the remedy safe advice — so it is used whole rather than re-assembled and half-repeated.
+    let message: String
+    if case .locked(let file) = failure, file != nil {
+      message = explain(failure, now: now)
+    } else {
+      message = [describe(failure), remedy(for: failure)].compactMap { $0 }.joined(
+        separator: "\n\n")
+    }
+    return VCSFailureDialog(
+      title: "\(action?.label ?? "The last action") failed",
+      message: message,
+      details: rawOutput(of: failure),
+      recovery: retryAction(for: failure, lastAction: action),
+      lockPath: lockPath(of: failure))
+  }
+
+  /// How to fix it, in the dialog's own voice. Nil where `describe` already IS the remedy, or where the
+  /// tool's output says it better than we can.
+  ///
+  /// Deliberately not merged into `describe`: that one is the toolbar's single line and has to stay one.
+  static func remedy(for failure: VCSRemoteFailure) -> String? {
+    switch failure {
+    case .toolMissing(let tool):
+      return """
+        Install \(tool), or add it to your PATH. Workroom takes its PATH from your login shell at \
+        launch, so a terminal that can find \(tool) is not proof that the app can — relaunch Workroom \
+        after changing your shell profile.
+        """
+    case .timedOut(let action):
+      return """
+        \(action.label) was stopped at its time limit. Check the network or VPN and try again — a first \
+        fetch of a large repository can legitimately need longer than the limit allows.
+        """
+    case .authRequired:
+      return """
+        For an SSH remote, load your key into the agent: ssh-add ~/.ssh/id_ed25519
+        For an HTTPS remote, configure a credential helper.
+
+        Workroom runs git and jj non-interactively, so they can never prompt you for a passphrase — \
+        they fail immediately instead of hanging.
+        """
+    case .hostKeyUnverified:
+      return """
+        Run the same command once from a terminal and accept the fingerprint. That records the host in \
+        ~/.ssh/known_hosts, and Workroom can connect from then on.
+        """
+    case .noRemote:
+      return """
+        Add one from a terminal, then fetch:
+
+        git remote add origin <url>
+        jj git remote add origin <url>
+        """
+    case .rejected:
+      return """
+        Pull to bring the remote's commits in, then push again. Workroom never force-pushes — that \
+        would discard whatever is on the remote that you don't have.
+        """
+    case .dirtyWorkingTree:
+      return "Commit or stash the files named below, then try again."
+    case .rebaseInProgress:
+      return "Abort the rebase to put the repository back in a clean state, then pull again."
+    case .immutableHistory:
+      return """
+        Pull rebases the whole branch containing @ onto trunk(), and a commit in it is protected by \
+        immutable_heads(). Rebase onto this workroom's own base from a terminal instead.
+        """
+    case .needsDescription:
+      return """
+        Give the change a message first, then push again:
+
+        jj describe -m "…"
+        """
+    // `.locked` is answered by `explain` in full; `.other` is raw tool output we have no advice for.
+    case .locked, .other:
+      return nil
+    }
+  }
+
+  /// The tool's own output, for the dialog's Details section. Nil for the failures Workroom raises
+  /// itself, which have no output to show.
+  static func rawOutput(of failure: VCSRemoteFailure) -> String? {
+    let raw: String?
+    switch failure {
+    case .authRequired(let m), .hostKeyUnverified(let m), .rejected(let m),
+      .dirtyWorkingTree(let m),
+      .immutableHistory(let m), .needsDescription(let m), .other(let m):
+      raw = m
+    case .toolMissing, .timedOut, .noRemote, .rebaseInProgress, .locked:
+      raw = nil
+    }
+    let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed?.isEmpty == false ? trimmed : nil
   }
 
   /// The blocking lock file's path, when the failure has one.

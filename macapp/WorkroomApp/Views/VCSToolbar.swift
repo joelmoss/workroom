@@ -127,8 +127,13 @@ struct VCSToolbar: View {
         VCSBranchSegment(name: branchName, vcs: model.target?.vcs)
           .frame(minWidth: VCSToolbarMetrics.segmentMinWidth, maxWidth: .infinity)
         divider
-        VCSSyncSegment(presentation: p, onAct: { perform(p.action) })
-          .frame(minWidth: VCSToolbarMetrics.segmentMinWidth, maxWidth: .infinity)
+        VCSSyncSegment(
+          presentation: p, onAct: { perform(p.action) },
+          // The dialog raises itself when the failure lands; this is how it's reached again after being
+          // dismissed. Offered only on the failure tier, where there is something to show.
+          onShowDetails: p.tone == .failure ? { model.presentFailureDetails() } : nil
+        )
+        .frame(minWidth: VCSToolbarMetrics.segmentMinWidth, maxWidth: .infinity)
         divider
         VCSFetchSegment(
           isRunning: model.activeAction == .fetch,
@@ -272,6 +277,8 @@ private struct VCSBranchSegment: View {
 private struct VCSSyncSegment: View {
   let presentation: VCSSyncPresentation
   let onAct: () -> Void
+  /// Re-opens the failure dialog. Nil on every tier that isn't a failure.
+  var onShowDetails: (() -> Void)?
 
   @State private var hovering = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -320,6 +327,11 @@ private struct VCSSyncSegment: View {
     // one corrupts the index — so the fix is the user's to make, and these hand them the file rather
     // than making them retype a path out of a tooltip.
     .contextMenu {
+      // First, because on a failure it's the item that leads to everything else — including the lock
+      // actions below, which the dialog also offers.
+      if let onShowDetails {
+        Button("Show Error Details…") { onShowDetails() }
+      }
       if let lockPath = presentation.lockPath {
         Button("Copy Lock File Path") {
           NSPasteboard.general.clearContents()
