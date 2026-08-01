@@ -1,3 +1,4 @@
+import Defaults
 import XCTest
 
 @testable import Workroom
@@ -18,6 +19,20 @@ import XCTest
 /// the real keys would leak this class's state into whatever runs beside it.
 @MainActor
 final class VCSRemoteTriggerTests: XCTestCase {
+
+  /// This class drives real action completions for project root `/p`, and a successful `.fetch`/`.pull`
+  /// makes `recordOwnFetch` write `Defaults[.vcsLastFetch]["/p"]` — a PERSISTED dictionary in the standard
+  /// suite. `RemoteStateModelTests` asserts never-fetched preconditions against the same `/p`, so leaving
+  /// the stamp behind defeats them from another `-parallel-testing` worker. Reset both sides.
+  override func setUp() {
+    super.setUp()
+    Defaults.reset(.vcsLastFetch)
+  }
+
+  override func tearDown() {
+    super.tearDown()
+    Defaults.reset(.vcsLastFetch)
+  }
 
   private func makeStore(visible: Bool, section: ActivitySection) -> (AppStore, CountingWriter) {
     let writer = CountingWriter()

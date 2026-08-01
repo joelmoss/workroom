@@ -394,7 +394,13 @@ final class AppStore: ObservableObject {
   /// in another app while Workroom was backgrounded won't have reached the metadata watcher.
   func refreshRemoteStateIfActive() {
     guard inspectorIsVisible, remoteToolbarShown else { return }
-    remoteState.refresh(force: true)
+    // NOT forced — `force` is what skips the model's 15s TTL, and app activation is the one caller that
+    // has no reason to. `RootView` promises this is "throttled, so rapid alt-tabbing doesn't fork a
+    // git/jj process per project" and it wasn't: every activation paid a full read (4 jj processes for an
+    // unbookmarked `@`), held back only by `load()`'s 300ms debounce. `refreshHistoryIfActive`, the twin
+    // this was modelled on, already calls its model unforced. The metadata watcher is the path that
+    // genuinely needs to override the TTL, and it still does.
+    remoteState.refresh()
     remoteState.autoFetchIfDue()
   }
   /// Relative heights of the inspector panes (issue #24), ordered as `InspectorSectionKind.allCases`.
@@ -3919,13 +3925,23 @@ final class AppStore: ObservableObject {
   /// finishes — so a pull in one workroom completing after the user moved to another read the SECOND
   /// workroom's conflict flag and attributed it to the first one's pull.
   private func handleRemoteMutation(_ action: VCSRemoteAction, on sid: SidebarID) {
-    refreshWorkroomStatuses(force: true)
+    // A FETCH refreshes nothing here. It moves remote refs and touches neither our working copy nor our
+    // CI runs, and `rootBranchWatchers` already watches `refs/remotes` and re-reads on its own. This used
+    // to run a forced app-wide sweep for every action including the AUTOMATIC fetch, and `force` is the
+    // one argument that bypasses the CI TTL (`guard !force else { return true }`), so it admitted every
+    // workroom whose local read merely succeeded: one background fetch fanned out into a local probe per
+    // workroom of every project plus a `gh` probe and a GitHub round trip each, two at a time.
+    guard action != .fetch else { return }
+    // One target, debounced, instead of the whole app. The action happened in one workroom.
+    scheduleSelectedStatusRefresh()
     if historySectionShown { commitHistory.refresh() }
     guard action == .pull else { return }
-    // The forced sweep above is async; read the conflict flag once it has landed.
-    let sweep = statusSweepTask
+    // The refresh above is async; read the conflict flag once it has landed. `noteConflictState` re-checks
+    // `sid`, so if the selection moved (and this therefore refreshed a different workroom) it no-ops
+    // rather than attributing someone else's conflicts to this pull.
+    let refresh = selectionStatusTask
     Task { [weak self] in
-      await sweep?.value
+      await refresh?.value
       guard let self else { return }
       self.remoteState.noteConflictState(self.workroomStatuses[sid]?.conflicted == true, for: sid)
     }

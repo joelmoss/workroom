@@ -154,6 +154,32 @@ final class VCSWritingTests: XCTestCase {
       "the flag is one character followed by a TAB — a bare ! is prose")
   }
 
+  /// Two jj refusals that are permanent until the user acts. Both landed in `.other`, whose recovery is a
+  /// retry of the same doomed command, so both needed their own case. jj doesn't localize, which is what
+  /// makes matching its prose acceptable here.
+  func testJJPermanentRefusalsAreClassified() {
+    let undescribed = CommandResult(
+      stdout: "",
+      stderr: "Error: Won't push commit 050e657d3c36 since it has no description",
+      exitCode: 1, timedOut: false)
+    guard case .needsDescription = CLIVCSWriter.classify(undescribed, action: .push, tool: "jj")
+    else {
+      return XCTFail("an undescribed commit must not reach .other — it can never be pushed")
+    }
+
+    let immutable = CommandResult(
+      stdout: "",
+      stderr: """
+        Error: Commit 4c8e754829da is immutable
+        Hint: Could not modify commit: nlsnswmz 4c8e7548 feat@origin | feat1
+        """,
+      exitCode: 1, timedOut: false)
+    guard case .immutableHistory = CLIVCSWriter.classify(immutable, action: .pull, tool: "jj")
+    else {
+      return XCTFail("an immutable-commit refusal must not reach .other — the retry is doomed")
+    }
+  }
+
   /// The point of the flag column: classification must survive a translated stderr. This is the exact
   /// pairing Homebrew git 2.55 produces under `fr_FR.UTF-8` — no English anywhere in the message.
   func testARejectedPushClassifiesWithNoEnglishInTheMessage() {

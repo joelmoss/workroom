@@ -38,7 +38,7 @@ enum VCSToolbarMetrics {
 
   static let titleFont = Font.system(size: 11, weight: .semibold)
   static let captionFont = Font.system(size: 10)
-  /// The single-line states. A lone 10pt dim line in a 36pt bar reads as a rendering bug, so the solo
+  /// The single-line states. A lone 10pt dim line in the bar reads as a rendering bug, so the solo
   /// subtitle is a step up in both size and contrast.
   static let soloFont = Font.system(size: 11)
 
@@ -92,7 +92,10 @@ struct VCSToolbar: View {
       // model-wide lock, so rendering it directly showed "Pushing…" on a workroom that wasn't pushing.
       activity: model.activeAction.map { .running($0) } ?? .idle,
       failure: model.lastFailure, lastAction: model.lastAction,
-      pullConflicted: pullConflicted, now: now)
+      pullConflicted: pullConflicted,
+      // An action is running, but not for THIS workroom. `perform` would drop the click, so the segment
+      // must not look clickable — see `make`'s `busyElsewhere`.
+      busyElsewhere: model.inFlight != nil && model.activeAction == nil, now: now)
   }
 
   /// Whether our own pull left conflicts that are still unresolved.
@@ -263,7 +266,7 @@ private struct VCSBranchSegment: View {
 ///
 /// Line order is inverted relative to segment 1 — bold title over dim subtitle — which is what the
 /// reference design specifies. The consequence is that the two segments' bold lines do **not** share a
-/// baseline: both blocks are 26pt and vertically centred, so a caption-first block sits low and a
+/// baseline: both blocks are the same height and vertically centred, so a caption-first block sits low and a
 /// title-first block sits high. The full-height divider between them is what makes that read as two
 /// groups rather than a misalignment. Called out because it looks like a bug and isn't.
 private struct VCSSyncSegment: View {
@@ -334,7 +337,7 @@ private struct VCSSyncSegment: View {
   @ViewBuilder private var content: some View {
     if presentation.isSingleLine {
       HStack(spacing: VCSToolbarMetrics.glyphSpacing) {
-        // Centred and a step up in size/contrast: a lone dim 10pt line in a 36pt bar reads as broken.
+        // Centred and a step up in size/contrast: a lone dim 10pt line in the bar reads as broken.
         Text(presentation.subtitle)
           .font(VCSToolbarMetrics.soloFont)
           .foregroundStyle(presentation.tone == .normal ? theme.fgMuted : toneColor)

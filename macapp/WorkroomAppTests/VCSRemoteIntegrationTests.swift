@@ -105,11 +105,20 @@ final class VCSRemoteIntegrationTests: XCTestCase {
     return (root, project, branch)
   }
 
+  private struct Unresolved: Error {}
+
+  /// **Fails, never skips.** This helper is the funnel every assertion in the file goes through, and it
+  /// used to `throw XCTSkip` when the resolution wasn't `.state`. A regression that made every repo
+  /// resolve `.failed`/`.keepPrior`/`.absent` — a broken arg builder, an over-eager `classify` rule, an
+  /// unparseable jj template — would then have reported ~20 tests as SKIPPED and left the gate green.
+  /// `requireTool` already `XCTFail`s, so skipping here also disagreed with the file's own policy.
   private func state(_ w: CLIVCSWriter, path: String, projectRoot: String) async throws
     -> VCSRemoteState
   {
-    guard case .state(let s) = await w.remoteState(path: path, projectRoot: projectRoot) else {
-      throw XCTSkip("expected a resolved state")
+    let resolution = await w.remoteState(path: path, projectRoot: projectRoot)
+    guard case .state(let s) = resolution else {
+      XCTFail("expected a resolved state, got \(resolution)")
+      throw Unresolved()
     }
     return s
   }

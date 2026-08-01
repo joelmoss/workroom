@@ -58,6 +58,20 @@ enum VCSRemoteFailure: Equatable, Sendable {
   /// lock corrupts the index — so this reports and explains, and the removal stays the user's call.
   /// That is also what git's own message tells you to do.
   case locked(VCSLockFile?)
+  /// jj refused to rewrite a commit protected by `immutable_heads()` — reached by Pull, whose
+  /// `jj rebase -b @` moves the whole branch containing `@`, and that branch usually contains a
+  /// remote-tracked commit. Measured on jj 0.43 for a workroom based off a feature branch while trunk
+  /// moved on: `Error: Commit 4c8e754829da is immutable`.
+  ///
+  /// Offers no retry, for `rebaseInProgress`'s reason: the destination doesn't change between clicks, so
+  /// every retry fails identically. The real fix is remembering each workroom's own base instead of
+  /// guessing `trunk()` — filed, not built.
+  case immutableHistory(String)
+  /// jj refuses to push a commit with an empty description, changes or not. This is the state a workroom
+  /// sits in the moment you edit a file and before you write a message, so it is the most reachable
+  /// failure on the push path, not an edge case. Measured: `Error: Won't push commit 050e657d3c36 since
+  /// it has no description`.
+  case needsDescription(String)
   case other(String)
 }
 
@@ -674,6 +688,15 @@ struct CLIVCSWriter: VCSWriting, Sendable {
       || err.contains("! [rejected]")
     {
       return .rejected(err)
+    }
+    // Both jj-only, and both permanent until the user acts — so they must NOT reach `.other`, whose
+    // recovery is a retry of the same doomed command. jj doesn't localize, so matching its prose is safe
+    // here in a way it wouldn't be for git.
+    if err.contains("since it has no description") || err.contains("has no description") {
+      return .needsDescription(err)
+    }
+    if err.contains("is immutable") || err.contains("immutable commits") {
+      return .immutableHistory(err)
     }
     if err.contains("Failed to take lock for Git import/export")
       || (err.contains(".lock")

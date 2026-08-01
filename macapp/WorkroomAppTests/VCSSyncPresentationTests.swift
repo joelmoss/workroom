@@ -210,7 +210,7 @@ final class VCSSyncPresentationTests: XCTestCase {
       p.subtitle.contains("Try again"), "the one thing it must never say for a located lock")
   }
 
-  /// The subtitle is one line in a 36pt bar, so the actual remedy lives in the tooltip — and it has to be
+  /// The subtitle is one line in the bar, so the actual remedy lives in the tooltip — and it has to be
   /// complete, because Workroom deliberately won't remove the file itself.
   func testTheTooltipCarriesThePathAgeAndRemedy() {
     let p = VCSSyncPresenter.make(
@@ -244,6 +244,61 @@ final class VCSSyncPresentationTests: XCTestCase {
       lastAction: .push, now: now)
     XCTAssertEqual(p.tone, .normal)
     XCTAssertEqual(p.title, "Pushing…")
+  }
+
+  // MARK: - permanent failures must not offer a retry
+
+  /// Two failures added because they are PERMANENT until the user acts outside Workroom. Both used to
+  /// fall through `retryAction`'s `default: return lastAction` and render a button that ran the identical
+  /// doomed command — the same defect the located-lock case exists to prevent.
+  func testPermanentFailuresOfferNoRetry() {
+    // jj refuses to push a commit with an empty description, changes or not — the state every workroom is
+    // in between the first edit and the first message. Measured: `Won't push commit … since it has no
+    // description`.
+    let undescribed = VCSSyncPresenter.make(
+      state: state(ahead: 1), hasTarget: true, failure: .needsDescription("no description"),
+      lastAction: .push, now: now)
+    XCTAssertNil(undescribed.action, "retrying the same push fails identically")
+    XCTAssertFalse(undescribed.isEnabled)
+    XCTAssertTrue(undescribed.subtitle.contains("Describe"), "got \(undescribed.subtitle)")
+
+    // jj refuses to rewrite commits `immutable_heads()` protects, which `rebase -b @` hits whenever the
+    // branch containing `@` holds a remote-tracked commit. Measured: `Commit … is immutable`.
+    let immutable = VCSSyncPresenter.make(
+      state: state(behind: 2), hasTarget: true, failure: .immutableHistory("is immutable"),
+      lastAction: .pull, now: now)
+    XCTAssertNil(immutable.action)
+    XCTAssertFalse(immutable.isEnabled)
+    XCTAssertTrue(immutable.titleVariants.isEmpty, "no title means no button to click")
+  }
+
+  /// The recovery button must name the action it PERFORMS. It took its title from `lastAction` while its
+  /// action came from `recovery`, so a rejected push rendered "Push" and ran a Pull.
+  func testTheRecoveryButtonNamesWhatItDoes() {
+    let p = VCSSyncPresenter.make(
+      state: state(ahead: 2), hasTarget: true, failure: .rejected("! [rejected]"),
+      lastAction: .push, now: now)
+    XCTAssertEqual(p.action, .pull)
+    XCTAssertEqual(
+      p.title, "Pull", "the button said \"Push\" and performed a Pull; got \(p.title ?? "nil")")
+  }
+
+  // MARK: - an action running for another workroom
+
+  /// `inFlight` is a model-wide lock but `activity` is per-target, so another workroom's action left this
+  /// segment rendering an enabled button whose click `perform` silently dropped — and via the
+  /// confirmation path, a dialog the user answered for nothing.
+  func testAnActionElsewhereDisablesTheSegmentWithoutChangingItsCopy() {
+    let idle = VCSSyncPresenter.make(state: state(ahead: 3), hasTarget: true, now: now)
+    let busy = VCSSyncPresenter.make(
+      state: state(ahead: 3), hasTarget: true, busyElsewhere: true, now: now)
+
+    XCTAssertEqual(idle.action, .push)
+    XCTAssertNil(busy.action, "a click here would be dropped, so it must not be offered")
+    XCTAssertFalse(busy.isEnabled)
+    XCTAssertEqual(
+      busy.titleVariants, idle.titleVariants, "the copy must still report the real state")
+    XCTAssertEqual(busy.badge, idle.badge, "and so must the count")
   }
 
   // MARK: - [14] a pull that landed conflicts

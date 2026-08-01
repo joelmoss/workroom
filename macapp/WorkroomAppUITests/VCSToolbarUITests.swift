@@ -127,12 +127,16 @@ class VCSToolbarUITestsBase: XCTestCase {
 
   /// Branch and remote state belong to the Changes section; the Files tree has no use for them, and
   /// showing the bar there would jump the layout on every activity-bar click.
+  /// The flag is `-WorkroomUITestInspectorSection`. It was `-WorkroomUITestSection`, which the fixture
+  /// never reads, so the app always launched on Changes and the whole test rested on an un-awaited
+  /// `if toolbar(app).exists { typeKey ⌥⌘F }`: sampled before the bar rendered, the keystroke was skipped
+  /// and the negative assertion passed against a toolbar that was about to appear. The Files case was
+  /// never exercised. The precondition is now asserted rather than assumed.
   func testToolbarIsHiddenOnTheFilesSection() {
-    let app = launchedApp(syncState: "ahead", extraArguments: ["-WorkroomUITestSection", "files"])
-    // If the fixture doesn't support pinning the section, fall back to the View-menu toggle (⌥⌘F).
-    if toolbar(app).exists {
-      app.typeKey("f", modifierFlags: [.command, .option])
-    }
+    let app = launchedApp(extraArguments: ["-WorkroomUITestInspectorSection", "files"])
+    XCTAssertTrue(
+      element(app, id: "inspector.header.Files").waitForExistence(timeout: 10),
+      "the Files pane must be up before absence of the toolbar means anything")
     XCTAssertTrue(
       waitExists(toolbar(app), false), "the toolbar must not render for the Files section")
   }

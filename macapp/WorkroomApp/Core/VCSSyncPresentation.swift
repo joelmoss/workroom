@@ -53,6 +53,8 @@ struct VCSSyncPresentation: Equatable, Sendable {
 ///      │no
 ///   in flight? ──yes──►  [10/11/12] Fetching…/Pushing…/Pulling…      disabled
 ///      │no
+///   pullConflicted? ──yes──►  [14] "Pulled with conflicts"    disabled, tone: warning
+///      │no
 ///   target valid? ──no──►  [1] no workroom  ·  [2] no repository     disabled
 ///      │yes
 ///   tools ok? ──no──►  [0] "<tool> is too old"                       disabled
@@ -86,10 +88,37 @@ enum VCSSyncPresenter {
   ///     (`VCSToolVersions`). Outranks everything except an in-flight action and a failure, because no
   ///     action can succeed.
   ///   - pullRebase: whether the repo pulls with rebase — wording only.
+  ///   - pullConflicted: our own pull left conflicts that are still unresolved. Compute it with
+  ///     `pullConflicted(lastPullConflicted:statusConflicted:)` — both halves are load-bearing.
+  ///   - busyElsewhere: an action is running for a DIFFERENT workroom. `RemoteStateModel.inFlight` is a
+  ///     model-wide lock, so `perform` drops the click — but `activity` here is per-target, so without
+  ///     this the segment rendered an enabled button, hover well and all, whose click did nothing at all.
+  ///     Worse through the confirmation path: the dialog appeared, the user confirmed, and the action was
+  ///     silently discarded. A 300s pull in one workroom made every other workroom's button a no-op.
   static func make(
     state: VCSRemoteState?, hasTarget: Bool, toolsUsable: Bool = true,
     activity: VCSSyncActivity = .idle, failure: VCSRemoteFailure? = nil,
     lastAction: VCSRemoteAction? = nil, pullRebase: Bool = true, pullConflicted: Bool = false,
+    busyElsewhere: Bool = false, now: Date
+  ) -> VCSSyncPresentation {
+    var resolved = resolve(
+      state: state, hasTarget: hasTarget, toolsUsable: toolsUsable, activity: activity,
+      failure: failure, lastAction: lastAction, pullRebase: pullRebase,
+      pullConflicted: pullConflicted, now: now)
+    // Applied AFTER the ladder rather than threaded through every enabled tier: it changes only whether
+    // the thing can be clicked, never what it says. The copy still reports the real state, so the user
+    // isn't told a lie — the button simply isn't live while the engine is busy for someone else.
+    if busyElsewhere, resolved.action != nil {
+      resolved.action = nil
+      resolved.isEnabled = false
+    }
+    return resolved
+  }
+
+  private static func resolve(
+    state: VCSRemoteState?, hasTarget: Bool, toolsUsable: Bool,
+    activity: VCSSyncActivity, failure: VCSRemoteFailure?,
+    lastAction: VCSRemoteAction?, pullRebase: Bool, pullConflicted: Bool,
     now: Date
   ) -> VCSSyncPresentation {
     // [13] A failure outranks everything: it's the only state with something to recover from, and
@@ -109,7 +138,7 @@ enum VCSSyncPresenter {
         symbol: "exclamationmark.triangle.fill",
         action: recovery,
         isEnabled: recovery != nil,
-        // The tooltip is where a failure gets room to explain itself — one line fits the 36pt bar, the
+        // The tooltip is where a failure gets room to explain itself — one line fits the bar, the
         // remedy usually doesn't.
         tone: .failure, help: explain(failure, now: now),
         accessibility: "\(lastAction?.label ?? "Action") failed. \(explain(failure, now: now))",
@@ -167,7 +196,7 @@ enum VCSSyncPresenter {
     // [0] The tools can't run these commands. Nothing below this line could succeed.
     guard toolsUsable else {
       return disabled(
-        "Update git to use this", symbol: "exclamationmark.triangle", tone: .warning,
+        "Update git or jj to use this", symbol: "exclamationmark.triangle", tone: .warning,
         help:
           "Fetch, push and pull need a newer git or jj. See the warning for the required version.")
     }
@@ -258,6 +287,10 @@ enum VCSSyncPresenter {
   /// Which action a failure offers. `.rebaseInProgress` deliberately offers **Abort**, never a retry —
   /// a retry fails identically until the rebase is cleared. `.toolMissing` offers nothing, because no
   /// click can fix a missing binary.
+  /// **Exhaustive on purpose — no `default:`.** It used to end `default: return lastAction`, so every
+  /// failure added later silently inherited "offer a retry", which is the exact defect the `[13]` tier
+  /// exists to prevent. Two of the failures below were added precisely because they are permanent, and a
+  /// `default:` would have handed them a doomed button without a compile error.
   static func retryAction(for failure: VCSRemoteFailure, lastAction: VCSRemoteAction?)
     -> VCSRemoteAction?
   {
@@ -265,12 +298,16 @@ enum VCSSyncPresenter {
     case .rebaseInProgress: return .abortRebase
     case .rejected: return .pull  // the fix for a rejection is to pull, never to force
     case .toolMissing, .noRemote: return nil
+    // Permanent until the user does something outside Workroom: describe the commit, or move off a base
+    // whose history is protected. Retrying either runs the identical command and fails identically.
+    case .needsDescription, .immutableHistory: return nil
+    case .timedOut, .authRequired, .hostKeyUnverified, .dirtyWorkingTree, .other:
+      return lastAction
     // A LOCATED lock file offers nothing, for `rebaseInProgress`'s reason: the file is sitting there, so
     // every retry fails identically and the button is a promise that can't be kept. Removing it is the
     // only fix and Workroom won't do that for you (see `VCSRemoteFailure.locked`), so the recovery is
     // explained rather than offered. An unlocatable lock was transient contention — retry away.
     case .locked(let file): return file == nil ? lastAction : nil
-    default: return lastAction
     }
   }
 
@@ -312,6 +349,12 @@ enum VCSSyncPresenter {
       // is still there sends the user round a loop that cannot terminate.
       guard let file else { return "The repository was busy. Try again." }
       return "A leftover \(file.filename) is blocking git."
+    case .needsDescription:
+      // The most reachable failure on the push path: this is every workroom between the first edit and
+      // the first commit message. The remedy is one command, so name it.
+      return "Describe the change before pushing it (jj describe)."
+    case .immutableHistory:
+      return "Pull would rewrite shared history here, so it can’t run."
     case .other(let message):
       return message.split(whereSeparator: \.isNewline).first.map(String.init) ?? "Failed."
     }

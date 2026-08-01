@@ -16,6 +16,16 @@ final class RemoteStateModelTests: XCTestCase {
   private let otherTarget = RemoteStateModel.Target(
     sid: .workroom(project: "/p", name: "other"), path: "/p/other", vcs: "git", projectRoot: "/p")
 
+  /// Reset in setUp as well as tearDown. `Defaults[.vcsLastFetch]` is a PERSISTED dictionary in the
+  /// standard suite keyed by project ROOT PATH, and `VCSRemoteTriggerTests` drives real `.fetch`/`.pull`
+  /// completions for the same `/p` root, so `recordOwnFetch` there writes a stamp this class's
+  /// never-fetched preconditions read. `-parallel-testing` workers are separate processes sharing one
+  /// defaults domain, so tearDown alone leaves a window where the other class's stamp is already written.
+  override func setUp() {
+    super.setUp()
+    Defaults.reset(.vcsLastFetch)
+  }
+
   override func tearDown() {
     super.tearDown()
     Defaults.reset(.vcsLastFetch)
