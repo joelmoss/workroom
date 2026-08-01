@@ -136,6 +136,34 @@ own factory `VCS.writer(for:)`, conformed by `CLIVCSWriter`. Two reasons, both l
 So: add commit/amend and the rest as `VCSWriting` members, and they inherit the gate, the network
 environment hardening and the failure taxonomy for free.
 
+**Which backend each op uses — decided, don't re-litigate.** `VCSWriting` says *where* writes live,
+not *how* they run. The split:
+
+| Ops | Backend | Why |
+|---|---|---|
+| commit/amend, branch + bookmark management, jj undo/op-log/split/absorb/evolog | **native** (libgit2/SwiftGitX, jj-lib) | Local. Typed APIs, no output to parse, no tool-version floor, no locale exposure. This is where every remaining Phase-2 feature lands, so the CLI surface **stops growing here.** |
+| fetch, push, pull | **CLI** — permanently, not a stopgap | Three independent blockers, all verified from checked-out sources: SwiftGitX passes NULL options (`git_remote_fetch(remotePointer, nil, nil, nil)`, and `pull` is a `// TODO`), so it has no credential callback at all; **libgit2 implements no `credential.helper` protocol** — nothing in its `src` reads that config key, so native auth means reimplementing helper invocation ourselves; and jj-lib shells to `git` for remote ops anyway (that's where its `MINIMUM_GIT_VERSION` comes from), so a "native jj push" is a git subprocess wearing a Rust coat. |
+
+**Non-goal: Workroom does not store credentials.** No OAuth client, no keychain writes, no auth
+prompt, no account concept. The user's own helpers (`osxkeychain`, GCM, `!gh auth git-credential`,
+anything corporate) are the correct answer, and shelling out gets every host — including ones we've
+never heard of — for free, with the same credentials their terminal uses. GitHub Desktop is the
+instructive counterexample: it also shells out (via `dugite`, which bundles its own git), but blanks
+your helpers and registers itself as `credential.helper=desktop` because being *the GitHub client* is
+its product. The cost of that choice is `app/src/lib/generic-git-auth.ts` — a second credential store,
+with its own prompt UI, keychain keys and invalidation, for every non-GitHub host. We are not that
+product, and the app's one GitHub dependency (PR status) already rides `gh`'s own token.
+
+**When you do shell out, never parse prose.** `--porcelain`, `-z`, `%(…)`, `-T`, exit codes. Measured:
+`Updates were rejected` becomes `Les mises à jour ont été rejetées` under `fr_FR.UTF-8`, so a prose
+match loses the whole failure taxonomy for a non-English user. `StatusCommandRunner` pins `LC_ALL=C`
+as a backstop; it is not the plan.
+
+*Filed, not planned:* bundling our own `git` the way `dugite` does would delete all of
+`Core/VCSToolVersions.swift` — floor, probe, notification, per-VCS scoping. Real cost (universal
+binary, notarization, ~40MB, and the Go CLI would want the same binary), so revisit only if the
+version floor actually bites a user.
+
 **Why:** This is a roadmap phase, not a tactical follow-up. The authoritative scope + sequencing live
 in the issue #59 plan; this entry is the pointer that makes it discoverable.
 
