@@ -239,6 +239,48 @@ the repair. The repair is itself a write, so it belongs on `VCSWriting`.
 
 **Priority:** P3 (jj projects only; wrong-workroom errors are rare but very confusing).
 
+### jj `push-<id>` bookmarks accumulate on the remote (macapp) — VCS-toolbar eng-review follow-up
+
+**What:** Decide what happens to the `push-<change-id>` bookmarks that pushing an unbookmarked jj `@`
+leaves on the remote.
+
+**Why:** A jj workroom is `jj workspace add`, whose `@` carries no bookmark, so the toolbar's Push runs
+`jj git push --change @`. jj creates a bookmark named by `templates.git_push_bookmark` (default
+`"push-" ++ change_id.short()`), and **nothing ever removes it**. Verified on jj 0.43 against a bare
+origin — two pushes of two different changes left two bookmarks behind permanently:
+
+```
+push-rrxukuporqwy
+push-slxllnxlmxwz
+```
+
+On a shared remote that accrues indefinitely, one entry per change anyone ever pushed from a workroom.
+
+**Not a problem, though it was filed as one:** the review paired this with a suspected
+non-fast-forward asymmetry — that re-pushing an amended change would be rejected. It isn't. A change id
+is stable across amends, so jj moves its own bookmark with no force flag and no error:
+
+```
+bookmark: push-slxllnxlmxwz [move sideways from b7e44fc98f79 to 8f82f551ad69]
+```
+
+Don't re-investigate that half.
+
+**Pros:** a shared remote stays legible.
+
+**Cons:** this is jj's OWN behaviour for an anonymous push, not something Workroom invented — bare
+`jj git push --change` does exactly this. Diverging from it means inventing a naming or cleanup policy
+that jj users won't expect from other jj tools. Doing nothing is defensible.
+
+**Context / how to start:** `CLIVCSWriter.jjPushRevision` and the `--change` push path; the options are
+(a) leave it and document it, (b) offer cleanup of merged `push-*` bookmarks, or (c) require a bookmark
+before pushing, which costs the one-click Publish a fresh workroom currently gets.
+
+**Depends on:** the VCS toolbar (shipped).
+
+**Priority:** P3 (jj projects only; cosmetic on a personal remote, untidy on a shared one — and the
+status quo matches jj's own).
+
 ### "New workroom from branch…" (macapp) — the successor to branch switching
 
 **What:** Pick a local or remote branch and create a workroom for it, from the VCS toolbar's branch
