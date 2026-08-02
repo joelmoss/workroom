@@ -297,6 +297,14 @@ struct RootView: View {
         ProjectSettingsSheet(project: pending.project, showsRunWarning: pending.showsRunWarning)
           .environmentObject(store)
       }
+      // The commit dialog. Presented on the ROOT for `VCSFailureSheet`'s reason: it can be opened
+      // from the Changes header, and a dialog that only survives while a particular pane happens to
+      // be open is worse than no dialog. `pendingCommit` is already counted by
+      // `hasModalPresentation`, so Source Control shortcuts are inert behind it.
+      .sheet(item: $store.pendingCommit) { pending in
+        CommitSheet(pending: pending, onDismiss: { store.pendingCommit = nil })
+          .environmentObject(store)
+      }
   }
 
   /// The edge-reveal sidebars and the foreground toast overlay — the layers drawn over the split.

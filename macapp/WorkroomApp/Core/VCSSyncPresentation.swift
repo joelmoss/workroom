@@ -512,6 +512,128 @@ enum VCSSyncPresenter {
       """
   }
 
+  // MARK: Commit failures
+
+  /// The dialog form of a commit failure, reusing `VCSFailureDialog` so the commit sheet and the
+  /// toolbar's failure sheet say things the same way.
+  ///
+  /// `recovery` is always nil: every `VCSRemoteAction` is a *remote* verb, and none of them fixes a
+  /// commit. The commit sheet offers its own recovery (edit and press Commit again, or hand off to
+  /// the terminal), which is the same reasoning `retryAction` applies to `.locked` — never offer a
+  /// button that would fail identically.
+  static func commitFailureDialog(_ failure: VCSCommitFailure, mode: VCSCommitMode)
+    -> VCSFailureDialog
+  {
+    VCSFailureDialog(
+      title: "\(commitVerb(mode)) failed",
+      message: [describeCommit(failure), commitRemedy(for: failure)].compactMap { $0 }
+        .joined(separator: "\n\n"),
+      details: commitRawOutput(of: failure),
+      recovery: nil,
+      lockPath: {
+        guard case .locked(let file) = failure else { return nil }
+        return file?.path
+      }())
+  }
+
+  static func commitVerb(_ mode: VCSCommitMode) -> String {
+    switch mode {
+    case .commit: return "Commit"
+    case .amendMessage: return "Amend"
+    case .describe: return "Set message"
+    }
+  }
+
+  /// One actionable line per failure. Same contract as `describe`: the baffling ones get written
+  /// copy, the self-explanatory ones carry the tool's own words.
+  static func describeCommit(_ failure: VCSCommitFailure) -> String {
+    switch failure {
+    case .toolMissing(let tool): return "\(tool) isn’t on Workroom’s PATH."
+    case .timedOut: return "The commit was stopped at its time limit."
+    case .nothingToCommit: return "Nothing to commit."
+    case .identityMissing: return "git doesn’t know who you are yet."
+    case .signingFailed: return "Signing the commit failed."
+    case .hookRejected: return "A commit hook rejected this commit."
+    case .unmergedFiles: return "Some files still have unresolved conflicts."
+    case .sequencerInProgress(let what): return "A \(what) is in progress in this workroom."
+    case .locked(let file):
+      guard let file else { return "The repository was busy. Try again." }
+      return "A leftover \(file.filename) is blocking git."
+    case .unsupportedMode: return "That action isn’t available for this repository."
+    case .other(let message):
+      return message.split(whereSeparator: \.isNewline).first.map(String.init) ?? "Commit failed."
+    }
+  }
+
+  /// How to fix it. Nil where the tool's own output already says it better.
+  static func commitRemedy(for failure: VCSCommitFailure) -> String? {
+    switch failure {
+    case .toolMissing(let tool):
+      return """
+        Install \(tool), or add it to your PATH. Workroom takes its PATH from your login shell at \
+        launch, so a terminal that can find \(tool) is not proof that the app can — relaunch \
+        Workroom after changing your shell profile.
+        """
+    case .timedOut:
+      return """
+        A pre-commit hook that runs a linter or a test suite can legitimately take this long. Run \
+        the commit in the terminal to watch it, or shorten the hook.
+        """
+    case .nothingToCommit:
+      return "Select at least one file with changes, then commit again."
+    case .identityMissing:
+      return """
+        Set your name and email, then commit again:
+
+        git config --global user.name "Your Name"
+        git config --global user.email "you@example.com"
+        """
+    case .signingFailed:
+      return """
+        Workroom runs git without a terminal, so gpg can never prompt you for a passphrase — it \
+        fails immediately instead of hanging. Unlock your key in the agent first, or run this \
+        commit in the terminal.
+        """
+    case .hookRejected:
+      return """
+        The hook’s own output is below. Fix what it reports and commit again, or run the commit in \
+        the terminal to work through it interactively.
+        """
+    case .unmergedFiles:
+      return "Resolve the conflicts first — the Changes list marks each conflicted file."
+    case .sequencerInProgress(let what):
+      return """
+        Finish or abort the \(what) in the terminal first. Committing part of a \(what) from here \
+        would leave the repository half-way through it.
+        """
+    case .locked(let file):
+      guard let file else { return nil }
+      return """
+        A git command that was force-stopped leaves this behind:
+
+        \(file.path)
+
+        If no git command is running for this repository, deleting the file is safe.
+        """
+    case .unsupportedMode, .other:
+      return nil
+    }
+  }
+
+  /// The tool's own output, for the Details section. Nil for failures Workroom raises itself.
+  static func commitRawOutput(of failure: VCSCommitFailure) -> String? {
+    let raw: String?
+    switch failure {
+    case .identityMissing(let m), .signingFailed(let m), .hookRejected(let m),
+      .unmergedFiles(let m), .other(let m):
+      raw = m
+    case .toolMissing, .timedOut, .nothingToCommit, .sequencerInProgress, .locked, .unsupportedMode:
+      raw = nil
+    }
+    let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed?.isEmpty == false ? trimmed : nil
+  }
+
   // MARK: Vocabulary
 
   /// What this backend calls the thing the working copy is on: jj says **bookmark**, git says **branch**.

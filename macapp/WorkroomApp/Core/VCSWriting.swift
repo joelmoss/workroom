@@ -137,6 +137,66 @@ enum VCSRemoteActionResult: Equatable, Sendable {
   case failed(VCSRemoteFailure)
 }
 
+// MARK: - Commit
+
+/// Which commit verb to run. Deliberately NOT folded into `VCSRemoteAction`: that enum feeds
+/// `VCSRemoteFailure.timedOut`, `PendingVCSAction` and the toolbar's labels, none of which mean
+/// anything for a purely local write.
+///
+/// The cases are backend-scoped and the writer rejects a mismatch with `.unsupportedMode` rather
+/// than silently issuing the wrong command:
+/// - `.commit` — both backends.
+/// - `.amendMessage` — git only. jj's analogue is `.describe`, which is not the same operation.
+/// - `.describe` — jj only. Sets `@`'s description and stays on it.
+enum VCSCommitMode: String, Equatable, Sendable {
+  case commit, amendMessage, describe
+}
+
+/// One commit, fully specified. `files` carries `ChangedFile` rather than `String` because a rename
+/// needs BOTH sides of the pathspec — see `gitPathspecPayload`.
+struct VCSCommitRequest: Equatable, Sendable {
+  let message: String
+  /// The user's selection. Empty for jj, which has no index and commits the whole change.
+  let files: [ChangedFile]
+  let mode: VCSCommitMode
+}
+
+enum VCSCommitResult: Equatable, Sendable {
+  case ok(summary: String, revision: String?)
+  /// The ref MOVED but the command still reported failure — a `post-commit` hook that fails or hangs
+  /// past the timeout is the reachable case. Distinct from `.failed` because the recovery is
+  /// opposite: retrying would create a SECOND commit.
+  case committedThenFailed(revision: String, detail: String)
+  case failed(VCSCommitFailure)
+}
+
+/// Why a commit failed. Separate from `VCSRemoteFailure` for the reason that enum documents about
+/// `VCSError`: its `.timedOut` carries a `VCSRemoteAction`, and commit is not a remote action, so
+/// reusing it would force a meaningless value.
+enum VCSCommitFailure: Equatable, Sendable {
+  case toolMissing(String)
+  case timedOut
+  /// Nothing staged/changed for the selection. jj reports this as an ordinary success ("Nothing
+  /// changed."), so the writer maps it rather than surfacing a phantom commit.
+  case nothingToCommit
+  /// `user.name`/`user.email` unset — git cannot build a signature.
+  case identityMissing(String)
+  /// gpg/ssh signing refused. With stdin on `/dev/null` this fails FAST rather than hanging, so it
+  /// is a classifiable outcome and not a timeout — see `commitSigningMarkers`.
+  case signingFailed(String)
+  /// A `pre-commit`/`commit-msg` hook rejected it. **Matched, never a catch-all** — a catch-all
+  /// mislabels signing failures, config errors and index corruption, sending users to the wrong fix.
+  case hookRejected(String)
+  case unmergedFiles(String)
+  /// A merge, cherry-pick, revert, rebase or bisect is parked in this worktree. Path-limited commits
+  /// are invalid during several of these, and finishing the sequencer is the user's call.
+  case sequencerInProgress(String)
+  case locked(VCSLockFile?)
+  /// The verb doesn't exist for this backend (`.amendMessage` on jj, `.describe` on git).
+  case unsupportedMode
+  case other(String)
+}
+
 /// The seam for VCS operations that **write** — remote state reads plus fetch/push/pull.
 ///
 /// Separate from `VCSProviding` on purpose. That protocol's doc calls it "the single seam the app
@@ -168,6 +228,26 @@ protocol VCSWriting: Sendable {
   /// Recover a workroom left mid-rebase. git only; a no-op for jj, whose rebase is atomic and
   /// `jj undo`-able.
   func abortRebase(path: String, projectRoot: String) async -> VCSRemoteActionResult
+
+  /// Record a commit. **Local**, unlike everything above it, so it takes no `remote` and never runs
+  /// through `runNetwork` — but it lands here rather than on `VCSProviding` for the reason this
+  /// protocol's own doc gives: writes belong behind the gate, and a read seam that could commit is
+  /// exactly what that separation prevents.
+  ///
+  /// Always runs in the **workroom**, both backends. `opDirectory` records the measured bug where a
+  /// jj write at the project root operated on the ROOT workspace's `@` and reported success; a
+  /// commit at the root would publish the wrong workspace's work in the same way.
+  func commit(path: String, projectRoot: String, request: VCSCommitRequest) async -> VCSCommitResult
+
+  /// Selected paths whose STAGED content a commit would silently discard, so the caller can confirm
+  /// first. Empty when there is nothing at risk. See `CLIVCSWriter.stagedContentAtRisk`.
+  func stagedContentAtRisk(path: String, files: [ChangedFile]) async -> [String]
+}
+
+extension VCSWriting {
+  /// Test doubles and the fixture have no index to put anything at risk — same reasoning as
+  /// `runNetwork`'s default, so they stay short.
+  func stagedContentAtRisk(path: String, files: [ChangedFile]) async -> [String] { [] }
 }
 
 extension VCS {
@@ -238,6 +318,14 @@ struct CLIVCSWriter: VCSWriting, Sendable {
   /// Generous because SIGKILLing a rebase is the one genuinely unsafe timeout here — it can leave
   /// `rebase-merge` behind. `classify` probes for that and reports `.rebaseInProgress`.
   var pullTimeout: TimeInterval = 300
+  /// Deliberately generous, and deliberately NOT tuned down. A `pre-commit` hook that runs a linter
+  /// or a test suite routinely takes minutes, and `StatusCommandRunner` escalates to `killTree` two
+  /// seconds after SIGTERM — SIGKILL is uncatchable, so git's own cleanup never runs and an
+  /// `index.lock` is left behind. Workroom deliberately never deletes that file (see
+  /// `VCSRemoteFailure.locked`), so a too-short limit here would wedge every later commit *and*
+  /// every status probe until the user removed it by hand. Killing a commit is categorically more
+  /// dangerous than killing a fetch.
+  var commitTimeout: TimeInterval = 600
 
   // MARK: - Placement
 
@@ -425,6 +513,140 @@ struct CLIVCSWriter: VCSWriting, Sendable {
     WorkroomStatusResolver.gitHardening + ["rebase", "--abort"]
   }
 
+  // MARK: - git commit argument builders
+
+  /// The NUL-separated pathspec payload for `--pathspec-from-file=-`, written to the child's stdin.
+  ///
+  /// Three things here are load-bearing, and all three were **measured** on git 2.x rather than
+  /// reasoned about:
+  ///
+  /// 1. **A rename contributes BOTH sides.** `ChangedFile` carries `oldPath`, and the status layer
+  ///    pairs renames (`.renamesIndex`/`.renamesWorkingTree`), so one row means two paths. Sending
+  ///    only `path`: `mv old new` then committing `new` recorded an **add** and left `D old`
+  ///    dangling in the worktree — staged, if the rename came from `git mv`. The user ticked one row
+  ///    labelled `old → new` and got half a rename plus a mess.
+  ///
+  /// 2. **Every entry is `:(literal)`-prefixed.** `--` ends OPTION parsing, not MAGIC parsing, and
+  ///    `--pathspec-file-nul` does NOT disable globbing either — its "taken literally" refers to the
+  ///    absence of C-quoting in the file format, not to pathspec magic. Measured with `ab.txt` and
+  ///    `a[b].txt` both modified: sending `a[b].txt` committed BOTH. A file named `*` would commit
+  ///    the whole tree. `:(literal)` is what actually turns it off (verified: commits only the
+  ///    bracketed file), and it still parses under `--pathspec-file-nul`.
+  ///
+  /// 3. **NUL separation, so no path needs escaping** — newlines and quotes in filenames pass
+  ///    through unharmed, and thousands of long paths cannot blow the `E2BIG` argv ceiling at spawn,
+  ///    where git would never get to emit anything classifiable.
+  ///
+  /// Order-preserving dedup: a rename whose `oldPath` is also its own `path` (or two rows naming the
+  /// same file) must not send a duplicate.
+  static func gitPathspecPayload(_ files: [ChangedFile]) -> Data {
+    var seen = Set<String>()
+    var out = Data()
+    for file in files {
+      for path in [file.path, file.oldPath].compactMap({ $0 }) where !path.isEmpty {
+        guard seen.insert(path).inserted else { continue }
+        out.append(contentsOf: Array(":(literal)\(path)".utf8))
+        out.append(0)
+      }
+    }
+    return out
+  }
+
+  /// Make untracked selections known to git so `--only` can commit them.
+  ///
+  /// `git commit --only` refuses a path git has never seen — measured: `error: pathspec
+  /// 'untracked.txt' did not match any file(s) known to git`. `--intent-to-add` records an empty
+  /// entry, which is enough for `--only` to then take the file's real contents (verified).
+  ///
+  /// This is the **only** index mutation the commit path performs, and only for files that were
+  /// untracked, so a failed commit can leave nothing worse than an intent-to-add marker the user
+  /// clears with `git reset`. Tracked files are never staged — see `gitCommitOnlyArgs`.
+  static func gitIntentToAddArgs() -> [String] {
+    WorkroomStatusResolver.gitHardening
+      + ["add", "--intent-to-add", "--pathspec-from-file=-", "--pathspec-file-nul"]
+  }
+
+  /// Commit exactly the selection, from the WORKTREE, without touching the index for tracked paths.
+  ///
+  /// `--only` is the whole point and was chosen on measurement: with a pre-staged `other.txt` and a
+  /// selection of `tracked.txt`, this committed only `tracked.txt` and left `other.txt` **still
+  /// staged** (`M ` in porcelain). A `git add <selection>` + bare `git commit` would have swept that
+  /// staged file into the user's commit, which is the "absorbs a partially-staged index" bug the
+  /// selection model exists to prevent — reintroduced by the fix.
+  ///
+  /// The message goes in **argv**, not stdin, because stdin is already carrying the pathspec and a
+  /// process has one of them. `-m` accepts embedded newlines fine, so a summary + body is one
+  /// argument. Note `--cleanup` still applies: git strips trailing whitespace and collapses runs of
+  /// blank lines, so what is recorded can differ slightly from what was typed.
+  static func gitCommitOnlyArgs(message: String) -> [String] {
+    WorkroomStatusResolver.gitHardening
+      + ["commit", "--only", "--pathspec-from-file=-", "--pathspec-file-nul", "-m", message]
+  }
+
+  /// Reword the last commit and change **nothing else**.
+  ///
+  /// `--only` with no pathspec is what makes that true. Measured without it: `git add sneaky.txt &&
+  /// git commit --amend -m "…"` absorbed `sneaky.txt` into the amended commit. In a dialog whose
+  /// entire premise is that you choose what gets recorded, an Amend that silently commits whatever
+  /// happens to be staged is the same defect wearing a different verb.
+  static func gitAmendMessageArgs(message: String) -> [String] {
+    WorkroomStatusResolver.gitHardening + ["commit", "--amend", "--only", "-m", message]
+  }
+
+  /// Porcelain status for the staged-content guard.
+  ///
+  /// `-z` because a filename can contain a newline, and without it git also C-quotes non-ASCII names
+  /// — both would desync the parse. Deliberately takes NO pathspec: `git diff`/`git status` do not
+  /// accept `--pathspec-from-file` (measured: `error: invalid option`), and passing thousands of
+  /// paths as argv is the `E2BIG` problem the commit path avoids. One unfiltered read plus an
+  /// in-memory filter is cheaper and cannot fail on an odd name.
+  static func gitStatusPorcelainArgs() -> [String] {
+    WorkroomStatusResolver.gitHardening + ["status", "--porcelain", "-z"]
+  }
+
+  /// Which of `paths` hold staged content that committing would DISCARD.
+  ///
+  /// `git commit --only` builds the commit from the **worktree**, so for a selected path whose index
+  /// differs from both HEAD and the worktree, the staged intermediate is bypassed and then lost.
+  /// That is precisely what someone who ran `git add -p` has: a half-staged file they are still
+  /// editing. Measured — the staged hunk vanished with a clean `git status` afterwards and no warning.
+  ///
+  /// Porcelain's two columns already encode it, so no extra command is needed:
+  /// `X` is HEAD→index and `Y` is index→worktree, giving `MM f.txt` (at risk), `M  h.txt` (staged and
+  /// identical to disk — safe) and ` M g.txt` (never staged — safe). `?` is untracked, which has no
+  /// staged state to lose.
+  ///
+  /// Pure, so the whole rule is testable without a repo.
+  static func stagedContentAtRisk(porcelainZ: String, selecting paths: Set<String>) -> [String] {
+    var atRisk: [String] = []
+    var fields = porcelainZ.split(separator: "\0", omittingEmptySubsequences: true).map(String.init)
+    var index = 0
+    while index < fields.count {
+      let entry = fields[index]
+      index += 1
+      guard entry.count > 3 else { continue }
+      let chars = Array(entry)
+      let x = chars[0]
+      let y = chars[1]
+      let path = String(chars[3...])
+      // A rename or copy spends a SECOND field on its old path. Consuming it keeps the walk aligned;
+      // without this every entry after the first rename would be read as a status code.
+      if x == "R" || x == "C" { index += 1 }
+      guard paths.contains(path) else { continue }
+      // Staged content exists (X is neither unmodified nor untracked) AND the worktree has moved on
+      // from it (Y is not unmodified) ⇒ `--only` will take the worktree copy and drop the staged one.
+      if x != " " && x != "?" && y != " " { atRisk.append(path) }
+    }
+    return atRisk
+  }
+
+  /// `HEAD`'s commit id, or nil when there isn't one (an unborn branch, i.e. a repo with no commits).
+  /// Used to tell "the commit didn't happen" from "the commit happened and something after it
+  /// failed" — see `VCSCommitResult.committedThenFailed`.
+  static func gitHeadArgs() -> [String] {
+    WorkroomStatusResolver.gitHardening + ["rev-parse", "--verify", "HEAD"]
+  }
+
   // MARK: - jj argument builders
 
   /// Read-only jj flags. `--ignore-working-copy` is REQUIRED on reads: without it every toolbar poll
@@ -569,6 +791,42 @@ struct CLIVCSWriter: VCSWriting, Sendable {
   /// pull-rebase shape. `-s` would move only `@` and its descendants, orphaning its parents.
   static func jjRebaseArgs(onto destination: String) -> [String] {
     ["rebase", "-b", "@", "-d", destination] + jjWriteFlags
+  }
+
+  /// Describe `@` and start a new empty change on top of it — jj's analogue of a git commit.
+  ///
+  /// **No pathspec, deliberately.** jj has no index: it commits the whole change. Its path arguments
+  /// are a *fileset expression language*, not a list, and interpolating a plain path into one is the
+  /// bug `jjQuote` already documents for revsets — measured on jj 0.43, `jj commit -- 'a (copy).txt'`
+  /// fails to parse outright, and a fileset that matches nothing **still creates an empty commit and
+  /// exits 0**, so the UI would report a commit that recorded nothing. Since partial selection is not
+  /// offered for jj (it would need `jj split`), the parameter would carry all that risk to buy
+  /// nothing at all.
+  static func jjCommitArgs(message: String) -> [String] {
+    ["commit", "-m", message] + jjWriteFlags
+  }
+
+  /// Set `@`'s description and stay on it. Not an amend and not a commit — the third jj verb, which
+  /// git has no equivalent of.
+  static func jjDescribeArgs(message: String) -> [String] {
+    ["describe", "-m", message] + jjWriteFlags
+  }
+
+  /// `@`'s full description, for prefilling the dialog.
+  ///
+  /// Read-only, so it carries `jjReadFlags`: without `--ignore-working-copy` this would snapshot the
+  /// working copy and take its lock, ungated, just to populate a text field.
+  ///
+  /// The FULL description, not `JJCommitChanges.description`, which is only the first line — filling
+  /// the summary from that and then running Describe would silently discard the message body.
+  static func jjDescriptionArgs() -> [String] {
+    ["log", "-r", "@", "--no-graph"] + jjReadFlags + ["-T", "description"]
+  }
+
+  /// The jj operation id at the head of the op log, for the same before/after comparison
+  /// `gitHeadArgs` serves.
+  static func jjOpHeadArgs() -> [String] {
+    ["op", "log", "--no-graph"] + jjReadFlags + ["--limit", "1", "-T", "self.id().short()"]
   }
 
   /// Which revision an anonymous push should send.
@@ -791,6 +1049,78 @@ struct CLIVCSWriter: VCSWriting, Sendable {
     return .other(trimmed.isEmpty ? "\(tool) exited \(result.exitCode)" : trimmed)
   }
 
+  /// Signing failures. With `standardInput` on `/dev/null` gpg cannot reach a TTY pinentry, so it
+  /// fails FAST with these rather than hanging — which is why the plan carries no signing preflight:
+  /// predicting whether pinentry needs a terminal is undecidable (it depends on `gpg-agent.conf`,
+  /// the agent's cache state and whether a smartcard is present), and this is decidable.
+  static let commitSigningMarkers = [
+    "gpg failed to sign the data", "failed to write commit object",
+    "Inappropriate ioctl for device", "error: unable to sign the commit",
+    "user.signingkey", "secret key not available",
+  ]
+
+  /// Missing `user.name`/`user.email`. git's own message tells the user exactly what to run, so the
+  /// value is carried through rather than replaced.
+  static let commitIdentityMarkers = [
+    "Please tell me who you are", "unable to auto-detect email address",
+    "empty ident name", "no email was given",
+  ]
+
+  static let commitNothingMarkers = [
+    "nothing to commit", "no changes added to commit", "nothing added to commit",
+    "Nothing changed.",
+  ]
+
+  static let commitUnmergedMarkers = [
+    "you have unmerged files", "Committing is not possible because you have unmerged files",
+    "needs merge",
+  ]
+
+  /// Hook rejection. **An explicit marker set, never the `else` branch.** A catch-all here would
+  /// relabel signing failures, bad config, index corruption and message-policy errors as "a hook
+  /// rejected this", which is worse than saying nothing: it sends the user to edit a hook that was
+  /// never involved. Anything unmatched stays `.other`, carrying git's own words.
+  static let commitHookMarkers = [
+    "hook declined", "pre-commit hook", "commit-msg hook", "prepare-commit-msg hook",
+    "hook exited with", "hook returned",
+  ]
+
+  /// Map a failed commit to a typed failure. `nil` means success.
+  ///
+  /// `movedRef` says the ref changed even though the command reported failure — the caller turns
+  /// that into `.committedThenFailed` rather than a failure, because retrying would make a SECOND
+  /// commit. The reachable case is a `post-commit` hook: git has already written the commit and
+  /// moved `HEAD` by the time it runs, so a hook that fails or runs past the timeout leaves a
+  /// perfectly good commit behind a non-zero exit.
+  static func classifyCommit(_ result: CommandResult, tool: String) -> VCSCommitFailure? {
+    if result.exitCode == CommandResult.commandNotFound { return .toolMissing(tool) }
+    let err = result.stderr + "\n" + result.stdout
+    // jj says "Nothing changed." and exits ZERO, so this is checked before the success guard — an
+    // untouched working copy must not be reported as a commit that happened.
+    if commitNothingMarkers.contains(where: err.contains) { return .nothingToCommit }
+    if result.timedOut { return .timedOut }
+    guard !result.ok else { return nil }
+
+    if commitIdentityMarkers.contains(where: err.contains) { return .identityMissing(err) }
+    if commitSigningMarkers.contains(where: err.contains) { return .signingFailed(err) }
+    if commitUnmergedMarkers.contains(where: err.contains) { return .unmergedFiles(err) }
+    // Before the hook check: git phrases this one as a plain fatal, and it is a state the user must
+    // finish rather than a hook they must fix.
+    if err.contains("cannot do a partial commit during a") || err.contains("is in progress") {
+      return .sequencerInProgress(err)
+    }
+    if commitHookMarkers.contains(where: err.contains) { return .hookRejected(err) }
+    if err.contains("Failed to take lock") || err.contains("index.lock")
+      || (err.contains(".lock")
+        && (err.contains("could not be obtained") || err.contains("File exists")
+          || err.contains("Unable to create")))
+    {
+      return .locked(lockFile(in: err))
+    }
+    let trimmed = err.trimmingCharacters(in: .whitespacesAndNewlines)
+    return .other(trimmed.isEmpty ? "\(tool) exited \(result.exitCode)" : trimmed)
+  }
+
   /// Whether a rebase is parked in this worktree. Both directory names are checked: `rebase-merge` for
   /// an interactive/merge rebase, `rebase-apply` for the am-based one.
   static func rebaseInProgress(gitDir: URL?) -> Bool {
@@ -798,6 +1128,33 @@ struct CLIVCSWriter: VCSWriting, Sendable {
     let fm = FileManager.default
     return fm.fileExists(atPath: gitDir.appendingPathComponent("rebase-merge").path)
       || fm.fileExists(atPath: gitDir.appendingPathComponent("rebase-apply").path)
+  }
+
+  /// Which multi-step git operation is parked in this worktree, named for the user, or nil if none.
+  ///
+  /// Checking for *conflicts* is not enough, and the difference is a real trap: resolving the
+  /// conflicts in a terminal clears the conflict markers but leaves `MERGE_HEAD` sitting there, so a
+  /// conflict-only guard re-enables Commit into a guaranteed `fatal: cannot do a partial commit
+  /// during a merge`. The sequencer file is the durable fact; the conflict is not.
+  ///
+  /// Ordered by specificity: a cherry-pick and a revert both also leave `MERGE_HEAD` behind, so they
+  /// are tested first or every one of them would report "merge".
+  static func sequencerState(gitDir: URL?) -> String? {
+    guard let gitDir else { return nil }
+    let fm = FileManager.default
+    let markers: [(String, String)] = [
+      ("CHERRY_PICK_HEAD", "cherry-pick"),
+      ("REVERT_HEAD", "revert"),
+      ("rebase-merge", "rebase"),
+      ("rebase-apply", "rebase"),
+      ("BISECT_LOG", "bisect"),
+      ("MERGE_HEAD", "merge"),
+    ]
+    for (file, label) in markers
+    where fm.fileExists(atPath: gitDir.appendingPathComponent(file).path) {
+      return label
+    }
+    return nil
   }
 
   /// The lock file a failure is complaining about, or nil if we can't point at one.
@@ -1187,5 +1544,139 @@ struct CLIVCSWriter: VCSWriting, Sendable {
       return .failed(failure)
     }
     return .ok(summary: "Rebase aborted")
+  }
+
+  // MARK: - Commit
+
+  func commit(path: String, projectRoot: String, request: VCSCommitRequest) async -> VCSCommitResult
+  {
+    guard Self.supports(mode: request.mode, vcs: vcs) else { return .failed(.unsupportedMode) }
+    let gitDir = Self.worktreeGitDir(at: path)
+    // A parked merge/cherry-pick/rebase/bisect makes a path-limited commit outright invalid, and
+    // finishing it is the user's call. Checked before the ref snapshot so nothing is spawned at all.
+    if vcs != "jj", let sequencer = Self.sequencerState(gitDir: gitDir) {
+      return .failed(.sequencerInProgress(sequencer))
+    }
+
+    let before = await currentRevision(path: path)
+
+    // ONE gate acquisition for the whole operation, not one per command. Two would let the 15s
+    // status sweep, the FSEvents lane and DiffResolver interleave between the intent-to-add and the
+    // commit — contending on `index.lock` and, for jj, snapshotting `@` out from under a write.
+    let outcome = await gated(
+      projectRoot,
+      { [self] in
+        await runCommitSequence(request, in: path)
+      })
+    guard let result = outcome else { return .failed(.other("commit was cancelled")) }
+
+    if let failure = Self.classifyCommit(result, tool: vcs) {
+      // The command failed, but did the ref move anyway? A `post-commit` hook runs AFTER git has
+      // written the commit and moved HEAD, so a hook that fails — or that we killed at the timeout —
+      // leaves a real commit behind a non-zero exit. Reporting that as a plain failure invites a
+      // retry, and the retry would commit a second time.
+      let after = await currentRevision(path: path)
+      if let after, after != before {
+        return .committedThenFailed(revision: after, detail: Self.commitFailureDetail(failure))
+      }
+      return .failed(failure)
+    }
+    let after = await currentRevision(path: path)
+    return .ok(summary: Self.commitSummary(request.mode, vcs: vcs), revision: after)
+  }
+
+  /// The commands, in order, inside the caller's single gate acquisition.
+  ///
+  /// Returns the FIRST failing result, so the caller classifies whichever step broke. The
+  /// intent-to-add step only runs when the selection actually contains untracked files, so the
+  /// common case is one process.
+  private func runCommitSequence(_ request: VCSCommitRequest, in path: String) async
+    -> CommandResult
+  {
+    if vcs == "jj" {
+      let args =
+        request.mode == .describe
+        ? Self.jjDescribeArgs(message: request.message)
+        : Self.jjCommitArgs(message: request.message)
+      return await run(args, in: path, timeout: commitTimeout)
+    }
+
+    if request.mode == .amendMessage {
+      return await run(
+        Self.gitAmendMessageArgs(message: request.message), in: path,
+        timeout: commitTimeout)
+    }
+
+    let untracked = request.files.filter { $0.change == .untracked }
+    if !untracked.isEmpty {
+      let ita = await runner.run(
+        vcs, Self.gitIntentToAddArgs(), in: path, timeout: refTimeout,
+        stdin: Self.gitPathspecPayload(untracked))
+      guard ita.ok else { return ita }
+    }
+    return await runner.run(
+      vcs, Self.gitCommitOnlyArgs(message: request.message), in: path, timeout: commitTimeout,
+      stdin: Self.gitPathspecPayload(request.files))
+  }
+
+  /// Selected paths whose staged content a commit would discard, for the dialog to confirm before it
+  /// happens. Empty for jj, which has no index, and for a mode that takes no pathspec.
+  ///
+  /// A pre-flight rather than a refusal: a partially-staged file is a legitimate thing to commit from
+  /// — the user just has to know that the version on disk is the one that lands. Silence is the only
+  /// unacceptable option, because the loss leaves no trace (`git status` is clean afterwards).
+  func stagedContentAtRisk(path: String, files: [ChangedFile]) async -> [String] {
+    guard vcs != "jj", !files.isEmpty else { return [] }
+    let result = await run(Self.gitStatusPorcelainArgs(), in: path, timeout: refTimeout)
+    guard result.ok else { return [] }
+    return Self.stagedContentAtRisk(
+      porcelainZ: result.stdout, selecting: Set(files.map(\.path)))
+  }
+
+  /// The current ref, for the before/after comparison. Ungated and cheap: git's `rev-parse` touches
+  /// nothing, and the jj form carries `jjReadFlags` so it cannot snapshot.
+  ///
+  /// Nil for an unborn branch (a repo with no commits), which is a legitimate state to commit from —
+  /// `nil != "abc123"` then reads correctly as "the ref moved".
+  private func currentRevision(path: String) async -> String? {
+    let args = vcs == "jj" ? Self.jjOpHeadArgs() : Self.gitHeadArgs()
+    let result = await run(args, in: path, timeout: refTimeout)
+    guard result.ok else { return nil }
+    let value = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+    return value.isEmpty ? nil : value
+  }
+
+  /// Which verbs each backend has. `.amendMessage` is git's and `.describe` is jj's; neither has a
+  /// counterpart on the other side, so a mismatch is a programming error the writer reports rather
+  /// than silently running the nearest command.
+  static func supports(mode: VCSCommitMode, vcs: String) -> Bool {
+    switch mode {
+    case .commit: return true
+    case .amendMessage: return vcs != "jj"
+    case .describe: return vcs == "jj"
+    }
+  }
+
+  static func commitSummary(_ mode: VCSCommitMode, vcs: String) -> String {
+    switch mode {
+    case .commit: return "Committed"
+    case .amendMessage: return "Amended the last commit"
+    case .describe: return "Set the change message"
+    }
+  }
+
+  /// The stderr a `committedThenFailed` carries, so the dialog can show what went wrong *after* the
+  /// commit landed.
+  static func commitFailureDetail(_ failure: VCSCommitFailure) -> String {
+    switch failure {
+    case .toolMissing(let m), .identityMissing(let m), .signingFailed(let m), .hookRejected(let m),
+      .unmergedFiles(let m), .sequencerInProgress(let m), .other(let m):
+      return m
+    case .timedOut: return "The command was stopped at its time limit."
+    case .nothingToCommit: return "Nothing to commit."
+    case .locked(let file):
+      return file.map { "Blocked by \($0.filename)." } ?? "The repository was busy."
+    case .unsupportedMode: return "That action isn’t available for this repository."
+    }
   }
 }

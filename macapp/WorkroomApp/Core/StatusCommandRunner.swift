@@ -25,6 +25,24 @@ protocol StatusCommandRunning: Sendable {
   func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
     async -> CommandResult
 
+  /// Like `run`, but feeds `stdin` to the child on its standard input.
+  ///
+  /// Exists for the commit path, where passing data as **argv is either unsafe or impossible**:
+  /// - `git add --pathspec-from-file=- --pathspec-file-nul` takes the selected paths NUL-separated
+  ///   on stdin. That is the only form git treats pathspecs as **literal** — after a bare `--` they
+  ///   are still glob magic, so selecting `a[b].txt` also stages `ab.txt` (measured), and a file
+  ///   named `*` stages the whole tree. It also sidesteps `E2BIG`, which a few thousand long paths
+  ///   in `proc.arguments` would hit at spawn, before git can emit anything classifiable.
+  /// - `git commit --file=-` takes the message on stdin, so no length or encoding question arises.
+  ///
+  /// A per-call **environment** override is deliberately NOT added yet: its only planned consumer is
+  /// `GIT_INDEX_FILE` for temp-index commits, which is deferred, and an unused parameter is surface
+  /// nobody can test.
+  func run(
+    _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
+    stdin: Data?
+  ) async -> CommandResult
+
   /// Like `run`, but for a command that will touch the **network** and therefore may want to
   /// authenticate — `git fetch/push/pull`, `jj git fetch/push`.
   ///
@@ -44,6 +62,16 @@ extension StatusCommandRunning {
   func runNetwork(
     _ executable: String, _ args: [String], in directory: String,
     timeout: TimeInterval
+  ) async -> CommandResult {
+    await run(executable, args, in: directory, timeout: timeout)
+  }
+
+  /// Same reasoning as `runNetwork`: a double that records argv doesn't care about the payload, so
+  /// it stays a two-line stub. A double that DOES need to assert on stdin (the commit tests) can
+  /// override this one method. Only `StatusCommandRunner` writes a real pipe.
+  func run(
+    _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
+    stdin: Data?
   ) async -> CommandResult {
     await run(executable, args, in: directory, timeout: timeout)
   }
@@ -114,19 +142,26 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
   func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
     async -> CommandResult
   {
-    await run(executable, args, in: directory, timeout: timeout, network: false)
+    await run(executable, args, in: directory, timeout: timeout, network: false, stdin: nil)
+  }
+
+  func run(
+    _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
+    stdin: Data?
+  ) async -> CommandResult {
+    await run(executable, args, in: directory, timeout: timeout, network: false, stdin: stdin)
   }
 
   func runNetwork(
     _ executable: String, _ args: [String], in directory: String,
     timeout: TimeInterval
   ) async -> CommandResult {
-    await run(executable, args, in: directory, timeout: timeout, network: true)
+    await run(executable, args, in: directory, timeout: timeout, network: true, stdin: nil)
   }
 
   private func run(
     _ executable: String, _ args: [String], in directory: String,
-    timeout: TimeInterval, network: Bool
+    timeout: TimeInterval, network: Bool, stdin: Data?
   ) async -> CommandResult {
     let proc = Process()
     proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -169,7 +204,11 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
     // tty that the same binary won't have when launched from Finder. Pinning it makes the two launch
     // contexts behave identically and turns any prompt into an immediate EOF. `ShellEnvironment.probe`
     // already does this for the same reason.
-    proc.standardInput = FileHandle.nullDevice
+    //
+    // A caller-supplied payload replaces the null device with a pipe we write and then close, so the
+    // child still sees a clean EOF and can never wait on a human.
+    let inPipe: Pipe? = stdin == nil ? nil : Pipe()
+    proc.standardInput = inPipe ?? FileHandle.nullDevice
 
     // `proc` is shared with the @Sendable cancellation handler; box it so the non-Sendable Process
     // can cross that boundary (mirrors the @unchecked Sendable helpers below).
@@ -230,11 +269,27 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
 
         do {
           try proc.run()
+          // Feed stdin AFTER the child exists, on a background queue, and close to signal EOF.
+          // Off the calling thread because a payload larger than the 64K pipe buffer blocks until
+          // the child drains it, and `git` does not start reading until it has parsed its argv.
+          if let inPipe, let payload = stdin {
+            DispatchQueue.global().async {
+              let handle = inPipe.fileHandleForWriting
+              // Darwin's per-descriptor SIGPIPE suppression. Without it, a child that exits before
+              // reading (git rejecting its argv, a hook killing it) makes our `write(2)` raise
+              // SIGPIPE, whose default disposition TERMINATES the app — a crash reachable from an
+              // ordinary failed commit. With it the write just returns EPIPE, which `try?` drops.
+              _ = fcntl(handle.fileDescriptor, F_SETNOSIGPIPE, 1)
+              if !payload.isEmpty { try? handle.write(contentsOf: payload) }
+              try? handle.close()
+            }
+          }
         } catch {
           // Launch failed (e.g. cwd vanished). Close the write ends so the drain readers hit
           // EOF instead of blocking forever, then resolve as command-not-found.
           timeoutItem.cancel()
           killItem.cancel()
+          try? inPipe?.fileHandleForWriting.close()
           try? outPipe.fileHandleForWriting.close()
           try? errPipe.fileHandleForWriting.close()
           gate.resume(

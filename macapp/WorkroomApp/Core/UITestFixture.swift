@@ -886,6 +886,19 @@ actor FixtureVCSWriter: VCSWriting {
     await record(.abortRebase)
   }
 
+  /// Answers the commit without running git or jj, so the sheet's own seam — selection → button
+  /// count → request, and the in-flight and failure states — is exercisable hermetically. The write's
+  /// real semantics are covered against throwaway repos in `VCSCommitIntegrationTests`, which is the
+  /// only tier that can see them.
+  func commit(path: String, projectRoot: String, request: VCSCommitRequest) async
+    -> VCSCommitResult
+  {
+    if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+    return failing
+      ? .failed(.hookRejected("fixture: pre-commit hook declined\nlint: 2 problems"))
+      : .ok(summary: CLIVCSWriter.commitSummary(request.mode, vcs: "git"), revision: "fixture01")
+  }
+
   private func record(_ action: VCSRemoteAction) async -> VCSRemoteActionResult {
     if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
     return failing

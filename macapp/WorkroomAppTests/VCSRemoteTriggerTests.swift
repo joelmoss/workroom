@@ -349,4 +349,10 @@ private actor CountingWriter: VCSWriting {
   func abortRebase(path: String, projectRoot: String) async -> VCSRemoteActionResult {
     .ok(summary: "")
   }
+
+  func commit(path: String, projectRoot: String, request: VCSCommitRequest) async
+    -> VCSCommitResult
+  {
+    .ok(summary: "", revision: nil)
+  }
 }

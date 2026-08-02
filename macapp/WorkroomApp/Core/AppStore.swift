@@ -289,6 +289,19 @@ final class AppStore: ObservableObject {
   /// A PR write action (Phase 2b) is running — disables the PR actions menu so it can't double-fire.
   @Published var prActionInFlight = false
 
+  /// The commit sheet's target, or nil when it's closed. Presented from the Changes section header.
+  ///
+  /// The sheet owns its own draft and selection for its lifetime, which is most of why it is a sheet:
+  /// a per-workroom draft store on the AppStore would need pruning on workroom delete, would inherit
+  /// a recycled workroom name's old message, and — since `AppStore` is per WINDOW — would let two
+  /// windows on the same workroom fight over one `Defaults` dictionary with last-writer-wins.
+  @Published var pendingCommit: PendingCommit?
+
+  /// Rows with a commit in flight. A `Set` rather than a `Bool` because the app's premise is N
+  /// parallel workrooms: a single flag would let a commit in one disable the button in another, and
+  /// `AppStore` is per window so even that would only half-work. Read by `isCommitting`.
+  @Published var committingTargets: Set<SidebarID> = []
+
   // Inspector section collapse (issue #24). Held on the store rather than as `@Default` in the
   // inspector view: the `.inspector` content doesn't observe `@Default` changes, but it DOES observe
   // this `@EnvironmentObject`. These are the *live* state for the currently selected workroom;
@@ -568,6 +581,9 @@ final class AppStore: ObservableObject {
       // Included so the Source Control shortcuts are inert while the confirmation is up — otherwise
       // ⌥⇧⌘P could queue a second pull behind the dialog asking about the first.
       || pendingRemoteConfirm != nil
+      // Same for the commit sheet: without this, ⌥⇧⌘P could fire a push behind an open commit
+      // dialog, and the terminal-scoped shortcuts would still reach a surface the user can't see.
+      || pendingCommit != nil
   }
 
   let terminals = TerminalSessions()

@@ -87,6 +87,24 @@ struct RightInspector: View {
     }
   }
 
+  /// Whether the inspector's target has anything a commit could record.
+  ///
+  /// jj is included even with no file changes: its working copy is itself a commit, so describing an
+  /// empty change is a real thing to want, and `jjPushRevision` already recognises that state.
+  private var canCommitSelectedTarget: Bool {
+    guard let sid = store.inspectorTargetID, sid.isStatusable,
+      let status = store.workroomStatuses[sid], !store.isCommitting(sid)
+    else { return false }
+    if let workingCopy = status.jjWorkingCopy {
+      return !workingCopy.files.isEmpty || (workingCopy.description?.isEmpty ?? true)
+    }
+    return !(status.isClean || status.isUnknown)
+  }
+
+  private var commitButtonHelp: String {
+    canCommitSelectedTarget ? "Commit changes…" : "Nothing to commit"
+  }
+
   /// The live collapse value for a sub-section. A solo pane (Files, which stacks only itself) never
   /// collapses, so it reports expanded and its header shows no chevron.
   private func collapsedValue(for sub: InspectorSectionKind) -> Bool {
@@ -108,8 +126,20 @@ struct RightInspector: View {
           title: "Changes", collapsed: $store.changesSectionCollapsed,
           indicator: changesIndicator, indicatorLabel: changesIndicatorLabel, shortcut: "⌥⌘C"
         ) {
-          InspectorHeaderButton(systemImage: "arrow.clockwise", help: "Refresh workroom status") {
-            store.refreshWorkroomStatuses(force: true)
+          HStack(spacing: 0) {
+            InspectorHeaderButton(
+              systemImage: "checkmark.circle", help: commitButtonHelp,
+              disabled: !canCommitSelectedTarget
+            ) {
+              guard let sid = store.inspectorTargetID,
+                let item = store.selectedStatusWorkItem(for: sid)
+              else { return }
+              store.pendingCommit = PendingCommit(sid: sid, vcs: item.vcs)
+            }
+            .accessibilityIdentifier("changes.commitButton")
+            InspectorHeaderButton(systemImage: "arrow.clockwise", help: "Refresh workroom status") {
+              store.refreshWorkroomStatuses(force: true)
+            }
           }
         }
         .environmentObject(store).environmentObject(notifications))

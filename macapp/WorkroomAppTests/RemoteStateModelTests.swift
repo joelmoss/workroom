@@ -649,6 +649,12 @@ private actor StubWriter: VCSWriting {
     return await settle()
   }
 
+  func commit(path: String, projectRoot: String, request: VCSCommitRequest) async
+    -> VCSCommitResult
+  {
+    .ok(summary: "committed", revision: nil)
+  }
+
   private func settle() async -> VCSRemoteActionResult {
     if actionDelay > 0 {
       try? await Task.sleep(nanoseconds: UInt64(actionDelay * 1_000_000_000))

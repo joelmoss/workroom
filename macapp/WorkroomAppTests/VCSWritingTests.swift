@@ -917,4 +917,299 @@ final class VCSWritingTests: XCTestCase {
       }
     }
   }
+
+  // MARK: - Commit: the pathspec payload
+
+  private func payloadEntries(_ files: [ChangedFile]) -> [String] {
+    let data = CLIVCSWriter.gitPathspecPayload(files)
+    return data.split(separator: 0).map { String(decoding: $0, as: UTF8.self) }
+  }
+
+  /// A rename is ONE row and TWO paths. Measured on git: sending only the new path recorded an **add**
+  /// and left `D old.txt` dangling in the worktree — staged, if the rename came from `git mv`. The user
+  /// ticked a row reading `old → new` and got half a rename.
+  func testRenameSendsBothSidesOfThePathspec() {
+    let files = [ChangedFile(path: "new.txt", change: .renamed, oldPath: "old.txt")]
+    XCTAssertEqual(payloadEntries(files), [":(literal)new.txt", ":(literal)old.txt"])
+  }
+
+  /// **`--` ends option parsing, not MAGIC parsing**, and `--pathspec-file-nul` does not disable
+  /// globbing either. Measured with `ab.txt` and `a[b].txt` both modified: sending the bracketed name
+  /// bare committed BOTH files. A file named `*` would commit the whole tree. This is the same
+  /// "commits files nobody reviewed" defect the selection model exists to prevent, so the prefix is
+  /// not cosmetic.
+  func testEveryPathIsLiteralPrefixedSoGlobMagicCannotFire() {
+    let files = [
+      ChangedFile(path: "a[b].txt", change: .modified, oldPath: nil),
+      ChangedFile(path: "*", change: .modified, oldPath: nil),
+      ChangedFile(path: ":weird", change: .modified, oldPath: nil),
+    ]
+    XCTAssertEqual(
+      payloadEntries(files), [":(literal)a[b].txt", ":(literal)*", ":(literal):weird"])
+  }
+
+  /// NUL separation is what lets a filename contain a newline or a quote without any escaping.
+  func testPayloadIsNULSeparatedSoOddFilenamesNeedNoEscaping() {
+    let files = [ChangedFile(path: "we ird\nname\".txt", change: .modified, oldPath: nil)]
+    XCTAssertEqual(payloadEntries(files), [":(literal)we ird\nname\".txt"])
+    XCTAssertEqual(CLIVCSWriter.gitPathspecPayload(files).last, 0, "every entry is NUL-terminated")
+  }
+
+  /// Two rows naming the same file, or a rename whose oldPath equals its path, must not send a
+  /// duplicate — order-preserving so the argv stays readable in a log.
+  func testPayloadDedupesPreservingOrder() {
+    let files = [
+      ChangedFile(path: "b.txt", change: .modified, oldPath: nil),
+      ChangedFile(path: "a.txt", change: .renamed, oldPath: "b.txt"),
+      ChangedFile(path: "a.txt", change: .modified, oldPath: nil),
+    ]
+    XCTAssertEqual(payloadEntries(files), [":(literal)b.txt", ":(literal)a.txt"])
+  }
+
+  func testEmptySelectionProducesAnEmptyPayload() {
+    XCTAssertTrue(CLIVCSWriter.gitPathspecPayload([]).isEmpty)
+  }
+
+  // MARK: - Commit: argument builders
+
+  /// `--only` is the whole design. Measured: with `other.txt` pre-staged and `tracked.txt` selected,
+  /// this committed only `tracked.txt` and left `other.txt` STILL STAGED. A `git add <selection>` +
+  /// bare `git commit` would have swept the user's staged file into the commit.
+  func testGitCommitIsOnlyScopedAndReadsPathsFromStdin() {
+    let args = CLIVCSWriter.gitCommitOnlyArgs(message: "hello")
+    XCTAssertTrue(args.contains("--only"), "must never commit the whole index")
+    XCTAssertTrue(args.contains("--pathspec-from-file=-"))
+    XCTAssertTrue(args.contains("--pathspec-file-nul"))
+    XCTAssertEqual(args.last, "hello", "message is the trailing -m value, since stdin holds paths")
+  }
+
+  /// Measured without `--only`: `git add sneaky.txt && git commit --amend -m "…"` absorbed
+  /// `sneaky.txt`. In a dialog whose premise is choosing what gets recorded, that is the same defect
+  /// wearing a different verb.
+  func testAmendIsMessageOnlyAndCannotAbsorbTheIndex() {
+    let args = CLIVCSWriter.gitAmendMessageArgs(message: "reworded")
+    XCTAssertTrue(args.contains("--amend"))
+    XCTAssertTrue(args.contains("--only"), "without --only, amend absorbs whatever is staged")
+    XCTAssertFalse(args.contains("--pathspec-from-file=-"), "message-only takes no paths")
+  }
+
+  /// `git commit --only` refuses a path git has never seen (`did not match any file(s) known to
+  /// git`), so untracked selections need an intent-to-add first. This is the only index mutation the
+  /// commit path makes.
+  func testIntentToAddReadsPathsFromStdin() {
+    let args = CLIVCSWriter.gitIntentToAddArgs()
+    // `gitHardening` comes first, so the subcommand is not at index 0.
+    XCTAssertEqual(args.first(where: { !$0.hasPrefix("-") && $0 != "core.fsmonitor=" }), "add")
+    XCTAssertTrue(args.contains("--intent-to-add"))
+    XCTAssertTrue(args.contains("--pathspec-from-file=-"))
+    XCTAssertTrue(args.contains("--pathspec-file-nul"))
+  }
+
+  /// Mutating jj commands must NOT carry `--ignore-working-copy`: the snapshot is what moves on-disk
+  /// edits into `@` before it is rewritten.
+  func testJJCommitAndDescribeUseWriteFlags() {
+    for args in [
+      CLIVCSWriter.jjCommitArgs(message: "m"), CLIVCSWriter.jjDescribeArgs(message: "m"),
+    ] {
+      XCTAssertFalse(
+        args.contains("--ignore-working-copy"),
+        "a jj write must snapshot, or the user's edits are not in the commit")
+      XCTAssertTrue(args.contains("--color"))
+    }
+    XCTAssertEqual(CLIVCSWriter.jjCommitArgs(message: "m").first, "commit")
+    XCTAssertEqual(CLIVCSWriter.jjDescribeArgs(message: "m").first, "describe")
+  }
+
+  /// jj takes NO pathspec: its path arguments are a fileset expression language where a space fails
+  /// to parse and a non-matching expression still creates an empty commit at exit 0.
+  func testJJCommitTakesNoPathspec() {
+    let args = CLIVCSWriter.jjCommitArgs(message: "m")
+    XCTAssertFalse(args.contains("--"), "no operand boundary, because there are no operands")
+    XCTAssertFalse(args.contains("--pathspec-from-file=-"))
+  }
+
+  /// The prefill read must not take the working-copy lock just to populate a text field.
+  func testJJDescriptionReadIsIgnoreWorkingCopy() {
+    let args = CLIVCSWriter.jjDescriptionArgs()
+    XCTAssertTrue(args.contains("--ignore-working-copy"))
+    XCTAssertTrue(args.contains("description"), "the FULL description, not just its first line")
+  }
+
+  func testOpHeadReadIsIgnoreWorkingCopy() {
+    XCTAssertTrue(CLIVCSWriter.jjOpHeadArgs().contains("--ignore-working-copy"))
+  }
+
+  // MARK: - Commit: mode support
+
+  /// Two of the six combinations are illegal, and they fail as a typed result rather than by
+  /// silently running the nearest command.
+  func testModeSupportMatrix() {
+    XCTAssertTrue(CLIVCSWriter.supports(mode: .commit, vcs: "git"))
+    XCTAssertTrue(CLIVCSWriter.supports(mode: .commit, vcs: "jj"))
+    XCTAssertTrue(CLIVCSWriter.supports(mode: .amendMessage, vcs: "git"))
+    XCTAssertFalse(CLIVCSWriter.supports(mode: .amendMessage, vcs: "jj"), "jj has no amend")
+    XCTAssertTrue(CLIVCSWriter.supports(mode: .describe, vcs: "jj"))
+    XCTAssertFalse(CLIVCSWriter.supports(mode: .describe, vcs: "git"), "git has no describe")
+  }
+
+  // MARK: - Commit: classification
+
+  private func commitResult(_ stderr: String, exit: Int32 = 1, timedOut: Bool = false)
+    -> CommandResult
+  {
+    CommandResult(stdout: "", stderr: stderr, exitCode: exit, timedOut: timedOut)
+  }
+
+  func testClassifyCommitIdentity() {
+    let f = CLIVCSWriter.classifyCommit(
+      commitResult("*** Please tell me who you are.\n\nfatal: unable to auto-detect email address"),
+      tool: "git")
+    guard case .identityMissing = f else { return XCTFail("got \(String(describing: f))") }
+  }
+
+  /// Signing must classify rather than fall through to `.other` — with stdin on `/dev/null` gpg
+  /// cannot reach a TTY pinentry, so this is the shape it fails in, and it fails fast.
+  func testClassifyCommitSigning() {
+    for text in [
+      "error: gpg failed to sign the data", "gpg: signing failed: Inappropriate ioctl for device",
+    ] {
+      let f = CLIVCSWriter.classifyCommit(commitResult(text), tool: "git")
+      guard case .signingFailed = f else {
+        return XCTFail("\(text) → \(String(describing: f))")
+      }
+    }
+  }
+
+  func testClassifyCommitHookRejection() {
+    let f = CLIVCSWriter.classifyCommit(
+      commitResult("eslint found 2 problems\npre-commit hook exited with code 1"), tool: "git")
+    guard case .hookRejected = f else { return XCTFail("got \(String(describing: f))") }
+  }
+
+  /// **The catch-all is the bug.** A signing failure, a config error and index corruption must not be
+  /// relabelled as a hook rejection — that sends the user to edit a hook that was never involved.
+  func testUnmatchedFailuresStayOtherRatherThanBecomingHookRejections() {
+    let f = CLIVCSWriter.classifyCommit(
+      commitResult("fatal: unable to write new index file"), tool: "git")
+    guard case .other(let message) = f else { return XCTFail("got \(String(describing: f))") }
+    XCTAssertTrue(message.contains("unable to write new index file"), "git's own words survive")
+  }
+
+  /// jj reports an untouched working copy as SUCCESS (exit 0, "Nothing changed."). Without this the
+  /// UI would report a commit that recorded nothing.
+  func testJJNothingChangedIsAFailureNotASilentSuccess() {
+    let result = CommandResult(
+      stdout: "Nothing changed.\n", stderr: "", exitCode: 0, timedOut: false)
+    XCTAssertEqual(CLIVCSWriter.classifyCommit(result, tool: "jj"), .nothingToCommit)
+  }
+
+  func testClassifyCommitNothingToCommitForGit() {
+    let result = CommandResult(
+      stdout: "nothing to commit, working tree clean", stderr: "", exitCode: 1, timedOut: false)
+    XCTAssertEqual(CLIVCSWriter.classifyCommit(result, tool: "git"), .nothingToCommit)
+  }
+
+  func testClassifyCommitUnmergedFiles() {
+    let f = CLIVCSWriter.classifyCommit(
+      commitResult("error: Committing is not possible because you have unmerged files."),
+      tool: "git")
+    guard case .unmergedFiles = f else { return XCTFail("got \(String(describing: f))") }
+  }
+
+  /// A merge that the user has already resolved still refuses a path-limited commit, and the message
+  /// is a plain fatal rather than anything hook-shaped.
+  func testClassifyCommitPartialCommitDuringMerge() {
+    let f = CLIVCSWriter.classifyCommit(
+      commitResult("fatal: cannot do a partial commit during a merge."), tool: "git")
+    guard case .sequencerInProgress = f else { return XCTFail("got \(String(describing: f))") }
+  }
+
+  func testClassifyCommitToolMissingAndTimeout() {
+    XCTAssertEqual(
+      CLIVCSWriter.classifyCommit(commitResult("", exit: 127), tool: "git"), .toolMissing("git"))
+    XCTAssertEqual(
+      CLIVCSWriter.classifyCommit(commitResult("", exit: 15, timedOut: true), tool: "git"),
+      .timedOut)
+  }
+
+  func testClassifyCommitSuccessIsNil() {
+    let ok = CommandResult(stdout: "[main abc] m", stderr: "", exitCode: 0, timedOut: false)
+    XCTAssertNil(CLIVCSWriter.classifyCommit(ok, tool: "git"))
+  }
+
+  // MARK: - Commit: sequencer state
+
+  private func gitDirWith(_ entries: [String]) -> URL {
+    let dir = tempDir()
+    for entry in entries {
+      FileManager.default.createFile(atPath: dir.appendingPathComponent(entry).path, contents: nil)
+    }
+    return dir
+  }
+
+  /// Checking for *conflicts* is not enough: resolving them in a terminal clears the markers and
+  /// leaves `MERGE_HEAD`, so a conflict-only guard would re-enable Commit into a guaranteed failure.
+  func testSequencerStateDetectsEachParkedOperation() {
+    XCTAssertEqual(CLIVCSWriter.sequencerState(gitDir: gitDirWith(["MERGE_HEAD"])), "merge")
+    XCTAssertEqual(CLIVCSWriter.sequencerState(gitDir: gitDirWith(["REVERT_HEAD"])), "revert")
+    XCTAssertEqual(CLIVCSWriter.sequencerState(gitDir: gitDirWith(["BISECT_LOG"])), "bisect")
+    XCTAssertNil(CLIVCSWriter.sequencerState(gitDir: gitDirWith([])))
+    XCTAssertNil(CLIVCSWriter.sequencerState(gitDir: nil))
+  }
+
+  /// A cherry-pick and a revert BOTH also leave `MERGE_HEAD` behind, so the specific marker has to
+  /// win or every one of them would report "merge" and send the user to finish the wrong thing.
+  func testCherryPickIsNamedAheadOfTheMergeHeadItAlsoLeaves() {
+    XCTAssertEqual(
+      CLIVCSWriter.sequencerState(gitDir: gitDirWith(["CHERRY_PICK_HEAD", "MERGE_HEAD"])),
+      "cherry-pick")
+  }
+
+  // MARK: - Commit: the staged-content guard
+
+  /// Porcelain's two columns are the whole rule: `X` is HEAD→index, `Y` is index→worktree.
+  ///
+  /// `MM` is the `git add -p` shape — staged something, then kept editing — and it is the only one at
+  /// risk, because `--only` commits the worktree copy and drops the staged one. `M ` is staged and
+  /// identical to disk (nothing to lose) and ` M` was never staged at all.
+  func testOnlyPartlyStagedFilesAreAtRisk() {
+    let porcelain = "MM f.txt\0 M g.txt\0M  h.txt\0?? new.txt\0"
+    XCTAssertEqual(
+      CLIVCSWriter.stagedContentAtRisk(
+        porcelainZ: porcelain, selecting: ["f.txt", "g.txt", "h.txt", "new.txt"]),
+      ["f.txt"])
+  }
+
+  /// Only the user's SELECTION can be at risk — a partly-staged file they didn't tick is untouched by
+  /// the commit, so warning about it would be noise.
+  func testUnselectedFilesAreNeverReported() {
+    let porcelain = "MM f.txt\0MM other.txt\0"
+    XCTAssertEqual(
+      CLIVCSWriter.stagedContentAtRisk(porcelainZ: porcelain, selecting: ["f.txt"]), ["f.txt"])
+  }
+
+  /// A rename spends a SECOND NUL field on its old path. Without consuming it, every entry after the
+  /// first rename would be read as a status code and the whole walk would desync — reporting
+  /// nonsense paths, or missing a genuinely at-risk file.
+  func testRenameEntriesDoNotDesyncTheWalk() {
+    // `R  new.txt\0old.txt\0` then a genuinely at-risk file.
+    let porcelain = "R  new.txt\0old.txt\0MM risky.txt\0"
+    XCTAssertEqual(
+      CLIVCSWriter.stagedContentAtRisk(
+        porcelainZ: porcelain, selecting: ["new.txt", "old.txt", "risky.txt"]),
+      ["risky.txt"])
+  }
+
+  func testNothingStagedMeansNothingAtRisk() {
+    XCTAssertTrue(
+      CLIVCSWriter.stagedContentAtRisk(porcelainZ: " M a.txt\0?? b.txt\0", selecting: ["a.txt"])
+        .isEmpty)
+  }
+
+  /// Filenames can contain spaces; `-z` is what makes that safe to parse.
+  func testPathsWithSpacesParse() {
+    XCTAssertEqual(
+      CLIVCSWriter.stagedContentAtRisk(
+        porcelainZ: "MM My Notes.md\0", selecting: ["My Notes.md"]), ["My Notes.md"])
+  }
 }
