@@ -23,6 +23,35 @@ struct RightInspector: View {
     // size-weights persist as full `InspectorSectionKind.allCases`-ordered vectors on the store; we
     // slice out — and write back — the entries for the sub-sections actually shown, by `storeIndex`.
     let subs = store.activeInspectorSection.subSections
+    VStack(spacing: 0) {
+      // The VCS toolbar sits ABOVE the section stack, not inside a section, so it survives a collapsed
+      // Changes section. Only for the Changes activity section: branch/remote state is what that section
+      // is about, and showing it over the Files tree would jump the layout on every activity-bar click.
+      if store.activeInspectorSection == .changes {
+        VCSToolbar(model: store.remoteState)
+      }
+      inspectorSplit(subs: subs)
+    }
+    // Bound to the STORE, not a local `@State`: the gate that raises this lives in
+    // `AppStore.performRemoteAction` so the Source Control menu's ⌥⇧⌘P goes through it too. When the
+    // toolbar owned the gate, the shortcut autostashed a dirty tree with no warning at all.
+    .confirmationDialog(
+      store.pendingRemoteConfirm.map { "\($0.action.label) with uncommitted changes?" } ?? "",
+      isPresented: Binding(
+        get: { store.pendingRemoteConfirm != nil },
+        set: { if !$0 { store.pendingRemoteConfirm = nil } }),
+      presenting: store.pendingRemoteConfirm
+    ) { item in
+      // `runRemoteAction(on:)`, which re-checks `item.sid` — the dialog isn't modal to the sidebar, so
+      // the selection can move while it's open and `performRemoteAction` would re-derive the target.
+      Button(item.action.label) { store.runRemoteAction(item.action, on: item.sid) }
+      Button("Cancel", role: .cancel) {}
+    } message: { _ in
+      Text("Your uncommitted changes will be stashed and reapplied after the rebase.")
+    }
+  }
+
+  @ViewBuilder private func inspectorSplit(subs: [InspectorSectionKind]) -> some View {
     InspectorSplitView(
       headers: subs.map { sectionHeader(for: $0) },
       bodies: subs.map { sectionBody(for: $0) },
@@ -58,6 +87,26 @@ struct RightInspector: View {
     }
   }
 
+  /// Whether the inspector's target has anything a commit could record.
+  ///
+  /// **jj is always available.** Its working copy is itself a commit, so there is no state in which
+  /// both its verbs are meaningless: Describe edits `@`'s message, which is worth doing with no file
+  /// changes at all. The condition this replaces tried to say that and inverted it — it required an
+  /// EMPTY description, so a change the user had already described was the one state that could not
+  /// be opened, which is precisely "I want to fix a typo in my message". `jjPushRevision` already
+  /// treats a described empty change as real.
+  private var canCommitSelectedTarget: Bool {
+    guard let sid = store.inspectorTargetID, sid.isStatusable,
+      let status = store.workroomStatuses[sid], !store.isCommitting(sid)
+    else { return false }
+    if status.jjWorkingCopy != nil { return true }
+    return !(status.isClean || status.isUnknown)
+  }
+
+  private var commitButtonHelp: String {
+    canCommitSelectedTarget ? "Commit changes…" : "Nothing to commit"
+  }
+
   /// The live collapse value for a sub-section. A solo pane (Files, which stacks only itself) never
   /// collapses, so it reports expanded and its header shows no chevron.
   private func collapsedValue(for sub: InspectorSectionKind) -> Bool {
@@ -79,8 +128,20 @@ struct RightInspector: View {
           title: "Changes", collapsed: $store.changesSectionCollapsed,
           indicator: changesIndicator, indicatorLabel: changesIndicatorLabel, shortcut: "⌥⌘C"
         ) {
-          InspectorHeaderButton(systemImage: "arrow.clockwise", help: "Refresh workroom status") {
-            store.refreshWorkroomStatuses(force: true)
+          HStack(spacing: 0) {
+            InspectorHeaderButton(
+              systemImage: "checkmark.circle", help: commitButtonHelp,
+              disabled: !canCommitSelectedTarget
+            ) {
+              guard let sid = store.inspectorTargetID,
+                let item = store.selectedStatusWorkItem(for: sid)
+              else { return }
+              store.pendingCommit = PendingCommit(sid: sid, vcs: item.vcs)
+            }
+            .accessibilityIdentifier("changes.commitButton")
+            InspectorHeaderButton(systemImage: "arrow.clockwise", help: "Refresh workroom status") {
+              store.refreshWorkroomStatuses(force: true)
+            }
           }
         }
         .environmentObject(store).environmentObject(notifications))
@@ -226,29 +287,52 @@ struct RightInspector: View {
     return store.workroomStatuses[sid]
   }
 
-  /// Changes header indicator: the working-tree line counts (`+N` green / `-M` red) when there's a
-  /// delta; otherwise the status dot (untracked-only dirty, conflict, or unknown); nothing if clean.
+  /// Changes header indicator: how many files changed (a capsule count) and the working-tree line counts
+  /// (`+N` green / `-M` red) when there's a delta. Nothing at all if clean.
+  ///
+  /// The file count is deliberately NOT inside the line-counts branch. `lineCountsHelp` is nil for an
+  /// untracked-only dirty tree, which is exactly a case where files changed and no `+/−` can be
+  /// computed — the count is the only thing there is to say, so it has to render on its own.
+  ///
+  /// **The dirty dot is gone; the unknown one is not.** `VCSStatusPresentation.dot` answers three
+  /// different questions, and the count only replaces one of them. Its `.dirty` circle said "this tree
+  /// has changes", which is now the capsule beside it saying so with a number; its conflict triangle is
+  /// already rendered here in its own right. But its `questionmark.circle` says the probe FAILED —
+  /// timed out, busy, not a repository — and a failed probe reports no files and no line counts, so
+  /// dropping it wholesale would render "status unavailable" identically to "clean". That case keeps its
+  /// glyph, and with it the specific reason in the tooltip.
   private var changesIndicator: AnyView {
     guard let s = selectedStatus else { return AnyView(EmptyView()) }
     let ins = s.insertions ?? 0
     let del = s.deletions ?? 0
-    if let help = VCSStatusPresentation.lineCountsHelp(s) {
-      return AnyView(
-        HStack(spacing: 5) {
-          if s.conflicted {
-            Image(systemName: "exclamationmark.triangle.fill")
-              .font(.system(size: 9)).foregroundStyle(Color.red)
-          }
-          if ins > 0 { Text("+\(ins)").foregroundStyle(.green) }
-          if del > 0 { Text("-\(del)").foregroundStyle(.red) }
-        }
-        .font(.caption).monospacedDigit()
-        .help(help))
-    }
-    guard let dot = VCSStatusPresentation.dot(s) else { return AnyView(EmptyView()) }
+    // `changedFiles` mirrors `jjWorkingCopy?.files` for jj (both come from the one summary probe), so
+    // this is the same number for both backends and matches the rows rendered below.
+    let files = s.changedFiles?.count ?? 0
+    let countsHelp = VCSStatusPresentation.lineCountsHelp(s)
+    // `!s.conflicted` because `dot` checks conflict FIRST and would hand back the triangle this row
+    // already draws — a status that is both conflicted and unreadable would otherwise show two.
+    let dot = s.isUnknown && !s.conflicted ? VCSStatusPresentation.dot(s) : nil
+    if files == 0, countsHelp == nil, dot == nil { return AnyView(EmptyView()) }
     return AnyView(
-      Image(systemName: dot.symbol).font(.system(size: 9)).foregroundStyle(dot.semantic.color)
-        .help(dot.accessibility))
+      HStack(spacing: 5) {
+        if s.conflicted {
+          Image(systemName: "exclamationmark.triangle.fill")
+            .font(.system(size: 9)).foregroundStyle(Color.red)
+        }
+        if files > 0 { ChangedFileCountBadge(count: files) }
+        if let countsHelp {
+          HStack(spacing: 5) {
+            if ins > 0 { Text("+\(ins)").foregroundStyle(.green) }
+            if del > 0 { Text("-\(del)").foregroundStyle(.red) }
+          }
+          .help(countsHelp)
+        }
+        if let dot {
+          Image(systemName: dot.symbol).font(.system(size: 9)).foregroundStyle(dot.semantic.color)
+            .help(dot.accessibility)
+        }
+      }
+      .font(.caption).monospacedDigit())
   }
 
   // VoiceOver text for each header indicator (the visual badge can't be read through the collapse
@@ -256,8 +340,18 @@ struct RightInspector: View {
 
   private var changesIndicatorLabel: String {
     guard let s = selectedStatus else { return "" }
-    if let help = VCSStatusPresentation.lineCountsHelp(s) { return help }
-    return VCSStatusPresentation.dot(s)?.accessibility ?? ""
+    // The capsule count is a `Text` inside the combined header element, so it never reaches the
+    // accessibility tree on its own — it has to be spoken here or not at all.
+    // `> 0` so this tracks the badge exactly — a clean tree renders no capsule and must speak none.
+    let files = (s.changedFiles?.count).flatMap {
+      $0 > 0 ? ChangedFileCountBadge.phrase(count: $0) : nil
+    }
+    // Mirrors what the row now draws: line counts, or the unavailable reason, and no longer "working
+    // tree has changes" — the count phrase above already says that, in files rather than in prose.
+    let detail =
+      VCSStatusPresentation.lineCountsHelp(s)
+      ?? (s.isUnknown ? VCSStatusPresentation.dot(s)?.accessibility : nil)
+    return [files, detail].compactMap { $0 }.joined(separator: ", ")
   }
 }
 
@@ -267,6 +361,32 @@ private struct PendingPRAction: Identifiable {
   let number: Int
   let sid: SidebarID
   var id: String { "\(action.rawValue)-\(number)" }
+}
+
+/// The Changes section header's changed-file count.
+///
+/// Geometry and type are `PRNumberBadge`'s, so the two section headers' badges match — but this one is
+/// not a `Button` and takes no hover: it's a quantity, not a link. The neutral `.quaternary` fill is the
+/// same capsule the ref chips in the body use, deliberately not a tinted one — the severity signal in
+/// this header is the conflict glyph and the `+/−` colours beside it, and a coloured count would compete
+/// with them for the same meaning.
+private struct ChangedFileCountBadge: View {
+  let count: Int
+
+  /// Also spoken by the section's accessibility label, which is why it's a static rather than inline.
+  static func phrase(count: Int) -> String {
+    count == 1 ? "1 changed file" : "\(count) changed files"
+  }
+
+  var body: some View {
+    // `verbatim:` for the same reason `PRNumberBadge` uses it — no LocalizedStringKey digit grouping.
+    Text(verbatim: "\(count)")
+      .font(.caption2).fontWeight(.semibold).monospacedDigit()
+      .foregroundStyle(.secondary)
+      .padding(.horizontal, 5).padding(.vertical, 1)
+      .background(.quaternary, in: Capsule())
+      .help(Self.phrase(count: count))
+  }
 }
 
 /// The Pull Request section header's number badge (issue #77): a capsule "#N" link that opens the PR
@@ -602,31 +722,27 @@ struct ChangesPanel: View {
     } else if status == nil || status?.lastChecked == nil {
       inspectorMessage("Checking\u{2026}")
     } else if let status {
-      // Git and jj render the SAME shape: a branch/bookmark header over a flat change list. jj adds
-      // the working copy's (`@`) change-id/commit-id/refs + description to the header, since `@` is
-      // itself a commit. `jjWorkingCopy != nil` is the discriminator — a failed probe leaves it nil,
-      // so failures fall to the git path (which renders the failure under a branch header, as before).
-      let name = branchLabel(sid: sid, status: status)
+      // The branch/bookmark name is NOT repeated here — the VCS toolbar above this section shows it,
+      // through the same `AppStore.branchName(for:)` accessor this panel used to read, so the pill was
+      // saying the same thing twice about 40pt apart. What's left is backend-shaped: git's working tree
+      // carries no metadata of its own, so it renders as a bare change list, while jj's `@` IS a commit
+      // and keeps its change-id/commit-id/refs + description header. `jjWorkingCopy != nil` is the
+      // discriminator — a failed probe leaves it nil, so failures fall to the git path.
       if let workingCopy = status.jjWorkingCopy {
-        // A jj bookmark that names an ANCESTOR of `@` (rather than `@` itself) is a different thing
-        // to the reader, and only the resolved `branchForCI` — not the `detached` fallback — can be
-        // one, so the distinction is drawn here where the status is in hand.
-        let ancestor =
-          (status.branchForCI.map { !$0.isEmpty } ?? false) && !workingCopy.refs.contains(name)
-        jjContent(name: name, workingCopy: workingCopy, ancestorBookmark: ancestor)
+        jjContent(workingCopy: workingCopy, sid: sid)
       } else {
-        gitContent(name: name, status: status)
+        gitContent(status: status)
       }
     }
   }
 
-  /// Git repos: the branch header over the working-tree change list (or clean/failure). CI is
-  /// GitHub-derived, so it lives in the Pull Request section — not here.
+  /// Git repos: just the working-tree change list (or clean/failure). No header — git's working tree
+  /// isn't a commit, so with the branch name moved to the toolbar there is nothing left to head it with,
+  /// and the divider went with it rather than ruling off an empty row. CI is GitHub-derived, so it lives
+  /// in the Pull Request section — not here.
   @ViewBuilder
-  private func gitContent(name: String, status: WorkroomStatus) -> some View {
+  private func gitContent(status: WorkroomStatus) -> some View {
     VStack(alignment: .leading, spacing: 10) {
-      changesHeader(name: name, meta: nil, identifier: nil)
-      Divider()
       if let failure = status.failure {
         inspectorMessage(failureText(failure))
       } else if status.isClean {
@@ -638,18 +754,13 @@ struct ChangesPanel: View {
     .padding(12)
   }
 
-  /// jj repos: the working copy (`@`) — its bookmark/branch name plus, because `@` is itself a
-  /// commit, its change-id/commit-id/refs and description — over the flat change list, mirroring
-  /// `gitContent`. The working copy's parent (`@-`) is no longer shown here; the History panel now
-  /// surfaces it.
+  /// jj repos: the working copy (`@`) — because `@` is itself a commit, its change-id/commit-id/refs
+  /// and description — over the flat change list. The working copy's parent (`@-`) is no longer shown
+  /// here; the History panel now surfaces it.
   @ViewBuilder
-  private func jjContent(name: String, workingCopy: JJCommitChanges, ancestorBookmark: Bool)
-    -> some View
-  {
+  private func jjContent(workingCopy: JJCommitChanges, sid: SidebarID) -> some View {
     VStack(alignment: .leading, spacing: 10) {
-      changesHeader(
-        name: name, meta: workingCopy, identifier: "changes.workingCopy",
-        ancestorBookmark: ancestorBookmark)
+      changesHeader(meta: workingCopy, identifier: "changes.workingCopy", sid: sid)
       Divider()
       if workingCopy.files.isEmpty {
         cleanState
@@ -660,84 +771,64 @@ struct ChangesPanel: View {
     .padding(12)
   }
 
-  /// The shared Changes header: the branch/bookmark name, plus (for jj, whose working copy is a
-  /// commit) its change-id (purple) / commit-id (blue) / the refs the name pill doesn't already show,
-  /// and the description line. `meta == nil` (git) renders just the name — git's working tree isn't a
-  /// commit, so it carries no refs or message. `ancestorBookmark` says the name pill points at an
-  /// ancestor of `@` rather than `@` itself, which only its tooltip distinguishes. `identifier`
-  /// combines the header into one a11y element (jj only; the panel's render sentinel).
+  /// The jj working copy's header: `@`'s change-id (purple) / commit-id (blue) / its bookmarks, and the
+  /// description line. **jj only** — git's working tree isn't a commit, so it carries no refs and no
+  /// message and now renders headerless. `identifier` combines this into one a11y element; it is also
+  /// the panel's render sentinel, which a dozen UI tests wait on before asserting anything else.
+  /// The refs worth chipping: every bookmark on `@` EXCEPT the one the toolbar's bookmark segment is
+  /// already showing, which is the only one most workrooms have.
+  ///
+  /// Filtered against `branchName(for:)` — the same accessor the toolbar reads — rather than against
+  /// `meta.refs.first`, so the two can't disagree about which chip is the redundant one. A commit can
+  /// carry several bookmarks and the toolbar names exactly one, so the rest still chip here; this
+  /// removes a duplicate, not the information.
+  private func extraRefs(_ meta: JJCommitChanges, sid: SidebarID) -> [String] {
+    guard let shown = store.branchName(for: sid) else { return meta.refs }
+    return meta.refs.filter { $0 != shown }
+  }
+
   @ViewBuilder
-  private func changesHeader(
-    name: String, meta: JJCommitChanges?, identifier: String?, ancestorBookmark: Bool = false
-  ) -> some View {
-    // jj's `branch_for_ci` (the left pill) is the first bookmark in `::@` log order, and `@` is the
-    // first commit that walk emits — so whenever `@` itself is bookmarked, the left pill's name is
-    // by construction also in `meta.refs`, and rendering both put ONE bookmark on screen as two
-    // identical capsules. Chip only what the left pill isn't already showing. The case the left
-    // pill exists for is untouched: when `@` carries no bookmark it names an ancestor's and `refs`
-    // is empty. A multi-bookmark `@` still reads right — left pill = the alphabetically first,
-    // chips = the rest.
-    let extraRefs = (meta?.refs ?? []).filter { $0 != name }
+  private func changesHeader(meta: JJCommitChanges, identifier: String?, sid: SidebarID)
+    -> some View
+  {
     VStack(alignment: .leading, spacing: 2) {
       HStack(alignment: .firstTextBaseline, spacing: 6) {
-        // The branch/bookmark the working copy is on, as the same gray pill the History list rows and
-        // the changeset detail header give a ref — it names the same kind of thing, so it shouldn't
-        // read as a bold title in one surface and a capsule in the others. Truncates in the MIDDLE
-        // (unlike the ref pills beside it): a long branch name's distinguishing part is often its
-        // tail (`joel/history-refs-pill`), so tail-truncating it would hide what tells it apart.
-        Text(name).font(.caption)
-          .lineLimit(1).truncationMode(.middle)
-          .padding(.horizontal, 5).padding(.vertical, 1)
-          .background(.quaternary, in: Capsule())
-          // NOT "nearest": `branch_for_ci` is the first bookmark in `::@`'s LOG order, which at a
-          // merge can be further away in the graph than one on another parent (see
-          // `first_bookmark_in_log_order`'s doc). It is the first one walking down History, so that's
-          // what the tooltip says.
-          .help(ancestorBookmark ? "First ancestor bookmark in history" : "Bookmark / branch")
-        if let meta {
-          if let changeID = meta.changeID {
-            Text(changeID).font(.system(.callout, design: .monospaced))
-              .foregroundStyle(.purple).help("Change ID")
-          }
-          if let commitID = meta.commitID {
-            Text(commitID).font(.system(.callout, design: .monospaced))
-              .foregroundStyle(.blue).help("Commit ID")
-          }
-          // The same gray capsules the History list rows and changeset header use, one step down
-          // from the ids beside them (`.caption` under `.callout`, as the list's `.caption2` sits
-          // under its `.caption`) so the pill doesn't outweigh this header's larger type.
-          ForEach(extraRefs, id: \.self) { ref in
-            Text(ref).font(.caption)
-              .lineLimit(1).truncationMode(.tail)
-              .padding(.horizontal, 5).padding(.vertical, 1)
-              .background(.quaternary, in: Capsule())
-              .help("Bookmark / branch")
-          }
+        if let changeID = meta.changeID {
+          Text(changeID).font(.system(.callout, design: .monospaced))
+            .foregroundStyle(.purple).help("Change ID")
+        }
+        if let commitID = meta.commitID {
+          Text(commitID).font(.system(.callout, design: .monospaced))
+            .foregroundStyle(.blue).help("Commit ID")
+        }
+        // The bookmark the toolbar shows does NOT chip here — see `extraRefs`. jj reports a bookmarked
+        // `@`'s name twice (as the status' `branchForCI` and again in `refs`), so this row has always
+        // needed a filter to avoid one bookmark reading as two capsules; what changed is the reference
+        // point. It used to be the branch-name pill that stood to the left of these chips. That pill is
+        // gone, and for one commit in between so was the filter — which put the bookmark back on screen
+        // twice, ~40pt below the toolbar segment that names it. Now it's the toolbar's own answer.
+        //
+        // The same gray capsules the History list rows and changeset header use, one step down from
+        // the ids beside them (`.caption` under `.callout`, as the list's `.caption2` sits under its
+        // `.caption`) so a pill doesn't outweigh this header's larger type.
+        ForEach(extraRefs(meta, sid: sid), id: \.self) { ref in
+          Text(ref).font(.caption)
+            .lineLimit(1).truncationMode(.tail)
+            .padding(.horizontal, 5).padding(.vertical, 1)
+            .background(.quaternary, in: Capsule())
+            .help("Bookmark / branch")
         }
         Spacer(minLength: 0)
       }
-      if let meta {
-        if let desc = meta.description {
-          Text(desc).font(.callout).foregroundStyle(.primary)
-            .lineLimit(1).truncationMode(.tail)
-        } else {
-          Text("(no description set)").font(.footnote).foregroundStyle(.tertiary).lineLimit(1)
-        }
+      if let desc = meta.description {
+        Text(desc).font(.callout).foregroundStyle(.primary)
+          .lineLimit(1).truncationMode(.tail)
+      } else {
+        Text("(no description set)").font(.footnote).foregroundStyle(.tertiary).lineLimit(1)
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .modifier(CombinedA11y(identifier: identifier))
-  }
-
-  /// The bold header name for both VCS kinds: the branch/bookmark the working copy is on (`branchForCI`
-  /// — for jj, the nearest ancestor bookmark). Falls back to the root row's resolved ref for a project
-  /// root, else `detached`.
-  private func branchLabel(sid: SidebarID, status: WorkroomStatus) -> String {
-    if let branch = status.branchForCI, !branch.isEmpty { return branch }
-    if case .root(let p) = sid {
-      return RootPresentation.make(store.rootRefs[p] ?? .unresolved).label
-    }
-    return "detached"
   }
 
   /// The clean (no working-tree changes) state, styled like the Notifications empty state (issue

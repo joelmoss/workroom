@@ -214,6 +214,14 @@ struct RootView: View {
           },
           onCancel: { showAddProject = false })
       }
+      // VCS failure dialog. Hosted here rather than on the inspector because ⌥⇧⌘P and the rest of the
+      // Source Control menu work with the inspector hidden, and a failure they raise still has to be
+      // readable. `performRemoteAction`, not `runRemoteAction`, so a Pull recovery meets the dirty-tree
+      // confirmation — and the sheet is window-modal, so the selection cannot have moved under it.
+      .modifier(
+        VCSFailurePresenter(
+          model: store.remoteState, onRecover: { store.performRemoteAction($0) })
+      )
       // New Workroom picker (⌘N, issue #81): same store-flag bridge as the importer above, packaged as
       // a modifier so this large `body` stays within the type-checker's budget (like EdgeRevealSidebars).
       // The menu command gates on `hasProjects`, so it only fires with ≥1 project; the dialog itself
@@ -287,6 +295,14 @@ struct RootView: View {
       // store-level presenter for both entry points — see `PendingProjectSettings`'s doc comment.
       .sheet(item: $store.pendingProjectSettings) { pending in
         ProjectSettingsSheet(project: pending.project, showsRunWarning: pending.showsRunWarning)
+          .environmentObject(store)
+      }
+      // The commit dialog. Presented on the ROOT for `VCSFailureSheet`'s reason: it can be opened
+      // from the Changes header, and a dialog that only survives while a particular pane happens to
+      // be open is worse than no dialog. `pendingCommit` is already counted by
+      // `hasModalPresentation`, so Source Control shortcuts are inert behind it.
+      .sheet(item: $store.pendingCommit) { pending in
+        CommitSheet(pending: pending, onDismiss: { store.pendingCommit = nil })
           .environmentObject(store)
       }
   }
@@ -384,6 +400,9 @@ struct RootView: View {
         // Refresh the History log if it's the visible inspector section — a commit made in an
         // external terminal while backgrounded won't have repainted via the live watcher.
         store.refreshHistoryIfActive()
+        // Same safety net for the VCS toolbar, plus the auto-fetch due-check: a fetch or a teammate's
+        // push while backgrounded won't have reached the metadata watcher.
+        store.refreshRemoteStateIfActive()
         Task { await store.reloadIfStale() }
       }
       // Publish selection state for menu-command enablement (see WorkroomCommands). Grouped into one
@@ -417,6 +436,12 @@ struct RootView: View {
           // Run/Stop/Restart (issue #7) — run-state lives on the store, so these stay live.
           hasRunCommand: selectedHasRunCommand && !store.hasModalPresentation,
           runCommandActive: selectedRunCommandActive && !store.hasModalPresentation,
+          // Source Control (⌥⇧⌘F / ⇧⌘P / ⌥⇧⌘P). The model's own `can*` already fold in "a remote
+          // exists" and "nothing is in flight"; the tool floor and the modal guard are ANDed here so
+          // the menu can't fire an action the toolbar itself would refuse.
+          vcsCanFetch: store.remoteState.canFetch && vcsToolsUsable && !store.hasModalPresentation,
+          vcsCanPush: store.remoteState.canPush && vcsToolsUsable && !store.hasModalPresentation,
+          vcsCanPull: store.remoteState.canPull && vcsToolsUsable && !store.hasModalPresentation,
           hasRunTerminal: store.hasAnyRunTerminal && !store.hasModalPresentation,
           // Go-menu Previous/Next Workroom Tab (issue #29) — only meaningful with ≥2 tabs.
           multipleWorkroomTabs: store.orderedWorkroomTargets().count > 1
@@ -440,6 +465,12 @@ struct RootView: View {
     AppStore.projectPath(of: store.selectedTargetID)
   }
   /// Whether the selected workroom's project has a run command configured.
+  /// Whether the `git`/`jj` on PATH can run the remote commands for the toolbar's current target
+  /// (`VCSToolVersions`). Scoped per project VCS, so an old `jj` doesn't disable a git project's menu.
+  private var vcsToolsUsable: Bool {
+    store.vcsAllowsRemoteActions(vcs: store.remoteState.target?.vcs ?? "git")
+  }
+
   private var selectedHasRunCommand: Bool {
     guard let path = selectedRunProjectPath else { return false }
     return store.hasRunCommand(forProject: path)
@@ -648,6 +679,9 @@ private struct MenuStateValues: ViewModifier {
   let canNavigateForward: Bool
   let hasRunCommand: Bool
   let runCommandActive: Bool
+  let vcsCanFetch: Bool
+  let vcsCanPush: Bool
+  let vcsCanPull: Bool
   let hasRunTerminal: Bool
   let multipleWorkroomTabs: Bool
   let canOpenInEditor: Bool
@@ -665,6 +699,9 @@ private struct MenuStateValues: ViewModifier {
       .focusedSceneValue(\.canNavigateBack, canNavigateBack)
       .focusedSceneValue(\.canNavigateForward, canNavigateForward)
       .focusedSceneValue(\.hasRunCommand, hasRunCommand)
+      .focusedSceneValue(\.vcsCanFetch, vcsCanFetch)
+      .focusedSceneValue(\.vcsCanPush, vcsCanPush)
+      .focusedSceneValue(\.vcsCanPull, vcsCanPull)
       .focusedSceneValue(\.runCommandActive, runCommandActive)
       .focusedSceneValue(\.hasRunTerminal, hasRunTerminal)
       .focusedSceneValue(\.multipleWorkroomTabs, multipleWorkroomTabs)

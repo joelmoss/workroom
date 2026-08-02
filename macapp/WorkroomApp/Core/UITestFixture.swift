@@ -66,6 +66,82 @@ enum UITestFixture {
     flag("WorkroomUITestNoProjects")
   }
 
+  /// When set (`-WorkroomUITestJJProject 1`), the fixture's project reports itself as **jj** instead of
+  /// git.
+  ///
+  /// The fixture has always fed jj-SHAPED status — `jjWorkingCopy`, with `@`'s change-id, commit-id,
+  /// bookmarks and description — while declaring the project `vcs: "git"`, because git is what makes the
+  /// sidebar's root row render plainly and no real VCS call is ever made either way. That was invisible
+  /// until the VCS toolbar started wording itself per backend: it read "Current Branch" over jj data, and
+  /// nothing in the suite could catch it.
+  ///
+  /// A flag rather than flipping the default, because roughly seventeen tests wait on this one project's
+  /// shape and a jj project also changes what the app probes at launch (`jj --version`, the `.jj`
+  /// metadata watcher) — none of which those tests are about. Everything else about the project is
+  /// identical, so the fixture's usual selection and auto-open path works unchanged.
+  static var jjProject: Bool {
+    flag("WorkroomUITestJJProject")
+  }
+
+  /// The VCS toolbar's remote state (`-WorkroomUITestSyncState <name>`), one of:
+  /// `clean`, `ahead`, `behind`, `diverged`, `noCounterpart`, `noRemote`, `neverFetched`.
+  ///
+  /// Absent ⇒ the toolbar shows "No repository", because the fixture's paths aren't real repos and a
+  /// live read would resolve to `.absent`. Seeding it is what lets the states be asserted at all.
+  static var syncState: String? {
+    text("WorkroomUITestSyncState")
+  }
+
+  /// When set (`-WorkroomUITestSyncFailure 1`), the seeded remote state reports a failed push, so the
+  /// error tier can be asserted.
+  static var syncFailure: Bool {
+    flag("WorkroomUITestSyncFailure")
+  }
+
+  /// A seeded `VCSRemoteState` for `syncState`, or nil.
+  ///
+  /// `lastFetch` is pinned to exactly nine minutes before now so the subtitle reads "Fetched 9
+  /// minutes ago" deterministically — the string from the reference design, and one a UI test can match
+  /// without a clock seam.
+  static var remoteState: VCSRemoteState? {
+    guard let name = syncState else { return nil }
+    let nineMinutesAgo = Date().addingTimeInterval(-540)
+    let branch = VCSRef(name: "feature/login", kind: .branch)
+    func tracking(_ ahead: Int?, _ behind: Int?, gone: Bool = false) -> VCSTracking {
+      VCSTracking(comparedTo: "origin/feature/login", ahead: ahead, behind: behind, gone: gone)
+    }
+    switch name {
+    case "noRemote":
+      return VCSRemoteState(
+        current: branch, tracking: nil, remotes: [], primaryRemote: nil,
+        lastFetch: .never, resolvedAt: Date())
+    case "neverFetched":
+      return VCSRemoteState(
+        current: branch, tracking: tracking(0, 0), remotes: ["origin"], primaryRemote: "origin",
+        lastFetch: .never, resolvedAt: Date())
+    case "noCounterpart":
+      return VCSRemoteState(
+        current: branch, tracking: tracking(nil, nil, gone: true), remotes: ["origin"],
+        primaryRemote: "origin", lastFetch: .at(nineMinutesAgo), resolvedAt: Date())
+    case "ahead":
+      return VCSRemoteState(
+        current: branch, tracking: tracking(5, 0), remotes: ["origin"], primaryRemote: "origin",
+        lastFetch: .at(nineMinutesAgo), resolvedAt: Date())
+    case "behind":
+      return VCSRemoteState(
+        current: branch, tracking: tracking(0, 3), remotes: ["origin"], primaryRemote: "origin",
+        lastFetch: .at(nineMinutesAgo), resolvedAt: Date())
+    case "diverged":
+      return VCSRemoteState(
+        current: branch, tracking: tracking(2, 4), remotes: ["origin"], primaryRemote: "origin",
+        lastFetch: .at(nineMinutesAgo), resolvedAt: Date())
+    default:  // "clean"
+      return VCSRemoteState(
+        current: branch, tracking: tracking(0, 0), remotes: ["origin"], primaryRemote: "origin",
+        lastFetch: .at(nineMinutesAgo), resolvedAt: Date())
+    }
+  }
+
   /// When set (`-WorkroomUITestManyChanges 1`), the fixture workroom reports a long changed-file
   /// list so the Changes section overflows and fills the inspector — the scenario in which the
   /// inspector's section-disclosure animation misbehaves (the header title swims relative to its
@@ -352,15 +428,24 @@ enum UITestFixture {
     // persisted, so without this a test inherits whichever sections the developer — or the last UI test
     // to press ⌥⌘C/⌥⌘Y — left shut, and reads as "the panel is broken".
     Defaults[.inspectorLayout] = .default
+    // Workroom's own last-fetch stamps, for the same reason as the collapse state: they PERSIST, and a
+    // fetch performed by an earlier test writes one. `RemoteStateModel` takes the later of the backend's
+    // evidence and this stamp, so a leftover value silently overrode a seeded `.never` and the
+    // never-fetched state reported "just now" instead.
+    Defaults[.vcsLastFetch] = [:]
   }
 
   /// The fake project list. Idempotent within a launch: the backing temp directories are created if
-  /// missing so each target's terminal can start a shell. The project is reported as `git` so the
-  /// sidebar's root row renders normally; no real VCS call is ever made (loading is short-circuited
-  /// in `AppStore`, which also skips branch resolution for these paths).
+  /// missing so each target's terminal can start a shell. The project is reported as `git` — or as `jj`
+  /// under `jjProject`, which is what the jj-wording tests need — so the sidebar's root row renders
+  /// normally; no real VCS call is ever made either way (loading is short-circuited in `AppStore`, which
+  /// also skips branch resolution for these paths).
   static func projects() -> [Project] {
     // Empty list for the no-projects scenario (issue #81 D3) — nothing to create or select.
     if noProjects { return [] }
+    // One value for the project AND every workroom in it — a project with a mixed backend isn't a thing,
+    // and a workroom disagreeing with its project would exercise a state the product can't reach.
+    let vcs = jjProject ? "jj" : "git"
     let base = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
       .appendingPathComponent("workroom-uitest", isDirectory: true)
     let projectDir = base.appendingPathComponent(projectName, isDirectory: true)
@@ -374,19 +459,19 @@ enum UITestFixture {
     var workrooms = [
       Workroom(
         name: longWorkroomName ? longWorkroomNameValue : workroomName, path: workroomDir.path,
-        vcsName: "git", warnings: [])
+        vcsName: vcs, warnings: [])
     ]
     if twoTabs {
       dirs.append(workroomDir2)
       workrooms.append(
-        Workroom(name: workroomName2, path: workroomDir2.path, vcsName: "git", warnings: []))
+        Workroom(name: workroomName2, path: workroomDir2.path, vcsName: vcs, warnings: []))
     }
     // Extra workrooms for the tab-bar overflow scenario (issue #129). `twoTabs` already contributes
     // `workroomName2`, so skip any name it seeded rather than listing a duplicate.
     for name in extraWorkroomNames where !workrooms.contains(where: { $0.name == name }) {
       let dir = workroomsBase.appendingPathComponent(name, isDirectory: true)
       dirs.append(dir)
-      workrooms.append(Workroom(name: name, path: dir.path, vcsName: "git", warnings: []))
+      workrooms.append(Workroom(name: name, path: dir.path, vcsName: vcs, warnings: []))
     }
     for dir in dirs {
       try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -403,7 +488,7 @@ enum UITestFixture {
     // copy left in the temp dir by an older build must not silently outlive a change to it.
     let seededMarkdown = workroomDir.appendingPathComponent(seededMarkdownFileName)
     try? seededMarkdownContent.write(to: seededMarkdown, atomically: true, encoding: .utf8)
-    return [Project(path: projectDir.path, vcs: "git", workrooms: workrooms)]
+    return [Project(path: projectDir.path, vcs: vcs, workrooms: workrooms)]
   }
 
   // MARK: - Changes-inspector status
@@ -747,5 +832,77 @@ struct StubAgentRunner: AgentRunning {
     systemPrompt: String?, model: String?, prompt: String, cwd: String, timeout: TimeInterval
   ) async -> AgentRunOutcome {
     .success(stdout: envelope)
+  }
+}
+
+/// The `VCSWriting` used under `-WorkroomUITestFixture`: serves the seeded `UITestFixture.remoteState`
+/// and answers every action without running git or jj.
+///
+/// What no other tier can see is the button→engine seam: whether clicking "Push origin" actually asks
+/// for a push, whether the confirmation dialog swallows the click, and whether a second click while one
+/// is in flight is dropped. The engine's own correctness is covered by `VCSRemoteIntegrationTests`
+/// against real repos.
+///
+/// A test process can't reach into this actor, so assertions read the seam out of the RENDERED state
+/// instead: `delay` makes the in-flight label ("Pushing…") observable, and `-WorkroomUITestSyncFailure`
+/// makes the failed action's own label the one shown — both of which name the action that was
+/// requested, in the accessibility tree, without a side channel.
+actor FixtureVCSWriter: VCSWriting {
+  /// Set for `-WorkroomUITestSyncFailure`, so the error tier renders.
+  private let failing: Bool
+  /// Delays each action so the in-flight state is observable rather than instantaneous.
+  private let delay: TimeInterval
+
+  /// 2.5s, not a token delay: XCUITest's predicate expectations poll roughly once a second, so a
+  /// sub-second action completes between samples and the in-flight state is never observed — the test
+  /// then fails claiming the state never rendered when it rendered and passed.
+  init(failing: Bool = UITestFixture.syncFailure, delay: TimeInterval = 2.5) {
+    self.failing = failing
+    self.delay = delay
+  }
+
+  func remoteState(path: String, projectRoot: String) async -> VCSRemoteResolution {
+    UITestFixture.remoteState.map { .state($0) } ?? .absent
+  }
+
+  func fetch(path: String, projectRoot: String, remote: String) async -> VCSRemoteActionResult {
+    await record(.fetch)
+  }
+
+  func push(
+    path: String, projectRoot: String, current: VCSRef, remote: String, setUpstream: Bool,
+    anonymousRevision: String
+  ) async -> VCSRemoteActionResult {
+    await record(.push)
+  }
+
+  func pullRebase(
+    path: String, projectRoot: String, current: VCSRef, remote: String, tracking: VCSTracking?
+  ) async -> VCSRemoteActionResult {
+    await record(.pull)
+  }
+
+  func abortRebase(path: String, projectRoot: String) async -> VCSRemoteActionResult {
+    await record(.abortRebase)
+  }
+
+  /// Answers the commit without running git or jj, so the sheet's own seam — selection → button
+  /// count → request, and the in-flight and failure states — is exercisable hermetically. The write's
+  /// real semantics are covered against throwaway repos in `VCSCommitIntegrationTests`, which is the
+  /// only tier that can see them.
+  func commit(path: String, projectRoot: String, request: VCSCommitRequest) async
+    -> VCSCommitResult
+  {
+    if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+    return failing
+      ? .failed(.hookRejected("fixture: pre-commit hook declined\nlint: 2 problems"))
+      : .ok(summary: CLIVCSWriter.commitSummary(request.mode, vcs: "git"), revision: "fixture01")
+  }
+
+  private func record(_ action: VCSRemoteAction) async -> VCSRemoteActionResult {
+    if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+    return failing
+      ? .failed(.authRequired("fixture: authentication refused"))
+      : .ok(summary: "fixture \(action.rawValue)")
   }
 }

@@ -8,6 +8,7 @@ use std::path::Path;
 use wr_vcs_model::RepoKind;
 
 pub mod jj_backend;
+mod jj_config;
 
 pub use wr_vcs_model as model;
 

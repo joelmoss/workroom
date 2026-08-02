@@ -24,6 +24,57 @@ struct CommandResult: Sendable, Equatable {
 protocol StatusCommandRunning: Sendable {
   func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
     async -> CommandResult
+
+  /// Like `run`, but feeds `stdin` to the child on its standard input.
+  ///
+  /// Exists for the commit path, where passing data as **argv is either unsafe or impossible**:
+  /// - `git add --pathspec-from-file=- --pathspec-file-nul` takes the selected paths NUL-separated
+  ///   on stdin. That is the only form git treats pathspecs as **literal** — after a bare `--` they
+  ///   are still glob magic, so selecting `a[b].txt` also stages `ab.txt` (measured), and a file
+  ///   named `*` stages the whole tree. It also sidesteps `E2BIG`, which a few thousand long paths
+  ///   in `proc.arguments` would hit at spawn, before git can emit anything classifiable.
+  /// - `git commit --file=-` takes the message on stdin, so no length or encoding question arises.
+  ///
+  /// A per-call **environment** override is deliberately NOT added yet: its only planned consumer is
+  /// `GIT_INDEX_FILE` for temp-index commits, which is deferred, and an unused parameter is surface
+  /// nobody can test.
+  func run(
+    _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
+    stdin: Data?
+  ) async -> CommandResult
+
+  /// Like `run`, but for a command that will touch the **network** and therefore may want to
+  /// authenticate — `git fetch/push/pull`, `jj git fetch/push`.
+  ///
+  /// A read like `git status` can never prompt, so it wants the minimal, predictable environment
+  /// `run` gives it. A push can: it may need an SSH agent the GUI environment can't see, and it may
+  /// try to ask for a passphrase or a host-key confirmation with nowhere to ask. See
+  /// `StatusCommandRunner.networkEnvironment` for what changes and why.
+  func runNetwork(
+    _ executable: String, _ args: [String], in directory: String,
+    timeout: TimeInterval
+  ) async -> CommandResult
+}
+
+extension StatusCommandRunning {
+  /// Test doubles never reach a real network, so the distinction is meaningless for them — forward
+  /// and let them stay two-line stubs. Only `StatusCommandRunner` overrides this.
+  func runNetwork(
+    _ executable: String, _ args: [String], in directory: String,
+    timeout: TimeInterval
+  ) async -> CommandResult {
+    await run(executable, args, in: directory, timeout: timeout)
+  }
+
+  /// Same reasoning as `runNetwork`: a double that records argv doesn't care about the payload, so
+  /// it stays a two-line stub. A double that DOES need to assert on stdin (the commit tests) can
+  /// override this one method. Only `StatusCommandRunner` writes a real pipe.
+  func run(
+    _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
+    stdin: Data?
+  ) async -> CommandResult {
+    await run(executable, args, in: directory, timeout: timeout)
+  }
 }
 
 /// Default `StatusCommandRunning`: spawns via `/usr/bin/env` (augmented PATH finds Homebrew
@@ -39,9 +90,79 @@ protocol StatusCommandRunning: Sendable {
 struct StatusCommandRunner: StatusCommandRunning, Sendable {
   var maxBytes: Int = 4 * 1024 * 1024
 
+  /// Auth-relevant variables forwarded from the user's shell for network commands only.
+  ///
+  /// A Finder- or Dock-launched `.app` inherits launchd's environment, not the user's shell, and this
+  /// runner otherwise overrides only PATH. That was harmless while it ran `git status` and `gh` (which
+  /// carries its own token), but it breaks authentication outright: `SSH_AUTH_SOCK` is how a process
+  /// finds an SSH agent, and for anyone using 1Password's agent, gpg-agent, or a custom socket it is
+  /// set in `.zshrc` and nowhere else. Without it their `git push` cannot reach the agent, and the
+  /// error would tell them to configure a credential helper they already have.
+  ///
+  /// Deliberately an allowlist, not the whole probed environment (which `ShellEnvironment.environment()`
+  /// hands to setup/teardown scripts): network ops now run automatically on inspector focus, and a
+  /// wholesale transplant would put every variable in the user's shell — secrets included — into a
+  /// child on an automatic path.
+  static let forwardedAuthKeys = [
+    "SSH_AUTH_SOCK", "SSH_AGENT_PID", "GIT_SSH_COMMAND", "GIT_CONFIG_GLOBAL", "XDG_CONFIG_HOME",
+  ]
+
+  /// Variables removed for network commands so `ssh` cannot find a graphical prompt helper.
+  static let networkClearedKeys = ["SSH_ASKPASS", "DISPLAY"]
+
+  /// The environment for a network command: `base` plus forwarded auth vars, with ssh pinned to
+  /// fail fast instead of asking a human.
+  ///
+  /// `GIT_TERMINAL_PROMPT=0` (set by `run`) governs **git's own** credential prompts and says nothing
+  /// to `ssh`. So an SSH remote with a passphrase-protected key and no agent, or a host whose key
+  /// isn't in `known_hosts`, would otherwise stall until the timeout — 120s for fetch/push, 300s for
+  /// pull. `BatchMode=yes` turns both into an immediate, classifiable failure, and
+  /// `SSH_ASKPASS_REQUIRE=never` stops ssh reaching for a GUI helper (OpenSSH 8.4+; macOS ships 10.x).
+  ///
+  /// A user's own `GIT_SSH_COMMAND` is preserved and appended to rather than replaced — it commonly
+  /// carries `-i <key>` or a proxy command that must survive.
+  ///
+  /// Pure and static so the whole policy is unit-testable without spawning anything.
+  static func networkEnvironment(base: [String: String], probed: [String: String])
+    -> [String: String]
+  {
+    var env = base
+    for key in forwardedAuthKeys {
+      // The inherited environment wins: if it's already set, the app was launched from a shell that
+      // had it, and that value is at least as current as the probe's.
+      if env[key] == nil, let value = probed[key], !value.isEmpty { env[key] = value }
+    }
+    for key in networkClearedKeys { env.removeValue(forKey: key) }
+    let ssh = env["GIT_SSH_COMMAND"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+    env["GIT_SSH_COMMAND"] = (ssh?.isEmpty == false ? ssh! : "ssh") + " -o BatchMode=yes"
+    env["SSH_ASKPASS_REQUIRE"] = "never"
+    return env
+  }
+
   func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
     async -> CommandResult
   {
+    await run(executable, args, in: directory, timeout: timeout, network: false, stdin: nil)
+  }
+
+  func run(
+    _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
+    stdin: Data?
+  ) async -> CommandResult {
+    await run(executable, args, in: directory, timeout: timeout, network: false, stdin: stdin)
+  }
+
+  func runNetwork(
+    _ executable: String, _ args: [String], in directory: String,
+    timeout: TimeInterval
+  ) async -> CommandResult {
+    await run(executable, args, in: directory, timeout: timeout, network: true, stdin: nil)
+  }
+
+  private func run(
+    _ executable: String, _ args: [String], in directory: String,
+    timeout: TimeInterval, network: Bool, stdin: Data?
+  ) async -> CommandResult {
     let proc = Process()
     proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
     proc.arguments = [executable] + args
@@ -51,16 +172,43 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
     env["PATH"] = ShellEnvironment.path()
     env["GIT_OPTIONAL_LOCKS"] = "0"
     env["GIT_TERMINAL_PROMPT"] = "0"
+    // Pin the message locale: EVERY consumer of this runner classifies failures by matching English
+    // substrings of git's stderr (`CLIVCSWriter.classify`, `WorkroomStatusResolver`), and git ships
+    // translated message catalogs. Homebrew git 2.55 under a French locale answers
+    // `erreur : le spécificateur de chemin …`, so without this a non-English user loses the ENTIRE
+    // failure taxonomy at once — auth, host-key, rejected-push, dirty-tree and leftover-lock all
+    // collapse to `.other(rawStderr)` with no recovery offered.
+    //
+    // `LC_ALL`, not `LC_MESSAGES`: this env is seeded from `ProcessInfo.environment`, so the user's own
+    // `LC_ALL` may be inherited, and it OUTRANKS `LC_MESSAGES` — setting the narrower variable is
+    // silently defeated (measured: `LC_ALL=fr_FR.UTF-8 LC_MESSAGES=C git …` still answers in French).
+    //
+    // Safe for paths despite forcing the C charset: git writes pathnames as raw bytes (and quotes
+    // non-ASCII per `core.quotePath` regardless of locale), so `LC_ALL=C` renders a `café-ünï.txt`
+    // byte-identically to the user's own locale — verified, not assumed. jj and gh are unaffected
+    // either way; neither localizes.
+    env["LC_ALL"] = "C"
     // A workroom can be a clone of an *untrusted* repo, and the status sweep runs git automatically
     // on load/focus/selection. `git diff` would otherwise run an inherited external-diff program;
     // unset it so only the explicit `--no-ext-diff` flag (see WorkroomStatusResolver) governs diffs.
     env.removeValue(forKey: "GIT_EXTERNAL_DIFF")
+    if network { env = Self.networkEnvironment(base: env, probed: ShellEnvironment.environment()) }
     proc.environment = env
 
     let outPipe = Pipe()
     let errPipe = Pipe()
     proc.standardOutput = outPipe
     proc.standardError = errPipe
+    // Never let a child read the app's stdin. Unset, it INHERITS ours — which under `make app-run`
+    // (or `Scripts/run.sh`) is a real terminal, so a prompting `ssh` or `git` could sit waiting on a
+    // tty that the same binary won't have when launched from Finder. Pinning it makes the two launch
+    // contexts behave identically and turns any prompt into an immediate EOF. `ShellEnvironment.probe`
+    // already does this for the same reason.
+    //
+    // A caller-supplied payload replaces the null device with a pipe we write and then close, so the
+    // child still sees a clean EOF and can never wait on a human.
+    let inPipe: Pipe? = stdin == nil ? nil : Pipe()
+    proc.standardInput = inPipe ?? FileHandle.nullDevice
 
     // `proc` is shared with the @Sendable cancellation handler; box it so the non-Sendable Process
     // can cross that boundary (mirrors the @unchecked Sendable helpers below).
@@ -121,11 +269,27 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
 
         do {
           try proc.run()
+          // Feed stdin AFTER the child exists, on a background queue, and close to signal EOF.
+          // Off the calling thread because a payload larger than the 64K pipe buffer blocks until
+          // the child drains it, and `git` does not start reading until it has parsed its argv.
+          if let inPipe, let payload = stdin {
+            DispatchQueue.global().async {
+              let handle = inPipe.fileHandleForWriting
+              // Darwin's per-descriptor SIGPIPE suppression. Without it, a child that exits before
+              // reading (git rejecting its argv, a hook killing it) makes our `write(2)` raise
+              // SIGPIPE, whose default disposition TERMINATES the app — a crash reachable from an
+              // ordinary failed commit. With it the write just returns EPIPE, which `try?` drops.
+              _ = fcntl(handle.fileDescriptor, F_SETNOSIGPIPE, 1)
+              if !payload.isEmpty { try? handle.write(contentsOf: payload) }
+              try? handle.close()
+            }
+          }
         } catch {
           // Launch failed (e.g. cwd vanished). Close the write ends so the drain readers hit
           // EOF instead of blocking forever, then resolve as command-not-found.
           timeoutItem.cancel()
           killItem.cancel()
+          try? inPipe?.fileHandleForWriting.close()
           try? outPipe.fileHandleForWriting.close()
           try? errPipe.fileHandleForWriting.close()
           gate.resume(

@@ -17,7 +17,6 @@ use std::sync::Arc;
 
 use jj_lib::backend::ChangeId;
 use jj_lib::commit::Commit as JjCommit;
-use jj_lib::config::StackedConfig;
 use jj_lib::conflict_labels::ConflictLabels;
 use jj_lib::conflicts::{
     materialize_merge_result_to_bytes, materialized_diff_stream, ConflictMaterializeOptions,
@@ -37,7 +36,6 @@ use jj_lib::object_id::ObjectId;
 use jj_lib::repo::{ReadonlyRepo, Repo, StoreFactories, StoreLoadError};
 use jj_lib::repo_path::RepoPath;
 use jj_lib::revset::{ResolvedRevsetExpression, Revset, RevsetExpression};
-use jj_lib::settings::UserSettings;
 use jj_lib::tree_merge::MergeOptions;
 use jj_lib::working_copy::{SnapshotOptions, WorkingCopyFreshness};
 use jj_lib::workspace::{default_working_copy_factories, Workspace, WorkspaceLoadError};
@@ -81,7 +79,7 @@ fn workspace_load_err(e: WorkspaceLoadError) -> VcsError {
 
 /// Open a workspace read-only and load the repo at the current operation head.
 fn open(root: &Path) -> model::Result<(Workspace, Arc<ReadonlyRepo>)> {
-    let settings = UserSettings::from_config(StackedConfig::with_defaults()).map_err(io)?;
+    let settings = crate::jj_config::user_settings()?;
     let workspace = Workspace::load(
         &settings,
         root,
@@ -590,7 +588,7 @@ fn lock_is_held(workspace: &Workspace) -> bool {
 /// matches the jj CLI default (1 MiB) so a status refresh can't hash/store an arbitrarily huge
 /// untracked file.
 fn snapshot_working_copy(root: &Path) -> model::Result<(Workspace, Arc<ReadonlyRepo>)> {
-    let settings = UserSettings::from_config(StackedConfig::with_defaults()).map_err(io)?;
+    let settings = crate::jj_config::user_settings()?;
     let mut workspace = Workspace::load(
         &settings,
         root,
@@ -984,7 +982,7 @@ fn raw_kind(
 /// jj/git config"). Marker STYLE can change a conflict's line count, so if that item lands, this
 /// call site wants the real settings too.
 fn materialize_options() -> model::Result<ConflictMaterializeOptions> {
-    let settings = UserSettings::from_config(StackedConfig::with_defaults()).map_err(io)?;
+    let settings = crate::jj_config::user_settings()?;
     Ok(ConflictMaterializeOptions {
         marker_style: settings.get("ui.conflict-marker-style").map_err(io)?,
         marker_len: None,

@@ -33,6 +33,20 @@ struct ToastStack: View {
     // ONE container (issue #67): live run toasts ride above the transient notification toasts, so the
     // two never overlap in the bottom-right corner (they'd collide as separate overlays).
     VStack(alignment: .trailing, spacing: 8) {
+      // Tool-version warnings ride at the top: unlike the two below, these describe a STANDING
+      // condition (an old `git` doesn't fix itself), so they never auto-dismiss and stay until the
+      // user closes them. See `VCSToolVersions`.
+      ForEach(store.vcsToolWarnings) { warning in
+        ToolWarningToastView(
+          warning: warning,
+          onDismiss: {
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+              store.dismissToolWarning(tool: warning.tool)
+            }
+          }
+        )
+        .transition(.move(edge: .trailing).combined(with: .opacity))
+      }
       ForEach(store.runToastItems) { item in
         RunToastView(
           item: item,
@@ -83,8 +97,71 @@ struct ToastStack: View {
       let live = Set(items.map(\.id))
       for toast in store.toasts where !live.contains(toast.id) { store.dismissToast(toast.id) }
     }
+    .animation(
+      reduceMotion ? nil : .spring(response: 0.36, dampingFraction: 0.82),
+      value: store.vcsToolWarnings
+    )
     // An empty stack must not eat clicks meant for the content beneath it.
-    .allowsHitTesting(!store.toasts.isEmpty || !store.runToastItems.isEmpty)
+    .allowsHitTesting(
+      !store.toasts.isEmpty || !store.runToastItems.isEmpty || !store.vcsToolWarnings.isEmpty)
+  }
+}
+
+/// A standing warning that `git`/`jj` on PATH is missing or too old for the VCS remote actions
+/// (`VCSToolVersions`). Deliberately NOT routed through `NotificationCenterStore`: every entry there
+/// is identified by `(targetID, tabID)` and a click routes back to a live terminal, which a
+/// machine-wide tool problem has none of.
+///
+/// Styled as `RunToastView` but with no tap action and no auto-dismiss — there is nowhere useful to
+/// navigate, and the condition persists until the user upgrades the tool.
+private struct ToolWarningToastView: View {
+  let warning: VCSToolVersions.ToolWarning
+  let onDismiss: () -> Void
+
+  @State private var hovering = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  private let theme = ThemeService.shared
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 10) {
+      Image(systemName: "exclamationmark.triangle.fill")
+        .foregroundStyle(theme.tokens.warning)
+      VStack(alignment: .leading, spacing: 2) {
+        Text(warning.title).font(.callout).fontWeight(.semibold).lineLimit(2)
+        Text(warning.detail).font(.caption).foregroundStyle(.secondary).lineLimit(4)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 10)
+    .frame(width: 300, alignment: .leading)
+    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(theme.tokens.border, lineWidth: 0.5))
+    .overlay(alignment: .topLeading) { closeButton }
+    .shadow(color: .black.opacity(0.28), radius: 18, y: 8)
+    .onHover { hovering = $0 }
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("\(warning.title). \(warning.detail)")
+    .accessibilityAction(named: "Dismiss") { onDismiss() }
+  }
+
+  private var closeButton: some View {
+    Button(action: onDismiss) {
+      Image(systemName: "xmark")
+        .font(.system(size: 9, weight: .bold))
+        .foregroundStyle(.secondary)
+        .frame(width: 18, height: 18)
+        .background(.regularMaterial, in: Circle())
+        .overlay(Circle().strokeBorder(theme.tokens.border, lineWidth: 0.5))
+        .contentShape(Circle())
+    }
+    .buttonStyle(.plain)
+    .padding(6)
+    .opacity(hovering ? 1 : 0)
+    .allowsHitTesting(hovering)
+    .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: hovering)
+    .help("Dismiss")
+    .accessibilityHidden(true)
   }
 }
 

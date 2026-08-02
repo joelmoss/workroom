@@ -116,27 +116,71 @@ best done after CMT-2 to use ghostty's `selection_changed` hook.
 
 ### VCS write actions — Phase 2 (macapp) — roadmap pointer
 
-**What:** The next VCS phase: turn the read-only foundation into a full in-app VCS UI. Write methods
-behind `VCSProviding` — commit/amend, push/pull/fetch, branch (git) / bookmark (jj) management — then
-the deep jj ops (undo/op-log, split, absorb, evolog, interdiff). A `CLIVCSProvider` fallback is
-introduced here for ops the libraries don't expose ergonomically (each with tests), NOT as a parallel
-read path.
+**What:** The next VCS phase: turn the read-only foundation into a full in-app VCS UI. **Fetch, push
+and pull-with-rebase have SHIPPED** (the VCS toolbar), and so have **commit + message-only amend/describe**
+(the Changes inspector's commit dialog). What remains: selection-aware amend (needs a temp index),
+bookmark (jj) / branch (git) management, and the deep jj ops (undo/op-log, split, absorb, evolog,
+interdiff).
 
-**Why:** This is a roadmap phase, not a tactical follow-up — it's tracked in full in the issue #59
-plan (Phase 2 section) + the `vcs-foundation-rust-core` design notes. This entry is only a pointer so
-Phase 2 is discoverable from `TODOS.md`; the authoritative scope + sequencing live in the plan.
+**Where the write seam actually is — this changed.** The original plan put write methods on
+`VCSProviding` with a `CLIVCSProvider` fallback. That is **not** what shipped, and new work should not
+follow it. Writes live behind a **separate** `VCSWriting` protocol (`Core/VCSWriting.swift`) with its
+own factory `VCS.writer(for:)`, conformed by `CLIVCSWriter`. Two reasons, both load-bearing:
 
-**How to start:** Read the plan's "Phase 2 — VCS write actions" section and issue #59. The read
-foundation (this file's other VCS entries) is the prerequisite; land the deferred read follow-ups
-first where they'd otherwise bite the write UI. All three that gated this — jj **rename detection**,
-**conflict status**, and the **error taxonomy** — have now shipped, so nothing in the read layer blocks
-Phase 2. What's left of the taxonomy is one-sided (git still flattens to `.io`) and the stale-working-copy
-**repair** is itself a write, so it belongs to this phase, not before it.
+- `VCSProviding`'s doc calls it "the single seam the app **reads** VCS data through", and four
+  resolvers construct providers freely and call them with no gate. A `fetch` on that protocol means
+  nothing structurally stops a read path firing a network mutation — the opposite of what
+  `JJSnapshotGate` exists to guarantee.
+- A CLI-backed method needs an injected `StatusCommandRunning`, and `GitProvider`/`RustJJProvider` are
+  stateless value types constructed at four call sites with nowhere to put one. A new conformer has
+  somewhere.
 
-**Depends on:** the VCS read foundation (shipped, Phase 1). Spans `vcs/` (Rust), `WrVcs` UniFFI,
-`Core/VCSProviding.swift` + both providers, and new write-flow UI.
+So: add commit/amend and the rest as `VCSWriting` members, and they inherit the gate, the network
+environment hardening and the failure taxonomy for free.
 
-**Priority:** P2 (the product direction; large, sequenced after the read follow-ups — see the plan for the real breakdown).
+**Which backend each op uses — decided, don't re-litigate.** `VCSWriting` says *where* writes live,
+not *how* they run. The split:
+
+| Ops | Backend | Why |
+|---|---|---|
+| commit/amend — **CLI, decided against this table's original answer** | **CLI** (`CLIVCSWriter.commit`, shipped) | This row used to say "native", and that was wrong on three counts it never weighed. **libgit2 runs no hooks** ([#964](https://github.com/libgit2/libgit2/issues/964)) — a `pre-commit`/`commit-msg` that the user's terminal honours would be silently skipped, which is worse than not offering commit at all. **libgit2 cannot sign**, so `commit.gpgsign = true` would produce unsigned commits. And native jj commit is blocked on `immutable_heads()` being a jj-*cli* revset alias that jj-lib cannot resolve — so it would happily rewrite commits the user's own `jj` refuses to touch. (The empty-committer and dropped-signature halves of that third blocker are now fixed by `jj_config.rs`; the revset one is not.) |
+| branch + bookmark management, jj undo/op-log/split/absorb/evolog | **native** (libgit2/SwiftGitX, jj-lib) — provisional | Local, typed APIs, no output to parse, no tool-version floor, no locale exposure. Still the default answer, but **not "don't re-litigate"**: commit was re-litigated on measurement and moved. Check each op for hooks, signing, and revset aliases before assuming native. |
+| fetch, push, pull | **CLI** — permanently, not a stopgap | Three independent blockers, all verified from checked-out sources: SwiftGitX passes NULL options (`git_remote_fetch(remotePointer, nil, nil, nil)`, and `pull` is a `// TODO`), so it has no credential callback at all; **libgit2 implements no `credential.helper` protocol** — nothing in its `src` reads that config key, so native auth means reimplementing helper invocation ourselves; and jj-lib shells to `git` for remote ops anyway (that's where its `MINIMUM_GIT_VERSION` comes from), so a "native jj push" is a git subprocess wearing a Rust coat. |
+
+**Non-goal: Workroom does not store credentials.** No OAuth client, no keychain writes, no auth
+prompt, no account concept. The user's own helpers (`osxkeychain`, GCM, `!gh auth git-credential`,
+anything corporate) are the correct answer, and shelling out gets every host — including ones we've
+never heard of — for free, with the same credentials their terminal uses. GitHub Desktop is the
+instructive counterexample: it also shells out (via `dugite`, which bundles its own git), but blanks
+your helpers and registers itself as `credential.helper=desktop` because being *the GitHub client* is
+its product. The cost of that choice is `app/src/lib/generic-git-auth.ts` — a second credential store,
+with its own prompt UI, keychain keys and invalidation, for every non-GitHub host. We are not that
+product, and the app's one GitHub dependency (PR status) already rides `gh`'s own token.
+
+**When you do shell out, never parse prose.** `--porcelain`, `-z`, `%(…)`, `-T`, exit codes. Measured:
+`Updates were rejected` becomes `Les mises à jour ont été rejetées` under `fr_FR.UTF-8`, so a prose
+match loses the whole failure taxonomy for a non-English user. `StatusCommandRunner` pins `LC_ALL=C`
+as a backstop; it is not the plan.
+
+*Filed, not planned:* bundling our own `git` the way `dugite` does would delete all of
+`Core/VCSToolVersions.swift` — floor, probe, notification, per-VCS scoping. Real cost (universal
+binary, notarization, ~40MB, and the Go CLI would want the same binary), so revisit only if the
+version floor actually bites a user.
+
+**Why:** This is a roadmap phase, not a tactical follow-up. The authoritative scope + sequencing live
+in the issue #59 plan; this entry is the pointer that makes it discoverable.
+
+**How to start:** Read `Core/VCSWriting.swift` — its doc comment carries the routing diagram, the
+per-backend command table and the placement rules (fetch always runs at the project root, for both
+backends; jj push too, because bookmarks are repo-global). The read layer blocks nothing. What's left
+of the error taxonomy is one-sided (git still flattens to `.io`), and the stale-working-copy **repair**
+is itself a write, so it belongs to this phase.
+
+**Depends on:** the VCS read foundation (shipped, Phase 1) and the write seam (shipped with the
+toolbar). Spans `Core/VCSWriting.swift`, possibly `vcs/` (Rust) + `WrVcs` UniFFI for native jj ops, and
+new write-flow UI.
+
+**Priority:** P2 (the product direction; large — see the plan for the real breakdown).
 
 ### `withTimeout` doesn't observe the CALLER's own cancellation (macapp) — VCS-foundation eng-review, /review follow-up
 
@@ -173,6 +217,196 @@ underlying synchronous native call (still uncancellable, unchanged).
 careful review/testing, not a drive-by fix.
 
 **Priority:** P2 (efficiency/responsiveness, not correctness; no user-visible bug today).
+
+### VCS toolbar: ten confirmed findings the `/review` pass didn't fix (macapp)
+
+**What:** Everything the toolbar review verified but left standing. Each was reproduced or read off the
+code; none is speculative. Ordered by what a user hits first.
+
+1. **A configured remote with NO refs reads as "No remote configured".** `primaryRemote` is derived
+   purely from `refs/remotes` rows, and a fresh empty remote has none (verified: `for-each-ref
+   refs/remotes` = 0 lines; jj's `bookmark list --all-remotes` likewise empty). So `canPush` is false and
+   publishing to a brand-new empty GitHub repo — the case where "Publish branch" matters most — is
+   impossible from the app. Fix: take the remote LIST from config (`git remote`, and jj's remotes) while
+   leaving the counts ref-derived.
+2. **jj Pull guesses `trunk()` as the base for an unbookmarked `@`.** Right for a workroom off trunk,
+   wrong for one off a feature branch: it reports "N behind" counting trunk's commits and the rebase
+   then refuses (`immutableHistory`, now typed and retry-free, so it fails honestly rather than looping).
+   The real fix is remembering each workroom's own base rather than deriving it — `::@ &
+   remote_bookmarks()` can't, because the base stops being an ancestor the moment it advances.
+3. **jj bookmark names that need quoting never match.** jj's template pre-quotes non-identifier names
+   (verified: `"main|evil"` comes back WITH the quotes), so `parsed.bookmarks.first { $0.name == name }`
+   compares `"main|evil"` against jj-lib's raw `main|evil` and always fails — tracking, counts and Pull
+   go silently nil. Parse names unquoted, and build the rebase destination from `(name, remote)` with
+   `jjQuote` on each rather than reusing the pre-joined `comparedTo` display string.
+4. **jj multi-remote: the wrong remote's tracking row wins.** `trackingByName[name] = …` overwrites by
+   name with no `primaryRemote` filter, so with `origin` + `upstream` both tracking `main` the last row
+   read decides the counts while every UI string interpolates `primaryRemote`. The git path builds
+   `"\(primary)/\(branch)"` explicitly; jj is the asymmetry. Same root cause makes `@..trunk()` capable
+   of counting against a different remote than the one it names and fetches.
+5. **`resolvedBranchNames` is stale-wins and never pruned.** It's now source #1 for every
+   branch-showing surface but is written only for the focused target, never removed on workroom/project
+   delete, and its refresh is gated on the inspector being visible AND on Changes. So `git switch` in a
+   workroom's terminal leaves the sidebar and status bar showing the old name indefinitely.
+6. **A failure is discarded if the selection moved.** `finish` guards the `lastFailure` write on target
+   identity (correct for rendering), and there is no toast for VCS action failures — so a push that
+   fails after you switch workrooms is recorded nowhere. You saw a spinner and never learn it didn't
+   happen.
+7. **A failed remote READ renders "No repository".** Nothing renders `model.state`; the toolbar reads
+   `snapshot` (nil'd on failure) and `lastFailure` (set only by actions). So a read blocked by
+   `packed-refs.lock`, or any `.other`, shows tier `[2]` with no diagnosis and no retry. Compounding it,
+   `RemoteStateModel.activate` — documented as "the panel's `.task`" and the only non-forced refresh
+   caller — is called by no view at all.
+8. **A workroom deleted mid-action reports "git isn't on Workroom's PATH".** `StatusCommandRunner`
+   returns `commandNotFound` for a launch failure ("cwd vanished" per its own comment) and `classify`
+   maps that exit code to `.toolMissing`, which offers no recovery — while the version toast
+   simultaneously says git is fine. Launch failure needs its own sentinel.
+9. **`JJSnapshotGate`'s 30s self-heal is far below the write timeouts it guards.** The gate accepts
+   re-admitting the original race past `maxChainWait`, justified as "the rare genuine-wedge case, not
+   routine contention" — but fetch is budgeted at 120s and pull at 300s, so exceeding 30s is routine.
+   Two windows, each with its own `AppStore` and its own `inFlight`, can queue two writes on one project
+   root; the second gives up and runs concurrently with a live `pull --rebase` on the shared `.git`.
+10. **Colocated jj root: "Abort rebase" reports success, changes nothing, loops.** `classify` can hand a
+    colocated root `.rebaseInProgress` from a `rebase-merge` left by a `git rebase` in its terminal, and
+    the jj branch of `abortRebase` returns `.ok(summary: "Nothing to abort")` — so `finish` clears the
+    failure, the user pulls, and the identical failure returns.
+
+Plus one doc correction: `gitLastFetch`'s comment claims `FETCH_HEAD`'s mtime covers "one the user ran in
+a terminal". It doesn't, for the terminals this app opens — a fetch inside a worktree writes
+`worktrees/<n>/FETCH_HEAD` while the common one stays put (measured), so counts update from the shared
+`refs/remotes` while the timestamp doesn't. Either read both and take the max, or stop claiming it.
+
+**Why:** These are the residue of a five-pass review (critical + 4 specialists + Claude adversarial +
+Codex) whose P0s — argv option injection and jj push publishing the wrong workspace's commit — are
+already fixed. What's left is real but none of it is a security hole or silent data loss.
+
+**Priority:** P2. (1), (5) and (7) are the ones a user notices.
+
+### Gate git VCS *reads*, not just writes (macapp) — VCS-toolbar eng-review follow-up
+
+**What:** Route git status reads through the same per-project `JJSnapshotGate` the writes now use.
+
+**Why:** The toolbar's write path gates git as well as jj, because a project's workrooms are
+`git worktree add` worktrees sharing ONE `.git` — a lock lost mid-`pull --rebase` can leave a workroom
+wedged in a rebase. But that only half-closes the contention: `WorkroomStatusResolver.resolveGit`
+never touches the gate (only `resolveJJ` does), so a fetch writing `packed-refs` while the ungated
+status sweep runs `git status` across N sibling worktrees reproduces exactly the
+`packed-refs.lock could not be obtained` failure the gate's own doc cites.
+
+**Pros:** removes the last window where `.locked` is an *expected* outcome rather than an anomaly, so
+the UI's Retry affordance becomes a genuine edge case.
+
+**Cons:** serialising reads could measurably slow the status sweep, which fans out per workroom by
+design. This wants measurement first — it may be that read/write contention is rare enough in practice
+that the cost isn't worth it.
+
+**Context / how to start:** `WorkroomStatusResolver.resolveGit` (the ungated read) vs `resolveJJ` (the
+gated one); `CLIVCSWriter.gated` for how the writes do it. Note the gate is key-based and
+backend-agnostic, so if this lands, renaming `JJSnapshotGate` → `RepoWriteGate` (3 call sites + its
+test suite) stops being speculative churn and starts being accurate.
+
+**Depends on:** the VCS toolbar (shipped).
+
+**Priority:** P3 (a real but narrow race; needs measurement before it's worth the sweep's latency).
+
+### jj sibling-workspace staleness after a rebase (macapp) — VCS-toolbar eng-review follow-up
+
+**What:** Detect and surface when a jj operation in one workroom leaves a *sibling* workspace stale.
+
+**Why:** All workrooms of a jj project share one repo and op-store. `jj rebase -b @` — what
+pull-with-rebase runs — rewrites commits, and any other workspace whose `@` descends from a rewritten
+commit is marked stale and needs `jj workspace update-stale` before its next command. Today that
+surfaces as an unexplained error in a **different** workroom from the one the user acted in, which is
+the worst attribution problem available: nothing on screen connects cause to effect.
+
+**Pros:** turns a mystery error into an explained one, and the repair is a single command Workroom
+could offer as a button.
+
+**Cons:** needs a cheap way to detect staleness across workspaces without reading each one (a per-op
+check would multiply the cost of every pull).
+
+**Context / how to start:** `VCSStatusFailure.staleWorkingCopy` already exists in the taxonomy, and
+`RustJJProvider.workingStatus` already maps jj's stale-working-copy error onto it — so the detection
+half may largely exist; the gap is noticing it for a workroom the user is NOT looking at, and offering
+the repair. The repair is itself a write, so it belongs on `VCSWriting`.
+
+**Depends on:** pull-with-rebase (shipped).
+
+**Priority:** P3 (jj projects only; wrong-workroom errors are rare but very confusing).
+
+### jj `push-<id>` bookmarks accumulate on the remote (macapp) — VCS-toolbar eng-review follow-up
+
+**What:** Decide what happens to the `push-<change-id>` bookmarks that pushing an unbookmarked jj `@`
+leaves on the remote.
+
+**Why:** A jj workroom is `jj workspace add`, whose `@` carries no bookmark, so the toolbar's Push runs
+`jj git push --change @`. jj creates a bookmark named by `templates.git_push_bookmark` (default
+`"push-" ++ change_id.short()`), and **nothing ever removes it**. Verified on jj 0.43 against a bare
+origin — two pushes of two different changes left two bookmarks behind permanently:
+
+```
+push-rrxukuporqwy
+push-slxllnxlmxwz
+```
+
+On a shared remote that accrues indefinitely, one entry per change anyone ever pushed from a workroom.
+
+**Not a problem, though it was filed as one:** the review paired this with a suspected
+non-fast-forward asymmetry — that re-pushing an amended change would be rejected. It isn't. A change id
+is stable across amends, so jj moves its own bookmark with no force flag and no error:
+
+```
+bookmark: push-slxllnxlmxwz [move sideways from b7e44fc98f79 to 8f82f551ad69]
+```
+
+Don't re-investigate that half.
+
+**Pros:** a shared remote stays legible.
+
+**Cons:** this is jj's OWN behaviour for an anonymous push, not something Workroom invented — bare
+`jj git push --change` does exactly this. Diverging from it means inventing a naming or cleanup policy
+that jj users won't expect from other jj tools. Doing nothing is defensible.
+
+**Context / how to start:** `CLIVCSWriter.jjPushRevision` and the `--change` push path; the options are
+(a) leave it and document it, (b) offer cleanup of merged `push-*` bookmarks, or (c) require a bookmark
+before pushing, which costs the one-click Publish a fresh workroom currently gets.
+
+**Depends on:** the VCS toolbar (shipped).
+
+**Priority:** P3 (jj projects only; cosmetic on a personal remote, untidy on a shared one — and the
+status quo matches jj's own).
+
+### "New workroom from branch…" (macapp) — the successor to branch switching
+
+**What:** Pick a local or remote branch and create a workroom for it, from the VCS toolbar's branch
+segment or the ⌘O picker.
+
+**Why:** Branch *switching* was deliberately cut from the VCS toolbar. A workroom's identity IS its
+branch — `internal/vcs/git.go` creates it with `git worktree add -b`, and there is no `branch` field
+anywhere in `internal/config` — so switching a workroom's branch makes its directory name permanently
+wrong, with nothing to reconcile the two. The jj equivalent is worse: `jj new <bookmark>` on the
+bookmark the toolbar already displays was reproduced **removing a file from the working copy** and
+leaving the workroom's commit as a nameless dangling head, with no visible change in the UI.
+
+But the underlying need — "I want to work on that other branch" — is real, and creating a workroom is
+the answer the product model actually supports. The toolbar's branch segment is **display only** — it
+briefly routed to ⌘O, which was dropped because ⌘O lists only workrooms that already exist, so the
+click promised more than it delivered. That leaves the segment with no action at all, which is the
+honest state until this lands and gives it one worth having.
+
+**Pros:** gives the cut affordance a correct home; makes an existing remote branch a first-class
+starting point instead of requiring a manual create-then-checkout.
+
+**Cons:** needs a branch list (the toolbar deliberately stopped enumerating refs when the picker was
+cut), and a naming policy for the new workroom.
+
+**Context / how to start:** `Views/OpenWorkroomDialog.swift` is the searchable, project-grouped picker
+to clone; the Go CLI's `create` already accepts a branch. `CLIVCSWriter.gitRemoteRefsArgs` shows how to
+enumerate remote refs cheaply, and its doc explains why the symref row must be dropped.
+
+**Depends on:** the VCS toolbar (shipped).
+
+**Priority:** P3 (a real gap, but ⌘O plus a terminal covers it today).
 
 ## P3 — VCS engine, diffs, and status
 
@@ -266,8 +500,34 @@ rather than picking one status delta.
 
 ### The jj snapshot ignores the user's real jj/git config (macapp) — VCS-foundation eng-review
 
-**What:** `snapshot_working_copy` builds its settings from jj's **built-in defaults only** —
-`UserSettings::from_config(StackedConfig::with_defaults())` (`jj_backend.rs:380`) — and jj-lib derives
+**Status: the config stack itself has LANDED.** `wr-vcs-core/src/jj_config.rs` now layers the user's
+real configuration (`$JJ_CONFIG`, else `~/.jjconfig.toml` + `$XDG_CONFIG_HOME`/`~/.config/jj/config.toml`
++ `conf.d/*.toml`) over jj's defaults, and all three call sites (`open`, `snapshot_working_copy`,
+`materialize_options`) read it. That fixes the two consequences this entry never named, both of which
+were live for **every** jj user rather than only non-default configs:
+
+- **Every snapshot stamped an EMPTY committer.** `for_rewrite_from` sets
+  `commit.committer = settings.signature()` unconditionally, and defaults-only settings carry
+  `user.name = ""` / `user.email = ""`. Mostly invisible (`jj log` shows the author) and self-healing
+  on the next real `jj` command, but NOT if `@` is pushed as-is — which the app's Push button does via
+  `jj git push --change @`. Pinned by `tests/committer_identity.rs`, which fails with `<>` against the
+  old code.
+- **Signatures were dropped.** `Signer::from_settings` read `signing.backend = "none"`, so
+  `can_sign()` was false and a rewrite of an already-signed `@` discarded its signature under the
+  default `behavior = "keep"`. Now works for free, since the signer is built from these settings.
+
+**What remains** (the original scope of this entry — the settings now reach jj-lib, so these follow,
+but none is verified): `core.fsmonitor`, `working-copy.eol-conversion`, `working-copy.exec-bit-change`
+and `ui.conflict-marker-style` are all derived from `TreeStateSettings::try_from_user_settings`, so
+they should now be honoured — but no test covers them. The custom `core.excludesFile` chaining in
+`base_ignores` is genuinely still missing. **Repo-level config is also still unread**: jj 0.43 keeps it
+under `~/.config/jj/repos/<hash>` rather than `.jj/repo/config.toml`, which the current chain does not
+resolve.
+
+Original description follows.
+
+**What:** `snapshot_working_copy` built its settings from jj's **built-in defaults only** —
+`UserSettings::from_config(StackedConfig::with_defaults())` — and jj-lib derives
 the whole of `TreeStateSettings` from those settings (`local_working_copy.rs`
 `try_from_user_settings`): `ui.conflict-marker-style`, `EolConversionMode`
 (`working-copy.eol-conversion`), `working-copy.exec-bit-change`, and `FsmonitorSettings`. So on the
@@ -293,15 +553,17 @@ materialize a conflicted file to count its marker lines, so `ui.conflict-marker-
 and for the same reason as the snapshot; when this entry lands, both call sites want the real settings,
 not just the snapshot.
 
-**How to start:** load the real config stack (user + repo) into `UserSettings` the way the jj CLI
-does, instead of `with_defaults()`, and chain a custom `core.excludesFile` in `base_ignores`. Test on
-throwaway repos only — this is the lock-taking, `@`-rewriting path.
+**How to start:** the config stack is loaded (`jj_config.rs`). What is left is chaining a custom
+`core.excludesFile` in `base_ignores`, resolving jj 0.43's repo-level config under
+`~/.config/jj/repos/<hash>`, and testing that the fsmonitor / EOL / exec-bit settings actually take
+effect now that they reach jj-lib. Test on throwaway repos only — this is the lock-taking,
+`@`-rewriting path.
 
-**Depends on:** the base_ignores fix (shipped). Touches `jj_backend.rs` (`snapshot_working_copy` +
-`materialize_options`).
+**Depends on:** the base_ignores fix (shipped) and the config stack (shipped). Touches `jj_config.rs`
+and `jj_backend.rs` (`base_ignores`).
 
-**Priority:** P3 for correctness (only bites non-default configs), but the fsmonitor half is a real
-perf item on large repos.
+**Priority:** P3 for what remains (only bites non-default configs); the identity + signing half that
+bit everyone has shipped. The fsmonitor half is still a real perf item on large repos.
 
 ### Offer to repair a stale jj working copy from the app (macapp) — error-taxonomy follow-up
 
@@ -321,10 +583,27 @@ and `VCSStatusFailure.staleWorkingCopy`. Relates to "VCS write actions — Phase
 
 **Priority:** P3 (the state is now self-explaining; this saves the trip to a terminal).
 
-### Background fetch so push state isn't stale (macapp) — unpushed-badge follow-up
+### Background fetch — cadence policy + Settings toggle (macapp) — PARTIALLY SHIPPED
 
-**What:** A periodic / on-focus `git fetch` (and `jj git fetch`) so remote-tracking refs — and
-therefore the History pane's unpushed badge — reflect the server rather than the last manual fetch.
+**Status:** the on-focus half has **shipped** with the VCS toolbar. `RemoteStateModel.autoFetchIfDue`
+fetches when the inspector gains focus, interval-guarded (5 min per project), gated on the inspector
+being visible with the Changes section active, skipped entirely under the UI-test fixture, and silent
+on failure — it sets the toolbar's inline error but raises no alert and never blocks a read.
+
+**What's LEFT:** the two things this entry originally said were the reason not to "just add a fetch" —
+a real cadence policy (a periodic timer, not only focus) and a **Settings toggle** to turn it off. The
+5-minute interval is currently a hardcoded constant with no UI. Also worth revisiting: whether an
+unattended machine should auto-fetch at all, which is a preference question, not a technical one.
+
+**Why the staleness reasoning below still stands:** it is the clearest writeup of the problem in the
+repo, and the toolbar's ahead/behind counts inherit it exactly — they are computed from local
+remote-tracking refs, so they are only as fresh as the last fetch. That is why the toolbar shows "last
+fetched N ago" beside the counts rather than presenting them as fact.
+
+---
+
+**What (original):** A periodic / on-focus `git fetch` (and `jj git fetch`) so remote-tracking refs —
+and therefore the History pane's unpushed badge — reflect the server rather than the last manual fetch.
 
 **Why:** Every push-state answer in the app is local knowledge: `GitGraph` walks
 `HEAD --not refs/remotes/origin/*` and the jj core evaluates `ancestors(<tracked @origin tips>)`.
@@ -347,9 +626,10 @@ synchronous log-read path, decide the credential story (the status sweep already
 is precedent for network reads), and surface failure without a modal. Deliberately NOT done as part of
 the badge: see the "Staleness" trap in the unpushed-badge plan.
 
-**Depends on:** the unpushed badge (shipped). Likely wants a `Defaults` key + Settings row.
+**Depends on:** the unpushed badge (shipped) and on-focus auto-fetch (shipped). Wants a `Defaults` key
++ Settings row, and `RemoteStateModel.autoFetchInterval` lifted out of a constant.
 
-**Priority:** P3 (the badge is useful without it; multi-machine users feel this first).
+**Priority:** P3 (on-focus fetch covers the common case; a user who wants it OFF currently can't).
 
 ### Three independent change-badge palettes (macapp) — jj conflict-status follow-up
 
