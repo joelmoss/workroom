@@ -89,15 +89,17 @@ struct RightInspector: View {
 
   /// Whether the inspector's target has anything a commit could record.
   ///
-  /// jj is included even with no file changes: its working copy is itself a commit, so describing an
-  /// empty change is a real thing to want, and `jjPushRevision` already recognises that state.
+  /// **jj is always available.** Its working copy is itself a commit, so there is no state in which
+  /// both its verbs are meaningless: Describe edits `@`'s message, which is worth doing with no file
+  /// changes at all. The condition this replaces tried to say that and inverted it — it required an
+  /// EMPTY description, so a change the user had already described was the one state that could not
+  /// be opened, which is precisely "I want to fix a typo in my message". `jjPushRevision` already
+  /// treats a described empty change as real.
   private var canCommitSelectedTarget: Bool {
     guard let sid = store.inspectorTargetID, sid.isStatusable,
       let status = store.workroomStatuses[sid], !store.isCommitting(sid)
     else { return false }
-    if let workingCopy = status.jjWorkingCopy {
-      return !workingCopy.files.isEmpty || (workingCopy.description?.isEmpty ?? true)
-    }
+    if status.jjWorkingCopy != nil { return true }
     return !(status.isClean || status.isUnknown)
   }
 

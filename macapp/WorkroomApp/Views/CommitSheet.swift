@@ -38,6 +38,16 @@ struct CommitSheet: View {
     case confirmingStagedLoss([String])
     case committing
     case failed(VCSFailureDialog)
+    /// The commit LANDED but a later step failed. Terminal: the only honest action left is to close.
+    /// Distinct from `.failed` because retrying here would record the work a second time, and the
+    /// notice says so — so the buttons that would do it are disabled rather than merely discouraged.
+    case landedThenFailed(VCSFailureDialog)
+  }
+
+  /// The commit is on disk; nothing in this dialog can be pressed again without duplicating it.
+  private var isSpent: Bool {
+    if case .landedThenFailed = phase { return true }
+    return false
   }
 
   private var isJJ: Bool { pending.vcs == "jj" }
@@ -61,6 +71,13 @@ struct CommitSheet: View {
       totalCount: files.count, conflicted: status?.conflicted ?? false, sequencer: nil)
   }
 
+  /// The secondary verb rewrites a message and takes no pathspec, so it answers to the repo-state and
+  /// summary rules but not the file-count ones — see `CommitDraft.messageOnlyBlockedReason`.
+  private var secondaryBlockedReason: String? {
+    CommitDraft.messageOnlyBlockedReason(
+      summary: summary, conflicted: status?.conflicted ?? false, sequencer: nil)
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
       header
@@ -68,6 +85,7 @@ struct CommitSheet: View {
       messageSection
       if case .confirmingStagedLoss(let paths) = phase { stagedLossNotice(paths) }
       if case .failed(let dialog) = phase { CommitFailureNotice(dialog: dialog) }
+      if case .landedThenFailed(let dialog) = phase { CommitFailureNotice(dialog: dialog) }
       Divider()
       buttons
     }
@@ -268,8 +286,13 @@ struct CommitSheet: View {
         Text("Running hooks…").font(.caption).foregroundStyle(.secondary)
       }
       Spacer(minLength: 0)
-      Button("Cancel") { onDismiss() }
+      // Disabled mid-commit, Escape included. The subprocess cannot be called back — a hook is
+      // already running — so dismissing here would only tear down the `@State` the completion writes
+      // its outcome into. A rejected hook, a signing failure or a left-behind `index.lock` would then
+      // be reported to a view that no longer exists, and the user would be told nothing at all.
+      Button(isSpent ? "Close" : "Cancel") { onDismiss() }
         .keyboardShortcut(.cancelAction)
+        .disabled(phase == .committing)
         .accessibilityIdentifier("commit.cancel")
       secondaryButton
       Button(primaryLabel) {
@@ -283,7 +306,7 @@ struct CommitSheet: View {
       }
       .keyboardShortcut(.defaultAction)
       .buttonStyle(.borderedProminent)
-      .disabled(blockedReason != nil || phase == .committing)
+      .disabled(blockedReason != nil || phase == .committing || isSpent)
       .help(isJJ ? "Describe this change and start a new one on top" : "Commit the selected files")
       .accessibilityIdentifier("commit.commit")
     }
@@ -303,7 +326,7 @@ struct CommitSheet: View {
     Button(isJJ ? "Describe" : "Amend last commit") {
       commit(mode: isJJ ? .describe : .amendMessage)
     }
-    .disabled(phase == .committing || summary.trimmingCharacters(in: .whitespaces).isEmpty)
+    .disabled(secondaryBlockedReason != nil || phase == .committing || isSpent)
     .help(
       isJJ
         ? "Set this change’s message and stay on it, instead of starting a new change (jj describe)"
@@ -340,11 +363,22 @@ struct CommitSheet: View {
   /// Commit, but check first whether doing so would throw away staged work.
   ///
   /// Only for the plain git commit path: amend takes no pathspec, and jj has no index. The check is
-  /// skipped once confirmed so pressing "Commit anyway" cannot re-raise the same warning.
+  /// skipped once confirmed so pressing "Commit anyway" cannot re-raise the same warning (that path
+  /// calls `commit` directly, never this).
+  ///
+  /// Deliberately NOT conditioned on `phase == .editing`. It was, and that made the guard skip itself
+  /// on exactly the attempt that needs it most: after a rejected hook the phase is `.failed`, so a
+  /// retry fell through to `commit` unchecked — and anything the user staged with `git add -p` while
+  /// fixing the rejection was discarded with no warning, unrecoverable except as a dangling blob.
   private func commitChecking(mode: VCSCommitMode) {
-    guard phase == .editing, mode == .commit, !isJJ else { return commit(mode: mode) }
+    guard mode == .commit, !isJJ else { return commit(mode: mode) }
     let files = selectedFiles
     store.stagedContentAtRisk(on: pending.sid, files: files) { atRisk in
+      // The sheet can move on while that `git status` runs — the secondary verb stays pressable
+      // during the round-trip. Without this re-check, a late result would stamp
+      // `.confirmingStagedLoss` over a commit already in flight, re-enabling the primary and letting
+      // a second concurrent commit through on the same repo.
+      guard phase != .committing, !isSpent else { return }
       if atRisk.isEmpty {
         commit(mode: mode)
       } else {
@@ -365,8 +399,10 @@ struct CommitSheet: View {
         onDismiss()
       case .committedThenFailed(_, let detail):
         // The commit LANDED. Closing would be a lie by omission, and offering a retry would create a
-        // second commit, so the sheet stays up saying exactly that.
-        phase = .failed(
+        // second commit, so the sheet stays up saying exactly that — and `.landedThenFailed` disables
+        // the buttons that would do it, rather than leaving the advice and the affordance in
+        // contradiction.
+        phase = .landedThenFailed(
           VCSFailureDialog(
             title: "Committed, but something afterwards failed",
             message:

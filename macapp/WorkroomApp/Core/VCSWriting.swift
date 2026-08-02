@@ -552,18 +552,49 @@ struct CLIVCSWriter: VCSWriting, Sendable {
     return out
   }
 
-  /// Make untracked selections known to git so `--only` can commit them.
+  /// The same payload, from paths that are already just paths.
+  ///
+  /// Used by the intent-to-add step, which must send **only the new side** of a rename. The old side
+  /// no longer exists on disk, and `git add` rejects a pathspec matching nothing — `fatal: pathspec
+  /// ':(literal)old.txt' did not match any files` — which would fail the whole commit at the step
+  /// meant to make it possible. `commit --only` is the opposite: it needs both sides, so the two
+  /// steps deliberately do not share a payload.
+  static func gitPathspecPayload(literalPaths: [String]) -> Data {
+    var seen = Set<String>()
+    var out = Data()
+    for path in literalPaths where !path.isEmpty {
+      guard seen.insert(path).inserted else { continue }
+      out.append(contentsOf: Array(":(literal)\(path)".utf8))
+      out.append(0)
+    }
+    return out
+  }
+
+  /// Make selections git may not know about committable — see `pathsGitMayNotKnow`.
   ///
   /// `git commit --only` refuses a path git has never seen — measured: `error: pathspec
   /// 'untracked.txt' did not match any file(s) known to git`. `--intent-to-add` records an empty
   /// entry, which is enough for `--only` to then take the file's real contents (verified).
   ///
-  /// This is the **only** index mutation the commit path performs, and only for files that were
-  /// untracked, so a failed commit can leave nothing worse than an intent-to-add marker the user
-  /// clears with `git reset`. Tracked files are never staged — see `gitCommitOnlyArgs`.
+  /// This is the **only** index mutation the commit path performs, and it is undone by
+  /// `gitUnstageArgs` when the commit that follows it fails. Tracked files are never staged — see
+  /// `gitCommitOnlyArgs`.
   static func gitIntentToAddArgs() -> [String] {
     WorkroomStatusResolver.gitHardening
       + ["add", "--intent-to-add", "--pathspec-from-file=-", "--pathspec-file-nul"]
+  }
+
+  /// Undo `gitIntentToAddArgs` for paths that were untracked, after a failed commit.
+  ///
+  /// `--cached` so only the index entry goes and the file itself is untouched — it returns to being
+  /// untracked, exactly as the user left it. `--ignore-unmatch` so a path something else removed in
+  /// the meantime cannot turn cleanup into a second error on top of the one being reported.
+  static func gitUnstageArgs() -> [String] {
+    WorkroomStatusResolver.gitHardening
+      + [
+        "rm", "--cached", "--quiet", "--ignore-unmatch", "--pathspec-from-file=-",
+        "--pathspec-file-nul",
+      ]
   }
 
   /// Commit exactly the selection, from the WORKTREE, without touching the index for tracked paths.
@@ -802,14 +833,19 @@ struct CLIVCSWriter: VCSWriting, Sendable {
   /// exits 0**, so the UI would report a commit that recorded nothing. Since partial selection is not
   /// offered for jj (it would need `jj split`), the parameter would carry all that risk to buy
   /// nothing at all.
+  /// The message rides ATTACHED (`--message=…`), never as a detached `-m` value: jj's parser reads a
+  /// detached value that begins with `-` as another flag, so `-m "-fix the parser"` dies with
+  /// `error: unexpected argument '-f' found` where the attached form records it verbatim (measured,
+  /// jj 0.43). git tolerates the detached form, but this side has no `--` to fall back on, so the
+  /// option boundary has to live in the argument itself.
   static func jjCommitArgs(message: String) -> [String] {
-    ["commit", "-m", message] + jjWriteFlags
+    ["commit", "--message=\(message)"] + jjWriteFlags
   }
 
   /// Set `@`'s description and stay on it. Not an amend and not a commit — the third jj verb, which
-  /// git has no equivalent of.
+  /// git has no equivalent of. Attached `--message=` for the reason `jjCommitArgs` records.
   static func jjDescribeArgs(message: String) -> [String] {
-    ["describe", "-m", message] + jjWriteFlags
+    ["describe", "--message=\(message)"] + jjWriteFlags
   }
 
   /// `@`'s full description, for prefilling the dialog.
@@ -1066,10 +1102,25 @@ struct CLIVCSWriter: VCSWriting, Sendable {
     "empty ident name", "no email was given",
   ]
 
+  /// git's phrasings, matched only on the FAILURE path — see `classifyCommit`. jj's exit-zero no-op
+  /// is not in here on purpose; it needs the whole-line check below.
   static let commitNothingMarkers = [
     "nothing to commit", "no changes added to commit", "nothing added to commit",
-    "Nothing changed.",
   ]
+
+  /// jj's no-op marker, as a whole line rather than a substring.
+  ///
+  /// jj echoes the change's description back in its `Working copy (@) now at:` and `Parent commit
+  /// (@-)` lines, so a `contains` here would fire on any commit whose own message happened to carry
+  /// the phrase — reporting a successful write as a no-op.
+  /// Both streams are checked. jj 0.43 writes this (and everything else) to stderr, but the whole-line
+  /// anchor is what makes the match safe, not the choice of stream — so covering stdout too costs
+  /// nothing and survives jj moving it.
+  static func saysNothingChanged(_ result: CommandResult) -> Bool {
+    let lines = (result.stderr + "\n" + result.stdout).split(
+      separator: "\n", omittingEmptySubsequences: false)
+    return lines.contains { $0.trimmingCharacters(in: .whitespaces) == "Nothing changed." }
+  }
 
   static let commitUnmergedMarkers = [
     "you have unmerged files", "Committing is not possible because you have unmerged files",
@@ -1094,13 +1145,24 @@ struct CLIVCSWriter: VCSWriting, Sendable {
   /// perfectly good commit behind a non-zero exit.
   static func classifyCommit(_ result: CommandResult, tool: String) -> VCSCommitFailure? {
     if result.exitCode == CommandResult.commandNotFound { return .toolMissing(tool) }
-    let err = result.stderr + "\n" + result.stdout
-    // jj says "Nothing changed." and exits ZERO, so this is checked before the success guard — an
-    // untouched working copy must not be reported as a commit that happened.
-    if commitNothingMarkers.contains(where: err.contains) { return .nothingToCommit }
+    // jj says "Nothing changed." and exits ZERO, so its no-op has to be read BEFORE the success
+    // guard — an untouched working copy must not be reported as a commit that happened.
+    //
+    // Scoped to jj, matched on a whole stderr line, and never against stdout. All three matter:
+    // `git commit` echoes the SUBJECT on stdout, so the substring form this replaces classified
+    // `-m "explain the nothing to commit error"` — a commit that succeeded, exit 0 — as a failure,
+    // and `commit()` then upgraded it to `.committedThenFailed` because the ref had legitimately
+    // moved. The dialog told the user their commit had half-worked when it was perfect. jj puts
+    // everything on stderr including its own echo of the description (`Parent commit (@-) … <msg>`),
+    // hence the whole-line anchor rather than `contains`. Measured on git 2.55 / jj 0.43.
+    if tool == "jj", result.ok, saysNothingChanged(result) { return .nothingToCommit }
     if result.timedOut { return .timedOut }
     guard !result.ok else { return nil }
 
+    // Only now, on a genuine failure, is matching the combined output safe: git's own
+    // "nothing to commit, working tree clean" goes to stdout with a non-zero exit.
+    let err = result.stderr + "\n" + result.stdout
+    if commitNothingMarkers.contains(where: err.contains) { return .nothingToCommit }
     if commitIdentityMarkers.contains(where: err.contains) { return .identityMissing(err) }
     if commitSigningMarkers.contains(where: err.contains) { return .signingFailed(err) }
     if commitUnmergedMarkers.contains(where: err.contains) { return .unmergedFiles(err) }
@@ -1267,9 +1329,9 @@ struct CLIVCSWriter: VCSWriting, Sendable {
   /// `+timeout` and `ProcessTree.killTree`s at `+timeout+2`, so the process is genuinely gone and its
   /// locks genuinely released. Hence the runner's own timeout with no outer `withTimeout` — this looks
   /// like a violation of that doc and isn't.
-  private func gated(
-    _ projectRoot: String, _ body: @Sendable @escaping () async -> CommandResult
-  ) async -> CommandResult? {
+  private func gated<T: Sendable>(
+    _ projectRoot: String, _ body: @Sendable @escaping () async -> T
+  ) async -> T? {
     try? await gate.run(projectRoot: projectRoot, body)
   }
 
@@ -1558,17 +1620,24 @@ struct CLIVCSWriter: VCSWriting, Sendable {
       return .failed(.sequencerInProgress(sequencer))
     }
 
-    let before = await currentRevision(path: path)
-
     // ONE gate acquisition for the whole operation, not one per command. Two would let the 15s
     // status sweep, the FSEvents lane and DiffResolver interleave between the intent-to-add and the
     // commit — contending on `index.lock` and, for jj, snapshotting `@` out from under a write.
+    //
+    // `before` is read INSIDE the gate, not before acquiring it. Outside, anything that moves the ref
+    // while this call waits its turn — a queued status snapshot (which rewrites `@` for jj, so the op
+    // head moves on every one), another window, the user's own terminal during a slow hook — would
+    // make the before/after comparison below read a ref that moved for someone else's reason. A
+    // commit that genuinely failed would then be reported as `.committedThenFailed`, whose copy tells
+    // the user their work is saved and not to commit again. It would not be.
     let outcome = await gated(
       projectRoot,
       { [self] in
-        await runCommitSequence(request, in: path)
+        let before = await currentRevision(path: path)
+        return CommitAttempt(before: before, result: await runCommitSequence(request, in: path))
       })
-    guard let result = outcome else { return .failed(.other("commit was cancelled")) }
+    guard let attempt = outcome else { return .failed(.other("commit was cancelled")) }
+    let (before, result) = (attempt.before, attempt.result)
 
     if let failure = Self.classifyCommit(result, tool: vcs) {
       // The command failed, but did the ref move anyway? A `post-commit` hook runs AFTER git has
@@ -1585,10 +1654,16 @@ struct CLIVCSWriter: VCSWriting, Sendable {
     return .ok(summary: Self.commitSummary(request.mode, vcs: vcs), revision: after)
   }
 
+  /// A commit's ref reading and its outcome, captured together inside one gate acquisition.
+  private struct CommitAttempt: Sendable {
+    let before: String?
+    let result: CommandResult
+  }
+
   /// The commands, in order, inside the caller's single gate acquisition.
   ///
   /// Returns the FIRST failing result, so the caller classifies whichever step broke. The
-  /// intent-to-add step only runs when the selection actually contains untracked files, so the
+  /// intent-to-add step only runs when the selection actually contains paths git may not know, so the
   /// common case is one process.
   private func runCommitSequence(_ request: VCSCommitRequest, in path: String) async
     -> CommandResult
@@ -1607,16 +1682,64 @@ struct CLIVCSWriter: VCSWriting, Sendable {
         timeout: commitTimeout)
     }
 
-    let untracked = request.files.filter { $0.change == .untracked }
-    if !untracked.isEmpty {
+    // New sides only — see `gitPathspecPayload(literalPaths:)`.
+    let unknown = Self.pathsGitMayNotKnow(in: request.files)
+    if !unknown.isEmpty {
       let ita = await runner.run(
         vcs, Self.gitIntentToAddArgs(), in: path, timeout: refTimeout,
-        stdin: Self.gitPathspecPayload(untracked))
+        stdin: Self.gitPathspecPayload(literalPaths: unknown))
       guard ita.ok else { return ita }
     }
-    return await runner.run(
+    let result = await runner.run(
       vcs, Self.gitCommitOnlyArgs(message: request.message), in: path, timeout: commitTimeout,
       stdin: Self.gitPathspecPayload(request.files))
+
+    // The commit failed, so undo the index entries we just made. Left behind, an intent-to-add marker
+    // is not the harmless residue it looks like: it breaks the user's own `git stash` in the terminal
+    // ("Entry 'x' not uptodate. Cannot merge.") until they find and reverse a change they never made.
+    //
+    // Rolled back for the untracked rows ONLY. Those were definitionally absent from the index, so
+    // `rm --cached` reverses exactly our own step. A rename's new side may already be a real staged
+    // entry (`git mv`), and unstaging that would destroy work the user did themselves — the wrong
+    // trade for tidiness.
+    if !result.ok {
+      let added = Self.pathsAddedToTheIndex(in: request.files)
+      if !added.isEmpty {
+        _ = await runner.run(
+          vcs, Self.gitUnstageArgs(), in: path, timeout: refTimeout,
+          stdin: Self.gitPathspecPayload(literalPaths: added))
+      }
+    }
+    return result
+  }
+
+  /// Selected paths git may have no index entry for, which `--only` therefore cannot commit.
+  ///
+  /// Untracked files are the obvious case. The one that was missing — and that broke every commit
+  /// containing it — is the NEW side of a rename. `GitProvider.workingStatus` runs libgit2
+  /// status with `.renamesWorkingTree`, so a plain `mv old new` (what editors, IDEs and coding agents
+  /// all do; only `git mv` behaves otherwise) arrives as ONE `.renamed` row whose `path` is a file git
+  /// has never seen. `git commit --only` then fails the WHOLE selection with `error: pathspec
+  /// ':(literal)new.txt' did not match any file(s) known to git` — every other ticked file goes
+  /// uncommitted with it, and the failure classifies as `.other` with no remedy to offer.
+  ///
+  /// Including paths git already tracks costs nothing: `--intent-to-add` records no content for them,
+  /// so a modified tracked file stays unstaged (measured). Intent-adding the new side also lets git
+  /// pair the two halves itself, so the commit records a rename (`R100`) rather than an add plus a
+  /// delete.
+  static func pathsGitMayNotKnow(in files: [ChangedFile]) -> [String] {
+    files.filter { $0.change == .untracked || $0.change == .renamed }.map(\.path)
+  }
+
+  /// Of those, the ones the intent-to-add step definitely CREATED an index entry for, so a failed
+  /// commit can put the index back exactly as it found it.
+  ///
+  /// Untracked rows only. Those were definitionally absent from the index, so `rm --cached` reverses
+  /// precisely our own step. A rename's new side may already be a real staged entry (`git mv` stages
+  /// the rename, and intent-to-add is then a no-op on it) — unstaging that would destroy work the user
+  /// did themselves, which is a far worse outcome than a leftover marker.
+  static func pathsAddedToTheIndex(in files: [ChangedFile]) -> [String] {
+    files.filter { $0.change == .untracked }.map(\.path)
   }
 
   /// Selected paths whose staged content a commit would discard, for the dialog to confirm before it

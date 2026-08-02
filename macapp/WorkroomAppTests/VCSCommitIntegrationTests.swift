@@ -146,6 +146,70 @@ final class VCSCommitIntegrationTests: XCTestCase {
     XCTAssertEqual(status(dir), "", "no dangling deletion left behind in the worktree")
   }
 
+  /// **The rename that actually happens.** `git mv` (above) stages the rename, so git already knows
+  /// the new path — which is why that test passed while every real rename failed. A plain `mv` is what
+  /// editors, IDEs and coding agents all do: libgit2 status pairs it into ONE `.renamed` row whose new
+  /// side git has never seen, and `--only` then refused the entire selection with `pathspec … did not
+  /// match any file(s) known to git`, committing nothing at all.
+  ///
+  /// The unrelated `other.txt` is the point of the assertion: the failure was never scoped to the
+  /// rename row, it took down every file ticked alongside it.
+  func testAPlainMoveRenameCommitsInsteadOfFailingTheWholeSelection() async throws {
+    try requireTool("git")
+    let dir = gitRepo(files: [
+      "base.txt": "base\n", "old.txt": "content\n", "other.txt": "other\n",
+    ])
+    sh("mv old.txt new.txt", in: dir)
+    write("other changed\n", to: "other.txt", in: dir)
+
+    let result = await writer("git").commit(
+      path: dir, projectRoot: dir,
+      request: VCSCommitRequest(
+        message: "move it",
+        files: [
+          ChangedFile(path: "new.txt", change: .renamed, oldPath: "old.txt"),
+          modified("other.txt"),
+        ],
+        mode: .commit))
+
+    guard case .ok = result else { return XCTFail("commit failed: \(result)") }
+    let record = nameStatus(dir)
+    XCTAssertTrue(record.contains("new.txt"), "the renamed file must be in the commit: \(record)")
+    XCTAssertTrue(
+      record.contains("other.txt"),
+      "and so must the file ticked beside it — the old failure was not scoped to the rename")
+    XCTAssertEqual(status(dir), "", "nothing left behind: no dangling deletion, no stray untracked")
+  }
+
+  /// A failed commit must not leave the index holding intent-to-add entries the user never made.
+  /// Measured: they break the user's own `git stash` with `Entry 'x' not uptodate. Cannot merge.`
+  /// until they find and reverse a change that was never theirs.
+  func testAFailedCommitLeavesNoIntentToAddResidue() async throws {
+    try requireTool("git")
+    let dir = gitRepo(files: ["base.txt": "base\n"])
+    write("fresh\n", to: "untracked.txt", in: dir)
+    // A `commit-msg` hook that always rejects: the commonest way a commit fails after the
+    // intent-to-add step has already run.
+    let hook = "\(dir)/.git/hooks/commit-msg"
+    write("#!/bin/sh\nexit 1\n", to: ".git/hooks/commit-msg", in: dir)
+    sh("chmod +x \(hook)", in: dir)
+
+    let result = await writer("git").commit(
+      path: dir, projectRoot: dir,
+      request: VCSCommitRequest(
+        message: "will be rejected",
+        files: [ChangedFile(path: "untracked.txt", change: .untracked)], mode: .commit))
+
+    guard case .failed = result else { return XCTFail("the hook should have rejected: \(result)") }
+    XCTAssertEqual(
+      status(dir), "?? untracked.txt",
+      "the file must be untracked again, exactly as the user left it — not staged as ' A'")
+    let stash = sh("git stash 2>&1", in: dir)
+    XCTAssertFalse(
+      stash.out.contains("not uptodate"),
+      "a failed commit must not break the user's own stash: \(stash.out)")
+  }
+
   /// `--` ends option parsing, not magic parsing. Bare, `a[b].txt` is a glob that also matches
   /// `ab.txt`; `:(literal)` is what stops it. This is the selection model's whole promise.
   func testGlobMagicCannotReachAnUnselectedFile() async throws {

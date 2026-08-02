@@ -298,9 +298,19 @@ final class AppStore: ObservableObject {
   @Published var pendingCommit: PendingCommit?
 
   /// Rows with a commit in flight. A `Set` rather than a `Bool` because the app's premise is N
-  /// parallel workrooms: a single flag would let a commit in one disable the button in another, and
-  /// `AppStore` is per window so even that would only half-work. Read by `isCommitting`.
-  @Published var committingTargets: Set<SidebarID> = []
+  /// parallel workrooms: a single flag would let a commit in one disable the button in another.
+  /// Read by `isCommitting`. Lives on the shared `ProjectStore` — see its doc for why per-window
+  /// was wrong.
+  var committingTargets: Set<SidebarID> {
+    get { projectStore.committingTargets }
+    set { projectStore.committingTargets = newValue }
+  }
+
+  /// In-flight commit counts per project root, which is the granularity the status lanes must respect.
+  var committingProjectRoots: [String: Int] {
+    get { projectStore.committingProjectRoots }
+    set { projectStore.committingProjectRoots = newValue }
+  }
 
   // Inspector section collapse (issue #24). Held on the store rather than as `@Default` in the
   // inspector view: the `.inspector` content doesn't observe `@Default` changes, but it DOES observe

@@ -1005,6 +1005,43 @@ final class VCSWritingTests: XCTestCase {
     XCTAssertTrue(args.contains("--pathspec-file-nul"))
   }
 
+  /// **A rename's new side is a path git has never seen.** libgit2 status runs with
+  /// `.renamesWorkingTree`, so a plain `mv` (every editor, every coding agent — only `git mv` differs)
+  /// arrives as ONE `.renamed` row whose `path` is untracked. Intent-adding only `.untracked` rows
+  /// left it out, and `git commit --only` then failed the WHOLE selection with `pathspec … did not
+  /// match any file(s) known to git` — taking every other ticked file down with it.
+  func testIntentToAddCoversRenamedPathsNotJustUntrackedOnes() {
+    let files = [
+      ChangedFile(path: "new.txt", change: .renamed, oldPath: "old.txt"),
+      ChangedFile(path: "fresh.txt", change: .untracked),
+      ChangedFile(path: "edited.txt", change: .modified),
+      ChangedFile(path: "gone.txt", change: .deleted),
+    ]
+    let paths = CLIVCSWriter.pathsGitMayNotKnow(in: files)
+    XCTAssertEqual(
+      Set(paths), ["new.txt", "fresh.txt"],
+      "the rename's new side needs an index entry just as much as an untracked file does")
+    XCTAssertFalse(
+      paths.contains("edited.txt"),
+      "a tracked file must not be staged — that is the absorption bug `--only` exists to avoid")
+    XCTAssertFalse(paths.contains("gone.txt"), "nor a deletion, which git already knows")
+  }
+
+  /// The rollback undoes our own index entries when the commit fails. Left behind, an intent-to-add
+  /// marker breaks the user's own `git stash` ("Entry 'x' not uptodate. Cannot merge.") until they
+  /// reverse a change they never made.
+  func testUnstageArgsRemoveOnlyTheIndexEntryNotTheFile() {
+    let args = CLIVCSWriter.gitUnstageArgs()
+    XCTAssertEqual(Array(args.prefix(2)), WorkroomStatusResolver.gitHardening)
+    XCTAssertTrue(args.contains("rm"))
+    XCTAssertTrue(args.contains("--cached"), "the file itself must survive; only the entry goes")
+    XCTAssertTrue(
+      args.contains("--ignore-unmatch"),
+      "cleanup must not turn into a second error on top of the one being reported")
+    XCTAssertTrue(args.contains("--pathspec-from-file=-"))
+    XCTAssertTrue(args.contains("--pathspec-file-nul"))
+  }
+
   /// Mutating jj commands must NOT carry `--ignore-working-copy`: the snapshot is what moves on-disk
   /// edits into `@` before it is rewritten.
   func testJJCommitAndDescribeUseWriteFlags() {
@@ -1018,6 +1055,25 @@ final class VCSWritingTests: XCTestCase {
     }
     XCTAssertEqual(CLIVCSWriter.jjCommitArgs(message: "m").first, "commit")
     XCTAssertEqual(CLIVCSWriter.jjDescribeArgs(message: "m").first, "describe")
+  }
+
+  /// The message rides ATTACHED. jj's parser reads a detached `-m` value that begins with `-` as
+  /// another flag — measured on 0.43: `jj describe -m "-fix the parser"` dies with
+  /// `error: unexpected argument '-f' found`, where `--message=-fix the parser` records it verbatim.
+  /// There is no `--` to fall back on here, so the option boundary has to be inside the argument.
+  func testJJMessageIsAttachedSoALeadingDashCannotBeReadAsAFlag() {
+    for args in [
+      CLIVCSWriter.jjCommitArgs(message: "-fix the parser"),
+      CLIVCSWriter.jjDescribeArgs(message: "-fix the parser"),
+    ] {
+      XCTAssertTrue(
+        args.contains("--message=-fix the parser"),
+        "the message must be one attached argument, got: \(args)")
+      XCTAssertFalse(args.contains("-m"), "a detached -m value starting with '-' fails to parse")
+      XCTAssertFalse(
+        args.contains("-fix the parser"),
+        "the message must never appear as a bare argv element")
+    }
   }
 
   /// jj takes NO pathspec: its path arguments are a fileset expression language where a space fails
@@ -1135,6 +1191,79 @@ final class VCSWritingTests: XCTestCase {
   func testClassifyCommitSuccessIsNil() {
     let ok = CommandResult(stdout: "[main abc] m", stderr: "", exitCode: 0, timedOut: false)
     XCTAssertNil(CLIVCSWriter.classifyCommit(ok, tool: "git"))
+  }
+
+  /// **The user's own words must not steer the classifier.** `git commit` echoes the subject on
+  /// stdout, so matching the nothing-to-commit markers against stdout before the success guard read a
+  /// perfectly good commit as a failure — and because the ref had legitimately moved, `commit()`
+  /// upgraded it to `.committedThenFailed`, whose copy tells the user their commit half-worked and
+  /// not to try again. Measured on git 2.55: this is the literal stdout of a successful commit.
+  func testASuccessfulCommitIsNotAFailureBecauseItsMessageSaysNothingToCommit() {
+    for subject in [
+      "docs: explain the nothing to commit error",
+      "fix: stop saying no changes added to commit",
+      "chore: nothing added to commit is not an error",
+    ] {
+      let landed = CommandResult(
+        stdout: "[main ec13fd3] \(subject)\n 1 file changed, 1 insertion(+)\n",
+        stderr: "", exitCode: 0, timedOut: false)
+      XCTAssertNil(
+        CLIVCSWriter.classifyCommit(landed, tool: "git"),
+        "a commit that exited 0 succeeded, whatever its message says: \(subject)")
+    }
+  }
+
+  /// A file whose NAME carries a marker reaches stdout too (`create mode 100644 nothing to commit.txt`).
+  func testACommittedFilenameCannotBeReadAsAFailure() {
+    let landed = CommandResult(
+      stdout: "[main ec13fd3] add it\n create mode 100644 nothing to commit.txt\n",
+      stderr: "", exitCode: 0, timedOut: false)
+    XCTAssertNil(CLIVCSWriter.classifyCommit(landed, tool: "git"))
+  }
+
+  /// git's genuine no-op still classifies: it prints to stdout but exits NON-zero, so the marker
+  /// check on the failure path still sees it.
+  func testGitNothingToCommitStillClassifiesOnAFailedExit() {
+    let empty = CommandResult(
+      stdout: "On branch main\nnothing to commit, working tree clean\n",
+      stderr: "", exitCode: 1, timedOut: false)
+    XCTAssertEqual(CLIVCSWriter.classifyCommit(empty, tool: "git"), .nothingToCommit)
+  }
+
+  /// jj's no-op is the one that must be caught BEFORE the success guard: it exits ZERO. Measured on
+  /// jj 0.43 — everything jj prints goes to stderr, including this.
+  func testJJNothingChangedIsCaughtDespiteExitingZero() {
+    for onStderr in [true, false] {
+      let noop = CommandResult(
+        stdout: onStderr ? "" : "Nothing changed.\n",
+        stderr: onStderr ? "Nothing changed.\n" : "", exitCode: 0, timedOut: false)
+      XCTAssertEqual(
+        CLIVCSWriter.classifyCommit(noop, tool: "jj"), .nothingToCommit,
+        "jj 0.43 uses stderr, but the whole-line anchor is what makes this safe, not the stream")
+    }
+  }
+
+  /// But jj echoes the description back in its own progress lines, so the match is a WHOLE line —
+  /// otherwise describing a change "Nothing changed." would report itself as a no-op.
+  func testJJEchoingTheMessageIsNotAnEmptyCommit() {
+    let landed = CommandResult(
+      stdout: "",
+      stderr: """
+        Working copy  (@) now at: rsuzonno 8d983e9b (empty) (no description set)
+        Parent commit (@-)      : trtwtxzs 5ba5b171 Nothing changed.
+        """,
+      exitCode: 0, timedOut: false)
+    XCTAssertNil(
+      CLIVCSWriter.classifyCommit(landed, tool: "jj"),
+      "jj echoes the description; only a whole line of its own may be read as the marker")
+  }
+
+  /// The exit-zero escape hatch is jj's alone. git never exits 0 on a no-op, so letting git take that
+  /// branch is what created the false positive in the first place.
+  func testTheExitZeroNoOpCheckIsScopedToJJ() {
+    let gitSaysIt = CommandResult(
+      stdout: "", stderr: "Nothing changed.\n", exitCode: 0, timedOut: false)
+    XCTAssertNil(CLIVCSWriter.classifyCommit(gitSaysIt, tool: "git"))
   }
 
   // MARK: - Commit: sequencer state

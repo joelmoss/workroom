@@ -82,6 +82,35 @@ enum CommitDraft {
     vcs: String, summary: String, selectedCount: Int, totalCount: Int, conflicted: Bool,
     sequencer: String?
   ) -> String? {
+    if let reason = repoStateBlockedReason(conflicted: conflicted, sequencer: sequencer) {
+      return reason
+    }
+    if totalCount == 0 && vcs != "jj" {
+      return "Nothing has changed in this workroom yet."
+    }
+    if vcs != "jj" && selectedCount == 0 {
+      return "Select at least one file to commit."
+    }
+    return summaryBlockedReason(summary)
+  }
+
+  /// Why the message-only verb — git's Amend, jj's Describe — is unavailable.
+  ///
+  /// The repo-state and summary rules, and deliberately NOT the file-count ones: both verbs rewrite a
+  /// message and take no pathspec, so "select at least one file" is not a precondition for either.
+  /// Sharing the rest is the point. The button used to enforce only its own summary check, which left
+  /// it live over unresolved conflicts that the primary refused and the engine then rejected anyway —
+  /// and it trimmed a different character set, so a summary of one newline blocked Commit while Amend
+  /// would rewrite the last commit's message with it.
+  static func messageOnlyBlockedReason(
+    summary: String, conflicted: Bool, sequencer: String?
+  ) -> String? {
+    repoStateBlockedReason(conflicted: conflicted, sequencer: sequencer)
+      ?? summaryBlockedReason(summary)
+  }
+
+  /// The states of the repo itself that stop any commit verb, shared by both rules above.
+  static func repoStateBlockedReason(conflicted: Bool, sequencer: String?) -> String? {
     if let sequencer {
       return "A \(sequencer) is in progress. Finish it in the terminal before committing."
     }
@@ -91,15 +120,12 @@ enum CommitDraft {
     if conflicted {
       return "Some files still have unresolved conflicts. Resolve them first."
     }
-    if totalCount == 0 && vcs != "jj" {
-      return "Nothing has changed in this workroom yet."
-    }
-    if vcs != "jj" && selectedCount == 0 {
-      return "Select at least one file to commit."
-    }
-    if summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      return "Write a summary to describe this change."
-    }
     return nil
+  }
+
+  /// One trimming rule for every verb, so two buttons can never disagree about what "empty" means.
+  static func summaryBlockedReason(_ summary: String) -> String? {
+    summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      ? "Write a summary to describe this change." : nil
   }
 }

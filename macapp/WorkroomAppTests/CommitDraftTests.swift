@@ -145,4 +145,42 @@ final class CommitDraftTests: XCTestCase {
         "Some files still have unresolved conflicts. Resolve them first.")
     }
   }
+
+  // MARK: - Blocked reasons: the message-only verbs
+
+  /// Amend and Describe rewrite a message and take no pathspec, so the file-count rules are not their
+  /// preconditions — gating them on the primary's reason would block a legitimate reword.
+  func testTheMessageOnlyVerbIgnoresTheFileCountRules() {
+    XCTAssertNil(
+      CommitDraft.messageOnlyBlockedReason(
+        summary: "Reworded", conflicted: false, sequencer: nil),
+      "no file selection is needed to rewrite a message")
+  }
+
+  /// But it answers to the repo's state, which it previously did not: the button stayed live over
+  /// unresolved conflicts that the primary refused and the engine then rejected anyway.
+  func testTheMessageOnlyVerbStillAnswersToRepoState() {
+    XCTAssertEqual(
+      CommitDraft.messageOnlyBlockedReason(summary: "Reworded", conflicted: true, sequencer: nil),
+      "Some files still have unresolved conflicts. Resolve them first.")
+    XCTAssertEqual(
+      CommitDraft.messageOnlyBlockedReason(
+        summary: "Reworded", conflicted: false, sequencer: "rebase"),
+      "A rebase is in progress. Finish it in the terminal before committing.")
+  }
+
+  /// **One trimming rule for both buttons.** The secondary used to trim `.whitespaces` where this
+  /// trims `.whitespacesAndNewlines`, so a summary of a single newline blocked Commit while Amend
+  /// would rewrite the last commit's message with it.
+  func testBothVerbsAgreeOnWhatAnEmptySummaryIs() {
+    for blank in ["", "   ", "\n", " \n\t "] {
+      XCTAssertEqual(
+        CommitDraft.messageOnlyBlockedReason(summary: blank, conflicted: false, sequencer: nil),
+        "Write a summary to describe this change.",
+        "the secondary verb must reject \(blank.debugDescription)")
+      XCTAssertEqual(
+        reason(summary: blank), "Write a summary to describe this change.",
+        "and so must the primary, identically")
+    }
+  }
 }

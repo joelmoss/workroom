@@ -67,9 +67,10 @@ extension AppStore {
       // storm) — even on `force`. Its status is refreshed once, post-setup, by `createWorkroom`.
       // Covers this window's create AND another window's, since `creatingWorkrooms` is shared.
       if isCreating(item.sid) { return false }
-      // Nor one whose commit is in flight — see `isCommitting`. Also honoured on `force`, because a
-      // manual Refresh during a long hook would race the write just as readily as the timer does.
-      if isCommitting(item.sid) { return false }
+      // Nor one whose PROJECT has a commit in flight — see `isCommittingProject`. Also honoured on
+      // `force`, because a manual Refresh during a long hook races the write just as readily as the
+      // timer does.
+      if isCommittingProject(item.projectRoot) { return false }
       guard !force else { return true }
       guard let checked = workroomStatuses[item.sid]?.lastChecked else { return true }
       return now.timeIntervalSince(checked) >= localTTL
@@ -126,7 +127,9 @@ extension AppStore {
     // suppressed above; this skips the debounced local+CI probe too. Re-armed post-setup by
     // `createWorkroom` calling this again once `creatingWorkrooms` no longer holds the id.
     if isCreating(sid) { return }
-    if isCommitting(sid) { return }
+    // By project root, not by row: a git worktree's index and refs live in the MAIN repo, so probing
+    // workroom B while workroom A of the same project commits contends on the same `index.lock`.
+    if isCommittingProject(item.projectRoot) { return }
     let resolver = statusResolver
     selectionStatusTask = Task { [weak self] in
       try? await Task.sleep(nanoseconds: UInt64(Self.selectionDebounce * 1_000_000_000))
@@ -234,29 +237,37 @@ extension AppStore {
     guard let item = selectedStatusWorkItem(for: sid) else {
       return completion(.failed(.other("That workroom is no longer available.")))
     }
-    // Fixture mode answers from `FixtureVCSWriter` rather than spawning git or jj — the fixture paths
-    // aren't real repos, so a live write would only ever fail. Same construction the seeded
-    // `RemoteStateModel` uses (`AppStore.swift`'s `makeWriter:`).
-    if UITestFixture.isActive {
-      let writer = FixtureVCSWriter()
-      Task {
-        completion(
-          await writer.commit(path: item.path, projectRoot: item.projectRoot, request: request))
-      }
-      return
-    }
+    // Fixture mode swaps the WRITER — `FixtureVCSWriter` rather than spawning git or jj, since the
+    // fixture paths aren't real repos and a live write would only ever fail. Only the writer: taking
+    // an early return here instead skipped the whole store-side lane (the in-flight marks, the
+    // captured-sid refresh), so the one tier that drives this code end to end exercised none of it.
+    // `refreshStatus(for:)` already no-ops under the fixture, so the rest is safe to run.
+    let root = item.projectRoot
     committingTargets.insert(sid)
+    committingProjectRoots[root, default: 0] += 1
     Task { [weak self] in
       let result: VCSCommitResult
-      do {
-        let writer = try VCS.writer(for: URL(fileURLWithPath: item.path, isDirectory: true))
-        result = await writer.commit(
-          path: item.path, projectRoot: item.projectRoot, request: request)
-      } catch {
-        result = .failed(.other("\(error)"))
+      if UITestFixture.isActive {
+        result = await FixtureVCSWriter().commit(
+          path: item.path, projectRoot: root, request: request)
+      } else {
+        do {
+          let writer = try VCS.writer(for: URL(fileURLWithPath: item.path, isDirectory: true))
+          result = await writer.commit(path: item.path, projectRoot: root, request: request)
+        } catch {
+          result = .failed(.other("\(error)"))
+        }
       }
       guard let self else { return }
       self.committingTargets.remove(sid)
+      // Decremented, never cleared: a sibling workroom of the same project can be committing too, and
+      // dropping the key would re-open every read lane against a write still in progress.
+      let remaining = (self.committingProjectRoots[root] ?? 1) - 1
+      if remaining > 0 {
+        self.committingProjectRoots[root] = remaining
+      } else {
+        self.committingProjectRoots.removeValue(forKey: root)
+      }
       switch result {
       case .ok, .committedThenFailed:
         // Refresh by the CAPTURED sid. The Changes list is the load-bearing one for jj:
@@ -617,6 +628,16 @@ extension AppStore {
   /// probe landing mid-commit shows a state that never really existed.
   func isCommitting(_ sid: SidebarID) -> Bool { committingTargets.contains(sid) }
 
+  /// Whether ANY workroom of this project has a commit in flight.
+  ///
+  /// The question every read lane has to ask, rather than `isCommitting(sid)`. `JJSnapshotGate`
+  /// serializes on the project root, and its `maxChainWait` self-heal (30s) is far shorter than
+  /// `commitTimeout` (600s) — so a probe queued behind a slow hook stops waiting and runs anyway.
+  /// Suppression is what actually keeps these lanes off a repo mid-write; the gate alone does not.
+  func isCommittingProject(_ projectRoot: String) -> Bool {
+    committingProjectRoots[projectRoot, default: 0] > 0
+  }
+
   /// Re-probe ONE row's local status, named explicitly.
   ///
   /// `scheduleSelectedStatusRefresh` cannot serve a commit: it derives its target from the LIVE
@@ -662,11 +683,12 @@ extension AppStore {
     // (updateSelectedWorkroomWatch stops it), but a stray in-flight FSEvents callback can land during
     // the stop transition — bail so it can't fork a probe against the tree the setup script is writing.
     if isCreating(sid) { return }
-    // Same for a commit in flight. This lane is the one that would fire MOST during a git commit: the
-    // `.jj/` filter below saves jj from self-triggering, but git's own index and ref churn is
-    // deliberately let through as real signal, so `git add`/`git commit` would each fork a probe
-    // against a tree mid-write.
-    if isCommitting(sid) { return }
+    // Same for a commit in flight, keyed by project root — a git worktree's index lives in the main
+    // repo, so a sibling workroom's commit churns the very files this probe reads. This lane is the
+    // one that would fire MOST during a git commit: the `.jj/` filter below saves jj from
+    // self-triggering, but git's own index and ref churn is deliberately let through as real signal,
+    // so `git add`/`git commit` would each fork a probe against a tree mid-write.
+    if isCommittingProject(item.projectRoot) { return }
     // A jj *local* probe snapshots `@` (writes under `.jj/`), which would itself trip the watcher —
     // an endless refresh loop. So ignore a burst that touched ONLY jj-internal paths. (git probes are
     // read-only, and `.git/index` changes from `git add` are real signal, so git events pass through.)

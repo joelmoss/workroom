@@ -47,6 +47,24 @@ final class ProjectStore: ObservableObject {
   /// creating one.
   @Published var creatingWorkrooms: Set<TerminalTarget.ID> = []
 
+  /// Sidebar rows with a commit in flight, for the per-row button state.
+  ///
+  /// Shared across windows for the reason `creatingWorkrooms` is: `AppStore` is per WINDOW, but
+  /// `JJSnapshotGate` and the `index.lock` contention it exists to prevent are per PROCESS. Held on
+  /// the window's own store, a second window's 15s sweep, FSEvents lane and Refresh button all saw an
+  /// empty set and kept probing a repo mid-write.
+  @Published var committingTargets: Set<SidebarID> = []
+
+  /// How many commits are in flight against each project root, which is what the read lanes actually
+  /// have to stand clear of.
+  ///
+  /// Keyed by project root, not by row: the gate serializes on the project root, and a git worktree's
+  /// index and refs live in the MAIN repo — so a commit in workroom A contends with a status probe of
+  /// workroom B of the same project, which a per-row check waved straight through. Counted rather than
+  /// a `Set` because the app's premise is N parallel workrooms, so two of one project can legitimately
+  /// commit at once and the first to finish must not clear the other's suppression.
+  @Published var committingProjectRoots: [String: Int] = [:]
+
   /// Target ids of workrooms with an in-flight optimistic deletion — dropped from the sidebar but
   /// their teardown (worktree/config removal) not yet finished. `AppStore.apply` filters these out of
   /// every incoming CLI `list`, so a stale snapshot taken before the teardown persisted can't
