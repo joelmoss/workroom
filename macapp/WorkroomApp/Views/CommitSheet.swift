@@ -271,7 +271,7 @@ struct CommitSheet: View {
       Button("Cancel") { onDismiss() }
         .keyboardShortcut(.cancelAction)
         .accessibilityIdentifier("commit.cancel")
-      secondaryMenu
+      secondaryButton
       Button(primaryLabel) {
         // Once the warning is on screen the same button confirms it — the guard has already told the
         // user what it is about to replace, so a second warning would just be a speed bump.
@@ -289,26 +289,27 @@ struct CommitSheet: View {
     }
   }
 
-  /// The backend's second verb. Labelled by OUTCOME, with the command named only in the help text —
-  /// the product goal is that you don't need to know jj's vocabulary to use this.
-  @ViewBuilder private var secondaryMenu: some View {
-    Menu {
-      if isJJ {
-        Button("Set Message Only") { commit(mode: .describe) }
-          .help("Name the current change and stay on it (jj describe)")
-      } else {
-        Button("Amend Last Commit") { commit(mode: .amendMessage) }
-          .help("Replace the last commit’s message. Nothing else about it changes.")
-      }
-    } label: {
-      Image(systemName: "ellipsis")
+  /// The backend's second verb, as its own button rather than behind a menu.
+  ///
+  /// There is exactly ONE alternative per backend, and a menu holding a single item is a click that
+  /// buys nothing — it hides the choice behind a disclosure and gives the control no name until you
+  /// open it. Naming it outright also stops the "same shape, opposite contract" problem an ellipsis
+  /// split button would have had beside `MergeButton`, whose menu CHANGES what its primary does
+  /// rather than performing a second action.
+  ///
+  /// The label is the command for jj — "Describe" is the verb jj users already have — with what it
+  /// actually does in the help text, since the two verbs differ in a way the word alone can't carry.
+  @ViewBuilder private var secondaryButton: some View {
+    Button(isJJ ? "Describe" : "Amend last commit") {
+      commit(mode: isJJ ? .describe : .amendMessage)
     }
-    .menuStyle(.button)
-    .menuIndicator(.hidden)
-    .fixedSize()
     .disabled(phase == .committing || summary.trimmingCharacters(in: .whitespaces).isEmpty)
-    .help("Other ways to record this message")
-    .accessibilityIdentifier("commit.moreActions")
+    .help(
+      isJJ
+        ? "Set this change’s message and stay on it, instead of starting a new change (jj describe)"
+        : "Replace the last commit’s message. Nothing else about that commit changes."
+    )
+    .accessibilityIdentifier(isJJ ? "commit.describe" : "commit.amend")
   }
 
   // MARK: Actions

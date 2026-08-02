@@ -158,6 +158,39 @@ final class CommitSheetUITests: XCTestCase {
       button(app, id: "commit.selectAll").exists, "nor a select-all for a selection it can't make")
   }
 
+  /// Each backend's second verb is its own named button, not a menu item. A menu holding exactly one
+  /// entry costs a click and leaves the control unnamed until it's opened.
+  func testGitOffersAmendAsItsOwnButton() throws {
+    let app = launchedApp(extraArguments: ["-WorkroomUITestGitWorkroom", "1"])
+    openSheet(app)
+
+    let amend = button(app, id: "commit.amend")
+    XCTAssertTrue(amend.waitForExistence(timeout: 5), "git should offer Amend directly")
+    XCTAssertEqual(amend.label, "Amend last commit")
+    XCTAssertFalse(
+      button(app, id: "commit.describe").exists, "and never jj's verb")
+
+    // Amend rewords the last commit, so it needs a message just as Commit does.
+    XCTAssertFalse(amend.isEnabled, "no summary yet")
+    typeSummary(app, "Reworded")
+    let enabled = NSPredicate(format: "isEnabled == true")
+    XCTAssertEqual(
+      XCTWaiter().wait(
+        for: [XCTNSPredicateExpectation(predicate: enabled, object: amend)], timeout: 5),
+      .completed)
+  }
+
+  func testJJOffersDescribeAsItsOwnButton() throws {
+    let app = launchedApp(extraArguments: ["-WorkroomUITestJJProject", "1"])
+    openSheet(app)
+
+    let describe = button(app, id: "commit.describe")
+    XCTAssertTrue(describe.waitForExistence(timeout: 5), "jj should offer Describe directly")
+    XCTAssertEqual(describe.label, "Describe")
+    XCTAssertFalse(
+      button(app, id: "commit.amend").exists, "jj has no amend — it must not be offered")
+  }
+
   // MARK: - Failure
 
   /// The defining moment. A hook's output is the most useful text in the whole taxonomy, so a
