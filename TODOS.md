@@ -117,8 +117,10 @@ best done after CMT-2 to use ghostty's `selection_changed` hook.
 ### VCS write actions — Phase 2 (macapp) — roadmap pointer
 
 **What:** The next VCS phase: turn the read-only foundation into a full in-app VCS UI. **Fetch, push
-and pull-with-rebase have SHIPPED** (the VCS toolbar). What remains: commit/amend, bookmark (jj) /
-branch (git) management, and the deep jj ops (undo/op-log, split, absorb, evolog, interdiff).
+and pull-with-rebase have SHIPPED** (the VCS toolbar), and so have **commit + message-only amend/describe**
+(the Changes inspector's commit dialog). What remains: selection-aware amend (needs a temp index),
+bookmark (jj) / branch (git) management, and the deep jj ops (undo/op-log, split, absorb, evolog,
+interdiff).
 
 **Where the write seam actually is — this changed.** The original plan put write methods on
 `VCSProviding` with a `CLIVCSProvider` fallback. That is **not** what shipped, and new work should not
@@ -141,7 +143,8 @@ not *how* they run. The split:
 
 | Ops | Backend | Why |
 |---|---|---|
-| commit/amend, branch + bookmark management, jj undo/op-log/split/absorb/evolog | **native** (libgit2/SwiftGitX, jj-lib) | Local. Typed APIs, no output to parse, no tool-version floor, no locale exposure. This is where every remaining Phase-2 feature lands, so the CLI surface **stops growing here.** |
+| commit/amend — **CLI, decided against this table's original answer** | **CLI** (`CLIVCSWriter.commit`, shipped) | This row used to say "native", and that was wrong on three counts it never weighed. **libgit2 runs no hooks** ([#964](https://github.com/libgit2/libgit2/issues/964)) — a `pre-commit`/`commit-msg` that the user's terminal honours would be silently skipped, which is worse than not offering commit at all. **libgit2 cannot sign**, so `commit.gpgsign = true` would produce unsigned commits. And native jj commit is blocked on `immutable_heads()` being a jj-*cli* revset alias that jj-lib cannot resolve — so it would happily rewrite commits the user's own `jj` refuses to touch. (The empty-committer and dropped-signature halves of that third blocker are now fixed by `jj_config.rs`; the revset one is not.) |
+| branch + bookmark management, jj undo/op-log/split/absorb/evolog | **native** (libgit2/SwiftGitX, jj-lib) — provisional | Local, typed APIs, no output to parse, no tool-version floor, no locale exposure. Still the default answer, but **not "don't re-litigate"**: commit was re-litigated on measurement and moved. Check each op for hooks, signing, and revset aliases before assuming native. |
 | fetch, push, pull | **CLI** — permanently, not a stopgap | Three independent blockers, all verified from checked-out sources: SwiftGitX passes NULL options (`git_remote_fetch(remotePointer, nil, nil, nil)`, and `pull` is a `// TODO`), so it has no credential callback at all; **libgit2 implements no `credential.helper` protocol** — nothing in its `src` reads that config key, so native auth means reimplementing helper invocation ourselves; and jj-lib shells to `git` for remote ops anyway (that's where its `MINIMUM_GIT_VERSION` comes from), so a "native jj push" is a git subprocess wearing a Rust coat. |
 
 **Non-goal: Workroom does not store credentials.** No OAuth client, no keychain writes, no auth
