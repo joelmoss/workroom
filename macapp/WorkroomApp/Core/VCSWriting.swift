@@ -848,6 +848,16 @@ struct CLIVCSWriter: VCSWriting, Sendable {
     ["describe", "--message=\(message)"] + jjWriteFlags
   }
 
+  /// The subject of the commit an amend would rewrite.
+  ///
+  /// Read-only and cheap. Its purpose is honesty rather than prefill: amend replaces `HEAD`'s message
+  /// with whatever is in the summary field, so the dialog has to be able to show WHICH message that
+  /// destroys before the click, not leave it recoverable only from the reflog. `%s` rather than `%B`
+  /// deliberately — this is a label, and a multi-line body would wrap the dialog.
+  static func gitHeadSubjectArgs() -> [String] {
+    WorkroomStatusResolver.gitHardening + ["log", "-1", "--no-color", "--pretty=format:%h %s"]
+  }
+
   /// `@`'s full description, for prefilling the dialog.
   ///
   /// Read-only, so it carries `jjReadFlags`: without `--ignore-working-copy` this would snapshot the

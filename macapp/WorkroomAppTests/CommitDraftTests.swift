@@ -128,6 +128,20 @@ final class CommitDraftTests: XCTestCase {
     XCTAssertNil(reason(vcs: "jj", selected: 0, total: 0))
   }
 
+  /// The sequencer reason is reachable from the UI now: `CommitSheet` resolves it on appear via
+  /// `CLIVCSWriter.sequencerState` and passes it here. It used to be hardcoded `nil` at the only
+  /// call site, so this rule was tested but unreachable — the user composed a whole message mid-merge
+  /// and only learned when the engine refused.
+  func testAParkedSequencerBlocksBothVerbs() {
+    XCTAssertEqual(
+      reason(sequencer: "merge"),
+      "A merge is in progress. Finish it in the terminal before committing.")
+    XCTAssertEqual(
+      CommitDraft.messageOnlyBlockedReason(
+        summary: "Reworded", conflicted: false, sequencer: "cherry-pick"),
+      "A cherry-pick is in progress. Finish it in the terminal before committing.")
+  }
+
   /// A parked sequencer outranks everything: several of those states make a path-limited commit
   /// outright invalid, and finishing one is the user's call, not ours.
   func testSequencerOutranksEveryOtherReason() {
@@ -144,6 +158,48 @@ final class CommitDraftTests: XCTestCase {
         reason(vcs: vcs, conflicted: true),
         "Some files still have unresolved conflicts. Resolve them first.")
     }
+  }
+
+  // MARK: - Lossless round-trip
+
+  /// **An untouched Describe must not rewrite the message.** `split` takes line 0 as the summary and
+  /// the rest as the body; `message` rejoins with a BLANK line. So a stored jj description with no
+  /// blank separator — which jj permits — came back reformatted, and the user who pressed Describe
+  /// without typing anything found their message silently changed.
+  func testAnUneditedMessageIsRecordedByteForByte() {
+    for stored in [
+      "line one\nline two",
+      "subject\n\nbody",
+      "subject only",
+      "subject\n\nbody\nwith\nlines",
+      "subject\n\n\n\nbody after several blanks",
+    ] {
+      let fields = CommitDraft.split(message: stored)
+      XCTAssertEqual(
+        CommitDraft.message(summary: fields.summary, body: fields.body, preserving: stored),
+        stored,
+        "round-tripping \(stored.debugDescription) unedited must change nothing")
+    }
+  }
+
+  /// Editing either field means the user wrote this message here, so the blank-line convention every
+  /// downstream tool splits on is applied — normalising is right, it was only rewriting an UNTOUCHED
+  /// message that was wrong.
+  func testAnEditedMessageIsNormalised() {
+    let stored = "line one\nline two"
+    XCTAssertEqual(
+      CommitDraft.message(summary: "line one", body: "edited body", preserving: stored),
+      "line one\n\nedited body")
+    XCTAssertEqual(
+      CommitDraft.message(summary: "new subject", body: "line two", preserving: stored),
+      "new subject\n\nline two")
+  }
+
+  /// With nothing to preserve — git, which has no prefill — it composes as it always did.
+  func testWithNoOriginalItComposesNormally() {
+    XCTAssertEqual(
+      CommitDraft.message(summary: "Subject", body: "Body", preserving: nil),
+      "Subject\n\nBody")
   }
 
   // MARK: - Blocked reasons: the message-only verbs

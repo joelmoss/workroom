@@ -30,6 +30,25 @@ enum CommitDraft {
     return detail.isEmpty ? subject : "\(subject)\n\n\(detail)"
   }
 
+  /// The message to record, preserving `original` byte for byte when neither field was edited.
+  ///
+  /// `split` and `message` are deliberately not inverses: `split` takes line 0 as the summary and the
+  /// rest as the body, while `message` always rejoins them with a BLANK line. So a stored jj
+  /// description of `"one\ntwo"` — no blank separator, which jj permits — came back as
+  /// `"one\n\ntwo"`. The user pressed Describe without touching the text and their message changed
+  /// underneath them.
+  ///
+  /// Normalising is right for a message the user actually wrote here (the blank line is what every
+  /// tool downstream splits on). Rewriting one they didn't touch is not. This tells the two apart.
+  static func message(summary: String, body: String, preserving original: String?) -> String {
+    guard let original else { return message(summary: summary, body: body) }
+    let stored = split(message: original)
+    guard stored.summary == summary, stored.body == body else {
+      return message(summary: summary, body: body)
+    }
+    return original
+  }
+
   /// Split a stored message back into the two fields, for prefilling from jj's `@` description.
   ///
   /// The first line is the summary and everything after the first blank line is the body. Used

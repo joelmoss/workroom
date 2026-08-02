@@ -150,6 +150,22 @@ enum UITestFixture {
     flag("WorkroomUITestManyChanges")
   }
 
+  /// When set (`-WorkroomUITestHugeChangeSet 1`), the fixture reports MORE changed files than the
+  /// commit dialog draws (`CommitSheet.renderCap`), so a test can prove the cap limits what is drawn
+  /// and never what is committed — the failure mode a render cap invites is a list that quietly
+  /// disagrees with the commit it is about to make. Deliberately separate from `manyChanges`, whose
+  /// 27 rows several other tests depend on exactly.
+  static var hugeChangeSet: Bool {
+    flag("WorkroomUITestHugeChangeSet")
+  }
+
+  /// The commit the dialog names as what "Amend last commit" would rewrite.
+  ///
+  /// Seeded rather than read, because the fixture's paths are not real repos — a live `git log` there
+  /// fails, and the dialog would then show nothing at all, which is exactly the state the test exists
+  /// to rule out. Shaped like the real read (`%h %s`).
+  static let amendTargetLabel = "a1b2c3d Add the session controller"
+
   /// When set (`-WorkroomUITestRunCommand "<cmd>"`), the fixture seeds this as the workroom's run
   /// command instead of the default probe — so the run-status XCUITests (issue #79) can drive a
   /// deterministic failure (`exit 7`), success (`exit 0`), or long-running (`sleep 30`) command and
@@ -615,6 +631,13 @@ enum UITestFixture {
     ]
     if conflicted {
       base.append(ChangedFile(path: conflictedFilePath, change: .conflicted))
+    }
+    if hugeChangeSet {
+      // Comfortably past `CommitSheet.renderCap` (200).
+      return base
+        + (0..<250).map {
+          ChangedFile(path: "vendor/bundle/gems/pkg-\($0)/lib/pkg.rb", change: .untracked)
+        }
     }
     guard manyChanges else { return base }
     let extra = (0..<20).map {
