@@ -497,8 +497,34 @@ rather than picking one status delta.
 
 ### The jj snapshot ignores the user's real jj/git config (macapp) — VCS-foundation eng-review
 
-**What:** `snapshot_working_copy` builds its settings from jj's **built-in defaults only** —
-`UserSettings::from_config(StackedConfig::with_defaults())` (`jj_backend.rs:380`) — and jj-lib derives
+**Status: the config stack itself has LANDED.** `wr-vcs-core/src/jj_config.rs` now layers the user's
+real configuration (`$JJ_CONFIG`, else `~/.jjconfig.toml` + `$XDG_CONFIG_HOME`/`~/.config/jj/config.toml`
++ `conf.d/*.toml`) over jj's defaults, and all three call sites (`open`, `snapshot_working_copy`,
+`materialize_options`) read it. That fixes the two consequences this entry never named, both of which
+were live for **every** jj user rather than only non-default configs:
+
+- **Every snapshot stamped an EMPTY committer.** `for_rewrite_from` sets
+  `commit.committer = settings.signature()` unconditionally, and defaults-only settings carry
+  `user.name = ""` / `user.email = ""`. Mostly invisible (`jj log` shows the author) and self-healing
+  on the next real `jj` command, but NOT if `@` is pushed as-is — which the app's Push button does via
+  `jj git push --change @`. Pinned by `tests/committer_identity.rs`, which fails with `<>` against the
+  old code.
+- **Signatures were dropped.** `Signer::from_settings` read `signing.backend = "none"`, so
+  `can_sign()` was false and a rewrite of an already-signed `@` discarded its signature under the
+  default `behavior = "keep"`. Now works for free, since the signer is built from these settings.
+
+**What remains** (the original scope of this entry — the settings now reach jj-lib, so these follow,
+but none is verified): `core.fsmonitor`, `working-copy.eol-conversion`, `working-copy.exec-bit-change`
+and `ui.conflict-marker-style` are all derived from `TreeStateSettings::try_from_user_settings`, so
+they should now be honoured — but no test covers them. The custom `core.excludesFile` chaining in
+`base_ignores` is genuinely still missing. **Repo-level config is also still unread**: jj 0.43 keeps it
+under `~/.config/jj/repos/<hash>` rather than `.jj/repo/config.toml`, which the current chain does not
+resolve.
+
+Original description follows.
+
+**What:** `snapshot_working_copy` built its settings from jj's **built-in defaults only** —
+`UserSettings::from_config(StackedConfig::with_defaults())` — and jj-lib derives
 the whole of `TreeStateSettings` from those settings (`local_working_copy.rs`
 `try_from_user_settings`): `ui.conflict-marker-style`, `EolConversionMode`
 (`working-copy.eol-conversion`), `working-copy.exec-bit-change`, and `FsmonitorSettings`. So on the
@@ -524,15 +550,17 @@ materialize a conflicted file to count its marker lines, so `ui.conflict-marker-
 and for the same reason as the snapshot; when this entry lands, both call sites want the real settings,
 not just the snapshot.
 
-**How to start:** load the real config stack (user + repo) into `UserSettings` the way the jj CLI
-does, instead of `with_defaults()`, and chain a custom `core.excludesFile` in `base_ignores`. Test on
-throwaway repos only — this is the lock-taking, `@`-rewriting path.
+**How to start:** the config stack is loaded (`jj_config.rs`). What is left is chaining a custom
+`core.excludesFile` in `base_ignores`, resolving jj 0.43's repo-level config under
+`~/.config/jj/repos/<hash>`, and testing that the fsmonitor / EOL / exec-bit settings actually take
+effect now that they reach jj-lib. Test on throwaway repos only — this is the lock-taking,
+`@`-rewriting path.
 
-**Depends on:** the base_ignores fix (shipped). Touches `jj_backend.rs` (`snapshot_working_copy` +
-`materialize_options`).
+**Depends on:** the base_ignores fix (shipped) and the config stack (shipped). Touches `jj_config.rs`
+and `jj_backend.rs` (`base_ignores`).
 
-**Priority:** P3 for correctness (only bites non-default configs), but the fsmonitor half is a real
-perf item on large repos.
+**Priority:** P3 for what remains (only bites non-default configs); the identity + signing half that
+bit everyone has shipped. The fsmonitor half is still a real perf item on large repos.
 
 ### Offer to repair a stale jj working copy from the app (macapp) — error-taxonomy follow-up
 

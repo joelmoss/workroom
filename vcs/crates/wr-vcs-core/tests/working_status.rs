@@ -14,9 +14,14 @@ mod common;
 ///
 /// `JJ_CONFIG` is passed per-`Command`, never through `std::env::set_var`: cargo runs `#[test]`s in
 /// parallel threads of one process, so a global env write is visible to (and racing with) every
-/// other test. Nothing else needs it — jj-lib itself never reads `JJ_CONFIG` on our path
-/// (`snapshot_working_copy` builds `UserSettings` from `StackedConfig::with_defaults()`), so the
-/// variable only has to reach the `jj` CLI children these fixtures shell out to.
+/// other test.
+///
+/// Note this reaches only the `jj` CLI children these fixtures shell out to. `wr-vcs-core` now reads
+/// the user's real config too (`jj_config::user_settings`), but from the PROCESS environment — which
+/// these tests deliberately leave alone. So the snapshots below run with whatever identity the
+/// developer's own jj config carries, which is fine because none of them asserts on the committer.
+/// The one test that does own its process environment, and therefore can assert on it, is
+/// `tests/committer_identity.rs` — deliberately its own binary for exactly that reason.
 fn jj(args: &[&str], dir: &Path, config: &Path) -> std::process::Output {
     Command::new("jj")
         .args(args)
