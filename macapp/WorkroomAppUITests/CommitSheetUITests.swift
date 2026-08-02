@@ -191,6 +191,53 @@ final class CommitSheetUITests: XCTestCase {
       button(app, id: "commit.amend").exists, "jj has no amend — it must not be offered")
   }
 
+  // MARK: - Render cap
+
+  /// A cap on drawn rows is only safe if it cannot lie about the commit. The dialog draws 200, but
+  /// the button must still claim — and the commit still record — all 257.
+  func testTheRenderCapLimitsWhatIsDrawnNotWhatIsCommitted() throws {
+    let app = launchedApp(extraArguments: [
+      "-WorkroomUITestGitWorkroom", "1", "-WorkroomUITestHugeChangeSet", "1",
+    ])
+    openSheet(app)
+
+    let notice = element(app, id: "commit.renderCapNotice")
+    XCTAssertTrue(
+      notice.waitForExistence(timeout: 10),
+      "a truncated list must say so — a silent cap reads as 'this is everything'")
+
+    typeSummary(app, "Vendor drop")
+    let commit = button(app, id: "commit.commit")
+    XCTAssertTrue(commit.waitForExistence(timeout: 5))
+    XCTAssertTrue(
+      commit.label.contains("257"),
+      "the count must be the real total, not the drawn one, got: \(commit.label)")
+  }
+
+  // MARK: - Amend target
+
+  /// Amend replaces HEAD's message with whatever is typed for a NEW commit, so which message it
+  /// destroys has to be on screen before the click — not recoverable only from the reflog after it.
+  func testTheAmendTargetIsNamedOnScreen() throws {
+    let app = launchedApp(extraArguments: ["-WorkroomUITestGitWorkroom", "1"])
+    openSheet(app)
+
+    let notice = element(app, id: "commit.amendTarget")
+    XCTAssertTrue(
+      notice.waitForExistence(timeout: 10), "the commit Amend would rewrite must be named")
+    XCTAssertTrue(
+      (notice.label + notice.value.debugDescription).lowercased().contains("amend"),
+      "and the line must say what it is about to replace, got: \(notice.label)")
+  }
+
+  /// jj has no amend, so it gets no such line.
+  func testJJShowsNoAmendTarget() throws {
+    let app = launchedApp(extraArguments: ["-WorkroomUITestJJProject", "1"])
+    openSheet(app)
+    XCTAssertTrue(element(app, id: "commit.summary").waitForExistence(timeout: 5))
+    XCTAssertFalse(element(app, id: "commit.amendTarget").exists)
+  }
+
   // MARK: - Failure
 
   /// The defining moment. A hook's output is the most useful text in the whole taxonomy, so a

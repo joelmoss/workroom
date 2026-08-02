@@ -1084,6 +1084,17 @@ final class VCSWritingTests: XCTestCase {
     XCTAssertFalse(args.contains("--pathspec-from-file=-"))
   }
 
+  /// The amend target is a label, so it reads the SUBJECT plus a short sha — a full `%B` body would
+  /// wrap the dialog. Read-only, hardened, and `--no-color` so the label can never carry escapes.
+  func testHeadSubjectReadIsAOneLineLabel() {
+    let args = CLIVCSWriter.gitHeadSubjectArgs()
+    XCTAssertEqual(Array(args.prefix(2)), WorkroomStatusResolver.gitHardening)
+    XCTAssertTrue(args.contains("-1"), "one commit: the one amend would rewrite")
+    XCTAssertTrue(args.contains("--pretty=format:%h %s"))
+    XCTAssertTrue(args.contains("--no-color"), "a label must not carry terminal escapes")
+    XCTAssertFalse(args.contains("%B"), "the full body would wrap the dialog")
+  }
+
   /// The prefill read must not take the working-copy lock just to populate a text field.
   func testJJDescriptionReadIsIgnoreWorkingCopy() {
     let args = CLIVCSWriter.jjDescriptionArgs()

@@ -30,6 +30,18 @@ struct CommitSheet: View {
   @State private var excluded: Set<String> = []
   @State private var phase: Phase = .editing
   @State private var prefilled = false
+  /// A parked merge/rebase/cherry-pick/revert/bisect in this worktree, resolved on appear.
+  ///
+  /// The engine refuses one of these outright, so leaving it out of `blockedReason` meant composing a
+  /// whole message and pressing Commit to be told. Read once: finishing a merge is something the user
+  /// does in the terminal, and re-polling for it would be a timer against the filesystem for a state
+  /// that changes at human speed.
+  @State private var sequencer: String?
+  /// The commit `Amend last commit` would rewrite, so the message being replaced is visible BEFORE
+  /// the click rather than recoverable only from the reflog afterwards.
+  @State private var amendTarget: String?
+  /// jj's stored description exactly as read, so an unedited Describe rewrites nothing.
+  @State private var originalMessage: String?
   @FocusState private var summaryFocused: Bool
 
   private enum Phase: Equatable {
@@ -50,6 +62,9 @@ struct CommitSheet: View {
     return false
   }
 
+  /// Hard cap on rendered rows, matching `ChangesPanel`'s. See `fileSection`.
+  private static let renderCap = 200
+
   private var isJJ: Bool { pending.vcs == "jj" }
   private var status: WorkroomStatus? { store.workroomStatuses[pending.sid] }
 
@@ -65,17 +80,26 @@ struct CommitSheet: View {
     isJJ ? files : CommitDraft.selected(from: files, excluding: excluded)
   }
 
+  /// How many files the commit would record, WITHOUT building the filtered array.
+  ///
+  /// `body` asks this several times per evaluation — the caption, the button label, the blocked
+  /// reason, the select-all glyph — and re-evaluates on every keystroke, so `selectedFiles.count`
+  /// meant several full copies of the change set per typed character.
+  private var selectedCount: Int {
+    isJJ ? files.count : files.reduce(into: 0) { if !excluded.contains($1.path) { $0 += 1 } }
+  }
+
   private var blockedReason: String? {
     CommitDraft.blockedReason(
-      vcs: pending.vcs, summary: summary, selectedCount: selectedFiles.count,
-      totalCount: files.count, conflicted: status?.conflicted ?? false, sequencer: nil)
+      vcs: pending.vcs, summary: summary, selectedCount: selectedCount,
+      totalCount: files.count, conflicted: status?.conflicted ?? false, sequencer: sequencer)
   }
 
   /// The secondary verb rewrites a message and takes no pathspec, so it answers to the repo-state and
   /// summary rules but not the file-count ones — see `CommitDraft.messageOnlyBlockedReason`.
   private var secondaryBlockedReason: String? {
     CommitDraft.messageOnlyBlockedReason(
-      summary: summary, conflicted: status?.conflicted ?? false, sequencer: nil)
+      summary: summary, conflicted: status?.conflicted ?? false, sequencer: sequencer)
   }
 
   var body: some View {
@@ -83,6 +107,7 @@ struct CommitSheet: View {
       header
       fileSection
       messageSection
+      amendTargetNotice
       if case .confirmingStagedLoss(let paths) = phase { stagedLossNotice(paths) }
       if case .failed(let dialog) = phase { CommitFailureNotice(dialog: dialog) }
       if case .landedThenFailed(let dialog) = phase { CommitFailureNotice(dialog: dialog) }
@@ -118,13 +143,13 @@ struct CommitSheet: View {
   /// warning is up so it can never read as an ordinary Commit.
   private var primaryLabel: String {
     if case .confirmingStagedLoss = phase { return "Commit anyway" }
-    return CommitDraft.commitLabel(selectedCount: selectedFiles.count, vcs: pending.vcs)
+    return CommitDraft.commitLabel(selectedCount: selectedCount, vcs: pending.vcs)
   }
 
   private var countCaption: String {
     isJJ
       ? "\(files.count) file\(files.count == 1 ? "" : "s") in this change"
-      : "\(selectedFiles.count) of \(files.count) file\(files.count == 1 ? "" : "s")"
+      : "\(selectedCount) of \(files.count) file\(files.count == 1 ? "" : "s")"
   }
 
   // MARK: Files
@@ -140,11 +165,17 @@ struct CommitSheet: View {
       .font(.callout).foregroundStyle(.secondary)
       .frame(maxWidth: .infinity, alignment: .leading)
     } else {
+      // Capped and lazy, for the reason `ChangesPanel.fileList` is: an accidental `node_modules` or
+      // vendor drop is thousands of rows, and every one of `summary`, `messageBody` and `excluded` is
+      // `@State` — so a non-lazy `ForEach` rebuilt the whole list on the main thread for each
+      // keystroke. The count in the button label is the honest total either way: the cap limits what
+      // is DRAWN, never what is committed.
+      let shown = Array(files.prefix(Self.renderCap))
       VStack(alignment: .leading, spacing: 6) {
         if !isJJ { selectAllRow }
         ScrollView {
-          VStack(alignment: .leading, spacing: 2) {
-            ForEach(files) { file in
+          LazyVStack(alignment: .leading, spacing: 2) {
+            ForEach(shown) { file in
               CommitFileRow(
                 file: file, showsCheckbox: !isJJ,
                 isIncluded: !excluded.contains(file.path),
@@ -156,6 +187,17 @@ struct CommitSheet: View {
         }
         .frame(maxHeight: 200)
         .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary.opacity(0.4)))
+        if files.count > shown.count {
+          // Never silent: the rows below the cap are still selected and still committed, and saying
+          // so is the difference between a cap and a lie about what is about to be recorded.
+          Text(
+            "Showing the first \(shown.count) of \(files.count). All \(files.count) are included "
+              + "unless you untick them."
+          )
+          .font(.caption).foregroundStyle(.tertiary)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityIdentifier("commit.renderCapNotice")
+        }
         if isJJ {
           Text("jj commits the whole change. Splitting isn’t supported yet.")
             .font(.caption).foregroundStyle(.tertiary)
@@ -213,10 +255,10 @@ struct CommitSheet: View {
       HStack(spacing: 6) {
         Image(
           systemName: allIncluded
-            ? "checkmark.square.fill" : (selectedFiles.isEmpty ? "square" : "minus.square.fill")
+            ? "checkmark.square.fill" : (selectedCount == 0 ? "square" : "minus.square.fill")
         )
         .font(.callout)
-        .foregroundStyle(allIncluded || !selectedFiles.isEmpty ? Color.accentColor : .secondary)
+        .foregroundStyle(allIncluded || selectedCount > 0 ? Color.accentColor : .secondary)
         .frame(width: 14)
         Text(allIncluded ? "Deselect all" : "Select all").font(.caption)
         Spacer(minLength: 0)
@@ -330,32 +372,85 @@ struct CommitSheet: View {
     .help(
       isJJ
         ? "Set this change’s message and stay on it, instead of starting a new change (jj describe)"
-        : "Replace the last commit’s message. Nothing else about that commit changes."
+        : amendTarget.map {
+          "Replace the message of \($0). Nothing else about that commit changes."
+        }
+          ?? "Replace the last commit’s message. Nothing else about that commit changes."
     )
     .accessibilityIdentifier(isJJ ? "commit.describe" : "commit.amend")
   }
 
+  /// Which commit Amend would rewrite, named on screen rather than only in a tooltip.
+  ///
+  /// Amend replaces `HEAD`'s message with whatever is in the summary field — and that field starts
+  /// EMPTY for git and is normally filled with a message written for a NEW commit. So the button one
+  /// position left of the default action silently destroys a message the user cannot see, recoverable
+  /// only through the reflog. Showing the target is the cheapest thing that makes the trade visible
+  /// before the click instead of after it.
+  @ViewBuilder private var amendTargetNotice: some View {
+    if !isJJ, let amendTarget, phase == .editing {
+      Text("“Amend last commit” would replace the message of \(amendTarget)")
+        .font(.caption)
+        .foregroundStyle(.tertiary)
+        .lineLimit(2)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityIdentifier("commit.amendTarget")
+    }
+  }
+
   // MARK: Actions
 
-  /// Prefill from jj's `@` description, once. git has nothing to prefill from.
+  /// Everything the dialog has to read from the repo before it can be honest: jj's existing
+  /// description, git's amend target, and any parked sequencer operation. Once, on appear.
   ///
-  /// Reads the FULL description rather than `JJCommitChanges.description`, which is only its first
-  /// line — prefilling the summary from that and then pressing Set Message Only would silently
+  /// The jj description is read in FULL rather than from `JJCommitChanges.description`, which is only
+  /// its first line — prefilling the summary from that and then describing again would silently
   /// discard the body the user wrote earlier.
   private func prefill() {
     summaryFocused = true
-    guard isJJ, !prefilled else { return }
+    guard !prefilled else { return }
     prefilled = true
     guard let item = store.selectedStatusWorkItem(for: pending.sid) else { return }
-    Task {
-      let result = await StatusCommandRunner().run(
-        "jj", CLIVCSWriter.jjDescriptionArgs(), in: item.path, timeout: 5)
-      guard result.ok else { return }
-      let existing = CommitDraft.split(message: result.stdout)
-      // Never clobber something typed while the read was in flight.
-      if summary.isEmpty && messageBody.isEmpty {
+    // The fixture's paths are not repos, so every read below would fail and the dialog would show
+    // nothing — which is the state these seeds exist to keep testable. Same rationale as
+    // `FixtureVCSWriter`.
+    if UITestFixture.isActive {
+      if isJJ {
+        let existing = CommitDraft.split(message: status?.jjWorkingCopy?.description ?? "")
         summary = existing.summary
         messageBody = existing.body
+      } else {
+        amendTarget = UITestFixture.amendTargetLabel
+      }
+      return
+    }
+    Task {
+      // Off the main actor: both of these touch the filesystem.
+      let parked = await Task.detached {
+        CLIVCSWriter.sequencerState(gitDir: CLIVCSWriter.worktreeGitDir(at: item.path))
+      }.value
+      if !isJJ { sequencer = parked }
+
+      if isJJ {
+        let result = await StatusCommandRunner().run(
+          "jj", CLIVCSWriter.jjDescriptionArgs(), in: item.path, timeout: 5)
+        guard result.ok else { return }
+        let existing = CommitDraft.split(message: result.stdout)
+        // Never clobber something typed while the read was in flight.
+        if summary.isEmpty && messageBody.isEmpty {
+          summary = existing.summary
+          messageBody = existing.body
+          // Kept verbatim so an untouched Describe re-records the message byte for byte — see
+          // `CommitDraft.message(summary:body:preserving:)`.
+          originalMessage = result.stdout
+        }
+      } else {
+        let result = await StatusCommandRunner().run(
+          "git", CLIVCSWriter.gitHeadSubjectArgs(), in: item.path, timeout: 5)
+        guard result.ok else { return }
+        let subject = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        amendTarget = subject.isEmpty ? nil : subject
       }
     }
   }
@@ -389,9 +484,15 @@ struct CommitSheet: View {
 
   private func commit(mode: VCSCommitMode) {
     guard phase != .committing else { return }
+    let message = CommitDraft.message(
+      summary: summary, body: messageBody, preserving: originalMessage)
+    // Describing a change with the message it already has is a no-op jj reports as "Nothing changed."
+    // — a failure notice for having changed nothing, which is not what the user asked about. Closing
+    // is the honest answer: the message is already exactly what they wanted.
+    if mode == .describe, let originalMessage, message == originalMessage { return onDismiss() }
     phase = .committing
     let request = VCSCommitRequest(
-      message: CommitDraft.message(summary: summary, body: messageBody),
+      message: message,
       files: mode == .amendMessage ? [] : selectedFiles, mode: mode)
     store.performCommit(request, on: pending.sid) { result in
       switch result {
