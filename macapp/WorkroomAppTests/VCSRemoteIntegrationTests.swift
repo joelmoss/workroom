@@ -18,14 +18,39 @@ import XCTest
 ///   forever.
 final class VCSRemoteIntegrationTests: XCTestCase {
   private var dirs: [String] = []
+  private var exportedJJConfig = false
 
   override func tearDown() {
     for d in dirs { try? FileManager.default.removeItem(atPath: d) }
     dirs = []
+    if exportedJJConfig {
+      unsetenv("JJ_CONFIG")
+      exportedJJConfig = false
+    }
     super.tearDown()
   }
 
   // MARK: helpers
+
+  /// Point **this process** at a fixture's jj config, so the jj the app spawns reads it too.
+  ///
+  /// `sh` prefixes `JJ_CONFIG=` onto its own command line, which covers fixture setup and nothing else:
+  /// `StatusCommandRunner` seeds a child's environment from `ProcessInfo.processInfo.environment`, and
+  /// jj-lib's config chain (`jj_config.rs`) reads `$JJ_CONFIG` at call time — so without this every
+  /// app-driven jj read and write in this file runs against the DEVELOPER's `~/.config/jj/config.toml`.
+  ///
+  /// That is what made `testAnonymousJJPushCreatesATrackedPushBookmark` pass locally and fail on CI. A
+  /// runner has no jj identity, so the snapshot jj takes as part of `jj git push` rewrote `@` with an
+  /// EMPTY committer and jj then refused its own bookmark: "Won't push commit … since it has no author
+  /// and/or committer set". Pinning the config fixes the identity, and also makes a developer's own
+  /// `templates.git_push_bookmark` (or any other jj customisation) unable to reach these assertions.
+  ///
+  /// Process-wide mutation is safe here: XCTest runs a test process's tests serially — parallel testing
+  /// distributes test *classes* across processes — and `tearDown` clears it either way.
+  private func exportJJConfig(_ path: String) {
+    setenv("JJ_CONFIG", path, 1)
+    exportedJJConfig = true
+  }
 
   private func tool(_ name: String) -> Bool {
     sh("command -v \(name)", in: NSTemporaryDirectory()).exit == 0
@@ -411,6 +436,7 @@ final class VCSRemoteIntegrationTests: XCTestCase {
     let config = root + "/jjconfig.toml"
     try? "[user]\nname=\"T\"\nemail=\"t@e.com\"\n".write(
       toFile: config, atomically: true, encoding: .utf8)
+    exportJJConfig(config)
     sh("git init -q --bare origin.git", in: root)
     let env = "JJ_CONFIG=\(config)"
     guard sh("\(env) jj git init --colocate app", in: root).exit == 0 else { return nil }
@@ -569,6 +595,7 @@ final class VCSRemoteIntegrationTests: XCTestCase {
     let config = root + "/jjconfig.toml"
     try "[user]\nname=\"T\"\nemail=\"t@e.com\"\n".write(
       toFile: config, atomically: true, encoding: .utf8)
+    exportJJConfig(config)
     let env = "JJ_CONFIG=\(config)"
     sh("git init -q --bare origin.git", in: root)
     guard sh("\(env) jj git init --colocate app", in: root).exit == 0 else {
