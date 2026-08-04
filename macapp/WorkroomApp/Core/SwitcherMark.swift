@@ -73,23 +73,43 @@ struct SwitcherMark: Equatable {
     let hueAngle = (anchor + CGFloat(index % hueCount) / CGFloat(hueCount)).truncatingRemainder(
       dividingBy: 1)
     let dark = tokens.colorScheme == .dark
-    let saturation: CGFloat = dark ? 0.55 : 0.62
-    // Step brightness until the tile clears its floor against the card, rather than trusting one
-    // constant: a mid-brightness colour of ANY hue sits near 2:1 against a near-white panel, which is
-    // exactly what measured wrong. Hue and saturation are held fixed, so the tile darkens (or lightens
-    // on a dark theme) without drifting toward grey.
-    var brightness: CGFloat = dark ? 0.72 : 0.62
-    let step: CGFloat = dark ? 0.03 : -0.03
-    var candidate = NSColor(hue: hueAngle, saturation: saturation, brightness: brightness, alpha: 1)
-    var steps = 0
-    while ThemeTokens.contrastRatio(candidate, tokens.nsPanel) < Self.tileContrastFloor,
-      brightness > 0.12, brightness < 0.98, steps < 40
-    {
-      brightness += step
-      steps += 1
-      candidate = NSColor(hue: hueAngle, saturation: saturation, brightness: brightness, alpha: 1)
+    func ratio(_ color: NSColor) -> CGFloat { ThemeTokens.contrastRatio(color, tokens.nsPanel) }
+    // Search brightness first, then give saturation ground — hue is identity and never moves.
+    //
+    // Two things this gets right that a single fixed walk did not, both measured rather than reasoned:
+    //
+    // 1. **Both directions.** The preferred one comes from `colorScheme`, which is derived from the
+    //    theme's *background*, while the tile is measured against its *panel*. On a theme where those sit
+    //    on opposite sides of mid-grey, a one-way walk moved the tile TOWARD the panel and nothing ever
+    //    cleared 3:1.
+    // 2. **Saturation is a fallback axis.** A mid-tone card caps how much contrast a saturated colour can
+    //    reach at all: against this app's grey card (luminance 0.186) the *best* a 0.62-saturated hue can
+    //    do is 2.71:1 at full brightness, because a saturated colour can't get light enough. Desaturating
+    //    buys the luminance that brightness alone cannot — a pale blue clears the floor where a vivid one
+    //    can't — and it stays visibly a hue, which a walk toward the foreground (`legible`) would not.
+    let ladder: [CGFloat] = dark ? [0.55, 0.46, 0.38, 0.34] : [0.62, 0.52, 0.42, 0.34]
+    var best: NSColor?
+    for saturation in ladder {
+      func tile(_ brightness: CGFloat) -> NSColor {
+        NSColor(hue: hueAngle, saturation: saturation, brightness: brightness, alpha: 1)
+      }
+      let start: CGFloat = dark ? 0.72 : 0.62
+      let lighter = Array(stride(from: start, through: 0.98, by: 0.03)).map(tile)
+      let darker = Array(stride(from: start, through: 0.10, by: -0.03)).map(tile)
+      let ordered = dark ? lighter + darker : darker + lighter
+      if let clears = ordered.first(where: { ratio($0) >= Self.tileContrastFloor }) {
+        return clears
+      }
+      if let rung = ordered.max(by: { ratio($0) < ratio($1) }),
+        ratio(rung) > ratio(best ?? rung) || best == nil
+      {
+        best = rung
+      }
     }
-    return candidate
+    // Nothing in the ladder clears the floor against this card — take the best available rather than
+    // whatever the last walk happened to stop on. `SwitcherRailLayout.Palette.needsOpaqueFill` is the
+    // wider guard for a theme this hostile.
+    return best ?? NSColor(hue: hueAngle, saturation: ladder[0], brightness: 0.62, alpha: 1)
   }
 
   /// The tile's contrast floor against the card. 3:1 — the tile is a large solid shape, not text.

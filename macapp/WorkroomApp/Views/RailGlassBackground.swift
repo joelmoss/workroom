@@ -21,23 +21,7 @@ struct RailGlassBackground: NSViewRepresentable {
   var cornerRadius: CGFloat = 20
 
   func makeNSView(context: Context) -> NSView {
-    if #available(macOS 26.0, *) {
-      let glass = NSGlassEffectView()
-      glass.cornerRadius = cornerRadius
-      // `.regular` rather than `.clear`: the rail carries text over arbitrary windows and wallpapers, and
-      // `.clear` leaves too little separation for a 12pt subtitle to survive a busy backdrop.
-      glass.style = .regular
-      return glass
-    }
-    let effect = NSVisualEffectView()
-    effect.material = .hudWindow
-    effect.blendingMode = .behindWindow
-    effect.state = .active  // NOT `.followsWindowActiveState`: this panel is never the key window
-    effect.wantsLayer = true
-    effect.layer?.cornerRadius = cornerRadius
-    effect.layer?.cornerCurve = .continuous
-    effect.layer?.masksToBounds = true
-    return effect
+    material()
   }
 
   func updateNSView(_ view: NSView, context: Context) {
@@ -47,4 +31,27 @@ struct RailGlassBackground: NSViewRepresentable {
     }
     view.layer?.cornerRadius = cornerRadius
   }
+
+  private func material() -> NSView {
+    if #available(macOS 26.0, *) {
+      let glass = NSGlassEffectView()
+      glass.cornerRadius = cornerRadius
+      // `.regular` rather than `.clear`: the rail carries text over arbitrary windows and wallpapers, and
+      // `.clear` leaves too little separation for a 12pt subtitle to survive a busy backdrop.
+      glass.style = .regular
+      glass.autoresizingMask = [.width, .height]
+      return glass
+    }
+    let effect = NSVisualEffectView()
+    effect.material = .hudWindow
+    effect.blendingMode = .behindWindow
+    effect.state = .active  // NOT `.followsWindowActiveState`: this panel is never the key window
+    effect.autoresizingMask = [.width, .height]
+    effect.wantsLayer = true
+    effect.layer?.cornerRadius = cornerRadius
+    effect.layer?.cornerCurve = .continuous
+    effect.layer?.masksToBounds = true
+    return effect
+  }
+
 }

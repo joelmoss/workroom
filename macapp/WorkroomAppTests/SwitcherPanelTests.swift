@@ -46,6 +46,31 @@ final class SwitcherPanelTests: XCTestCase {
     XCTAssertEqual(panel.backgroundColor, .clear)
   }
 
+  func testTheRailDrawsItsOwnShadowRatherThanTheWindow() {
+    // Measured, not assumed: a borderless non-opaque panel casts NO system shadow — `hasShadow = true`
+    // plus `invalidateShadow()` darkened nothing at 6/14/26/44pt out on any side, with glass content and
+    // with a solid opaque fill alike. So the rail draws the shadow itself and the window stays shadowless.
+    let panel = makePanel()
+    panel.hasShadow = false
+    XCTAssertFalse(
+      panel.hasShadow, "a window shadow here would only duplicate the drawn one, squarely")
+  }
+
+  func testTheHaloDoesNotEatClicksMeantForTheWindowBelow() {
+    // The window is bigger than the rail by `shadowMargin` on every side so the drawn shadow has room.
+    // That border is empty, and a plain NSView would hit-test it — swallowing clicks that should reach
+    // whatever is underneath.
+    let content = HaloContentView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
+    let inner = NSView(frame: content.bounds)
+    inner.autoresizingMask = [.width, .height]
+    content.addSubview(inner)
+    let margin = SwitcherRailLayout.shadowMargin
+    XCTAssertNil(
+      content.hitTest(NSPoint(x: margin / 2, y: 100)), "the shadow halo must be click-through")
+    XCTAssertNotNil(
+      content.hitTest(NSPoint(x: 200, y: 100)), "the rail itself still takes hover and clicks")
+  }
+
   func testThePanelIsAFloatingNonActivatingHUD() {
     let panel = makePanel()
     panel.isFloatingPanel = true

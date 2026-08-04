@@ -81,6 +81,27 @@ final class SwitcherRailLayoutTests: XCTestCase {
     XCTAssertEqual(L.cardWidth(count: 0, available: 1100), L.maxCardWidth, "no division by zero")
   }
 
+  // MARK: The shadow halo
+
+  func testTheWindowIsTheSlabPlusAShadowHalo() {
+    let visible = CGRect(x: 0, y: 0, width: 2000, height: 1200)
+    let size = L.panelSize(count: 4, visibleFrame: visible)
+    XCTAssertEqual(
+      size.width, L.panelWidth(count: 4, visibleFrame: visible) + L.shadowMargin * 2,
+      "a drawn shadow is clipped at the window edge, so the window is bigger than the rail")
+    XCTAssertEqual(size.height, L.railHeight + L.shadowMargin * 2)
+  }
+
+  func testOnANarrowScreenTheHaloComesOutOfTheRailNotTheScreenMargin() {
+    // Otherwise the window would overhang `visibleFrame` and `panelOrigin`'s clamp would shove the rail
+    // off centre — the one thing the centring work was for.
+    let narrow = CGRect(x: 0, y: 0, width: 900, height: 700)
+    let size = L.panelSize(count: 40, visibleFrame: narrow)
+    XCTAssertLessThanOrEqual(size.width, narrow.width - L.screenMargin * 2)
+    let origin = L.panelOrigin(size: size, windowFrame: narrow, visibleFrame: narrow)
+    XCTAssertEqual(origin.x + size.width / 2, narrow.midX, accuracy: 0.5, "still centred")
+  }
+
   // MARK: Overflow (D9)
 
   func testFewCardsDoNotScroll() {
@@ -175,20 +196,52 @@ final class SwitcherRailLayoutTests: XCTestCase {
         palette: (0..<8).map { _ in NSColor(srgbRed: 0.52, green: 0.52, blue: 0.55, alpha: 1) }))
   }
 
+  /// A theme with real headroom, at either end. Explicit rather than `ThemeTokens(preview: nil)`: the
+  /// system fallback follows the machine's own appearance preference, so a floor asserted against it
+  /// passes or fails depending on who runs it — which is exactly what happened (the fallback's card moved
+  /// to mid-grey, where even pure white text caps at 4.45:1, and these tests started failing on a
+  /// codebase nobody had touched).
+  private func healthyTokens(dark: Bool) -> ThemeTokens {
+    let ansi: [NSColor] = [
+      NSColor(srgbRed: 0.16, green: 0.16, blue: 0.18, alpha: 1),
+      NSColor(srgbRed: 0.78, green: 0.25, blue: 0.28, alpha: 1),
+      NSColor(srgbRed: 0.25, green: 0.62, blue: 0.35, alpha: 1),
+      NSColor(srgbRed: 0.80, green: 0.64, blue: 0.24, alpha: 1),
+      NSColor(srgbRed: 0.24, green: 0.48, blue: 0.82, alpha: 1),
+      NSColor(srgbRed: 0.60, green: 0.34, blue: 0.75, alpha: 1),
+      NSColor(srgbRed: 0.22, green: 0.62, blue: 0.66, alpha: 1),
+      NSColor(srgbRed: 0.86, green: 0.86, blue: 0.88, alpha: 1),
+    ]
+    return ThemeTokens(
+      preview: ThemePreview(
+        name: dark ? "dark fixture" : "light fixture",
+        background: dark
+          ? NSColor(srgbRed: 0.07, green: 0.07, blue: 0.09, alpha: 1)
+          : NSColor(srgbRed: 0.98, green: 0.98, blue: 0.98, alpha: 1),
+        foreground: dark
+          ? NSColor(srgbRed: 0.94, green: 0.94, blue: 0.95, alpha: 1)
+          : NSColor(srgbRed: 0.11, green: 0.11, blue: 0.13, alpha: 1),
+        palette: ansi))
+  }
+
   func testTextRolesAreLiftedToTheTextFloorWherePossible() {
-    let tokens = ThemeTokens(preview: nil)  // system fallback: a sane, high-contrast baseline
-    let palette = SwitcherRailLayout.palette(for: tokens)
-    let base = tokens.nsPanel
-    XCTAssertGreaterThanOrEqual(
-      ThemeTokens.contrastRatio(palette.nsName, base),
-      SwitcherRailLayout.Palette.textTarget - 0.01, "the 13pt name must clear 4.5:1")
-    XCTAssertGreaterThanOrEqual(
-      ThemeTokens.contrastRatio(palette.nsSubtitle, base),
-      SwitcherRailLayout.Palette.textTarget - 0.01, "the 11pt subtitle too — this is body text")
+    for dark in [true, false] {
+      let tokens = healthyTokens(dark: dark)
+      let palette = SwitcherRailLayout.palette(for: tokens)
+      let base = tokens.nsPanel
+      XCTAssertGreaterThanOrEqual(
+        ThemeTokens.contrastRatio(palette.nsName, base),
+        SwitcherRailLayout.Palette.textTarget - 0.01,
+        "the 13pt name must clear 4.5:1 (dark: \(dark))")
+      XCTAssertGreaterThanOrEqual(
+        ThemeTokens.contrastRatio(palette.nsSubtitle, base),
+        SwitcherRailLayout.Palette.textTarget - 0.01,
+        "the 11pt subtitle too — this is body text (dark: \(dark))")
+    }
   }
 
   func testIndicatorRolesClearTheIndicatorFloor() {
-    let tokens = ThemeTokens(preview: nil)
+    let tokens = healthyTokens(dark: true)
     let palette = SwitcherRailLayout.palette(for: tokens)
     let base = tokens.nsPanel
     for (role, color) in [
@@ -210,8 +263,28 @@ final class SwitcherRailLayoutTests: XCTestCase {
   }
 
   func testAHealthyThemeKeepsItsVibrancy() {
-    XCTAssertFalse(
-      SwitcherRailLayout.palette(for: ThemeTokens(preview: nil)).needsOpaqueFill,
-      "the normal case keeps the frosted material")
+    for dark in [true, false] {
+      XCTAssertFalse(
+        SwitcherRailLayout.palette(for: healthyTokens(dark: dark)).needsOpaqueFill,
+        "the normal case keeps the frosted material (dark: \(dark))")
+    }
+  }
+
+  func testAHairsBreadthMissKeepsTheMaterial() {
+    // Going opaque doesn't raise the ratio — it's measured against `nsPanel` either way — so a theme that
+    // lands at 4.45:1 (99% of the floor) must not lose the whole Liquid Glass surface for it. Measured
+    // case: the system fallback's mid-grey card, which caps white text at exactly that.
+    let grey = ThemeTokens(
+      preview: ThemePreview(
+        name: "mid-grey card",
+        background: NSColor(srgbRed: 0.12, green: 0.12, blue: 0.12, alpha: 1),
+        foreground: NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 1),
+        palette: (0..<8).map { _ in NSColor(srgbRed: 0.55, green: 0.6, blue: 0.75, alpha: 1) }))
+    let palette = SwitcherRailLayout.palette(for: grey)
+    let achieved = ThemeTokens.contrastRatio(palette.nsName, grey.nsPanel)
+    XCTAssertLessThan(
+      achieved, SwitcherRailLayout.Palette.textTarget, "the premise: it misses 4.5:1")
+    XCTAssertGreaterThan(achieved, SwitcherRailLayout.Palette.opaqueFillFloor, "but only just")
+    XCTAssertFalse(palette.needsOpaqueFill, "a 1% shortfall must not cost the material")
   }
 }

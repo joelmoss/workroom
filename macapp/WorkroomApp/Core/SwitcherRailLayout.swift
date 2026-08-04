@@ -54,6 +54,22 @@ enum SwitcherRailLayout {
   /// Clearance kept between the rail and the screen edge.
   static let screenMargin: CGFloat = 24
 
+  /// Empty room kept between the rail and the WINDOW's edge, for the rail's drop shadow to land in.
+  ///
+  /// The shadow is drawn in-content rather than by the window, because a borderless non-opaque panel
+  /// casts no system shadow at all — measured, not assumed: with `hasShadow = true` and
+  /// `invalidateShadow()`, a pixel diff of the same screen with and without the panel found **zero**
+  /// darkening at 6/14/26/44pt out on every side, with glass content *and* with a solid opaque fill. A
+  /// drawn shadow, though, is clipped at the window's edge, so the window has to be this much bigger
+  /// than the rail on all four sides.
+  ///
+  /// Deliberately equal to `screenMargin`: the halo then *is* the screen clearance, so a full-width rail
+  /// plus its shadow lands exactly inside `visibleFrame` and `panelOrigin`'s clamp never has to fire.
+  static let shadowMargin: CGFloat = 24
+
+  /// The rail slab's height — one row of cards plus its inset.
+  static var railHeight: CGFloat { cardHeight + railPadding * 2 }
+
   /// The widest the rail may be on a given screen: capped, and never wider than the usable frame. This
   /// is the space available for cards, NOT the panel's width — see `panelWidth`.
   static func viewportWidth(visibleFrame: CGRect) -> CGFloat {
@@ -71,6 +87,16 @@ enum SwitcherRailLayout {
     let content = contentWidth(
       count: count, cardWidth: cardWidth(count: count, available: viewport))
     return min(content, viewport)
+  }
+
+  /// The **window's** size: the rail slab plus its shadow halo on every side. `panelWidth` is the slab;
+  /// this is the window that carries it. Capped so the halo can never push the slab off the screen —
+  /// on a narrow display the rail gives the halo its points rather than the reverse.
+  static func panelSize(count: Int, visibleFrame: CGRect) -> CGSize {
+    let rail = panelWidth(count: count, visibleFrame: visibleFrame)
+    let cap = max(minCardWidth, visibleFrame.width - screenMargin * 2)
+    return CGSize(
+      width: min(rail + shadowMargin * 2, cap), height: railHeight + shadowMargin * 2)
   }
 
   /// Where to place a `size` panel for a key window on a screen: centred on the **window**, then
@@ -123,6 +149,16 @@ enum SwitcherRailLayout {
 
     static let textTarget: CGFloat = 4.5
     static let indicatorTarget: CGFloat = 3.0
+
+    /// When to abandon the material, which is **lower** than `textTarget` on purpose.
+    ///
+    /// Dropping vibrancy doesn't raise the contrast ratio — it's computed against `nsPanel` either way.
+    /// What it buys is *certainty*: an opaque card makes the measured background the real one instead of
+    /// whatever the glass happened to sample. That's worth having when text is genuinely hard to read,
+    /// and not worth the whole Liquid Glass surface when a theme misses the floor by a hair. Measured
+    /// case: a mid-grey card caps white text at 4.45:1 — 99% of the floor, no perceptible difference —
+    /// and keying the fallback on `textTarget` turned the glass off for it.
+    static let opaqueFillFloor: CGFloat = 4.0
   }
 
   static func palette(for tokens: ThemeTokens) -> Palette {
@@ -143,9 +179,9 @@ enum SwitcherRailLayout {
       nsDot: accent,
       nsDiffAdd: fix(tokens.nsDiffAddFg, Palette.indicatorTarget),
       nsDiffRemove: fix(tokens.nsDiffRemoveFg, Palette.indicatorTarget),
-      // `legible` walks towards the foreground and stops at 100%; if even the pure foreground can't
-      // clear the text floor against this fill, the fill itself is the problem.
-      needsOpaqueFill: ThemeTokens.contrastRatio(name, base) < Palette.textTarget
+      // `legible` walks towards the foreground and stops at 100%; if even the pure foreground can't come
+      // close to the text floor against this fill, the fill itself is the problem.
+      needsOpaqueFill: ThemeTokens.contrastRatio(name, base) < Palette.opaqueFillFloor
     )
   }
 }

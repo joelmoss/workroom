@@ -14,6 +14,20 @@ final class SwitcherPanel: NSPanel {
   override var canBecomeMain: Bool { false }
 }
 
+/// The panel's content view: the rail plus the empty `shadowMargin` halo its drop shadow lands in.
+///
+/// The halo must not eat clicks. The panel is bigger than the rail it shows, and a plain `NSView`
+/// hit-tests its whole bounds — so without this a click in the transparent border would be swallowed by
+/// the rail's window instead of reaching the window underneath.
+final class HaloContentView: NSView {
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    let local = superview.map { convert(point, from: $0) } ?? point
+    let rail = bounds.insetBy(
+      dx: SwitcherRailLayout.shadowMargin, dy: SwitcherRailLayout.shadowMargin)
+    return rail.contains(local) ? super.hitTest(point) : nil
+  }
+}
+
 /// Owns the panel and its hosting view, and hands the rail its data. Pre-creates the panel at launch:
 /// the first `NSHostingView` render costs real milliseconds, and paying that at the 250 ms reveal is
 /// exactly the wrong moment.
@@ -41,6 +55,12 @@ final class SwitcherPanelController {
     // surface behind the rail believes it is occluded and stops rendering.
     panel.isOpaque = false
     panel.backgroundColor = .clear
+    // Stays FALSE, and the rail draws its own shadow instead (`RailGlassBackground.ShadowHost`). Not a
+    // style preference — measured: a borderless non-opaque panel casts no system shadow at all. With
+    // `hasShadow = true` plus `invalidateShadow()`, a pixel diff of the same screen with and without the
+    // panel showed zero darkening at 6/14/26/44pt out on every side, with glass content and with a solid
+    // opaque fill alike. Turning this on would buy nothing except a square shadow around the shadow
+    // halo if it ever started working.
     panel.hasShadow = false
     panel.isReleasedWhenClosed = false
     panel.isExcludedFromWindowsMenu = true
@@ -48,9 +68,11 @@ final class SwitcherPanelController {
     panel.ignoresMouseEvents = false
     panel.setAccessibilityIdentifier("switcher.panel")
 
+    let content = HaloContentView()
     let host = NSHostingView(rootView: SwitcherRailView(model: model))
-    host.translatesAutoresizingMaskIntoConstraints = false
-    panel.contentView = host
+    host.autoresizingMask = [.width, .height]
+    content.addSubview(host)
+    panel.contentView = content
     self.panel = panel
   }
 
@@ -79,15 +101,16 @@ final class SwitcherPanelController {
     let cards = SwitcherCard.cards(for: items)
     let screen = NSApp.keyWindow?.screen ?? NSScreen.main
     let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-    // The cards get the whole viewport to lay out in, but the PANEL is only as wide as they turned out
+    // The window is the rail slab plus its shadow halo; the SLAB is only as wide as the cards turned out
     // to be — otherwise the glass runs on past the last card and a rail of four reads as left-aligned
     // inside a wide slab, even though the slab is perfectly centred.
-    let width = SwitcherRailLayout.viewportWidth(visibleFrame: visible)
-    model.update(cards: cards, cursor: cursor, width: width)
+    let size = SwitcherRailLayout.panelSize(count: cards.count, visibleFrame: visible)
+    // The cards lay out in the slab they actually get, not the viewport they were sized against: on a
+    // narrow display the halo comes out of the slab, and cards measured against the wider viewport would
+    // overflow it.
+    model.update(
+      cards: cards, cursor: cursor, width: size.width - SwitcherRailLayout.shadowMargin * 2)
 
-    let size = NSSize(
-      width: SwitcherRailLayout.panelWidth(count: cards.count, visibleFrame: visible),
-      height: SwitcherRailLayout.cardHeight + SwitcherRailLayout.railPadding * 2)
     let origin = SwitcherRailLayout.panelOrigin(
       size: size, windowFrame: NSApp.keyWindow?.frame ?? visible, visibleFrame: visible)
     panel.setFrame(NSRect(origin: origin, size: size), display: false)
