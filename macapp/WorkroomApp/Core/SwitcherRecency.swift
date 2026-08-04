@@ -13,6 +13,11 @@ import Foundation
 struct WindowToken: Hashable {
   private let raw: UUID
   init() { raw = UUID() }
+
+  /// A string form, for composing view identities. The rail needs it because a workroom's
+  /// `TerminalTarget.id` is project+name with no window in it, so the same workroom open in two windows
+  /// — deliberately two slots — yielded two cards with the *same* SwiftUI id.
+  var key: String { raw.uuidString }
 }
 
 /// A workroom *as opened in one window* — the unit ⌥Tab switches between.
@@ -114,13 +119,31 @@ final class SwitcherRecency {
   /// Test seam: a fresh instance, so a test never mutates the singleton's order.
   init() {}
 
+  /// True while a switcher commit is mid-flight, so the window raise it performs doesn't record a
+  /// "use" of its own. See `suppressingRecord`.
+  private(set) var isSuppressed = false
+
+  /// Run `body` with recording disabled.
+  ///
+  /// Exists for one caller: `QuickSwitcher.commit` raises the destination window *before* writing the
+  /// selection (`persistsSidebarPrefs` requires that order), and the raise makes the window key, which
+  /// fires `WindowRegistry`'s own recency hook for the selection that window is about to leave. That put
+  /// a workroom the user never visited at MRU[1] and broke the ⌥Tab⌥Tab ping-pong the whole feature is
+  /// built on.
+  func suppressingRecord(_ body: () -> Void) {
+    let wasSuppressed = isSuppressed
+    isSuppressed = true
+    defer { isSuppressed = wasSuppressed }
+    body()
+  }
+
   func recordWorkroom(store: AppStore, sid: SidebarID?) {
-    guard let sid else { return }
+    guard !isSuppressed, let sid else { return }
     workrooms.touch(WorkroomSlotID(window: store.windowToken, sid: sid))
   }
 
   func recordPane(_ id: TerminalTab.ID?) {
-    guard let id else { return }
+    guard !isSuppressed, let id else { return }
     panes.touch(id)
   }
 
@@ -128,13 +151,18 @@ final class SwitcherRecency {
     for id in ids { panes.forget(id) }
   }
 
-  /// MRU-order the rail's workroom slots, pruning recency down to what is live while here. A slot
-  /// whose store has gone away has no identity and drops out.
+  /// MRU-order the rail's workroom slots. A slot whose store has gone away has no identity and drops
+  /// out.
+  ///
+  /// It deliberately does **not** prune, which it used to. The slots it is handed are already filtered —
+  /// `QuickSwitcher.workroomSlots` drops every window with a sheet up — so pruning against them wiped
+  /// the MRU rank of any window that merely had a dialog open at the moment ⌥Tab was pressed, and those
+  /// workrooms then sorted last as never-visited once the sheet closed. `ordered` only ever emits ids
+  /// belonging to the items it was given, so nothing needed the prune; the 200-entry cap is the bound.
   func workroomOrder(_ slots: [WorkroomSlot]) -> [WorkroomSlot] {
     let identified = slots.compactMap { slot -> (slot: WorkroomSlot, id: WorkroomSlotID)? in
       slot.id.map { (slot, $0) }
     }
-    workrooms.retain(Set(identified.map(\.id)))
     return workrooms.ordered(identified) { $0.id }.map(\.slot)
   }
 

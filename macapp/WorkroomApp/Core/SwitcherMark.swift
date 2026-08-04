@@ -115,6 +115,18 @@ struct SwitcherMark: Equatable {
   /// The tile's contrast floor against the card. 3:1 — the tile is a large solid shape, not text.
   static let tileContrastFloor: CGFloat = 3.0
 
+  /// The monogram's ink: whichever of black/white actually measures better on this tile.
+  ///
+  /// Deliberately not `ThemeTokens.contrastingForeground`, which switches at luminance 0.6. That is a
+  /// fine rule for the accent fill it was written for and wrong here: a tile at luminance ~0.54 sits
+  /// just under the threshold, so it takes WHITE at 1.77:1 when black would have given 11.8:1 — an
+  /// illegible monogram, measured on a dark-theme fixture. Comparing both ratios has no threshold to
+  /// get wrong.
+  static func ink(on tile: NSColor) -> NSColor {
+    ThemeTokens.contrastRatio(.black, tile) >= ThemeTokens.contrastRatio(.white, tile)
+      ? .black : .white
+  }
+
   /// Rotate hues so that **no two marks on one rail share a colour**.
   ///
   /// A stable per-name hue is right in isolation and not sufficient in practice: with 12 buckets and 4

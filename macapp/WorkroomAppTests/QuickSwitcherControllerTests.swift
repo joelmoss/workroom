@@ -45,6 +45,8 @@ final class QuickSwitcherControllerTests: XCTestCase {
     controller.pointerProvider = { .zero }
     controller.announce = { recorder.announcements.append($0) }
     controller.onReveal = { items, cursor in recorder.reveals.append((items.count, cursor)) }
+    // Both land on `show(items:cursor:)` in production, so they land in one list here too.
+    controller.onItemsChanged = { items, cursor in recorder.reveals.append((items.count, cursor)) }
     controller.onCursorMoved = { recorder.cursorMoves.append($0) }
     controller.onEnd = { recorder.ends += 1 }
     recorder.held = held
@@ -242,6 +244,56 @@ final class QuickSwitcherControllerTests: XCTestCase {
     XCTAssertEqual(recorder.cursorMoves.last, 1, "and ← walks the other way")
   }
 
+  func testArrowsArePassedOnBeforeTheRailIsRevealed() {
+    // The 250 ms pending phase has nothing on screen to steer, so eating an arrow there both swallowed
+    // the keystroke and popped the rail — ⌥Tab followed by ⌥← (word-back in a shell) did exactly that.
+    let store = seededStore()
+    let (controller, _) = makeController()
+    _ = controller.handleTrigger(
+      .workrooms, reverse: false, in: store, registry: registry, recency: recency)
+    XCTAssertTrue(controller.isLive)
+    XCTAssertFalse(controller.isRevealed)
+    XCTAssertFalse(
+      controller.handleArrow(reverse: false, flags: [.option]),
+      "live but not revealed — the arrow belongs to whatever is focused")
+  }
+
+  func testArrowsCarryingExtraModifiersAreNotStolen() {
+    // ⌥⌘←/→ cycles terminal tabs and ⇧⌥⌘←/→ cycles workroom tabs; ⌃⌘arrows moves pane focus. All three
+    // need a modifier the user is *already* holding for the rail, so the branch has to check flags —
+    // its comment claimed it did while the code matched on keyCode alone.
+    let store = seededStore()
+    let (controller, _) = makeController()
+    _ = controller.handleTrigger(
+      .workrooms, reverse: false, in: store, registry: registry, recency: recency)
+    controller.revealTimerFired()
+    XCTAssertFalse(
+      controller.handleArrow(reverse: false, flags: [.option, .command]),
+      "⌥⌘→ belongs to the terminal-tab cycler, not the rail")
+    XCTAssertFalse(controller.handleArrow(reverse: true, flags: [.option, .command, .shift]))
+    XCTAssertTrue(
+      controller.handleArrow(reverse: false, flags: [.option]), "the bare trigger still steers")
+  }
+
+  // MARK: Live-session ownership
+
+  func testAPaneTriggerDoesNotStealAWorkroomSession() {
+    // Release is a 30 ms poll, so a ⌃Tab landing just after ⌥ came up used to step the WORKROOM rail,
+    // consume the key, and then commit a workroom nobody asked for.
+    let store = seededStore()
+    let (controller, recorder) = makeController()
+    _ = controller.handleTrigger(
+      .workrooms, reverse: false, in: store, registry: registry, recency: recency)
+    controller.revealTimerFired()
+    XCTAssertEqual(recorder.reveals.count, 1)
+    _ = controller.handleTrigger(
+      .panes, reverse: false, in: store, registry: registry, recency: recency)
+    XCTAssertEqual(
+      recorder.ends, 1, "the workroom session was cancelled rather than steered by ⌃Tab")
+    XCTAssertEqual(
+      controller.reducer.kind, .panes, "and the new session is the one that was pressed")
+  }
+
   // MARK: Click commit
 
   func testClickCommitsAndTheFollowingReleaseIsSwallowed() {
@@ -273,6 +325,55 @@ final class QuickSwitcherControllerTests: XCTestCase {
     controller.reconcileItems()
     XCTAssertFalse(controller.isLive, "no live candidates left ⇒ end without committing")
     XCTAssertEqual(recorder.ends, 1)
+  }
+
+  func testReconcileKeepsTheCursorOnTheItemItWasTrackingAndRerendersTheRail() {
+    // The bug this pins: `filter` compacts the array, so losing an item BEFORE the cursor shifts every
+    // later item down one. The reducer used to only clamp, so the release committed the highlighted
+    // card's neighbour — and the rail was never re-rendered, so a click indexed a stale card list.
+    let a = makeStore(workrooms: ["fox"])
+    let b = makeStore(workrooms: ["owl", "elk"])
+    attach(a)
+    attach(b)
+    let (controller, recorder) = makeController()
+    _ = controller.handleTrigger(
+      .workrooms, reverse: false, in: b, registry: registry, recency: recency)
+    controller.revealTimerFired()
+    XCTAssertEqual(controller.items.count, 3, "fox + owl + elk")
+    // The rail opens on index 1, and index 0 belongs to the OTHER window — so killing that window is
+    // exactly the case where every later index shifts down one under the cursor.
+    XCTAssertEqual(controller.reducer.cursor, 1)
+    let tracked = controller.items[controller.reducer.cursor]
+    let trackedID: WorkroomSlotID? = {
+      guard case .workroom(let slot) = tracked else { return nil }
+      return slot.id
+    }()
+    a.errorMessage = "a sheet went up in the other window"  // `hasModalPresentation` ⇒ fox is dead
+    let revealsBefore = recorder.reveals.count
+    controller.reconcileItems()
+
+    XCTAssertTrue(controller.isLive, "two candidates remain — the session survives")
+    XCTAssertEqual(controller.items.count, 2)
+    guard case .workroom(let stillAt) = controller.items[controller.reducer.cursor] else {
+      return XCTFail("cursor no longer on a workroom")
+    }
+    XCTAssertEqual(stillAt.id, trackedID, "the cursor followed the ITEM, not its old index")
+    XCTAssertEqual(controller.reducer.cursor, 0, "which is now index 0, one lower than before")
+    XCTAssertGreaterThan(
+      recorder.reveals.count, revealsBefore, "and the rail was re-rendered from the survivors")
+    XCTAssertEqual(recorder.reveals.last?.count, 2)
+  }
+
+  func testReconcileWithNothingDeadLeavesTheRailAlone() {
+    let store = seededStore()
+    let (controller, recorder) = makeController()
+    _ = controller.handleTrigger(
+      .workrooms, reverse: false, in: store, registry: registry, recency: recency)
+    controller.revealTimerFired()
+    let reveals = recorder.reveals.count
+    controller.reconcileItems()
+    XCTAssertEqual(recorder.reveals.count, reveals, "no churn when nothing changed")
+    XCTAssertTrue(controller.isLive)
   }
 
   func testReconcileWhileIdleIsHarmless() {

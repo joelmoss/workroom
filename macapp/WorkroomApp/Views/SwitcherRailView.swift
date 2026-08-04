@@ -19,8 +19,10 @@ struct SwitcherCard: Identifiable, Equatable {
   }
 
   let id: String
-  /// The primary line. Already prefix-stripped by `WorkroomLabel.railTitles` where applicable.
-  let title: String
+  /// The primary line. Workroom titles are finalised by `cards(for:)` through
+  /// `WorkroomLabel.railTitles`, which keeps the `project / workroom` form when the rail spans more than
+  /// one project — otherwise two workrooms both named `main` render identically.
+  var title: String
   /// The stable identity zone of the subtitle — never empty, never churns.
   let stableSubtitle: String
   /// The live tail (a command line, a diffstat). Truncates before `stableSubtitle` does.
@@ -28,6 +30,10 @@ struct SwitcherCard: Identifiable, Equatable {
   var well: Well
   let badge: Int
   let isRunning: Bool
+  /// The mark's tile colour, resolved once when the cards are built. Resolving it in `body` instead ran
+  /// `SwitcherMark.tileColor`'s saturation-ladder × brightness-step search — NSColor allocations and a
+  /// contrast ratio per candidate — on every re-render of every card.
+  var tile: NSColor?
 
   var subtitle: String {
     guard let liveSubtitle, !liveSubtitle.isEmpty else { return stableSubtitle }
@@ -36,10 +42,12 @@ struct SwitcherCard: Identifiable, Equatable {
 }
 
 extension SwitcherCard {
-  /// Build the rail's cards, with mark hues rotated so no two visible marks share a colour.
+  /// Build the rail's cards: hues rotated so no two visible marks share a colour, titles resolved
+  /// against the whole set (D12), and each tile colour computed once, here, rather than per render.
   @MainActor
   static func cards(for items: [QuickSwitcherController.Item]) -> [SwitcherCard] {
     var cards = items.map(SwitcherCard.init(item:))
+    let tokens = ThemeService.shared.tokens
     // Only workroom cards carry marks; pane miniatures are unaffected.
     let markIndices = cards.indices.filter {
       if case .mark = cards[$0].well { true } else { false }
@@ -51,6 +59,19 @@ extension SwitcherCard {
     for (position, index) in zip(SwitcherMark.disambiguate(hues), markIndices) {
       guard case .mark(let mark) = cards[index].well else { continue }
       cards[index].well = .mark(SwitcherMark(monogram: mark.monogram, hue: position))
+      cards[index].tile = SwitcherMark.tileColor(hue: position, tokens: tokens)
+    }
+    // D12: drop the project prefix only when EVERY workroom on the rail shares it. Applied over the
+    // whole set, which is the only place the set is in hand — per-card `.distinguishing` always dropped
+    // it, so two workrooms named `main` in different projects rendered identically.
+    let labels = items.compactMap { item -> WorkroomLabel? in
+      guard case .workroom(let slot) = item else { return nil }
+      return slot.store?.label(for: slot.sid)
+    }
+    if labels.count == markIndices.count {
+      for (title, index) in zip(WorkroomLabel.railTitles(labels), markIndices) {
+        cards[index].title = title
+      }
     }
     return cards
   }
@@ -63,7 +84,11 @@ extension SwitcherCard {
     switch item {
     case .workroom(let slot):
       let label = slot.store?.label(for: slot.sid)
-      id = "wr:\(slot.target.id)"
+      // The window token is part of the id because `TerminalTarget.id` is project+name and carries no
+      // window — and the same workroom open in two windows is deliberately two slots. Without it the
+      // `ForEach` got duplicate ids (undefined rows, a runtime warning, and an ambiguous `scrollTo`).
+      let window = slot.store.map { "\($0.windowToken.key):" } ?? ""
+      id = "wr:\(window)\(slot.target.id)"
       let displayed = label?.distinguishing ?? slot.target.title
       title = displayed
       // The monogram follows the DISPLAYED name so it matches what you read; the colour follows the
@@ -230,6 +255,12 @@ struct SwitcherRailView: View {
           // lands on card 4.
           proxy.scrollTo(model.cards[safe: index]?.id, anchor: .center)
         }
+        // A theme change re-`id`s the row, which resets the ScrollView — and the cursor didn't move, so
+        // the handler above can't put it back. Without this the highlighted card is simply gone from
+        // view on a scrolling rail.
+        .onChange(of: model.themeVersion) { _, _ in
+          proxy.scrollTo(model.cards[safe: model.cursor]?.id, anchor: .center)
+        }
       }
     } else {
       cards
@@ -315,7 +346,7 @@ private struct SwitcherCardView: View {
   private var well: some View {
     ZStack(alignment: .topTrailing) {
       switch card.well {
-      case .mark(let mark): MarkWell(mark: mark)
+      case .mark(let mark): MarkWell(mark: mark, tile: card.tile)
       case .miniature(let miniature): MiniatureWell(miniature: miniature, palette: palette)
       }
       // Badge on the icon's corner, the Dock/⌘Tab idiom — and in a stacked card it costs no width at
@@ -383,18 +414,21 @@ extension Array {
 /// saturation and brightness; the monogram takes whichever of black/white is legible on the result.
 private struct MarkWell: View {
   let mark: SwitcherMark
+  /// Resolved by `SwitcherCard.cards(for:)`, once per reveal. `tileColor` is a search — a saturation
+  /// ladder × brightness steps, each rung allocating an NSColor and measuring a contrast ratio — so
+  /// running it from `body` re-ran it on every render of every card.
+  let tile: NSColor?
   private let theme = ThemeService.shared
 
   var body: some View {
-    let tokens = theme.tokens
-    let tile = SwitcherMark.tileColor(hue: mark.hue, tokens: tokens)
+    let tile = tile ?? SwitcherMark.tileColor(hue: mark.hue, tokens: theme.tokens)
     RoundedRectangle(cornerRadius: 8, style: .continuous)
       .fill(Color(nsColor: tile))
       .frame(width: SwitcherRailLayout.wellSize.width, height: SwitcherRailLayout.wellSize.height)
       .overlay {
         Text(mark.monogram)
           .font(.system(size: 13, weight: .semibold, design: .rounded))
-          .foregroundStyle(Color(nsColor: ThemeTokens.contrastingForeground(for: tile)))
+          .foregroundStyle(Color(nsColor: SwitcherMark.ink(on: tile)))
       }
   }
 }

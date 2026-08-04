@@ -210,32 +210,48 @@ final class QuickSwitcherReducerTests: XCTestCase {
   func testItemsChangedToZeroEndsWithoutCommitting() {
     // RULE: every item went away (the last window closed) — end, don't commit into nothing.
     var r = revealed(count: 5)
-    XCTAssertEqual(r.handle(.itemsChanged(count: 0)), .end(commit: nil))
+    XCTAssertEqual(r.handle(.itemsChanged(count: 0, cursor: 0)), .end(commit: nil))
     XCTAssertEqual(r.phase, .idle)
   }
 
-  func testItemsChangedClampsTheCursor() {
+  func testItemsChangedTakesTheCallersRemappedCursor() {
+    // The caller recomputes the cursor from the ITEM it was tracking, because `filter` shifts every
+    // later index down one. Clamping alone silently moved the selection to a neighbour, and the release
+    // then committed that neighbour — the rail highlighting one card and landing on the next.
+    var r = revealed(count: 4)
+    _ = r.handle(.step(reverse: false))
+    _ = r.handle(.step(reverse: false))
+    XCTAssertEqual(r.cursor, 3)
+    XCTAssertEqual(
+      r.handle(.itemsChanged(count: 3, cursor: 2)), .moveCursor(2),
+      "the item that was at 3 is now at 2 — follow it, don't just clamp")
+    XCTAssertEqual(r.count, 3)
+    XCTAssertEqual(r.phase, .revealed, "the session survives — only the cursor moved")
+  }
+
+  func testItemsChangedClampsAnOutOfRangeCursor() {
     var r = revealed(count: 5)
     _ = r.handle(.step(reverse: false))
     _ = r.handle(.step(reverse: false))
     XCTAssertEqual(r.cursor, 3)
     XCTAssertEqual(
-      r.handle(.itemsChanged(count: 2)), .moveCursor(1),
-      "clamped to the new last index, not dangling")
-    XCTAssertEqual(r.count, 2)
-    XCTAssertEqual(r.phase, .revealed, "the session survives — only the cursor moved")
+      r.handle(.itemsChanged(count: 2, cursor: 9)), .moveCursor(1),
+      "a cursor past the new end lands on the last item, never dangling")
+    XCTAssertEqual(
+      r.handle(.itemsChanged(count: 2, cursor: -3)), .moveCursor(0), "and never negative")
   }
 
-  func testItemsChangedWithNoClampNeededEmitsNothing() {
+  func testItemsChangedWithNoMoveNeededEmitsNothing() {
     var r = revealed(count: 5)
-    XCTAssertEqual(r.handle(.itemsChanged(count: 4)), .none, "cursor 1 still valid — no scroll")
+    XCTAssertEqual(
+      r.handle(.itemsChanged(count: 4, cursor: 1)), .none, "cursor 1 still valid — no scroll")
     XCTAssertEqual(r.count, 4)
   }
 
   func testItemsChangedWhilePendingClampsSilently() {
     var r = opened(count: 5)  // cursor 1, no panel on screen yet
     XCTAssertEqual(
-      r.handle(.itemsChanged(count: 1)), .none,
+      r.handle(.itemsChanged(count: 1, cursor: 0)), .none,
       "clamped with no panel on screen, so there is nothing to scroll")
     XCTAssertEqual(r.cursor, 0)
     XCTAssertEqual(r.phase, .pending, "the session survives a shrink to one item")
@@ -243,7 +259,7 @@ final class QuickSwitcherReducerTests: XCTestCase {
 
   func testItemsChangedWhileIdleIsANoOp() {
     var r = QuickSwitcherReducer()
-    XCTAssertEqual(r.handle(.itemsChanged(count: 3)), .none)
+    XCTAssertEqual(r.handle(.itemsChanged(count: 3, cursor: 0)), .none)
   }
 
   // MARK: Reuse + constants

@@ -104,10 +104,21 @@ enum QuickSwitcher {
     _ kind: QuickSwitcherKind, reverse: Bool, in store: AppStore,
     registry: WindowRegistry = .shared, recency: SwitcherRecency = .shared
   ) -> Bool {
+    stepDescribing(kind, reverse: reverse, in: store, registry: registry, recency: recency).switched
+  }
+
+  /// `step`, plus what to say out loud. The VoiceOver path (D16) has no rail, so the announcement is
+  /// the whole interface — and it has to name the **destination**, which for a cross-window switch is
+  /// not something the origin store can be asked for: its own selection never moves, so reading it back
+  /// announced the workroom the user just left.
+  static func stepDescribing(
+    _ kind: QuickSwitcherKind, reverse: Bool, in store: AppStore,
+    registry: WindowRegistry = .shared, recency: SwitcherRecency = .shared
+  ) -> (switched: Bool, spoken: String?) {
     switch kind {
     case .workrooms:
-      stepWorkrooms(reverse: reverse, in: store, registry: registry, recency: recency)
-    case .panes: stepPanes(reverse: reverse, in: store, recency: recency)
+      return stepWorkrooms(reverse: reverse, in: store, registry: registry, recency: recency)
+    case .panes: return stepPanes(reverse: reverse, in: store, recency: recency)
     }
   }
 
@@ -131,14 +142,16 @@ enum QuickSwitcher {
 
   private static func stepWorkrooms(
     reverse: Bool, in store: AppStore, registry: WindowRegistry, recency: SwitcherRecency
-  ) -> Bool {
+  ) -> (switched: Bool, spoken: String?) {
     let slots = workroomSlots(registry: registry, recency: recency)
-    guard slots.count > 1 else { return false }
+    guard slots.count > 1 else { return (false, nil) }
     let current = store.selectedTargetID.flatMap { sid in
       slots.firstIndex { $0.store === store && $0.sid == sid }
     }
     let next = destination(from: current, count: slots.count, reverse: reverse)
-    return commit(slots[next], from: store)
+    let slot = slots[next]
+    guard commit(slot, from: store) else { return (false, nil) }
+    return (true, slot.store?.label(for: slot.sid).full ?? slot.target.title)
   }
 
   /// Switch to one workroom slot. Shared by the tap-only path above and the held-modifier session's
@@ -148,10 +161,22 @@ enum QuickSwitcher {
     guard let target = slot.store, target !== store || slot.sid != store.selectedTargetID else {
       return false  // already here: no raise, no selection write, no history entry
     }
+    // Re-checked HERE, not just when the session opened. A sheet going up posts no notification the
+    // session watches, so a window that was clean at open can be modal by the time the modifier is
+    // released — and this is the write the monitor's `.swallow` gate exists to prevent: a raise plus a
+    // selection change underneath a dialog that is already acting on a different workroom.
+    guard !target.hasModalPresentation else { return false }
     if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
     // Raise first, then select: `AppStore.persistsSidebarPrefs` keys on being `lastActiveStore`, so
     // the registry's didBecomeKey observer must have run before the selection write.
-    target.hostWindow?.makeKeyAndOrderFront(nil)
+    //
+    // That raise makes the destination window key, which fires the registry's own recency hook and
+    // would record the selection the window is *about to leave* — putting a workroom the user never
+    // visited at MRU[1] and breaking the ⌥Tab⌥Tab ping-pong. Suppressed across the raise; the
+    // `openExisting` below records the real destination.
+    SwitcherRecency.shared.suppressingRecord {
+      target.hostWindow?.makeKeyAndOrderFront(nil)
+    }
     target.openExisting(slot.sid)
     return true
   }
@@ -166,20 +191,27 @@ enum QuickSwitcher {
 
   private static func stepPanes(
     reverse: Bool, in store: AppStore, recency: SwitcherRecency
-  ) -> Bool {
-    guard let target = store.selectedTarget, !target.isMissing else { return false }
+  ) -> (switched: Bool, spoken: String?) {
+    guard let target = store.selectedTarget, !target.isMissing else { return (false, nil) }
     let tabs = paneTabs(in: store, recency: recency)
-    guard tabs.count > 1 else { return false }
+    guard tabs.count > 1 else { return (false, nil) }
     let activeID = store.terminals.activeTab(for: target)?.id
     let current = activeID.flatMap { id in tabs.firstIndex { $0.id == id } }
     let next = destination(from: current, count: tabs.count, reverse: reverse)
-    return commit(pane: tabs[next].id, in: store)
+    let tab = tabs[next]
+    guard commit(pane: tab.id, in: store, target: target) else { return (false, nil) }
+    return (true, tab.title)
   }
 
-  /// Switch to one pane by id. Shared with the held-modifier session's release commit (T10).
+  /// Switch to one pane by id, within `target`. Shared with the held-modifier session's release commit
+  /// (T10), which passes the workroom it froze at open rather than whatever is selected now — a
+  /// mid-gesture selection change would otherwise write the pane into the wrong workroom.
   @discardableResult
-  static func commit(pane id: TerminalTab.ID, in store: AppStore) -> Bool {
-    guard let target = store.selectedTarget, !target.isMissing else { return false }
+  static func commit(
+    pane id: TerminalTab.ID, in store: AppStore, target: TerminalTarget? = nil
+  ) -> Bool {
+    guard let target = target ?? store.selectedTarget, !target.isMissing else { return false }
+    guard !store.hasModalPresentation else { return false }
     guard store.terminals.activeTab(for: target)?.id != id else { return false }
     guard store.terminals.tabs(for: target).contains(where: { $0.id == id }) else { return false }
     // `select`, not `focus`: it also promotes the owning workroom in a split and takes keyboard focus.

@@ -61,8 +61,11 @@ struct QuickSwitcherReducer: Equatable {
     case commit(index: Int?)
     case modifierReleased
     case cancel(Cancel)
-    /// The item list changed under us (a window closed, a pane died).
-    case itemsChanged(count: Int)
+    /// The item list changed under us (a window closed, a pane died). `cursor` is where the caller
+    /// wants the cursor now — it must be recomputed from the *item* the cursor was tracking, because
+    /// removing an earlier item shifts every later index down by one. Clamping alone silently moves the
+    /// selection to a neighbour, which the release then commits.
+    case itemsChanged(count: Int, cursor: Int)
   }
 
   enum Effect: Equatable {
@@ -160,14 +163,14 @@ struct QuickSwitcherReducer: Equatable {
       end()
       return .end(commit: nil)
 
-    case .itemsChanged(let newCount):
+    case .itemsChanged(let newCount, let newCursor):
       guard phase != .idle else { return .none }
       guard newCount > 0 else {
         end()
         return .end(commit: nil)
       }
       count = newCount
-      let clamped = min(cursor, newCount - 1)
+      let clamped = min(max(newCursor, 0), newCount - 1)
       guard clamped != cursor else { return .none }
       cursor = clamped
       return phase == .revealed ? .moveCursor(cursor) : .none

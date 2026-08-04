@@ -55,7 +55,7 @@ final class SwitcherPanelController {
     // surface behind the rail believes it is occluded and stops rendering.
     panel.isOpaque = false
     panel.backgroundColor = .clear
-    // Stays FALSE, and the rail draws its own shadow instead (`RailGlassBackground.ShadowHost`). Not a
+    // Stays FALSE, and the rail draws its own shadow instead (`SwitcherRailView.shadowCaster`). Not a
     // style preference — measured: a borderless non-opaque panel casts no system shadow at all. With
     // `hasShadow = true` plus `invalidateShadow()`, a pixel diff of the same screen with and without the
     // panel showed zero darkening at 6/14/26/44pt out on every side, with glass content and with a solid
@@ -80,6 +80,13 @@ final class SwitcherPanelController {
   /// Called once at launch.
   func attach(to controller: QuickSwitcherController) {
     controller.onReveal = { [weak self] items, cursor in self?.show(items: items, cursor: cursor) }
+    // Re-render from the surviving items when something dies mid-session. `show` is idempotent — it
+    // re-sizes and re-centres the panel for the new count — and without this the cards on screen keep
+    // showing a workroom that is gone while the controller's array has already moved on, so a click or
+    // a release lands on the wrong one.
+    controller.onItemsChanged = { [weak self] items, cursor in
+      self?.show(items: items, cursor: cursor)
+    }
     controller.onCursorMoved = { [weak self] index in self?.model.cursor = index }
     controller.onEnd = { [weak self] in self?.hide() }
     // Hover goes through the controller, not straight to the model: the D17 movement threshold lives

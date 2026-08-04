@@ -283,14 +283,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       // the app owns it depends on runtime state (a workroom with one pane has nothing to switch to,
       // so ⌃Tab must still reach a TUI). Both trigger modifiers are preferences — a global hotkey
       // grabber like AltTab beats this monitor and can't be detected.
-      if let hit = QuickSwitcherKey.classify(keyCode: event.keyCode, flags: flags) {
-        // Autorepeat would spin the switcher (~15 steps/sec); macOS's own ⌘Tab ignores repeats too.
-        if event.isARepeat { return nil }
+      if QuickSwitcherKey.classify(keyCode: event.keyCode, flags: flags) != nil {
         return MainActor.assumeIsolated {
           switch Self.switcherGate(for: window) {
           case .passThrough: return event
           case .swallow: return nil
           case .act(let store):
+            // Autorepeat would spin the switcher (~15 steps/sec); macOS's own ⌘Tab ignores repeats too.
+            // Tested INSIDE `.act`, not above the gate: above it, a held ⌃Tab in the quick terminal or
+            // in a single-pane workroom — the cases deliberately handed to the TUI — passed its first
+            // keystroke through and had every repeat after it silently eaten.
+            if event.isARepeat { return nil }
+            guard let hit = QuickSwitcherKey.classify(keyCode: event.keyCode, flags: flags) else {
+              return event
+            }
             // Consumed only when it switched, so ⌃Tab still reaches a TUI in a single-pane workroom —
             // the same rule as the ⌥⌘digit / ⌥⌘arrow branches below.
             return QuickSwitcherController.shared.handleTrigger(
@@ -300,9 +306,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       }
       // Escape and ←/→ while a switcher session is live (issue #132). Ahead of every other branch that
       // could claim them, because a live session owns the keyboard until it ends — and behind the Tab
-      // branch above, which is what starts one. Plain arrows only: ⌥⌘arrows (the tab cyclers) still
-      // carry ⌘, so a held-⌥ rail and those shortcuts can't collide.
-      if MainActor.assumeIsolated({ QuickSwitcherController.shared.isLive }) {
+      // branch above, which is what starts one.
+      //
+      // Gated on the window like the Tab branch, and on the modifiers: without the window gate, Escape
+      // pressed in the quick terminal or in Settings was swallowed to cancel the rail instead of
+      // dismissing what was actually in front of the user. `handleArrow` enforces the rest — revealed
+      // only, and no modifier beyond the trigger, so a live session can't steal ⌥⌘←/→ or ⇧⌥⌘←/→.
+      if MainActor.assumeIsolated({ QuickSwitcherController.shared.isLive }),
+        MainActor.assumeIsolated({
+          if case .passThrough = Self.switcherGate(for: window) { false } else { true }
+        })
+      {
         if event.keyCode == 53 {  // Escape
           return MainActor.assumeIsolated { QuickSwitcherController.shared.handleEscape() }
             ? nil : event
@@ -310,7 +324,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if event.keyCode == 123 || event.keyCode == 124 {  // ← / →
           let reverse = event.keyCode == 123
           return MainActor.assumeIsolated {
-            QuickSwitcherController.shared.handleArrow(reverse: reverse)
+            QuickSwitcherController.shared.handleArrow(reverse: reverse, flags: flags)
           } ? nil : event
         }
       }

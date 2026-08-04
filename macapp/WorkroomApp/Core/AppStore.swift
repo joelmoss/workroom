@@ -1152,13 +1152,6 @@ final class AppStore: ObservableObject {
     return true
   }
 
-  /// Switch to the next (`forward`) or previous workroom tab, wrapping at the ends — bound to
-  /// ⇧⌥⌘→ / ⇧⌥⌘← (issue #29), the workroom-level counterpart to ⌥⌘arrows' terminal-tab cycle. When
-  /// the current selection isn't in the bar (e.g. a root with no terminals), enters at the rightmost
-  /// tab (forward, →) or the leftmost (back, ←) — spatially matching the arrow, like the on-tab step.
-  /// Returns whether it switched, so the AppDelegate monitor
-  /// consumes the key in the monitor only when there's a tab to move to (it's a no-op otherwise —
-  /// the key is reserved in `isAppShortcut` either way, so it never reaches the terminal).
   /// Step `index` by `delta` around a list of `count` items, wrapping at both ends. The one wrap rule
   /// for every cycling shortcut — the workroom bar (⇧⌥⌘←/→), the terminal strip (⌥⌘←/→) and the quick
   /// switcher's MRU step (issue #132) all read it, so an off-by-one can only ever exist in one place.
@@ -1168,6 +1161,13 @@ final class AppStore: ObservableObject {
     return ((index + delta) % count + count) % count
   }
 
+  /// Switch to the next (`forward`) or previous workroom tab, wrapping at the ends — bound to
+  /// ⇧⌥⌘→ / ⇧⌥⌘← (issue #29), the workroom-level counterpart to ⌥⌘arrows' terminal-tab cycle. When
+  /// the current selection isn't in the bar (e.g. a root with no terminals), enters at the rightmost
+  /// tab (forward, →) or the leftmost (back, ←) — spatially matching the arrow, like the on-tab step.
+  /// Returns whether it switched, so the AppDelegate monitor
+  /// consumes the key in the monitor only when there's a tab to move to (it's a no-op otherwise —
+  /// the key is reserved in `isAppShortcut` either way, so it never reaches the terminal).
   @discardableResult
   func cycleWorkroomTab(forward: Bool) -> Bool {
     // Step the on-screen order (`displayedWorkroomTargets`, == ordered with no split): a split pulls its

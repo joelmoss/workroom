@@ -138,22 +138,54 @@ final class SwitcherMarkTests: XCTestCase {
 
   // MARK: Mark palette
 
+  /// Themes with real headroom, one at each end. Explicit rather than `ThemeTokens(preview: nil)`: the
+  /// system fallback follows the machine's own appearance preference, so a floor asserted against it
+  /// passes or fails depending on who runs it — which happened on this very branch, when the fallback's
+  /// card moved to mid-grey and the sibling layout tests began failing on untouched code.
+  private func fixtureTokens(dark: Bool) -> ThemeTokens {
+    let ansi: [NSColor] = [
+      NSColor(srgbRed: 0.16, green: 0.16, blue: 0.18, alpha: 1),
+      NSColor(srgbRed: 0.78, green: 0.25, blue: 0.28, alpha: 1),
+      NSColor(srgbRed: 0.25, green: 0.62, blue: 0.35, alpha: 1),
+      NSColor(srgbRed: 0.80, green: 0.64, blue: 0.24, alpha: 1),
+      NSColor(srgbRed: 0.24, green: 0.48, blue: 0.82, alpha: 1),
+      NSColor(srgbRed: 0.60, green: 0.34, blue: 0.75, alpha: 1),
+      NSColor(srgbRed: 0.22, green: 0.62, blue: 0.66, alpha: 1),
+      NSColor(srgbRed: 0.86, green: 0.86, blue: 0.88, alpha: 1),
+    ]
+    return ThemeTokens(
+      preview: ThemePreview(
+        name: dark ? "dark fixture" : "light fixture",
+        background: dark
+          ? NSColor(srgbRed: 0.07, green: 0.07, blue: 0.09, alpha: 1)
+          : NSColor(srgbRed: 0.98, green: 0.98, blue: 0.98, alpha: 1),
+        foreground: dark
+          ? NSColor(srgbRed: 0.94, green: 0.94, blue: 0.95, alpha: 1)
+          : NSColor(srgbRed: 0.11, green: 0.11, blue: 0.13, alpha: 1),
+        palette: ansi))
+  }
+
   func testTileColoursAreDistinctAndClearTheContrastFloor() {
     // The other half of the live bug: `legible` walks a colour TOWARD THE FOREGROUND, so on a light
     // theme every insufficiently-contrasty palette entry became near-black and all six tiles collapsed
     // into identical charcoal. `tileColor` keeps only the hue angle and imposes its own S/B instead.
-    let tokens = ThemeTokens(preview: nil)
-    var seen: Set<String> = []
-    for hue in 0..<SwitcherMark.hueCount {
-      let tile = SwitcherMark.tileColor(hue: hue, tokens: tokens)
-      let srgb = tile.usingColorSpace(.sRGB)!
-      seen.insert(String(format: "%.3f-%.3f", srgb.hueComponent, srgb.brightnessComponent))
-      XCTAssertGreaterThanOrEqual(
-        ThemeTokens.contrastRatio(tile, tokens.nsPanel), 3.0 - 0.01, "hue \(hue) vs the card")
-      XCTAssertGreaterThan(
-        srgb.saturationComponent, 0.3, "hue \(hue) must stay a colour, not a grey")
+    for dark in [true, false] {
+      let tokens = fixtureTokens(dark: dark)
+      var seen: Set<String> = []
+      for hue in 0..<SwitcherMark.hueCount {
+        let tile = SwitcherMark.tileColor(hue: hue, tokens: tokens)
+        let srgb = tile.usingColorSpace(.sRGB)!
+        seen.insert(String(format: "%.3f-%.3f", srgb.hueComponent, srgb.brightnessComponent))
+        XCTAssertGreaterThanOrEqual(
+          ThemeTokens.contrastRatio(tile, tokens.nsPanel), 3.0 - 0.01,
+          "hue \(hue) vs the card (dark: \(dark))")
+        XCTAssertGreaterThan(
+          srgb.saturationComponent, 0.3, "hue \(hue) must stay a colour, not a grey (dark: \(dark))"
+        )
+      }
+      XCTAssertEqual(
+        seen.count, SwitcherMark.hueCount, "every hue must be visually distinct (dark: \(dark))")
     }
-    XCTAssertEqual(seen.count, SwitcherMark.hueCount, "every hue must be visually distinct")
   }
 
   func testEveryMarkTileCanCarryALegibleMonogram() {
@@ -164,14 +196,18 @@ final class SwitcherMarkTests: XCTestCase {
     // MID-TONE hue (measured 3.15–4.2:1 here) cannot carry either black or white at 4.5:1 — no ink
     // choice exists. 17pt semibold is WCAG "large text" (well past the 14pt-bold / 18.66px threshold),
     // for which 3:1 is the conforming ratio. Body text on the card keeps its 4.5:1 floor.
-    let tokens = ThemeTokens(preview: nil)
-    for hue in 0..<SwitcherMark.hueCount {
-      let tile = SwitcherMark.tileColor(hue: hue, tokens: tokens)
-      XCTAssertGreaterThanOrEqual(
-        ThemeTokens.contrastRatio(tile, tokens.nsPanel), 3.0 - 0.01, "tile vs card")
-      let ink = ThemeTokens.contrastingForeground(for: tile)
-      XCTAssertGreaterThanOrEqual(
-        ThemeTokens.contrastRatio(ink, tile), 3.0 - 0.01, "monogram vs tile (large-text floor)")
+    for dark in [true, false] {
+      let tokens = fixtureTokens(dark: dark)
+      for hue in 0..<SwitcherMark.hueCount {
+        let tile = SwitcherMark.tileColor(hue: hue, tokens: tokens)
+        XCTAssertGreaterThanOrEqual(
+          ThemeTokens.contrastRatio(tile, tokens.nsPanel), 3.0 - 0.01,
+          "tile vs card (dark: \(dark))")
+        let ink = SwitcherMark.ink(on: tile)
+        XCTAssertGreaterThanOrEqual(
+          ThemeTokens.contrastRatio(ink, tile), 3.0 - 0.01,
+          "monogram vs tile, large-text floor (dark: \(dark))")
+      }
     }
   }
 

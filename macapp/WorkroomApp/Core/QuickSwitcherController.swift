@@ -56,6 +56,10 @@ final class QuickSwitcherController {
   // MARK: Rail seam (T11)
 
   var onReveal: (([Item], Int) -> Void)?
+  /// The item list changed mid-session and the rail must be re-rendered from it. Separate from
+  /// `onCursorMoved`, which moves the highlight only: the rail is handed a frozen array at reveal, so
+  /// without this the cards on screen and the array a commit indexes into drift apart.
+  var onItemsChanged: (([Item], Int) -> Void)?
   var onCursorMoved: ((Int) -> Void)?
   var onEnd: (() -> Void)?
 
@@ -65,6 +69,10 @@ final class QuickSwitcherController {
   private(set) var items: [Item] = []
   /// The window the gesture started in — the commit's "am I already here" reference.
   private weak var originStore: AppStore?
+  /// For a `.panes` session, the workroom whose panes are on the rail, frozen at open. Resolving it
+  /// live off `originStore.selectedTarget` instead let a sidebar click (or a project reload) mid-gesture
+  /// either kill every item or, worse, commit a pane into whatever workroom is selected *now*.
+  private var paneTargetID: SidebarID?
   /// The modifier that must stay held. Released ⇒ commit.
   private var triggerFlags: NSEvent.ModifierFlags = []
   private var observers: [NSObjectProtocol] = []
@@ -80,6 +88,11 @@ final class QuickSwitcherController {
   /// How far the pointer must actually travel before hover may steer the cursor (D17).
   static let hoverArmDistance: CGFloat = 4
 
+  /// How often the trigger modifier is sampled. Named alongside the reducer's `revealDelay` and
+  /// `sessionCeiling` rather than left inline: it is the gesture's release latency, so it belongs with
+  /// the other two numbers that define how the hold feels.
+  static let pollInterval: TimeInterval = 0.03
+
   // MARK: Entry
 
   /// The key monitor's entry point. Returns whether the event was consumed.
@@ -93,15 +106,29 @@ final class QuickSwitcherController {
     // queue announcements that land *after* the commit. So this degrades to the stage-1 tap flip, which
     // is a complete interaction on its own, and says where it landed.
     if voiceOverEnabled() {
-      let switched = QuickSwitcher.step(
+      // VoiceOver can come on *mid-session* (or the rail can already be up when it does). Without this
+      // the live session keeps its timers and its rail, the tap below commits immediately, and the
+      // modifier release then commits a SECOND time off the frozen list.
+      if isLive { cancel(.escape) }
+      let outcome = QuickSwitcher.stepDescribing(
         kind, reverse: reverse, in: store, registry: registry, recency: recency)
-      if switched, let spoken = Self.announcement(for: kind, in: store) { announce(spoken) }
-      return switched
+      // Spoken from what the commit actually wrote, not from the origin store: a cross-window switch
+      // leaves the origin's own selection untouched, so reading it back announced the workroom the user
+      // just left — on the one path where the announcement *is* the entire UI.
+      if let spoken = outcome.spoken { announce(spoken) }
+      return outcome.switched
     }
 
     if isLive {
-      apply(reducer.handle(.step(reverse: reverse)))
-      return true
+      // A live session owns only its own kind and its own window. Dropping both (as this did) meant a
+      // ⌃Tab landing inside the 30 ms poll window after ⌥ came up would step the *workroom* rail, eat
+      // the key so the pane switch never happened, and then commit a workroom nobody asked for. Start
+      // over instead: cancel and re-open for what was actually pressed.
+      if kind == reducer.kind, store === originStore {
+        apply(reducer.handle(.step(reverse: reverse)))
+        return true
+      }
+      cancel(.escape)
     }
 
     let frozen = Self.collect(kind, in: store, registry: registry, recency: recency)
@@ -110,6 +137,7 @@ final class QuickSwitcherController {
     guard effect != .none else { return false }
     items = frozen
     originStore = store
+    paneTargetID = kind == .panes ? store.selectedTargetID : nil
     triggerFlags =
       (kind == .workrooms
       ? Defaults[.switcherWorkroomModifier] : Defaults[.switcherPaneModifier]).flags
@@ -130,10 +158,17 @@ final class QuickSwitcherController {
     return true
   }
 
-  /// ←/→ while the rail is up. Returns whether it was consumed.
+  /// ←/→ while the rail is **up**, carrying nothing but the trigger modifier. Returns whether it was
+  /// consumed.
+  ///
+  /// Both guards are load-bearing, and the branch that calls this used to have neither. `isRevealed`
+  /// rather than `isLive`: during the 250 ms pending phase there is nothing on screen to steer, so
+  /// eating an arrow there both swallowed the keystroke and popped the rail. And extra modifiers must
+  /// disqualify it, or a live session steals ⌥⌘←/→ (terminal tabs), ⇧⌥⌘←/→ (workroom tabs) and
+  /// ⌃⌘arrows (pane focus) — every one of which the user is already holding the trigger for.
   @discardableResult
-  func handleArrow(reverse: Bool) -> Bool {
-    guard isLive else { return false }
+  func handleArrow(reverse: Bool, flags: NSEvent.ModifierFlags = []) -> Bool {
+    guard isRevealed, flags.subtracting(triggerFlags).isEmpty else { return false }
     apply(reducer.handle(.step(reverse: reverse)))
     return true
   }
@@ -180,12 +215,32 @@ final class QuickSwitcherController {
     apply(reducer.handle(.modifierReleased))
   }
 
-  /// A window closed (or its workroom went away): drop dead candidates and tell the reducer the new
-  /// count, which clamps the cursor or ends the session.
+  /// A window closed, a pane died, or a sheet went up: drop dead candidates, keep the cursor on the
+  /// **item** it was tracking, and re-render the rail from the surviving list.
+  ///
+  /// Every part of that matters. `filter` compacts the array, so removing anything before the cursor
+  /// shifts every later item down one — remapping by identity is what stops the release committing the
+  /// card's neighbour. And the rail was handed a frozen array at reveal, so it has to be re-pushed or
+  /// the cards on screen no longer line up with the array a click indexes into (a visible card then
+  /// either switches to the wrong place or silently does nothing).
   func reconcileItems() {
     guard isLive else { return }
-    items = items.filter(isAlive)
-    apply(reducer.handle(.itemsChanged(count: items.count)))
+    let tracked = items.indices.contains(reducer.cursor) ? items[reducer.cursor] : nil
+    let survivors = items.filter(isAlive)
+    guard survivors.count != items.count else { return }  // nothing died; leave the rail alone
+    items = survivors
+    let remapped = tracked.flatMap { item in items.firstIndex { Self.sameItem($0, item) } }
+    apply(reducer.handle(.itemsChanged(count: items.count, cursor: remapped ?? reducer.cursor)))
+    if reducer.isRevealed { onItemsChanged?(items, reducer.cursor) }
+  }
+
+  /// Identity, not index — the two things `reconcileItems` has to line up.
+  private static func sameItem(_ lhs: Item, _ rhs: Item) -> Bool {
+    switch (lhs, rhs) {
+    case (.workroom(let a), .workroom(let b)): a.id == b.id && a.id != nil
+    case (.pane(let a), .pane(let b)): a.id == b.id
+    default: false
+    }
   }
 
   // MARK: Effects
@@ -206,15 +261,18 @@ final class QuickSwitcherController {
     case .end(let commit):
       let chosen = commit.flatMap { items.indices.contains($0) ? items[$0] : nil }
       let store = originStore
+      let target = store.flatMap(frozenPaneTarget(in:))
       teardown()
       onEnd?()
-      if let chosen, let store { Self.perform(chosen, from: store) }
+      // `target` was read before `teardown()` cleared it.
+      if let chosen, let store { Self.perform(chosen, from: store, target: target) }
     }
   }
 
   private func teardown() {
     items = []
     originStore = nil
+    paneTargetID = nil
     triggerFlags = []
     pointerAtReveal = nil
     for observer in observers { NotificationCenter.default.removeObserver(observer) }
@@ -255,7 +313,7 @@ final class QuickSwitcherController {
     ) { [weak self] _ in
       MainActor.assumeIsolated { self?.revealTimerFired() }
     }
-    let poll = Timer(timeInterval: 0.03, repeats: true) { [weak self] _ in
+    let poll = Timer(timeInterval: Self.pollInterval, repeats: true) { [weak self] _ in
       MainActor.assumeIsolated { self?.poll() }
     }
     let ceiling = Timer(
@@ -297,27 +355,26 @@ final class QuickSwitcherController {
       guard let store = slot.store, !store.hasModalPresentation else { return false }
       return store.displayedWorkroomTargets().contains { $0.sid == slot.sid }
     case .pane(let tab):
-      guard let store = originStore, let target = store.selectedTarget else { return false }
+      guard let store = originStore, let target = frozenPaneTarget(in: store) else { return false }
       return store.terminals.tabs(for: target).contains { $0.id == tab.id }
     }
   }
 
-  private static func perform(_ item: Item, from store: AppStore) {
-    switch item {
-    case .workroom(let slot): QuickSwitcher.commit(slot, from: store)
-    case .pane(let tab): QuickSwitcher.commit(pane: tab.id, in: store)
+  /// The `.panes` session's workroom, resolved from the id frozen at open.
+  private func frozenPaneTarget(in store: AppStore) -> TerminalTarget? {
+    guard let sid = paneTargetID, let target = store.target(for: sid), !target.isMissing else {
+      return nil
     }
+    return target
   }
 
-  /// What the VoiceOver path speaks after a tap flip: where it actually landed.
-  private static func announcement(for kind: QuickSwitcherKind, in store: AppStore) -> String? {
-    switch kind {
-    case .workrooms:
-      guard let sid = store.selectedTargetID else { return nil }
-      return store.label(for: sid).full
-    case .panes:
-      guard let target = store.selectedTarget else { return nil }
-      return store.terminals.activeTab(for: target)?.title
+  /// `target` is the session's frozen workroom, needed only by a pane commit.
+  private static func perform(_ item: Item, from store: AppStore, target: TerminalTarget?) {
+    switch item {
+    case .workroom(let slot): QuickSwitcher.commit(slot, from: store)
+    case .pane(let tab):
+      guard let target else { return }
+      QuickSwitcher.commit(pane: tab.id, in: store, target: target)
     }
   }
 }

@@ -114,6 +114,53 @@ final class SwitcherRecencyTests: XCTestCase {
     XCTAssertTrue(recency.workrooms.ids.isEmpty)
   }
 
+  // MARK: Suppression around a commit's own window raise
+
+  func testRecordingIsSuppressedWhileACommitIsInFlight() {
+    // `QuickSwitcher.commit` raises the destination window before writing the selection, and that raise
+    // fires `WindowRegistry`'s recency hook for the selection the window is about to LEAVE. Unsuppressed,
+    // that put a workroom the user never visited at MRU[1] and broke the ⌥Tab⌥Tab ping-pong.
+    let store = AppStore()
+    let leaving = SidebarID.workroom(project: "/p", name: "leaving")
+    let arriving = SidebarID.workroom(project: "/p", name: "arriving")
+    let recency = SwitcherRecency()
+
+    recency.suppressingRecord {
+      recency.recordWorkroom(store: store, sid: leaving)  // what the raise would record
+      recency.recordPane(UUID())
+    }
+    XCTAssertTrue(recency.workrooms.ids.isEmpty, "the raise's phantom use is not recorded")
+    XCTAssertTrue(recency.panes.ids.isEmpty)
+
+    recency.recordWorkroom(store: store, sid: arriving)
+    XCTAssertEqual(
+      recency.workrooms.ids, [WorkroomSlotID(window: store.windowToken, sid: arriving)],
+      "and recording resumes after the commit")
+  }
+
+  func testOrderingDoesNotPruneWhatItWasNotShown() {
+    // `workroomOrder` is handed an ALREADY-FILTERED list (windows with a sheet up are excluded), so
+    // pruning against it permanently forgot the MRU rank of any window that merely had a dialog open.
+    let visible = AppStore()
+    let busy = AppStore()
+    let sid = SidebarID.workroom(project: "/p", name: "w")
+    let recency = SwitcherRecency()
+    recency.recordWorkroom(store: busy, sid: sid)
+    recency.recordWorkroom(store: visible, sid: sid)
+    XCTAssertEqual(recency.workrooms.ids.count, 2)
+
+    _ = recency.workroomOrder([
+      WorkroomSlot(
+        store: visible, sid: sid,
+        target: TerminalTarget(
+          id: TerminalTarget.workroomID(project: "/p", name: "w"), title: "w", path: "/p/w",
+          isMissing: false))
+    ])
+    XCTAssertEqual(
+      recency.workrooms.ids.count, 2,
+      "the excluded window keeps its rank — it comes back when its sheet closes")
+  }
+
   // MARK: Pane recency
 
   func testPaneRecordingAndPruning() {
