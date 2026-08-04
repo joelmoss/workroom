@@ -138,7 +138,13 @@ enum QuickSwitcher {
       slots.firstIndex { $0.store === store && $0.sid == sid }
     }
     let next = destination(from: current, count: slots.count, reverse: reverse)
-    let slot = slots[next]
+    return commit(slots[next], from: store)
+  }
+
+  /// Switch to one workroom slot. Shared by the tap-only path above and the held-modifier session's
+  /// release commit (T10), so the two can't diverge on the raise-then-select ordering.
+  @discardableResult
+  static func commit(_ slot: WorkroomSlot, from store: AppStore) -> Bool {
     guard let target = slot.store, target !== store || slot.sid != store.selectedTargetID else {
       return false  // already here: no raise, no selection write, no history entry
     }
@@ -167,9 +173,17 @@ enum QuickSwitcher {
     let activeID = store.terminals.activeTab(for: target)?.id
     let current = activeID.flatMap { id in tabs.firstIndex { $0.id == id } }
     let next = destination(from: current, count: tabs.count, reverse: reverse)
-    guard tabs[next].id != activeID else { return false }
+    return commit(pane: tabs[next].id, in: store)
+  }
+
+  /// Switch to one pane by id. Shared with the held-modifier session's release commit (T10).
+  @discardableResult
+  static func commit(pane id: TerminalTab.ID, in store: AppStore) -> Bool {
+    guard let target = store.selectedTarget, !target.isMissing else { return false }
+    guard store.terminals.activeTab(for: target)?.id != id else { return false }
+    guard store.terminals.tabs(for: target).contains(where: { $0.id == id }) else { return false }
     // `select`, not `focus`: it also promotes the owning workroom in a split and takes keyboard focus.
-    store.terminals.select(tabs[next].id, for: target)
+    store.terminals.select(id, for: target)
     return true
   }
 

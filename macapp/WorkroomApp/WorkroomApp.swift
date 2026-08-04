@@ -287,8 +287,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
           case .act(let store):
             // Consumed only when it switched, so ⌃Tab still reaches a TUI in a single-pane workroom —
             // the same rule as the ⌥⌘digit / ⌥⌘arrow branches below.
-            return QuickSwitcher.step(hit.kind, reverse: hit.reverse, in: store) ? nil : event
+            return QuickSwitcherController.shared.handleTrigger(
+              hit.kind, reverse: hit.reverse, in: store) ? nil : event
           }
+        }
+      }
+      // Escape and ←/→ while a switcher session is live (issue #132). Ahead of every other branch that
+      // could claim them, because a live session owns the keyboard until it ends — and behind the Tab
+      // branch above, which is what starts one. Plain arrows only: ⌥⌘arrows (the tab cyclers) still
+      // carry ⌘, so a held-⌥ rail and those shortcuts can't collide.
+      if MainActor.assumeIsolated({ QuickSwitcherController.shared.isLive }) {
+        if event.keyCode == 53 {  // Escape
+          return MainActor.assumeIsolated { QuickSwitcherController.shared.handleEscape() }
+            ? nil : event
+        }
+        if event.keyCode == 123 || event.keyCode == 124 {  // ← / →
+          let reverse = event.keyCode == 123
+          return MainActor.assumeIsolated {
+            QuickSwitcherController.shared.handleArrow(reverse: reverse)
+          } ? nil : event
         }
       }
       // ⌘1–9: focus the Nth tab (caught here so it fires before the terminal swallows the digit).
