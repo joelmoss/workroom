@@ -434,8 +434,11 @@ private struct WorkroomPaneTitleBar: View {
     )
   }
 
+  /// The tooltip's title, formatted by `WorkroomLabel` — the same one the tab chip and a
+  /// notification's origin line use. Built from the parts already passed in rather than resolved from
+  /// a `SidebarID`, so this presentation view keeps its store/sid independence.
   private var fullTitle: String {
-    workroomName.map { "\(projectLabel) / \($0)" } ?? projectLabel
+    WorkroomLabel(project: projectLabel, workroom: workroomName).full
   }
 }
 

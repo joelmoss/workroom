@@ -4009,6 +4009,26 @@ final class AppStore: ObservableObject {
     Self.notificationSource(forTargetID: id, in: projects)
   }
 
+  /// The display label parts for a sidebar item — the one resolver behind the workroom tab chip's
+  /// tooltip, the split pane title bar's, and the quick-switcher rail (issue #132). Formatting lives
+  /// on `WorkroomLabel`; this only *resolves*: the project's directory name, the workroom's
+  /// label-aware `displayName` (issue #41), and — for a root only — its branch, left nil while the
+  /// ref is unresolved so `RootPresentation`'s `"root"` placeholder can't pose as a branch name.
+  func label(for sid: SidebarID) -> WorkroomLabel {
+    let project = Self.projectPath(of: sid).map { ($0 as NSString).lastPathComponent } ?? ""
+    switch sid {
+    case .workroom(let path, let name):
+      return WorkroomLabel(
+        project: project, workroom: displayName(forWorkroom: name, inProject: path))
+    case .root(let path):
+      let ref = rootRefs[path] ?? .unresolved
+      let branch = ref.kind == .none ? nil : RootPresentation.make(ref).label
+      return WorkroomLabel(project: project, branch: branch)
+    case .project:
+      return WorkroomLabel(project: project)
+    }
+  }
+
   /// Human-readable origin of a notification: the project name, or "project / workroom" for a
   /// workroom terminal, using the workroom's `displayName` so a set label shows here too (issue #41).
   /// Returns "" when the target isn't in `projects` (deleted) — callers fall back to the snapshot
@@ -4022,7 +4042,7 @@ final class AppStore: ObservableObject {
     for p in projects {
       if TerminalTarget.rootID(project: p.path) == id { return p.displayName }
       for w in p.workrooms where TerminalTarget.workroomID(project: p.path, name: w.name) == id {
-        return "\(p.displayName) / \(w.displayName)"
+        return WorkroomLabel(project: p.displayName, workroom: w.displayName).full
       }
     }
     return ""

@@ -454,11 +454,12 @@ private struct WorkroomTabChip: View {
     return RootPresentation.make(store.rootRefs[project] ?? .unresolved).label
   }
 
-  /// The full, untruncated rendered title — `primaryLabel`, plus `/` + `workroomName` for a workroom —
-  /// exactly what the (possibly capped) title HStack shows. Feeds the tooltip so a tail-truncated chip
-  /// still reveals its whole name on hover, mirroring `TerminalTabChip.help(tab.title)`.
+  /// The full, untruncated rendered title — what the (possibly capped) title HStack shows. Feeds the
+  /// tooltip so a tail-truncated chip still reveals its whole name on hover, mirroring
+  /// `TerminalTabChip.help(tab.title)`. Formatted by `WorkroomLabel` so this can't drift from the
+  /// split title bar's tooltip or a notification's origin line again — which it had, on the separator.
   private var fullTitle: String {
-    workroomName.map { "\(primaryLabel)/\($0)" } ?? primaryLabel
+    WorkroomLabel(project: primaryLabel, workroom: workroomName).full
   }
 
   private var hasActivity: Bool { notifications.count(target: target.id) > 0 }
