@@ -1,5 +1,6 @@
 import AppKit
 import Defaults
+import SwiftUI
 
 /// Which of the two quick switchers a keystroke opened (issue #132).
 enum QuickSwitcherKind: Equatable {
@@ -33,6 +34,17 @@ enum SwitcherModifier: String, CaseIterable, Defaults.Serializable {
   case commandControl
 
   var flags: NSEvent.ModifierFlags {
+    switch self {
+    case .option: [.option]
+    case .control: [.control]
+    case .commandOption: [.command, .option]
+    case .commandControl: [.command, .control]
+    }
+  }
+
+  /// The same chord as SwiftUI states it, for the Go-menu items' key equivalents (D11) — which is how
+  /// macOS teaches a shortcut, so it has to track the preference rather than hard-code ⌥/⌃.
+  var eventModifiers: EventModifiers {
     switch self {
     case .option: [.option]
     case .control: [.control]
@@ -120,6 +132,47 @@ enum QuickSwitcher {
       return stepWorkrooms(reverse: reverse, in: store, registry: registry, recency: recency)
     case .panes: return stepPanes(reverse: reverse, in: store, recency: recency)
     }
+  }
+
+  // MARK: The Go-menu path (D11)
+
+  /// Switch from a Go-menu item rather than a keystroke (D11 — the shortcut is otherwise invisible, and
+  /// mouse-only users can't reach the feature at all).
+  ///
+  /// Resolved through the monitor's own gate on the **key window**, not through the `Commands` body's
+  /// `@FocusedObject` store, for two reasons. A `focusedSceneValue` survives an aux window or the quick
+  /// terminal becoming key, so a menu-fired switch could otherwise retarget a background workroom
+  /// window the user isn't looking at; and the gate is what encodes "not one of our windows" and "a
+  /// modal is up" — the exact cases where this must do nothing. No session and no rail: a menu click
+  /// has no modifier to hold, so this is always the stage-1 immediate flip.
+  ///
+  /// There is no double-fire with the monitor: it runs inside `NSApp.sendEvent` ahead of menu
+  /// key-equivalent dispatch and consumes the event whenever it switched, so the menu's key equivalent
+  /// is only ever reached in the pass-through cases — where this returns false and changes nothing.
+  @discardableResult
+  static func stepFromKeyWindow(
+    _ kind: QuickSwitcherKind, reverse: Bool = false, window: NSWindow? = NSApp.keyWindow,
+    registry: WindowRegistry = .shared, recency: SwitcherRecency = .shared
+  ) -> Bool {
+    guard case .act(let store) = AppDelegate.switcherGate(for: window, in: registry) else {
+      return false
+    }
+    return step(kind, reverse: reverse, in: store, registry: registry, recency: recency)
+  }
+
+  /// Whether ⌥Tab has anywhere to go — the enablement for its Go-menu item, and load-bearing rather
+  /// than cosmetic: **a disabled menu item drops its key equivalent**, which is what stops the item
+  /// swallowing a Tab the monitor deliberately passed through.
+  ///
+  /// Counts rather than building `workroomSlots()`: this is recomputed on every RootView body pass, and
+  /// the MRU ordering it would do is irrelevant to "is there more than one".
+  static func canSwitchWorkrooms(registry: WindowRegistry = .shared) -> Bool {
+    var count = 0
+    for store in registry.allStores where !store.hasModalPresentation {
+      count += store.orderedWorkroomTargets().count
+      if count > 1 { return true }
+    }
+    return false
   }
 
   // MARK: Workrooms (⌥Tab, every window)

@@ -446,6 +446,12 @@ struct RootView: View {
           // Go-menu Previous/Next Workroom Tab (issue #29) — only meaningful with ≥2 tabs.
           multipleWorkroomTabs: store.orderedWorkroomTargets().count > 1
             && !store.hasModalPresentation,
+          // Go-menu "Last-Used Workroom" (⌥⇥, issue #132). Counted across every window, so it stays
+          // enabled when this window holds the only workroom and another window holds a second one.
+          // This window's body is what recomputes it, so another window's change lands here only on the
+          // next pass — harmless in both directions: the monitor owns the keystroke either way, and the
+          // menu item merely no-ops (or greys) until then.
+          canSwitchWorkrooms: QuickSwitcher.canSwitchWorkrooms() && !store.hasModalPresentation,
           // Go-menu "Open in…" + ⌘O — enabled only with an editor and a valid selection.
           canOpenInEditor: store.canOpenInEditor && !store.hasModalPresentation,
           // View ▸ "Resize Workroom Splits Evenly" (#83) — only when the selected workroom is a live
@@ -684,6 +690,7 @@ private struct MenuStateValues: ViewModifier {
   let vcsCanPull: Bool
   let hasRunTerminal: Bool
   let multipleWorkroomTabs: Bool
+  let canSwitchWorkrooms: Bool
   let canOpenInEditor: Bool
   let workroomSplitVisible: Bool
   /// Published for the items that have no other boolean to fold it into (see `ModalPresentedKey`).
@@ -705,6 +712,7 @@ private struct MenuStateValues: ViewModifier {
       .focusedSceneValue(\.runCommandActive, runCommandActive)
       .focusedSceneValue(\.hasRunTerminal, hasRunTerminal)
       .focusedSceneValue(\.multipleWorkroomTabs, multipleWorkroomTabs)
+      .focusedSceneValue(\.canSwitchWorkrooms, canSwitchWorkrooms)
       .focusedSceneValue(\.canOpenInEditor, canOpenInEditor)
       .focusedSceneValue(\.workroomSplitVisible, workroomSplitVisible)
   }

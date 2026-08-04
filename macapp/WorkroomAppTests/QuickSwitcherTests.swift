@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 
 @testable import Workroom
@@ -175,6 +176,86 @@ final class QuickSwitcherTests: XCTestCase {
     guard case .swallow = AppDelegate.switcherGate(for: window, in: registry) else {
       return XCTFail("⌥Tab must not retarget the selection under a live commit sheet")
     }
+  }
+
+  // MARK: the Go-menu path (D11)
+
+  /// The menu item resolves its store from the KEY window through the same gate, not from the menu's
+  /// own focused store: a `focusedSceneValue` survives an aux window or the quick terminal becoming key,
+  /// so reading the focused store would let a menu-fired switch retarget a background window.
+  func testTheMenuPathRefusesAnyWindowTheKeyMonitorWouldNotActOn() {
+    let shared = ProjectStore()
+    shared.projects = [project("/p", workrooms: ["w1", "w2"])]
+    let store = makeStore(shared, project: "/p", workrooms: ["w1", "w2"])
+    store.selectedTargetID = .workroom(project: "/p", name: "w1")
+    let window = NSWindow()
+    let registry = WindowRegistry()
+    registry.register(window: window, store: store)
+
+    XCTAssertFalse(
+      QuickSwitcher.stepFromKeyWindow(
+        .workrooms, window: NSWindow(), registry: registry, recency: SwitcherRecency()),
+      "an unregistered key window (Settings, the quick terminal) is not ours to switch in")
+    XCTAssertFalse(
+      QuickSwitcher.stepFromKeyWindow(
+        .workrooms, window: nil, registry: registry, recency: SwitcherRecency()),
+      "no key window at all ⇒ nothing to switch in")
+
+    store.pendingCommit = PendingCommit(sid: .workroom(project: "/p", name: "w1"), vcs: "git")
+    XCTAssertFalse(
+      QuickSwitcher.stepFromKeyWindow(
+        .workrooms, window: window, registry: registry, recency: SwitcherRecency()),
+      "and a modal is swallowed here too, not just in the monitor")
+    XCTAssertEqual(
+      store.selectedTargetID, .workroom(project: "/p", name: "w1"), "the selection never moved")
+  }
+
+  func testTheMenuPathSwitchesOnTheKeyWindow() {
+    let shared = ProjectStore()
+    shared.projects = [project("/p", workrooms: ["w1", "w2"])]
+    let store = makeStore(shared, project: "/p", workrooms: ["w1", "w2"])
+    store.selectedTargetID = .workroom(project: "/p", name: "w1")
+    let window = NSWindow()
+    let registry = WindowRegistry()
+    registry.register(window: window, store: store)
+
+    XCTAssertTrue(
+      QuickSwitcher.stepFromKeyWindow(
+        .workrooms, window: window, registry: registry, recency: SwitcherRecency()))
+    XCTAssertEqual(
+      store.selectedTargetID, .workroom(project: "/p", name: "w2"),
+      "the menu item performs the same immediate flip a tap does — no session, no rail")
+  }
+
+  /// `canSwitchWorkrooms` gates the menu item's key equivalent, and a disabled item drops it — so this
+  /// answering true when nothing is switchable is what would eat a pass-through Tab.
+  func testCanSwitchWorkroomsCountsAcrossWindowsAndSkipsModalOnes() {
+    let shared = ProjectStore()
+    shared.projects = [project("/p", workrooms: ["w1", "w2"])]
+    let a = makeStore(shared, project: "/p", workrooms: ["w1"])
+    let registry = WindowRegistry()
+    registry.register(window: NSWindow(), store: a)
+    XCTAssertFalse(
+      QuickSwitcher.canSwitchWorkrooms(registry: registry), "one workroom is nowhere to go")
+
+    let b = makeStore(shared, project: "/p", workrooms: ["w2"])
+    registry.register(window: NSWindow(), store: b)
+    XCTAssertTrue(
+      QuickSwitcher.canSwitchWorkrooms(registry: registry),
+      "the second window's workroom counts — the switcher's scope is the whole app")
+
+    b.activePicker = .open
+    XCTAssertFalse(
+      QuickSwitcher.canSwitchWorkrooms(registry: registry),
+      "…and a window with a dialog up isn't a destination, exactly as `workroomSlots` has it")
+  }
+
+  /// The chords the Go items render. Wrong glyphs here and macOS teaches the user the wrong shortcut.
+  func testEveryTriggerModifierHasAMatchingSwiftUIChord() {
+    XCTAssertEqual(SwitcherModifier.option.eventModifiers, [.option])
+    XCTAssertEqual(SwitcherModifier.control.eventModifiers, [.control])
+    XCTAssertEqual(SwitcherModifier.commandOption.eventModifiers, [.command, .option])
+    XCTAssertEqual(SwitcherModifier.commandControl.eventModifiers, [.command, .control])
   }
 
   // MARK: pane stepping (the ⌃Tab commit path)

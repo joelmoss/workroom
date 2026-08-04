@@ -703,6 +703,13 @@ struct MultipleWorkroomTabsKey: FocusedValueKey {
   typealias Value = Bool
 }
 
+/// Whether ⌥Tab has anywhere to go — published by RootView, so the Go-menu "Last-Used Workroom" item
+/// (D11, issue #132) disables when this window's is the only open workroom in the app. Counted across
+/// every window, unlike `MultipleWorkroomTabsKey`, because that's the switcher's scope.
+struct CanSwitchWorkroomsKey: FocusedValueKey {
+  typealias Value = Bool
+}
+
 /// Whether the selected target can be opened in an external editor — published by RootView, so the
 /// Go-menu "Open in…" item (⌘O) disables when there's no selection / a missing dir / no editor.
 struct CanOpenInEditorKey: FocusedValueKey {
@@ -788,6 +795,10 @@ extension FocusedValues {
     get { self[MultipleWorkroomTabsKey.self] }
     set { self[MultipleWorkroomTabsKey.self] = newValue }
   }
+  var canSwitchWorkrooms: Bool? {
+    get { self[CanSwitchWorkroomsKey.self] }
+    set { self[CanSwitchWorkroomsKey.self] = newValue }
+  }
   var canOpenInEditor: Bool? {
     get { self[CanOpenInEditorKey.self] }
     set { self[CanOpenInEditorKey.self] = newValue }
@@ -835,6 +846,7 @@ struct WorkroomCommands: Commands {
   @FocusedValue(\.hasRunTerminal) private var hasRunTerminal
   @FocusedValue(\.multipleTerminalTabs) private var multipleTerminalTabs
   @FocusedValue(\.multipleWorkroomTabs) private var multipleWorkroomTabs
+  @FocusedValue(\.canSwitchWorkrooms) private var canSwitchWorkrooms
   @FocusedValue(\.canOpenInEditor) private var canOpenInEditor
   @FocusedValue(\.terminalSplitVisible) private var terminalSplitVisible
   @FocusedValue(\.workroomSplitVisible) private var workroomSplitVisible
@@ -854,6 +866,10 @@ struct WorkroomCommands: Commands {
   // Drives the quick dark/light toggle (⌘⇧L, issue #57). RootView's `.onChange(of: theme)` applies
   // it through the single theme chokepoint; same key as the sidebar's 3-state cycle button.
   @Default(.theme) private var theme
+  // The two quick-switcher trigger chords (issue #132). Read here so the Go-menu items re-render — and
+  // so their key equivalents follow the preference — when either is retuned in Settings.
+  @Default(.switcherWorkroomModifier) private var switcherWorkroomModifier
+  @Default(.switcherPaneModifier) private var switcherPaneModifier
   /// Opens a new Workroom window (issue #70) — a fresh `WindowSeed` so the window starts blank.
   @Environment(\.openWindow) private var openWindow
 
@@ -1255,6 +1271,27 @@ struct WorkroomCommands: Commands {
       Button("Previous Workroom Tab") { store?.cycleWorkroomTab(forward: false) }
         .keyboardShortcut(.leftArrow, modifiers: [.command, .option, .shift])
         .disabled(multipleWorkroomTabs != true)
+
+      // The quick switchers (issue #132, D11), by recency rather than position — here because a
+      // shortcut nobody can see is a shortcut nobody uses, and because this is the only way to reach
+      // the feature with the mouse. Both key equivalents track their `Defaults` chord.
+      //
+      // The action goes through the key window, not this menu's focused store — see
+      // `QuickSwitcher.stepFromKeyWindow`. Enablement is load-bearing rather than cosmetic: the monitor
+      // consumes the keystroke whenever it switched, so these key equivalents are reached only in the
+      // pass-through cases, and a disabled item drops its key equivalent — which is what keeps ⌃⇥
+      // reaching a TUI in a single-pane workroom instead of being eaten by a menu that would no-op.
+      //
+      // Set both preferences to the same chord and these two items share a key equivalent; AppKit fires
+      // the first enabled match, which is Workrooms — the same tie-break `QuickSwitcherKey.classify`
+      // makes, so the menu and the monitor agree even in that configuration.
+      Divider()
+      Button("Last-Used Workroom") { QuickSwitcher.stepFromKeyWindow(.workrooms) }
+        .keyboardShortcut(.tab, modifiers: switcherWorkroomModifier.eventModifiers)
+        .disabled(canSwitchWorkrooms != true)
+      Button("Last-Used Pane") { QuickSwitcher.stepFromKeyWindow(.panes) }
+        .keyboardShortcut(.tab, modifiers: switcherPaneModifier.eventModifiers)
+        .disabled(multipleTerminalTabs != true)
 
       Divider()
 

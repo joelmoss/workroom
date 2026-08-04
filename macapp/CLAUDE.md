@@ -190,6 +190,13 @@ that surfaces violations as **warnings** (non-fatal — `make app-lint` is the h
   trigger modifiers are `Defaults` keys (`switcher*Modifier`) because a global-hotkey grabber
   (AltTab, HyperSwitch, Contexts all bind ⌥Tab) intercepts upstream of `NSApp.sendEvent`, where no
   local monitor can see the key and no API can detect the conflict.
+  The Go menu's **Last-Used Workroom / Last-Used Pane** items carry the same key equivalents purely so
+  macOS renders and teaches them (and so the feature is mouse-reachable) — the monitor still owns the
+  keystroke, since it runs ahead of menu dispatch and consumes the event whenever it switched. Their
+  enablement is therefore load-bearing, not cosmetic: a disabled item drops its key equivalent, which is
+  what stops the menu eating a Tab the monitor deliberately passed through. Their action resolves the
+  store from the **key window** (`QuickSwitcher.stepFromKeyWindow`), not from the `Commands` body's
+  focused store, which outlives an aux window becoming key.
 
 ## Layout
 
