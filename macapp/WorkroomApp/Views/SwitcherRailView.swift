@@ -167,20 +167,7 @@ struct SwitcherRailView: View {
         }
       }
       .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
-      // The drop shadow, cast by a plain shape BEHIND the glass and mounted AFTER the clip.
-      //
-      // Three things had to be true here, each found by looking at the screen rather than reasoning:
-      // the window cannot cast it (a borderless non-opaque panel produces no system shadow at all —
-      // measured, zero darkening at any distance, with glass content and with a solid fill); a clip
-      // applies to a view's background, so a shadow mounted alongside the glass was clipped away
-      // entirely; and a layer shadow on the representable didn't render either. A SwiftUI shape's shadow
-      // does. The fill is the theme's own card colour, so on the chance the glass lets any of it through
-      // it reads as the rail's surface rather than a dark slab.
-      .background {
-        RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
-          .fill(theme.tokens.panel)
-          .shadow(color: .black.opacity(0.30), radius: 14, y: 5)
-      }
+      .background { shadowCaster }
       // The halo the rail's drop shadow lands in. The window is `shadowMargin` bigger than the slab on
       // every side for exactly this — a drawn shadow is clipped at the window's edge, and the window
       // itself casts none (see `SwitcherRailLayout.shadowMargin`).
@@ -192,6 +179,40 @@ struct SwitcherRailView: View {
   /// Matches the system switcher's generous curvature; also handed to the glass view, which rounds the
   /// material itself rather than relying on a clip.
   static let cornerRadius: CGFloat = 20
+
+  /// The rail's drop shadow: the shape's shadow with **the shape itself punched out**, mounted behind the
+  /// glass and after the clip.
+  ///
+  /// Every part of that is load-bearing, and each was measured rather than reasoned:
+  ///
+  /// - **The window can't cast it.** A borderless, non-opaque `NSPanel` produces no system shadow at all —
+  ///   `hasShadow = true` with `invalidateShadow()` darkened nothing at 6/14/26/44pt out on any side, with
+  ///   glass content and with a solid opaque fill alike.
+  /// - **A clip applies to a view's background**, so a shadow mounted alongside the glass was clipped away
+  ///   entirely. Hence a second `.background`, after `.clipShape`.
+  /// - **A layer shadow on the representable never rendered**, `shadowPath` and all. A SwiftUI shape's
+  ///   shadow does.
+  /// - **The hole is what keeps the glass alive.** A shadow needs an opaque caster, and an opaque layer
+  ///   anywhere beneath a glass view destroys the material completely: sampled across the rail's interior,
+  ///   glass normally tracks its backdrop (correlation +0.81), and with an opaque fill behind it the
+  ///   correlation and the variation both fall to exactly zero — a flat slab. So the caster keeps only its
+  ///   spill: `destinationOut` removes its own footprint, and the mask's rectangle is expanded by
+  ///   `shadowMargin` because a mask hides whatever falls outside it, which would otherwise take the
+  ///   spill with it.
+  private var shadowCaster: some View {
+    let shape = RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+    return
+      shape
+      .fill(Color.black)
+      .shadow(color: .black.opacity(0.32), radius: 14, y: 5)
+      .compositingGroup()
+      .mask {
+        Rectangle()
+          .padding(-SwitcherRailLayout.shadowMargin)
+          .overlay { shape.blendMode(.destinationOut) }
+          .compositingGroup()
+      }
+  }
 
   @ViewBuilder private var row: some View {
     if scrolls {
