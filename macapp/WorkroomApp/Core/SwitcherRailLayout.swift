@@ -10,19 +10,22 @@ enum SwitcherRailLayout {
   // MARK: Card geometry (D9)
 
   /// The comfortable card width, used while the whole rail fits.
-  static let maxCardWidth: CGFloat = 200
-  /// The floor. **180, not 140**: with the well plus padding and the gap, a 140pt card leaves far too
-  /// little label column — every name becomes a fragment and the badge collides with it, so the densest
-  /// state would read the worst. At 180 the label keeps a readable name plus the badge, and the row
-  /// simply starts scrolling sooner.
-  static let minCardWidth: CGFloat = 180
-  static let cardHeight: CGFloat = 88
-  static let cardSpacing: CGFloat = 10
+  ///
+  /// Cards are **stacked** — well above label, the way ⌘Tab and the Dock put an icon above its name —
+  /// rather than well-beside-label. That change alone nearly halved the card: a side-by-side card has to
+  /// pay for the well's width *and* a label column beside it, while a stacked one gives the full card
+  /// width to the label. Roughly twice as many workrooms now fit before the row has to scroll.
+  static let maxCardWidth: CGFloat = 120
+  /// The floor. The label spans the whole card here, so ~96pt of 12pt text survives — comfortably more
+  /// than the side-by-side layout had at 180pt, where a 52pt well and its gap came off the top first.
+  static let minCardWidth: CGFloat = 104
+  static let cardHeight: CGFloat = 104
+  static let cardSpacing: CGFloat = 8
   /// Inset from the rail's own edge to the first card.
-  static let railPadding: CGFloat = 14
-  /// The well. Square, and smaller than the 72×56 the screenshot era needed: a mark or a drawn
-  /// miniature reads fine at this size, and the 20pt saved goes to the label column.
-  static let wellSize = CGSize(width: 52, height: 52)
+  static let railPadding: CGFloat = 12
+  /// The well. Small on purpose: at 52pt it dominated a card whose *label* is the thing you read, and a
+  /// mark only has to be recognisable, not large. This is close to a Dock icon's proportion of its label.
+  static let wellSize = CGSize(width: 38, height: 38)
 
   /// Card width for `count` items in `available` points: the comfortable width while everything fits,
   /// shrinking no further than the floor. Past the floor the row scrolls instead (never a second row).
@@ -51,9 +54,23 @@ enum SwitcherRailLayout {
   /// Clearance kept between the rail and the screen edge.
   static let screenMargin: CGFloat = 24
 
-  /// The rail's width for a given screen: capped, and never wider than the usable frame.
+  /// The widest the rail may be on a given screen: capped, and never wider than the usable frame. This
+  /// is the space available for cards, NOT the panel's width — see `panelWidth`.
   static func viewportWidth(visibleFrame: CGRect) -> CGFloat {
     min(maxViewportWidth, max(minCardWidth, visibleFrame.width - screenMargin * 2))
+  }
+
+  /// The panel's actual width: **snug around its cards**, not the full viewport.
+  ///
+  /// Sizing the panel to the viewport left the glass extending far past the last card, so a rail of four
+  /// looked left-aligned inside a wide slab even though the slab itself was centred. Fitting the panel to
+  /// its content is what makes the *cards* look centred, which is the thing anyone actually perceives.
+  /// Once the cards overflow, the panel takes the whole viewport and the row scrolls inside it.
+  static func panelWidth(count: Int, visibleFrame: CGRect) -> CGFloat {
+    let viewport = viewportWidth(visibleFrame: visibleFrame)
+    let content = contentWidth(
+      count: count, cardWidth: cardWidth(count: count, available: viewport))
+    return min(content, viewport)
   }
 
   /// Where to place a `size` panel for a key window on a screen: centred on the **window**, then

@@ -16,27 +16,65 @@ final class SwitcherRailLayoutTests: XCTestCase {
   }
 
   func testCardsShrinkTowardsTheFloorAsTheCountGrows() {
-    let wide = L.cardWidth(count: 5, available: 1100)
-    let tight = L.cardWidth(count: 6, available: 1100)
+    let wide = L.cardWidth(count: 9, available: 1100)
+    let tight = L.cardWidth(count: 10, available: 1100)
     XCTAssertLessThan(tight, wide, "more cards ⇒ narrower cards, before any scrolling")
     XCTAssertLessThanOrEqual(wide, L.maxCardWidth)
   }
 
   func testCardWidthNeverGoesBelowTheFloor() {
-    // The whole point of the 180pt floor (Codex #1): at 140 the label column is ~36pt, so every name
-    // fragments and the badge collides — the densest state would read the worst.
-    for count in [8, 12, 40, 200] {
+    // The floor exists so the densest state never becomes the least readable one — the original 140pt
+    // side-by-side card left ~36pt of label, which fragmented every name.
+    for count in [12, 20, 40, 200] {
       XCTAssertEqual(
         L.cardWidth(count: count, available: 1100), L.minCardWidth,
         "\(count) cards must shrink to the floor and then scroll, never past it")
     }
   }
 
-  func testTheFloorIs180Not140() {
-    XCTAssertEqual(L.minCardWidth, 180)
-    // And the floor must leave a usable label column: card − well − padding − gap.
-    let label = L.minCardWidth - L.wellSize.width - 10 * 2 - 10
-    XCTAssertGreaterThan(label, 60, "a 13pt name plus a badge needs real width")
+  func testTheFloorLeavesAUsableLabelWidth() {
+    XCTAssertEqual(L.minCardWidth, 104)
+    // Stacked cards give the label the FULL card width (the well is above it, not beside it), so only
+    // the horizontal padding comes off — which is why the card could shrink from 180 to 104 and still
+    // hold MORE label than before.
+    let label = L.minCardWidth - 6 * 2
+    XCTAssertGreaterThan(label, 80, "a 12pt name needs real width")
+    XCTAssertGreaterThan(
+      label, L.maxCardWidth - L.wellSize.width - 30,
+      "the stacked label beats what a side-by-side card of the same width would give it")
+  }
+
+  func testStackingRoughlyDoubledHowManyCardsFit() {
+    // The reason for the layout change: at the old 200pt a 1100pt rail held 5 cards, and it now holds 8.
+    let viewport: CGFloat = 1100
+    let fits = Int((viewport - L.railPadding * 2) / (L.maxCardWidth + L.cardSpacing))
+    XCTAssertGreaterThanOrEqual(fits, 8, "the whole point of stacking was horizontal room")
+  }
+
+  // MARK: Panel width — snug, so the cards read as centred
+
+  func testThePanelIsOnlyAsWideAsItsCards() {
+    let visible = CGRect(x: 0, y: 0, width: 2000, height: 1200)
+    let panel = L.panelWidth(count: 4, visibleFrame: visible)
+    let expected = L.contentWidth(
+      count: 4, cardWidth: L.cardWidth(count: 4, available: L.viewportWidth(visibleFrame: visible)))
+    XCTAssertEqual(
+      panel, expected, "sizing the panel to the viewport made 4 cards look left-aligned")
+    XCTAssertLessThan(panel, L.viewportWidth(visibleFrame: visible))
+  }
+
+  func testThePanelTakesTheWholeViewportOnceCardsOverflow() {
+    let visible = CGRect(x: 0, y: 0, width: 1200, height: 900)
+    let viewport = L.viewportWidth(visibleFrame: visible)
+    XCTAssertEqual(
+      L.panelWidth(count: 40, visibleFrame: visible), viewport,
+      "past the floor the row scrolls inside a full-width panel")
+  }
+
+  func testASingleCardGetsASnugPanel() {
+    let visible = CGRect(x: 0, y: 0, width: 2000, height: 1200)
+    let panel = L.panelWidth(count: 1, visibleFrame: visible)
+    XCTAssertEqual(panel, L.maxCardWidth + L.railPadding * 2)
   }
 
   func testCardWidthWithNoCards() {
@@ -51,7 +89,7 @@ final class SwitcherRailLayoutTests: XCTestCase {
 
   func testManyCardsScrollRatherThanWrapping() {
     XCTAssertTrue(
-      L.scrolls(count: 12, available: 1100),
+      L.scrolls(count: 40, available: 1100),
       "past the floor the single row scrolls — never a second row")
   }
 

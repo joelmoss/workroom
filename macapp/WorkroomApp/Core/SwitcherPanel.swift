@@ -79,11 +79,15 @@ final class SwitcherPanelController {
     let cards = SwitcherCard.cards(for: items)
     let screen = NSApp.keyWindow?.screen ?? NSScreen.main
     let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+    // The cards get the whole viewport to lay out in, but the PANEL is only as wide as they turned out
+    // to be — otherwise the glass runs on past the last card and a rail of four reads as left-aligned
+    // inside a wide slab, even though the slab is perfectly centred.
     let width = SwitcherRailLayout.viewportWidth(visibleFrame: visible)
     model.update(cards: cards, cursor: cursor, width: width)
 
     let size = NSSize(
-      width: width, height: SwitcherRailLayout.cardHeight + SwitcherRailLayout.railPadding * 2)
+      width: SwitcherRailLayout.panelWidth(count: cards.count, visibleFrame: visible),
+      height: SwitcherRailLayout.cardHeight + SwitcherRailLayout.railPadding * 2)
     let origin = SwitcherRailLayout.panelOrigin(
       size: size, windowFrame: NSApp.keyWindow?.frame ?? visible, visibleFrame: visible)
     panel.setFrame(NSRect(origin: origin, size: size), display: false)

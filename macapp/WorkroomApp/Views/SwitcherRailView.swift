@@ -153,13 +153,27 @@ struct SwitcherRailView: View {
   var body: some View {
     row
       .id(model.themeVersion)  // see `palette` — the only thing that invalidates this view
-      // The app's own floating-translucent recipe (the inspector reveal uses it). No full-screen dim:
-      // a 250ms gesture must not flash the whole screen, so separation comes from material + hairline
-      // + shadow instead.
-      .sidebarCard(cornerRadius: 16, margin: 0, vibrant: !palette.needsOpaqueFill, elevated: true)
+      // The system's Liquid Glass — the same surface ⌘Tab sits on — rather than the app's
+      // `sidebarCard` recipe, whose `.withinWindow` material has nothing to sample inside a transparent
+      // floating panel. No full-screen dim: a 250ms gesture must not flash the whole screen, so the
+      // separation is the material itself.
+      .background {
+        ZStack {
+          RailGlassBackground(cornerRadius: Self.cornerRadius)
+          // D14's last resort: a theme whose foreground cannot clear the text floor against a
+          // translucent surface gets an opaque one instead. Legibility outranks the material — and
+          // without this the glass would keep washing text that already failed its contrast check.
+          if palette.needsOpaqueFill { theme.tokens.panel }
+        }
+      }
+      .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
       .accessibilityElement(children: .contain)
       .accessibilityIdentifier("switcher.rail")
   }
+
+  /// Matches the system switcher's generous curvature; also handed to the glass view, which rounds the
+  /// material itself rather than relying on a clip.
+  static let cornerRadius: CGFloat = 20
 
   @ViewBuilder private var row: some View {
     if scrolls {
@@ -208,7 +222,11 @@ struct SwitcherRailView: View {
   }
 }
 
-/// One card: a fixed thumbnail well, then a label column that absorbs every point of width loss.
+/// One card: the well above its label, the way ⌘Tab and the Dock stack an icon over its name.
+///
+/// Stacked rather than side-by-side because that is what buys horizontal room: a side-by-side card pays
+/// for the well's width *and* a label column beside it, while a stacked card gives the full width to the
+/// label — so the card shrank 200pt → 120pt and roughly twice as many fit before the row scrolls.
 private struct SwitcherCardView: View {
   let card: SwitcherCard
   let isCursor: Bool
@@ -217,22 +235,22 @@ private struct SwitcherCardView: View {
   private let theme = ThemeService.shared
 
   var body: some View {
-    // No trailing `Spacer` here. A `Spacer(minLength: 0)` is a *flexible* child, so SwiftUI splits the
-    // card's spare width between it and the label column — which truncated "uitest-room-2" at a card
-    // width that fits it twice over. `maxWidth: .infinity` on the labels claims that space instead.
-    HStack(spacing: 10) {
+    VStack(spacing: 7) {
       well
       labels
     }
-    .padding(.horizontal, 10)
+    .padding(.horizontal, 6)
+    .padding(.vertical, 10)
     .frame(width: width, height: SwitcherRailLayout.cardHeight)
     .background(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .fill(isCursor ? theme.tokens.accentSoft : theme.tokens.panel)
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .fill(isCursor ? theme.tokens.accentSoft : Color.clear)
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .strokeBorder(isCursor ? palette.ring : theme.tokens.border, lineWidth: 1)
+      // Only the cursor is outlined. On glass, giving every card its own border produced a row of
+      // competing boxes and buried the one signal that matters — which card you are about to commit to.
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .strokeBorder(isCursor ? palette.ring : .clear, lineWidth: 1.5)
     )
     .contentShape(Rectangle())
     .help(tooltip)
@@ -241,43 +259,51 @@ private struct SwitcherCardView: View {
     .accessibilityIdentifier("switcher.card.\(card.title)")
   }
 
-  /// The well. Screenshots were tried and removed: at any size that fits a switcher rail, an aspect-fit
-  /// window capture is a grey smudge, and it is neither stable nor distinctive — it changes every time
-  /// and every terminal looks like every other terminal. So each switcher draws what actually
-  /// distinguishes its own items.
-  @ViewBuilder private var well: some View {
-    switch card.well {
-    case .mark(let mark): MarkWell(mark: mark)
-    case .miniature(let miniature): MiniatureWell(miniature: miniature, palette: palette)
+  /// The well, with its badge and running pip riding on its corners.
+  ///
+  /// Screenshots were tried and removed: at any size that fits a switcher rail an aspect-fit window
+  /// capture is a grey smudge, and it is neither stable nor distinctive — it changes every time and every
+  /// terminal looks like every other terminal. So each switcher draws what distinguishes its own items.
+  private var well: some View {
+    ZStack(alignment: .topTrailing) {
+      switch card.well {
+      case .mark(let mark): MarkWell(mark: mark)
+      case .miniature(let miniature): MiniatureWell(miniature: miniature, palette: palette)
+      }
+      // Badge on the icon's corner, the Dock/⌘Tab idiom — and in a stacked card it costs no width at
+      // all, where in the label row it competed with the name for the same points.
+      if card.badge > 0 {
+        UnreadBadge(count: card.badge)
+          .offset(x: 7, y: -6)
+      } else if card.isRunning {
+        Circle()
+          .fill(palette.dot)
+          .frame(width: 7, height: 7)
+          .overlay(Circle().strokeBorder(theme.tokens.panel, lineWidth: 1.5))
+          .offset(x: 3, y: -3)
+          .help("Running")
+          .accessibilityLabel("running")
+      }
     }
   }
 
   private var labels: some View {
-    VStack(alignment: .leading, spacing: 3) {
-      HStack(spacing: 5) {
-        // Middle truncation, never tail: generated workroom names share a prefix and differ at the
-        // END, which is exactly what tail truncation deletes (D12).
-        Text(card.title)
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(palette.name)
-          .lineLimit(1)
-          .truncationMode(.middle)
-        // Badge and running dot sit in the LABEL row, not over the thumbnail — which also removes the
-        // contrast problem of an accent pill over arbitrary screenshot pixels.
-        if card.badge > 0 { UnreadBadge(count: card.badge) }
-        if card.isRunning {
-          Circle().fill(palette.dot).frame(width: 6, height: 6)
-            .help("Running")
-            .accessibilityLabel("running")
-        }
-      }
+    VStack(spacing: 1) {
+      // Middle truncation, never tail: generated workroom names share a prefix and differ at the END,
+      // which is exactly what tail truncation deletes (D12).
+      Text(card.title)
+        .font(.system(size: 12, weight: .semibold))
+        .foregroundStyle(palette.name)
+        .lineLimit(1)
+        .truncationMode(.middle)
       Text(card.subtitle)
-        .font(.system(size: 11))
+        .font(.system(size: 10))
         .foregroundStyle(palette.subtitle)
         .lineLimit(1)
         .truncationMode(.tail)
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
+    .multilineTextAlignment(.center)
+    .frame(maxWidth: .infinity)
   }
 
   private var tooltip: String {
@@ -319,7 +345,7 @@ private struct MarkWell: View {
       .frame(width: SwitcherRailLayout.wellSize.width, height: SwitcherRailLayout.wellSize.height)
       .overlay {
         Text(mark.monogram)
-          .font(.system(size: 17, weight: .semibold, design: .rounded))
+          .font(.system(size: 13, weight: .semibold, design: .rounded))
           .foregroundStyle(Color(nsColor: ThemeTokens.contrastingForeground(for: tile)))
       }
   }
