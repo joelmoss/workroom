@@ -6,8 +6,14 @@ import XCTest
 /// working tree. The dot itself is decorative (a11y-hidden); the state is announced on the icon
 /// button's accessibility **value** ("has changes"), which is what this test reads.
 ///
-/// Also guards that the dot is scoped to Changes only — the History and Files icons never inherit
-/// the dirty value even though the selected workroom is dirty.
+/// Also guards that the dot is scoped to Changes only — no peer icon inherits the dirty value even
+/// though the selected workroom is dirty.
+///
+/// The peer icons are **discovered from the accessibility tree**, not named. This test used to probe
+/// `activitySection.history` by name, which stopped existing when History moved out of the activity bar
+/// and into the Changes stack (`0fc3b97a`): reading `.value` on a element that isn't there throws
+/// "Failed to get matching snapshot", so the test failed for 16 days while saying nothing about the dot.
+/// Enumerating whatever sections the bar renders keeps the assertion honest through the next such move.
 ///
 /// Run with `make app-uitest` on a real GUI login session — XCUITest can't drive a headless run, so
 /// this is excluded from `make app-test` (the unit gate) via a separate scheme.
@@ -26,6 +32,14 @@ final class ActivityBarDirtyDotUITests: XCTestCase {
   /// A bar icon by its accessibility id (`activitySection.<rawValue>`).
   private func icon(_ app: XCUIApplication, _ raw: String) -> XCUIElement {
     app.descendants(matching: .any).matching(identifier: "activitySection.\(raw)").firstMatch
+  }
+
+  /// Every activity-bar icon currently in the tree, by identifier — whatever sections the bar renders.
+  private func barIcons(_ app: XCUIApplication) -> [(id: String, value: String)] {
+    app.descendants(matching: .any)
+      .matching(NSPredicate(format: "identifier BEGINSWITH %@", "activitySection."))
+      .allElementsBoundByIndex
+      .map { (id: $0.identifier, value: $0.value as? String ?? "") }
   }
 
   /// Wait until `el`'s accessibility value contains `text`. The dirty state rides the icon button's
@@ -53,12 +67,17 @@ final class ActivityBarDirtyDotUITests: XCTestCase {
       waitValue(changes, contains: "has changes"),
       "Changes icon should report the dirty working tree")
 
-    // The dot is scoped to Changes: the peer sections never inherit the dirty value.
+    // The dot is scoped to Changes: no peer section inherits the dirty value. Peers are read off the
+    // tree rather than named, so a section leaving the bar can't turn this into a query for an element
+    // that doesn't exist (which is how it broke before — see the type doc).
+    let peers = barIcons(app).filter { $0.id != "activitySection.changes" }
     XCTAssertFalse(
-      (icon(app, "history").value as? String ?? "").contains("has changes"),
-      "History icon must not carry the dirty dot")
-    XCTAssertFalse(
-      (icon(app, "files").value as? String ?? "").contains("has changes"),
-      "Files icon must not carry the dirty dot")
+      peers.isEmpty,
+      "the bar must render at least one peer section, or this assertion proves nothing")
+    for peer in peers {
+      XCTAssertFalse(
+        peer.value.contains("has changes"),
+        "\(peer.id) must not carry the dirty dot — it is scoped to Changes")
+    }
   }
 }
