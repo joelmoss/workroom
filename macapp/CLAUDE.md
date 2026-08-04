@@ -181,6 +181,15 @@ that surfaces violations as **warnings** (non-fatal — `make app-lint` is the h
   (see `WorkroomApp.swift`); a `Commands` body does not re-evaluate when the shared
   `AppStore` mutates. ⌘1–9 are handled by an `NSEvent` local monitor in `AppDelegate`,
   not menu items, so they fire before the terminal swallows the keys.
+- **⌥Tab / ⌃Tab (the quick switchers, issue #132) are monitor-only and deliberately NOT in
+  `GhosttySurfaceView.isAppShortcut`.** That list is static, but whether the app owns Tab depends on
+  runtime state: a workroom with one pane has nothing to switch to, so ⌃Tab must reach the TUI. The
+  monitor branch consumes the event only when a switch actually happened, exactly as ⌥⌘digit and
+  ⌥⌘arrows already do — same reasoning as the unreserved ⌃⌘arrows. `AppShortcutReservationTests` pins
+  Tab as never-reserved so a later "defence in depth" edit can't take `<C-Tab>` from every TUI. Both
+  trigger modifiers are `Defaults` keys (`switcher*Modifier`) because a global-hotkey grabber
+  (AltTab, HyperSwitch, Contexts all bind ⌥Tab) intercepts upstream of `NSApp.sendEvent`, where no
+  local monitor can see the key and no API can detect the conflict.
 
 ## Layout
 

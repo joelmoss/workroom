@@ -1,3 +1,4 @@
+import Defaults
 import SwiftUI
 
 /// Reference sheet listing every available keyboard shortcut, grouped by area (raised by the
@@ -100,6 +101,14 @@ extension KeyboardShortcutsView {
         ShortcutItem(label: "Previous terminal tab", keys: "⌥⌘←"),
         ShortcutItem(label: "Next workroom tab", keys: "⇧⌥⌘→"),
         ShortcutItem(label: "Previous workroom tab", keys: "⇧⌥⌘←"),
+        // Recency order, not position — a tap flips to the workroom/pane you were last in (issue
+        // #132). Rendered from the stored trigger modifiers, which are retunable because a global
+        // hotkey grabber (AltTab and friends bind ⌥Tab) beats the app's key monitor.
+        ShortcutItem(
+          label: "Last-used workroom",
+          keys: "\(Defaults[.switcherWorkroomModifier].display)⇥"),
+        ShortcutItem(
+          label: "Last-used pane", keys: "\(Defaults[.switcherPaneModifier].display)⇥"),
       ]),
     ShortcutGroup(
       title: "Splits & Panes",

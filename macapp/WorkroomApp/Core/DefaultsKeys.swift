@@ -132,6 +132,16 @@ extension Defaults.Keys {
   /// hint applied to whatever is currently active — stale ids resolve away harmlessly.
   static let workroomTabOrder = Key<[String]>("workroomsView.tabOrder", default: [])
 
+  /// Trigger modifiers for the two quick switchers (issue #132): ⌥Tab steps open workrooms across
+  /// every window, ⌃Tab steps the current workroom's panes. Retunable because a global hotkey grabber
+  /// beats our local key monitor and cannot be detected — AltTab, HyperSwitch and Contexts all take
+  /// ⌥Tab by default via a CGEvent tap, so for those users the default is unreachable and a different
+  /// modifier is the only fix. No Settings UI yet; `SwitcherModifier` owns the offered set.
+  static let switcherWorkroomModifier = Key<SwitcherModifier>(
+    "switcher.workroomModifier", default: .option)
+  static let switcherPaneModifier = Key<SwitcherModifier>(
+    "switcher.paneModifier", default: .control)
+
   /// When Workroom itself last fetched a project, keyed by the project's absolute path (fetch always
   /// runs at the project root, so this is per-project, never per-workroom). Path-keyed map for the
   /// same reason as `runCommands`.

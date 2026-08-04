@@ -111,6 +111,11 @@ final class AppStore: ObservableObject {
   /// Backs the `windowTitle` fallback for a window with nothing selected ("Window 1", "Window 2", …).
   /// `@Published` so the title updates the moment the registry assigns it. 0 until registered.
   @Published var windowNumber = 0
+  /// This window's *identity* for cross-window bookkeeping (issue #132) — minted here and never
+  /// reused, unlike `windowNumber`, which is a display number reclaimed by the next new window. Used
+  /// by the quick switcher's recency (and its snapshot cache) so a closed window's entries can't
+  /// alias onto a fresh one.
+  let windowToken = WindowToken()
   /// Retains the close-guard delegate proxy (the window holds its delegate weakly) for this window's
   /// lifetime (issue #70, A3).
   private var closeGuard: WindowCloseGuard?
@@ -158,6 +163,12 @@ final class AppStore: ObservableObject {
       if persistsSidebarPrefs {
         Defaults[.sidebarSelection] = Self.targetIDString(for: selectedTargetID)
       }
+      // Promote this workroom in the quick switcher's most-recently-used order (issue #132).
+      // UNCONDITIONAL, unlike the history record below: `applyLocation` raises `isNavigatingHistory`
+      // for its whole body and the switcher commits through it, so a gated write would never record
+      // where the switcher just took you — ⌥Tab would flip to the same place forever. Recency means
+      // "where did the user end up", which is equally true of a ⌘[ replay.
+      SwitcherRecency.shared.recordWorkroom(store: self, sid: selectedTargetID)
       // Record the new location for back/forward (issue #26), unless we're replaying history.
       if !isNavigatingHistory { recordCurrentLocation() }
       // Freshen the newly-selected workroom's status (incl. CI) — debounced so arrow-key
@@ -825,8 +836,12 @@ final class AppStore: ObservableObject {
       self?.handleActivity(targetID: targetID, tabID: tabID, activity: activity)
     }
     // Record each focused-tab change for back/forward history (issue #26), unless we're replaying.
-    terminals.onFocusChange = { [weak self] _, _ in
+    terminals.onFocusChange = { [weak self] _, tabID in
       guard let self else { return }
+      // Quick-switcher recency (issue #132) — recorded before the history guard below, for the same
+      // reason as the `selectedTargetID` didSet: the switcher's own commit runs under
+      // `isNavigatingHistory`.
+      SwitcherRecency.shared.recordPane(tabID)
       // The in-file find is tied to the focused file pane (the model is shared across panes). Any
       // focused-tab change ends that session: close it so ⌘G can't step a hidden find from a
       // terminal/diff pane, and the bar doesn't reappear pre-filled on the next file (review).
@@ -842,6 +857,7 @@ final class AppStore: ObservableObject {
     // back later — the subtree is meant to be re-opened deliberately.
     terminals.onTabsRemoved = { [weak self] targetID, ids in
       guard let self else { return }
+      SwitcherRecency.shared.forgetPanes(ids)  // drop closed panes from the ⌃Tab order (issue #132)
       self.history.prune(removing: Set(ids))
       if self.terminals.tabCount(forTargetID: targetID) < 2 {
         self.expandedTerminalTargets.remove(targetID)
@@ -1143,6 +1159,15 @@ final class AppStore: ObservableObject {
   /// Returns whether it switched, so the AppDelegate monitor
   /// consumes the key in the monitor only when there's a tab to move to (it's a no-op otherwise —
   /// the key is reserved in `isAppShortcut` either way, so it never reaches the terminal).
+  /// Step `index` by `delta` around a list of `count` items, wrapping at both ends. The one wrap rule
+  /// for every cycling shortcut — the workroom bar (⇧⌥⌘←/→), the terminal strip (⌥⌘←/→) and the quick
+  /// switcher's MRU step (issue #132) all read it, so an off-by-one can only ever exist in one place.
+  /// Returns `index` unchanged when `count <= 0`; `delta` may be any sign or magnitude.
+  nonisolated static func wrapped(index: Int, by delta: Int, count: Int) -> Int {
+    guard count > 0 else { return index }
+    return ((index + delta) % count + count) % count
+  }
+
   @discardableResult
   func cycleWorkroomTab(forward: Bool) -> Bool {
     // Step the on-screen order (`displayedWorkroomTargets`, == ordered with no split): a split pulls its
@@ -1153,7 +1178,7 @@ final class AppStore: ObservableObject {
     let next: Int
     if let current = tabs.firstIndex(where: { $0.sid == selectedTargetID }) {
       guard tabs.count > 1 else { return false }
-      next = (current + (forward ? 1 : -1) + tabs.count) % tabs.count
+      next = Self.wrapped(index: current, by: forward ? 1 : -1, count: tabs.count)
     } else {
       // No current tab: forward (→) enters at the rightmost, back (←) at the leftmost.
       next = forward ? tabs.count - 1 : 0
@@ -3441,7 +3466,7 @@ final class AppStore: ObservableObject {
       terminals.activeTab(for: target).flatMap { active in
         tabs.firstIndex(where: { $0.id == active.id })
       } ?? 0
-    let next = (current + (forward ? 1 : -1) + tabs.count) % tabs.count
+    let next = Self.wrapped(index: current, by: forward ? 1 : -1, count: tabs.count)
     terminals.select(tabs[next].id, for: target)
     return true
   }

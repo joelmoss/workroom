@@ -89,6 +89,26 @@ final class AppShortcutReservationTests: XCTestCase {
     }
   }
 
+  /// Tab (keyCode 48) is **deliberately never reserved**, for either quick switcher (issue #132).
+  ///
+  /// Adding it here was considered and rejected: this classifier is static, but whether the app owns
+  /// ⌃Tab depends on runtime state — a workroom with one pane has nothing to switch to, so the key must
+  /// reach the TUI. The `AppDelegate` monitor decides instead (it runs inside `NSApp.sendEvent`, ahead
+  /// of key-equivalent dispatch, so a switch that *does* happen never leaks the key to the surface).
+  /// Same reasoning as ⌃⌘arrows above. Pinned so a future "defence in depth" edit can't silently take
+  /// `<C-Tab>` away from every single-pane TUI.
+  func testTabIsNeverReservedForAnyModifierCombination() {
+    let combos: [NSEvent.ModifierFlags] = [
+      [], [.shift], [.option], [.option, .shift], [.control], [.control, .shift],
+      [.command], [.command, .shift], [.command, .option], [.command, .control],
+    ]
+    for flags in combos {
+      XCTAssertFalse(
+        reserved("\t", flags, keyCode: 48),
+        "Tab must stay the terminal's; the quick switcher is monitor-only (issue #132)")
+    }
+  }
+
   // MARK: Things that must NOT be reserved
 
   /// The allowlist is deliberately minimal — anything not a Workroom menu command belongs to the

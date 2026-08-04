@@ -55,6 +55,10 @@ final class WindowRegistry: ObservableObject {
           let store = self.store(for: window)
         else { return }
         self.lastActiveStore = store
+        // Bringing a window forward makes its selection the most recent one (issue #132). Without
+        // this, ⌘` to another window leaves the switcher's MRU head pointing at the window you left,
+        // so the next ⌥Tab tap flips somewhere you didn't come from.
+        SwitcherRecency.shared.recordWorkroom(store: store, sid: store.selectedTargetID)
       }
     }
   }

@@ -128,9 +128,13 @@ struct RootWindow: View {
   }
 }
 
-/// Installs a local key monitor for ⌘1…⌘9 to focus the workroom's Nth terminal tab.
-/// Handled here (rather than as menu items) so the shortcuts work without cluttering the
-/// menu, and the monitor sees the keys before the focused terminal does.
+/// Installs the app's local key monitor: the shortcuts that are handled *here* rather than as menu
+/// items, because they'd clutter the menu (⌘1–9 / ⌥⌘1–9 tab focus), because they have no menu home
+/// (⌘` window cycling, ⌃⌘arrows pane focus, ⌥Tab / ⌃Tab quick switching), or because the monitor must
+/// beat a competing menu item (⌘W in the quick terminal). A local monitor runs inside
+/// `NSApp.sendEvent`, ahead of both menu key-equivalent dispatch and the focused terminal surface, so
+/// it is also the only place a shortcut can be claimed *conditionally* — see the ⌥Tab / ⌃Tab branch,
+/// which passes the key back to the terminal when there is nothing to switch to.
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
   private var monitor: Any?
   /// The global ⌘§ show/hide shortcut while enabled, else nil (issue #13). Registered/torn down by
@@ -177,6 +181,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   ) -> AppStore? {
     guard let store = registry.store(for: window), store.activePicker == nil else { return nil }
     return store
+  }
+
+  /// What a quick-switcher keystroke (⌥Tab / ⌃Tab, issue #132) should do for `window`.
+  ///
+  /// Three outcomes, because this shortcut is the first one whose consumption is *conditional*:
+  /// - `.passThrough` — not one of our windows (Settings, About, the quick terminal). The key belongs
+  ///   to whatever is focused there, so ⌃Tab still reaches a TUI in the quick terminal.
+  /// - `.swallow` — one of ours with a modal up. Raising a window and moving its selection under its
+  ///   own sheet would leave that sheet acting on a workroom the user never chose (for the commit
+  ///   sheet, a wrong-target VCS write). Gated on the FULL `hasModalPresentation` predicate, not
+  ///   `activePicker` — hence resolving through the registry rather than `shortcutStore`, which nils
+  ///   out a picker window and a foreign window alike, two cases that must differ here.
+  /// - `.act(store)` — go ahead; whether the event is consumed then depends on whether the switcher
+  ///   actually switched (nothing to switch to ⇒ the terminal keeps the key).
+  ///
+  /// `registry` is injectable for the same reason as `shortcutStore`'s: so tests don't register windows
+  /// on the shared singleton.
+  @MainActor static func switcherGate(
+    for window: NSWindow?, in registry: WindowRegistry = .shared
+  ) -> SwitcherGate {
+    guard let store = registry.store(for: window) else { return .passThrough }
+    return store.hasModalPresentation ? .swallow : .act(store)
   }
 
   /// Whether `window` is one of ours *and* has a command-palette dialog open — the case where a
@@ -244,6 +270,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let forward = flags == .command
         MainActor.assumeIsolated { WindowRegistry.shared.cycleWindows(forward: forward) }
         return nil
+      }
+      // ⌥Tab / ⌃Tab: the quick switchers (issue #132) — ⌥Tab steps open workrooms across every
+      // window by most-recent use, ⌃Tab steps the current workroom's panes. Caught here for the same
+      // reason as ⌘1–9, and *only* here: Tab is deliberately NOT in `isAppShortcut`, because whether
+      // the app owns it depends on runtime state (a workroom with one pane has nothing to switch to,
+      // so ⌃Tab must still reach a TUI). Both trigger modifiers are preferences — a global hotkey
+      // grabber like AltTab beats this monitor and can't be detected.
+      if let hit = QuickSwitcherKey.classify(keyCode: event.keyCode, flags: flags) {
+        // Autorepeat would spin the switcher (~15 steps/sec); macOS's own ⌘Tab ignores repeats too.
+        if event.isARepeat { return nil }
+        return MainActor.assumeIsolated {
+          switch Self.switcherGate(for: window) {
+          case .passThrough: return event
+          case .swallow: return nil
+          case .act(let store):
+            // Consumed only when it switched, so ⌃Tab still reaches a TUI in a single-pane workroom —
+            // the same rule as the ⌥⌘digit / ⌥⌘arrow branches below.
+            return QuickSwitcher.step(hit.kind, reverse: hit.reverse, in: store) ? nil : event
+          }
+        }
       }
       // ⌘1–9: focus the Nth tab (caught here so it fires before the terminal swallows the digit).
       if flags == .command, let chars = event.charactersIgnoringModifiers,
