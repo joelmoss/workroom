@@ -24,13 +24,8 @@ enum SentryConfig {
 
       // Tag dev builds so local crashes/traces don't pollute the production environment in Sentry.
       // `SENTRY_ENVIRONMENT` overrides either default.
-      #if DEBUG
-        let defaultEnvironment = "development"
-      #else
-        let defaultEnvironment = "production"
-      #endif
       options.environment =
-        ProcessInfo.processInfo.environment["SENTRY_ENVIRONMENT"] ?? defaultEnvironment
+        ProcessInfo.processInfo.environment["SENTRY_ENVIRONMENT"] ?? defaultEnvironment()
       // releaseName defaults to "<bundle id>@<version>+<build>", which release.sh already drives.
 
       // Error monitoring: crashes + app hangs. Watchdog-termination tracking and the
@@ -57,4 +52,32 @@ enum SentryConfig {
       options.enableMetrics = true
     }
   }
+
+  /// The Sentry `environment` for this build: `development` for Debug, `nightly` for the side-by-side
+  /// Workroom Nightly product, `production` for the shipping app.
+  ///
+  /// Nightly needs its own environment, not just its own release name. The `Nightly` build config is
+  /// release-type (no `DEBUG`), so nightly events used to arrive tagged `production` — which is how
+  /// WORKROOM-2B, an App Hang from a build that ships from the tip of `master` to a handful of people,
+  /// was indistinguishable from a hang in the released app. Alert rules and saved searches scoped to
+  /// `environment:production` will stop matching nightly events, which is the point.
+  ///
+  /// Both parameters default to the real build facts and exist purely so `SentryConfigTests` never has
+  /// to fake a build configuration (the same seam `UITestFixture` uses).
+  static func defaultEnvironment(
+    nightly: Bool = ReleaseChannel.isNightlyBuild, debug: Bool = isDebugBuild
+  ) -> String {
+    if debug { return "development" }
+    return nightly ? "nightly" : "production"
+  }
+
+  /// Whether this is a Debug build. A stored fact rather than an `#if` at the use site so
+  /// `defaultEnvironment` stays a pure function of its inputs.
+  static let isDebugBuild: Bool = {
+    #if DEBUG
+      return true
+    #else
+      return false
+    #endif
+  }()
 }

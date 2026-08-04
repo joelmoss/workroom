@@ -159,6 +159,15 @@ enum UITestFixture {
     flag("WorkroomUITestHugeChangeSet")
   }
 
+  /// When set (`-WorkroomUITestManyCommits <n>`), the fixture's History page reports `n` synthetic
+  /// commits instead of the default five, so a test can prove the pane realizes only the rows on screen
+  /// and stays responsive at scale — the shape of the WORKROOM-2B App Hang. Clamped: 0 disables it
+  /// (the default five-commit page every other History test depends on), and the ceiling keeps a typo'd
+  /// launch argument from generating a million rows.
+  static var manyCommits: Int {
+    min(max(number("WorkroomUITestManyCommits"), 0), 2000)
+  }
+
   /// The commit the dialog names as what "Amend last commit" would rewrite.
   ///
   /// Seeded rather than read, because the fixture's paths are not real repos — a live `git log` there
@@ -803,10 +812,33 @@ struct FixtureVCSProvider: VCSProviding {
   /// One origin branch, so the badge tooltips name it rather than counting.
   static let pushScope = VCSPushScope(refName: "origin/main", count: 1)
 
+  /// A large synthetic page for `-WorkroomUITestManyCommits <n>` — newest-first, `root()` last, spread
+  /// over seven author emails so several distinct avatars (and their MD5/Gravatar work) are in play.
+  ///
+  /// Deliberately built only when the flag is set, and deliberately NOT mixed with `commits`: the
+  /// default five-row page is depended on EXACTLY by `HistoryPushStateUITests` (one badge, one
+  /// divergence expander), so it must stay byte-identical when the flag is absent.
+  static func manyCommits(_ count: Int) -> [VCSCommit] {
+    let base: TimeInterval = 1_700_000_000
+    let real = (0..<count).map { (n: Int) -> VCSCommit in
+      let author = VCSAuthor(name: "Author \(n % 7)", email: "author\(n % 7)@example.com")
+      return VCSCommit(
+        commitID: String(format: "stress%034x", n), shortID: String(format: "s%07x", n),
+        changeID: nil, summary: "Stress commit \(n)", body: "", authors: [author],
+        timestamp: Date(timeIntervalSince1970: base - TimeInterval(n * 60)), refs: [],
+        parentIDs: n + 1 < count ? [String(format: "stress%034x", n + 1)] : [rootCommit.commitID],
+        isWorkingCopy: n == 0, pushState: .unknown)
+    }
+    return real + [rootCommit]
+  }
+
   func log(root: URL, limit: Int) throws -> VCSHistoryPage {
-    let slice = Array(Self.commits.prefix(limit))
+    let all =
+      UITestFixture.manyCommits > 0
+      ? Self.manyCommits(UITestFixture.manyCommits) : Self.commits
+    let slice = Array(all.prefix(limit))
     return VCSHistoryPage(
-      commits: slice, reachedEnd: slice.count >= Self.commits.count, pushScope: Self.pushScope)
+      commits: slice, reachedEnd: slice.count >= all.count, pushScope: Self.pushScope)
   }
 
   func changeset(root: URL, commitID: String) async throws -> VCSChangeset {

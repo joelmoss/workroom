@@ -119,6 +119,65 @@ final class HistoryModelTests: XCTestCase {
     XCTAssertTrue(m.reachedEnd, "all commits loaded ⇒ reachedEnd")
   }
 
+  // MARK: window cap (bounds the per-refresh read, not the drawing — WORKROOM-2B)
+
+  private func capped(_ provider: some VCSProviding, pageSize: Int, maxWindow: Int) -> HistoryModel
+  {
+    HistoryModel(pageSize: pageSize, maxWindow: maxWindow, resolve: { _ in provider })
+  }
+
+  func testLoadMoreStopsAtWindowCap() async {
+    let m = capped(FakeProvider(all: (1...20).map { commit("\($0)") }), pageSize: 2, maxWindow: 4)
+    m.focus(url)
+    await m.awaitCurrentLoad()
+    XCTAssertFalse(m.atWindowCap)
+
+    m.loadMore()
+    await m.awaitCurrentLoad()
+    XCTAssertEqual(m.commits.count, 4)
+    XCTAssertTrue(m.atWindowCap, "the window is full")
+
+    m.loadMore()
+    await m.awaitCurrentLoad()
+    XCTAssertEqual(m.commits.count, 4, "loadMore at the cap must be a no-op")
+  }
+
+  func testWindowCapDoesNotClaimTheHistoryEnded() async {
+    let m = capped(FakeProvider(all: (1...20).map { commit("\($0)") }), pageSize: 4, maxWindow: 4)
+    m.focus(url)
+    await m.awaitCurrentLoad()
+
+    XCTAssertTrue(m.atWindowCap)
+    XCTAssertFalse(
+      m.reachedEnd,
+      "`reachedEnd` means no OLDER commits exist; conflating it with the cap would make the model lie "
+        + "to every caller (and hide the cap notice the pane shows instead of `Load more`)")
+  }
+
+  func testRefreshDoesNotReinflatePastTheCap() async {
+    let m = capped(FakeProvider(all: (1...20).map { commit("\($0)") }), pageSize: 2, maxWindow: 4)
+    m.focus(url)
+    await m.awaitCurrentLoad()
+    m.loadMore()
+    await m.awaitCurrentLoad()
+    XCTAssertEqual(m.commits.count, 4)
+
+    // Refresh re-reads a growing PREFIX, and it fires per ref write from the metadata watcher — so an
+    // unclamped refresh is the path that would keep re-walking an oversized window forever.
+    m.refresh()
+    await m.awaitCurrentLoad()
+    XCTAssertEqual(m.commits.count, 4)
+  }
+
+  func testWindowCapNeverBelowOnePage() async {
+    // A caller asking for a cap under one page gets one page, not an empty list.
+    let m = capped(FakeProvider(all: (1...20).map { commit("\($0)") }), pageSize: 10, maxWindow: 3)
+    m.focus(url)
+    await m.awaitCurrentLoad()
+    XCTAssertEqual(m.commits.count, 10)
+    XCTAssertEqual(m.windowCap, 10)
+  }
+
   func testFailurePropagatesToState() async {
     let m = model(FailProvider(), pageSize: 10)
     m.focus(url)

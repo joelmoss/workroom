@@ -2,9 +2,32 @@ import SwiftUI
 
 /// The inspector's **History** section body (issue #59): a newest-first commit log for the selected
 /// workroom, read via `VCSProviding` through the store-owned `HistoryModel`. Lives inside the
-/// inspector's scroll view, so it renders a flat `VStack` of rows (like `ChangesPanel`/`FilesPanel`)
+/// inspector's scroll view, so it renders a flat stack of rows (like `ChangesPanel`/`FilesPanel`)
 /// rather than a `List`. Single-click a row opens the commit's `ChangesetDetailView` as a preview
 /// content tab; a quick double-click persists it (the same gate the Changes panel uses).
+///
+/// **Invalidation — read this before adding a dependency to a row** (WORKROOM-2B, a ≥2000 ms App Hang
+/// sampled inside `HistoryRow.body`):
+///
+/// ```
+/// BEFORE                                     AFTER
+/// TerminalSessions.updateTitle / pulse       TerminalSessions.updateTitle / pulse
+///   │ @Published tabsByTarget/activityPulses   │
+///   ▼                                          ▼
+/// EVERY HistoryRow (@ObservedObject)         HistoryPanel.body — ONE pass
+///   │                                          │ LazyVStack: ForEach builds REALIZED rows only
+///   ▼                                          ▼
+/// N × body: MD5 + 16×String(format:)         HistoryRow == (commit, pushScope,
+///         + URL parse + AsyncImage                          isSelected, themeGeneration)
+///   = 2000 ms                                  │ equal → body SKIPPED
+///                                              ▼
+///                                            selection/theme moved → affected rows rebuild
+/// ```
+///
+/// So: the panel owns the `TerminalSessions` dependency and resolves the focused tab **once**
+/// (`FocusedTabSelection`); rows receive plain values and observe nothing. Measured by
+/// `HistoryRowInvalidationTests` — a pulse burst must rebuild zero rows, and a selection or content
+/// change must still rebuild the affected ones.
 struct HistoryPanel: View {
   @EnvironmentObject var store: AppStore
   /// Injected + `@ObservedObject` (mirrors `FilesPanel`), NOT read via `store.commitHistory`: the
@@ -13,6 +36,10 @@ struct HistoryPanel: View {
   /// `store.commitHistory` read only refreshed when some *unrelated* store change happened to publish
   /// (a status refresh, a reselection, an app refocus) — leaving the loader stuck until then.
   @ObservedObject var model: HistoryModel
+  /// Observed HERE, deliberately, and nowhere below: this is the one view that needs to know which
+  /// content tab is focused, and `TerminalSessions` republishes per terminal title/activity write. One
+  /// panel body pass per publish is affordable; N row bodies was not (see the diagram above).
+  @ObservedObject var sessions: TerminalSessions
   private let theme = ThemeService.shared
 
   var body: some View {
@@ -66,8 +93,19 @@ struct HistoryPanel: View {
       + "\u{1F}\(store.historySectionShown)"
   }
 
+  /// The commit id of the focused changeset tab, or `nil`. Resolved once per panel body pass and handed
+  /// to the rows as a value — the row-level `isSelected` this replaced is what made every row observe
+  /// `AppStore` + `TerminalSessions` (see the type doc's invalidation diagram).
+  private var selectedCommitID: String? {
+    FocusedTabSelection.current(store: store, sessions: sessions)?.changesetCommitID
+  }
+
   /// The changeset tab's title for a commit — its summary, or the short id when it has none.
-  private func title(_ commit: VCSCommit) -> String {
+  ///
+  /// `static` so the `open:` closure below can be written with an explicit `[store]` capture list and
+  /// provably capture nothing per-pass: `HistoryRow`'s hand-written `==` excludes that closure, and the
+  /// exclusion is only sound while the closure is behaviour-constant.
+  private static func title(_ commit: VCSCommit) -> String {
     commit.summary.isEmpty ? commit.shortID : commit.summary
   }
 
@@ -76,34 +114,66 @@ struct HistoryPanel: View {
   /// makes the per-row divergence accordion animate smoothly — a growing row's height change and the
   /// resulting scroll layout are one SwiftUI transaction, not a fight with an AppKit resize.
   private var list: some View {
-    ScrollView {
-      VStack(alignment: .leading, spacing: 0) {
+    let selected = selectedCommitID
+    // Read HERE so the panel itself has an Observation dependency on the theme, and pass it down so the
+    // rows' equality gate can see a theme change.
+    //
+    // Why this is not belt-and-braces: a row reads `theme.tokens` only inside ternaries
+    // (`isSelected ? accent : …`, `hovering ? rowHover : .clear`), and Swift evaluates just the taken
+    // branch — so an unselected, unhovered row reads NO token and therefore registers no observation.
+    // It used to repaint anyway, by accident: applying a theme also re-themes live terminals, which
+    // republished `TerminalSessions`, which every row observed. Removing that observation (the App Hang
+    // fix) removed the accidental repaint with it, and the unpushed badge's warning tint would have
+    // stayed stale until something else invalidated the row.
+    let themeGeneration = theme.generation
+    return ScrollView {
+      // `LazyVStack`, so a 1000-commit page costs the ~8 rows on screen rather than all of them. Safe
+      // here and NOT in `DiffViewer` (which documents rejecting it at `unifiedBody`): these rows are
+      // single-line `lineLimit(1)` fixed-height, so the height estimate a lazy stack caches is right,
+      // where a soft-wrapping diff row's is not. The divergence accordion still animates smoothly
+      // because SwiftUI owns the scroll (the doc comment above this property explains why), and it only
+      // ever grows a row that is already realized.
+      LazyVStack(alignment: .leading, spacing: 0) {
         ForEach(model.commits) { commit in
           if commit.isRoot {
             // jj's `root()` shares almost nothing with a real commit row — no author, time, refs,
             // push state, divergence or changeset to open — so it gets its own view rather than a
             // `HistoryRow` body threaded with suppressions.
-            HistoryRootRow(commit: commit)
+            HistoryRootRow(commit: commit).equatable()
           } else {
             HistoryRow(
               commit: commit,
               // Page-level, so an unpushed row's tooltip can name the origin branch it was measured
               // against instead of saying "origin" generically.
               pushScope: model.pushScope,
+              // Resolved once above, not per row: rows must not reach the stores for this.
+              selectedCommitID: selected,
+              themeGeneration: themeGeneration,
               // Open any commit's changeset — the row itself, or one of its divergent siblings.
               // Preview on a single click, persist on a quick double-click (siblings only ever
-              // preview).
-              open: { target, persist in
+              // preview). `[store]` + `Self.title` on purpose: the capture list is what makes this
+              // closure behaviour-constant, which is what lets `HistoryRow.==` exclude it.
+              open: { [store] target, persist in
                 if persist {
-                  store.openChangesetPersistent(commitID: target.commitID, title: title(target))
+                  store.openChangesetPersistent(
+                    commitID: target.commitID, title: Self.title(target))
                 } else {
-                  store.openChangesetPreview(commitID: target.commitID, title: title(target))
+                  store.openChangesetPreview(commitID: target.commitID, title: Self.title(target))
                 }
-              },
-              sessions: store.terminals)
+              }
+            ).equatable()
           }
         }
-        if !model.reachedEnd {
+        if !model.reachedEnd, model.atWindowCap {
+          // Older history exists but the window is capped, so say so instead of leaving a "Load more"
+          // that does nothing. Same shape as the other panes' cap notices (`FilesPanel`'s "+N more",
+          // `ChangesPanel`'s "Showing first N of M").
+          Text("Showing the newest \(model.windowCap) commits")
+            .font(.footnote).foregroundStyle(.tertiary)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.vertical, 8)
+            .accessibilityIdentifier("HistoryWindowCapNotice")
+        } else if !model.reachedEnd {
           Button {
             model.loadMore()
           } label: {
@@ -145,19 +215,38 @@ struct HistoryPanel: View {
   }
 }
 
+/// The abbreviated relative-time formatter shared by BOTH History row types (the commit row and its
+/// divergent siblings). One instance, not one per struct: `RelativeDateTimeFormatter` is not cheap to
+/// construct, the two configurations were byte-identical, and neither row keeps formatter state.
+private let historyRelativeFormatter: RelativeDateTimeFormatter = {
+  let f = RelativeDateTimeFormatter()
+  f.unitsStyle = .abbreviated
+  return f
+}()
+
 /// One commit row: first line of the message, then a metadata line (short id · author · relative
 /// time) with any bookmark/branch refs, and a `@` marker for the jj working copy.
-private struct HistoryRow: View {
+///
+/// Deliberately `internal`, not `private` (same reason `HistoryCommitCard` below is): the row's
+/// invalidation behaviour is the regression net for the WORKROOM-2B App Hang, and
+/// `HistoryRowInvalidationTests` reads `bodyPasses` to assert it. XCUITest can only see that rows
+/// exist, not how many times they were rebuilt.
+struct HistoryRow: View, Equatable {
   let commit: VCSCommit
   /// What this page's push states were compared against, for the unpushed badge's tooltip.
   let pushScope: VCSPushScope?
+  /// The focused changeset tab's commit id, resolved ONCE by `HistoryPanel` and passed down as a plain
+  /// value. This row observes nothing: it used to hold `@EnvironmentObject AppStore` +
+  /// `@ObservedObject TerminalSessions` just to compute the comparison below, which is what made a
+  /// terminal title/activity pulse rebuild every row in the pane (WORKROOM-2B).
+  let selectedCommitID: String?
+  /// `ThemeService.generation`, so a theme change makes this row's equality gate report "changed".
+  /// Load-bearing: the row's token reads sit inside ternaries, so an unselected, unhovered row reads no
+  /// token and registers no Observation dependency of its own (see `HistoryPanel.list`).
+  let themeGeneration: Int
   /// Open a commit's changeset detail as a tab — the row's own commit or one of its divergent
   /// siblings. `persist` false previews (single click), true persists (quick double-click).
   let open: (_ commit: VCSCommit, _ persist: Bool) -> Void
-  @EnvironmentObject var store: AppStore
-  /// Observed so the row's selected state tracks which changeset tab is focused — the tab strip
-  /// lives in a separate observation tree from the inspector (mirrors `ChangesPanel.ChangedFileRow`).
-  @ObservedObject var sessions: TerminalSessions
   @State private var hovering = false
   /// Whether the rich hover card (mirroring the changeset detail's header) is showing. Revealed on a
   /// short hover dwell so it doesn't flash while the pointer scans down the list (see the `.task`).
@@ -168,14 +257,38 @@ private struct HistoryRow: View {
   @State private var showDivergent = false
   private let theme = ThemeService.shared
 
-  private static let relative: RelativeDateTimeFormatter = {
-    let f = RelativeDateTimeFormatter()
-    f.unitsStyle = .abbreviated
-    return f
-  }()
+  /// The equality gate behind `.equatable()` at the use site. Synthesis is impossible (the row stores
+  /// four `@State`s, a `ThemeService` handle and a closure), so this lists what the body actually reads
+  /// from its inputs: the commit, the page's push scope, and whether this row is the selected one.
+  ///
+  /// `open` is EXCLUDED. That is sound only because `HistoryPanel` builds it with an explicit `[store]`
+  /// capture list over a `static` title helper, so two instances differing only in closure identity are
+  /// behaviourally identical. If that closure ever captures per-pass state, this `==` must start
+  /// comparing it — or go away. `@State` and `ThemeService`'s Observation invalidate the body directly,
+  /// past this gate, so hover, the dwell popover, the accordion and theme repaints are unaffected.
+  /// Compares the DERIVED `isSelected`, not the raw `selectedCommitID`: when selection moves from one
+  /// row to another, only the two rows whose own selected-ness changed compare unequal — the rest of
+  /// the realized page stays elided.
+  static func == (lhs: HistoryRow, rhs: HistoryRow) -> Bool {
+    lhs.commit == rhs.commit && lhs.pushScope == rhs.pushScope
+      && lhs.isSelected == rhs.isSelected && lhs.themeGeneration == rhs.themeGeneration
+  }
+
+  #if DEBUG
+    /// How many times ANY row's body has been evaluated this process — the measurement behind the
+    /// WORKROOM-2B regression tests. A terminal title/activity publish must move this by ZERO, and a
+    /// 200-commit page must move it by far less than 200. Debug-only: it exists for
+    /// `HistoryRowInvalidationTests`, not for the shipping app.
+    static var bodyPasses = 0
+  #endif
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 0) {
+    #if DEBUG
+      Self.bodyPasses += 1
+    #endif
+    // Explicit `return` on purpose: it opts this body out of the `@ViewBuilder` transform so the
+    // debug counter above can be a plain statement. The `VStack` closure is still builder-built.
+    return VStack(alignment: .leading, spacing: 0) {
       VStack(alignment: .leading, spacing: 3) {
         // Line one — the commit summary — is the row's combined accessibility leaf (id `HistoryRow`),
         // so the row reads and selects as a unit behind one queryable identifier.
@@ -194,6 +307,14 @@ private struct HistoryRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
         .accessibilityIdentifier("HistoryRow")
+        // The short id leads the spoken label so a UI test can name the COMMIT it means instead of
+        // indexing by position. That distinction became load-bearing when this list went lazy: offscreen
+        // rows leave the accessibility tree, so `element(boundBy: 2)` no longer reliably means "the
+        // third commit" — and a test that quietly indexes a different row than it intends still passes.
+        // An element carries only one identifier (`HistoryRow`, which the tests also count), so identity
+        // rides in the label. VoiceOver gains the id too, which the row never announced before.
+        .accessibilityLabel(
+          "\(commit.shortID), \(commit.summary.isEmpty ? "(no description)" : commit.summary)")
 
         // Line two — author avatars, relative time, then any bookmark/branch refs right of the
         // timestamp, then the unpushed marker — with the "diverging" disclosure trailing on the SAME
@@ -207,7 +328,8 @@ private struct HistoryRow: View {
         // refs out. Each avatar tooltips its own name, the hover card and the changeset detail spell
         // the names out, and the timestamp carries them as its accessibility label for VoiceOver.
         HStack(spacing: 6) {
-          let relative = Self.relative.localizedString(for: commit.timestamp, relativeTo: Date())
+          let relative = historyRelativeFormatter.localizedString(
+            for: commit.timestamp, relativeTo: Date())
           if !commit.authors.isEmpty {
             AvatarStack(
               subjects: commit.authors.map { AvatarSubject(author: $0, pixelSize: 48) }, size: 16)
@@ -331,26 +453,24 @@ private struct HistoryRow: View {
     .accessibilityIdentifier("HistoryRowDiverges")
   }
 
-  /// The expanded list of the change's divergent copies — one `DivergentSiblingRow` each.
+  /// The expanded list of the change's divergent copies — one `DivergentSiblingRow` each. The siblings
+  /// get the same passed-down selection value the parent row did; nothing here reaches a store.
   private var divergentSiblingsList: some View {
     VStack(alignment: .leading, spacing: 0) {
       ForEach(commit.divergentSiblings) { sibling in
-        DivergentSiblingRow(sibling: sibling, open: open, sessions: sessions)
+        DivergentSiblingRow(
+          sibling: sibling, selectedCommitID: selectedCommitID,
+          themeGeneration: themeGeneration, open: open
+        )
+        .equatable()
       }
     }
     .padding(.top, 1).padding(.bottom, 5)
   }
 
-  /// True when the selected target's focused content tab is this commit's changeset — so the row
-  /// showing in the pane reads as selected. The History analogue of `ChangedFileRow.isSelected`.
-  private var isSelected: Bool {
-    guard let target = store.selectedTarget, let tab = sessions.focusedTab(for: target)
-    else { return false }
-    if case .changeset(let descriptor) = tab.content {
-      return descriptor.commitID == commit.commitID
-    }
-    return false
-  }
+  /// True when the focused content tab is this commit's changeset — so the row showing in the pane
+  /// reads as selected. Now a comparison against a value the panel resolved, not a store read.
+  fileprivate var isSelected: Bool { selectedCommitID == commit.commitID }
 }
 
 /// jj's virtual **root commit**, rendered the way `jj log` prints it: `◆ root() 00000000`.
@@ -363,7 +483,7 @@ private struct HistoryRow: View {
 ///
 /// **Inert on purpose**: no hover highlight and no tap. There is no changeset to open (root's diff is
 /// empty by definition), so the row must not look or behave like it opens one.
-private struct HistoryRootRow: View {
+private struct HistoryRootRow: View, Equatable {
   let commit: VCSCommit
 
   var body: some View {
@@ -482,20 +602,17 @@ struct HistoryCommitCard: View {
 /// One divergent-copy row inside the expander: jj's `id/N` label + summary + relative time, with the
 /// SAME hover / selected highlight as a `HistoryRow` — a full-width band (content indented under the
 /// parent). Selected when its changeset is the focused content tab; a single click opens it.
-private struct DivergentSiblingRow: View {
+private struct DivergentSiblingRow: View, Equatable {
   let sibling: VCSCommit
+  /// The focused changeset tab's commit id, passed down from the panel through the parent row — the
+  /// sibling row observed the stores for this until WORKROOM-2B (see `HistoryPanel`'s type doc).
+  let selectedCommitID: String?
+  /// `ThemeService.generation` — same reason as `HistoryRow.themeGeneration`.
+  let themeGeneration: Int
   /// Opens a commit's changeset detail (preview) — the parent row's `open`, siblings only preview.
   let open: (_ commit: VCSCommit, _ persist: Bool) -> Void
-  @EnvironmentObject var store: AppStore
-  @ObservedObject var sessions: TerminalSessions
   @State private var hovering = false
   private let theme = ThemeService.shared
-
-  private static let relative: RelativeDateTimeFormatter = {
-    let f = RelativeDateTimeFormatter()
-    f.unitsStyle = .abbreviated
-    return f
-  }()
 
   var body: some View {
     HStack(spacing: 6) {
@@ -508,7 +625,7 @@ private struct DivergentSiblingRow: View {
         .foregroundStyle(
           isSelected ? theme.tokens.accent : (sibling.summary.isEmpty ? .secondary : .primary))
       Spacer(minLength: 4)
-      Text(Self.relative.localizedString(for: sibling.timestamp, relativeTo: Date()))
+      Text(historyRelativeFormatter.localizedString(for: sibling.timestamp, relativeTo: Date()))
         .font(.caption2).foregroundStyle(.secondary)
     }
     // Content indented under the parent row; the highlight band bleeds full-width (same -12 as the
@@ -531,12 +648,12 @@ private struct DivergentSiblingRow: View {
   }
 
   /// Selected when the focused content tab is this sibling's changeset (mirrors `HistoryRow`).
-  private var isSelected: Bool {
-    guard let target = store.selectedTarget, let tab = sessions.focusedTab(for: target)
-    else { return false }
-    if case .changeset(let descriptor) = tab.content {
-      return descriptor.commitID == sibling.commitID
-    }
-    return false
+  private var isSelected: Bool { selectedCommitID == sibling.commitID }
+
+  /// Same gate and same exclusion rationale as `HistoryRow.==` — `open` is the parent's
+  /// behaviour-constant closure.
+  static func == (lhs: DivergentSiblingRow, rhs: DivergentSiblingRow) -> Bool {
+    lhs.sibling == rhs.sibling && lhs.isSelected == rhs.isSelected
+      && lhs.themeGeneration == rhs.themeGeneration
   }
 }

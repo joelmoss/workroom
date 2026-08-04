@@ -107,16 +107,23 @@ xcodebuild -project "$PROJ" -scheme WorkroomApp -configuration "$CONFIGURATION" 
 # SENTRY_AUTH_TOKEN/SENTRY_ORG/SENTRY_PROJECT are set, else it skips with a note. We do this right
 # after archiving — symbols are tied to the compiled binary, not to signing/notarization — and a
 # symbol-upload hiccup must never block shipping an otherwise-good build.
+# Under GitHub Actions every branch below annotates the run summary: `::notice::` when symbols really
+# uploaded, `::warning::` when they didn't. A plain echo into a 2000-line log is what let the nightly
+# ship unsymbolicated for weeks (the app frames in WORKROOM-2B were three unnamed addresses), and a
+# skip-only warning still wouldn't prove the happy path — so both directions are stated.
 if [ -n "${SENTRY_AUTH_TOKEN:-}" ] && [ -n "${SENTRY_ORG:-}" ] && [ -n "${SENTRY_PROJECT:-}" ]; then
   if command -v sentry-cli >/dev/null 2>&1; then
     echo "==> Uploading dSYMs to Sentry ($SENTRY_ORG/$SENTRY_PROJECT)"
-    sentry-cli debug-files upload --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" "${ARCHIVE}/dSYMs" \
-      || echo "warning: Sentry dSYM upload failed; continuing release." >&2
+    if sentry-cli debug-files upload --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" "${ARCHIVE}/dSYMs"; then
+      echo "${GITHUB_ACTIONS:+::notice::}Sentry dSYM upload succeeded ($SENTRY_ORG/$SENTRY_PROJECT)."
+    else
+      echo "${GITHUB_ACTIONS:+::warning::}Sentry dSYM upload failed; continuing release." >&2
+    fi
   else
-    echo "note: sentry-cli not found; skipping Sentry dSYM upload (brew install getsentry/tools/sentry-cli)." >&2
+    echo "${GITHUB_ACTIONS:+::warning::}sentry-cli not found; skipping Sentry dSYM upload (brew install getsentry/tools/sentry-cli)." >&2
   fi
 else
-  echo "note: SENTRY_AUTH_TOKEN/SENTRY_ORG/SENTRY_PROJECT unset; skipping Sentry dSYM upload." >&2
+  echo "${GITHUB_ACTIONS:+::warning::}SENTRY_AUTH_TOKEN/SENTRY_ORG/SENTRY_PROJECT unset; skipping Sentry dSYM upload." >&2
 fi
 
 EXPORT_PLIST="${BUILD}/ExportOptions.plist"

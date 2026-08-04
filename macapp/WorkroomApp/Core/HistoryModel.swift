@@ -31,6 +31,14 @@ final class HistoryModel: ObservableObject {
   @Published private(set) var pushScope: VCSPushScope?
 
   private let pageSize: Int
+  /// Ceiling on the loaded window (10 pages). Not layout hygiene — a `LazyVStack` already keeps drawing
+  /// proportional to what's on screen. This bounds the **read**: `load` re-fetches a growing prefix, so
+  /// a window a user grew once is re-walked in full on every `refresh()`, and refresh fires per ref
+  /// write from the VCS-metadata watcher. That is one commit decode (message, author, refs) per row of
+  /// the window, per commit anyone makes. Mirrors the render caps the other panes already have
+  /// (`FileTreeModel.renderCap`, `ChangesPanel.renderCap`), which is also why the pane says so in
+  /// words rather than silently ignoring "Load more".
+  private let maxWindow: Int
   private let resolve: @Sendable (URL) throws -> VCSProviding
   /// Trailing debounce in front of every read — see `load`. Matches the selected-workroom status
   /// probe's own coalesce window (`AppStore.selectionDebounce`); injectable so tests needn't wait.
@@ -40,13 +48,25 @@ final class HistoryModel: ObservableObject {
 
   init(
     pageSize: Int = 100,
+    maxWindow: Int = 1000,
     debounce: TimeInterval = 0.3,
     resolve: @escaping @Sendable (URL) throws -> VCSProviding = { try VCS.provider(for: $0) }
   ) {
     self.pageSize = pageSize
+    self.maxWindow = max(pageSize, maxWindow)
     self.debounce = debounce
     self.resolve = resolve
   }
+
+  /// True once the loaded window has hit `maxWindow`, so "Load more" would be a no-op.
+  ///
+  /// Derived from the existing `@Published commits` rather than published separately, and deliberately
+  /// NOT folded into `reachedEnd`: that means "no older commits exist", and a model that conflated the
+  /// two would be lying to every caller that reads it.
+  var atWindowCap: Bool { commits.count >= maxWindow }
+
+  /// The cap itself, so the pane can name the number it is showing rather than hardcode it.
+  var windowCap: Int { maxWindow }
 
   /// Point the model at a repo (or clear it with `nil`). No-op if already focused there. Loads the
   /// first page.
@@ -66,7 +86,9 @@ final class HistoryModel: ObservableObject {
   /// Reload the currently-shown range (on pane-appear / app-focus / the refresh button).
   func refresh() {
     guard root != nil else { return }
-    load(limit: max(pageSize, commits.count))
+    // Clamped as well as `loadMore`: belt and braces, so a window grown before the cap existed (or by a
+    // future caller) can't re-inflate itself here on every ref write.
+    load(limit: min(max(pageSize, commits.count), maxWindow))
   }
 
   /// Ensure fresh data when the History section (re)activates (the panel's `.task`). On a genuine
@@ -83,10 +105,10 @@ final class HistoryModel: ObservableObject {
     }
   }
 
-  /// Grow the page by one `pageSize` (the "Load more" affordance).
+  /// Grow the page by one `pageSize` (the "Load more" affordance), up to `maxWindow`.
   func loadMore() {
-    guard root != nil, !reachedEnd, state != .loading else { return }
-    load(limit: commits.count + pageSize)
+    guard root != nil, !reachedEnd, state != .loading, !atWindowCap else { return }
+    load(limit: min(commits.count + pageSize, maxWindow))
   }
 
   /// Await the in-flight load — for tests and for a view that wants to sequence after a refresh.

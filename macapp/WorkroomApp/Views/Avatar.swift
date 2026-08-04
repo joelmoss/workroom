@@ -51,9 +51,31 @@ struct AvatarSubject: Hashable {
   private static func gravatar(email: String, pixelSize: Int) -> URL? {
     let normalized = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     guard !normalized.isEmpty else { return nil }
-    let hash = Insecure.MD5.hash(data: Data(normalized.utf8))
-      .map { String(format: "%02x", $0) }.joined()
+    let hash = hexString(Insecure.MD5.hash(data: Data(normalized.utf8)))
     return URL(string: "https://www.gravatar.com/avatar/\(hash)?s=\(pixelSize)&d=404")
+  }
+
+  private static let hexDigits: [UInt8] = Array("0123456789abcdef".utf8)
+
+  /// Lowercase hex, without Foundation's format machinery.
+  ///
+  /// This was `.map { String(format: "%02x", $0) }.joined()`, which is 16 full format-string parses
+  /// (`+[NSString _stringWithValidatedFormat:]` → `__CFStringAppendFormatCore`) per author to produce
+  /// 32 characters. That call was the leaf of the WORKROOM-2B App Hang sample, reached from
+  /// `HistoryRow.body` via `AvatarSubject.init` once per author per row per body pass.
+  ///
+  /// Byte-identical to `%02x` by construction: lowercase, zero-padded, exactly two digits per byte,
+  /// no locale involvement — which matters because the digest goes straight into the Gravatar URL, so
+  /// any drift would silently break every avatar. `internal`, not `private`, so
+  /// `AvatarSubjectTests` can pin it against the exact expression it replaced.
+  static func hexString<S: Sequence>(_ bytes: S) -> String where S.Element == UInt8 {
+    var out: [UInt8] = []
+    out.reserveCapacity(32)
+    for byte in bytes {
+      out.append(hexDigits[Int(byte >> 4)])
+      out.append(hexDigits[Int(byte & 0x0F)])
+    }
+    return String(decoding: out, as: UTF8.self)
   }
 
   private static func githubAvatar(login: String, pixelSize: Int) -> URL? {
@@ -89,6 +111,49 @@ struct AvatarSubject: Hashable {
   }
 }
 
+/// Avatar URLs whose load failed, for this session — so a row scrolling back into view doesn't
+/// re-request an image that isn't there.
+///
+/// Needed because the History list is a `LazyVStack` now: rows are built as they scroll in, and an
+/// author with no Gravatar (requested with `d=404`, so a miss really is a 404) would otherwise cost a
+/// request on every pass through the viewport, plus a visible flicker through `AsyncImage`'s loading
+/// phase before the initials chip settles.
+///
+/// **`AsyncImage` cannot tell us why a load failed** — its `.failure` phase carries an error, not an
+/// HTTP status — so "no avatar" and "wifi dropped" land here identically. That is why the set is
+/// cleared on app activation rather than kept for the whole session: a scroll performed offline
+/// self-heals the next time the user comes back to the app, instead of showing initials until relaunch.
+/// A loader that reads the status code (and can therefore cache only true 404s, and cache images too)
+/// is tracked in TODOS.md.
+@MainActor
+final class AvatarImageFailures: ObservableObject {
+  static let shared = AvatarImageFailures()
+
+  /// Bumped whenever the set is cleared, so views that consulted it re-evaluate and retry.
+  @Published private(set) var generation = 0
+  private var failed: Set<URL> = []
+  private var observer: Any?
+
+  private init() {
+    observer = NotificationCenter.default.addObserver(
+      forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+    ) { _ in
+      MainActor.assumeIsolated { AvatarImageFailures.shared.clear() }
+    }
+  }
+
+  func contains(_ url: URL) -> Bool { failed.contains(url) }
+
+  func record(_ url: URL) { failed.insert(url) }
+
+  /// Forget every failure so the next render retries. Called on app activation; also the test seam.
+  func clear() {
+    guard !failed.isEmpty else { return }
+    failed.removeAll()
+    generation += 1
+  }
+}
+
 /// A single circular avatar: the remote image once it loads, the coloured initials chip otherwise
 /// (nil URL, in-flight, or a 404/empty decode). Decorative — the adjacent name text carries the
 /// accessibility label, so the avatar is hidden from VoiceOver and only exposes a hover tooltip.
@@ -99,16 +164,25 @@ struct AvatarView: View {
   /// Privacy gate: when off, no avatar image is ever requested (the initials chip shows instead), so
   /// viewing an untrusted repo's history can't beacon the viewer to Gravatar/GitHub. See the key doc.
   @Default(.loadRemoteAvatars) private var loadRemoteAvatars
+  /// Session record of URLs that failed, so a lazily-rebuilt row doesn't re-request a missing avatar.
+  @ObservedObject private var failures = AvatarImageFailures.shared
 
   var body: some View {
     Group {
-      if loadRemoteAvatars, let url = subject.imageURL {
+      // `failures.generation` is read so a clear (app activation) re-evaluates this body and retries.
+      if loadRemoteAvatars, let url = subject.imageURL,
+        failures.generation >= 0, !failures.contains(url)
+      {
         AsyncImage(url: url, transaction: Transaction(animation: .easeOut(duration: 0.15))) {
           phase in
-          if case .success(let image) = phase {
+          switch phase {
+          case .success(let image):
             image.resizable().scaledToFill()
-          } else {
-            initials
+          case .failure:
+            // Remembered so the next realization of this row draws initials without a second request.
+            initials.onAppear { failures.record(url) }
+          default:
+            initials  // still in flight
           }
         }
       } else {

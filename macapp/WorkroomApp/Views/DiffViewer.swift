@@ -368,6 +368,13 @@ struct DiffViewer: View {
     // wrapping rows — leaving a blank band in the middle of a tall diff until you scroll it into
     // view. `UnifiedDiff.parse`'s 2000-line cap bounds the row count, so laying them all out up
     // front is affordable and gap-free.
+    //
+    // This is NOT a general rule against lazy stacks, and `HistoryPanel` deliberately uses one: its
+    // rows are single-line `lineLimit(1)`, so their height is known before layout and the estimate a
+    // lazy stack caches is correct. The distinction is soft-wrapping vs fixed-height rows, not
+    // "diffs vs history" — which matters because History's row count is unbounded by anything as
+    // tight as 2000 lines, and building all of it eagerly is what produced a 2-second App Hang
+    // (WORKROOM-2B).
     ScrollView(.vertical) {
       VStack(alignment: .leading, spacing: 0) {
         if let from = diff.renamedFrom {

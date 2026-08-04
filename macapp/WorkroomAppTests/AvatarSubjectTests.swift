@@ -1,3 +1,4 @@
+import CryptoKit
 import XCTest
 
 @testable import Workroom
@@ -5,6 +6,53 @@ import XCTest
 /// `AvatarSubject` is pure value logic — URL construction, email normalisation, initials, and the
 /// stable (non-salted) fallback colour. All unit-testable without a view.
 final class AvatarSubjectTests: XCTestCase {
+
+  // MARK: Hex encoding (replaced `String(format: "%02x")` — WORKROOM-2B)
+
+  /// The honest "no behaviour change" proof: compare against the EXACT expression that was removed.
+  /// The digest feeds the Gravatar URL, so a single wrong nibble silently breaks every avatar.
+  func testHexStringMatchesFormatSpecifierForEveryByte() {
+    for value in UInt8.min...UInt8.max {
+      XCTAssertEqual(
+        AvatarSubject.hexString([value]), String(format: "%02x", value),
+        "hex encoding diverged from %02x at byte \(value)")
+    }
+  }
+
+  func testHexStringMatchesFormatSpecifierForSequences() {
+    let bytes: [UInt8] = [0x00, 0x01, 0x0f, 0x10, 0x7f, 0x80, 0xfe, 0xff]
+    XCTAssertEqual(
+      AvatarSubject.hexString(bytes), bytes.map { String(format: "%02x", $0) }.joined())
+    XCTAssertEqual(AvatarSubject.hexString([UInt8]()), "", "empty input encodes to an empty string")
+  }
+
+  /// RFC 1321 anchors, so the digest+encode pair is pinned to published values rather than to itself.
+  func testHexStringOfKnownMD5Digests() {
+    func md5Hex(_ s: String) -> String {
+      AvatarSubject.hexString(Insecure.MD5.hash(data: Data(s.utf8)))
+    }
+    XCTAssertEqual(md5Hex(""), "d41d8cd98f00b204e9800998ecf8427e")
+    XCTAssertEqual(md5Hex("abc"), "900150983cd24fb0d6963f7d28e17f72")
+    XCTAssertEqual(md5Hex("message digest"), "f96b697d7cb7938d525a2f31aaf161d0")
+  }
+
+  /// The end-to-end contract: the produced Gravatar URL must be byte-identical to what the removed
+  /// `String(format: "%02x")` path produced. Independently recomputed here with the OLD expression, so
+  /// the production encoder and this assertion cannot drift together.
+  func testGravatarURLIsUnchangedForKnownEmails() {
+    func legacyMD5Hex(_ email: String) -> String {
+      Insecure.MD5.hash(data: Data(email.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+    func url(_ email: String) -> String? {
+      AvatarSubject(author: VCSAuthor(name: "x", email: email), pixelSize: 48)
+        .imageURL?.absoluteString
+    }
+    for email in ["joel@example.com", "grace@example.com", "ada@example.com"] {
+      XCTAssertEqual(
+        url(email), "https://www.gravatar.com/avatar/\(legacyMD5Hex(email))?s=48&d=404",
+        "the gravatar URL for \(email) moved")
+    }
+  }
 
   // MARK: Commit authors → Gravatar
 

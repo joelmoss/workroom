@@ -239,21 +239,6 @@ final class GhosttyApp {
     try? contents.write(to: themeConfigURL, atomically: true, encoding: .utf8)
   }
 
-  /// A `#RRGGBB` string for `color` resolved against the light/dark appearance (the system colors
-  /// flatten to concrete RGB only when the matching appearance is the current drawing appearance).
-  private static func hexColor(_ color: NSColor, dark: Bool) -> String {
-    let appearance = NSAppearance(named: dark ? .darkAqua : .aqua) ?? NSApp.effectiveAppearance
-    var hex = dark ? "#000000" : "#FFFFFF"
-    appearance.performAsCurrentDrawingAppearance {
-      if let c = color.usingColorSpace(.sRGB) {
-        hex = String(
-          format: "#%02X%02X%02X", Int(round(c.redComponent * 255)),
-          Int(round(c.greenComponent * 255)), Int(round(c.blueComponent * 255)))
-      }
-    }
-    return hex
-  }
-
   // MARK: Tick pump (A1 — coalesced, main-thread)
 
   /// Called by `wakeup_cb`, possibly off the main thread. Hops to the main actor and coalesces

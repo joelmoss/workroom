@@ -75,6 +75,22 @@ final class HistoryPushStateUITests: XCTestCase {
       "fixture history rows render")
   }
 
+  /// The row for a specific fixture commit, matched by its short id rather than by position.
+  ///
+  /// Position stopped being a reliable way to name a commit when the History list became a
+  /// `LazyVStack` (WORKROOM-2B): unrealized rows are absent from the accessibility tree, so
+  /// `element(boundBy: 2)` can silently mean a different commit than the test intends — and still pass.
+  /// The short id leads each row's accessibility label for exactly this reason. Scoped to `staticTexts`
+  /// (the combined row leaf) to keep the predicate query off the whole snapshot.
+  private func historyRow(_ app: XCUIApplication, shortID: String) -> XCUIElement {
+    // `descendants(matching: .any)`, not `staticTexts`: SwiftUI's combined row leaf is not reliably a
+    // static text, and an identifier-scoped query stays indexed (fast) even though a label predicate
+    // rides along.
+    els(app, "HistoryRow")
+      .matching(NSPredicate(format: "label BEGINSWITH %@", shortID))
+      .firstMatch
+  }
+
   /// Exactly one row badges, and it isn't every row: this is the suppression proof. `@` (unpushed),
   /// pushed and unknown rows must all stay clean.
   func testExactlyOneRowShowsTheUnpushedBadge() throws {
@@ -142,8 +158,11 @@ final class HistoryPushStateUITests: XCTestCase {
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
     openHistory(app)
 
-    // Fixture commit 2 is the badged one; open it (row order is newest-first, so index 1).
-    els(app, "HistoryRow").element(boundBy: 1).click()
+    // Fixture commit 2 is the badged one — named by its short id, not by row position.
+    let badged = historyRow(app, shortID: "fixc0002")
+    XCTAssertTrue(
+      badged.waitForExistence(timeout: 8), "the badged fixture commit's row is on screen")
+    badged.click()
     XCTAssertTrue(waitExists(el(app, "ChangesetDetail")), "the changeset detail opens")
     XCTAssertTrue(
       waitExists(headerSaysNotPushed(app)), "the detail header states the commit isn't pushed")
@@ -157,7 +176,10 @@ final class HistoryPushStateUITests: XCTestCase {
     openHistory(app)
 
     // Fixture commit 3 is `.pushed`.
-    els(app, "HistoryRow").element(boundBy: 2).click()
+    let pushed = historyRow(app, shortID: "fixc0003")
+    XCTAssertTrue(
+      pushed.waitForExistence(timeout: 8), "the pushed fixture commit's row is on screen")
+    pushed.click()
     XCTAssertTrue(waitExists(el(app, "ChangesetDetail")), "the changeset detail opens")
     XCTAssertFalse(
       headerSaysNotPushed(app).exists, "a pushed commit's header carries no unpushed marker")

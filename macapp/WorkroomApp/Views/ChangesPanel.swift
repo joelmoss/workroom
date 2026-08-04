@@ -184,16 +184,20 @@ struct RightInspector: View {
   private func sectionBody(for sub: InspectorSectionKind) -> AnyView {
     switch sub {
     case .changes:
-      return AnyView(ChangesPanel().environmentObject(store).environmentObject(notifications))
+      return AnyView(
+        ChangesPanel(sessions: store.terminals)
+          .environmentObject(store).environmentObject(notifications))
     case .files:
       return AnyView(
         FilesPanel(model: store.fileTree).environmentObject(store).environmentObject(notifications))
     case .pullRequest:
       return AnyView(PullRequestPanel().environmentObject(store).environmentObject(notifications))
     case .history:
+      // `sessions:` is injected, not read from the store inside the panel, because the panel must
+      // OBSERVE it (that is what replaced every row observing it — see `HistoryPanel`'s type doc).
       return AnyView(
-        HistoryPanel(model: store.commitHistory).environmentObject(store).environmentObject(
-          notifications))
+        HistoryPanel(model: store.commitHistory, sessions: store.terminals)
+          .environmentObject(store).environmentObject(notifications))
     }
   }
 
@@ -427,18 +431,35 @@ private struct PRNumberBadge: View {
 /// double-click persists it. `source` is the row's group (git worktree / jj `@` / jj `@-`), so the
 /// diff resolves against the right revision. The directory yields first when space is tight
 /// (truncates from the head). The change kind is spelled out in the accessibility label.
-private struct ChangedFileRow: View {
+///
+/// Deliberately `internal`, not `private` (mirrors `HistoryRow`): `ChangedFileRowInvalidationTests`
+/// reads `bodyPasses` to assert that a terminal pulse rebuilds nothing here either.
+struct ChangedFileRow: View, Equatable {
   let file: ChangedFile
   /// Which revision this row's diff comes from — the Changes group it's rendered under.
   let source: DiffSource
+  /// What the focused content tab is showing, resolved ONCE by the panel. The row used to hold
+  /// `@ObservedObject TerminalSessions` and compute this itself, which meant every terminal
+  /// title/activity publish rebuilt all `renderCap` rows (WORKROOM-2B's defect, one pane over).
+  let selection: FocusedTabSelection?
+  /// `ThemeService.generation`, so a theme change defeats the equality gate below. The row's
+  /// hover/selection tints are read inside ternaries, so an unselected, unhovered row would otherwise
+  /// register no Observation dependency at all — see `HistoryPanel.list` for the full reasoning.
+  let themeGeneration: Int
+  /// Still an `@EnvironmentObject`: the row's click/context-menu actions need the store, and those are
+  /// four call sites, not one value. `AppStore` publishes on status sweeps — seconds apart — not per
+  /// terminal keystroke, so it is not the invalidation source this fix was about.
   @EnvironmentObject var store: AppStore
-  /// Observed so the row's selected state tracks which diff tab is focused (the tab strip lives in
-  /// a separate observation tree from the inspector).
-  @ObservedObject var sessions: TerminalSessions
   @State private var hovering = false
   /// Time of the last click, so a quick second click promotes the preview tab to persisted (eager
   /// single/double discrimination — the single click never waits).
   @State private var lastClick: Date?
+
+  #if DEBUG
+    /// Body evaluations across all rows this process — the Changes-panel counterpart of
+    /// `HistoryRow.bodyPasses`, read by `ChangedFileRowInvalidationTests`.
+    static var bodyPasses = 0
+  #endif
   /// Observed so the hover toolbar / context-menu "Open file in <editor>" label updates live when
   /// the user changes Settings → "Open file paths in" (issue #93); otherwise it'd be stale until an
   /// unrelated redraw.
@@ -446,10 +467,13 @@ private struct ChangedFileRow: View {
   private let theme = ThemeService.shared
 
   var body: some View {
+    #if DEBUG
+      Self.bodyPasses += 1
+    #endif
     let (dir, name) = ChangesPanel.splitPath(file.path)
     // Baseline-aligned, not centered: the path is a smaller face than the filename, so centering
     // would float it off the name's baseline.
-    HStack(alignment: .firstTextBaseline, spacing: 6) {
+    return HStack(alignment: .firstTextBaseline, spacing: 6) {
       Text(letter)
         .font(.system(.callout, design: .monospaced))
         .foregroundStyle(color)
@@ -573,18 +597,22 @@ private struct ChangedFileRow: View {
     ExternalEditor.forFilePaths?.name ?? "your default app"
   }
 
-  /// True when the selected target's focused content tab is this row — either its diff (opened by a
-  /// row click) or its file (opened by the in-app "Open File", issue #117) — so the row that's
-  /// showing in the pane reads as selected. The file match ignores `source` since a file tab has no
+  /// True when the focused content tab is this row — either its diff (opened by a row click) or its
+  /// file (opened by the in-app "Open File", issue #117) — so the row that's showing in the pane reads
+  /// as selected. The matching rule itself lives in `FocusedTabSelection.selectsChangedFile` now, next
+  /// to the History pane's equivalent: the file match ignores `source` since a file tab has no
   /// revision; the diff match keeps it so the same path under `@` vs `@-` selects the right row.
-  private var isSelected: Bool {
-    guard let target = store.selectedTarget, let tab = sessions.focusedTab(for: target)
-    else { return false }
-    switch tab.content {
-    case .diff(let descriptor): return descriptor.path == file.path && descriptor.source == source
-    case .file(let descriptor): return descriptor.path == file.path
-    default: return false
-    }
+  fileprivate var isSelected: Bool {
+    selection?.selectsChangedFile(path: file.path, source: source) ?? false
+  }
+
+  /// The equality gate behind `.equatable()` in `fileList`: a panel body pass caused by an unrelated
+  /// publish re-creates every row value, and only the ones whose file, group or selected-ness actually
+  /// changed get a body. `@EnvironmentObject`/`@State`/`@Default` still invalidate past this gate, so
+  /// hover, the editor-preference label and store-driven updates are unaffected.
+  static func == (lhs: ChangedFileRow, rhs: ChangedFileRow) -> Bool {
+    lhs.file == rhs.file && lhs.source == rhs.source && lhs.isSelected == rhs.isSelected
+      && lhs.themeGeneration == rhs.themeGeneration
   }
 
   // Letter / colour / word live in `ChangeBadge` (Core) so the mapping is unit-testable — see its
@@ -697,6 +725,12 @@ private struct InspectorMenuButtonStyle: ButtonStyle {
 /// (non-target), missing directory, still-loading, unknown (probe failed), and clean.
 struct ChangesPanel: View {
   @EnvironmentObject var store: AppStore
+  /// Observed HERE so the rows don't have to be. `TerminalSessions` republishes per terminal
+  /// title/activity write, and while each `ChangedFileRow` observed it directly, every one of those
+  /// publishes rebuilt all `renderCap` rows — the same defect that produced the WORKROOM-2B App Hang
+  /// in the History pane (see `HistoryPanel`'s invalidation diagram). One panel pass per publish, and
+  /// the rows' `Equatable` gate elides the rest.
+  @ObservedObject var sessions: TerminalSessions
   private let theme = ThemeService.shared
   /// Hard cap on rendered rows so a huge change set can't blow up the list (the underlying
   /// output is already byte-capped by `StatusCommandRunner`).
@@ -847,9 +881,17 @@ struct ChangesPanel: View {
   @ViewBuilder
   private func fileList(_ files: [ChangedFile], source: DiffSource) -> some View {
     let shown = Array(files.prefix(renderCap))
+    // Resolved once for the whole list, not once per row: this is the read that used to make every row
+    // observe `TerminalSessions`.
+    let selection = FocusedTabSelection.current(store: store, sessions: sessions)
+    // Read here so the panel observes the theme, and passed down so the rows' gate sees a theme change.
+    let themeGeneration = theme.generation
     VStack(alignment: .leading, spacing: 1) {
       ForEach(shown) { file in
-        ChangedFileRow(file: file, source: source, sessions: store.terminals)
+        ChangedFileRow(
+          file: file, source: source, selection: selection, themeGeneration: themeGeneration
+        )
+        .equatable()
       }
       if files.count > shown.count {
         Text("Showing first \(shown.count) of \(files.count)")

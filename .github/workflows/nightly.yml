@@ -140,6 +140,15 @@ jobs:
       - name: Install XcodeGen + create-dmg + protobuf
         run: brew install xcodegen create-dmg protobuf
 
+      # Separate step, and deliberately non-fatal — unlike the release workflow, which installs
+      # sentry-cli on the same fatal brew line. This job is an unattended cron: a Homebrew/tap hiccup
+      # must cost tonight's SYMBOLS, never tonight's BUILD. `release.sh` already skips the upload when
+      # the CLI is missing, and the warning below surfaces the degraded night on the run summary.
+      - name: Install sentry-cli (optional — dSYM upload)
+        run: |
+          brew install getsentry/tools/sentry-cli \
+            || echo "::warning::sentry-cli unavailable; nightly will ship without symbol upload"
+
       - name: Add Rust darwin targets (universal VCS core)
         run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
 
@@ -165,6 +174,13 @@ jobs:
           NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
           NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          # Sentry dSYM upload (optional — release.sh skips when any is empty). Without these the
+          # nightly shipped unsymbolicated every night, which is why the app frames in WORKROOM-2B's
+          # hang report were three unnamed addresses. ORG/PROJECT are slugs, not secrets, but kept as
+          # secrets to match this job's convention (and release.yml's).
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
           # release.sh derives MARKETING_VERSION = ${VERSION#v} and CURRENT_PROJECT_VERSION = commit
           # count; the nightly version has no leading v, so it flows through unchanged.
         run: |

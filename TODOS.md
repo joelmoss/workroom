@@ -1140,6 +1140,86 @@ badge assertions need the notification a11y identifiers to be queryable — add 
 **Priority:** P3 (the smoke + opportunistic suites cover the basics; these harden the notification
 flows).
 
+## P3 — Performance and diagnostics (WORKROOM-2B follow-ups)
+
+### Status-aware avatar image loader (macapp) — WORKROOM-2B follow-up
+
+**What:** Replace `AsyncImage` in `AvatarView` (`Views/Avatar.swift`) with a small loader that reads the
+HTTP status, caches decoded images in memory, caches genuine 404s, and retries transient failures.
+
+**Why:** the shipped mitigation (`AvatarImageFailures`) is a session set of URLs whose load *failed* —
+and `AsyncImage`'s `.failure` phase carries an error, not a status, so "this author has no Gravatar"
+and "the network dropped" are indistinguishable. The set is therefore cleared on app activation, which
+bounds the damage but means an offline scroll shows initials until the user comes back to the app. A
+status-aware loader removes the ambiguity, and gets image caching (no flicker on re-realization) for
+free. Gravatar is requested with `d=404` on purpose, so a miss really is a 404 — the information is
+there, `AsyncImage` just doesn't expose it.
+
+**Current state:** `AvatarImageFailures.shared` + the `.failure` branch in `AvatarView.body`. Covered
+by no test: `AsyncImage` offers no injection seam, which is itself part of the argument for replacing it
+(a hand-rolled loader is testable behind a `URLProtocol` stub).
+
+**How to start:** `AvatarView.body`'s image branch and the `AvatarSubject.imageURL` contract. Keep the
+`.loadRemoteAvatars` privacy gate exactly as it is — no request may be issued when it's off. Bound the
+image cache (count or bytes); Gravatar/GitHub avatars are 16–54 px, so it stays small.
+
+**Depends on:** nothing (the lazy History list that made repeated loads visible has landed).
+
+**Priority:** P3 — the current mitigation covers the common case; this is the correct version.
+
+### `FilesPanel` renders up to 4000 rows eagerly (macapp) — WORKROOM-2B follow-up
+
+**What:** `Views/FilesPanel.swift:58-60` builds every visible tree row in an eager `VStack`, capped at
+`FileTreeModel.renderCap = 4000`, and each row holds `@EnvironmentObject store` + `@ObservedObject
+model`.
+
+**Why:** this is the third instance of the pattern that produced the WORKROOM-2B App Hang — eager stack
+plus per-row observation of a publishing object — and its cap is 20× the Changes panel's 200. The
+History pane took >2 seconds of main thread at ~1000 rows of comparable per-row work.
+
+**Why it is NOT P1:** unmeasured. No hang report names Files, and `FileTreeModel` publishes far less
+often than `TerminalSessions` did (tree loads and expand/collapse, not terminal output), so the
+high-frequency trigger that made History fatal may simply not exist here. Tree rows also carry
+expand/collapse state, which lazy stacks handle less predictably than fixed-height list rows.
+
+**How to start:** measure before changing anything — add a `#if DEBUG bodyPasses` counter to the row
+(same shape as `HistoryRow`/`ChangedFileRow`) and count passes per `FileTreeModel` publish with a large
+expanded tree. If the number is large, the fix is the one this branch established: hoist the selection
+lookup into the panel, give the row an `Equatable` gate, and switch the stack to `LazyVStack` (only if
+the rows are fixed-height — see the comment at `Views/DiffViewer.swift`'s `unifiedBody` for when lazy
+is wrong).
+
+**Depends on:** nothing; the counter harness and the pattern both exist now.
+
+**Priority:** P3 — structural risk, no measured symptom.
+
+### Main-thread timing from a real hang (macapp) — WORKROOM-2B follow-up
+
+**What:** a bounded way to learn *how long* the main thread was held, and by what, from a hang report on
+a user's machine. Three candidates: Sentry profiling started and stopped around suspect windows,
+`os_signpost` intervals around panel body passes, or a watchdog breadcrumb capturing what the app was
+doing when the stall began.
+
+**Why:** WORKROOM-2B cost a full session of inference because the report was a single unsymbolicated
+main-thread sample. The dSYM upload fix (`.github/workflows/nightly.yml` + `Scripts/release.sh`) closes
+the *naming* half — frames will have function names now. Nothing tells us the duration or the shape of
+the stall.
+
+**Verify FIRST, before implementing anything:** whether Sentry's continuous profile chunks actually
+attach to macOS **app-hang** events. If they don't, profiling buys nothing for this use case and the
+signpost/breadcrumb options win. `Core/SentryConfig.swift` already configures profiling with
+`.trace` lifecycle and `sessionSampleRate = 1.0`, but the app opens no transactions, so it never runs —
+that is why the option looked free and isn't.
+
+**Known caveat (from the eng review):** sentry-cocoa 9.19's manual lifecycle requires an explicit
+`SentrySDK.stopProfiler()`. A launch-start-never-stop profiler is outside documented usage, costs CPU
+and upload volume continuously, and could itself stall — which is why it was cut from the fix rather
+than shipped on nightly.
+
+**Depends on:** the dSYM upload landing (symbols are a prerequisite for any of this being readable).
+
+**Priority:** P3 — until the next hang report, symbols alone may be enough.
+
 ## P3 — CLI
 
 ### Harden `vcs.Detect` to validate a real repo (CLI) — #103 follow-up
