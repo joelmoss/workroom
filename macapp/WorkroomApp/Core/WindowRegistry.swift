@@ -152,7 +152,10 @@ final class WindowRegistry: ObservableObject {
   /// A window ⌘`/⇧⌘` should cycle through: a visible, focusable workroom window (one we registered)
   /// or the quick terminal. Excludes panels, the menu-bar status item's window, and anything that
   /// can't become key.
-  private func isCycleableWindow(_ window: NSWindow) -> Bool {
+  ///
+  /// Internal rather than private so a test can assert the switcher rail's panel is rejected — the
+  /// `canBecomeKey` guard is what excludes it, and `SwitcherPanel` relies on that staying true.
+  func isCycleableWindow(_ window: NSWindow) -> Bool {
     guard window.isVisible, window.canBecomeKey else { return false }
     return store(for: window) != nil || window is QuickTerminalWindow
   }

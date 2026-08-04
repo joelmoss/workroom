@@ -116,6 +116,9 @@ final class QuickSwitcherController {
     installObservers()
     startTimers(self)
     apply(effect)
+    // A held modifier is not drivable by synthetic input (see `switcherRevealsImmediately`), so under
+    // the fixture flag skip straight to the revealed state.
+    if UITestFixture.switcherRevealsImmediately { revealTimerFired() }
     return true
   }
 
@@ -169,6 +172,10 @@ final class QuickSwitcherController {
   /// One 30 ms tick. The only thing that ends a held session normally.
   func poll() {
     guard isLive else { return }
+    // Under the reveal fixture flag the "hold" is a synthetic tap, so the modifier is already up by
+    // the time the first tick lands and the rail would vanish before anything could look at it. The
+    // session then ends on Escape or a click, which is what those tests drive.
+    guard !UITestFixture.switcherRevealsImmediately else { return }
     guard !flagsProvider().contains(triggerFlags) else { return }
     apply(reducer.handle(.modifierReleased))
   }

@@ -39,6 +39,7 @@ struct ThemeTokens {
 
   // Accent (palette[4]).
   let accent: Color
+  let nsAccent: NSColor
   let accentSoft: Color  // accent @ 0.10 — selection wash
   let accentForeground: Color  // black/white for legibility on the accent
   let warning: Color  // palette[3] (yellow)
@@ -54,6 +55,12 @@ struct ThemeTokens {
   // Diff / VCS semantics (palette green/red/cyan).
   let diffAddFg: Color
   let diffRemoveFg: Color
+  // NSColor forms of the two diff foregrounds. Present so a contrast check never has to round-trip a
+  // SwiftUI `Color` back through `NSColor(_:)`: that yields a lazily-resolved, SwiftUI-backed NSColor
+  // whose `usingColorSpace` returns nil outside a view update, and re-wrapping THAT in a `Color`
+  // crashes in `Color._apply` during layout. Always start from the source NSColor.
+  let nsDiffAddFg: NSColor
+  let nsDiffRemoveFg: NSColor
   let diffHunkFg: Color
   let diffAddBg: Color
   let diffRemoveBg: Color
@@ -126,6 +133,7 @@ struct ThemeTokens {
       nsColor: panelColor.blended(withFraction: 0.22, of: accentSRGB) ?? panelColor)
 
     accent = Color(nsColor: accentColor)
+    nsAccent = accentColor
     accentSoft = Color(nsColor: accentColor.withAlphaComponent(0.10))
     accentForeground = Color(nsColor: Self.contrastingForeground(for: accentColor))
     warning = Color(nsColor: p(3) ?? .systemYellow)
@@ -146,6 +154,8 @@ struct ThemeTokens {
     let hunkColor = p(6) ?? accentColor
     diffAddFg = Color(nsColor: addColor)
     diffRemoveFg = Color(nsColor: removeColor)
+    nsDiffAddFg = addColor
+    nsDiffRemoveFg = removeColor
     diffHunkFg = Color(nsColor: hunkColor)
     diffAddBg = Color(nsColor: addColor.withAlphaComponent(0.16))
     diffRemoveBg = Color(nsColor: removeColor.withAlphaComponent(0.16))

@@ -319,6 +319,15 @@ enum UITestFixture {
     flag("WorkroomUITestWhatsNew")
   }
 
+  /// Reveal the quick-switcher rail with no delay (issue #132). The real gesture holds a modifier for
+  /// 250 ms, which neither XCUITest nor AppleScript can drive reliably — synthetic modifier holds do
+  /// not consistently reach `NSEvent.modifierFlags`, the *global hardware* snapshot the session polls.
+  /// With this set, one ⌥Tab reveals the rail immediately so its rendering, hover and click can be
+  /// asserted; the 250 ms delay itself stays manual, as does real-mouse hover.
+  static var switcherRevealsImmediately: Bool {
+    flag("WorkroomUITestSwitcherReveal")
+  }
+
   /// Canned release notes for the What's-New dialog under `forceWhatsNew` — a couple of versions with
   /// headings + bullets so the markdown renderer and the multi-release layout both get coverage.
   static var whatsNewNotes: [ReleaseNote] {

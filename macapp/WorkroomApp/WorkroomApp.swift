@@ -229,6 +229,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // into existence early, so its key-window observer is live before the first window appears.
     menuBarController = MenuBarController(registry: .shared)
 
+    // Build the switcher rail's panel now, ordered out, and connect it to the session controller
+    // (issue #132). Pre-created on purpose: the first `NSHostingView` render costs real milliseconds,
+    // and the 250 ms reveal is the worst possible moment to pay it.
+    SwitcherPanelController.shared.prepare()
+    SwitcherPanelController.shared.attach(to: .shared)
+
     monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
       let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
       // ⌘W closes the quick terminal (issue #39) when its window is key. The menu's "Close Terminal"
