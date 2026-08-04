@@ -105,6 +105,10 @@ final class QuickSwitcherController {
     }
 
     let frozen = Self.collect(kind, in: store, registry: registry, recency: recency)
+    // Capture BEFORE the panel is ordered in, so the rail can't photograph itself. Fired unbounded on
+    // open (the per-window debounce is a background-refresh rule, not this one) and asynchronous, so a
+    // first-ever hold still shows glyph wells and fills in next time.
+    captureOnOpen(kind, in: store, registry: registry)
     let effect = reducer.handle(.open(kind: kind, count: frozen.count, reverse: reverse))
     // Under 2 items there is nothing to switch to, so the key passes through to the terminal.
     guard effect != .none else { return false }
@@ -120,6 +124,23 @@ final class QuickSwitcherController {
     // the fixture flag skip straight to the revealed state.
     if UITestFixture.switcherRevealsImmediately { revealTimerFired() }
     return true
+  }
+
+  /// Refresh the thumbnails a session is about to show. ⌥Tab spans windows, so every window with a
+  /// live region is captured; ⌃Tab only ever shows the current window's panes.
+  private func captureOnOpen(
+    _ kind: QuickSwitcherKind, in store: AppStore, registry: WindowRegistry
+  ) {
+    let generation = ThemeService.shared.generation
+    switch kind {
+    case .workrooms:
+      for window in registry.allStores.compactMap(\.hostWindow) {
+        SnapshotService.shared.capture(window: window, themeGeneration: generation)
+      }
+    case .panes:
+      guard let window = store.hostWindow else { return }
+      SnapshotService.shared.capture(window: window, themeGeneration: generation)
+    }
   }
 
   /// Escape while a session is live.

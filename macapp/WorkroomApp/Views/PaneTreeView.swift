@@ -382,6 +382,11 @@ private struct PaneLeafView: View {
 
   var body: some View {
     paneContent
+      // Report where this pane is, so a window capture can be cropped into its rail thumbnail
+      // (issue #132). Zero-drawing and always mounted — it covers all four `TabContent` kinds because
+      // it sits on the one slot they all pass through. `.background` so it inherits the pane's exact
+      // bounds without touching layout.
+      .background(SnapshotRectReporter(key: .pane(tabID)))
       // Dim every pane that isn't the focused one so the active terminal reads instantly. This fires
       // for split-mates AND for every pane of a co-displayed *backgrounded* workroom — which passes
       // `surfaceActive: false`, so all its panes arrive here `focused == false` (`shouldDim` gates on

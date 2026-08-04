@@ -226,6 +226,10 @@ targets:
       - sdk: CoreText.framework
       - sdk: IOKit.framework
       - sdk: QuartzCore.framework
+      # Own-window capture for the quick-switcher rail's thumbnails (issue #132). No entitlement and
+      # no Info.plist key: `SCShareableContent.currentProcess` captures our own windows with no TCC
+      # grant, measured in the T1 spike.
+      - sdk: ScreenCaptureKit.framework
     info:
       path: WorkroomApp/Info.plist
       properties:

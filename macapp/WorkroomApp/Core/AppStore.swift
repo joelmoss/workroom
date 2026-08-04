@@ -858,6 +858,7 @@ final class AppStore: ObservableObject {
     terminals.onTabsRemoved = { [weak self] targetID, ids in
       guard let self else { return }
       SwitcherRecency.shared.forgetPanes(ids)  // drop closed panes from the ⌃Tab order (issue #132)
+      SnapshotService.shared.forgetPanes(ids)  // and their cached rail thumbnails
       self.history.prune(removing: Set(ids))
       if self.terminals.tabCount(forTargetID: targetID) < 2 {
         self.expandedTerminalTargets.remove(targetID)
