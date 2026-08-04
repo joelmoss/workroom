@@ -117,14 +117,13 @@ struct SwitcherMark: Equatable {
 
   /// The monogram's ink: whichever of black/white actually measures better on this tile.
   ///
-  /// Deliberately not `ThemeTokens.contrastingForeground`, which switches at luminance 0.6. That is a
-  /// fine rule for the accent fill it was written for and wrong here: a tile at luminance ~0.54 sits
-  /// just under the threshold, so it takes WHITE at 1.77:1 when black would have given 11.8:1 — an
-  /// illegible monogram, measured on a dark-theme fixture. Comparing both ratios has no threshold to
-  /// get wrong.
+  /// This existed as its own implementation because `ThemeTokens.contrastingForeground` used to switch on
+  /// a brightness threshold (`> 0.6`), which left a tile at 0.54 taking WHITE at 1.77:1 where black gives
+  /// 11.8:1 — an illegible monogram, measured on a dark-theme fixture. That helper now measures both
+  /// candidates, exactly as this did, so this is a name for the rail's use of it rather than a second
+  /// rule. Kept as the call site the rail reads, and as the record of why the threshold went.
   static func ink(on tile: NSColor) -> NSColor {
-    ThemeTokens.contrastRatio(.black, tile) >= ThemeTokens.contrastRatio(.white, tile)
-      ? .black : .white
+    ThemeTokens.contrastingForeground(for: tile)
   }
 
   /// Rotate hues so that **no two marks on one rail share a colour**.

@@ -10,6 +10,12 @@ enum UnreadCount {
 /// a number). Renders nothing when `count` is 0.
 struct UnreadBadge: View {
   let count: Int
+  /// Contrast-corrected colours, for a host that has measured its own surface. Defaults to the raw accent
+  /// pair — the switcher rail passes `SwitcherRailLayout.Palette`'s, whose ink is chosen by measurement
+  /// rather than by `contrastingForeground`'s luminance-0.6 switch, and whose fill matches the rail's
+  /// cursor ring so one card can't show two different "accents" (D14).
+  var fill: Color?
+  var ink: Color?
   private let theme = ThemeService.shared
 
   var body: some View {
@@ -17,11 +23,11 @@ struct UnreadBadge: View {
       Text(UnreadCount.label(count))
         .font(.caption2)
         .fontWeight(.semibold)
-        .foregroundStyle(theme.tokens.accentForeground)
+        .foregroundStyle(ink ?? theme.tokens.accentForeground)
         .monospacedDigit()
         .padding(.horizontal, 5)
         .padding(.vertical, 1)
-        .background(Capsule().fill(theme.tokens.accent))
+        .background(Capsule().fill(fill ?? theme.tokens.accent))
         .accessibilityLabel("\(count) unread")
     }
   }

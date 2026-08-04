@@ -37,6 +37,13 @@ final class QuickSwitcherController {
   var pointerProvider: () -> NSPoint = { NSEvent.mouseLocation }
 
   /// Speaks a destination on the VoiceOver path. Replaced in tests to assert what was announced.
+  ///
+  /// This is the switcher's **only** announcement, and deliberately so. The rail was originally going to
+  /// narrate every cursor move ("uitest-room-2, 2 of 5") because a panel that can't become key can never
+  /// hold VoiceOver focus — but D16 then removed the rail under VoiceOver entirely, and the KVO watch in
+  /// `installObservers` ends any session VoiceOver joins late. There is therefore no reachable state in
+  /// which a cursor move happens with a screen reader listening, and posting per-step announcements to
+  /// nobody would only queue speech that lands after the commit — the exact failure D16 exists to avoid.
   var announce: (String) -> Void = { message in
     NSAccessibility.post(
       element: NSApp as Any, notification: .announcementRequested,
@@ -76,6 +83,8 @@ final class QuickSwitcherController {
   /// The modifier that must stay held. Released ⇒ commit.
   private var triggerFlags: NSEvent.ModifierFlags = []
   private var observers: [NSObjectProtocol] = []
+  /// KVO on `NSWorkspace.isVoiceOverEnabled`, live only while a session is (see `installObservers`).
+  private var voiceOverObservation: NSKeyValueObservation?
   private var pollTimer: Timer?
   private var revealTimer: Timer?
   private var ceilingTimer: Timer?
@@ -277,6 +286,8 @@ final class QuickSwitcherController {
     pointerAtReveal = nil
     for observer in observers { NotificationCenter.default.removeObserver(observer) }
     observers = []
+    voiceOverObservation?.invalidate()
+    voiceOverObservation = nil
     for timer in [pollTimer, revealTimer, ceilingTimer] { timer?.invalidate() }
     pollTimer = nil
     revealTimer = nil
@@ -302,6 +313,21 @@ final class QuickSwitcherController {
         DispatchQueue.main.async { MainActor.assumeIsolated { self?.reconcileItems() } }
       },
     ]
+    // VoiceOver switched on mid-gesture (⌘F5 is one keystroke, and the rail can be up when it lands).
+    // KVO, not a notification: AppKit ships **no** VoiceOver-status notification — `isVoiceOverEnabled`
+    // is documented "observable through KVO" and that is the only signal there is.
+    voiceOverObservation = NSWorkspace.shared.observe(\.isVoiceOverEnabled, options: [.new]) {
+      [weak self] _, _ in
+      MainActor.assumeIsolated { self?.voiceOverStatusChanged() }
+    }
+  }
+
+  /// VoiceOver's running state changed while a session was live. Reads through the injected
+  /// `voiceOverEnabled` seam rather than the notification's payload, so a test drives this directly
+  /// instead of starting a screen reader.
+  func voiceOverStatusChanged() {
+    guard isLive, voiceOverEnabled() else { return }
+    cancel(.voiceOver)
   }
 
   /// The production timers. `.common` run-loop mode is load-bearing: the default mode does not run

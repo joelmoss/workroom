@@ -272,19 +272,24 @@ final class SwitcherRailLayoutTests: XCTestCase {
 
   func testAHairsBreadthMissKeepsTheMaterial() {
     // Going opaque doesn't raise the ratio — it's measured against `nsPanel` either way — so a theme that
-    // lands at 4.45:1 (99% of the floor) must not lose the whole Liquid Glass surface for it. Measured
-    // case: the system fallback's mid-grey card, which caps white text at exactly that.
-    let grey = ThemeTokens(
+    // lands just under 4.5:1 must not lose the whole Liquid Glass surface for it. A mid-tone card with
+    // white text, sized so the ratio lands in the 4.0–4.5 band: the card is `bg` blended 5.5%
+    // toward `fg`, so an encoded 0.44 background yields a 0.47 card at 4.41:1 against white.
+    //
+    // Three of the 56 bundled themes really do live in this band (Everforest Light Med, TokyoNight Day,
+    // iTerm2 Solarized Dark) — see `SwitcherThemeSweepTests`. This fixture is the arithmetic; those are
+    // the product's own evidence that the band is worth having.
+    let midTone = ThemeTokens(
       preview: ThemePreview(
-        name: "mid-grey card",
-        background: NSColor(srgbRed: 0.12, green: 0.12, blue: 0.12, alpha: 1),
+        name: "mid-tone card",
+        background: NSColor(srgbRed: 0.44, green: 0.44, blue: 0.44, alpha: 1),
         foreground: NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 1),
-        palette: (0..<8).map { _ in NSColor(srgbRed: 0.55, green: 0.6, blue: 0.75, alpha: 1) }))
-    let palette = SwitcherRailLayout.palette(for: grey)
-    let achieved = ThemeTokens.contrastRatio(palette.nsName, grey.nsPanel)
+        palette: (0..<8).map { _ in NSColor(srgbRed: 0.10, green: 0.12, blue: 0.16, alpha: 1) }))
+    let palette = SwitcherRailLayout.palette(for: midTone)
+    let achieved = ThemeTokens.contrastRatio(palette.nsName, midTone.nsPanel)
     XCTAssertLessThan(
       achieved, SwitcherRailLayout.Palette.textTarget, "the premise: it misses 4.5:1")
     XCTAssertGreaterThan(achieved, SwitcherRailLayout.Palette.opaqueFillFloor, "but only just")
-    XCTAssertFalse(palette.needsOpaqueFill, "a 1% shortfall must not cost the material")
+    XCTAssertFalse(palette.needsOpaqueFill, "a near miss must not cost the material")
   }
 }

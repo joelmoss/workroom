@@ -70,9 +70,51 @@ final class ThemeTokensTests: XCTestCase {
     XCTAssertEqual(ThemeTokens.contrastingForeground(for: ns("#1c1c1e")), .white)
   }
 
+  /// The band a brightness threshold gets wrong. This used to be `luminance > 0.6 ? .black : .white`, and
+  /// a mid-tone fill sits just under 0.6 *apparent* brightness while black beats white on it several times
+  /// over — the illegible-monogram bug (1.77:1 where black gave 11.8:1). Picking by measurement has no
+  /// threshold to miscalibrate.
+  func testContrastingForegroundPicksByMeasurementNotBrightness() {
+    for hex in ["#8a8a8a", "#7f9f5f", "#a08a4a", "#9a7fbf"] {
+      let fill = ns(hex)
+      let ink = ThemeTokens.contrastingForeground(for: fill)
+      let chosen = ThemeTokens.contrastRatio(ink, fill)
+      let rejected = ThemeTokens.contrastRatio(ink == .black ? .white : .black, fill)
+      XCTAssertGreaterThanOrEqual(chosen, rejected, "\(hex) took the worse of black/white")
+    }
+  }
+
   func testLuminanceBounds() {
     XCTAssertEqual(ThemeTokens.luminance(of: ns("#ffffff")), 1.0, accuracy: 0.001)
     XCTAssertEqual(ThemeTokens.luminance(of: ns("#000000")), 0.0, accuracy: 0.001)
+  }
+
+  /// `luminance` is WCAG — sRGB **linearized** before weighting — and `perceivedBrightness` is the
+  /// gamma-encoded weighting it used to be. Mid-grey separates them: 0.5 encoded, 0.216 linear.
+  ///
+  /// Not a pedantic distinction. Weighting encoded components inflates dark colours (`#2e3440` reads 0.20
+  /// against a true 0.033), which collapses dark-background/light-text ratios: the switcher rail's name
+  /// text measured under 4.5:1 for 43 of the 56 bundled themes on the old formula and for 3 on this one,
+  /// and its "this theme is unreadable, drop the material" fallback was firing for 38 legible themes.
+  func testLuminanceIsWCAGWhileBrightnessStaysPerceptual() {
+    XCTAssertEqual(ThemeTokens.luminance(of: ns("#808080")), 0.216, accuracy: 0.005)
+    XCTAssertEqual(ThemeTokens.perceivedBrightness(of: ns("#808080")), 0.502, accuracy: 0.005)
+    // A real theme: Nord's foreground on its background — 9.2:1, legible as anyone can see. The old
+    // formula scored that same pair 3.6:1, which is what had the rail treating Nord as a contrast failure.
+    XCTAssertEqual(ThemeTokens.contrastRatio(ns("#d8dee9"), ns("#2e3440")), 9.25, accuracy: 0.15)
+  }
+
+  /// Light/dark classification must keep reading the *encoded* value, or a visibly light background whose
+  /// linearized luminance is under 0.5 flips to dark and re-themes the whole app.
+  func testColorSchemeStillFollowsApparentBrightness() {
+    for (hex, expected) in [
+      ("#c8c8c8", ColorScheme.light), ("#8f8f8f", .light), ("#4a4a4a", .dark),
+    ] {
+      XCTAssertEqual(
+        ThemeTokens(preview: full(bg: hex, fg: "#101010", accent4: "#1e7fa8")).colorScheme,
+        expected,
+        "\(hex)")
+    }
   }
 
   func testTerminalDimIsBackgroundAndFocusedIsForeground() {

@@ -136,6 +136,14 @@ enum SwitcherRailLayout {
     let nsDot: NSColor
     let nsDiffAdd: NSColor
     let nsDiffRemove: NSColor
+    /// The unread pill, and the count drawn on it. The rail can't use the shared `UnreadBadge`'s own
+    /// colours: those are the raw `accent` with `accentForeground` on top, and `accentForeground` comes
+    /// from `ThemeTokens.contrastingForeground`, which flips ink at luminance 0.6 — the same threshold
+    /// that left a mark's monogram at 1.77:1 on a 0.54-luminance tile. `nsBadgeFill` is deliberately the
+    /// SAME colour as `nsRing`: both are "the accent", and on a pale-accent theme the ring gets corrected
+    /// while a raw-accent badge would not, leaving two elements on one card disagreeing about it.
+    let nsBadgeFill: NSColor
+    let nsBadgeInk: NSColor
     /// True when a floor could not be met by nudging alone, so the card drops vibrancy for an opaque
     /// fill. Legibility outranks the material.
     let needsOpaqueFill: Bool
@@ -146,6 +154,8 @@ enum SwitcherRailLayout {
     var dot: Color { Color(nsColor: nsDot) }
     var diffAdd: Color { Color(nsColor: nsDiffAdd) }
     var diffRemove: Color { Color(nsColor: nsDiffRemove) }
+    var badgeFill: Color { Color(nsColor: nsBadgeFill) }
+    var badgeInk: Color { Color(nsColor: nsBadgeInk) }
 
     static let textTarget: CGFloat = 4.5
     static let indicatorTarget: CGFloat = 3.0
@@ -179,6 +189,10 @@ enum SwitcherRailLayout {
       nsDot: accent,
       nsDiffAdd: fix(tokens.nsDiffAddFg, Palette.indicatorTarget),
       nsDiffRemove: fix(tokens.nsDiffRemoveFg, Palette.indicatorTarget),
+      nsBadgeFill: accent,
+      // Whichever of black/white actually wins on this fill, measured — not chosen by a luminance
+      // threshold. Shared with the mark's monogram, which is where the measurement came from.
+      nsBadgeInk: SwitcherMark.ink(on: accent),
       // `legible` walks towards the foreground and stops at 100%; if even the pure foreground can't come
       // close to the text floor against this fill, the fill itself is the problem.
       needsOpaqueFill: ThemeTokens.contrastRatio(name, base) < Palette.opaqueFillFloor

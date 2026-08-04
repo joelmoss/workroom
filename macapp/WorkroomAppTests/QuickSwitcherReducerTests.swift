@@ -185,7 +185,7 @@ final class QuickSwitcherReducerTests: XCTestCase {
 
   func testEveryCancelReasonEndsWithoutCommitting() {
     for reason in [
-      QuickSwitcherReducer.Cancel.escape, .deactivated, .empty, .timeout,
+      QuickSwitcherReducer.Cancel.escape, .deactivated, .empty, .timeout, .voiceOver,
     ] {
       var r = revealed(count: 5)
       XCTAssertEqual(r.handle(.cancel(reason)), .end(commit: nil), "\(reason) must not commit")

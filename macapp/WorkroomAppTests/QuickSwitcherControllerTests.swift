@@ -103,6 +103,34 @@ final class QuickSwitcherControllerTests: XCTestCase {
     XCTAssertTrue(recorder.reveals.isEmpty, "and no rail")
   }
 
+  /// VoiceOver switched on **mid-gesture** (⌘F5 is one keystroke). AppKit ships no VoiceOver-status
+  /// notification — `isVoiceOverEnabled` is KVO-only — so the controller watches it that way and ends the
+  /// session, because D16's answer to "a panel that can't take VoiceOver focus" is to have no panel. It
+  /// must end WITHOUT committing: the user is mid-hold on a rail that just became invisible to them.
+  func testVoiceOverComingOnMidSessionEndsTheRailWithoutCommitting() {
+    let store = makeStore(workrooms: ["fox", "owl"])
+    store.selectedTargetID = .workroom(project: "/p", name: "fox")
+    attach(store)
+    let (controller, recorder) = makeController()
+    var voiceOverRunning = false
+    controller.voiceOverEnabled = { voiceOverRunning }
+    _ = controller.handleTrigger(
+      .workrooms, reverse: false, in: store, registry: registry, recency: recency)
+    controller.revealTimerFired()
+    XCTAssertTrue(controller.isRevealed)
+
+    controller.voiceOverStatusChanged()
+    XCTAssertTrue(controller.isLive, "the status changed to still-off — nothing to do")
+
+    voiceOverRunning = true
+    controller.voiceOverStatusChanged()
+    XCTAssertFalse(controller.isLive, "VoiceOver on ⇒ the session ends")
+    XCTAssertEqual(recorder.ends, 1)
+    XCTAssertEqual(
+      store.selectedTargetID, .workroom(project: "/p", name: "fox"),
+      "cancelled, not committed — the rail was steering a choice the user can no longer see")
+  }
+
   func testNonVoiceOverDoesOpenASession() {
     let store = makeStore(workrooms: ["fox", "owl"])
     store.selectedTargetID = .workroom(project: "/p", name: "fox")

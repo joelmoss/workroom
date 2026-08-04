@@ -45,6 +45,10 @@ struct QuickSwitcherReducer: Equatable {
     case empty
     /// The hard ceiling — a stuck modifier must not leave the rail up forever.
     case timeout
+    /// VoiceOver came on mid-gesture. D16 says there is no rail under VoiceOver at all, so a session
+    /// that started without it cannot continue with it: the panel can never take VoiceOver focus, so it
+    /// would be steering a commit that is invisible to the one user who most needs to hear it.
+    case voiceOver
   }
 
   enum Event: Equatable {

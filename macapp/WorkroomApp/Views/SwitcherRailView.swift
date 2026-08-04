@@ -352,8 +352,12 @@ private struct SwitcherCardView: View {
       // Badge on the icon's corner, the Dock/⌘Tab idiom — and in a stacked card it costs no width at
       // all, where in the label row it competed with the name for the same points.
       if card.badge > 0 {
-        UnreadBadge(count: card.badge)
+        // The rail's own contrast-corrected pair, not the component's raw accent — see
+        // `Palette.nsBadgeFill`. Its `.help` is redundant with the card's tooltip on purpose: a badge is a
+        // control-sized indicator, and the project rule is that every one of them names itself.
+        UnreadBadge(count: card.badge, fill: palette.badgeFill, ink: palette.badgeInk)
           .offset(x: 7, y: -6)
+          .help("\(card.badge) unread")
       } else if card.isRunning {
         Circle()
           .fill(palette.dot)
