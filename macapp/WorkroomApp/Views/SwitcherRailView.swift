@@ -33,22 +33,17 @@ extension SwitcherCard {
   /// actor at reveal, and what the views then hold is inert.
   @MainActor
   init(item: QuickSwitcherController.Item) {
-    let generation = ThemeService.shared.generation
     switch item {
     case .workroom(let slot):
       let label = slot.store?.label(for: slot.sid)
       id = "wr:\(slot.target.id)"
       title = label?.distinguishing ?? slot.target.title
       stableSubtitle = label?.branch ?? label?.project ?? ""
-      liveSubtitle = nil
+      liveSubtitle = nil  // the live command tail arrives with the snapshot layer (T12)
       glyph = "cube"
       badge = slot.store?.notifications.count(target: slot.target.id) ?? 0
       isRunning = slot.store?.isRunCommandRunning(for: slot.target.id) ?? false
-      snapshot =
-        slot.store.map { store in
-          SnapshotService.shared.snapshot(
-            for: .workroom(slot.sid, store.windowToken), themeGeneration: generation)
-        } ?? nil
+      snapshot = nil
     case .pane(let tab):
       id = "pane:\(tab.id)"
       title = tab.title
@@ -57,8 +52,7 @@ extension SwitcherCard {
       glyph = Self.glyph(for: tab.content)
       badge = 0
       isRunning = tab.isRunning
-      snapshot = SnapshotService.shared.snapshot(
-        for: .pane(tab.id), themeGeneration: generation)
+      snapshot = nil
     }
   }
 

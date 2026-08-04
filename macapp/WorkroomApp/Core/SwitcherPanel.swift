@@ -69,13 +69,7 @@ final class SwitcherPanelController {
     themeObserver = NotificationCenter.default.addObserver(
       forName: .themeDidChange, object: nil, queue: .main
     ) { [weak self] _ in
-      MainActor.assumeIsolated {
-        self?.model.themeVersion &+= 1
-        // Every cached thumbnail is now a picture of the OLD theme — the terminals in it are the wrong
-        // colours. The cache also refuses stale-generation reads, but dropping them here reclaims the
-        // bytes instead of holding pictures nothing will ever return.
-        SnapshotService.shared.invalidateAll()
-      }
+      MainActor.assumeIsolated { self?.model.themeVersion &+= 1 }
     }
   }
 

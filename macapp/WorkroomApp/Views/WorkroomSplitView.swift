@@ -224,10 +224,6 @@ private struct WorkroomPaneLeaf: View {
       // both live INSIDE `TargetTerminalDetail`'s own ZStack, so nothing here ever swaps branches.
       TargetTerminalDetail(target: target, surfaceActive: focused)
     }
-    // Report where this workroom is, for its rail thumbnail (issue #132). Mounted here rather than on
-    // the split container because this leaf is the one view that covers BOTH solo and split — every
-    // workroom renders through `WorkroomSplitView`, so a solo pane arrives here too.
-    .background(snapshotReporter)
     // No border: the pane reads as a unit by a subtle raised fill over the `panel` base plus the
     // shadow + rounded corners (issue #110). The focused member's fill is accent-tinted so focus reads
     // as a colour; the rest take a faint neutral lift. Unconditional since issue #139 — a solo pane is
@@ -255,12 +251,6 @@ private struct WorkroomPaneLeaf: View {
   /// doesn't take a dependency on `SidebarID`, and so the lookup happens once for both the label and
   /// the run controls' `hasRunCommand` check.
   private var projectPath: String? { AppStore.projectPath(of: sid) }
-
-  /// The rail-thumbnail region reporter, keyed by `(sid, window)` — the same `SidebarID` shown in two
-  /// windows is two different pictures, so the window has to be part of the key.
-  @ViewBuilder private var snapshotReporter: some View {
-    SnapshotRectReporter(key: .workroom(sid, store.windowToken))
-  }
 
   /// Which trailing controls the header shows — resolved in one pass so the group's divider can't
   /// disagree with the buttons on either side of it. The editor list is cached, so this is cheap enough
