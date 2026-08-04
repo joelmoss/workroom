@@ -76,7 +76,7 @@ final class SwitcherPanelController {
   private func show(items: [QuickSwitcherController.Item], cursor: Int) {
     prepare()
     guard let panel else { return }
-    let cards = items.map(SwitcherCard.init(item:))
+    let cards = SwitcherCard.cards(for: items)
     let screen = NSApp.keyWindow?.screen ?? NSScreen.main
     let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
     let width = SwitcherRailLayout.viewportWidth(visibleFrame: visible)

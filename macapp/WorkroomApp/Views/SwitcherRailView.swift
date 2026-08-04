@@ -8,6 +8,16 @@ import SwiftUI
 /// so a card observing it to decide "am I the cursor" would re-render at OSC frequency — the
 /// WORKROOM-2B hang. Everything a card draws is snapshotted here instead.
 struct SwitcherCard: Identifiable, Equatable {
+  /// What the well draws. The two switchers have genuinely different identity problems, so they get
+  /// genuinely different wells: workrooms differ from each other by *which workroom they are*, panes
+  /// inside one workroom differ by *what kind of thing they are*.
+  enum Well: Equatable {
+    /// ⌥Tab: a stable colour + monogram you learn, the way you learn an app icon.
+    case mark(SwitcherMark)
+    /// ⌃Tab: a small graphic drawn from the pane's own data, so the shape says the kind.
+    case miniature(PaneMiniature)
+  }
+
   let id: String
   /// The primary line. Already prefix-stripped by `WorkroomLabel.railTitles` where applicable.
   let title: String
@@ -15,11 +25,9 @@ struct SwitcherCard: Identifiable, Equatable {
   let stableSubtitle: String
   /// The live tail (a command line, a diffstat). Truncates before `stableSubtitle` does.
   let liveSubtitle: String?
-  let glyph: String
+  var well: Well
   let badge: Int
   let isRunning: Bool
-  /// Set once the snapshot layer lands (T12); until then every card draws its glyph well.
-  let snapshot: CGImage?
 
   var subtitle: String {
     guard let liveSubtitle, !liveSubtitle.isEmpty else { return stableSubtitle }
@@ -28,6 +36,25 @@ struct SwitcherCard: Identifiable, Equatable {
 }
 
 extension SwitcherCard {
+  /// Build the rail's cards, with mark hues rotated so no two visible marks share a colour.
+  @MainActor
+  static func cards(for items: [QuickSwitcherController.Item]) -> [SwitcherCard] {
+    var cards = items.map(SwitcherCard.init(item:))
+    // Only workroom cards carry marks; pane miniatures are unaffected.
+    let markIndices = cards.indices.filter {
+      if case .mark = cards[$0].well { true } else { false }
+    }
+    let hues = markIndices.map { index -> Int in
+      guard case .mark(let mark) = cards[index].well else { return 0 }
+      return mark.hue
+    }
+    for (position, index) in zip(SwitcherMark.disambiguate(hues), markIndices) {
+      guard case .mark(let mark) = cards[index].well else { continue }
+      cards[index].well = .mark(SwitcherMark(monogram: mark.monogram, hue: position))
+    }
+    return cards
+  }
+
   /// Snapshot a controller item into a card. Reads the stores ONCE, here, and never again — which is
   /// also why this is `@MainActor` while `SwitcherCard` itself is not: the reads happen on the main
   /// actor at reveal, and what the views then hold is inert.
@@ -37,45 +64,40 @@ extension SwitcherCard {
     case .workroom(let slot):
       let label = slot.store?.label(for: slot.sid)
       id = "wr:\(slot.target.id)"
-      title = label?.distinguishing ?? slot.target.title
+      let displayed = label?.distinguishing ?? slot.target.title
+      title = displayed
+      // The monogram follows the DISPLAYED name so it matches what you read; the colour follows the
+      // target id, which a relabel doesn't change — so relabelling re-letters the mark without moving
+      // the hue you actually recognise.
+      well = .mark(SwitcherMark(displayName: displayed, stableKey: slot.target.id))
       stableSubtitle = label?.branch ?? label?.project ?? ""
-      liveSubtitle = nil  // the live command tail arrives with the snapshot layer (T12)
-      glyph = "cube"
+      liveSubtitle = slot.store.flatMap { Self.vcsTail(for: slot.sid, in: $0) }
       badge = slot.store?.notifications.count(target: slot.target.id) ?? 0
       isRunning = slot.store?.isRunCommandRunning(for: slot.target.id) ?? false
-      snapshot = nil
     case .pane(let tab):
       id = "pane:\(tab.id)"
       title = tab.title
-      stableSubtitle = Self.kindLabel(tab.content)
+      let miniature = PaneMiniature(content: tab.content, isRunning: tab.isRunning)
+      well = .miniature(miniature)
+      stableSubtitle = miniature.label
       liveSubtitle = nil
-      glyph = Self.glyph(for: tab.content)
       badge = 0
       isRunning = tab.isRunning
-      snapshot = nil
     }
   }
 
-  /// The tab-strip / sidebar glyph vocabulary, so a pane reads the same everywhere. Exhaustive on
-  /// purpose: a fifth `TabContent` kind must be a compile error, not a silent fallback to "terminal".
-  static func glyph(for content: TabContent) -> String {
-    switch content {
-    case .terminal: "terminal"
-    case .diff: "plusminus"
-    case .file: "doc"
-    case .changeset: "clock"
+  /// A workroom's VCS state as the subtitle's live tail: line counts when known, otherwise the coarse
+  /// state. Conflicts win — they are the one state you want to notice from a switcher.
+  @MainActor
+  static func vcsTail(for sid: SidebarID, in store: AppStore) -> String? {
+    guard let status = store.workroomStatuses[sid] else { return nil }
+    if status.conflicted { return "conflicts" }
+    if let added = status.insertions, let removed = status.deletions, added + removed > 0 {
+      return "+\(added) −\(removed)"
     }
-  }
-
-  /// The subtitle's stable zone for a pane: what kind of thing this is. Present even when there is no
-  /// live text, which is the point — identity must not disappear (D13).
-  static func kindLabel(_ content: TabContent) -> String {
-    switch content {
-    case .terminal: "Terminal"
-    case .diff: "Diff"
-    case .file: "File"
-    case .changeset: "Commit"
-    }
+    if status.dirty == true { return "modified" }
+    if status.dirty == false { return "clean" }
+    return nil
   }
 }
 
@@ -101,9 +123,12 @@ final class SwitcherRailModel: ObservableObject {
 
 /// The rail: **one** row of label-led cards, centred in a floating translucent panel.
 ///
-/// Label-led, not thumbnail-led: drawn at the originally-planned 220×140 a terminal thumbnail is a
-/// near-blank rectangle (output hugs the top-left), so the loudest element carried the least
-/// information while the name — the thing you actually decide on — was the smallest. Inverted here.
+/// Label-led, and screenshot-free. Window captures were built and removed: at any size that fits a
+/// switcher rail an aspect-fit terminal capture is a grey smudge, and it is neither stable nor
+/// distinctive — it changes every time and every terminal looks like every other terminal. What
+/// replaced it differs per switcher, because the two have different identity problems: a workroom is
+/// distinguished by *which workroom it is* (so it gets a learnable mark), a pane inside one workroom by
+/// *what kind of thing it is* (so it gets a drawn miniature of its type).
 struct SwitcherRailView: View {
   @ObservedObject var model: SwitcherRailModel
   private let theme = ThemeService.shared
@@ -216,25 +241,15 @@ private struct SwitcherCardView: View {
     .accessibilityIdentifier("switcher.card.\(card.title)")
   }
 
-  /// The well: the pane capture aspect-**fit** (never cropped — a crop-zoom can make two different
-  /// panes look identical), or the pane-kind glyph when there is no snapshot, which is the normal
-  /// first-run case since capture only happens while a pane is visible.
-  private var well: some View {
-    RoundedRectangle(cornerRadius: 6, style: .continuous)
-      .fill(card.snapshot == nil ? theme.tokens.accentSoft : theme.tokens.surface)
-      .frame(width: SwitcherRailLayout.wellSize.width, height: SwitcherRailLayout.wellSize.height)
-      .overlay {
-        if let snapshot = card.snapshot {
-          Image(decorative: snapshot, scale: 1)
-            .resizable()
-            .aspectRatio(contentMode: .fit)
-        } else {
-          Image(systemName: card.glyph)
-            .font(.system(size: 20))
-            .foregroundStyle(palette.ring)
-        }
-      }
-      .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+  /// The well. Screenshots were tried and removed: at any size that fits a switcher rail, an aspect-fit
+  /// window capture is a grey smudge, and it is neither stable nor distinctive — it changes every time
+  /// and every terminal looks like every other terminal. So each switcher draws what actually
+  /// distinguishes its own items.
+  @ViewBuilder private var well: some View {
+    switch card.well {
+    case .mark(let mark): MarkWell(mark: mark)
+    case .miniature(let miniature): MiniatureWell(miniature: miniature, palette: palette)
+    }
   }
 
   private var labels: some View {
@@ -283,5 +298,123 @@ private struct SwitcherCardView: View {
 extension Array {
   fileprivate subscript(safe index: Int) -> Element? {
     indices.contains(index) ? self[index] : nil
+  }
+}
+
+/// A workroom's identity mark: a solid theme-derived tile with its monogram.
+///
+/// Solid rather than a tinted wash on purpose — the tile is the thing you are meant to recognise from
+/// the corner of your eye, and a 10%-opacity wash of six different hues all reads as "grey-ish". The
+/// colour comes from `SwitcherMark.tileColor`, which keeps the theme's hue angle but imposes its own
+/// saturation and brightness; the monogram takes whichever of black/white is legible on the result.
+private struct MarkWell: View {
+  let mark: SwitcherMark
+  private let theme = ThemeService.shared
+
+  var body: some View {
+    let tokens = theme.tokens
+    let tile = SwitcherMark.tileColor(hue: mark.hue, tokens: tokens)
+    RoundedRectangle(cornerRadius: 8, style: .continuous)
+      .fill(Color(nsColor: tile))
+      .frame(width: SwitcherRailLayout.wellSize.width, height: SwitcherRailLayout.wellSize.height)
+      .overlay {
+        Text(mark.monogram)
+          .font(.system(size: 17, weight: .semibold, design: .rounded))
+          .foregroundStyle(Color(nsColor: ThemeTokens.contrastingForeground(for: tile)))
+      }
+  }
+}
+
+/// A pane's type miniature, drawn from its own data.
+private struct MiniatureWell: View {
+  let miniature: PaneMiniature
+  let palette: SwitcherRailLayout.Palette
+  private let theme = ThemeService.shared
+
+  var body: some View {
+    RoundedRectangle(cornerRadius: 8, style: .continuous)
+      .fill(theme.tokens.surface)
+      .frame(width: SwitcherRailLayout.wellSize.width, height: SwitcherRailLayout.wellSize.height)
+      .overlay { shape }
+      .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+  }
+
+  @ViewBuilder private var shape: some View {
+    switch miniature {
+    case .terminal(let running): terminal(running: running)
+    case .diff(let change): diff(change)
+    case .file: file
+    case .changeset: changeset
+    }
+  }
+
+  /// A prompt chevron, with a filled pip while something is running — the one pane state you care about
+  /// mid-switch is "is this the one that's still working".
+  private func terminal(running: Bool) -> some View {
+    HStack(spacing: 3) {
+      Image(systemName: "chevron.right")
+        .font(.system(size: 13, weight: .bold))
+        .foregroundStyle(palette.name)
+      if running {
+        Circle().fill(palette.dot).frame(width: 5, height: 5)
+      } else {
+        RoundedRectangle(cornerRadius: 1).fill(palette.subtitle).frame(width: 8, height: 2)
+      }
+    }
+  }
+
+  /// Stacked add/remove bars. Composition follows the change *kind*, not magnitude: per-file line counts
+  /// don't exist on `ChangedFile`, so an added file reads all-add, a deletion all-remove, a modification
+  /// split, and a conflict takes the conflict token outright.
+  private func diff(_ change: ChangedFile.Change) -> some View {
+    VStack(spacing: 2) {
+      ForEach(Array(bars(for: change).enumerated()), id: \.offset) { _, bar in
+        RoundedRectangle(cornerRadius: 1)
+          .fill(bar.color)
+          .frame(width: bar.width, height: 4)
+      }
+    }
+  }
+
+  private func bars(for change: ChangedFile.Change) -> [(color: Color, width: CGFloat)] {
+    let add = palette.diffAdd
+    let remove = palette.diffRemove
+    switch change {
+    case .added, .untracked:
+      return [(add, 26), (add, 20), (add, 14)]
+    case .deleted:
+      return [(remove, 26), (remove, 20), (remove, 14)]
+    case .modified, .other:
+      return [(add, 26), (remove, 18), (add, 12)]
+    case .renamed:
+      return [(palette.subtitle, 26), (add, 18), (remove, 12)]
+    case .conflicted:
+      return [(Color(nsColor: theme.tokens.nsFg), 24), (remove, 24), (add, 24)]
+    }
+  }
+
+  /// Abstract text lines — a page, with no pretence of showing the real content.
+  private var file: some View {
+    VStack(alignment: .leading, spacing: 3) {
+      ForEach([24, 18, 22, 13], id: \.self) { width in
+        RoundedRectangle(cornerRadius: 1)
+          .fill(palette.subtitle)
+          .frame(width: CGFloat(width), height: 2.5)
+      }
+    }
+  }
+
+  /// A chain of commit dots.
+  private var changeset: some View {
+    HStack(spacing: 0) {
+      ForEach(0..<3, id: \.self) { index in
+        Circle()
+          .fill(index == 0 ? palette.name : palette.subtitle)
+          .frame(width: 6, height: 6)
+        if index < 2 {
+          Rectangle().fill(palette.subtitle).frame(width: 6, height: 1.5)
+        }
+      }
+    }
   }
 }

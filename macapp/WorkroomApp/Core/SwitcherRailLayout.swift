@@ -11,17 +11,18 @@ enum SwitcherRailLayout {
 
   /// The comfortable card width, used while the whole rail fits.
   static let maxCardWidth: CGFloat = 200
-  /// The floor. **180, not 140**: with a fixed 72pt well plus padding and the gap, a 140pt card leaves
-  /// roughly 36pt of label column — every name becomes a fragment and the badge collides with it, so
-  /// the densest state would read the worst. At 180 the label keeps ~76pt (a readable name plus the
-  /// badge) and the row simply starts scrolling sooner.
+  /// The floor. **180, not 140**: with the well plus padding and the gap, a 140pt card leaves far too
+  /// little label column — every name becomes a fragment and the badge collides with it, so the densest
+  /// state would read the worst. At 180 the label keeps a readable name plus the badge, and the row
+  /// simply starts scrolling sooner.
   static let minCardWidth: CGFloat = 180
   static let cardHeight: CGFloat = 88
   static let cardSpacing: CGFloat = 10
   /// Inset from the rail's own edge to the first card.
   static let railPadding: CGFloat = 14
-  /// The thumbnail well. Fixed at every card width — the label column absorbs all of the shrink.
-  static let wellSize = CGSize(width: 72, height: 56)
+  /// The well. Square, and smaller than the 72×56 the screenshot era needed: a mark or a drawn
+  /// miniature reads fine at this size, and the 20pt saved goes to the label column.
+  static let wellSize = CGSize(width: 52, height: 52)
 
   /// Card width for `count` items in `available` points: the comfortable width while everything fits,
   /// shrinking no further than the floor. Past the floor the row scrolls instead (never a second row).
@@ -76,9 +77,10 @@ enum SwitcherRailLayout {
   ///
   /// The cursor ring clearing 3:1 says nothing about the rest, and the rail's surface is
   /// vibrancy + `panel.opacity(0.7)` over a *user-supplied* ghostty theme — a theme whose foreground
-  /// sits close to its background washes out the name, the subtitle and the diff numbers while the
-  /// ring still passes. So each role gets its own floor: 4.5:1 for text (11–13pt body), 3:1 for
-  /// indicators and the ring.
+  /// sits close to its background washes out the name, the subtitle and the diff bars while the ring
+  /// still passes. So each role gets its own floor: 4.5:1 for text (11–13pt body), 3:1 for indicators,
+  /// the ring and the drawn miniatures.
+  ///
   /// Resolved as **`NSColor`**, with `Color` accessors on top. Never the other way round: converting a
   /// SwiftUI `Color` back with `NSColor(_:)` yields a lazily-resolved, SwiftUI-backed colour whose
   /// `usingColorSpace` returns nil outside a view update — so a contrast check silently no-ops and
