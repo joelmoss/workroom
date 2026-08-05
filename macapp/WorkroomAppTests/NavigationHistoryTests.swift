@@ -13,6 +13,27 @@ final class NavigationHistoryTests: XCTestCase {
     NavLocation(target: target, tab: tab)
   }
 
+  /// A changeset location: identity is the commit + the in-commit file. `title` rides in the payload
+  /// only, so it can drift without inventing a step.
+  private func changeset(
+    _ target: SidebarID, _ tab: UUID, commit: String, title: String = "t", file: String? = nil
+  ) -> NavLocation {
+    NavLocation(
+      target: target, tab: tab, contentID: .changeset(commitID: commit), selectedPath: file,
+      payload: .changeset(
+        ChangesetDescriptor(commitID: commit, title: title, isPreview: false, selectedPath: file)))
+  }
+
+  /// A working-copy diff location: identity is path + source; `change` rides in the payload only.
+  private func diff(
+    _ target: SidebarID, _ tab: UUID, path: String, change: ChangedFile.Change = .modified
+  ) -> NavLocation {
+    NavLocation(
+      target: target, tab: tab, contentID: .diff(path: path, source: .gitWorktree),
+      payload: .diff(
+        DiffDescriptor(path: path, change: change, source: .gitWorktree, isPreview: false)))
+  }
+
   /// The exact issue #26 example at the stack level: T1 of A → new terminal (Tnew, in A) →
   /// T2 of B → Back lands Tnew → Back lands T1 → Forward lands Tnew.
   func testIssueExampleTrace() {
@@ -49,10 +70,9 @@ final class NavigationHistoryTests: XCTestCase {
   func testCommitAndFileAreDistinctSteps() {
     let a = SidebarID.workroom(project: "/a", name: "main")
     let tab = UUID()
-    let cA = NavLocation(target: a, tab: tab, commitID: "A", commitTitle: "a", filePath: nil)
-    let cAfile = NavLocation(
-      target: a, tab: tab, commitID: "A", commitTitle: "a", filePath: "x.swift")
-    let cB = NavLocation(target: a, tab: tab, commitID: "B", commitTitle: "b", filePath: nil)
+    let cA = changeset(a, tab, commit: "A")
+    let cAfile = changeset(a, tab, commit: "A", file: "x.swift")
+    let cB = changeset(a, tab, commit: "B")
     var h = NavigationHistory()
     h.record(cA)
     h.record(cAfile)
@@ -65,11 +85,126 @@ final class NavigationHistoryTests: XCTestCase {
 
   func testSameCommitAndFileDedups() {
     let a = SidebarID.workroom(project: "/a", name: "main")
-    let same = NavLocation(target: a, tab: UUID(), commitID: "A", commitTitle: "a", filePath: "x")
+    let same = changeset(a, UUID(), commit: "A", file: "x")
     var h = NavigationHistory()
     h.record(same)
     h.record(same)  // identical content → no-op
     XCTAssertEqual(h.entries, [same])
+  }
+
+  // MARK: Identity excludes the drifting payload fields
+
+  /// A commit's title is rebuilt from a fallback on replay, so it must not make a new location —
+  /// otherwise revisiting one commit piles up steps that look identical on screen.
+  func testChangesetTitleDriftDedups() {
+    let a = SidebarID.workroom(project: "/a", name: "main")
+    let tab = UUID()
+    var h = NavigationHistory()
+    h.record(changeset(a, tab, commit: "A", title: "written at record time"))
+    h.record(changeset(a, tab, commit: "A", title: "A"))  // replay's `commitTitle ?? commitID`
+    XCTAssertEqual(h.entries.count, 1, "a title change is not a new place")
+  }
+
+  /// A file's change kind flips as it is staged, reverted or deleted. Same file, same place.
+  func testDiffChangeKindDriftDedups() {
+    let a = SidebarID.workroom(project: "/a", name: "main")
+    let tab = UUID()
+    var h = NavigationHistory()
+    h.record(diff(a, tab, path: "x.swift", change: .modified))
+    h.record(diff(a, tab, path: "x.swift", change: .deleted))
+    XCTAssertEqual(h.entries.count, 1, "a change-kind flip is not a new place")
+  }
+
+  /// Keep Open flips `isPreview`; the location is unchanged. (`NavPayload.init` normalises it, and
+  /// `==` ignores the payload anyway — this pins both.)
+  func testPreviewToPersistDedups() {
+    let a = SidebarID.workroom(project: "/a", name: "main")
+    let tab = UUID()
+    let preview = DiffDescriptor(
+      path: "x.swift", change: .modified, source: .gitWorktree, isPreview: true)
+    var h = NavigationHistory()
+    h.record(
+      NavLocation(
+        target: a, tab: tab, contentID: .diff(path: "x.swift", source: .gitWorktree),
+        payload: NavPayload(.diff(preview))))
+    h.record(diff(a, tab, path: "x.swift"))
+    XCTAssertEqual(h.entries.count, 1, "pinning a preview is not a new place")
+  }
+
+  /// The same path viewed as a diff and as a plain file are different panes, so different steps.
+  func testDiffAndFileOnTheSamePathAreDistinctSteps() {
+    let a = SidebarID.workroom(project: "/a", name: "main")
+    let tab = UUID()
+    let asDiff = diff(a, tab, path: "x.swift")
+    let asFile = NavLocation(
+      target: a, tab: tab, contentID: .file(path: "x.swift"),
+      payload: .file(FileDescriptor(path: "x.swift", isPreview: false)))
+    var h = NavigationHistory()
+    h.record(asDiff)
+    h.record(asFile)
+    XCTAssertEqual(h.entries, [asDiff, asFile])
+    XCTAssertEqual(h.step(-1, isLive: alwaysLive), asDiff)
+  }
+
+  /// A terminal pane and a content pane in the same tab are different places.
+  func testTerminalAndContentAreDistinctSteps() {
+    let a = SidebarID.workroom(project: "/a", name: "main")
+    let tab = UUID()
+    let term = NavLocation(target: a, tab: tab)  // contentID nil ⇒ a terminal
+    let content = diff(a, tab, path: "x.swift")
+    var h = NavigationHistory()
+    h.record(term)
+    h.record(content)
+    XCTAssertEqual(h.entries, [term, content])
+  }
+
+  /// `prune`'s adjacent-duplicate collapse is the one place the hand-written `==` runs during removal,
+  /// and for content entries in the SAME tab only the content can tell two steps apart. Both directions:
+  /// identical content collapses, a different path does not.
+  func testPruneCollapseIsContentAware() {
+    let a = SidebarID.workroom(project: "/a", name: "main")
+    let preview = UUID()
+    let term = UUID()
+
+    var same = NavigationHistory()
+    same.record(diff(a, preview, path: "x.swift"))
+    same.record(NavLocation(target: a, tab: term))
+    same.record(diff(a, preview, path: "x.swift"))
+    same.prune(removing: [term])
+    XCTAssertEqual(same.entries.count, 1, "revisiting the same file in one tab is one place")
+
+    var differing = NavigationHistory()
+    differing.record(diff(a, preview, path: "x.swift"))
+    differing.record(NavLocation(target: a, tab: term))
+    differing.record(diff(a, preview, path: "y.swift"))
+    differing.prune(removing: [term])
+    XCTAssertEqual(
+      differing.entries.count, 2, "two files browsed in one preview tab are two distinct steps")
+    XCTAssertEqual(
+      differing.step(-1, isLive: alwaysLive)?.contentID,
+      .diff(path: "x.swift", source: .gitWorktree))
+  }
+
+  /// Pruning keys on the tab id even for content entries — back ignores what was closed, and nothing
+  /// is reopened. Browsing several files in ONE preview tab therefore loses every step when that tab
+  /// closes. Deliberate; see `prune`'s doc comment.
+  func testPruneDropsContentEntriesOfAClosedTab() {
+    let a = SidebarID.workroom(project: "/a", name: "main")
+    let preview = UUID()
+    let pinned = UUID()
+    var h = NavigationHistory()
+    h.record(diff(a, pinned, path: "kept.swift"))
+    h.record(diff(a, preview, path: "one.swift"))
+    h.record(diff(a, preview, path: "two.swift"))
+    XCTAssertEqual(h.entries.count, 3)
+
+    h.prune(removing: [preview])
+    XCTAssertEqual(h.entries.count, 1, "both browse steps die with the tab that carried them")
+    // The cursor was ON a removed entry, so it parks just past the last survivor (existing contract:
+    // `current` is nil, and Back lands on that survivor rather than skipping it).
+    XCTAssertTrue(h.canGoBack)
+    XCTAssertEqual(
+      h.step(-1, isLive: alwaysLive)?.tab, pinned, "the entry naming a still-open tab survives")
   }
 
   func testRecordAfterBackTruncatesForward() {

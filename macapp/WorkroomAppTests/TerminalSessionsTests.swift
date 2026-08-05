@@ -15,6 +15,67 @@ final class TerminalSessionsTests: XCTestCase {
     return sessions
   }
 
+  // MARK: onTabContentChange — the navigation-history seam
+
+  /// Retargeting the shared preview tab mutates content without moving focus, so `onFocusChange` never
+  /// fires. This seam is the only way history can see it — the whole cause of "Back skips the files you
+  /// browsed".
+  func testContentSeamFiresOnPreviewRetarget() {
+    let s = makeSessions()
+    var fired: [TerminalTab.ID] = []
+    s.onTabContentChange = { _, tabID in fired.append(tabID) }
+    let first = s.openDiffPreview(
+      DiffDescriptor(path: "A.swift", change: .modified, source: .gitWorktree, isPreview: true),
+      for: target)
+    XCTAssertTrue(fired.isEmpty, "a NEW preview tab changes focus, so onFocusChange covers it")
+
+    let second = s.openDiffPreview(
+      DiffDescriptor(path: "B.swift", change: .modified, source: .gitWorktree, isPreview: true),
+      for: target)
+
+    XCTAssertEqual(second, first, "the preview slot is retargeted in place")
+    XCTAssertEqual(fired, [first], "the retarget must report itself")
+  }
+
+  /// Selecting a file inside a commit is its own location and moves no focus.
+  func testContentSeamFiresOnChangesetFileSelection() {
+    let s = makeSessions()
+    let tab = s.openContentPreview(
+      ChangesetDescriptor(commitID: "abc", title: "t", isPreview: true), for: target)
+    var fired: [TerminalTab.ID] = []
+    s.onTabContentChange = { _, tabID in fired.append(tabID) }
+
+    s.setChangesetSelectedPath("one.swift", forTab: tab, in: target)
+    s.setChangesetSelectedPath("one.swift", forTab: tab, in: target)  // unchanged → no event
+
+    XCTAssertEqual(fired, [tab])
+  }
+
+  /// Pinning a tab and changing how a pane is rendered are not locations, so they must stay silent —
+  /// otherwise Keep Open and the view-mode toggle would litter back/forward with phantom steps.
+  ///
+  /// The file preview is opened BEFORE the pin so it is a genuine retarget of the one preview slot: that
+  /// is the only fire this body is allowed, and asserting the count around it proves the overrides are
+  /// silent rather than proving a counter that was already zero.
+  func testContentSeamStaysSilentForPinAndViewMode() {
+    let s = makeSessions()
+    let tab = s.openDiffPreview(
+      DiffDescriptor(path: "A.swift", change: .modified, source: .gitWorktree, isPreview: true),
+      for: target)
+    var fired = 0
+    s.onTabContentChange = { _, _ in fired += 1 }
+
+    let file = s.openFilePreview(FileDescriptor(path: "R.md", isPreview: true), for: target)
+    XCTAssertEqual(tab, file, "the file preview retargets the one preview slot")
+    XCTAssertEqual(fired, 1, "a retarget is a location change")
+
+    s.persist(file, for: target)
+    s.setMarkdownPreview(true, forTab: file, in: target)
+    s.setDiffViewMode(.sideBySide, forTab: file, in: target)
+
+    XCTAssertEqual(fired, 1, "pin and view-mode overrides add no locations")
+  }
+
   func testAddTabAppendsAndActivates() {
     let s = makeSessions()
     s.addTab(for: target)

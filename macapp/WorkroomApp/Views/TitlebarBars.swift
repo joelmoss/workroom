@@ -110,6 +110,11 @@ struct LeadingTitlebarBar: View {
 
       TitlebarDivider()
 
+      // The two identifiers below are a deliberate hook with no test behind them yet: the nav UI test
+      // drives ⌘[/⌘] instead, because these buttons live in an AppKit titlebar accessory that no
+      // XCUITest has ever queried, and a tap on a `.disabled` one fails silently (a green test proving
+      // nothing). Kept so a future titlebar test has a handle. `accessibilityLabel` is what assistive
+      // tech actually reads.
       Button {
         store.navigateBack()
       } label: {
@@ -117,6 +122,7 @@ struct LeadingTitlebarBar: View {
       }
       .help("Back (⌘[)")
       .accessibilityLabel("Back")
+      .accessibilityIdentifier("toolbar.navigateBack")
       .disabled(!store.canGoBack)
 
       Button {
@@ -126,6 +132,7 @@ struct LeadingTitlebarBar: View {
       }
       .help("Forward (⌘])")
       .accessibilityLabel("Forward")
+      .accessibilityIdentifier("toolbar.navigateForward")
       .disabled(!store.canGoForward)
     }
     .buttonStyle(ToolbarIconButtonStyle())

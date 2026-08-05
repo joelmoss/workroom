@@ -121,6 +121,80 @@ enum TabContent {
   }
 }
 
+// MARK: - Navigation-history bridge
+//
+// The `TabContent` → history projections live here, next to `TabContent`, so a fifth content kind is a
+// compile error in ONE place instead of failing silently in several. Both switches below are
+// exhaustive on purpose — no `default` arm.
+
+extension NavPayload {
+  /// The replay payload for a tab's content, or `nil` for a terminal (nothing to re-open — replay just
+  /// re-focuses the tab).
+  ///
+  /// Two fields are normalised OUT, and for the same reason: they are not part of a location, so leaving
+  /// them here would give one value two homes. `isPreview` — a Keep Open must not read as a new place.
+  /// `selectedPath` — the in-commit file selection is identity, and it lives on `NavLocation` where `==`
+  /// can see it; a second copy in here would let dedup read one value while replay applied the other.
+  init?(_ content: TabContent) {
+    switch content {
+    case .terminal:
+      return nil
+    case .diff(var d):
+      d.isPreview = false
+      self = .diff(d)
+    case .file(var f):
+      f.isPreview = false
+      self = .file(f)
+    case .changeset(var c):
+      c.isPreview = false
+      c.selectedPath = nil
+      self = .changeset(c)
+    }
+  }
+
+  /// This payload as tab content, taking its preview flag from the tab it is landing in — see
+  /// `TerminalSessions.setContent`.
+  func makeTabContent(isPreview: Bool) -> TabContent {
+    switch self {
+    case .diff(var d):
+      d.isPreview = isPreview
+      return .diff(d)
+    case .file(var f):
+      f.isPreview = isPreview
+      return .file(f)
+    case .changeset(var c):
+      c.isPreview = isPreview
+      return .changeset(c)
+    }
+  }
+
+  /// Whether `content` is already showing this payload — delegates to each descriptor's own identity
+  /// rule (`sameFile` / `sameChangeset` via `ContentDescriptor.matches`), so the rule stays defined
+  /// once per type.
+  func matchesTab(_ content: TabContent) -> Bool {
+    switch self {
+    case .diff(let d): return d.matches(content)
+    case .file(let f): return f.matches(content)
+    case .changeset(let c): return c.matches(content)
+    }
+  }
+
+}
+
+extension FocusedTabSelection {
+  /// The content identity of a tab, or `nil` for a terminal (no inspector row corresponds to it, and
+  /// history represents it as "no content"). The single switch `current(store:sessions:)` and
+  /// navigation history both resolve through.
+  init?(content: TabContent) {
+    switch content {
+    case .changeset(let descriptor): self = .changeset(commitID: descriptor.commitID)
+    case .diff(let descriptor): self = .diff(path: descriptor.path, source: descriptor.source)
+    case .file(let descriptor): self = .file(path: descriptor.path)
+    case .terminal: return nil
+    }
+  }
+}
+
 /// A non-terminal content-tab payload the preview/persist openers drive uniformly (issue #59). Diffs,
 /// files, and changesets differ only in how they wrap into a `TabContent` case and what makes two of
 /// them the *same* tab (the dedup / retarget identity) — extracting this collapses the otherwise
@@ -196,6 +270,21 @@ final class TerminalSessions: ObservableObject {
   /// mirroring `activityHandler`, so sessions stay ignorant of `AppStore`. `tabID` is nil when the
   /// target's focus was cleared (a `reap` passes `notify: false`, so that case never reaches here).
   var onFocusChange: ((TerminalTarget.ID, TerminalTab.ID?) -> Void)?
+  /// Set once by `AppStore`: fired when a tab's recorded **location** changes underneath a focus that
+  /// did not move, so navigation history can record it. `onFocusChange` cannot cover this: retargeting
+  /// the shared preview tab in place mutates `content` and leaves `focusedTabByTarget` untouched, so
+  /// every Changes/Files click after the first recorded nothing at all — the whole bug.
+  ///
+  /// "Location", not "content identity": one of the two fire sites is `setChangesetSelectedPath`, and a
+  /// changeset's selected file is deliberately NOT part of content identity (`sameChangeset` excludes
+  /// it, which is why the preview can be retargeted across files without becoming a different tab). It
+  /// is still its own back/forward step, so it belongs here.
+  ///
+  /// Fired from exactly the two sites that mutate content identity (`openContentPreview`'s retarget
+  /// branch and `setChangesetSelectedPath`) and nowhere else. The other opener branches all end in
+  /// `setFocused` on a tab that was not focused, so `onFocusChange` already records them; firing here
+  /// too would redefine this seam as "an open happened", which is not what it means.
+  var onTabContentChange: ((TerminalTarget.ID, TerminalTab.ID) -> Void)?
   /// Set once by `AppStore`: the tabs just removed by a `closeTab` or `reap`, so navigation history
   /// can prune their now-dead entries (issue #26 — honest back/forward enablement).
   var onTabsRemoved: ((TerminalTarget.ID, [TerminalTab.ID]) -> Void)?
@@ -387,6 +476,15 @@ final class TerminalSessions: ObservableObject {
   //                                          └─ else → new preview tab           (≤1 preview/target: Inv A)
   //   double-click file ─▶ openDiffPersistent ─ create-or-promote a persisted tab
   //   double-click chip / "Keep Open" ─▶ persist ─ flip preview → persisted
+  //
+  // EVERY branch above must end up recorded in navigation history, and they get there two ways —
+  // forget this and back/forward silently stops seeing a whole content kind (that WAS the bug):
+  //
+  //   Inv A         ─▶ setFocused (a brand-new tab) ─▶ onFocusChange ─▶ AppStore records
+  //   Inv B         ─▶ content mutates, focus does NOT ─▶ onTabContentChange ─▶ AppStore records
+  //   Inv C         ─▶ focus may EARLY-RETURN (already focused) ─▶ onTabContentChange too, so a
+  //                    re-select can reconcile a cursor that a replay left elsewhere
+  //   persist / setDiffViewMode / setMarkdownPreview ─▶ NEITHER — a pin and a view mode are not places
 
   /// Open `descriptor` as the target's single PREVIEW content tab (VS-Code semantics). Returns the
   /// id of the tab now shown. Generic over `ContentDescriptor` so diffs, files, and changesets share
@@ -404,12 +502,21 @@ final class TerminalSessions: ObservableObject {
     desc.isPreview = true
     if let existing = contentTab(matching: desc, in: target.id) {
       focus(existing, for: target)
+      // Re-selecting content that is ALREADY the focused tab moves nothing, so `onFocusChange` stays
+      // quiet — yet after a replay landed in a tab the history cursor doesn't name, the cursor and the
+      // screen disagree, and staying quiet leaves the forward stack pointing at a future that is no
+      // longer on screen. Report it and let `record`'s dedup decide: same place ⇒ free no-op, different
+      // place ⇒ the entry the user actually re-selected, which truncates forward.
+      onTabContentChange?(target.id, existing)
       return existing
     }
     if let previewID = previewTabID(in: target.id), var tab = tabsByTarget[target.id]?[previewID] {
       tab.content = desc.makeTabContent()
       tabsByTarget[target.id]?[previewID] = tab
       focus(previewID, for: target)
+      // The content moved but the focus did not, so `onFocusChange` will not fire — this is the one
+      // opener branch navigation history cannot otherwise see (issue #26 follow-up).
+      onTabContentChange?(target.id, previewID)
       return previewID
     }
     let tab = TerminalTab(content: desc.makeTabContent())
@@ -431,6 +538,7 @@ final class TerminalSessions: ObservableObject {
     if let existing = contentTab(matching: desc, in: target.id) {
       persist(existing, for: target)
       focus(existing, for: target)
+      onTabContentChange?(target.id, existing)  // same reconciliation as the preview dedup branch
       return existing
     }
     let tab = TerminalTab(content: desc.makeTabContent())
@@ -524,6 +632,9 @@ final class TerminalSessions: ObservableObject {
     desc.selectedPath = path
     tab.content = .changeset(desc)
     tabsByTarget[target.id]?[tabID] = tab
+    // A selection change inside a commit is its own location, and it moves no focus — so, like the
+    // preview retarget, only this seam can tell navigation history about it.
+    onTabContentChange?(target.id, tabID)
   }
 
   /// Set a file tab's Markdown source/preview override, from the tab toolbar's Source/Preview switch.
@@ -537,7 +648,32 @@ final class TerminalSessions: ObservableObject {
     tabsByTarget[target.id]?[tabID] = tab
   }
 
+  /// Put `payload` back into a SPECIFIC tab, in place — back/forward replay's landing primitive, and the
+  /// only caller. Distinct from `openContentPreview`, which retargets whichever tab is *currently* the
+  /// preview slot; replay needs the tab the location was recorded in, which may since have been pinned.
+  ///
+  /// Restoring a tab's own earlier content is not the same as dropping unrelated content on it, which is
+  /// what the pin protects against — so `isPreview` is carried over untouched. That also keeps the
+  /// ≤1-preview invariant by construction: a pinned tab stays pinned, the preview slot stays the slot,
+  /// and no tab is created.
+  ///
+  /// Refuses a terminal tab. A tab that recorded content cannot become a terminal (only the content
+  /// openers write `content`, and none of them writes `.terminal`), so this is a guard against a future
+  /// caller rather than a live case — but silently freeing a live surface would be unrecoverable.
+  func setContent(_ payload: NavPayload, forTab tabID: TerminalTab.ID, in target: TerminalTarget) {
+    guard var tab = tabsByTarget[target.id]?[tabID] else { return }
+    let wasPreview = tab.isPreview
+    guard case .terminal = tab.content else {
+      tab.content = payload.makeTabContent(isPreview: wasPreview)
+      tabsByTarget[target.id]?[tabID] = tab
+      onTabContentChange?(target.id, tabID)
+      return
+    }
+    assertionFailure("replay must never overwrite a terminal tab's content")
+  }
+
   /// The id of the target's single preview content tab, if one exists (the ≤1-preview invariant).
+
   private func previewTabID(in target: TerminalTarget.ID) -> TerminalTab.ID? {
     tabsByTarget[target]?.first { _, tab in tab.isPreview }?.key
   }

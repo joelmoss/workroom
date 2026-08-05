@@ -264,7 +264,9 @@ struct ChangesetDetailView: View {
     ScrollView {
       VStack(alignment: .leading, spacing: 0) {
         ForEach(files) { file in
-          fileRow(file)
+          // `isFirst` is what lets the row canonicalise its tap: an empty selection renders the first
+          // file, so the first file must always be recorded as an empty selection rather than by name.
+          fileRow(file, isFirst: file.path == files.first?.path)
         }
       }
       .padding(.vertical, 4)
@@ -272,7 +274,7 @@ struct ChangesetDetailView: View {
     .accessibilityIdentifier("ChangesetFileList")
   }
 
-  private func fileRow(_ file: VCSChangedFile) -> some View {
+  private func fileRow(_ file: VCSChangedFile, isFirst: Bool) -> some View {
     let isSelected = (selectedPath ?? "") == file.path
     return HStack(alignment: .firstTextBaseline, spacing: 6) {
       Text(Self.badge(file.kind))
@@ -308,7 +310,12 @@ struct ChangesetDetailView: View {
         hoveredPath = nil
       }
     }
-    .onTapGesture { store.selectChangesetFile(file.path, tab: tabID, in: target) }
+    // The first file is reported as `nil` — the single canonical spelling of "the default selection",
+    // since that is what this view renders when the descriptor's selection is empty. Recording it by
+    // name instead would make two history entries that render identically, and Back would spend a press
+    // going nowhere visible. With one spelling, `setChangesetSelectedPath`'s own "did it change" guard
+    // is enough; no view-level tap guard is needed.
+    .onTapGesture { store.selectChangesetFile(isFirst ? nil : file.path, tab: tabID, in: target) }
     .help(ChangeBadge.pathLine(path: file.path, oldPath: file.oldPath))
     .accessibilityElement(children: .combine)
     .accessibilityIdentifier("ChangesetFileRow")

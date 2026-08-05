@@ -34,16 +34,9 @@ enum FocusedTabSelection: Equatable {
     guard let target = store.selectedTarget, let tab = sessions.focusedTab(for: target) else {
       return nil
     }
-    switch tab.content {
-    case .changeset(let descriptor):
-      return .changeset(commitID: descriptor.commitID)
-    case .diff(let descriptor):
-      return .diff(path: descriptor.path, source: descriptor.source)
-    case .file(let descriptor):
-      return .file(path: descriptor.path)
-    case .terminal:
-      return nil
-    }
+    // The per-kind switch lives in `init?(content:)`, beside `TabContent` — navigation history reduces
+    // a tab the same way, and one switch means a new case cannot be taught here and forgotten there.
+    return Self(content: tab.content)
   }
 
   /// The focused changeset's commit id, if a changeset tab is focused. What the History rows compare

@@ -851,6 +851,20 @@ final class AppStore: ObservableObject {
       guard !self.isNavigatingHistory else { return }
       self.recordCurrentLocation()
     }
+    // A tab's content changed underneath an unmoved focus (the shared preview tab being retargeted, or
+    // a file selected inside a commit). `onFocusChange` cannot see either, which is why browsing the
+    // Changes/Files panels used to record nothing after the first click.
+    //
+    // Scoped to the on-screen cursor location: a content change in a co-displayed but NON-selected
+    // workroom is not where the user is, and `recordCurrentLocation` records the *selected* target's
+    // focused tab, so recording here would log the wrong place at the wrong moment.
+    terminals.onTabContentChange = { [weak self] targetID, tabID in
+      guard let self, !self.isNavigatingHistory else { return }
+      guard let selected = self.selectedTarget, selected.id == targetID,
+        self.terminals.focusedTab(for: selected)?.id == tabID
+      else { return }
+      self.recordCurrentLocation()
+    }
     // Prune dead entries when tabs are closed/reaped, so canGoBack/Forward stay honest (issue #26).
     // Also collapse a target's sidebar terminal subtree once a close drops it below the 2-tab
     // disclosure threshold (issue #30), so a stale expand flag can't auto-reveal if the count climbs
@@ -1009,10 +1023,10 @@ final class AppStore: ObservableObject {
       let sid = Self.sidebarID(forTargetID: targetID, in: projects), group.contains(sid),
       selectedTargetID != sid
     else { return }
-    isNavigatingHistory = true
-    defer { isNavigatingHistory = false }
-    selectedTargetID = sid
-    selectedProjectID = Self.projectPath(of: sid)
+    withHistorySuppressed {
+      selectedTargetID = sid
+      selectedProjectID = Self.projectPath(of: sid)
+    }
   }
 
   var selectedProject: Project? {
@@ -3513,9 +3527,6 @@ final class AppStore: ObservableObject {
     guard let target = selectedTarget else { return }
     terminals.openContentPreview(
       ChangesetDescriptor(commitID: commitID, title: title, isPreview: true), for: target)
-    // Retargeting the preview tab fires no focus change, so record the commit view explicitly (a
-    // dedup collapses the double when a genuine focus change also recorded it).
-    if !isNavigatingHistory { recordCurrentLocation() }
   }
 
   /// Open a commit's changeset detail as a *persisted* content tab (double-click a History row).
@@ -3524,21 +3535,21 @@ final class AppStore: ObservableObject {
     guard let target = selectedTarget else { return }
     terminals.openContentPersistent(
       ChangesetDescriptor(commitID: commitID, title: title, isPreview: false), for: target)
-    if !isNavigatingHistory { recordCurrentLocation() }
   }
 
   /// Select a file within a changeset tab (a tap in the History detail's file list). Updates the tab
-  /// so `ChangesetDetailView` shows that file's diff (no reload — its `.task` keys on the commit),
-  /// and records a back/forward step, so each in-commit file selection is its own step. Records only
-  /// when this changeset is the active (focused) location, to avoid a wrong-tab entry.
-  func selectChangesetFile(_ path: String, tab tabID: TerminalTab.ID, in target: TerminalTarget) {
-    guard case .changeset(let d)? = terminals.tab(tabID, for: target)?.content,
-      d.selectedPath != path
-    else { return }
+  /// so `ChangesetDetailView` shows that file's diff (no reload — its `.task` keys on the commit).
+  /// Each in-commit selection is its own back/forward step, recorded by `onTabContentChange` rather
+  /// than here — one seam, so no opener can forget. A plain forward: `setChangesetSelectedPath` already
+  /// applies the same two preconditions (the tab exists and is a changeset, and the path actually
+  /// changed), so re-checking them here would just be two guards to keep in sync.
+  ///
+  /// `path` is optional because "the commit's first file" has exactly ONE representation: `nil`. The
+  /// detail view renders the first file when the selection is empty, so recording that same file
+  /// *by name* would create a second location that renders identically to the first — Back would spend a
+  /// press going nowhere visible. The caller canonicalises, because only it knows the file list.
+  func selectChangesetFile(_ path: String?, tab tabID: TerminalTab.ID, in target: TerminalTarget) {
     terminals.setChangesetSelectedPath(path, forTab: tabID, in: target)
-    if !isNavigatingHistory, terminals.focusedTab(for: target)?.id == tabID {
-      recordCurrentLocation()
-    }
   }
 
   /// Open a repo file in the configured external editor (⌘-click / context menu in the Files
@@ -3690,31 +3701,42 @@ final class AppStore: ObservableObject {
     history.record(Self.location(target: sid, tab: tab))
   }
 
-  /// Build a `NavLocation` from a focused tab, capturing the content selection (commit + file) so
-  /// back/forward can restore not just which tab, but which commit's changeset and which file within
-  /// it were on screen (issue: commit browser).
+  /// Build a `NavLocation` from a focused tab: which tab, *what it was showing* (identity), and the
+  /// descriptor needed to put it back. Every content kind is captured — a diff and a file used to
+  /// record a bare path and nothing at all respectively, which is why back/forward could not reinstate
+  /// them.
   private static func location(target sid: SidebarID, tab: TerminalTab) -> NavLocation {
-    switch tab.content {
-    case .changeset(let d):
-      return NavLocation(
-        target: sid, tab: tab.id, commitID: d.commitID, commitTitle: d.title,
-        filePath: d.selectedPath)
-    case .diff(let d):
-      return NavLocation(target: sid, tab: tab.id, filePath: d.path)
-    default:
-      return NavLocation(target: sid, tab: tab.id)
-    }
+    var selectedPath: String? = nil
+    if case .changeset(let d) = tab.content { selectedPath = d.selectedPath }
+    return NavLocation(
+      target: sid, tab: tab.id, contentID: FocusedTabSelection(content: tab.content),
+      selectedPath: selectedPath, payload: NavPayload(tab.content))
+  }
+
+  /// Run `body` with history recording suppressed, reinstating the *previous* value afterwards rather
+  /// than clearing the flag outright.
+  ///
+  /// Nothing nests today: `applyLocation(_:)`'s two suppressed regions are sequential, so `wasNavigating`
+  /// is `false` at all three call sites. Save-and-reinstate is the cheap insurance that keeps it that
+  /// way — a bare `defer { isNavigatingHistory = false }` inside a future nested region would reopen
+  /// recording halfway through the outer one and replay would silently record itself, which no
+  /// assertion outside `testReplayAppendsNothing` would catch.
+  private func withHistorySuppressed(_ body: () -> Void) {
+    let wasNavigating = isNavigatingHistory
+    isNavigatingHistory = true
+    defer { isNavigatingHistory = wasNavigating }
+    body()
   }
 
   /// Go back one step, skipping entries whose target/tab no longer exist (D2). No-op when there's no
   /// live earlier location.
   func navigateBack() {
-    if let loc = history.step(-1, isLive: isLive) { applyLocation(loc, recordHistory: false) }
+    if let loc = history.step(-1, isLive: isLive) { applyLocation(loc) }
   }
 
   /// Go forward one step (mirrors `navigateBack`).
   func navigateForward() {
-    if let loc = history.step(+1, isLive: isLive) { applyLocation(loc, recordHistory: false) }
+    if let loc = history.step(+1, isLive: isLive) { applyLocation(loc) }
   }
 
   /// The single primitive for "go to (target, tab)": used by back/forward replay and by
@@ -3725,49 +3747,117 @@ final class AppStore: ObservableObject {
   /// requested tab when it still exists, else the target's current focused tab.
   private func applyLocation(target sid: SidebarID, tab tabID: TerminalTab.ID?, recordHistory: Bool)
   {
-    isNavigatingHistory = true
-    defer { isNavigatingHistory = false }
-    selectedProjectID = Self.projectPath(of: sid)
-    selectedTargetID = sid
-    guard let target = selectedTarget, !target.isMissing else { return }
-    let resolved =
-      tabID.flatMap { id in terminals.tabs(for: target).contains { $0.id == id } ? id : nil }
-      ?? terminals.focusedTab(for: target)?.id
-    guard let resolved else { return }
-    terminals.focus(resolved, for: target)
-    if recordHistory, let tab = terminals.tab(resolved, for: target) {
-      history.record(Self.location(target: sid, tab: tab))
+    withHistorySuppressed {
+      selectedProjectID = Self.projectPath(of: sid)
+      selectedTargetID = sid
+      guard let target = selectedTarget, !target.isMissing else { return }
+      let resolved =
+        tabID.flatMap { id in terminals.tabs(for: target).contains { $0.id == id } ? id : nil }
+        ?? terminals.focusedTab(for: target)?.id
+      guard let resolved else { return }
+      terminals.focus(resolved, for: target)
+      if recordHistory, let tab = terminals.tab(resolved, for: target) {
+        history.record(Self.location(target: sid, tab: tab))
+      }
     }
   }
 
-  /// Back/forward replay of a full `NavLocation`: select + focus its tab, then restore the recorded
-  /// content selection. For a changeset, re-establish the recorded commit + file — the preview tab
-  /// drifts as you browse (retargets record no focus change), so replay reopens the recorded commit
-  /// there; a persisted tab already shows the right commit, so only its file is restored. All under
-  /// `isNavigatingHistory`, so nothing re-records.
-  private func applyLocation(_ loc: NavLocation, recordHistory: Bool) {
-    applyLocation(target: loc.target, tab: loc.tab, recordHistory: recordHistory)
-    guard let commitID = loc.commitID, let target = selectedTarget, !target.isMissing else {
-      return
-    }
-    isNavigatingHistory = true
-    defer { isNavigatingHistory = false }
-    if let focused = terminals.focusedTab(for: target), case .changeset(let d) = focused.content,
-      d.commitID == commitID
-    {
-      terminals.setChangesetSelectedPath(loc.filePath, forTab: focused.id, in: target)
-    } else {
-      terminals.openContentPreview(
-        ChangesetDescriptor(
-          commitID: commitID, title: loc.commitTitle ?? commitID, isPreview: true,
-          selectedPath: loc.filePath),
-        for: target)
+  /// Back/forward replay of a full `NavLocation`: select the workroom, focus the tab, then put the
+  /// recorded content back on screen.
+  ///
+  /// **Replay never creates a tab** — back ignores anything that was closed, and nothing is reopened.
+  /// It always has somewhere to land, because `isLive` guarantees `loc.tab` still exists and a content
+  /// tab can always be retargeted back to what it was showing:
+  ///
+  /// ```
+  ///   applyLocation(loc)
+  ///     │ select loc.target, focus loc.tab  (suppressed, so nothing re-records)
+  ///     ├── payload == nil ─▶ a terminal ─▶ done: the focus above IS the whole replay
+  ///     └── payload != nil ─▶ refresh a working-copy diff's change kind, then:
+  ///           ├─ 1. loc.tab already shows it     ─▶ nothing to re-open, it is already there
+  ///           ├─ 2. another live tab shows it     ─▶ focus that tab, rather than render the same
+  ///           │                                      content twice (the ⌘D twin / a pinned copy)
+  ///           └─ 3. else                          ─▶ retarget loc.tab IN PLACE, pin and all
+  ///         then: reinstate the in-commit file selection
+  /// ```
+  ///
+  /// Step 3 retargets a *pinned* `loc.tab` too. Restoring a tab's own earlier content is not the same as
+  /// dropping unrelated content on it, which is what Keep Open protects against — and the alternative
+  /// was worse: `persist` removes the preview slot, so requiring one stranded every entry browsed before
+  /// a pin and left the Back chevron enabled-but-dead (one double-click re-armed the original bug).
+  ///
+  /// Not idempotent across a round trip when a ⌘D twin is involved: step 2 can focus the pinned anchor
+  /// while the twin keeps whatever step 3 last put in it, so Back-then-Forward may leave a split
+  /// arranged differently than it started. Content is always right; pane *placement* is not restored.
+  private func applyLocation(_ loc: NavLocation) {
+    applyLocation(target: loc.target, tab: loc.tab, recordHistory: false)
+    guard let payload = loc.payload, let target = selectedTarget, !target.isMissing else { return }
+    withHistorySuppressed {
+      // A diff's `change` is rendered (the header letter) and acted on ("Open file in…" is disabled for
+      // a deleted source), so replaying a record-time value could offer to open a file that is gone.
+      // Take the live kind from the same changed-file list the Changes panel renders; keep the recorded
+      // one when status has not loaded yet.
+      let landing = Self.refreshingChangeKind(payload, from: workroomStatuses[loc.target])
+
+      let landedTab: TerminalTab.ID
+      if let recorded = terminals.tab(loc.tab, for: target), landing.matchesTab(recorded.content) {
+        landedTab = recorded.id  // 1 — already showing it
+      } else if let other = terminals.tabs(for: target).first(where: {
+        landing.matchesTab($0.content)
+      }) {
+        terminals.focus(other.id, for: target)
+        landedTab = other.id  // 2 — a different tab has it
+      } else {
+        terminals.setContent(landing, forTab: loc.tab, in: target)  // 3 — retarget in place
+        landedTab = loc.tab
+      }
+
+      if case .changeset = landing {
+        terminals.setChangesetSelectedPath(loc.selectedPath, forTab: landedTab, in: target)
+      }
     }
   }
 
-  /// Whether a recorded location is still reachable: its target resolves to a live, non-missing
-  /// target and the recorded tab still exists there. Skips dead entries (closed tab / deleted
-  /// workroom) on back/forward.
+  /// A payload with a working-copy `.diff`'s change kind refreshed from live status; everything else
+  /// returned untouched. `nonisolated` + pure so the freshness rule is unit-testable without a store.
+  ///
+  /// Needed because `DiffDescriptor.change` is not inert: `DiffViewer` paints it as the header letter
+  /// and the tab strip disables "Open file in…" when it is `.deleted`. A record-time value written back
+  /// on replay could offer to open a file that has since been deleted, or refuse one that has since
+  /// come back.
+  nonisolated static func refreshingChangeKind(_ payload: NavPayload, from status: WorkroomStatus?)
+    -> NavPayload
+  {
+    guard case .diff(var descriptor) = payload else { return payload }
+    switch descriptor.source {
+    case .gitWorktree, .jjWorkingCopy:
+      break  // the working copy drifts under us — refresh it
+    case .jjParent, .commit:
+      return payload  // a commit's own diff is immutable; there is nothing fresher to read
+    }
+    // `changedFiles` mirrors the jj working copy's own file list (both come from the one summary
+    // probe), so this single lookup serves git worktrees and jj `@` alike. No entry ⇒ status has not
+    // loaded, or the file is no longer changed: keep what we recorded and let the pane report.
+    guard let live = status?.changedFiles?.first(where: { $0.path == descriptor.path }) else {
+      return payload
+    }
+    descriptor.change = live.change
+    return .diff(descriptor)
+  }
+
+  /// Whether a recorded location is still reachable — the mechanism behind "back ignores what was
+  /// closed". `step(_:isLive:)` skips every entry this rejects.
+  ///
+  /// Deliberately structural, and deliberately the SAME question `prune` asks: does the recorded tab
+  /// still exist? Content needs no extra condition, because replay can always retarget that tab back to
+  /// what it was showing (`applyLocation` step 3). An earlier version also demanded a landing spot — a
+  /// matching tab or a free preview slot — which made this predicate disagree with `prune`: pinning a
+  /// tab silently stranded every entry browsed before it while `canGoBack` (a raw cursor read) stayed
+  /// true, so the chevron lit up and did nothing. Two predicates, one question.
+  ///
+  /// Does NOT ask whether the file or commit still exists on disk: that needs I/O inside a predicate run
+  /// per candidate while stepping, and the pane already renders its own "Diff unavailable" /
+  /// "Changeset unavailable" state.
   private func isLive(_ loc: NavLocation) -> Bool {
     guard let target = target(for: loc.target), !target.isMissing else { return false }
     return terminals.tabs(for: target).contains { $0.id == loc.tab }

@@ -410,6 +410,51 @@ enumerate remote refs cheaply, and its doc explains why the symref row must be d
 
 ## P3 — VCS engine, diffs, and status
 
+### Deterministic tab lookup for content panes (macapp) — nav-history follow-up
+
+**What:** `TerminalSessions.contentTab(matching:)` and `previewTabID(in:)` both resolve with
+`.first { … }` over `tabsByTarget`, which is a **Dictionary** — unordered, so which tab they return is
+not deterministic when two match. Resolve through `orderByTarget` (the strip order) instead, so "first"
+means leftmost.
+
+**Why:** `newPaneTab` deliberately bypasses the same-file dedup ("so the same-file dedup doesn't
+collapse it back onto the anchor"), so ⌘D on a diff or changeset pane genuinely creates two tabs with
+identical content identity. Back/forward replay now resolves through these lookups, which makes the coin
+flip user-visible: replay could focus the pinned twin instead of the pane you were browsing in. Today
+only two things hide it — replay prefers the tab the location was recorded in (step 1 of
+`AppStore.applyLocation`), and the ≤1-preview invariant keeps `previewTabID` incidentally unique.
+
+**How to start:** `previewTabID` and `contentTab(matching:)` in `Core/TerminalSessions.swift`; both have
+`orderByTarget` to hand. Pin it with a test that builds twins via `splitFocusedPane` on a diff pane and
+asserts *which* tab a lookup returns.
+
+**Depends on:** nothing. Independent of the nav-history fix, which is what made it matter.
+
+**Priority:** P3 (latent; replay's prefer-the-recorded-tab step shields the common path, and
+`AppStoreContentNavigationTests.testReplayPrefersTheRecordedTab` pins that shielding).
+
+### `DiffDescriptor.change` goes stale on any open tab (macapp) — nav-history follow-up
+
+**What:** `change` is captured when a diff tab is opened and never refreshed, yet it is both rendered
+and acted on: `DiffViewer` paints it as the header letter, and `TerminalTabStrip` disables
+"Open file in…" when it is `.deleted`. Remove the field from `DiffDescriptor` and have the viewer and
+the strip read the live kind from status instead.
+
+**Why:** leave a diff tab open, delete the file, and the header still says `M` while "Open file in…"
+stays enabled for a file that is gone (and the inverse wrongly disables it). The nav-history fix already
+solved the replay half — `AppStore.refreshingChangeKind` re-resolves a working-copy diff's kind from
+`workroomStatuses` on back/forward — so Back is now *more* correct than leaving the tab open, which is
+the wrong way round.
+
+**How to start:** the live answer is `WorkroomStatus.changedFiles`, which already mirrors the jj working
+copy's own file list, so one lookup serves git and jj. Doing this lets
+`AppStore.refreshingChangeKind` be deleted. Mind the row-invalidation hot path (WORKROOM-2B): the strip
+and viewer must not start observing a high-frequency publisher to get it.
+
+**Depends on:** nothing; supersedes `refreshingChangeKind`.
+
+**Priority:** P3 (pre-existing, and the replay path — the one that could newly surprise — is fixed).
+
 ### Structured diff model (`FileDiff` hunks) for the diff viewer (macapp) — 47b / VCS-foundation follow-up
 
 **What:** Give `VCSProviding` a structured per-file diff (a `FileDiff` of hunks/lines) instead of the
@@ -898,6 +943,27 @@ parser, banner partial-text state, and its own entry in `AgentDiagnosisEvalTests
 **Priority:** P3 (polish; marginal over a 2-3s spinner, and must not regress the structured fix).
 
 ## P3 — Inspector, window layout, and theming
+
+### Back/forward doesn't reinstate the inspector section (macapp) — nav-history follow-up
+
+**What:** `activeInspectorSection` is not part of a `NavLocation`, so ⌘[/⌘] never moves it. Add it to the
+location and map content kinds to sections (`.diff`/`.file` → `.changes`, `.changeset` → the pane holding
+History), suppressed under replay so it doesn't write the persisted default.
+
+**Why:** narrower than it first looks, and worth stating so nobody re-scopes it wrongly:
+`ActivitySection.changes` stacks `[.changes, .history, .pullRequest]` as sub-sections of **one** pane, so
+moving between a diff and a commit needs no section switch at all — both lists are already on screen.
+The only real case is **Files ↔ Changes**: open a file from the Files section, press Back to a diff, and
+the pane is correct while the inspector still lists files, so no row highlights.
+
+**How to start:** `AppStore.activeInspectorSection` (`@Published`, persisted in its `didSet`) plus the
+`FocusedTabSelection` → `ActivitySection` mapping. `withHistorySuppressed` already exists for the
+replay-side guard.
+
+**Depends on:** nothing.
+
+**Priority:** P3 (cosmetic — the detail pane, which is what the bug report was about, is correct in every
+case; only the inspector's list can be the wrong one).
 
 ### Search section for the right activity bar (macapp) — activity-bar follow-up
 
