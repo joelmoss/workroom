@@ -224,12 +224,19 @@ private struct WorkroomPaneLeaf: View {
       // both live INSIDE `TargetTerminalDetail`'s own ZStack, so nothing here ever swaps branches.
       TargetTerminalDetail(target: target, surfaceActive: focused)
     }
-    // No border: the pane reads as a unit by a subtle raised fill over the `panel` base plus the
-    // shadow + rounded corners (issue #110). The focused member's fill is accent-tinted so focus reads
-    // as a colour; the rest take a faint neutral lift. Unconditional since issue #139 — a solo pane is
-    // always the focused one, so it takes the accent fill with no special case.
+    // The pane reads as a unit by a subtle raised fill over the `panel` base plus the shadow +
+    // rounded corners (issue #110), and is FRAMED by a stroke whose colour carries focus: the focused
+    // member takes a full-strength accent frame, the rest a neutral hairline. Its fill stays
+    // accent-tinted as the secondary cue — accent @ 0.10 over a `panel` that is itself only 5.5% off
+    // the theme background moves luminance by a couple of percent, which was too faint to pick the
+    // focused member out of a split at a glance. Both are unconditional since issue #139 — a solo pane
+    // is always the focused one, so it takes the accent treatment with no special case.
     .background(WorkroomPaneCardBackground(focused: focused))
     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    // Mounted AFTER the clip (so the frame isn't clipped away) and BEFORE the shadow: `strokeBorder`
+    // insets by half its width, so the stroke sits inside the card and the shadow's silhouette — and
+    // every pane rect — is unchanged.
+    .overlay { WorkroomPaneCardBorder(focused: focused) }
     .shadow(
       color: .black.opacity(focused ? 0.18 : 0.10), radius: focused ? 6 : 3, y: 2
     )
@@ -293,6 +300,44 @@ private struct WorkroomPaneCardBackground: View {
       activeState == .inactive || !focused
         ? theme.tokens.splitGroupFill : theme.tokens.splitGroupFocusedFill
     }
+  }
+}
+
+/// The pane card's frame — the primary focus cue. Its own view for the same two reasons as
+/// `WorkroomPaneCardBackground`: it reads `\.controlActiveState` (so the accent drops on a background
+/// window), and as a child it absorbs those activation re-renders instead of passing them to
+/// `WorkroomPaneLeaf` and the libghostty surface below it.
+///
+/// The stroke is ALWAYS mounted and only its colour swaps — the same shape as the terminal pane's ring
+/// (`PaneTreeView`) and the dialogs' highlighted rows. A structural `if focused` here would add a
+/// `_ConditionalContent` branch beside the leaf's content slot, which is the one thing this pane's
+/// hierarchy must not do.
+struct WorkroomPaneCardBorder: View {
+  let focused: Bool
+  @Environment(\.controlActiveState) private var activeState
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  private let theme = ThemeService.shared
+
+  var body: some View {
+    RoundedRectangle(cornerRadius: 8, style: .continuous)
+      .strokeBorder(
+        Self.tint(focused: focused, active: activeState != .inactive, tokens: theme.tokens),
+        lineWidth: 1.5
+      )
+      .allowsHitTesting(false)
+      .animation(reduceMotion ? nil : .easeInOut(duration: 0.08), value: focused)
+  }
+
+  /// Which colour frames the card. Pure and static (same rationale as `PaneTreeView.shouldDim`) so the
+  /// three-way decision is testable without hosting a view.
+  ///
+  /// 1.5pt of `accent` deliberately matches the terminal pane's focus ring rather than the 2pt accent
+  /// box of the drag drop-edge highlight in this file, so a focused pane can't be mistaken for a drop
+  /// target. On a background window the frame goes neutral (`focused`, fg @ 0.3) rather than holding a
+  /// saturated accent — the same convention the card fill follows.
+  static func tint(focused: Bool, active: Bool, tokens: ThemeTokens) -> Color {
+    guard focused else { return tokens.border }
+    return active ? tokens.accent : tokens.focused
   }
 }
 

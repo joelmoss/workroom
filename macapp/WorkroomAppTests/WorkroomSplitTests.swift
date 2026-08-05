@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import XCTest
 
 @testable import Workroom
@@ -752,5 +754,38 @@ final class WorkroomSplitTests: XCTestCase {
     let hit = PaneTreeLayout.dropTarget(at: CGPoint(x: 380, y: 50), panes: plan.panes)
     XCTAssertEqual(hit?.tab, b)
     XCTAssertEqual(hit?.edge, .right)
+  }
+
+  // MARK: pane card frame (the focused member's primary cue)
+
+  /// Tokens with a known foreground, so the hairline/neutral alphas are checkable. No palette, so
+  /// `accent` is the system control accent — distinct from anything derived from the foreground.
+  private var frameTokens: ThemeTokens {
+    ThemeTokens(preview: nil, fallbackBackground: .black, fallbackForeground: .white)
+  }
+
+  func testFocusedPaneFrameIsAccentOnAKeyWindow() {
+    let t = frameTokens
+    XCTAssertEqual(
+      WorkroomPaneCardBorder.tint(focused: true, active: true, tokens: t), t.accent,
+      "the focused member's frame is the full-strength accent")
+  }
+
+  func testFocusedPaneFrameGoesNeutralOnABackgroundWindow() {
+    let t = frameTokens
+    let tint = WorkroomPaneCardBorder.tint(focused: true, active: false, tokens: t)
+    XCTAssertEqual(
+      tint, t.focused, "an inactive window drops the saturated accent, as the fill does")
+    XCTAssertNotEqual(tint, t.accent)
+    XCTAssertEqual(NSColor(tint).usingColorSpace(.sRGB)!.alphaComponent, 0.3, accuracy: 0.01)
+  }
+
+  func testUnfocusedPaneFrameIsTheNeutralHairline() {
+    let t = frameTokens
+    for active in [true, false] {
+      let tint = WorkroomPaneCardBorder.tint(focused: false, active: active, tokens: t)
+      XCTAssertEqual(tint, t.border, "unfocused members keep a faint edge (active: \(active))")
+      XCTAssertEqual(NSColor(tint).usingColorSpace(.sRGB)!.alphaComponent, 0.12, accuracy: 0.01)
+    }
   }
 }
