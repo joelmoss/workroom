@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="280" viewBox="0 0 560 140" role="img" aria-labelledby="title">
+  <title id="title">Workroom logo in yellow</title>
+  <style>
+    @font-face { font-family: "Workroom Barlow"; src: url("../fonts/barlow-condensed-700.ttf") format("truetype"); font-weight: 700; }
+  </style>
+  <g transform="translate(31 41.875) scale(1.8125)">
+    <path fill="#ffea00" d="M2 2h9v9H2zM14 2h8v9h-8zM25 2h9v9h-9zM2 14h9v8H2zM25 14h9v8h-9zM2 25h9v9H2zM14 25h8v9h-8zM25 25h9v9h-9z"/>
+  </g>
+  <text x="110" y="103" fill="#ffea00" font-family="Workroom Barlow, 'Barlow Condensed', 'Arial Narrow', sans-serif" font-size="82" font-weight="700" letter-spacing="0.5">Workroom</text>
+</svg>

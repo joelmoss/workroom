@@ -231,7 +231,7 @@ targets:
       properties:
         # Track PRODUCT_NAME so the Debug build shows as "Workroom Dev" everywhere (Dock, ⌘-Tab,
         # the bold app menu) while Release stays "Workroom". CFBundleIconName tracks the asset
-        # name so Debug picks up the amber AppIcon-Dev set and Release the teal AppIcon set.
+        # name so Debug picks up the labelled AppIcon-Dev set and Release the clean AppIcon set.
         CFBundleDisplayName: "$(PRODUCT_NAME)"
         CFBundleName: "$(PRODUCT_NAME)"
         CFBundleIconName: "$(ASSETCATALOG_COMPILER_APPICON_NAME)"
@@ -280,7 +280,7 @@ targets:
           # instead of fighting it for activation, the key window, preferences, and the global
           # ⌘§ hotkey (issue: "isolated builds"). A different bundle id makes LaunchServices treat
           # them as separate apps and gives the Debug build its own UserDefaults domain for free;
-          # the "Workroom Dev" name + amber AppIcon-Dev make it obvious which window is which.
+          # the "Workroom Dev" name + labelled AppIcon-Dev make it obvious which window is which.
           PRODUCT_BUNDLE_IDENTIFIER: com.developwithstyle.workroom.dev
           PRODUCT_NAME: "Workroom Dev"
           ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon-Dev

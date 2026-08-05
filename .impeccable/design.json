@@ -1,0 +1,126 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-01T22:04:30Z",
+  "title": "Design System: Workroom Broadcast Index",
+  "extensions": {
+    "colorMeta": {
+      "broadcast-black": { "role": "neutral", "displayName": "Broadcast Black", "canonical": "#000000", "tonalRamp": ["oklch(15% 0 0)", "oklch(25% 0 0)", "oklch(35% 0 0)", "oklch(47% 0 0)", "oklch(59% 0 0)", "oklch(71% 0 0)", "oklch(83% 0 0)", "oklch(95% 0 0)"] },
+      "panel-ink": { "role": "neutral", "displayName": "Panel Ink", "canonical": "#050505", "tonalRamp": ["oklch(15% 0 0)", "oklch(25% 0 0)", "oklch(35% 0 0)", "oklch(47% 0 0)", "oklch(59% 0 0)", "oklch(71% 0 0)", "oklch(83% 0 0)", "oklch(95% 0 0)"] },
+      "signal-white": { "role": "neutral", "displayName": "Signal White", "canonical": "#ffffff", "tonalRamp": ["oklch(15% 0 0)", "oklch(25% 0 0)", "oklch(35% 0 0)", "oklch(47% 0 0)", "oklch(59% 0 0)", "oklch(71% 0 0)", "oklch(83% 0 0)", "oklch(95% 0 0)"] },
+      "muted-signal": { "role": "neutral", "displayName": "Muted Signal", "canonical": "#bfc3c5", "tonalRamp": ["oklch(15% 0.006 220)", "oklch(25% 0.006 220)", "oklch(35% 0.006 220)", "oklch(47% 0.006 220)", "oklch(59% 0.006 220)", "oklch(71% 0.006 220)", "oklch(83% 0.006 220)", "oklch(95% 0.006 220)"] },
+      "workroom-yellow": { "role": "primary", "displayName": "Workroom Yellow", "canonical": "#ffea00", "tonalRamp": ["oklch(15% 0.08 105)", "oklch(25% 0.10 105)", "oklch(35% 0.12 105)", "oklch(47% 0.15 105)", "oklch(59% 0.17 105)", "oklch(71% 0.18 105)", "oklch(83% 0.17 105)", "oklch(95% 0.08 105)"] },
+      "split-cyan": { "role": "secondary", "displayName": "Split Cyan", "canonical": "#00e6ef", "tonalRamp": ["oklch(15% 0.06 195)", "oklch(25% 0.09 195)", "oklch(35% 0.12 195)", "oklch(47% 0.15 195)", "oklch(59% 0.17 195)", "oklch(71% 0.16 195)", "oklch(83% 0.12 195)", "oklch(95% 0.05 195)"] },
+      "review-green": { "role": "secondary", "displayName": "Review Green", "canonical": "#00e24b", "tonalRamp": ["oklch(15% 0.07 145)", "oklch(25% 0.10 145)", "oklch(35% 0.14 145)", "oklch(47% 0.18 145)", "oklch(59% 0.20 145)", "oklch(71% 0.18 145)", "oklch(83% 0.13 145)", "oklch(95% 0.05 145)"] },
+      "alert-red": { "role": "tertiary", "displayName": "Alert Red", "canonical": "#f3261f", "tonalRamp": ["oklch(15% 0.07 28)", "oklch(25% 0.11 28)", "oklch(35% 0.15 28)", "oklch(47% 0.20 28)", "oklch(59% 0.22 28)", "oklch(71% 0.18 28)", "oklch(83% 0.12 28)", "oklch(95% 0.05 28)"] },
+      "channel-blue": { "role": "tertiary", "displayName": "Channel Blue", "canonical": "#162acb", "tonalRamp": ["oklch(15% 0.08 270)", "oklch(25% 0.12 270)", "oklch(35% 0.16 270)", "oklch(47% 0.20 270)", "oklch(59% 0.20 270)", "oklch(71% 0.16 270)", "oklch(83% 0.11 270)", "oklch(95% 0.04 270)"] },
+      "auxiliary-magenta": { "role": "tertiary", "displayName": "Auxiliary Magenta", "canonical": "#ef2bc4", "tonalRamp": ["oklch(15% 0.07 330)", "oklch(25% 0.11 330)", "oklch(35% 0.15 330)", "oklch(47% 0.19 330)", "oklch(59% 0.21 330)", "oklch(71% 0.17 330)", "oklch(83% 0.11 330)", "oklch(95% 0.04 330)"] }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Condensed Broadcast Display", "purpose": "Short hero statements only." },
+      "headline": { "displayName": "Broadcast Headline", "purpose": "Major section propositions and feature states." },
+      "title": { "displayName": "Channel Title", "purpose": "Channel headings, bars, brand, and prominent controls." },
+      "body": { "displayName": "Terminal Body", "purpose": "Readable product explanation and technical proof." },
+      "label": { "displayName": "Signal Label", "purpose": "Status, captions, and compact metadata." },
+      "control": { "displayName": "Broadcast Control", "purpose": "Primary action labels." }
+    },
+    "shadows": [],
+    "motion": [
+      { "name": "smooth-addressing", "value": "scroll-behavior: smooth", "purpose": "Anchor navigation only; switch to auto under prefers-reduced-motion." }
+    ],
+    "breakpoints": [
+      { "name": "hero-focus", "value": "1320px" },
+      { "name": "stack", "value": "1120px" },
+      { "name": "compact", "value": "760px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Download Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The yellow broadcast action for the single primary commitment.",
+      "html": "<a class=\"ds-btn-primary\" href=\"#\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M11 3h2v10l3.5-3.5 1.4 1.4-5.9 5.9-5.9-5.9 1.4-1.4L11 13V3Zm-6 15h14v3H5v-3Z\"/></svg>Download for Mac</a>",
+      "css": ".ds-btn-primary{display:inline-flex;min-height:58px;align-items:center;justify-content:center;gap:12px;padding:14px 22px;border:3px solid #ffea00;border-radius:0;background:#ffea00;color:#000;font-family:'Barlow Condensed','Arial Narrow',sans-serif;font-size:1.2rem;letter-spacing:.04em;line-height:1.05;text-decoration:none;text-transform:uppercase}.ds-btn-primary svg{width:22px;height:22px;fill:currentColor}.ds-btn-primary:hover,.ds-btn-primary:focus-visible{border-color:#fff;background:#162acb;color:#fff}.ds-btn-primary:focus-visible{outline:3px solid #fff;outline-offset:4px}.ds-btn-primary:active{background:#000;color:#ffea00}"
+    },
+    {
+      "name": "Minimal Brand Header",
+      "kind": "custom",
+      "description": "A two-item masthead containing the shared Codaset/Workroom mark and the single download action.",
+      "html": "<header class=\"ds-header\"><a class=\"ds-brand\" href=\"#\">[mark] Workroom</a><a class=\"ds-download\" href=\"#\">Download</a></header>",
+      "css": ".ds-header{display:grid;min-height:70px;grid-template-columns:1fr auto;border-bottom:2px solid #ffea00;background:#000}.ds-brand,.ds-download{display:flex;min-height:68px;align-items:center;padding:0 clamp(16px,2vw,32px);font-family:'Barlow Condensed','Arial Narrow',sans-serif;text-decoration:none;text-transform:uppercase}.ds-brand{color:#ffea00;font-size:2rem}.ds-download{border-left:2px solid #ffea00;background:#ffea00;color:#000;font-size:1.2rem;letter-spacing:.04em}.ds-download:hover,.ds-download:focus-visible{background:#00e6ef}.ds-brand:focus-visible,.ds-download:focus-visible{outline:3px solid #fff;outline-offset:-5px}"
+    },
+    {
+      "name": "Section Bar",
+      "kind": "custom",
+      "description": "A strong color-band chapter divider with one clear title.",
+      "html": "<header class=\"ds-section-bar\"><h2>Separate working worlds.</h2></header>",
+      "css": ".ds-section-bar{display:flex;min-height:66px;align-items:center;padding:10px clamp(16px,2vw,32px);background:#162acb;color:#fff;font-family:'Share Tech Mono',ui-monospace,monospace;text-transform:uppercase}.ds-section-bar h2{margin:0;color:#ffea00;font-family:'Barlow Condensed','Arial Narrow',sans-serif;font-size:clamp(1.55rem,2.8vw,3rem);line-height:.94}.ds-section-bar:hover{background:#162acb}.ds-section-bar:focus-within{outline:3px solid #fff;outline-offset:-5px}"
+    },
+    {
+      "name": "Broadcast Proof Panel",
+      "kind": "card",
+      "description": "A restrained product proof with one yellow signal rail, compact metadata, and an undistracted image surface.",
+      "html": "<figure class=\"ds-proof\"><header><span>Product preview</span><span>Native macOS</span></header><div class=\"ds-proof-stage\">APP PROOF</div><figcaption>Active: parallel workrooms stay visible together.</figcaption></figure>",
+      "css": ".ds-proof{margin:0;border:1px solid rgba(255,255,255,.28);border-top:5px solid #ffea00;border-radius:0;background:#050505;color:#fff;font-family:'Share Tech Mono',ui-monospace,monospace}.ds-proof header{display:flex;min-height:34px;align-items:center;justify-content:space-between;padding:0 12px;color:#bfc3c5;font-size:.72rem;text-transform:uppercase}.ds-proof header>:last-child{padding:0 5px;background:#00e24b;color:#000}.ds-proof-stage{display:grid;min-height:160px;place-items:center;border-block:1px solid rgba(255,255,255,.2);background:#050505;color:#bfc3c5}.ds-proof figcaption{padding:11px 12px;color:#00e6ef;font-size:.9rem}.ds-proof:focus-within{outline:3px solid #fff;outline-offset:4px}"
+    },
+    {
+      "name": "Capability Switcher",
+      "kind": "custom",
+      "description": "A border-divided state selector with explicit pressed state.",
+      "html": "<div class=\"ds-switcher\" role=\"group\" aria-label=\"Capability\"><button type=\"button\" aria-pressed=\"true\">Workrooms</button><button type=\"button\" aria-pressed=\"false\">Splits</button></div>",
+      "css": ".ds-switcher{display:grid;grid-template-columns:repeat(2,1fr);border:2px solid #fff;background:#000;font-family:'Share Tech Mono',ui-monospace,monospace}.ds-switcher button{display:flex;min-height:58px;align-items:center;justify-content:center;padding:12px 14px;border:0;border-right:1px solid #fff;border-radius:0;background:#000;color:#fff;font:inherit;text-transform:uppercase;cursor:pointer}.ds-switcher button:last-child{border-right:0}.ds-switcher button:hover,.ds-switcher button[aria-pressed='true']{background:#00e6ef;color:#000}.ds-switcher button:focus-visible{outline:3px solid #fff;outline-offset:-5px}.ds-switcher button:active{background:#ffea00;color:#000}"
+    },
+    {
+      "name": "Restart Disclosure",
+      "kind": "custom",
+      "description": "A native disclosure for constraints and secondary mechanism detail.",
+      "html": "<details class=\"ds-disclosure\"><summary>What survives an app restart?</summary><p>Directories and repository state remain on disk.</p></details>",
+      "css": ".ds-disclosure{border:2px solid #f3261f;border-radius:0;background:#000;color:#fff;font-family:'Share Tech Mono',ui-monospace,monospace}.ds-disclosure summary{padding:14px 16px;background:#f3261f;color:#fff;cursor:pointer;list-style:none;text-transform:uppercase}.ds-disclosure summary::before{margin-right:12px;content:'+'}.ds-disclosure[open] summary::before{content:'−'}.ds-disclosure p{margin:0;padding:18px}.ds-disclosure summary:hover{background:#fff;color:#000}.ds-disclosure summary:focus-visible{outline:3px solid #fff;outline-offset:4px}.ds-disclosure summary:active{background:#ffea00;color:#000}"
+    },
+    {
+      "name": "Compact Pixel Mark",
+      "kind": "custom",
+      "description": "Workroom's square three-by-three perimeter signature.",
+      "html": "<span class=\"ds-mark\" role=\"img\" aria-label=\"Workroom\"><svg viewBox=\"0 0 36 36\"><path d=\"M2 2h9v9H2zM14 2h8v9h-8zM25 2h9v9h-9zM2 14h9v8H2zM25 14h9v8h-9zM2 25h9v9H2zM14 25h8v9h-8zM25 25h9v9h-9z\"/></svg><b>Workroom</b></span>",
+      "css": ".ds-mark{display:inline-flex;align-items:center;gap:12px;color:#ffea00;font-family:'Barlow Condensed','Arial Narrow',sans-serif;font-size:2rem;line-height:.95}.ds-mark svg{width:34px;height:34px;fill:currentColor;shape-rendering:crispEdges}.ds-mark b{font-weight:700}.ds-mark:hover{color:#00e6ef}.ds-mark:focus-visible{outline:3px solid #fff;outline-offset:4px}.ds-mark:active{color:#fff}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Live Developer Broadcast",
+    "overview": "Workroom presents parallel development as a focused live service: terse, exact, high-contrast, and always visibly in progress. Its visual language borrows the strongest universal qualities of broadcast teletext—hard color bands, condensed display type, block geometry, and dense information framing—without depending on page numbers or specialist teletext vocabulary.\n\nThe system refuses soft, centered SaaS polish. It is intentionally flat, rectilinear, and cell-aligned. Visual personality comes from role-specific signal colors and the rhythm of hard divisions, not gradients, glass, rounded cards, stock illustrations, or decorative shadows.",
+    "keyCharacteristics": [
+      "Broadcast-black fields divided by exact, high-contrast rules.",
+      "Fixed yellow, cyan, green, red, and blue roles; color communicates channel and state.",
+      "Smooth condensed display type paired with readable monospaced copy.",
+      "Clear labels, block mosaics, and square marks.",
+      "Dense on wide screens, structurally stacked on narrow screens without losing the lattice.",
+      "Motion is sparse, discrete, and non-essential."
+    ],
+    "rules": [
+      { "name": "The Fixed Channel Rule", "body": "Yellow means brand/action, cyan means interaction/splits, green means review/files, red means alert, and blue means structural broadcast band; do not casually swap their jobs.", "section": "colors" },
+      { "name": "The Black Field Rule", "body": "Bright signal colors live on black or in flat full-color bands. Do not dilute them into pastel tints or soft neutral cards.", "section": "colors" },
+      { "name": "The Two-Face Rule", "body": "Use Barlow Condensed for display, sectional, and action moments; use Share Tech Mono for readable information. Never introduce a third expressive face.", "section": "typography" },
+      { "name": "The Broadcast-Height Rule", "body": "Display lines are compact and forceful, but retain enough leading for Barlow Condensed's smooth letterforms. Never use the display face for paragraphs.", "section": "typography" },
+      { "name": "The Broadcast Grid Rule", "body": "Every major region should feel clearly structured by row, column, or color channel—even after responsive stacking.", "section": "layout" },
+      { "name": "The No-Shadow Rule", "body": "Surfaces separate through rules, fills, and cell patterns. Do not add ambient shadows, soft elevation, glass blur, or neumorphic relief.", "section": "elevation" },
+      { "name": "The Zero-Radius Rule", "body": "Buttons, panels, chips, disclosures, tabs, and frames remain rectangular. A rounded control belongs to another visual world.", "section": "shapes" },
+      { "name": "The Countable Geometry Rule", "body": "Decorative forms should resolve into an obvious small grid or orthogonal path rather than organic blobs.", "section": "shapes" }
+    ],
+    "dos": [
+      "Do preserve fixed semantic color roles across actions, channels, diagrams, and component states.",
+      "Do use hard borders and grid alignment to make every region feel clearly structured.",
+      "Do keep Barlow Condensed to short, high-impact copy and Share Tech Mono to readable content.",
+      "Do preserve minimum 48px interactive targets on narrow screens and the 3px white focus outline.",
+      "Do disable smooth scrolling when reduced motion is requested.",
+      "Do render the compact square mark from crisp, countable geometry."
+    ],
+    "donts": [
+      "Don't add rounded cards, pill chips, gradients, glass, glows, or drop shadows.",
+      "Don't soften the palette into pastels, invent nearby shades for decoration, or reassign channel colors arbitrarily.",
+      "Don't center every section into a generic hero stack; use unequal grids, restrained product proof, and clear labels.",
+      "Don't animate essential content or make state depend on motion.",
+      "Don't replace the self-hosted type pairing with generic geometric sans typography.",
+      "Don't require knowledge of teletext conventions; broadcast cues must remain understandable in plain language."
+    ]
+  }
+}

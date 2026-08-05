@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#080806" />
+    <title>Codaset Logo Lab</title>
+    <link rel="stylesheet" href="logo-lab.css" />
+  </head>
+  <body>
+    <header class="lab-header">
+      <a class="lab-brand" href="/" aria-label="Back to Workroom">
+        <svg viewBox="0 0 36 36" aria-hidden="true">
+          <path d="M2 2h9v9H2zM14 2h8v9h-8zM25 2h9v9h-9zM2 14h9v8H2zM25 14h9v8h-9zM2 25h9v9H2zM14 25h8v9h-8zM25 25h9v9h-9z" />
+        </svg>
+        <span>Logo Lab</span>
+      </a>
+      <div class="header-readout" aria-label="Current canvas size">
+        <span>Canvas</span>
+        <strong id="canvasReadout">1120 × 320</strong>
+      </div>
+    </header>
+
+    <main class="lab-shell">
+      <section class="stage" aria-label="Live logo preview">
+        <div class="stage-grid" aria-hidden="true"></div>
+        <div class="stage-meta">
+          <span>Live output</span>
+          <span id="zoomReadout">Fit</span>
+        </div>
+
+        <div class="preview-wrap" id="previewWrap">
+          <svg id="logoPreview" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 320" role="img" aria-label="Logo preview">
+            <rect id="previewBackground" width="1120" height="320" fill="#000000" />
+            <g id="previewMark" fill="#ffea00" transform="translate(62 83.75) scale(3.625)">
+              <path d="M2 2h9v9H2zM14 2h8v9h-8zM25 2h9v9h-9zM2 14h9v8H2zM25 14h9v8h-9zM2 25h9v9H2zM14 25h8v9h-8zM25 25h9v9h-9z" />
+            </g>
+            <text id="previewWord" x="220" y="206" fill="#ffea00">Workroom</text>
+            <text id="previewSubtitle" x="220" y="274" fill="#9f9300">by Codaset</text>
+          </svg>
+        </div>
+
+        <div class="stage-footer">
+          <span><i class="signal-dot"></i> Changes save locally</span>
+          <button class="text-button" id="resetButton" type="button">Reset preset</button>
+        </div>
+      </section>
+
+      <aside class="controls" aria-label="Logo controls">
+        <section class="control-section identity-section">
+          <div class="section-heading">
+            <span class="section-index">01</span>
+            <h1>Identity</h1>
+          </div>
+
+          <div class="preset-switcher" role="group" aria-label="Logo preset">
+            <button type="button" data-preset="workroom">Workroom</button>
+            <button type="button" data-preset="codaset">Codaset</button>
+            <button class="is-active" type="button" data-preset="endorsed">Endorsed</button>
+          </div>
+
+          <label class="text-field">
+            <span>Wordmark</span>
+            <input id="wordInput" type="text" value="Workroom" maxlength="24" spellcheck="false" />
+          </label>
+
+          <div class="subtitle-row">
+            <label class="switch-control">
+              <input id="subtitleVisible" type="checkbox" checked />
+              <span class="switch-track" aria-hidden="true"></span>
+              <span>Subtitle</span>
+            </label>
+            <input id="subtitleInput" type="text" value="by Codaset" maxlength="32" aria-label="Subtitle text" spellcheck="false" />
+          </div>
+        </section>
+
+        <section class="control-section">
+          <div class="section-heading">
+            <span class="section-index">02</span>
+            <h2>Colour</h2>
+          </div>
+
+          <div class="colour-grid">
+            <label class="colour-control">
+              <span>Primary</span>
+              <span class="colour-well"><input id="primaryColor" type="color" value="#ffea00" /><b id="primaryHex">#FFEA00</b></span>
+            </label>
+            <label class="colour-control">
+              <span>Subtitle</span>
+              <span class="colour-well"><input id="subtitleColor" type="color" value="#9f9300" /><b id="subtitleHex">#9F9300</b></span>
+            </label>
+            <label class="colour-control">
+              <span>Canvas</span>
+              <span class="colour-well"><input id="backgroundColor" type="color" value="#000000" /><b id="backgroundHex">#000000</b></span>
+            </label>
+          </div>
+
+          <label class="switch-control transparency-control">
+            <input id="transparentBackground" type="checkbox" />
+            <span class="switch-track" aria-hidden="true"></span>
+            <span>Transparent canvas</span>
+          </label>
+        </section>
+
+        <section class="control-section geometry-section">
+          <div class="section-heading">
+            <span class="section-index">03</span>
+            <h2>Scale</h2>
+          </div>
+
+          <div class="knob-bank">
+            <label class="knob-control">
+              <span class="knob" id="markKnob">
+                <i></i>
+                <input id="markScale" data-key="markScale" type="range" min="1.5" max="6" step="0.025" value="3.625" />
+              </span>
+              <span>Mark</span>
+              <output for="markScale">3.625×</output>
+            </label>
+            <label class="knob-control">
+              <span class="knob" id="wordKnob">
+                <i></i>
+                <input id="wordSize" data-key="wordSize" type="range" min="72" max="220" step="1" value="164" />
+              </span>
+              <span>Word</span>
+              <output for="wordSize">164px</output>
+            </label>
+            <label class="knob-control">
+              <span class="knob" id="subtitleKnob">
+                <i></i>
+                <input id="subtitleSize" data-key="subtitleSize" type="range" min="20" max="96" step="1" value="56" />
+              </span>
+              <span>Subtitle</span>
+              <output for="subtitleSize">56px</output>
+            </label>
+          </div>
+        </section>
+
+        <section class="control-section position-section">
+          <div class="section-heading">
+            <span class="section-index">04</span>
+            <h2>Position</h2>
+          </div>
+
+          <div class="axis-group">
+            <h3>Mark</h3>
+            <label class="range-control"><span>X</span><input data-key="markX" type="range" min="0" max="360" step="1" value="62" /><output>62</output></label>
+            <label class="range-control"><span>Y</span><input data-key="markY" type="range" min="0" max="240" step="1" value="84" /><output>84</output></label>
+          </div>
+          <div class="axis-group">
+            <h3>Wordmark</h3>
+            <label class="range-control"><span>X</span><input data-key="wordX" type="range" min="0" max="520" step="1" value="220" /><output>220</output></label>
+            <label class="range-control"><span>Y</span><input data-key="wordY" type="range" min="80" max="320" step="1" value="206" /><output>206</output></label>
+            <label class="range-control"><span>Track</span><input data-key="wordTracking" type="range" min="-5" max="20" step="0.5" value="1" /><output>1</output></label>
+          </div>
+          <div class="axis-group subtitle-axes">
+            <h3>Subtitle</h3>
+            <label class="range-control"><span>X</span><input data-key="subtitleX" type="range" min="0" max="520" step="1" value="220" /><output>220</output></label>
+            <label class="range-control"><span>Y</span><input data-key="subtitleY" type="range" min="100" max="380" step="1" value="274" /><output>274</output></label>
+            <label class="range-control"><span>Track</span><input data-key="subtitleTracking" type="range" min="-3" max="24" step="0.5" value="2" /><output>2</output></label>
+          </div>
+        </section>
+
+        <section class="control-section canvas-section">
+          <div class="section-heading">
+            <span class="section-index">05</span>
+            <h2>Output</h2>
+          </div>
+
+          <div class="dimension-grid">
+            <label><span>Width</span><input id="canvasWidth" type="number" min="320" max="2400" step="10" value="1120" /></label>
+            <label><span>Height</span><input id="canvasHeight" type="number" min="160" max="1200" step="10" value="320" /></label>
+          </div>
+
+          <div class="export-actions">
+            <button id="downloadSvg" class="export-button primary" type="button">Download SVG</button>
+            <button id="downloadPng" class="export-button" type="button">Download PNG</button>
+          </div>
+          <p class="export-status" id="exportStatus" aria-live="polite">Self-contained exports include the wordmark font.</p>
+        </section>
+      </aside>
+    </main>
+
+    <script src="logo-lab.js"></script>
+  </body>
+</html>

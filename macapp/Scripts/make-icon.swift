@@ -1,17 +1,16 @@
 #!/usr/bin/env swift
 //
-// make-icon.swift — generates the Workroom app icon.
+// make-icon.swift — generates the Workroom app icons.
 //
-// Draws three cascading rounded "room" cards (a workroom = an isolated copy) on a
-// rounded-square tile, with a terminal prompt — a blue chevron and a pink block cursor —
-// on the front card. Exports every PNG the macOS AppIcon set needs. Pure CoreGraphics/AppKit,
-// no assets.
+// Draws the shared Codaset / Workroom square-blocked mark in signal yellow on a black macOS tile.
+// Development and nightly variants retain the yellow mark and overlay a compact, channel-colored
+// label so side-by-side builds remain easy to distinguish. Exports every PNG the macOS AppIcon set
+// needs. Pure CoreGraphics/AppKit, no source bitmap assets.
 //
-// Two variants are rendered (only the background gradient differs):
-//   • AppIcon       — the release tile (teal→blue), used by the shipped "Workroom" app.
-//   • AppIcon-Dev   — a warm amber→red tile so the Debug "Workroom Dev" build is obvious at a
-//                     glance when both run side by side (see project.yml: Debug sets
-//                     ASSETCATALOG_COMPILER_APPICON_NAME=AppIcon-Dev).
+// Three variants are rendered:
+//   • AppIcon         — the unlabelled release icon used by the shipped "Workroom" app.
+//   • AppIcon-Dev     — overlays "dev" for the local Debug build.
+//   • AppIcon-Nightly — overlays "nightly" for the rolling Nightly build.
 //
 // Usage:
 //   swift Scripts/make-icon.swift [assets-dir]
@@ -23,41 +22,42 @@ import AppKit
 import CoreGraphics
 import Foundation
 
-// MARK: - Palette
+// MARK: - Brand geometry and palette
 
 func rgb(_ r: Int, _ g: Int, _ b: Int, _ a: CGFloat = 1) -> CGColor {
     CGColor(srgbRed: CGFloat(r) / 255, green: CGFloat(g) / 255, blue: CGFloat(b) / 255, alpha: a)
 }
 
-// Per-variant background gradient (the only thing that differs between release and dev).
 struct Variant {
-    let dirName: String   // <name>.appiconset under the assets dir
-    let bgTop: CGColor    // top-left
-    let bgBottom: CGColor // bottom-right
+    let dirName: String
+    let label: String?
 }
 let variants = [
-    Variant(dirName: "AppIcon.appiconset",
-            bgTop: rgb(0x18, 0xE0, 0xC8), bgBottom: rgb(0x2E, 0x7D, 0xFF)),   // teal→blue (release)
-    Variant(dirName: "AppIcon-Dev.appiconset",
-            bgTop: rgb(0xFF, 0xB0, 0x2E), bgBottom: rgb(0xFF, 0x3D, 0x55)),   // amber→red (dev)
-    Variant(dirName: "AppIcon-Nightly.appiconset",
-            bgTop: rgb(0x9D, 0x5C, 0xFF), bgBottom: rgb(0x4B, 0x1F, 0xB8)),   // violet→indigo (nightly)
+    Variant(dirName: "AppIcon.appiconset", label: nil),
+    Variant(dirName: "AppIcon-Dev.appiconset", label: "dev"),
+    Variant(dirName: "AppIcon-Nightly.appiconset", label: "nightly"),
 ]
 
-let cardBack = rgb(0xFF, 0xD2, 0x3F)  // yellow (deepest card)
-let cardMid = rgb(0xFF, 0x6F, 0xB5)   // pink (middle card)
-let cardFront = rgb(0xFF, 0xFF, 0xFF) // white (front card)
-let chevron = rgb(0x2E, 0x7D, 0xFF)   // blue prompt chevron
-let cursor = rgb(0xFF, 0x6F, 0xB5)    // pink block cursor
+let brandYellow = rgb(0xFF, 0xEA, 0x00)
+let brandBlack = rgb(0x00, 0x00, 0x00)
+let devOrange = rgb(0xFF, 0x5A, 0x36)
+let nightlyIndigo = rgb(0x5B, 0x55, 0xE7)
 
-// MARK: - Geometry (fractions of the rounded tile)
-
-let cardW: CGFloat = 0.66    // card edge as a fraction of the tile width
-let offset: CGFloat = 0.055  // each card's diagonal step from the tile centre
+// The exact 36×36 geometry used by website/assets/brand/codaset-symbol.svg.
+let markBlocks = [
+    CGRect(x: 2, y: 2, width: 9, height: 9),
+    CGRect(x: 14, y: 2, width: 8, height: 9),
+    CGRect(x: 25, y: 2, width: 9, height: 9),
+    CGRect(x: 2, y: 14, width: 9, height: 8),
+    CGRect(x: 25, y: 14, width: 9, height: 8),
+    CGRect(x: 2, y: 25, width: 9, height: 9),
+    CGRect(x: 14, y: 25, width: 8, height: 9),
+    CGRect(x: 25, y: 25, width: 9, height: 9),
+]
 
 // MARK: - Render
 
-func render(_ pixels: Int, to url: URL, bgTop: CGColor, bgBottom: CGColor) {
+func render(_ pixels: Int, to url: URL, label: String?) {
     let S = CGFloat(pixels)
     let cs = CGColorSpace(name: CGColorSpace.sRGB)!
     guard let ctx = CGContext(
@@ -69,89 +69,90 @@ func render(_ pixels: Int, to url: URL, bgTop: CGColor, bgBottom: CGColor) {
     ctx.setShouldAntialias(true)
     ctx.interpolationQuality = .high
 
-    // Flip to a top-left origin so the fractions above read naturally (y grows downward).
+    // Draw the tile and symbol in top-left coordinates.
+    ctx.saveGState()
     ctx.translateBy(x: 0, y: S)
     ctx.scaleBy(x: 1, y: -1)
 
-    // --- Tile + soft contact shadow -------------------------------------------------
-    let margin = S * 0.0975
+    let margin = S * 0.08
     let tile = CGRect(x: margin, y: margin, width: S - 2 * margin, height: S - 2 * margin)
-    let radius = tile.width * 0.2237
+    let radius = tile.width * 0.22
     let tilePath = CGPath(roundedRect: tile, cornerWidth: radius, cornerHeight: radius, transform: nil)
 
     ctx.saveGState()
-    // In the flipped CTM, a negative height pushes the shadow visually downward.
-    ctx.setShadow(offset: CGSize(width: 0, height: -S * 0.012), blur: S * 0.03,
-                  color: rgb(0x10, 0x06, 0x33, 0.40))
+    ctx.setShadow(
+        offset: CGSize(width: 0, height: -S * 0.016), blur: S * 0.034,
+        color: rgb(0x00, 0x00, 0x00, 0.42))
     ctx.addPath(tilePath)
-    ctx.setFillColor(bgBottom)
+    ctx.setFillColor(brandBlack)
     ctx.fillPath()
     ctx.restoreGState()
 
-    // --- Background gradient (clipped to the tile) ----------------------------------
+    // Keep all artwork within the macOS tile silhouette.
     ctx.saveGState()
     ctx.addPath(tilePath)
     ctx.clip()
-    let grad = CGGradient(colorsSpace: cs, colors: [bgTop, bgBottom] as CFArray,
-                          locations: [0, 1])!
-    ctx.drawLinearGradient(grad, start: CGPoint(x: tile.minX, y: tile.minY),
-                           end: CGPoint(x: tile.maxX, y: tile.maxY), options: [])
 
-    // Subtle top sheen for a glassy feel.
-    let sheen = CGGradient(colorsSpace: cs,
-                           colors: [rgb(0xFF, 0xFF, 0xFF, 0.16), rgb(0xFF, 0xFF, 0xFF, 0)] as CFArray,
-                           locations: [0, 1])!
-    ctx.drawLinearGradient(sheen, start: CGPoint(x: tile.minX, y: tile.minY),
-                           end: CGPoint(x: tile.minX, y: tile.minY + tile.height * 0.55), options: [])
-
-    // --- Cascading "room" cards -----------------------------------------------------
-    func pt(_ fx: CGFloat, _ fy: CGFloat) -> CGPoint {
-        CGPoint(x: tile.minX + fx * tile.width, y: tile.minY + fy * tile.height)
+    // Inset the original 36×36 artboard so its outer blocks clear the tile's rounded corners.
+    let markArtboardEdge = tile.width * 0.82
+    let markOrigin = CGPoint(
+        x: tile.midX - markArtboardEdge / 2,
+        y: tile.midY - markArtboardEdge / 2)
+    let markScale = markArtboardEdge / 36
+    ctx.setFillColor(brandYellow)
+    for block in markBlocks {
+        ctx.fill(
+            CGRect(
+                x: markOrigin.x + block.minX * markScale,
+                y: markOrigin.y + block.minY * markScale,
+                width: block.width * markScale,
+                height: block.height * markScale))
     }
-    let w = tile.width * cardW
-    let cardRadius = w * 0.235
-    let cardShadow = rgb(0x07, 0x2A, 0x55, 0.45)
 
-    func card(center: CGPoint, fill: CGColor) {
-        let r = CGRect(x: center.x - w / 2, y: center.y - w / 2, width: w, height: w)
-        let path = CGPath(roundedRect: r, cornerWidth: cardRadius, cornerHeight: cardRadius, transform: nil)
-        ctx.saveGState()
-        ctx.setShadow(offset: CGSize(width: 0, height: -w * 0.05), blur: w * 0.11, color: cardShadow)
-        ctx.addPath(path)
-        ctx.setFillColor(fill)
+    var labelRect: CGRect?
+    if let label {
+        let widthRatio: CGFloat = label == "nightly" ? 0.68 : 0.46
+        let labelWidth = tile.width * widthRatio
+        let labelHeight = tile.height * 0.17
+        let rect = CGRect(
+            x: tile.midX - labelWidth / 2,
+            y: tile.minY + tile.height * 0.64,
+            width: labelWidth,
+            height: labelHeight)
+        labelRect = rect
+        ctx.setFillColor(label == "nightly" ? nightlyIndigo : devOrange)
+        ctx.addPath(
+            CGPath(
+                roundedRect: rect,
+                cornerWidth: labelHeight * 0.14,
+                cornerHeight: labelHeight * 0.14,
+                transform: nil))
         ctx.fillPath()
-        ctx.restoreGState()
     }
-    card(center: pt(0.5 + offset, 0.5 - offset), fill: cardBack)
-    card(center: pt(0.5, 0.5), fill: cardMid)
-    let front = pt(0.5 - offset, 0.5 + offset)
-    card(center: front, fill: cardFront)
-
-    // --- Terminal prompt on the front card ------------------------------------------
-    func fp(_ dx: CGFloat, _ dy: CGFloat) -> CGPoint {
-        CGPoint(x: front.x + dx * w, y: front.y + dy * w)
-    }
-    ctx.saveGState()
-    ctx.setLineCap(.round)
-    ctx.setLineJoin(.round)
-    // Blue chevron ">".
-    ctx.setStrokeColor(chevron)
-    ctx.setLineWidth(0.085 * w)
-    ctx.move(to: fp(-0.26, -0.17))
-    ctx.addLine(to: fp(-0.05, 0.0))
-    ctx.addLine(to: fp(-0.26, 0.17))
-    ctx.strokePath()
-    // Pink block cursor.
-    let cc = fp(0.16, 0.02)
-    let cw = 0.17 * w
-    let ch = 0.30 * w
-    let cursorRect = CGRect(x: cc.x - cw / 2, y: cc.y - ch / 2, width: cw, height: ch)
-    ctx.addPath(CGPath(roundedRect: cursorRect, cornerWidth: 0.035 * w, cornerHeight: 0.035 * w, transform: nil))
-    ctx.setFillColor(cursor)
-    ctx.fillPath()
-    ctx.restoreGState()
 
     ctx.restoreGState()
+    ctx.restoreGState()
+
+    // CoreText uses the default bottom-left coordinate system; draw the channel name last so it
+    // remains crisp instead of inheriting the flipped geometry transform above.
+    if let label, let labelRect {
+        let fontSize = S * (label == "nightly" ? 0.068 : 0.082)
+        let font = NSFont.systemFont(ofSize: fontSize, weight: .black)
+        let textColor = label == "nightly"
+            ? NSColor(srgbRed: 1, green: 234.0 / 255.0, blue: 0, alpha: 1)
+            : NSColor.black
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: textColor,
+            .kern: S * 0.002,
+        ]
+        let line = CTLineCreateWithAttributedString(
+            NSAttributedString(string: label, attributes: attributes))
+        let textWidth = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+        let baselineFromTop = labelRect.minY + (labelRect.height - fontSize) / 2 + fontSize * 0.79
+        ctx.textPosition = CGPoint(x: labelRect.midX - textWidth / 2, y: S - baselineFromTop)
+        CTLineDraw(line, ctx)
+    }
 
     // --- Write PNG ------------------------------------------------------------------
     guard let image = ctx.makeImage() else { fatalError("makeImage") }
@@ -264,7 +265,7 @@ for variant in variants {
     try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     print("Rendering \(variant.dirName) → \(dir.path)")
     for (name, px) in outputs {
-        render(px, to: dir.appendingPathComponent(name), bgTop: variant.bgTop, bgBottom: variant.bgBottom)
+        render(px, to: dir.appendingPathComponent(name), label: variant.label)
     }
     try! contentsJSON.write(to: dir.appendingPathComponent("Contents.json"), atomically: false, encoding: .utf8)
 }

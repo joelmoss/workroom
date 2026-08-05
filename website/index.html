@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en-GB">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#000000" />
+    <meta
+      name="description"
+      content="Workroom is a native Mac development environment for parallel agentic work. Give every task an isolated Git worktree or Jujutsu workspace."
+    />
+    <title>Workroom — Every task gets its own room</title>
+    <link rel="icon" href="assets/workroom-mark.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+    <script src="script.js" defer></script>
+  </head>
+  <body>
+    <!--
+      THESIS: Workroom is a live developer broadcast where every parallel task keeps a distinct working context; it refuses the soft, centred SaaS hero.
+      OWN-WORLD: Broadcast black, fixed yellow/cyan/green/red/blue roles, exact cell rules, condensed broadcast type, clear navigation, block mosaics, and restrained signal motion.
+      STORY: Understand isolated workrooms, see the real app proving splits and review, inspect the Git/JJ mechanism, then download Workroom for macOS.
+      FIRST VIEWPORT: A broadcast masthead tops a two-column headline and framed app proof; the yellow download action sits below the headline before a red fact ticker.
+      FORM: Broadcast Index, approved composition A from the selected Teletext challenger; seed 56b6f1f2.
+      FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
+    -->
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="broadcast-header" aria-label="Site header">
+      <a class="brand" href="#top" aria-label="Workroom home">
+        <svg class="brand-mark" viewBox="0 0 36 36" role="img" aria-label="Workroom square mark">
+          <path d="M2 2h9v9H2zM14 2h8v9h-8zM25 2h9v9h-9zM2 14h9v8H2zM25 14h9v8h-9zM2 25h9v9H2zM14 25h8v9h-8zM25 25h9v9h-9z" />
+        </svg>
+        <span>Workroom</span>
+      </a>
+
+      <a class="header-download" href="https://github.com/joelmoss/workroom/releases/latest">Download</a>
+    </header>
+
+    <main id="main">
+      <section class="hero" id="top" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <h1 id="hero-title">Every task gets its own room.</h1>
+          <p>
+            A native Mac development environment for parallel agentic work. Give each task an
+            isolated Git worktree or Jujutsu workspace, then run, inspect, and review it in one place.
+          </p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="https://github.com/joelmoss/workroom/releases/latest">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M11 3h2v10l3.5-3.5 1.4 1.4-5.9 5.9-5.9-5.9 1.4-1.4L11 13V3Zm-6 15h14v3H5v-3Z" />
+              </svg>
+              Download for Mac
+            </a>
+          </div>
+          <p class="platform-note">macOS 15+ · Apple silicon</p>
+        </div>
+
+        <div class="product-broadcast" id="product">
+          <div class="proof-header" aria-hidden="true">
+            <span>Product preview</span>
+            <span>Native macOS</span>
+          </div>
+          <figure>
+            <img
+              src="assets/workroom-app.png"
+              alt="Workroom on macOS showing project and workroom navigation, split terminal panes, a syntax-highlighted diff, changes and pull-request status, and notifications."
+              width="2048"
+              height="1209"
+            />
+            <figcaption id="proof-caption">
+              Active: parallel workrooms, terminals, diffs and review stay visible together.
+            </figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <div class="ticker" role="note" aria-label="Product facts">
+        <span class="ticker-caret" aria-hidden="true"></span>
+        <p>Native macOS · Git + Jujutsu · terminal-first</p>
+        <span class="ticker-caret" aria-hidden="true"></span>
+      </div>
+
+      <section class="channel-grid" aria-label="Workroom capabilities">
+        <article class="channel channel-yellow" id="workrooms">
+          <header>
+            <h2>Parallel workrooms</h2>
+          </header>
+          <p>
+            Each task gets a real directory with its own branch or bookmark, without copying repository
+            history or asking you to stash your current work.
+          </p>
+          <ul>
+            <li>Git worktrees</li>
+            <li>Jujutsu workspaces</li>
+            <li>Setup and teardown hooks</li>
+          </ul>
+          <a href="#mechanism">See the mechanism <span aria-hidden="true">&gt;&gt;</span></a>
+        </article>
+
+        <article class="channel channel-cyan" id="splits">
+          <header>
+            <h2>Terminal + workroom splits</h2>
+          </header>
+          <p>
+            Arrange multiple workrooms side by side, then split each workroom into the terminal or content
+            panes the task needs.
+          </p>
+          <ul>
+            <li>Embedded Ghostty terminals</li>
+            <li>Session-scoped terminal continuity</li>
+            <li>Keyboard-first navigation</li>
+          </ul>
+          <a href="#feature-hold">Inspect the split <span aria-hidden="true">&gt;&gt;</span></a>
+        </article>
+
+        <article class="channel channel-green" id="review">
+          <header>
+            <h2>Diffs, VCS + files</h2>
+          </header>
+          <p>
+            Read changes in context with native Git and Jujutsu state, syntax-highlighted diffs, project
+            files, pull requests, CI and notifications.
+          </p>
+          <ul>
+            <li>Unified or side-by-side diffs</li>
+            <li>History and changesets</li>
+            <li>Syntax-highlighted file viewer</li>
+          </ul>
+          <a href="#files">Review the signal <span aria-hidden="true">&gt;&gt;</span></a>
+        </article>
+      </section>
+
+      <section class="mechanism" id="mechanism" aria-labelledby="mechanism-title">
+        <div class="section-bar">
+          <h2 id="mechanism-title">One repository. Separate working worlds.</h2>
+        </div>
+
+        <div class="mechanism-layout">
+          <div class="branch-diagram" aria-label="Diagram showing one repository branching into three isolated workrooms">
+            <div class="repo-node">
+              <span>ROOT</span>
+              <strong>acme-app</strong>
+            </div>
+            <svg viewBox="0 0 680 260" aria-hidden="true">
+              <path class="line line-white" d="M28 130h102" />
+              <path class="line line-cyan" d="M130 130v-78h110" />
+              <path class="line line-green" d="M130 130h110" />
+              <path class="line line-yellow" d="M130 130v78h110" />
+              <circle cx="130" cy="130" r="8" />
+            </svg>
+            <div class="branch branch-one"><span>WORKROOM</span><strong>session-login</strong><small>feature/login</small></div>
+            <div class="branch branch-two"><span>WORKROOM</span><strong>rate-limiting</strong><small>fix/rate-limit</small></div>
+            <div class="branch branch-three"><span>WORKROOM</span><strong>docs-update</strong><small>docs/update</small></div>
+          </div>
+
+          <div class="mechanism-copy">
+            <p>
+              Workrooms share repository history, not working directories. That is the difference between
+              parallel work that is merely open and parallel work that is actually isolated.
+            </p>
+            <dl>
+              <div><dt>Git</dt><dd>One worktree and branch per task</dd></div>
+              <div><dt>Jujutsu</dt><dd>One workspace and bookmark per task</dd></div>
+              <div><dt>Disk</dt><dd>Real directories under your workroom root</dd></div>
+            </dl>
+            <details>
+              <summary>What survives an app restart?</summary>
+              <p>
+                Your workroom directories and repository state remain on disk. Terminal sessions and their
+                running processes are not restored when Workroom relaunches.
+              </p>
+            </details>
+          </div>
+        </div>
+      </section>
+
+      <section class="feature-hold" id="feature-hold" aria-labelledby="feature-title">
+        <div class="section-bar section-bar-cyan">
+          <h2 id="feature-title">One room. Every view you need.</h2>
+        </div>
+
+        <div class="hold-controls" role="group" aria-label="Choose a product capability">
+          <button type="button" data-feature="workrooms" aria-pressed="true">Workrooms</button>
+          <button type="button" data-feature="splits" aria-pressed="false">Splits</button>
+          <button type="button" data-feature="diffs" aria-pressed="false">Diffs</button>
+          <button type="button" data-feature="files" aria-pressed="false">Files</button>
+        </div>
+
+        <div class="hold-stage">
+          <div class="hold-visual" aria-hidden="true">
+            <div class="mosaic mosaic-workrooms is-active" data-mosaic="workrooms">
+              <span></span><span></span><span></span><span></span><span></span><span></span>
+            </div>
+            <div class="mosaic mosaic-splits" data-mosaic="splits">
+              <span></span><span></span><span></span><span></span>
+            </div>
+            <div class="mosaic mosaic-diffs" data-mosaic="diffs">
+              <i></i><i></i><i></i><i></i><i></i><i></i>
+            </div>
+            <div class="mosaic mosaic-files" data-mosaic="files">
+              <b></b><b></b><b></b><b></b><b></b>
+            </div>
+          </div>
+          <div class="hold-copy" aria-live="polite">
+            <h3 id="feature-heading">Parallel workrooms</h3>
+            <p id="feature-copy">
+              Open several isolated tasks at once and keep their project, branch, terminals and status visibly separate.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section class="file-signal" id="files" aria-labelledby="files-title">
+        <div class="file-copy">
+          <h2 id="files-title">Read the work without leaving the room.</h2>
+          <p>
+            Browse the tree, open a syntax-highlighted file, inspect the working copy, compare a changeset,
+            and follow pull-request and CI state from the same workroom.
+          </p>
+        </div>
+        <div class="file-demo" aria-label="Illustrative file and diff viewer layout">
+          <div class="demo-label">ILLUSTRATIVE LAYOUT / FILE + DIFF</div>
+          <div class="file-tree" aria-hidden="true">
+            <span class="selected">Views/</span><span>ProjectSidebar.swift</span><span>DiffViewer.swift</span><span>TerminalTabStrip.swift</span><span>Core/</span><span>ThemeTokens.swift</span>
+          </div>
+          <div class="diff-code" aria-hidden="true">
+            <span class="context">  let room = workroom</span>
+            <span class="remove">- terminal.restore()</span>
+            <span class="add">+ terminal.startSession()</span>
+            <span class="context">  review(changeset)</span>
+            <span class="add">+ show(fileViewer)</span>
+          </div>
+          <div class="diff-key" aria-hidden="true"><span>− removed</span><span>+ added</span></div>
+        </div>
+      </section>
+
+      <section class="download-close" aria-labelledby="download-title">
+        <div class="close-signal" aria-hidden="true">
+          <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+        </div>
+        <div>
+          <h2 id="download-title">Make room for the next task.</h2>
+          <p>Download Workroom for macOS 15 or later on Apple silicon.</p>
+        </div>
+        <a class="button button-primary button-large" href="https://github.com/joelmoss/workroom/releases/latest">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 3h2v10l3.5-3.5 1.4 1.4-5.9 5.9-5.9-5.9 1.4-1.4L11 13V3Zm-6 15h14v3H5v-3Z" /></svg>
+          Download for Mac
+        </a>
+      </section>
+    </main>
+
+    <footer>
+      <div class="codaset-credit">
+        <span>Workroom by Codaset</span>
+      </div>
+      <p>Terminal sessions are not restored across app restarts.</p>
+    </footer>
+  </body>
+</html>

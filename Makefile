@@ -100,7 +100,7 @@ app-release: VCS_APPLE_FLAGS := --universal
 app-release: app-vcs ## Build, notarize, staple + package a DMG installer (macapp/Scripts/release.sh)
 	cd macapp && Scripts/release.sh
 
-app-icon: ## Regenerate the release + dev AppIcon PNGs (macapp/Scripts/make-icon.swift)
+app-icon: ## Regenerate release, dev + nightly AppIcon PNGs (macapp/Scripts/make-icon.swift)
 	cd macapp && swift Scripts/make-icon.swift
 
 app-clean: ## Remove the app's DerivedData + .xcodeproj

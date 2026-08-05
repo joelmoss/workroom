@@ -139,15 +139,15 @@ that surfaces violations as **warnings** (non-fatal — `make app-lint` is the h
   test host".
 - **Debug builds run side by side with the release build.** The Debug config has a distinct
   identity — bundle id `com.developwithstyle.workroom.dev`, product/display name `Workroom Dev`,
-  and the amber `AppIcon-Dev` icon set — so a local build doesn't fight the installed release
+  and the orange-badged `AppIcon-Dev` icon set — so a local build doesn't fight the installed release
   `Workroom` for activation, the key window, preferences (separate UserDefaults domain via the
   bundle id), or the system-wide ⌘§ hotkey. The Debug build deliberately **doesn't register ⌘§**
   and **doesn't run Sparkle scheduled checks** (`#if DEBUG` in `WorkroomApp.swift` / `Updater.swift`)
   so it can't grab the global hotkey or try to "update" itself to the release DMG. Both builds
   still share the CLI config at `~/.config/workroom/config.json` (the bundled CLI has no
   config-path override), so they show the same projects/workrooms. `make app-run` only kills the
-  `Workroom Dev` instance, never your release build. The two app icons (`make app-icon` renders
-  both) are identical except for the tile gradient.
+  `Workroom Dev` instance, never your release build. The three app icons (`make app-icon` renders
+  all of them) share the yellow blocked mark; Dev and Nightly overlay their channel labels.
 - **Adding/removing/renaming a `.swift` file needs an `xcodegen generate`.** XcodeGen
   expands the source glob into explicit file refs in the (gitignored) `.xcodeproj`, so
   the change is invisible (or, for a deleted/renamed file, a hard "Build input file
@@ -227,7 +227,7 @@ setup and the `SPARKLE_PRIVATE_KEY` secret.
 **Release channels (issue #91) — two build identities.** The **main** app (`Release` config)
 switches `stable`⟷`pre` at runtime via the *Settings ▸ General ▸ Release channel* picker
 (`ReleaseChannel.pickerCases` = stable/pre only). **Workroom Nightly** is a separate side-by-side
-product — the `Nightly` build config in `project.yml` (bundle id `…workroom.nightly`, name, violet
+product — the `Nightly` build config in `project.yml` (bundle id `…workroom.nightly`, name, labelled
 `AppIcon-Nightly`, `WORKROOM_RELEASE_CHANNEL=nightly` → the `WorkroomReleaseChannel` Info.plist
 marker read by `ReleaseChannel.current`/`isNightlyBuild`), extending the Debug/"Workroom Dev"
 per-config identity pattern to a third identity.

@@ -1,0 +1,45 @@
+{
+  "title": "Choose the homepage composition",
+  "question": "Which Teletext composition should become the Workroom homepage? Use the steer field to combine or revise details.",
+  "options": [
+    {
+      "id": "comp-a",
+      "label": "A — Broadcast Index",
+      "kicker": "BALANCED",
+      "lineage": "teletext front page plus feature magazine",
+      "thesis": "The offer, product proof, and three capability channels all land within one scan.",
+      "palette": ["#000000", "#ffff00", "#00ffff", "#00ff00", "#ff0000", "#0000ff"],
+      "materials": ["40 × 24 cell lattice", "double-height headers", "broadcast ticker"],
+      "viewport": "Headline and beta download sit beside the app; a factual ticker introduces three dense proof channels.",
+      "risk": "The equal feature columns can make the second half feel more like an index than a guided story.",
+      "hero": ".impeccable/mocks/home-a-index.png"
+    },
+    {
+      "id": "comp-b",
+      "label": "B — Split Broadcast",
+      "kicker": "PRODUCT-FIRST",
+      "lineage": "two-channel broadcast with HOLD selector",
+      "thesis": "The real app becomes the dominant transmission while the offer occupies one focused control panel.",
+      "palette": ["#000000", "#ffffff", "#ffff00", "#00ffff", "#0000ff"],
+      "materials": ["split transmission", "HOLD state", "horizontal process band"],
+      "viewport": "A large product capture occupies the left; the action and explanation remain fixed on the right.",
+      "risk": "The controlled split is exceptionally clear but less exuberant than the other compositions.",
+      "hero": ".impeccable/mocks/home-b-split.png"
+    },
+    {
+      "id": "comp-c",
+      "label": "C — Magazine Rail",
+      "kicker": "DEEPEST WORLD",
+      "lineage": "numbered teletext magazine with vertical page rail",
+      "thesis": "A persistent direct-address rail turns the whole homepage into a navigable Workroom broadcast.",
+      "palette": ["#000000", "#ffffff", "#ffff00", "#00ffff", "#0000ff", "#ff0000"],
+      "materials": ["vertical page rail", "transmission window", "branching mosaic"],
+      "viewport": "A full magazine index frames the headline, current screenshot, capability channels, and Git/JJ diagram.",
+      "risk": "The dense rail carries the world most fully, but it needs careful mobile translation to stay fast and legible.",
+      "hero": ".impeccable/mocks/home-c-magazine.png"
+    }
+  ],
+  "reroll": false,
+  "canon": false,
+  "steer": true
+}

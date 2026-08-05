@@ -1,0 +1,76 @@
+{
+  "title": "Choose Workroom's visual world",
+  "question": "Keep the press-proof direction, choose an alternate, steer it, or re-roll.",
+  "options": [
+    {
+      "id": "assigned",
+      "label": "Patch Proofing Table",
+      "kicker": "THE ROLL",
+      "lineage": "industrial print proofing tables and imposition sheets",
+      "thesis": "Every task is a separate galley, aligned into one inspectable working sheet.",
+      "palette": ["#f6c945", "#11110f", "#f3f0e8", "#2447d8", "#db3d32"],
+      "materials": ["coated proof stock", "registration ink", "crop rules", "overprint fields"],
+      "viewport": "A huge working proof sheet pairs the download promise with a live-looking arrangement of parallel workrooms, diff marks, and registration controls.",
+      "risk": "Can feel like print nostalgia if the grid is decorative instead of visibly organizing real product proof.",
+      "sketch": ".impeccable/sketches/assigned.png"
+    },
+    {
+      "id": "challenger-teletext",
+      "label": "Teletext Service",
+      "kicker": "CHALLENGER",
+      "lineage": "broadcast teletext magazines",
+      "thesis": "Workroom becomes a direct-address developer broadcast with every feature on a numbered page.",
+      "palette": ["#050505", "#f4f4f0", "#f2df38", "#26d9dc", "#e7473d"],
+      "materials": ["40 × 24 character lattice", "block mosaics", "broadcast black"],
+      "viewport": "A rigid bitmap screen indexes WORKROOM 100, SPLITS 210, DIFFS 302, and DOWNLOAD 900 around a product capture.",
+      "risk": "Strong developer recognition, but page-by-page navigation fights Workroom's promise of simultaneous split contexts.",
+      "case": "Loses narrowly on product clarity: culturally legible, structurally too sequential.",
+      "sketch": ".impeccable/sketches/challenger-teletext.png",
+      "hero": "https://impeccable.style/worlds/cards/broadcast-programming-teletext-service-hero.webp",
+      "board": "https://impeccable.style/worlds/cards/broadcast-programming-teletext-service.webp"
+    },
+    {
+      "id": "challenger-glass",
+      "label": "Glazier's Partition",
+      "kicker": "CHALLENGER",
+      "lineage": "steel-framed hand-rolled glass partition walls",
+      "thesis": "Parallel work becomes a wall of clear panes, each context lit independently but visible together.",
+      "palette": ["#0e0f10", "#f2f4ee", "#155ac8", "#e7a624", "#7f2028"],
+      "materials": ["seeded glass", "black glazing bars", "backlit color fields"],
+      "viewport": "A full-height glazing elevation makes the app screenshot and download action the two illuminated panes in a larger workroom wall.",
+      "risk": "The split-view mechanism reads instantly, but the material has weaker native vocabulary for code review, diffs, and VCS state.",
+      "case": "Nearly ties on clarity; loses on developer identification and VCS specificity.",
+      "sketch": ".impeccable/sketches/challenger-glass.png",
+      "hero": "https://impeccable.style/worlds/cards/craft-making-glazier-colorfield-partition-hero.webp",
+      "board": "https://impeccable.style/worlds/cards/craft-making-glazier-colorfield-partition.webp"
+    },
+    {
+      "id": "challenger-bass",
+      "label": "Cut-Paper Sequence",
+      "kicker": "CHALLENGER",
+      "lineage": "Saul Bass title sequences",
+      "thesis": "Workroom's mechanism unfolds through hard, cinematic cards of isolated tasks converging into one release.",
+      "palette": ["#d8562f", "#12100e", "#f1e7cf", "#efc83f"],
+      "materials": ["cut-paper silhouettes", "flat ink fields", "jittering leader lines"],
+      "viewport": "A black worktree shape fractures across a yellow field while one decisive line lands on Download the beta.",
+      "risk": "The timed sequence hides the simultaneous, inspectable contexts the homepage must prove immediately.",
+      "case": "Fuses poorly because cinematic sequence contradicts Workroom's parallel visibility.",
+      "sketch": ".impeccable/sketches/challenger-bass.png",
+      "hero": "https://impeccable.style/worlds/cards/posters-covers-sleeves-saul-bass-title-hero.webp",
+      "board": "https://impeccable.style/worlds/cards/posters-covers-sleeves-saul-bass-title.webp"
+    }
+  ],
+  "reroll": true,
+  "canon": true,
+  "canonCard": {
+    "label": "The category standard",
+    "lineage": "polished macOS developer-tool landing pages",
+    "thesis": "A restrained dark product page with a large app screenshot, feature rows, and an unmistakable beta download.",
+    "palette": ["#171918", "#f4f3ee", "#f6c945", "#8e9590"],
+    "materials": ["dark app chrome", "soft product shadows", "precise sans typography"],
+    "viewport": "A centered headline and download button sit above the annotated Workroom screenshot with concise proof below.",
+    "risk": "Clear and credible, but unlikely to make Workroom memorable beyond its category.",
+    "sketch": ".impeccable/sketches/canon.png"
+  },
+  "steer": true
+}
