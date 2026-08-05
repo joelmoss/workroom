@@ -26,27 +26,80 @@ struct PullRequestPanel: View {
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
-  /// Warning shown when `gh` isn't installed or isn't signed in — the GitHub-backed PR/CI data
-  /// can't be fetched, so say why and how to fix it rather than silently showing nothing.
+  /// The copy for each unusable-`gh` state, as a pure function so all of it is unit-tested.
+  ///
+  /// Extracted from the view body because it was a chain of `status == .notInstalled` ternaries: with
+  /// only two outcomes that read fine, but every state that wasn't `.notInstalled` printed "not
+  /// signed in" — so `.tooOld` would have inherited a message that is both wrong and unactionable
+  /// (`gh auth login` cannot fix an old gh). A switch makes the compiler demand an answer per state,
+  /// and pulling it out of the `ViewBuilder` means a mis-mapped case fails a test instead of quietly
+  /// rendering plausible nonsense.
+  /// `id` is the a11y-identifier suffix (`pr.ghWarning.<id>`). The rendered `Text`s in this panel
+  /// expose EMPTY accessibility labels — measured: every `staticTexts` element in the inspector tree
+  /// comes back with `label == ""` — so a UI test cannot asserted on the copy itself. The identifier
+  /// is what makes which-state-is-showing observable, and it doubles as the screen-reader handle.
+  static func ghWarningCopy(for status: GitHubCLIStatus)
+    -> (id: String, title: String, body: String, showsInstallLink: Bool)
+  {
+    switch status {
+    case .notInstalled:
+      return (
+        id: "notInstalled",
+        title: "GitHub CLI not found",
+        body: "Install the gh command-line tool to see pull requests and CI status.",
+        showsInstallLink: true
+      )
+    case .tooOld:
+      return (
+        id: "tooOld",
+        title: "GitHub CLI too old",
+        body:
+          "Workroom needs gh 2.57 or newer to read pull requests and CI status. "
+          + "Upgrade it (for example \u{201C}brew upgrade gh\u{201D}) and reopen this panel.",
+        // No install link: gh IS installed, and pointing at the download page buries the one-line
+        // upgrade that actually fixes it.
+        showsInstallLink: false
+      )
+    case .notAuthenticated:
+      return (
+        id: "notAuthenticated",
+        title: "GitHub CLI not signed in",
+        body: "Run \u{201C}gh auth login\u{201D} in a terminal to see pull requests and CI status.",
+        showsInstallLink: false
+      )
+    case .available:
+      // Not rendered (the caller only warns when `!= .available`), but spelled out rather than
+      // defaulted so adding a state can't silently fall into a wrong message.
+      return (id: "available", title: "", body: "", showsInstallLink: false)
+    }
+  }
+
+  /// Warning shown when `gh` can't be used — not installed, too old, or not signed in. The
+  /// GitHub-backed PR/CI data can't be fetched, so say why and how to fix it rather than silently
+  /// showing nothing.
   private func ghWarning(_ status: GitHubCLIStatus) -> some View {
-    VStack(alignment: .leading, spacing: 6) {
+    let copy = Self.ghWarningCopy(for: status)
+    return VStack(alignment: .leading, spacing: 6) {
       HStack(spacing: 6) {
         Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
           .accessibilityHidden(true)
-        Text(status == .notInstalled ? "GitHub CLI not found" : "GitHub CLI not signed in")
+        Text(copy.title)
           .fontWeight(.medium)
+          // Which warning is showing has to be observable from outside, and the rendered `Text`s in
+          // this tree expose EMPTY accessibility labels — so without an identifier a UI test can see
+          // that *a* warning exists but not which, and "wrong warning for the state" is exactly the
+          // regression worth catching. On the title rather than the enclosing stack: combining the
+          // stack into one a11y element would swallow the install link below it.
+          .accessibilityIdentifier("pr.ghWarning.\(copy.id)")
         Spacer(minLength: 0)
       }
       .font(.callout)
-      Text(
-        status == .notInstalled
-          ? "Install the gh command-line tool to see pull requests and CI status."
-          : "Run \u{201C}gh auth login\u{201D} in a terminal to see pull requests and CI status."
-      )
-      .font(.footnote).foregroundStyle(.secondary)
-      .fixedSize(horizontal: false, vertical: true)
-      if status == .notInstalled, let url = URL(string: "https://cli.github.com") {
+      Text(copy.body)
+        .font(.footnote).foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      if copy.showsInstallLink, let url = URL(string: "https://cli.github.com") {
         Link("Install gh\u{2026}", destination: url).font(.footnote).help("Open cli.github.com")
+          .accessibilityIdentifier("pr.ghWarning.installLink")
       }
     }
     .padding(12)

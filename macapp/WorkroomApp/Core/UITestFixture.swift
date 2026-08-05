@@ -98,6 +98,23 @@ enum UITestFixture {
     flag("WorkroomUITestSyncFailure")
   }
 
+  /// The `gh` availability state to seed (`-WorkroomUITestGHStatus notInstalled|notAuthenticated|tooOld`).
+  ///
+  /// Needed because `refreshGitHubCLI` returns immediately in fixture mode — it must, since the
+  /// fixture's paths aren't real repos and a live `gh auth status` would answer about the developer's
+  /// own machine. So nothing could drive the Pull Request panel's warning states, and none of that
+  /// copy had any UI coverage at all. Absent ⇒ leave the optimistic `.available` default, i.e. no
+  /// warning, which is what every existing fixture test expects.
+  static var ghStatus: GitHubCLIStatus? {
+    switch text("WorkroomUITestGHStatus") {
+    case "notInstalled": return .notInstalled
+    case "notAuthenticated": return .notAuthenticated
+    case "tooOld": return .tooOld
+    case "available": return .available
+    default: return nil
+    }
+  }
+
   /// When set (`-WorkroomUITestSyncReadFailure 1`), the remote READ fails rather than an action — the
   /// distinct case that used to render "No repository" for a perfectly good repo. Separate from
   /// `syncFailure` because the two tiers are different: that one retries the action, this one re-reads.

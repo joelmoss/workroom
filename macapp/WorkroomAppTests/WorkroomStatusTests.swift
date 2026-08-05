@@ -867,21 +867,18 @@ final class WorkroomStatusTests: XCTestCase {
   ///
   /// A cancelled probe's child is SIGKILLed, and `StatusCommandRunner`'s continuation is
   /// NON-throwing, so it still resumes with `exitCode: 9` and empty stdout. The classifier read that
-  /// as `.notAuthenticated`. Publishing it was bad; STAMPING the TTL alongside it was what made the
-  /// wrong answer stick, because the staleness gate then turned every lane that would have healed it
-  /// into an early return for a full minute. So both halves must stay untouched — asserting only the
-  /// status would let a regression that skips the value but keeps the stamp pass.
+  /// as `.notAuthenticated`, and publishing it painted every window's PR panel.
   ///
   /// The double deliberately returns a CLEAN, verdict-producing payload rather than the signalled
-  /// shape (see `GatedGHRunner`), so `Task.isCancelled` is the only thing under test here. Deleting
-  /// that guard must fail this test; `.keepPrior` is covered separately below.
+  /// shape (see `GatedGHRunner`), so `Task.isCancelled` is the only thing under test here — the
+  /// signalled path is `.keepPrior`'s job and is covered separately. Deleting the guard must fail
+  /// this test (verified by mutation).
   @MainActor
-  func testCancelledGitHubCLIProbePublishesNothingAndDoesNotStamp() async {
+  func testCancelledGitHubCLIProbePublishesNothing() async {
     let store = AppStore()
     let runner = GatedGHRunner()
     store.statusResolver = WorkroomStatusResolver(runner: runner)
     store.githubCLIStatus = .available
-    store.ghStatusCheckedAt = nil
 
     let resolver = store.statusResolver
     let task = Task { await store.refreshGitHubCLI(resolver: resolver) }
@@ -895,29 +892,25 @@ final class WorkroomStatusTests: XCTestCase {
     await task.value
 
     XCTAssertEqual(store.githubCLIStatus, .available, "a cancelled probe published a verdict")
-    XCTAssertNil(
-      store.ghStatusCheckedAt, "a cancelled probe stamped the TTL, suppressing the re-probe")
   }
 
   /// `.keepPrior` (a killed or crashed child that was never cancelled — jetsam, SIGSEGV, a signal
-  /// around sleep/wake) keeps the previous verdict AND leaves the stamp alone, so the next lane
-  /// re-probes rather than trusting a non-answer for the full TTL.
+  /// around sleep/wake) must not erase a correct warning. With nothing cached, the cache reports
+  /// `nil` and the mirror is left exactly as it was.
   @MainActor
-  func testKeepPriorGitHubCLIProbeLeavesStatusAndStampUntouched() async {
+  func testKeepPriorGitHubCLIProbeLeavesTheStatusUntouched() async {
     let store = AppStore()
     store.statusResolver = WorkroomStatusResolver(
       runner: StubPRRunner { _, _ in
         CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
       })
     store.githubCLIStatus = .notAuthenticated  // a TRUE warning that must not be erased
-    store.ghStatusCheckedAt = nil
 
     await store.refreshGitHubCLI(resolver: store.statusResolver)
 
     XCTAssertEqual(
       store.githubCLIStatus, .notAuthenticated,
       "an uninformative probe erased a correct warning — the inverse false claim")
-    XCTAssertNil(store.ghStatusCheckedAt, "a non-answer must not refresh the TTL")
   }
 
   /// Spin until the in-flight `gh` task settles (the stub returns promptly), with a bound so a hang

@@ -475,14 +475,28 @@ struct WorkroomStatusResolver: Sendable {
     // signal): `exitCode` is a signal number, so the heuristic below would read SIGKILL as a
     // logout. That was the false, sticky "GitHub CLI not signed in".
     if r.signaled { return .keepPrior }
+    // A gh too old to understand our flags is a VERSION problem, not a sign-in one, and must be
+    // separated before the fallback below reads it as a logout.
+    if rejectedUnknownFlag(r) { return .verdict(.tooOld) }
     // Remaining non-zero exits are a fatal gh error with no parseable JSON. Ambiguous, and
     // deliberately still reported as not-authenticated rather than silently masking a real problem.
-    //
-    // NOTE: one identifiable shape lands here today and is WRONG — an old gh (< 2.57) rejects
-    // `--active`/`--json` outright (measured: exit 1, empty stdout, `unknown flag: --json` on
-    // stderr), so a perfectly signed-in user reads as permanently logged out. That gets its own
-    // `.tooOld` verdict and an upgrade message; see the PR2 hardening pass.
     return .verdict(r.ok ? .available : .notAuthenticated)
+  }
+
+  /// Whether gh rejected one of our flags outright, i.e. it predates them.
+  ///
+  /// `gh auth status --active --json hosts` needs gh ≥ 2.57. An older gh does NOT ignore an unknown
+  /// flag, it refuses the whole command: measured `exit 1`, **empty stdout**, and `unknown flag:
+  /// --json` on stderr. Without this that shape fell through to the exit-code heuristic and reported
+  /// a perfectly signed-in user as logged out — permanently, since no probe could ever succeed and
+  /// `gh auth login` would change nothing.
+  ///
+  /// Matched on `unknown flag` **generically** rather than a specific flag name: `--active` and
+  /// `--json` share the 2.57 floor and gh reports whichever it parses first, so pinning one spelling
+  /// would miss the other. Requires a failed result, so a repo whose branch or PR title happens to
+  /// contain the words can't trip it.
+  static func rejectedUnknownFlag(_ r: CommandResult) -> Bool {
+    !r.ok && r.stderr.lowercased().contains("unknown flag")
   }
 
   /// Classify `gh auth status --active --json hosts` output, or `nil` if it isn't the expected JSON

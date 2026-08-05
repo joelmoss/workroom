@@ -736,6 +736,34 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .keepPrior)
   }
 
+  /// A gh older than 2.57 REJECTS `--json`/`--active` rather than ignoring them: measured exit 1,
+  /// empty stdout, `unknown flag: --json` on stderr. That used to fall through to the exit-code
+  /// heuristic and report a signed-in user as permanently logged out, sending them to
+  /// `gh auth login`, which cannot fix a version problem.
+  func testClassifyGitHubCLIUnknownFlagIsTooOld() {
+    let old = CommandResult(
+      stdout: "", stderr: "unknown flag: --json\n\nUsage:  gh auth status [flags]\n", exitCode: 1,
+      timedOut: false)
+    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(old), .verdict(.tooOld))
+  }
+
+  /// `--active` shares the same 2.57 floor and gh reports whichever flag it parses first, so the
+  /// detection must not be pinned to one spelling.
+  func testClassifyGitHubCLIUnknownFlagMatchesEitherFlag() {
+    let active = CommandResult(
+      stdout: "", stderr: "unknown flag: --active", exitCode: 1, timedOut: false)
+    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(active), .verdict(.tooOld))
+  }
+
+  /// A *successful* probe whose payload happens to contain the words must not be read as a version
+  /// problem — the detector requires a failed result.
+  func testClassifyGitHubCLIUnknownFlagNeedsAFailure() {
+    let branchNamedOddly = ok(
+      #"{"hosts":{"github.com":[{"state":"success","active":true,"login":"unknown flag"}]}}"#)
+    XCTAssertEqual(
+      WorkroomStatusResolver.classifyGitHubCLI(branchNamedOddly), .verdict(.available))
+  }
+
   /// A signalled `gh pr list`/`gh run list` must not clear a good PR/CI badge either.
   func testGHPreflightSignalledKeepsPrior() {
     let killed = CommandResult(

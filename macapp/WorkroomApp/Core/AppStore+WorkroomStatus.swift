@@ -13,7 +13,7 @@ import Foundation
 extension AppStore {
   fileprivate static let localStatusTTL: TimeInterval = 15  // git/jj dirty/changed-files
   fileprivate static let ciStatusTTL: TimeInterval = 300  // gh CI (network)
-  fileprivate static let ghStatusTTL: TimeInterval = 60  // `gh auth status` availability check
+  // The `gh auth status` TTL lives in `GitHubAuthCache`, which owns that probe's freshness outright.
   fileprivate static let localConcurrency = 5
   fileprivate static let ciConcurrency = 2
   fileprivate static let selectionDebounce: TimeInterval = 0.3  // arrow-key row cycling coalesce
@@ -98,34 +98,28 @@ extension AppStore {
     }
   }
 
-  /// Refresh `githubCLIStatus` if stale (own short TTL), so the warning + probe guards reflect
-  /// whether `gh` is usable. No-ops in fixture mode (the fixture seeds `.available`).
+  /// Mirror the `gh` verdict onto the observable store so the warning + probe guards reflect whether
+  /// `gh` is usable. Freshness, single-flight and the `force` contract all belong to
+  /// `GitHubAuthCache`; this function only decides whether to paint what it says. No-ops in fixture
+  /// mode (the fixture seeds the status directly).
   ///
-  /// **This is the one status mutation that happens INSIDE an awaited function**, so the callers'
-  /// own `Task.isCancelled` checks (`:86`/`:144`) run too late to protect it — the guard has to live
-  /// here. It was missing, and that was the false, sticky "GitHub CLI not signed in": a superseded
-  /// sweep or a workroom switched mid-probe SIGKILLs the `gh` child, `StatusCommandRunner`'s
-  /// non-throwing continuation still hands back `exitCode: 9` with empty stdout, and the classifier
-  /// read that as a logout. Publishing it then STAMPED the TTL, so the gate above turned every lane
+  /// **This is the one status mutation that happens INSIDE an awaited function**, so the callers' own
+  /// `Task.isCancelled` checks run too late to protect it — the guard has to live here. It was
+  /// missing, and that was the false, sticky "GitHub CLI not signed in": a superseded sweep or a
+  /// workroom switched mid-probe SIGKILLs the `gh` child, `StatusCommandRunner`'s non-throwing
+  /// continuation still hands back `exitCode: 9` with empty stdout, and the classifier read that as a
+  /// logout. Publishing it also stamped the freshness clock, so the staleness gate turned every lane
   /// that would have healed the value into an early return for a full minute — the wrong answer
   /// suppressing its own repair, escapable only via the Refresh button's `force`.
   ///
   /// The tempting instinct — "gh's auth state is machine-global, so record it even from a cancelled
-  /// task" — is wrong: a cancelled probe holds no fact at all, neither a value nor a freshness. Bail
-  /// on both. Same for `.keepPrior`: leaving the stamp alone is what makes the next lane re-probe
-  /// instead of trusting a non-answer.
+  /// task" — is wrong: a cancelled probe holds no fact at all. A `nil` here means the same thing (the
+  /// probe told us nothing and there was no prior verdict), so leave the mirror alone in both cases.
   func refreshGitHubCLI(resolver: WorkroomStatusResolver, force: Bool = false) async {
     if UITestFixture.isActive { return }
-    if !force, let at = ghStatusCheckedAt,
-      Date().timeIntervalSince(at) < Self.ghStatusTTL
-    {
-      return
-    }
-    let probe = await resolver.resolveGitHubCLI()
+    guard let status = await ghAuthCache.status(force: force, resolver: resolver) else { return }
     if Task.isCancelled { return }
-    guard case .verdict(let status) = probe else { return }
     githubCLIStatus = status
-    ghStatusCheckedAt = Date()
   }
 
   /// Freshen just the selected workroom (local + CI, forced), debounced so arrow-key cycling
@@ -405,6 +399,11 @@ extension AppStore {
       workroomStatuses[.workroom(project: project.path, name: workroom.name)] =
         UITestFixture.workroomStatus
     }
+    // Seed here — not only at load — because this runs again on the manual Refresh button, and
+    // `refreshGitHubCLI` no-ops in fixture mode, so a re-seed is the only thing that can restate the
+    // value. Left alone when the flag is absent, so the optimistic `.available` default stands and
+    // every existing fixture test still sees no warning.
+    if let seeded = UITestFixture.ghStatus { githubCLIStatus = seeded }
   }
 
   // MARK: - Internals

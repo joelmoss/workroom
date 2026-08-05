@@ -34,9 +34,13 @@ final class ProjectStore: ObservableObject {
   /// no warning flashes before the first check.
   @Published var githubCLIStatus: GitHubCLIStatus = .available
 
-  /// When `githubCLIStatus` was last probed (its own short TTL, so we don't re-run `gh auth status`
-  /// on every selection). Plain (non-`@Published`): it gates a re-probe, nothing renders from it.
-  var ghStatusCheckedAt: Date?
+  /// Owns the `gh auth status` probe: its freshness clock AND its single-flight, so N windows share
+  /// one `gh` and the staleness check can't interleave with the write the way a bare timestamp on
+  /// this class did. `githubCLIStatus` above is the SwiftUI-observable mirror of what it decided.
+  ///
+  /// A `var` purely so tests can swap in an instance with millisecond TTLs; production never
+  /// reassigns it.
+  var ghAuthCache = GitHubAuthCache()
 
   /// Project paths with an in-flight create/delete (for per-row progress + disabling).
   @Published var busyProjects: Set<String> = []

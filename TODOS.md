@@ -437,6 +437,86 @@ enumerate remote refs cheaply, and its doc explains why the symref row must be d
 
 ## P3 — VCS engine, diffs, and status
 
+### `XDG_CONFIG_HOME` never reaches the `gh` auth probe (macapp) — gh-flap eng-review follow-up
+
+**What:** decide whether `XDG_CONFIG_HOME` (or another way of resolving gh's config dir) should reach
+the NON-network `run` path that `WorkroomStatusResolver.resolveGitHubCLI` uses.
+
+**Why:** `XDG_CONFIG_HOME` *is* in `StatusCommandRunner.forwardedAuthKeys`, but that allowlist is only
+applied by `networkEnvironment`, i.e. behind `if network` in `run`. The gh auth probe is a plain `run`,
+and the comment justifying the split says gh "carries its own token" — true, but gh FINDS that token via
+its config dir. A user who sets `XDG_CONFIG_HOME` in `.zshrc` and launches from Finder therefore hands
+gh a different config root than their terminal uses. Measured: an empty gh config dir returns
+`{"hosts":{}}` on stdout with exit 0, which classifies as `.notAuthenticated` — a permanent false
+"GitHub CLI not signed in" for someone who is signed in everywhere else. Same false claim the
+cancelled-probe fix removed, reached by a completely different route.
+
+**Pros:** closes the last known cause of a false "not signed in". **Cons:** widening the environment on
+an automatic path is a deliberate, documented narrowness (`StatusCommandRunner` explains why a
+wholesale transplant is refused for anything that runs without the user asking) — this is a security
+posture question, not a one-line fix. A third allowlist ("non-secret, both paths") is probably the right
+shape, and `GH_CONFIG_DIR` deserves the same thought.
+
+**How to start:** `StatusCommandRunner.run`, where `if network` selects the environment. Decide the
+allowlist question first, then apply to both paths.
+
+**Depends on:** nothing.
+
+**Priority:** P3 — real and measured, but it needs a policy decision, and the affected configuration is
+uncommon.
+
+### The other `CommandResult` consumers don't know about `signaled` (macapp) — gh-flap eng-review follow-up
+
+**What:** consume `CommandResult.signaled` in `AgentRunner.classify`, `FileTreeModel`, and
+`RustJJProvider.runCLI`.
+
+**Why:** the gh-flap fix added `signaled` (a killed child reports its SIGNAL in `terminationStatus`, so
+9 or 15 is not an exit code) and wired it into the gh classifiers plus both `CLIVCSWriter` failure
+classifiers. Three consumers still read a raw exit code as evidence. `AgentRunner.classify` is the one
+that reaches a user: a killed `claude` diagnosis becomes `.failed(exitCode: 9)` and the agent banner
+shows "exit 9", which is exactly the class of nonsense commit `a64e4269` set out to end.
+`FileTreeModel` gates on `result.ok`, so a signalled listing renders as a silently empty file tree.
+`RustJJProvider` throws `VCSError.io("jj exited 9")`.
+
+**Pros:** finishes the job — every place that reads an exit code as evidence learns that a signal is not
+one. Each site is a one-line branch plus a test, since the mechanism already exists and is tested.
+**Cons:** none of the three has a reported symptom, and two fail safe (an empty tree, a typed IO error)
+rather than making a false claim.
+
+**How to start:** `AgentRunner.classify` first (the only user-visible one): treat `signaled` as its own
+outcome before the `exitCode != 0` branch, and mind that `timedOut` implies `signaled`, so the timeout
+check must stay first.
+
+**Depends on:** `CommandResult.signaled` (shipped).
+
+**Priority:** P3 — cheap, but speculative until someone reports one.
+
+### `ShellEnvironment` exposes no probe-readiness signal (macapp) — gh-flap eng-review follow-up
+
+**What:** give `ShellEnvironment` a way for callers to know whether the interactive-shell PATH probe has
+landed (or to await it), instead of silently degrading to the floor.
+
+**Why:** `ShellEnvironment.path()` returns the probed PATH if the probe finished and the deterministic
+floor otherwise, with nothing distinguishing the two. The probe is fired detached in `WorkroomApp.init`
+and nothing joins it, while `refreshVCSToolReport` runs from `apply(projects)` — so a launch-time
+`--version` probe can genuinely run against floor-only PATH. The floor covers Homebrew but not a
+version-manager shim dir, Nix, or MacPorts, so those tools read as missing. `VCSToolVersionCache` no
+longer *pins* such a verdict (it refuses to cache a discovered absence — shipped with the gh-flap work),
+but that treats the symptom: any future caller reading `path()` early inherits the same ambiguity with
+no way to detect it.
+
+**Pros:** removes a whole class of "it depends when we asked" bugs, and would let the few callers that
+genuinely need enrichment await it rather than guess. **Cons:** the probe is best-effort BY DESIGN — its
+failures must degrade to the floor, never block — so a readiness signal must not become a hidden
+dependency that stalls launch. Larger and more delicate than it first looks.
+
+**How to start:** `ShellEnvironment.ProbeState` already tracks a generation; surface "has a probe
+completed" from it, then audit `path()` callers for who should wait versus who should keep degrading.
+
+**Depends on:** nothing.
+
+**Priority:** P3 — the honest fix for a family of PATH-timing bugs, none currently reported.
+
 ### Deterministic tab lookup for content panes (macapp) — nav-history follow-up
 
 **What:** `TerminalSessions.contentTab(matching:)` and `previewTabID(in:)` both resolve with

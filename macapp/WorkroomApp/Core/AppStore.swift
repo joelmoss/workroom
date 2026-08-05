@@ -291,12 +291,10 @@ final class AppStore: ObservableObject {
     get { projectStore.githubCLIStatus }
     set { projectStore.githubCLIStatus = newValue }
   }
-  /// When `githubCLIStatus` was last probed (its own short TTL, so we don't re-run `gh auth status`
-  /// on every selection).
-  var ghStatusCheckedAt: Date? {
-    get { projectStore.ghStatusCheckedAt }
-    set { projectStore.ghStatusCheckedAt = newValue }
-  }
+  /// Owns the `gh auth status` verdict's freshness and single-flight (see `GitHubAuthCache`). The
+  /// timestamp that used to live here is gone: two owners for one truth is how the staleness gate and
+  /// the write drifted apart in the first place.
+  var ghAuthCache: GitHubAuthCache { projectStore.ghAuthCache }
   /// A PR write action (Phase 2b) is running — disables the PR actions menu so it can't double-fire.
   @Published var prActionInFlight = false
 

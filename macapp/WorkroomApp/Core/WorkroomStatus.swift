@@ -69,6 +69,11 @@ enum GitHubCLIStatus: Equatable, Sendable {
   case available
   case notInstalled  // gh not on PATH (env exit 127)
   case notAuthenticated  // gh present but `gh auth status` fails (not logged in)
+  /// gh is installed and possibly signed in, but too old to answer us: it rejects `--active` /
+  /// `--json` (both gh ≥ 2.57) outright rather than ignoring them, so no probe can ever succeed.
+  /// Distinct from `notAuthenticated` because `gh auth login` cannot fix it — only an upgrade can,
+  /// and telling such a user they're "not signed in" sends them down the wrong path entirely.
+  case tooOld
 }
 
 /// Why a status probe couldn't produce a clean/dirty answer. Drives the "unknown" badge.
