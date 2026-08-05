@@ -80,6 +80,19 @@ enum VCSToolVersions {
       }
     }
 
+    /// Whether a tool we actually RAN reported absent from PATH (exit 127).
+    ///
+    /// Used to decide a verdict is too fragile to cache: absence is the one `Status` that can be an
+    /// artefact of WHEN we probed rather than what is installed, because the PATH is still the
+    /// deterministic floor until the interactive-shell probe lands. See `VCSToolVersionCache.report`.
+    ///
+    /// `probedJJ` is load-bearing, not decoration: when it is false `jj` is reported `.notInstalled`
+    /// WITHOUT running anything, so counting that would refuse to cache on every launch with no jj
+    /// project registered — turning a one-shot `git --version` into one per call.
+    func hasMissingTool(probedJJ: Bool) -> Bool {
+      git == .notInstalled || (probedJJ && jj == .notInstalled)
+    }
+
     /// Whether remote actions are permitted for a project of this VCS (`"git"` / `"jj"`).
     func allowsRemoteActions(vcs: String) -> Bool {
       guard Self.isUsable(git) else { return false }
@@ -195,7 +208,18 @@ actor VCSToolVersionCache {
     let task = Task { await VCSToolVersions.probe(runner: runner, probeJJ: probeJJ) }
     inFlight = (task, probeJJ)
     let report = await task.value
-    cached = (report, probeJJ)
+    // Never cache a `.notInstalled`. That verdict comes from exit 127, i.e. the tool wasn't on PATH —
+    // and at launch the PATH may still be the deterministic floor, because `ShellEnvironment.path()`
+    // silently returns the floor until the interactive-shell probe lands and nothing joins that probe
+    // (it is fired detached in `WorkroomApp.init`, while `refreshVCSToolReport` runs from
+    // `apply(projects)`). The floor covers Homebrew but NOT a version-manager shim dir, Nix, or
+    // MacPorts, so a jj living in one of those reads as missing — and caching that pinned "jj isn't
+    // installed" for the entire process, since `cached` is only cleared by the tests-only `reset()`.
+    // Re-probing costs one `--version` and by then the enriched PATH has usually landed.
+    //
+    // `.unknown` is safe to cache by contrast: `warnings(hasJJProject:)` ignores it, so it never
+    // becomes a false claim.
+    if !report.hasMissingTool(probedJJ: probeJJ) { cached = (report, probeJJ) }
     inFlight = nil
     return report
   }
