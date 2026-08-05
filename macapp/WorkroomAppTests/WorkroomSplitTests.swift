@@ -767,13 +767,13 @@ final class WorkroomSplitTests: XCTestCase {
   func testFocusedPaneFrameIsAccentOnAKeyWindow() {
     let t = frameTokens
     XCTAssertEqual(
-      WorkroomPaneCardBorder.tint(focused: true, active: true, tokens: t), t.accent,
+      WorkroomPaneCardBorder.tint(highlighted: true, active: true, tokens: t), t.accent,
       "the focused member's frame is the full-strength accent")
   }
 
   func testFocusedPaneFrameGoesNeutralOnABackgroundWindow() {
     let t = frameTokens
-    let tint = WorkroomPaneCardBorder.tint(focused: true, active: false, tokens: t)
+    let tint = WorkroomPaneCardBorder.tint(highlighted: true, active: false, tokens: t)
     XCTAssertEqual(
       tint, t.focused, "an inactive window drops the saturated accent, as the fill does")
     XCTAssertNotEqual(tint, t.accent)
@@ -783,9 +783,37 @@ final class WorkroomSplitTests: XCTestCase {
   func testUnfocusedPaneFrameIsTheNeutralHairline() {
     let t = frameTokens
     for active in [true, false] {
-      let tint = WorkroomPaneCardBorder.tint(focused: false, active: active, tokens: t)
+      let tint = WorkroomPaneCardBorder.tint(highlighted: false, active: active, tokens: t)
       XCTAssertEqual(tint, t.border, "unfocused members keep a faint edge (active: \(active))")
       XCTAssertEqual(NSColor(tint).usingColorSpace(.sRGB)!.alphaComponent, 0.12, accuracy: 0.01)
     }
+  }
+
+  // MARK: the highlight gate (the treatment is split-only)
+
+  /// A solo pane is ALWAYS the model-focused one, so `focused` alone would hand it the accent frame,
+  /// fill and deeper shadow — a selection cue with nothing to select among.
+  func testASoloPaneIsNeverHighlighted() {
+    XCTAssertFalse(
+      WorkroomPaneCardBorder.isHighlighted(focused: true, multi: false),
+      "a lone workroom has no peer to be picked out from")
+    let t = frameTokens
+    for active in [true, false] {
+      let highlighted = WorkroomPaneCardBorder.isHighlighted(focused: true, multi: false)
+      XCTAssertEqual(
+        WorkroomPaneCardBorder.tint(highlighted: highlighted, active: active, tokens: t), t.border,
+        "so it takes the neutral resting hairline, not the accent (active: \(active))")
+    }
+  }
+
+  func testTheFocusedSplitMemberIsHighlighted() {
+    XCTAssertTrue(WorkroomPaneCardBorder.isHighlighted(focused: true, multi: true))
+    XCTAssertEqual(
+      WorkroomPaneCardBorder.tint(highlighted: true, active: true, tokens: frameTokens),
+      frameTokens.accent)
+  }
+
+  func testAnUnfocusedSplitMemberIsNotHighlighted() {
+    XCTAssertFalse(WorkroomPaneCardBorder.isHighlighted(focused: false, multi: true))
   }
 }
