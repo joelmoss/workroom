@@ -91,7 +91,13 @@ struct VCSToolbar: View {
       // `activeAction`, not `inFlight`: the label must describe THIS workroom. `inFlight` is the
       // model-wide lock, so rendering it directly showed "Pushing…" on a workroom that wasn't pushing.
       activity: model.activeAction.map { .running($0) } ?? .idle,
-      failure: model.lastFailure, lastAction: model.lastAction,
+      failure: model.lastFailure,
+      // The READ's own failure, which nothing rendered before: `snapshot` is nil'd on a failed read and
+      // `lastFailure` is written only by actions, so a locked repo fell through to "No repository".
+      readFailure: model.readFailure,
+      // Only a USER-requested re-read, never the sweep's — see `RemoteStateModel.readInFlight`.
+      reading: model.readInFlight,
+      lastAction: model.lastAction,
       pullConflicted: pullConflicted,
       // An action is running, but not for THIS workroom. `perform` would drop the click, so the segment
       // must not look clickable — see `make`'s `busyElsewhere`.
@@ -128,7 +134,10 @@ struct VCSToolbar: View {
           .frame(minWidth: VCSToolbarMetrics.segmentMinWidth, maxWidth: .infinity)
         divider
         VCSSyncSegment(
-          presentation: p, onAct: { perform(p.action) },
+          // The read-failure tier's click re-runs the READ, forced past the TTL — it isn't a
+          // `VCSRemoteAction`, so it can't route through `perform` (nothing to confirm, nothing to gate).
+          presentation: p,
+          onAct: { p.retriesRead ? model.retryRead() : perform(p.action) },
           // The dialog raises itself when the failure lands; this is how it's reached again after being
           // dismissed. Offered only on the failure tier, where there is something to show.
           onShowDetails: p.tone == .failure ? { model.presentFailureDetails() } : nil
@@ -151,6 +160,18 @@ struct VCSToolbar: View {
     }
     .id(themeTick)
     .onReceive(NotificationCenter.default.publisher(for: .themeDidChange)) { _ in themeTick += 1 }
+    // The `.task` `RemoteStateModel.activate` documents itself as, and never had — the toolbar was
+    // rendered by whoever held the model and nothing ever called it, so a read that failed transiently
+    // stayed failed until an action or a watcher happened along. `activate`'s settled-state guard means
+    // this doesn't double the store's eager `focus` on selection; the store's own gate (the inspector
+    // showing Changes) is what decides this view exists at all.
+    .task(id: activationKey) { model.activate(store.remoteTarget()) }
+  }
+
+  /// Re-runs the `.task` when the toolbar points somewhere new. Keyed on the target's identity rather
+  /// than the whole `Target`, which carries paths that never change independently of it.
+  private var activationKey: String {
+    AppStore.targetIDString(for: store.inspectorTargetID) ?? ""
   }
 
   /// Full-bleed, unlike `TitlebarDivider` (a 14pt inline group rule) — it's what makes the three cells
@@ -300,7 +321,10 @@ private struct VCSSyncSegment: View {
             .font(.system(size: VCSToolbarMetrics.glyph))
             .foregroundStyle(presentation.tone == .normal ? theme.fgMuted : toneColor)
             .frame(width: VCSToolbarMetrics.glyphSlot)
-        } else if presentation.action != nil, isRunning {
+          // `isRunning` alone: it keys on the "…" title, which only the in-flight tiers use, and the
+          // read-retry tier ([13c]) has no `action` — requiring one left that spinner slot empty, so the
+          // one cell whose click needs acknowledging was the one cell that couldn't show it.
+        } else if isRunning {
           ProgressView().controlSize(.mini).frame(width: VCSToolbarMetrics.glyphSlot)
         }
         content

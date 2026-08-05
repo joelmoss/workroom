@@ -98,6 +98,13 @@ enum UITestFixture {
     flag("WorkroomUITestSyncFailure")
   }
 
+  /// When set (`-WorkroomUITestSyncReadFailure 1`), the remote READ fails rather than an action — the
+  /// distinct case that used to render "No repository" for a perfectly good repo. Separate from
+  /// `syncFailure` because the two tiers are different: that one retries the action, this one re-reads.
+  static var syncReadFailure: Bool {
+    flag("WorkroomUITestSyncReadFailure")
+  }
+
   /// A seeded `VCSRemoteState` for `syncState`, or nil.
   ///
   /// `lastFetch` is pinned to exactly nine minutes before now so the subtitle reads "Fetched 9
@@ -926,7 +933,8 @@ actor FixtureVCSWriter: VCSWriting {
   }
 
   func remoteState(path: String, projectRoot: String) async -> VCSRemoteResolution {
-    UITestFixture.remoteState.map { .state($0) } ?? .absent
+    if UITestFixture.syncReadFailure { return .failed(.locked(nil)) }
+    return UITestFixture.remoteState.map { .state($0) } ?? .absent
   }
 
   func fetch(path: String, projectRoot: String, remote: String) async -> VCSRemoteActionResult {

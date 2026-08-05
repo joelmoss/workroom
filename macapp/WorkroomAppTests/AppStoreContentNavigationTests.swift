@@ -464,33 +464,108 @@ final class AppStoreContentNavigationTests: XCTestCase {
     )
   }
 
-  /// A replayed working-copy diff takes its change kind from live status, so Back cannot reinstate a
-  /// `.modified` badge — or an enabled "Open file in…" — for a file that has since been deleted.
-  func testReplayRefreshesAStaleChangeKind() {
-    let recorded = NavPayload.diff(
-      DiffDescriptor(
-        path: "A.swift", change: .modified, source: .gitWorktree, isPreview: false))
+  /// The freshness rule itself: a working-copy diff follows live status, a commit's own diff never does,
+  /// and an unknown path yields no answer rather than an invented one.
+  func testLiveChangeKindOnlyAnswersForAWorkingCopyDiff() {
     var status = WorkroomStatus()
     status.changedFiles = [ChangedFile(path: "A.swift", change: .deleted)]
 
-    guard case .diff(let refreshed) = AppStore.refreshingChangeKind(recorded, from: status) else {
-      return XCTFail("expected a diff payload back")
-    }
-    XCTAssertEqual(refreshed.change, .deleted)
+    let working = DiffDescriptor(
+      path: "A.swift", change: .modified, source: .gitWorktree, isPreview: false)
+    XCTAssertEqual(AppStore.liveChangeKind(for: working, in: status), .deleted)
 
     // A commit's own diff is immutable — never refreshed, even if a path happens to match.
-    let commitDiff = NavPayload.diff(
-      DiffDescriptor(
-        path: "A.swift", change: .modified, source: .commit("abc"), isPreview: false))
-    guard case .diff(let untouched) = AppStore.refreshingChangeKind(commitDiff, from: status) else {
-      return XCTFail("expected a diff payload back")
-    }
-    XCTAssertEqual(untouched.change, .modified)
+    let committed = DiffDescriptor(
+      path: "A.swift", change: .modified, source: .commit("abc"), isPreview: false)
+    XCTAssertNil(AppStore.liveChangeKind(for: committed, in: status))
 
-    // No status yet ⇒ keep what we recorded rather than inventing a kind.
-    guard case .diff(let kept) = AppStore.refreshingChangeKind(recorded, from: nil) else {
-      return XCTFail("expected a diff payload back")
+    // No status yet, or the file is no longer changed ⇒ no answer, so the caller keeps what it has.
+    XCTAssertNil(AppStore.liveChangeKind(for: working, in: nil))
+    let untracked = DiffDescriptor(
+      path: "B.swift", change: .modified, source: .gitWorktree, isPreview: false)
+    XCTAssertNil(AppStore.liveChangeKind(for: untracked, in: status))
+  }
+
+  /// An OPEN diff tab follows the working copy: deleting the file it shows repaints its header letter and
+  /// disables "Open file in…", without the tab being touched. This is the half the earlier replay-only
+  /// refresh never covered — Back was correct while a tab left open stayed stale, which is backwards.
+  func testOpenDiffTabFollowsTheWorkingCopy() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    let a = SidebarID.workroom(project: "/a", name: "main")
+    let targetA = store.target(for: a)!
+    addTerminal(store, a)
+    store.openDiffPreview(ChangedFile(path: "A.swift", change: .modified), source: .gitWorktree)
+    let diffTab = store.terminals.focusedTab(for: targetA)!.id
+
+    var status = WorkroomStatus()
+    status.changedFiles = [ChangedFile(path: "A.swift", change: .deleted)]
+    store.mergeLocalStatus(status, into: a)
+
+    guard case .diff(let refreshed)? = store.terminals.tab(diffTab, for: targetA)?.content else {
+      return XCTFail("the diff tab must still be a diff tab")
     }
-    XCTAssertEqual(kept.change, .modified)
+    XCTAssertEqual(refreshed.change, .deleted)
+    XCTAssertTrue(refreshed.isPreview, "the refresh must not disturb the preview flag")
+  }
+
+  /// The no-op case: a sweep that agrees writes nothing, so a 15s cadence can't invalidate every strip
+  /// row for free (the WORKROOM-2B row-invalidation constraint).
+  func testAnUnchangedKindWritesNothing() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    let a = SidebarID.workroom(project: "/a", name: "main")
+    let targetA = store.target(for: a)!
+    addTerminal(store, a)
+    store.openDiffPreview(ChangedFile(path: "A.swift", change: .modified), source: .gitWorktree)
+    let diffTab = store.terminals.focusedTab(for: targetA)!.id
+
+    XCTAssertFalse(
+      store.terminals.refreshDiffChangeKind(.modified, forTab: diffTab, in: targetA.id),
+      "the same kind is not a change")
+    XCTAssertTrue(
+      store.terminals.refreshDiffChangeKind(.deleted, forTab: diffTab, in: targetA.id),
+      "a different kind is")
+  }
+
+  /// A refresh is not navigation: it must not record a back/forward entry, even for the focused tab of
+  /// the selected target — the one place `onTabContentChange` would.
+  func testRefreshingAChangeKindRecordsNoHistory() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    let a = SidebarID.workroom(project: "/a", name: "main")
+    addTerminal(store, a)
+    store.openDiffPreview(ChangedFile(path: "A.swift", change: .modified), source: .gitWorktree)
+    let count = store.history.entries.count
+
+    var status = WorkroomStatus()
+    status.changedFiles = [ChangedFile(path: "A.swift", change: .deleted)]
+    store.mergeLocalStatus(status, into: a)
+
+    XCTAssertEqual(
+      store.history.entries.count, count,
+      "a file changing under an open tab is not somewhere the user went")
+  }
+
+  /// Replay lands on a refreshed kind too — the recorded payload carries a record-time value, and the
+  /// landing settles it through the same path the sweep uses.
+  func testReplayRefreshesAStaleChangeKind() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    let a = SidebarID.workroom(project: "/a", name: "main")
+    let targetA = store.target(for: a)!
+    addTerminal(store, a)
+    store.openDiffPreview(ChangedFile(path: "A.swift", change: .modified), source: .gitWorktree)
+    // Pin it, then browse elsewhere, so Back has to retarget a tab rather than find the content still up.
+    let diffTab = store.terminals.focusedTab(for: targetA)!.id
+    store.openChangesetPreview(commitID: "aaa111", title: "first")
+
+    var status = WorkroomStatus()
+    status.changedFiles = [ChangedFile(path: "A.swift", change: .deleted)]
+    store.workroomStatuses[a] = status
+
+    store.navigateBack()
+
+    guard case .diff(let landed)? = store.terminals.focusedTab(for: targetA)?.content else {
+      return XCTFail("Back must land on the diff")
+    }
+    XCTAssertEqual(landed.change, .deleted)
+    XCTAssertEqual(store.terminals.focusedTab(for: targetA)?.id, diffTab)
   }
 }

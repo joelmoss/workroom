@@ -40,6 +40,17 @@ final class RemoteStateModel: ObservableObject {
   /// The last action failure. Kept SEPARATE from `state` so a failed push never blanks a good snapshot
   /// — the `keepPrior` rule the CI/PR resolvers already follow. Cleared on the next action or refresh.
   @Published private(set) var lastFailure: VCSRemoteFailure?
+  /// The failure from the last READ, typed. `state.failed` carries the same thing already described into a
+  /// `String`, which is a dead end: nothing renders `state`, and a description can't be classified. So a
+  /// read blocked by `packed-refs.lock` reached the toolbar as a nil snapshot and rendered "No
+  /// repository" — a wrong diagnosis of a healthy repo. Cleared by every settled read that isn't a
+  /// failure, so it can never outlive the condition.
+  @Published private(set) var readFailure: VCSRemoteFailure?
+  /// Whether a USER-REQUESTED read is running — the read-failure tier's "Try Again". Distinct from
+  /// `state == .loading`, which is true for every automatic read too (the 15s sweep, the metadata
+  /// watcher): a spinner on those would flicker in the bar continuously. Without this the retry was the
+  /// only clickable cell in the toolbar that acknowledged a click with nothing at all.
+  @Published private(set) var readInFlight = false
   /// Which action produced `lastFailure`, so the segment can offer the right retry.
   @Published private(set) var lastAction: VCSRemoteAction?
   /// The failure the dialog is showing, or nil. Raised only for user-initiated actions — see
@@ -82,6 +93,10 @@ final class RemoteStateModel: ObservableObject {
   /// Publishes the resolved branch name so `AppStore.branchName(for:)` — the one accessor every
   /// branch-showing surface reads — can lead with it. This model is the only writer.
   var onBranchResolved: (@MainActor (SidebarID, String?) -> Void)?
+  /// Resolves a target's human label ("platform / fix-auth"), for naming the workroom a failure belongs
+  /// to when it is no longer the selected one. Wired post-init to `AppStore.label(for:)` for the same
+  /// reason the two callbacks above are: the model stays `AppStore`-free and unit-testable.
+  var describeTarget: (@MainActor (SidebarID) -> String?)?
 
   init(
     makeWriter: @escaping @Sendable (URL) throws -> VCSWriting = { try VCS.writer(for: $0) },
@@ -104,6 +119,7 @@ final class RemoteStateModel: ObservableObject {
     self.target = target
     snapshot = nil
     lastFailure = nil
+    readFailure = nil
     // A dialog left open over a workroom the user has moved away from is reporting someone else's
     // problem — the same reasoning that makes `finish` check the target before publishing anything.
     failureReport = nil
@@ -111,6 +127,7 @@ final class RemoteStateModel: ObservableObject {
     guard target != nil else {
       task?.cancel()
       state = .idle
+      readInFlight = false
       return
     }
     load()
@@ -125,6 +142,13 @@ final class RemoteStateModel: ObservableObject {
     } else {
       focus(target)
     }
+  }
+
+  /// Re-read because the USER asked — the read-failure tier's "Try Again". Always forced (the TTL is for
+  /// automatic callers), never debounced, and flagged so the segment can show the read in flight.
+  func retryRead() {
+    guard target != nil else { return }
+    load(skipDebounce: true)
   }
 
   /// Re-read. TTL-gated unless `force` — a watcher can fire several times for one logical change.
@@ -146,12 +170,18 @@ final class RemoteStateModel: ObservableObject {
     await task?.value
   }
 
-  private func load() {
+  /// `skipDebounce` is for a read the USER asked for — the read-failure tier's "Try Again". The debounce
+  /// exists to collapse a burst of selection changes, and a click is not a burst: paying it there delays
+  /// the acknowledgement of the one action on that tier by 300ms for no benefit.
+  private func load(skipDebounce: Bool = false) {
     guard let target else { return }
     task?.cancel()
     state = .loading
+    // Only for a retry the user clicked: an automatic read must not put a spinner in the bar (the sweep
+    // and the watcher fire constantly, and a flickering segment reads as instability, not as progress).
+    readInFlight = skipDebounce
     let makeWriter = self.makeWriter
-    let debounce = self.debounce
+    let debounce = skipDebounce ? 0 : self.debounce
     task = Task { [weak self] in
       if debounce > 0 {
         try? await Task.sleep(nanoseconds: UInt64(debounce * 1_000_000_000))
@@ -171,6 +201,9 @@ final class RemoteStateModel: ObservableObject {
   }
 
   private func apply(_ resolution: VCSRemoteResolution, for target: Target) {
+    // Cleared for whatever target the read belonged to — the spinner tracks THIS read, and leaving it
+    // set after a target switch would strand a "Trying again…" on a workroom that isn't reading.
+    readInFlight = false
     // A read that finished after the model moved on must not overwrite the new target's state.
     guard self.target == target else { return }
     switch resolution {
@@ -182,17 +215,23 @@ final class RemoteStateModel: ObservableObject {
       // which keeps a fetch run in the user's own terminal visible.
       snapshot = Self.merging(state, ownFetch: Defaults[.vcsLastFetch][target.projectRoot])
       self.state = .loaded
+      readFailure = nil
       onBranchResolved?(target.sid, state.current.name)
     case .absent:
       snapshot = nil
       self.state = .loaded
+      // A definitive "not a repo" is an answer, not a failure — [2] "No repository" is the honest tier
+      // for it, so any earlier read failure is over.
+      readFailure = nil
       onBranchResolved?(target.sid, nil)
     case .keepPrior:
-      // A transient blip — leave the last good snapshot standing rather than blanking the toolbar.
+      // A transient blip — leave the last good snapshot standing rather than blanking the toolbar. Also
+      // leaves `readFailure` standing: a blip is not evidence that a previous failure has cleared.
       self.state = snapshot == nil ? .idle : .loaded
     case .failed(let failure):
       snapshot = nil
       self.state = .failed(VCSSyncPresenter.describe(failure))
+      readFailure = failure
       onBranchResolved?(target.sid, nil)
     }
   }
@@ -311,6 +350,16 @@ final class RemoteStateModel: ObservableObject {
       if action == .fetch || action == .pull { recordOwnFetch(projectRoot: target.projectRoot) }
       onDidMutate?(action, target.sid)
     }
+    // The DIALOG is deliberately raised ahead of the identity guard below. Something the user asked for
+    // failed, and that fact belongs to them, not to the current selection: with the report behind the
+    // guard, starting a push and switching workrooms mid-flight reported the failure nowhere at all —
+    // no dialog, no toolbar notice, no record. The spinner stopped and nothing said why. The workroom is
+    // named whenever it isn't the one on screen, so the dialog can't be misread as this one's failure.
+    if case .failed(let failure) = result, userInitiated {
+      raiseFailureReport(
+        failure, action: action,
+        workroom: self.target == target ? nil : describeTarget?(target.sid))
+    }
     // Everything past here writes PUBLISHED state that the toolbar renders for whatever is selected NOW,
     // so it needs the same guard `apply` has. Without it, starting a push in one workroom and switching
     // to another put the first one's failure — and its action label — on the second one's toolbar,
@@ -324,24 +373,35 @@ final class RemoteStateModel: ObservableObject {
       refresh(force: true)
     case .failed(let failure):
       // Deliberately leaves `snapshot` intact: a failed action tells you nothing new about the repo.
+      // The dialog for this failure was already raised above, ahead of the guard.
       lastFailure = failure
-      if userInitiated { raiseFailureReport(failure, action: action) }
     }
   }
 
   /// Put a failure in front of the user. The toolbar's one truncating line can't carry the message, so
-  /// anything the user asked for and that failed gets the dialog.
-  private func raiseFailureReport(_ failure: VCSRemoteFailure, action: VCSRemoteAction?) {
+  /// anything the user asked for and that failed gets the dialog. `workroom` names where it happened,
+  /// and is passed only when that isn't the current selection — see `VCSFailureReport.workroom`.
+  private func raiseFailureReport(
+    _ failure: VCSRemoteFailure, action: VCSRemoteAction?, workroom: String? = nil,
+    isRead: Bool = false
+  ) {
     failureSequence += 1
     failureReport = VCSFailureReport(
-      failure: failure, action: action, sequence: failureSequence)
+      failure: failure, action: action, workroom: workroom, isRead: isRead,
+      sequence: failureSequence)
   }
 
   /// Re-open the dialog for the failure the toolbar is currently reporting — the segment's "Show Error
   /// Details…" item. No-op when there is nothing to show.
+  ///
+  /// Same precedence as the tier ladder: an action failure outranks a read failure, so the dialog can't
+  /// describe a different failure than the bar. A read failure names no action, because none was taken.
   func presentFailureDetails() {
-    guard let lastFailure else { return }
-    raiseFailureReport(lastFailure, action: lastAction)
+    if let lastFailure {
+      raiseFailureReport(lastFailure, action: lastAction)
+    } else if let readFailure {
+      raiseFailureReport(readFailure, action: nil, isRead: true)
+    }
   }
 
   /// Close the dialog. `lastFailure` deliberately survives: the bar goes on reporting the failure until

@@ -218,17 +218,18 @@ careful review/testing, not a drive-by fix.
 
 **Priority:** P2 (efficiency/responsiveness, not correctness; no user-visible bug today).
 
-### VCS toolbar: ten confirmed findings the `/review` pass didn't fix (macapp)
+### VCS toolbar: the findings the `/review` pass didn't fix (macapp)
 
 **What:** Everything the toolbar review verified but left standing. Each was reproduced or read off the
 code; none is speculative. Ordered by what a user hits first.
 
-1. **A configured remote with NO refs reads as "No remote configured".** `primaryRemote` is derived
-   purely from `refs/remotes` rows, and a fresh empty remote has none (verified: `for-each-ref
-   refs/remotes` = 0 lines; jj's `bookmark list --all-remotes` likewise empty). So `canPush` is false and
-   publishing to a brand-new empty GitHub repo — the case where "Publish branch" matters most — is
-   impossible from the app. Fix: take the remote LIST from config (`git remote`, and jj's remotes) while
-   leaving the counts ref-derived.
+**Four have since SHIPPED and are struck below**, so the list is what remains:
+
+- **the empty-remote case** (was (1)): `CLIVCSWriter.mergeRemotes` now unions the configured remote list
+  (`git remote`, `jj git remote list`) with the ref-derived names for both backends, so publishing to a
+  brand-new empty remote works and the counts stay ref-derived.
+- **(5), (6) and (7)** — the three a user noticed — see each entry.
+
 2. **jj Pull guesses `trunk()` as the base for an unbookmarked `@`.** Right for a workroom off trunk,
    wrong for one off a feature branch: it reports "N behind" counting trunk's commits and the rebase
    then refuses (`immutableHistory`, now typed and retry-free, so it fails honestly rather than looping).
@@ -244,19 +245,31 @@ code; none is speculative. Ordered by what a user hits first.
    read decides the counts while every UI string interpolates `primaryRemote`. The git path builds
    `"\(primary)/\(branch)"` explicitly; jj is the asymmetry. Same root cause makes `@..trunk()` capable
    of counting against a different remote than the one it names and fetches.
-5. **`resolvedBranchNames` is stale-wins and never pruned.** It's now source #1 for every
-   branch-showing surface but is written only for the focused target, never removed on workroom/project
-   delete, and its refresh is gated on the inspector being visible AND on Changes. So `git switch` in a
-   workroom's terminal leaves the sidebar and status bar showing the old name indefinitely.
-6. **A failure is discarded if the selection moved.** `finish` guards the `lastFailure` write on target
-   identity (correct for rendering), and there is no toast for VCS action failures — so a push that
-   fails after you switch workrooms is recorded nowhere. You saw a spinner and never learn it didn't
-   happen.
-7. **A failed remote READ renders "No repository".** Nothing renders `model.state`; the toolbar reads
-   `snapshot` (nil'd on failure) and `lastFailure` (set only by actions). So a read blocked by
-   `packed-refs.lock`, or any `.other`, shows tier `[2]` with no diagnosis and no retry. Compounding it,
-   `RemoteStateModel.activate` — documented as "the panel's `.task`" and the only non-forced refresh
-   caller — is called by no view at all.
+5. ~~**`resolvedBranchNames` is stale-wins and never pruned.**~~ **SHIPPED.** The cache now yields
+   instead of winning: `mergeLocalStatus` drops the entry when the sweep's `branchForCI` disagrees
+   (`pruneResolvedBranchNameIfDrifted` — an empty/absent swept branch is not a disagreement, since a
+   detached HEAD and an unbookmarked jj `@` legitimately report none), and `removeWorkroomLocally` /
+   `removeProjectLocally` prune it on delete beside the label they already dropped. `git switch` in a
+   workroom's terminal now follows within one sweep. Note what was NOT changed: the write side is still
+   focused-target-only and still gated on the inspector showing Changes — that gate is the reason a read
+   costs 2-3 processes rather than a pointer move, and drift-pruning is what makes it safe.
+6. ~~**A failure is discarded if the selection moved.**~~ **SHIPPED.** The `lastFailure` write stays
+   behind `finish`'s identity guard (correct — the bar renders whatever is selected NOW), but the DIALOG
+   is now raised ahead of it, carrying `VCSFailureReport.workroom` so the sheet names where it happened
+   when that isn't the current selection. Deliberately NOT a toast: `WorkroomNotification` is OSC-shaped
+   (`targetID` + `tabID` + `kind == .osc`), so a VCS failure doesn't fit it without inventing a second
+   kind, and the dialog was already the app's answer for "something you asked for failed" — it was just
+   being suppressed.
+7. ~~**A failed remote READ renders "No repository".**~~ **SHIPPED.** `RemoteStateModel` now publishes
+   the read's failure typed (`readFailure`) rather than only as the `String` inside `state.failed`, which
+   nothing rendered and nothing could classify. The presenter has a tier for it ([13b], below an action
+   failure and an in-flight action, above everything else): it names the cause, carries the lock path,
+   and — only when re-reading could plausibly help (`readRetryIsWorthwhile`) — offers "Try Again", which
+   re-runs the READ (`retriesRead` — re-reading is not a `VCSRemoteAction`, so it can't route through
+   `perform`). A read failure carrying an ACTION recovery (a leftover rebase, a rejection) offers that
+   action instead; one that nothing can fix (`toolMissing`, a LOCATED lock, `noRemote`) is a disabled
+   message, per `retryAction`'s rule. [13c] renders the re-read in flight ("Trying again…" + spinner).
+   `activate` is wired too, as the toolbar's own `.task`.
 8. **A workroom deleted mid-action reports "git isn't on Workroom's PATH".** `StatusCommandRunner`
    returns `commandNotFound` for a launch failure ("cwd vanished" per its own comment) and `classify`
    maps that exit code to `.toolMissing`, which offers no recovery — while the version toast
@@ -280,7 +293,8 @@ a terminal". It doesn't, for the terminals this app opens — a fetch inside a w
 Codex) whose P0s — argv option injection and jj push publishing the wrong workspace's commit — are
 already fixed. What's left is real but none of it is a security hole or silent data loss.
 
-**Priority:** P2. (1), (5) and (7) are the ones a user notices.
+**Priority:** P2. What remains is jj-shaped ((2), (3), (4), (10)) plus two cross-cutting ones ((8), (9));
+the four a user actually notices have shipped.
 
 ### Gate git VCS *reads*, not just writes (macapp) — VCS-toolbar eng-review follow-up
 
@@ -432,28 +446,6 @@ asserts *which* tab a lookup returns.
 
 **Priority:** P3 (latent; replay's prefer-the-recorded-tab step shields the common path, and
 `AppStoreContentNavigationTests.testReplayPrefersTheRecordedTab` pins that shielding).
-
-### `DiffDescriptor.change` goes stale on any open tab (macapp) — nav-history follow-up
-
-**What:** `change` is captured when a diff tab is opened and never refreshed, yet it is both rendered
-and acted on: `DiffViewer` paints it as the header letter, and `TerminalTabStrip` disables
-"Open file in…" when it is `.deleted`. Remove the field from `DiffDescriptor` and have the viewer and
-the strip read the live kind from status instead.
-
-**Why:** leave a diff tab open, delete the file, and the header still says `M` while "Open file in…"
-stays enabled for a file that is gone (and the inverse wrongly disables it). The nav-history fix already
-solved the replay half — `AppStore.refreshingChangeKind` re-resolves a working-copy diff's kind from
-`workroomStatuses` on back/forward — so Back is now *more* correct than leaving the tab open, which is
-the wrong way round.
-
-**How to start:** the live answer is `WorkroomStatus.changedFiles`, which already mirrors the jj working
-copy's own file list, so one lookup serves git and jj. Doing this lets
-`AppStore.refreshingChangeKind` be deleted. Mind the row-invalidation hot path (WORKROOM-2B): the strip
-and viewer must not start observing a high-frequency publisher to get it.
-
-**Depends on:** nothing; supersedes `refreshingChangeKind`.
-
-**Priority:** P3 (pre-existing, and the replay path — the one that could newly surprise — is fixed).
 
 ### Structured diff model (`FileDiff` hunks) for the diff viewer (macapp) — 47b / VCS-foundation follow-up
 
@@ -1360,6 +1352,33 @@ forking git).
 
 Condensed from the long status notes this file used to carry at the top; the full write-ups are in git
 history. Kept here for the parts that stay useful: what changed, and the traps found doing it.
+
+**2026-08-05 — four caches and surfaces that asserted stale or wrong things.** The three user-noticed
+findings from the VCS-toolbar review ((5), (6), (7) — see that entry) plus `DiffDescriptor.change` going
+stale on an open tab. What each turned on:
+
+- **A "freshest first" cache needs a way to be retracted.** `resolvedBranchNames` led `branchName(for:)`
+  because the toolbar read is normally freshest, but only the FOCUSED target is ever written and only
+  while the inspector shows Changes — so nothing could ever say "not any more", and `git switch` in a
+  terminal left every surface on the old name indefinitely. Fix is one line at the sweep
+  (`pruneResolvedBranchNameIfDrifted`): a lower source that disagrees retracts the higher one. An
+  empty/absent swept branch is NOT a disagreement — a detached HEAD and an unbookmarked jj `@` both
+  legitimately report none.
+- **An identity guard that's right for rendering is wrong for reporting.** `finish` guards its published
+  state on target identity because the toolbar renders whatever is selected NOW — correct — but the
+  failure DIALOG was behind the same guard, so a push that failed after a workroom switch was reported
+  nowhere at all. Raised ahead of the guard now, with the workroom named
+  (`VCSFailureReport.workroom`) when it isn't the current selection.
+- **A failure described into a `String` is a dead end.** `state.failed(String)` carried the read's
+  failure but nothing rendered `state` and nothing could classify a description, so a read blocked by
+  `packed-refs.lock` reached the bar as a nil snapshot and rendered "No repository" — a wrong diagnosis
+  of a healthy repo. Publishing it typed (`readFailure`) is what let the presenter add tier [13b].
+- **Refreshing content must not look like navigating to it.** `TerminalSessions.setContent` fires
+  `onTabContentChange`, which RECORDS a back/forward entry — so refreshing an open diff tab's change kind
+  through it would have logged a history step every time a file changed under the user. The refresher
+  mutates in place, fires nothing, and returns `false` for an unchanged kind so a 15s sweep publishes
+  nothing (WORKROOM-2B). Also: `DiffDescriptor.change` was KEPT, not removed as filed — `.commit` diffs
+  need a kind that live status can't supply.
 
 **2026-08-05 — the ⌥Tab / ⌃Tab quick switcher (#132), and the contrast metric it exposed.** ⌥Tab steps
 open workrooms across every window by most-recent use, ⌃Tab steps the current workroom's panes; a tap

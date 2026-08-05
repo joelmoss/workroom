@@ -86,6 +86,59 @@ final class BranchLabelTests: XCTestCase {
     XCTAssertEqual(store.branchName(for: sid), "from-sweep")
   }
 
+  /// The drift case, and the reason the cache can't be stale-wins: the resolver writes only the FOCUSED
+  /// target with the inspector on Changes, so `git switch` in a workroom's terminal left every surface on
+  /// the old name forever. A sweep that disagrees retracts it.
+  func testASweepThatDisagreesDropsTheResolvedName() {
+    let store = makeStore()
+    let sid = SidebarID.workroom(project: "/p", name: "feat")
+    store.setResolvedBranchName("old-name", for: sid)
+
+    store.mergeLocalStatus(WorkroomStatus(branchForCI: "switched-to"), into: sid)
+
+    XCTAssertNil(store.resolvedBranchNames[sid], "the cache is no longer the freshest answer")
+    XCTAssertEqual(store.branchName(for: sid), "switched-to")
+  }
+
+  /// A sweep that AGREES leaves it alone, and one with nothing to say (a detached HEAD, an unbookmarked
+  /// jj `@`) is not evidence the cached name is wrong.
+  func testASweepThatAgreesOrSaysNothingKeepsTheResolvedName() {
+    let store = makeStore()
+    let sid = SidebarID.workroom(project: "/p", name: "feat")
+    store.setResolvedBranchName("feature/login", for: sid)
+
+    store.mergeLocalStatus(WorkroomStatus(branchForCI: "feature/login"), into: sid)
+    XCTAssertEqual(store.resolvedBranchNames[sid], "feature/login")
+
+    store.mergeLocalStatus(WorkroomStatus(branchForCI: nil), into: sid)
+    XCTAssertEqual(store.resolvedBranchNames[sid], "feature/login")
+
+    store.mergeLocalStatus(WorkroomStatus(branchForCI: ""), into: sid)
+    XCTAssertEqual(store.resolvedBranchNames[sid], "feature/login")
+  }
+
+  /// Deleting the target prunes its entry: this is a per-`SidebarID` cache with no other pruning, so
+  /// without it a same-named recreate inherits the dead workroom's branch name.
+  func testDeletingAWorkroomOrProjectPrunesTheResolvedName() {
+    let store = makeStore()
+    let workroom = SidebarID.workroom(project: "/p", name: "feat")
+    let root = SidebarID.root(project: "/p")
+    store.setResolvedBranchName("feature/login", for: workroom)
+    store.setResolvedBranchName("main", for: root)
+
+    store.removeWorkroomLocally(store.projects[0].workrooms[0], in: store.projects[0])
+    XCTAssertNil(store.resolvedBranchNames[workroom])
+    XCTAssertEqual(store.resolvedBranchNames[root], "main", "only the deleted workroom is pruned")
+
+    // A project delete takes its root AND every workroom with it, so it needs a store that still has one.
+    let whole = makeStore()
+    whole.setResolvedBranchName("feature/login", for: workroom)
+    whole.setResolvedBranchName("main", for: root)
+    whole.removeProjectLocally(whole.projects[0])
+    XCTAssertNil(whole.resolvedBranchNames[root])
+    XCTAssertNil(whole.resolvedBranchNames[workroom])
+  }
+
   /// An empty resolver answer must not blank the label — it should fall through, not win with "".
   func testEmptyResolvedNameDoesNotWin() {
     let store = makeStore()

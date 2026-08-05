@@ -637,6 +637,30 @@ final class TerminalSessions: ObservableObject {
     onTabContentChange?(target.id, tabID)
   }
 
+  /// Refresh an open diff tab's change kind in place, leaving everything else about the tab alone.
+  ///
+  /// `DiffDescriptor.change` is captured when the tab opens but is not inert — `DiffViewer` paints it as
+  /// the header letter and the tab strip disables "Open file in…" for a `.deleted` source — so it has to
+  /// follow the working copy while the tab sits open. Called by `AppStore.refreshOpenDiffChangeKinds`
+  /// off the status sweep.
+  ///
+  /// Deliberately NOT routed through `setContent`, and deliberately silent on `onTabContentChange`: that
+  /// callback records a back/forward entry, and a sweep noticing a file went from modified to deleted is
+  /// not somewhere the user navigated. Returns whether anything changed; the no-op case publishes
+  /// nothing, so a 15s sweep can't invalidate every strip row for free.
+  @discardableResult
+  func refreshDiffChangeKind(
+    _ change: ChangedFile.Change, forTab tabID: TerminalTab.ID, in targetID: TerminalTarget.ID
+  ) -> Bool {
+    guard var tab = tabsByTarget[targetID]?[tabID], case .diff(var desc) = tab.content,
+      desc.change != change
+    else { return false }
+    desc.change = change
+    tab.content = .diff(desc)
+    tabsByTarget[targetID]?[tabID] = tab
+    return true
+  }
+
   /// Set a file tab's Markdown source/preview override, from the tab toolbar's Source/Preview switch.
   /// Reassigns the tab value so `@Published tabsByTarget` fires and the pane's `PlainFileViewer`
   /// re-renders. No-op for a missing or non-file tab.

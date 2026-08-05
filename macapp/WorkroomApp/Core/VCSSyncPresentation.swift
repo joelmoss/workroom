@@ -33,6 +33,10 @@ struct VCSSyncPresentation: Equatable, Sendable {
   /// the fix is a file operation the user performs, so the least Workroom can do is hand them the path
   /// rather than make them transcribe it out of a tooltip.
   var lockPath: String?
+  /// True on the read-failure tier, where the cell re-runs the READ rather than performing an action.
+  /// Distinguished by a flag rather than by an `action`, because re-reading is not a `VCSRemoteAction` —
+  /// nothing is written, nothing is gated, and no confirmation applies.
+  var retriesRead: Bool = false
 
   struct Badge: Equatable, Sendable {
     enum Direction: Equatable, Sendable { case ahead, behind }
@@ -55,6 +59,9 @@ struct VCSSyncPresentation: Equatable, Sendable {
 struct VCSFailureDialog: Equatable, Sendable {
   /// Names the action, so the dialog says what failed without the bar for context.
   var title: String
+  /// Names the workroom, for a failure that arrived after the selection moved on. Nil — the common case
+  /// — when the failure belongs to what's on screen and the title alone is unambiguous.
+  var subtitle: String?
   /// The full explanation: what happened, then how to fix it. Multi-paragraph, never truncated.
   var message: String
   /// The tool's own output, when there is any. Kept apart from `message` because it's evidence, not
@@ -71,6 +78,11 @@ struct VCSFailureDialog: Equatable, Sendable {
 ///
 /// ```
 ///   failure?  ──yes──►  [13] retry the previous action          tone: failure
+///      │no
+///   read failed? ──yes──►  [13c] re-read running? "Trying again…"      disabled, spinner
+///                          [13b] recoverable by an ACTION? offer it
+///                                else retryable? "Try Again" + the cause  tone: failure
+///                                else            the cause alone          disabled
 ///      │no
 ///   in flight? ──yes──►  [10/11/12] Fetching…/Pushing…/Pulling…      disabled
 ///      │no
@@ -119,13 +131,14 @@ enum VCSSyncPresenter {
   static func make(
     state: VCSRemoteState?, hasTarget: Bool, toolsUsable: Bool = true,
     activity: VCSSyncActivity = .idle, failure: VCSRemoteFailure? = nil,
+    readFailure: VCSRemoteFailure? = nil, reading: Bool = false,
     lastAction: VCSRemoteAction? = nil, pullRebase: Bool = true, pullConflicted: Bool = false,
     busyElsewhere: Bool = false, now: Date
   ) -> VCSSyncPresentation {
     var resolved = resolve(
       state: state, hasTarget: hasTarget, toolsUsable: toolsUsable, activity: activity,
-      failure: failure, lastAction: lastAction, pullRebase: pullRebase,
-      pullConflicted: pullConflicted, now: now)
+      failure: failure, readFailure: readFailure, reading: reading, lastAction: lastAction,
+      pullRebase: pullRebase, pullConflicted: pullConflicted, now: now)
     // Applied AFTER the ladder rather than threaded through every enabled tier: it changes only whether
     // the thing can be clicked, never what it says. The copy still reports the real state, so the user
     // isn't told a lie — the button simply isn't live while the engine is busy for someone else.
@@ -138,8 +151,8 @@ enum VCSSyncPresenter {
 
   private static func resolve(
     state: VCSRemoteState?, hasTarget: Bool, toolsUsable: Bool,
-    activity: VCSSyncActivity, failure: VCSRemoteFailure?,
-    lastAction: VCSRemoteAction?, pullRebase: Bool, pullConflicted: Bool,
+    activity: VCSSyncActivity, failure: VCSRemoteFailure?, readFailure: VCSRemoteFailure?,
+    reading: Bool, lastAction: VCSRemoteAction?, pullRebase: Bool, pullConflicted: Bool,
     now: Date
   ) -> VCSSyncPresentation {
     // [13] A failure outranks everything: it's the only state with something to recover from, and
@@ -164,6 +177,57 @@ enum VCSSyncPresenter {
         tone: .failure, help: explain(failure, now: now),
         accessibility: "\(lastAction?.label ?? "Action") failed. \(explain(failure, now: now))",
         lockPath: lockPath(of: failure))
+    }
+
+    // [13b] The READ failed. Below an action failure (that one is about something the user did) but above
+    // everything else, for the same reason: without this tier a read blocked by `packed-refs.lock` nil'd
+    // the snapshot and fell all the way to [2] "No repository" — a wrong diagnosis, offering neither the
+    // cause nor a way to try again, for a repo that is perfectly fine.
+    if let readFailure, case .idle = activity {
+      let message = describe(readFailure)
+      // [13c] The re-read the user asked for is running. Same shape as the action in-flight tiers, and for
+      // the same reason: a click that changes nothing on screen reads as a dead control, and on a
+      // persistent failure the retry would otherwise repaint the identical words.
+      if reading {
+        return VCSSyncPresentation(
+          titleVariants: ["Trying again…"],
+          subtitle: message, subtitleShort: message,
+          // Nil so the segment renders its `ProgressView` in the glyph slot rather than the warning
+          // triangle — the layout is identical, only the spinner says "working".
+          symbol: nil,
+          action: nil, isEnabled: false,
+          tone: .failure, help: "Reading the repository again…",
+          accessibility: "Trying again. \(message)")
+      }
+      // A read failure can have a concrete ACTION recovery (a rebase left behind, a rejection), and that
+      // outranks re-reading: the read will fail identically until the action is taken. `lastAction` is nil
+      // because nothing was attempted, so this asks purely "what does this failure need?".
+      let recovery = retryAction(for: readFailure, lastAction: nil)
+      // Otherwise: is re-running the READ worth offering at all? Same rule `retryAction` applies to
+      // actions — a leftover lock file, a missing tool and an unconfigured remote all fail identically on
+      // the next read, and a button that can't keep its promise is the defect tier [13] exists to prevent.
+      let retryable = recovery == nil && readRetryIsWorthwhile(readFailure)
+      return VCSSyncPresentation(
+        // Deliberately not `lastAction`-labelled: nothing was attempted. When re-reading is the only thing
+        // that can help, the title names that; when nothing can, the tier is a message, not a button.
+        titleVariants: recovery.map { [$0.label] } ?? (retryable ? ["Try Again"] : []),
+        subtitle: message, subtitleShort: message,
+        symbol: "exclamationmark.triangle.fill",
+        action: recovery,
+        isEnabled: recovery != nil || retryable,
+        tone: .failure,
+        // Names the affordance as well as the cause: `explain` alone repeats the subtitle for every
+        // failure but a located lock, so hovering would add nothing.
+        help: retryable
+          ? "\(explain(readFailure, now: now))\n\nClick to read the repository again."
+          : explain(readFailure, now: now),
+        // Leads with what the control DOES. VoiceOver gets no visual text, so a label that only recites
+        // the cause never says this is a retry — and for a located lock `explain` is several paragraphs.
+        accessibility: retryable
+          ? "Try again. Reading the repository failed. \(message)"
+          : "Reading the repository failed. \(message)",
+        lockPath: lockPath(of: readFailure),
+        retriesRead: retryable)
     }
 
     // [10/11/12] In flight — one action at a time, so this can't collide with a second.
@@ -332,6 +396,28 @@ enum VCSSyncPresenter {
     }
   }
 
+  /// Whether re-running the READ could plausibly succeed — the read-side counterpart of `retryAction`,
+  /// and gated for the same reason: an offer that fails identically every time is worse than no offer.
+  ///
+  /// Only consulted when the failure has no ACTION recovery. Exhaustive with no `default:`, so a new
+  /// `VCSRemoteFailure` case has to be classified here rather than inheriting a doomed retry.
+  static func readRetryIsWorthwhile(_ failure: VCSRemoteFailure) -> Bool {
+    switch failure {
+    // Transient or environmental: a slow network, an agent that can be loaded, a tree that can be
+    // cleaned, an unclassified error whose cause may well be gone by the next read.
+    case .timedOut, .authRequired, .hostKeyUnverified, .dirtyWorkingTree, .other: return true
+    // A LOCATED lock is sitting on disk — nothing changes until the user removes it. An unlocatable one
+    // had already cleared, which is ordinary contention.
+    case .locked(let file): return file == nil
+    // Permanent until the user acts outside Workroom: install the tool, add a remote, describe the
+    // commit, move off protected history.
+    case .toolMissing, .noRemote, .needsDescription, .immutableHistory: return false
+    // Both carry an ACTION recovery, so this is only reached if that path is ever changed — and neither
+    // is fixed by re-reading.
+    case .rejected, .rebaseInProgress: return false
+    }
+  }
+
   /// Whether the pull **we** ran has conflicts still outstanding — the `[14]` tier's condition.
   ///
   /// Both halves are load-bearing. `lastPullConflicted` says the conflicts came from Workroom's own
@@ -384,8 +470,12 @@ enum VCSSyncPresenter {
   /// The dialog form of a failure: the one-liner, the remedy, the tool's own output, and the recovery.
   ///
   /// `action` is what was attempted (`RemoteStateModel.lastAction`), which is what lets the title name it.
+  /// `isRead: true` says nothing was attempted — the failure came from READING the repo — so the title
+  /// must not invent an action. Without it a read failure's dialog opened saying "The last action failed"
+  /// over a repo where no action had run, contradicting the tier that raised it.
   static func failureDialog(
-    _ failure: VCSRemoteFailure, action: VCSRemoteAction?, now: Date
+    _ failure: VCSRemoteFailure, action: VCSRemoteAction?, workroom: String? = nil,
+    isRead: Bool = false, now: Date
   ) -> VCSFailureDialog {
     // A located lock's `explain` is already the complete account — path, age, remedy and the caveat that
     // makes the remedy safe advice — so it is used whole rather than re-assembled and half-repeated.
@@ -397,7 +487,9 @@ enum VCSSyncPresenter {
         separator: "\n\n")
     }
     return VCSFailureDialog(
-      title: "\(action?.label ?? "The last action") failed",
+      title: isRead
+        ? "Couldn’t read the repository" : "\(action?.label ?? "The last action") failed",
+      subtitle: workroom.map { "in \($0)" },
       message: message,
       details: rawOutput(of: failure),
       recovery: retryAction(for: failure, lastAction: action),

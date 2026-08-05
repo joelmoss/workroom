@@ -379,6 +379,41 @@ class VCSToolbarUITestsBase: XCTestCase {
       "the bar goes on reporting the failure; got \(sync(app).label)")
   }
 
+  // MARK: A failed read
+
+  /// **The reported defect.** A read that fails nils the snapshot, and a nil snapshot renders
+  /// "No repository" — a wrong diagnosis of a healthy repo whose refs were momentarily locked, with no
+  /// cause named and nothing to click. Only this tier can see that the tier actually reaches the screen:
+  /// nothing rendered `model.state`, so the unit-level failure was invisible end to end.
+  func testAFailedReadNamesTheCauseAndOffersARetry() {
+    let app = launchedApp(extraArguments: ["-WorkroomUITestSyncReadFailure", "1"])
+    XCTAssertTrue(waitExists(sync(app)))
+    XCTAssertTrue(
+      waitLabel(sync(app), contains: "busy", 10),
+      "the read's own failure must be named; got \(sync(app).label)")
+    XCTAssertFalse(
+      sync(app).label.contains("No repository"),
+      "the repo is fine — diagnosing it as absent is the bug; got \(sync(app).label)")
+    XCTAssertTrue(
+      button(app, id: "vcs.toolbar.sync").isHittable,
+      "the retry has to be clickable, or the tier is just a nicer dead end")
+  }
+
+  /// The details dialog is reachable for a read failure too, through the segment's context menu — the
+  /// one line in the bar can't carry the explanation any more than an action's can.
+  func testAFailedReadCanShowItsDetails() {
+    let app = launchedApp(extraArguments: ["-WorkroomUITestSyncReadFailure", "1"])
+    XCTAssertTrue(waitExists(sync(app)))
+    XCTAssertTrue(waitLabel(sync(app), contains: "busy", 10))
+    button(app, id: "vcs.toolbar.sync").rightClick()
+    let item = app.menuItems["Show Error Details…"]
+    XCTAssertTrue(item.waitForExistence(timeout: 6), "the failure tier must offer its details")
+    item.click()
+    XCTAssertTrue(
+      waitExists(element(app, id: "vcs.failure.sheet"), true, 10),
+      "a read failure's explanation belongs in the dialog, like an action's")
+  }
+
   /// A failed action must NOT blank the toolbar — the ref is still known, and the repo is unchanged.
   func testAFailedActionKeepsTheBranchVisible() {
     let app = launchedApp(syncState: "ahead", extraArguments: ["-WorkroomUITestSyncFailure", "1"])

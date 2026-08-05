@@ -169,6 +169,124 @@ final class VCSSyncPresentationTests: XCTestCase {
     XCTAssertEqual(p.action, .push, "retries the action that failed")
   }
 
+  // MARK: A failed read
+
+  /// **The defect this fixes.** A read blocked by a lock nils the snapshot, and `state: nil` renders
+  /// "No repository" — a wrong diagnosis of a healthy repo, offering neither the cause nor a way to try
+  /// again. The read's own failure now has a tier.
+  func testAFailedReadNamesTheCauseAndOffersARetry() {
+    let p = VCSSyncPresenter.make(
+      state: nil, hasTarget: true, readFailure: .locked(nil), now: now)
+    XCTAssertNotEqual(p.subtitle, "No repository")
+    XCTAssertEqual(p.subtitle, "The repository was busy. Try again.")
+    XCTAssertEqual(p.tone, .failure)
+    XCTAssertEqual(p.titleVariants, ["Try Again"])
+    XCTAssertTrue(p.isEnabled)
+    XCTAssertTrue(p.retriesRead, "the click re-reads; it performs no action")
+    XCTAssertNil(p.action, "re-reading is not a VCSRemoteAction — nothing is written or gated")
+  }
+
+  /// **The gate the first version of this tier missed.** A read can fail for reasons no retry can fix —
+  /// `classify` returns `.toolMissing` for a launch failure, `.locked(file)` for a lock sitting on disk,
+  /// `.noRemote` for an unconfigured remote — and "Try Again" over any of them is a button that fails
+  /// identically every press. Same rule `retryAction` applies to actions.
+  func testAnUnfixableReadFailureIsAMessageNotAButton() {
+    for failure: VCSRemoteFailure in [
+      .toolMissing("git"), .noRemote, .locked(lock()), .needsDescription("no description"),
+      .immutableHistory("immutable"),
+    ] {
+      let p = VCSSyncPresenter.make(state: nil, hasTarget: true, readFailure: failure, now: now)
+      XCTAssertFalse(p.isEnabled, "\(failure) cannot be retried away; got enabled")
+      XCTAssertFalse(p.retriesRead, "\(failure): re-reading changes nothing")
+      XCTAssertTrue(
+        p.titleVariants.isEmpty,
+        "\(failure): with nothing to offer the title must not read as a button; got \(p.titleVariants)"
+      )
+      XCTAssertEqual(p.tone, .failure, "\(failure) is still a failure, just not an actionable one")
+    }
+  }
+
+  /// The other half: the transient ones DO offer the re-read.
+  func testATransientReadFailureOffersTheReRead() {
+    for failure: VCSRemoteFailure in [
+      .locked(nil), .timedOut(.fetch), .other("boom"), .authRequired("nope"),
+    ] {
+      let p = VCSSyncPresenter.make(state: nil, hasTarget: true, readFailure: failure, now: now)
+      XCTAssertTrue(p.retriesRead, "\(failure) may well succeed on the next read")
+      XCTAssertEqual(p.titleVariants, ["Try Again"], "got \(p.titleVariants) for \(failure)")
+      XCTAssertTrue(p.help.contains("read the repository again"), "the tooltip must name the click")
+      XCTAssertTrue(
+        p.accessibility.hasPrefix("Try again."),
+        "VoiceOver gets no visual text, so the label leads with the affordance; got \(p.accessibility)"
+      )
+    }
+  }
+
+  /// The click has to acknowledge itself. Without this tier, clicking "Try Again" on a persistent failure
+  /// repainted the identical words — the only clickable cell in the bar that showed nothing at all.
+  func testARunningReReadShowsItself() {
+    let p = VCSSyncPresenter.make(
+      state: nil, hasTarget: true, readFailure: .locked(nil), reading: true, now: now)
+    XCTAssertEqual(p.titleVariants, ["Trying again…"])
+    XCTAssertTrue(
+      p.title?.hasSuffix("…") == true,
+      "the segment's spinner keys on the ellipsis, like every other in-flight tier")
+    XCTAssertNil(p.symbol, "the spinner takes the glyph slot, not the warning triangle")
+    XCTAssertFalse(p.isEnabled, "no second click while the read is running")
+    XCTAssertFalse(p.retriesRead)
+    XCTAssertTrue(p.subtitle.contains("busy"), "the cause stays on screen; got \(p.subtitle)")
+  }
+
+  /// A read failure that has a concrete ACTION recovery offers THAT, not a re-read — the read will fail
+  /// identically until the rebase is aborted.
+  func testAReadFailureWithAnActionRecoveryOffersTheAction() {
+    let p = VCSSyncPresenter.make(
+      state: nil, hasTarget: true, readFailure: .rebaseInProgress, now: now)
+    XCTAssertEqual(p.action, .abortRebase)
+    XCTAssertFalse(p.retriesRead, "the fix is the action, not another read")
+    XCTAssertTrue(p.isEnabled)
+  }
+
+  /// The dialog must not name an action that never ran. It used to open saying "The last action failed"
+  /// over a repo where nothing had been attempted.
+  func testTheReadFailureDialogNamesNoAction() {
+    let d = VCSSyncPresenter.failureDialog(.locked(nil), action: nil, isRead: true, now: now)
+    XCTAssertEqual(d.title, "Couldn’t read the repository")
+    XCTAssertFalse(d.title.contains("action"), "nothing was attempted; got \(d.title)")
+    // An action failure keeps its own voice.
+    let a = VCSSyncPresenter.failureDialog(.locked(nil), action: .push, now: now)
+    XCTAssertEqual(a.title, "Push failed")
+  }
+
+  /// An ACTION failure outranks a read failure: it's about something the user did, and it names the retry
+  /// for that action rather than a re-read.
+  func testAnActionFailureOutranksAFailedRead() {
+    let p = VCSSyncPresenter.make(
+      state: nil, hasTarget: true, failure: .rejected("! [rejected]"),
+      readFailure: .locked(nil), lastAction: .push, now: now)
+    XCTAssertFalse(p.retriesRead)
+    XCTAssertEqual(p.action, .pull, "a rejection is recovered by pulling")
+  }
+
+  /// A running action outranks it too — progress beats a previous read's outcome, exactly as it beats a
+  /// previous action's.
+  func testAnInFlightActionOutranksAFailedRead() {
+    let p = VCSSyncPresenter.make(
+      state: state(), hasTarget: true, activity: .running(.fetch), readFailure: .locked(nil),
+      now: now)
+    XCTAssertEqual(p.titleVariants, ["Fetching…"])
+    XCTAssertFalse(p.retriesRead)
+  }
+
+  /// The lock file is carried, so the read tier offers the same copy/reveal items an action failure does —
+  /// the fix is the user's file operation either way.
+  func testAFailedReadCarriesTheLockPath() {
+    let p = VCSSyncPresenter.make(
+      state: nil, hasTarget: true, readFailure: .locked(lock()), now: now)
+    XCTAssertEqual(p.lockPath, "/r/.git/index.lock")
+    XCTAssertTrue(p.help.contains("/r/.git/index.lock"), "got \(p.help)")
+  }
+
   // MARK: Lock failures
 
   private func lock(_ path: String = "/r/.git/index.lock", ageSeconds: TimeInterval = 900)

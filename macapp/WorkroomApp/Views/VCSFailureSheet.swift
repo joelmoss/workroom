@@ -59,10 +59,21 @@ struct VCSFailureSheet: View {
         .font(.system(size: 30))
         .foregroundStyle(.orange)
         .accessibilityHidden(true)
-      Text(dialog.title)
-        .font(.headline)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityIdentifier("vcs.failure.title")
+      VStack(alignment: .leading, spacing: 2) {
+        Text(dialog.title)
+          .font(.headline)
+          .accessibilityIdentifier("vcs.failure.title")
+        // Present only when the failure belongs to a workroom that is no longer selected. Without it the
+        // dialog would describe the action but not its subject, which over a different workroom reads as
+        // a failure of the one on screen.
+        if let subtitle = dialog.subtitle {
+          Text(subtitle)
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .accessibilityIdentifier("vcs.failure.subtitle")
+        }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
     }
   }
 
@@ -119,8 +130,12 @@ struct VCSFailureSheet: View {
   }
 
   /// Title, message and output as one block — what you'd paste into an issue or a chat.
+  ///
+  /// The subtitle is part of it: it names the workroom the failure belongs to, which is the one fact a
+  /// pasted report from a background workroom would otherwise lose — exactly what the subtitle exists for.
   private func copyReport() {
-    let text = [dialog.title, dialog.message, dialog.details].compactMap { $0 }
+    let heading = [dialog.title, dialog.subtitle].compactMap { $0 }.joined(separator: " ")
+    let text = [heading, dialog.message, dialog.details].compactMap { $0 }
       .joined(separator: "\n\n")
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(text, forType: .string)
@@ -147,7 +162,8 @@ struct VCSFailurePresenter: ViewModifier {
     ) { report in
       VCSFailureSheet(
         dialog: VCSSyncPresenter.failureDialog(
-          report.failure, action: report.action, now: Date()),
+          report.failure, action: report.action, workroom: report.workroom, isRead: report.isRead,
+          now: Date()),
         onRecover: onRecover,
         onDismiss: { model.dismissFailureReport() })
     }

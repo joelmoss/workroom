@@ -527,6 +527,29 @@ extension AppStore {
     s.failure = fresh.failure
     s.lastChecked = Date()
     workroomStatuses[sid] = s
+    // This sweep is the freshest evidence anyone has for these two, so it settles both of the caches
+    // that would otherwise go on asserting a record-time answer: the branch name the toolbar
+    // published, and the change kind an open diff tab captured when it opened.
+    pruneResolvedBranchNameIfDrifted(sid, sweptBranch: fresh.branchForCI)
+    refreshOpenDiffChangeKinds(for: sid, status: s)
+  }
+
+  /// Drop the toolbar's cached branch name for `sid` when this sweep disagrees with it.
+  ///
+  /// `resolvedBranchNames` leads `branchName(for:)` because it is normally the freshest source — but it
+  /// is written only for the focused target, and only while the inspector is showing Changes
+  /// (`focusRemoteStateIfShown`). So `git switch` in a workroom's terminal left every branch-showing
+  /// surface on the old name indefinitely: nothing invalidated source #1, and the sweep that DID know
+  /// better sat behind it. A disagreement means the cache is no longer the freshest answer, so it
+  /// yields rather than wins — and the next toolbar read republishes it.
+  ///
+  /// Only a non-empty swept branch counts: git reports none for a detached HEAD, and jj none for an
+  /// unbookmarked `@` — neither is evidence the cached name is wrong.
+  private func pruneResolvedBranchNameIfDrifted(_ sid: SidebarID, sweptBranch: String?) {
+    guard let cached = resolvedBranchNames[sid], let swept = sweptBranch, !swept.isEmpty,
+      cached != swept
+    else { return }
+    setResolvedBranchName(nil, for: sid)
   }
 
   private func applyCIStatus(_ res: CIResolution, to sid: SidebarID) {

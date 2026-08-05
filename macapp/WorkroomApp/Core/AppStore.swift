@@ -626,12 +626,17 @@ final class AppStore: ObservableObject {
 
   /// Branch/bookmark names from the VCS toolbar's remote-state read, keyed by `SidebarID`.
   ///
-  /// Written by `RemoteStateModel` (the only writer) and read by `branchName(for:)`, which every
-  /// branch-showing surface goes through. This is the "one shared cache" half of unifying those
-  /// surfaces: the resolver publishes here, nobody else calls it, and no surface calls a provider.
+  /// Published by `RemoteStateModel` (the only source of *names*) and read by `branchName(for:)`, which
+  /// every branch-showing surface goes through. This is the "one shared cache" half of unifying those
+  /// surfaces: the resolver publishes here and no surface calls a provider.
+  ///
+  /// Cleared from three other places, because the resolver only ever writes the FOCUSED target and so
+  /// can't retract anything: `pruneResolvedBranchNameIfDrifted` (a status sweep disagreed),
+  /// `removeWorkroomLocally` and `removeProjectLocally` (the target is gone).
   @Published private(set) var resolvedBranchNames: [SidebarID: String] = [:]
 
-  /// Record (or clear) the resolver's branch answer for a target. Called only by `RemoteStateModel`.
+  /// Record (or clear) the resolver's branch answer for a target. Names come only from
+  /// `RemoteStateModel`; see `resolvedBranchNames` for who clears them.
   func setResolvedBranchName(_ name: String?, for sid: SidebarID) {
     if let name, !name.isEmpty {
       guard resolvedBranchNames[sid] != name else { return }
@@ -829,6 +834,9 @@ final class AppStore: ObservableObject {
     self.remoteState.onDidMutate = { [weak self] action, sid in
       self?.handleRemoteMutation(action, on: sid)
     }
+    // Only the store can name a target, and the model needs the name to attribute a failure that
+    // outlived the selection it started from.
+    self.remoteState.describeTarget = { [weak self] sid in self?.label(for: sid).full }
     pendingRestoreSelection = Defaults[.sidebarSelection]
     // Route each terminal's activity (OSC/bell) through the notification spine, gated on
     // focus, and raise a native banner only when the app is backgrounded.
@@ -3001,6 +3009,9 @@ final class AppStore: ObservableObject {
     projects[idx] = Project(
       path: p.path, vcs: p.vcs, workrooms: p.workrooms.filter { $0.id != workroom.id })
     forgetLabels(forProject: project.path, workroomNames: [workroom.name])
+    // Same reasoning as the label: a per-workroom cache keyed by `SidebarID` with no other pruning,
+    // so without this it outlives the workroom and a same-named recreate inherits its branch name.
+    setResolvedBranchName(nil, for: .workroom(project: project.path, name: workroom.name))
   }
 
   // MARK: - Workroom labels (issue #41)
@@ -3206,9 +3217,11 @@ final class AppStore: ObservableObject {
     if let sel = selectedTargetID, sel.belongsToProject(project.path) { selectedTargetID = nil }
     removeWorkroomSplitMember(.root(project: project.path))
     workroomStatuses[.root(project: project.path)] = nil
+    setResolvedBranchName(nil, for: .root(project: project.path))
     for w in project.workrooms {
       removeWorkroomSplitMember(.workroom(project: project.path, name: w.name))
       workroomStatuses[.workroom(project: project.path, name: w.name)] = nil
+      setResolvedBranchName(nil, for: .workroom(project: project.path, name: w.name))
     }
     // Drop every label belonging to this project's workrooms (issue #41) — prune-on-load is the
     // backstop, but clearing here keeps it immediate and prevents a same-named recreate from
@@ -3773,12 +3786,13 @@ final class AppStore: ObservableObject {
   ///   applyLocation(loc)
   ///     │ select loc.target, focus loc.tab  (suppressed, so nothing re-records)
   ///     ├── payload == nil ─▶ a terminal ─▶ done: the focus above IS the whole replay
-  ///     └── payload != nil ─▶ refresh a working-copy diff's change kind, then:
+  ///     └── payload != nil ─▶
   ///           ├─ 1. loc.tab already shows it     ─▶ nothing to re-open, it is already there
   ///           ├─ 2. another live tab shows it     ─▶ focus that tab, rather than render the same
   ///           │                                      content twice (the ⌘D twin / a pinned copy)
   ///           └─ 3. else                          ─▶ retarget loc.tab IN PLACE, pin and all
-  ///         then: reinstate the in-commit file selection
+  ///         then: reinstate the in-commit file selection, and refresh a working-copy diff's change
+  ///         kind (the recorded payload's is a record-time value)
   /// ```
   ///
   /// Step 3 retargets a *pinned* `loc.tab` too. Restoring a tab's own earlier content is not the same as
@@ -3793,11 +3807,7 @@ final class AppStore: ObservableObject {
     applyLocation(target: loc.target, tab: loc.tab, recordHistory: false)
     guard let payload = loc.payload, let target = selectedTarget, !target.isMissing else { return }
     withHistorySuppressed {
-      // A diff's `change` is rendered (the header letter) and acted on ("Open file in…" is disabled for
-      // a deleted source), so replaying a record-time value could offer to open a file that is gone.
-      // Take the live kind from the same changed-file list the Changes panel renders; keep the recorded
-      // one when status has not loaded yet.
-      let landing = Self.refreshingChangeKind(payload, from: workroomStatuses[loc.target])
+      let landing = payload
 
       let landedTab: TerminalTab.ID
       if let recorded = terminals.tab(loc.tab, for: target), landing.matchesTab(recorded.content) {
@@ -3815,34 +3825,52 @@ final class AppStore: ObservableObject {
       if case .changeset = landing {
         terminals.setChangesetSelectedPath(loc.selectedPath, forTab: landedTab, in: target)
       }
+      // A recorded payload carries the change kind the file had when it was recorded, so step 3 writes a
+      // stale one back. Settle it from live status, through the same path the sweep uses — replay is not
+      // a special case, it just arrives at an already-refreshed tab a moment sooner.
+      refreshOpenDiffChangeKinds(for: loc.target, status: workroomStatuses[loc.target])
     }
   }
 
   /// A payload with a working-copy `.diff`'s change kind refreshed from live status; everything else
   /// returned untouched. `nonisolated` + pure so the freshness rule is unit-testable without a store.
   ///
+  /// The live change kind for a diff, or nil when there is nothing fresher to say than what the
+  /// descriptor already carries. `nonisolated` + pure so the freshness rule is unit-testable without a
+  /// store.
+  ///
   /// Needed because `DiffDescriptor.change` is not inert: `DiffViewer` paints it as the header letter
-  /// and the tab strip disables "Open file in…" when it is `.deleted`. A record-time value written back
-  /// on replay could offer to open a file that has since been deleted, or refuse one that has since
-  /// come back.
-  nonisolated static func refreshingChangeKind(_ payload: NavPayload, from status: WorkroomStatus?)
-    -> NavPayload
-  {
-    guard case .diff(var descriptor) = payload else { return payload }
+  /// and the tab strip disables "Open file in…" when it is `.deleted`. A record-time value could offer
+  /// to open a file that has since been deleted, or refuse one that has since come back.
+  nonisolated static func liveChangeKind(
+    for descriptor: DiffDescriptor, in status: WorkroomStatus?
+  ) -> ChangedFile.Change? {
     switch descriptor.source {
     case .gitWorktree, .jjWorkingCopy:
       break  // the working copy drifts under us — refresh it
     case .jjParent, .commit:
-      return payload  // a commit's own diff is immutable; there is nothing fresher to read
+      return nil  // a commit's own diff is immutable; there is nothing fresher to read
     }
     // `changedFiles` mirrors the jj working copy's own file list (both come from the one summary
     // probe), so this single lookup serves git worktrees and jj `@` alike. No entry ⇒ status has not
-    // loaded, or the file is no longer changed: keep what we recorded and let the pane report.
-    guard let live = status?.changedFiles?.first(where: { $0.path == descriptor.path }) else {
-      return payload
+    // loaded, or the file is no longer changed: keep what we have and let the pane report.
+    return status?.changedFiles?.first { $0.path == descriptor.path }?.change
+  }
+
+  /// Point every open working-copy diff tab of `sid` at the freshest change kind. Called from
+  /// `mergeLocalStatus` (where a sweep lands) and after a back/forward landing.
+  ///
+  /// This is why the descriptor's `change` can be trusted by whoever renders it: the value is refreshed
+  /// at the source rather than re-derived per surface, so `DiffViewer` and the tab strip need no status
+  /// of their own — neither has to observe the sweep's high-frequency publisher (WORKROOM-2B).
+  func refreshOpenDiffChangeKinds(for sid: SidebarID, status: WorkroomStatus?) {
+    guard let target = target(for: sid) else { return }
+    for tab in terminals.tabs(for: target) {
+      guard case .diff(let descriptor) = tab.content,
+        let live = Self.liveChangeKind(for: descriptor, in: status)
+      else { continue }
+      terminals.refreshDiffChangeKind(live, forTab: tab.id, in: target.id)
     }
-    descriptor.change = live.change
-    return .diff(descriptor)
   }
 
   /// Whether a recorded location is still reachable — the mechanism behind "back ignores what was

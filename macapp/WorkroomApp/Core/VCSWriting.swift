@@ -100,6 +100,13 @@ struct VCSFailureReport: Identifiable, Equatable, Sendable {
   let failure: VCSRemoteFailure
   /// What was attempted, so the dialog's title can name it.
   let action: VCSRemoteAction?
+  /// Where it was attempted, named ONLY when that is no longer what's selected — an action can outlive
+  /// the selection it started from (a push takes as long as it takes), and an unattributed dialog
+  /// arriving over a different workroom reads as a failure of the one on screen.
+  let workroom: String?
+  /// True when the failure came from READING the repo rather than from an action, so the dialog titles
+  /// itself accordingly instead of naming an action that never ran.
+  let isRead: Bool
   let sequence: Int
   var id: Int { sequence }
 }

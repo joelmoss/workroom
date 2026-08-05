@@ -532,6 +532,123 @@ final class RemoteStateModelTests: XCTestCase {
     XCTAssertEqual(m.failureReport?.action, .push)
   }
 
+  /// **The reported gap.** An action outlives the selection it started from — a push takes as long as it
+  /// takes — and `finish`'s identity guard used to swallow the dialog along with the toolbar notice. So
+  /// starting a push and switching workrooms mid-flight reported the failure NOWHERE: no dialog, no bar,
+  /// no record. The spinner stopped and nothing said why.
+  func testAFailureAfterTheSelectionMovedStillReportsAndNamesTheWorkroom() async {
+    let writer = StubWriter(state: .state(state(ahead: 1)), action: .failed(.authRequired("nope")))
+    let m = model(writer, ttl: 0)
+    m.describeTarget = { sid in sid == self.target.sid ? "p / feat" : "p / other" }
+    m.focus(target)
+    await m.awaitCurrentLoad()
+
+    m.perform(.push)
+    m.focus(otherTarget)  // the user moves on while the push is still running
+    await m.awaitCurrentLoad()
+
+    XCTAssertEqual(m.failureReport?.failure, .authRequired("nope"))
+    XCTAssertEqual(
+      m.failureReport?.workroom, "p / feat",
+      "named, so the dialog can't be read as the workroom now on screen")
+    XCTAssertNil(
+      m.lastFailure, "the BAR still belongs to the selection — only the dialog crosses the switch")
+  }
+
+  /// The common case stays unnamed: naming the workroom you are looking at is noise.
+  func testAFailureForTheSelectedWorkroomIsNotNamed() async {
+    let writer = StubWriter(state: .state(state(ahead: 1)), action: .failed(.authRequired("nope")))
+    let m = model(writer, ttl: 0)
+    m.describeTarget = { _ in "p / feat" }
+    m.focus(target)
+    await m.awaitCurrentLoad()
+    m.perform(.push)
+    await m.awaitCurrentLoad()
+    XCTAssertNotNil(m.failureReport)
+    XCTAssertNil(m.failureReport?.workroom)
+  }
+
+  // MARK: A failed READ
+
+  /// A failed read used to reach the toolbar as nothing but a nil snapshot, which renders "No repository" —
+  /// a wrong diagnosis of a healthy repo whose `packed-refs` was momentarily locked. The failure is now
+  /// published, typed, so the bar can name the cause and offer a retry.
+  func testAFailedReadPublishesTheFailure() async {
+    let writer = StubWriter(state: .failed(.locked(nil)))
+    let m = model(writer, ttl: 0)
+    m.focus(target)
+    await m.awaitCurrentLoad()
+    XCTAssertEqual(m.readFailure, .locked(nil))
+    XCTAssertNil(m.snapshot)
+    XCTAssertNil(m.lastFailure, "nothing was attempted, so no ACTION failed")
+  }
+
+  /// It can never outlive the condition: the next read that lands an answer clears it.
+  func testASuccessfulReadClearsTheReadFailure() async {
+    let writer = StubWriter(state: .failed(.locked(nil)))
+    let m = model(writer, ttl: 0)
+    m.focus(target)
+    await m.awaitCurrentLoad()
+    XCTAssertNotNil(m.readFailure)
+
+    await writer.setState(.state(state()))
+    m.refresh(force: true)
+    await m.awaitCurrentLoad()
+    XCTAssertNil(m.readFailure)
+
+    // A definitive "not a repo" is an answer too, not a lingering failure.
+    await writer.setState(.failed(.locked(nil)))
+    m.refresh(force: true)
+    await m.awaitCurrentLoad()
+    await writer.setState(.absent)
+    m.refresh(force: true)
+    await m.awaitCurrentLoad()
+    XCTAssertNil(m.readFailure)
+  }
+
+  /// `retryRead` is the tier's click: forced past the TTL, undebounced, and flagged while it runs so the
+  /// segment can show it. `readInFlight` is deliberately NOT `state == .loading` — every 15s sweep and
+  /// every watcher fire sets that, and a spinner on those would flicker in the bar continuously.
+  func testRetryReadIsForcedAndFlagsItselfInFlight() async {
+    let writer = StubWriter(state: .failed(.locked(nil)))
+    let m = model(writer, debounce: 0.2, ttl: 600)
+    m.focus(target)
+    await m.awaitCurrentLoad()
+    XCTAssertFalse(m.readInFlight, "an automatic read must not put a spinner in the bar")
+
+    m.retryRead()
+    XCTAssertTrue(m.readInFlight, "the click is acknowledged immediately, not after the debounce")
+    await m.awaitCurrentLoad()
+    XCTAssertFalse(m.readInFlight, "cleared when the read settles")
+    let reads = await writer.stateReads
+    XCTAssertEqual(reads, 2, "forced past the 600s TTL — the user asked for this one")
+  }
+
+  /// Switching workrooms mid-retry must not strand "Trying again…" on a workroom that isn't reading.
+  func testSwitchingWorkroomsClearsTheReadInFlightFlag() async {
+    let writer = StubWriter(state: .failed(.locked(nil)))
+    let m = model(writer, ttl: 0)
+    m.focus(target)
+    await m.awaitCurrentLoad()
+    m.retryRead()
+    m.focus(nil)
+    XCTAssertFalse(m.readInFlight)
+    await m.awaitCurrentLoad()
+  }
+
+  /// The details dialog reaches a read failure too, with no action named — none was taken. An action
+  /// failure still outranks it, so the dialog can't describe something different from the bar.
+  func testDetailsForAReadFailureNameNoAction() async {
+    let writer = StubWriter(state: .failed(.locked(nil)))
+    let m = model(writer, ttl: 0)
+    m.focus(target)
+    await m.awaitCurrentLoad()
+
+    m.presentFailureDetails()
+    XCTAssertEqual(m.failureReport?.failure, .locked(nil))
+    XCTAssertNil(m.failureReport?.action)
+  }
+
   /// A dialog left open over a workroom the user has moved away from is reporting someone else's problem.
   func testSwitchingWorkroomsClosesTheDialog() async {
     let writer = StubWriter(state: .state(state(ahead: 1)), action: .failed(.authRequired("nope")))
