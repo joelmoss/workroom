@@ -861,6 +861,65 @@ final class WorkroomStatusTests: XCTestCase {
     XCTAssertEqual(store.workroomStatuses[sid]?.pr?.state, .open)
   }
 
+  // MARK: - refreshGitHubCLI must never publish a non-answer
+
+  /// REGRESSION: the false, sticky "GitHub CLI not signed in".
+  ///
+  /// A cancelled probe's child is SIGKILLed, and `StatusCommandRunner`'s continuation is
+  /// NON-throwing, so it still resumes with `exitCode: 9` and empty stdout. The classifier read that
+  /// as `.notAuthenticated`. Publishing it was bad; STAMPING the TTL alongside it was what made the
+  /// wrong answer stick, because the staleness gate then turned every lane that would have healed it
+  /// into an early return for a full minute. So both halves must stay untouched — asserting only the
+  /// status would let a regression that skips the value but keeps the stamp pass.
+  ///
+  /// The double deliberately returns a CLEAN, verdict-producing payload rather than the signalled
+  /// shape (see `GatedGHRunner`), so `Task.isCancelled` is the only thing under test here. Deleting
+  /// that guard must fail this test; `.keepPrior` is covered separately below.
+  @MainActor
+  func testCancelledGitHubCLIProbePublishesNothingAndDoesNotStamp() async {
+    let store = AppStore()
+    let runner = GatedGHRunner()
+    store.statusResolver = WorkroomStatusResolver(runner: runner)
+    store.githubCLIStatus = .available
+    store.ghStatusCheckedAt = nil
+
+    let resolver = store.statusResolver
+    let task = Task { await store.refreshGitHubCLI(resolver: resolver) }
+    // Cancel only once the probe is genuinely in flight, or the guard under test never runs.
+    let deadline = Date().addingTimeInterval(2)
+    while !runner.enteredGHProbe && Date() < deadline {
+      try? await Task.sleep(nanoseconds: 2_000_000)
+    }
+    XCTAssertTrue(runner.enteredGHProbe, "the gh auth probe never started")
+    task.cancel()
+    await task.value
+
+    XCTAssertEqual(store.githubCLIStatus, .available, "a cancelled probe published a verdict")
+    XCTAssertNil(
+      store.ghStatusCheckedAt, "a cancelled probe stamped the TTL, suppressing the re-probe")
+  }
+
+  /// `.keepPrior` (a killed or crashed child that was never cancelled — jetsam, SIGSEGV, a signal
+  /// around sleep/wake) keeps the previous verdict AND leaves the stamp alone, so the next lane
+  /// re-probes rather than trusting a non-answer for the full TTL.
+  @MainActor
+  func testKeepPriorGitHubCLIProbeLeavesStatusAndStampUntouched() async {
+    let store = AppStore()
+    store.statusResolver = WorkroomStatusResolver(
+      runner: StubPRRunner { _, _ in
+        CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
+      })
+    store.githubCLIStatus = .notAuthenticated  // a TRUE warning that must not be erased
+    store.ghStatusCheckedAt = nil
+
+    await store.refreshGitHubCLI(resolver: store.statusResolver)
+
+    XCTAssertEqual(
+      store.githubCLIStatus, .notAuthenticated,
+      "an uninformative probe erased a correct warning — the inverse false claim")
+    XCTAssertNil(store.ghStatusCheckedAt, "a non-answer must not refresh the TTL")
+  }
+
   /// Spin until the in-flight `gh` task settles (the stub returns promptly), with a bound so a hang
   /// fails the test rather than wedging it.
   @MainActor
@@ -881,5 +940,46 @@ private struct StubPRRunner: StatusCommandRunning {
     async -> CommandResult
   {
     handler(executable, args)
+  }
+}
+
+/// Blocks inside the `gh auth status` probe until the awaiting Task is cancelled, then returns a
+/// result that WOULD produce a real verdict.
+///
+/// Two details make this test the cancellation guard's test rather than a duplicate of the
+/// `.keepPrior` one:
+///
+/// 1. It RETURNS rather than throws. `StatusCommandRunner` resolves a **non-throwing**
+///    `withCheckedContinuation`, so its `terminationHandler` always resumes with a value even when
+///    the child was SIGKILLed out from under it. A double that threw `CancellationError` would model
+///    a runner we don't have, and would pass against the buggy code.
+/// 2. It returns a **parseable, verdict-producing** payload (`{"hosts":{}}` with exit 0), NOT the
+///    signalled shape. The signalled shape is already caught by `.keepPrior`, so using it here would
+///    make the test pass even with the cancellation guard deleted — green for the wrong reason. With
+///    a clean verdict, `Task.isCancelled` is the ONLY thing standing between a cancelled probe and a
+///    published `.notAuthenticated`.
+private final class GatedGHRunner: StatusCommandRunning, @unchecked Sendable {
+  private let lock = NSLock()
+  private var entered = false
+
+  var enteredGHProbe: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return entered
+  }
+
+  func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
+    async -> CommandResult
+  {
+    guard executable == "gh", args.contains("auth") else {
+      return CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: false)
+    }
+    lock.lock()
+    entered = true
+    lock.unlock()
+    // Sleeps until cancelled (then throws immediately, which `try?` drops). Long enough that the
+    // test's own deadline fails first if cancellation never propagates.
+    try? await Task.sleep(nanoseconds: 60_000_000_000)
+    return CommandResult(stdout: #"{"hosts":{}}"#, stderr: "", exitCode: 0, timedOut: false)
   }
 }

@@ -422,7 +422,11 @@ struct WorkroomStatusResolver: Sendable {
   /// invalid" and exits non-zero — a false "not signed in". The `--json` form instead always exits
   /// zero (barring a fatal error) and emits a per-account `state`/`error`, so we can tell a
   /// transport failure (transient → don't cry wolf) from a genuine 401 (really logged out).
-  func resolveGitHubCLI() async -> GitHubCLIStatus {
+  ///
+  /// Measured against gh 2.97.0: the JSON goes to **stdout** and the exit code is **0** in every
+  /// genuine state — signed in, token rejected (a 401 in the per-account `error`), and no config at
+  /// all (`{"hosts":{}}`). So a non-zero exit means we learned nothing, not that you're logged out.
+  func resolveGitHubCLI() async -> GHAuthProbe {
     let r = await runner.run(
       "gh", ["auth", "status", "--active", "--json", "hosts"], in: NSTemporaryDirectory(),
       timeout: ciTimeout)
@@ -431,16 +435,54 @@ struct WorkroomStatusResolver: Sendable {
 
   // MARK: - Pure parsers / classifiers (unit-tested directly)
 
-  static func classifyGitHubCLI(_ r: CommandResult) -> GitHubCLIStatus {
-    if r.exitCode == CommandResult.commandNotFound { return .notInstalled }
-    if r.timedOut { return .available }  // network/keyring blip — don't cry wolf
+  /// The outcome of one `gh auth status` probe: either a verdict about the machine, or "the probe
+  /// told us nothing" — which is a THIRD thing, not a synonym for "gh works".
+  ///
+  /// Forcing "no news" into a `GitHubCLIStatus` is what made the old timeout path lie: reporting
+  /// `.available` for a probe that never answered doesn't just fail to warn, it actively ERASES a
+  /// correct `.notAuthenticated`/`.notInstalled`/`.tooOld` and leaves the user with a silent panel
+  /// and PR probes that fail for no visible reason. `.keepPrior` mirrors `GHPreflight.keepPrior` and
+  /// `CIResolution.keepPrior`, and — critically — the store does not stamp the TTL for it, so the
+  /// next lane re-probes instead of trusting a non-answer for a full minute.
+  enum GHAuthProbe: Equatable {
+    case verdict(GitHubCLIStatus)
+    case keepPrior
+  }
+
+  /// Classify one `gh auth status --active --json hosts` result.
+  ///
+  /// ```
+  ///   exit 127 ─────────────────────────► .verdict(.notInstalled)
+  ///   timedOut ─────────────────────────► .keepPrior      ◄─ MUST precede `signaled`:
+  ///        │                                                 the timeout SIGTERMs the child,
+  ///        │                                                 so a timeout sets BOTH flags
+  ///   parseable JSON ───────────────────► .verdict(from the payload)
+  ///        │                              ◄─ BEFORE `signaled`: a child that emitted a COMPLETE
+  ///        │                                 401 and was killed afterwards really did tell us
+  ///        │                                 the token is bad. Don't discard evidence.
+  ///   signaled (no parseable payload) ──► .keepPrior      ◄─ killed/crashed: no verdict, no news
+  ///        │
+  ///   exit 0 ───────────────────────────► .verdict(.available)
+  ///   non-zero ─────────────────────────► .verdict(.notAuthenticated)
+  /// ```
+  static func classifyGitHubCLI(_ r: CommandResult) -> GHAuthProbe {
+    if r.exitCode == CommandResult.commandNotFound { return .verdict(.notInstalled) }
+    if r.timedOut { return .keepPrior }  // network/keyring blip — and always also `signaled`
     // `--json hosts` exits 0 even when the active token fails to validate, emitting structured
     // per-account state. Parse that to tell a transient network failure from a real logout (#86).
-    if let status = classifyGitHubCLIJSON(r.stdout) { return status }
-    // Fallback for an unparseable payload (pre-2.57 gh without `--json`, or a fatal gh error): the
-    // old exit-code heuristic. A non-zero exit here is rare and ambiguous, so keep the prior
-    // behaviour of treating it as not-authenticated rather than silently masking a real problem.
-    return r.ok ? .available : .notAuthenticated
+    if let status = classifyGitHubCLIJSON(r.stdout) { return .verdict(status) }
+    // Killed with nothing parseable to show for it (superseded probe, jetsam, crash, sleep/wake
+    // signal): `exitCode` is a signal number, so the heuristic below would read SIGKILL as a
+    // logout. That was the false, sticky "GitHub CLI not signed in".
+    if r.signaled { return .keepPrior }
+    // Remaining non-zero exits are a fatal gh error with no parseable JSON. Ambiguous, and
+    // deliberately still reported as not-authenticated rather than silently masking a real problem.
+    //
+    // NOTE: one identifiable shape lands here today and is WRONG — an old gh (< 2.57) rejects
+    // `--active`/`--json` outright (measured: exit 1, empty stdout, `unknown flag: --json` on
+    // stderr), so a perfectly signed-in user reads as permanently logged out. That gets its own
+    // `.tooOld` verdict and an upgrade message; see the PR2 hardening pass.
+    return .verdict(r.ok ? .available : .notAuthenticated)
   }
 
   /// Classify `gh auth status --active --json hosts` output, or `nil` if it isn't the expected JSON
@@ -494,6 +536,12 @@ struct WorkroomStatusResolver: Sendable {
 
   static func ghPreflight(_ r: CommandResult) -> GHPreflight {
     if r.timedOut { return .keepPrior }
+    // Killed rather than finished (cancelled lane, jetsam, crash, sleep/wake signal): `exitCode` is
+    // a signal number, so `!r.ok` below would read SIGKILL as "gh failed" and clear a good PR/CI
+    // badge. Belt is the callers' `Task.isCancelled` guards (`:153`/`:156`/`:166`/`:169`); this is
+    // braces, because those guards are non-local and a future call site can forget them — which is
+    // exactly how the gh *auth* probe came to publish a killed child's verdict.
+    if r.signaled { return .keepPrior }
     if r.exitCode == CommandResult.commandNotFound { return .absent }  // gh not installed
     let lowerErr = r.stderr.lowercased()
     if lowerErr.contains("rate limit") || lowerErr.contains("503") || lowerErr.contains("timeout") {

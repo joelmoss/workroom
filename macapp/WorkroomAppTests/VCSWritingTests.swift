@@ -892,6 +892,43 @@ final class VCSWritingTests: XCTestCase {
     XCTAssertEqual(message, "jj exited 3")
   }
 
+  /// REGRESSION for the dialog `a64e4269` ("stop 'exited with code 15' dialog on wake from sleep")
+  /// set out to end. That fix taught `WorkroomCLI.CLIResult` about signals but never reached
+  /// `StatusCommandRunner`, so a `git push` SIGTERMed around sleep/wake wrote nothing to stderr and
+  /// the failure sheet rendered the signal number as an exit code: literally "git exited 15".
+  func testSignalledFailureWithNoStderrReportsAnInterruption() {
+    let killed = CommandResult(
+      stdout: "", stderr: "", exitCode: 15, timedOut: false, signaled: true)
+    guard case .other(let message) = CLIVCSWriter.classify(killed, action: .push, tool: "git")
+    else {
+      return XCTFail("expected .other")
+    }
+    XCTAssertEqual(message, "git was interrupted")
+    XCTAssertFalse(message.contains("15"), "a signal number must never surface as an exit code")
+  }
+
+  /// A child that explained itself before dying keeps its real classification: the interruption
+  /// message is a fallback for an EMPTY stderr, not a blanket override that would discard a genuine
+  /// diagnosis (a rejected push, a host-key failure) just because the process was later killed.
+  func testSignalledFailureWithStderrStillClassifiesByMessage() {
+    let killed = CommandResult(
+      stdout: "", stderr: "Updates were rejected because the remote contains work", exitCode: 15,
+      timedOut: false, signaled: true)
+    guard case .rejected = CLIVCSWriter.classify(killed, action: .push, tool: "git") else {
+      return XCTFail("expected .rejected")
+    }
+  }
+
+  /// ORDERING LOCK: our own timeout SIGTERMs the child, so a timed-out result also carries
+  /// `signaled`. The timeout branch runs first and must keep winning, or every timeout would be
+  /// reported as a bare interruption and lose its Retry-with-context recovery.
+  func testTimedOutFailureStillReportsTimeoutNotInterruption() {
+    let timedOut = CommandResult(
+      stdout: "", stderr: "", exitCode: 15, timedOut: true, signaled: true)
+    XCTAssertEqual(
+      CLIVCSWriter.classify(timedOut, action: .fetch, tool: "git"), .timedOut(.fetch))
+  }
+
   // MARK: - Routing
 
   func testWriterRoutesByRepoKind() throws {

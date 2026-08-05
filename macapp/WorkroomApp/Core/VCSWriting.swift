@@ -1099,6 +1099,13 @@ struct CLIVCSWriter: VCSWriting, Sendable {
     // doesn't.
     if lockSymptom(err), let lock = existingLockFile(gitDir: gitDir) { return .locked(lock) }
     let trimmed = err.trimmingCharacters(in: .whitespacesAndNewlines)
+    // Killed rather than finished, with nothing to say for itself: `exitCode` is the SIGNAL number,
+    // so the fallback below would render "git exited 15" — literally the dialog `a64e4269` ("stop
+    // 'exited with code 15' dialog on wake from sleep") set out to end. That fix taught
+    // `WorkroomCLI.CLIResult` about signals but never reached this runner. Deliberately last, and
+    // only when there is no stderr: a child that explained itself before dying keeps its real
+    // classification. `.other` retries, which is the right recovery for an interrupted write.
+    if trimmed.isEmpty, result.signaled { return .other("\(tool) was interrupted") }
     return .other(trimmed.isEmpty ? "\(tool) exited \(result.exitCode)" : trimmed)
   }
 
@@ -1197,6 +1204,8 @@ struct CLIVCSWriter: VCSWriting, Sendable {
       return .locked(lockFile(in: err))
     }
     let trimmed = err.trimmingCharacters(in: .whitespacesAndNewlines)
+    // Same reasoning as `classify`: a signal number is not an exit status, so don't print it as one.
+    if trimmed.isEmpty, result.signaled { return .other("\(tool) was interrupted") }
     return .other(trimmed.isEmpty ? "\(tool) exited \(result.exitCode)" : trimmed)
   }
 

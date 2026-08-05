@@ -10,11 +10,37 @@ struct CommandResult: Sendable, Equatable {
   let stderr: String
   let exitCode: Int32
   let timedOut: Bool
+  /// The child was killed by a signal (`terminationReason == .uncaughtSignal`) rather than exiting
+  /// normally — our own cancellation SIGKILL, our timeout's SIGTERM, an OS kill under memory
+  /// pressure, a crash, or a signal delivered around sleep/wake. `exitCode` is then the **signal
+  /// number** (SIGKILL = 9, SIGTERM = 15), NOT a CLI exit status, so no classifier may read it as
+  /// one: `gh` "exited 9" is not a logout, and `git` "exited 15" is not a push failure.
+  ///
+  /// `WorkroomCLI.CLIResult` has carried this exact field since `a64e4269` ("stop 'exited with code
+  /// 15' dialog on wake from sleep"); this is the same fact for the runner that *deliberately*
+  /// SIGKILLs on cancellation.
+  ///
+  /// **`timedOut` implies `signaled`.** The timeout path marks `timedOut` and then calls
+  /// `terminate()` (SIGTERM), so a timed-out child sets BOTH. Every consumer must therefore test
+  /// `timedOut` first, or a timeout gets misreported as a bare interruption.
+  let signaled: Bool
 
   /// `/usr/bin/env` exits 127 when the command (git/jj/gh) isn't on PATH.
   static let commandNotFound: Int32 = 127
   /// git exits 128 for "not a git repository" and similar fatal usage errors.
   static let gitFatal: Int32 = 128
+
+  /// Written out rather than synthesized: a `let` with an initial value is EXCLUDED from the
+  /// memberwise init entirely, so `let signaled = false` would compile at all ~60 construction
+  /// sites and then fail only where the runner tries to set it. Defaulted last so those sites —
+  /// almost all tests, none of which care about signals — keep compiling untouched.
+  init(stdout: String, stderr: String, exitCode: Int32, timedOut: Bool, signaled: Bool = false) {
+    self.stdout = stdout
+    self.stderr = stderr
+    self.exitCode = exitCode
+    self.timedOut = timedOut
+    self.signaled = signaled
+  }
 
   var ok: Bool { exitCode == 0 && !timedOut }
 }
@@ -264,7 +290,12 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
               stdout: String(decoding: state.stdout, as: UTF8.self),
               stderr: String(decoding: state.stderr, as: UTF8.self),
               exitCode: finished.terminationStatus,
-              timedOut: state.timedOut))
+              timedOut: state.timedOut,
+              // A killed child reports its SIGNAL in `terminationStatus`, so record which kind of
+              // exit this was — otherwise a cancelled/killed probe is indistinguishable from a CLI
+              // that ran and failed, which is how a SIGKILLed `gh auth status` came to be read as
+              // "not signed in" and a SIGTERMed `git push` as "git exited 15".
+              signaled: finished.terminationReason == .uncaughtSignal))
         }
 
         do {

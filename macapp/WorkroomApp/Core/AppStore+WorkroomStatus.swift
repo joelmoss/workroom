@@ -100,6 +100,20 @@ extension AppStore {
 
   /// Refresh `githubCLIStatus` if stale (own short TTL), so the warning + probe guards reflect
   /// whether `gh` is usable. No-ops in fixture mode (the fixture seeds `.available`).
+  ///
+  /// **This is the one status mutation that happens INSIDE an awaited function**, so the callers'
+  /// own `Task.isCancelled` checks (`:86`/`:144`) run too late to protect it — the guard has to live
+  /// here. It was missing, and that was the false, sticky "GitHub CLI not signed in": a superseded
+  /// sweep or a workroom switched mid-probe SIGKILLs the `gh` child, `StatusCommandRunner`'s
+  /// non-throwing continuation still hands back `exitCode: 9` with empty stdout, and the classifier
+  /// read that as a logout. Publishing it then STAMPED the TTL, so the gate above turned every lane
+  /// that would have healed the value into an early return for a full minute — the wrong answer
+  /// suppressing its own repair, escapable only via the Refresh button's `force`.
+  ///
+  /// The tempting instinct — "gh's auth state is machine-global, so record it even from a cancelled
+  /// task" — is wrong: a cancelled probe holds no fact at all, neither a value nor a freshness. Bail
+  /// on both. Same for `.keepPrior`: leaving the stamp alone is what makes the next lane re-probe
+  /// instead of trusting a non-answer.
   func refreshGitHubCLI(resolver: WorkroomStatusResolver, force: Bool = false) async {
     if UITestFixture.isActive { return }
     if !force, let at = ghStatusCheckedAt,
@@ -107,7 +121,9 @@ extension AppStore {
     {
       return
     }
-    let status = await resolver.resolveGitHubCLI()
+    let probe = await resolver.resolveGitHubCLI()
+    if Task.isCancelled { return }
+    guard case .verdict(let status) = probe else { return }
     githubCLIStatus = status
     ghStatusCheckedAt = Date()
   }

@@ -201,10 +201,23 @@ enclosing task gave up.
 
 **Why:** Wastes CPU/time re-running a probe nobody wants anymore, and — post the jj-snapshot-gate
 fix — adds unnecessary extra contention pressure on `JJSnapshotGate` (an unwanted, already-abandoned
-caller still occupies a project's queue slot for up to its full timeout). Not corruption-causing
-today: every call site already checks `Task.isCancelled` before merging a stale result
-(`runLocalSweep`'s `if Task.isCancelled { break }`, etc.), so state stays correct — this is a
-responsiveness/efficiency gap, not a data-integrity one.
+caller still occupies a project's queue slot for up to its full timeout). This is a
+responsiveness/efficiency gap, not a data-integrity one, because the call sites in this seam do
+check `Task.isCancelled` before merging a stale result (`runLocalSweep`'s
+`if Task.isCancelled { break }`, etc.).
+
+**Corrected 2026-08-05 — do NOT re-read this entry as "the convention protects us".** This used to
+say *every* call site already checks, so state stays correct. That was false, and the counterexample
+shipped: `refreshGitHubCLI` mutated `githubCLIStatus` **inside** an awaited function, where the
+callers' own guards (`AppStore+WorkroomStatus.swift:86`/`:144`) run too late to help. A cancelled
+probe's SIGKILLed `gh` still returned through `StatusCommandRunner`'s non-throwing continuation with
+the signal number as its exit code, the classifier read that as "not signed in", and publishing it
+*stamped the TTL* — so the wrong value suppressed its own repair for a full minute. The cost of a
+missed guard is therefore a **wrong published value**, not merely a wasted probe. Two defences
+landed with that fix and are what keeps the residual risk low: `CommandResult.signaled` (a killed
+child is never mistaken for a CLI that ran and failed) and `GHAuthProbe.keepPrior` (a non-answer
+neither writes nor stamps). The `withTimeout` gap below is a genuinely different mechanism and stays
+deferred on its own merits.
 
 **How to start:** Wrap `withTimeout`'s continuation in `withTaskCancellationHandler` so cancelling
 the calling task settles the `TimeoutGate` early (same shape `JJSnapshotGate.run` already uses to

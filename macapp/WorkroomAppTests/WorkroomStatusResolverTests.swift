@@ -674,24 +674,75 @@ final class WorkroomStatusResolverTests: XCTestCase {
   func testClassifyGitHubCLINotInstalled() {
     let r = CommandResult(
       stdout: "", stderr: "env: gh: No such file", exitCode: 127, timedOut: false)
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .notInstalled)
+    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .verdict(.notInstalled))
   }
 
   func testClassifyGitHubCLINotAuthenticated() {
     let r = CommandResult(
       stdout: "", stderr: "You are not logged into any GitHub hosts.", exitCode: 1, timedOut: false)
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .notAuthenticated)
+    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .verdict(.notAuthenticated))
   }
 
   func testClassifyGitHubCLIAvailable() {
     let r = ok("github.com\n  \u{2713} Logged in to github.com account joelmoss")
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .available)
+    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .verdict(.available))
   }
 
-  func testClassifyGitHubCLITimeoutIsAvailable() {
-    // A network/keyring blip must not raise a false "not signed in" warning.
+  /// A timeout learned NOTHING, so it must not publish a verdict in either direction. It used to
+  /// report `.available`, which is not "no news" — it is a positive claim that would erase a correct
+  /// `.notAuthenticated` and leave the user with a silent panel.
+  func testClassifyGitHubCLITimeoutKeepsPrior() {
     let r = CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: true)
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .available)
+    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .keepPrior)
+  }
+
+  /// REGRESSION (the false, sticky "GitHub CLI not signed in"): a cancelled probe is SIGKILLed, so
+  /// `StatusCommandRunner`'s non-throwing continuation resumes with the SIGNAL number as `exitCode`
+  /// (9), `timedOut` false, and no output. The exit-code fallback read that as a logout, and
+  /// publishing it stamped the TTL that then suppressed every repair for a minute.
+  func testClassifyGitHubCLISignalledKeepsPrior() {
+    let killed = CommandResult(
+      stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
+    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(killed), .keepPrior)
+  }
+
+  /// The exact cancellation shape: gh had begun writing its JSON when the SIGKILL landed, so the
+  /// payload is real but unparseable.
+  func testClassifyGitHubCLISignalledWithPartialJSONKeepsPrior() {
+    let partial = CommandResult(
+      stdout: #"{"hosts":{"github.com":[{"sta"#, stderr: "", exitCode: 9, timedOut: false,
+      signaled: true)
+    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(partial), .keepPrior)
+  }
+
+  /// ORDERING LOCK: `signaled` suppresses only the ambiguous exit-code FALLBACK, never a complete
+  /// verdict. A child that emitted a full 401 payload and was killed AFTERWARDS really did tell us
+  /// the token is rejected — moving the `signaled` check above the JSON parse would throw that away
+  /// and delay a genuine logout warning.
+  func testClassifyGitHubCLISignalledStillHonoursACompleteVerdict() {
+    let json = #"""
+      {"hosts":{"github.com":[{"state":"error","active":true,"error":"HTTP 401: Bad credentials"}]}}
+      """#
+    let r = CommandResult(stdout: json, stderr: "", exitCode: 9, timedOut: false, signaled: true)
+    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .verdict(.notAuthenticated))
+  }
+
+  /// ORDERING LOCK: our own timeout SIGTERMs the child, so a timed-out result carries `signaled` too.
+  /// `timedOut` must be tested first or a timeout gets reported as a bare interruption. Both land on
+  /// `.keepPrior` today, so this pins the ordering rather than an observable difference — which is
+  /// exactly what stops a later edit from reordering them into a real bug.
+  func testClassifyGitHubCLITimeoutAlsoCarriesSignaled() {
+    let r = CommandResult(stdout: "", stderr: "", exitCode: 15, timedOut: true, signaled: true)
+    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .keepPrior)
+  }
+
+  /// A signalled `gh pr list`/`gh run list` must not clear a good PR/CI badge either.
+  func testGHPreflightSignalledKeepsPrior() {
+    let killed = CommandResult(
+      stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
+    XCTAssertEqual(WorkroomStatusResolver.ghPreflight(killed), .keepPrior)
+    XCTAssertEqual(WorkroomStatusResolver.classifyPR(killed), .keepPrior)
+    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(killed), .keepPrior)
   }
 
   // MARK: - resolveGitHubCLI (end-to-end via the mock)
@@ -702,7 +753,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
         (exe == "gh" && args.contains("auth")) ? ok("Logged in") : ok("")
       })
     let status = await r.resolveGitHubCLI()
-    XCTAssertEqual(status, .available)
+    XCTAssertEqual(status, .verdict(.available))
   }
 
   func testResolveGitHubCLIMissing() async {
@@ -711,7 +762,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
         CommandResult(stdout: "", stderr: "env: gh: No such file", exitCode: 127, timedOut: false)
       })
     let status = await r.resolveGitHubCLI()
-    XCTAssertEqual(status, .notInstalled)
+    XCTAssertEqual(status, .verdict(.notInstalled))
   }
 
   /// Regression lock for issues #50 + #86. The auth probe MUST pass `--active` (scope to the active
@@ -726,7 +777,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     }
     let r = WorkroomStatusResolver(runner: runner)
     let status = await r.resolveGitHubCLI()
-    XCTAssertEqual(status, .available)
+    XCTAssertEqual(status, .verdict(.available))
     let authCall = runner.calls.first { $0.exe == "gh" && $0.args.contains("auth") }
     XCTAssertNotNil(authCall, "resolveGitHubCLI should invoke `gh auth status`")
     XCTAssertEqual(authCall?.args, ["auth", "status", "--active", "--json", "hosts"])
@@ -737,7 +788,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
   /// A validated active account → available.
   func testClassifyGitHubCLIJSONSuccess() {
     let json = #"{"hosts":{"github.com":[{"state":"success","active":true,"login":"joelmoss"}]}}"#
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(json)), .available)
+    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(json)), .verdict(.available))
   }
 
   /// The #86 bug: a network blip while validating the token surfaces as a *transport* error (no HTTP
@@ -747,7 +798,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let json = #"""
       {"hosts":{"github.com":[{"state":"error","active":true,"login":"joelmoss","error":"Get \"https://api.github.com/\": dial tcp: lookup api.github.com: no such host"}]}}
       """#
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(json)), .available)
+    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(json)), .verdict(.available))
   }
 
   /// Policy lock (#86): the classifier recognizes a 401 as a real logout and treats *every other*
@@ -758,12 +809,12 @@ final class WorkroomStatusResolverTests: XCTestCase {
   func testClassifyGitHubCLIJSONUnrecognizedErrorIsAvailable() {
     let weird =
       #"{"hosts":{"github.com":[{"state":"error","active":true,"error":"something unexpected"}]}}"#
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(weird)), .available)
+    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(weird)), .verdict(.available))
     let sso =
       #"{"hosts":{"github.com":[{"state":"error","active":true,"error":"HTTP 403: Resource protected by organization SAML enforcement"}]}}"#
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(sso)), .available)
+    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(sso)), .verdict(.available))
     let noErrorKey = #"{"hosts":{"github.com":[{"state":"error","active":true}]}}"#
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(noErrorKey)), .available)
+    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(noErrorKey)), .verdict(.available))
   }
 
   /// A genuinely rejected token (HTTP 401 / bad credentials) → really logged out, keep the warning.
@@ -771,13 +822,13 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let json = #"""
       {"hosts":{"github.com":[{"state":"error","active":true,"login":"joelmoss","error":"HTTP 401: Bad credentials (https://api.github.com/)"}]}}
       """#
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(json)), .notAuthenticated)
+    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(json)), .verdict(.notAuthenticated))
   }
 
   /// No accounts configured → genuinely logged out.
   func testClassifyGitHubCLIJSONNoAccountsIsNotAuthenticated() {
     XCTAssertEqual(
-      WorkroomStatusResolver.classifyGitHubCLI(ok(#"{"hosts":{}}"#)), .notAuthenticated)
+      WorkroomStatusResolver.classifyGitHubCLI(ok(#"{"hosts":{}}"#)), .verdict(.notAuthenticated))
   }
 
   /// A working active account wins even when a *secondary* host's account errors (#50): the default
@@ -786,17 +837,20 @@ final class WorkroomStatusResolverTests: XCTestCase {
     let json = #"""
       {"hosts":{"github.com":[{"state":"success","active":true}],"ghe.example.com":[{"state":"error","active":true,"error":"HTTP 401: Bad credentials"}]}}
       """#
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(json)), .available)
+    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(json)), .verdict(.available))
   }
 
-  /// Unparseable stdout (pre-2.57 gh without `--json`, or a fatal error) falls back to the exit-code
-  /// heuristic: a clean exit is available, a non-zero exit is not-authenticated.
+  /// Unparseable stdout (a fatal gh error) falls back to the exit-code heuristic: a clean exit is
+  /// available, a non-zero exit is not-authenticated.
+  ///
+  /// This is also the lock that `signaled` did NOT blanket-mask the fallback: both results below
+  /// default to `signaled: false`, so they must still produce verdicts rather than `.keepPrior`.
   func testClassifyGitHubCLINonJSONFallback() {
     XCTAssertEqual(
-      WorkroomStatusResolver.classifyGitHubCLI(ok("Logged in to github.com")), .available)
+      WorkroomStatusResolver.classifyGitHubCLI(ok("Logged in to github.com")), .verdict(.available))
     let failed = CommandResult(
       stdout: "", stderr: "You are not logged into any GitHub hosts.", exitCode: 1, timedOut: false)
-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(failed), .notAuthenticated)
+    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(failed), .verdict(.notAuthenticated))
   }
 
   // MARK: - classifyChecks (issue #75)

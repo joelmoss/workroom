@@ -17,6 +17,9 @@ final class StatusCommandRunnerTests: XCTestCase {
     XCTAssertEqual(r.exitCode, 3)
     XCTAssertFalse(r.timedOut)
     XCTAssertFalse(r.ok)
+    // A child that CHOSE its exit status is not signalled, so 3 really is an exit code here. This is
+    // the baseline the flag distinguishes from a 9/15 that only looks like one.
+    XCTAssertFalse(r.signaled)
   }
 
   func testLargeOutputCappedWithoutDeadlock() async {
@@ -33,6 +36,11 @@ final class StatusCommandRunnerTests: XCTestCase {
     let r = await runner.run("sh", ["-c", "sleep 10"], in: tmp, timeout: 0.3)
     XCTAssertTrue(r.timedOut)
     XCTAssertFalse(r.ok)
+    // ORDERING LOCK: the timeout path SIGTERMs the child, so a timed-out result carries `signaled`
+    // too and `exitCode` is the signal number, not an exit status. Every classifier must therefore
+    // test `timedOut` BEFORE `signaled` — see `WorkroomStatusResolver.classifyGitHubCLI`.
+    XCTAssertTrue(r.signaled, "our timeout kills the child, so a timeout is also a signal")
+    XCTAssertEqual(r.exitCode, 15)  // SIGTERM, not something `sleep` chose
   }
 
   func testSigtermIgnoringChildIsSigkilledAndStillReturns() async {
@@ -75,12 +83,22 @@ final class StatusCommandRunnerTests: XCTestCase {
     let r = await task.value
     XCTAssertFalse(r.ok, "a cancelled probe's result is abandoned, not a success")
     XCTAssertLessThan(Date().timeIntervalSince(start), 10, "not the 30s sleep")
+    // The result shape a cancelled probe actually has — and the one `classifyGitHubCLI` used to read
+    // as a logout. Killed by SIGKILL, so `exitCode` is the SIGNAL NUMBER (9), `timedOut` is false
+    // (the 30s deadline never fired), and stdout is empty or half-written. Nothing here is evidence
+    // about gh's auth state, which is why the flag exists.
+    XCTAssertTrue(r.signaled, "a cancelled probe's child was killed by a signal")
+    XCTAssertFalse(r.timedOut, "cancellation is not a timeout")
+    XCTAssertEqual(r.exitCode, 9)  // SIGKILL, not a CLI exit status
   }
 
   func testLaunchFailureInMissingDirIsCommandNotFound() async {
     let r = await runner.run(
       "git", ["status"], in: "/no/such/dir-\(UUID().uuidString)", timeout: 5)
     XCTAssertEqual(r.exitCode, CommandResult.commandNotFound)
+    // Nothing was ever spawned, so nothing was signalled — this must stay a clean 127 so it keeps
+    // classifying as "not installed" rather than as an interruption.
+    XCTAssertFalse(r.signaled)
   }
 
   // MARK: stdin
