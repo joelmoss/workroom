@@ -517,6 +517,47 @@ completed" from it, then audit `path()` callers for who should wait versus who s
 
 **Priority:** P3 — the honest fix for a family of PATH-timing bugs, none currently reported.
 
+### `VCSToolVersionCache` pins a tool verdict for the whole process (macapp) — gh-flap follow-up
+
+**What:** give the `git`/`jj` version cache the three contracts the `gh` cache got in the same area and
+this one never did: a freshness lease, a generation-stamped in-flight slot, and per-`ProjectStore`
+ownership instead of `static let shared`. `Core/VCSToolVersions.swift` (the cache is the actor at the
+bottom); the shape to copy is `Core/GitHubAuthCache.swift`.
+
+**Why (the user-visible half first):** `report(probeJJ:)` caches every verdict except `.notInstalled`
+**forever** — the only thing that clears `cached` is the tests-only `reset()`. So `.belowFloor` is
+permanent for the process: the user reads "Git 2.41 or newer is required", runs `brew upgrade git`, and
+fetch/push/pull stay disabled with the toast still standing until they relaunch the app.
+`refreshVCSToolReport` does re-run on every `apply(projects)`, but it gets the pinned answer back, and
+dismissing the toast (`dismissedToolWarnings`) only hides it — nothing re-probes. `gh` got a monotonic
+60s/10s TTL *and* a manual Refresh; the tool whose warning names an action the user is expected to go
+perform got neither.
+
+Two structural gaps behind it, both fixed in `GitHubAuthCache` and both still live here:
+
+- **Reentrancy loses the single-flight and can downgrade the cache.** `await task.value` suspends the
+  actor with `inFlight` set, and the `inFlight = nil` after it is unconditional and unstamped. A
+  `probeJJ: false` caller finishing clears a concurrent `probeJJ: true` caller's slot, so the next jj
+  caller forks a third `--version` pair; and if the jj-blind lane resumes *last* it overwrites the
+  jj-aware report, because `probe(probeJJ: false)` returns `jj: .notInstalled` outright and
+  `hasMissingTool(probedJJ: false)` doesn't count it. Narrow (both windows normally compute the same
+  `probeJJ` from the same config) but exactly the class the `gh` generation stamp exists to kill.
+- **`static let shared` plus an injected `runner:` is the hazard `GitHubAuthCache` documents rejecting**
+  — `make app-test` runs classes in parallel, so one test's fake runner can answer another's probe, and
+  `reset()` cannot stop an in-flight task repopulating afterwards. Cheap to close here:
+  `VCSToolVersionsTests` already builds fresh instances, so `AppStore` is the *only* `.shared` caller.
+
+**How to start:** lift the `GitHubAuthCache` shape wholesale — `ContinuousClock` freshness with
+injectable TTLs, generation-stamped `inFlight`, instance ownership. Only the TTL is new policy: refusing
+to cache `.notInstalled` already ships, so pick a shortish lease for `.belowFloor` (an upgrade is the
+expected repair and it should be noticed) and a long one for `.ok`.
+
+**Depends on:** nothing. Adjacent to the `ShellEnvironment` probe-readiness item above — that one is
+about a verdict taken too early, this one about a verdict kept too long — but neither blocks the other.
+
+**Priority:** P3 — self-repairing on relaunch, and no report of it in the wild. The stale `.belowFloor`
+alone justifies it.
+
 ### Deterministic tab lookup for content panes (macapp) — nav-history follow-up
 
 **What:** `TerminalSessions.contentTab(matching:)` and `previewTabID(in:)` both resolve with
@@ -1440,6 +1481,53 @@ forking git).
 **Depends on:** nothing; touches all VCS consumers (`create`, `list`, `delete`, `add-project`).
 
 **Priority:** P3 (pre-existing; create-new path inits a valid repo, so not blocking #103).
+
+### The config lock can be stolen from a live holder (CLI) — `withLock` audit
+
+**What:** give the config's advisory lock (`Config.withLock`, `internal/config/config.go`) an
+*ownership token* and a heartbeat, so a lock is only ever removed by the process that holds it, and
+"stale" measures time since the holder last made progress rather than time since it started.
+
+**Why:** the lock file carries no identity — it is created empty with `O_CREATE|O_EXCL` and released
+by an unconditional `defer os.Remove(lockPath)` that deletes *whatever* file is at that path, not the
+one this process created. So a steal silently unlocks a live holder:
+
+```
+  A: creates lock ─────── fn (stalls > staleAfter) ────────► defer Remove  ← deletes B's lock
+  B:                       stat says stale, Remove + create ──── fn ─────────────► (unprotected)
+  C:                                                    creates lock ── fn ──► interleaves with B
+```
+
+Two read-modify-write cycles then interleave on `config.json`, and because each one `Read`s the whole
+map and `Write`s its own snapshot back, the loser's edit vanishes — a workroom or project silently
+disappearing from the sidebar, which is precisely what this lock exists to prevent. There is no error
+on any path: both writes "succeed".
+
+The staleness rule makes that reachable rather than theoretical. The lock file's mtime is stamped at
+creation and never refreshed, so `time.Since(info.ModTime()) > staleAfter` is really "has been held
+for 10s", not "has been abandoned" — any holder that genuinely takes longer (a home dir on a synced
+or network volume, a machine under heavy load, a CLI paused under a debugger) is declared dead while
+it is still working.
+
+Two constants that don't agree, worth settling in the same pass: the wait loop gives up after
+200 × 10ms ≈ **2s** while `staleAfter` is **10s**, so a waiter can never actually reclaim a lock
+orphaned by a crash *during its own wait* — it spins for two seconds and then proceeds **unlocked**.
+The unlocked fallback is deliberate (documented: never fail an operation over the lock), but it means
+that after a crash every writer for the next 10s runs with no mutual exclusion at all, and that is
+when the app and the CLI are most likely to be writing together.
+
+**How to start:** write a nonce (pid + a random token) into the lock file; release with a
+read-compare-then-remove, and steal only after re-reading the same nonce you judged stale. Refresh the
+mtime periodically from the holder (or record a deadline in the file) so staleness tracks liveness.
+Then make the wait cap and `staleAfter` consistent. Testable without concurrency by injecting the
+clock and the nonce — today's only lock test (`TestWriteAtomicLeavesNoTempOrLockFiles`) asserts
+cleanup, not exclusion.
+
+**Depends on:** nothing. Pure `internal/config`; no caller signature changes.
+
+**Priority:** P3 — every `withLock` body is a short read-modify-write today, so the >10s stall that
+opens the window is rare. Cheap to close, and the failure it produces (a silently lost entry, no
+error) is one of the hardest to diagnose from a bug report.
 
 ## Recently done
 
