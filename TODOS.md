@@ -830,6 +830,51 @@ default (Ghostty = allow).
 
 **Priority:** P3 (permissive default is acceptable for the beta).
 
+### Quick-switcher deferrals (macapp) — #132 follow-ups
+
+**What:** Six things the ⌥Tab / ⌃Tab switcher shipped without, deliberately. Independent of each
+other; take them one at a time.
+
+- **MRU order in the ⌘O Open Workroom picker.** `SwitcherRecency` already answers "what did I use
+  last", so `OpenPickerModel` could rank by it instead of alphabetically. Cheap, but it reorders a
+  shipped, tested surface (`OpenPickerModelTests`) — hence deferred until we've lived with MRU in the
+  switcher and know it feels right there first.
+- **Settings UI for the two trigger modifiers.** `Defaults[.switcherWorkroomModifier]` /
+  `[.switcherPaneModifier]` ship with no picker, so retuning them needs `defaults write`. They exist
+  because a global-hotkey grabber (AltTab, HyperSwitch, Contexts all bind ⌥Tab) intercepts upstream of
+  `NSApp.sendEvent` where no local monitor can see the key — i.e. the *only* remedy for an affected
+  user is a preference they currently can't reach. The Keyboard Shortcuts sheet already renders the
+  configured chords (`SwitcherModifier.display`), so the picker is the missing half.
+- **Scope ⌥Tab to the current Space.** A cross-window commit to a window on another Space animates the
+  Space switch for ~0.5–1s. Nothing is wrong, but it's a jarring result for a keystroke that reads as
+  instant. Either filter `QuickSwitcher.workroomSlots` by `hostWindow?.isOnActiveSpace` (and lose the
+  ability to reach those workrooms at all) or leave it; decide from use, not from taste.
+- **The shared `UnreadBadge` still draws the RAW accent.** The rail passes its own corrected pair
+  (`Palette.nsBadgeFill` == `nsRing`, ink measured), because a themed accent can sit close to the
+  surface it's on — the sidebar and toolbar badges have the same exposure and no correction. Now a
+  small change: `ThemeTokens.contrastRatio` is genuinely WCAG since `dfcc0bd8`, so
+  `legible(accent, on: host, target: 3.0)` at the component's own call sites means what it says.
+- **The 10s session ceiling cancels silently.** A stuck modifier can't leave the rail up forever, so
+  `QuickSwitcherReducer.sessionCeiling` ends the session — with **no commit**, so a user who held ⌥ for
+  eleven seconds while reading the rail gets nothing. Arguably the timeout should commit the cursor
+  instead. A product call, not a bug: pick one and say so in the reducer's doc comment.
+- **⌃-click on the pane rail is unverified.** ⌃-click is a secondary click, and the rail panel is never
+  key, so it may not deliver a `.onTapGesture` at all. Needs a **real mouse** — this repo has twice
+  been lied to by synthetic input (`macapp-textselection-swallows-taps`,
+  `macapp-hover-slide-release-only`), so an XCUITest pass here would prove nothing.
+
+**Why:** each of these was written down in the #132 plan's out-of-scope table and would otherwise be
+lost with it. Two other entries from that table are now **moot**: the window-capture layer was built
+and then removed (an aspect-fit terminal thumbnail at card size is a grey smudge that looks like every
+other terminal), so "a libghostty damage callback for thumbnail freshness" and "per-pane sensitive
+marking / screen-sharing auto-suppress" no longer have a subject — `Core/Snapshots/` is gone and the
+rail draws marks and miniatures instead.
+
+**Depends on:** nothing. The badge item wants `dfcc0bd8` (the contrast-metric fix), which has landed.
+
+**Priority:** P3 for all six, except the Settings picker, which is **P2 for anyone running a hotkey
+grabber** — for those users ⌥Tab never arrives and the workaround is unreachable from the UI.
+
 ### Stream the inline terminal agent's diagnosis into the banner — #49 follow-up
 
 **What:** Show the diagnosis appearing live in the banner (claude `--output-format stream-json`)
@@ -1249,6 +1294,55 @@ forking git).
 
 Condensed from the long status notes this file used to carry at the top; the full write-ups are in git
 history. Kept here for the parts that stay useful: what changed, and the traps found doing it.
+
+**2026-08-05 — the ⌥Tab / ⌃Tab quick switcher (#132), and the contrast metric it exposed.** ⌥Tab steps
+open workrooms across every window by most-recent use, ⌃Tab steps the current workroom's panes; a tap
+flips, a 250ms hold reveals a screen-centred rail of cards, release commits. `Core/SwitcherRecency.swift`
+(pure `RecencyList` + `WindowToken`), `QuickSwitcher{,Reducer,Controller}.swift`, `SwitcherPanel.swift`,
+`SwitcherRailLayout.swift`, `SwitcherMark.swift`, `Views/SwitcherRailView.swift`, plus Go-menu items and
+two Keyboard Shortcuts rows. Deferrals are filed above ("Quick-switcher deferrals"). The traps:
+
+- **`ThemeTokens.luminance` was never WCAG.** It weighted *gamma-encoded* sRGB instead of linearizing,
+  so `contrastRatio` under-reported every dark colour (`#2E3440` read 0.20 against a true 0.033). Across
+  the 56 bundled themes the rail's name text scored under 4.5:1 for **43** of them by that formula and
+  **4** by real WCAG, and the "this theme is unreadable, drop the material" fallback was firing for 38
+  legible themes. Fixed app-wide: `luminance` linearizes, the old formula survives as
+  `perceivedBrightness` for light/dark classification only (WCAG luminance is not perceptual), and
+  `contrastingForeground` picks ink by **measuring both candidates** instead of a luminance-0.6 switch —
+  that threshold is what left a monogram at 1.77:1 where black gave 11.8:1.
+- **Contrast tests must pin their theme, and then sweep the real ones.** Three "failures on untouched
+  code" were tests reading the ambient theme via `ThemeTokens(preview: nil)`, which follows the machine's
+  appearance. Pinning them to fixtures exposed two real bugs; sweeping all 56 bundled themes
+  (`SwitcherThemeSweepTests`) exposed the metric. Two hand-made fixtures prove nothing about the
+  fiftieth theme.
+- **A borderless non-opaque `NSPanel` casts no shadow at all** (measured: zero darkening at 6/14/26/44pt
+  out with `hasShadow = true` + `invalidateShadow()`). The rail draws its own — which needs the window
+  padded by a halo (a drawn shadow clips at the window edge), the shadow in a *second* `.background`
+  after `.clipShape` (a clip applies to a view's background), and the caster's own footprint punched out
+  with `destinationOut`, because an opaque layer anywhere beneath a glass view annihilates the material
+  (interior variation and backdrop correlation both fall to exactly 0).
+- **Compacting a live item list silently retargets the commit.** `filter`ing dead items shifted every
+  later index down one while the reducer only *clamped* the cursor, so losing an item before the cursor
+  committed the highlighted card's neighbour — and the rail was never re-pushed, so a click indexed a
+  stale array. `.itemsChanged` now carries a cursor remapped by item **identity**.
+- **A commit must re-check `hasModalPresentation`.** It was enforced at open and in the liveness check,
+  which only runs on a window *close* — a sheet going up posts no notification the session watches, so
+  releasing over a window that had since become modal performed exactly the write the gate exists to
+  prevent.
+- **Raising a window fires the recency hook for the selection it's leaving**, so MRU[1] became somewhere
+  the user had never been and the ⌥Tab⌥Tab ping-pong broke. `SwitcherRecency.suppressingRecord` wraps the
+  raise.
+- **There is no VoiceOver-status notification in AppKit.** `isVoiceOverEnabled` is KVO-only
+  (`NSAccessibility.h`), which is how a live session now ends when VoiceOver arrives mid-gesture.
+- **`UserDefaults` is not isolated by a throwaway `$HOME`** — cfprefsd resolves the login session's home,
+  so QA can isolate `~/.config/workroom` but never `Defaults`-backed state (theme, inspector, channel).
+  Use a `UITestFixture` flag instead.
+- **Window captures were built (T12) and removed.** At card size an aspect-fit terminal thumbnail is a
+  grey smudge that changes every time and looks like every other terminal — it carried the least
+  information while being the loudest element. Replaced by a learnable per-workroom mark (hue + monogram,
+  hues rotated so no two visible cards collide) and a per-pane type miniature. `Core/Snapshots/` is gone;
+  own-process ScreenCaptureKit needing no TCC was proven on the way and is in git history if it's ever
+  wanted again.
 
 **2026-07-26 — the shared inspector prefs are out of the test suite, and the fix went one class further
 than filed.** The entry this retires was about three classes writing `Defaults[.showInspector]` /
