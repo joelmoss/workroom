@@ -13,7 +13,28 @@ CLAUDE.local.md
 # macOS app (macapp/)
 /macapp/build/
 /macapp/DerivedData/
-/macapp/WorkroomApp.xcodeproj/
+/macapp/WorkroomApp.xcodeproj/*
+# ...except the SPM lockfile. `exactVersion` in project.yml pins a git TAG, which is mutable — the
+# libghostty packager has already re-cut one (arm64e shipped 2026-07-21, reverted three days later),
+# and Sparkle/Sentry/Defaults are `from:` ranges that float on their own. Package.resolved is the
+# only tracked record of what was actually resolved, so a changed dependency is a diff instead of a
+# silent swap between your machine, CI (whose SPM cache keys on project.yml) and the release runner.
+#
+# The chain below is load-bearing: git does NOT descend into an excluded DIRECTORY, so a lone
+# `!.../Package.resolved` under `/macapp/WorkroomApp.xcodeproj/` would silently match nothing. Each
+# intermediate directory has to be re-included in turn — hence `dir/*` above rather than `dir/`, and
+# one negation per level. Verify with:
+#   git status --porcelain -uall | grep xcodeproj
+# which must list Package.resolved and NOTHING else from this directory. (`git check-ignore -v` is
+# the wrong check here: it prints the matching `!` rule and still exits 0, which reads like the file
+# is ignored when it isn't.) xcodegen preserves the file across regeneration; it doesn't rewrite it.
+!/macapp/WorkroomApp.xcodeproj/project.xcworkspace/
+/macapp/WorkroomApp.xcodeproj/project.xcworkspace/*
+!/macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/
+/macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/*
+!/macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
+/macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/*
+!/macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
 # VCS-core Rust artifacts (built by vcs/scripts/build-apple.sh; regenerated, not tracked).
 # Package.swift is tracked; the xcframework + generated Swift inside it are not.
 /vcs/swift/WrVcs/Frameworks/

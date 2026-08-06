@@ -125,11 +125,34 @@ final class GhosttyRuntimeAdapter {
       return true
 
     default:
-      // Tab/split/window intents, child-exit, and everything else are intentionally not handled.
-      // Workroom owns its own tab model (plan A5) and (as with SwiftTerm) leaves a tab in place when
-      // its shell exits; returning false lets libghostty fall back to its default.
+      // Tab/split/window intents and everything else are intentionally not handled. Workroom owns
+      // its own tab model (plan A5) and (as with SwiftTerm) leaves a tab in place when its shell
+      // exits; returning false lets libghostty fall back to its default. (Child-exit IS handled —
+      // see `GHOSTTY_ACTION_SHOW_CHILD_EXITED` above, which also returns false, but only after
+      // telling the run tab.)
+      //
+      // Logged in Debug because this arm is the one place an action can go missing in SILENCE. A
+      // libghostty upgrade that renumbers the action enum, renames a tag, or routes an effect
+      // through a new one shows up here as nothing at all: no crash, no failing test, just a title
+      // that stops updating or a spinner that never stops. Swift cannot exhaustively switch a C
+      // enum, so there is no compile-time equivalent — a log line is the whole signal.
+      logUnhandled(action.tag)
       return false
     }
+  }
+
+  /// Tags already logged, so a routinely-unhandled action (the tab/split/window intents fire
+  /// constantly) reports once instead of flooding the log. Debug-only, and `handleAction` is
+  /// documented above as main-thread-only, so a plain `Set` needs no synchronisation.
+  #if DEBUG
+    private var loggedUnhandledTags: Set<UInt32> = []
+  #endif
+
+  private func logUnhandled(_ tag: ghostty_action_tag_e) {
+    #if DEBUG
+      guard loggedUnhandledTags.insert(tag.rawValue).inserted else { return }
+      logger.debug("unhandled libghostty action tag \(tag.rawValue, privacy: .public)")
+    #endif
   }
 
   private func handleOpenURL(target: ghostty_target_s, openURL: ghostty_action_open_url_s) -> Bool {
