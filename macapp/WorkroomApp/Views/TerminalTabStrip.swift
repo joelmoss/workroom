@@ -641,6 +641,10 @@ private struct TerminalTabChip: View {
     // each one. The close button's own `.help` (inner) wins when the cursor is over the ✕.
     .help(tab.filePath ?? tab.title)
     .accessibilityIdentifier("terminal.tab.\(tab.title)")
+    // The running state is otherwise conveyed ONLY by the flowing underline above — invisible to
+    // VoiceOver, and unassertable in XCUITest. `GhosttyActionDispatchUITests` reads this to prove
+    // `GHOSTTY_ACTION_PROGRESS_REPORT` (OSC 9;4) still reaches the tab model after an engine change.
+    .accessibilityValue(tab.isRunning ? "Busy" : "Idle")
     .scaleEffect(isDragging ? 1.04 : 1)
     .shadow(color: .black.opacity(isDragging ? 0.25 : 0), radius: isDragging ? 6 : 0, y: 2)
   }

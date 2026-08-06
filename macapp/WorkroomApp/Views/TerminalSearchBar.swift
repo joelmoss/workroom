@@ -28,6 +28,9 @@ struct TerminalSearchBar: View {
           .monospacedDigit()
           .foregroundStyle(.secondary)
           .frame(minWidth: 58, alignment: .trailing)
+          // The only surface for `SEARCH_TOTAL` / `SEARCH_SELECTED`, and the handle
+          // `GhosttyActionDispatchUITests` reads to prove those two actions still arrive.
+          .accessibilityIdentifier("terminal.search.summary")
 
         Divider().frame(height: 14)
 
