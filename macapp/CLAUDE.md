@@ -156,12 +156,14 @@ that surfaces violations as **warnings** (non-fatal — `make app-lint` is the h
   it only bites when building from Xcode directly (regenerate, or run `make app-generate`).
 - **SourceKit "Cannot find type X in scope" is usually noise.** The single-file indexer
   doesn't see sibling files; a clean `xcodebuild` is authoritative.
-- **The terminal is libghostty** (`libghostty-spm`'s `GhosttyKit` xcframework, pinned
-  `exactVersion: 1.2.3` in project.yml). The embedding C API is not yet stable, so pin EXACT —
-  don't float it. The terminal surface (`Core/GhosttySurfaceView.swift`) + runtime
-  (`GhosttyApp`/`GhosttyRuntimeAdapter`) are ours; the bundled `Resources/ghostty` (terminfo +
-  shell-integration) must ship for the engine to start. Pre-GA, the plan is to move to a
-  self-built xcframework from a pinned Ghostty fork.
+- **The terminal is libghostty** (`libghostty-spm`'s `GhosttyKit` xcframework). The embedding C API
+  is not yet stable, so the pin is EXACT — don't float it. **`project.yml` is the single source of
+  truth for which package version and which ghostty engine we ship** — read the comment there rather
+  than trusting a version quoted anywhere else, and note the trap it documents: the package versions
+  itself independently of ghostty, so package `1.3.1` is not ghostty `v1.3.1`. Bumping it is not a
+  one-line change (see "Bump the libghostty pin" in `TODOS.md`). The terminal surface
+  (`Core/GhosttySurfaceView.swift`) + runtime (`GhosttyApp`/`GhosttyRuntimeAdapter`) are ours; the
+  bundled `Resources/ghostty` (terminfo + shell-integration) must ship for the engine to start.
 - **The child environment has two layers, and only one of them is reliable** (`Core/ShellEnvironment.swift`).
   A Finder-launched `.app` gets a minimal PATH, so: the **floor** (`floorPath()`) reads `/etc/paths`
   + `/etc/paths.d/*` — `path_helper`'s own inputs — with no shell at all, and that alone resolves

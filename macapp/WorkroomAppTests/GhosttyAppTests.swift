@@ -10,7 +10,7 @@ final class GhosttyAppTests: XCTestCase {
   func testEngineInitializes() {
     XCTAssertTrue(
       GhosttyApp.shared.isReady,
-      "libghostty failed to initialize — check bundled ghostty resources and the 1.2.3 C API")
+      "libghostty failed to initialize — check bundled ghostty resources and the pinned C API")
   }
 }
 

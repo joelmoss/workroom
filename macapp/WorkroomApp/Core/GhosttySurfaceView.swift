@@ -772,7 +772,7 @@ final class GhosttySurfaceView: NSView {
   /// inline agent. Call this **synchronously** when a command finishes (we are on the main thread in
   /// the runtime callback, before the next prompt renders), so the captured region is the
   /// just-finished command's, not a later one. Returns `nil` when nothing meaningful is on screen.
-  /// The exact command-start boundary isn't exposed by libghostty 1.2.3; reading the active screen
+  /// The exact command-start boundary isn't exposed by the pinned libghostty; reading the active screen
   /// captures recent output (errors live at the end), and the host trims/caps via `TerminalCapture`.
   func readCommandRegion(maxBytes: Int = 16_384) -> String? {
     guard let surface else { return nil }
@@ -900,7 +900,7 @@ final class GhosttySurfaceView: NSView {
       // Derive text from `event.characters`, dropping AppKit sentinels (see `filterSpecialCharacters`):
       // function keys / arrows resolve to "" here and fall through to the keycode-only branch, which
       // libghostty encodes correctly. DEL (U+7F, the Backspace key) is intentionally KEPT and sent as
-      // text — libghostty 1.2.3's *keycode* encoding for backspace is broken (it emits a space for the
+      // text — the pinned libghostty's *keycode* encoding for backspace is broken (it emits a space for the
       // backspace keycode), but forwarding the literal 0x7f byte as text delivers the correct erase.
       // (Confirmed by raw-PTY byte probing; matches Muxy's filter. Revisit if we move off 1.2.3.)
       let text = Self.filterSpecialCharacters(event.characters ?? "")

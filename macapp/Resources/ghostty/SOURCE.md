@@ -9,7 +9,16 @@
 - `shell-integration/` — per-shell scripts Ghostty auto-injects; these report OSC 7 pwd
   (the cwd source for ⌘-click path resolution — see plan CMT-1) and more.
 
-The `libghostty-spm` package ships NO resources, so these are vendored. Sourced from a recent
-Ghostty build. **TODO (pre-GA, CMT-2):** when we move to a self-built xcframework from a pinned
-Ghostty fork, regenerate these from that exact tag so they version-match the binary.
-Themes are intentionally omitted (Workroom themes via macOS system colors, not Ghostty themes).
+- `themes/` — **ours, not upstream's.** 56 curated theme files whose names `ThemeService.families`
+  parses, plus the two hand-authored `Workroom` themes. Do NOT regenerate this directory from a
+  ghostty checkout; it would break the theme picker.
+
+The `libghostty-spm` package ships no terminfo or shell-integration, so those are vendored here.
+**Their provenance is unrecorded** — "a recent Ghostty build", no ref, no sha — and they are a
+*coupled contract* with the engine's own Zig-side injection, which `GhosttyApp.resolveResources`
+cannot verify (it only checks the directory exists). If they drift, OSC 7 and OSC 133 degrade
+silently, taking ⌘-click paths, tab titles and the busy indicator with them.
+
+**TODO:** regenerate `terminfo/` + `shell-integration/` from the exact ghostty ref the pinned package
+builds from (see `macapp/project.yml` for which that is), and record the sha here. Tracked in
+`TODOS.md` → "Regenerate the bundled ghostty resources"; blocking for the pin bump.

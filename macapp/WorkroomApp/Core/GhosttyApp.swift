@@ -225,7 +225,7 @@ final class GhosttyApp {
   private func writeThemeConfig(dark: Bool) {
     // The terminal's colours come from the active theme family's variant for this appearance
     // (issue #36). libghostty resolves `theme = "<name>"` from $GHOSTTY_RESOURCES_DIR/themes (and
-    // ~/.config/ghostty/themes, which wins) — verified on GhosttyKit 1.2.3 for new and live
+    // ~/.config/ghostty/themes, which wins) — verified on the pinned GhosttyKit for new and live
     // surfaces. The name is already sanitised by ThemeService (safe to quote into the conf). The
     // padded region inherits the theme background, so the terminal still blends into the panel.
     let theme = ThemeService.activeThemeName(isDark: dark)

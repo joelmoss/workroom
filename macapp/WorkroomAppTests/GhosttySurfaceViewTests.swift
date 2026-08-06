@@ -34,7 +34,7 @@ final class TerminalKeyTextFilterTests: XCTestCase {
   }
 
   func testDelIsKept() {
-    // The backspace fix: DEL (0x7F) must be forwarded as text (libghostty 1.2.3 mis-encodes the
+    // The backspace fix: DEL (0x7F) must be forwarded as text (the pinned libghostty mis-encodes the
     // backspace *keycode*, so we send the byte instead).
     XCTAssertEqual(filter("\u{007F}"), "\u{007F}")
   }

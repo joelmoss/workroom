@@ -2,7 +2,7 @@ import Combine
 import Foundation
 
 /// Scrollback **find** (search) for the embedded terminals. Workroom adds no search engine of its
-/// own — libghostty (the bundled engine is upstream Ghostty 1.3.x, which shipped scrollback search)
+/// own — libghostty (the bundled engine; see `macapp/project.yml` for which build) shipped it and
 /// owns the matching, viewport highlighting, and match tracking. This file is the host side: the
 /// thin chrome (a find bar) plus the two engine-free seams that carry data across the C boundary.
 ///
@@ -61,7 +61,7 @@ enum TerminalSearchAction: Equatable {
   /// counts up as Find Next walks down the screen.
   ///
   /// **Wrap is synthesized host-side:** libghostty's `navigate_search` does NOT wrap — the bundled
-  /// Ghostty (1.3.1) stops dead at the ends ("we don't wrap or reset the match currently"). At an end
+  /// engine stops dead at the ends ("we don't wrap or reset the match currently"). At an end
   /// we step the other way across the remaining (total-1) matches to reach the opposite end. The
   /// engine's search thread drains the whole burst in one mailbox pass and notifies only the *net*
   /// selection once, so it collapses into a single selection + render — no flicker. With no current

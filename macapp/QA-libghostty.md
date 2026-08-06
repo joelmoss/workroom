@@ -70,14 +70,15 @@ the likeliest suspects.
 - [x] `printf '\e]9;Build finished\a'` in an **unfocused** tab → tab/sidebar **badge**;
       panel shows the entry with title. ✅ verified end-to-end.
 - [x] OSC 777: `printf '\e]777;notify;Title;Body text\a'` → entry with title **and** body. ✅ verified.
-- N/A OSC 99: `printf '\e]99;;Hello from 99\a'` → not supported by ghostty **yet — it's coming.**
-      Verified against ghostty `main`: no OSC-99 parser today (only OSC 9 / 777 notify; "99" → invalid
-      and dropped), so it doesn't reach the app. But there's an **open upstream PR,
-      ghostty-org/ghostty#10467** ("parse the Kitty desktop notification protocol (OSC 99)"), not yet
-      merged. So OSC 99 should work once we build the xcframework from a ghostty that includes #10467
-      (or cherry-pick it into our fork). ghostty is also adding a libghostty fallback-handler for
-      unknown OSC, which would be an alternate way to handle it app-side. OSC 9/777 cover the common
-      cases until then; SwiftTerm parsed OSC 99 itself, so this is a temporary minor regression.
+- N/A OSC 99: `printf '\e]99;;Hello from 99\a'` → not supported by ghostty yet. Verified against
+      ghostty `main`: no OSC-99 parser (only OSC 9 / 777 notify; "99" → invalid and dropped), so it
+      never reaches the app. **Do not expect the open PR to fix this on its own** — #10467 adds only
+      a *parser*, and files the command in the branch that logs "unimplemented OSC callback" and
+      discards it; the stream dispatch, apprt action and `ghostty_action_*` tag an embedder would
+      need do not exist as PRs. Nor would building our own xcframework from a ref including #10467
+      change that. Re-check when **ghostty 1.4.0** ships (issue #5634 is milestoned there); see the
+      OSC 99 entry in `TODOS.md`. OSC 9/777 cover the common cases meanwhile; SwiftTerm parsed OSC 99
+      itself, so this remains a minor regression.
 - [ ] Fire an OSC 9 in the **focused/active** tab → **no** notification (focus suppression).
 - [ ] **Background the app** (⌘-Tab away), fire an OSC 9 → **system banner** appears.
 - [ ] **Click the system banner** → app comes forward and jumps to the **exact tab/target**.

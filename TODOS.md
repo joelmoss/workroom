@@ -7,66 +7,6 @@
 
 ## P1 — before GA
 
-### Own the GhosttyKit xcframework (macapp) — CMT-2
-
-**What:** Stop depending on the third-party `libghostty-spm` (Lakr233) package as the source of
-truth. Build our own universal `GhosttyKit.xcframework` (`macos-arm64_x86_64`) + version-matched
-resources from a ghostty ref *we* pin, and point `project.yml` at it.
-
-**Current state:** `macapp/project.yml` still pins `libghostty-spm` at `exactVersion: 1.2.3`.
-
-**When (trigger-based, lean sooner than "vague pre-GA"):** Not needed for the beta — `1.2.3` works
-with our fixes (see the keyboard-input + terminal-input commits). Do it when the **first concrete
-trigger** hits, and treat it as the **next infra task after the beta stabilizes**:
-- We want an **unreleased ghostty change** — concretely **OSC 99** (PR #10467), the backspace-keycode
-  fix, or the libghostty OSC fallback-handler — none of which exist in any ghostty *release*, so no
-  libghostty-spm release can ever deliver them.
-- We want to be on **ghostty 1.3.x** (see lag below).
-- libghostty-spm stalls or makes a pin choice we don't want.
-- **GA** — do it regardless of features: shipping GA on a single-maintainer repackaging of an
-  explicitly-unstable API is a supply-chain risk; owning the pin is the control.
-
-**Why (reinforced by observed facts, 2026-06-05):**
-- The embedding C API is explicitly unstable/internal ("breaking changes are expected").
-- **The packager already lags upstream.** ghostty has released **v1.3.0 and v1.3.1**, but
-  libghostty-spm is still on **`1.2.3`** (published 2026-06-01; tags 1.2.1→1.2.3 only). So "just use
-  new libghostty-spm releases as they arrive" means trailing ghostty by ~2 versions on a single
-  maintainer's cadence — the exact "packager lags" risk, now real, not hypothetical.
-- Everything we'll want next (OSC 99 etc.) lives **upstream of any release** — only the owner-of-the-pin
-  path can reach it. Muxy forked for exactly this reason.
-
-**How to start (cheaper than a full fork — reuse the packager's tooling):**
-- libghostty-spm ships a **`build.sh`** that builds the xcframework from a ghostty source dir
-  (`./build.sh --source /path/to/ghostty …`). So: clone `ghostty-org/ghostty` at the chosen ref (a
-  release tag, or a branch with PR #10467 cherry-picked), run `build.sh`, and **regenerate
-  `terminfo`/`shell-integration` from that same ref** (fixes the SOURCE.md version-skew TODO).
-- Vendor the resulting xcframework + a 2-file C shim (`GhosttyKit.c` + `module.modulemap` exposing
-  `ghostty.h`), linking the static archive via `.unsafeFlags`, **or** host it as a release artifact in
-  a separate repo's CI and point the SPM package there. Zig is needed only to *build*, not to
-  *consume*.
-- Re-verify signing — still a static archive in the main executable, so no new framework to sign
-  (plan §4).
-
-**Depends on:** nothing in-app — it's a dependency-source swap (`macapp/project.yml`,
-`macapp/Resources/ghostty/`). Best done when we've picked the target ghostty ref.
-
-**Re-verify after the upgrade (known gaps to recheck):**
-- **OSC 99 desktop notifications** — ghostty has no OSC-99 (Kitty notification) parser in any release
-  *or* `main` yet (only OSC 9 / 777 notify); `\e]99;;…` parses as invalid and is dropped, so it never
-  reaches the app. There's an **open upstream PR — ghostty-org/ghostty#10467** ("parse the Kitty
-  desktop notification protocol (OSC 99)"). When building our xcframework, pick a ghostty ref that
-  includes #10467 (or cherry-pick it) and confirm OSC 99 fires — the app pipeline is already proven
-  via OSC 9. Alternative: ghostty's in-progress libghostty fallback-handler for unknown OSC could let
-  us parse OSC 99 app-side instead of patching the engine. OSC 9/777 cover the common cases meanwhile.
-  See `macapp/QA-libghostty.md` §H.
-- **Backspace keycode encoding** — 1.2.3 mis-encodes the backspace *keycode* (emits a space); we
-  work around it by sending DEL as text (`GhosttySurfaceView.filterSpecialCharacters`). If the
-  upgrade fixes the keycode path, the workaround can be simplified.
-
-**Priority:** P2 now / **P1 before GA**. Trigger-based: not blocking the beta (ships on the
-third-party pin), but it's the next infra task once the beta is stable — and the observed packager
-lag (1.2.3 vs ghostty 1.3.1) means leaning sooner beats waiting on the packager.
-
 ### Terminal *content* accessibility (macapp) — CMT-3
 
 **What:** VoiceOver support for the terminal's *rendered text* on `GhosttySurfaceView` — accessible
@@ -85,12 +25,16 @@ the **enabler for content-level UI tests**: once terminal text is in the a11y tr
 assert on rendered output (backspace deleted, TUI drew, scrollback) on top of the now-landed fixture
 seam — see `macapp/QA-libghostty.md` (Bucket 2).
 
-**When:** **sequence with the xcframework upgrade** (CMT-2), not now. Feasible on 1.2.3 today (read
-APIs exist), but ghostty upstream has merged a11y plumbing we'd want to ride — e.g.
-**ghostty #12902** ("core: send selection_changed notification"), which on macOS posts
-`.ghosttySelectionDidChange` → debounced → `NSAccessibility.selectedTextChanged`. On 1.2.3 we'd have
-to post that notification ourselves on our own selection events; post-upgrade it comes from the
-engine. A before-GA item.
+**When:** feasible on the currently pinned engine today (the read APIs exist), but ghostty upstream
+has merged a11y plumbing worth riding — **ghostty #12902** ("core: send selection_changed
+notification", merged 2026-06-04), which on macOS posts `.ghosttySelectionDidChange` → debounced →
+`NSAccessibility.selectedTextChanged`. On the pinned engine we'd have to post that notification
+ourselves from our own selection events; after the pin bump it comes from the engine as
+`GHOSTTY_ACTION_SELECTION_CHANGED`.
+
+This is unblocked by the **pin bump** (see "Bump the libghostty pin", P2), NOT by owning the
+xcframework — an earlier version of this entry sequenced it behind CMT-2, which was wrong. A
+before-GA item either way; doing it before the bump costs one self-posted notification.
 
 **How to start (minimal-viable, keep light per D1 — crib Muxy's `accessibilitySelectedText()`):**
 - `accessibilityValue()` → visible screen text via `ghostty_surface_read_text(surface, <viewport
@@ -106,13 +50,201 @@ engine. A before-GA item.
 **Caveat:** terminal a11y is inherently partial (dynamic output, scrollback, full-screen TUIs);
 target "announce output + selection, navigable text", not a perfect document model.
 
-**Depends on:** the read APIs already present in 1.2.3 (`ghostty_surface_read_selection`,
-`ghostty_surface_read_text`, `extractString`) in `macapp/WorkroomApp/Core/GhosttySurfaceView.swift`;
-best done after CMT-2 to use ghostty's `selection_changed` hook.
+**Depends on:** the read APIs already present in the pinned engine (`ghostty_surface_read_selection`,
+`ghostty_surface_read_text`, `extractString`) in `macapp/WorkroomApp/Core/GhosttySurfaceView.swift`.
+Cheaper after the pin bump (engine-sent `selection_changed`), but not blocked by it.
 
 **Priority:** P2 (accessibility regression — address before GA, not blocking the beta).
 
 ## P2 — perf, correctness, and the next VCS phase
+
+### Bump the libghostty pin (macapp) — post-GA, first change after the GA tag
+
+**What:** move `macapp/project.yml` from the currently pinned `libghostty-spm` package to **1.3.2**
+(ghostty commit `35e1a0160c4f6797e1bb1ef8e7a2b8c6b114ab58`). Those two numbers are this task's
+TARGET, not a claim about what ships — for what is pinned today, read `project.yml`'s comment, which
+is the single source of truth. Re-check the target against the packager's newest release before
+starting; it moves.
+
+**Why:** it is the only way to reach `ghostty_surface_foreground_pid` + `ghostty_surface_tty_name`
+(the "libghostty exposes no PTY child PID" limitation CMT-1 records at `GhosttySurfaceView.swift:95`)
+and `GHOSTTY_ACTION_SELECTION_CHANGED` (CMT-3's a11y hook), plus ~1300 upstream commits. **It ships
+no user-visible change by itself** — both wins need separate work to wire — which is exactly why it
+waits for GA rather than riding under it.
+
+**The version trap that produced two wrong roadmap entries — read this first.** `libghostty-spm`
+versions its **package** independently of ghostty. The release bodies state the ghostty ref
+explicitly, and package `1.2.3` is built from ghostty **`v1.3.1`**. Reading a package version as a
+ghostty version is what made an earlier CMT-2 claim we trailed ghostty by ~2 versions and file it as
+P1. Package `1.3.1` ≠ ghostty `v1.3.1`. Always read `Ghostty.ref` + the release body, never the tag.
+
+**The real risk is the patch swap, not the API.** The packager applies its own patches to ghostty
+before building, and `Script/apply-patches.sh` feature-probes the header to choose between them:
+
+```
+  grep -q "ghostty_surface_foreground_pid" include/ghostty.h
+      │
+      ├── absent  (ghostty v1.3.1 — what we ship today)
+      │     └── 0002-host-managed-io.patch          (17,588 B)
+      │
+      └── present (ghostty 35e1a016 — package 1.3.2)
+            └── 0002-host-managed-io-modern.patch   (18,447 B)   ← never run here
+                                                                    PTY/IO hosting: surface teardown,
+                                                                    orphan shells, the EXC_BAD_ACCESS
+                                                                    site WorkroomApp.swift:606 documents
+```
+
+By contrast the mid-enum `GHOSTTY_ACTION_SELECTION_CHANGED` insert — which renumbers 14 following
+tags including `SHOW_CHILD_EXITED` and `COMMAND_FINISHED` — is **not** a risk: header and static
+archive ship together, `GhosttyRuntimeAdapter.handleAction` dispatches on symbolic labels, and
+nothing persists a raw tag. Don't spend the retest budget there. (Don't write a test asserting a
+tag's raw value either — test and app import the same header, so it can never fail.)
+
+**Blocking work, same commit:**
+- **Regenerate `macapp/Resources/ghostty/`** from the same ghostty ref — `terminfo/` and
+  `shell-integration/` ONLY. See the separate entry below for why `themes/` must not be touched.
+- **Resolve `TerminalSearch.navigationPlan`.** It both inverts direction against the engine's
+  ordering and synthesizes wrap by emitting `total - 1` steps, keyed to the pinned engine's "stops
+  dead at the ends" behaviour. If wrapping or match ordering moved upstream, ⌘G becomes *wrong*, not
+  redundant.
+
+**Retest the IO layer, not the enum:** repeated surface create/destroy, split/close churn, workroom
+switch/delete, the run-tab supervisor, and the `ps` orphan check. `0010-fix-scroll-remainder-zeroing.patch`
+is also new, so include the scrollbar overlay. The XCUITest action-tag baseline (added ahead of this
+work, deliberately against the old engine) is the pass/fail gate.
+
+**Also required:**
+- **A universal Release build before landing.** CI only ever builds Debug/arm64 and `release.sh`
+  takes `ARCHS_STANDARD`, so today the first universal link happens at release time:
+  `VCS_APPLE_FLAGS=--universal make app-vcs`, then
+  `xcodebuild -configuration Release ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO build`.
+- **A bake gate.** `nightly.yml` builds daily from master, so this reaches nightly users ~24h after
+  landing. Require N clean nightlies before it enters a `pre` tag.
+- **A `QA-libghostty.md` §N "engine bump smoke"** (~12 items). Committing to the full 13-section
+  manual walk on every bump guarantees it won't happen next time.
+
+**Rollback is not one line:** revert the commit(s), `rm -rf macapp/DerivedData/SourcePackages`,
+rebuild. CI's `spm-`/`xcbuild-` caches key on `project.yml` and their `restore-keys` fallback can
+restore a mixed state. Do **not** remove any workaround (backspace DEL-as-text, ⌃Tab) until this has
+baked — both fail safe, and the backspace test passes either way, so removal needs a raw-PTY probe.
+
+**Depends on:** GA shipping first. `Package.resolved` is now tracked, so the resolved revision is a
+reviewable diff.
+
+**Priority:** P2 — real value, no user-visible gain on its own, and it swaps the layer that runs the
+user's shell. First change after the GA tag, not before it.
+
+### Own the GhosttyKit xcframework (macapp) — CMT-2, GA-time supply-chain decision
+
+**What:** stop depending on the third-party `libghostty-spm` (Lakr233) package as the source of
+truth. Build our own universal `GhosttyKit.xcframework` + version-matched resources from a ghostty
+ref *we* pin, and point `project.yml` at it.
+
+**Status: demoted from P1, and re-argued.** Two of the three rationales this entry used to carry were
+wrong, and are struck:
+
+- ~~"We trail ghostty by ~2 versions"~~ — a **package-vs-ghostty version confusion**; see the trap
+  described in the pin-bump entry above. We have been on ghostty's newest *release* the whole time.
+- ~~"Only owning the pin can reach OSC 99"~~ — **a fork cannot deliver OSC 99 either.** See the OSC 99
+  entry under Notifications for the upstream state; the short version is that the open parser PR
+  routes the command into an "unimplemented → discard" branch, and the pieces that would make it
+  reach an embedder do not exist as PRs at all.
+
+**What survives, and it is the whole argument: supply chain.** The shipped binary is **not stock
+ghostty**. `Patches/ghostty/` carries 11 patches (~200 KB, including a 113 KB prebuilt-framedata
+patch and the ~18 KB host-managed-IO patch that rewrites PTY hosting), applied at build time by a
+single maintainer. The artifact is checksummed by SPM but **not signed or notarized** — unlike
+ghostty-org, which minisigns its own `ghostty-vt` artifacts. We link that into a notarized app, in
+the component that runs the user's shell. Slice composition churns too: arm64e slices shipped
+2026-07-21 and were reverted three days later, re-cutting an already-published tag.
+
+**And the lag concern is real — for a mechanism the old entry never identified.** The packager does
+**not** track ghostty. `.github/workflows/build.yml` reads its ghostty commit from a hand-maintained
+`Ghostty.ref` file (regex-validated as a 40-char sha), and the weekly cron never queries ghostty at
+all — it bumps the package's own patch number and bails with `"main matches package tag …, skipping
+scheduled release"` when the package repo hasn't moved. Release-tag auto-detection existed up to
+package 1.2.9 and was **removed**. Five package releases in 17 days all shipped one engine. So when
+ghostty ships 1.4.0, nothing pulls it until one person edits a file.
+
+**How to start (cheaper than a full fork — reuse the packager's tooling):** clone
+`ghostty-org/ghostty` at the chosen ref, run the packager's build script against it, and regenerate
+`terminfo`/`shell-integration` from that same ref. Decide deliberately which of the 11 patches to
+carry — `0002-host-managed-io*` is load-bearing for embedding; the iOS/Catalyst ones are not ours.
+Vendor the xcframework + a 2-file C shim, or host it as a release artifact in a separate repo's CI.
+Zig is needed only to *build*, not to *consume*. Signing is unchanged (a static archive in the main
+executable, no new framework to sign).
+
+**Depends on:** nothing in-app. Best decided once GA has shipped and the pin bump has baked, since
+owning the pin means owning the patch decisions above.
+
+**Priority:** P3 — a real supply-chain posture question with no feature blocked behind it. Revisit at
+GA, or the first time the hand-maintained `Ghostty.ref` leaves us stranded on an engine we need to
+move off.
+
+### Finish the action-dispatch UI coverage (macapp) — search counters
+
+**What:** add the `SEARCH_TOTAL` / `SEARCH_SELECTED` case to
+`WorkroomAppUITests/GhosttyActionDispatchUITests.swift`. The other two visible tags (`SET_TITLE`,
+`PROGRESS_REPORT`) are covered and green; this one was attempted, hit a wall, and was parked rather
+than left as a failing test.
+
+**Why:** the scrollback find bar's "n/N" counter is the only surface for those two actions, so
+without it they have no automated detector — the same gap the rest of that file exists to close, and
+it matters most when the engine is bumped.
+
+**What is already known (do not re-derive):**
+- The bar DOES open under XCUITest from **`Edit ▸ Find…`** (`app.menuBars.menuBarItems["Edit"]
+  .menuItems["Find…"].click()`). The menu item is `exists=true enabled=true hittable=true` while a
+  terminal is focused — measured. `app.typeKey("f", modifierFlags: .command)` does NOT work: the
+  focused terminal consumes the keystroke, exactly as `RunStatusUITests` documents for the Run button.
+- Assert bar-open on the **text field** (`app.textFields.firstMatch`), NOT on the match summary:
+  `TerminalSearchModel.matchSummary` is `""` until a needle is set, and an empty SwiftUI `Text`
+  produces no accessibility element at all, so waiting on it waits forever while the bar is up.
+- **The wall:** the needle never reaches the field. Both `app.typeText` and element-scoped
+  `field.typeText` leave the summary at its empty-needle state (`""` — distinguishable from a real
+  no-match, which renders "No results"). So `model.needle` is not being set. The field is a SwiftUI
+  `TextField` with `.focused($fieldFocused)` and a deferred `onAppear` focus grab
+  (`TerminalSearchBar.swift`), and `TerminalContainerView.applyFocus` yields to it — that interaction
+  is the place to look.
+- `terminal.search.summary` (the a11y identifier on the summary `Text`) already exists for whoever
+  picks this up.
+
+**How to start:** dump the accessibility tree with the find bar open
+(`app.debugDescription` written to a file from inside the test) and confirm what the field element
+actually is and whether it reports keyboard focus. If SwiftUI focus proves undrivable here, the
+fallback is to drive `TerminalSearchModel.setNeedle` through a `UITestFixture` seam and assert the
+counter, which still exercises the two engine actions end-to-end.
+
+**Depends on:** nothing. `TerminalSearchTests` already covers the pure state folding, so this is
+purely about the engine→UI leg.
+
+**Priority:** P3 — two of the three visible tags are covered, and the search path has unit coverage
+for everything except the engine round-trip.
+
+### Regenerate the bundled ghostty resources (macapp) — blocking for the pin bump
+
+**What:** regenerate `macapp/Resources/ghostty/terminfo/` and `shell-integration/` from the exact
+ghostty ref the pinned package builds from, and record that ref in `SOURCE.md`.
+
+**Why:** `SOURCE.md` records the provenance as "a recent Ghostty build" — no ref, no sha. The
+shell-integration scripts and the engine's Zig-side injection are a **coupled contract**
+(ZDOTDIR/ENV/XDG_DATA_DIRS, `GHOSTTY_SHELL_FEATURES`, ssh integration). `GhosttyApp.resolveResources`
+only checks the directory exists, so if that contract moved, OSC 7 and OSC 133 degrade **silently** —
+taking ⌘-click path resolution, tab titles, and the busy indicator with them. There is no error, no
+log, and no test: the terminal just quietly stops reporting things.
+
+**Trap:** `themes/` in that directory is **ours**, not upstream's — 56 curated files (`8fd7fa19`,
+`602b5aa3`) whose filenames `ThemeService.families` parses. Regenerating it breaks theming. Scope the
+regeneration to `terminfo/` and `shell-integration/`.
+
+**Watch first:** `libghostty-spm` PR #43 proposes shipping compiled terminfo + shell-integration from
+the package itself, pointing `GHOSTTY_RESOURCES_DIR` at the package bundle. If that merges, this
+becomes "delete our copies" instead. Open as of 2026-08-05.
+
+**Depends on:** the pin bump — the resources must match the engine that ships with them.
+
+**Priority:** P2, but only as part of the bump. Regenerating against the *current* engine separately
+is also valid and strictly reduces risk, since today's provenance is unknown.
 
 ### VCS write actions — Phase 2 (macapp) — roadmap pointer
 
@@ -1258,6 +1390,35 @@ the existing identity-keyed fold; teams won't have counts.
 **Priority:** P3 (nice-to-have; deliberately deferred from #52 to keep that change to free data).
 
 ## P3 — Notifications and run commands
+
+### OSC 99 desktop notifications (macapp) — blocked upstream, watch ghostty 1.4.0
+
+**What:** support Kitty-style OSC 99 notifications (`printf '\e]99;;done\a'`). Nothing to build here
+yet — this entry exists so the gap stays tracked and nobody re-derives the upstream state.
+
+**Why it's a gap:** SwiftTerm parsed OSC 99; libghostty does not, so this is a regression against the
+app's own prior behaviour. OSC 9 and OSC 777 work today
+(`GhosttyRuntimeAdapter` `GHOSTTY_ACTION_DESKTOP_NOTIFICATION`), which covers the common cases.
+
+**Upstream state (checked 2026-08-05) — the important part:**
+- Issue **ghostty-org/ghostty#5634** is open, assigned, milestone **1.4.0**.
+- PR **#10467** ("parse the Kitty desktop notification protocol (OSC 99)") is open, rebased and
+  described by its author as ready — but it adds **only a parser**. Its one-line `stream.zig` change
+  files `.kitty_desktop_notification` in the branch that logs `"unimplemented OSC callback"` and
+  discards it. Its own description says: *"This includes only parsing of the OSC. You cannot (yet)
+  use OSC 99 to send notifications."*
+- Three further pieces are needed before an **embedder** sees anything: stream dispatch, a
+  Surface/apprt action (OSC 99's richer model — id, urgency, icon, chunked payloads — does not fit
+  the existing 2-field `DesktopNotification`), and a `ghostty_action_*` tag in `include/ghostty.h`.
+  **None exists as an open or merged PR.**
+
+**So: the re-check trigger is "ghostty 1.4.0 ships", NOT "#10467 merges".** Merging #10467 alone
+changes nothing observable, and cherry-picking it into a fork of our own would not either — this is
+why the OSC 99 rationale was struck from CMT-2.
+
+**Depends on:** upstream only. Then the pin bump (or whatever engine source we're on) to pick it up.
+
+**Priority:** P3 — one escape sequence, with two working alternatives already wired.
 
 ### Auto-emit OSC notifications on command completion (macapp)
 

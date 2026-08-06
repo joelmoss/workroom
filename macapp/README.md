@@ -138,9 +138,9 @@ release is a baseline; auto-update kicks in for the release after it. **Never de
 
 ## Things to verify on first build (marked `TODO` in code)
 
-1. **libghostty pin** (`project.yml`): `libghostty-spm`'s `GhosttyKit` xcframework pinned to
-   `exactVersion: 1.2.3`. The embedding C API is not yet stable, so pin EXACT — don't float it.
-   Pre-GA: move to a self-built xcframework from a pinned Ghostty fork. ✓ the app builds + links.
+1. **libghostty pin**: `libghostty-spm`'s `GhosttyKit` xcframework, pinned EXACT because the
+   embedding C API is not yet stable. `project.yml` is the single source of truth for the package
+   version and the ghostty engine it's built from — don't restate them here. ✓ the app builds + links.
 2. **Terminal teardown** (`TerminalSessions` → `GhosttySurfaceView.tearDown`): ✓ frees the
    surface via `ghostty_surface_free` (callbacks cleared first). Still worth a runtime check:
    switch/delete workrooms repeatedly and confirm no orphaned shells in `ps`.

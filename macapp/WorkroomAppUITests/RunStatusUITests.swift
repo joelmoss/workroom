@@ -4,7 +4,7 @@ import XCTest
 /// `RunCommandTests`, these drive a REAL run command in the fixture workroom (a temp dir), so the
 /// integration seams the unit tests bypass get end-to-end coverage:
 ///   1. a real non-zero exit → the failed run icon (the wrapper records the code; libghostty's own
-///      child-exit code is unreliable in GhosttyKit 1.2.3, so this proves the recorded-code path).
+///      child-exit code is unreliable in the pinned GhosttyKit, so this proves the recorded-code path).
 ///   2. in-pane ⌃C → `onInterrupt` → NOT a failure (the `keyDown`/NSEvent wiring the unit tests skip).
 ///
 /// The fixture run command is overridden per-test via `-WorkroomUITestRunCommand`. The run-status
