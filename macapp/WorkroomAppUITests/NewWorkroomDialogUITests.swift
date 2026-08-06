@@ -76,6 +76,23 @@ final class NewWorkroomDialogUITests: XCTestCase {
     app.typeKey(.escape, modifierFlags: [])
   }
 
+  /// The title-bar Open / New Workroom buttons render even with NO tabs in the bar — they're the
+  /// mouse route to a first workroom, so gating them on a tab already existing left a fresh window
+  /// with nothing to click. Launched with the empty fixture, which has no workroom targets and so an
+  /// empty chip run.
+  func testTitleBarWorkroomButtonsRenderWithNoTabs() throws {
+    let app = launchedApp(extraArgs: ["-WorkroomUITestNoProjects", "1"])
+    XCTAssertTrue(
+      app.windows.firstMatch.waitForExistence(timeout: 15),
+      "a window should appear even with no projects")
+    XCTAssertTrue(
+      el(app, "OpenWorkroom").waitForExistence(timeout: 6),
+      "the Open Workroom button should render with an empty tab bar")
+    XCTAssertTrue(
+      el(app, "NewWorkroom").exists,
+      "…and so should the New Workroom button")
+  }
+
   /// Opening New Workroom shows the picker (filter field + the fixture project row); typing a
   /// non-matching query hides the row, and clearing the query brings it back.
   func testDialogOpensListsAndFiltersProjects() throws {

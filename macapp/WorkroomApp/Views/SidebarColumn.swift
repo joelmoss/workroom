@@ -37,9 +37,15 @@ struct SidebarColumn: View {
       .frame(width: width)
       .frame(maxHeight: .infinity)
       // Tighten the gap to the detail panel: 2pt trailing vs the default 8 (mirrors the inspector's
-      // leading 2). `topMargin: 0` sits the card flush below the title bar. `vibrant` matches the
-      // right inspector's frosted `.sidebar` material so both sidebars read as the same surface.
-      .sidebarCard(topMargin: 0, trailingMargin: 2, vibrant: true)
+      // leading 2). Top and bottom take the workroom pane card's own gutter, so this card starts and
+      // ends on the SAME lines as the detail pane beside it — they used to be 4pt out at the top (card
+      // flush at 0 against the pane's 4) and 4pt out at the bottom (the default 8 against that 4),
+      // which reads as a misalignment with the two cards side by side. `vibrant` matches the right
+      // inspector's frosted `.sidebar` material so both sidebars read as the same surface.
+      .sidebarCard(
+        topMargin: WorkroomPaneMetrics.gutter, bottomMargin: WorkroomPaneMetrics.gutter,
+        trailingMargin: 2, vibrant: true
+      )
       // AppKit drag handle over the trailing edge (a SwiftUI gesture doesn't get events over the
       // List reliably). 12pt hit area with a resize cursor.
       .overlay(alignment: .trailing) {

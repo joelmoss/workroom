@@ -17,7 +17,11 @@ struct ActivityBar: View {
   // read from the `ThemeService` singleton, which SwiftUI doesn't observe on its own).
   @State private var themeTick = 0
   private let theme = ThemeService.shared
-  private let width: CGFloat = 44
+  /// The rail's width. Not private: it's the trailing-most column of the window, so the title bar's
+  /// trailing controls centre their last button over this rail's icon column
+  /// (`TrailingTitlebarBar.trailingInset`) — the two are directly above one another and a hand-copied
+  /// number would drift.
+  static let width: CGFloat = 44
 
   var body: some View {
     VStack(spacing: 2) {
@@ -41,7 +45,7 @@ struct ActivityBar: View {
       NotificationsBarButton()
     }
     .padding(.vertical, 6)
-    .frame(width: width)
+    .frame(width: Self.width)
     .frame(maxHeight: .infinity)
     .background(theme.tokens.panel)
     .onReceive(NotificationCenter.default.publisher(for: .themeDidChange)) { _ in themeTick += 1 }

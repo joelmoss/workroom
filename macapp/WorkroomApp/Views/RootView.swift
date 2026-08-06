@@ -69,7 +69,7 @@ struct RootView: View {
       workroomTabsBar
       TrailingTitlebarBar()
     }
-    .padding(.horizontal, 8)
+    .padding(.horizontal, WorkroomTitlebar.outerInset)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     // No own background — the accessory is transparent so the window's panel bg shows through it AND
     // behind the traffic lights uniformly (an opaque fill here didn't match the titlebar strip behind
@@ -95,22 +95,19 @@ struct RootView: View {
       reduceMotion ? nil : DialogOverlayStyle.revealAnimation, value: store.activePicker != nil)
   }
 
-  @ViewBuilder private var workroomTabsBar: some View {
-    let tabs = store.displayedWorkroomTargets()
-    // Show the bar during a create even before any tab resolves (issue #116) — it hosts the
-    // provisional "Creating…" chip, so the bar can't be hidden just because `tabs` is still empty.
-    if !tabs.isEmpty || store.creation != nil {
-      WorkroomTabBar(
-        tabs: tabs, selectedID: store.selectedTargetID,
-        onSelect: { selectWorkroomTab($0) },
-        chipPaneDrag: $workroomChipDrag,
-        localize: { workroomChipLocal($0) },
-        dropTarget: { workroomChipDropTarget(at: $0) }
-      )
-      .frame(maxWidth: .infinity)
-    } else {
-      Spacer(minLength: 0)
-    }
+  private var workroomTabsBar: some View {
+    // ALWAYS mounted, even with no tabs: its trailing Open/New buttons are how you get your first
+    // workroom open in a fresh window, so they can't be gated on a tab already existing. (It also
+    // hosts the provisional "Creating…" chip before any tab resolves — issue #116.) With an empty
+    // run the bar is just those two buttons over the draggable title bar.
+    WorkroomTabBar(
+      tabs: store.displayedWorkroomTargets(), selectedID: store.selectedTargetID,
+      onSelect: { selectWorkroomTab($0) },
+      chipPaneDrag: $workroomChipDrag,
+      localize: { workroomChipLocal($0) },
+      dropTarget: { workroomChipDropTarget(at: $0) }
+    )
+    .frame(maxWidth: .infinity)
   }
 
   /// The two-column `NavigationSplitView` core (sidebar + detail/inspector). The window chrome, modal

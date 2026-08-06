@@ -16,8 +16,8 @@ extension View {
   // content (a popover-style drop shadow), vs the subtle inset shadow the docked card uses.
   func sidebarCard(
     cornerRadius: CGFloat = 10, margin: CGFloat = 8, topMargin: CGFloat? = nil,
-    leadingMargin: CGFloat? = nil, trailingMargin: CGFloat? = nil, vibrant: Bool = false,
-    elevated: Bool = false
+    bottomMargin: CGFloat? = nil, leadingMargin: CGFloat? = nil, trailingMargin: CGFloat? = nil,
+    vibrant: Bool = false, elevated: Bool = false
   )
     -> some View
   {
@@ -51,7 +51,10 @@ extension View {
       // tightens the gap to the detail panel without pulling its outer (trailing) edge off the window.
       .padding(.leading, leadingMargin ?? margin)
       .padding(.trailing, trailingMargin ?? margin)
-      .padding(.bottom, margin)
+      // `bottomMargin`, like `topMargin`, overrides one edge only: the docked columns match the
+      // workroom pane card's gutter top AND bottom so the three columns' cards share both lines,
+      // while their outer (window-facing) edges keep the wider `margin`.
+      .padding(.bottom, bottomMargin ?? margin)
       .padding(.top, topMargin ?? margin)
   }
 }

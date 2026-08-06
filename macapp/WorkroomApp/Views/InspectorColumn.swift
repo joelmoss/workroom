@@ -33,7 +33,12 @@ struct InspectorColumn: View {
       .frame(maxHeight: .infinity)
       // Tighten the gap to the detail panel: 2pt leading vs the default 8 (the detail panel keeps its
       // own trailing pad), while the trailing margin stays 8 to match the left sidebar's window inset.
-      .sidebarCard(topMargin: 0, leadingMargin: 2, vibrant: true)
+      // Top and bottom take the workroom pane card's gutter, so this card's edges land on the same
+      // lines as the detail pane's and the left sidebar's — see `SidebarColumn`.
+      .sidebarCard(
+        topMargin: WorkroomPaneMetrics.gutter, bottomMargin: WorkroomPaneMetrics.gutter,
+        leadingMargin: 2, vibrant: true
+      )
       // AppKit drag handle over the leading edge (a SwiftUI gesture doesn't get events over the
       // AppKit inspector). 12pt hit area with a resize cursor.
       .overlay(alignment: .leading) {

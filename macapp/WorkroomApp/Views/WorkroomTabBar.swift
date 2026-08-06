@@ -8,6 +8,10 @@ import SwiftUI
 /// No per-chip close button: a tab vanishes when its terminals are closed, and closing-as-kill would
 /// defeat the parallel-monitoring purpose.
 ///
+/// The bar is mounted whether or not there are any tabs: its trailing controls are how a fresh window
+/// opens its first workroom, so an empty run still shows them (over the otherwise bare, draggable
+/// title bar).
+///
 /// The trailing controls (open-workroom + "+") are **adaptive** (issue #129), mirroring
 /// `TerminalTabStrip`: they sit inline hugging the last chip while everything fits, and pin at the
 /// bar's trailing edge once the chips overflow, so the "+" is never scrolled out of reach. They move as
@@ -47,10 +51,12 @@ struct WorkroomTabBar: View {
   /// Whether the hairline before the trailing controls shows. Hidden when the last tab stands apart on
   /// its own (selected or hovered — its filled pill already separates it), when it's in a split group
   /// (the `splitWell` bracket frames it, so a divider would double against its rounded edge), and once
-  /// the controls have pinned (issue #129): the fade and gutter already separate the regions.
+  /// the controls have pinned (issue #129): the fade and gutter already separate the regions. Hidden
+  /// too when the run is empty — the bar is mounted with no tabs at all (a fresh window), and a
+  /// hairline with nothing to its left is a divider between nothing and the buttons.
   private func showsTrailingDivider(overflowing: Bool, groupOf: [SidebarID: Int]) -> Bool {
     guard !overflowing else { return false }
-    guard let last = tabs.last else { return true }
+    guard let last = tabs.last else { return provisionalCreation != nil }
     return groupOf[last.sid] == nil && last.sid != selectedID && last.sid != hoveredID
   }
 
@@ -348,57 +354,63 @@ struct WorkroomTabBar: View {
     }
   }
 
+  /// The glyph box inside each trailing button's hover well. **Fixed**, not the symbol's intrinsic
+  /// size: "chevron.down" is wide and short where "plus" is square, so sizing each well off its own
+  /// glyph gave the two side-by-side buttons visibly different wells and different hit areas (the
+  /// chevron's was several points shorter). Both glyphs fit inside 13pt at `.system(size: 11)`.
+  private static let glyphBox: CGFloat = 13
+
   /// The "new workroom" (+) button — raises the New Workroom picker (`requestNewWorkroomPicker`, the
   /// same flag File ▸ New Workroom / ⌘N sets). Styled like the terminal strip's `addTerminalButton`:
-  /// a hover-washed rounded glyph. Shown only alongside open tabs (the bar itself is hidden when
-  /// nothing's open), so it's icon-only.
+  /// a hover-washed rounded glyph. Icon-only, and present even with no tabs open — it and ⌘O are the
+  /// mouse route to a first workroom in a fresh window.
   private var addWorkroomButton: some View {
-    Button {
-      store.requestNewWorkroomPicker = true
-    } label: {
-      Image(systemName: "plus")
-        .font(.system(size: 11))
-        .foregroundStyle(.secondary)
-        .padding(4)
-        .background(
-          RoundedRectangle(cornerRadius: 5)
-            .fill(ThemeService.shared.tokens.hover.opacity(addHovering ? 1 : 0))
-        )
-        // The whole padded glyph (the hover well's area) is clickable/hoverable, not just the "+" —
-        // the transparent padding wouldn't hit-test on its own.
-        .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
-    .onHover { addHovering = $0 }
-    .padding(.leading, 2)
-    .help("New workroom (⌘N)")
-    .accessibilityLabel("New workroom")
-    .accessibilityIdentifier("NewWorkroom")
+    glyphButton(
+      "plus", hovering: addHovering, help: "New workroom (⌘N)", label: "New workroom",
+      identifier: "NewWorkroom",
+      onHover: { addHovering = $0 },
+      action: { store.requestNewWorkroomPicker = true })
   }
 
   /// The "open workroom" button — raises the Open Workroom picker (`requestOpenWorkroomPicker`, the
   /// same flag File ▸ Open workroom… / ⌘O sets). Sits just left of the "+" and shares its exact
   /// size/style (a hover-washed rounded glyph).
   private var openWorkroomButton: some View {
-    Button {
-      store.requestOpenWorkroomPicker = true
-    } label: {
-      Image(systemName: "chevron.down")
+    glyphButton(
+      "chevron.down", hovering: openHovering, help: "Open workroom (⌘O)", label: "Open workroom",
+      identifier: "OpenWorkroom",
+      onHover: { openHovering = $0 },
+      action: { store.requestOpenWorkroomPicker = true })
+  }
+
+  /// One builder for both trailing buttons, so their well and hit area are identical **by
+  /// construction** rather than by two modifier chains that agree today. The glyph is centred in the
+  /// fixed `glyphBox` before the padding, which is what makes the two wells the same size despite the
+  /// symbols not being.
+  private func glyphButton(
+    _ systemName: String, hovering: Bool, help: String, label: String, identifier: String,
+    onHover: @escaping (Bool) -> Void, action: @escaping () -> Void
+  ) -> some View {
+    Button(action: action) {
+      Image(systemName: systemName)
         .font(.system(size: 11))
         .foregroundStyle(.secondary)
+        .frame(width: Self.glyphBox, height: Self.glyphBox)
         .padding(4)
         .background(
           RoundedRectangle(cornerRadius: 5)
-            .fill(ThemeService.shared.tokens.hover.opacity(openHovering ? 1 : 0))
+            .fill(ThemeService.shared.tokens.hover.opacity(hovering ? 1 : 0))
         )
+        // The whole padded glyph (the hover well's area) is clickable/hoverable, not just the symbol —
+        // the transparent padding wouldn't hit-test on its own.
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .onHover { openHovering = $0 }
+    .onHover(perform: onHover)
     .padding(.leading, 2)
-    .help("Open workroom (⌘O)")
-    .accessibilityLabel("Open workroom")
-    .accessibilityIdentifier("OpenWorkroom")
+    .help(help)
+    .accessibilityLabel(label)
+    .accessibilityIdentifier(identifier)
   }
 }
 

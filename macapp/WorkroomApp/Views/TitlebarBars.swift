@@ -13,6 +13,10 @@ enum WorkroomTitlebar {
   static let height: CGFloat = 28
   /// Leading inset so the bar's first control clears the traffic-light cluster.
   static let trafficLightInset: CGFloat = 80
+  /// The accessory row's own outer inset (`RootView.accessoryBarContent`), charged against the window
+  /// edges. Shared because the trailing bar has to subtract it to line its last button up with the
+  /// activity bar below — see `TrailingTitlebarBar.trailingInset`.
+  static let outerInset: CGFloat = 8
 }
 
 /// A transparent backing view that lets a click-drag on the empty parts of the custom title bar
@@ -159,6 +163,19 @@ struct TrailingTitlebarBar: View {
   /// broadcast to every window, and the key-window guard below is what decides which one opens.
   @State private var showThemePicker = false
 
+  /// The row's trailing inset — DERIVED, not chosen: the activity bar (always present, flush to the
+  /// window's trailing edge) is directly below this row, so the last control's well is centred on that
+  /// rail's icon column. Anything else reads as a random gap between the last button and the window
+  /// edge, which is what a hand-set 10pt gave: the button sat ~10pt inboard of the rail's centre line.
+  ///
+  /// = half the rail, less the accessory row's own outer inset and half the well's footprint. `max(0,)`
+  /// so a future narrower rail can only close the gap, never push the button off the row.
+  private static var trailingInset: CGFloat {
+    max(
+      0,
+      ActivityBar.width / 2 - WorkroomTitlebar.outerInset - ToolbarIconButtonStyle.footprint / 2)
+  }
+
   var body: some View {
     HStack(spacing: 6) {
       // A newer version is waiting (Sparkle gentle reminder) — the accent pill leads the trailing
@@ -207,10 +224,9 @@ struct TrailingTitlebarBar: View {
       .accessibilityIdentifier("toolbar.quickTerminal")
     }
     .buttonStyle(ToolbarIconButtonStyle())
-    // Trailing gap so the last control isn't flush to the window edge (previously supplied by the
-    // removed TitlebarControlsBar — the right-sidebar toggle it hosted is redundant with the activity
-    // bar, whose section icons show/collapse the inspector).
-    .padding(.trailing, 10)
+    // Trailing gap, sized so the last control's well centres over the activity bar's icon column
+    // directly below it rather than floating in dead space short of the window edge.
+    .padding(.trailing, Self.trailingInset)
     // Fill the full-height (52pt) accessory host so the HStack centres its buttons — see LeadingTitlebarBar.
     .frame(maxHeight: .infinity)
     // The `Theme…` command (⌘⇧K) can't anchor a popover from a menu, so it posts and this bar — which

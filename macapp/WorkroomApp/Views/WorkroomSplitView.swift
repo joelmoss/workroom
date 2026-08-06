@@ -1,6 +1,16 @@
 import AppKit
 import SwiftUI
 
+/// Geometry the workroom pane cards share with the chrome AROUND them.
+enum WorkroomPaneMetrics {
+  /// The clear gutter on every side of a pane card — between the cards of a split, and between a solo
+  /// card and the window. Also the sidebars' and inspector's top/bottom card margin
+  /// (`SidebarColumn`/`InspectorColumn`), so the three columns' cards start and end on the same lines
+  /// rather than each choosing its own inset; they're side by side, so any difference reads as a
+  /// misalignment.
+  static let gutter: CGFloat = 4
+}
+
 /// A drag from the workroom tab bar into the split content (content-local point + the dragged tab's id).
 struct WorkroomPaneDrag: Equatable {
   let sid: SidebarID
@@ -246,8 +256,9 @@ private struct WorkroomPaneLeaf: View {
       color: .black.opacity(highlighted ? 0.18 : 0.10), radius: highlighted ? 6 : 3, y: 2
     )
     // A clear gutter on every side — between the cards of a split, and between a solo card and the
-    // window. The title bar sits at the pane's top, inside this inset.
-    .padding(EdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4))
+    // window. The title bar sits at the pane's top, inside this inset. Shared with the two sidebar
+    // cards' top/bottom margins so all three columns line up.
+    .padding(WorkroomPaneMetrics.gutter)
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("workroom.pane")
     // Roots aren't workrooms — say what this pane actually is (the chip makes the same distinction).
