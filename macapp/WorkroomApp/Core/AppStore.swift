@@ -575,8 +575,9 @@ final class AppStore: ObservableObject {
   /// Drives the immediate full-pane setup dialog AND the provisional "Creating…" tab chip — both
   /// appear before the CLI has even reported the (generated) name. Per-window, like selection.
   @Published var creation: WorkroomCreation?
-  /// Mirrors whether one of RootView's *view-local* sheets is up (Add Project, Theme Picker, Keyboard
-  /// Shortcuts, What's New). Those four are `@State` in RootView rather than store-level like the
+  /// Mirrors whether one of RootView's *view-local* sheets is up (Add Project, Keyboard Shortcuts,
+  /// What's New — the theme dropdown is a transient popover, not modal, and deliberately NOT counted:
+  /// it closes itself when one of these comes up). Those are `@State` in RootView rather than the
   /// `pending*` ones, so `hasModalPresentation` can't see them directly; RootView keeps this in sync
   /// with a single `onChange`. Deliberately a mirror rather than re-homing the four flags onto the
   /// store: re-homing a local sheet flag to a store-level published item needs a clobber guard to stop

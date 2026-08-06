@@ -275,33 +275,72 @@ final class ThemeServiceTests: XCTestCase {
 
   // MARK: preview cache
 
-  /// The bundled cache must never shadow a user's own theme file. `~/.config` is re-read on every
-  /// call for exactly this reason: a user editing their theme has to see it change.
-  func testUserThemeOverrideIsNotServedFromTheBundledCache() throws {
-    let dir = try bundledThemeDir()
+  /// The bundled cache must never shadow a user's own theme file — asserted by actually writing one.
+  ///
+  /// This is the cache's one real hazard. Bundled files can't change while the app runs, so a cached
+  /// entry can't go stale; a file the USER edits can, which is why `themePreview` reads their dir on
+  /// every call and caches only the bundle. A regression that consulted the cache first would be
+  /// invisible to any test that only inspects `themeDirectories()` — it would still report the user dir
+  /// first while the lookup never reached it.
+  ///
+  /// The override lands in a temp dir via `withUserThemeDirectory`, so this never touches the
+  /// developer's real `~/.config/ghostty/themes`.
+  func testAUserOverrideBeatsAWarmBundledCache() throws {
     let name = try XCTUnwrap(ThemeService.families.first?.dark)
+    let userDir = URL(fileURLWithPath: NSTemporaryDirectory())
+      .appendingPathComponent("workroom-theme-override-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: userDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: userDir) }
 
     ThemeService.resetPreviewCacheForTesting()
-    let bundled = try XCTUnwrap(ThemeService.parseThemeFile(atPath: dir + "/" + name, name: name))
-    // Prime the cache from the bundle.
-    XCTAssertEqual(ThemeService.themePreview(named: name)?.background, bundled.background)
+    // Warm the cache from the bundle first — that is the state the hazard needs.
+    let bundled = try XCTUnwrap(ThemeService.themePreview(named: name))
 
-    // A user override for the same name must win even though the cache is warm. The user dir may
-    // not exist on this machine, so this asserts the *precedence rule* via themeDirectories()
-    // ordering rather than by writing into the real ~/.config.
+    let overridePath = userDir.appendingPathComponent(name).path
+    try "background = #ff00ff\nforeground = #000000\n".write(
+      toFile: overridePath, atomically: true, encoding: .utf8)
+    // Parsed through the same code path as the assertion below, so this can't fail on NSColor
+    // colour-space equality rather than on precedence.
+    let expected = try XCTUnwrap(
+      ThemeService.parseThemeFile(atPath: overridePath, name: name))
+    XCTAssertNotEqual(
+      expected.background, bundled.background, "the fixture must differ from the bundled theme")
+
+    try ThemeService.withUserThemeDirectory(userDir.path) {
+      let resolved = try XCTUnwrap(ThemeService.themePreview(named: name))
+      XCTAssertEqual(
+        resolved.background, expected.background,
+        "the warm bundled cache shadowed the user's own theme file — a theme they edit would appear "
+          + "not to change")
+    }
+
+    // And the bundled theme comes back once the override is gone, so the override can't have poisoned
+    // the cache on its way through.
+    XCTAssertEqual(ThemeService.themePreview(named: name)?.background, bundled.background)
+  }
+
+  /// The search order every other reader relies on. Kept as a separate, honest assertion now that
+  /// `themePreview` resolves the two directories by name instead of by index.
+  func testThemeDirectoriesReportTheUserDirFirst() {
     let dirs = ThemeService.themeDirectories()
     XCTAssertTrue(
-      dirs.first?.hasSuffix("/.config/ghostty/themes") == true,
-      "the user dir must stay first — it is what makes an override win over the cache")
-    XCTAssertGreaterThan(dirs.count, 1, "the bundled dir must still be searched after it")
+      dirs.first?.hasSuffix("/.config/ghostty/themes") == true, "user dir must come first")
+    XCTAssertEqual(dirs.count, 2, "user dir + bundled dir")
+    XCTAssertEqual(dirs.last, ThemeService.bundledThemeDirectory())
   }
 
   func testResetPreviewCacheForTestingClearsIt() throws {
     let name = try XCTUnwrap(ThemeService.families.first?.dark)
-    XCTAssertNotNil(ThemeService.themePreview(named: name))
+    // Reset FIRST: the cache is a process-lifetime static, so without this the test silently inherits
+    // whatever an earlier case in the same process left warm and proves nothing about a cold start.
     ThemeService.resetPreviewCacheForTesting()
-    // Still resolvable after a reset — the cache is an optimisation, never the source of truth.
-    XCTAssertNotNil(ThemeService.themePreview(named: name))
+    let cold = try XCTUnwrap(ThemeService.themePreview(named: name))
+    ThemeService.resetPreviewCacheForTesting()
+    // Same colours after a reset — the cache is an optimisation, never the source of truth, so a
+    // repopulated entry must be indistinguishable from the one it replaced.
+    let repopulated = try XCTUnwrap(ThemeService.themePreview(named: name))
+    XCTAssertEqual(repopulated.background, cold.background)
+    XCTAssertEqual(repopulated.palette, cold.palette)
   }
 
   // MARK: dark/light quick toggle (issue #57)

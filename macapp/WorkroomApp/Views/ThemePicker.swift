@@ -3,19 +3,23 @@ import SwiftUI
 
 /// Theme chooser (issue #36). A searchable list of **families**, each row a dual (light + dark)
 /// swatch — pick one and its variant follows the appearance. ↑/↓ apply families live; the selected
-/// one is scrolled into view on open. Used in Settings and from the `Theme…` (⌘⇧K) command.
+/// one is scrolled into view on open. Both hosts are popovers: the toolbar's theme dropdown
+/// (`TrailingTitlebarBar`, ⌘⇧K) and the Settings row's swatch button.
 struct ThemePicker: View {
+  /// The size this picker frames itself to; both popovers size themselves from the rendered frame.
+  static let contentSize = CGSize(width: 300, height: 420)
+
   private let theme = ThemeService.shared
   @Environment(\.dismiss) private var dismiss
   @Default(.themeFamily) private var familyName
 
-  /// When true (the ⌘⇧K sheet) the view shows a title bar + Done button; embedded in Settings it
-  /// doesn't.
-  var presentedAsSheet = false
-
   @State private var query = ""
   /// Index into `filteredFamilies` of the keyboard-highlighted row (↑/↓ move it, ⏎ applies).
   @State private var highlighted = 0
+  /// Focus on the search field, claimed explicitly on appear rather than left to the host. Without
+  /// focus in this tree nothing works — not typing, and not ↑/↓, which reach `.onKeyPress` only
+  /// through the focused SwiftUI view.
+  @FocusState private var searchFocused: Bool
 
   private var filteredFamilies: [ThemeFamily] {
     let q = query.trimmingCharacters(in: .whitespaces)
@@ -45,16 +49,6 @@ struct ThemePicker: View {
 
   var body: some View {
     VStack(spacing: 0) {
-      if presentedAsSheet {
-        HStack {
-          Text("Theme").font(.headline)
-          Spacer()
-          Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
-        }
-        .padding(12)
-        Divider()
-      }
-
       searchField
 
       ScrollViewReader { proxy in
@@ -92,7 +86,7 @@ struct ThemePicker: View {
         }
       }
     }
-    .frame(width: 300, height: presentedAsSheet ? 460 : 420)
+    .frame(width: Self.contentSize.width, height: Self.contentSize.height)
     // ↑/↓ move through the list and apply the family live; ⏎ dismisses. The search field keeps
     // text focus; single-line fields don't consume the arrow keys, so they bubble here.
     .onKeyPress(.upArrow) {
@@ -107,7 +101,17 @@ struct ThemePicker: View {
       dismiss()
       return .handled
     }
+    // Esc closes too, explicitly rather than trusting the host: a popover's own cancel handling depends
+    // on its behaviour mode, which SwiftUI doesn't expose, and the Settings popover has no other way out
+    // besides clicking away.
+    .onExitCommand { dismiss() }
     .onChange(of: query) { _, _ in highlighted = 0 }
+    // `.task`, not `.onAppear`: it runs after the view is installed in its window, and focus set before
+    // that is dropped — which leaves a picker you can't type into. There is no `await` here, so this is
+    // not a suspension; it relies only on when SwiftUI schedules the task. Both hosts are popovers,
+    // which rebuild their content on each presentation, so `searchFocused` starts false every time and
+    // this can't no-op on a reused view.
+    .task { searchFocused = true }
   }
 
   private var searchField: some View {
@@ -115,6 +119,7 @@ struct ThemePicker: View {
       Image(systemName: "magnifyingglass").foregroundStyle(theme.tokens.fgDim)
       TextField("Search themes", text: $query)
         .textFieldStyle(.plain)
+        .focused($searchFocused)
         .multilineTextAlignment(.leading)
         .frame(maxWidth: .infinity, alignment: .leading)
       if !query.isEmpty {

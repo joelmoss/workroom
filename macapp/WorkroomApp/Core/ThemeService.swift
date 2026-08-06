@@ -235,22 +235,23 @@ final class ThemeService {
   /// SAME precedence as ghostty's terminal resolution, so chrome and terminal never diverge for a
   /// user-overridden theme file.
   nonisolated static func themePreview(named name: String) -> ThemePreview? {
-    // User dir stays uncached and is checked first, preserving both ghostty's precedence and the
-    // ability to edit a theme live.
-    if let userDir = themeDirectories().first {
-      let path = userDir + "/" + name
-      if FileManager.default.fileExists(atPath: path),
-        let theme = parseThemeFile(atPath: path, name: name)
-      {
-        return theme
-      }
+    // The user's dir is checked first and NEVER cached, preserving both ghostty's precedence and the
+    // ability to edit a theme live. Named directly rather than as `themeDirectories().first`: which
+    // entry is user-writable (and therefore uncacheable) is the whole correctness argument for the
+    // cache below, and an index into an array pins nothing — a third directory added at the front
+    // would silently start being cached forever.
+    let userPath = userThemeDirectory() + "/" + name
+    if FileManager.default.fileExists(atPath: userPath),
+      let theme = parseThemeFile(atPath: userPath, name: name)
+    {
+      return theme
     }
 
     bundledPreviewCacheLock.lock()
     defer { bundledPreviewCacheLock.unlock() }
     if let hit = bundledPreviewCache[name] { return hit }
-    for dir in themeDirectories().dropFirst() {
-      let path = dir + "/" + name
+    if let bundledDir = bundledThemeDirectory() {
+      let path = bundledDir + "/" + name
       if FileManager.default.fileExists(atPath: path),
         let theme = parseThemeFile(atPath: path, name: name)
       {
@@ -261,13 +262,55 @@ final class ThemeService {
     return nil
   }
 
-  /// User config dir first (wins on resolution), bundled dir second.
+  /// User config dir first (wins on resolution), bundled dir second. A convenience over the two
+  /// accessors below — `themePreview` deliberately does NOT resolve through this, because the
+  /// user/bundled distinction is what decides cacheability and a position in an array can't carry that.
   nonisolated static func themeDirectories() -> [String] {
-    var dirs = [NSHomeDirectory() + "/.config/ghostty/themes"]
-    if let bundled = Bundle.main.resourceURL?.appendingPathComponent("ghostty/themes").path {
-      dirs.append(bundled)
+    guard let bundled = bundledThemeDirectory() else { return [userThemeDirectory()] }
+    return [userThemeDirectory(), bundled]
+  }
+
+  /// The user's own theme dir — the same `~/.config/ghostty/themes` ghostty itself reads, so a file
+  /// dropped there overrides a bundled theme of the same name in the terminal AND the chrome.
+  /// User-writable, therefore never cached.
+  nonisolated static func userThemeDirectory() -> String {
+    userThemeDirectoryLock.lock()
+    defer { userThemeDirectoryLock.unlock() }
+    return userThemeDirectoryOverride ?? NSHomeDirectory() + "/.config/ghostty/themes"
+  }
+
+  /// The bundled theme dir. Immutable for the process lifetime, which is what makes caching its parsed
+  /// files correct rather than merely fast.
+  nonisolated static func bundledThemeDirectory() -> String? {
+    Bundle.main.resourceURL?.appendingPathComponent("ghostty/themes").path
+  }
+
+  private nonisolated(unsafe) static var userThemeDirectoryOverride: String?
+  private static let userThemeDirectoryLock = NSLock()
+
+  /// Redirect `userThemeDirectory()` at `path` for the duration of `body`. **Tests only.**
+  ///
+  /// This exists because the alternative was untestable: proving "a user's own theme file beats a warm
+  /// bundled cache" needs a real file in the user dir, and the only user dir available was the
+  /// developer's actual `~/.config/ghostty/themes`. The test that stood here before asserted the
+  /// *ordering* of `themeDirectories()` instead and would still have passed if the cache had been
+  /// consulted before the user dir — the exact regression the cache introduced the risk of.
+  ///
+  /// Scoped rather than a settable property so a test can't leak the override into later cases. It is
+  /// process-wide while set, so a concurrent reader in another test class sees it — harmless in
+  /// practice, since a lookup only diverges for a name that exists in `path`.
+  nonisolated static func withUserThemeDirectory<T>(_ path: String, _ body: () throws -> T) rethrows
+    -> T
+  {
+    userThemeDirectoryLock.lock()
+    userThemeDirectoryOverride = path
+    userThemeDirectoryLock.unlock()
+    defer {
+      userThemeDirectoryLock.lock()
+      userThemeDirectoryOverride = nil
+      userThemeDirectoryLock.unlock()
     }
-    return dirs
+    return try body()
   }
 
   // MARK: Theme-file parser (ported from muxy — pure)
@@ -338,7 +381,7 @@ extension Notification.Name {
   /// sites that read `ThemeService.shared.tokens` outside a SwiftUI body can refresh.
   static let themeDidChange = Notification.Name("workroom.themeDidChange")
 
-  /// Posted by the `Theme…` (⌘⇧K) command; `RootView` presents the picker as a sheet (a menu
-  /// command can't anchor a popover).
+  /// Posted by the `Theme…` (⌘⇧K) command; `TrailingTitlebarBar` toggles the dropdown anchored to its
+  /// theme button (a menu command can't anchor a popover itself).
   static let showThemePicker = Notification.Name("workroom.showThemePicker")
 }

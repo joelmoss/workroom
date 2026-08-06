@@ -2,8 +2,9 @@ import Defaults
 import SwiftUI
 
 /// Reference sheet listing every available keyboard shortcut, grouped by area (raised by the
-/// "Keyboard Shortcuts…" command via the `.showKeyboardShortcuts` notification — a menu command
-/// can't anchor a sheet, so `RootView` observes it and presents this, mirroring the Theme… picker).
+/// "Keyboard Shortcuts…" command via the `.showKeyboardShortcuts` notification — a menu command can't
+/// anchor a sheet, so `RootView` observes it and presents this). A sheet is right *here*, unlike the
+/// Theme… dropdown: this is something you read, not something you preview the app against.
 ///
 /// The catalog below is **hand-maintained**: SwiftUI exposes no API to enumerate menu shortcuts, so
 /// any change to `WorkroomCommands` (`WorkroomApp.swift`) or the `AppDelegate` key monitor (⌘1–9,
@@ -175,7 +176,8 @@ extension KeyboardShortcutsView {
 }
 
 /// Posted by the "Keyboard Shortcuts…" command; `RootView` presents this view as a sheet (a menu
-/// command can't anchor one — same pattern as `.showThemePicker`).
+/// command can't anchor one — the same notification hop `.showThemePicker` uses, though that one is
+/// received by the trailing toolbar bar, which owns the button its dropdown hangs off).
 extension Notification.Name {
   static let showKeyboardShortcuts = Notification.Name("workroom.showKeyboardShortcuts")
 }

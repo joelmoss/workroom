@@ -1026,8 +1026,8 @@ struct WorkroomCommands: Commands {
       .keyboardShortcut("f", modifiers: [.command, .option])
       .disabled(modalBlocked)
 
-      // Theme chooser (issue #36). A menu command can't anchor a popover, so it posts a
-      // notification RootView observes to present the picker as a sheet.
+      // Theme chooser (issue #36). A menu command can't anchor a popover, so it posts a notification
+      // that `TrailingTitlebarBar` — which owns the toolbar button the dropdown hangs off — observes.
       Divider()
       Button("Theme…") { NotificationCenter.default.post(name: .showThemePicker, object: nil) }
         .keyboardShortcut("k", modifiers: [.command, .shift])

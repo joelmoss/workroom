@@ -26,11 +26,8 @@ struct RootView: View {
   /// modes: add an existing repo, or create + git-init a new directory.
   @State private var showAddProject = false
 
-  /// Presents the theme picker (issue #36), raised by the `Theme…` (⌘⇧K) command via notification.
-  @State private var showThemePicker = false
-
   /// Presents the keyboard-shortcuts reference, raised by the `Keyboard Shortcuts…` command via
-  /// notification (same menu-can't-anchor-a-sheet pattern as the theme picker).
+  /// notification (a menu command can't anchor a sheet).
   @State private var showKeyboardShortcuts = false
 
   /// The "What's New" dialog's content, or nil when closed. Set by the launch-window auto-check.
@@ -339,15 +336,8 @@ struct RootView: View {
       }
       .onDisappear { ThemeService.shared.unregisterTerminals(store.terminals) }
       .onChange(of: theme) { _ in applyAppearance() }
-      // Present only in the key window — the notification is broadcast to every window's RootView, so
-      // without this guard the sheet would pop in all of them (issue #70, OV #6).
-      .onReceive(NotificationCenter.default.publisher(for: .showThemePicker)) { _ in
-        guard store.hostWindow?.isKeyWindow ?? false else { return }
-        showThemePicker = true
-      }
-      .sheet(isPresented: $showThemePicker) {
-        ThemePicker(presentedAsSheet: true)
-      }
+      // The theme picker is deliberately NOT here: it's a dropdown anchored to a toolbar button
+      // (`TrailingTitlebarBar`), because a sheet is the wrong shape for a live preview.
       .onReceive(NotificationCenter.default.publisher(for: .showKeyboardShortcuts)) { _ in
         guard store.hostWindow?.isKeyWindow ?? false else { return }
         showKeyboardShortcuts = true
@@ -460,9 +450,13 @@ struct RootView: View {
           modalPresented: store.hasModalPresentation))
   }
 
-  /// The four sheets RootView owns as `@State` rather than store state, ORed for the store mirror.
+  /// The sheets RootView owns as `@State` rather than store state, ORed for the store mirror.
+  ///
+  /// The theme panel is absent on purpose: it is not modal. Counting it would make every shortcut and
+  /// menu item inert while it's up, and the whole point of it being a panel is that you keep using the
+  /// app — ⌘⇧L especially — to see what the theme you just picked actually looks like.
   private var auxSheetPresented: Bool {
-    showAddProject || showThemePicker || showKeyboardShortcuts || whatsNewContent != nil
+    showAddProject || showKeyboardShortcuts || whatsNewContent != nil
   }
 
   /// The project path of the selected root or workroom (nil for no selection) — the run command is

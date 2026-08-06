@@ -14,7 +14,7 @@ import XCTest
 /// floors get asserted against.
 ///
 /// The sweep is also what caught the contrast metric itself: `ThemeTokens.luminance` was weighting
-/// gamma-encoded sRGB, so 43 of the 56 themes scored below the body-text floor and 38 of them lost the
+/// gamma-encoded sRGB, so 43 of the then-56 themes scored below the body-text floor and 38 of them lost the
 /// Liquid Glass surface to the opaque fallback. A floor that holds for two fixtures says nothing about the
 /// fiftieth theme.
 @MainActor

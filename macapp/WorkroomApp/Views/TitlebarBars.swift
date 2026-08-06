@@ -151,6 +151,13 @@ struct LeadingTitlebarBar: View {
 /// are reachable too. With no update pending this collapses to just the quick terminal.
 struct TrailingTitlebarBar: View {
   @EnvironmentObject var updater: Updater
+  @EnvironmentObject var store: AppStore
+
+  /// The theme dropdown (issue #36), anchored to its own toolbar button.
+  ///
+  /// Window-local `@State`, like the sheets `RootView` owns: the `Theme…` command's notification is
+  /// broadcast to every window, and the key-window guard below is what decides which one opens.
+  @State private var showThemePicker = false
 
   var body: some View {
     HStack(spacing: 6) {
@@ -163,6 +170,26 @@ struct TrailingTitlebarBar: View {
         UpdateAvailableButton()
         TitlebarDivider()
       }
+
+      // Theme (⌘⇧K) — a dropdown anchored here rather than a sheet or a window of its own, because
+      // picking a theme is a live-preview gesture: ↑/↓ apply families as you move through them, so the
+      // app behind the dropdown IS the preview. A sheet made that impossible twice over (measured on
+      // the real build): its modality had AppKit render the whole window inactive — traffic lights
+      // greyed, the sidebar's VCS dot badges orange → dull brown — and being anchored under the title
+      // bar it sat on top of the content whose colours you were choosing, with nothing to drag.
+      //
+      // A popover is transient, so it needs no dismiss affordance and no modal bookkeeping: clicking
+      // anywhere else closes it, and anything that raises a dialog closes it too (below). It is
+      // therefore deliberately absent from `AppStore.hasModalPresentation`.
+      Button {
+        showThemePicker.toggle()
+      } label: {
+        Image(systemName: "paintpalette")
+      }
+      .help("Theme (⌘⇧K)")
+      .accessibilityLabel("Theme")
+      .accessibilityIdentifier("toolbar.theme")
+      .popover(isPresented: $showThemePicker, arrowEdge: .bottom) { ThemePicker() }
 
       // Quick Terminal (⌥§) — a ~/ shell in its own window. Always present, and since issue #139 moved
       // the selected target's run/open-in actions into the workroom pane title bars, the only control
@@ -186,5 +213,37 @@ struct TrailingTitlebarBar: View {
     .padding(.trailing, 10)
     // Fill the full-height (52pt) accessory host so the HStack centres its buttons — see LeadingTitlebarBar.
     .frame(maxHeight: .infinity)
+    // The `Theme…` command (⌘⇧K) can't anchor a popover from a menu, so it posts and this bar — which
+    // owns the anchor — presents. Guarded on the key window because the post reaches every window's
+    // accessory; toggling means the shortcut closes the dropdown as well as opening it.
+    //
+    // The guard and the toggle only compose because a popover does NOT take key from the window it is
+    // attached to — measured: with the dropdown open and its search field holding first responder,
+    // ⌘⇧K still closes it, so `isKeyWindow` was still true. If that ever changed, the shortcut could
+    // open the dropdown and then never close it, which is why `ThemePickerUITests` presses ⌘⇧K twice.
+    .onReceive(NotificationCenter.default.publisher(for: .showThemePicker)) { _ in
+      guard store.hostWindow?.isKeyWindow ?? false else { return }
+      showThemePicker.toggle()
+    }
+    // A popover dismisses itself on a click outside, but a *keyboard* command never sends that click, so
+    // the two window-level changes a command can make close it explicitly: a dialog or sheet coming up
+    // (a dropdown hanging over a modal is confusing and unreachable past), and the selection moving
+    // (⌥⌘digit, the quick switchers), which a stale dropdown would be sitting on top of.
+    //
+    // Deliberately NOT exhaustive, so don't read it as "any keystroke closes it": ⌘⇧L (flip light/dark)
+    // and ⌘1–9 (focus a terminal tab) change neither value and leave the dropdown up. ⌘⇧L especially is
+    // the point — flipping appearance with the picker still open is how you check a family's other
+    // variant.
+    .onChange(of: store.hasModalPresentation) { _, blocked in
+      if blocked { showThemePicker = false }
+    }
+    // Only a real navigation BETWEEN two targets closes it. Both transitions involving nil are
+    // background events that would otherwise yank away a dropdown the user just opened: `selectedTargetID`
+    // is nil until the project list resolves and is then filled from the persisted selection
+    // (`AppStore` — "a restore that loses the race to a user click"), and a reload that finds the selected
+    // workroom gone nils it back out. Neither is the user navigating.
+    .onChange(of: store.selectedTargetID) { old, new in
+      if old != nil, new != nil { showThemePicker = false }
+    }
   }
 }
