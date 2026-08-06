@@ -767,6 +767,20 @@ struct WorkroomStatusResolver: Sendable {
     }
     // Empty stdout (gh wrote nothing): distinguish gh-missing / transient blip / hard absence.
     if r.timedOut { return .keepPrior }
+    // Killed rather than finished (cancelled lane, jetsam, crash, sleep/wake signal), with nothing
+    // to show for it. `exitCode` is a signal number, so every test below reads a lie: 9/15 is
+    // neither 127 nor a gh error message, and the `.absent` fallback would blank the rows AND stamp
+    // `checksCheckedAt` — which is the loaded marker `PullRequestPanel.checksSummaryGlyph` and
+    // `PRPresentation.isFailing` read to stop falling back to the branch CI aggregate. So a killed
+    // probe would render a FAILING pr as green, and stay that way until the row is selected again
+    // (`resolveChecks` runs only from `scheduleSelectedStatusRefresh`; no sweep refills it).
+    //
+    // Placed AFTER `timedOut` (the timeout SIGTERMs the child, so a timeout also sets `signaled`)
+    // and after the stdout parse above (a child that emitted a COMPLETE payload and was killed
+    // afterwards really did tell us something — don't discard evidence). Same ordering, and the same
+    // reasoning, as `classifyGitHubCLI`; `ghPreflight` — which this classifier deliberately does not
+    // use, because `gh pr checks` overloads its exit code — carries the sibling check.
+    if r.signaled { return .keepPrior }
     if r.exitCode == CommandResult.commandNotFound { return .absent }  // gh not installed
     let lowerErr = r.stderr.lowercased()
     if lowerErr.contains("rate limit") || lowerErr.contains("503") || lowerErr.contains("timeout") {

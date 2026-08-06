@@ -975,6 +975,27 @@ final class WorkroomStatusResolverTests: XCTestCase {
     XCTAssertEqual(WorkroomStatusResolver.classifyChecks(ok("not json")), .keepPrior)
   }
 
+  /// A KILLED child (SIGKILL/SIGTERM from a cancelled lane, jetsam, a crash, sleep/wake) wrote
+  /// nothing, so its exit code is a signal number and not evidence of anything. Without this the
+  /// `.absent` fallback blanked the rows AND stamped `checksCheckedAt`, which makes the panel treat
+  /// the empty list as authoritative — a failing PR rendered green until the row was re-selected.
+  func testClassifyChecksSignaledKeepsPrior() {
+    let r = CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
+    XCTAssertEqual(WorkroomStatusResolver.classifyChecks(r), .keepPrior)
+  }
+
+  /// ORDERING LOCK: a killed child that had already written a COMPLETE payload really did report
+  /// the checks, so the parse wins over `signaled`. Guards the placement of the `signaled` branch
+  /// AFTER the stdout parse — moving it earlier would discard a good answer.
+  func testClassifyChecksSignaledWithCompletePayloadStillParses() {
+    let json = #"[{"name":"build","bucket":"fail"}]"#
+    let r = CommandResult(stdout: json, stderr: "", exitCode: 9, timedOut: false, signaled: true)
+    guard case .list(let checks) = WorkroomStatusResolver.classifyChecks(r) else {
+      return XCTFail("expected .list")
+    }
+    XCTAssertEqual(checks.map(\.state), [.failing])
+  }
+
   // MARK: - resolveChecks (end-to-end via the mock)
 
   /// git: `gh pr checks <number>` runs in the workroom path with the right args.
