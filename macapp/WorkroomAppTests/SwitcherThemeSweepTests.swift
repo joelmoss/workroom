@@ -10,7 +10,7 @@ import XCTest
 /// hues, the accent, the two diff foregrounds and the dimmed subtitle are all computed from whatever
 /// `background`/`foreground`/ANSI palette a theme file happens to carry — and the ways that goes wrong are
 /// specific to real palettes: a near-monochrome theme, a theme whose ANSI blue is nearly its background, a
-/// light theme with a pale accent. The 56 bundled themes ARE the product's input set, so they are what the
+/// light theme with a pale accent. The 116 bundled themes ARE the product's input set, so they are what the
 /// floors get asserted against.
 ///
 /// The sweep is also what caught the contrast metric itself: `ThemeTokens.luminance` was weighting
@@ -32,7 +32,7 @@ final class SwitcherThemeSweepTests: XCTestCase {
       ThemeService.parseThemeFile(atPath: root.path + "/" + $0, name: $0)
     }
     XCTAssertGreaterThan(
-      themes.count, 40, "the bundled set is ~56 themes; a near-empty sweep is a bug")
+      themes.count, 100, "the bundled set is 116 themes; a near-empty sweep is a bug")
     return themes
   }
 
@@ -68,8 +68,10 @@ final class SwitcherThemeSweepTests: XCTestCase {
         nearMiss.append(theme.name)
       }
     }
-    // Measured at the time of writing: 1 fallback (iTerm2 Solarized Light, 3.90:1) and 3 in the band
-    // (Everforest Light Med 4.39, TokyoNight Day 4.25, iTerm2 Solarized Dark 4.35).
+    // Measured, and unchanged by the 27→58 family expansion (the 31 added families were swept before
+    // being registered): 1 fallback (iTerm2 Solarized Light, 3.90:1) and 3 in the band (Everforest
+    // Light Med 4.39, TokyoNight Day 4.25, iTerm2 Solarized Dark 4.35). The counts below are absolute
+    // rather than proportional on purpose — doubling the theme set must not double the tolerance.
     XCTAssertLessThanOrEqual(
       fellBack.count, 4,
       "the opaque fallback is the exception, not the rule — fell back: \(fellBack)")

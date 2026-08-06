@@ -276,7 +276,7 @@ final class SwitcherRailLayoutTests: XCTestCase {
     // white text, sized so the ratio lands in the 4.0–4.5 band: the card is `bg` blended 5.5%
     // toward `fg`, so an encoded 0.44 background yields a 0.47 card at 4.41:1 against white.
     //
-    // Three of the 56 bundled themes really do live in this band (Everforest Light Med, TokyoNight Day,
+    // Three of the 116 bundled themes really do live in this band (Everforest Light Med, TokyoNight Day,
     // iTerm2 Solarized Dark) — see `SwitcherThemeSweepTests`. This fixture is the arithmetic; those are
     // the product's own evidence that the band is worth having.
     let midTone = ThemeTokens(

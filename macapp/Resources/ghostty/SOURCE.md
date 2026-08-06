@@ -9,9 +9,12 @@
 - `shell-integration/` — per-shell scripts Ghostty auto-injects; these report OSC 7 pwd
   (the cwd source for ⌘-click path resolution — see plan CMT-1) and more.
 
-- `themes/` — **ours, not upstream's.** 56 curated theme files whose names `ThemeService.families`
-  parses, plus the two hand-authored `Workroom` themes. Do NOT regenerate this directory from a
-  ghostty checkout; it would break the theme picker.
+- `themes/` — **ours, not upstream's.** 116 curated theme files whose names `ThemeService.families`
+  parses — 114 vendored from iTerm2-Color-Schemes plus the two hand-authored `Workroom` themes,
+  forming 58 dark/light families. Do NOT regenerate this directory from a ghostty checkout; it would
+  break the theme picker. Unlike the two directories below, this one's provenance IS recorded:
+  `themes/SOURCE.md` pins the upstream commit and `themes/CHECKSUMS` pins the bytes, verified by a
+  test.
 
 The `libghostty-spm` package ships no terminfo or shell-integration, so those are vendored here.
 **Their provenance is unrecorded** — "a recent Ghostty build", no ref, no sha — and they are a

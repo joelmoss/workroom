@@ -233,9 +233,11 @@ only checks the directory exists, so if that contract moved, OSC 7 and OSC 133 d
 taking ⌘-click path resolution, tab titles, and the busy indicator with them. There is no error, no
 log, and no test: the terminal just quietly stops reporting things.
 
-**Trap:** `themes/` in that directory is **ours**, not upstream's — 56 curated files (`8fd7fa19`,
-`602b5aa3`) whose filenames `ThemeService.families` parses. Regenerating it breaks theming. Scope the
-regeneration to `terminfo/` and `shell-integration/`.
+**Trap:** `themes/` in that directory is **ours**, not upstream's — 116 curated files (`8fd7fa19`,
+`602b5aa3`, and the 27→58 family expansion) whose filenames `ThemeService.families` parses.
+Regenerating it breaks theming. Scope the regeneration to `terminfo/` and `shell-integration/`.
+Unlike those two, `themes/` records its own provenance (`themes/SOURCE.md` pins the upstream commit,
+`themes/CHECKSUMS` pins the bytes), so refreshing it is a real diff rather than a re-vendor.
 
 **Watch first:** `libghostty-spm` PR #43 proposes shipping compiled terminfo + shell-integration from
 the package itself, pointing `GHOSTTY_RESOURCES_DIR` at the package bundle. If that merges, this
@@ -1334,6 +1336,115 @@ collides with a bundled family.
 **Depends on:** the #36 families model shipping first (done).
 
 **Priority:** P3 (bundled families cover the common case; this is for users with custom schemes).
+
+**Prior art (2026-08-06):** the 27→58 family expansion built and threw away exactly this heuristic
+offline — suffix pairing (`X Dark`/`X Light`, `X`/`X Light`, `X Night`/`X Day`) over 604 candidate
+files, plus dark/light classification by `perceivedBrightness(background) > 0.5`. It found 58 pair-
+complete clusters. It also showed what a naive version adopts: another product's brand pair (`Muxy`),
+a theme that fails the rail's contrast floor (`Violet Dark`, 3.94:1), six stock black-on-white
+terminal defaults, and a byte-identical duplicate (`Zenbones` ≡ `Zenbones Light`). So the heuristic is
+the easy half; the deny-list and a contrast gate are the real work.
+
+### Use ghostty's native `theme = dark:<X>,light:<Y>` syntax (macapp)
+
+**What:** Replace our rewrite-the-conf-on-every-appearance-change path with the engine's own
+per-appearance theme selection.
+
+**Why:** libghostty accepts `theme = dark:<X>,light:<Y>` and picks the variant itself. We instead
+write a single `theme = "<name>"` and, on every appearance change, rewrite
+`~/Library/Application Support/Workroom/ghostty.conf`, then `ghostty_config_load_file`,
+`ghostty_app_update_config`, then `updateConfig` on every surface
+(`GhosttyApp.swift` `writeThemeConfig`, `TerminalSessions.applyThemeToAll`). Muxy already uses the
+native form (`muxy/Muxy/Services/ThemeService.swift` `parseThemeSelection`). Rolling our own where a
+built-in exists is the finding.
+
+**Pros:** deletes a hand-rolled apply path; removes the force-reload from every light/dark flip, which
+is the most frequent theme operation there is.
+
+**Cons:** the *chrome* still needs to know which variant is active, so `ThemeService.activeThemeName`
+and its parse stay either way — the win is narrower than it first looks. Also couples us to a config
+syntax the embedding C API doesn't version.
+
+**How to start:** verify the pinned GhosttyKit accepts the two-variant form for new AND live surfaces
+before committing (the pin is exact — see `project.yml`). Then `writeThemeConfig` emits both names once
+and `applyThemeToAll` stops needing `force: true` on appearance changes.
+
+**Priority:** P2 (removes a whole class of reload churn; no user-visible feature).
+
+### Profile and fix the theme picker's invalidation storm (macapp)
+
+**What:** Measure the picker's per-keypress cost, then stop every row re-rendering on every apply.
+
+**Why:** `FamilyRow` holds `ThemeService.shared` and reads `theme.tokens`, while each ↑/↓ calls
+`applyFamily`, which replaces `tokens` — so one arrow press invalidates every instantiated row. The
+2026-08-06 change cached bundled theme previews, which removed the disk reads (up to 116 synchronous
+file reads per keypress at 58 families) but **not** the re-render. This is the shape of the logged
+WORKROOM-2B App Hang, and the repo already has the proven remedy: pass the needed values down instead
+of observing the service, then `Equatable` + `.equatable()` on the row.
+
+**Pros:** the remedy is known and cheap; arrow-browsing a 58-row list is now a real user behaviour.
+
+**Cons:** the picker is a transient sheet, so the payoff is smaller than it was for `HistoryPanel`'s
+200-row list. Measure first — the cache may already have made it imperceptible.
+
+**Depends on:** the preview cache (landed 2026-08-06).
+
+**Priority:** P3.
+
+### Ship the remaining vetted theme families (macapp)
+
+**What:** Three accessibility families — `GitHub Colorblind`, `Pierre`, `Adwaita` — and ten
+same-family shade variants: Catppuccin Frappé + Macchiato, Tokyo Night Storm + Moon, Rosé Pine Moon,
+Kanagawa Dragon, Gruvbox Hard, Modus Tinted, GitHub Dimmed, Nord Wave.
+
+**Why:** all were swept against the real contrast floors during the 2026-08-06 expansion and came back
+clean, so the measurement work is already done. The ten variants need only **one** new file each — the
+light side already ships.
+
+**Pros:** near-zero cost per family; accessibility is the one need in the recorded inclusion criterion
+(`Resources/ghostty/themes/SOURCE.md`) that stays thinly served even after `GitHub High Contrast` and
+`Xcode High Contrast` landed.
+
+**Cons:** criterion rule 3 (distinct palette, not a shade of one we ship) argues *against* the ten
+variants — they are exactly what that rule was written to exclude. Record that tension rather than
+pretending the criterion endorses them. The a11y families' light sides are plain `#ffffff`.
+
+**How to start:** re-run the sweep before shipping — upstream theme files move, and `themes/CHECKSUMS`
+pins only what we already vendored.
+
+**Priority:** P3.
+
+### Report the gstack codex outside-voice fix upstream
+
+**What:** File upstream: `plan-eng-review`, `plan-ceo-review` and `plan-design-review` never got the
+codex timeout wrapper their own CHANGELOG claims is universal, and `--enable web_search_cached` is
+deprecated in codex 0.146.0.
+
+**Why:** measured 2026-08-06 — the outside voice never completed in 330s and was denied outright inside
+the command sandbox; a fixed invocation runs in 104s. `CHANGELOG.md` claims "every `codex exec` /
+`codex review` now runs under a 10-minute timeout wrapper", but those three skills had **zero**
+`_gstack_codex_timeout_wrapper` uses (`codex/SKILL.md` uses 330s, `autoplan/SKILL.md` 600s). Codex
+0.146 also prints `deprecated: [features].web_search_cached … web search is enabled by default`, so the
+flag silently bought live web search that a plan review never wanted, at 10 call sites.
+
+**Second, larger finding:** `/codex` and `/autoplan` call `_gstack_codex_timeout_wrapper` from Bash
+blocks that never `source` the probe. Bash functions do not survive across tool calls — the probe file
+says so itself — so the wrapper is undefined there and the invocation dies with exit 127. This likely
+explains the review-log entries recording `"source":"claude"` instead of `"source":"codex"`: the codex
+call fails and the skill silently falls back to the Claude subagent.
+
+**Pros:** fixes it for every gstack user; our local patch survives `gstack-upgrade` only if upstream
+takes it.
+
+**Cons:** upstream may have context we lack for why those three were left on a bare Bash timeout.
+
+**Also worth reporting, but to Claude Code rather than gstack:** `sandbox.excludedCommands: ["codex"]`
+in `~/.claude/settings.json` does not exempt codex from the *filesystem* sandbox — verified, a bare
+`codex` command still had a `/tmp` write denied. The working fix was adding `~/.codex` to
+`sandbox.filesystem.allowWrite` (codex fails with `failed to initialize in-process app-server client:
+Operation not permitted` without it).
+
+**Priority:** P2 (cheap, and it unblocks a review step that currently degrades silently).
 
 ## P3 — Pull requests and GitHub
 

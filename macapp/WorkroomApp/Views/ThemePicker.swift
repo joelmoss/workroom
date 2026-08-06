@@ -166,8 +166,8 @@ private struct FamilyRow: View {
         }
       }
       HStack(spacing: 4) {
-        Swatch(preview: dark)
-        Swatch(preview: light)
+        Swatch(preview: dark, variantName: family.dark)
+        Swatch(preview: light, variantName: family.light)
       }
       .frame(height: 16)
     }
@@ -189,6 +189,17 @@ private struct FamilyRow: View {
           lineWidth: 1.5)
     )
     .onHover { hovered = $0 }
+    // Queryable by `ThemePickerUITests`. Two things here are load-bearing and were both found by
+    // running the test rather than by reasoning:
+    //
+    // `children: .contain` — WITHOUT it, an identifier on this container makes the row an a11y LEAF:
+    // the identifier propagates to every descendant (four elements answered to the same one) and
+    // `row.descendants(...)` came back empty, so the per-swatch assertions could never see anything.
+    //
+    // The identifier goes on the SwiftUI row, never on an `NSViewRepresentable` wrapper — an
+    // identifier set on a wrapper isn't reachable from XCUITest at all.
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("theme-family-\(family.name)")
   }
 }
 
@@ -197,6 +208,10 @@ private struct FamilyRow: View {
 private struct Swatch: View {
   private let theme = ThemeService.shared
   let preview: ThemePreview?
+  /// The variant's theme-file name. Carried purely so the swatch can report, through accessibility,
+  /// *which* file it is drawing and whether that file resolved — the visible symptom of a registry
+  /// typo is a grey fallback swatch, and that is the one failure a bundle-reading unit test can't see.
+  let variantName: String
 
   var body: some View {
     HStack(spacing: 0) {
@@ -214,5 +229,11 @@ private struct Swatch: View {
     }
     .clipShape(RoundedRectangle(cornerRadius: 3))
     .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(theme.tokens.border, lineWidth: 0.5))
+    .accessibilityElement()
+    // Resolution state rides the IDENTIFIER, not `accessibilityValue`: a value set on a
+    // non-control element like this one comes back empty through XCUIElement (measured), while
+    // identifiers are reliably queryable.
+    .accessibilityIdentifier(
+      "theme-swatch-\(variantName)-\(preview == nil ? "unresolved" : "resolved")")
   }
 }

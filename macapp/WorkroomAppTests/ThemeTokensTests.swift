@@ -94,8 +94,9 @@ final class ThemeTokensTests: XCTestCase {
   ///
   /// Not a pedantic distinction. Weighting encoded components inflates dark colours (`#2e3440` reads 0.20
   /// against a true 0.033), which collapses dark-background/light-text ratios: the switcher rail's name
-  /// text measured under 4.5:1 for 43 of the 56 bundled themes on the old formula and for 3 on this one,
-  /// and its "this theme is unreadable, drop the material" fallback was firing for 38 legible themes.
+  /// text measured under 4.5:1 for 43 of the then-56 bundled themes on the old formula and for 3 on this
+  /// one, and its "this theme is unreadable, drop the material" fallback was firing for 38 legible themes.
+  /// (Those counts are the historical measurement that exposed the bug; the set is 116 themes today.)
   func testLuminanceIsWCAGWhileBrightnessStaysPerceptual() {
     XCTAssertEqual(ThemeTokens.luminance(of: ns("#808080")), 0.216, accuracy: 0.005)
     XCTAssertEqual(ThemeTokens.perceivedBrightness(of: ns("#808080")), 0.502, accuracy: 0.005)

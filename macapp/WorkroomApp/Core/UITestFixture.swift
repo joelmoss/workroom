@@ -442,6 +442,21 @@ enum UITestFixture {
     return DiffViewMode(rawValue: raw) ?? .unified
   }
 
+  /// The theme family every fixture launch starts on
+  /// (`-WorkroomUITestThemeFamily "<family name>"`). Unset (or unknown) = the `Workroom` default.
+  ///
+  /// This exists so `ThemePickerUITests` never has to touch the theme preference from the *runner*
+  /// process. `Defaults` is not isolated by a throwaway `$HOME` — cfprefsd resolves the real one — so
+  /// a runner-side save/restore would be writing the developer's actual pref and racing the app for
+  /// it. And a bare `-themeFamily` launch argument is worse than useless: argument-domain values
+  /// outrank the app domain, so it would pin the theme and shadow every later write, exactly as
+  /// documented for `showInspector` above. A fixture-namespaced argument mirrored into `Defaults` by
+  /// `applyFixtureDefaults` avoids both traps.
+  static var themeFamily: String {
+    let raw = text("WorkroomUITestThemeFamily") ?? ""
+    return ThemeService.family(named: raw) != nil ? raw : ThemeService.defaultFamilyName
+  }
+
   /// Force a deterministic **UI** state in fixture mode: the inspector open, parked on
   /// `inspectorSection` with every section expanded, and the diff viewer in `diffViewMode`. Must be
   /// called before any `AppStore` is built (`WorkroomApp.init`), because `activeInspectorSection` and
@@ -491,6 +506,10 @@ enum UITestFixture {
     // evidence and this stamp, so a leftover value silently overrode a seeded `.never` and the
     // never-fetched state reported "just now" instead.
     Defaults[.vcsLastFetch] = [:]
+    // The theme family, for the same reason as the collapse state and the fetch stamps: it PERSISTS.
+    // Without this a theme test inherits whatever the developer last picked, and a test that applies
+    // a theme leaves it applied for the next run.
+    Defaults[.themeFamily] = themeFamily
   }
 
   /// The fake project list. Idempotent within a launch: the backing temp directories are created if
