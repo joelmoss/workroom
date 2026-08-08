@@ -127,6 +127,56 @@ final class ScrollbackSidecarTests: XCTestCase {
     XCTAssertNil(disabled.readScrollback(forTabKey: "abc"))
   }
 
+  // MARK: Alternate-screen discrimination
+
+  /// The whole rule, and the reason it is a change over time rather than a property.
+  ///
+  /// `SURFACE` returns history normally and **false** while a TUI holds the alternate screen. So a
+  /// pane that produced scrollback before, reading false now, has a TUI up — and its visible frame
+  /// must not be captured, because restoring a frozen vim or Claude screen as dead text looks
+  /// interactive and is not.
+  ///
+  /// `mouse_captured` is NOT the signal: measured false for `less`, `man`, `vim` and Claude Code
+  /// alike, so it caught nothing at all.
+  func testViewportIsSkippedOnlyWhenHistoryVanishes() {
+    XCTAssertTrue(
+      GhosttySurfaceView.shouldSkipViewport(hasHistoryNow: false, everHadScrollback: true),
+      "history existed before and reads false now — a TUI is up")
+    XCTAssertFalse(
+      GhosttySurfaceView.shouldSkipViewport(hasHistoryNow: false, everHadScrollback: false),
+      "a short session that never scrolled must still capture its visible lines")
+    XCTAssertFalse(
+      GhosttySurfaceView.shouldSkipViewport(hasHistoryNow: true, everHadScrollback: true),
+      "history is readable, so nothing is hiding it")
+    XCTAssertFalse(
+      GhosttySurfaceView.shouldSkipViewport(hasHistoryNow: true, everHadScrollback: false))
+  }
+
+  // MARK: Replay payload
+
+  /// **REGRESSION.** `read_text` returns lines separated by bare `\n`, and a terminal treats LF as
+  /// "down one row, keep the column" — so replaying the capture unchanged staircased every line
+  /// further right than the last. CR is what returns to column zero.
+  func testReplayPayloadUsesCRLFLineEndings() {
+    let payload = GhosttySurfaceView.replayPayload(for: "one\ntwo\nthree")
+    XCTAssertTrue(payload.hasPrefix("one\r\ntwo\r\nthree"))
+    XCTAssertFalse(
+      payload.replacingOccurrences(of: "\r\n", with: "").contains("\n"),
+      "no bare LF may survive — each one is a staircase step")
+  }
+
+  /// Text that already had CRLF must not end up with doubled carriage returns.
+  func testReplayPayloadDoesNotDoubleExistingCarriageReturns() {
+    let payload = GhosttySurfaceView.replayPayload(for: "one\r\ntwo")
+    XCTAssertTrue(payload.hasPrefix("one\r\ntwo"))
+    XCTAssertFalse(payload.contains("\r\r"))
+  }
+
+  func testReplayPayloadEndsWithTheDivider() {
+    XCTAssertTrue(
+      GhosttySurfaceView.replayPayload(for: "x").hasSuffix(GhosttySurfaceView.scrollbackDivider))
+  }
+
   // MARK: Divider
 
   /// The one marker in a restored pane: it separates dead history from the live shell.
