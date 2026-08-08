@@ -598,7 +598,10 @@ final class TerminalSessions: ObservableObject {
   /// remembered directory, which is the half that matters. Nothing spawns here: constructing a
   /// surface is inert until it enters a window.
   @discardableResult
-  func restore(_ session: TargetSession, for target: TerminalTarget) -> Int {
+  func restore(
+    _ session: TargetSession, for target: TerminalTarget,
+    scrollback: (String) -> String? = { _ in nil }
+  ) -> Int {
     guard (tabsByTarget[target.id] ?? [:]).isEmpty else { return 0 }
 
     var idsByKey: [String: TerminalTab.ID] = [:]
@@ -614,7 +617,8 @@ final class TerminalSessions: ObservableObject {
         tab = makeTerminalTab(
           for: target,
           cwd: Self.restoredCwd(payload.cwd, fallback: target.path),
-          title: payload.defaultTitle)
+          title: payload.defaultTitle,
+          restoredScrollback: scrollback(saved.key))
         restoredTerminals += 1
       } else if let content = saved.restoredContent {
         tab = TerminalTab(
@@ -1474,11 +1478,13 @@ final class TerminalSessions: ObservableObject {
   }
 
   private func makeTerminalTab(
-    for target: TerminalTarget, cwd: String, command: String? = nil, title: String? = nil
+    for target: TerminalTarget, cwd: String, command: String? = nil, title: String? = nil,
+    restoredScrollback: String? = nil
   ) -> TerminalTab {
     let count = (counts[target.id] ?? 0) + 1
     counts[target.id] = count
     let view = makeView(target, cwd, command)
+    view.adoptRestoredScrollback(restoredScrollback)
     let tab = TerminalTab.terminal(view: view, defaultTitle: title ?? "Terminal \(count)")
 
     let targetID = target.id

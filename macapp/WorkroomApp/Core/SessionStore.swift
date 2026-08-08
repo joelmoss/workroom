@@ -164,6 +164,87 @@ final class SessionStore {
     queue.sync { try? self.fileManager.removeItem(at: self.url) }
   }
 
+  // MARK: Scrollback sidecars (issue #144)
+
+  /// One plain-text file per pane, beside `session.json`. Deliberately NOT inside it: that document
+  /// is rewritten on every coalesced save, and a few hundred KB of terminal output per pane has no
+  /// business riding along with the layout.
+  var scrollbackDirectory: URL {
+    url.deletingLastPathComponent().appendingPathComponent("scrollback", isDirectory: true)
+  }
+
+  private func scrollbackURL(forTabKey key: String) -> URL {
+    // The key is a `TabSession.key` UUID string: filesystem-safe and unique within a snapshot, so
+    // no escaping and no collision handling.
+    scrollbackDirectory.appendingPathComponent("\(key).txt")
+  }
+
+  func writeScrollback(_ text: String, forTabKey key: String) {
+    guard !isDisabled, !writesDisabled, !text.isEmpty else { return }
+    do {
+      try fileManager.createDirectory(at: scrollbackDirectory, withIntermediateDirectories: true)
+      try Data(text.utf8).write(to: scrollbackURL(forTabKey: key), options: .atomic)
+    } catch {
+      // Best-effort like everything else here: a pane with no sidecar simply restores empty.
+      logger.error("scrollback write failed: \(error.localizedDescription)")
+    }
+  }
+
+  /// The saved text for a pane, or nil when there is none, it is unreadable, or it fails validation.
+  ///
+  /// A file that fails validation is **deleted**: it would fail identically on every future launch,
+  /// and unlike `session.json` a scrollback sidecar has no diagnostic value worth quarantining.
+  func readScrollback(forTabKey key: String) -> String? {
+    guard !isDisabled else { return nil }
+    let fileURL = scrollbackURL(forTabKey: key)
+    guard fileManager.fileExists(atPath: fileURL.path) else { return nil }
+
+    if let size = try? fileManager.attributesOfItem(atPath: fileURL.path)[.size] as? Int,
+      size > SessionLimits.maxScrollbackFileBytes
+    {
+      logger.notice("scrollback sidecar is \(size) bytes, over the limit — discarding")
+      try? fileManager.removeItem(at: fileURL)
+      return nil
+    }
+    guard let data = try? Data(contentsOf: fileURL) else { return nil }
+    guard let text = String(data: data, encoding: .utf8) else {
+      logger.notice("scrollback sidecar is not valid UTF-8 — discarding")
+      try? fileManager.removeItem(at: fileURL)
+      return nil
+    }
+    let cleaned = Self.strippingControlBytes(text)
+    return cleaned.isEmpty ? nil : cleaned
+  }
+
+  /// Drop sidecars for panes that are no longer in the session.
+  ///
+  /// Runs once after the write pass, unconditionally — including when every write failed. A pane
+  /// whose capture is now empty wrote no sidecar, so its old one is removed here and yesterday's
+  /// output cannot reappear under today's empty pane.
+  func pruneScrollback(keeping keys: Set<String>) {
+    guard !isDisabled else { return }
+    guard
+      let entries = try? fileManager.contentsOfDirectory(
+        at: scrollbackDirectory, includingPropertiesForKeys: nil)
+    else { return }
+    for entry in entries where entry.pathExtension == "txt" {
+      let key = entry.deletingPathExtension().lastPathComponent
+      if !keys.contains(key) { try? fileManager.removeItem(at: entry) }
+    }
+  }
+
+  /// Remove C0 control bytes except newline, carriage return and tab.
+  ///
+  /// The captured text is rendered output, never raw PTY bytes, so it carries no escape sequences to
+  /// begin with. This exists so a hand-edited sidecar cannot inject one and leave the parser
+  /// mid-sequence on replay. CR is kept: the divider is CRLF.
+  nonisolated static func strippingControlBytes(_ text: String) -> String {
+    String(
+      text.unicodeScalars.filter { scalar in
+        scalar == "\n" || scalar == "\r" || scalar == "\t" || scalar.value >= 0x20
+      })
+  }
+
   private func persist(_ file: SessionFile) {
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .iso8601

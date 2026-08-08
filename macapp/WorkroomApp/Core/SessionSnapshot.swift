@@ -29,8 +29,9 @@ import Foundation
 ///
 /// # What is deliberately absent
 ///
-/// - **Scrollback, the PTY, and child processes.** libghostty exposes no session-dump API, so a
-///   restored terminal is a fresh login shell in the remembered directory. Nothing else is possible.
+/// - **The PTY and child processes.** A restored terminal is a fresh login shell in the remembered
+///   directory; the process it was running is gone. (Its *text* does come back — scrollback lives in
+///   sidecar files beside this document, never inside it. See `SessionStore` and issue #144.)
 /// - **Run tabs.** Restoring one would resurrect a dev server with no `AppStore.RunState` behind it —
 ///   an untracked process orphaned on its port, the failure `WindowRegistry.runOwner(for:excluding:)`
 ///   and issue #7 exist to prevent. `Defaults[.runCommands]` already survives, and `RunConfig.autoRun`
@@ -58,6 +59,12 @@ enum SessionLimits {
   static let maxFileBytes = 512 * 1024
   /// Clamps paths, titles, and commit ids individually.
   static let maxStringLength = 4096
+  /// Per-pane scrollback kept in a sidecar file (issue #144). The value is overwhelmingly at the
+  /// recent end, and a cap keeps the quit path bounded no matter how much a pane logged.
+  static let maxScrollbackBytes = 256 * 1024
+  /// A sidecar larger than this on disk is corrupt by definition — twice the cap, so a legitimate
+  /// file can never trip it.
+  static let maxScrollbackFileBytes = 512 * 1024
 }
 
 // MARK: - Lossy array decoding

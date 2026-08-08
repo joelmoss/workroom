@@ -64,6 +64,23 @@ extension AppStore {
     }
   }
 
+  /// Write every live pane's scrollback to its sidecar (issue #144). Quit only — reading each
+  /// pane's history is far too heavy for a coalesced save.
+  ///
+  /// The tab key must match what `captureTargetSessions` wrote for the same tab, or the sidecar
+  /// belongs to nothing and is pruned the moment it is written.
+  func captureScrollback(into store: SessionStore) {
+    for targetID in terminals.activeTargetIDs {
+      guard let captured = terminals.sessionCapture(forTargetID: targetID) else { continue }
+      for tab in captured.tabs {
+        // Run tabs are not persisted at all, so their output must not be either.
+        guard tab.surface?.isRunCommandSurface != true else { continue }
+        guard let text = tab.surface?.captureScrollback() else { continue }
+        store.writeScrollback(text, forTabKey: tab.id.uuidString)
+      }
+    }
+  }
+
   /// Tell the coordinator this window changed. Every dirty source funnels through here so there is
   /// one place to look when asking "what causes a save?".
   func markSessionDirty() {
@@ -105,7 +122,11 @@ extension AppStore {
       guard let sid = Self.sidebarID(forTargetID: saved.targetID, in: projects),
         let target = target(for: sid)
       else { continue }
-      guard terminals.restore(saved, for: target) > 0 else { continue }
+      let coordinator = projectStore.sessionCoordinator
+      guard
+        terminals.restore(saved, for: target, scrollback: { coordinator.scrollback(forTabKey: $0) })
+          > 0
+      else { continue }
       restoredTargetIDs.insert(target.id)
     }
 

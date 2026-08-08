@@ -32,6 +32,9 @@ final class SessionCoordinator {
   private let debounce: TimeInterval
   private let ceiling: TimeInterval
   private let capture: () -> [WindowSession]
+  /// Writes each live pane's scrollback into the store (issue #144). Separate from `capture` because
+  /// it runs ONLY at quit: reading every pane's history is far too heavy for a coalesced save.
+  private let captureScrollback: (SessionStore) -> Void
   private let logger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "session")
 
@@ -53,12 +56,17 @@ final class SessionCoordinator {
     store: SessionStore = SessionStore(),
     debounce: TimeInterval = SessionCoordinator.defaultDebounce,
     ceiling: TimeInterval = SessionCoordinator.defaultCeiling,
-    capture: (() -> [WindowSession])? = nil
+    capture: (() -> [WindowSession])? = nil,
+    captureScrollback: ((SessionStore) -> Void)? = nil
   ) {
     self.store = store
     self.debounce = debounce
     self.ceiling = ceiling
     self.capture = capture ?? { WindowRegistry.shared.captureSessionWindows() }
+    self.captureScrollback =
+      captureScrollback ?? { store in
+        for appStore in WindowRegistry.shared.allStores { appStore.captureScrollback(into: store) }
+      }
   }
 
   /// Exposed so a caller can tell "no session" from "a session this build must not touch".
@@ -149,6 +157,11 @@ final class SessionCoordinator {
       let windows = capture()
       lastWritten = windows
       store.writeSynchronously(makeFile(windows))
+      // Scrollback is captured HERE and nowhere else (issue #144): quitting is the one moment worth
+      // reading every pane's history for. Prune afterwards, unconditionally, so a pane that captured
+      // nothing this time loses its old sidecar rather than restoring yesterday's output.
+      captureScrollback(store)
+      store.pruneScrollback(keeping: Self.tabKeys(in: windows))
     }
     isFrozen = true
   }
@@ -156,6 +169,14 @@ final class SessionCoordinator {
   // MARK: Read
 
   func read() -> SessionStore.ReadOutcome { store.read() }
+
+  /// A restored pane's saved text, for replay (issue #144).
+  func scrollback(forTabKey key: String) -> String? { store.readScrollback(forTabKey: key) }
+
+  /// Every tab key in the document, which is exactly the set of sidecars worth keeping.
+  private static func tabKeys(in windows: [WindowSession]) -> Set<String> {
+    Set(windows.flatMap { $0.targets.flatMap { $0.tabs.map(\.key) } })
+  }
 
   private func makeFile(_ windows: [WindowSession]) -> SessionFile {
     SessionFile(
