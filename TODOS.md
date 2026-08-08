@@ -692,6 +692,28 @@ about a verdict taken too early, this one about a verdict kept too long — but 
 **Priority:** P3 — self-repairing on relaunch, and no report of it in the wild. The stale `.belowFloor`
 alone justifies it.
 
+### Cross-launch navigation history (macapp) — issue #26 / #46 follow-up
+
+**What:** Back/forward (⌘[ / ⌘]) does nothing immediately after a relaunch. Session restore (issue #46)
+brings the panes back but not the history that led to them, so the first ⌘[ in a restored window has
+nowhere to go.
+
+**Why:** It is the one part of "pick up exactly where you left off" that #46 deliberately left out, and
+the reason is structural rather than lazy — worth writing down so the next person meets it instead of
+rediscovering it. `NavLocation` keys on `TerminalTab.ID`, and restore **mints fresh tab ids on purpose**
+(a tab id is unique across windows at runtime, and `WindowRegistry.ownerOf(tabID:)` routes OS
+notification clicks by it). So every persisted history entry would point at a tab that no longer exists,
+and naively reviving the old ids would trade a dead-history bug for a duplicate-id one.
+
+**How to start:** `Core/NavigationHistory.swift`. `NavLocation` already carries a content identity
+beside the tab id (the `FocusedTabSelection`-shaped payload), so the path is to re-key replay on content
+rather than on the tab — then persisting the stack is a small addition to `WindowSession`. Note that
+`NavPayload` normalises `isPreview` and `selectedPath` out, which persistence would need back.
+
+**Depends on:** issue #46 landing first (restore has to exist before there is anything to replay into).
+
+**Priority:** P3 — a nicety, and the window it affects is the first few keystrokes after a launch.
+
 ### Deterministic tab lookup for content panes (macapp) — nav-history follow-up
 
 **What:** `TerminalSessions.contentTab(matching:)` and `previewTabID(in:)` both resolve with
@@ -1008,8 +1030,6 @@ The pieces below were explicitly deferred — each small, none blocking.
 - **Drag-a-pane-out-to-dissolve** — removal today is the per-pane ✕ (strip trailing) + clicking a
   non-member tab; the terminal split's "drag the grip up out of the panes" gesture isn't wired for
   workroom panes.
-- **Cross-relaunch persistence of the split** — `workroomSplit` is session-only (the terminal split
-  isn't persisted either). Add a `Defaults` key + restore-on-load if wanted.
 - **Per-pane activity border-flash** (partial) — the *terminals hosted inside* a workroom pane flash
   via `PaneLeafView`'s `activityPulses` handler, but the workroom **pane itself** doesn't flash the way
   a terminal split pane does; workroom-level activity surfaces via `WorkroomTabChip` tinting instead. A

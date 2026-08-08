@@ -85,9 +85,23 @@ struct WorkroomApp: App {
 /// persisted selection; every ⌘N window carries a fresh `restore == false` seed and opens blank.
 struct WindowSeed: Codable, Hashable {
   let id: UUID
+  /// Whether this window may adopt a saved session — true for the launch window and for each sibling
+  /// it reopens (issue #46), false for every ⌘N window, which always starts blank.
   let restore: Bool
-  /// The launch window: a fresh id allowed to restore the saved selection.
-  static var launch: WindowSeed { WindowSeed(id: UUID(), restore: true) }
+  /// Whether this is THE launch window, as opposed to a sibling reopened from the saved session.
+  ///
+  /// Separate from `restore` because the two answer different questions and both siblings and the
+  /// launch window restore. Only the launch window runs the What's-New auto-check and fans the
+  /// siblings out — without this distinction every restored window would pop that dialog.
+  var isLaunch = false
+
+  /// The launch window: a fresh id allowed to restore the saved session.
+  static var launch: WindowSeed { WindowSeed(id: UUID(), restore: true, isLaunch: true) }
+
+  /// A window reopened from the saved session, keyed on the session it will claim.
+  static func restoring(key: UUID) -> WindowSeed {
+    WindowSeed(id: key, restore: true, isLaunch: false)
+  }
 }
 
 /// One window's root. The value-based `WindowGroup` gives each window its own `RootWindow`, so the
@@ -97,6 +111,7 @@ struct WindowSeed: Codable, Hashable {
 struct RootWindow: View {
   let seed: WindowSeed
   @StateObject private var store: AppStore
+  @Environment(\.openWindow) private var openWindow
 
   init(seed: WindowSeed) {
     self.seed = seed
@@ -104,9 +119,14 @@ struct RootWindow: View {
     // Capture the current window's size ONCE, at this window's creation, so the new window can be
     // sized to match it before it's shown (issue #70). nil for the launch window.
     store.pendingInitialWindowSize = WindowRegistry.shared.preferredNewWindowSize
-    // Only the launch window runs the What's-New auto-check (see RootView), so restored ⌘N windows
-    // don't each pop the dialog.
-    store.isRestoreWindow = seed.restore
+    // Only the launch window runs the What's-New auto-check (see RootView). Sibling windows reopened
+    // from the saved session also carry `restore: true`, so gating on that would pop the dialog once
+    // per restored window (issue #46).
+    store.isRestoreWindow = seed.isLaunch
+    // Which saved window this one adopts. The launch window takes the first unclaimed session; a
+    // sibling was opened FOR a specific key and claims exactly that one.
+    store.sessionKey = seed.id
+    store.claimsSavedSession = seed.restore
     _store = StateObject(wrappedValue: store)
   }
 
@@ -124,7 +144,15 @@ struct RootWindow: View {
           store.attachWindow(window)
         }
       )
-      .task { await store.bootstrap(restore: seed.restore) }
+      .task {
+        await store.bootstrap(restore: seed.restore)
+        // Reopen the windows that were open at the last quit (issue #46). Only the launch window
+        // fans out, and each key is handed out once, so a `.task` re-fire cannot double-open.
+        guard seed.isLaunch else { return }
+        for key in ProjectStore.shared.pendingSessionKeys() {
+          openWindow(value: WindowSeed.restoring(key: key))
+        }
+      }
   }
 }
 
@@ -157,6 +185,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   /// Catches SIGTERM so a signalled quit stops run commands gracefully (issue #7). Retained so the
   /// `DispatchSource` stays alive for the process's lifetime.
   private var sigtermSource: DispatchSourceSignal?
+  /// Retains the background-save observer (issue #46) for the app's lifetime.
+  private var resignActiveObserver: Any?
 
   deinit { hotkeyObservation?.cancel() }
 
@@ -234,6 +264,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // and the 250 ms reveal is the worst possible moment to pay it.
     SwitcherPanelController.shared.prepare()
     SwitcherPanelController.shared.attach(to: .shared)
+
+    // Save the session whenever the app goes to the background (issue #46). Belt and braces on top
+    // of the coalesced writes: ⌘-tabbing away is the most common moment a user leaves a layout they
+    // would hate to lose, and it costs nothing when nothing changed (the coordinator compares the
+    // captured document with the last one written).
+    resignActiveObserver = NotificationCenter.default.addObserver(
+      forName: NSApplication.willResignActiveNotification, object: nil, queue: .main
+    ) { _ in
+      MainActor.assumeIsolated { SessionCoordinator.shared.writeIfChanged() }
+    }
 
     monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
       let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
@@ -468,6 +508,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       // The source fires on the main queue, so we're main-actor-isolated in practice (same pattern
       // as the NSEvent monitor above) — assert it so we can touch the store synchronously.
       MainActor.assumeIsolated {
+        // SIGTERM is the path `XCUIApplication.terminate()`, `make app-run` and `pkill` take —
+        // `applicationShouldTerminate` never runs for a signal, so the session flush has to happen
+        // here too or none of those exits save anything (issue #46).
+        SessionCoordinator.shared.flushAndFreeze()
         WindowRegistry.shared.gracefullyStopAllWindows(timeout: 4) {
           exit(EXIT_SUCCESS)
         }
@@ -546,8 +590,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   /// this on the main thread. Closing a window doesn't quit the app, so this fires only on a quit.
   @MainActor
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-    // UI-test fixture quits cleanly (no modal, no waiting) so XCUITest teardown never blocks.
-    if UITestFixture.isActive { return .terminateNow }
+    // UI-test fixture quits cleanly (no modal, no waiting) so XCUITest teardown never blocks. The
+    // session still flushes here: this branch IS terminating, and a UI test that relaunches to check
+    // what was restored must not race the coalescing timer (issue #46).
+    if UITestFixture.isActive {
+      SessionCoordinator.shared.flushAndFreeze()
+      return .terminateNow
+    }
     if Defaults[.confirmOnQuit] {
       let alert = NSAlert()
       alert.messageText = "Quit Workroom?"
@@ -578,6 +627,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     let registry = WindowRegistry.shared
     // Mark the app as terminating so a window's own close handler doesn't also prompt/stop (#70).
     registry.isTerminating = true
+    // Write the session and stop writing (issue #46). Deliberately HERE and not at the top of
+    // `applicationShouldTerminate`: that method can still return `.terminateCancel` at the confirm
+    // dialog, and freezing above that guard would silently kill session saving for the rest of the
+    // app's life after one cancelled ⌘Q. This point is past the guard and still before any window
+    // closes — which is exactly what the freeze protects, since the document is rebuilt from the
+    // live windows.
+    SessionCoordinator.shared.flushAndFreeze()
     guard registry.hasAnyLiveRunCommand else { return .terminateNow }
     // Stop every window's run commands, not just the focused one's.
     registry.gracefullyStopAllWindows(timeout: 5) {

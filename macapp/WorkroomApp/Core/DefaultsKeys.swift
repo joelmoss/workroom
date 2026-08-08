@@ -128,8 +128,8 @@ extension Defaults.Keys {
   static let runCommands = Key<[String: RunConfig]>("runCommands", default: [:])
 
   /// Remembered order of the workroom tab bar, as `TerminalTarget.ID` strings (issue #23, same
-  /// encoding as `sidebarSelection`). Terminals don't survive relaunch, so this is just an ordering
-  /// hint applied to whatever is currently active — stale ids resolve away harmlessly.
+  /// encoding as `sidebarSelection`). Terminals now DO survive a relaunch (issue #46), but this stays
+  /// an ordering hint applied to whatever is currently active — stale ids resolve away harmlessly.
   static let workroomTabOrder = Key<[String]>("workroomsView.tabOrder", default: [])
 
   /// Trigger modifiers for the two quick switchers (issue #132): ⌥Tab steps open workrooms across

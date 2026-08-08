@@ -195,6 +195,90 @@ extension FocusedTabSelection {
   }
 }
 
+// MARK: - Saved-session bridge (issue #46)
+//
+// Deliberately in the SAME block as the navigation-history bridge above, for the reason that block's
+// comment already gives: a fifth `TabContent` kind must be a compile error in ONE place. A second
+// projection living in `SessionSnapshot.swift` would compile fine while silently never persisting
+// the new kind. The switch below is exhaustive on purpose — no `default` arm.
+//
+// The on-disk types stay separate from the runtime ones (no descriptor gains `Codable`) so the file
+// format is never hostage to an internal field rename — see `SessionSnapshot.swift`.
+
+extension TabSession {
+  /// A tab as it will be written to disk, or `nil` when it must not be persisted.
+  ///
+  /// Run tabs return nil: restoring one would resurrect a dev server with no `AppStore.RunState`
+  /// behind it, orphaned on its port. They are identified by the surface carrying a command
+  /// (`isRunCommandSurface`) rather than by `AppStore.runStates`, so a tab whose run bookkeeping has
+  /// already moved on still cannot leak into the file.
+  init?(key: String, tab: TerminalTab) {
+    switch tab.content {
+    case .terminal(let state):
+      guard state.view.isRunCommandSurface == false else { return nil }
+      self.init(
+        key: key, kind: Self.terminalKind,
+        // The LAST REPORTED cwd, which is the whole value of restoring a terminal. `state.cwd` is
+        // the shell's latest report mirrored into observable state; `lastKnownCwd` is the surface's
+        // own copy and covers a tab whose mirror never updated.
+        terminal: TerminalPayload(
+          defaultTitle: state.defaultTitle, cwd: state.cwd ?? state.view.lastKnownCwd))
+    case .diff(let descriptor):
+      self.init(
+        key: key, kind: Self.diffKind,
+        diff: DiffPayload(
+          path: descriptor.path, change: descriptor.change.rawValue,
+          source: DiffSourcePayload(descriptor.source), isPreview: descriptor.isPreview,
+          viewMode: tab.diffViewModeOverride?.rawValue))
+    case .file(let descriptor):
+      self.init(
+        key: key, kind: Self.fileKind,
+        file: FilePayload(
+          path: descriptor.path, isPreview: descriptor.isPreview,
+          markdownPreview: tab.markdownPreviewOverride))
+    case .changeset(let descriptor):
+      self.init(
+        key: key, kind: Self.changesetKind,
+        changeset: ChangesetPayload(
+          commitID: descriptor.commitID, title: descriptor.title,
+          isPreview: descriptor.isPreview, selectedPath: descriptor.selectedPath))
+    }
+  }
+
+  /// The non-terminal content this tab describes, or nil for a terminal (which needs a surface, so
+  /// only `TerminalSessions` can build it) and for anything unrecognised.
+  ///
+  /// Deliberately lenient where the capture direction above is exhaustive: an unknown kind is a tab
+  /// written by a NEWER build, and dropping it is the whole point of the lossy schema.
+  var restoredContent: TabContent? {
+    switch kind {
+    case Self.diffKind:
+      guard let payload = diff, let source = payload.source.source,
+        let change = ChangedFile.Change(rawValue: payload.change)
+      else { return nil }
+      return .diff(
+        DiffDescriptor(
+          path: payload.path, change: change, source: source, isPreview: payload.isPreview))
+    case Self.fileKind:
+      guard let payload = file else { return nil }
+      return .file(FileDescriptor(path: payload.path, isPreview: payload.isPreview))
+    case Self.changesetKind:
+      guard let payload = changeset else { return nil }
+      return .changeset(
+        ChangesetDescriptor(
+          commitID: payload.commitID, title: payload.title, isPreview: payload.isPreview,
+          selectedPath: payload.selectedPath))
+    default:
+      return nil
+    }
+  }
+
+  /// The per-tab diff layout override, if this tab had one.
+  var restoredDiffViewMode: DiffViewMode? { diff?.viewMode.flatMap(DiffViewMode.init(rawValue:)) }
+  /// The per-tab Markdown source/preview override, if this tab had one.
+  var restoredMarkdownPreview: Bool? { file?.markdownPreview }
+}
+
 /// A non-terminal content-tab payload the preview/persist openers drive uniformly (issue #59). Diffs,
 /// files, and changesets differ only in how they wrap into a `TabContent` case and what makes two of
 /// them the *same* tab (the dedup / retarget identity) — extracting this collapses the otherwise
@@ -238,8 +322,10 @@ struct TerminalState {
 /// Split model (issue #3) is **single-layout**: per target there is at most ONE `PaneLayout` split (a
 /// tree of ≥2 tab ids) plus solo tabs. The content area shows the split when the focused tab belongs to
 /// it, otherwise the focused solo tab. The shared tab strip lists every tab; the split's members render
-/// as a contiguous bracketed run, ordered by the split tree (`displayedTabIDs`). Cross-relaunch disk
-/// persistence is intentionally out of scope.
+/// as a contiguous bracketed run, ordered by the split tree (`displayedTabIDs`). The whole layout —
+/// tabs, order, split, focus — is captured to disk and rehydrated by `restore(_:for:)` (issue #46);
+/// what does NOT survive is a terminal's process, so a restored one is a fresh shell in the
+/// remembered directory.
 ///
 /// ```
 ///   STRIP:  A  [ B │ C ]  D        focused == C, C ∈ split  →  CONTENT renders the split.
@@ -366,8 +452,14 @@ final class TerminalSessions: ObservableObject {
   /// order as a contiguous block at the earliest member's slot. So the bracket is always one run and
   /// strip order always matches pane order (rearranging panes IS strip reorder).
   func displayedTabIDs(for target: TerminalTarget) -> [TerminalTab.ID] {
-    let order = orderByTarget[target.id] ?? []
-    guard let split = splitByTarget[target.id] else { return order }
+    displayedTabIDs(forTargetID: target.id)
+  }
+
+  /// The id-addressed core of `displayedTabIDs(for:)`. Session capture (issue #46) walks
+  /// `activeTargetIDs` and has no `TerminalTarget` value in hand, and only the id was ever used.
+  func displayedTabIDs(forTargetID targetID: TerminalTarget.ID) -> [TerminalTab.ID] {
+    let order = orderByTarget[targetID] ?? []
+    guard let split = splitByTarget[targetID] else { return order }
     let members = split.tabIDs
     let memberSet = Set(members)
     guard let anchor = order.firstIndex(where: { memberSet.contains($0) }) else { return order }
@@ -377,6 +469,33 @@ final class TerminalSessions: ObservableObject {
       if !memberSet.contains(id) { result.append(id) }
     }
     return result
+  }
+
+  // MARK: Session capture (issue #46)
+
+  /// Everything one target contributes to a saved session, addressed by id.
+  ///
+  /// One accessor rather than four because the four dictionaries behind it are `@Published private`
+  /// and should stay that way — capture reads through the public queries, and this is the single
+  /// exception it needs (`counts`, which nothing else exposes).
+  struct SessionCapture {
+    /// Tabs in DISPLAYED order. Safe to persist as the strip order: display normalisation is a fixed
+    /// point, so feeding it back in reproduces the same layout.
+    let tabs: [TerminalTab]
+    let split: TerminalPaneLayout?
+    let focused: TerminalTab.ID?
+    /// The "Terminal N" counter, so the next ⌘T after a restore continues the numbering.
+    let counter: Int
+  }
+
+  func sessionCapture(forTargetID targetID: TerminalTarget.ID) -> SessionCapture? {
+    let dict = tabsByTarget[targetID] ?? [:]
+    guard !dict.isEmpty else { return nil }
+    let ordered = displayedTabIDs(forTargetID: targetID).compactMap { dict[$0] }
+    guard !ordered.isEmpty else { return nil }
+    return SessionCapture(
+      tabs: ordered, split: splitByTarget[targetID], focused: focusedTabByTarget[targetID],
+      counter: counts[targetID] ?? ordered.count)
   }
 
   func tabs(for target: TerminalTarget) -> [TerminalTab] {
@@ -457,6 +576,86 @@ final class TerminalSessions: ObservableObject {
   /// set is left as-is (the user closed them on purpose).
   func ensureTab(for target: TerminalTarget) {
     if orderByTarget[target.id] == nil { addTab(for: target) }
+  }
+
+  // MARK: Session restore (issue #46)
+
+  /// Re-materialise a target's panes from a saved session.
+  ///
+  /// The only path that sets the four per-target dictionaries wholesale, so it lives here beside the
+  /// mutation primitives rather than in `AppStore`. Three deliberate properties:
+  ///
+  /// - **Tabs get FRESH ids.** A `TerminalTab.ID` is unique across *windows* at runtime and OS
+  ///   notification clicks are routed by it (`WindowRegistry.ownerOf(tabID:)`), so reviving persisted
+  ///   ids would put a duplicate-id hazard one bug away for no benefit. The persisted keys are a join
+  ///   key valid only within one snapshot; order, split and focus are rewired through them here.
+  /// - **Focus is set with `notify: false`** (the escape `reap` uses): a restore is not a navigation,
+  ///   and firing `onFocusChange` would seed back/forward with a place the user never went.
+  /// - **No-op when the target already has tabs**, so a restore can never race or duplicate a live
+  ///   session.
+  ///
+  /// Terminals come back as fresh login shells — libghostty has no session dump — but in their
+  /// remembered directory, which is the half that matters. Nothing spawns here: constructing a
+  /// surface is inert until it enters a window.
+  @discardableResult
+  func restore(_ session: TargetSession, for target: TerminalTarget) -> Int {
+    guard (tabsByTarget[target.id] ?? [:]).isEmpty else { return 0 }
+
+    var idsByKey: [String: TerminalTab.ID] = [:]
+    var order: [TerminalTab.ID] = []
+    var tabs: [TerminalTab.ID: TerminalTab] = [:]
+    var restoredTerminals = 0
+
+    for saved in session.tabs {
+      let tab: TerminalTab
+      if saved.kind == TabSession.terminalKind, let payload = saved.terminal {
+        // `command:` is deliberately never passed: run tabs are not persisted, and this makes even a
+        // hand-edited file unable to start a process on launch.
+        tab = makeTerminalTab(
+          for: target,
+          cwd: Self.restoredCwd(payload.cwd, fallback: target.path),
+          title: payload.defaultTitle)
+        restoredTerminals += 1
+      } else if let content = saved.restoredContent {
+        tab = TerminalTab(
+          content: content, diffViewModeOverride: saved.restoredDiffViewMode,
+          markdownPreviewOverride: saved.restoredMarkdownPreview)
+      } else {
+        continue
+      }
+      idsByKey[saved.key] = tab.id
+      order.append(tab.id)
+      tabs[tab.id] = tab
+    }
+
+    guard !order.isEmpty else { return 0 }
+
+    tabsByTarget[target.id] = tabs
+    orderByTarget[target.id] = order
+    splitByTarget[target.id] = session.split.flatMap { saved in
+      saved.materialize { idsByKey[$0] }
+    }
+    setFocused(
+      session.focusedKey.flatMap { idsByKey[$0] } ?? order.first, for: target.id, notify: false)
+    // `makeTerminalTab` bumps the counter per terminal it builds, so take whichever is higher: the
+    // saved value keeps "Terminal 7" from becoming "Terminal 3" again after closes.
+    counts[target.id] = max(session.terminalCounter ?? 0, counts[target.id] ?? 0)
+    reconcileOcclusion(for: target)
+    return order.count
+  }
+
+  /// The directory a restored terminal should open in: the remembered one while it is still a live
+  /// directory, else the target's own path. libghostty cannot spawn into a directory that no longer
+  /// exists, so an unchecked value would turn a deleted folder into a dead pane.
+  ///
+  /// Pure and `nonisolated` so it is unit-testable without a session, a target, or a surface.
+  nonisolated static func restoredCwd(_ cwd: String?, fallback: String) -> String {
+    guard let cwd, !cwd.isEmpty else { return fallback }
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: cwd, isDirectory: &isDirectory),
+      isDirectory.boolValue
+    else { return fallback }
+    return cwd
   }
 
   /// Open a new solo terminal at the end of the strip and focus it (⌘T). Does not touch the split.

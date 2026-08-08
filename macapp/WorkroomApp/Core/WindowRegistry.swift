@@ -55,6 +55,9 @@ final class WindowRegistry: ObservableObject {
           let store = self.store(for: window)
         else { return }
         self.lastActiveStore = store
+        // Which window was key is part of the saved session — it decides where the user lands after
+        // a restore (issue #46).
+        SessionCoordinator.shared.markDirty()
         // Bringing a window forward makes its selection the most recent one (issue #132). Without
         // this, ⌘` to another window leaves the switcher's MRU head pointing at the window you left,
         // so the next ⌥Tab tap flips somewhere you didn't come from.
@@ -77,6 +80,9 @@ final class WindowRegistry: ObservableObject {
     assignWindowNumberIfNeeded(store)
     if lastActiveStore == nil { lastActiveStore = store }
     recomputeBadge()
+    // The saved session is rebuilt from the live windows (issue #46), and the window layer publishes
+    // through none of the store's own publishers — so opening a window has to say so itself.
+    SessionCoordinator.shared.markDirty()
   }
 
   /// Give a newly registered window the smallest unused positive number, so the untitled-window
@@ -93,6 +99,9 @@ final class WindowRegistry: ObservableObject {
   func unregister(window: NSWindow) {
     entries.removeAll { $0.window === window || $0.window == nil }
     recomputeBadge()
+    // Without this a closed window is never noticed, and comes back on the next launch. The quit
+    // freeze is what stops the same signal erasing the session as windows close during termination.
+    SessionCoordinator.shared.markDirty()
   }
 
   private func prune() {

@@ -85,4 +85,132 @@ final class ProjectStore: ObservableObject {
     defer { pendingInitialRestore = false }
     return pendingInitialRestore
   }
+
+  // MARK: Saved session (issue #46)
+
+  /// Windows from the saved session that no window has adopted yet. Loaded once, lazily, by the first
+  /// claim — which is also the moment saves are suspended, so a restoring window cannot overwrite the
+  /// file before the rest of it has been claimed.
+  private var unclaimedSessionWindows: [WindowSession] = []
+  private var didLoadSession = false
+  /// Injectable so tests drive a temp session file instead of the developer's real one.
+  var sessionCoordinator: SessionCoordinator = .shared
+  /// True between loading the session and finishing the restore, so the suspend/resume is balanced
+  /// exactly once however many windows take part.
+  private var isRestoringSession = false
+
+  /// Sessions already handed to a window, by the key that window now owns. Makes claiming idempotent:
+  /// `WindowAccessor` can resolve the same window more than once, and a repeat claim must return the
+  /// same session rather than consume a second one.
+  private var claimedSessions: [UUID: WindowSession] = [:]
+  /// Keys handed to `openWindow` whose window has not claimed yet. Dispatched once so a `.task`
+  /// re-fire cannot open a second copy of the same window.
+  private var dispatchedSessionKeys: Set<UUID> = []
+  /// How many windows have claimed a session and not yet finished restoring it. Saving resumes when
+  /// this reaches zero AND nothing is still awaiting a window.
+  private var outstandingRestores = 0
+  /// The key of the window that was key at the last quit, so focus lands where the user left it once
+  /// every window is back.
+  private var keyWindowSessionKey: UUID?
+
+  /// Adopt a saved window for this store, or nil when there is nothing to adopt.
+  ///
+  /// Loading is lazy so the read happens at the first claim rather than at app init — the claim is
+  /// made from `AppStore.attachWindow`, when a real `NSWindow` exists but before it is shown, which is
+  /// both early enough for the frame and late enough that a speculative SwiftUI view init cannot
+  /// consume a session no window ever uses.
+  ///
+  /// The launch window adopts the first unclaimed session (its own seed id is freshly minted, so it
+  /// cannot match anything on disk) and takes that session's key as its own. A sibling was opened FOR
+  /// a specific key and claims exactly that one — never another window's.
+  func claimSession(for key: UUID, isLaunchWindow: Bool) -> WindowSession? {
+    loadSessionIfNeeded()
+    if let already = claimedSessions[key] { return already }
+
+    let claimed: WindowSession?
+    if isLaunchWindow {
+      claimed = unclaimedSessionWindows.isEmpty ? nil : unclaimedSessionWindows.removeFirst()
+    } else if let index = unclaimedSessionWindows.firstIndex(
+      where: { $0.windowKey == key.uuidString })
+    {
+      claimed = unclaimedSessionWindows.remove(at: index)
+    } else {
+      claimed = nil
+    }
+
+    guard let claimed else { return nil }
+    let ownedKey = UUID(uuidString: claimed.windowKey) ?? key
+    claimedSessions[ownedKey] = claimed
+    dispatchedSessionKeys.remove(ownedKey)
+    outstandingRestores += 1
+    if claimed.isKey { keyWindowSessionKey = ownedKey }
+    return claimed
+  }
+
+  /// Keys of saved windows nobody has claimed yet, marked as dispatched so they are handed out once.
+  /// The launch window opens one window per key.
+  func pendingSessionKeys() -> [UUID] {
+    loadSessionIfNeeded()
+    let keys = unclaimedSessionWindows.compactMap { UUID(uuidString: $0.windowKey) }
+      .filter { !dispatchedSessionKeys.contains($0) }
+    dispatchedSessionKeys.formUnion(keys)
+    return keys
+  }
+
+  /// One window finished restoring. Saving resumes only once every window has, so a half-restored
+  /// document is never written over a full one.
+  ///
+  /// The `unclaimedSessionWindows` check is load-bearing, not belt and braces: the launch window
+  /// finishes its own restore INSIDE `bootstrap`, which returns before `pendingSessionKeys` has handed
+  /// anything out. Ending the restore on "nothing outstanding, nothing dispatched" alone would
+  /// therefore fire while the siblings were still only on disk — clearing them, so the fan-out found
+  /// nothing to open and only one window ever came back.
+  func finishSessionRestore() {
+    guard isRestoringSession else { return }
+    outstandingRestores = max(0, outstandingRestores - 1)
+    guard outstandingRestores == 0, dispatchedSessionKeys.isEmpty,
+      unclaimedSessionWindows.isEmpty
+    else { return }
+    endSessionRestore()
+  }
+
+  /// Bring the window that was key at the last quit back to the front, then resume saving.
+  private func endSessionRestore() {
+    guard isRestoringSession else { return }
+    isRestoringSession = false
+    unclaimedSessionWindows.removeAll()
+    dispatchedSessionKeys.removeAll()
+    claimedSessions.removeAll()
+    if let keyWindowSessionKey,
+      let store = WindowRegistry.shared.allStores.first(where: {
+        $0.sessionKey == keyWindowSessionKey
+      })
+    {
+      store.hostWindow?.makeKeyAndOrderFront(nil)
+    }
+    keyWindowSessionKey = nil
+    sessionCoordinator.resumeSaves()
+  }
+
+  private func loadSessionIfNeeded() {
+    guard !didLoadSession else { return }
+    didLoadSession = true
+    guard case .restored(let file, _) = sessionCoordinator.read() else { return }
+    unclaimedSessionWindows = file.windows
+    isRestoringSession = true
+    // Suspended until `finishSessionRestore`. Without this the first window's restore marks the
+    // session dirty, and that write would rebuild the document from the windows that exist SO FAR —
+    // overwriting the file and discarding the ones still to be claimed.
+    sessionCoordinator.suspendSaves()
+    // Watchdog: a dispatched window that never opens (a scene SwiftUI declines to create, a window
+    // closed mid-restore) would otherwise leave saving suspended for the whole run — the app would
+    // silently stop persisting anything. Restoring is a launch-time operation measured in
+    // milliseconds, so anything still outstanding this much later is not coming.
+    DispatchQueue.main.asyncAfter(deadline: .now() + Self.sessionRestoreTimeout) { [weak self] in
+      MainActor.assumeIsolated { self?.endSessionRestore() }
+    }
+  }
+
+  /// How long to wait for every dispatched window before giving up and resuming saves.
+  static let sessionRestoreTimeout: TimeInterval = 15
 }
