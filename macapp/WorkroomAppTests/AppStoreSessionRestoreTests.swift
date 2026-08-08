@@ -63,6 +63,8 @@ final class AppStoreSessionRestoreTests: XCTestCase {
     projectStore.projects = projects
     let store = AppStore(projectStore: projectStore)
     store.isRestoreWindow = isLaunchWindow
+    // A ⌘N window carries neither flag; the launch window and any restored sibling carry the claim.
+    store.claimsSavedSession = isLaunchWindow
     store.terminals.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command)
     }

@@ -85,9 +85,23 @@ struct WorkroomApp: App {
 /// persisted selection; every ⌘N window carries a fresh `restore == false` seed and opens blank.
 struct WindowSeed: Codable, Hashable {
   let id: UUID
+  /// Whether this window may adopt a saved session — true for the launch window and for each sibling
+  /// it reopens (issue #46), false for every ⌘N window, which always starts blank.
   let restore: Bool
-  /// The launch window: a fresh id allowed to restore the saved selection.
-  static var launch: WindowSeed { WindowSeed(id: UUID(), restore: true) }
+  /// Whether this is THE launch window, as opposed to a sibling reopened from the saved session.
+  ///
+  /// Separate from `restore` because the two answer different questions and both siblings and the
+  /// launch window restore. Only the launch window runs the What's-New auto-check and fans the
+  /// siblings out — without this distinction every restored window would pop that dialog.
+  var isLaunch = false
+
+  /// The launch window: a fresh id allowed to restore the saved session.
+  static var launch: WindowSeed { WindowSeed(id: UUID(), restore: true, isLaunch: true) }
+
+  /// A window reopened from the saved session, keyed on the session it will claim.
+  static func restoring(key: UUID) -> WindowSeed {
+    WindowSeed(id: key, restore: true, isLaunch: false)
+  }
 }
 
 /// One window's root. The value-based `WindowGroup` gives each window its own `RootWindow`, so the
@@ -97,6 +111,7 @@ struct WindowSeed: Codable, Hashable {
 struct RootWindow: View {
   let seed: WindowSeed
   @StateObject private var store: AppStore
+  @Environment(\.openWindow) private var openWindow
 
   init(seed: WindowSeed) {
     self.seed = seed
@@ -104,9 +119,14 @@ struct RootWindow: View {
     // Capture the current window's size ONCE, at this window's creation, so the new window can be
     // sized to match it before it's shown (issue #70). nil for the launch window.
     store.pendingInitialWindowSize = WindowRegistry.shared.preferredNewWindowSize
-    // Only the launch window runs the What's-New auto-check (see RootView), so restored ⌘N windows
-    // don't each pop the dialog.
-    store.isRestoreWindow = seed.restore
+    // Only the launch window runs the What's-New auto-check (see RootView). Sibling windows reopened
+    // from the saved session also carry `restore: true`, so gating on that would pop the dialog once
+    // per restored window (issue #46).
+    store.isRestoreWindow = seed.isLaunch
+    // Which saved window this one adopts. The launch window takes the first unclaimed session; a
+    // sibling was opened FOR a specific key and claims exactly that one.
+    store.sessionKey = seed.id
+    store.claimsSavedSession = seed.restore
     _store = StateObject(wrappedValue: store)
   }
 
@@ -124,7 +144,15 @@ struct RootWindow: View {
           store.attachWindow(window)
         }
       )
-      .task { await store.bootstrap(restore: seed.restore) }
+      .task {
+        await store.bootstrap(restore: seed.restore)
+        // Reopen the windows that were open at the last quit (issue #46). Only the launch window
+        // fans out, and each key is handed out once, so a `.task` re-fire cannot double-open.
+        guard seed.isLaunch else { return }
+        for key in ProjectStore.shared.pendingSessionKeys() {
+          openWindow(value: WindowSeed.restoring(key: key))
+        }
+      }
   }
 }
 

@@ -114,6 +114,32 @@ final class SessionRestoreUITests: XCTestCase {
     assertCount(tabs(relaunched), reaches: 3)
   }
 
+  // MARK: Multi-window
+
+  /// Every window that was open at quit comes back. This is the one assertion that covers the whole
+  /// multi-window chain end to end — claiming by key, the sibling fan-out, and the save gate that
+  /// stops the launch window overwriting the file before its siblings exist.
+  func testEveryWindowSurvivesRelaunch() throws {
+    let app = launchedApp()
+    waitForFirstPane(app)
+    XCTAssertEqual(app.windows.count, 1)
+
+    app.typeKey("n", modifierFlags: .command)
+    let twoWindows = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "count == 2"), object: app.windows)
+    XCTAssertEqual(
+      XCTWaiter().wait(for: [twoWindows], timeout: 8), .completed, "⌘N should open a second window")
+    quitAndWaitForSave(app)
+
+    let relaunched = launchedApp()
+    XCTAssertTrue(relaunched.wait(for: .runningForeground, timeout: 10))
+    let bothBack = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "count == 2"), object: relaunched.windows)
+    XCTAssertEqual(
+      XCTWaiter().wait(for: [bothBack], timeout: 12), .completed,
+      "both windows should be reopened from the saved session")
+  }
+
   // MARK: Degradation
 
   /// Corrupt input on the launch path must never cost more than the restore itself.

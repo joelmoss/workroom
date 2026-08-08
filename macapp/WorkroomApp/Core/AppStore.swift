@@ -813,6 +813,9 @@ final class AppStore: ObservableObject {
   /// One-shot guard: `WindowAccessor` can resolve the same window more than once, and a claim must
   /// never be taken twice.
   var didClaimSession = false
+  /// Whether this window may adopt a saved session (issue #46) — the launch window and each sibling
+  /// reopened from the session, but never a ⌘N window, which always starts blank.
+  var claimsSavedSession = false
   /// UI-test fixture mode only: whether this window auto-selects the fixture workroom. True for the
   /// launch window, false for a ⌘N window so it stays blank — the fixture analogue of clearing
   /// `pendingRestoreSelection` on the real path (issue #70).

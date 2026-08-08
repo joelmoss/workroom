@@ -77,7 +77,11 @@ extension AppStore {
   func claimSessionIfNeeded() {
     guard !didClaimSession else { return }
     didClaimSession = true
-    guard let claimed = projectStore.claimSession(isLaunchWindow: isRestoreWindow) else { return }
+    // Every ⌘N window opens blank, matching how the persisted selection already behaves.
+    guard claimsSavedSession else { return }
+    guard
+      let claimed = projectStore.claimSession(for: sessionKey, isLaunchWindow: isRestoreWindow)
+    else { return }
     pendingSessionRestore = claimed
     // Keep the window's identity stable across launches: it now owns this session's slot.
     if let key = UUID(uuidString: claimed.windowKey) { sessionKey = key }
