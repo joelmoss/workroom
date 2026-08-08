@@ -153,6 +153,25 @@ final class GhosttySurfaceView: NSView {
   private var progressActive = false
   private static let progressTimeout: TimeInterval = 30
 
+  /// How to fetch this pane's previous text, replayed once the surface exists (issue #144). Nil for a
+  /// pane that is not being restored, and cleared the moment it has been used.
+  ///
+  /// A **closure, not the text**, and that is the point: restore materialises every target's tabs
+  /// eagerly (the sidebar's terminal subtree renders from them), so reading each sidecar up front
+  /// would do hundreds of file reads on the launch path and then hold every one of them — up to
+  /// 256KB per pane — in memory for the process's lifetime, including for panes that never mount.
+  /// Deferring to `createSurface` means only a pane you actually look at pays, and it pays once.
+  ///
+  /// Set through `adoptRestoredScrollback` rather than `init` because views are built by the
+  /// `TerminalSessions.makeView` factory, whose signature is shared with every other spawn path.
+  private var restoredScrollback: (() -> String?)?
+  /// One replay per view, ever.
+  private var didReplayScrollback = false
+  /// Whether this pane has ever had more rows than fit on screen (issue #144), set from the
+  /// scrollbar geometry libghostty already pushes. The alternate-screen discriminator: see
+  /// `captureScrollback`.
+  private var everHadScrollback = false
+
   init(workingDirectory: String, command: String? = nil, spawnsSurface: Bool = true) {
     self.workingDirectory = workingDirectory
     self.runCommand = command
@@ -269,6 +288,11 @@ final class GhosttySurfaceView: NSView {
     // but libghostty drops them on an unfocused surface, and a click can't recover because
     // `makeFirstResponder` short-circuits on an already-first-responder view. Re-sync the flag now.
     adoptFocusIfFirstResponder()
+    // Replay the previous session's text (issue #144) synchronously, in the same main-thread call
+    // that created the surface, so no IO callback can interleave ahead of it. The shell's own first
+    // prompt may still land after the replayed block, which is correct — the divider separates
+    // restored history from live output.
+    replayRestoredScrollback()
   }
 
   /// Spawn the surface's PTY *without* waiting for window mount (issue #67, background run). Normally
@@ -574,6 +598,10 @@ final class GhosttySurfaceView: NSView {
   /// `offset` is the viewport top's distance from the top of the scrollback (live == `total - len`).
   func updateScrollbar(total: UInt64, offset: UInt64, len: UInt64) {
     scrollbarMetrics = (total, offset, len)
+    // More rows than fit on screen means this pane has real scrollback (issue #144). Remembering
+    // that it EVER did is the only way to tell a TUI from a fresh pane at quit — see
+    // `captureScrollback`. Free: this action already fires continuously.
+    if total > len { everHadScrollback = true }
     layoutScrollbar()
     let scrolledBack = Self.isScrolledBack(total: total, offset: offset, len: len)
     // The go-to-bottom button is present exactly while scrolled back from the live bottom (issue #42).
@@ -789,23 +817,154 @@ final class GhosttySurfaceView: NSView {
     return TerminalCapture.tidy(raw, maxBytes: maxBytes)
   }
 
-  /// Read the entire surface (visible screen + scrollback, capped) for a run-tab diagnosis (issue
-  /// #49, A1). Run commands `exec` over the shell so there are no OSC 133 command marks — the whole
-  /// surface is the command's output, and long output (a failing test suite) may have scrolled, so
-  /// we read SURFACE (incl. history), not just the active screen.
-  func readFullSurface(maxBytes: Int = 65_536) -> String? {
+  /// Read the rendered text for one point tag, or nil when the region is empty or unreadable.
+  ///
+  /// Measured tag semantics on the pinned libghostty (issue #144 spike):
+  /// - `SURFACE` — the **scrollback only**; the current viewport is NOT included, and the call
+  ///   returns false when nothing has scrolled off yet (a fresh pane has no history to read).
+  /// - `VIEWPORT` / `ACTIVE` — what is on screen now.
+  /// - `SCREEN` — scrollback + viewport, but **unusable while a TUI holds the alternate screen**:
+  ///   it then returns the TUI frame and hides the real history.
+  private func readText(tag: ghostty_point_tag_e) -> String? {
     guard let surface else { return nil }
     var selection = ghostty_selection_s()
     selection.top_left = ghostty_point_s(
-      tag: GHOSTTY_POINT_SURFACE, coord: GHOSTTY_POINT_COORD_TOP_LEFT, x: 0, y: 0)
+      tag: tag, coord: GHOSTTY_POINT_COORD_TOP_LEFT, x: 0, y: 0)
     selection.bottom_right = ghostty_point_s(
-      tag: GHOSTTY_POINT_SURFACE, coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT, x: 0, y: 0)
+      tag: tag, coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT, x: 0, y: 0)
     selection.rectangle = false
     var text = ghostty_text_s()
     guard ghostty_surface_read_text(surface, selection, &text) else { return nil }
     defer { ghostty_surface_free_text(surface, &text) }
-    guard let raw = Self.extractString(from: text) else { return nil }
+    return Self.extractString(from: text)
+  }
+
+  /// Read the surface's SCROLLBACK (capped) for a run-tab diagnosis (issue #49, A1). Run commands
+  /// `exec` over the shell so there are no OSC 133 command marks — the whole surface is the
+  /// command's output, and long output (a failing test suite) may have scrolled, so we read SURFACE
+  /// (the history) rather than just the active screen.
+  ///
+  /// Returns nil when nothing has scrolled yet; SURFACE is history, and a short command that never
+  /// filled a screen leaves none. That is not a failure — see `readText(tag:)`.
+  func readFullSurface(maxBytes: Int = 65_536) -> String? {
+    guard let raw = readText(tag: GHOSTTY_POINT_SURFACE) else { return nil }
     return TerminalCapture.tidy(raw, maxBytes: maxBytes)
+  }
+
+  // MARK: Session scrollback (issue #144)
+
+  /// The pane's content for a saved session: the scrollback, then what is currently on screen.
+  ///
+  /// **Two reads, deliberately.** `SCREEN` fetches both in one call but is unusable here: while a TUI
+  /// holds the alternate screen it returns the TUI's frame *and hides the primary history*, so
+  /// quitting with vim open would persist a frozen vim screenshot INSTEAD of the real session.
+  /// `SURFACE` is the history and can never return alternate-screen content; `VIEWPORT` adds the
+  /// visible lines `SURFACE` omits.
+  ///
+  /// **The viewport is skipped when a TUI is up**, because restoring a frozen vim or Claude screen
+  /// as dead text is worse than restoring nothing: it looks interactive and is not.
+  ///
+  /// There is no alternate-screen query on the pinned libghostty, and `mouse_captured` is useless
+  /// here — measured false for `less`, `man`, `vim` AND Claude Code alike. The signal that does work
+  /// is a change over time: `SURFACE` returns history normally, and **false** while a TUI holds the
+  /// alternate screen. So a pane that has produced scrollback before, and whose `SURFACE` reads false
+  /// now, has a TUI up.
+  ///
+  /// The gap is a pane that launches a TUI before producing any output — indistinguishable from a
+  /// short session, so its frame is captured. A real alt-screen query would close it; see TODOS.md.
+  /// Rows of history worth asking libghostty for at quit.
+  ///
+  /// `read_text` has no length parameter — it materialises the WHOLE history as one string, and only
+  /// then does `TerminalCapture.tidy` keep the last `maxScrollbackBytes` of it. The app sets no
+  /// `scrollback-limit`, so that history is bounded only by ghostty's own default (megabytes per
+  /// surface), and this runs serially for every pane inside `applicationShouldTerminate`. A pane that
+  /// logged all day would turn a quit into a multi-second hang for output that is discarded anyway.
+  ///
+  /// 10,000 rows sits above what `maxScrollbackBytes` can hold at a typical row width, so a pane whose
+  /// history would have survived the byte cap is not skipped by this one. Past it, the viewport alone
+  /// is captured — what you were actually looking at, which is the part worth keeping. Against
+  /// ghostty's byte-based default (~130,000 rows at 80 columns) that is still an order-of-magnitude
+  /// bound on the read.
+  static let maxCaptureRows: UInt64 = 10_000
+
+  /// Pure form of the row guard, so the bound is unit-testable without a live surface.
+  ///
+  /// Absent metrics read as "worth trying": a surface that has never reported geometry has nothing to
+  /// read anyway, and the guard is about panes that report a LOT, not panes that report nothing.
+  nonisolated static func shouldReadHistory(totalRows: UInt64?) -> Bool {
+    (totalRows ?? 0) <= maxCaptureRows
+  }
+
+  func captureScrollback(maxBytes: Int = SessionLimits.maxScrollbackBytes) -> String? {
+    let historyIsWorthReading = Self.shouldReadHistory(totalRows: scrollbarMetrics?.total)
+    let history = historyIsWorthReading ? readText(tag: GHOSTTY_POINT_SURFACE) : nil
+    // The alternate-screen inference only holds when the `SURFACE` read actually ran: `history == nil`
+    // because we CHOSE not to read it says nothing about a TUI, and treating it as one would skip the
+    // viewport too and capture nothing at all — the exact panes with the most worth keeping. (An alt
+    // screen has no scrollback of its own, so a TUI never trips the row guard and detection is intact.)
+    let isAlternateScreen =
+      historyIsWorthReading
+      && Self.shouldSkipViewport(
+        hasHistoryNow: history != nil, everHadScrollback: everHadScrollback)
+    // The viewport is otherwise always read: `SURFACE` is history ONLY, so gating it on history
+    // existing would capture nothing at all for a short session — most panes, most of the time.
+    let visible = isAlternateScreen ? nil : readText(tag: GHOSTTY_POINT_VIEWPORT)
+    let combined = [history, visible].compactMap { $0 }.joined(separator: "\n")
+    guard !combined.isEmpty else { return nil }
+    return TerminalCapture.tidy(combined, maxBytes: maxBytes)
+  }
+
+  /// Pure form of the rule above, so it can be unit-tested without a live surface.
+  nonisolated static func shouldSkipViewport(hasHistoryNow: Bool, everHadScrollback: Bool) -> Bool {
+    !hasHistoryNow && everHadScrollback
+  }
+
+  /// Replay a previous session's text into this surface, once, followed by a divider marking where
+  /// restored history ends and the live shell begins.
+  ///
+  /// `write_buffer` feeds the terminal parser as if the child had emitted the bytes — verified to
+  /// work on an EXEC (real PTY) surface, with the shell still executing commands afterwards (#144
+  /// spike). The bytes are rendered text, never escape sequences, and control bytes are stripped on
+  /// the way in, so this cannot leave the parser mid-sequence.
+  private func replayRestoredScrollback() {
+    guard !didReplayScrollback, let surface, let provider = restoredScrollback else { return }
+    didReplayScrollback = true
+    // Released as soon as it has run: the text is now the terminal's own scrollback, and keeping a
+    // second copy on the view would double the memory cost of every restored pane for no purpose.
+    restoredScrollback = nil
+    guard let restored = provider(), !restored.isEmpty else { return }
+    var bytes = Array(Self.replayPayload(for: restored).utf8)
+    ghostty_surface_write_buffer(surface, &bytes, UInt(bytes.count))
+  }
+
+  /// The exact bytes replayed into a restored pane: the captured text with **CRLF** line endings,
+  /// then the divider.
+  ///
+  /// The CR is the whole point. `read_text` returns lines separated by bare `\n`, but a terminal
+  /// treats LF as "down one row, keep the column" — CR is what returns to column zero. Replaying the
+  /// captured text unchanged therefore staircases every line further right than the last, which is
+  /// exactly what it looked like. Normalise any existing CRLF down to LF first so this cannot double
+  /// the CR on text that already had it.
+  ///
+  /// Pure and `nonisolated` so the rule is unit-testable without a surface.
+  nonisolated static func replayPayload(for text: String) -> String {
+    let normalised = text.replacingOccurrences(of: "\r\n", with: "\n")
+      .replacingOccurrences(of: "\n", with: "\r\n")
+    return normalised + scrollbackDivider
+  }
+
+  /// Plain text, no SGR — it is content like any other replayed byte.
+  static let scrollbackDivider = "\r\n── restored session ──\r\n"
+
+  /// Hand this view a way to fetch a previous session's text to replay. Must be called before the
+  /// surface is created (i.e. before the view enters a window), which is where
+  /// `TerminalSessions.restore` sets it — immediately after the factory returns.
+  ///
+  /// The closure is called at most once, when the surface is created, and released straight after —
+  /// so a restored pane that is never opened costs a closure, not a copy of its history.
+  func adoptRestoredScrollback(_ provider: (() -> String?)?) {
+    guard surface == nil, let provider else { return }
+    restoredScrollback = provider
   }
 
   /// Type literal text into the surface WITHOUT a trailing newline ("Insert fix", issue #49): the

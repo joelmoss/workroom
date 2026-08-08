@@ -29,8 +29,9 @@ import Foundation
 ///
 /// # What is deliberately absent
 ///
-/// - **Scrollback, the PTY, and child processes.** libghostty exposes no session-dump API, so a
-///   restored terminal is a fresh login shell in the remembered directory. Nothing else is possible.
+/// - **The PTY and child processes.** A restored terminal is a fresh login shell in the remembered
+///   directory; the process it was running is gone. (Its *text* does come back — scrollback lives in
+///   sidecar files beside this document, never inside it. See `SessionStore` and issue #144.)
 /// - **Run tabs.** Restoring one would resurrect a dev server with no `AppStore.RunState` behind it —
 ///   an untracked process orphaned on its port, the failure `WindowRegistry.runOwner(for:excluding:)`
 ///   and issue #7 exist to prevent. `Defaults[.runCommands]` already survives, and `RunConfig.autoRun`
@@ -49,15 +50,36 @@ import Foundation
 /// as full coverage.
 enum SessionLimits {
   static let maxWindows = 8
-  static let maxTargetsPerWindow = 20
+  /// Workroom's whole point is managing many workrooms, so this has to sit above real usage rather
+  /// than above a guess: 20 was tight enough that a heavy user would silently lose targets on every
+  /// relaunch. **Enforced at capture as well as at read** (`AppStore.captureWindowSession`), so the
+  /// app can never author a file it will later truncate.
+  static let maxTargetsPerWindow = 40
   static let maxTabsPerTarget = 20
   /// Split trees are user-built by repeated ⌘D; a dozen levels is far past any real layout, and the
   /// cap is what stops a hand-edited file recursing `materialize` into the stack.
   static let maxSplitDepth = 12
+  /// Nesting depth refused **during decoding**, before a tree is built at all.
+  ///
+  /// `maxSplitDepth` is checked by `sanitized()`, which runs only once a `LayoutNode` already exists —
+  /// far too late, because `init(from:)` recurses per level as it decodes. A deeply nested file would
+  /// overflow the stack, and a crash (unlike a thrown error) is never quarantined, so the app would
+  /// crash on every launch with no way out. Throwing here drops one element through `@Lossy` instead.
+  /// Well above `maxSplitDepth` plus the outer document's own coding path, so no real file trips it.
+  static let maxDecodeDepth = 64
   /// Refused before decoding — array caps bound element *counts*, not the size of one giant string.
-  static let maxFileBytes = 512 * 1024
+  ///
+  /// Generous rather than tight: this is a quarantine trigger, and a false positive costs the user
+  /// their whole session. The element caps above are what actually bound the work.
+  static let maxFileBytes = 4 * 1024 * 1024
   /// Clamps paths, titles, and commit ids individually.
   static let maxStringLength = 4096
+  /// Per-pane scrollback kept in a sidecar file (issue #144). The value is overwhelmingly at the
+  /// recent end, and a cap keeps the quit path bounded no matter how much a pane logged.
+  static let maxScrollbackBytes = 256 * 1024
+  /// A sidecar larger than this on disk is corrupt by definition — twice the cap, so a legitimate
+  /// file can never trip it.
+  static let maxScrollbackFileBytes = 512 * 1024
 }
 
 // MARK: - Lossy array decoding
@@ -138,6 +160,15 @@ indirect enum LayoutNode<Leaf: Codable & Hashable & Sendable>: Codable, Hashable
   }
 
   init(from decoder: Decoder) throws {
+    // Refused BEFORE recursing. `sanitized()`'s `maxSplitDepth` check cannot help here — it inspects
+    // a tree that decoding has already built, and building it is the stack hazard. Each nesting level
+    // adds a `first`/`second` key to the coding path, so the path length is the live depth.
+    guard decoder.codingPath.count <= SessionLimits.maxDecodeDepth else {
+      throw DecodingError.dataCorrupted(
+        DecodingError.Context(
+          codingPath: decoder.codingPath,
+          debugDescription: "split tree nested deeper than \(SessionLimits.maxDecodeDepth)"))
+    }
     let container = try decoder.container(keyedBy: CodingKeys.self)
     switch try container.decode(Kind.self, forKey: .kind) {
     case .leaf:
@@ -597,11 +628,14 @@ extension TargetSession {
         report.droppedTabs += 1
         continue
       }
+      // Clamped BEFORE the uniqueness check, not after: two keys that differ only past
+      // `maxStringLength` collapse to the same clamped key, and a duplicate key silently re-points a
+      // split leaf or the focus at the wrong pane. Checking first would wave both through.
+      var tab = tab.clamped()
       guard tab.isWellFormed, seenKeys.insert(tab.key).inserted else {
         report.droppedTabs += 1
         continue
       }
-      var tab = tab.clamped()
       // At most one preview tab per target (`TerminalSessions.previewTabID`). A hand-edited file
       // with two would give the target two italic chips and an ambiguous retarget slot; keep the
       // first and persist the rest.
