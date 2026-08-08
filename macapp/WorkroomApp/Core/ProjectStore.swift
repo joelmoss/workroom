@@ -159,10 +159,18 @@ final class ProjectStore: ObservableObject {
 
   /// One window finished restoring. Saving resumes only once every window has, so a half-restored
   /// document is never written over a full one.
+  ///
+  /// The `unclaimedSessionWindows` check is load-bearing, not belt and braces: the launch window
+  /// finishes its own restore INSIDE `bootstrap`, which returns before `pendingSessionKeys` has handed
+  /// anything out. Ending the restore on "nothing outstanding, nothing dispatched" alone would
+  /// therefore fire while the siblings were still only on disk — clearing them, so the fan-out found
+  /// nothing to open and only one window ever came back.
   func finishSessionRestore() {
     guard isRestoringSession else { return }
     outstandingRestores = max(0, outstandingRestores - 1)
-    guard outstandingRestores == 0, dispatchedSessionKeys.isEmpty else { return }
+    guard outstandingRestores == 0, dispatchedSessionKeys.isEmpty,
+      unclaimedSessionWindows.isEmpty
+    else { return }
     endSessionRestore()
   }
 

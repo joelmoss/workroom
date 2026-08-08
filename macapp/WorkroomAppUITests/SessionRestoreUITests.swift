@@ -116,28 +116,40 @@ final class SessionRestoreUITests: XCTestCase {
 
   // MARK: Multi-window
 
-  /// Every window that was open at quit comes back. This is the one assertion that covers the whole
-  /// multi-window chain end to end — claiming by key, the sibling fan-out, and the save gate that
-  /// stops the launch window overwriting the file before its siblings exist.
+  /// Poll the window count, which settles asynchronously.
+  private func waitForWindowCount(_ app: XCUIApplication, _ target: Int, timeout: TimeInterval = 10)
+    -> Bool
+  {
+    let exp = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "count == %d", target), object: app.windows)
+    return XCTWaiter().wait(for: [exp], timeout: timeout) == .completed
+  }
+
+  /// New Window is **menu-only** — ⌘N belongs to New Workroom (issue #81), so typing it here would
+  /// open a dialog instead of a window.
+  private func openSecondWindow(_ app: XCUIApplication) {
+    app.menuBars.menuBarItems["File"].menuItems["New Window"].click()
+  }
+
+  /// Every window that was open at quit comes back. The one assertion covering the whole multi-window
+  /// chain end to end: claiming by key, the sibling fan-out, and the save gate that stops the launch
+  /// window overwriting the file before its siblings exist.
   func testEveryWindowSurvivesRelaunch() throws {
     let app = launchedApp()
     waitForFirstPane(app)
-    XCTAssertEqual(app.windows.count, 1)
+    let before = app.windows.count
 
-    app.typeKey("n", modifierFlags: .command)
-    let twoWindows = XCTNSPredicateExpectation(
-      predicate: NSPredicate(format: "count == 2"), object: app.windows)
-    XCTAssertEqual(
-      XCTWaiter().wait(for: [twoWindows], timeout: 8), .completed, "⌘N should open a second window")
+    openSecondWindow(app)
+    XCTAssertTrue(
+      waitForWindowCount(app, before + 1), "File ▸ New Window should add exactly one window")
     quitAndWaitForSave(app)
 
     let relaunched = launchedApp()
     XCTAssertTrue(relaunched.wait(for: .runningForeground, timeout: 10))
-    let bothBack = XCTNSPredicateExpectation(
-      predicate: NSPredicate(format: "count == 2"), object: relaunched.windows)
-    XCTAssertEqual(
-      XCTWaiter().wait(for: [bothBack], timeout: 12), .completed,
-      "both windows should be reopened from the saved session")
+    waitForFirstPane(relaunched)
+    XCTAssertTrue(
+      waitForWindowCount(relaunched, before + 1),
+      "both windows should be reopened from the saved session, without a second ⌘N")
   }
 
   // MARK: Degradation

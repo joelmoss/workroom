@@ -155,6 +155,31 @@ final class SessionClaimTests: XCTestCase {
       "still awaiting a dispatched window — the watchdog is what releases this")
   }
 
+  /// **REGRESSION.** The launch window finishes its own restore inside `bootstrap`, which returns
+  /// BEFORE `pendingSessionKeys` has handed anything out. Ending the restore at that moment cleared
+  /// the windows still on disk, so the fan-out found nothing to open and only one window came back —
+  /// the bug the two-window XCUITest caught.
+  func testLaunchWindowFinishingDoesNotDiscardUnclaimedWindows() throws {
+    let first = UUID()
+    let second = UUID()
+    let store = makeProjectStore(windows: [window(key: first), window(key: second)])
+
+    _ = store.claimSession(for: UUID(), isLaunchWindow: true)
+    // Exactly the real order: the launch window finishes before anything is dispatched.
+    store.finishSessionRestore()
+
+    XCTAssertEqual(
+      store.pendingSessionKeys(), [second],
+      "the second window must still be there to open")
+    XCTAssertTrue(
+      store.sessionCoordinator.isSuspended, "and saving must stay suspended until it lands")
+
+    let claimed = try XCTUnwrap(store.claimSession(for: second, isLaunchWindow: false))
+    XCTAssertEqual(claimed.windowKey, second.uuidString)
+    store.finishSessionRestore()
+    XCTAssertFalse(store.sessionCoordinator.isSuspended)
+  }
+
   /// Every window claimed, so nothing is awaited and saving resumes immediately.
   func testSingleWindowSessionResumesAfterItsOwnRestore() {
     let store = makeProjectStore(windows: [window(key: UUID())])
