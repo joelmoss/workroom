@@ -600,7 +600,7 @@ final class TerminalSessions: ObservableObject {
   @discardableResult
   func restore(
     _ session: TargetSession, for target: TerminalTarget,
-    scrollback: (String) -> String? = { _ in nil }
+    scrollback: @escaping (String) -> String? = { _ in nil }
   ) -> Int {
     guard (tabsByTarget[target.id] ?? [:]).isEmpty else { return 0 }
 
@@ -614,11 +614,15 @@ final class TerminalSessions: ObservableObject {
       if saved.kind == TabSession.terminalKind, let payload = saved.terminal {
         // `command:` is deliberately never passed: run tabs are not persisted, and this makes even a
         // hand-edited file unable to start a process on launch.
+        // The sidecar is fetched by the SURFACE when it is created, not here: restore materialises
+        // every target's tabs eagerly, so reading now would put one file read per restored pane on
+        // the launch path and hold every result in memory for the whole run.
+        let key = saved.key
         tab = makeTerminalTab(
           for: target,
           cwd: Self.restoredCwd(payload.cwd, fallback: target.path),
           title: payload.defaultTitle,
-          restoredScrollback: scrollback(saved.key))
+          restoredScrollback: { scrollback(key) })
         restoredTerminals += 1
       } else if let content = saved.restoredContent {
         tab = TerminalTab(
@@ -1479,7 +1483,7 @@ final class TerminalSessions: ObservableObject {
 
   private func makeTerminalTab(
     for target: TerminalTarget, cwd: String, command: String? = nil, title: String? = nil,
-    restoredScrollback: String? = nil
+    restoredScrollback: (() -> String?)? = nil
   ) -> TerminalTab {
     let count = (counts[target.id] ?? 0) + 1
     counts[target.id] = count

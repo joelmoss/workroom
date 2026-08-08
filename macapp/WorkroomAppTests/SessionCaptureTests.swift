@@ -143,6 +143,26 @@ final class SessionCaptureTests: XCTestCase {
     XCTAssertNil(capture(sessions))
   }
 
+  /// **REGRESSION.** The caps have to bind at CAPTURE, not only at read. `sanitized()` drops anything
+  /// over them on restore, so a capture that ignored them would let the app author a file it then
+  /// truncates on every single launch — the user losing the same panes forever, silently.
+  func testCaptureStopsAtTheTabCapSoTheFileIsNeverTruncatedOnRead() {
+    let store = AppStore(projectStore: ProjectStore())
+    store.terminals.makeView = { _, cwd, command in
+      GhosttySurfaceView(workingDirectory: cwd, command: command)
+    }
+    for _ in 0..<(SessionLimits.maxTabsPerTarget + 4) { store.terminals.addTab(for: target) }
+
+    let captured = store.captureWindowSession()
+    let tabs = captured.targets.first?.tabs.count ?? 0
+    XCTAssertEqual(tabs, SessionLimits.maxTabsPerTarget)
+
+    // What was written must survive a round trip with nothing dropped.
+    let (sanitized, report) = SessionFile(savedAt: Date(), windows: [captured]).sanitized()
+    XCTAssertEqual(sanitized.windows.first?.targets.first?.tabs.count, tabs)
+    XCTAssertEqual(report.droppedTabs, 0)
+  }
+
   func testNoTabsCapturesNothing() {
     XCTAssertNil(capture(makeSessions()))
   }

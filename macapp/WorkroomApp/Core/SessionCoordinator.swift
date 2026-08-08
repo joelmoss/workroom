@@ -44,13 +44,16 @@ final class SessionCoordinator {
   /// The last document written, compared with `==` rather than a hash: Swift seeds `hashValue` per
   /// process, and a collision would silently suppress a write the user needs.
   private var lastWritten: [WindowSession]?
+  /// What the last **successful** write persisted, or nil when nothing has landed yet. Exposed so a
+  /// test can assert that a failed write is not latched as written.
+  var lastWrittenWindows: [WindowSession]? { lastWritten }
   /// Depth rather than a flag so nested suspensions (several windows restoring) cannot resume early.
   private var suspensions = 0
   private var dirtyWhileSuspended = false
   /// Set once the app is genuinely terminating. Windows close one by one during a quit, and the
   /// document is rebuilt from the LIVE windows — without this, the last window closing would
   /// overwrite a good session with an empty one after the flush already wrote it.
-  private var isFrozen = false
+  private(set) var isFrozen = false
 
   init(
     store: SessionStore = SessionStore(),
@@ -113,18 +116,19 @@ final class SessionCoordinator {
     let start = dirtySince ?? now
     dirtySince = start
 
-    // Past the ceiling, write now rather than pushing the deadline out again.
-    if now.timeIntervalSince(start) >= ceiling {
-      writeIfChanged()
-      return
-    }
-
+    // Past the ceiling, write on the next turn rather than pushing the deadline out again.
+    //
+    // Scheduled at zero delay rather than called inline, because the loudest dirty source is
+    // `terminals.objectWillChange`, which fires BEFORE the mutation lands: capturing inline would
+    // snapshot the state the change was about to replace. Zero delay keeps the ceiling's guarantee
+    // (this run loop turn) while letting the mutation complete first.
     pending?.cancel()
     let work = DispatchWorkItem { [weak self] in
       MainActor.assumeIsolated { self?.writeIfChanged() }
     }
     pending = work
-    DispatchQueue.main.asyncAfter(deadline: .now() + debounce, execute: work)
+    let delay = now.timeIntervalSince(start) >= ceiling ? 0 : debounce
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
   }
 
   /// Capture and persist immediately if anything actually changed. Also the ceiling's landing point.
@@ -137,7 +141,14 @@ final class SessionCoordinator {
     let windows = capture()
     guard windows != lastWritten else { return }
     lastWritten = windows
-    store.write(makeFile(windows))
+    // `lastWritten` is the gate that drops an unchanged save, so a write that FAILED must not be
+    // remembered as written: after a disk-full or permissions blip, every later attempt at the same
+    // state would be suppressed and the user's layout would silently stop being saved until they
+    // changed something else. Clearing it on failure makes the next dirty mark retry.
+    store.write(makeFile(windows)) { [weak self] didWrite in
+      guard let self, !didWrite, self.lastWritten == windows else { return }
+      self.lastWritten = nil
+    }
   }
 
   // MARK: Quit
@@ -164,6 +175,24 @@ final class SessionCoordinator {
       store.pruneScrollback(keeping: Self.tabKeys(in: windows))
     }
     isFrozen = true
+  }
+
+  /// Stop writing for the rest of the run **without** writing anything.
+  ///
+  /// The abandoned-restore path. If a window claimed a saved session and never restored it — a `list`
+  /// that threw, a scene SwiftUI declined to create — then the live windows are NOT the user's
+  /// session, and resuming saves would rebuild the document from those empty windows and overwrite a
+  /// perfectly good file. Freezing instead preserves it, so the next launch can still restore.
+  ///
+  /// This costs the current run's layout changes, which is the right trade: the file on disk is real
+  /// work the user did, and what would replace it is the wreckage of a failed launch.
+  func freezeWithoutWriting() {
+    guard !isFrozen else { return }
+    pending?.cancel()
+    pending = nil
+    dirtySince = nil
+    isFrozen = true
+    logger.notice("session restore did not complete — writes frozen to preserve the saved session")
   }
 
   // MARK: Read

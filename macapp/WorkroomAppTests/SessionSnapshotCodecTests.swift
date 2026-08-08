@@ -303,6 +303,58 @@ final class SessionSnapshotCodecTests: XCTestCase {
     XCTAssertEqual(report.droppedTabs, 1)
   }
 
+  /// **REGRESSION.** Two keys that differ only past `maxStringLength` collapse to the same key once
+  /// clamped, and a duplicate key silently re-points a split leaf or the focus at the wrong pane.
+  /// Checking uniqueness before clamping waved both through.
+  func testKeysThatCollideOnlyAfterClampingAreStillDeduped() {
+    let prefix = String(repeating: "k", count: SessionLimits.maxStringLength)
+    let first = TabSession(
+      key: prefix + "-one", kind: TabSession.terminalKind,
+      terminal: TerminalPayload(defaultTitle: "Terminal 1", cwd: nil))
+    var second = first
+    second.key = prefix + "-two"
+    second.terminal?.defaultTitle = "Impostor"
+
+    let file = SessionFile(
+      savedAt: Date(timeIntervalSince1970: 0),
+      windows: [
+        WindowSession(
+          windowKey: "W1", targets: [TargetSession(targetID: "root|/p", tabs: [first, second])])
+      ])
+
+    let (sanitized, report) = file.sanitized()
+    XCTAssertEqual(sanitized.windows[0].targets[0].tabs.count, 1)
+    XCTAssertEqual(report.droppedTabs, 1)
+  }
+
+  /// **REGRESSION.** `maxSplitDepth` is checked by `sanitized()`, which only runs once a tree EXISTS —
+  /// but building it is the hazard: `LayoutNode.init(from:)` recurses per level while decoding. A deep
+  /// file overflowed the stack, and a crash (unlike a thrown error) is never quarantined, so the app
+  /// would have crashed on every launch with no way out.
+  func testADeeplyNestedTreeThrowsDuringDecodingRatherThanRecursing() throws {
+    var json = #"{"kind":"leaf","leaf":"t0"}"#
+    for _ in 0..<(SessionLimits.maxDecodeDepth + 40) {
+      json =
+        #"{"kind":"split","orientation":"vertical","ratio":0.5,"first":"# + json
+        + #","second":{"kind":"leaf","leaf":"x"}}"#
+    }
+    XCTAssertThrowsError(
+      try JSONDecoder().decode(LayoutNode<String>.self, from: Data(json.utf8)),
+      "a tree deeper than the decode cap must throw, not recurse")
+  }
+
+  /// The depth guard must not fire on a tree a user could actually build with ⌘D.
+  func testARealisticSplitTreeStillDecodes() throws {
+    var json = #"{"kind":"leaf","leaf":"t0"}"#
+    for _ in 0..<(SessionLimits.maxSplitDepth - 1) {
+      json =
+        #"{"kind":"split","orientation":"vertical","ratio":0.5,"first":"# + json
+        + #","second":{"kind":"leaf","leaf":"x"}}"#
+    }
+    let decoded = try JSONDecoder().decode(LayoutNode<String>.self, from: Data(json.utf8))
+    XCTAssertEqual(decoded.depth, SessionLimits.maxSplitDepth)
+  }
+
   func testCapsAreEnforcedAndReported() {
     let tabs = (0..<(SessionLimits.maxTabsPerTarget + 5)).map {
       TabSession(

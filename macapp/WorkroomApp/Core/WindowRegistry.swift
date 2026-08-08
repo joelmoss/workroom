@@ -64,6 +64,20 @@ final class WindowRegistry: ObservableObject {
         SwitcherRecency.shared.recordWorkroom(store: store, sid: store.selectedTargetID)
       }
     }
+    // Drop a window as it closes (issue #46). `unregister` previously had NO caller: entries were
+    // only ever cleared by `prune()` noticing the weak reference had died, which happens whenever the
+    // next unrelated lookup runs — so a closed window scheduled no save, and the session file kept
+    // describing it until something else happened to mark the session dirty. Filtered to registered
+    // workroom windows, so Settings/About/quick terminal closing here is a no-op.
+    NotificationCenter.default.addObserver(
+      forName: NSWindow.willCloseNotification, object: nil, queue: .main
+    ) { [weak self] note in
+      MainActor.assumeIsolated {
+        guard let self, let window = note.object as? NSWindow, self.store(for: window) != nil
+        else { return }
+        self.unregister(window: window)
+      }
+    }
   }
 
   // MARK: Registration

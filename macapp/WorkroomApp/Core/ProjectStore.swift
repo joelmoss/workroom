@@ -175,12 +175,26 @@ final class ProjectStore: ObservableObject {
   }
 
   /// Bring the window that was key at the last quit back to the front, then resume saving.
-  private func endSessionRestore() {
+  ///
+  /// `timedOut` is the watchdog calling, and it changes the ending: see below.
+  private func endSessionRestore(timedOut: Bool = false) {
     guard isRestoringSession else { return }
+    // **A restore that never finished must not resume saving.** `AppStore.load` swallows a CLI
+    // failure and returns WITHOUT calling `apply`, so `restorePersistedSessionIfPending` never runs
+    // and this window's restore stays outstanding forever. Resuming here would then rebuild the
+    // document from a window holding nothing and overwrite the file — one `workroom list` timing out
+    // on a cold machine would silently destroy the user's whole saved session, ~16 seconds into a
+    // launch that was supposed to bring it back. Freezing keeps the file intact for the next launch.
+    let incomplete = outstandingRestores > 0 || !unclaimedSessionWindows.isEmpty
     isRestoringSession = false
     unclaimedSessionWindows.removeAll()
     dispatchedSessionKeys.removeAll()
     claimedSessions.removeAll()
+    keyWindowSessionKey = timedOut && incomplete ? nil : keyWindowSessionKey
+    if timedOut && incomplete {
+      sessionCoordinator.freezeWithoutWriting()
+      return
+    }
     if let keyWindowSessionKey,
       let store = WindowRegistry.shared.allStores.first(where: {
         $0.sessionKey == keyWindowSessionKey
@@ -206,11 +220,13 @@ final class ProjectStore: ObservableObject {
     // closed mid-restore) would otherwise leave saving suspended for the whole run — the app would
     // silently stop persisting anything. Restoring is a launch-time operation measured in
     // milliseconds, so anything still outstanding this much later is not coming.
-    DispatchQueue.main.asyncAfter(deadline: .now() + Self.sessionRestoreTimeout) { [weak self] in
-      MainActor.assumeIsolated { self?.endSessionRestore() }
+    DispatchQueue.main.asyncAfter(deadline: .now() + sessionRestoreTimeout) { [weak self] in
+      MainActor.assumeIsolated { self?.endSessionRestore(timedOut: true) }
     }
   }
 
-  /// How long to wait for every dispatched window before giving up and resuming saves.
-  static let sessionRestoreTimeout: TimeInterval = 15
+  /// How long to wait for every dispatched window before giving up. Instance-level so a test can
+  /// shorten it and exercise the real watchdog rather than a stand-in for it.
+  var sessionRestoreTimeout: TimeInterval = ProjectStore.defaultSessionRestoreTimeout
+  static let defaultSessionRestoreTimeout: TimeInterval = 15
 }

@@ -127,6 +127,29 @@ final class SessionSaveTests: XCTestCase {
     XCTAssertEqual(readWindows()?.first?.targets.first?.tabs.count, 3)
   }
 
+  /// **REGRESSION.** `lastWritten` is the gate that drops an unchanged save, so a write that FAILED
+  /// must not be remembered as written — otherwise, after a disk-full or permissions blip, every later
+  /// attempt at the same state is suppressed and the layout silently stops being saved until the user
+  /// happens to change something else.
+  func testAFailedWriteIsNotRememberedAsWritten() throws {
+    // A file where the parent directory must be: `createDirectory` fails, so `persist` fails.
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let blocked = directory.appendingPathComponent("blocked")
+    try Data("not a directory".utf8).write(to: blocked)
+    let coordinator = SessionCoordinator(
+      store: SessionStore(url: blocked.appendingPathComponent("session.json")),
+      debounce: 0.05, ceiling: 0.2, capture: { [weak self] in self?.captured ?? [] })
+
+    coordinator.writeIfChanged()
+    pump(0.3)
+    XCTAssertNil(coordinator.lastWrittenWindows, "a failed write must be retried, not latched")
+
+    // The same unchanged state must therefore still attempt a write rather than be dropped.
+    coordinator.writeIfChanged()
+    pump(0.3)
+    XCTAssertNil(coordinator.lastWrittenWindows)
+  }
+
   // MARK: Restore gate
 
   /// **CRITICAL REGRESSION (outside voice, finding 1).**

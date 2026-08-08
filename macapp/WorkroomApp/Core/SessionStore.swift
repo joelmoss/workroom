@@ -34,6 +34,15 @@ final class SessionStore {
   /// a fixture launch would otherwise write over the developer's own `Workroom Dev` session — and the
   /// fixture's temp-directory workrooms would then be restored into a real launch.
   static func forCurrentEnvironment() -> SessionStore {
+    // Unit tests inject their own store, but `AppStore.markSessionDirty` reaches the SHARED
+    // coordinator — so without this a `make app-test` run writes the developer's own `Workroom Dev`
+    // session file and scrollback sidecars as a side effect of exercising tab mutations. Same
+    // isolation the app already applies at `WorkroomApp.swift:42` and `AppStore.swift:750`.
+    if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil,
+      UITestFixture.sessionFilePath == nil
+    {
+      return SessionStore(url: SessionStore.defaultURL(), isDisabled: true)
+    }
     guard UITestFixture.isActive else { return SessionStore() }
     guard let path = UITestFixture.sessionFilePath else {
       return SessionStore(url: SessionStore.defaultURL(), isDisabled: true)
@@ -147,16 +156,30 @@ final class SessionStore {
   // MARK: Write
 
   /// Persist off the main actor. Coalescing is the caller's job (see `AppStore+Session`).
-  func write(_ file: SessionFile) {
-    guard !isDisabled, !writesDisabled else { return }
-    queue.async { [weak self] in self?.persist(file) }
+  ///
+  /// `completion` reports on the main actor whether the bytes actually reached disk. The caller needs
+  /// it: it gates a write on "did this change since last time?", and treating a failed write as
+  /// written would suppress every retry of the same state until something else changed.
+  func write(_ file: SessionFile, completion: (@MainActor (Bool) -> Void)? = nil) {
+    guard !isDisabled, !writesDisabled else {
+      if let completion {
+        DispatchQueue.main.async { MainActor.assumeIsolated { completion(false) } }
+      }
+      return
+    }
+    queue.async { [weak self] in
+      let ok = self?.persist(file) ?? false
+      guard let completion else { return }
+      DispatchQueue.main.async { MainActor.assumeIsolated { completion(ok) } }
+    }
   }
 
   /// Persist before returning — the quit path, where the process may not survive long enough for an
   /// async write to land.
-  func writeSynchronously(_ file: SessionFile) {
-    guard !isDisabled, !writesDisabled else { return }
-    queue.sync { self.persist(file) }
+  @discardableResult
+  func writeSynchronously(_ file: SessionFile) -> Bool {
+    guard !isDisabled, !writesDisabled else { return false }
+    return queue.sync { self.persist(file) }
   }
 
   func clear() {
@@ -173,17 +196,42 @@ final class SessionStore {
     url.deletingLastPathComponent().appendingPathComponent("scrollback", isDirectory: true)
   }
 
-  private func scrollbackURL(forTabKey key: String) -> URL {
-    // The key is a `TabSession.key` UUID string: filesystem-safe and unique within a snapshot, so
-    // no escaping and no collision handling.
-    scrollbackDirectory.appendingPathComponent("\(key).txt")
+  /// Rejects a key that could address anything outside the scrollback directory.
+  ///
+  /// The keys this app writes are `TabSession.key` UUID strings, which are filesystem-safe by
+  /// construction — but `session.json` is a plain file a user (or anything running as them) can edit,
+  /// and `URL.appendingPathComponent` does **not** normalise: a key of `../../../x` yields a path
+  /// that escapes on access (measured). Since `readScrollback` *deletes* a file that fails
+  /// validation, an unchecked key is an arbitrary-file-delete primitive at launch.
+  ///
+  /// A separator check rather than a strict UUID match, so the rule bites the actual hazard without
+  /// making the key format part of the on-disk contract.
+  nonisolated static func isSafeScrollbackKey(_ key: String) -> Bool {
+    guard !key.isEmpty, key.count <= 128, !key.hasPrefix(".") else { return false }
+    return !key.contains("/") && !key.contains(":") && !key.contains("\0")
+  }
+
+  private func scrollbackURL(forTabKey key: String) -> URL? {
+    guard Self.isSafeScrollbackKey(key) else {
+      logger.error("refusing an unsafe scrollback key")
+      return nil
+    }
+    return scrollbackDirectory.appendingPathComponent("\(key).txt")
   }
 
   func writeScrollback(_ text: String, forTabKey key: String) {
     guard !isDisabled, !writesDisabled, !text.isEmpty else { return }
+    guard let fileURL = scrollbackURL(forTabKey: key) else { return }
     do {
-      try fileManager.createDirectory(at: scrollbackDirectory, withIntermediateDirectories: true)
-      try Data(text.utf8).write(to: scrollbackURL(forTabKey: key), options: .atomic)
+      // Owner-only, on the directory as well as the file: a sidecar is verbatim terminal output, so
+      // it can hold whatever the user's shell printed — tokens, `env` dumps, connection strings. The
+      // default 0644 would leave that readable by every other account on the machine.
+      try fileManager.createDirectory(
+        at: scrollbackDirectory, withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700])
+      try Data(text.utf8).write(to: fileURL, options: .atomic)
+      // `.atomic` writes a temp file and renames, so the mode has to be set after the rename.
+      try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
     } catch {
       // Best-effort like everything else here: a pane with no sidecar simply restores empty.
       logger.error("scrollback write failed: \(error.localizedDescription)")
@@ -195,8 +243,7 @@ final class SessionStore {
   /// A file that fails validation is **deleted**: it would fail identically on every future launch,
   /// and unlike `session.json` a scrollback sidecar has no diagnostic value worth quarantining.
   func readScrollback(forTabKey key: String) -> String? {
-    guard !isDisabled else { return nil }
-    let fileURL = scrollbackURL(forTabKey: key)
+    guard !isDisabled, let fileURL = scrollbackURL(forTabKey: key) else { return nil }
     guard fileManager.fileExists(atPath: fileURL.path) else { return nil }
 
     if let size = try? fileManager.attributesOfItem(atPath: fileURL.path)[.size] as? Int,
@@ -245,7 +292,8 @@ final class SessionStore {
       })
   }
 
-  private func persist(_ file: SessionFile) {
+  @discardableResult
+  private func persist(_ file: SessionFile) -> Bool {
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .iso8601
     // Readable and diff-stable on purpose: "delete this file and relaunch" is a support instruction
@@ -254,7 +302,7 @@ final class SessionStore {
 
     guard let data = try? encoder.encode(file) else {
       logger.error("session snapshot could not be encoded")
-      return
+      return false
     }
     do {
       // `Data.write(.atomic)` does NOT create intermediate directories, and the bundle-id
@@ -264,8 +312,10 @@ final class SessionStore {
       // Atomic: a reader sees the complete old document or the complete new one, never a partial
       // write from a process that died mid-save.
       try data.write(to: url, options: .atomic)
+      return true
     } catch {
       logger.error("session snapshot could not be written: \(error.localizedDescription)")
+      return false
     }
   }
 

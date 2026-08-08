@@ -153,12 +153,18 @@ final class GhosttySurfaceView: NSView {
   private var progressActive = false
   private static let progressTimeout: TimeInterval = 30
 
-  /// A previous session's text, replayed into this surface once it exists (issue #144). Nil for a
-  /// pane that is not being restored.
+  /// How to fetch this pane's previous text, replayed once the surface exists (issue #144). Nil for a
+  /// pane that is not being restored, and cleared the moment it has been used.
+  ///
+  /// A **closure, not the text**, and that is the point: restore materialises every target's tabs
+  /// eagerly (the sidebar's terminal subtree renders from them), so reading each sidecar up front
+  /// would do hundreds of file reads on the launch path and then hold every one of them — up to
+  /// 256KB per pane — in memory for the process's lifetime, including for panes that never mount.
+  /// Deferring to `createSurface` means only a pane you actually look at pays, and it pays once.
   ///
   /// Set through `adoptRestoredScrollback` rather than `init` because views are built by the
   /// `TerminalSessions.makeView` factory, whose signature is shared with every other spawn path.
-  private var restoredScrollback: String?
+  private var restoredScrollback: (() -> String?)?
   /// One replay per view, ever.
   private var didReplayScrollback = false
   /// Whether this pane has ever had more rows than fit on screen (issue #144), set from the
@@ -866,10 +872,40 @@ final class GhosttySurfaceView: NSView {
   ///
   /// The gap is a pane that launches a TUI before producing any output — indistinguishable from a
   /// short session, so its frame is captured. A real alt-screen query would close it; see TODOS.md.
+  /// Rows of history worth asking libghostty for at quit.
+  ///
+  /// `read_text` has no length parameter — it materialises the WHOLE history as one string, and only
+  /// then does `TerminalCapture.tidy` keep the last `maxScrollbackBytes` of it. The app sets no
+  /// `scrollback-limit`, so that history is bounded only by ghostty's own default (megabytes per
+  /// surface), and this runs serially for every pane inside `applicationShouldTerminate`. A pane that
+  /// logged all day would turn a quit into a multi-second hang for output that is discarded anyway.
+  ///
+  /// 10,000 rows sits above what `maxScrollbackBytes` can hold at a typical row width, so a pane whose
+  /// history would have survived the byte cap is not skipped by this one. Past it, the viewport alone
+  /// is captured — what you were actually looking at, which is the part worth keeping. Against
+  /// ghostty's byte-based default (~130,000 rows at 80 columns) that is still an order-of-magnitude
+  /// bound on the read.
+  static let maxCaptureRows: UInt64 = 10_000
+
+  /// Pure form of the row guard, so the bound is unit-testable without a live surface.
+  ///
+  /// Absent metrics read as "worth trying": a surface that has never reported geometry has nothing to
+  /// read anyway, and the guard is about panes that report a LOT, not panes that report nothing.
+  nonisolated static func shouldReadHistory(totalRows: UInt64?) -> Bool {
+    (totalRows ?? 0) <= maxCaptureRows
+  }
+
   func captureScrollback(maxBytes: Int = SessionLimits.maxScrollbackBytes) -> String? {
-    let history = readText(tag: GHOSTTY_POINT_SURFACE)
-    let isAlternateScreen = Self.shouldSkipViewport(
-      hasHistoryNow: history != nil, everHadScrollback: everHadScrollback)
+    let historyIsWorthReading = Self.shouldReadHistory(totalRows: scrollbarMetrics?.total)
+    let history = historyIsWorthReading ? readText(tag: GHOSTTY_POINT_SURFACE) : nil
+    // The alternate-screen inference only holds when the `SURFACE` read actually ran: `history == nil`
+    // because we CHOSE not to read it says nothing about a TUI, and treating it as one would skip the
+    // viewport too and capture nothing at all — the exact panes with the most worth keeping. (An alt
+    // screen has no scrollback of its own, so a TUI never trips the row guard and detection is intact.)
+    let isAlternateScreen =
+      historyIsWorthReading
+      && Self.shouldSkipViewport(
+        hasHistoryNow: history != nil, everHadScrollback: everHadScrollback)
     // The viewport is otherwise always read: `SURFACE` is history ONLY, so gating it on history
     // existing would capture nothing at all for a short session — most panes, most of the time.
     let visible = isAlternateScreen ? nil : readText(tag: GHOSTTY_POINT_VIEWPORT)
@@ -891,10 +927,12 @@ final class GhosttySurfaceView: NSView {
   /// spike). The bytes are rendered text, never escape sequences, and control bytes are stripped on
   /// the way in, so this cannot leave the parser mid-sequence.
   private func replayRestoredScrollback() {
-    guard !didReplayScrollback, let surface, let restored = restoredScrollback,
-      !restored.isEmpty
-    else { return }
+    guard !didReplayScrollback, let surface, let provider = restoredScrollback else { return }
     didReplayScrollback = true
+    // Released as soon as it has run: the text is now the terminal's own scrollback, and keeping a
+    // second copy on the view would double the memory cost of every restored pane for no purpose.
+    restoredScrollback = nil
+    guard let restored = provider(), !restored.isEmpty else { return }
     var bytes = Array(Self.replayPayload(for: restored).utf8)
     ghostty_surface_write_buffer(surface, &bytes, UInt(bytes.count))
   }
@@ -918,12 +956,15 @@ final class GhosttySurfaceView: NSView {
   /// Plain text, no SGR — it is content like any other replayed byte.
   static let scrollbackDivider = "\r\n── restored session ──\r\n"
 
-  /// Hand this view a previous session's text to replay. Must be called before the surface is
-  /// created (i.e. before the view enters a window), which is where `TerminalSessions.restore` sets
-  /// it — immediately after the factory returns.
-  func adoptRestoredScrollback(_ text: String?) {
-    guard surface == nil, let text, !text.isEmpty else { return }
-    restoredScrollback = text
+  /// Hand this view a way to fetch a previous session's text to replay. Must be called before the
+  /// surface is created (i.e. before the view enters a window), which is where
+  /// `TerminalSessions.restore` sets it — immediately after the factory returns.
+  ///
+  /// The closure is called at most once, when the surface is created, and released straight after —
+  /// so a restored pane that is never opened costs a closure, not a copy of its history.
+  func adoptRestoredScrollback(_ provider: (() -> String?)?) {
+    guard surface == nil, let provider else { return }
+    restoredScrollback = provider
   }
 
   /// Type literal text into the surface WITHOUT a trailing newline ("Insert fix", issue #49): the

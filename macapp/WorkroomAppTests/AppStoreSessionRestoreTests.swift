@@ -101,6 +101,64 @@ final class AppStoreSessionRestoreTests: XCTestCase {
     XCTAssertNil(store.pendingSessionRestore)
   }
 
+  /// **CRITICAL REGRESSION.** A restored sibling window keeps the selection its own session recorded.
+  ///
+  /// `bootstrap` gates on `consumeInitialRestore()`, which is app-wide and one-shot: the launch window
+  /// consumes it, so every sibling reaches the clear with `shouldRestore == false`. Clearing there
+  /// wiped what `claimSessionIfNeeded` had just written from the window's own session — so window 2
+  /// came back with its panes restored into `TerminalSessions` but nothing selected, i.e. visibly
+  /// empty. Only the window COUNT was asserted end to end, so nothing caught it.
+  func testRestoredSiblingKeepsItsOwnSelectionThroughBootstrap() async throws {
+    let projects = [project("/p", workrooms: ["calm-otter"])]
+    let saved = windowSession(targetID: "wr|/p|calm-otter", titles: ["Terminal 1"])
+    let store = makeStore(projects: projects, session: saved, isLaunchWindow: false)
+    // A sibling is opened FOR a key: it claims, but it is not the launch window.
+    store.claimsSavedSession = true
+    store.sessionKey = try XCTUnwrap(UUID(uuidString: saved.windowKey))
+    // The launch window has already taken the app-wide one-shot.
+    XCTAssertTrue(store.projectStore.consumeInitialRestore())
+
+    store.claimSessionIfNeeded()
+    XCTAssertEqual(store.pendingRestoreSelection, "wr|/p|calm-otter")
+
+    await store.bootstrap(restore: true)
+
+    XCTAssertEqual(
+      AppStore.targetIDString(for: store.selectedTargetID), "wr|/p|calm-otter",
+      "a sibling restored from the session must not open blank")
+  }
+
+  /// A ⌘N window still opens blank — the fix above must not hand it the saved selection.
+  func testCommandNWindowStillOpensBlank() async {
+    let projects = [project("/p", workrooms: ["calm-otter"])]
+    let store = makeStore(
+      projects: projects,
+      session: windowSession(targetID: "wr|/p|calm-otter", titles: ["Terminal 1"]),
+      isLaunchWindow: false)
+    XCTAssertTrue(store.projectStore.consumeInitialRestore())
+
+    store.claimSessionIfNeeded()
+    await store.bootstrap(restore: false)
+
+    XCTAssertNil(store.selectedTargetID, "a ⌘N window opens with nothing selected")
+  }
+
+  /// A saved window that had NOTHING selected must come back with nothing selected — the single-slot
+  /// `Defaults` key, last written by whichever other window was active, must not decide for it.
+  func testASessionWithNoSelectionOverridesTheDefaultsFallback() {
+    let projects = [project("/p", workrooms: ["calm-otter"])]
+    var saved = windowSession(targetID: "wr|/p|calm-otter", titles: ["Terminal 1"])
+    saved.selectedTargetID = nil
+    let store = makeStore(projects: projects, session: saved)
+    // As `AppStore.init` seeds it from `Defaults[.sidebarSelection]`.
+    store.pendingRestoreSelection = "wr|/p|calm-otter"
+
+    store.claimSessionIfNeeded()
+
+    XCTAssertNil(
+      store.pendingRestoreSelection, "the session owns selection, including when it recorded none")
+  }
+
   func testWindowKeyIsAdoptedSoTheSlotIsStableAcrossLaunches() throws {
     let projects = [project("/p", workrooms: ["calm-otter"])]
     let saved = windowSession(targetID: "wr|/p|calm-otter", titles: ["Terminal 1"])

@@ -2403,14 +2403,20 @@ final class AppStore: ObservableObject {
     // Exactly one window (the launch window) reapplies the saved selection; every other (incl. ⌘N)
     // window starts blank (issue #70).
     let shouldRestore = restore && projectStore.consumeInitialRestore()
+    // A window reopened from the saved session (issue #46) restores its OWN selection, which
+    // `claimSessionIfNeeded` has already put in `pendingRestoreSelection` from `attachWindow`.
+    // `consumeInitialRestore` is app-wide and one-shot, so the launch window consumes it and every
+    // sibling arrives here with `shouldRestore == false` — without this, the clear below would wipe
+    // what the claim just set and every restored sibling would come back with nothing selected.
+    let restoresOwnSession = pendingSessionRestore != nil
     if UITestFixture.isActive {
-      fixtureAutoSelect = shouldRestore
+      fixtureAutoSelect = shouldRestore || restoresOwnSession
       loadFixture()
       return
     }
-    // Drop the saved selection unless this is the one launch window allowed to restore it, so a new
-    // window opens with nothing selected (no workroom, no terminal).
-    if !shouldRestore {
+    // Drop the saved selection unless this window is entitled to one, so a ⌘N window opens with
+    // nothing selected (no workroom, no terminal).
+    if !shouldRestore && !restoresOwnSession {
       pendingRestoreSelection = nil
     }
     if projectStore.projects.isEmpty {

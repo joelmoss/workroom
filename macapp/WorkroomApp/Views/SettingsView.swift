@@ -179,6 +179,7 @@ private struct GeneralSettingsPane: View {
   @Default(.confirmOnQuit) private var confirmOnQuit
   @Default(.globalHotkey) private var globalHotkey
   @Default(.showMenuBarItem) private var showMenuBarItem
+  @Default(.persistScrollback) private var persistScrollback
 
   var body: some View {
     Form {
@@ -187,6 +188,14 @@ private struct GeneralSettingsPane: View {
           "Ask for confirmation before quitting (quitting closes every terminal, with no undo)."
         )
         .accessibilityIdentifier("settings.control.confirmQuit")
+
+      Toggle("Restore terminal output on relaunch", isOn: $persistScrollback)
+        .help(
+          "Save each terminal's visible output and scrollback so it comes back after a relaunch. "
+            + "Stored as plain text in Application Support, so turn this off if your terminals show "
+            + "secrets. Panes, splits and windows are restored either way."
+        )
+        .accessibilityIdentifier("settings.control.persistScrollback")
 
       Toggle("Global show/hide hotkey (⌘§)", isOn: $globalHotkey)
         .help("Register the system-wide ⌘§ shortcut to show or hide Workroom.")

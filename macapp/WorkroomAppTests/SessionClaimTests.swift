@@ -42,15 +42,30 @@ final class SessionClaimTests: XCTestCase {
   }
 
   /// A store whose session file holds `windows`, with saving driven by an injected coordinator.
-  private func makeProjectStore(windows: [WindowSession]) -> ProjectStore {
+  private func makeProjectStore(
+    windows: [WindowSession], capture: @escaping () -> [WindowSession] = { [] }
+  ) -> ProjectStore {
     if !windows.isEmpty {
       SessionStore(url: url).writeSynchronously(
         SessionFile(savedAt: Date(timeIntervalSince1970: 0), windows: windows))
     }
     let store = ProjectStore()
     store.sessionCoordinator = SessionCoordinator(
-      store: SessionStore(url: url), debounce: 0.05, ceiling: 0.2, capture: { [] })
+      store: SessionStore(url: url), debounce: 0.05, ceiling: 0.2, capture: capture)
     return store
+  }
+
+  /// Spin the main run loop so scheduled work items fire, without blocking the main actor.
+  private func pump(_ seconds: TimeInterval) {
+    let deadline = Date().addingTimeInterval(seconds)
+    while Date() < deadline {
+      RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+    }
+  }
+
+  private func savedWindows() -> [WindowSession]? {
+    guard case .restored(let file, _) = SessionStore(url: url).read() else { return nil }
+    return file.windows
   }
 
   // MARK: The matrix
@@ -207,6 +222,53 @@ final class SessionClaimTests: XCTestCase {
   }
 
   /// A sibling is opened keyed on the session it will claim, so the two cannot drift apart.
+  // MARK: The abandoned restore
+
+  /// **CRITICAL REGRESSION.** A restore that never completes must FREEZE saving, not resume it.
+  ///
+  /// `AppStore.load` swallows a CLI failure and returns without calling `apply`, so
+  /// `restorePersistedSessionIfPending` never runs and the claim stays outstanding forever. The
+  /// watchdog exists so saving can't wedge — but resuming here rebuilds the document from a window
+  /// holding nothing and overwrites the file. One `workroom list` timing out on a cold machine would
+  /// silently destroy the user's entire saved session seconds into the launch meant to restore it.
+  func testWatchdogPreservesTheFileWhenARestoreNeverFinished() throws {
+    let key = UUID()
+    // What the live (unrestored) window would contribute — the wreckage that must NOT be written.
+    let store = makeProjectStore(
+      windows: [window(key: key, isKey: true, selected: "wr|/p|foo")],
+      capture: { [WindowSession(windowKey: UUID().uuidString)] })
+    store.sessionRestoreTimeout = 0.1
+
+    XCTAssertNotNil(store.claimSession(for: key, isLaunchWindow: true))
+    XCTAssertTrue(store.sessionCoordinator.isSuspended)
+    // The window registers and moves, marking dirty — but its restore never lands.
+    store.sessionCoordinator.markDirty()
+
+    pump(0.6)
+
+    XCTAssertTrue(
+      store.sessionCoordinator.isFrozen,
+      "an abandoned restore must stop writing, not resume it")
+    XCTAssertEqual(
+      savedWindows()?.first?.targets.first?.tabs.count, 1,
+      "the saved session must survive a launch that failed to restore it")
+  }
+
+  /// The watchdog firing AFTER a clean restore is a no-op — it must not freeze a healthy session.
+  func testWatchdogAfterACompletedRestoreLeavesSavingEnabled() {
+    let key = UUID()
+    let store = makeProjectStore(windows: [window(key: key)])
+    store.sessionRestoreTimeout = 0.1
+
+    _ = store.claimSession(for: key, isLaunchWindow: true)
+    store.finishSessionRestore()
+    XCTAssertFalse(store.sessionCoordinator.isSuspended)
+
+    pump(0.4)
+    XCTAssertFalse(
+      store.sessionCoordinator.isFrozen, "a completed restore must leave saving working")
+  }
+
   func testRestoringSeedCarriesTheSessionKey() {
     let key = UUID()
     XCTAssertEqual(WindowSeed.restoring(key: key).id, key)

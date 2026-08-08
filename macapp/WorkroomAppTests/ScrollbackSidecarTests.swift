@@ -92,6 +92,55 @@ final class ScrollbackSidecarTests: XCTestCase {
     XCTAssertNil(store.readScrollback(forTabKey: "abc"))
   }
 
+  // MARK: Key safety
+
+  /// **SECURITY REGRESSION.** `session.json` is a plain file the user (or anything running as them)
+  /// can edit, and `URL.appendingPathComponent` does NOT normalise — measured: a key of `../../../x`
+  /// yields a path that escapes on access. Since `readScrollback` DELETES a file that fails
+  /// validation, an unchecked key was an arbitrary-file-delete primitive that fires at launch.
+  func testKeysThatCouldEscapeTheDirectoryAreRefused() {
+    for hostile in [
+      "../../../evil", "a/b", "/etc/hosts", ".hidden", "", String(repeating: "x", count: 200),
+    ] {
+      XCTAssertFalse(
+        SessionStore.isSafeScrollbackKey(hostile), "\"\(hostile)\" must not address a file")
+    }
+  }
+
+  func testOrdinaryTabKeysAreAccepted() {
+    XCTAssertTrue(SessionStore.isSafeScrollbackKey(UUID().uuidString))
+    XCTAssertTrue(SessionStore.isSafeScrollbackKey("t0"))
+  }
+
+  func testAnUnsafeKeyNeitherReadsNorWrites() throws {
+    let outside = directory.appendingPathComponent("outside.txt")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try Data("do not touch".utf8).write(to: outside)
+
+    store.writeScrollback("nope", forTabKey: "../outside")
+    XCTAssertNil(store.readScrollback(forTabKey: "../outside"))
+    XCTAssertEqual(
+      try String(contentsOf: outside, encoding: .utf8), "do not touch",
+      "a file outside the scrollback directory must be untouched")
+  }
+
+  // MARK: Permissions
+
+  /// A sidecar is verbatim terminal output — whatever the shell printed, including anything secret.
+  /// The default 0644 would leave that readable by every other account on the machine.
+  func testSidecarsAreOwnerOnly() throws {
+    store.writeScrollback("secret", forTabKey: "abc")
+
+    let filePerms =
+      try FileManager.default.attributesOfItem(atPath: sidecar("abc").path)[.posixPermissions]
+      as? NSNumber
+    XCTAssertEqual(filePerms?.int16Value, 0o600)
+    let dirPerms =
+      try FileManager.default.attributesOfItem(atPath: store.scrollbackDirectory.path)[
+        .posixPermissions] as? NSNumber
+    XCTAssertEqual(dirPerms?.int16Value, 0o700)
+  }
+
   // MARK: Prune
 
   func testPruneRemovesOnlyUnknownKeys() {
@@ -114,6 +163,29 @@ final class ScrollbackSidecarTests: XCTestCase {
 
   func testPruneOnMissingDirectoryIsHarmless() {
     store.pruneScrollback(keeping: ["anything"])
+  }
+
+  // MARK: The opt-out
+
+  /// A sidecar is verbatim terminal output written to disk in plain text, and terminals hold tokens,
+  /// `env` dumps and connection strings — which Time Machine and any folder sync then pick up. The
+  /// switch exists so that is the user's call; turning it off must cost the TEXT and nothing else.
+  @MainActor
+  func testTurningScrollbackOffLeavesTheLayoutAlone() {
+    let store = AppStore(projectStore: ProjectStore())
+    store.terminals.makeView = { _, cwd, command in
+      GhosttySurfaceView(workingDirectory: cwd, command: command)
+    }
+    let target = TerminalTarget(id: "wr|/p|foo", title: "foo", path: "/tmp", isMissing: false)
+    store.terminals.addTab(for: target)
+
+    store.captureScrollback(into: self.store, isEnabled: false)
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: self.store.scrollbackDirectory.path),
+      "with the preference off nothing is written at all")
+    XCTAssertEqual(
+      store.captureWindowSession().targets.first?.tabs.count, 1,
+      "the pane itself still persists — only its text is opted out")
   }
 
   // MARK: Disabled store
@@ -150,6 +222,33 @@ final class ScrollbackSidecarTests: XCTestCase {
       "history is readable, so nothing is hiding it")
     XCTAssertFalse(
       GhosttySurfaceView.shouldSkipViewport(hasHistoryNow: true, everHadScrollback: false))
+  }
+
+  // MARK: Quit-time read bound
+
+  /// `read_text` has no length parameter — it materialises the WHOLE history, and only then does
+  /// `tidy` keep the last 256KB. With no `scrollback-limit` in the generated ghostty config that is
+  /// bounded by the engine's own default (megabytes per surface), and it runs serially for every pane
+  /// inside `applicationShouldTerminate`. A pane that logged all day would hang the quit for output
+  /// that gets discarded anyway.
+  func testHistoryIsReadOnlyWhileItCouldStillFitTheCap() {
+    XCTAssertTrue(GhosttySurfaceView.shouldReadHistory(totalRows: 0))
+    XCTAssertTrue(GhosttySurfaceView.shouldReadHistory(totalRows: nil), "no geometry yet")
+    XCTAssertTrue(
+      GhosttySurfaceView.shouldReadHistory(totalRows: GhosttySurfaceView.maxCaptureRows))
+    XCTAssertFalse(
+      GhosttySurfaceView.shouldReadHistory(totalRows: GhosttySurfaceView.maxCaptureRows + 1))
+    XCTAssertFalse(GhosttySurfaceView.shouldReadHistory(totalRows: 10_000_000))
+  }
+
+  /// The row guard must sit ABOVE what the byte cap keeps, or it would throw away history that would
+  /// have survived anyway — the guard exists to bound work, not to shrink the capture. Measured
+  /// against a typical rendered row; this assertion is what caught the bound being set too low.
+  func testTheRowBoundIsAboveWhatTheByteCapKeeps() {
+    let typicalRenderedRow = 32
+    XCTAssertGreaterThan(
+      Int(GhosttySurfaceView.maxCaptureRows) * typicalRenderedRow,
+      SessionLimits.maxScrollbackBytes)
   }
 
   // MARK: Replay payload
