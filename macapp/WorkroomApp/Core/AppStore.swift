@@ -90,6 +90,12 @@ final class AppStore: ObservableObject {
   /// so views/menus observing this store still re-render when the shared data changes.
   let projectStore: ProjectStore
   private var projectStoreObservation: AnyCancellable?
+  /// Marks the saved session dirty on any pane change (issue #46). Hooking the publisher rather than
+  /// the ~12 structural mutators in `TerminalSessions` is deliberate: a thirteenth mutation cannot be
+  /// forgotten. It fires far more often than the session changes (every live title, every activity
+  /// pulse), which the coordinator answers with coalescing plus an equality gate — the excluded
+  /// fields make that chatter produce an identical document, so it costs a comparison, not a write.
+  private var sessionObservation: AnyCancellable?
 
   /// Seam over the bundled `workroom` CLI (issue #103). Production uses
   /// `WorkroomCLI.shared`; tests inject a fake to drive mutations without a real
@@ -116,6 +122,12 @@ final class AppStore: ObservableObject {
   /// by the quick switcher's recency (and its snapshot cache) so a closed window's entries can't
   /// alias onto a fresh one.
   let windowToken = WindowToken()
+  /// This window's identity in the saved session (issue #46) — the key its `WindowSession` is stored
+  /// under, and the only cross-*launch* window identity the app has. `WindowSeed.launch` mints a fresh
+  /// UUID on every access and `windowToken` is per-process, so neither survives a relaunch. Defaults
+  /// to the seed's id; a window that adopts a saved session takes that session's key instead, so the
+  /// same window keeps the same slot across launches.
+  var sessionKey = UUID()
   /// Retains the close-guard delegate proxy (the window holds its delegate weakly) for this window's
   /// lifetime (issue #70, A3).
   private var closeGuard: WindowCloseGuard?
@@ -163,6 +175,9 @@ final class AppStore: ObservableObject {
       if persistsSidebarPrefs {
         Defaults[.sidebarSelection] = Self.targetIDString(for: selectedTargetID)
       }
+      // The saved session records selection PER WINDOW (issue #46); the Defaults key above is the
+      // single-slot cold-start fallback for a launch with no usable session file.
+      markSessionDirty()
       // Promote this workroom in the quick switcher's most-recently-used order (issue #132).
       // UNCONDITIONAL, unlike the history record below: `applyLocation` raises `isNavigatingHistory`
       // for its whole body and the switcher commits through it, so a gated write would never record
@@ -259,16 +274,21 @@ final class AppStore: ObservableObject {
   /// coexist** — grouping two solo workrooms leaves the other groups alone — and they're disjoint (a
   /// workroom is in at most one) with ≥2 leaves each (a lone leaf is "no split", mirroring the
   /// terminal-split invariant). At most one group is *visible*: the one holding the selection.
-  /// Session-only (not persisted, like the terminal split). All edits go through the helpers in
+  /// Persisted with the rest of the session (issue #46) as target-id strings; a group whose leaves no
+  /// longer resolve dissolves on restore. All edits go through the helpers in
   /// `AppStore+WorkroomSplit.swift`; stale leaves resolve away in `resolvedSplitLeaves(of:)`, so it's
   /// self-healing. See that file for the transforms.
-  @Published var workroomSplits: [PaneLayout<SidebarID>] = []
+  @Published var workroomSplits: [PaneLayout<SidebarID>] = [] {
+    didSet { markSessionDirty() }
+  }
   /// Terminal targets whose terminal subtree is *expanded* in the sidebar (issue #30). Inverse
   /// polarity to `collapsedProjects`: terminals are collapsed by default, so the set holds only the
-  /// expanded ones (empty = all collapsed). Session-only and deliberately NOT persisted — the
-  /// terminals themselves don't survive a relaunch (`TerminalSessions` is in-memory), so a restored
-  /// expand flag would point at nothing. Pruned below 2 tabs by the `onTabsRemoved` hook in `init`.
-  @Published var expandedTerminalTargets: Set<TerminalTarget.ID> = []
+  /// expanded ones (empty = all collapsed). Persisted with the session (issue #46) — restored only for
+  /// targets whose panes actually came back, since an expand flag pointing at nothing would render an
+  /// empty disclosure. Pruned below 2 tabs by the `onTabsRemoved` hook in `init`.
+  @Published var expandedTerminalTargets: Set<TerminalTarget.ID> = [] {
+    didSet { markSessionDirty() }
+  }
   /// Per-project resolved root branch/bookmark labels, hydrated asynchronously after each
   /// load (see `resolveBranches`). Absent ⇒ the root row shows a dim "root" until resolved.
   var rootRefs: [Project.ID: RootRef] {
@@ -783,7 +803,16 @@ final class AppStore: ObservableObject {
   private var lastLoadAt: Date = .distantPast
   /// The selection persisted from a previous launch (issue #14), applied once on the first
   /// successful load (see `apply`). Consumed there so a later refresh can't resurrect it.
-  private var pendingRestoreSelection: TerminalTarget.ID?
+  ///
+  /// Seeded from `Defaults[.sidebarSelection]`, and overwritten by a claimed session's own selection
+  /// (issue #46) — the session owns selection per window; the Defaults key is the single-slot
+  /// cold-start fallback. Internal rather than private so `AppStore+Session` can do that.
+  var pendingRestoreSelection: TerminalTarget.ID?
+  /// This window's claimed saved session (issue #46), consumed at the end of `apply`.
+  var pendingSessionRestore: WindowSession?
+  /// One-shot guard: `WindowAccessor` can resolve the same window more than once, and a claim must
+  /// never be taken twice.
+  var didClaimSession = false
   /// UI-test fixture mode only: whether this window auto-selects the fixture workroom. True for the
   /// launch window, false for a ⌘N window so it stays blank — the fixture analogue of clearing
   /// `pendingRestoreSelection` on the real path (issue #70).
@@ -823,6 +852,11 @@ final class AppStore: ObservableObject {
     // re-render when the proxied `projects` / `rootRefs` / `workroomStatuses` / … change (issue #70).
     projectStoreObservation = store.objectWillChange.sink { [weak self] _ in
       self?.objectWillChange.send()
+    }
+    // Any pane change marks the saved session dirty (issue #46). `objectWillChange` fires BEFORE the
+    // mutation, so the coordinator must always schedule a capture — never take one inline here.
+    sessionObservation = terminals.objectWillChange.sink { [weak self] _ in
+      self?.markSessionDirty()
     }
     // Wired post-init (the `workroomFileWatcher` idiom) so `RemoteStateModel` needs no `AppStore` to be
     // unit-tested. `onBranchResolved` makes this model the single writer of the shared branch cache
@@ -934,10 +968,46 @@ final class AppStore: ObservableObject {
     return (frame.width > 200 && frame.height > 200) ? frame : nil
   }
 
+  /// A restored frame, moved onto a screen that still exists.
+  ///
+  /// Restoring a raw frame is not safe (issue #46): unplug the external display a window was on, or
+  /// change the resolution, and the window reopens somewhere the user cannot reach it — with no way
+  /// back except deleting the saved state. Anything that still overlaps a visible screen is left
+  /// exactly as it was; anything that doesn't is shrunk to fit and re-centred on the primary screen.
+  static func frameOnAVisibleScreen(_ frame: NSRect) -> NSRect? {
+    frameOnAVisibleScreen(frame, screens: NSScreen.screens.map(\.visibleFrame))
+  }
+
+  /// The pure core, taking the screens as data so it is unit-testable without a display.
+  nonisolated static func frameOnAVisibleScreen(_ frame: NSRect, screens: [NSRect]) -> NSRect? {
+    guard frame.width > 200, frame.height > 200 else { return nil }
+    guard let primary = screens.first else { return nil }
+    // "Reachable" means a real overlap, not a shared edge — a window one pixel onto a screen is not
+    // something a user can grab.
+    let minimumVisible: CGFloat = 60
+    let isReachable = screens.contains { screen in
+      let overlap = screen.intersection(frame)
+      return !overlap.isNull && overlap.width >= minimumVisible && overlap.height >= minimumVisible
+    }
+    if isReachable { return frame }
+
+    let size = NSSize(
+      width: min(frame.width, primary.width), height: min(frame.height, primary.height))
+    return NSRect(
+      x: primary.midX - size.width / 2, y: primary.midY - size.height / 2,
+      width: size.width, height: size.height)
+  }
+
   /// Bind this store to its host `NSWindow` once the view tree resolves it (issue #70). Idempotent —
   /// `WindowAccessor` may resolve the same window more than once.
   func attachWindow(_ window: NSWindow) {
     hostWindow = window
+    // Adopt this window's saved panes (issue #46) BEFORE anything below reads them. Here rather than
+    // in `RootWindow.init` on purpose: SwiftUI can construct a view speculatively or repeatedly, and a
+    // discarded init would consume a session no real window ever shows. `attachWindow` runs from
+    // `WindowAccessor` in `viewDidMoveToWindow` — a real window exists, and it is still pre-display,
+    // which is what the restored frame needs.
+    claimSessionIfNeeded()
     // Keep the title out of the title bar (issue #70). The title we give the window (selected
     // project/workroom, via `navigationTitle` → `windowTitle`) exists only to name it in the Window
     // menu + Mission Control — never to show in the bar. But a non-empty `navigationTitle` re-asserts
@@ -965,9 +1035,16 @@ final class AppStore: ObservableObject {
         }
       }
     }
-    // Launch with a single window (issue #70): SwiftUI would otherwise persist + restore every window
-    // that was open at quit. We restore the one window's size ourselves (below), so opt out of
-    // AppKit's per-window state restoration; extra windows are deliberately not reopened.
+    // Opt out of AppKit/SwiftUI window state restoration (issue #70), and KEEP it opted out now that
+    // the app restores sessions itself (issue #46) — otherwise an OS-restored window and an
+    // app-restored one would both appear.
+    //
+    // The built-in is real and would even solve cross-launch window identity for free (a value-based
+    // `WindowGroup` brings each `WindowSeed` back with its original id — which is why `WindowSeed` is
+    // `Codable`). It is declined because it is gated on a system preference that ships OFF: "Close
+    // windows when quitting an application" is checked by default, so `NSQuitAlwaysKeepsWindows` is
+    // unset on a default install and the built-in silently does nothing for most users. Panels and
+    // frames are restored from `session.json` instead, which behaves the same for everyone.
     window.isRestorable = false
     // Set the window's size before it's shown (issue #70): `WindowAccessor` resolves it in
     // `viewDidMoveToWindow`, which fires during window setup (pre-display), so SwiftUI's value-based
@@ -976,9 +1053,16 @@ final class AppStore: ObservableObject {
     // was current when it opened; the launch window restores its last frame, else a sensible default.
     if !didApplyInitialSize {
       didApplyInitialSize = true
-      if let size = pendingInitialWindowSize {
+      // The saved session owns per-window frames (issue #46) and wins over both the
+      // "match the current window" size and the single-slot `Defaults` key, which can only ever
+      // describe one window and is now just the cold-start fallback.
+      if let restored = pendingSessionRestore?.frame.map(NSRectFromString),
+        let frame = Self.frameOnAVisibleScreen(restored)
+      {
+        window.setFrame(frame, display: false)
+      } else if let size = pendingInitialWindowSize {
         window.setFrame(NSRect(origin: window.frame.origin, size: size), display: false)
-      } else if let frame = Self.savedMainWindowFrame() {
+      } else if let frame = Self.savedMainWindowFrame().flatMap(Self.frameOnAVisibleScreen) {
         window.setFrame(frame, display: false)
       } else {
         window.setContentSize(NSSize(width: 1200, height: 780))
@@ -991,9 +1075,18 @@ final class AppStore: ObservableObject {
       for name in [NSWindow.didResizeNotification, NSWindow.didMoveNotification] {
         let token = NotificationCenter.default.addObserver(
           forName: name, object: window, queue: .main
-        ) { [weak window] _ in
+        ) { [weak self, weak window] _ in
           guard let window else { return }
-          MainActor.assumeIsolated { Defaults[.mainWindowFrame] = NSStringFromRect(window.frame) }
+          MainActor.assumeIsolated {
+            // Per-window frames live in the saved session (issue #46); a drag fires this
+            // continuously, which the coordinator's coalescing absorbs.
+            SessionCoordinator.shared.markDirty()
+            // The `Defaults` key holds ONE frame, so only the active window writes it — three windows
+            // were previously racing to be the last mover. It is now the cold-start fallback for a
+            // first launch with no session file, not the authority.
+            guard self?.persistsSidebarPrefs == true else { return }
+            Defaults[.mainWindowFrame] = NSStringFromRect(window.frame)
+          }
         }
         frameObservers.append(token)
       }
@@ -2369,6 +2462,10 @@ final class AppStore: ObservableObject {
   private func loadFixture() {
     let fixtures = UITestFixture.projects()
     projects = fixtures
+    // Fixture mode never reaches `apply`, so restore has to be released here or saves would stay
+    // suspended for the whole run (issue #46). Fixture projects live in a temp directory that a real
+    // saved session can't address anyway.
+    restorePersistedSessionIfPending(in: fixtures)
     // Seed a deterministic run command (issue #7) so the run-command UI is exercisable in fixture
     // mode (the lifecycle XCUITest + the manual verify-first probe). The path is a temp dir, so real
     // projects' Defaults are untouched. Prints a marker (proves the command parsed + launched) then
@@ -2536,6 +2633,12 @@ final class AppStore: ObservableObject {
     }
     // Keep the live root-branch watchers in sync with the project set (start new, drop departed).
     updateRootBranchWatches()
+    // Rehydrate this window's panes (issue #46). LAST, and race-free by construction rather than by
+    // timing: a pane only mounts once `selectedTargetID` is non-nil AND SwiftUI has rendered, neither
+    // of which can happen inside this synchronous main-actor body. By the time
+    // `WorkroomTerminalsView`'s `.task` runs `ensureInitialTerminal`, `tabCount != 0`, so its existing
+    // guard makes it a no-op and no stray "Terminal 1" appears beside the restored panes.
+    restorePersistedSessionIfPending(in: fresh)
   }
 
   /// Removes workrooms currently tombstoned in `deletingWorkrooms` from an incoming CLI project list,

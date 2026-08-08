@@ -59,6 +59,18 @@ enum UITestFixture {
     flag(defaultsKey)
   }
 
+  /// Where a session-restore UI test wants its `session.json` (`-WorkroomUITestSessionFile <path>`).
+  ///
+  /// **In fixture mode the session store is a no-op unless this is set** (see
+  /// `SessionStore.forCurrentEnvironment`). That default-off posture is not optional: the app's
+  /// session file is scoped by bundle id, so without it the 30-odd existing UI tests would each write
+  /// over the DEVELOPER's own `Workroom Dev` session — and the fixture's temp-directory workrooms
+  /// would then be restored into a real launch.
+  static var sessionFilePath: String? {
+    guard isActive else { return nil }
+    return text("WorkroomUITestSessionFile")
+  }
+
   /// When set (`-WorkroomUITestNoProjects 1`), the fixture loads an EMPTY project list — the
   /// fresh-install / nothing-configured state. Used by `NewWorkroomDialogUITests` to assert File ▸
   /// New Workroom is disabled when there's nothing to pick (issue #81 D3).

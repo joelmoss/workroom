@@ -135,6 +135,14 @@ release is a baseline; auto-update kicks in for the release after it. **Never de
 - `Views/` — `NavigationSplitView`: projects sidebar · workroom list · terminal detail,
   with empty/error states, a destructive delete confirmation, and a detail toolbar.
 - `Core/Models.swift` — `Codable` mirrors of the `--json` contract (lenient decoding).
+- `Core/SessionSnapshot.swift` / `SessionStore.swift` / `SessionCoordinator.swift` — the saved
+  session (issue #46): open panels, split layouts, selection and window frames, restored on the next
+  launch. Stored as
+  `~/Library/Application Support/Workroom/<bundle id>/session.json` — scoped by bundle id so
+  Workroom, Workroom Dev and Workroom Nightly never restore each other's windows. Deleting that file
+  is always safe: the app then launches as it would on a fresh install. A restored terminal is a
+  fresh shell in its remembered directory (libghostty exposes no session dump), and run tabs are
+  deliberately never restored.
 
 ## Things to verify on first build (marked `TODO` in code)
 

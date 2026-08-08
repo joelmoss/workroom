@@ -85,4 +85,51 @@ final class ProjectStore: ObservableObject {
     defer { pendingInitialRestore = false }
     return pendingInitialRestore
   }
+
+  // MARK: Saved session (issue #46)
+
+  /// Windows from the saved session that no window has adopted yet. Loaded once, lazily, by the first
+  /// claim — which is also the moment saves are suspended, so a restoring window cannot overwrite the
+  /// file before the rest of it has been claimed.
+  private var unclaimedSessionWindows: [WindowSession] = []
+  private var didLoadSession = false
+  /// Injectable so tests drive a temp session file instead of the developer's real one.
+  var sessionCoordinator: SessionCoordinator = .shared
+  /// True between loading the session and finishing the restore, so the suspend/resume is balanced
+  /// exactly once however many windows take part.
+  private var isRestoringSession = false
+
+  /// Adopt a saved window for this store, or nil when there is nothing to adopt.
+  ///
+  /// Loading is lazy so the read happens at the first claim rather than at app init — the claim is
+  /// made from `AppStore.attachWindow`, when a real `NSWindow` exists but before it is shown, which is
+  /// both early enough for the frame and late enough that a speculative SwiftUI view init cannot
+  /// consume a session no window ever uses.
+  func claimSession(isLaunchWindow: Bool) -> WindowSession? {
+    loadSessionIfNeeded()
+    // Only the launch window restores today; every ⌘N window opens blank, matching
+    // `consumeInitialRestore`. Per-window claiming by key is the multi-window follow-up.
+    guard isLaunchWindow, !unclaimedSessionWindows.isEmpty else { return nil }
+    return unclaimedSessionWindows.removeFirst()
+  }
+
+  /// Every claimed window has finished restoring — resume saving.
+  func finishSessionRestore() {
+    guard isRestoringSession else { return }
+    isRestoringSession = false
+    unclaimedSessionWindows.removeAll()
+    sessionCoordinator.resumeSaves()
+  }
+
+  private func loadSessionIfNeeded() {
+    guard !didLoadSession else { return }
+    didLoadSession = true
+    guard case .restored(let file, _) = sessionCoordinator.read() else { return }
+    unclaimedSessionWindows = file.windows
+    isRestoringSession = true
+    // Suspended until `finishSessionRestore`. Without this the first window's restore marks the
+    // session dirty, and that write would rebuild the document from the windows that exist SO FAR —
+    // overwriting the file and discarding the ones still to be claimed.
+    sessionCoordinator.suspendSaves()
+  }
 }
