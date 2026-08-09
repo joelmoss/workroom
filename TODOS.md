@@ -733,6 +733,38 @@ replace, and its unit test documents the behaviour to preserve.
 inert text, not data loss. The real price is carrying a ninth patch through every libghostty upgrade,
 which is why this is a deliberate deferral rather than an oversight.
 
+**Issue #145 made the gap easier to hit.** The unprotected case is "a pane launches a TUI before
+producing any output", and Resume is now a one-click way to do exactly that: click *Resume Claude…*
+in a freshly restored pane and Claude takes the alternate screen with nothing above it, so
+`everHadScrollback` is false and the inference cannot fire. Quit from there and the captured
+scrollback is Claude's frame. Still one screenful of inert text rather than data loss, so the
+priority stands — but the "you have to go out of your way to hit this" part of the P3 argument no
+longer holds.
+
+### Resume offer doesn't know the shell is at a prompt (macapp) — issue #145 follow-up
+
+**What:** `AgentResumeCoordinator` publishes an offer as soon as discovery finishes, and
+`TerminalStatusBar` enables the button whenever a surface exists. Neither establishes that the
+restored pane's shell has actually reached its first prompt.
+
+**Why:** Clicking Resume writes the picker command and a synthetic Return. If a `.zshrc` is still
+running something interactive — a `read`, a version-manager activation, an ssh key passphrase
+prompt — that text goes to *that* program instead of the shell, and the Return answers it. Raised by
+Codex in the #145 pre-landing review and deliberately not fixed there: the two guards that ship
+(first keystroke drops the offer, and a pane whose cwd moved refuses to resume) cover the cases that
+happen in practice, and the real fix needs state we don't plumb yet.
+
+**How to start:** the signal exists but isn't surfaced. The bundled shell integration already emits
+OSC 7 on each prompt, which is what feeds `GhosttySurfaceView.lastKnownCwd` — so "has this pane ever
+reported a cwd" is a usable first-prompt proxy today, and gating `TerminalStatusBar.resumable` on
+`state?.cwd != nil` is a two-line down payment. Doing it properly means tracking prompt-start /
+command-start as explicit state on the surface (the same shell-integration events `#49`'s
+`command_finished` capture already rides on) and clearing the offer while a command is running.
+
+**Priority:** P3 — a restored pane is a fresh login shell that is normally at its prompt long before
+a filesystem scan returns, so the window is small. It is a correctness gap rather than a hazard: the
+worst case is one wrong line typed into a program the user can see.
+
 ### Cross-launch navigation history (macapp) — issue #26 / #46 follow-up
 
 **What:** Back/forward (⌘[ / ⌘]) does nothing immediately after a relaunch. Session restore (issue #46)
