@@ -56,6 +56,36 @@ Cheaper after the pin bump (engine-sent `selection_changed`), but not blocked by
 
 **Priority:** P2 (accessibility regression — address before GA, not blocking the beta).
 
+### Every shipped beta has an arm64-only CLI inside a universal app (macapp) — FIXED IN TREE, UNRELEASED
+
+**What:** the app is universal; the `workroom` CLI it bundles is arm64-only. Verified on the
+published `v2.0.0-beta.23` DMG:
+
+```
+Workroom.app/Contents/MacOS/Workroom      x86_64 arm64
+Workroom.app/Contents/Resources/workroom  arm64        ← thin
+```
+
+**Why it matters:** the app drives *every* workroom operation through that binary
+(`create`/`list`/`delete`/`add-project`/`delete-project --json`). On an Intel Mac the app launches,
+renders, and then fails at all of it. Rosetta does not help — that translates the other direction.
+
+**Cause:** `ARCHS` is a space-separated list (`"arm64 x86_64"`), and `build-helper.sh` matched it as
+a single token, falling through to a `warn:`-and-default-to-arm64 branch. The warning was buried in
+xcodebuild output; codesign, notarization and Gatekeeper are all happy with a thin nested binary.
+Present since `8bae1b2a` (2026-06-02), the commit that added the app — so beta.1 through beta.23.
+The standalone CLI's own `darwin_amd64` tarball was always fine; only the embedded copy was thin.
+
+**Fixed** in `build-helper.sh` (per-arch build + `lipo`), asserted at release time by
+`release.sh check_universal()`, and regression-tested by `macapp/Scripts/build-helper_test.sh`
+(proven to fail against the old logic). **Not yet released.**
+
+**Open decision:** whether this warrants cutting a beta ahead of the normal cadence. It has been
+broken for two months, so urgency is lower than severity suggests — but any Intel user who has
+tried the app has a broken install.
+
+**Priority:** P2 — fixed, pending a release decision.
+
 ## P2 — perf, correctness, and the next VCS phase
 
 ### Bump the libghostty pin (macapp) — post-GA, first change after the GA tag
@@ -101,8 +131,22 @@ nothing persists a raw tag. Don't spend the retest budget there. (Don't write a 
 tag's raw value either — test and app import the same header, so it can never fail.)
 
 **Blocking work, same commit:**
+- **Decide the `ghostty +ssh` question — this is the one that bites.** Upstream `484d6ec6` +
+  follow-ups (2026-05-04/05) **deleted the inline ssh wrapper** from every shell-integration script
+  ("roughly a third of our shell integration scripts") and replaced it with a call to `ghostty
+  +ssh`. **We ship no `ghostty` executable and never set `GHOSTTY_BIN_DIR`** — only
+  `GHOSTTY_RESOURCES_DIR` (`GhosttyApp.swift:159`). So regenerating the scripts from the bump target
+  hands users an ssh wrapper that shells out to a binary that is not in the bundle. It fails soft
+  (`ssh-env` / `ssh-terminfo` are opt-in, so only users who enabled them in
+  `~/.config/ghostty/config` are hit) but silently, which is this directory's whole failure mode.
+  Two ways out: ship a `ghostty` CLI + `GHOSTTY_BIN_DIR`, or carry our pre-migration ssh wrapper as
+  a local patch. Pick deliberately; do not let it ride in on a regeneration.
 - **Regenerate `macapp/Resources/ghostty/`** from the same ghostty ref — `terminfo/` and
-  `shell-integration/` ONLY. See the separate entry below for why `themes/` must not be touched.
+  `shell-integration/` ONLY, then refresh `CHECKSUMS` (`shasum -a 256`, see
+  `GhosttyResourcesTests`) and rewrite the provenance section of `SOURCE.md`. `themes/` is ours and
+  must not be touched. Note the current resources are *ahead* of the pinned engine, not behind — the
+  measured detail is in `SOURCE.md`, and a regeneration must not silently drop the four upstream
+  script fixes recorded there.
 - **Resolve `TerminalSearch.navigationPlan`.** It both inverts direction against the engine's
   ordering and synthesizes wrap by emitting `total - 1` steps, keyed to the pinned engine's "stops
   dead at the ends" behaviour. If wrapping or match ordering moved upstream, ⌘G becomes *wrong*, not
@@ -114,8 +158,12 @@ is also new, so include the scrollbar overlay. The XCUITest action-tag baseline 
 work, deliberately against the old engine) is the pass/fail gate.
 
 **Also required:**
-- **A universal Release build before landing.** CI only ever builds Debug/arm64 and `release.sh`
-  takes `ARCHS_STANDARD`, so today the first universal link happens at release time:
+- **A universal Release build before landing.** ~~CI only ever builds Debug/arm64, so the first
+  universal link happens at release time.~~ **That was wrong** — `nightly.yml` has run
+  `make app-release` (universal Rust core + `ARCHS_STANDARD` Release) daily since it landed. What
+  was actually missing was an *assertion*, which now exists: `release.sh` refuses to notarize a
+  bundle containing any thin Mach-O. So the bump inherits a daily universal build plus a gate; run
+  one locally only if you want the signal before pushing:
   `VCS_APPLE_FLAGS=--universal make app-vcs`, then
   `xcodebuild -configuration Release ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO build`.
 - **A bake gate.** `nightly.yml` builds daily from master, so this reaches nightly users ~24h after
@@ -192,6 +240,15 @@ than left as a failing test.
 without it they have no automated detector — the same gap the rest of that file exists to close, and
 it matters most when the engine is bumped.
 
+**It is also the pin bump's missing tripwire.** `TerminalSearch.navigationPlan` encodes three
+*engine* assumptions — `navigate_search:next` steps newest→oldest, the engine never wraps, and index
+0 is the bottom-most match — and none is observable without driving a real search. If any moved
+upstream, ⌘G becomes silently **wrong** (walks the wrong way, or stops dead at an end) rather than
+merely redundant, and `TerminalSearchTests` cannot see it: those cover the pure fold, which stays
+self-consistent against a changed engine. Until this lands, the only detector is manual —
+`QA-libghostty.md` §N, "⌘F wrap + ordering". Once the fixture seam below exists, assert direction and
+wrap against a seeded scrollback and the tripwire is automatic.
+
 **What is already known (do not re-derive):**
 - The bar DOES open under XCUITest from **`Edit ▸ Find…`** (`app.menuBars.menuBarItems["Edit"]
   .menuItems["Find…"].click()`). The menu item is `exists=true enabled=true hittable=true` while a
@@ -221,32 +278,43 @@ purely about the engine→UI leg.
 **Priority:** P3 — two of the three visible tags are covered, and the search path has unit coverage
 for everything except the engine round-trip.
 
-### Regenerate the bundled ghostty resources (macapp) — blocking for the pin bump
+### Bundled ghostty resources — provenance recorded, nothing to regenerate (macapp)
 
-**What:** regenerate `macapp/Resources/ghostty/terminfo/` and `shell-integration/` from the exact
-ghostty ref the pinned package builds from, and record that ref in `SOURCE.md`.
+**Status: the premise of this entry was wrong, and it is measured now.** It used to say "regenerate
+`terminfo/` + `shell-integration/` from the ref the pinned package builds from", on the assumption
+that unrecorded provenance meant *stale* resources. Measured 2026-08-09 against a stock Ghostty.app
+1.3.1 install and ghostty's own git history:
 
-**Why:** `SOURCE.md` records the provenance as "a recent Ghostty build" — no ref, no sha. The
-shell-integration scripts and the engine's Zig-side injection are a **coupled contract**
-(ZDOTDIR/ENV/XDG_DATA_DIRS, `GHOSTTY_SHELL_FEATURES`, ssh integration). `GhosttyApp.resolveResources`
-only checks the directory exists, so if that contract moved, OSC 7 and OSC 133 degrade **silently** —
-taking ⌘-click path resolution, tab titles, and the busy indicator with them. There is no error, no
-log, and no test: the terminal just quietly stops reporting things.
+- **`terminfo/` has zero drift.** `terminfo/78/xterm-ghostty` is byte-identical to the engine's own.
+  `terminfo/67/ghostty` is the same record under the `ghostty` alias. Nothing to regenerate.
+- **`shell-integration/` is *ahead* of the engine, not behind** — a `main` snapshot from the window
+  [`43f3dc5f` 2026-03-25 … `484d6ec6` 2026-05-04), pinned by a byte-exact blob match on
+  `bash/ghostty.bash`. It carries four upstream fixes v1.3.1 lacks (ble.sh cursor desync,
+  `PROMPT_COMMAND` newline handling, inherited-`PROMPT_COMMAND` errors in subshells, trailing-`%`
+  prompt corruption).
+- **The drift is safe on both contract axes**, checked rather than assumed: the two sets reference
+  an identical ten-variable `GHOSTTY_*` surface, and our OSC 133 vocabulary is a subset of what the
+  v1.3.1 scripts themselves emit, so the pinned engine parses everything we send.
 
-**Trap:** `themes/` in that directory is **ours**, not upstream's — 116 curated files (`8fd7fa19`,
-`602b5aa3`, and the 27→58 family expansion) whose filenames `ThemeService.families` parses.
-Regenerating it breaks theming. Scope the regeneration to `terminfo/` and `shell-integration/`.
-Unlike those two, `themes/` records its own provenance (`themes/SOURCE.md` pins the upstream commit,
-`themes/CHECKSUMS` pins the bytes), so refreshing it is a real diff rather than a re-vendor.
+So **regenerating against v1.3.1 would be a downgrade** — four real fixes traded for a version
+number. Don't.
 
-**Watch first:** `libghostty-spm` PR #43 proposes shipping compiled terminfo + shell-integration from
-the package itself, pointing `GHOSTTY_RESOURCES_DIR` at the package bundle. If that merges, this
-becomes "delete our copies" instead. Open as of 2026-08-05.
+What actually shipped instead: full provenance in `macapp/Resources/ghostty/SOURCE.md`, a
+`CHECKSUMS` manifest pinning the bytes, and `GhosttyResourcesTests` verifying membership + hashes
+both ways. That is the tripwire the entry existed to ask for.
 
-**Depends on:** the pin bump — the resources must match the engine that ships with them.
+**One live risk survives, and it moved to the bump entry** (above, "Blocking work"): upstream deleted
+the inline ssh wrapper in favour of `ghostty +ssh`, a binary we do not ship.
 
-**Priority:** P2, but only as part of the bump. Regenerating against the *current* engine separately
-is also valid and strictly reduces risk, since today's provenance is unknown.
+**Watch:** `libghostty-spm` PR #43 proposes shipping compiled terminfo + shell-integration from the
+package itself, pointing `GHOSTTY_RESOURCES_DIR` at the package bundle. If that merges, our copies
+get deleted instead of refreshed. Open as of 2026-08-05.
+
+**Trap that still applies:** `themes/` in that directory is **ours** — 116 curated files whose
+filenames `ThemeService.families` parses. Never regenerate it from a ghostty checkout. It keeps its
+own `themes/SOURCE.md` + `themes/CHECKSUMS`, deliberately disjoint from the new one.
+
+**Priority:** done, except the `ghostty +ssh` decision tracked under the pin bump.
 
 ### VCS write actions — Phase 2 (macapp) — roadmap pointer
 

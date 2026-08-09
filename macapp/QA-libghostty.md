@@ -133,3 +133,69 @@ the likeliest suspects.
       bar; switching back restores the first tab's search state. Same across split panes (only the
       **focused** pane shows the bar).
 - [ ] Find disabled when no terminal is focused (Edit ▸ Find… greyed; ⌘F a no-op).
+
+## N. Engine bump smoke (run on EVERY libghostty pin change)
+
+**Run this section against the *current* engine first and record the result.** Half of these items
+have no correct absolute answer — only "same as before the bump" — so a baseline taken after the
+bump is worthless. See TODOS.md → "Bump the libghostty pin".
+
+**Scope note:** the risk in a bump is the **patch swap**
+(`0002-host-managed-io.patch` → `-modern`, which rewrites PTY hosting), not the C enum. A mid-enum
+`ghostty_action_tag_e` insert renumbers tags, but header and static archive ship together and
+`GhosttyRuntimeAdapter.handleAction` dispatches on symbolic labels — don't spend the retest budget
+there.
+
+### IO layer (the patch swap)
+- [ ] **Surface churn**: open/close ~20 panes in one workroom (⌘T then ⌘W, repeatedly) → no crash,
+      no beachball, memory returns to roughly its starting point.
+- [ ] **Split churn**: ⌘D / ⌘⇧D and close, repeatedly, including closing the *focused* pane of a
+      split → the survivor stays mounted and full-size (never blank).
+- [ ] **Workroom switch**: cycle between three workrooms ~10× → each returns to its own live panes;
+      no surface renders another workroom's content.
+- [ ] **Workroom delete** with live panes in it → panes tear down, app stays up.
+- [ ] **Orphan check** (the one that catches a bad IO patch): quit the app, then
+      `ps -ax | grep -E '[z]sh|[b]ash' | grep -v $$` → no shells left behind. Repeat after a
+      **force-quit**.
+- [ ] **Run tab**: start a run command, stop it, start it again → no "A server is already running",
+      no orphan on the port (`lsof -i :<port>`), and the exit code reported matches reality.
+- [ ] **Quit with a live TUI**: `vim` open in one pane, `htop` in another, ⌘Q → clean exit, no
+      `EXC_BAD_ACCESS` (see `WorkroomApp.swift:606`).
+
+### Behaviour keyed to engine internals (assert *no change*, not correctness)
+- [ ] **⌘F wrap + ordering** — `TerminalSearch.navigationPlan` inverts the engine's direction and
+      synthesizes wrap host-side. On a needle with many matches: Find Next must walk **down** the
+      screen and the counter must count **up**. If either reversed, the engine's ordering moved and
+      `navigationPlan` is now wrong, not merely redundant. Re-run §M in full.
+- [ ] **Backspace** erases (we forward a literal `0x7f` as text because the pinned engine's keycode
+      encoding is broken — `GhosttySurfaceView.swift:1171`). If it now double-deletes, the engine
+      was fixed and the workaround must go.
+- [ ] **⌃Tab** reaches a TUI in a single-pane workroom (the pinned engine sends no bytes for it, so
+      "nothing happens" is the expected baseline, not a regression).
+- [ ] **Scrollbar overlay** — `0010-fix-scroll-remainder-zeroing.patch` is new in the target
+      package. Scroll a long buffer to the middle, to the top, to the bottom → the overlay tracks
+      without jumping or sticking.
+
+### Resource contract (silent-failure class)
+- [ ] `echo $TERM` → `xterm-ghostty`, and `infocmp xterm-ghostty >/dev/null` succeeds.
+- [ ] **OSC 7 still lands**: `cd` somewhere, then ⌘-click a *relative* path in the output → resolves
+      against the new cwd. (Nothing logs when this breaks — it just stops working.)
+- [ ] **OSC 133 still lands**: run a long command → the tab title tracks it and the busy indicator
+      animates, then clears on completion.
+- [ ] If `shell-integration/` was regenerated, `make app-test` covers the bytes
+      (`GhosttyResourcesTests`) but **not** the contract — both boxes above are the contract.
+- [ ] **ssh integration** — only meaningful if the `ghostty +ssh` decision in TODOS.md was made.
+      `GHOSTTY_SHELL_FEATURES` is an *injected* env var, not a config key: enable the feature with
+      `shell-integration-features = ssh-env,ssh-terminfo` in `~/.config/ghostty/config`, then open a
+      new pane and confirm `echo $GHOSTTY_SHELL_FEATURES` actually lists them.
+      Then `type ssh` → must report a shell *function*, not `/usr/bin/ssh` (that's what proves the
+      wrapper loaded at all). `ssh <a host you control> env | grep -E 'COLORTERM|TERM_PROGRAM'` →
+      the variables arrive. **Do not** assert merely on the absence of "command not found": with
+      `GHOSTTY_BIN_DIR` unset the failing call is redirected to `/dev/null`, so silence is exactly
+      what a broken wrapper looks like (see `ghostty/SOURCE.md`).
+
+### Build shapes CI doesn't cover
+- [ ] **Universal Release build links**: `VCS_APPLE_FLAGS=--universal make app-vcs`, then
+      `xcodebuild -configuration Release ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO build`, then
+      `lipo -info` the binary → both slices. CI only builds Debug/native.
+- [ ] **Bake gate**: N clean nightlies before this enters a `pre` tag.
