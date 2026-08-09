@@ -419,6 +419,11 @@ final class TerminalSessions: ObservableObject {
   /// into the environment (see `WorkroomApp`) so the pane banner observes it. Opt-in, default off.
   let agentManager: TerminalAgentManager
 
+  /// Resume-an-agent offers for restored panes (issue #145). Owned here beside `agentManager` so the
+  /// same tab-teardown chokepoints feed both, but a SEPARATE object: see the type comment for why an
+  /// offer cannot live in `agentManager.banners`.
+  let resumeCoordinator = AgentResumeCoordinator(index: AgentSessionIndex.forCurrentEnvironment())
+
   init() {
     // Under the UI-test agent fixture, drive a stub backend (no network) with the feature + auto on
     // so the XCUITest sees the banner; otherwise the normal opt-in, default-off real runner.
@@ -580,6 +585,30 @@ final class TerminalSessions: ObservableObject {
 
   // MARK: Session restore (issue #46)
 
+  /// A terminal pane `restore` just built, for callers that need to act on the panes a *restore*
+  /// produced rather than on panes in general (issue #145's resume offer is the first).
+  ///
+  /// Returning them beats marking them. A `TerminalTab.wasRestored` flag was the obvious design and
+  /// is the wrong one: it is state that outlives the moment it describes, it has to be kept correct
+  /// through every future mutation path, and it would have to agree with whatever else keys off
+  /// "restored". Handing back the identities at the one instant they are known means a ⌘T pane can
+  /// never enter that set — not because a flag says so, but because it was never in the list.
+  struct RestoredTerminal: Equatable {
+    let tabID: TerminalTab.ID
+    let targetID: TerminalTarget.ID
+    /// The directory the pane actually opens in — already through `restoredCwd`, so it is the
+    /// fallback when the remembered one is gone, not the dead path.
+    let cwd: String
+  }
+
+  /// What a restore produced: how many tabs of any kind came back, and the terminal panes among them.
+  struct RestoreResult: Equatable {
+    var count: Int
+    var terminals: [RestoredTerminal]
+
+    static let nothing = RestoreResult(count: 0, terminals: [])
+  }
+
   /// Re-materialise a target's panes from a saved session.
   ///
   /// The only path that sets the four per-target dictionaries wholesale, so it lives here beside the
@@ -601,13 +630,13 @@ final class TerminalSessions: ObservableObject {
   func restore(
     _ session: TargetSession, for target: TerminalTarget,
     scrollback: @escaping (String) -> String? = { _ in nil }
-  ) -> Int {
-    guard (tabsByTarget[target.id] ?? [:]).isEmpty else { return 0 }
+  ) -> RestoreResult {
+    guard (tabsByTarget[target.id] ?? [:]).isEmpty else { return .nothing }
 
     var idsByKey: [String: TerminalTab.ID] = [:]
     var order: [TerminalTab.ID] = []
     var tabs: [TerminalTab.ID: TerminalTab] = [:]
-    var restoredTerminals = 0
+    var restoredTerminals: [RestoredTerminal] = []
 
     for saved in session.tabs {
       let tab: TerminalTab
@@ -618,12 +647,14 @@ final class TerminalSessions: ObservableObject {
         // every target's tabs eagerly, so reading now would put one file read per restored pane on
         // the launch path and hold every result in memory for the whole run.
         let key = saved.key
+        let cwd = Self.restoredCwd(payload.cwd, fallback: target.path)
         tab = makeTerminalTab(
           for: target,
-          cwd: Self.restoredCwd(payload.cwd, fallback: target.path),
+          cwd: cwd,
           title: payload.defaultTitle,
           restoredScrollback: { scrollback(key) })
-        restoredTerminals += 1
+        restoredTerminals.append(
+          RestoredTerminal(tabID: tab.id, targetID: target.id, cwd: cwd))
       } else if let content = saved.restoredContent {
         tab = TerminalTab(
           content: content, diffViewModeOverride: saved.restoredDiffViewMode,
@@ -636,7 +667,7 @@ final class TerminalSessions: ObservableObject {
       tabs[tab.id] = tab
     }
 
-    guard !order.isEmpty else { return 0 }
+    guard !order.isEmpty else { return .nothing }
 
     tabsByTarget[target.id] = tabs
     orderByTarget[target.id] = order
@@ -649,7 +680,7 @@ final class TerminalSessions: ObservableObject {
     // saved value keeps "Terminal 7" from becoming "Terminal 3" again after closes.
     counts[target.id] = max(session.terminalCounter ?? 0, counts[target.id] ?? 0)
     reconcileOcclusion(for: target)
-    return order.count
+    return RestoreResult(count: order.count, terminals: restoredTerminals)
   }
 
   /// The directory a restored terminal should open in: the remembered one while it is still a live
@@ -1247,6 +1278,7 @@ final class TerminalSessions: ObservableObject {
     if wasFocused { setFocused(successor, for: target.id) }
     reconcileOcclusion(for: target)
     agentManager.tabClosed(tabID)
+    resumeCoordinator.tabClosed(tabID)
     onTabsRemoved?(target.id, [tabID])
   }
 
@@ -1262,7 +1294,10 @@ final class TerminalSessions: ObservableObject {
     splitByTarget[id] = nil
     setFocused(nil, for: id, notify: false)
     counts[id] = nil
-    for removed in removedIDs { agentManager.tabClosed(removed) }
+    for removed in removedIDs {
+      agentManager.tabClosed(removed)
+      resumeCoordinator.tabClosed(removed)
+    }
     if !removedIDs.isEmpty { onTabsRemoved?(id, removedIDs) }
   }
 
@@ -1501,6 +1536,11 @@ final class TerminalSessions: ObservableObject {
     }
     view.onCwdChange = { [weak self] cwd in
       self?.updateCwd(cwd, forTab: tabID, target: targetID)
+    }
+    // The pane stopped being pristine, so a resume offer must not type into it (issue #145).
+    // Fires once per pane and only for real AppKit input, so `sendCommandLine` cannot trip it.
+    view.onFirstUserInput = { [weak self] in
+      self?.resumeCoordinator.paneReceivedInput(tab: tabID)
     }
     view.onCommandFinished = { [weak self] exitCode in
       // Exit code feeds the inline-agent manager (issue #49); the title-clear path (issue #2)

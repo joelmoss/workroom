@@ -71,6 +71,19 @@ enum UITestFixture {
     return text("WorkroomUITestSessionFile")
   }
 
+  /// A fake `$HOME` holding seeded agent session stores, for the resume-offer UI tests
+  /// (`-WorkroomUITestAgentSessionRoot <path>`; the test writes `<path>/.claude/projects/…` and
+  /// `<path>/.codex/sessions/…`).
+  ///
+  /// **Default-off, exactly like `sessionFilePath`** (see `AgentSessionIndex.forCurrentEnvironment`):
+  /// with no path supplied, agent discovery does nothing at all in fixture mode. Without that, the
+  /// existing UI tests would read the DEVELOPER's real `~/.claude` and `~/.codex`, so whether a test
+  /// passed would depend on which directories they happened to have talked to an agent in that day.
+  static var agentSessionRoot: String? {
+    guard isActive else { return nil }
+    return text("WorkroomUITestAgentSessionRoot")
+  }
+
   /// When set (`-WorkroomUITestNoProjects 1`), the fixture loads an EMPTY project list — the
   /// fresh-install / nothing-configured state. Used by `NewWorkroomDialogUITests` to assert File ▸
   /// New Workroom is disabled when there's nothing to pick (issue #81 D3).

@@ -974,6 +974,39 @@ final class GhosttySurfaceView: NSView {
     string.withCString { ghostty_surface_text(surface, $0, UInt(string.utf8.count)) }
   }
 
+  /// Type a command into the surface **and run it** (issue #145's Resume action).
+  ///
+  /// A separate entry point rather than a `submit:` flag on `sendText`, so that method's guarantee
+  /// stays exactly as narrow and as greppable as it was: an AI-*suggested* command is never
+  /// auto-executed. The distinction is the provenance, not the mechanism. `sendText` carries a string
+  /// a model produced, which nobody has read yet. This carries a compile-time constant
+  /// (`AgentInvocationBuilder.resume`) behind a button labelled Resume — the click is the review.
+  ///
+  /// Callers must confirm the pane is pristine first (`AgentResumeCoordinator.paneReceivedInput`),
+  /// since appending to a half-typed line would run something else entirely.
+  ///
+  /// The submit byte is `\r`, the same thing Return puts on the wire. If a libghostty version ever
+  /// filters control bytes out of the text path this is where it would show up — as a command typed
+  /// but not run — and the fix is to send Return through `ghostty_surface_key` instead.
+  func sendCommandLine(_ commandLine: String) {
+    guard surface != nil, !commandLine.isEmpty else { return }
+    sendText(commandLine + "\r")
+  }
+
+  /// Fired the FIRST time this pane sees real user input, and never again.
+  ///
+  /// "Real" means a keystroke, an IME commit or a paste — the AppKit entry points. Text this app
+  /// writes in itself (`sendText` / `sendCommandLine`) goes straight to libghostty and does not pass
+  /// through them, which is what stops the Resume action from cancelling its own offer.
+  var onFirstUserInput: (() -> Void)?
+  private var didReportUserInput = false
+
+  private func noteUserInput() {
+    guard !didReportUserInput else { return }
+    didReportUserInput = true
+    onFirstUserInput?()
+  }
+
   /// Whether this surface runs a fixed command (the Run feature) rather than a login shell. Run tabs
   /// always qualify for inline-agent diagnosis (issue #49, A1), since they're the issue's headline
   /// cases (dev server / test suite).
@@ -982,6 +1015,7 @@ final class GhosttySurfaceView: NSView {
   // MARK: Keyboard
 
   override func keyDown(with event: NSEvent) {
+    noteUserInput()
     guard let surface else {
       super.keyDown(with: event)
       return
@@ -1645,6 +1679,7 @@ extension GhosttySurfaceView: NSTextInputClient {
     let text = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
     unmarkText()
     guard !text.isEmpty else { return }
+    noteUserInput()
     if currentKeyEvent != nil {
       keyTextAccumulator.append(text)
     } else if let surface {
