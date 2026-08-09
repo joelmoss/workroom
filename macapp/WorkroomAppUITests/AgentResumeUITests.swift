@@ -62,8 +62,10 @@ final class AgentResumeUITests: XCTestCase {
   private func paneCwd(_ app: XCUIApplication) -> String {
     let segment = app.descendants(matching: .any)
       .matching(identifier: "terminal.statusBar.cwd").firstMatch
+    // Generous: the cwd only appears once the shell has reported it via OSC 7, and the FIRST launch
+    // of a run pays for the app's cold start on top of that.
     XCTAssertTrue(
-      segment.waitForExistence(timeout: 25),
+      segment.waitForExistence(timeout: 60),
       "the pane's status bar should report a cwd once the shell reports one")
     let prefix = "Working directory "
     XCTAssertTrue(segment.label.hasPrefix(prefix), "unexpected cwd label: \(segment.label)")
@@ -210,18 +212,34 @@ final class AgentResumeUITests: XCTestCase {
       .firstMatch
     XCTAssertTrue(surface.waitForExistence(timeout: 10))
 
-    let submitted = NSPredicate { element, _ in
-      guard let text = (element as? XCUIElement)?.value as? String,
-        let range = text.range(of: "claude --resume")
-      else { return false }
-      // Something after the command line means Return was delivered. Without it the command is the
-      // last thing on the screen, sitting on an unsubmitted input line.
-      return text[range.upperBound...].contains("\n")
+    // Submitted means the shell moved PAST the line the command was typed on — so there is
+    // non-whitespace content after it, whether that is the agent's own UI or a `command not found`
+    // from a machine with no `claude` installed. Typed-but-not-submitted is the case that leaves the
+    // command sitting alone at the end of the prompt line.
+    //
+    // Polled by hand rather than through `XCTNSPredicateExpectation`: that re-evaluates against a
+    // cached element snapshot and never observed the surface's value changing here, which cost a
+    // debugging round trip on a test whose subject was already working.
+    var screen = ""
+    let deadline = Date().addingTimeInterval(30)
+    var submitted = false
+    while Date() < deadline, !submitted {
+      screen = (surface.value as? String) ?? ""
+      if let range = screen.range(of: "claude --resume") {
+        submitted = !screen[range.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+          .isEmpty
+      }
+      if !submitted { usleep(250_000) }
     }
-    XCTAssertEqual(
-      XCTWaiter().wait(
-        for: [XCTNSPredicateExpectation(predicate: submitted, object: surface)], timeout: 20),
-      .completed, "the resume command should have been typed AND submitted")
+
+    XCTAssertTrue(
+      submitted,
+      """
+      the command should have been typed AND submitted, but nothing followed it on screen — \
+      libghostty drops `\\r` from the TEXT path, so Return must go through `ghostty_surface_key`. \
+      Screen was:
+      \(screen)
+      """)
 
     // Spent: `consume` removes the offer before returning the command, so a second click cannot
     // start a second (billed) agent session.

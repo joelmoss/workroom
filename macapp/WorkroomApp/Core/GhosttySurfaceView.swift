@@ -985,12 +985,38 @@ final class GhosttySurfaceView: NSView {
   /// Callers must confirm the pane is pristine first (`AgentResumeCoordinator.paneReceivedInput`),
   /// since appending to a half-typed line would run something else entirely.
   ///
-  /// The submit byte is `\r`, the same thing Return puts on the wire. If a libghostty version ever
-  /// filters control bytes out of the text path this is where it would show up — as a command typed
-  /// but not run — and the fix is to send Return through `ghostty_surface_key` instead.
+  /// **Return goes through the KEY path, not the text path — measured, not assumed.** Appending
+  /// `"\r"` to `ghostty_surface_text` does not submit: the engine drops the control byte, and
+  /// `AgentResumeUITests` caught it with the command sitting on the prompt, typed and never run:
+  ///
+  /// ```
+  ///   ❯ claude --resume
+  /// ```
+  ///
+  /// `ghostty_surface_text` is the *text input* path (it also backs `NSTextInputClient.insertText`),
+  /// so a control byte there is not a keystroke. Return has to arrive as one.
   func sendCommandLine(_ commandLine: String) {
     guard surface != nil, !commandLine.isEmpty else { return }
-    sendText(commandLine + "\r")
+    sendText(commandLine)
+    sendReturn()
+  }
+
+  /// Press Return, exactly as `keyDown` would forward it.
+  ///
+  /// `keycode` is the **native macOS virtual keycode** — libghostty does the mapping — so this is
+  /// `kVK_Return`, not `GHOSTTY_KEY_ENTER`. Only the press is sent, matching `keyDown`, which never
+  /// forwards a release either.
+  private func sendReturn() {
+    guard let surface else { return }
+    var keyEvent = ghostty_input_key_s()
+    keyEvent.action = GHOSTTY_ACTION_PRESS
+    keyEvent.keycode = 0x24  // kVK_Return
+    keyEvent.mods = GHOSTTY_MODS_NONE
+    keyEvent.consumed_mods = GHOSTTY_MODS_NONE
+    keyEvent.composing = false
+    keyEvent.text = nil
+    keyEvent.unshifted_codepoint = 0x0D
+    _ = ghostty_surface_key(surface, keyEvent)
   }
 
   /// **Fixture-only.** Expose the visible screen text to the accessibility tree so an XCUITest can
