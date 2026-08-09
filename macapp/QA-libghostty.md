@@ -184,15 +184,30 @@ there.
       animates, then clears on completion.
 - [ ] If `shell-integration/` was regenerated, `make app-test` covers the bytes
       (`GhosttyResourcesTests`) but **not** the contract — both boxes above are the contract.
-- [ ] **ssh integration** — only meaningful if the `ghostty +ssh` decision in TODOS.md was made.
+- [ ] **ssh integration.** We now ship the CLI the wrapper needs: `Contents/MacOS/ghostty` is a
+      relative symlink to the app binary (see `ghostty/SOURCE.md`). The parts that are automated —
+      the symlink's shape, `+ssh-cache` dispatch, and `GHOSTTY_BIN_DIR` resolving in a live pane —
+      are covered by `GhosttyCLITests` and `GhosttyCLIUITests`; **what is left here is the part that
+      needs a real remote host.**
+
       `GHOSTTY_SHELL_FEATURES` is an *injected* env var, not a config key: enable the feature with
       `shell-integration-features = ssh-env,ssh-terminfo` in `~/.config/ghostty/config`, then open a
       new pane and confirm `echo $GHOSTTY_SHELL_FEATURES` actually lists them.
       Then `type ssh` → must report a shell *function*, not `/usr/bin/ssh` (that's what proves the
       wrapper loaded at all). `ssh <a host you control> env | grep -E 'COLORTERM|TERM_PROGRAM'` →
-      the variables arrive. **Do not** assert merely on the absence of "command not found": with
-      `GHOSTTY_BIN_DIR` unset the failing call is redirected to `/dev/null`, so silence is exactly
-      what a broken wrapper looks like (see `ghostty/SOURCE.md`).
+      the variables arrive. **Do not** assert merely on the absence of "command not found": a failing
+      call is redirected to `/dev/null`, so silence is exactly what a broken wrapper looks like.
+- [ ] **ssh cache memoisation** (the thing the symlink actually bought). With `ssh-terminfo` on,
+      `ssh <host>` twice. The first connect installs terminfo; the second should skip it, and
+      `~/.local/state/ghostty/ssh_cache` should hold a `host|timestamp|xterm-ghostty` line. Before
+      the symlink shipped, that file was never written at all.
+- [ ] **Shell matrix.** The wrapper is defined in five shells with three different guard styles
+      (bash/zsh call the binary bare; fish guards with `test -x`; elvish wraps in `?(…)`; nushell
+      uses `^$ghostty … | complete`). Only **bash and zsh** are installed on the current dev machine
+      — `nu` on PATH is `@antfu/ni`, not nushell — so **fish, elvish and nushell are UNTESTED**, not
+      passing. Nushell is the one to prioritise if it ever gets installed: its `complete` catches
+      exit codes, and it is unverified whether it also catches a spawn failure, which is what the
+      missing binary used to produce.
 
 ### Build shapes CI doesn't cover
 - [ ] **Universal Release build links**: `VCS_APPLE_FLAGS=--universal make app-vcs`, then

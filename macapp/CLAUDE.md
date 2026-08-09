@@ -160,6 +160,21 @@ that surfaces violations as **warnings** (non-fatal — `make app-lint` is the h
   it only bites when building from Xcode directly (regenerate, or run `make app-generate`).
 - **SourceKit "Cannot find type X in scope" is usually noise.** The single-file indexer
   doesn't see sibling files; a clean `xcodebuild` is authoritative.
+- **The app binary is also the `ghostty` CLI, and the entry point is `main.swift`, not `@main`.**
+  `Contents/MacOS/ghostty` is a **relative** symlink to the app binary (a `postCompileScripts` phase
+  in `project.yml`, before the final code-sign so the link is sealed into the signature).
+  `WorkroomApp/main.swift` branches on `argv[0]`: invoked as `ghostty` it runs libghostty's
+  `+action` dispatcher (`ghostty_init` **then** `ghostty_cli_try_action` — the first only *stores*
+  the action, so calling it alone runs nothing) and exits; otherwise it calls `WorkroomApp.main()`
+  and the GUI path is byte-for-byte what it was. That branch is why `ghostty_init` was NOT hoisted
+  out of `GhosttyApp`: the engine captures the environment at init, and `WorkroomApp.init()`'s one
+  `setenv("PATH", …)` has to land first or every terminal inherits the un-enriched Finder PATH.
+  Ghostty's bundled shell integration needs this to reach `"$GHOSTTY_BIN_DIR/ghostty" +ssh-cache`
+  (the engine sets `GHOSTTY_BIN_DIR` itself, to the running executable's directory). Side effect:
+  `ghostty` is on every pane's `PATH` and shadows a real Ghostty.app in there, so a bare `ghostty`
+  prints a message naming Workroom and exits 1 instead of launching a second app. `release.sh`
+  asserts the link exists, is relative, and can actually dispatch `+ssh-cache` on the shipped
+  artifact; `GhosttyCLITests` covers the rest. See `Resources/ghostty/SOURCE.md`.
 - **The terminal is libghostty** (`libghostty-spm`'s `GhosttyKit` xcframework). The embedding C API
   is not yet stable, so the pin is EXACT — don't float it. **`project.yml` is the single source of
   truth for which package version and which ghostty engine we ship** — read the comment there rather

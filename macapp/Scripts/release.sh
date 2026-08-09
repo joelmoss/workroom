@@ -184,6 +184,37 @@ while IFS= read -r macho; do
   check_universal "nested: ${macho#"$APP/"}" "$macho"
 done < <(find "$APP" -type f -perm -u+x -exec sh -c 'file -b "$1" | grep -q "Mach-O" && echo "$1"' _ {} \;)
 
+# Ghostty's shell integration reaches the engine's `+action` CLI through Contents/MacOS/ghostty, a
+# relative symlink to the app binary (created by the "Symlink ghostty" build phase). The sweep above
+# cannot see it — `find -type f` does not match symlinks — and nothing else in the pipeline would
+# notice it missing, because it fails exactly the way this whole area fails: silently. `ssh-terminfo`
+# users would just quietly re-push terminfo on every connect. So assert it here, on the artifact.
+echo "==> Verifying the ghostty CLI symlink"
+GHOSTTY_LINK="$APP/Contents/MacOS/ghostty"
+[ -L "$GHOSTTY_LINK" ] \
+  || { echo "error: $GHOSTTY_LINK is missing or not a symlink — shell integration cannot reach '+ssh-cache'." >&2; exit 1; }
+GHOSTTY_TARGET="$(readlink "$GHOSTTY_LINK")"
+case "$GHOSTTY_TARGET" in
+  /*) echo "error: ghostty symlink is absolute ($GHOSTTY_TARGET); it must be relative or it breaks once the bundle is copied or mounted from the DMG." >&2; exit 1 ;;
+esac
+[ "$GHOSTTY_TARGET" = "$APP_NAME" ] \
+  || { echo "error: ghostty symlink points at '$GHOSTTY_TARGET', expected '$APP_NAME'." >&2; exit 1; }
+# The one check that proves function rather than packaging: run the shipped artifact. `+ssh-cache`
+# with no arguments lists the cache and exits 0 even when empty. Uses a throwaway XDG_STATE_HOME so
+# a release never reads or writes the release engineer's own ssh terminfo cache.
+GHOSTTY_PROBE_STATE="$(mktemp -d)"
+# Guard the emptiness explicitly rather than trusting `set -e` to have caught a failed mktemp: an
+# empty value would make this `XDG_STATE_HOME=` — which is not "isolated", it is a fallback to the
+# release engineer's REAL ~/.local/state, the precise thing the temp dir exists to avoid.
+[ -n "$GHOSTTY_PROBE_STATE" ] && [ -d "$GHOSTTY_PROBE_STATE" ] \
+  || { echo "error: could not create a temp XDG_STATE_HOME to probe the ghostty CLI." >&2; exit 1; }
+ghostty_probe_rc=0
+XDG_STATE_HOME="$GHOSTTY_PROBE_STATE" "$GHOSTTY_LINK" +ssh-cache >/dev/null 2>&1 || ghostty_probe_rc=$?
+rm -rf "$GHOSTTY_PROBE_STATE"
+[ "$ghostty_probe_rc" -eq 0 ] \
+  || { echo "error: shipped ghostty cannot dispatch '+ssh-cache' — the libghostty action layer is broken." >&2; exit 1; }
+echo "    ghostty -> $GHOSTTY_TARGET (relative, dispatches +ssh-cache)"
+
 echo "==> Verifying signatures"
 codesign --verify --strict --verbose=2 "$APP"
 echo "--- embedded helper ---"

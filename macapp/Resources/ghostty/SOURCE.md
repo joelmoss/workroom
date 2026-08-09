@@ -57,9 +57,10 @@ Being ahead of the engine is safe **here, on this pair**, and that was measured 
   ten `GHOSTTY_*` variables (`GHOSTTY_BASH_ENV`, `_INJECT`, `_RCFILE`, `_UNEXPORT_HISTFILE`,
   `GHOSTTY_BIN_DIR`, `GHOSTTY_RESOURCES_DIR`, `GHOSTTY_SAVE_PS`, `GHOSTTY_SHELL_FEATURES`,
   `GHOSTTY_SHELL_INTEGRATION_XDG_DIR`, `GHOSTTY_ZSH_ZDOTDIR`), so the drift introduced no new
-  dependency. **One of the ten is unset in our app, and always has been:** we export only
-  `GHOSTTY_RESOURCES_DIR` (`GhosttyApp.swift:159`), never `GHOSTTY_BIN_DIR`. See the ssh note below —
-  that is a pre-existing gap the drift neither caused nor worsened, not a clean bill of health.
+  dependency. All ten are satisfied. We export `GHOSTTY_RESOURCES_DIR` ourselves
+  (`GhosttyResources.exportResourcesDir`, called from both `GhosttyApp` and `main.swift`); the engine
+  sets the other nine itself, `GHOSTTY_BIN_DIR` among them — see the ssh section below, which
+  corrects an earlier claim in this file that we left it unset.
 - The OSC 133 vocabulary is a **strict subset**. Our scripts emit
   `133;A`/`B`/`C`/`D`/`P;k=i`/`P;k=s`; the engine's own scripts emit all of those plus `133;A;k=s`,
   which ours never send. So the pinned engine already parses every sequence we emit.
@@ -69,31 +70,71 @@ What the drift buys is four upstream fixes v1.3.1 lacks: ble.sh cursor desync (`
 subshells (`4b9324f4`), and the trailing-`%` prompt corruption (`43f3dc5f`). **Do not "fix" this by
 downgrading to the v1.3.1 scripts** — it would trade four real fixes for a version number.
 
-## The trap for the next engine bump
+## The ssh wrapper, and the `ghostty` symlink that feeds it — RESOLVED
 
 Between our snapshot and any later ref, upstream **deleted the inline ssh wrapper** from every shell
 script and replaced it with a call to `ghostty +ssh` (`484d6ec6` and follow-ups, 2026-05-04/05 —
 "roughly a third of our shell integration scripts").
 
-We ship **no `ghostty` executable** and never set `GHOSTTY_BIN_DIR`. So regenerating this directory
-from the bump target would hand users scripts that shell out to a binary that does not exist in the
-bundle. It fails soft — the `ssh-env` / `ssh-terminfo` features are opt-in, so only a user who
-enabled them in `~/.config/ghostty/config` is affected — but it fails silently, which is this
-directory's whole failure mode.
+**Two earlier claims in this file were wrong, and are corrected here.** It said we "never set
+`GHOSTTY_BIN_DIR`", and concluded that either way out "has to set `GHOSTTY_BIN_DIR`". Neither holds:
 
-**The gap is already live, in a milder form.** Our current pre-migration scripts also reach for that
-binary: all five call `"$GHOSTTY_BIN_DIR/ghostty" +ssh-cache` (bash `:145`, zsh `:344`, and the fish
-/ elvish / nushell equivalents). With the variable unset that expands to `/ghostty +ssh-cache`,
-redirected to `/dev/null`, and bash/zsh fall through to the `infocmp` branch — so `ssh-terminfo`
-users silently lose only the install-cache memoisation today, not the feature. After the migration
-the same unset variable takes out the whole ssh wrapper instead.
+- **The engine sets it, and always has.** `src/termio/Exec.zig` does
+  `env.put("GHOSTTY_BIN_DIR", dirname(executablePath()))` inside a block labelled `ghostty_path:`,
+  and the literal is present in our own pinned archive among the other child-env strings (`TERMINFO`,
+  `xterm-256color`, `GHOSTTY_BIN_DIR`, `MANPATH`, `TERM_PROGRAM_VERSION`). For us it resolves to
+  `Workroom.app/Contents/MacOS`. The variable was never unset — the directory just had no `ghostty`
+  in it, so `"$GHOSTTY_BIN_DIR/ghostty" +ssh-cache` failed on a missing file rather than an empty
+  path.
+- **We did not need to build a CLI.** `libghostty` carries the entire `+action` implementation set:
+  `src/build/GhosttyLib.zig` roots the library at `src/main_c.zig` → `global.zig` → `cli.zig`,
+  unconditionally. Verified in our archive — `nm -gU` shows `_ghostty_init` and
+  `_ghostty_cli_try_action`, `nm -a` shows `cli.ghostty.Action.runMain` and
+  `cli.ssh-cache.DiskCache.*`, and `strings` carries the full `+ssh-cache` help text. Dispatch is a
+  **two-call sequence**: `ghostty_init` parses and *stores* the action, `ghostty_cli_try_action` runs
+  it and exits. The app called only the first, which is why nothing ever ran.
 
-That also means **"keep the pre-migration wrapper" is not a real escape hatch on its own** — the
-wrapper we would be preserving has the same dependency. Either option below has to set
-`GHOSTTY_BIN_DIR` (or accept the cache loss knowingly).
+**What ships now.** `Contents/MacOS/ghostty` is a **relative symlink to the app binary**, created by
+the "Symlink ghostty" build phase in `project.yml` before Xcode's final code-sign, and `main.swift`
+branches on `argv[0]` to run the CLI dispatch instead of starting the GUI. This is upstream's own
+shape — `Ghostty.app/Contents/MacOS/ghostty` *is* the app binary there too — and it means the action
+set we expose is exactly the pinned engine's, by construction: no second binary to keep in
+architecture, signing or engine lockstep.
 
-Decide it deliberately at bump time: ship a `ghostty` CLI + `GHOSTTY_BIN_DIR`, or keep our
-pre-migration ssh wrapper as a local patch. See TODOS.md → "Bump the libghostty pin".
+Measured, not assumed (a throwaway bundle carrying the same symlink shape): `codesign` seals it
+(`Sealed Resources … files=1`), and it survives `--verify --deep --strict`, a `ditto` zip round-trip,
+notarization (`status: Accepted`), `stapler staple` + `validate`, a UDZO DMG round-trip, and
+`spctl -a -vvv` (`accepted / source=Notarized Developer ID`) — still a symlink, still executing with
+`argv[0] == "ghostty"`. `release.sh` asserts all of this on the real artifact, including actually
+running `+ssh-cache` on it, because a build completing proves packaging, not function.
+
+**Consequence for the bump: regenerating `shell-integration/` is now safe** — but only *with or
+after* the pin bump, never before it. `+ssh` does not exist at the pinned v1.3.1 (it is `main`-only,
+in no tagged release) and arrives at the bump target `35e1a016`. Regenerating first would swap the
+inline wrapper for a call to an action this engine does not have. TODOS.md's pin-bump entry carries
+the blocking test that must accompany it.
+
+**Side effect worth knowing:** the engine puts `Contents/MacOS` on every pane's `PATH`, so inside a
+Workroom terminal `ghostty` now resolves to this helper and shadows a real Ghostty.app. A bare
+`ghostty` therefore prints a message naming Workroom and exits 1, rather than launching a second
+copy of the app. `GhosttyCLITests` pins that behaviour.
+
+### Pre-bump latency baseline
+
+The wrapper calls `+ssh-cache` once per `ssh`. Measured on the Debug build (58 KB launcher + an
+81 MB debug dylib — Release links statically and is faster), 20 runs each:
+
+| | per invocation |
+|---|---|
+| `ghostty +ssh-cache --host=…`, cold miss | ~21 ms |
+| `ghostty +ssh-cache --host=…`, warm hit | ~21 ms |
+| `infocmp -0 -x xterm-ghostty` (the fallback it replaces) | ~2.9 ms |
+
+Read it as: on a **miss** we pay ~21 ms of pure overhead and then take the `infocmp` path anyway; on
+a **hit** those same ~21 ms replace `infocmp` *plus a full ControlMaster round-trip to the remote
+host* to push terminfo, which is orders of magnitude more. Hosts are cached after first connect, so
+steady state is hits and the cache is a clear win. Re-measure after the bump: `+ssh` moves the whole
+wrapper into the binary, so this is the only before-picture we will have.
 
 ## Why any of this is checked
 

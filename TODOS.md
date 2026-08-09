@@ -131,16 +131,21 @@ nothing persists a raw tag. Don't spend the retest budget there. (Don't write a 
 tag's raw value either — test and app import the same header, so it can never fail.)
 
 **Blocking work, same commit:**
-- **Decide the `ghostty +ssh` question — this is the one that bites.** Upstream `484d6ec6` +
-  follow-ups (2026-05-04/05) **deleted the inline ssh wrapper** from every shell-integration script
-  ("roughly a third of our shell integration scripts") and replaced it with a call to `ghostty
-  +ssh`. **We ship no `ghostty` executable and never set `GHOSTTY_BIN_DIR`** — only
-  `GHOSTTY_RESOURCES_DIR` (`GhosttyApp.swift:159`). So regenerating the scripts from the bump target
-  hands users an ssh wrapper that shells out to a binary that is not in the bundle. It fails soft
-  (`ssh-env` / `ssh-terminfo` are opt-in, so only users who enabled them in
-  `~/.config/ghostty/config` are hit) but silently, which is this directory's whole failure mode.
-  Two ways out: ship a `ghostty` CLI + `GHOSTTY_BIN_DIR`, or carry our pre-migration ssh wrapper as
-  a local patch. Pick deliberately; do not let it ride in on a regeneration.
+- ~~**Decide the `ghostty +ssh` question.**~~ **DONE, ahead of this bump.**
+  `Contents/MacOS/ghostty` is now a relative symlink to the app binary, and `main.swift` dispatches
+  Ghostty's `+action` CLI on `argv[0]` — libghostty already carried the whole action set, so no
+  second binary and no Zig toolchain were needed. `GHOSTTY_BIN_DIR` turned out to be set by the
+  engine all along (from the running executable's directory); the directory simply had no `ghostty`
+  in it. Full correction in `Resources/ghostty/SOURCE.md`. **Regenerating `shell-integration/` is
+  now safe — but only with or after this bump**, never before it: `+ssh` does not exist at the
+  pinned v1.3.1 and arrives at the bump target.
+- **Test `+ssh` itself, not just `+ssh-cache`.** After regeneration the wrapper *is* `ghostty +ssh`,
+  with no `infocmp` fallback branch left — so a failure there is total, not degraded, and silent
+  either way. The `+ssh-cache` tests that shipped with the ghostty symlink (`GhosttyCLITests`) all
+  pass with `+ssh` broken or absent, because they exercise a different action. Required with the
+  regeneration: a dispatch test (`ghostty +ssh --help` exits 0, asserted on the shipped artifact the
+  way `release.sh` already asserts `+ssh-cache`) **and** a shell-wrapper integration test that
+  actually `ssh`es through the regenerated script to a real host.
 - **Regenerate `macapp/Resources/ghostty/`** from the same ghostty ref — `terminfo/` and
   `shell-integration/` ONLY, then refresh `CHECKSUMS` (`shasum -a 256`, see
   `GhosttyResourcesTests`) and rewrite the provenance section of `SOURCE.md`. `themes/` is ours and
@@ -303,8 +308,10 @@ What actually shipped instead: full provenance in `macapp/Resources/ghostty/SOUR
 `CHECKSUMS` manifest pinning the bytes, and `GhosttyResourcesTests` verifying membership + hashes
 both ways. That is the tripwire the entry existed to ask for.
 
-**One live risk survives, and it moved to the bump entry** (above, "Blocking work"): upstream deleted
-the inline ssh wrapper in favour of `ghostty +ssh`, a binary we do not ship.
+~~**One live risk survives, and it moved to the bump entry**: upstream deleted the inline ssh wrapper
+in favour of `ghostty +ssh`, a binary we do not ship.~~ **Resolved** — we ship it now, as a relative
+`Contents/MacOS/ghostty` symlink to the app binary (libghostty already carried the `+action`
+dispatcher). What remains under the bump entry is testing `+ssh` itself once the pin moves.
 
 **Watch:** `libghostty-spm` PR #43 proposes shipping compiled terminfo + shell-integration from the
 package itself, pointing `GHOSTTY_RESOURCES_DIR` at the package bundle. If that merges, our copies
@@ -314,7 +321,7 @@ get deleted instead of refreshed. Open as of 2026-08-05.
 filenames `ThemeService.families` parses. Never regenerate it from a ghostty checkout. It keeps its
 own `themes/SOURCE.md` + `themes/CHECKSUMS`, deliberately disjoint from the new one.
 
-**Priority:** done, except the `ghostty +ssh` decision tracked under the pin bump.
+**Priority:** done.
 
 ### VCS write actions — Phase 2 (macapp) — roadmap pointer
 

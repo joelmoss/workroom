@@ -354,6 +354,22 @@ targets:
         # the app signature. See Scripts/build-helper.sh.
         basedOnDependencyAnalysis: false
         script: '"${SRCROOT}/Scripts/build-helper.sh"'
+      - name: Symlink ghostty -> app binary
+        # Ghostty's bundled shell integration calls "$GHOSTTY_BIN_DIR/ghostty" +ssh-cache, and the
+        # engine sets GHOSTTY_BIN_DIR to the running executable's directory — i.e. Contents/MacOS.
+        # The app binary already links libghostty, which carries the whole +action implementation
+        # set, so a symlink is the entire mechanism: no second binary to keep in arch/signing/engine
+        # lockstep. main.swift dispatches on argv[0]. See Resources/ghostty/SOURCE.md.
+        #
+        # RELATIVE, and pre-code-sign: an absolute link breaks the moment the bundle is copied or
+        # mounted from a DMG, and the link has to be sealed into the app signature (measured: it is
+        # — "Sealed Resources … files=1" — and survives notarization, stapling and Gatekeeper).
+        # ${EXECUTABLE_NAME} is per-config, so this follows Workroom / Workroom Dev / Nightly.
+        basedOnDependencyAnalysis: false
+        script: |
+          set -eu
+          ln -sfn "${EXECUTABLE_NAME}" \
+            "${TARGET_BUILD_DIR}/${EXECUTABLE_FOLDER_PATH}/ghostty"
     # Wire the unit tests into the app's scheme so `xcodebuild test -scheme WorkroomApp` runs
     # them. Debug builds enable testability, so `@testable import WorkroomApp` sees internals.
     scheme:

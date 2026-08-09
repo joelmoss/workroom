@@ -3,7 +3,9 @@ import Defaults
 import SwiftUI
 import UserNotifications
 
-@main
+// No `@main`: the entry point is `main.swift`, which dispatches Ghostty's `+action` CLI when this
+// binary is invoked through the `Contents/MacOS/ghostty` symlink, and calls `WorkroomApp.main()`
+// otherwise. Everything below runs on the app path only.
 struct WorkroomApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
   @StateObject private var updater = Updater()

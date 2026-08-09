@@ -148,15 +148,10 @@ final class GhosttyApp {
   /// Returns false (and logs) if the resources are missing — shell integration, the `xterm-ghostty`
   /// terminfo entry, and OSC-7 cwd reporting all depend on them. See Resources/ghostty/SOURCE.md.
   private func resolveResources() -> Bool {
-    guard let resourcesURL = Bundle.main.resourceURL?.appendingPathComponent("ghostty"),
-      FileManager.default.fileExists(
-        atPath: resourcesURL.appendingPathComponent("shell-integration").path)
-    else {
+    guard let resourcesURL = GhosttyResources.exportResourcesDir() else {
       reportStartupFailure("bundled ghostty resources not found — terminals unavailable")
-      unsetenv("GHOSTTY_RESOURCES_DIR")
       return false
     }
-    setenv("GHOSTTY_RESOURCES_DIR", resourcesURL.path, 1)
 
     // Resolve the bundled terminfo dir; each surface injects it as `TERMINFO` into the shell's env
     // (see `GhosttySurfaceView.createSurface`). libghostty sets `TERM=xterm-ghostty` but builds the
