@@ -214,6 +214,16 @@ final class AgentSessionIndexTests: XCTestCase {
     XCTAssertTrue(AgentSessionIndex.pathsMatch("/tmp/project", "/tmp/project"))
     XCTAssertFalse(AgentSessionIndex.pathsMatch("", "/tmp/project"))
 
+    // **REGRESSION.** A space is legal in a POSIX filename, so these are two different directories.
+    // Trimming whitespace as "normalization" made them match, which would offer a picker for
+    // history the pane does not have.
+    XCTAssertFalse(AgentSessionIndex.pathsMatch("/tmp/project ", "/tmp/project"))
+    XCTAssertTrue(
+      AgentSessionIndex.pathsMatch("/tmp/my project", "/tmp/my project"),
+      "a path with an interior space still matches itself")
+    // A trailing newline IS a transport artefact of reading the value out of a JSON line.
+    XCTAssertTrue(AgentSessionIndex.pathsMatch("/tmp/project\n", "/tmp/project"))
+
     // Case-folding would merge two genuinely different directories on a case-sensitive volume.
     XCTAssertFalse(AgentSessionIndex.pathsMatch("/tmp/Project", "/tmp/project"))
 
@@ -260,6 +270,42 @@ final class AgentSessionIndexTests: XCTestCase {
     XCTAssertNil(index.backends(forCwds: [cwd], savedAt: savedAt)[cwd])
   }
 
+  /// **REGRESSION.** The Codex match was a linear scan calling `pathsMatch` per (pane, recorded)
+  /// pair, and `pathsMatch` falls through to `resolvingSymlinksInPath()` on every non-equal pair —
+  /// so 40 panes against a 2,000-entry set was ~160k filesystem syscalls, on the launch path, in a
+  /// loop that never consulted the budget. Matching is now a Set probe.
+  ///
+  /// Asserted by cost, not by wall clock: a pane with NO codex history is the worst case, because
+  /// it can never short-circuit. The whole call has to stay well inside the deadline.
+  func testCodexMatchingDoesNotScaleWithTheNumberOfRecordedSessions() throws {
+    for index in 0..<400 {
+      try seedCodex(day: savedAtDay, cwd: "/tmp/other-\(index)", file: "rollout-\(index).jsonl")
+    }
+    let panes = (0..<40).map { "/tmp/no-history-\($0)" }
+
+    let started = Date()
+    let found = makeIndex().backends(forCwds: panes, savedAt: savedAt)
+    let elapsed = Date().timeIntervalSince(started)
+
+    XCTAssertTrue(found.isEmpty, "none of these panes has any history")
+    XCTAssertLessThan(
+      elapsed, AgentSessionIndex.Limits.standard.deadline,
+      "matching must not do per-pair symlink resolution")
+  }
+
+  /// A pane whose directory is recorded through a symlink still matches — the set carries both the
+  /// textual and the resolved form, so O(1) lookup did not cost the symlink case.
+  func testCodexMatchesASessionRecordedThroughASymlink() throws {
+    let target = home.appendingPathComponent("real", isDirectory: true)
+    let link = home.appendingPathComponent("link", isDirectory: true)
+    try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+    try seedCodex(day: savedAtDay, cwd: link.path)
+
+    XCTAssertEqual(
+      makeIndex().backends(forCwds: [target.path], savedAt: savedAt)[target.path], [.codex])
+  }
+
   func testCancellationStopsTheScan() throws {
     let cwd = "/tmp/project"
     try seedClaude(directory: AgentSessionIndex.claudeSlugHint(for: cwd), cwd: cwd)
@@ -297,8 +343,6 @@ final class AgentSessionIndexTests: XCTestCase {
 
   /// The store belongs to the developer, not to the test suite.
   func testDiscoveryIsDisabledUnderXCTestWithNoSeededRoot() {
-    XCTAssertNil(
-      AgentSessionIndex.forCurrentEnvironment(),
-      "a unit test must never read the real ~/.claude")
+    XCTAssertNil(AgentSessionIndex.shared, "a unit test must never read the real ~/.claude")
   }
 }

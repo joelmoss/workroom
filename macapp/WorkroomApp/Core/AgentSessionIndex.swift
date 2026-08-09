@@ -77,6 +77,14 @@ final class AgentSessionIndex {
   /// Injected so tests drive the deadline without sleeping.
   private let now: () -> Date
 
+  /// The Codex cwd set, computed once per launch and reused by every window.
+  ///
+  /// Walking the date tree is the expensive half of discovery and its answer does not vary by pane,
+  /// so a second restoring window must not repeat it. Lock-guarded because `backends` runs on a
+  /// utility queue and two windows can start within milliseconds of each other.
+  private let memoLock = NSLock()
+  private var codexCwdMemo: Set<String>?
+
   init(
     roots: Roots = .standard, limits: Limits = .standard, fileManager: FileManager = .default,
     now: @escaping () -> Date = Date.init
@@ -93,7 +101,13 @@ final class AgentSessionIndex {
   /// the developer, not to the app. A UI test gets a seeded fake `$HOME` only when it asks for one,
   /// and a unit test never gets a real store at all — otherwise `AgentSessionIndexTests` would pass
   /// or fail depending on which directories the developer had used an agent in that day.
-  static func forCurrentEnvironment() -> AgentSessionIndex? {
+  ///
+  /// **One instance for the process.** `TerminalSessions` is per-`AppStore`, and `AppStore` is
+  /// per-window, so a per-owner index would mean N restored windows each walking the Codex date
+  /// tree from scratch — the duplicate work this was specified to avoid, quietly not avoided
+  /// because the owner looked like a natural place to hang it. The instance is immutable and its
+  /// only mutable state is the per-launch memo below, guarded by a lock, so sharing is safe.
+  static let shared: AgentSessionIndex? = {
     if let root = UITestFixture.agentSessionRoot {
       return AgentSessionIndex(roots: Roots(home: URL(fileURLWithPath: root, isDirectory: true)))
     }
@@ -101,7 +115,7 @@ final class AgentSessionIndex {
       ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
     else { return nil }
     return AgentSessionIndex()
-  }
+  }()
 
   // MARK: Recency
 
@@ -146,13 +160,21 @@ final class AgentSessionIndex {
     return resolved(a) == resolved(b)
   }
 
-  private static func trimmed(_ path: String) -> String {
-    var value = path.trimmingCharacters(in: .whitespacesAndNewlines)
+  /// Normalize only what is genuinely equivalent: a redundant trailing slash.
+  ///
+  /// Deliberately NOT `trimmingCharacters(in: .whitespacesAndNewlines)`. A space is a legal
+  /// character in a POSIX filename, so trimming would make history recorded for `/work/project `
+  /// match a pane at `/work/project` — two different directories, and the offer would open a picker
+  /// for history the pane does not have. Only a trailing newline is stripped, since that is a
+  /// transport artefact of reading the value out of a JSON line rather than part of the path.
+  static func trimmed(_ path: String) -> String {
+    var value = path
+    while value.hasSuffix("\n") || value.hasSuffix("\r") { value.removeLast() }
     while value.count > 1, value.hasSuffix("/") { value.removeLast() }
     return value
   }
 
-  private static func resolved(_ path: String) -> String {
+  static func resolved(_ path: String) -> String {
     trimmed(URL(fileURLWithPath: path).resolvingSymlinksInPath().path)
   }
 
@@ -220,9 +242,17 @@ final class AgentSessionIndex {
     // Codex cannot be addressed by path — its tree is keyed by date — so the day directories are
     // scanned once and every pane is answered from the resulting set, rather than re-walking them
     // per pane.
+    //
+    // The lookup is a Set membership test, NOT a linear scan with `pathsMatch`. That distinction is
+    // the difference between bounded and not: `pathsMatch` falls through to
+    // `resolvingSymlinksInPath()` on every non-equal pair, so scanning a 2,000-entry set for each of
+    // 40 restored panes would be 160,000 filesystem syscalls — on the launch path, *after* the
+    // budget had already said stop, because this loop never consulted it. Indexing both the textual
+    // and the resolved form up front pays the syscalls once per recorded cwd instead.
     if !budget.isExhausted {
       let codexCwds = codexRecordedCwds(savedAt: savedAt, budget: &budget)
-      for cwd in cwds where codexCwds.contains(where: { Self.pathsMatch($0, cwd) }) {
+      for cwd in cwds
+      where codexCwds.contains(Self.trimmed(cwd)) || codexCwds.contains(Self.resolved(cwd)) {
         result[cwd, default: []].insert(.codex)
       }
     }
@@ -274,8 +304,17 @@ final class AgentSessionIndex {
     contents(of: roots.claudeProjects).filter { directoryExists($0) }
   }
 
-  /// Every `cwd` recorded by a Codex rollout inside the recency window.
+  /// Every `cwd` recorded by a Codex rollout inside the recency window, indexed for O(1) lookup.
+  ///
+  /// Each recorded path is inserted BOTH textually and symlink-resolved, so the caller can answer
+  /// "does this pane match?" with two Set probes instead of a linear scan that resolves symlinks per
+  /// comparison. Resolution happens once per recorded cwd, not once per (pane, cwd) pair.
   private func codexRecordedCwds(savedAt: Date, budget: inout Budget) -> Set<String> {
+    memoLock.lock()
+    let memo = codexCwdMemo
+    memoLock.unlock()
+    if let memo { return memo }
+
     var found: Set<String> = []
     for day in codexDayDirectories(savedAt: savedAt) where !budget.isExhausted {
       for file in recentJSONLFiles(in: day, savedAt: savedAt, prefix: "rollout-")
@@ -284,8 +323,16 @@ final class AgentSessionIndex {
         guard let first = head(of: file, lines: 1).first,
           let recorded = Self.codexCwd(inFirstLine: first)
         else { continue }
-        found.insert(recorded)
+        found.insert(Self.trimmed(recorded))
+        found.insert(Self.resolved(recorded))
       }
+    }
+    // Only memoize a COMPLETE walk. Caching a budget-truncated set would make the first window's
+    // bad luck permanent for every window after it.
+    if !budget.isExhausted {
+      memoLock.lock()
+      codexCwdMemo = found
+      memoLock.unlock()
     }
     return found
   }
@@ -354,9 +401,17 @@ final class AgentSessionIndex {
     guard let data = try? handle.read(upToCount: limits.maxBytesPerFile), !data.isEmpty else {
       return []
     }
-    let text = String(decoding: data, as: UTF8.self)
-    var split = text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
-    if data.count == limits.maxBytesPerFile, split.count > 1 { split.removeLast() }
+    // Whether the last line is complete is decided on the RAW BYTES, before decoding. Two bugs live
+    // here otherwise: a capped read that happens to end exactly on a newline had its last (complete)
+    // record thrown away, and a capped read with only one line kept a truncated one. Checking for a
+    // trailing LF answers both, and slicing at the last LF keeps a multi-byte scalar cut by the cap
+    // from decoding as a replacement character inside a line we actually parse.
+    let cappedAndUnterminated = data.count == limits.maxBytesPerFile && data.last != 0x0A
+    let usable =
+      cappedAndUnterminated ? data[..<(data.lastIndex(of: 0x0A).map { $0 + 1 } ?? 0)] : data[...]
+    guard !usable.isEmpty else { return [] }
+    let text = String(decoding: usable, as: UTF8.self)
+    let split = text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
     return Array(split.prefix(lines))
   }
 

@@ -422,7 +422,9 @@ final class TerminalSessions: ObservableObject {
   /// Resume-an-agent offers for restored panes (issue #145). Owned here beside `agentManager` so the
   /// same tab-teardown chokepoints feed both, but a SEPARATE object: see the type comment for why an
   /// offer cannot live in `agentManager.banners`.
-  let resumeCoordinator = AgentResumeCoordinator(index: AgentSessionIndex.forCurrentEnvironment())
+  /// Shares the PROCESS-WIDE index: this type is per-`AppStore` and `AppStore` is per-window, so a
+  /// per-owner index would have every restored window walk the Codex date tree again.
+  let resumeCoordinator = AgentResumeCoordinator(index: AgentSessionIndex.shared)
 
   init() {
     // Under the UI-test agent fixture, drive a stub backend (no network) with the feature + auto on

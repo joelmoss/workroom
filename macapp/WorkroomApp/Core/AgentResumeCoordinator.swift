@@ -31,6 +31,10 @@ final class AgentResumeCoordinator: ObservableObject {
   /// the app cannot know which agent a pane was running.
   @Published private(set) var offers: [TerminalTab.ID: Set<AgentBackend>] = [:]
 
+  /// The directory each offer was matched against, so `consume` can refuse a pane that has since
+  /// moved. Kept beside `offers` rather than inside it because the view has no use for it.
+  private var offerCwds: [TerminalTab.ID: String] = [:]
+
   /// A cancellation flag the scan can read from its own queue.
   ///
   /// `DispatchWorkItem.isCancelled` would do, but reading it means capturing the work item inside its
@@ -60,8 +64,13 @@ final class AgentResumeCoordinator: ObservableObject {
     label: "com.developwithstyle.workroom.agent-resume", qos: .utility)
   private var discovery: CancellationFlag?
   /// Tabs whose offer must not be published, because the pane is gone or its offer was already
-  /// spent. Never pruned: it is bounded by the number of tabs a launch restores, and forgetting an
-  /// entry would let a late scan re-offer a pane the user already resumed.
+  /// spent.
+  ///
+  /// Only meaningful while a scan is in flight — its whole job is to stop `publish` re-offering a
+  /// pane that was closed, typed into, or resumed while the scan ran. So it is cleared once the scan
+  /// lands. An earlier version never pruned it, on the stated grounds that it was "bounded by the
+  /// number of tabs a launch restores"; that was wrong, because `tabClosed` fires for EVERY tab
+  /// closed in the process, restored or not, so it grew for the life of the app.
   private var abandoned: Set<TerminalTab.ID> = []
 
   /// `index: nil` disables discovery entirely — the fixture default, so the existing UI tests can
@@ -114,8 +123,12 @@ final class AgentResumeCoordinator: ObservableObject {
       guard !abandoned.contains(pane.tabID) else { continue }
       guard let backends = found[pane.cwd], !backends.isEmpty else { continue }
       offers[pane.tabID] = backends
+      offerCwds[pane.tabID] = pane.cwd
       offered += 1
     }
+    // The scan has landed, so the suppression list has done its job. Clearing it is what keeps it
+    // from growing for the life of the process on every tab close.
+    abandoned.removeAll()
     if offered > 0 {
       Self.logger.notice("resume offers published for \(offered, privacy: .public) restored panes")
     }
@@ -129,10 +142,26 @@ final class AgentResumeCoordinator: ObservableObject {
   /// not tidiness: the action starts a billed agent session, and a double-click, a SwiftUI re-render
   /// firing the button's action twice, or two windows racing on the same pane would otherwise each
   /// start one. Returning nil on the second call is the button being spent, not an error.
-  func consume(tab: TerminalTab.ID, backend: AgentBackend) -> AgentInvocation? {
+  /// `liveCwd` is the pane's CURRENT directory, when it has reported one. The offer was matched
+  /// against the directory the pane was restored into, and a shell hook (`direnv`, a `cd` in
+  /// `.zshrc`, a project activator) can move it before the user ever touches the keyboard — none of
+  /// which trips the pristine guard. Resuming there would open a picker listing a different
+  /// project's conversations, which is precisely the confident-wrong-answer this feature refuses to
+  /// give. A moved pane spends the offer and returns nothing.
+  func consume(tab: TerminalTab.ID, backend: AgentBackend, liveCwd: String? = nil)
+    -> AgentInvocation?
+  {
     guard let backends = offers[tab], backends.contains(backend) else { return nil }
     offers[tab] = nil
     abandoned.insert(tab)
+    if let liveCwd, let matched = offerCwds[tab],
+      !AgentSessionIndex.pathsMatch(matched, liveCwd)
+    {
+      offerCwds[tab] = nil
+      Self.logger.notice("resume offer dropped — the pane's directory changed since discovery")
+      return nil
+    }
+    offerCwds[tab] = nil
     return AgentInvocationBuilder.resume(backend)
   }
 
@@ -145,18 +174,23 @@ final class AgentResumeCoordinator: ObservableObject {
   /// it trades a wrong command for lost work.
   func paneReceivedInput(tab: TerminalTab.ID) {
     offers[tab] = nil
-    abandoned.insert(tab)
+    offerCwds[tab] = nil
+    // Only worth remembering while a scan could still publish for it; see `abandoned`.
+    if discovery != nil { abandoned.insert(tab) }
   }
 
   /// The pane went away: drop its offer and make sure an in-flight scan cannot resurrect it.
   func tabClosed(_ tab: TerminalTab.ID) {
     offers[tab] = nil
-    abandoned.insert(tab)
+    offerCwds[tab] = nil
+    if discovery != nil { abandoned.insert(tab) }
   }
 
   /// Cancel any scan still running — the offers it would publish are for panes nobody is waiting on.
   func cancelDiscovery() {
     discovery?.cancel()
     discovery = nil
+    // Nothing can publish now, so the suppression list has nothing left to suppress.
+    abandoned.removeAll()
   }
 }

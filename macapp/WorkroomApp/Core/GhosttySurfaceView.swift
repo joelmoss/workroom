@@ -969,7 +969,18 @@ final class GhosttySurfaceView: NSView {
 
   /// Type literal text into the surface WITHOUT a trailing newline ("Insert fix", issue #49): the
   /// user reviews and presses Return themselves — we never auto-execute an AI-suggested command.
+  ///
+  /// **Marks the pane dirty** (issue #145). Inserted text sits unsubmitted on the input line, which
+  /// is exactly the state a resume offer must not append a Return to.
   func sendText(_ string: String) {
+    guard !string.isEmpty else { return }
+    noteUserInput()
+    writeText(string)
+  }
+
+  /// Put text on the PTY with no side effects. The raw primitive behind `sendText` and
+  /// `sendCommandLine`, split out so those two can differ on whether the pane becomes dirty.
+  private func writeText(_ string: String) {
     guard let surface, !string.isEmpty else { return }
     string.withCString { ghostty_surface_text(surface, $0, UInt(string.utf8.count)) }
   }
@@ -995,9 +1006,11 @@ final class GhosttySurfaceView: NSView {
   ///
   /// `ghostty_surface_text` is the *text input* path (it also backs `NSTextInputClient.insertText`),
   /// so a control byte there is not a keystroke. Return has to arrive as one.
+  /// Writes through `writeText`, NOT `sendText`: this is the one caller that must not mark the pane
+  /// dirty, because the offer it is spending has already been consumed.
   func sendCommandLine(_ commandLine: String) {
     guard surface != nil, !commandLine.isEmpty else { return }
-    sendText(commandLine)
+    writeText(commandLine)
     sendReturn()
   }
 
@@ -1043,15 +1056,27 @@ final class GhosttySurfaceView: NSView {
     UITestFixture.isActive ? "terminal.surface" : super.accessibilityIdentifier()
   }
 
-  /// Fired the FIRST time this pane sees real user input, and never again.
+  /// Fired the FIRST time anything lands on this pane's input line, and never again.
   ///
-  /// "Real" means a keystroke, an IME commit or a paste — the AppKit entry points. Text this app
-  /// writes in itself (`sendText` / `sendCommandLine`) goes straight to libghostty and does not pass
-  /// through them, which is what stops the Resume action from cancelling its own offer.
+  /// "Anything" is the operative word, and getting it wrong is a code-execution bug rather than a
+  /// cosmetic one: issue #145's resume action appends a synthetic Return, so ANY text sitting
+  /// unsubmitted on the prompt when that fires gets executed. Every path that can put text there
+  /// must call this.
+  ///
+  /// The one that was missed, and it is not an AppKit path at all: **⌘V does not go through
+  /// `insertText`.** libghostty owns the keybind and asks the runtime to read the clipboard, which
+  /// completes straight into the surface (`GhosttyRuntimeAdapter.readClipboard` →
+  /// `ghostty_surface_complete_clipboard_request`). Paste `rm -rf ~/x; ` without Return, click
+  /// Resume, and the Return runs it. `sendText` ("Insert fix", issue #49) had the same hole.
+  ///
+  /// The only writer that deliberately does NOT mark the pane dirty is `sendCommandLine`, which
+  /// spends an offer that was already consumed.
   var onFirstUserInput: (() -> Void)?
   private var didReportUserInput = false
 
-  private func noteUserInput() {
+  /// Safe to call from a libghostty callback: those arrive on the main thread, and this view is
+  /// main-thread-confined like any `NSView`.
+  func noteUserInput() {
     guard !didReportUserInput else { return }
     didReportUserInput = true
     onFirstUserInput?()

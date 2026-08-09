@@ -285,7 +285,10 @@ struct TerminalStatusBar: View {
   /// double-click, or SwiftUI evaluating the action again, would otherwise each start a billed agent
   /// session. A nil return is the button already being spent, not an error.
   private func resume(_ backend: AgentBackend) {
-    guard let invocation = resumeCoordinator.consume(tab: tabID, backend: backend) else { return }
+    // `cwd` is the pane's LIVE directory: the coordinator refuses the offer if a shell hook has
+    // moved the pane since discovery matched it.
+    guard let invocation = resumeCoordinator.consume(tab: tabID, backend: backend, liveCwd: cwd)
+    else { return }
     state?.view.sendCommandLine(invocation.commandLine)
   }
 

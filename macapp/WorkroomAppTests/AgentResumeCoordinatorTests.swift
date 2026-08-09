@@ -192,6 +192,74 @@ final class AgentResumeCoordinatorTests: XCTestCase {
     XCTAssertNil(coordinator.offers[restored.tabID])
   }
 
+  /// **REGRESSION.** The suppression set is cleared once a scan lands.
+  ///
+  /// It only exists to stop `publish` re-offering a pane that closed mid-scan. `tabClosed` fires for
+  /// EVERY tab closed in the process, not just restored ones, so never pruning it meant it grew for
+  /// the life of the app — and the comment claiming otherwise was what hid that.
+  func testClosingUnrelatedTabsAfterAScanDoesNotAccumulateState() throws {
+    let cwd = "/tmp/project"
+    try seedClaude(cwd: cwd)
+    let coordinator = makeCoordinator()
+    let restored = pane(cwd)
+    coordinator.discover([restored], savedAt: savedAt)
+    XCTAssertNotNil(waitForOffer(coordinator, tab: restored.tabID))
+
+    // Panes that have nothing to do with this restore, closed later in the session.
+    for _ in 0..<50 { coordinator.tabClosed(UUID()) }
+
+    // A fresh restore in the same process still offers — nothing stale is suppressing it.
+    let second = pane(cwd)
+    coordinator.discover([second], savedAt: savedAt)
+    XCTAssertEqual(waitForOffer(coordinator, tab: second.tabID), [.claude])
+  }
+
+  /// **REGRESSION.** A pane whose directory moved since discovery does not resume.
+  ///
+  /// The offer was matched against the directory the pane was RESTORED into. A shell hook (`direnv`,
+  /// a `cd` in `.zshrc`, a project activator) can move it before the user touches the keyboard, so
+  /// nothing trips the pristine guard. Resuming there would open a picker listing another project's
+  /// conversations — the confident wrong answer this whole feature refuses to give.
+  func testAPaneThatChangedDirectorySinceDiscoveryDoesNotResume() throws {
+    let cwd = "/tmp/project"
+    try seedClaude(cwd: cwd)
+    let coordinator = makeCoordinator()
+    let restored = pane(cwd)
+    coordinator.discover([restored], savedAt: savedAt)
+    XCTAssertNotNil(waitForOffer(coordinator, tab: restored.tabID))
+
+    XCTAssertNil(
+      coordinator.consume(tab: restored.tabID, backend: .claude, liveCwd: "/tmp/somewhere-else"),
+      "a moved pane must not resume another directory's history")
+    XCTAssertNil(coordinator.offers[restored.tabID], "and the offer is spent either way")
+  }
+
+  func testAPaneStillInItsRestoredDirectoryResumes() throws {
+    let cwd = "/tmp/project"
+    try seedClaude(cwd: cwd)
+    let coordinator = makeCoordinator()
+    let restored = pane(cwd)
+    coordinator.discover([restored], savedAt: savedAt)
+    XCTAssertNotNil(waitForOffer(coordinator, tab: restored.tabID))
+
+    XCTAssertEqual(
+      coordinator.consume(tab: restored.tabID, backend: .claude, liveCwd: cwd)?.arguments,
+      ["--resume"])
+  }
+
+  /// A pane that has not reported a cwd yet still resumes — the guard refuses a MOVE, not an
+  /// unknown. Refusing on nil would make the button dead until shell integration reports in.
+  func testAPaneWithNoReportedCwdStillResumes() throws {
+    let cwd = "/tmp/project"
+    try seedClaude(cwd: cwd)
+    let coordinator = makeCoordinator()
+    let restored = pane(cwd)
+    coordinator.discover([restored], savedAt: savedAt)
+    XCTAssertNotNil(waitForOffer(coordinator, tab: restored.tabID))
+
+    XCTAssertNotNil(coordinator.consume(tab: restored.tabID, backend: .claude, liveCwd: nil))
+  }
+
   // MARK: Independence from the diagnosis banner
 
   /// **CRITICAL REGRESSION.** An offer and a diagnosis are separate state, in both orders.
