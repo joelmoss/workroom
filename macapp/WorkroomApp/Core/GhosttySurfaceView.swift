@@ -993,6 +993,30 @@ final class GhosttySurfaceView: NSView {
     sendText(commandLine + "\r")
   }
 
+  /// **Fixture-only.** Expose the visible screen text to the accessibility tree so an XCUITest can
+  /// assert what a terminal actually did.
+  ///
+  /// A libghostty surface renders through Metal, so its contents are invisible to XCUITest — which
+  /// leaves whole behaviours unassertable end to end. The one that forced this: issue #145 types a
+  /// command in and submits it with `\r`, and if a libghostty version ever filtered control bytes out
+  /// of the text path the command would be typed and never run. That failure is silent from the
+  /// outside and there is no unit test for it, because the behaviour under test belongs to the engine.
+  ///
+  /// Gated on `UITestFixture.isActive`, which is itself `#if DEBUG` — a release build reads nothing
+  /// and publishes nothing. `VIEWPORT` is the visible screen only, never the scrollback.
+  override func isAccessibilityElement() -> Bool {
+    UITestFixture.isActive ? true : super.isAccessibilityElement()
+  }
+
+  override func accessibilityValue() -> Any? {
+    guard UITestFixture.isActive else { return super.accessibilityValue() }
+    return readText(tag: GHOSTTY_POINT_VIEWPORT) ?? ""
+  }
+
+  override func accessibilityIdentifier() -> String {
+    UITestFixture.isActive ? "terminal.surface" : super.accessibilityIdentifier()
+  }
+
   /// Fired the FIRST time this pane sees real user input, and never again.
   ///
   /// "Real" means a keystroke, an IME commit or a paste — the AppKit entry points. Text this app
