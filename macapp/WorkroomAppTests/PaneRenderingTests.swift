@@ -33,6 +33,9 @@ final class PaneRenderingTests: XCTestCase {
     let root = TestPaneHost(target: target, sessions: sessions)
       .environmentObject(AppStore())
       .environmentObject(sessions.agentManager)
+      // `TerminalStatusBar` reads this too (issue #145). A missing `@EnvironmentObject` is a fatal
+      // crash at render, not a nil — so every view test that mounts a pane has to supply it.
+      .environmentObject(sessions.resumeCoordinator)
     let hosting = NSHostingView(rootView: root)
     hosting.frame = NSRect(x: 0, y: 0, width: 900, height: 600)
     let window = NSWindow(

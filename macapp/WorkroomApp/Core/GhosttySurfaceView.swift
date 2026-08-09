@@ -969,9 +969,117 @@ final class GhosttySurfaceView: NSView {
 
   /// Type literal text into the surface WITHOUT a trailing newline ("Insert fix", issue #49): the
   /// user reviews and presses Return themselves — we never auto-execute an AI-suggested command.
+  ///
+  /// **Marks the pane dirty** (issue #145). Inserted text sits unsubmitted on the input line, which
+  /// is exactly the state a resume offer must not append a Return to.
   func sendText(_ string: String) {
+    guard !string.isEmpty else { return }
+    noteUserInput()
+    writeText(string)
+  }
+
+  /// Put text on the PTY with no side effects. The raw primitive behind `sendText` and
+  /// `sendCommandLine`, split out so those two can differ on whether the pane becomes dirty.
+  private func writeText(_ string: String) {
     guard let surface, !string.isEmpty else { return }
     string.withCString { ghostty_surface_text(surface, $0, UInt(string.utf8.count)) }
+  }
+
+  /// Type a command into the surface **and run it** (issue #145's Resume action).
+  ///
+  /// A separate entry point rather than a `submit:` flag on `sendText`, so that method's guarantee
+  /// stays exactly as narrow and as greppable as it was: an AI-*suggested* command is never
+  /// auto-executed. The distinction is the provenance, not the mechanism. `sendText` carries a string
+  /// a model produced, which nobody has read yet. This carries a compile-time constant
+  /// (`AgentInvocationBuilder.resume`) behind a button labelled Resume — the click is the review.
+  ///
+  /// Callers must confirm the pane is pristine first (`AgentResumeCoordinator.paneReceivedInput`),
+  /// since appending to a half-typed line would run something else entirely.
+  ///
+  /// **Return goes through the KEY path, not the text path — measured, not assumed.** Appending
+  /// `"\r"` to `ghostty_surface_text` does not submit: the engine drops the control byte, and
+  /// `AgentResumeUITests` caught it with the command sitting on the prompt, typed and never run:
+  ///
+  /// ```
+  ///   ❯ claude --resume
+  /// ```
+  ///
+  /// `ghostty_surface_text` is the *text input* path (it also backs `NSTextInputClient.insertText`),
+  /// so a control byte there is not a keystroke. Return has to arrive as one.
+  /// Writes through `writeText`, NOT `sendText`: this is the one caller that must not mark the pane
+  /// dirty, because the offer it is spending has already been consumed.
+  func sendCommandLine(_ commandLine: String) {
+    guard surface != nil, !commandLine.isEmpty else { return }
+    writeText(commandLine)
+    sendReturn()
+  }
+
+  /// Press Return, exactly as `keyDown` would forward it.
+  ///
+  /// `keycode` is the **native macOS virtual keycode** — libghostty does the mapping — so this is
+  /// `kVK_Return`, not `GHOSTTY_KEY_ENTER`. Only the press is sent, matching `keyDown`, which never
+  /// forwards a release either.
+  private func sendReturn() {
+    guard let surface else { return }
+    var keyEvent = ghostty_input_key_s()
+    keyEvent.action = GHOSTTY_ACTION_PRESS
+    keyEvent.keycode = 0x24  // kVK_Return
+    keyEvent.mods = GHOSTTY_MODS_NONE
+    keyEvent.consumed_mods = GHOSTTY_MODS_NONE
+    keyEvent.composing = false
+    keyEvent.text = nil
+    keyEvent.unshifted_codepoint = 0x0D
+    _ = ghostty_surface_key(surface, keyEvent)
+  }
+
+  /// **Fixture-only.** Expose the visible screen text to the accessibility tree so an XCUITest can
+  /// assert what a terminal actually did.
+  ///
+  /// A libghostty surface renders through Metal, so its contents are invisible to XCUITest — which
+  /// leaves whole behaviours unassertable end to end. The one that forced this: issue #145 types a
+  /// command in and submits it with `\r`, and if a libghostty version ever filtered control bytes out
+  /// of the text path the command would be typed and never run. That failure is silent from the
+  /// outside and there is no unit test for it, because the behaviour under test belongs to the engine.
+  ///
+  /// Gated on `UITestFixture.isActive`, which is itself `#if DEBUG` — a release build reads nothing
+  /// and publishes nothing. `VIEWPORT` is the visible screen only, never the scrollback.
+  override func isAccessibilityElement() -> Bool {
+    UITestFixture.isActive ? true : super.isAccessibilityElement()
+  }
+
+  override func accessibilityValue() -> Any? {
+    guard UITestFixture.isActive else { return super.accessibilityValue() }
+    return readText(tag: GHOSTTY_POINT_VIEWPORT) ?? ""
+  }
+
+  override func accessibilityIdentifier() -> String {
+    UITestFixture.isActive ? "terminal.surface" : super.accessibilityIdentifier()
+  }
+
+  /// Fired the FIRST time anything lands on this pane's input line, and never again.
+  ///
+  /// "Anything" is the operative word, and getting it wrong is a code-execution bug rather than a
+  /// cosmetic one: issue #145's resume action appends a synthetic Return, so ANY text sitting
+  /// unsubmitted on the prompt when that fires gets executed. Every path that can put text there
+  /// must call this.
+  ///
+  /// The one that was missed, and it is not an AppKit path at all: **⌘V does not go through
+  /// `insertText`.** libghostty owns the keybind and asks the runtime to read the clipboard, which
+  /// completes straight into the surface (`GhosttyRuntimeAdapter.readClipboard` →
+  /// `ghostty_surface_complete_clipboard_request`). Paste `rm -rf ~/x; ` without Return, click
+  /// Resume, and the Return runs it. `sendText` ("Insert fix", issue #49) had the same hole.
+  ///
+  /// The only writer that deliberately does NOT mark the pane dirty is `sendCommandLine`, which
+  /// spends an offer that was already consumed.
+  var onFirstUserInput: (() -> Void)?
+  private var didReportUserInput = false
+
+  /// Safe to call from a libghostty callback: those arrive on the main thread, and this view is
+  /// main-thread-confined like any `NSView`.
+  func noteUserInput() {
+    guard !didReportUserInput else { return }
+    didReportUserInput = true
+    onFirstUserInput?()
   }
 
   /// Whether this surface runs a fixed command (the Run feature) rather than a login shell. Run tabs
@@ -982,6 +1090,7 @@ final class GhosttySurfaceView: NSView {
   // MARK: Keyboard
 
   override func keyDown(with event: NSEvent) {
+    noteUserInput()
     guard let surface else {
       super.keyDown(with: event)
       return
@@ -1645,6 +1754,7 @@ extension GhosttySurfaceView: NSTextInputClient {
     let text = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
     unmarkText()
     guard !text.isEmpty else { return }
+    noteUserInput()
     if currentKeyEvent != nil {
       keyTextAccumulator.append(text)
     } else if let surface {

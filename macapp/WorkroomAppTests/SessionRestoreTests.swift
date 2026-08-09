@@ -52,8 +52,65 @@ final class SessionRestoreTests: XCTestCase {
         return "history for \(key)"
       })
 
-    XCTAssertEqual(count, 2)
+    XCTAssertEqual(count.count, 2)
     XCTAssertTrue(reads.isEmpty, "restoring a pane must not read its sidecar")
+  }
+
+  // MARK: Restore reports what it created (issue #145)
+
+  /// **REGRESSION.** Eligibility for a resume offer is "this pane came back from a restore", and
+  /// that is answered by the list `restore` hands back — NOT by a `wasRestored` flag on the tab.
+  ///
+  /// A flag is state that outlives the moment it describes and has to be kept true through every
+  /// future mutation path. Returning the identities at the one instant they are known means a ⌘T
+  /// pane can never be mistaken for a restored one, because it was never in the list.
+  func testRestoreReportsItsTerminalsAndAddTabDoesNot() {
+    let sessions = makeSessions()
+    let result = sessions.restore(
+      TargetSession(
+        targetID: target.id,
+        tabs: [terminal("a", title: "Terminal 1", cwd: "/tmp"), terminal("b", title: "Terminal 2")]),
+      for: target)
+
+    XCTAssertEqual(result.terminals.count, 2)
+    XCTAssertEqual(Set(result.terminals.map(\.tabID)), Set(sessions.tabs(for: target).map(\.id)))
+    XCTAssertEqual(result.terminals.map(\.targetID), [target.id, target.id])
+
+    let added = sessions.addTab(for: target)
+    XCTAssertFalse(
+      result.terminals.map(\.tabID).contains(added.id), "a ⌘T pane is not a restored pane")
+  }
+
+  /// The reported cwd is the one the pane actually opens in, already through `restoredCwd` — so a
+  /// pane whose remembered directory is gone reports the fallback, not the dead path that would
+  /// never match an agent's recorded cwd.
+  func testReportedCwdIsTheResolvedOneNotTheDeadRememberedPath() {
+    let sessions = makeSessions()
+    let result = sessions.restore(
+      TargetSession(
+        targetID: target.id,
+        tabs: [terminal("a", title: "Terminal 1", cwd: "/definitely/not/a/real/directory")]),
+      for: target)
+
+    XCTAssertEqual(result.terminals.first?.cwd, target.path)
+  }
+
+  /// Content tabs have no shell, so they are not terminals to resume into.
+  func testContentTabsAreNotReportedAsTerminals() {
+    let sessions = makeSessions()
+    let result = sessions.restore(
+      TargetSession(
+        targetID: target.id,
+        tabs: [
+          terminal("a", title: "Terminal 1"),
+          TabSession(
+            key: "f", kind: TabSession.fileKind,
+            file: FilePayload(path: "README.md", isPreview: true, markdownPreview: false)),
+        ]),
+      for: target)
+
+    XCTAssertEqual(result.count, 2)
+    XCTAssertEqual(result.terminals.count, 1)
   }
 
   // MARK: Shape
@@ -69,7 +126,7 @@ final class SessionRestoreTests: XCTestCase {
         ], terminalCounter: 3),
       for: target)
 
-    XCTAssertEqual(restored, 3)
+    XCTAssertEqual(restored.count, 3)
     XCTAssertEqual(
       sessions.tabs(for: target).map(\.title), ["Terminal 1", "Terminal 2", "Terminal 3"])
   }
@@ -160,7 +217,7 @@ final class SessionRestoreTests: XCTestCase {
           terminal("b", title: "Terminal 2"),
         ]),
       for: target)
-    XCTAssertEqual(restored, 2)
+    XCTAssertEqual(restored.count, 2)
     XCTAssertEqual(sessions.tabs(for: target).map(\.title), ["Terminal 1", "Terminal 2"])
   }
 
@@ -213,14 +270,14 @@ final class SessionRestoreTests: XCTestCase {
     let restored = sessions.restore(
       TargetSession(targetID: target.id, tabs: [terminal("a", title: "Terminal 99")]),
       for: target)
-    XCTAssertEqual(restored, 0)
+    XCTAssertEqual(restored.count, 0)
     XCTAssertEqual(sessions.tabs(for: target).map(\.title), ["Terminal 1"])
   }
 
   func testEmptySessionRestoresNothing() {
     let sessions = makeSessions()
     XCTAssertEqual(
-      sessions.restore(TargetSession(targetID: target.id, tabs: []), for: target), 0)
+      sessions.restore(TargetSession(targetID: target.id, tabs: []), for: target).count, 0)
     XCTAssertTrue(sessions.tabs(for: target).isEmpty)
   }
 

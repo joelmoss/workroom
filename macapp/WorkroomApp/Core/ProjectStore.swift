@@ -99,6 +99,15 @@ final class ProjectStore: ObservableObject {
   /// exactly once however many windows take part.
   private var isRestoringSession = false
 
+  /// When the session being restored was written (issue #145's recency window).
+  ///
+  /// Deliberately scoped to the restore and **cleared in `endSessionRestore`**, not kept for the
+  /// life of the store. A long-lived `savedAt` would still be sitting there hours later, so a
+  /// reload — or a window that claims nothing — could re-arm agent discovery long after launch and
+  /// offer Resume on panes that were never restored. Every window taking part in one restore reads
+  /// the same value; the moment the restore ends it is gone.
+  private(set) var sessionSavedAt: Date?
+
   /// Sessions already handed to a window, by the key that window now owns. Makes claiming idempotent:
   /// `WindowAccessor` can resolve the same window more than once, and a repeat claim must return the
   /// same session rather than consume a second one.
@@ -187,6 +196,8 @@ final class ProjectStore: ObservableObject {
     // launch that was supposed to bring it back. Freezing keeps the file intact for the next launch.
     let incomplete = outstandingRestores > 0 || !unclaimedSessionWindows.isEmpty
     isRestoringSession = false
+    // The restore is over, so its context goes with it — see `sessionSavedAt`.
+    sessionSavedAt = nil
     unclaimedSessionWindows.removeAll()
     dispatchedSessionKeys.removeAll()
     claimedSessions.removeAll()
@@ -211,6 +222,7 @@ final class ProjectStore: ObservableObject {
     didLoadSession = true
     guard case .restored(let file, _) = sessionCoordinator.read() else { return }
     unclaimedSessionWindows = file.windows
+    sessionSavedAt = file.savedAt
     isRestoringSession = true
     // Suspended until `finishSessionRestore`. Without this the first window's restore marks the
     // session dirty, and that write would rebuild the document from the windows that exist SO FAR —

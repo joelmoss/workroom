@@ -23,6 +23,7 @@ struct TerminalStatusBar: View {
   @ObservedObject var sessions: TerminalSessions
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var agentManager: TerminalAgentManager
+  @EnvironmentObject var resumeCoordinator: AgentResumeCoordinator
   @State private var showingDiagnosis = false
   /// The AppKit view the cwd menu pops out of — see `MenuAnchor`.
   @State private var cwdMenuAnchor: NSView?
@@ -36,6 +37,17 @@ struct TerminalStatusBar: View {
 
   private var diagnosis: AgentBannerState? { state == nil ? nil : agentManager.banners[tabID] }
 
+  /// Agents this restored pane can be reopened into (issue #145). Terminal panes only — a diff pane
+  /// has no shell to resume into.
+  private var resumable: [AgentBackend]? {
+    guard state != nil, let backends = resumeCoordinator.offers[tabID], !backends.isEmpty else {
+      return nil
+    }
+    // A stable order so two agents don't swap places between renders. It carries no meaning — the
+    // app has no basis for ranking them, which is exactly why both are offered.
+    return AgentBackend.allCases.filter(backends.contains)
+  }
+
   var body: some View {
     HStack(spacing: 12) {
       // Path and cwd are mutually exclusive in practice — a content pane has no cwd, a terminal has
@@ -45,6 +57,7 @@ struct TerminalStatusBar: View {
       branchSegment
       // Diagnosis sits left-aligned right after the branch, not pushed to the far edge.
       if let diagnosis { diagnosisSegment(diagnosis) }
+      if let resumable { resumeSegment(resumable) }
       Spacer(minLength: 8)
       if isRunTab, let run = runStatePresentation { runSegment(run) }
     }
@@ -234,6 +247,49 @@ struct TerminalStatusBar: View {
         return RunPresentation(icon: "stop.fill", text: "Stopped", color: nil)
       }
     }
+  }
+
+  // MARK: Resume an agent session (issue #145)
+
+  /// One button per agent whose conversation this restored pane can be reopened into.
+  ///
+  /// Rendered here rather than through `TerminalAgentBanner`, and it is not a near-miss reuse: that
+  /// banner is failure-shaped (every `AgentBannerState` carries a `FailedCommand`), it lives behind a
+  /// popover, and `diagnosisTint` paints it with `theme.tokens.failure`. An offer to pick up where
+  /// you left off is not a failure, has no body worth a popover, and must not be red. Accent-tinted
+  /// direct buttons say "this is available" instead of "something went wrong".
+  private func resumeSegment(_ backends: [AgentBackend]) -> some View {
+    ForEach(backends, id: \.self) { backend in
+      Button {
+        resume(backend)
+      } label: {
+        HStack(spacing: 4) {
+          Image(systemName: "arrow.uturn.backward.circle")
+          Text("Resume \(backend.displayName)…")
+        }
+        .foregroundStyle(Color.accentColor)
+      }
+      .buttonStyle(.plain)
+      .help(
+        "Reopen a \(backend.displayName) conversation from this folder. "
+          + "\(backend.displayName) shows its own picker — nothing resumes until you choose."
+      )
+      .accessibilityLabel("Resume \(backend.displayName)")
+      .accessibilityIdentifier("terminal.statusBar.resume.\(backend.rawValue)")
+    }
+  }
+
+  /// Spend the offer, then type the picker command into this pane and run it.
+  ///
+  /// `consume` removes the offer BEFORE returning the command, so this cannot fire twice — a
+  /// double-click, or SwiftUI evaluating the action again, would otherwise each start a billed agent
+  /// session. A nil return is the button already being spent, not an error.
+  private func resume(_ backend: AgentBackend) {
+    // `cwd` is the pane's LIVE directory: the coordinator refuses the offer if a shell hook has
+    // moved the pane since discovery matched it.
+    guard let invocation = resumeCoordinator.consume(tab: tabID, backend: backend, liveCwd: cwd)
+    else { return }
+    state?.view.sendCommandLine(invocation.commandLine)
   }
 
   // MARK: Diagnosis
