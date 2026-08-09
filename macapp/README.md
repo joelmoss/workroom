@@ -35,6 +35,7 @@ namespaced under `app-*` (run from the **repo root**):
 make app-run        # xcodegen (if needed) → xcodebuild (Debug) → relaunch the app
 make app-build      # build only
 make app-test       # run WorkroomAppTests
+make app-test-scripts # shell-script tests (build-helper architectures, channel classification)
 make app-format     # swift-format, rewrite sources in place
 make app-lint       # swift-format --strict
 make app-generate   # force-regenerate the .xcodeproj
@@ -52,6 +53,13 @@ script phase (`Scripts/build-helper.sh`) compiles the Go CLI into
 `Workroom.app/Contents/Resources/workroom` and signs it. (Resources, not
 `Contents/MacOS`: a helper named `workroom` there would collide with the `Workroom`
 app executable on the case-insensitive filesystem.)
+
+The helper is built **once per architecture in `ARCHS` and `lipo`'d**, so a universal app
+carries a universal CLI. That is asserted, not assumed: `release.sh` refuses to notarize a
+bundle containing any thin Mach-O, and `Scripts/build-helper_test.sh` covers the arch
+matrix. It shipped wrong once — `ARCHS` is a space-separated list, was matched as a single
+token, and every release up to `v2.0.0-beta.23` embedded an arm64-only CLI inside a fat app,
+which broke every workroom operation on Intel while passing codesign and notarization.
 
 ## Signing & distribution
 

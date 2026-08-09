@@ -41,8 +41,8 @@ make cli-install                    # install to $GOBIN
 ```
 
 `cli-lint` requires `golangci-lint` (v1.x): `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`.
-The macOS app targets (`app-build`, `app-run`, `app-test`, `app-format`, `app-lint`, …) are
-documented in `macapp/CLAUDE.md`.
+The macOS app targets (`app-build`, `app-run`, `app-test`, `app-test-scripts`, `app-format`,
+`app-lint`, …) are documented in `macapp/CLAUDE.md`.
 
 ## Releases
 

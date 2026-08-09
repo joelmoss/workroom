@@ -221,3 +221,9 @@ jobs:
       # tests (mocked seam) can't see. python3 is preinstalled on the macOS runner.
       - name: Test (run-command supervisor)
         run: make app-test-supervisor
+
+      # Shell-script tests. `make app-test` builds Debug with a single native arch, so it can never
+      # exercise build-helper.sh's multi-arch path — the branch whose absence shipped an arm64-only
+      # CLI inside every universal .app. These run it directly with ARCHS="arm64 x86_64".
+      - name: Test (build + channel helper scripts)
+        run: make app-test-scripts

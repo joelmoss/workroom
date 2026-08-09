@@ -145,6 +145,45 @@ echo "==> Exporting (Developer ID; re-signs nested code with a secure timestamp)
 xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportPath "$EXPORT_DIR" \
   -exportOptionsPlist "$EXPORT_PLIST"
 
+# A release must be universal all the way down. This is asserted, not assumed, because it silently
+# regressed once: `ARCHS` is a space-separated list ("arm64 x86_64") and build-helper.sh used to
+# match it as a single token, falling back to an arm64-only Go build with nothing but a `warn:` in
+# the xcodebuild log. The result shipped as a fat app wrapping a thin CLI — and since the app drives
+# every workroom operation through that CLI, it launched fine on an Intel Mac and then failed at
+# everything. Nothing downstream catches this: codesign, notarization and Gatekeeper are all happy
+# with a thin nested binary.
+echo "==> Verifying architectures (app + embedded CLI)"
+check_universal() {
+  local label="$1" path="$2" archs
+  # Distinguish the three ways this can go wrong. Collapsing them into one "missing the arm64 slice"
+  # message sends whoever hits it at 2am hunting an architecture problem that isn't one.
+  command -v lipo >/dev/null 2>&1 || { echo "error: 'lipo' not on PATH — cannot verify $label." >&2; exit 1; }
+  [ -f "$path" ] || { echo "error: $label not found at $path." >&2; exit 1; }
+  archs="$(lipo -archs "$path" 2>/dev/null || true)"
+  [ -n "$archs" ] || { echo "error: $label is not a Mach-O binary (lipo read no architectures) — $path" >&2; exit 1; }
+  for want in arm64 x86_64; do
+    case " $archs " in
+      *" $want "*) ;;
+      *) echo "error: $label is missing the $want slice (has: ${archs:-none}) — $path" >&2; exit 1 ;;
+    esac
+  done
+  echo "    $label: $archs"
+}
+check_universal "app binary" "$APP/Contents/MacOS/${APP_NAME}"
+check_universal "embedded workroom CLI" "$APP/Contents/Resources/workroom"
+
+# Naming only those two would leave the invariant narrower than the sentence above claims: Sparkle
+# ships XPC services, an Autoupdate tool and an Updater app, and notarization is just as happy with
+# a thin one of those. So sweep EVERY Mach-O in the bundle. `file` decides what is executable code,
+# rather than a path allowlist that a future dependency silently escapes.
+echo "    sweeping all nested Mach-O binaries…"
+while IFS= read -r macho; do
+  case "$macho" in
+    "$APP/Contents/MacOS/${APP_NAME}" | "$APP/Contents/Resources/workroom") continue ;;
+  esac
+  check_universal "nested: ${macho#"$APP/"}" "$macho"
+done < <(find "$APP" -type f -perm -u+x -exec sh -c 'file -b "$1" | grep -q "Mach-O" && echo "$1"' _ {} \;)
+
 echo "==> Verifying signatures"
 codesign --verify --strict --verbose=2 "$APP"
 echo "--- embedded helper ---"

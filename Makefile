@@ -10,7 +10,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 .DEFAULT_GOAL := help
 .PHONY: help \
         cli-build cli-test cli-install cli-lint cli-clean \
-        app-vcs app-run app-build app-test app-uitest app-test-supervisor app-generate app-format app-lint app-release app-icon app-clean
+        app-vcs app-run app-build app-test app-uitest app-test-supervisor app-test-scripts app-generate app-format app-lint app-release app-icon app-clean
 
 help: ## List available targets
 	@grep -hE '^[a-z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
@@ -87,6 +87,10 @@ app-uitest: app-vcs ## Run the app's UI tests (XCUITest — needs a real GUI log
 app-test-supervisor: ## Run the run-command supervisor PTY integration test (real shell + fake server)
 	python3 macapp/Tests/run-supervisor/test_supervisor.py
 
+app-test-scripts: ## Run the dependency-free shell-script tests (build-helper archs, channel classify)
+	sh macapp/Scripts/build-helper_test.sh
+	sh macapp/Scripts/channel-helper_test.sh
+
 app-generate: app-vcs ## Force-regenerate the (gitignored) .xcodeproj from project.yml
 	cd macapp && xcodegen generate
 
@@ -97,7 +101,16 @@ app-lint: ## Lint Swift with swift-format (--strict)
 	cd macapp && xcrun swift-format lint --strict --parallel --recursive WorkroomApp WorkroomAppTests WorkroomAppUITests
 
 app-release: VCS_APPLE_FLAGS := --universal
-app-release: app-vcs ## Build, notarize, staple + package a DMG installer (macapp/Scripts/release.sh)
+# `app-test-scripts` gates the release because it is the cheap half that catches an ARTIFACT bug
+# (the universal-arch cases) and needs no toolchain, no keychain and no Xcode.
+#
+# `app-test` is deliberately NOT a prerequisite here. It builds Debug, and Debug pins
+# `CODE_SIGN_STYLE: Automatic` + `CODE_SIGN_IDENTITY: "Apple Development"` (project.yml). The
+# release and nightly runners import a Developer ID certificate ONLY, and pass no APP_SIGN_FLAGS —
+# so making it a prerequisite fails provisioning on a fresh runner before anything is archived.
+# The xcodebuild suite runs as an explicit gate step in release.yml / nightly.yml instead, with the
+# same ad-hoc overrides ci.yml uses.
+app-release: app-vcs app-test-scripts ## Build, notarize, staple + package a DMG installer (macapp/Scripts/release.sh)
 	cd macapp && Scripts/release.sh
 
 app-icon: ## Regenerate release, dev + nightly AppIcon PNGs (macapp/Scripts/make-icon.swift)

@@ -13,11 +13,15 @@ root, not `macapp/`):
 make app-run        # canonical local loop: xcodegen → xcodebuild (Debug) → relaunch
 make app-build      # xcodegen → xcodebuild (Debug)
 make app-test       # xcodebuild test (WorkroomAppTests) — parallel; APP_TEST_FLAGS= to serialize
+make app-test-scripts # shell-script tests (build-helper archs, channel classify) — no toolchain
 make app-generate   # force-regenerate the (gitignored) .xcodeproj from project.yml
 make app-vcs        # build the Rust VCS core → WrVcs SwiftPM package (auto-run before app builds)
 make app-format     # swift-format, rewrite sources in place
 make app-lint       # swift-format --strict (non-zero on any violation — the hard gate)
-make app-release    # Release build → notarize → staple → DMG installer (Scripts/release.sh)
+make app-release    # Release build → notarize → staple → DMG installer (Scripts/release.sh).
+                    # Gated on app-test + app-test-scripts: several assertions exist to stop a bad
+                    # ARTIFACT shipping (bundled-resource checksums, universal-arch cases), and a
+                    # CI-only gate can be outrun by a release cut from a dirty tree.
 make app-icon       # regenerate AppIcon PNGs (Scripts/make-icon.swift)
 make app-clean      # remove DerivedData + .xcodeproj
 ```

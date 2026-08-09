@@ -168,6 +168,17 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security list-keychain -d user -s "$KEYCHAIN" login.keychain
 
+      # Gate the nightly on the suite that guards the ARTIFACT — the bundled-resource checksum
+      # tripwires and the universal-arch cases. Runs BEFORE the release step, or it is not a gate.
+      #
+      # `make app-release` cannot depend on this itself: app-test builds Debug, which pins automatic
+      # "Apple Development" signing (project.yml), and this runner imports only a Developer ID cert.
+      # Hence the same ad-hoc overrides ci.yml uses.
+      - name: Test (artifact gate)
+        run: >-
+          make app-test
+          APP_SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM="
+
       - name: Build, sign, notarize, staple, package DMG
         env:
           NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
