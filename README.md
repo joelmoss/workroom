@@ -1,6 +1,13 @@
 # Workroom
 
-### The Terminal Driven Development Environment for the AI Revolution
+True parallel software development in a native MacOS development environment.
+
+It's your IDE (Integrated Development Environment),
+     your ADE (Agent Development Environment),
+     your TDE (Terminal Development Environment),
+     your EDE (Everything Development Environment)
+
+## But What is Workroom?
 
 Workroom is a native MacOS IDE with the terminal at its heart. We believe that the terminal is now
 the best interface for developers, and that it should be the center of your development environment.
@@ -82,12 +89,14 @@ split view.
 - **File explorer** — browse and view the workroom's files with automatic language detection, and syntax highlighting.
 - **Multiple terminals, multiple tabs** — each workroom keeps its own terminal alive, and you can
   open as many terminals as you like in a draggable tab strip.
-- **Split view** — Open and arrange multiple workrooms and tabs horizontally or vertically.
+- **Split view** — Open and arrange multiple workrooms and tabs horizontally or vertically, in one or many views.
+- **Persistent Layout** — Layout and terminal persistence across sessions
 - **Live activity & notifications** — tabs and sidebar rows animate while busy; desktop banners fire
   when a backgrounded terminal needs you.
 - **Custom Run Command** — set a custom command to run in each workroom (e.g. `npm start` or `rails s`).
 - **Setup/teardown hooks** — run a project script automatically on create and delete.
-- **Quick Terminal** — a global hotkey to open a quick terminal.
+- **Quick Terminal** — a global hotkey (⌘§) to open a quick terminal.
+- **Quick Switcher** — quickly switch between workrooms (⌥⇥) and terminals (⌃⇥)
 - **Keyboard shortcuts** — at the heart of the app, including a global hotkey to show/hide Workroom from anywhere.
 - **Themes** — Dozens of themes, each with light/dark mode, and live re-theming of the entire app, including terminals.
 
