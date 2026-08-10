@@ -57,7 +57,15 @@ struct DiffViewer: View {
   /// Per-hunk side-by-side rows, paired once in `load()` (mirroring `emphasis`) so the layout isn't
   /// re-derived on every render (highlight arrival, theme change). Empty unless a diff is loaded;
   /// index-aligned with the loaded diff's `hunks`. Only consumed by `sideBySideBody`.
-  @State private var sbsRows: [[UnifiedDiff.SideBySideRow]] = []
+  ///
+  /// Boxed in a non-`Equatable` reference type rather than stored as a bare array: a plain
+  /// `@State` array is a genuine AttributeGraph-tracked value, and every file switch reassigns it
+  /// against the PREVIOUS file's unrelated rows, forcing AG to structurally walk two nested
+  /// `Equatable` arrays (`_ArrayBuffer.count.getter` twice — outer hunks, inner rows) whose "equal
+  /// → skip" result is never useful (a different file's diff should never read as unchanged). A
+  /// near-cap (2000-line) diff with long lines made that walk run long enough to trip a Sentry App
+  /// Hang (WORKROOM-2S). The box makes AG's compare an O(1) reference check instead.
+  @State private var sbsRows: SideBySideRows?
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   /// The global default diff layout (issue #66), used when this tab has no `viewModeOverride`. A
   /// narrow pane additionally falls back to unified (see `sideBySideMinWidth`).
@@ -75,6 +83,14 @@ struct DiffViewer: View {
     case empty
     case tooLarge
     case failed(String)
+  }
+
+  /// Reference-type box for `sbsRows` (see its doc) — deliberately not `Equatable`, so storing it
+  /// in `@State` makes AttributeGraph's write-time compare an identity check rather than a walk of
+  /// the wrapped arrays.
+  private final class SideBySideRows {
+    let rows: [[UnifiedDiff.SideBySideRow]]
+    init(_ rows: [[UnifiedDiff.SideBySideRow]]) { self.rows = rows }
   }
 
   var body: some View {
@@ -260,10 +276,10 @@ struct DiffViewer: View {
       emphasis = IntraLineDiff.emphasis(for: diff)
       // Pair the side-by-side rows once here (same place/pattern as `emphasis`) — bounded by the
       // line cap, so the layout never re-pairs on a render-only update (highlight, theme).
-      sbsRows = diff.hunks.map(UnifiedDiff.sideBySideRows(for:))
+      sbsRows = SideBySideRows(diff.hunks.map(UnifiedDiff.sideBySideRows(for:)))
     } else {
       emphasis = ([:], [:])
-      sbsRows = []
+      sbsRows = nil
     }
     loadToken &+= 1  // signal the highlight task to (re)build against this diff
   }
@@ -422,7 +438,19 @@ struct DiffViewer: View {
   /// The memoized side-by-side rows for a hunk index (empty if out of range — should not happen, as
   /// `sbsRows` is built from the same diff in `load()`).
   private func rows(forHunk index: Int) -> [UnifiedDiff.SideBySideRow] {
-    index < sbsRows.count ? sbsRows[index] : []
+    Self.rows(in: sbsRows?.rows, forHunk: index)
+  }
+
+  /// Bounds-checked lookup into paired side-by-side rows for a hunk index — pulled out as a pure
+  /// static func (mirrors `shouldLoad`) so the boxed-`sbsRows` refactor (WORKROOM-2S: an AppHang
+  /// from AttributeGraph deep-comparing the array on every file switch) stays regression-tested
+  /// without needing a live view. A `nil` box (no diff loaded) or an out-of-range/negative index
+  /// reads empty rather than trapping.
+  static func rows(in rows: [[UnifiedDiff.SideBySideRow]]?, forHunk index: Int)
+    -> [UnifiedDiff.SideBySideRow]
+  {
+    guard let rows, index >= 0, index < rows.count else { return [] }
+    return rows[index]
   }
 
   private func sideBySideRow(_ row: UnifiedDiff.SideBySideRow) -> some View {
