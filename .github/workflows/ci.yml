@@ -100,8 +100,12 @@ jobs:
       # status resolver against real git + jj repos. git + gh are preinstalled on the runner;
       # jj is not. XcodeGen generates the (gitignored) .xcodeproj. protobuf provides protoc, a
       # build-time dependency of jj-lib (the Rust VCS core, built by `make app-vcs`).
+      # aws/tap ships pre-tapped but untrusted on the runner image, which makes every `brew
+      # install` on this job emit a "tap trust" warning annotation unrelated to our formulae.
       - name: Install XcodeGen + jj + protobuf
-        run: brew install xcodegen jj protobuf
+        run: |
+          brew untap aws/tap
+          brew install xcodegen jj protobuf
 
       - name: Lint (swift-format --strict)
         run: make app-lint

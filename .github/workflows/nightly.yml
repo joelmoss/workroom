@@ -139,8 +139,12 @@ jobs:
 
       # jj is required by WorkroomStatusIntegrationTests / VCSProviderConformanceTests / etc.
       # (see ci.yml) — git + gh are preinstalled on the runner, jj is not.
+      # aws/tap ships pre-tapped but untrusted on the runner image, which makes every `brew
+      # install` on this job emit a "tap trust" warning annotation unrelated to our formulae.
       - name: Install XcodeGen + jj + create-dmg + protobuf
-        run: brew install xcodegen jj create-dmg protobuf
+        run: |
+          brew untap aws/tap
+          brew install xcodegen jj create-dmg protobuf
 
       # Separate step, and deliberately non-fatal — unlike the release workflow, which installs
       # sentry-cli on the same fatal brew line. This job is an unattended cron: a Homebrew/tap hiccup

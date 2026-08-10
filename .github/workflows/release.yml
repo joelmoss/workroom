@@ -58,8 +58,12 @@ jobs:
 
       - name: Install XcodeGen + create-dmg + sentry-cli + protobuf
         # sentry-cli uploads dSYMs in release.sh (skipped there if the Sentry env vars are unset).
-        # protobuf provides protoc, a build-time dep of the Rust VCS core (jj-lib).
-        run: brew install xcodegen create-dmg getsentry/tools/sentry-cli protobuf
+        # protobuf provides protoc, a build-time dep of the Rust VCS core (jj-lib). aws/tap ships
+        # pre-tapped but untrusted on the runner image, which would otherwise emit a "tap trust"
+        # warning annotation unrelated to our formulae.
+        run: |
+          brew untap aws/tap
+          brew install xcodegen create-dmg getsentry/tools/sentry-cli protobuf
 
       # `make app-release` builds the Rust VCS core universal (build-apple.sh --universal). Homebrew
       # rust can't cross-compile, so ensure rustup has both darwin targets (the runner's stable is
