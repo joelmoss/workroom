@@ -238,9 +238,23 @@ struct RootView: View {
         }
         Button("Cancel", role: .cancel) { store.pendingDeletion = nil }
       } message: {
-        Text(
-          "This removes the workroom's directory and runs its teardown script. For Git, the branch is left in place."
-        )
+        // Issue #146: deleteWorkroom reaps live terminals unconditionally, including a live
+        // Investigate session — which the base copy below never mentions stopping.
+        if let target = store.pendingDeletion,
+          WindowRegistry.shared.hasLiveInvestigateSession(for: [
+            TerminalTarget.workroomID(project: target.project.path, name: target.workroom.name)
+          ])
+        {
+          Text(
+            "This workroom has an active Investigate agent session running — deleting will stop "
+              + "it. This removes the workroom's directory and runs its teardown script. For Git, "
+              + "the branch is left in place."
+          )
+        } else {
+          Text(
+            "This removes the workroom's directory and runs its teardown script. For Git, the branch is left in place."
+          )
+        }
       }
       // Tab bar "Close": tear down all of the workroom's terminal tabs (its chip leaves the bar),
       // leaving the workroom itself in place. Same store-flag → confirmationDialog bridge as delete.
@@ -267,6 +281,14 @@ struct RootView: View {
       .sheet(item: $store.pendingProjectDeletion) { pending in
         DeleteProjectSheet(
           project: pending.project,
+          // Issue #146: deleteProject reaps live terminals unconditionally (even `.configOnly`,
+          // which keeps files on disk) — warn if any target in this project has a live Investigate
+          // session, since none of the sheet's existing per-scope copy mentions stopping one.
+          hasLiveInvestigateSession: WindowRegistry.shared.hasLiveInvestigateSession(
+            for: [TerminalTarget.rootID(project: pending.project.path)]
+              + pending.project.workrooms.map {
+                TerminalTarget.workroomID(project: pending.project.path, name: $0.name)
+              }),
           onDelete: { scope in
             store.pendingProjectDeletion = nil
             store.deleteProject(pending.project, scope: scope)

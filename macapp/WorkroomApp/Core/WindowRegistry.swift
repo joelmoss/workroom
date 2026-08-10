@@ -211,6 +211,22 @@ final class WindowRegistry: ObservableObject {
     allStores.first { $0 !== excluding && ($0.runStates[target]?.isRunning ?? false) }
   }
 
+  /// Whether any window has a live Investigate session (issue #146) for any of `targetIDs` — used
+  /// to warn before `deleteWorkroom`/`deleteProject` reap those targets' surfaces. Both delete flows
+  /// stop and reap unconditionally (even `.configOnly`, which keeps files but still tears down live
+  /// terminals), and neither goes through `hasLiveRunCommand`/`gracefullyStopRuns` (which only know
+  /// about `runStates`) — so without this check, deleting silently kills a live agent session with
+  /// no wait or warning, and for `.workrooms`/`.fromDisk` also deletes the directory out from under it.
+  func hasLiveInvestigateSession(for targetIDs: [TerminalTarget.ID]) -> Bool {
+    let ids = Set(targetIDs)
+    return allStores.contains { store in
+      store.investigateTabs.contains { tabID, targetID in
+        ids.contains(targetID)
+          && store.terminals.view(forTab: tabID, inTarget: targetID)?.hasLiveProcess == true
+      }
+    }
+  }
+
   // MARK: Quit
 
   /// Any window with a live run command — gates the graceful-stop-on-quit (issue #7 / #70).

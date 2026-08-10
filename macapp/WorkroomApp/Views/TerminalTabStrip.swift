@@ -431,17 +431,11 @@ struct TerminalTabStrip: View {
         state: state,
         onDiagnose: { agentManager.diagnose(tab: tab.id, target: target.id) },
         onInsertFix: { fix in
-          if case .terminal(let s) = tab.content { s.view.sendText(fix) }
+          tab.surface?.sendText(fix)
           agentPopoverTab = nil
         },
         onInvestigate: {
-          let cwd: String
-          if case .terminal(let s) = tab.content {
-            cwd = s.view.lastKnownCwd ?? target.path
-          } else {
-            cwd = target.path
-          }
-          _ = store.terminals.addRunTab(for: target, command: "claude", cwd: cwd)
+          _ = store.startInvestigate(bannerState: state, target: target, surface: tab.surface)
           agentManager.dismiss(tab: tab.id)
           agentPopoverTab = nil
         },

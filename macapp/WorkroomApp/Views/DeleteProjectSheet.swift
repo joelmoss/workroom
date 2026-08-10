@@ -50,6 +50,14 @@ enum DeleteProjectSheetModel {
       return "Moves the project to the Bin — restorable from the Trash."
     }
   }
+
+  /// Issue #146: every scope (even `.configOnly`, which keeps files on disk) unconditionally reaps
+  /// live terminals across the project's targets before any CLI/disk work — so a live Investigate
+  /// session gets silently killed unless the sheet warns about it up front.
+  static func investigateWarning(hasLiveInvestigateSession: Bool) -> String? {
+    guard hasLiveInvestigateSession else { return nil }
+    return "⚠️ This project has an active Investigate agent session running — deleting will stop it."
+  }
 }
 
 /// Type-to-confirm sheet for deleting a project (issue #61). Opened from the project row's
@@ -64,6 +72,11 @@ enum DeleteProjectSheetModel {
 /// `onDelete(scope)` passes the selected level; the parent owns clearing the pending state.
 struct DeleteProjectSheet: View {
   let project: Project
+  /// Whether any window has a live Investigate session somewhere in this project (issue #146) —
+  /// computed by the caller via `WindowRegistry.hasLiveInvestigateSession(for:)`. Defaulted so
+  /// existing previews/tests that don't care about this still construct the sheet with one argument
+  /// fewer.
+  var hasLiveInvestigateSession: Bool = false
   let onDelete: (_ scope: DeleteProjectScope) -> Void
   let onCancel: () -> Void
 
@@ -82,6 +95,9 @@ struct DeleteProjectSheet: View {
   }
   private var effectFooter: String {
     DeleteProjectSheetModel.effectFooter(scope: scope, workroomCount: count)
+  }
+  private var investigateWarning: String? {
+    DeleteProjectSheetModel.investigateWarning(hasLiveInvestigateSession: hasLiveInvestigateSession)
   }
 
   var body: some View {
@@ -106,6 +122,13 @@ struct DeleteProjectSheet: View {
             .truncationMode(.middle)
             .help(project.path)
         }
+      }
+
+      if let investigateWarning {
+        Text(investigateWarning)
+          .font(.callout.weight(.semibold))
+          .foregroundStyle(.orange)
+          .accessibilityIdentifier("deleteProject.investigateWarning")
       }
 
       if hasWorkrooms {

@@ -61,6 +61,43 @@ final class TerminalAgentUITests: XCTestCase {
     XCTAssertTrue(app.buttons["Investigate"].exists)
   }
 
+  /// The exact issue #146 regression: TerminalTabStrip's Investigate previously hardcoded a bare
+  /// `"claude"` invocation with no context, while TerminalStatusBar's already seeded it with the
+  /// diagnosis. Both now route through `AppStore.startInvestigate`, so clicking Investigate from
+  /// EITHER entry point must open a tab whose command carries the canned diagnosis text — not a
+  /// bare `claude` with nothing to go on. Checked via the status-bar popover here (the tab-strip's
+  /// popover is covered by `testFailedTabShowsAgentBadge`'s identical entry point, minus the click).
+  func testClickingInvestigateSeedsTheRealDiagnosisNotABareCommand() {
+    let app = launchedApp(runCommand: "echo 'boom: build failed'; exit 7")
+    startRun(app)
+    revealRunTab(app)
+
+    let diagnosis = app.buttons["terminal.statusBar.diagnosis"]
+    XCTAssertTrue(diagnosis.waitForExistence(timeout: 20))
+    diagnosis.click()
+
+    let investigate = app.buttons["Investigate"]
+    XCTAssertTrue(investigate.waitForExistence(timeout: 5))
+    investigate.click()
+
+    // Investigate opens a new focused tab (titled "Run" until claude reports its own title, same
+    // as any run tab) seeded with the diagnosis — read its live surface content via the
+    // fixture-only accessibility value (`UITestFixture.isActive` → `readText(VIEWPORT)`).
+    let newSurface = app.descendants(matching: .any).matching(identifier: "terminal.surface")
+      .element(boundBy: 0)
+    XCTAssertTrue(newSurface.waitForExistence(timeout: 10), "Investigate opens a new terminal pane")
+
+    let containsDiagnosis = NSPredicate { _, _ in
+      (newSurface.value as? String)?.contains("UITEST diagnosis: port already in use") == true
+    }
+    let expectation = XCTNSPredicateExpectation(predicate: containsDiagnosis, object: nil)
+    let result = XCTWaiter().wait(for: [expectation], timeout: 10)
+    XCTAssertEqual(
+      result, .completed,
+      "the seeded command must carry the diagnosis text, not a bare `claude` invocation — got: "
+        + "\(newSurface.value ?? "<nil>")")
+  }
+
   /// A failed tab carries a ✦ badge (the per-tab signal), which opens the same diagnosis popover.
   func testFailedTabShowsAgentBadge() {
     let app = launchedApp(runCommand: "echo 'boom: build failed'; exit 7")

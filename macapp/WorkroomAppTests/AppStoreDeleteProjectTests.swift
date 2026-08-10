@@ -235,6 +235,15 @@ final class AppStoreDeleteProjectTests: XCTestCase {
     XCTAssertFalse(diskNoWR.contains("workroom"))
   }
 
+  // MARK: Investigate warning (issue #146)
+
+  func testInvestigateWarningOnlyWhenLive() {
+    XCTAssertNil(DeleteProjectSheetModel.investigateWarning(hasLiveInvestigateSession: false))
+    XCTAssertEqual(
+      DeleteProjectSheetModel.investigateWarning(hasLiveInvestigateSession: true),
+      "⚠️ This project has an active Investigate agent session running — deleting will stop it.")
+  }
+
   // MARK: from-disk trash orchestration (issue #108)
 
   /// Records trash requests and fails for any URL in `failURLs`, so the from-disk trash

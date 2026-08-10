@@ -500,7 +500,7 @@ private struct PaneLeafView: View {
             TerminalSearchBar(model: s.view.searchModel)
           }
         }
-        TerminalStatusBar(target: target, tabID: tabID, state: s, sessions: sessions)
+        TerminalStatusBar(target: target, tabID: tabID, state: s)
       }
       .clipShape(
         RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius, style: .continuous))
@@ -563,8 +563,7 @@ private struct PaneLeafView: View {
   private func contentPanel(_ view: some View, filePath: String?) -> some View {
     VStack(spacing: 0) {
       view
-      TerminalStatusBar(
-        target: target, tabID: tabID, state: nil, filePath: filePath, sessions: sessions)
+      TerminalStatusBar(target: target, tabID: tabID, state: nil, filePath: filePath)
     }
     .clipShape(
       RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius, style: .continuous))

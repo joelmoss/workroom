@@ -20,7 +20,6 @@ struct TerminalStatusBar: View {
   /// header already carries the path). Supplied by `PaneLeafView` from `TabContent.filePath`.
   /// Defaulted, so the terminal mount doesn't have to say `filePath: nil`.
   var filePath: String? = nil
-  @ObservedObject var sessions: TerminalSessions
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var agentManager: TerminalAgentManager
   @EnvironmentObject var resumeCoordinator: AgentResumeCoordinator
@@ -321,10 +320,7 @@ struct TerminalStatusBar: View {
           showingDiagnosis = false
         },
         onInvestigate: {
-          let cwd = state?.view.lastKnownCwd ?? target.path
-          // Seed the interactive agent with the problem so it can start investigating immediately.
-          let command = AgentPrompt.investigateCommandLine(for: bannerState)
-          _ = sessions.addRunTab(for: target, command: command, cwd: cwd)
+          _ = store.startInvestigate(bannerState: bannerState, target: target, surface: state?.view)
           agentManager.dismiss(tab: tabID)
           showingDiagnosis = false
         },

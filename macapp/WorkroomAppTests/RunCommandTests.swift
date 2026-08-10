@@ -796,6 +796,136 @@ final class RunCommandTests: XCTestCase {
     waitUntil("a wedged process still proceeds after the timeout (SIGHUP fallback)") { completed }
   }
 
+  // MARK: Investigate (issue #146)
+
+  private func investigateBanner(_ target: TerminalTarget) -> AgentBannerState {
+    .awaitingDiagnose(
+      FailedCommand(
+        command: "npm test", cwd: target.path, exitCode: 1, shell: nil, output: "",
+        isRunTab: false, isRemote: false))
+  }
+
+  func testStartInvestigateBuildsCommandAndTracksTab() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    let t = target(store, "/a", "main")
+    let bannerState = investigateBanner(t)
+
+    let tab = store.startInvestigate(bannerState: bannerState, target: t, surface: nil)
+
+    XCTAssertEqual(captured.last, AgentPrompt.investigateCommandLine(for: bannerState))
+    XCTAssertEqual(store.investigateTabs[tab.id], t.id)
+  }
+
+  func testInvestigateLivenessClearsViaChildExitAndViaTabRemoval() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    let t = target(store, "/a", "main")
+    let bannerState = investigateBanner(t)
+    XCTAssertFalse(store.hasLiveRunCommand)
+
+    let tab1 = store.startInvestigate(bannerState: bannerState, target: t, surface: nil)
+    let surface1 = try! XCTUnwrap(tab1.surface)
+    surface1.liveProcessOverrideForTesting = true
+    XCTAssertTrue(store.hasLiveRunCommand)
+
+    // Cleanup path 1: the process exits (`onChildExited`) — independent of the tab closing.
+    surface1.handleChildExited(exitCode: 0)
+    XCTAssertNil(store.investigateTabs[tab1.id])
+    XCTAssertFalse(store.hasLiveRunCommand)
+
+    // Cleanup path 2: the tab is closed/reaped (`onTabsRemoved`) — independent of `onChildExited`
+    // ever firing (it isn't guaranteed to, per libghostty exit-reporting flakiness).
+    let tab2 = store.startInvestigate(bannerState: bannerState, target: t, surface: nil)
+    let surface2 = try! XCTUnwrap(tab2.surface)
+    surface2.liveProcessOverrideForTesting = true
+    XCTAssertTrue(store.hasLiveRunCommand)
+
+    store.terminals.closeTab(tab2.id, for: t)
+    XCTAssertNil(store.investigateTabs[tab2.id])
+    XCTAssertFalse(store.hasLiveRunCommand)
+  }
+
+  func testGracefullyStopAllCompletesImmediatelyWithOnlyInvestigateTabLive() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    let t = target(store, "/a", "main")
+    let tab = store.startInvestigate(bannerState: investigateBanner(t), target: t, surface: nil)
+    let surface = try! XCTUnwrap(tab.surface)
+    surface.liveProcessOverrideForTesting = true
+    XCTAssertTrue(store.hasLiveRunCommand)
+
+    // `runStates` is empty — an Investigate-only session has no supervisor to SIGTERM, so this must
+    // resolve immediately rather than wait on a `runStates` entry that will never appear (issue #146).
+    var completed = false
+    store.gracefullyStopAllRunCommands(timeout: 2) { completed = true }
+    XCTAssertTrue(completed, "no runStates entries to iterate → completes synchronously")
+  }
+
+  /// `WindowRegistry.hasLiveInvestigateSession` (issue #146) — used to warn before
+  /// deleteWorkroom/deleteProject reap a target's surfaces, since neither goes through
+  /// `hasLiveRunCommand`. Must see a live session registered in ANY window, and must not match an
+  /// unrelated target id.
+  func testHasLiveInvestigateSessionAcrossWindows() {
+    let registry = WindowRegistry()
+    let store = makeStore([project("/a", workrooms: ["main", "other"])])
+    registry.register(window: NSWindow(), store: store)
+    let t = target(store, "/a", "main")
+    let other = target(store, "/a", "other")
+
+    XCTAssertFalse(registry.hasLiveInvestigateSession(for: [t.id]))
+
+    let tab = store.startInvestigate(bannerState: investigateBanner(t), target: t, surface: nil)
+    try! XCTUnwrap(tab.surface).liveProcessOverrideForTesting = true
+
+    XCTAssertTrue(registry.hasLiveInvestigateSession(for: [t.id]))
+    XCTAssertFalse(
+      registry.hasLiveInvestigateSession(for: [other.id]), "must not match an unrelated target id")
+  }
+
+  /// A third teardown path, distinct from `closeTab`/quit: deleting a workroom/project reaps the
+  /// target directly (`reapTargetLocally`), which must also purge `investigateTabs` via the same
+  /// `onTabsRemoved` route — this exercises that specific caller, not just `closeTab`.
+  func testInvestigateTabsClearedWhenTargetReapedWithLiveInvestigateTab() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    let t = target(store, "/a", "main")
+    let tab = store.startInvestigate(bannerState: investigateBanner(t), target: t, surface: nil)
+    try! XCTUnwrap(tab.surface).liveProcessOverrideForTesting = true
+    XCTAssertTrue(store.hasLiveRunCommand)
+
+    store.reapTargetLocally(t.id)
+
+    XCTAssertNil(store.investigateTabs[tab.id])
+    XCTAssertFalse(store.hasLiveRunCommand)
+  }
+
+  /// `investigateTabs` allows many tabs per target (unlike the one-slot-per-target `runStates`) —
+  /// a second live Investigate session on the same target must not be shadowed by the first one's
+  /// (possibly already-dead) liveness, and closing just the live one must drop `hasLiveRunCommand`.
+  func testHasLiveRunCommandTrueWithMultipleConcurrentInvestigateTabsOnSameTarget() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    let t = target(store, "/a", "main")
+    let bannerState = investigateBanner(t)
+    let tab1 = store.startInvestigate(bannerState: bannerState, target: t, surface: nil)
+    let tab2 = store.startInvestigate(bannerState: bannerState, target: t, surface: nil)
+    try! XCTUnwrap(tab1.surface).liveProcessOverrideForTesting = false
+    try! XCTUnwrap(tab2.surface).liveProcessOverrideForTesting = true
+
+    XCTAssertTrue(
+      store.hasLiveRunCommand, "a second live Investigate tab on the same target must still count")
+
+    store.terminals.closeTab(tab2.id, for: t)
+    XCTAssertFalse(store.hasLiveRunCommand, "closing the only live tab drops liveness")
+  }
+
+  // Note: a direct `WindowCloseGuard.windowShouldClose` test for the "defer, then gracefully stop"
+  // branch was attempted here and dropped — that branch calls `sender.close()` on the passed
+  // `NSWindow`, and a bare `NSWindow()` with no real window-server backing crashes XCTest's
+  // post-test memory checker (SIGSEGV in `objc_release` during
+  // `XCTMemoryChecker._assertInvalidObjectsDeallocatedAfterScope:`), not the app itself. The
+  // underlying logic this branch depends on (`hasLiveRunCommand`, `gracefullyStopAllRunCommands`
+  // resolving immediately with no `runStates` entries) is already covered above; this specific
+  // AppKit-glue path is verified manually (see the plan's Verification section) — matching the
+  // existing precedent in `MultiWindowTests.swift` for a similarly NSWindow-bound case ("isn't
+  // cleanly unit-testable; it's verified live").
+
   // MARK: Background run, status outcomes, run toast (issue #67)
 
   func testStartRunsInBackgroundWithoutStealingFocus() {

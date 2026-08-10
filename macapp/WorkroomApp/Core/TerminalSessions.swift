@@ -946,7 +946,11 @@ final class TerminalSessions: ObservableObject {
   /// `cwd`, titled "Run" until the program reports its own title, focused like any new tab — through
   /// `setFocused`, so focus observers fire (it is NOT a direct dict write; see the focus-chokepoint
   /// note on `setFocused`). The caller (`AppStore`) owns the run-state and wires `onChildExited`;
-  /// this just creates and shows the tab.
+  /// this just creates and shows the tab. Also the mechanism behind an interactive Investigate
+  /// session (issue #49) — `AppStore.startInvestigate` is that caller for Investigate, tracking the
+  /// tab in `investigateTabs` rather than `runStates` (issue #146): a single-slot-per-target dev-server
+  /// run and a freely-multiple interactive agent session are different enough lifecycles to warrant
+  /// separate bookkeeping, not a shared one.
   ///
   /// Run-tab lifecycle — one `AppStore.RunState` per target; the pane stays open on exit via
   /// `wait_after_command`:

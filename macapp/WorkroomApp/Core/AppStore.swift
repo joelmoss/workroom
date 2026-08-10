@@ -929,6 +929,9 @@ final class AppStore: ObservableObject {
         self.clearRunPidFile(for: targetID)  // forget the captured pid (issue #7)
         self.resetRunToast(for: targetID)  // run gone → drop its toast state (issue #67)
       }
+      // Same idea for a closed/reaped Investigate tab (issue #146) — a second, independent cleanup
+      // path from `onChildExited`, since that callback isn't guaranteed to fire on every teardown.
+      for id in ids { self.investigateTabs.removeValue(forKey: id) }
       // Closing the last terminal in a co-displayed split pane leaves an empty pane whose only
       // affordance is the remove-from-split ✕ — close it for the user by dropping the now-empty
       // workroom from the split (issue #55). No-op for a solo workroom or a non-member.
@@ -1369,6 +1372,32 @@ final class AppStore: ObservableObject {
   /// — which all observe this store — react to start/stop/exit from one `@Published` source (OV-A).
   /// `TerminalSessions` only creates/focuses the tab and reports its removal via `onTabsRemoved`.
   @Published private(set) var runStates: [TerminalTarget.ID: RunState] = [:]
+
+  /// Live Investigate sessions (issue #49/#146), tab → target. Kept separate from `runStates` (one
+  /// `RunState` per target, modelling a single dev-server-style run): an Investigate session is a
+  /// second, independent process that can coexist with a target's real run command, and must NOT be
+  /// deduped across windows the way `WindowRegistry.runOwner` dedupes a run command. Only feeds
+  /// `hasLiveRunCommand`, so quit/window-close notice a live agent conversation instead of silently
+  /// SIGHUP'ing it. Not `@Published` — its only reader, `hasLiveRunCommand`, is read imperatively by
+  /// AppKit code at close/quit time (never by a SwiftUI view that needs a re-render), unlike
+  /// `runStates`, which the toolbar/sidebar/menu genuinely observe.
+  ///
+  ///        runStates                    investigateTabs
+  ///   [TargetID: RunState]          [TabID: TargetID]
+  ///   one slot per target      many tabs allowed per target
+  ///   (dev-server run)              (interactive claude)
+  ///            │                            │
+  ///            └─────────────┬──────────────┘
+  ///                          ▼
+  ///               hasLiveRunCommand (OR)
+  ///                          │
+  ///              ┌───────────┴────────────┐
+  ///              ▼                        ▼
+  ///   windowShouldClose confirm   stopRunCommandsThenTerminate (⌘Q)
+  ///   alert — now fires for a     — unaffected in practice: only
+  ///   live Investigate session    `runStates` feeds the actual
+  ///                                gracefully-stop loop
+  private(set) var investigateTabs: [TerminalTab.ID: TerminalTarget.ID] = [:]
 
   /// Per-target end-of-run outcome for the run toast (issue #67). Set on exit / failed start, cleared
   /// when a fresh run starts for that target. Derived-from, not duplicating, `runStates`.
@@ -1961,6 +1990,27 @@ final class AppStore: ObservableObject {
     wireRunClose(tab.id, for: target)
   }
 
+  /// Start an interactive Investigate session (issue #49) seeded with the failure captured in
+  /// `bannerState`. `surface` is the pane's live terminal surface (if any), used to derive cwd —
+  /// takes the surface rather than a pre-computed `cwd: String` so both call sites share one cwd
+  /// derivation instead of each re-deriving `?? target.path` themselves (the same drift shape issue
+  /// #146 fixed for the command). The one caller of `addRunTab` for Investigate (issue #146) —
+  /// tracks the tab in `investigateTabs` so it isn't invisible to quit/close teardown.
+  @discardableResult
+  func startInvestigate(
+    bannerState: AgentBannerState, target: TerminalTarget, surface: GhosttySurfaceView?
+  ) -> TerminalTab {
+    let cwd = surface?.lastKnownCwd ?? target.path
+    let command = AgentPrompt.investigateCommandLine(for: bannerState)
+    let tab = terminals.addRunTab(for: target, command: command, cwd: cwd)
+    investigateTabs[tab.id] = target.id
+    let tabID = tab.id
+    tab.surface?.onChildExited = { [weak self] _ in
+      self?.investigateTabs.removeValue(forKey: tabID)
+    }
+    return tab
+  }
+
   /// The "press any key to close" / wait_after_command close for a run tab MUST go through the graceful
   /// stop (SIGTERM the supervisor + wait for it to fully exit) BEFORE freeing the surface — a raw
   /// `closeTab` frees the surface, which PTY-hangs-up (SIGHUP) the supervisor and can orphan a
@@ -2254,8 +2304,13 @@ final class AppStore: ObservableObject {
   }
 
   /// Whether any run command still has a live process — gates the quit handler's graceful wait.
+  /// Also true for a live Investigate session (issue #146), even though it has no `RunState` and
+  /// no supervisor to gracefully stop — see `investigateTabs`.
   var hasLiveRunCommand: Bool {
     runStates.keys.contains { liveRunView(for: $0) != nil }
+      || investigateTabs.contains { tabID, targetID in
+        terminals.view(forTab: tabID, inTarget: targetID)?.hasLiveProcess ?? false
+      }
   }
 
   /// Tell each target's SUPERVISOR to quit (SIGTERM — it stops the child gracefully, waits for it,
