@@ -707,7 +707,15 @@ allowlist question first, then apply to both paths.
 **Priority:** P3 — real and measured, but it needs a policy decision, and the affected configuration is
 uncommon.
 
-### The other `CommandResult` consumers don't know about `signaled` (macapp) — gh-flap eng-review follow-up
+### The other `CommandResult` consumers don't know about `signaled` (macapp) — gh-flap eng-review follow-up — SHIPPED (2026-08-10)
+
+**Shipped:** all three sites now consume `CommandResult.signaled`, exactly as scoped below.
+`AgentRunner.classify` returns `.interrupted` (checked after `timedOut`, before `commandNotFound`,
+per the ordering note below) instead of `.failed(exitCode: 9, ...)`. `FileTreeModel.list` returns a
+new `ListResult.interrupted` case (distinct from `.unavailable`) so a killed probe leaves the
+existing tree/state alone instead of blanking it as "not a repo". `RustJJProvider.run` throws
+`VCSError.io("\(exe) was interrupted")` before its generic exit-code guard. Each site has a
+regression test.
 
 **What:** consume `CommandResult.signaled` in `AgentRunner.classify`, `FileTreeModel`, and
 `RustJJProvider.runCLI`.
@@ -759,7 +767,19 @@ completed" from it, then audit `path()` callers for who should wait versus who s
 
 **Priority:** P3 — the honest fix for a family of PATH-timing bugs, none currently reported.
 
-### `VCSToolVersionCache` pins a tool verdict for the whole process (macapp) — gh-flap follow-up
+### `VCSToolVersionCache` pins a tool verdict for the whole process (macapp) — gh-flap follow-up — SHIPPED (2026-08-10)
+
+**Shipped, with one revision from this entry's original proposal.** The `GitHubAuthCache` shape
+(freshness lease, generation-stamped in-flight, per-`ProjectStore` instance ownership) is lifted, as
+proposed — but NOT as one combined `Report`/`probedJJ` slot. Tracing the actual reentrancy bug during
+implementation showed a single combined slot doesn't structurally stop a `probeJJ: false` (jj-blind)
+completion from overwriting a `probeJJ: true` (jj-aware) cached verdict — `GitHubAuthCache` has no
+analogous coverage axis to protect, so a literal transplant only imports the temporal generation
+stamp, not the fix. Revised to two fully independent cache slots (git, jj), each its own
+`GitHubAuthCache`-shaped instance — a jj-blind caller now never touches the jj slot at all, closing
+the clobber class structurally rather than by ordering. TTLs match `GitHubAuthCache`'s exact numbers
+(60s `.ok` / 10s `.belowFloor`) as this entry proposed. `.notInstalled` is still never cached, per the
+existing (already-shipped) reasoning quoted below.
 
 **What:** give the `git`/`jj` version cache the three contracts the `gh` cache got in the same area and
 this one never did: a freshness lease, a generation-stamped in-flight slot, and per-`ProjectStore`
@@ -1955,7 +1975,24 @@ forking git).
 
 **Priority:** P3 (pre-existing; create-new path inits a valid repo, so not blocking #103).
 
-### The config lock can be stolen from a live holder (CLI) — `withLock` audit
+### The config lock can be stolen from a live holder (CLI) — `withLock` audit — SHIPPED (2026-08-10)
+
+**Shipped, via a different mechanism than the one this entry proposed.** Rather than adding a nonce +
+heartbeat to the hand-rolled `O_CREATE|O_EXCL` + mtime scheme, `withLock` now takes a real cross-process
+OS advisory lock via `github.com/gofrs/flock` (`flock(2)` on Unix, `LockFileEx` on Windows). This
+structurally eliminates every failure mode this entry describes — there is no elapsed-time staleness
+window to reason about or steal from a still-live holder at all, because the kernel releases the lock
+the instant the holding process dies or crashes, not after some elapsed-time guess. Every scenario in
+this entry's own diagram (a slow-but-live holder mistaken for stale; the two mismatched constants;
+the unlocked-for-10s-after-a-crash window) is a consequence of measuring staleness by CLOCK TIME, which
+an OS advisory lock simply doesn't do. Verified with new concurrency tests: a live holder that runs
+past the OLD 10s "stale" threshold is never stolen from (`TestWithLockSerializesAgainstALiveSlowHolder`),
+20 concurrent writers never lose an update (`TestWithLockConcurrentWritersNeverCorruptTheFile`), and a
+simulated crashed holder's lock releases immediately, not after any wait
+(`TestWithLockReleasedImmediatelyWhenHolderDies`). **Rollout caveat, deliberately not addressed here**:
+an old, un-upgraded standalone CLI binary still runs the previous scheme against the same `.lock` path,
+and the two mechanisms don't recognise each other — no worse than the pre-fix status quo for that
+pairing, but not fully closed either. Left as an explicit decision for whoever cuts the next release tag.
 
 **What:** give the config's advisory lock (`Config.withLock`, `internal/config/config.go`) an
 *ownership token* and a heartbeat, so a lock is only ever removed by the process that holds it, and
