@@ -97,6 +97,20 @@ final class RemoteStateModel: ObservableObject {
   /// to when it is no longer the selected one. Wired post-init to `AppStore.label(for:)` for the same
   /// reason the two callbacks above are: the model stays `AppStore`-free and unit-testable.
   var describeTarget: (@MainActor (SidebarID) -> String?)?
+  /// Whether a write is already in flight for this project root, IN ANY WINDOW — `inFlight` above is
+  /// only this one model's own single-action lock, which does nothing against a second window's
+  /// `RemoteStateModel` (each has its own `inFlight`, as it must to render its own spinner). Checked
+  /// before starting an action; a `true` result refuses with `.locked(nil)` rather than queuing into
+  /// `JJSnapshotGate` and possibly racing a live write past its wedge-detection ceiling. Wired post-init
+  /// to `AppStore.isWritingProject`, same `AppStore`-free reasoning as the callbacks above. Defaults to
+  /// "never busy" so a model built without this wired (e.g. in isolation for a unit test) behaves as
+  /// today rather than silently refusing everything.
+  var canStartWrite: (@MainActor (String) -> Bool)?
+  /// Marks a write starting/finishing against a project root, wired to `AppStore.beginWrite`/`endWrite`.
+  /// Paired unconditionally around the action's `Task` in `perform`/`finish`, mirroring how
+  /// `performCommit` pairs its own `beginWrite`/`endWrite` calls.
+  var writeDidStart: (@MainActor (String) -> Void)?
+  var writeDidFinish: (@MainActor (String) -> Void)?
 
   init(
     makeWriter: @escaping @Sendable (URL) throws -> VCSWriting = { try VCS.writer(for: $0) },
@@ -300,6 +314,15 @@ final class RemoteStateModel: ObservableObject {
       if userInitiated { raiseFailureReport(.noRemote, action: action) }
       return
     }
+    // Refuse outright rather than queue behind another write (this window or another) on the same
+    // project root — see `canStartWrite`'s doc for why. `inFlight == nil` above only rules out THIS
+    // model's own action; this is the cross-window half.
+    if canStartWrite?(target.projectRoot) == false {
+      lastFailure = .locked(nil)
+      lastAction = action
+      if userInitiated { raiseFailureReport(.locked(nil), action: action) }
+      return
+    }
     inFlight = action
     inFlightTarget = target
     lastAction = action
@@ -309,6 +332,13 @@ final class RemoteStateModel: ObservableObject {
     let makeWriter = self.makeWriter
     let current = snapshot.current
     let tracking = snapshot.tracking
+    let projectRoot = target.projectRoot
+    writeDidStart?(projectRoot)
+    // Captured as a local NOW, not read through `self` after the `await` below: if this model (or
+    // its owning `AppStore`) is deallocated before the write finishes — the window closed mid-write
+    // — `self?.writeDidFinish` would silently no-op and leak the cross-window write-in-flight mark
+    // forever. The closure value itself is held by this `Task`, independent of `self`'s lifetime.
+    let finishWrite = writeDidFinish
     actionTask = Task { [weak self] in
       let root = URL(fileURLWithPath: target.path, isDirectory: true)
       let result: VCSRemoteActionResult
@@ -332,6 +362,7 @@ final class RemoteStateModel: ObservableObject {
       } catch {
         result = .failed(.other("\(error)"))
       }
+      finishWrite?(projectRoot)
       self?.finish(action, result: result, for: target, userInitiated: userInitiated)
     }
   }

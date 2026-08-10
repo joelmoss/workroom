@@ -25,10 +25,19 @@ struct CommandResult: Sendable, Equatable {
   /// `timedOut` first, or a timeout gets misreported as a bare interruption.
   let signaled: Bool
 
-  /// `/usr/bin/env` exits 127 when the command (git/jj/gh) isn't on PATH.
+  /// `/usr/bin/env` exits 127 when the command (git/jj/gh) isn't on PATH. A REAL exit from a REAL
+  /// process — env ran, tried to exec the tool, and failed to find it.
   static let commandNotFound: Int32 = 127
   /// git exits 128 for "not a git repository" and similar fatal usage errors.
   static let gitFatal: Int32 = 128
+  /// The process never ran at all — `Process.run()` itself threw, which on this runner's setup
+  /// (`proc.currentDirectoryURL` set unconditionally) is dominated by one cause: the working
+  /// directory vanished between when the caller decided to probe it and when this runner tried to
+  /// launch. Deliberately NOT `commandNotFound`/127: that value means env itself ran and searched
+  /// PATH, which is a completely different fact from "nothing ran." Every consumer that read 127 as
+  /// "tool not installed" would otherwise misdiagnose a deleted workroom as a missing git/jj/gh.
+  /// Negative and outside 0-255, so it can never collide with a real exit code or a signal number.
+  static let launchFailed: Int32 = -1
 
   /// Written out rather than synthesized: a `let` with an initial value is EXCLUDED from the
   /// memberwise init entirely, so `let signaled = false` would compile at all ~60 construction
@@ -317,7 +326,8 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
           }
         } catch {
           // Launch failed (e.g. cwd vanished). Close the write ends so the drain readers hit
-          // EOF instead of blocking forever, then resolve as command-not-found.
+          // EOF instead of blocking forever, then resolve as launchFailed — NOT commandNotFound,
+          // which would misreport this as a missing tool. See `CommandResult.launchFailed`'s doc.
           timeoutItem.cancel()
           killItem.cancel()
           try? inPipe?.fileHandleForWriting.close()
@@ -325,7 +335,7 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
           try? errPipe.fileHandleForWriting.close()
           gate.resume(
             CommandResult(
-              stdout: "", stderr: "\(error)", exitCode: CommandResult.commandNotFound,
+              stdout: "", stderr: "\(error)", exitCode: CommandResult.launchFailed,
               timedOut: false))
         }
       }

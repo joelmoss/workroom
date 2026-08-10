@@ -92,12 +92,18 @@ final class StatusCommandRunnerTests: XCTestCase {
     XCTAssertEqual(r.exitCode, 9)  // SIGKILL, not a CLI exit status
   }
 
-  func testLaunchFailureInMissingDirIsCommandNotFound() async {
+  /// A missing cwd must classify as `launchFailed`, NOT `commandNotFound` — the two are different
+  /// facts (nothing ran at all vs. `env` ran and searched PATH), and every consumer that reads 127
+  /// as "tool not installed" would otherwise misdiagnose a deleted workroom as a missing git/jj/gh.
+  func testLaunchFailureInMissingDirIsLaunchFailedNotCommandNotFound() async {
     let r = await runner.run(
       "git", ["status"], in: "/no/such/dir-\(UUID().uuidString)", timeout: 5)
-    XCTAssertEqual(r.exitCode, CommandResult.commandNotFound)
-    // Nothing was ever spawned, so nothing was signalled — this must stay a clean 127 so it keeps
-    // classifying as "not installed" rather than as an interruption.
+    XCTAssertEqual(r.exitCode, CommandResult.launchFailed)
+    XCTAssertNotEqual(
+      r.exitCode, CommandResult.commandNotFound,
+      "a vanished directory is not the same fact as env searching PATH and failing")
+    XCTAssertFalse(r.stderr.isEmpty, "the underlying launch error must be preserved for diagnosis")
+    // Nothing was ever spawned, so nothing was signalled — this must stay a clean, fixed sentinel.
     XCTAssertFalse(r.signaled)
   }
 

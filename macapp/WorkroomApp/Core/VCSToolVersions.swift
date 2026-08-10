@@ -80,19 +80,6 @@ enum VCSToolVersions {
       }
     }
 
-    /// Whether a tool we actually RAN reported absent from PATH (exit 127).
-    ///
-    /// Used to decide a verdict is too fragile to cache: absence is the one `Status` that can be an
-    /// artefact of WHEN we probed rather than what is installed, because the PATH is still the
-    /// deterministic floor until the interactive-shell probe lands. See `VCSToolVersionCache.report`.
-    ///
-    /// `probedJJ` is load-bearing, not decoration: when it is false `jj` is reported `.notInstalled`
-    /// WITHOUT running anything, so counting that would refuse to cache on every launch with no jj
-    /// project registered — turning a one-shot `git --version` into one per call.
-    func hasMissingTool(probedJJ: Bool) -> Bool {
-      git == .notInstalled || (probedJJ && jj == .notInstalled)
-    }
-
     /// Whether remote actions are permitted for a project of this VCS (`"git"` / `"jj"`).
     func allowsRemoteActions(vcs: String) -> Bool {
       guard Self.isUsable(git) else { return false }
@@ -184,50 +171,148 @@ enum VCSToolVersions {
   }
 }
 
-/// Process-wide single-flight cache for the version probe.
+/// Cache for the version probe — the `GitHubAuthCache` shape (freshness lease, generation-stamped
+/// in-flight, instance ownership) applied to git and jj as TWO INDEPENDENT slots, not one combined
+/// `Report`.
+///
+/// **Why two slots, not one.** The previous single-slot design cached one `(Report, probedJJ)` pair.
+/// A `probeJJ: false` caller and a `probeJJ: true` caller racing meant whichever's completion landed
+/// LAST won the shared slot unconditionally — so a jj-blind result (which reports `jj: .notInstalled`
+/// outright, without running anything) could overwrite a jj-aware one that had already cached a real
+/// verdict. `GitHubAuthCache`'s generation stamp alone doesn't fix this: it orders by RECENCY, and it
+/// has no analogous "coverage" axis to protect, because it only ever answers one question. Splitting
+/// git and jj into their own slots removes the shared state those two kinds of caller could race
+/// over in the first place — a jj-blind caller never touches the jj slot at all.
+///
+/// **Why instance-owned, not `static let shared`.** `AppStore.init` documents that "tests build an
+/// isolated `AppStore()` (own fresh `ProjectStore`)", and `make app-test` runs classes in PARALLEL —
+/// with `static let shared` one test's injected fake runner could serve another's probe, and the
+/// tests-only `reset()` couldn't stop an already-in-flight task from repopulating the cache
+/// afterwards. Same reasoning `GitHubAuthCache` documents; owned on `ProjectStore` the same way.
 ///
 /// The tool versions are a fact about the machine, not about a window, but `AppStore` is per-window
-/// (`WorkroomApp.swift` mints one per `WindowSeed`). Without this, every window would spawn its own
-/// `git --version` at launch. Concurrent callers share one probe rather than racing two.
+/// (`WorkroomApp.swift` mints one per `WindowSeed`) while this lives on the shared `ProjectStore`, so
+/// concurrent callers across windows still share one probe per tool rather than racing two.
 ///
-/// `probedJJ` is remembered: a first probe taken before any jj project was registered legitimately
-/// skipped `jj`, and reporting that cached `.notInstalled` once a jj project appears would warn about
-/// a tool nobody ever looked for. Needing jj after skipping it re-probes.
+/// `probedJJ` is still remembered at the `report(probeJJ:)` call boundary (see below): a first probe
+/// taken before any jj project was registered legitimately skips `jj` outright, and reporting a
+/// cached `.notInstalled` once a jj project appears would warn about a tool nobody ever looked for.
+/// Needing jj after skipping it re-probes — but that re-probe now only ever touches the jj slot.
 actor VCSToolVersionCache {
-  static let shared = VCSToolVersionCache()
+  /// Flat, per-tool stored properties rather than a shared `Slot` struct passed by `inout`:
+  /// mutating a stored property through an `inout` binding held across an `await` is an actor
+  /// reentrancy hazard (a second call landing on the same actor while the first is suspended would
+  /// be a simultaneous exclusive access to the same property, a runtime crash) — the exact class of
+  /// bug this type exists to get away from. `GitHubAuthCache` avoids it the same way: read/write
+  /// `self.<property>` directly inside each `await`-separated step, never borrow it across one.
+  ///
+  /// `belowFloor` gets a short TTL lease — an upgrade is the expected repair, and the whole point of
+  /// warning about it is that it should be noticed once fixed — while `ok` gets a long one, since an
+  /// installed tool's version is effectively static for a session. TTLs match `GitHubAuthCache`'s
+  /// exact numbers (60s / 10s): a tool's version changes far less than GitHub auth state, but the
+  /// cost of a redundant local `--version` is cheap enough that a bespoke, longer TTL isn't worth
+  /// its own tuning surface.
+  private let clock = ContinuousClock()
+  private let ttl: Duration
+  private let belowFloorTTL: Duration
 
-  private var cached: (report: VCSToolVersions.Report, probedJJ: Bool)?
-  private var inFlight: (task: Task<VCSToolVersions.Report, Never>, probedJJ: Bool)?
+  private var gitCached: (status: VCSToolVersions.Status, at: ContinuousClock.Instant)?
+  private var gitInFlight: Task<VCSToolVersions.Status, Never>?
+  /// Generation-stamped like `GitHubAuthCache`, so a superseded probe can't clear a newer flight or
+  /// overwrite a newer verdict when it finally lands.
+  private var gitGeneration = 0
 
+  private var jjCached: (status: VCSToolVersions.Status, at: ContinuousClock.Instant)?
+  private var jjInFlight: Task<VCSToolVersions.Status, Never>?
+  private var jjGeneration = 0
+
+  /// TTLs are injectable so tests can age a verdict in milliseconds instead of sleeping for a minute.
+  init(ttl: Duration = .seconds(60), belowFloorTTL: Duration = .seconds(10)) {
+    self.ttl = ttl
+    self.belowFloorTTL = belowFloorTTL
+  }
+
+  /// `probeJJ: false` ⇒ the jj slot is never touched at all — jj reports `.notInstalled` without a
+  /// process ever spawning, exactly as `VCSToolVersions.probe` itself behaves, and nothing about that
+  /// non-answer is cached (there is nothing to age out of a slot that was never written).
   func report(probeJJ: Bool, runner: StatusCommandRunning = StatusCommandRunner()) async
     -> VCSToolVersions.Report
   {
-    // Reuse only a result that covers what this caller needs.
-    if let cached, cached.probedJJ || !probeJJ { return cached.report }
-    if let inFlight, inFlight.probedJJ || !probeJJ { return await inFlight.task.value }
-    let task = Task { await VCSToolVersions.probe(runner: runner, probeJJ: probeJJ) }
-    inFlight = (task, probeJJ)
-    let report = await task.value
-    // Never cache a `.notInstalled`. That verdict comes from exit 127, i.e. the tool wasn't on PATH —
-    // and at launch the PATH may still be the deterministic floor, because `ShellEnvironment.path()`
-    // silently returns the floor until the interactive-shell probe lands and nothing joins that probe
-    // (it is fired detached in `WorkroomApp.init`, while `refreshVCSToolReport` runs from
-    // `apply(projects)`). The floor covers Homebrew but NOT a version-manager shim dir, Nix, or
-    // MacPorts, so a jj living in one of those reads as missing — and caching that pinned "jj isn't
-    // installed" for the entire process, since `cached` is only cleared by the tests-only `reset()`.
-    // Re-probing costs one `--version` and by then the enriched PATH has usually landed.
-    //
-    // `.unknown` is safe to cache by contrast: `warnings(hasJJProject:)` ignores it, so it never
-    // becomes a false claim.
-    if !report.hasMissingTool(probedJJ: probeJJ) { cached = (report, probeJJ) }
-    inFlight = nil
-    return report
+    let gitStatus = await gitStatus(runner: runner)
+    guard probeJJ else { return VCSToolVersions.Report(git: gitStatus, jj: .notInstalled) }
+    let jjStatus = await jjStatus(runner: runner)
+    return VCSToolVersions.Report(git: gitStatus, jj: jjStatus)
   }
 
-  /// Tests only — the cache is process-wide, so a test that probed must clear it.
+  private func gitStatus(runner: StatusCommandRunning) async -> VCSToolVersions.Status {
+    if let gitCached, isFresh(gitCached) { return gitCached.status }
+    if let gitInFlight { return await gitInFlight.value }
+    gitGeneration += 1
+    let gen = gitGeneration
+    let task = Task { [self] () -> VCSToolVersions.Status in
+      let result = await runner.run("git", ["--version"], in: NSTemporaryDirectory(), timeout: 5)
+      let status = VCSToolVersions.status(result, floor: VCSToolVersions.gitFloor)
+      return await recordGit(status, gen: gen)
+    }
+    gitInFlight = task
+    return await task.value
+  }
+
+  private func jjStatus(runner: StatusCommandRunning) async -> VCSToolVersions.Status {
+    if let jjCached, isFresh(jjCached) { return jjCached.status }
+    if let jjInFlight { return await jjInFlight.value }
+    jjGeneration += 1
+    let gen = jjGeneration
+    let task = Task { [self] () -> VCSToolVersions.Status in
+      let result = await runner.run("jj", ["--version"], in: NSTemporaryDirectory(), timeout: 5)
+      let status = VCSToolVersions.status(result, floor: VCSToolVersions.jjFloor)
+      return await recordJJ(status, gen: gen)
+    }
+    jjInFlight = task
+    return await task.value
+  }
+
+  /// Fold a finished git probe into the git slot. Never caches `.notInstalled` — see the type doc on
+  /// the original single-slot design for why: at launch the PATH may still be the deterministic
+  /// floor, because `ShellEnvironment.path()` returns the floor until the detached interactive-shell
+  /// probe lands, so an absence can be an artefact of WHEN we probed rather than what is installed.
+  /// `.unknown` is safe to cache by contrast: `warnings(hasJJProject:)` ignores it.
+  private func recordGit(_ status: VCSToolVersions.Status, gen: Int) -> VCSToolVersions.Status {
+    if gen == gitGeneration {
+      gitInFlight = nil
+      if status != .notInstalled { gitCached = (status, clock.now) }
+    }
+    return status
+  }
+
+  /// The jj-slot counterpart of `recordGit` — kept as its own method rather than sharing one
+  /// parameterized by tool, because that would need `inout` access to whichever property the
+  /// caller means, the exact hazard this design avoids (see the type doc above).
+  private func recordJJ(_ status: VCSToolVersions.Status, gen: Int) -> VCSToolVersions.Status {
+    if gen == jjGeneration {
+      jjInFlight = nil
+      if status != .notInstalled { jjCached = (status, clock.now) }
+    }
+    return status
+  }
+
+  private func isFresh(_ entry: (status: VCSToolVersions.Status, at: ContinuousClock.Instant))
+    -> Bool
+  {
+    entry.at.duration(to: clock.now) < effectiveTTL(for: entry.status)
+  }
+
+  private func effectiveTTL(for status: VCSToolVersions.Status) -> Duration {
+    if case .belowFloor = status { return belowFloorTTL }
+    return ttl
+  }
+
+  /// Tests only — clears both slots.
   func reset() {
-    cached = nil
-    inFlight = nil
+    gitCached = nil
+    gitInFlight = nil
+    jjCached = nil
+    jjInFlight = nil
   }
 }
 

@@ -27,6 +27,11 @@ enum VCSRemoteFailure: Equatable, Sendable {
   /// `git`/`jj` not on PATH. Distinct from `VCSToolVersions`' floor check, which runs at launch —
   /// this is the same condition caught at the point of use.
   case toolMissing(String)
+  /// The command never ran — `CommandResult.launchFailed`, dominated by the working directory
+  /// having vanished (e.g. the workroom was deleted mid-action) between the toolbar deciding to
+  /// act and the runner trying to launch. Distinct from `toolMissing`: that means the TOOL wasn't
+  /// found on PATH, which is a completely different, unrelated fact from "this folder is gone."
+  case launchFailed
   case timedOut(VCSRemoteAction)
   /// Credentials were needed and none were available.
   case authRequired(String)
@@ -182,6 +187,9 @@ enum VCSCommitResult: Equatable, Sendable {
 /// reusing it would force a meaningless value.
 enum VCSCommitFailure: Equatable, Sendable {
   case toolMissing(String)
+  /// The command never ran — see `VCSRemoteFailure.launchFailed`'s doc for why this must not be
+  /// folded into `toolMissing`.
+  case launchFailed
   case timedOut
   /// Nothing staged/changed for the selection. jj reports this as an ordinary success ("Nothing
   /// changed."), so the writer maps it rather than surfacing a phantom commit.
@@ -758,6 +766,32 @@ struct CLIVCSWriter: VCSWriting, Sendable {
     return "\"\(escaped)\""
   }
 
+  /// Reverse jj's own template quoting. `self.name()` renders a bookmark name bare when it's a plain
+  /// identifier and `"quoted\"like\\this"` (jjQuote's exact escaping) when it isn't — verified against
+  /// jj 0.43: a bookmark named `main|evil` prints as `"main|evil"` from `self.name()`. Comparing that
+  /// raw template output against an unquoted name (from `currentRef`, or a UI-typed name) never
+  /// matches, so every downstream lookup (`parseJJBookmarks`'s tracking-by-name, `jjRemoteState`'s
+  /// bookmark match) needs the literal name back.
+  ///
+  /// Not a naive strip of the first/last character: an embedded escaped quote or backslash must
+  /// round-trip exactly, so this walks the escape sequences jjQuote produces (`\\` → `\`, `\"` → `"`)
+  /// rather than assuming the only quotes present are the wrapping pair.
+  static func jjUnquote(_ name: String) -> String {
+    guard name.count >= 2, name.hasPrefix("\""), name.hasSuffix("\"") else { return name }
+    let inner = name.dropFirst().dropLast()
+    var result = ""
+    var chars = Substring(inner)
+    while let c = chars.popFirst() {
+      guard c == "\\", let next = chars.first, next == "\\" || next == "\"" else {
+        result.append(c)
+        continue
+      }
+      result.append(next)
+      chars.removeFirst()
+    }
+    return result
+  }
+
   /// The base an unbookmarked `@` is measured — and rebased — against.
   ///
   /// `trunk()` is jj's own alias, so this defers to the user's `revset-aliases.'trunk()'` when they've
@@ -797,16 +831,21 @@ struct CLIVCSWriter: VCSWriting, Sendable {
 
   /// Where a jj pull rebases `@`.
   ///
-  /// A bookmarked `@` goes onto its own remote counterpart. An unbookmarked one has no counterpart —
-  /// `VCSTracking.comparedTo` carries the bare remote name as the sentinel for that state — and goes onto
-  /// `trunk()`, the same base its behind count is measured from.
+  /// A bookmarked `@` goes onto its own remote counterpart. An unbookmarked one has no counterpart and
+  /// goes onto `trunk()`, the same base its behind count is measured from.
   ///
   /// That second case used to return early without rebasing at all, so Pull fetched and stopped: the
   /// toolbar offered "Pull" beside a count the button could not act on. git's Pull has always been
   /// pull-and-rebase, and this is what makes jj's the same operation.
-  static func jjRebaseDestination(comparedTo: String?, remote: String) -> String {
-    guard let comparedTo, comparedTo != remote else { return jjTrunkRevset }
-    return comparedTo
+  ///
+  /// Builds the revset from the raw bookmark name and remote, quoting each independently with
+  /// `jjQuote`, rather than reusing a pre-joined "name@remote" display string — a bookmark name needing
+  /// quoting (e.g. `main|evil`) parses as a union inside a bare revset, exactly the bug `jjQuote`'s own
+  /// doc comment warns about, so the destination must be built quoted from the start, not patched after
+  /// the fact.
+  static func jjRebaseDestination(current: VCSRef, remote: String) -> String {
+    guard current.kind == .branch, let name = current.name else { return jjTrunkRevset }
+    return "\(jjQuote(name))@\(jjQuote(remote))"
   }
 
   static func jjFetchArgs(remote: String) -> [String] {
@@ -978,14 +1017,24 @@ struct CLIVCSWriter: VCSWriting, Sendable {
   /// `@origin` ref means *the remote is ahead of local*, which is git's **behind** — jj's own default
   /// template proves it by printing "ahead by N commits" next to `@origin`. One line, one comment, and
   /// a cross-backend integration test pins it.
-  static func parseJJBookmarks(_ stdout: String) -> (bookmarks: [JJBookmark], remotes: [String]) {
+  ///
+  /// `primaryRemote` breaks ties when the SAME bookmark is tracked on more than one remote (`origin`
+  /// AND `upstream` both tracking `main`, say): the primary remote's row wins, rather than whichever
+  /// line happened to parse last. Every UI string interpolates `primaryRemote` elsewhere in this file,
+  /// so the counts have to agree with the name being shown. `nil` (no primary known yet, or only one
+  /// remote in the output — the common case) falls back to an arbitrary row, which is harmless because
+  /// there is only ever one candidate to choose from.
+  static func parseJJBookmarks(_ stdout: String, primaryRemote: String? = nil) -> (
+    bookmarks: [JJBookmark], remotes: [String]
+  ) {
     var remotes: [String] = []
-    var trackingByName: [String: VCSTracking] = [:]
+    var trackingByNameAndRemote: [String: [String: VCSTracking]] = [:]
     var localNames: [String] = []
     for line in stdout.split(whereSeparator: \.isNewline) {
       let f = line.components(separatedBy: "\0")
       guard f.count == 8 else { continue }
-      let (name, remote) = (f[0], f[1])
+      // `self.name()` renders quoted for a non-identifier name (e.g. `"main|evil"`) — see `jjUnquote`.
+      let (name, remote) = (Self.jjUnquote(f[0]), f[1])
       let present = f[3] == "1"
       let tracked = f[5] == "1"
       guard !name.isEmpty else { continue }
@@ -1002,13 +1051,17 @@ struct CLIVCSWriter: VCSWriting, Sendable {
       // reports the deletion; nil counts report "unanswerable" rather than a misleading zero.
       let jjAhead = Int(f[6])
       let jjBehind = Int(f[7])
-      trackingByName[name] = VCSTracking(
+      trackingByNameAndRemote[name, default: [:]][remote] = VCSTracking(
         comparedTo: "\(name)@\(remote)",
         ahead: tracked && present ? jjBehind : nil,  // swapped — see the doc comment
         behind: tracked && present ? jjAhead : nil,
         gone: !present)
     }
-    let bookmarks = localNames.map { JJBookmark(name: $0, tracking: trackingByName[$0]) }
+    let bookmarks = localNames.map { name in
+      let byRemote = trackingByNameAndRemote[name]
+      let tracking = primaryRemote.flatMap { byRemote?[$0] } ?? byRemote?.values.first
+      return JJBookmark(name: name, tracking: tracking)
+    }
     return (bookmarks, remotes)
   }
 
@@ -1040,6 +1093,9 @@ struct CLIVCSWriter: VCSWriting, Sendable {
     _ result: CommandResult, action: VCSRemoteAction, tool: String,
     gitDir: URL? = nil
   ) -> VCSRemoteFailure? {
+    // Checked BEFORE commandNotFound: launchFailed means the process never ran at all (dominated by
+    // a vanished cwd), which is a different fact from commandNotFound's "env ran and searched PATH".
+    if result.exitCode == CommandResult.launchFailed { return .launchFailed }
     if result.exitCode == CommandResult.commandNotFound { return .toolMissing(tool) }
     let err = result.stderr + "\n" + result.stdout
     // A timed-out pull may have left a rebase behind; that reads better than "timed out".
@@ -1168,6 +1224,7 @@ struct CLIVCSWriter: VCSWriting, Sendable {
   /// moved `HEAD` by the time it runs, so a hook that fails or runs past the timeout leaves a
   /// perfectly good commit behind a non-zero exit.
   static func classifyCommit(_ result: CommandResult, tool: String) -> VCSCommitFailure? {
+    if result.exitCode == CommandResult.launchFailed { return .launchFailed }
     if result.exitCode == CommandResult.commandNotFound { return .toolMissing(tool) }
     // jj says "Nothing changed." and exits ZERO, so its no-op has to be read BEFORE the success
     // guard — an untouched working copy must not be reported as a commit that happened.
@@ -1423,11 +1480,15 @@ struct CLIVCSWriter: VCSWriting, Sendable {
       if case .timedOut = failure { return .keepPrior }
       return .failed(failure)
     }
-    let parsed = Self.parseJJBookmarks(list.stdout)
     let remoteList = await run(Self.jjRemoteListArgs(), in: path, timeout: refTimeout)
-    let remotes = Self.mergeRemotes(
-      configured: remoteList.ok ? Self.parseJJRemoteList(remoteList.stdout) : [],
-      derived: parsed.remotes)
+    let configuredRemotes = remoteList.ok ? Self.parseJJRemoteList(remoteList.stdout) : []
+    // Resolved from the CONFIGURED remotes alone, ahead of the merge below — every remote a
+    // bookmark can be tracked on is itself configured, so this is the same answer `primary` below
+    // reaches in the success case, just available in time to hand to `parseJJBookmarks`, which
+    // needs it to pick the right row when more than one remote tracks the same bookmark name.
+    let parsed = Self.parseJJBookmarks(
+      list.stdout, primaryRemote: Self.primaryRemote(configuredRemotes))
+    let remotes = Self.mergeRemotes(configured: configuredRemotes, derived: parsed.remotes)
     let primary = Self.primaryRemote(remotes)
     var tracking: VCSTracking?
     if let primary {
@@ -1586,7 +1647,7 @@ struct CLIVCSWriter: VCSWriting, Sendable {
       // as far behind as it started while the toolbar went on offering Pull. Already a descendant of the
       // destination is not an error — jj prints "Nothing changed." and exits 0.
       args = Self.jjRebaseArgs(
-        onto: Self.jjRebaseDestination(comparedTo: tracking?.comparedTo, remote: remote))
+        onto: Self.jjRebaseDestination(current: current, remote: remote))
     } else {
       guard let branch = Self.pullBranch(current: current, tracking: tracking) else {
         return .failed(.other("no remote branch to pull from."))
@@ -1616,8 +1677,13 @@ struct CLIVCSWriter: VCSWriting, Sendable {
   }
 
   func abortRebase(path: String, projectRoot: String) async -> VCSRemoteActionResult {
-    guard vcs != "jj" else {
-      // jj's rebase is atomic and undoable — there is no half-finished state to abort.
+    if vcs == "jj", !Self.rebaseInProgress(gitDir: Self.worktreeGitDir(at: path)) {
+      // jj's own rebase is atomic and undoable — there is no half-finished state to abort. But a
+      // COLOCATED jj root still has a real `.git`, and a `git rebase` run in that root's terminal
+      // can leave a real `rebase-merge`/`rebase-apply` behind — exactly what `classify` checks for
+      // (via this same `rebaseInProgress`) to hand this action `.rebaseInProgress` in the first
+      // place. Only report "nothing to abort" when that check finds no such state on disk;
+      // otherwise fall through to the real `git rebase --abort` below, same as the plain-git path.
       return .ok(summary: "Nothing to abort")
     }
     let dir = Self.opDirectory(.abortRebase, path: path, projectRoot: projectRoot)
@@ -1625,10 +1691,17 @@ struct CLIVCSWriter: VCSWriting, Sendable {
       let result = await gated(
         projectRoot,
         { [self] in
-          await run(Self.gitAbortRebaseArgs(), in: dir, timeout: refTimeout)
+          // Explicitly "git" here, never the private `run(_:in:timeout:)` helper — that helper
+          // spawns `self.vcs`, which for a colocated root falling through from the guard above is
+          // "jj", not "git". Running `jj` with git's rebase-abort args is not "abort a rebase" —
+          // jj's own default-command fallback rejects the flags outright, which is exactly what
+          // this was measured doing before this explicit executable was added.
+          await runner.run("git", Self.gitAbortRebaseArgs(), in: dir, timeout: refTimeout)
         })
     else { return .failed(.other("abort was cancelled")) }
-    if let failure = Self.classify(result, action: .abortRebase, tool: vcs) {
+    // Always "git" here too, never `vcs`, for the same reason: attributing a failure to the wrong
+    // tool would misdirect ".toolMissing"/"exited N" messages.
+    if let failure = Self.classify(result, action: .abortRebase, tool: "git") {
       return .failed(failure)
     }
     return .ok(summary: "Rebase aborted")
@@ -1826,6 +1899,7 @@ struct CLIVCSWriter: VCSWriting, Sendable {
     case .locked(let file):
       return file.map { "Blocked by \($0.filename)." } ?? "The repository was busy."
     case .unsupportedMode: return "That action isn’t available for this repository."
+    case .launchFailed: return "This workroom’s folder is no longer there."
     }
   }
 }

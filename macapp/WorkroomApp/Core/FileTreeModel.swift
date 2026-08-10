@@ -91,15 +91,21 @@ final class FileTreeModel: ObservableObject {
     loadTask?.cancel()
     loadTask = Task { [weak self] in
       guard let self else { return }
-      let paths = await FileTreeModel.list(
+      let result = await FileTreeModel.list(
         path: path, projectRoot: projectRoot, runner: self.runner, gate: self.gate)
       guard !Task.isCancelled, self.currentPath == path else { return }
-      if let paths {
+      switch result {
+      case .listing(let paths):
         self.roots = FileTreeBuilder.build(from: paths)
         self.state = .loaded
-      } else {
+      case .unavailable:
         self.roots = []
         self.state = .unavailable
+      case .interrupted:
+        // An external kill, not evidence `path` stopped being a repo — leave whatever tree/state
+        // is already showing alone (the same "keep the existing tree visible" contract this
+        // function already promises while a listing is in flight) rather than blanking it.
+        break
       }
     }
   }
@@ -125,17 +131,31 @@ final class FileTreeModel: ObservableObject {
     self.watcher = watcher
   }
 
+  /// The outcome of listing a working tree — richer than a bare optional so a killed probe can be
+  /// told apart from a genuine "not a repo" or "tool missing".
+  enum ListResult: Equatable {
+    case listing([String])
+    /// Neither tool yielded a listing for an ordinary reason (not a repo, tool missing).
+    case unavailable
+    /// A tool's probe was killed by a signal — our own cancellation is caught earlier by the caller
+    /// checking `Task.isCancelled`, so reaching this means an EXTERNAL kill (OS memory pressure, a
+    /// crash). Distinct from `.unavailable`: this says nothing about whether `path` is a repo, so
+    /// the caller must not blank an existing tree over it — the sensible read is "try again", not
+    /// "this isn't a repo any more".
+    case interrupted
+  }
+
   /// List the working tree at `path`: try git first (covers git worktrees and colocated jj repos),
-  /// then jj (a non-colocated jj workspace has no `.git`). Returns the parsed repo-relative paths, or
-  /// `nil` when neither tool yields a listing (not a repo / tool missing). Static + injectable
-  /// runner so the git→jj fallthrough is testable. `jj file list` has no `--ignore-working-copy` —
-  /// like `WorkroomStatusResolver.resolveJJ`/`DiffResolver`'s `.jjWorkingCopy`, it snapshots `@`, so
-  /// it's serialized per project root through `JJSnapshotGate` (`git ls-files` is read-only and
-  /// never gated). `projectRoot` falls back to `path` itself when unavailable (never skip the gate
+  /// then jj (a non-colocated jj workspace has no `.git`). Static + injectable runner so the
+  /// git→jj fallthrough is testable. `jj file list` has no `--ignore-working-copy` — like
+  /// `WorkroomStatusResolver.resolveJJ`/`DiffResolver`'s `.jjWorkingCopy`, it snapshots `@`, so it's
+  /// serialized per project root through `JJSnapshotGate` (`git ls-files` is read-only and never
+  /// gated). `projectRoot` falls back to `path` itself when unavailable (never skip the gate
   /// entirely — see `DiffResolver.resolve`'s identical fallback).
   static func list(
     path: String, projectRoot: String?, runner: StatusCommandRunning, gate: JJSnapshotGate = .shared
-  ) async -> [String]? {
+  ) async -> ListResult {
+    var sawSignal = false
     for vcs in [FileListVCS.git, .jj] {
       let command = FileListing.command(vcs)
       let result: CommandResult
@@ -147,8 +167,11 @@ final class FileTreeModel: ObservableObject {
       } else {
         result = await runner.run(command.executable, command.args, in: path, timeout: 10)
       }
-      if result.ok { return FileListing.parse(result.stdout, vcs: vcs) }
+      if result.ok { return .listing(FileListing.parse(result.stdout, vcs: vcs)) }
+      // A killed probe is not evidence `path` isn't a repo — remember it, but still try the other
+      // tool before giving up, exactly as an ordinary failure does.
+      if result.signaled { sawSignal = true }
     }
-    return nil
+    return sawSignal ? .interrupted : .unavailable
   }
 }

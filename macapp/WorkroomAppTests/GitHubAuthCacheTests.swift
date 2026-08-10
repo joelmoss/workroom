@@ -150,8 +150,8 @@ final class GitHubAuthCacheTests: XCTestCase {
   // MARK: - Isolation
 
   /// Two `GitHubAuthCache` instances share nothing. This is the whole reason it is an instance rather
-  /// than the `static let shared` actor `VCSToolVersionCache` uses: `make app-test` runs classes in
-  /// parallel, and static state would let one test's fake runner answer another test's probe.
+  /// than a `static let shared` actor: `make app-test` runs classes in parallel, and static state
+  /// would let one test's fake runner answer another test's probe.
   func testTwoInstancesDoNotShareState() async {
     let runnerA = CountingGHRunner(stdout: successJSON)
     let runnerB = CountingGHRunner(stdout: #"{"hosts":{}}"#)

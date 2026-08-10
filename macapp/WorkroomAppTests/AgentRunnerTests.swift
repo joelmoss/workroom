@@ -98,6 +98,14 @@ final class AgentRunnerTests: XCTestCase {
     XCTAssertEqual(AgentRunner.classify(result("", "env: claude: No such file", 127)), .cliNotFound)
   }
 
+  /// A vanished cwd (the workroom deleted mid-action) must classify as `.launchFailed`, never
+  /// `.failed(exitCode:)` — `CommandResult.launchFailed` (-1) is a sentinel, not a real exit code,
+  /// and never `.cliNotFound` either, which would misreport a missing tool instead of a gone folder.
+  func testClassifyLaunchFailedIsNotFailedOrCliNotFound() {
+    let launchFailed = result("", "The file couldn't be opened.", CommandResult.launchFailed)
+    XCTAssertEqual(AgentRunner.classify(launchFailed), .launchFailed)
+  }
+
   func testClassifyAuthFailure() {
     XCTAssertEqual(
       AgentRunner.classify(result("", "Invalid API key · Please run `claude login`", 1)),
@@ -107,6 +115,23 @@ final class AgentRunnerTests: XCTestCase {
   func testClassifyOtherNonZeroFails() {
     let out = AgentRunner.classify(result("", "boom", 2))
     XCTAssertEqual(out, .failed(exitCode: 2, stderr: "boom"))
+  }
+
+  /// A killed agent (our own cancellation, an OS kill under memory pressure) must classify as
+  /// `.interrupted`, never `.failed(exitCode:)` — `exitCode` on a signalled result is the SIGNAL
+  /// number, not a real CLI exit status, so "exit 9" is exactly the nonsense the gh-flap fix ended
+  /// elsewhere.
+  func testClassifySignaledIsInterruptedNotFailed() {
+    let signaled = CommandResult(
+      stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
+    XCTAssertEqual(AgentRunner.classify(signaled), .interrupted)
+  }
+
+  /// `timedOut` implies `signaled` (the timeout path SIGTERMs), so timeout must win the check order.
+  func testClassifyTimeoutWinsOverSignaled() {
+    let timedOutAndSignaled = CommandResult(
+      stdout: "", stderr: "", exitCode: 15, timedOut: true, signaled: true)
+    XCTAssertEqual(AgentRunner.classify(timedOutAndSignaled), .timedOut)
   }
 
   func testClassifyEmptyStdoutIsEmptyOutput() {

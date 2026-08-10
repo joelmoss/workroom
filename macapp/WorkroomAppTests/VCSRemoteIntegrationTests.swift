@@ -516,6 +516,47 @@ final class VCSRemoteIntegrationTests: XCTestCase {
     XCTAssertEqual(s.tracking?.ahead, 0, "an empty, undescribed `@` is not pushable and not ahead")
   }
 
+  /// **A colocated jj root's `abortRebase` must run the REAL git abort, not fake success.** Before
+  /// the fix, the jj branch returned `.ok(summary: "Nothing to abort")` unconditionally for ANY jj
+  /// repo, without ever checking whether a real `git rebase` — run in this workroom's terminal, as
+  /// `classify`'s own `rebaseInProgress` check anticipates — had actually left `rebase-merge`
+  /// behind. Set up that exact state with plain git inside the colocated root, then abort through
+  /// the writer and assert the real `.git/rebase-merge` is gone afterward, not just papered over.
+  func testAbortRebaseOnAColocatedRootRunsTheRealGitAbort() async throws {
+    try requireTool("git")
+    try requireTool("jj")
+    guard let j = jjFixture() else { throw XCTSkip("jj fixture could not be created") }
+    // A conflicting rebase, created with plain git — exactly what a `git rebase` run by hand in this
+    // workroom's terminal would leave behind. jj's bookmark auto-export gives the colocated repo a
+    // real `refs/heads/main` to branch from. `-f` on every checkout: right after `jj describe`, git's
+    // own index isn't yet in sync with jj's working-copy commit, so a plain checkout refuses with
+    // "local changes would be overwritten" — an artifact of this fixture's ordering, not something
+    // `abortRebase` itself needs to care about.
+    sh("git checkout -q -f -b other main", in: j.project)
+    sh("echo other >> a.txt && git commit -qam other", in: j.project)
+    sh("git checkout -q -f main", in: j.project)
+    sh("echo mainedit >> a.txt && git commit -qam mainedit", in: j.project)
+    sh("git checkout -q -f other", in: j.project)
+    sh("git rebase main", in: j.project)
+    let rebaseMerge = j.project + "/.git/rebase-merge"
+    XCTAssertTrue(
+      FileManager.default.fileExists(atPath: rebaseMerge),
+      "setup must actually leave a rebase-merge behind, or this test proves nothing")
+
+    let result = await writer("jj").abortRebase(path: j.project, projectRoot: j.project)
+
+    guard case .ok(let summary) = result else {
+      return XCTFail("expected .ok, got \(result)")
+    }
+    XCTAssertEqual(
+      summary, "Rebase aborted",
+      "must run the real git abort — \"Nothing to abort\" is the old, unconditional-fake-success bug"
+    )
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: rebaseMerge),
+      "the real `git rebase --abort` must have cleared it")
+  }
+
   /// **Pull must actually rebase an unbookmarked `@`.** It used to fetch and return `.ok` — jj moves the
   /// remote bookmarks on fetch but does NOT move `@`, so the workroom stayed exactly as far behind as it
   /// started while the toolbar went on offering Pull. git's Pull has always been pull-and-rebase.

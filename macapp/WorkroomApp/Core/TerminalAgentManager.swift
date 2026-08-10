@@ -235,6 +235,12 @@ final class TerminalAgentManager: ObservableObject {
     case .cliNotFound: resolved = .failure(failure, .cliNotFound)
     case .notAuthenticated: resolved = .failure(failure, .notAuthenticated)
     case .timedOut: resolved = .failure(failure, .timedOut)
+    // The workroom's folder is gone, not a real exit code — see `AgentRunOutcome.launchFailed`.
+    case .launchFailed: resolved = .failure(failure, .other("workroom folder is gone"))
+    // Not `.other("exit \(code)")`: `result.exitCode` on a signalled outcome is the SIGNAL number,
+    // not a real CLI exit status — showing "exit 9" for a killed agent is the nonsense the gh-flap
+    // fix ended elsewhere. Same `.other` case as `.failed` below, distinct copy.
+    case .interrupted: resolved = .failure(failure, .other("interrupted"))
     case .emptyOutput: resolved = .failure(failure, .emptyOutput)
     case .failed(let code, _): resolved = .failure(failure, .other("exit \(code)"))
     }

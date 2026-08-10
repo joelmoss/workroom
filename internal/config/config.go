@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gofrs/flock"
 	"github.com/joelmoss/workroom/internal/errs"
 )
 
@@ -111,36 +113,48 @@ func (c *Config) Write(data map[string]any) error {
 	return nil
 }
 
-// withLock runs fn while holding a best-effort cross-process advisory lock on the
-// config (an exclusive sidecar lock file). It serialises read-modify-write cycles
-// between the standalone CLI and the desktop app's bundled binary. It is
-// best-effort: on any lock-acquisition trouble it degrades to running fn unlocked
-// rather than failing the operation, and it steals a stale lock left by a crashed
-// process.
+// withLock runs fn while holding a cross-process OS advisory lock on the config
+// (an exclusive sidecar lock file, taken via flock(2) on Unix / LockFileEx on
+// Windows through github.com/gofrs/flock). It serialises read-modify-write
+// cycles between the standalone CLI and the desktop app's bundled binary. It is
+// best-effort: on any lock-acquisition trouble, or on hitting the pathological-
+// hang backstop below, it degrades to running fn unlocked rather than failing
+// the operation. Unlike a stale-file mtime heuristic, an OS advisory lock is
+// released by the kernel the instant the holding process dies or crashes —
+// there is no elapsed-time staleness window to reason about or steal from a
+// still-live holder, so ordinary contention (even an unusually slow
+// read-modify-write) is never mistaken for abandonment.
+//
+// Rollout note: an OLD CLI binary built before this change still runs the
+// previous O_CREATE|O_EXCL + mtime-staleness scheme against the same ".lock"
+// path, and the two mechanisms do not recognise each other at all. During a
+// mixed-version window (an un-upgraded standalone CLI alongside a freshly
+// updated one) this is no worse than the pre-fix status quo for that specific
+// pairing, but it isn't fully closed by this change either. Decide, before
+// cutting the next tag that ships this, whether withLock should also touch the
+// legacy sidecar file for one release cycle so an old binary's staleness
+// heuristic at least sees a fresh mtime from a live new-style holder instead of
+// misreading it as abandoned.
 func (c *Config) withLock(fn func() error) error {
 	lockPath := c.path + ".lock"
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		return fn()
 	}
-	const staleAfter = 10 * time.Second
-	for range 200 {
-		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-		if err == nil {
-			f.Close()
-			defer func() { _ = os.Remove(lockPath) }()
-			return fn()
-		}
-		if !os.IsExist(err) {
-			// Cannot create the lock for some other reason; proceed unlocked.
-			return fn()
-		}
-		if info, e := os.Stat(lockPath); e == nil && time.Since(info.ModTime()) > staleAfter {
-			_ = os.Remove(lockPath) // steal a stale lock from a crashed process
-			continue
-		}
-		time.Sleep(10 * time.Millisecond)
+	fl := flock.New(lockPath)
+	// 30s is a backstop against a genuinely pathological hang (e.g. a suspended
+	// or wedged holder), not a throttle on ordinary contention: a config
+	// read-modify-write is microseconds to low milliseconds of work, so any real
+	// holder releases long before this fires. Sized to match JJSnapshotGate's own
+	// "well above any routine case" self-heal ceiling elsewhere in this codebase.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	locked, err := fl.TryLockContext(ctx, 10*time.Millisecond)
+	if err != nil || !locked {
+		// Lock-acquisition trouble, or the pathological-hang backstop fired:
+		// proceed unlocked rather than fail the operation or block forever.
+		return fn()
 	}
-	// Gave up waiting (~2s); proceed unlocked rather than block forever.
+	defer func() { _ = fl.Unlock() }()
 	return fn()
 }
 

@@ -125,10 +125,20 @@ enum AgentRunOutcome: Sendable, Equatable {
   case success(stdout: String)
   /// `/usr/bin/env` exit 127 — the agent CLI isn't on PATH.
   case cliNotFound
+  /// The process never launched at all (e.g. the workroom's cwd vanished) — `CommandResult
+  /// .launchFailed`, not a real exit code. Distinct from `cliNotFound`: that means env ran and
+  /// searched PATH, a different fact from "nothing ran."
+  case launchFailed
   /// Non-zero exit whose output looks like an auth/login failure.
   case notAuthenticated
   /// The timeout fired.
   case timedOut
+  /// Killed by a signal (our own cancellation SIGKILL, an OS kill under memory pressure, a crash) —
+  /// NOT a timeout, which is checked first and reported as `.timedOut` instead (a timeout's
+  /// `terminate()` call also sets `signaled`, so order matters). `exitCode` on a signalled result is
+  /// the SIGNAL NUMBER, not a real CLI exit status, so it must never reach `.failed(exitCode:)` — a
+  /// killed `claude` showing "exit 9" is exactly the nonsense class the gh-flap fix ended elsewhere.
+  case interrupted
   /// Succeeded but produced no usable text.
   case emptyOutput
   /// Any other non-zero exit (stderr tail kept for the banner / logs).
@@ -173,6 +183,8 @@ struct AgentRunner: AgentRunning {
   /// JSON; stderr is treated only as diagnostics (CLI warnings must not be mistaken for the result).
   static func classify(_ result: CommandResult) -> AgentRunOutcome {
     if result.timedOut { return .timedOut }
+    if result.signaled { return .interrupted }
+    if result.exitCode == CommandResult.launchFailed { return .launchFailed }
     if result.exitCode == CommandResult.commandNotFound { return .cliNotFound }
     if result.exitCode != 0 {
       if isAuthFailure(result.stderr + "\n" + result.stdout) {

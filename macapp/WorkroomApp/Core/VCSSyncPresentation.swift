@@ -386,6 +386,9 @@ enum VCSSyncPresenter {
     // Permanent until the user does something outside Workroom: describe the commit, or move off a base
     // whose history is protected. Retrying either runs the identical command and fails identically.
     case .needsDescription, .immutableHistory: return nil
+    // The workroom's folder is gone. Retrying spawns the identical command against the identical
+    // missing path — there is no "later" where this changes, unlike ordinary contention.
+    case .launchFailed: return nil
     case .timedOut, .authRequired, .hostKeyUnverified, .dirtyWorkingTree, .other:
       return lastAction
     // A LOCATED lock file offers nothing, for `rebaseInProgress`'s reason: the file is sitting there, so
@@ -412,6 +415,8 @@ enum VCSSyncPresenter {
     // Permanent until the user acts outside Workroom: install the tool, add a remote, describe the
     // commit, move off protected history.
     case .toolMissing, .noRemote, .needsDescription, .immutableHistory: return false
+    // The workroom's folder is gone — re-reading the same missing path can't succeed.
+    case .launchFailed: return false
     // Both carry an ACTION recovery, so this is only reached if that path is ever changed — and neither
     // is fixed by re-reading.
     case .rejected, .rebaseInProgress: return false
@@ -435,6 +440,8 @@ enum VCSSyncPresenter {
     switch failure {
     case .toolMissing(let tool):
       return "\(tool) isn’t on Workroom’s PATH."
+    case .launchFailed:
+      return "This workroom’s folder is no longer there."
     case .timedOut(let action):
       return "\(action.label) timed out."
     case .authRequired:
@@ -553,6 +560,11 @@ enum VCSSyncPresenter {
 
         jj describe -m "…"
         """
+    case .launchFailed:
+      return """
+        The workroom may have been deleted, or its folder moved or removed outside Workroom. \
+        Refresh the sidebar, or recreate the workroom if it's genuinely gone.
+        """
     // `.locked` is answered by `explain` in full; `.other` is raw tool output we have no advice for.
     case .locked, .other:
       return nil
@@ -568,7 +580,7 @@ enum VCSSyncPresenter {
       .dirtyWorkingTree(let m),
       .immutableHistory(let m), .needsDescription(let m), .other(let m):
       raw = m
-    case .toolMissing, .timedOut, .noRemote, .rebaseInProgress, .locked:
+    case .toolMissing, .timedOut, .noRemote, .rebaseInProgress, .locked, .launchFailed:
       raw = nil
     }
     let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -641,6 +653,7 @@ enum VCSSyncPresenter {
   static func describeCommit(_ failure: VCSCommitFailure) -> String {
     switch failure {
     case .toolMissing(let tool): return "\(tool) isn’t on Workroom’s PATH."
+    case .launchFailed: return "This workroom’s folder is no longer there."
     case .timedOut: return "The commit was stopped at its time limit."
     case .nothingToCommit: return "Nothing to commit."
     case .identityMissing: return "git doesn’t know who you are yet."
@@ -707,6 +720,11 @@ enum VCSSyncPresenter {
 
         If no git command is running for this repository, deleting the file is safe.
         """
+    case .launchFailed:
+      return """
+        The workroom may have been deleted, or its folder moved or removed outside Workroom. \
+        Refresh the sidebar, or recreate the workroom if it's genuinely gone.
+        """
     case .unsupportedMode, .other:
       return nil
     }
@@ -719,7 +737,8 @@ enum VCSSyncPresenter {
     case .identityMissing(let m), .signingFailed(let m), .hookRejected(let m),
       .unmergedFiles(let m), .other(let m):
       raw = m
-    case .toolMissing, .timedOut, .nothingToCommit, .sequencerInProgress, .locked, .unsupportedMode:
+    case .toolMissing, .launchFailed, .timedOut, .nothingToCommit, .sequencerInProgress, .locked,
+      .unsupportedMode:
       raw = nil
     }
     let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -165,6 +165,26 @@ final class TerminalAgentManagerTests: XCTestCase {
     XCTAssertEqual(manager.banners[tab], .failure(failure(1), .cliNotFound))
   }
 
+  /// A killed diagnosis must map to `.other("interrupted")`, never `.other("exit 9")` — the whole
+  /// point of `AgentRunOutcome.interrupted` existing as its own case.
+  func testInterruptedMapsToItsOwnFailureNotAnExitCode() async {
+    let (manager, _) = makeManager(outcome: .interrupted, auto: true)
+    let tab = UUID()
+    manager.commandFinished(tab: tab, target: target, failure: failure(1))
+    await manager.inFlight[tab]?.value
+    XCTAssertEqual(manager.banners[tab], .failure(failure(1), .other("interrupted")))
+  }
+
+  /// A vanished-cwd diagnosis must map to a folder-gone message, never `.cliNotFound` (which would
+  /// misreport a missing tool) or `.other("exit -1")` (the `launchFailed` sentinel, not a real code).
+  func testLaunchFailedMapsToFolderGoneNotCliNotFound() async {
+    let (manager, _) = makeManager(outcome: .launchFailed, auto: true)
+    let tab = UUID()
+    manager.commandFinished(tab: tab, target: target, failure: failure(1))
+    await manager.inFlight[tab]?.value
+    XCTAssertEqual(manager.banners[tab], .failure(failure(1), .other("workroom folder is gone")))
+  }
+
   func testMalformedSuccessMapsToFailure() async {
     let (manager, _) = makeManager(outcome: .success(stdout: "not json"), auto: true)
     let tab = UUID()

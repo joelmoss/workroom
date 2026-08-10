@@ -209,7 +209,7 @@ func TestWorkroomNames(t *testing.T) {
 	}
 }
 
-func TestWriteAtomicLeavesNoTempOrLockFiles(t *testing.T) {
+func TestWriteAtomicLeavesNoTempFiles(t *testing.T) {
 	c := newTestConfig(t)
 	in := map[string]any{
 		"workrooms_dir": "/x",
@@ -226,15 +226,18 @@ func TestWriteAtomicLeavesNoTempOrLockFiles(t *testing.T) {
 		t.Fatalf("atomic write round-trip mismatch: %v", out)
 	}
 
-	// Exercise the lock path and confirm no temp/lock artifacts are left behind.
+	// Exercise the lock path and confirm no temp-write artifacts are left behind.
+	// The ".lock" sidecar itself is expected to persist across calls — it's a
+	// real OS advisory lock (flock), not a create-then-delete marker file, so
+	// its file staying on disk between calls is correct, not a leak.
 	if err := c.AddProject("/p", "git"); err != nil {
 		t.Fatal(err)
 	}
 	entries, _ := os.ReadDir(filepath.Dir(c.Path()))
 	for _, e := range entries {
 		n := e.Name()
-		if strings.HasPrefix(n, ".config-") || strings.HasSuffix(n, ".lock") {
-			t.Fatalf("leftover temp/lock file after write: %s", n)
+		if strings.HasPrefix(n, ".config-") {
+			t.Fatalf("leftover temp file after write: %s", n)
 		}
 	}
 }

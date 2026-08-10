@@ -7,7 +7,20 @@
 
 ## P1 — before GA
 
-### Terminal *content* accessibility (macapp) — CMT-3
+### Terminal *content* accessibility (macapp) — CMT-3 — SHIPPED (2026-08-10)
+
+**Shipped:** `isAccessibilityElement()`/`accessibilityValue()` are real now (no longer gated behind
+the UI-test fixture), a new `accessibilitySelectedText()` reads the existing `readSelectionText()`,
+and a 400ms `Timer` poll posts coalesced `.valueChanged`/`.selectedTextChanged` only when the read
+content actually changed. There is no render/damage callback on the libghostty side to hook instead
+(checked `GhosttyRuntimeAdapter`'s full `GHOSTTY_ACTION_*` switch first) — the poll checks
+`NSWorkspace.shared.isVoiceOverEnabled` FIRST on every tick, so the real cost (materializing the
+viewport into a `String`) is paid only while VoiceOver is actually listening. The safety property
+below (a password prompt must never leak through this) was verified empirically, not by reasoning
+about terminal semantics: `TerminalAccessibilityUITests.testPasswordPromptWithEchoDisabledRendersNoTypedCharacters`
+drives a real `stty -echo` + `read` prompt in a real pane and asserts the typed secret never appears
+in the read viewport. Everything below this line is the pre-fix scoping and stays as the historical
+record of what was decided and why.
 
 **What:** VoiceOver support for the terminal's *rendered text* on `GhosttySurfaceView` — accessible
 value (screen text), selected text, and change notifications — so the terminal content is navigable
@@ -445,7 +458,7 @@ careful review/testing, not a drive-by fix.
 **What:** Everything the toolbar review verified but left standing. Each was reproduced or read off the
 code; none is speculative. Ordered by what a user hits first.
 
-**Four have since SHIPPED and are struck below**, so the list is what remains:
+**Nine have since SHIPPED and are struck below**, so the list is what remains:
 
 - **the empty-remote case** (was (1)): `CLIVCSWriter.mergeRemotes` now unions the configured remote list
   (`git remote`, `jj git remote list`) with the ref-derived names for both backends, so publishing to a
@@ -455,18 +468,30 @@ code; none is speculative. Ordered by what a user hits first.
 2. **jj Pull guesses `trunk()` as the base for an unbookmarked `@`.** Right for a workroom off trunk,
    wrong for one off a feature branch: it reports "N behind" counting trunk's commits and the rebase
    then refuses (`immutableHistory`, now typed and retry-free, so it fails honestly rather than looping).
+   **Correction (2026-08-10): the "wrong for a feature branch" claim above does not reproduce.**
+   Three ancestor-based revsets were tried against real jj repos while attempting a fix — `trunk() &
+   ::@`, either-direction ancestry, and `(trunk()..@) & ::(immutable_heads())` — and all were falsified
+   empirically; the last one was tested against a constructed feature-branch-with-independently-
+   advancing-trunk scenario, and the real `jj rebase -b @ -d trunk()` command in that exact scenario
+   **succeeded** (exit 0, "Rebased 2 commits to destination") rather than hitting
+   `immutable_heads()`. jj's default `immutable_heads()` is `trunk()`-ancestors only — a merely-pushed
+   feature bookmark isn't protected by it — which is likely why this entry's own measurement isn't
+   reproducible from its stated recipe. Reopening this needs a fresh, documented repro (the exact repo
+   shape and jj version that produced `Error: Commit 4c8e754829da is immutable`), not another revset
+   guess. The original "remember each workroom's own base" fix idea below is unaffected either way —
+   it was already out of scope for a bug-fix pass (needs persistence + a migration path), independent
+   of whether the triggering scenario reproduces.
    The real fix is remembering each workroom's own base rather than deriving it — `::@ &
    remote_bookmarks()` can't, because the base stops being an ancestor the moment it advances.
-3. **jj bookmark names that need quoting never match.** jj's template pre-quotes non-identifier names
-   (verified: `"main|evil"` comes back WITH the quotes), so `parsed.bookmarks.first { $0.name == name }`
-   compares `"main|evil"` against jj-lib's raw `main|evil` and always fails — tracking, counts and Pull
-   go silently nil. Parse names unquoted, and build the rebase destination from `(name, remote)` with
-   `jjQuote` on each rather than reusing the pre-joined `comparedTo` display string.
-4. **jj multi-remote: the wrong remote's tracking row wins.** `trackingByName[name] = …` overwrites by
-   name with no `primaryRemote` filter, so with `origin` + `upstream` both tracking `main` the last row
-   read decides the counts while every UI string interpolates `primaryRemote`. The git path builds
-   `"\(primary)/\(branch)"` explicitly; jj is the asymmetry. Same root cause makes `@..trunk()` capable
-   of counting against a different remote than the one it names and fetches.
+3. ~~**jj bookmark names that need quoting never match.**~~ **SHIPPED.** jj's template pre-quotes
+   non-identifier names (verified: `"main|evil"` comes back WITH the quotes) — `jjUnquote` (the exact
+   inverse of `jjQuote`) now unquotes every name coming out of `parseJJBookmarks` before it's stored or
+   compared, and `jjRebaseDestination` builds its revset from the raw bookmark name and remote, each
+   quoted independently with `jjQuote`, rather than reusing the pre-joined `comparedTo` display string.
+4. ~~**jj multi-remote: the wrong remote's tracking row wins.**~~ **SHIPPED.** `parseJJBookmarks` now
+   takes a `primaryRemote` hint (resolved from the configured remote list, ahead of the ref-derived
+   merge) and picks that remote's row per bookmark name instead of last-write-wins, closing the
+   `origin` + `upstream`-both-tracking-`main` collision.
 5. ~~**`resolvedBranchNames` is stale-wins and never pruned.**~~ **SHIPPED.** The cache now yields
    instead of winning: `mergeLocalStatus` drops the entry when the sweep's `branchForCI` disagrees
    (`pruneResolvedBranchNameIfDrifted` — an empty/absent swept branch is not a disagreement, since a
@@ -492,19 +517,26 @@ code; none is speculative. Ordered by what a user hits first.
    action instead; one that nothing can fix (`toolMissing`, a LOCATED lock, `noRemote`) is a disabled
    message, per `retryAction`'s rule. [13c] renders the re-read in flight ("Trying again…" + spinner).
    `activate` is wired too, as the toolbar's own `.task`.
-8. **A workroom deleted mid-action reports "git isn't on Workroom's PATH".** `StatusCommandRunner`
-   returns `commandNotFound` for a launch failure ("cwd vanished" per its own comment) and `classify`
-   maps that exit code to `.toolMissing`, which offers no recovery — while the version toast
-   simultaneously says git is fine. Launch failure needs its own sentinel.
-9. **`JJSnapshotGate`'s 30s self-heal is far below the write timeouts it guards.** The gate accepts
-   re-admitting the original race past `maxChainWait`, justified as "the rare genuine-wedge case, not
-   routine contention" — but fetch is budgeted at 120s and pull at 300s, so exceeding 30s is routine.
-   Two windows, each with its own `AppStore` and its own `inFlight`, can queue two writes on one project
-   root; the second gives up and runs concurrently with a live `pull --rebase` on the shared `.git`.
-10. **Colocated jj root: "Abort rebase" reports success, changes nothing, loops.** `classify` can hand a
-    colocated root `.rebaseInProgress` from a `rebase-merge` left by a `git rebase` in its terminal, and
-    the jj branch of `abortRebase` returns `.ok(summary: "Nothing to abort")` — so `finish` clears the
-    failure, the user pulls, and the identical failure returns.
+8. ~~**A workroom deleted mid-action reports "git isn't on Workroom's PATH".**~~ **SHIPPED.**
+   `CommandResult.launchFailed` (a negative sentinel, `-1`) is now returned by the runner's catch
+   block instead of `commandNotFound` when the process never launched at all (cwd vanished), and
+   `classify`/`classifyCommit` check it before `commandNotFound` — so a deleted-mid-action workroom
+   reports "This workroom's folder is no longer there" instead of a false "tool missing" that
+   contradicted the version toast.
+9. ~~**`JJSnapshotGate`'s 30s self-heal is far below the write timeouts it guards.**~~ **SHIPPED,
+   via a different mechanism than raising the ceiling.** Rather than raising `maxChainWait` (which
+   would slow every unrelated status probe on the project, not just ones racing a live write), added
+   a unified per-project `writingProjectRoots` counter (`ProjectStore`) that commit/fetch/push/pull
+   all check via `isWritingProject`/`canStartWrite` BEFORE starting — a second write on the same
+   project root now refuses outright (`.locked(nil)`, "The repository was busy. Try again.") instead
+   of queuing into the gate and racing a live one past its wedge-detection ceiling. The gate's own
+   30s ceiling is untouched — it still exists for a genuinely wedged single chain, which is a
+   different problem.
+10. ~~**Colocated jj root: "Abort rebase" reports success, changes nothing, loops.**~~ **SHIPPED.**
+    `abortRebase`'s jj branch now checks `rebaseInProgress(gitDir: worktreeGitDir(at: path))` before
+    faking success — only a colocated root with no real git-side rebase state gets "Nothing to
+    abort"; otherwise it falls through to a real `git rebase --abort` (explicitly against `"git"`,
+    never the vcs-derived executable, which would run `jj` with git's flags and fail outright).
 
 Plus one doc correction: `gitLastFetch`'s comment claims `FETCH_HEAD`'s mtime covers "one the user ran in
 a terminal". It doesn't, for the terminals this app opens — a fetch inside a worktree writes
@@ -515,8 +547,9 @@ a terminal". It doesn't, for the terminals this app opens — a fetch inside a w
 Codex) whose P0s — argv option injection and jj push publishing the wrong workspace's commit — are
 already fixed. What's left is real but none of it is a security hole or silent data loss.
 
-**Priority:** P2. What remains is jj-shaped ((2), (3), (4), (10)) plus two cross-cutting ones ((8), (9));
-the four a user actually notices have shipped.
+**Priority:** P2. What remains is (2) alone, and even that isn't open work in the usual sense — see
+its 2026-08-10 correction above: the scenario it describes doesn't reproduce, so there's nothing left
+to fix without a fresh, documented repro first. Everything else in this list has shipped.
 
 ### Gate git VCS *reads*, not just writes (macapp) — VCS-toolbar eng-review follow-up
 

@@ -26,12 +26,13 @@ import Foundation
 ///                           (concurrent forced callers still join each other)
 /// ```
 ///
-/// Deliberately an INSTANCE, not the `static let shared` actor that `VCSToolVersionCache` uses for
-/// the same category of fact. `AppStore.init` documents that "tests build an isolated `AppStore()`
-/// (own fresh `ProjectStore`)", and `make app-test` runs classes in PARALLEL — with static state one
-/// test's injected fake runner can serve another test's probe, and a tests-only `reset()` cannot stop
-/// an already-in-flight task from repopulating the cache afterwards. Per-`ProjectStore` ownership
-/// gets that isolation from a guarantee the codebase already makes.
+/// Deliberately an INSTANCE, owned per-`ProjectStore` rather than a `static let shared` — the same
+/// reasoning `VCSToolVersionCache` now follows too. `AppStore.init` documents that "tests build an
+/// isolated `AppStore()` (own fresh `ProjectStore`)", and `make app-test` runs classes in PARALLEL —
+/// with static state one test's injected fake runner can serve another test's probe, and a
+/// tests-only `reset()` cannot stop an already-in-flight task from repopulating the cache
+/// afterwards. Per-`ProjectStore` ownership gets that isolation from a guarantee the codebase
+/// already makes.
 actor GitHubAuthCache {
   typealias Probe = WorkroomStatusResolver.GHAuthProbe
 

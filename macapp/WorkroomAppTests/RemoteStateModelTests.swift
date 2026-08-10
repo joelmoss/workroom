@@ -290,6 +290,72 @@ final class RemoteStateModelTests: XCTestCase {
     XCTAssertEqual(pulls, 0)
   }
 
+  /// The CROSS-window guard: `inFlight == nil` only rules out this model's own action, so a second
+  /// window's write on the same project root must be caught by `canStartWrite` instead — refusing
+  /// outright (never queuing into the gate) rather than letting two writes physically race.
+  func testActionRefusedWhenAnotherWriteIsInFlightForTheProject() async {
+    let writer = StubWriter(state: .state(state(ahead: 1)))
+    let m = model(writer, ttl: 0)
+    m.canStartWrite = { _ in false }
+    m.focus(target)
+    await m.awaitCurrentLoad()
+    m.perform(.fetch)
+    await m.awaitCurrentLoad()
+    let fetches = await writer.fetches
+    XCTAssertEqual(fetches, 0, "must not have reached the writer at all")
+    XCTAssertNil(m.inFlight, "never entered the in-flight state")
+    XCTAssertEqual(m.lastFailure, .locked(nil))
+    XCTAssertEqual(m.lastAction, .fetch)
+  }
+
+  /// `canStartWrite` returning true (the common case) must not block anything new.
+  func testActionProceedsWhenNoOtherWriteIsInFlight() async {
+    let writer = StubWriter(state: .state(state(ahead: 1)))
+    let m = model(writer, ttl: 0)
+    m.canStartWrite = { _ in true }
+    m.focus(target)
+    await m.awaitCurrentLoad()
+    m.perform(.fetch)
+    await m.awaitCurrentLoad()
+    let fetches = await writer.fetches
+    XCTAssertEqual(fetches, 1)
+    XCTAssertNil(m.lastFailure)
+  }
+
+  /// `writeDidStart`/`writeDidFinish` must bracket the actual write exactly once each, with the
+  /// project root the action ran against — this is what lets the store maintain a per-project
+  /// write-in-flight count that `canStartWrite` (wired to `AppStore.isWritingProject`) reads.
+  func testWriteStartAndFinishBracketASuccessfulAction() async {
+    let writer = StubWriter(state: .state(state(ahead: 1)))
+    let m = model(writer, ttl: 0)
+    var started: [String] = []
+    var finished: [String] = []
+    m.writeDidStart = { root in started.append(root) }
+    m.writeDidFinish = { root in finished.append(root) }
+    m.focus(target)
+    await m.awaitCurrentLoad()
+    m.perform(.push)
+    XCTAssertEqual(started, [target.projectRoot], "started before the write returns")
+    XCTAssertEqual(finished, [], "not finished yet — the write is still in flight")
+    await m.awaitCurrentLoad()
+    XCTAssertEqual(started, [target.projectRoot])
+    XCTAssertEqual(finished, [target.projectRoot])
+  }
+
+  /// A failed action must still call `writeDidFinish` — otherwise a project that fails to push once
+  /// would stay marked "busy" forever, refusing every future write for that root.
+  func testWriteDidFinishFiresEvenOnFailure() async {
+    let writer = StubWriter(state: .state(state()), action: .failed(.authRequired("no")))
+    let m = model(writer, ttl: 0)
+    var finished: [String] = []
+    m.writeDidFinish = { root in finished.append(root) }
+    m.focus(target)
+    await m.awaitCurrentLoad()
+    m.perform(.push)
+    await m.awaitCurrentLoad()
+    XCTAssertEqual(finished, [target.projectRoot])
+  }
+
   func testMutationCallbackDoesNotFireOnFailure() async {
     let writer = StubWriter(state: .state(state()), action: .failed(.locked(nil)))
     let m = model(writer, ttl: 0)

@@ -229,11 +229,18 @@ struct RustJJProvider: VCSProviding {
   /// The runner drains stdout/stderr concurrently on GCD global-queue threads, so this blocking work
   /// never touches the fixed-width Swift cooperative pool (the pool-starvation class documented on
   /// `runBlocking`). Non-zero exit / timeout throw `VCSError.io`.
-  private static func run(
-    _ exe: String, _ args: [String], cwd: URL, timeout: TimeInterval = 30
+  /// `runner` is injectable (default the real `StatusCommandRunner`) purely so
+  /// `RustJJProviderRunTests` can prove the `signaled` branch below without spawning real jj.
+  static func run(
+    _ exe: String, _ args: [String], cwd: URL, timeout: TimeInterval = 30,
+    runner: StatusCommandRunning = StatusCommandRunner()
   ) async throws -> String {
-    let result = await StatusCommandRunner().run(exe, args, in: cwd.path, timeout: timeout)
+    let result = await runner.run(exe, args, in: cwd.path, timeout: timeout)
     if result.timedOut { throw VCSError.io("\(exe) timed out after \(Int(timeout))s") }
+    // Checked before the generic exit-code guard: `result.exitCode` on a signalled result is the
+    // SIGNAL number, not a real CLI exit status — "jj exited 9" is exactly the nonsense class the
+    // gh-flap fix ended elsewhere, and this call site never learned that lesson.
+    if result.signaled { throw VCSError.io("\(exe) was interrupted") }
     guard result.exitCode == 0 else {
       throw VCSError.io("\(exe) exited \(result.exitCode): \(result.stderr)")
     }

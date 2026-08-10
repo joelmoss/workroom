@@ -283,18 +283,30 @@ final class VCSWritingTests: XCTestCase {
       "the count must be measured from the base the rebase targets")
   }
 
-  /// A bookmarked `@` rebases onto its counterpart; an unbookmarked one onto `trunk()`. The sentinel for
-  /// "no counterpart" is `comparedTo` carrying the bare remote name, which is what `jjRemoteState` sets.
+  /// A bookmarked `@` rebases onto its counterpart; an unbookmarked one (or a detached/none ref) onto
+  /// `trunk()`.
   func testJJPullRebaseDestinationFallsBackToTrunk() {
     XCTAssertEqual(
-      CLIVCSWriter.jjRebaseDestination(comparedTo: "main@origin", remote: "origin"), "main@origin")
+      CLIVCSWriter.jjRebaseDestination(
+        current: VCSRef(name: "main", kind: .branch), remote: "origin"),
+      "\"main\"@\"origin\"")
     XCTAssertEqual(
-      CLIVCSWriter.jjRebaseDestination(comparedTo: "origin", remote: "origin"),
+      CLIVCSWriter.jjRebaseDestination(
+        current: VCSRef(name: nil, kind: .ancestor), remote: "origin"),
       CLIVCSWriter.jjTrunkRevset,
       "an unbookmarked `@` must still rebase — returning early left Pull as a fetch")
     XCTAssertEqual(
-      CLIVCSWriter.jjRebaseDestination(comparedTo: nil, remote: "origin"),
+      CLIVCSWriter.jjRebaseDestination(current: .none, remote: "origin"),
       CLIVCSWriter.jjTrunkRevset)
+  }
+
+  /// A bookmark name needing revset quoting (e.g. containing `|`) must not be interpolated bare into
+  /// the rebase destination — bare `|` parses as a union, exactly the bug `jjQuote` exists to prevent.
+  func testJJPullRebaseDestinationQuotesANameThatNeedsIt() {
+    XCTAssertEqual(
+      CLIVCSWriter.jjRebaseDestination(
+        current: VCSRef(name: "main|evil", kind: .branch), remote: "origin"),
+      "\"main|evil\"@\"origin\"")
   }
 
   /// Interpolating a remote name bare is a parse bug. Verified against jj 0.43: `a b`, `a)b` and `a:b`
@@ -317,6 +329,24 @@ final class VCSWritingTests: XCTestCase {
         revset.contains("remote=\(CLIVCSWriter.jjQuote(name))"),
         "the name must reach the revset quoted: \(revset)")
     }
+  }
+
+  /// `jjUnquote` must be the exact inverse of `jjQuote`, not a naive strip of the first/last character —
+  /// an embedded escaped quote or backslash has to round-trip exactly, since a naive strip would mangle
+  /// either one.
+  func testJJUnquoteRoundTripsJJQuoteExactly() {
+    for name in ["origin", "a b", "a|b", #"a"b"#, #"a\b"#, #"a\"b"#, #"a\\b"#, #""a"#, ""] {
+      XCTAssertEqual(
+        CLIVCSWriter.jjUnquote(CLIVCSWriter.jjQuote(name)), name,
+        "round-trip failed for \(name.debugDescription)")
+    }
+  }
+
+  /// A bare (unquoted) name — what jj's template prints for an ordinary identifier-like bookmark — must
+  /// pass through unchanged, since it was never quoted to begin with.
+  func testJJUnquoteLeavesABareNameUnchanged() {
+    XCTAssertEqual(CLIVCSWriter.jjUnquote("main"), "main")
+    XCTAssertEqual(CLIVCSWriter.jjUnquote(""), "")
   }
 
   /// jj refuses to push a commit with an empty description, and a fresh `@` after `jj new` has neither
@@ -424,6 +454,30 @@ final class VCSWritingTests: XCTestCase {
     XCTAssertEqual(parsed.bookmarks.first?.tracking?.comparedTo, "main@origin")
   }
 
+  /// **The bug T9 exists to close.** `origin` and `upstream` both tracking `main`: the PRIMARY
+  /// remote's row must win, not whichever line the parser read last. Two identical inputs differing
+  /// only in ROW ORDER must produce the SAME tracking once a primary is given.
+  func testMultiRemoteTrackingPicksThePrimaryNotTheLastRowRead() {
+    let originLast = [
+      nul("main", "", "aaa", "1", "0", "0", "", ""),
+      nul("main", "upstream", "aaa", "1", "0", "1", "9", "9"),
+      nul("main", "origin", "aaa", "1", "0", "1", "1", "2"),
+    ].joined(separator: "\n")
+    let upstreamLast = [
+      nul("main", "", "aaa", "1", "0", "0", "", ""),
+      nul("main", "origin", "aaa", "1", "0", "1", "1", "2"),
+      nul("main", "upstream", "aaa", "1", "0", "1", "9", "9"),
+    ].joined(separator: "\n")
+    for out in [originLast, upstreamLast] {
+      let tracking = CLIVCSWriter.parseJJBookmarks(out, primaryRemote: "origin").bookmarks.first?
+        .tracking
+      XCTAssertEqual(
+        tracking?.comparedTo, "main@origin", "row order must not decide the winner")
+      XCTAssertEqual(tracking?.ahead, 2)
+      XCTAssertEqual(tracking?.behind, 1)
+    }
+  }
+
   func testAbsentRemoteBookmarkIsGone() {
     let out = [
       nul("feature", "", "aaa", "1", "0", "0", "", ""),
@@ -462,6 +516,25 @@ final class VCSWritingTests: XCTestCase {
     XCTAssertEqual(parsed.bookmarks.map(\.name), ["local-only"])
     XCTAssertNil(parsed.bookmarks.first?.tracking)
     XCTAssertEqual(parsed.remotes, [])
+  }
+
+  /// **The bug T8 exists to close.** jj's `self.name()` template field renders a non-identifier
+  /// bookmark name pre-quoted — verified against jj 0.43: `bookmark list -T 'self.name()'` for a
+  /// bookmark literally named `main|evil` prints `"main|evil"`, quotes included. Before `jjUnquote`,
+  /// `JJBookmark.name` carried that literal quoted string, so `parsed.bookmarks.first { $0.name ==
+  /// name }` against the raw name from `currentRef` never matched — tracking, counts and Pull went
+  /// silently nil for any workroom using such a name.
+  func testAQuotedBookmarkNameIsUnquotedNotLeftLiteral() {
+    let out = [
+      nul(#""main|evil""#, "", "aaa", "1", "0", "0", "", ""),
+      nul(#""main|evil""#, "origin", "aaa", "1", "0", "1", "2", "1"),
+    ].joined(separator: "\n")
+    let parsed = CLIVCSWriter.parseJJBookmarks(out)
+    XCTAssertEqual(parsed.bookmarks.map(\.name), ["main|evil"], "must be unquoted, not literal")
+    let tracking = parsed.bookmarks.first { $0.name == "main|evil" }?.tracking
+    XCTAssertNotNil(tracking, "the raw name must match the parsed, unquoted name")
+    XCTAssertEqual(tracking?.ahead, 1)
+    XCTAssertEqual(tracking?.behind, 2)
   }
 
   // MARK: - parseJJFetchOp
@@ -637,6 +710,14 @@ final class VCSWritingTests: XCTestCase {
   func testToolMissing() {
     let r = failed("", exit: CommandResult.commandNotFound)
     XCTAssertEqual(CLIVCSWriter.classify(r, action: .fetch, tool: "git"), .toolMissing("git"))
+  }
+
+  /// A vanished workroom folder (`launchFailed`) must never be reported as `.toolMissing` — the
+  /// version toast would say git is fine while the action's own failure blamed git's PATH, exactly
+  /// the contradiction this distinct sentinel exists to end.
+  func testLaunchFailedIsDistinctFromToolMissing() {
+    let r = failed("some launch error", exit: CommandResult.launchFailed)
+    XCTAssertEqual(CLIVCSWriter.classify(r, action: .fetch, tool: "git"), .launchFailed)
   }
 
   func testTimeout() {
@@ -1231,6 +1312,10 @@ final class VCSWritingTests: XCTestCase {
   func testClassifyCommitToolMissingAndTimeout() {
     XCTAssertEqual(
       CLIVCSWriter.classifyCommit(commitResult("", exit: 127), tool: "git"), .toolMissing("git"))
+    XCTAssertEqual(
+      CLIVCSWriter.classifyCommit(
+        commitResult("", exit: CommandResult.launchFailed), tool: "git"), .launchFailed,
+      "a vanished workroom folder must not be reported as .toolMissing")
     XCTAssertEqual(
       CLIVCSWriter.classifyCommit(commitResult("", exit: 15, timedOut: true), tool: "git"),
       .timedOut)

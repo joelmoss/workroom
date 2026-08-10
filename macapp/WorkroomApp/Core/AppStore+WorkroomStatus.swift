@@ -253,8 +253,22 @@ extension AppStore {
     // captured-sid refresh), so the one tier that drives this code end to end exercised none of it.
     // `refreshStatus(for:)` already no-ops under the fixture, so the rest is safe to run.
     let root = item.projectRoot
+    // Refuse outright rather than queue behind another write (commit/fetch/push/pull, this window
+    // or another) on the same project root — see `isWritingProject`'s doc for why queuing into
+    // `JJSnapshotGate` here would risk racing it past the gate's own wedge-detection ceiling.
+    guard !isWritingProject(root) else {
+      return completion(.failed(.locked(nil)))
+    }
     committingTargets.insert(sid)
     committingProjectRoots[root, default: 0] += 1
+    beginWrite(projectRoot: root)
+    // Captured STRONGLY, not through `self`: `committingProjectRoots`/`writingProjectRoots` live on
+    // this shared, cross-window store, and their release below must run even if THIS window's
+    // `AppStore` is deallocated before the write finishes (e.g. the window is closed mid-commit). A
+    // release gated on `self` staying alive would leak both counters — `writingProjectRoots`
+    // permanently, since nothing else ever decrements it, refusing every future write for this
+    // project, in every window, until the app restarts.
+    let projectStore = self.projectStore
     Task { [weak self] in
       let result: VCSCommitResult
       if UITestFixture.isActive {
@@ -268,16 +282,17 @@ extension AppStore {
           result = .failed(.other("\(error)"))
         }
       }
-      guard let self else { return }
-      self.committingTargets.remove(sid)
       // Decremented, never cleared: a sibling workroom of the same project can be committing too, and
       // dropping the key would re-open every read lane against a write still in progress.
-      let remaining = (self.committingProjectRoots[root] ?? 1) - 1
-      if remaining > 0 {
-        self.committingProjectRoots[root] = remaining
+      let remainingCommits = (projectStore.committingProjectRoots[root] ?? 1) - 1
+      if remainingCommits > 0 {
+        projectStore.committingProjectRoots[root] = remainingCommits
       } else {
-        self.committingProjectRoots.removeValue(forKey: root)
+        projectStore.committingProjectRoots.removeValue(forKey: root)
       }
+      Self.releaseWrite(projectRoot: root, in: projectStore)
+      guard let self else { return }
+      self.committingTargets.remove(sid)
       switch result {
       case .ok, .committedThenFailed:
         // Refresh by the CAPTURED sid. The Changes list is the load-bearing one for jj:
@@ -674,6 +689,46 @@ extension AppStore {
   /// Suppression is what actually keeps these lanes off a repo mid-write; the gate alone does not.
   func isCommittingProject(_ projectRoot: String) -> Bool {
     committingProjectRoots[projectRoot, default: 0] > 0
+  }
+
+  /// Whether ANY write (commit, fetch, push, or pull) is in flight against this project root, in
+  /// this window or another. Checked by the write actions themselves BEFORE they start — the
+  /// umbrella `isCommittingProject` above never was, and neither was any fetch/push/pull call
+  /// site, which is what let two windows each queue a write on the same project and run them
+  /// concurrently once `JJSnapshotGate`'s self-heal ceiling passed. A write that finds this true
+  /// refuses outright (surfaced as `.locked(nil)` — "The repository was busy. Try again.") rather
+  /// than queuing into the gate and racing the one already running.
+  func isWritingProject(_ projectRoot: String) -> Bool {
+    writingProjectRoots[projectRoot, default: 0] > 0
+  }
+
+  /// Mark a write starting against `projectRoot`. Pair with `endWrite(projectRoot:)` — always in a
+  /// `defer` or an equivalent unconditional cleanup, mirroring how `committingProjectRoots` is
+  /// incremented/decremented around `performCommit`'s own write below.
+  func beginWrite(projectRoot: String) {
+    writingProjectRoots[projectRoot, default: 0] += 1
+  }
+
+  /// Mark a write finishing against `projectRoot`. Decremented rather than cleared, matching
+  /// `committingProjectRoots`'s own shape: in steady state this should only ever be 0 or 1, since
+  /// `isWritingProject` refuses a second write before `beginWrite` is ever called for it — but
+  /// decrementing (not clearing) is the robust form if that invariant is ever violated by a future
+  /// caller, the same defensive reasoning `committingProjectRoots` already applies.
+  func endWrite(projectRoot: String) {
+    Self.releaseWrite(projectRoot: projectRoot, in: projectStore)
+  }
+
+  /// The shared logic behind `endWrite`, taking `ProjectStore` explicitly so a caller that only has
+  /// a STRONGLY-captured `ProjectStore` (not a live `AppStore`) can release the mark directly —
+  /// `performCommit`'s Task and the `writeDidFinish` closure wired in `AppStore.init` both need this,
+  /// since either can run after the `AppStore`/`RemoteStateModel` that started the write is gone.
+  static func releaseWrite(projectRoot: String, in projectStore: ProjectStore) {
+    let remaining = (projectStore.writingProjectRoots[projectRoot] ?? 1) - 1
+    if remaining > 0 {
+      projectStore.writingProjectRoots[projectRoot] = remaining
+    } else {
+      projectStore.writingProjectRoots.removeValue(forKey: projectRoot)
+    }
   }
 
   /// Re-probe ONE row's local status, named explicitly.

@@ -153,6 +153,19 @@ final class GhosttySurfaceView: NSView {
   private var progressActive = false
   private static let progressTimeout: TimeInterval = 30
 
+  // MARK: Terminal content accessibility (CMT-3)
+  //
+  // A libghostty surface renders through Metal, so its content is otherwise invisible to VoiceOver —
+  // there is no per-frame "content changed" callback from the engine to drive notifications off (the
+  // adapter's `GHOSTTY_ACTION_*` switch has nothing render-shaped), so this polls instead. The poll
+  // itself is near-free when VoiceOver is off (one boolean check), which is the common case for every
+  // user of every pane, so the timer runs unconditionally and the real work — materializing the
+  // viewport into a `String` and diffing it — happens only while VoiceOver is actually listening.
+  private var accessibilityPollTimer: Timer?
+  private static let accessibilityPollInterval: TimeInterval = 0.4
+  private var lastAccessibilityValue: String?
+  private var lastAccessibilitySelectedText: String?
+
   /// How to fetch this pane's previous text, replayed once the surface exists (issue #144). Nil for a
   /// pane that is not being restored, and cleared the moment it has been used.
   ///
@@ -338,6 +351,7 @@ final class GhosttySurfaceView: NSView {
     progressActive = false
     progressTimeoutTimer?.invalidate()
     progressTimeoutTimer = nil
+    stopAccessibilityPolling()
     if let occlusionObserver {
       NotificationCenter.default.removeObserver(occlusionObserver)
       self.occlusionObserver = nil
@@ -350,6 +364,7 @@ final class GhosttySurfaceView: NSView {
 
   deinit {
     progressTimeoutTimer?.invalidate()
+    accessibilityPollTimer?.invalidate()
     if let occlusionObserver { NotificationCenter.default.removeObserver(occlusionObserver) }
     for observer in keyWindowObservers { NotificationCenter.default.removeObserver(observer) }
     if let surface { ghostty_surface_free(surface) }
@@ -401,9 +416,11 @@ final class GhosttySurfaceView: NSView {
       // when window is nil, so set it explicitly here rather than leaving the last (stale) value.
       isWindowVisible = false
       applyOcclusionState()
+      stopAccessibilityPolling()
       return
     }
     if surface == nil { createSurface() }
+    startAccessibilityPolling()
     occlusionObserver = NotificationCenter.default.addObserver(
       forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
     ) { [weak self] _ in self?.updateWindowVisibility() }
@@ -1032,28 +1049,85 @@ final class GhosttySurfaceView: NSView {
     _ = ghostty_surface_key(surface, keyEvent)
   }
 
-  /// **Fixture-only.** Expose the visible screen text to the accessibility tree so an XCUITest can
-  /// assert what a terminal actually did.
+  /// Gate for every accessibility override below: real content publishes only while something is
+  /// actually listening. Without this, `isAccessibilityElement()`/`accessibilityValue()` being
+  /// unconditionally true would let ANY process holding the Accessibility (TCC) permission read a
+  /// mounted pane's live content at any time via `AXUIElementCopyAttributeValue` — silently, with no
+  /// pasteboard write or synthesized keystroke to leave a trace — not just VoiceOver. That's a wider
+  /// exposure than this feature's actual purpose (VoiceOver support), so content is published only
+  /// while VoiceOver is genuinely on, or under the UI-test fixture (which needs it regardless, to
+  /// assert terminal content in XCUITest — see `accessibilityIdentifier`'s doc).
+  private var accessibilityContentEnabled: Bool {
+    UITestFixture.isActive || NSWorkspace.shared.isVoiceOverEnabled
+  }
+
+  /// Expose the visible screen text to the accessibility tree (CMT-3) — VoiceOver's only way to read a
+  /// libghostty pane, since it renders through Metal and has no text layer of its own.
   ///
-  /// A libghostty surface renders through Metal, so its contents are invisible to XCUITest — which
-  /// leaves whole behaviours unassertable end to end. The one that forced this: issue #145 types a
-  /// command in and submits it with `\r`, and if a libghostty version ever filtered control bytes out
-  /// of the text path the command would be typed and never run. That failure is silent from the
-  /// outside and there is no unit test for it, because the behaviour under test belongs to the engine.
-  ///
-  /// Gated on `UITestFixture.isActive`, which is itself `#if DEBUG` — a release build reads nothing
-  /// and publishes nothing. `VIEWPORT` is the visible screen only, never the scrollback.
+  /// **Exposes exactly what copy/select already exposes, no more.** `VIEWPORT` reads the same rendered
+  /// screen a sighted user can select and copy; it cannot see anything a terminal itself would mask.
+  /// That parity is *why* this is safe rather than an accident that happens to be: a password prompt
+  /// with local echo disabled (`read -s`, an `ssh` passphrase) renders nothing for the typed
+  /// characters — the PTY never emits them for the terminal to draw in the first place — so there is
+  /// nothing here for VoiceOver to leak. Verified against a real `read`-with-echo-disabled prompt in
+  /// `TerminalAccessibilityUITests.testPasswordPromptWithEchoDisabledRendersNoTypedCharacters`. A TUI
+  /// drawing its own masked field (`••••`) is a different case — the mask characters DO render, and DO
+  /// get exposed, exactly as they're visible to a sighted user.
   override func isAccessibilityElement() -> Bool {
-    UITestFixture.isActive ? true : super.isAccessibilityElement()
+    accessibilityContentEnabled ? true : super.isAccessibilityElement()
   }
 
   override func accessibilityValue() -> Any? {
-    guard UITestFixture.isActive else { return super.accessibilityValue() }
+    guard accessibilityContentEnabled else { return super.accessibilityValue() }
     return readText(tag: GHOSTTY_POINT_VIEWPORT) ?? ""
   }
 
+  override func accessibilitySelectedText() -> String? {
+    guard accessibilityContentEnabled else { return nil }
+    return readSelectionText()
+  }
+
+  /// **Fixture-only.** A stable id so an XCUITest can find this exact surface (e.g. issue #145's "did
+  /// the Return actually submit" check) — VoiceOver has no use for it, only test code targeting one
+  /// pane among several. Gated on `UITestFixture.isActive`, itself `#if DEBUG`: a release build
+  /// publishes no identifier.
   override func accessibilityIdentifier() -> String {
     UITestFixture.isActive ? "terminal.surface" : super.accessibilityIdentifier()
+  }
+
+  /// Poll the visible screen and selection at a fixed interval and tell VoiceOver when either changed.
+  ///
+  /// Libghostty gives no per-frame "content changed" callback to drive notifications off (the runtime
+  /// adapter's `GHOSTTY_ACTION_*` switch has nothing render-shaped — checked before building this), so
+  /// this polls instead. Gated on `NSWorkspace.shared.isVoiceOverEnabled`, checked FIRST and cheaply on
+  /// every tick: the real cost — materializing the whole viewport into a `String` — is paid only while
+  /// VoiceOver is actually listening, which is the rare case, not the common one. The timer itself runs
+  /// unconditionally so turning VoiceOver on mid-session is picked up within one interval, with no
+  /// separate on/off notification to subscribe to.
+  private func startAccessibilityPolling() {
+    guard accessibilityPollTimer == nil else { return }
+    accessibilityPollTimer = Timer.scheduledTimer(
+      withTimeInterval: Self.accessibilityPollInterval, repeats: true
+    ) { [weak self] _ in self?.pollAccessibilityContent() }
+  }
+
+  private func stopAccessibilityPolling() {
+    accessibilityPollTimer?.invalidate()
+    accessibilityPollTimer = nil
+  }
+
+  private func pollAccessibilityContent() {
+    guard NSWorkspace.shared.isVoiceOverEnabled else { return }
+    let value = readText(tag: GHOSTTY_POINT_VIEWPORT) ?? ""
+    if value != lastAccessibilityValue {
+      lastAccessibilityValue = value
+      NSAccessibility.post(element: self, notification: .valueChanged)
+    }
+    let selected = readSelectionText()
+    if selected != lastAccessibilitySelectedText {
+      lastAccessibilitySelectedText = selected
+      NSAccessibility.post(element: self, notification: .selectedTextChanged)
+    }
   }
 
   /// Fired the FIRST time anything lands on this pane's input line, and never again.

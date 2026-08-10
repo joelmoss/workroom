@@ -315,6 +315,7 @@ final class AppStore: ObservableObject {
   /// timestamp that used to live here is gone: two owners for one truth is how the staleness gate and
   /// the write drifted apart in the first place.
   var ghAuthCache: GitHubAuthCache { projectStore.ghAuthCache }
+  var vcsToolVersionCache: VCSToolVersionCache { projectStore.vcsToolVersionCache }
   /// A PR write action (Phase 2b) is running — disables the PR actions menu so it can't double-fire.
   @Published var prActionInFlight = false
 
@@ -339,6 +340,12 @@ final class AppStore: ObservableObject {
   var committingProjectRoots: [String: Int] {
     get { projectStore.committingProjectRoots }
     set { projectStore.committingProjectRoots = newValue }
+  }
+
+  /// In-flight write (commit/fetch/push/pull) counts per project root — see `ProjectStore`'s doc.
+  var writingProjectRoots: [String: Int] {
+    get { projectStore.writingProjectRoots }
+    set { projectStore.writingProjectRoots = newValue }
   }
 
   // Inspector section collapse (issue #24). Held on the store rather than as `@Default` in the
@@ -750,8 +757,9 @@ final class AppStore: ObservableObject {
       ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
     else { return }
     let probeJJ = projects.contains { $0.vcs == "jj" }
+    let cache = vcsToolVersionCache
     Task { [weak self] in
-      let report = await VCSToolVersionCache.shared.report(probeJJ: probeJJ)
+      let report = await cache.report(probeJJ: probeJJ)
       self?.vcsToolReport = report
     }
   }
@@ -873,6 +881,22 @@ final class AppStore: ObservableObject {
     // Only the store can name a target, and the model needs the name to attribute a failure that
     // outlived the selection it started from.
     self.remoteState.describeTarget = { [weak self] sid in self?.label(for: sid).full }
+    // Cross-window write-in-flight refusal (VCS-foundation eng-review) — see `isWritingProject`'s
+    // doc. `canStartWrite` defaults to "never busy" when unwired, so a model built without an
+    // `AppStore` (unit tests) behaves as it did before this was added.
+    self.remoteState.canStartWrite = { [weak self] root in !(self?.isWritingProject(root) ?? false)
+    }
+    self.remoteState.writeDidStart = { [weak self] root in self?.beginWrite(projectRoot: root) }
+    // Captured STRONGLY, not through `self`: `writingProjectRoots` lives on the shared, cross-window
+    // `ProjectStore`, and this release must run even if THIS window's `AppStore` (and its
+    // `RemoteStateModel`) is deallocated before the write finishes — e.g. the window closed
+    // mid-fetch/push/pull. A release gated on `self` staying alive would leak the counter
+    // permanently, refusing every future write for this project, in every window, until relaunch.
+    // `RemoteStateModel.perform` already captures this closure's VALUE as a local before its own
+    // `Task` starts, for the identical reason on its side of the chain.
+    self.remoteState.writeDidFinish = { [projectStore = self.projectStore] root in
+      AppStore.releaseWrite(projectRoot: root, in: projectStore)
+    }
     pendingRestoreSelection = Defaults[.sidebarSelection]
     // Route each terminal's activity (OSC/bell) through the notification spine, gated on
     // focus, and raise a native banner only when the app is backgrounded.

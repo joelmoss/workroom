@@ -42,6 +42,15 @@ final class ProjectStore: ObservableObject {
   /// reassigns it.
   var ghAuthCache = GitHubAuthCache()
 
+  /// Owns the git/jj `--version` probe: its freshness clock AND its single-flight, per tool, so N
+  /// windows share one probe each rather than racing two. `vcsToolReport` on `AppStore` mirrors what
+  /// this decided (per-window, since `apply(projects)` runs per-window even though the underlying
+  /// facts are machine-wide).
+  ///
+  /// A `var` for the same reason `ghAuthCache` is: tests swap in an instance with millisecond TTLs;
+  /// production never reassigns it.
+  var vcsToolVersionCache = VCSToolVersionCache()
+
   /// Project paths with an in-flight create/delete (for per-row progress + disabling).
   @Published var busyProjects: Set<String> = []
 
@@ -68,6 +77,17 @@ final class ProjectStore: ObservableObject {
   /// a `Set` because the app's premise is N parallel workrooms, so two of one project can legitimately
   /// commit at once and the first to finish must not clear the other's suppression.
   @Published var committingProjectRoots: [String: Int] = [:]
+
+  /// How many writes (commit, fetch, push, or pull) are in flight against each project root,
+  /// across every window. Checked by the write ACTIONS THEMSELVES before starting — not just
+  /// by read lanes — so a second write on the same project root is refused outright rather than
+  /// queuing into `JJSnapshotGate` and possibly racing a live one past its wedge-detection
+  /// ceiling (VCS-foundation eng-review: the gate's `maxChainWait` self-heal is far shorter than
+  /// fetch/pull's own timeouts, so two windows could otherwise both queue a write and run them
+  /// concurrently on the shared `.git`). Distinct from `committingProjectRoots`, which exists for
+  /// a different reason (suppressing READ lanes during a commit specifically) and keeps its own
+  /// narrower role unchanged; this counter is the umbrella that all four write kinds share.
+  @Published var writingProjectRoots: [String: Int] = [:]
 
   /// Target ids of workrooms with an in-flight optimistic deletion — dropped from the sidebar but
   /// their teardown (worktree/config removal) not yet finished. `AppStore.apply` filters these out of

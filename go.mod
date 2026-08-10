@@ -5,6 +5,7 @@ go 1.25.7
 require (
 	github.com/charmbracelet/huh v0.8.0
 	github.com/fatih/color v1.18.0
+	github.com/gofrs/flock v0.13.0
 	github.com/spf13/cobra v1.8.1
 	golang.org/x/mod v0.38.0
 )
@@ -37,6 +38,6 @@ require (
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/sync v0.15.0 // indirect
-	golang.org/x/sys v0.33.0 // indirect
+	golang.org/x/sys v0.37.0 // indirect
 	golang.org/x/text v0.23.0 // indirect
 )

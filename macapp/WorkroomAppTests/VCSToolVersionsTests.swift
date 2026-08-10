@@ -280,6 +280,71 @@ final class VCSToolVersionsTests: XCTestCase {
     XCTAssertEqual(gitProbes, 1, "a skipped jj was mistaken for a discovered absence")
   }
 
+  // MARK: - VCSToolVersionCache: two independent slots
+
+  /// A `.belowFloor` verdict must clear after its (short) TTL, so a user who upgrades and is told to
+  /// relaunch actually sees it clear without relaunching — the bug the single, pinned-forever cache
+  /// used to have. `.ok` gets a long TTL by contrast (see `testStillCachedWithinTheDefaultLongTTL`).
+  func testBelowFloorExpiresAfterItsShortTTLAndReprobes() async {
+    let runner = RecordingVersionRunner(responses: [
+      "git": CommandResult(stdout: "git version 2.30.0", stderr: "", exitCode: 0, timedOut: false)
+    ])
+    let cache = VCSToolVersionCache(ttl: .seconds(60), belowFloorTTL: .milliseconds(20))
+
+    let first = await cache.report(probeJJ: false, runner: runner)
+    XCTAssertEqual(first.git, .belowFloor("2.30.0"))
+
+    try? await Task.sleep(for: .milliseconds(60))
+
+    _ = await cache.report(probeJJ: false, runner: runner)
+    let gitProbes = await runner.executables().filter { $0 == "git" }.count
+    XCTAssertEqual(gitProbes, 2, "a stale belowFloor verdict must re-probe, not stay pinned")
+  }
+
+  /// The counterpart: within the TTL, a settled verdict — including `.belowFloor` — must NOT
+  /// re-probe on every call. Only proven with an injectable clock would this be airtight against a
+  /// slow CI runner, but the default TTL (60s) is generous enough that two immediate calls prove the
+  /// cache is doing anything at all.
+  func testStillCachedWithinTheDefaultLongTTL() async {
+    let runner = RecordingVersionRunner(responses: [
+      "git": CommandResult(stdout: "git version 2.55.0", stderr: "", exitCode: 0, timedOut: false)
+    ])
+    let cache = VCSToolVersionCache()
+
+    _ = await cache.report(probeJJ: false, runner: runner)
+    _ = await cache.report(probeJJ: false, runner: runner)
+
+    let gitProbes = await runner.executables().filter { $0 == "git" }.count
+    XCTAssertEqual(gitProbes, 1)
+  }
+
+  /// **The reentrancy bug the split-slot design exists to close, structurally.** In the old
+  /// single-slot design, a `probeJJ: false` call finishing after a `probeJJ: true` call could
+  /// overwrite the jj-aware verdict with a jj-blind one. Here, a `probeJJ: false` call must not
+  /// touch the jj slot AT ALL — proven by never giving its runner a "jj" response, so any attempt to
+  /// probe jj would surface as a spawned (and unanswered) call, not silently as `.notInstalled`.
+  func testProbeJJFalseNeverTouchesTheJJSlotOnceCached() async {
+    let runner = RecordingVersionRunner(responses: [
+      "git": CommandResult(stdout: "git version 2.55.0", stderr: "", exitCode: 0, timedOut: false),
+      "jj": CommandResult(stdout: "jj 0.43.0", stderr: "", exitCode: 0, timedOut: false),
+    ])
+    let cache = VCSToolVersionCache()
+
+    // Cache a REAL jj-aware verdict first.
+    let aware = await cache.report(probeJJ: true, runner: runner)
+    XCTAssertEqual(aware.jj, .ok("0.43.0"))
+
+    // Any number of jj-blind callers must not disturb it.
+    for _ in 0..<3 { _ = await cache.report(probeJJ: false, runner: runner) }
+
+    // Re-asking with probeJJ:true must return the STILL-CACHED verdict — one jj probe total, not
+    // clobbered and not re-run.
+    let stillAware = await cache.report(probeJJ: true, runner: runner)
+    XCTAssertEqual(stillAware.jj, .ok("0.43.0"), "a jj-blind caller must never clobber the jj slot")
+    let jjProbes = await runner.executables().filter { $0 == "jj" }.count
+    XCTAssertEqual(jjProbes, 1, "the cached jj verdict must not be re-probed either")
+  }
+
 }
 
 /// Records which executables were asked for, so a test can assert `jj` was never spawned.

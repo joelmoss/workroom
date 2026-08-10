@@ -92,8 +92,8 @@ final class FileTreeTests: XCTestCase {
     let runner = StubRunner(byExecutable: [
       "git": CommandResult(stdout: "a.txt\u{0}b.txt\u{0}", stderr: "", exitCode: 0, timedOut: false)
     ])
-    let paths = await FileTreeModel.list(path: "/repo", projectRoot: nil, runner: runner)
-    XCTAssertEqual(paths, ["a.txt", "b.txt"])
+    let result = await FileTreeModel.list(path: "/repo", projectRoot: nil, runner: runner)
+    XCTAssertEqual(result, .listing(["a.txt", "b.txt"]))
   }
 
   func testListFallsThroughToJJWhenGitFails() async {
@@ -101,14 +101,35 @@ final class FileTreeTests: XCTestCase {
       "git": CommandResult(stdout: "", stderr: "not a repo", exitCode: 128, timedOut: false),
       "jj": CommandResult(stdout: "x.txt\ny.txt\n", stderr: "", exitCode: 0, timedOut: false),
     ])
-    let paths = await FileTreeModel.list(path: "/repo", projectRoot: nil, runner: runner)
-    XCTAssertEqual(paths, ["x.txt", "y.txt"])
+    let result = await FileTreeModel.list(path: "/repo", projectRoot: nil, runner: runner)
+    XCTAssertEqual(result, .listing(["x.txt", "y.txt"]))
   }
 
-  func testListReturnsNilWhenNeitherVCSResponds() async {
+  func testListReturnsUnavailableWhenNeitherVCSResponds() async {
     let runner = StubRunner(byExecutable: [:])  // every command → not-found
-    let paths = await FileTreeModel.list(path: "/repo", projectRoot: nil, runner: runner)
-    XCTAssertNil(paths)
+    let result = await FileTreeModel.list(path: "/repo", projectRoot: nil, runner: runner)
+    XCTAssertEqual(result, .unavailable)
+  }
+
+  /// A signalled probe is not evidence `path` stopped being a repo — it must read `.interrupted`,
+  /// never silently fold into `.unavailable` (which the UI treats as "not a repo").
+  func testListReturnsInterruptedWhenAToolIsSignalled() async {
+    let runner = StubRunner(byExecutable: [
+      "git": CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true),
+      "jj": CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true),
+    ])
+    let result = await FileTreeModel.list(path: "/repo", projectRoot: nil, runner: runner)
+    XCTAssertEqual(result, .interrupted)
+  }
+
+  /// If the OTHER tool succeeds after one is signalled, that's a real listing, not an interruption.
+  func testListPrefersARealListingOverAnEarlierSignal() async {
+    let runner = StubRunner(byExecutable: [
+      "git": CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true),
+      "jj": CommandResult(stdout: "x.txt\n", stderr: "", exitCode: 0, timedOut: false),
+    ])
+    let result = await FileTreeModel.list(path: "/repo", projectRoot: nil, runner: runner)
+    XCTAssertEqual(result, .listing(["x.txt"]))
   }
 
   /// `jj file list` has no `--ignore-working-copy` — it snapshots `@`, so same-project calls must
