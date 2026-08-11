@@ -35,6 +35,7 @@ final class SharedPrefDefaultsTests: XCTestCase {
   private let visibleKey = "showNotificationsInspector"
   private let activeSectionKey = "inspector.activeSection"
   private let diffModeKey = "diffViewMode"
+  private let sidebarVisibleKey = "sidebar.visible"
 
   /// Every raw key this test writes, saved/restored so it never leaks into the real Dev defaults
   /// (the unit tests run in the app's own UserDefaults domain — cf. `ActivitySectionTests`).
@@ -46,7 +47,7 @@ final class SharedPrefDefaultsTests: XCTestCase {
   /// unrelated class happens to be running beside it. The keys that remain are written by this class
   /// alone (see above), so nothing else can see them mid-flight.
   private var keys: [String] {
-    [sectionArgKey, diffModeArgKey, visibleKey, activeSectionKey, diffModeKey]
+    [sectionArgKey, diffModeArgKey, visibleKey, activeSectionKey, diffModeKey, sidebarVisibleKey]
   }
   private var saved: [String: Any?] = [:]
 
@@ -77,6 +78,34 @@ final class SharedPrefDefaultsTests: XCTestCase {
   func testTheShippedDefaultsAreAClosedPaneOnChanges() {
     XCTAssertFalse(Defaults[.showInspector], "the inspector starts closed until the user opens it")
     XCTAssertEqual(Defaults[.activeInspectorSection], .changes)
+  }
+
+  /// The sidebar's own shipped default, kept separate from the inspector's above since it's the
+  /// opposite polarity — the projects sidebar starts SHOWN, unlike the inspector.
+  func testTheSidebarShippedDefaultIsShown() {
+    XCTAssertTrue(Defaults[.sidebarVisible], "the projects sidebar starts open")
+  }
+
+  // MARK: sidebar visibility, as the store persists it
+
+  /// A fresh store seeds from whatever was last persisted, not the shipped default — the same
+  /// contract `showInspector`/`activeInspectorSection` already have.
+  ///
+  /// The write-back half (`didSet { if persistsSidebarPrefs { … } }`) has no test here, matching
+  /// `collapsedProjects`/`workroomTabOrder`/`sidebarSelection` — the other properties gated the same
+  /// way — because this suite runs hosted inside the real app (`TEST_HOST`): the app's own launch
+  /// path opens a real window and registers its `AppStore` as `WindowRegistry.lastActiveStore` before
+  /// any test body runs, so a freshly-constructed `AppStore()` here is never the last-active store and
+  /// `persistsSidebarPrefs` is always false for it. Asserting the write would test a should-never-fire
+  /// branch, not the real gate.
+  @MainActor
+  func testAStoreSeedsSidebarVisibilityFromThePersistedSetting() {
+    Defaults[.sidebarVisible] = false
+    XCTAssertFalse(
+      AppStore().sidebarVisible, "a new store must not silently reopen a closed sidebar")
+
+    Defaults[.sidebarVisible] = true
+    XCTAssertTrue(AppStore().sidebarVisible, "and must reopen a persisted-visible sidebar")
   }
 
   // MARK: inspector visibility, as the store reads it

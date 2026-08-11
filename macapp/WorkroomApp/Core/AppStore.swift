@@ -234,9 +234,14 @@ final class AppStore: ObservableObject {
   }
   /// Whether the projects sidebar column is visible. The single source of truth for showing the
   /// custom `SidebarColumn` *and* the View ▸ Projects checkmark — a bare AppKit `toggleSidebar` has no
-  /// state a menu checkmark can bind to, so it could never show a tick. Session-only (resets to shown
-  /// on launch); the dragged width is persisted separately to `Defaults.sidebarWidth`.
-  @Published var sidebarVisible: Bool = true
+  /// state a menu checkmark can bind to, so it could never show a tick. Persisted to
+  /// `Defaults.sidebarVisible` (mirrors `showInspector`) so closing it survives a relaunch; the dragged
+  /// width is persisted separately to `Defaults.sidebarWidth`. Gated on `persistsSidebarPrefs`, same as
+  /// `collapsedProjects`/`workroomTabOrder`/`sidebarSelection`, so a background window can't clobber the
+  /// active window's choice.
+  @Published var sidebarVisible: Bool = Defaults[.sidebarVisible] {
+    didSet { if persistsSidebarPrefs { Defaults[.sidebarVisible] = sidebarVisible } }
+  }
   /// Whether a collapsed sidebar is *temporarily* on screen via edge-hover reveal (issue #56): the
   /// left Projects overlay (`previewingLeft`) and the right inspector overlay (`previewingRight`).
   /// These are observable app state, not view-local, because other surfaces must react: notification

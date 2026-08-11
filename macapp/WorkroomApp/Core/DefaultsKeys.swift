@@ -104,6 +104,10 @@ extension Defaults.Keys {
   /// fed back on launch — mirrors `inspectorWidth`. Clamped to the column's min/max when applied.
   static let sidebarWidth = Key<Double>("sidebar.width", default: 270)
 
+  /// Whether the Projects sidebar column is shown, mirroring `showInspector`. Persisted so closing
+  /// it survives a relaunch — previously session-only (reset to visible on every launch).
+  static let sidebarVisible = Key<Bool>("sidebar.visible", default: true)
+
   /// Whether the notifications menu bar item is shown (issue #33). On by default.
   static let showMenuBarItem = Key<Bool>("showMenuBarItem", default: true)
 
