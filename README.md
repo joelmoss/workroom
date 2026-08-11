@@ -2,9 +2,9 @@
 
 True parallel software development in a native MacOS development environment.
 
-It's your IDE (Integrated Development Environment),
-     your ADE (Agent Development Environment),
-     your TDE (Terminal Development Environment),
+It's your IDE (Integrated Development Environment)
+     your ADE (Agent Development Environment)
+     your TDE (Terminal Development Environment)
      your EDE (Everything Development Environment)
 
 ## But What is Workroom?
