@@ -1950,6 +1950,146 @@ than shipped on nightly.
 
 **Priority:** P3 — until the next hang report, symbols alone may be enough.
 
+### Focus-responder App Hang on a large diff (macapp) — WORKROOM-2T
+
+**What:** Sentry WORKROOM-2T, nightly build 596 (macOS 26.5.2), 5 occurrences. **Pulling all events
+showed Sentry grouped two different bugs into one issue** (fingerprinted on `culprit: main` + "App
+Hanging", not on stack signature) — treat this as two separate findings:
+
+- **4 of 5 events share an identical 93-96-frame stack**, entirely inside the SwiftUI/AppKit runtime:
+  `NSAnimationContext.runAnimationGroup` → `NSHostingView.layout` → `ViewGraphRootValueUpdater.render` →
+  `AccessibilityNode.updateFocusResponder` → `ViewRendererHost.focusResponder` →
+  `ResponderNode.visitFocusResponders` → 10+ nested `MultiViewResponder.visit` →
+  `swift_conformsToProtocol2` → `dyld4::APIs::_dyld_find_protocol_conformance` →
+  `SwiftHashTable::getIndex` — the same slow-dyld-conformance-lookup family behind the toolbar App Hang
+  this app already fixed once (empty AppKit `NSToolbar`, no SwiftUI `.toolbar*`), this time hit from
+  SwiftUI's **accessibility focus-responder walk**, which runs on every `NSHostingView.layout` pass.
+- **The first event (21:15:07) has a completely different 36-frame stack** — `GraphHost.runTransaction`
+  → `AG::Subgraph::update` → `DynamicPreferenceCombiner.value.getter`, an AttributeGraph stall with no
+  focus-responder frames at all. Belongs with the `DiffViewer`/`sbsRows` AttributeGraph App Hang family
+  (commit `5194b614`), not this entry — split into its own tracked item if it recurs with more samples.
+
+**Root cause, confirmed by a live user repro:** the 5th occurrence fired the moment Joel opened a large
+Git diff of a CSS file — a direct, deterministic trigger, not archaeology off breadcrumbs. This lines up
+exactly with `DiffViewer.unifiedBody`/`sideBySideBody` (`Views/DiffViewer.swift:381-436`): both
+deliberately render **every line of every hunk in one eager `VStack`**, not a `LazyVStack` — the code
+comment explains why (line 382-393): diff lines soft-wrap via `fixedSize(vertical:)`, so a lazy stack
+would cache a wrong height estimate for a not-yet-materialized wrapping row and leave a visible blank
+band mid-scroll. `UnifiedDiff.parse`'s 2000-line cap was believed to make eager layout "affordable" —
+and it is, for layout and for AttributeGraph (after the `sbsRows` box fixed WORKROOM-2S, a near-cap diff
+tripping an AG walk). It is **not** affordable for SwiftUI's accessibility focus-responder walk: each
+`lineRow`/`sideBySideRow` is already its own `.accessibilityElement(children: .ignore)` (`DiffViewer.swift:496,542`)
+— correct for VoiceOver (one element per line, not per glyph run) but it means a near-cap diff puts up to
+~2000 individual accessibility nodes in the tree that `ResponderNode.visitFocusResponders` walks on every
+layout pass, and that walk is what's hitting the cold conformance-lookup path repeatedly.
+
+This also explains the earlier reactivation-triggered occurrences in this same issue (events 2/3, see
+history in git blame if needed): `RootView.swift:405-416`'s `didBecomeActiveNotification` handler calls
+`store.refreshHistoryIfActive()`, and a repopulated History `LazyVStack` is the same shape of problem —
+many per-row accessibility elements materializing at once. Diff and History are two instances of one
+mechanism: **a wide, eagerly-accessible content view appearing in one layout pass.**
+
+**Why no fix yet — real tradeoff, not just unverified:** the obvious "make it lazy" fix is the one this
+file's own comment already rejected, for a correctness reason (blank bands) that's independent of this
+bug — reintroducing it to chase 2T would trade one visible bug for another. The other candidate —
+collapsing multiple diff lines into fewer accessibility elements to shrink the responder tree — is a
+real accessibility regression, not a free win: it would cost VoiceOver users per-line diff navigation,
+and `diff.line`/`diff.side.left`/`diff.side.right` identifiers are likely load-bearing for existing UI
+tests (grep before touching). Neither is a small, obviously-safe change; both are product tradeoffs, not
+mechanical fixes. Flag to Joel before implementing either.
+
+**How to confirm/measure:** reproduce locally — open a large CSS (or any near-2000-line) diff, and
+profile with Instruments' Hangs + Time Profiler template watching `ResponderNode.visitFocusResponders`.
+Worth measuring how the hang duration scales with line count (200 lines vs 2000) — if it's linear, the
+2000-line cap itself is also a lever (lowering it trades diff completeness for hang avoidance, its own
+tradeoff, but a cheap one to quantify).
+
+**Depends on:** "Main-thread timing from a real hang" above — the same profiling/signpost infrastructure
+would turn the next occurrence into a real trace, and would let Sentry fingerprint the AttributeGraph and
+focus-responder hangs as separate issues instead of one.
+
+**Priority:** P2 — confirmed deterministic repro (open a large diff), recurring (5 occurrences), one
+real user hit it live. No longer "one hang report, unconfirmed mechanism."
+
+**Update (live diagnostic, 2026-08-11):** ran a throwaway experiment (collapsed each hunk's per-line
+accessibility elements into one via `.accessibilityElement(children: .combine)`, no other change) against
+the real codaset `workroom.css` diff that originally reproduced the hang. Result: **partial** improvement,
+not a full fix — the hang is "a bit better," but unified⇄side-by-side mode switching is still noticeably
+delayed and scrolling the large diff still isn't smooth. Reverted the throwaway edit (needs its own
+VoiceOver-granularity tradeoff sign-off if ever pursued for real, not something to smuggle in as a
+diagnostic).
+
+**Conclusion:** accessibility-node count is A real contributing factor (grouping measurably helped) but
+NOT the only one — the eager `VStack` also pays a separate, real cost from sheer materialized-view count
+(no virtualization), which grouping AX elements alone doesn't touch and which fully explains the
+still-slow mode-switch and scroll. Confirms neither the `List` spike (Phase -1) nor the pre-measured
+`LazyVStack` fallback (Phase 0) can be skipped — actual laziness/virtualization is necessary, not just an
+accessibility-tree optimization. Proceeding to Phase -1.
+
+**RESOLVED (2026-08-11) — Phase -1 `List` spike: GO, adopted.** Spiked `List` directly inside
+`DiffViewer.unifiedBody`/`sideBySideBody` (`.listStyle(.plain)` + `.listRowInsets(EdgeInsets())` +
+`.listRowSeparator(.hidden)` + `.environment(\.defaultMinListRowHeight, 0)` to suppress macOS List
+chrome — the `.listRowSpacing(0)` modifier is unavailable on macOS at this deployment target, the
+`defaultMinListRowHeight` environment override closed the same inter-row gap instead). All 4 spike
+questions confirmed against the real codaset repro: hang gone, scrolling smooth, mode-switch instant,
+`.listStyle(.plain)` chrome matches the prior look once the row-gap was closed, text selection/copy and
+keyboard nav unaffected, and `DiffViewerUITests`/`DiffHighlightUITests` (10 tests) pass unmodified —
+the `diff.line`/`diff.side.left`/`diff.side.right` accessibility identifier/label/value contract
+survived the rewrite intact. Full `make app-test` unit suite also green. This **replaces** the
+pre-measured `LazyVStack` engineering entirely (`DiffLineMetrics`, the boxed height cache, the debounce/
+generation-check machinery) — none of it shipped or is needed; `List`'s `NSTableView` backing
+virtualizes both rendering and accessibility natively. Doc comments in `DiffViewer.swift` updated to
+describe `List` as the permanent fix, not a spike.
+
+**CLOSED (2026-08-11) — hang-regression test written and passing.** Added
+`macapp/WorkroomAppTests/DiffViewerLazyRenderingTests.swift`, mirroring
+`HistoryRowInvalidationTests`'s host()/settle()/body-pass-count/wall-clock-ceiling shape:
+`DiffViewer.lineRowBodyPasses`/`sideBySideRowBodyPasses` `#if DEBUG` counters added (same convention as
+`HistoryRow.bodyPasses`/`ChangedFileRow.bodyPasses`); `UITestFixture.hugeDiff()` synthesizes a
+2000-line, 20-hunk, minified-CSS-shaped diff behind a `huge.css` magic path (forced active in the test
+via `UserDefaults.standard.set(true, forKey: UITestFixture.defaultsKey)`, reset in `tearDown`). Three
+tests, all passing: `testHugeDiffDoesNotBuildEveryLine` (laziness bound), `testHugeDiffRendersUnderTimeCeiling`
+(< 1s, well under the 2s watchdog), `testHugeDiffKeepsMultipleHunks` (pins the multi-hunk shape so the
+`ForEach`-in-`ForEach`-in-`List` nesting is exercised, not assumed to virtualize). Full `make app-test`
+green. WORKROOM-2T is fully closed.
+
+### Diff line-height cache doesn't invalidate on Dynamic Type change (macapp) — WORKROOM-2T follow-up — MOOT
+
+**Superseded 2026-08-11:** the `List` spike (Phase -1) was adopted instead of the pre-measured
+`LazyVStack` fallback this TODO depended on — there is no hand-rolled font-tracking height cache to
+invalidate. `List`/`NSTableView` handles Dynamic Type changes as part of its own native row-sizing, not
+a bespoke mechanism this codebase would need to maintain. No action needed; keeping this entry (rather
+than deleting it) as a record of why it was proposed and why it no longer applies.
+
+**What:** If the WORKROOM-2T fix ships via the pre-measured `LazyVStack` fallback path (not the `List`
+spike), `DiffLineMetrics.measurementFont()` resolves Dynamic Type once per recompute, but nothing
+observes a live system text-size change and re-triggers a recompute while a diff is already open — the
+cached heights go stale until some unrelated trigger (a resize, a mode toggle, reloading the diff)
+happens to fire a fresh one.
+
+**Why:** a user who changes their system text size (System Settings ▸ Accessibility, or a hardware
+shortcut) with a large diff open would see rows sized for the OLD font until something else nudges a
+recompute — a silent, accessibility-adjacent correctness gap, and currently nothing (test or otherwise)
+would catch a regression here.
+
+**Pros:** small, well-understood fix once the underlying recompute machinery exists — observe
+`NSApplication`-side Dynamic-Type/content-size-category change (or the SwiftUI environment
+`\.dynamicTypeSize`, if adopted) and fold it into the existing `heightCacheKey` the same way `loadToken`/
+`mode`/`widthBucket` already are.
+
+**Cons:** genuinely rare interaction (change text size AND have a large diff open AND no other recompute
+trigger fires in between); another small addition to an already-multi-part cache-invalidation surface.
+
+**Context:** surfaced during `/plan-eng-review` of the WORKROOM-2T fix plan, in the "NOT in scope"
+section — not solved there to keep that plan's scope to the hang fix itself. Only applies if that plan's
+fallback (pre-measured `LazyVStack`) path ships; moot if Phase -1's `List` spike succeeds instead, since
+`List`/`NSTableView` row-sizing wouldn't depend on a hand-rolled font-tracking cache the same way.
+
+**Depends on:** the WORKROOM-2T fix landing via the fallback path (the cache this would extend doesn't
+exist otherwise).
+
+**Priority:** P3 — rare edge case, no user report of it yet.
+
 ## P3 — CLI
 
 ### Harden `vcs.Detect` to validate a real repo (CLI) — #103 follow-up

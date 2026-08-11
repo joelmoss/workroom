@@ -753,6 +753,7 @@ enum UITestFixture {
     let name = (descriptor.path as NSString).lastPathComponent
     if name == "binary.bin" { return .binary }
     if name == "clean.txt" { return .empty }
+    if name == "huge.css" { return hugeDiff() }
     let tag = sourceTag(descriptor.source)
     if SyntaxLanguage.grammar(forPath: descriptor.path) == .ruby {
       return .diff(UnifiedDiff.parse(rubyDiffText(tag: tag, path: descriptor.path)))
@@ -768,6 +769,29 @@ enum UITestFixture {
        context line three
       """
     return .diff(UnifiedDiff.parse(raw))
+  }
+
+  /// A large synthetic diff for the WORKROOM-2T hang-regression test (`DiffViewerLazyRenderingTests`):
+  /// many separate hunks (not one giant hunk, to exercise the `ForEach`-in-`ForEach`-in-`List` nesting
+  /// the real diff has) of long, no-whitespace-to-wrap-on lines — the minified-CSS shape that actually
+  /// reproduced the App Hang. Defaults to exactly `UnifiedDiff.parse`'s 2000-line cap. Reached only via
+  /// the `huge.css` magic path, so no other fixture path is affected.
+  static func hugeDiff(hunkCount: Int = 20, linesPerHunk: Int = 100) -> DiffResult {
+    var text = ""
+    var newStart = 1
+    for h in 0..<hunkCount {
+      text += "@@ -0,0 +\(newStart),\(linesPerHunk) @@\n"
+      for l in 0..<linesPerHunk {
+        let n = h * linesPerHunk + l
+        let hex = String(format: "%06x", n % 0xFF_FFFF)
+        text +=
+          "+.class-\(n){color:#\(hex);font-family:\"Barlow Condensed\",sans-serif;"
+          + "src:url(/fonts/barlow-condensed-700.woff2) format(\"woff2\");"
+          + "padding:0;margin:0;display:block;position:relative;z-index:1}\n"
+      }
+      newStart += linesPerHunk
+    }
+    return .diff(UnifiedDiff.parse(text))
   }
 
   /// Canned new-side file content for highlighting in fixture mode (mirrors `DiffResolver

@@ -10,8 +10,11 @@ import SwiftUI
 /// Fetch is on-appear via `.task(id:)` keyed on the descriptor's file + revision, so switching to a
 /// diff tab (or retargeting the preview to a new file) re-runs `DiffResolver` for the current state —
 /// the diff is always fresh, and SwiftUI cancels an in-flight fetch when the view goes away. Lines
-/// render in an eager `VStack` (see
-/// `unifiedBody`), so a large diff lays out gap-free; `UnifiedDiff.parse`'s line cap bounds it.
+/// render in a `List` (see `unifiedBody`/`sideBySideBody`, WORKROOM-2T): a near-cap (2000-line) diff
+/// used to render in one eager `VStack`, which put every line's accessibility element in the tree
+/// SwiftUI's focus-responder walk traverses on every layout pass — the App Hang. `List` is
+/// `NSTableView`-backed, so it virtualizes both rendering AND accessibility for offscreen rows, unlike
+/// a hand-rolled `LazyVStack` (which was the fallback plan, made unnecessary once `List` proved out).
 struct DiffViewer: View {
   let descriptor: DiffDescriptor
   /// The workroom directory the VCS runs in (resolves the repo-relative path / picks the worktree).
@@ -379,60 +382,69 @@ struct DiffViewer: View {
   }
 
   private func unifiedBody(_ diff: UnifiedDiff) -> some View {
-    // Vertical-only scroll, eager `VStack` (not `LazyVStack`): the rows soft-wrap via
-    // `fixedSize(vertical:)`, and a lazy stack caches a bad height estimate for not-yet-materialised
-    // wrapping rows — leaving a blank band in the middle of a tall diff until you scroll it into
-    // view. `UnifiedDiff.parse`'s 2000-line cap bounds the row count, so laying them all out up
-    // front is affordable and gap-free.
-    //
-    // This is NOT a general rule against lazy stacks, and `HistoryPanel` deliberately uses one: its
-    // rows are single-line `lineLimit(1)`, so their height is known before layout and the estimate a
-    // lazy stack caches is correct. The distinction is soft-wrapping vs fixed-height rows, not
-    // "diffs vs history" — which matters because History's row count is unbounded by anything as
-    // tight as 2000 lines, and building all of it eagerly is what produced a 2-second App Hang
-    // (WORKROOM-2B).
-    ScrollView(.vertical) {
-      VStack(alignment: .leading, spacing: 0) {
-        if let from = diff.renamedFrom {
-          headerNote("Renamed from \(from)")
-        }
-        ForEach(Array(diff.hunks.enumerated()), id: \.offset) { _, hunk in
-          hunkHeader(hunk.header)
-          ForEach(Array(hunk.lines.enumerated()), id: \.offset) { _, line in
-            lineRow(line)
-          }
-        }
-        if diff.truncated {
-          headerNote("Diff truncated — file too large to show in full.")
+    // `List`, not `ScrollView { VStack {...} }` (WORKROOM-2T): a near-cap (2000-line) diff used to lay
+    // every line out eagerly, on the reasoning that soft-wrapping rows (`.fixedSize(vertical:)`) can't
+    // report their height to a `LazyVStack` before being materialized, and an inaccurate estimate left
+    // a visible blank band mid-scroll. That reasoning was correct as far as it went, but it missed the
+    // actual cost: 2000 eager rows means 2000 accessibility elements in the tree SwiftUI's
+    // accessibility focus-responder walk traverses on every layout pass — the App Hang.
+    // `List` sidesteps both problems at once: it's `NSTableView`-backed, so it virtualizes rendering
+    // AND accessibility together for offscreen rows (no manual height pre-measurement needed, and no
+    // per-row `AppKitPlatformViewHost` node for a row that was never realized). `HistoryPanel`'s
+    // `LazyVStack` is fine for its OWN rows (single-line, fixed-height, so a lazy stack's height
+    // estimate is exact) but couldn't have carried the same fix here without the pre-measurement work
+    // `List` makes unnecessary — see TODOS.md/WORKROOM-2T for the full investigation, including why
+    // `List` was avoided elsewhere in this codebase (macOS list chrome fighting custom row styling) and
+    // why that concern didn't hold up here once actually tried (`.listStyle(.plain)` +
+    // `.listRowInsets`/`.listRowSeparator(.hidden)` + `.environment(\.defaultMinListRowHeight, 0)`).
+    List {
+      if let from = diff.renamedFrom {
+        headerNote("Renamed from \(from)")
+          .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
+      }
+      ForEach(Array(diff.hunks.enumerated()), id: \.offset) { _, hunk in
+        hunkHeader(hunk.header)
+          .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
+        ForEach(Array(hunk.lines.enumerated()), id: \.offset) { _, line in
+          lineRow(line)
+            .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
         }
       }
-      .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-      .padding(.vertical, 4)
+      if diff.truncated {
+        headerNote("Diff truncated — file too large to show in full.")
+          .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
+      }
     }
+    .listStyle(.plain)
+    .environment(\.defaultMinListRowHeight, 0)
+    .scrollContentBackground(.hidden)
   }
 
-  /// Side-by-side body (issue #66): same scroll/eager-`VStack` shell as `unifiedBody` (the soft-wrap
-  /// reasoning there still holds), but each hunk's rows come from the memoized `sbsRows` and render
-  /// as a left(old) | divider | right(new) `HStack`.
+  /// Side-by-side body (issue #66): same `List` shell as `unifiedBody` (see its comment for why `List`,
+  /// WORKROOM-2T), but each hunk's rows come from the memoized `sbsRows` and render as a
+  /// left(old) | divider | right(new) `HStack`.
   private func sideBySideBody(_ diff: UnifiedDiff) -> some View {
-    ScrollView(.vertical) {
-      VStack(alignment: .leading, spacing: 0) {
-        if let from = diff.renamedFrom {
-          headerNote("Renamed from \(from)")
-        }
-        ForEach(Array(diff.hunks.enumerated()), id: \.offset) { index, hunk in
-          hunkHeader(hunk.header)
-          ForEach(Array(rows(forHunk: index).enumerated()), id: \.offset) { _, row in
-            sideBySideRow(row)
-          }
-        }
-        if diff.truncated {
-          headerNote("Diff truncated — file too large to show in full.")
+    List {
+      if let from = diff.renamedFrom {
+        headerNote("Renamed from \(from)")
+          .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
+      }
+      ForEach(Array(diff.hunks.enumerated()), id: \.offset) { index, hunk in
+        hunkHeader(hunk.header)
+          .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
+        ForEach(Array(rows(forHunk: index).enumerated()), id: \.offset) { _, row in
+          sideBySideRow(row)
+            .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
         }
       }
-      .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-      .padding(.vertical, 4)
+      if diff.truncated {
+        headerNote("Diff truncated — file too large to show in full.")
+          .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
+      }
     }
+    .listStyle(.plain)
+    .environment(\.defaultMinListRowHeight, 0)
+    .scrollContentBackground(.hidden)
   }
 
   /// The memoized side-by-side rows for a hunk index (empty if out of range — should not happen, as
@@ -453,13 +465,23 @@ struct DiffViewer: View {
     return rows[index]
   }
 
+  #if DEBUG
+    /// How many times `sideBySideRow`'s body has been evaluated this process — the measurement behind
+    /// the WORKROOM-2T hang-regression test (does `List` actually realize only visible rows for a
+    /// near-2000-line diff, mirroring `HistoryRow.bodyPasses`/`ChangedFileRow.bodyPasses`).
+    static var sideBySideRowBodyPasses = 0
+  #endif
+
   private func sideBySideRow(_ row: UnifiedDiff.SideBySideRow) -> some View {
+    #if DEBUG
+      Self.sideBySideRowBodyPasses += 1
+    #endif
     // `.top` so each side's gutter aligns to the first visual line when the taller side wraps. The
     // add/remove/absent fills are painted as a full-height background *layer* (two equal halves), not
     // per-cell: a bare cell background collapses to the gutter line under `.top` alignment, so a
     // short side opposite a multi-line wrapped side would only tint its first line. The background
     // matches the row's height (the taller side), so both halves always span the full row.
-    HStack(alignment: .top, spacing: 0) {
+    return HStack(alignment: .top, spacing: 0) {
       sideCell(row.left, side: .left)
       Divider()
       sideCell(row.right, side: .right)
@@ -520,9 +542,20 @@ struct DiffViewer: View {
   /// Width of the two-column gutter strip: two `unifiedGutterNumber` cells (32 + 6 + 6 each).
   private static let gutterWidth: CGFloat = 88
 
+  #if DEBUG
+    /// How many times `lineRow`'s body has been evaluated this process — the measurement behind the
+    /// WORKROOM-2T hang-regression test, mirroring `HistoryRow.bodyPasses`/`ChangedFileRow.bodyPasses`.
+    /// A near-2000-line diff must move this by far less than the line count once `List` realizes only
+    /// visible rows — the property that WOULD have caught the eager-`VStack` App Hang.
+    static var lineRowBodyPasses = 0
+  #endif
+
   private func lineRow(_ line: UnifiedDiff.Line) -> some View {
+    #if DEBUG
+      Self.lineRowBodyPasses += 1
+    #endif
     // `.top` so the gutter + marker align to the first visual line when a long line wraps.
-    HStack(alignment: .top, spacing: 0) {
+    return HStack(alignment: .top, spacing: 0) {
       unifiedGutter(old: line.oldLine, new: line.newLine)
       Text(marker(line.kind))
         .font(.system(.callout, design: .monospaced))
