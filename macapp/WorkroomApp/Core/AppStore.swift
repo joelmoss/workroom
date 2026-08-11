@@ -1464,11 +1464,20 @@ final class AppStore: ObservableObject {
   /// Cleared when a fresh run starts. Open-terminal does NOT add here — it lets the visibility rule
   /// hide the toast while the run is on screen, so it reappears when you navigate away.
   @Published private(set) var dismissedRunToasts: Set<TerminalTarget.ID> = []
-  /// Pending auto-dismiss timers, one per target, cancelled on restart so a stale timer can't dismiss
-  /// the next run's toast (review: timer cancellation on restart).
+  /// Targets whose LIVE (running/restarting) toast auto-hid after lingering a while — separate from
+  /// `dismissedRunToasts` so a run that quietly auto-hid its "still running" toast can still surface
+  /// a later terminal (exited/failed) toast; only gates the non-terminal branch of `runToastItems`.
+  /// Cleared on a fresh "running" edge (start or restart), so the toast reappears each time.
+  @Published private(set) var runningToastAutoHidden: Set<TerminalTarget.ID> = []
+  /// Pending auto-dismiss/auto-hide timers, one per target, cancelled on restart so a stale timer
+  /// can't dismiss the next run's toast (review: timer cancellation on restart).
   private var runToastDismissWork: [TerminalTarget.ID: DispatchWorkItem] = [:]
   /// How long a terminal-state run toast lingers before auto-dismissing.
   private static let runToastLinger: TimeInterval = 6
+  /// How long the LIVE (running/restarting) toast shows before auto-hiding — longer than the terminal
+  /// linger since it's informational, not a final result; other always-on indicators (sidebar run
+  /// button, tab-bar dot, tab chip icon) keep conveying "still running" after it fades.
+  private static let runningToastLinger: TimeInterval = 10
   /// Test seam: how a delayed auto-dismiss is scheduled. Production schedules on the main queue; tests
   /// capture the returned `DispatchWorkItem` to fire (or assert cancellation of) it deterministically.
   var scheduleRunToastDismiss: (TimeInterval, @escaping () -> Void) -> DispatchWorkItem = {
@@ -1518,12 +1527,16 @@ final class AppStore: ObservableObject {
       // Live status (running/restarting) shows ONLY for the SELECTED workroom's backgrounded run:
       // you don't need a "still running" reminder for workrooms you aren't even looking at (issue
       // #73 — one live toast for the run you're in, not one per open workroom with a run), nor for
-      // the run tab you're currently watching (split-aware via `visibleTabIDs`). Terminal statuses
-      // (a success or failure exit) ALWAYS show — even for a background workroom, so you learn it
-      // finished/crashed (issue #79: "show a success/failure toast"); they linger then auto-dismiss.
+      // the run tab you're currently watching (split-aware via `visibleTabIDs`), nor once it's
+      // auto-hidden after lingering a while (a server never reaches a terminal state, so without
+      // this it would show forever — sidebar/tab-bar indicators keep conveying "still running").
+      // Terminal statuses (a success or failure exit) ALWAYS show — even for a background workroom,
+      // so you learn it finished/crashed (issue #79: "show a success/failure toast"); they linger
+      // then auto-dismiss, independent of `runningToastAutoHidden`.
       if !status.isTerminal {
         guard let target = selectedTarget, target.id == targetID,
-          !terminals.visibleTabIDs(for: target).contains(tabID)
+          !terminals.visibleTabIDs(for: target).contains(tabID),
+          !runningToastAutoHidden.contains(targetID)
         else { return nil }
       }
       let command =
@@ -1557,6 +1570,7 @@ final class AppStore: ObservableObject {
     runToastDismissWork[targetID]?.cancel()
     runToastDismissWork[targetID] = nil
     dismissedRunToasts.remove(targetID)
+    runningToastAutoHidden.remove(targetID)
   }
 
   /// After a run reaches a terminal state, auto-dismiss its toast once the linger elapses (unless the
@@ -1566,6 +1580,19 @@ final class AppStore: ObservableObject {
     let work = scheduleRunToastDismiss(Self.runToastLinger) { [weak self] in
       guard let self else { return }
       self.dismissedRunToasts.insert(targetID)
+      self.runToastDismissWork[targetID] = nil
+    }
+    runToastDismissWork[targetID] = work
+  }
+
+  /// While a run stays alive, auto-hide its LIVE toast once the (longer) running linger elapses —
+  /// unlike `scheduleRunToastAutoDismiss`, this only marks `runningToastAutoHidden`, so a later
+  /// terminal toast (the run crashes) isn't swallowed by an earlier "still running" auto-hide.
+  private func scheduleRunningToastAutoHide(for targetID: TerminalTarget.ID) {
+    runToastDismissWork[targetID]?.cancel()
+    let work = scheduleRunToastDismiss(Self.runningToastLinger) { [weak self] in
+      guard let self else { return }
+      self.runningToastAutoHidden.insert(targetID)
       self.runToastDismissWork[targetID] = nil
     }
     runToastDismissWork[targetID] = work
@@ -1908,6 +1935,10 @@ final class AppStore: ObservableObject {
     case "starting", "running":
       runStates[target.id] = .running(tab: tab, interrupted: false)
       runOutcomes[target.id] = nil
+      // Every fresh "running" edge (initial start, or a restart completing) re-arms the live toast,
+      // even if a prior run already auto-hid it.
+      runningToastAutoHidden.remove(target.id)
+      scheduleRunningToastAutoHide(for: target.id)
       setRunStoppedAwaitingClose(false, tab: tab, target: target.id)
     case "stopping":
       break  // keep the in-flight state (running(interrupted) for a stop, restarting for a restart)
@@ -2277,6 +2308,7 @@ final class AppStore: ObservableObject {
     case .running(let tab, _), .restarting(let tab), .stopped(let tab):
       if signalSupervisor(SIGUSR1, for: target.id) {
         runStates[target.id] = .restarting(tab: tab)  // status: stopping → running
+        runningToastAutoHidden.remove(target.id)  // show "Restarting…" even if prior run auto-hid
       } else {
         respawnRunCommand(replacing: tab, for: target)  // supervisor gone → fresh surface
       }

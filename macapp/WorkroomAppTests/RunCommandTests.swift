@@ -1210,6 +1210,87 @@ final class RunCommandTests: XCTestCase {
     XCTAssertTrue(store.isRunCommandRunning(for: t.id), "and the fresh run is running")
   }
 
+  func testRunningToastAutoHidesAfterLinger() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "npm run dev", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.selectedTargetID = .workroom(project: "/a", name: "main")
+    _ = store.terminals.addTab(for: t)  // focused shell → the run is backgrounded + toasted
+    var pending: [DispatchWorkItem] = []
+    store.scheduleRunToastDismiss = { _, body in
+      let work = DispatchWorkItem(block: body)
+      pending.append(work)
+      return work
+    }
+    store.startRunCommand(for: t)
+    store.applyRunStatus("running", for: t)  // live edge → schedules the running-toast auto-hide
+
+    XCTAssertEqual(pending.count, 1)
+    XCTAssertEqual(
+      store.runToastItems.first?.status, .running, "the live toast shows while running")
+
+    pending[0].perform()  // the running linger elapses
+
+    XCTAssertTrue(store.runToastItems.isEmpty, "the live toast auto-hides after the linger")
+    XCTAssertTrue(store.runningToastAutoHidden.contains(t.id))
+    XCTAssertFalse(
+      store.dismissedRunToasts.contains(t.id), "auto-hide isn't a permanent dismissal")
+  }
+
+  func testRunningToastAutoHideDoesNotSuppressLaterTerminalToast() {
+    // Regression guard: a run that quietly auto-hid its "still running" toast must still surface a
+    // failure toast if it later crashes — the two dismissal sets are independent.
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "npm run dev", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.selectedTargetID = .workroom(project: "/a", name: "main")
+    _ = store.terminals.addTab(for: t)
+    var pending: [DispatchWorkItem] = []
+    store.scheduleRunToastDismiss = { _, body in
+      let work = DispatchWorkItem(block: body)
+      pending.append(work)
+      return work
+    }
+    store.startRunCommand(for: t)
+    store.applyRunStatus("running", for: t)
+    pending[0].perform()  // the running toast auto-hides
+    XCTAssertTrue(store.runToastItems.isEmpty)
+
+    store.applyRunStatus("exited 1", for: t)  // the run later crashes
+
+    XCTAssertEqual(
+      store.runToastItems.first?.status, .failed(code: 1),
+      "a later failure toast isn't swallowed by the earlier running auto-hide")
+  }
+
+  func testRestartReArmsRunningToastAfterAutoHide() {
+    let store = makeStore([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "npm run dev", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.selectedTargetID = .workroom(project: "/a", name: "main")
+    _ = store.terminals.addTab(for: t)
+    var pending: [DispatchWorkItem] = []
+    store.scheduleRunToastDismiss = { _, body in
+      let work = DispatchWorkItem(block: body)
+      pending.append(work)
+      return work
+    }
+    store.startRunCommand(for: t)
+    store.applyRunStatus("running", for: t)
+    pending[0].perform()  // auto-hidden
+    XCTAssertTrue(store.runToastItems.isEmpty)
+
+    store.restartRunCommand(for: t)  // alive supervisor → SIGUSR1 → .restarting, re-arms the toast
+
+    XCTAssertFalse(
+      store.runningToastAutoHidden.contains(t.id), "restarting clears the stale auto-hide flag")
+    XCTAssertEqual(store.runToastItems.first?.status, .restarting)
+
+    store.applyRunStatus("running", for: t)  // restart completes
+
+    XCTAssertEqual(store.runToastItems.first?.status, .running)
+  }
+
   func testRunOutcomeBannerWorthiness() {
     // A genuine failure warrants a banner; a clean exit or a user Stop does not (Arch #7).
     XCTAssertTrue(AppStore.runOutcomeIsBannerWorthy(.exited(code: 1)))
