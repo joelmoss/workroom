@@ -19,6 +19,8 @@ enum SentryConfig {
     "https://01c27f42380699d6072a6e30abe6e175@o272130.ingest.us.sentry.io/4511524517249024"
 
   static func start() {
+    guard shouldStart() else { return }
+
     SentrySDK.start { options in
       options.dsn = ProcessInfo.processInfo.environment["SENTRY_DSN"] ?? dsn
 
@@ -70,6 +72,13 @@ enum SentryConfig {
     if debug { return "development" }
     return nightly ? "nightly" : "production"
   }
+
+  /// Whether Sentry should run at all. Never for local dev builds — CI test runs (GitHub Actions
+  /// macOS runners are VMs) and everyday Debug launches were reporting real crash/hang/trace
+  /// telemetry to the shared Sentry project, indistinguishable from a genuine release event except
+  /// for the `environment` tag — that's how VM/CI noise like WORKROOM-2Y ended up looking like a
+  /// user report.
+  static func shouldStart(debug: Bool = isDebugBuild) -> Bool { !debug }
 
   /// Whether this is a Debug build. A stored fact rather than an `#if` at the use site so
   /// `defaultEnvironment` stays a pure function of its inputs.

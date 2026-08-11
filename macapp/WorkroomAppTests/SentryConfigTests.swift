@@ -31,4 +31,12 @@ final class SentryConfigTests: XCTestCase {
     XCTAssertTrue(SentryConfig.isDebugBuild)
     XCTAssertEqual(SentryConfig.defaultEnvironment(), "development")
   }
+
+  func testDevBuildNeverStartsSentry() {
+    XCTAssertFalse(SentryConfig.shouldStart(debug: true))
+  }
+
+  func testReleaseChannelsStartSentry() {
+    XCTAssertTrue(SentryConfig.shouldStart(debug: false))
+  }
 }
