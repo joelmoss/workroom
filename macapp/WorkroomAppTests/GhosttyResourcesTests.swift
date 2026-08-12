@@ -159,3 +159,52 @@ final class GhosttyResourcesTests: XCTestCase {
     SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
   }
 }
+
+/// `Package.resolved` pins `libghostty-spm` to an exact revision, but that pin protects only the
+/// *bump that set it* — nothing re-checks it afterwards. This packager has re-cut an already
+/// published tag before (arm64e slices shipped under `1.2.4` on 2026-07-21, reverted 3 days later
+/// under the same tag), so a moved tag would silently vendor a different engine than whatever was
+/// last reviewed, with no signal beyond "the version number still says the same thing."
+///
+/// So this is a permanent tripwire, not a one-time check: it is *expected* to fail on the next pin
+/// bump, and that failure is the point — it forces whoever does that bump to notice and deliberately
+/// update `expectedRevision`, rather than the pin silently drifting under an unchanged version string.
+final class GhosttyPinIntegrityTests: XCTestCase {
+  /// The exact commit `macapp/project.yml`'s `libghostty` pin (version 1.3.2) resolved to when this
+  /// bump was researched and landed. Update this alongside `project.yml`'s `exactVersion` on every
+  /// future bump — see "Bump the libghostty pin" in `TODOS.md`.
+  private static let expectedRevision = "b146b73a8ba3ed2678a22a9de5feecfcbf298d48"
+
+  /// `Package.resolved` lives next to the (gitignored) `.xcodeproj`, not under `Resources` — it isn't
+  /// a bundled resource, so this walks up from the test file's own source location instead of going
+  /// through `Bundle.main`.
+  private func packageResolvedURL() throws -> URL {
+    let testFile = URL(fileURLWithPath: String(describing: #filePath))
+    let macappDir = testFile.deletingLastPathComponent().deletingLastPathComponent()
+    return
+      macappDir
+      .appendingPathComponent("WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm")
+      .appendingPathComponent("Package.resolved")
+  }
+
+  func testLibghosttyPinMatchesReviewedRevision() throws {
+    let url = try packageResolvedURL()
+    let data = try XCTUnwrap(
+      FileManager.default.contents(atPath: url.path),
+      "Package.resolved must exist at \(url.path) — run `make app-generate` first")
+    let root =
+      try JSONSerialization.jsonObject(with: data) as? [String: Any]
+    let pins = try XCTUnwrap(root?["pins"] as? [[String: Any]], "Package.resolved has no `pins`")
+    let libghostty = try XCTUnwrap(
+      pins.first { $0["identity"] as? String == "libghostty-spm" },
+      "Package.resolved has no `libghostty-spm` pin")
+    let state = try XCTUnwrap(libghostty["state"] as? [String: Any])
+    let revision = try XCTUnwrap(state["revision"] as? String)
+
+    XCTAssertEqual(
+      revision, Self.expectedRevision,
+      "libghostty-spm resolved to a different commit than the one this bump was reviewed against — "
+        + "either the packager moved the tag, or `project.yml`'s pin changed without updating "
+        + "`expectedRevision` here. Verify what actually changed before updating this constant.")
+  }
+}

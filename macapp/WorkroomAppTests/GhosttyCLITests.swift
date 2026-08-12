@@ -36,21 +36,26 @@ final class GhosttyCLITests: XCTestCase {
   @discardableResult
   private func runGhostty(
     _ arguments: [String], stateHome: URL, file: StaticString = #filePath, line: UInt = #line
-  ) throws -> (status: Int32, stderr: String) {
+  ) throws -> (status: Int32, stdout: String, stderr: String) {
     let process = Process()
     process.executableURL = try ghosttyLink()
     process.arguments = arguments
     process.environment = ProcessInfo.processInfo.environment
       .merging(["XDG_STATE_HOME": stateHome.path]) { _, new in new }
 
+    let outPipe = Pipe()
     let errPipe = Pipe()
-    process.standardOutput = Pipe()
+    process.standardOutput = outPipe
     process.standardError = errPipe
     try process.run()
     // Drain before waiting: a pipe that fills would deadlock a process we then wait on.
+    let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
     let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
     process.waitUntilExit()
-    return (process.terminationStatus, String(decoding: errData, as: UTF8.self))
+    return (
+      process.terminationStatus, String(decoding: outData, as: UTF8.self),
+      String(decoding: errData, as: UTF8.self)
+    )
   }
 
   private func makeStateHome() throws -> URL {
@@ -113,6 +118,26 @@ final class GhosttyCLITests: XCTestCase {
       "a cache miss must exit non-zero — the shell wrapper falls through to infocmp on it")
   }
 
+  /// `+ssh` is the action `shell-integration/{bash,zsh}` now call (the inline wrapper was replaced
+  /// upstream around 2026-05-04/05 — see `Resources/ghostty/SOURCE.md`), and it does not exist at
+  /// all before that: the old pin this bump replaces has no `+ssh` action, so grepping the OLD
+  /// vendored scripts finds no such call. Mirrors `testGhosttyRunsSshCacheActionAndWritesCache`'s
+  /// exit-0 assertion (`release.sh:212-216` asserts `+ssh-cache` dispatch on the shipped artifact
+  /// the same way), plus a stdout-content check — proving the *help* subcommand actually ran,
+  /// rather than merely exiting 0 the way a no-op could.
+  func testGhosttySshHelpDispatches() throws {
+    let stateHome = try makeStateHome()
+    let result = try runGhostty(["+ssh", "--help"], stateHome: stateHome)
+    XCTAssertEqual(result.status, 0, "`+ssh --help` must exit 0; stderr: \(result.stderr)")
+    XCTAssertTrue(
+      result.stdout.contains("Wrap `ssh`"),
+      "expected +ssh's own help text, not a generic/empty response; got: \(result.stdout)")
+    XCTAssertTrue(
+      result.stdout.contains("--terminfo"),
+      "expected the --terminfo flag documented, confirming this is +ssh's real help and not a "
+        + "stale cached string; got: \(result.stdout)")
+  }
+
   /// An unknown action fails in `ghostty_init` (which parses and stores it), before
   /// `ghostty_cli_try_action` ever runs. `main.swift` turns that into a message and exit 1.
   func testGhosttyRejectsInvalidAction() throws {
@@ -154,5 +179,125 @@ final class GhosttyCLITests: XCTestCase {
     XCTAssertTrue(
       executableName.hasPrefix("Workroom"),
       "expected the app path to be running this suite, got executable name: \(executableName)")
+  }
+
+  // MARK: - Shell-integration `ssh` wrapper (issue: the fake-ssh regression cover)
+
+  /// A stub `ssh` on `PATH`, ahead of the real one, that just echoes its argv to stderr and exits
+  /// 0. `testGhosttySshHelpDispatches` above proves `+ssh --help` dispatches; this closes the gap
+  /// that leaves: that `+ssh` — and the shell FUNCTION that calls it, which is exactly what this
+  /// bump's resource regeneration rewrote — actually translates `GHOSTTY_SHELL_FEATURES` into the
+  /// right flags and env, without a real network round-trip to a real host.
+  private func makeStubSSH() throws -> URL {
+    let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+      .appendingPathComponent("ghostty-fake-ssh-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+    let script = dir.appendingPathComponent("ssh")
+    try "#!/bin/bash\necho \"FAKE_SSH_ARGS: $@\" >&2\nexit 0\n".write(
+      to: script, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+    return dir
+  }
+
+  /// Sources the real vendored `bash/ghostty.bash` and calls its `ssh` function — the actual shipped
+  /// bytes `GhosttyResourcesTests` pins, not a hand-copied approximation of the wrapper logic.
+  ///
+  /// The script hard-gates on interactive mode (`[[ "$-" != *i* ]] && return`), since it expects to
+  /// run as part of a real shell startup — hence `bash -i`. `--norc --noprofile` keep that from also
+  /// loading the actual developer's `.bashrc`, which has nothing to do with what's under test here.
+  @discardableResult
+  private func runShellWrapperSSH(
+    features: String, sshArgs: [String], file: StaticString = #filePath, line: UInt = #line
+  ) throws -> (status: Int32, stderr: String) {
+    let script = try XCTUnwrap(
+      Bundle.main.resourceURL?
+        .appendingPathComponent("ghostty/shell-integration/bash/ghostty.bash").path)
+    let fakeSSHDir = try makeStubSSH()
+
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/bash")
+    process.arguments = [
+      "--norc", "--noprofile", "-i", "-c",
+      "source '\(script)'; ssh \(sshArgs.joined(separator: " "))",
+    ]
+    process.environment = ProcessInfo.processInfo.environment.merging([
+      "GHOSTTY_SHELL_FEATURES": features,
+      "GHOSTTY_BIN_DIR": try macOSDir().path,
+      "PATH": fakeSSHDir.path + ":" + (ProcessInfo.processInfo.environment["PATH"] ?? ""),
+    ]) { _, new in new }
+
+    let errPipe = Pipe()
+    process.standardOutput = Pipe()
+    process.standardError = errPipe
+    try process.run()
+    let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    return (process.terminationStatus, String(decoding: errData, as: UTF8.self))
+  }
+
+  /// Both `ssh-env` and `ssh-terminfo` on: the real `ssh` must be called with env-forwarding flags
+  /// AND the host/port args passed through untouched. `+ssh` also attempts a terminfo install
+  /// against the stub over a `ControlMaster` connection, which fails harmlessly (the stub isn't a
+  /// real ssh) and logs a warning — that warning, not the actual `ssh` call, is what's ignored here.
+  func testShellIntegrationSshWrapperForwardsEnvWhenEnabled() throws {
+    let result = try runShellWrapperSSH(
+      features: "ssh-env,ssh-terminfo", sshArgs: ["myhost.example", "-p", "2222"])
+    XCTAssertTrue(
+      result.stderr.contains("FAKE_SSH_ARGS:"),
+      "the stub ssh was never invoked at all; got: \(result.stderr)")
+    XCTAssertTrue(
+      result.stderr.contains("SetEnv=TERM=xterm-256color")
+        && result.stderr.contains("SendEnv=COLORTERM"),
+      "ssh-env was enabled, so env-forwarding flags must reach the real ssh call; got: \(result.stderr)"
+    )
+    XCTAssertTrue(
+      result.stderr.contains("myhost.example") && result.stderr.contains("-p 2222"),
+      "the original ssh args must pass through unchanged; got: \(result.stderr)")
+  }
+
+  /// `ssh-terminfo` only (no `ssh-env`): the wrapper must translate that into `--forward-env=false`,
+  /// which `+ssh` must honour by NOT adding the `SetEnv`/`SendEnv` flags to the real `ssh` call —
+  /// proving the flag actually suppresses forwarding, not just that it was accepted.
+  func testShellIntegrationSshWrapperSkipsEnvForwardingWhenDisabled() throws {
+    let result = try runShellWrapperSSH(features: "ssh-terminfo", sshArgs: ["myhost.example"])
+    XCTAssertTrue(
+      result.stderr.contains("FAKE_SSH_ARGS:"),
+      "the stub ssh was never invoked at all; got: \(result.stderr)")
+    XCTAssertFalse(
+      result.stderr.contains("SetEnv=") || result.stderr.contains("SendEnv="),
+      "ssh-env was NOT enabled, so no env-forwarding flags should reach the real ssh call; "
+        + "got: \(result.stderr)")
+  }
+
+  /// No `ssh-*` feature at all: the wrapper function must not even be defined, so a plain `ssh`
+  /// resolves straight to whatever is on `PATH` — proving the gate itself, not just its flag
+  /// translation, since a wrapper that always ran (even as a no-op) would still be a behavior change
+  /// from upstream's un-integrated `ssh`.
+  func testShellIntegrationSshWrapperIsUndefinedWithoutFeature() throws {
+    let script = try XCTUnwrap(
+      Bundle.main.resourceURL?
+        .appendingPathComponent("ghostty/shell-integration/bash/ghostty.bash").path)
+    let fakeSSHDir = try makeStubSSH()
+
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/bash")
+    process.arguments = ["--norc", "--noprofile", "-i", "-c", "source '\(script)'; type -t ssh"]
+    process.environment = ProcessInfo.processInfo.environment.merging([
+      "GHOSTTY_SHELL_FEATURES": "",
+      "PATH": fakeSSHDir.path + ":" + (ProcessInfo.processInfo.environment["PATH"] ?? ""),
+    ]) { _, new in new }
+    let outPipe = Pipe()
+    process.standardOutput = outPipe
+    process.standardError = Pipe()
+    try process.run()
+    let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    let out = String(decoding: outData, as: UTF8.self).trimmingCharacters(
+      in: .whitespacesAndNewlines)
+    XCTAssertEqual(
+      out, "file",
+      "without an ssh-* feature, `ssh` must resolve to the PATH binary (`type -t` reports \"file\"), "
+        + "not a shell function — got: \(out)")
   }
 }
