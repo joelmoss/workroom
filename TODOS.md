@@ -121,6 +121,14 @@ explicitly, and package `1.2.3` is built from ghostty **`v1.3.1`**. Reading a pa
 ghostty version is what made an earlier CMT-2 claim we trailed ghostty by ~2 versions and file it as
 P1. Package `1.3.1` ≠ ghostty `v1.3.1`. Always read `Ghostty.ref` + the release body, never the tag.
 
+**Scope check (2026-08-12):** we link only the raw `GhosttyKit` C-API product (`project.yml`'s
+`libghostty` target) — not the wrapper's own Swift `TerminalSurface`/`TerminalView` convenience
+layer. Every wrapper-side Swift PR between our pin and 1.3.2 (AppKit copy-path change, async
+host-managed output queuing, prompt navigation, per-surface env vars, scrollbar delegate) touches
+types we don't consume and is out of scope for this bump. Whether we *should* start consuming that
+layer is a separate, open question — see "Own the GhosttyKit xcframework" below for the supply-chain
+angle; the API-surface angle is undecided and not yet filed.
+
 **The real risk is the patch swap, not the API.** The packager applies its own patches to ghostty
 before building, and `Script/apply-patches.sh` feature-probes the header to choose between them:
 
@@ -142,6 +150,24 @@ tags including `SHOW_CHILD_EXITED` and `COMMAND_FINISHED` — is **not** a risk:
 archive ship together, `GhosttyRuntimeAdapter.handleAction` dispatches on symbolic labels, and
 nothing persists a raw tag. Don't spend the retest budget there. (Don't write a test asserting a
 tag's raw value either — test and app import the same header, so it can never fail.)
+
+**Full `include/ghostty.h` diff swept (2026-08-12, `332b2aef` → `35e1a016`) — two real C-ABI
+removals found, both confirmed unused:** `ghostty_app_key_is_binding()` is gone (moved to
+`ghostty_config_key_is_binding`); the `translated` field is gone from `ghostty_input_trigger_u`.
+Grepped `WorkroomApp*` for both — zero call sites, zero `.translated` reads; we only ever call
+`ghostty_surface_key_is_binding` (surface-level, untouched), so neither removal costs anything.
+Also confirmed: upstream's OSC 9;4 progress-report expansion (PR #13483) is **not** in this pin —
+it merged 2026-07-27, three weeks after `35e1a016`'s actual commit date (2026-07-10), so don't
+expect it from this bump.
+
+**Two more upstream fixes for the retest budget, on top of the patch-swap risk above:**
+- `ghostty_surface_free_text` was silently not freeing memory (header/impl pointer-type mismatch,
+  now fixed) — good news for `extractString`/`read_text`/`read_selection` in
+  `GhosttySurfaceView.swift`, but confirm with an actual leak check rather than assuming.
+- A crash fix: `mouseButtonCallback` raced the I/O thread's scrollback pruning without the renderer
+  mutex on link clicks (use-after-free). Add "select/click text while scrollback is actively
+  producing output" to the IO-layer retest below. `SelectionGesture` was also rewritten internally
+  (same public surface) — retest drag/click-threshold edges while there.
 
 **Blocking work, same commit:**
 - ~~**Decide the `ghostty +ssh` question.**~~ **DONE, ahead of this bump.**
@@ -188,6 +214,11 @@ work, deliberately against the old engine) is the pass/fail gate.
   landing. Require N clean nightlies before it enters a `pre` tag.
 - **A `QA-libghostty.md` §N "engine bump smoke"** (~12 items). Committing to the full 13-section
   manual walk on every bump guarantees it won't happen next time.
+- **Retest the GhosttyKit modulemap-collision workaround.** The packager namespaced its
+  XCFramework headers under `Headers/libghostty/` between our pin and 1.3.2 (avoids a collision
+  when two static XCFrameworks link into one target) — confirm the existing library-only-xcframework
+  + separate-C-target workaround (`macapp/CLAUDE.md:120-124`, "Multiple commands produce
+  include/module.modulemap") still holds, or has become unnecessary.
 
 **Rollback is not one line:** revert the commit(s), `rm -rf macapp/DerivedData/SourcePackages`,
 rebuild. CI's `spm-`/`xcbuild-` caches key on `project.yml` and their `restore-keys` fallback can
@@ -232,13 +263,13 @@ scheduled release"` when the package repo hasn't moved. Release-tag auto-detecti
 package 1.2.9 and was **removed**. Five package releases in 17 days all shipped one engine. So when
 ghostty ships 1.4.0, nothing pulls it until one person edits a file.
 
-**How to start (cheaper than a full fork — reuse the packager's tooling):** clone
-`ghostty-org/ghostty` at the chosen ref, run the packager's build script against it, and regenerate
-`terminfo`/`shell-integration` from that same ref. Decide deliberately which of the 11 patches to
-carry — `0002-host-managed-io*` is load-bearing for embedding; the iOS/Catalyst ones are not ours.
-Vendor the xcframework + a 2-file C shim, or host it as a release artifact in a separate repo's CI.
-Zig is needed only to *build*, not to *consume*. Signing is unchanged (a static archive in the main
-executable, no new framework to sign).
+**How to start:** clone `ghostty-org/ghostty` at the chosen ref, decide deliberately which of the 11
+patches to carry (`0002-host-managed-io*` is load-bearing for embedding; the iOS/Catalyst ones are
+not ours), and regenerate `terminfo`/`shell-integration` from that same ref. Vendor the xcframework +
+a 2-file C shim, or host it as a release artifact in a separate repo's CI. Zig is needed only to
+*build*, not to *consume*. Signing is unchanged (a static archive in the main executable, no new
+framework to sign). **The build mechanics themselves are cheaper than "reuse the packager's tooling"
+implies** — see "Build path for owning GhosttyKit.xcframework" below.
 
 **Depends on:** nothing in-app. Best decided once GA has shipped and the pin bump has baked, since
 owning the pin means owning the patch decisions above.
@@ -246,6 +277,89 @@ owning the pin means owning the patch decisions above.
 **Priority:** P3 — a real supply-chain posture question with no feature blocked behind it. Revisit at
 GA, or the first time the hand-maintained `Ghostty.ref` leaves us stranded on an engine we need to
 move off.
+
+### Build path for owning GhosttyKit.xcframework (macapp) — CMT-2 finding, checked 2026-08-12
+
+**What:** if/when CMT-2 (above) is actioned, the build mechanics are cheaper than "reuse the
+packager's tooling" suggests. `ghostty-org/ghostty`'s own `build.zig` has first-class
+`-Demit-xcframework` machinery (`src/build/{Config,XCFrameworkStep,LipoStep,GhosttyXCFramework}.zig`)
+— it's what builds `GhosttyKit.xcframework` for **ghostty-org's own** macOS app
+(`macos/Ghostty.xcodeproj` links that exact framework). `-Demit-xcframework -Dapp-runtime=none` is
+the official surface, confirmed in `Config.zig`'s option defaults; it isn't a reverse-engineered
+path, it's the same one ghostty-org's own Mac build uses.
+
+**Why it's cheaper than assumed:** the packager's `Script/build-ghostty.sh` +
+hand-rolled `merge-xcframework.sh` reimplement a slice of that official machinery because their CI
+matrix targets 7 slices (macOS × iOS × iOS-sim × Catalyst, for *their* downstream reach — Workroom
+doesn't need any of that). We only ship macOS — 2 slices (`aarch64-macos`, `x86_64-macos`) — so
+`-Dxcframework-target=universal` should drive Zig's own `LipoStep`/`XCFrameworkStep` to assemble the
+universal xcframework directly in one invocation, with no custom lipo script needed.
+
+**What this doesn't solve:** patch curation is still fully on us. `Patches/ghostty/` carries 11
+patches (~200 KB); `0002-host-managed-io*` is load-bearing for embedding, the iOS/Catalyst ones are
+not ours to carry. Self-building doesn't remove that decision, it just makes it ours instead of
+inherited from Lakr233 — that's the real ongoing cost of CMT-2, not the build mechanics this entry
+is about.
+
+**Depends on:** CMT-2 actually being actioned — this is a build-path finding for that entry, not an
+independent task.
+
+**Priority:** P3 — same gating as CMT-2; irrelevant unless/until that entry is executed.
+
+### Evaluate adopting `AppTerminalView` for action-dispatch plumbing (macapp) — reviewed 2026-08-12, not now
+
+**What:** `libghostty-spm` ships more than the raw `GhosttyKit` C-API product we link — a Swift
+convenience layer (`Sources/GhosttyTerminal`) with a cross-platform `AppTerminalView`
+(AppKit)/`UITerminalView` (UIKit) pair, a `TerminalSurfaceCoordinator`/`TerminalController`, and a
+typed delegate family (`TerminalSurfaceTitleDelegate`, `...ResizeDelegate`, `...FocusDelegate`,
+`...BellDelegate`, `...ScrollbarDelegate`, `...ProgressReportDelegate`,
+`...CommandFinishedDelegate`, `...OpenURLDelegate`, `...HoverLinkDelegate`, `...PwdDelegate`,
+`...LifecycleDelegate`, etc.). We use none of it — `GhosttySurfaceView.swift` is our own 2001-line
+`NSView` subclass calling `ghostty_surface_config_new()` and the rest of the raw C API directly, with
+our own `GhosttyRuntimeAdapter` doing the `GHOSTTY_ACTION_*` switch by hand.
+
+**Checked, not assumed:** `AppTerminalView` is `open class: NSView` (not sealed), and every
+input override in `AppTerminalView+Input.swift` (`keyDown`, `mouseDown`, `rightMouseDown`,
+`scrollWheel`, `performKeyEquivalent`, …) is itself `override open`, so a subclass in our module
+genuinely can override further and call `super`. This is a real, thoughtfully-designed extension
+point, not a rebrand of a black box — worth recording so this doesn't get re-litigated on a
+surface-level "it's probably sealed" guess.
+
+**Why not now anyway:**
+- **It would bundle a UI-layer rewrite with the IO-layer risk the pin bump already carries.**
+  Adopting the delegate surface means adopting the coordinator/controller layer underneath it too,
+  which is exactly where the packager's `0002-host-managed-io*` patch swap lives (see the pin-bump
+  entry above). Evaluating two unknowns — a new engine *and* a new plumbing layer — at once defeats
+  the point of bumping the pin first and baking it.
+- **Migration cost is real, not mechanical.** `GhosttySurfaceView.swift` encodes ~15-20 documented,
+  empirically-discovered AppKit fixes (several **real-mouse-only** — synthetic/XCUITest clicks pass
+  on the buggy code, so they can't be regression-tested by CI alone): `.textSelection(.enabled)`
+  swallowing real mouseDown, the ⌘-key routing through `AppDelegate`'s monitor rather than
+  `event.window`, DECSET-1004 focus reporting via `ghostty_app_set_focus` + window-key handling, the
+  backspace-DEL-as-text and ⌃Tab workarounds, mask+contentShape hit-testing during scroll. `open`
+  subclassing means each of these is *portable in principle*, but re-deriving exactly where each one
+  hooks into `TerminalKeyEventHandler`/`TerminalSurfaceCoordinator` internals we didn't write is
+  rediscovery work, not a mechanical port — and several of these fixes have no delegate hook at all
+  (they're not events `AppTerminalView` surfaces, they're workarounds for how SwiftUI/AppKit deliver
+  events to *any* view underneath them).
+- **No pin-bump goal needs it.** `ghostty_surface_foreground_pid`/`ttyName` and
+  `GHOSTTY_ACTION_SELECTION_CHANGED` are both reachable through the raw C API we already call —
+  adopting the Swift layer buys nothing for CMT-1/CMT-3.
+- **It deepens exactly the coupling CMT-2 (above) is questioning.** Consuming more of a
+  single-maintainer package's Swift surface, while a neighboring entry is asking whether to stop
+  depending on that same package altogether, is the wrong direction until CMT-2 is resolved.
+
+**What it could buy, if revisited later:** the delegate family plausibly replaces a chunk of
+`GhosttyRuntimeAdapter`'s hand-rolled `GHOSTTY_ACTION_*` switch (title/resize/bell/scrollbar/
+progress-report/command-finished are all typed callbacks instead of a raw tag switch) — but that's
+an argument for adopting the **dispatch layer only**, not for replacing our own input/mouse/keyboard
+handling, which is where nearly all the hard-won fixes live.
+
+**Depends on:** the pin bump landing and baking first (see above), and CMT-2's supply-chain question
+being settled — no point deepening coupling to a dependency we might drop.
+
+**Priority:** P3 — no feature blocked behind it, reviewed and consciously deferred rather than
+unconsidered.
 
 ### Finish the action-dispatch UI coverage (macapp) — search counters
 
