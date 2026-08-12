@@ -64,15 +64,6 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
     return (window, hosting)
   }
 
-  private func settle(_ view: NSView, seconds: TimeInterval = 0.6) {
-    let deadline = Date().addingTimeInterval(seconds)
-    while Date() < deadline {
-      view.layoutSubtreeIfNeeded()
-      RunLoop.current.run(until: Date().addingTimeInterval(0.02))
-    }
-    view.layoutSubtreeIfNeeded()
-  }
-
   func testTerminalPulseBurstRebuildsNoChangedFileRows() throws {
     let store = makeStore(changedFiles: files(60))
     let (window, view) = host(store)
@@ -80,6 +71,9 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
       store.terminals.reapAll()
       window.close()
     }
+    // No early-exit condition here: this settle must fully drain the initial render's transient
+    // extra passes, or stray late renders leak into the pulse-burst measurement window below and
+    // spuriously fail the "must rebuild NOTHING" assertion (found by running the mutation check).
     settle(view)
     let target = store.target(for: .workroom(project: projectPath, name: workroomName))!
     guard let tab = store.terminals.focusedTab(for: target) else {
@@ -119,13 +113,13 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
     settle(view, seconds: 1.2)
     store.workroomStatuses[.workroom(project: projectPath, name: workroomName)] = WorkroomStatus(
       dirty: true, changedFiles: files(20), lastChecked: Date())
-    settle(view)
+    settle(view, until: { ChangedFileRow.bodyPasses > 0 })
     XCTAssertGreaterThan(
       ChangedFileRow.bodyPasses, 0, "the fixture must actually render changed-file rows")
 
     ChangedFileRow.bodyPasses = 0
     ThemeService.shared.applyActiveTheme(force: true)
-    settle(view)
+    settle(view, until: { ChangedFileRow.bodyPasses > 0 })
 
     XCTAssertGreaterThan(
       ChangedFileRow.bodyPasses, 0, "a theme change must repaint the changed-file rows")
@@ -169,7 +163,7 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
       .diff(path: "src/file0.swift", source: .gitWorktree), "file0's diff must be the focused tab")
     ChangedFileRow.bodyPasses = 0
     store.workroomStatuses[.workroom(project: projectPath, name: workroomName)]?.dirty = true
-    settle(view)
+    settle(view, until: { ChangedFileRow.bodyPasses > 0 })
     XCTAssertGreaterThan(
       ChangedFileRow.bodyPasses, 0,
       "rows must be on screen when the measurement window opens — otherwise 'the rows rebuilt' and "
@@ -178,7 +172,7 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
     ChangedFileRow.bodyPasses = 0
     // Focusing the terminal tab clears the selection (a terminal selects no inspector row).
     store.terminals.focus(terminalTab.id, for: target)
-    settle(view)
+    settle(view, until: { ChangedFileRow.bodyPasses > 0 })
 
     XCTAssertNil(FocusedTabSelection.current(store: store, sessions: store.terminals))
     XCTAssertGreaterThan(

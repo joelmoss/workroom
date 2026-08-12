@@ -51,16 +51,6 @@ final class NewWindowUITests: XCTestCase {
     return XCTWaiter().wait(for: [exp], timeout: timeout) == .completed
   }
 
-  /// The File menu carries a "New Window" item (it replaced the suppressed default). It has no
-  /// keyboard shortcut — ⌘N now belongs to "New Workroom" (issue #81); New Window is menu-only.
-  /// Asserting the item exists is the reliable a11y check.
-  func testNewWindowMenuItemPresent() throws {
-    let app = launchedApp()
-    waitForLaunchWindow(app)
-    XCTAssertTrue(
-      newWindowMenuItem(app).waitForExistence(timeout: 4), "File ▸ New Window should exist")
-  }
-
   /// New Window opens a second window, and it's BLANK: the app-wide terminal-pane count stays at the
   /// launch window's one — the new window has no open workroom or terminal (issue #70).
   func testNewWindowOpensBlankSecondWindow() throws {

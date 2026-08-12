@@ -269,17 +269,7 @@ final class SessionRestoreUITests: XCTestCase {
     assertCount(tabs(app), reaches: 1)
   }
 
-  /// Proves the fixture seam isolates every other UI test: with no session path, the app writes
-  /// nothing at all — so the 30-odd existing tests cannot touch the developer's own session.
-  func testWithoutASessionPathNothingIsWritten() throws {
-    let app = launchedApp(withSessionFile: false)
-    waitForFirstPane(app)
-    app.typeKey("d", modifierFlags: .command)
-    assertCount(panes(app), reaches: 2)
-    app.terminate()
-
-    XCTAssertFalse(
-      FileManager.default.fileExists(atPath: sessionFile.path),
-      "fixture mode must not write a session unless a test asked for one")
-  }
+  // `testWithoutASessionPathNothingIsWritten` moved to
+  // `AgentSessionIsolationTripwireUITests.swift` — it's an isolation tripwire the routine sweep
+  // must keep running even though this file is skipped by default via `APP_UITEST_FLAGS`.
 }

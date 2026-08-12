@@ -132,16 +132,6 @@ final class HistoryRowInvalidationTests: XCTestCase {
     return (window, hosting)
   }
 
-  /// Pump the runloop so SwiftUI commits pending transactions, then force layout.
-  private func settle(_ view: NSView, seconds: TimeInterval = 0.6) {
-    let deadline = Date().addingTimeInterval(seconds)
-    while Date() < deadline {
-      view.layoutSubtreeIfNeeded()
-      RunLoop.current.run(until: Date().addingTimeInterval(0.02))
-    }
-    view.layoutSubtreeIfNeeded()
-  }
-
   // MARK: the hang itself
 
   func testTerminalPulseBurstRebuildsNoRows() async throws {
@@ -192,7 +182,7 @@ final class HistoryRowInvalidationTests: XCTestCase {
     HistoryRow.bodyPasses = 0
     let first = store.commitHistory.commits[0]
     store.openChangesetPreview(commitID: first.commitID, title: first.summary)
-    settle(view)
+    settle(view, until: { HistoryRow.bodyPasses > 0 })
 
     XCTAssertGreaterThan(
       HistoryRow.bodyPasses, 0,
@@ -221,7 +211,7 @@ final class HistoryRowInvalidationTests: XCTestCase {
     provider.replace(commits: rewritten)
     store.commitHistory.refresh()
     await store.commitHistory.awaitCurrentLoad()
-    settle(view)
+    settle(view, until: { HistoryRow.bodyPasses > 0 })
 
     XCTAssertGreaterThan(
       HistoryRow.bodyPasses, 0,
@@ -250,7 +240,7 @@ final class HistoryRowInvalidationTests: XCTestCase {
 
     HistoryRow.bodyPasses = 0
     ThemeService.shared.applyActiveTheme(force: true)
-    settle(view)
+    settle(view, until: { HistoryRow.bodyPasses > 0 })
 
     XCTAssertGreaterThan(
       HistoryRow.bodyPasses, 0,

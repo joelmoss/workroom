@@ -22,6 +22,18 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # `jj` is what TestAddProjectCreate_ExistingJJRepoUsedAsIs / TestDeleteProjectSafetyJJ_* shell
+      # out to — both `t.Skip` silently without it, so without this step they never ran in CI at
+      # all. Same pattern as the `vcs-core` job below (apt has no jj package, hence the release
+      # tarball); pinned to jj-lib's version in vcs/Cargo.toml: bump both together.
+      - name: Install jj
+        env:
+          JJ_VERSION: 0.43.0
+        run: |
+          curl -fsSL "https://github.com/jj-vcs/jj/releases/download/v$JJ_VERSION/jj-v$JJ_VERSION-x86_64-unknown-linux-musl.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin ./jj
+          jj --version
+
       # golangci-lint subsumes `go vet` (govet) and the gofmt check (gofmt linter). Installed
       # with `go install` so it's built with the project's Go toolchain (go.mod), matching local.
       - name: Lint

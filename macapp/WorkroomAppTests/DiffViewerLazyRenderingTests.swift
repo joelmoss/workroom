@@ -63,16 +63,11 @@ final class DiffViewerLazyRenderingTests: XCTestCase {
     return (window, hosting)
   }
 
-  /// Pump the runloop so SwiftUI commits pending transactions (including the `.task(id: fetchKey)`
-  /// load) and force layout.
-  private func settle(_ view: NSView, seconds: TimeInterval = 0.6) {
-    let deadline = Date().addingTimeInterval(seconds)
-    while Date() < deadline {
-      view.layoutSubtreeIfNeeded()
-      RunLoop.current.run(until: Date().addingTimeInterval(0.02))
-    }
-    view.layoutSubtreeIfNeeded()
-  }
+  // Both settle() calls below deliberately use the shared helper's default (no early-exit
+  // condition): these are scale/amplification checks (List must realize far fewer rows than
+  // `lineCount`, and must do so within a time ceiling) — an early exit as soon as ANY row renders
+  // would stop the observation window before a real "list went eager again" regression has a
+  // chance to fully manifest, masking exactly the WORKROOM-2T defect this suite exists to catch.
 
   func testHugeDiffDoesNotBuildEveryLine() throws {
     DiffViewer.lineRowBodyPasses = 0

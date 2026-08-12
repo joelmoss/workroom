@@ -889,7 +889,27 @@ final class WorkroomStatusTests: XCTestCase {
     }
     XCTAssertTrue(runner.enteredGHProbe, "the gh auth probe never started")
     task.cancel()
-    await task.value
+    // Release the probe only AFTER cancelling — this is what proves `task.value` blocks on the
+    // runner's own decision (single-flight ignores cancellation) rather than on any timer.
+    runner.release()
+
+    // Safety net, not the mechanism under test: if a future change to `GatedGHRunner` ever leaves
+    // the continuation unresumed, fail fast with a clear message instead of hanging the whole run.
+    let returnedInTime = await withTaskGroup(of: Bool.self) { group in
+      group.addTask {
+        await task.value
+        return true
+      }
+      group.addTask {
+        try? await Task.sleep(nanoseconds: 5_000_000_000)
+        return false
+      }
+      let first = await group.next() ?? false
+      group.cancelAll()
+      return first
+    }
+    XCTAssertTrue(
+      returnedInTime, "refreshGitHubCLI did not return within 5s of the probe being released")
 
     XCTAssertEqual(store.githubCLIStatus, .available, "a cancelled probe published a verdict")
   }
@@ -936,7 +956,7 @@ private struct StubPRRunner: StatusCommandRunning {
   }
 }
 
-/// Blocks inside the `gh auth status` probe until the awaiting Task is cancelled, then returns a
+/// Blocks inside the `gh auth status` probe until the TEST explicitly releases it, then returns a
 /// result that WOULD produce a real verdict.
 ///
 /// Two details make this test the cancellation guard's test rather than a duplicate of the
@@ -951,14 +971,29 @@ private struct StubPRRunner: StatusCommandRunning {
 ///    make the test pass even with the cancellation guard deleted — green for the wrong reason. With
 ///    a clean verdict, `Task.isCancelled` is the ONLY thing standing between a cancelled probe and a
 ///    published `.notAuthenticated`.
+///
+/// Gated on a stored continuation rather than a fixed sleep: how long the probe is "in flight"
+/// before the test cancels it isn't the thing under test, so it shouldn't cost the test suite any
+/// wall-clock time. `release()` is a no-op until `run()` has actually stored the continuation —
+/// callers must poll `enteredGHProbe` first, same as the old sleep-based version required.
 private final class GatedGHRunner: StatusCommandRunning, @unchecked Sendable {
   private let lock = NSLock()
   private var entered = false
+  private var continuation: CheckedContinuation<Void, Never>?
 
   var enteredGHProbe: Bool {
     lock.lock()
     defer { lock.unlock() }
     return entered
+  }
+
+  /// Lets `run()` return. No-op if the probe hasn't reached the await yet.
+  func release() {
+    lock.lock()
+    let cont = continuation
+    continuation = nil
+    lock.unlock()
+    cont?.resume()
   }
 
   func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
@@ -970,9 +1005,11 @@ private final class GatedGHRunner: StatusCommandRunning, @unchecked Sendable {
     lock.lock()
     entered = true
     lock.unlock()
-    // Sleeps until cancelled (then throws immediately, which `try?` drops). Long enough that the
-    // test's own deadline fails first if cancellation never propagates.
-    try? await Task.sleep(nanoseconds: 60_000_000_000)
+    await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+      lock.lock()
+      continuation = cont
+      lock.unlock()
+    }
     return CommandResult(stdout: #"{"hosts":{}}"#, stderr: "", exitCode: 0, timedOut: false)
   }
 }

@@ -81,29 +81,18 @@ final class SettingsSidebarUITests: XCTestCase {
     pane(app, "agent").click()
     XCTAssertTrue(waitExists(control(app, "autoDiagnose"), true), "Agent shows its controls")
 
-    // About → the "Check for Updates…" button; Agent's control is gone (detail swapped).
+    // About → the "Check for Updates…" button; Agent's control is gone (detail swapped). Also
+    // covers the rest of the About pane (issue #91) here rather than in a separate test/launch:
+    // the version, repo/release-notes links, and the release-channel picker, all by a11y id.
     pane(app, "about").click()
     XCTAssertTrue(
       aboutControl(app, "checkForUpdates").waitForExistence(timeout: 5), "About shows its controls")
     XCTAssertTrue(
       waitExists(control(app, "autoDiagnose"), false),
       "switching away replaces the Agent detail")
-  }
-
-  /// The About pane (issue #91) exposes the version, the repo/release-notes links, the
-  /// "Check for Updates…" button, and the release-channel picker — all reachable by a11y id.
-  func testAboutPaneHasUpdateControlsAndLinks() throws {
-    let app = launchedApp()
-    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
-    openSettings(app)
-
-    XCTAssertTrue(pane(app, "about").waitForExistence(timeout: 10), "sidebar should render")
-    pane(app, "about").click()
-    XCTAssertTrue(
-      aboutControl(app, "version").waitForExistence(timeout: 5), "About shows the version")
+    XCTAssertTrue(aboutControl(app, "version").exists, "About shows the version")
     XCTAssertTrue(aboutControl(app, "repo").exists, "About shows the repository link")
     XCTAssertTrue(aboutControl(app, "releaseNotes").exists, "About shows the release-notes link")
-    XCTAssertTrue(aboutControl(app, "checkForUpdates").exists, "About shows Check for Updates…")
     XCTAssertTrue(
       control(app, "releaseChannel").exists, "About shows the release-channel picker")
   }

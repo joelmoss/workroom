@@ -53,14 +53,12 @@ final class AgentResumeCoordinatorTests: XCTestCase {
     return coordinator.offers[tab]
   }
 
-  private func settle(_ seconds: TimeInterval = 0.5) {
-    let deadline = Date().addingTimeInterval(seconds)
-    while Date() < deadline {
-      RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
-    }
-  }
-
   // MARK: Offers
+  //
+  // Every `settle()` call below deliberately uses the shared helper's default (no early-exit
+  // condition): each one is proving a NEGATIVE ("no offer must land") — early-exiting on any
+  // observable signal would risk stopping the wait before a real regression (an offer landing
+  // late) has a chance to show up, which is exactly backwards for what these are checking.
 
   func testARestoredPaneWithHistoryGetsAnOffer() throws {
     let cwd = "/tmp/project"

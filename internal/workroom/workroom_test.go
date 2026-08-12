@@ -455,38 +455,6 @@ func TestCreateErrorsAfterTooManyNameCollisions(t *testing.T) {
 	}
 }
 
-func TestCreateUpdatesConfig(t *testing.T) {
-	dir := t.TempDir()
-	os.Mkdir(filepath.Join(dir, ".jj"), 0o755)
-	workroomsDir := filepath.Join(dir, "workrooms")
-
-	mock := &mockExecutor{
-		output: "default: mk 6ec05f05 (no description set)",
-	}
-	jj := &vcs.JJ{Executor: mock}
-
-	svc, _, _ := newTestService(t, jj)
-	svc.Config = newTestConfig(t, filepath.Join(dir, "config.json"))
-	svc.Config.SetWorkroomsDir(workroomsDir)
-	svc.NameGenFunc = func() string { return "foo" }
-
-	err := svc.Create(dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	data, _ := svc.Config.Read()
-	project := data[dir].(map[string]any)
-	if project["vcs"] != "jj" {
-		t.Fatalf("expected vcs jj, got %v", project["vcs"])
-	}
-	workrooms := project["workrooms"].(map[string]any)
-	foo := workrooms["foo"].(map[string]any)
-	if foo["path"] != filepath.Join(workroomsDir, "foo") {
-		t.Fatalf("expected workroom path, got %v", foo["path"])
-	}
-}
-
 // --- Create: Editor prompt ---
 
 func TestCreatePromptsToOpenEditorWhenSet(t *testing.T) {

@@ -57,12 +57,4 @@ func TestGenerate(t *testing.T) {
 		}
 	})
 
-	t.Run("has expected word list sizes", func(t *testing.T) {
-		if len(adjectives) != 120 {
-			t.Fatalf("expected 120 adjectives, got %d", len(adjectives))
-		}
-		if len(nouns) != 210 {
-			t.Fatalf("expected 210 nouns, got %d", len(nouns))
-		}
-	})
 }

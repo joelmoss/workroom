@@ -175,21 +175,9 @@ final class AgentResumeUITests: XCTestCase {
     XCTAssertFalse(resumeButton(app, "codex").exists)
   }
 
-  /// **The default-off rule.** With no seeded root, discovery does nothing at all — which is what
-  /// stops every other UI test reading the developer's real `~/.claude`.
-  func testWithNoSeededRootDiscoveryIsANoOp() throws {
-    let first = launchedApp(withAgentRoot: false)
-    XCTAssertTrue(panes(first).firstMatch.waitForExistence(timeout: 20))
-    let cwd = paneCwd(first)
-    quitAndWaitForSave(first)
-    try seedClaude(cwd: cwd)
-
-    let app = launchedApp(withAgentRoot: false)
-    XCTAssertTrue(panes(app).firstMatch.waitForExistence(timeout: 20))
-    _ = paneCwd(app)
-    XCTAssertFalse(
-      resumeButton(app, "claude").exists, "no seeded root means discovery never runs")
-  }
+  // `testWithNoSeededRootDiscoveryIsANoOp` moved to `AgentSessionIsolationTripwireUITests.swift` —
+  // it's an isolation tripwire the routine sweep must keep running even though this file is
+  // skipped by default via `APP_UITEST_FLAGS`.
 
   // MARK: Acting on it
 

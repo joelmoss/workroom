@@ -126,16 +126,21 @@ final class TabStripOverflowUITests: XCTestCase {
 
   // MARK: Accessibility geometry of the chrome glyph buttons
 
-  /// The counter-evidence guard for the "chrome buttons report `isHittable == false`" finding raised
-  /// during #129. That was an environmental XCUITest artefact, **not** an accessibility defect: probing
-  /// inline and pinned, solo and batched, waited and unwaited, every one of these controls resolves to
-  /// exactly ONE element of type `.button`, enabled, with a real on-screen frame, and hittable. So the
-  /// property is safe to assert, and asserting it here is what keeps it that way — a genuinely
-  /// degenerate or mis-placed accessibility frame (which VoiceOver would see too, these being the
-  /// primary new-tab / new-workroom / open-workroom actions) fails this test.
+  /// Real-geometry guard for the chrome glyph buttons (issue #129): each resolves to exactly ONE
+  /// button-role element, enabled, with a non-degenerate on-screen frame, inside the window, and not
+  /// collapsed.
   ///
-  /// Kept as one focused test rather than sprinkled through the geometry tests above, so a
-  /// hittability failure points at the accessibility layer and not at whatever else that test asserts.
+  /// Deliberately does NOT assert `isHittable`: that specific check was investigated and closed as
+  /// an environmental XCUITest artefact, not an accessibility defect (see TODOS.md) — it answers an
+  /// *accessibility* hit test, which stays true for a control collapsed to 1×1 or pushed clean
+  /// outside the window by a `safeAreaInset` regression (precisely the pinned arrangement #129 was
+  /// about), and can also read `false` for reasons that have nothing to do with the control itself
+  /// (a covering window, a backgrounded app). `window.contains`/the collapse floor below assert the
+  /// two things a pointer or VoiceOver user actually needs instead: the control is inside the
+  /// window, and it is big enough to aim at.
+  ///
+  /// Kept as one focused helper rather than sprinkled through the geometry tests above, so a
+  /// failure here points at the accessibility layer and not at whatever else that test asserts.
   private func assertHittableButton(_ app: XCUIApplication, _ id: String, _ state: String) {
     let matches = app.descendants(matching: .any).matching(identifier: id)
     XCTAssertTrue(matches.firstMatch.waitForExistence(timeout: 10), "\(state)/\(id) never appeared")
@@ -144,17 +149,7 @@ final class TabStripOverflowUITests: XCTestCase {
     XCTAssertEqual(element.elementType, .button, "\(state)/\(id) should expose the button role")
     XCTAssertFalse(element.frame.isEmpty, "\(state)/\(id) has a degenerate accessibility frame")
     XCTAssertTrue(element.isEnabled, "\(state)/\(id) should be enabled")
-    XCTAssertTrue(
-      element.isHittable,
-      "\(state)/\(id) is not hittable — AX frame \(element.frame) vs window "
-        + "\(app.windows.firstMatch.frame)")
 
-    // `isHittable` alone cannot see the failure this test is named for. It answers an
-    // *accessibility* hit test, so it stays true for a control collapsed to 1×1, and for one pushed
-    // clean outside the window's visible bounds by a `safeAreaInset` regression — which is precisely
-    // the pinned arrangement #129 was about. `frame.isEmpty` only rejects a literally zero-area
-    // frame. So assert the two things a pointer or VoiceOver user actually needs: the control is
-    // inside the window, and it is big enough to aim at.
     let window = app.windows.firstMatch.frame
     XCTAssertTrue(
       window.contains(element.frame),

@@ -57,6 +57,15 @@ APP_SIGN_FLAGS ?=
 # failure. Test dirs are already UUID-scoped under NSTemporaryDirectory, so those don't collide.
 APP_TEST_FLAGS ?= -parallel-testing-enabled YES
 
+# Extra xcodebuild options for app-uitest. Skips the 3 most expensive/flaky cases by default (each
+# does a real quit+relaunch or a hard timing budget), since XCUITest never runs in CI and a routine
+# `make app-uitest` was paying ~4-5 min for tests that are only load-bearing right before a release.
+# The isolation-tripwire tests those two classes carried (proving discovery/session-restore no-op
+# without a seeded path — a guard the REST of this suite depends on) were extracted to
+# `AgentSessionIsolationTripwireUITests` first, so the routine sweep keeps that safety net. Run the
+# full suite (pre-release, or after touching any of these) with `make app-uitest APP_UITEST_FLAGS=`.
+APP_UITEST_FLAGS ?= -skip-testing:WorkroomAppUITests/AgentResumeUITests -skip-testing:WorkroomAppUITests/SessionRestoreUITests -skip-testing:WorkroomAppUITests/HistoryStressUITests/testLargeHistoryStaysInteractive -skip-testing:WorkroomAppUITests/WindowDragUITests/testDraggingWorkroomTabReordersTwoChips
+
 # The Rust VCS core (jj-lib via UniFFI) the app links, built into the local WrVcs SwiftPM package
 # (vcs/swift/WrVcs). Must run before xcodegen so the package's xcframework + generated Swift exist.
 # arm64 by default; release/distribution sets VCS_APPLE_FLAGS=--universal (needs rustup stable >=
@@ -82,7 +91,7 @@ app-test: app-vcs ## Run the app's unit tests
 	cd macapp && xcodegen generate && $(APP_XCODEBUILD) -destination 'platform=macOS' $(APP_TEST_FLAGS) test $(APP_SIGN_FLAGS)
 
 app-uitest: app-vcs ## Run the app's UI tests (XCUITest — needs a real GUI login session, not headless)
-	cd macapp && xcodegen generate && xcodebuild -project $(APP_PROJECT) -scheme WorkroomAppUITests -configuration Debug -derivedDataPath DerivedData -clonedSourcePackagesDirPath DerivedData/SourcePackages -destination 'platform=macOS' test $(APP_SIGN_FLAGS)
+	cd macapp && xcodegen generate && xcodebuild -project $(APP_PROJECT) -scheme WorkroomAppUITests -configuration Debug -derivedDataPath DerivedData -clonedSourcePackagesDirPath DerivedData/SourcePackages -destination 'platform=macOS' $(APP_UITEST_FLAGS) test $(APP_SIGN_FLAGS)
 
 app-test-supervisor: ## Run the run-command supervisor PTY integration test (real shell + fake server)
 	python3 macapp/Tests/run-supervisor/test_supervisor.py
