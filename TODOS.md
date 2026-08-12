@@ -101,7 +101,12 @@ tried the app has a broken install.
 
 ## P2 — perf, correctness, and the next VCS phase
 
-### Bump the libghostty pin (macapp) — post-GA, first change after the GA tag
+### Bump the libghostty pin (macapp) — in progress, 2026-08-12
+
+**GA-gate removed (2026-08-12):** this entry originally read "post-GA, first change after the GA
+tag" and gated on GA shipping. That gate has been explicitly lifted — the repo is still at
+`v2.0.0-beta.24`, no `v2.0.0` tag exists, and the bump is proceeding ahead of it. See the execution
+plan for the full phased breakdown, cross-model review, and task list.
 
 **What:** move `macapp/project.yml` from the currently pinned `libghostty-spm` package to **1.3.2**
 (ghostty commit `35e1a0160c4f6797e1bb1ef8e7a2b8c6b114ab58`). Those two numbers are this task's
@@ -142,7 +147,7 @@ before building, and `Script/apply-patches.sh` feature-probes the header to choo
             └── 0002-host-managed-io-modern.patch   (18,447 B)   ← never run here
                                                                     PTY/IO hosting: surface teardown,
                                                                     orphan shells, the EXC_BAD_ACCESS
-                                                                    site WorkroomApp.swift:606 documents
+                                                                    site WorkroomApp.swift:665-678 documents
 ```
 
 By contrast the mid-enum `GHOSTTY_ACTION_SELECTION_CHANGED` insert — which renumbers 14 following
@@ -159,6 +164,19 @@ Grepped `WorkroomApp*` for both — zero call sites, zero `.translated` reads; w
 Also confirmed: upstream's OSC 9;4 progress-report expansion (PR #13483) is **not** in this pin —
 it merged 2026-07-27, three weeks after `35e1a016`'s actual commit date (2026-07-10), so don't
 expect it from this bump.
+
+**Re-swept as a full unified `diff -u` this time (2026-08-12, not just a symbol-grep) — clean,
+nothing beyond the above.** Every existing function signature we call is byte-identical (same
+params, same return type); the only structural change anywhere in the header is the one union-field
+removal above, and it was same-type/same-size with the field that survives (`physical`), so it was
+never a layout risk even for someone still calling it. New in this header: a `GHOSTTY_API` symbol-
+visibility macro on every declaration (resolves to `__attribute__((visibility("default")))` on our
+Clang/macOS static-archive build since we never define `GHOSTTY_STATIC` — inert for a statically-
+linked consumer, this is for making the same header serve shared-lib builds too) and
+`GHOSTTY_IPC_ACTION_TOGGLE_QUICK_TERMINAL` appended to `ghostty_ipc_action_tag_e` — grepped, zero
+usage of that enum anywhere in `WorkroomApp*`. No thread-affinity/ownership signal is expressible in
+a C header at all (that needs a Zig source diff, explicitly out of scope — see "Bump the libghostty
+pin" plan's Failure-modes decision to leave this check one-time, not permanent).
 
 **Two more upstream fixes for the retest budget, on top of the patch-swap risk above:**
 - `ghostty_surface_free_text` was silently not freeing memory (header/impl pointer-type mismatch,
@@ -212,8 +230,11 @@ work, deliberately against the old engine) is the pass/fail gate.
   `xcodebuild -configuration Release ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO build`.
 - **A bake gate.** `nightly.yml` builds daily from master, so this reaches nightly users ~24h after
   landing. Require N clean nightlies before it enters a `pre` tag.
-- **A `QA-libghostty.md` §N "engine bump smoke"** (~12 items). Committing to the full 13-section
-  manual walk on every bump guarantees it won't happen next time.
+- ~~**A `QA-libghostty.md` §N "engine bump smoke"** (~12 items).~~ **Stale claim, corrected
+  2026-08-12: it already exists.** `QA-libghostty.md:137-216` has a full §N with 4 subsections and
+  ~20 checkbox items (IO layer/patch-swap, behaviour keyed to engine internals, resource contract,
+  build shapes CI doesn't cover). Its own preamble requires running it against the *current* engine
+  first as a baseline — a baseline taken after the bump is worthless. Extend it, don't recreate it.
 - **Retest the GhosttyKit modulemap-collision workaround.** The packager namespaced its
   XCFramework headers under `Headers/libghostty/` between our pin and 1.3.2 (avoids a collision
   when two static XCFrameworks link into one target) — confirm the existing library-only-xcframework
@@ -225,11 +246,11 @@ rebuild. CI's `spm-`/`xcbuild-` caches key on `project.yml` and their `restore-k
 restore a mixed state. Do **not** remove any workaround (backspace DEL-as-text, ⌃Tab) until this has
 baked — both fail safe, and the backspace test passes either way, so removal needs a raw-PTY probe.
 
-**Depends on:** GA shipping first. `Package.resolved` is now tracked, so the resolved revision is a
-reviewable diff.
+**Depends on:** nothing now (GA gate removed 2026-08-12, see above). `Package.resolved` is now
+tracked, so the resolved revision is a reviewable diff.
 
 **Priority:** P2 — real value, no user-visible gain on its own, and it swaps the layer that runs the
-user's shell. First change after the GA tag, not before it.
+user's shell. In progress.
 
 ### Own the GhosttyKit xcframework (macapp) — CMT-2, GA-time supply-chain decision
 

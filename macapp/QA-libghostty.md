@@ -148,19 +148,35 @@ there.
 
 ### IO layer (the patch swap)
 - [ ] **Surface churn**: open/close ~20 panes in one workroom (⌘T then ⌘W, repeatedly) → no crash,
-      no beachball, memory returns to roughly its starting point.
+      no beachball. Record RSS before and after (Activity Monitor or `vmmap`), note the delta — not
+      just "roughly its starting point," so a slow leak across future bumps is comparable, not
+      eyeballed.
 - [ ] **Split churn**: ⌘D / ⌘⇧D and close, repeatedly, including closing the *focused* pane of a
       split → the survivor stays mounted and full-size (never blank).
 - [ ] **Workroom switch**: cycle between three workrooms ~10× → each returns to its own live panes;
       no surface renders another workroom's content.
 - [ ] **Workroom delete** with live panes in it → panes tear down, app stays up.
-- [ ] **Orphan check** (the one that catches a bad IO patch): quit the app, then
-      `ps -ax | grep -E '[z]sh|[b]ash' | grep -v $$` → no shells left behind. Repeat after a
-      **force-quit**.
+- [ ] **Orphan check** (the one that catches a bad IO patch): a bare shell-name grep
+      (`ps -ax | grep zsh`) always matches unrelated shells on the machine — false positive/negative
+      both ways. Spawn the pane's shell with a unique marker instead (e.g.
+      `MARKER=qa-orphan-$$ zsh -c 'export MARKER; exec zsh'`, or a distinctive argv0), quit the app,
+      then `ps -eo pid,command -ax | grep -- "$MARKER"` → no match. Record RSS before/after alongside
+      the process check. Repeat after a **force-quit** (`kill -9` the app PID, not ⌘Q, so a stuck
+      System-Events dialog can't eat the keystroke).
 - [ ] **Run tab**: start a run command, stop it, start it again → no "A server is already running",
       no orphan on the port (`lsof -i :<port>`), and the exit code reported matches reality.
 - [ ] **Quit with a live TUI**: `vim` open in one pane, `htop` in another, ⌘Q → clean exit, no
-      `EXC_BAD_ACCESS` (see `WorkroomApp.swift:606`).
+      `EXC_BAD_ACCESS` (see `WorkroomApp.swift:665-678`).
+- [ ] **Scrollback-click race** (new 2026-08-12, targets a `mouseButtonCallback`/scrollback-pruning
+      use-after-free fixed upstream between our pin and the bump target): select/click a link or text
+      while scrollback is actively producing output (e.g. `yes` piped to a pane) → no crash, no
+      corrupted selection. Record RSS before/after.
+- [ ] **`free_text` leak spot-check** (new 2026-08-12, targets a `ghostty_surface_free_text` fix —
+      the function was silently not freeing memory before this pin): loop
+      `readFullSurface`/`readSelectionText` (`GhosttySurfaceView.swift:792-857`) a few hundred times
+      via the inline-agent or accessibility read path. RSS alone can't distinguish a real leak from
+      normal allocator retention at this volume — use Xcode's Instruments (Leaks template) or a
+      scripted `leaks <pid>` run around the loop, not just Activity Monitor.
 
 ### Behaviour keyed to engine internals (assert *no change*, not correctness)
 - [ ] **⌘F wrap + ordering** — `TerminalSearch.navigationPlan` inverts the engine's direction and
