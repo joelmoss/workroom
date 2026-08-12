@@ -8,6 +8,12 @@ notes** — replace GoReleaser's raw commit list with a succinct, themed summary
 `v2.0.0-beta.1` (a headline, a one-line framing, and grouped bullets). The commit list is what
 the git log is for.
 
+**Never hard-wrap paragraph or bullet text at a fixed column.** Write each paragraph and each
+bullet as one unbroken line, however long. The in-app "What's New" viewer renders a literal `\n`
+as a line break instead of reflowing it, so a source line wrapped at ~90 cols shows up as a
+sentence broken mid-clause. Markdown block structure (headers, blank lines between paragraphs,
+`-` bullets, blockquotes) is unaffected — only the wrapping *within* a block must go.
+
 **Release channels** (issue #91) ship as **two products**. The **main** product (`workroom` CLI +
 "Workroom" app) tracks `stable` or `pre`, chosen at runtime (`workroom update --channel stable|pre`;
 the app's Settings picker). **Nightly** is a **separate side-by-side install** — a `workroom-nightly`
