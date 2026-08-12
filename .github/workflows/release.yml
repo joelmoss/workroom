@@ -56,14 +56,18 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install XcodeGen + create-dmg + sentry-cli + protobuf
+      - name: Install XcodeGen + create-dmg + sentry-cli + protobuf + jj
         # sentry-cli uploads dSYMs in release.sh (skipped there if the Sentry env vars are unset).
-        # protobuf provides protoc, a build-time dep of the Rust VCS core (jj-lib). aws/tap ships
+        # protobuf provides protoc, a build-time dep of the Rust VCS core (jj-lib). jj is the CLI the
+        # VCS integration tests shell out to (WorkroomAppTests' `requireTool("jj")`) — `app-test` runs
+        # as part of this job's own gate below, and without it every jj/git-colocated integration test
+        # fails immediately on the missing-tool check (found when v2.0.0-beta.24's release attempt
+        # failed 32 of them; `ci.yml`'s app job already installs jj and passes). aws/tap ships
         # pre-tapped but untrusted on the runner image, which would otherwise emit a "tap trust"
         # warning annotation unrelated to our formulae.
         run: |
           brew untap aws/tap
-          brew install xcodegen create-dmg getsentry/tools/sentry-cli protobuf
+          brew install xcodegen create-dmg getsentry/tools/sentry-cli protobuf jj
 
       # `make app-release` builds the Rust VCS core universal (build-apple.sh --universal). Homebrew
       # rust can't cross-compile, so ensure rustup has both darwin targets (the runner's stable is
