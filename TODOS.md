@@ -101,7 +101,25 @@ tried the app has a broken install.
 
 ## P2 — perf, correctness, and the next VCS phase
 
-### Bump the libghostty pin (macapp) — in progress, 2026-08-12
+### Bump the libghostty pin (macapp) — SHIPPED, 2026-08-13
+
+**Landed 2026-08-13** across four commits: `2e37b446` (doc hygiene), `0f11f479` (pre-bump QA
+baseline), `e6f926a3` (the pin bump + resources + tests), `b338c737` (the new orphan-shell XCUITest).
+Full before/after numbers in `macapp/QA-libghostty-results/2026-08-12-libghostty-1.3.2-bump.md`.
+**Headline result: the `free_text` leak below is CONFIRMED FIXED** — an isolated repro (300
+accessibility reads, `leaks` before/after) went from 299 leaks / 38272 bytes on the old pin to
+**0 leaks** on the new one. No regressions found in surface/split churn, backspace, ⌃Tab,
+`$TERM`/infocmp, the orphan-shell teardown path (now a permanent XCUITest, see below), or the two
+`GhosttyActionDispatchUITests`. Everything below this point in the entry describes the WORK DONE to
+get here; kept as the historical record rather than rewritten, per this repo's usual practice of
+correcting claims in place rather than deleting the trail.
+
+**What did NOT get verified, filed as its own follow-up** (see "Automate the rest of §N's IO-layer
+checklist" below): workroom switch/delete and OSC 7 (blocked on a real mouse — synthetic `AXPress`/
+`click at` didn't register on these specific custom SwiftUI controls in an external-AppleScript
+driving session), and the terminfo `Se` capability's cursor-style-reset behavior change (`\E[2 q` →
+`\E[0 q`, found during the resource regen below) — attempted via screen capture, abandoned when
+`screencapture -x` grabbed the whole display instead of the target window.
 
 **GA-gate removed (2026-08-12):** this entry originally read "post-GA, first change after the GA
 tag" and gated on GA shipping. That gate has been explicitly lifted — the repo is still at
@@ -178,10 +196,12 @@ usage of that enum anywhere in `WorkroomApp*`. No thread-affinity/ownership sign
 a C header at all (that needs a Zig source diff, explicitly out of scope — see "Bump the libghostty
 pin" plan's Failure-modes decision to leave this check one-time, not permanent).
 
-**Two more upstream fixes for the retest budget, on top of the patch-swap risk above:**
-- `ghostty_surface_free_text` was silently not freeing memory (header/impl pointer-type mismatch,
-  now fixed) — good news for `extractString`/`read_text`/`read_selection` in
-  `GhosttySurfaceView.swift`, but confirm with an actual leak check rather than assuming.
+**Two more upstream fixes for the retest budget, on top of the patch-swap risk above — both
+confirmed, not assumed:**
+- ~~`ghostty_surface_free_text` was silently not freeing memory~~ **CONFIRMED FIXED.** Isolated
+  before/after leak check (300 accessibility reads through `extractString`/`read_text`, `leaks`
+  before and after): 299 leaks / 38272 bytes on the old pin → **0 leaks** on the new one. The
+  headline result of this whole bump — see the QA results file for the exact reproduction.
 - A crash fix: `mouseButtonCallback` raced the I/O thread's scrollback pruning without the renderer
   mutex on link clicks (use-after-free). Add "select/click text while scrollback is actively
   producing output" to the IO-layer retest below. `SelectionGesture` was also rewritten internally
@@ -196,28 +216,30 @@ pin" plan's Failure-modes decision to leave this check one-time, not permanent).
   in it. Full correction in `Resources/ghostty/SOURCE.md`. **Regenerating `shell-integration/` is
   now safe — but only with or after this bump**, never before it: `+ssh` does not exist at the
   pinned v1.3.1 and arrives at the bump target.
-- **Test `+ssh` itself, not just `+ssh-cache`.** After regeneration the wrapper *is* `ghostty +ssh`,
-  with no `infocmp` fallback branch left — so a failure there is total, not degraded, and silent
-  either way. The `+ssh-cache` tests that shipped with the ghostty symlink (`GhosttyCLITests`) all
-  pass with `+ssh` broken or absent, because they exercise a different action. Required with the
-  regeneration: a dispatch test (`ghostty +ssh --help` exits 0, asserted on the shipped artifact the
-  way `release.sh` already asserts `+ssh-cache`) **and** a shell-wrapper integration test that
-  actually `ssh`es through the regenerated script to a real host.
-- **Regenerate `macapp/Resources/ghostty/`** from the same ghostty ref — `terminfo/` and
-  `shell-integration/` ONLY, then refresh `CHECKSUMS` (`shasum -a 256`, see
-  `GhosttyResourcesTests`) and rewrite the provenance section of `SOURCE.md`. `themes/` is ours and
-  must not be touched. Note the current resources are *ahead* of the pinned engine, not behind — the
-  measured detail is in `SOURCE.md`, and a regeneration must not silently drop the four upstream
-  script fixes recorded there.
-- **Resolve `TerminalSearch.navigationPlan`.** It both inverts direction against the engine's
-  ordering and synthesizes wrap by emitting `total - 1` steps, keyed to the pinned engine's "stops
-  dead at the ends" behaviour. If wrapping or match ordering moved upstream, ⌘G becomes *wrong*, not
-  redundant.
+- ~~**Test `+ssh` itself, not just `+ssh-cache`.**~~ **DONE.** `GhosttyCLITests.testGhosttySshHelpDispatches`
+  (exit 0 + real help text) plus three tests against a stub `ssh` on `PATH` that prove the
+  regenerated shell-integration wrapper itself translates `GHOSTTY_SHELL_FEATURES` into the right
+  `--forward-env`/`--terminfo` flags — without a real network round-trip. **The real-host SSH
+  integration test stayed explicitly deferred** (Codex cross-model tension 7's accepted middle
+  ground: the fake-ssh test closes most of the risk at a fraction of the infrastructure cost) — filed
+  as its own decision in the execution plan, not silently dropped.
+- ~~**Regenerate `macapp/Resources/ghostty/`**~~ **DONE**, and it was NOT a no-op the way "ahead of
+  the engine" implied: a source diff of `src/terminfo/ghostty.zig` between the two engine commits
+  found the `Se` (cursor-style-reset) capability actually changed (`\E[2 q` → `\E[0 q`) — regenerated
+  via `infocmp`/`tic`, not assumed unchanged. `shell-integration/` is now copied straight from the
+  pinned commit instead of carrying a separate ahead-of-engine snapshot. Full detail in
+  `Resources/ghostty/SOURCE.md`.
+- ~~**Resolve `TerminalSearch.navigationPlan`.**~~ **Checked, no change needed.** The manual ⌘F
+  retest (below) showed the match counter still counts up exactly as before — no drift in direction
+  or wrap semantics detected, so the existing inversion/wrap-synthesis logic is still correct at this
+  pin. (On-screen highlight direction wasn't independently re-verified — see the QA results file.)
 
-**Retest the IO layer, not the enum:** repeated surface create/destroy, split/close churn, workroom
-switch/delete, the run-tab supervisor, and the `ps` orphan check. `0010-fix-scroll-remainder-zeroing.patch`
-is also new, so include the scrollbar overlay. The XCUITest action-tag baseline (added ahead of this
-work, deliberately against the old engine) is the pass/fail gate.
+**Retest the IO layer, not the enum: DONE**, partially via a new permanent XCUITest
+(`GhosttyOrphanShellUITests.testNormalQuitLeavesNoOrphanedShell`, replacing the `ps`-name-grep
+approach with a marker + heartbeat-file design — `ps` itself turned out to throw `EPERM` from inside
+an XCUITest runner, a real platform constraint worth knowing for any future test in this style) and
+partially via manual retest (surface/split churn, backspace, ⌃Tab, `$TERM`/infocmp — see the results
+file). Workroom switch/delete and the scrollbar overlay were NOT re-verified — filed below.
 
 **Also required:**
 - **A universal Release build before landing.** ~~CI only ever builds Debug/arm64, so the first
@@ -229,28 +251,72 @@ work, deliberately against the old engine) is the pass/fail gate.
   `VCS_APPLE_FLAGS=--universal make app-vcs`, then
   `xcodebuild -configuration Release ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO build`.
 - **A bake gate.** `nightly.yml` builds daily from master, so this reaches nightly users ~24h after
-  landing. Require N clean nightlies before it enters a `pre` tag.
+  landing. Require N clean nightlies before it enters a `pre` tag. **Still open** — landing this
+  commit doesn't itself decide N; that's a separate call at promotion time.
 - ~~**A `QA-libghostty.md` §N "engine bump smoke"** (~12 items).~~ **Stale claim, corrected
   2026-08-12: it already exists.** `QA-libghostty.md:137-216` has a full §N with 4 subsections and
   ~20 checkbox items (IO layer/patch-swap, behaviour keyed to engine internals, resource contract,
   build shapes CI doesn't cover). Its own preamble requires running it against the *current* engine
   first as a baseline — a baseline taken after the bump is worthless. Extend it, don't recreate it.
-- **Retest the GhosttyKit modulemap-collision workaround.** The packager namespaced its
-  XCFramework headers under `Headers/libghostty/` between our pin and 1.3.2 (avoids a collision
-  when two static XCFrameworks link into one target) — confirm the existing library-only-xcframework
-  + separate-C-target workaround (`macapp/CLAUDE.md:120-124`, "Multiple commands produce
-  include/module.modulemap") still holds, or has become unnecessary.
+- ~~**Retest the GhosttyKit modulemap-collision workaround.**~~ **DONE — still holds.** The Debug
+  build (T4) compiled clean against the 1.3.2 xcframework with no "Multiple commands produce
+  include/module.modulemap" error, so the library-only-xcframework + separate-C-target workaround
+  (`macapp/CLAUDE.md:120-124`) needed no changes.
 
 **Rollback is not one line:** revert the commit(s), `rm -rf macapp/DerivedData/SourcePackages`,
 rebuild. CI's `spm-`/`xcbuild-` caches key on `project.yml` and their `restore-keys` fallback can
 restore a mixed state. Do **not** remove any workaround (backspace DEL-as-text, ⌃Tab) until this has
 baked — both fail safe, and the backspace test passes either way, so removal needs a raw-PTY probe.
 
-**Depends on:** nothing now (GA gate removed 2026-08-12, see above). `Package.resolved` is now
-tracked, so the resolved revision is a reviewable diff.
+**Depends on:** nothing — landed. `Package.resolved` is tracked, so the resolved revision is a
+reviewable diff, and `GhosttyPinIntegrityTests` asserts it matches `b146b73a...` permanently (fails
+loudly if the packager ever re-cuts the `1.3.2` tag).
 
 **Priority:** P2 — real value, no user-visible gain on its own, and it swaps the layer that runs the
-user's shell. In progress.
+user's shell. SHIPPED; watching the bake gate and the residual gaps filed below before promoting to
+a `pre` tag.
+
+### Automate the rest of §N's IO-layer checklist (macapp) — libghostty-bump follow-up, filed 2026-08-13
+
+**What:** the 1.3.2 bump (above) added exactly one automated tripwire
+(`GhosttyOrphanShellUITests.testNormalQuitLeavesNoOrphanedShell`) for `QA-libghostty.md` §N's
+IO-layer subsection. Everything else in §N — surface/split churn volume, workroom switch, workroom
+delete, force-quit variant, the scrollbar overlay — is still manual-only, exactly as it was before
+this bump. That gap isn't new; it's just now visible with a name, having been walked end-to-end this
+session rather than assumed.
+
+**Two concrete blockers surfaced while running the manual retest, worth fixing before the next
+attempt at automating this, not just re-discovering them again:**
+- **Workroom-tab chips and the run-command button (`workroom.tab.*`, `runCommand.run`) didn't respond
+  to synthetic `AXPress` or a raw `click at {x,y}` from an external AppleScript-driven session** —
+  0 observable effect despite the action reporting success and the on-screen bounds being correct.
+  Real keyboard shortcuts (⌘R/⇧⌘R) and raw `keystroke` text input worked fine throughout, which is
+  how the QA results file's Run-tab and behavioral checks actually got driven. `GhosttyOrphanShellUITests`
+  and `GhosttyActionDispatchUITests` prove an actual XCUITest host process (not external AppleScript)
+  CAN drive these controls — `focusTerminal`'s tab-chip click works there. So the fix for
+  workroom-switch/delete/OSC-7 automation is likely "write it as a real XCUITest," not "find the
+  right AppleScript incantation."
+- **`Process()` spawning `/bin/ps` (or presumably anything) throws `NSPOSIXErrorDomain Code=1
+  "Operation not permitted"` from inside an XCUITest runner** (`WorkroomAppUITests`'s auto-generated
+  `XCTRunner` host is sandboxed against subprocess spawning; the app under test itself is not — two
+  different sandbox realms). `GhosttyOrphanShellUITests` worked around this with a heartbeat FILE
+  (`/tmp`, not `NSTemporaryDirectory()` — see that file's doc comment for why `NSTemporaryDirectory()`
+  resolves to a different, container-private path in the runner vs. the app) instead of polling `ps`.
+  Any future XCUITest needing to observe OS-level process state should reuse that pattern rather than
+  rediscovering the `ps` restriction.
+
+**Also unverified, not automated, and not re-attempted manually either — flag before assuming
+fine:** the terminfo `Se` capability's cursor-style-reset behavior change (`\E[2 q` → `\E[0 q`, found
+during the bump's resource regen) has never been visually confirmed. A `screencapture -x` attempt at
+this was abandoned mid-session when it turned out to capture the whole display rather than the
+target window (see the bump entry above) — needs either a window-scoped capture API or a human at
+the keyboard, not screen-wide automation.
+
+**Depends on:** nothing blocking — can start anytime. The two platform-constraint findings above
+mean whoever picks this up should design as a real XCUITest from the start, not attempt external
+AppleScript driving again.
+
+**Priority:** P3 — the manual checklist still covers this; nothing is unguarded, just unautomated.
 
 ### Own the GhosttyKit xcframework (macapp) — CMT-2, GA-time supply-chain decision
 
