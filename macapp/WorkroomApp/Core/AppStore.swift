@@ -154,8 +154,17 @@ final class AppStore: ObservableObject {
   /// reads them on launch (issue #70, CQ1). `lastActiveStore` is modal-safe (a quit alert / Settings
   /// becoming key never changes it). Defaults to `true` until the first window registers, so the
   /// initial single window persists from the very first edit.
+  ///
+  /// Also `false` under `UITestFixture.isActive`, for the same reason `applyFixtureDefaults` writes
+  /// fixture-forced state instead of just reading it: a fixture run that TOGGLES the sidebar (e.g.
+  /// `ViewMenuShortcutsUITests`) would otherwise persist that into the real Dev `Defaults` domain —
+  /// invisible to the fixture-mode launch that caused it (its own `sidebarVisible` is forced open
+  /// regardless), but inherited by the next *non*-fixture launch in the same `xcodebuild test`
+  /// invocation (`WorkroomWorkflowUITests.testAppLaunchesWithChrome` uses `fixture: false`), which
+  /// reads the real Default straight through. Same hazard, opposite direction, as the read-side one
+  /// `sidebarVisible`'s own initializer already guards against.
   private var persistsSidebarPrefs: Bool {
-    WindowRegistry.shared.lastActiveStore.map { $0 === self } ?? true
+    !UITestFixture.isActive && (WindowRegistry.shared.lastActiveStore.map { $0 === self } ?? true)
   }
 
   /// The list of configured projects — proxied to the shared `ProjectStore` so every window sees the
@@ -239,7 +248,18 @@ final class AppStore: ObservableObject {
   /// width is persisted separately to `Defaults.sidebarWidth`. Gated on `persistsSidebarPrefs`, same as
   /// `collapsedProjects`/`workroomTabOrder`/`sidebarSelection`, so a background window can't clobber the
   /// active window's choice.
-  @Published var sidebarVisible: Bool = Defaults[.sidebarVisible] {
+  ///
+  /// Forced open under `UITestFixture.isActive` — same idiom as `commitHistory`/`remoteState` above.
+  /// The real persisted value is whatever a PRIOR launch (human or automated) last left it as, and
+  /// that's true WITHIN one `xcodebuild test` invocation too: this key is real `Defaults`, not
+  /// fixture-isolated, so one sidebar-toggle test's launch persists into the very next test class's
+  /// launch. Without this override, `sidebar.visible` flip-flops across the suite depending on run
+  /// order and whichever test last toggled it — confirmed by removing this override: the suite then
+  /// fails BOTH the tests that need the sidebar open (`WorkroomWorkflowUITests`,
+  /// `ViewMenuShortcutsUITests`) and the ones that broke when it's open (see below), never a clean
+  /// pass either way.
+  @Published var sidebarVisible: Bool = (UITestFixture.isActive ? true : Defaults[.sidebarVisible])
+  {
     didSet { if persistsSidebarPrefs { Defaults[.sidebarVisible] = sidebarVisible } }
   }
   /// Whether a collapsed sidebar is *temporarily* on screen via edge-hover reveal (issue #56): the
@@ -1088,10 +1108,31 @@ final class AppStore: ObservableObject {
     // was current when it opened; the launch window restores its last frame, else a sensible default.
     if !didApplyInitialSize {
       didApplyInitialSize = true
-      // The saved session owns per-window frames (issue #46) and wins over both the
-      // "match the current window" size and the single-slot `Defaults` key, which can only ever
-      // describe one window and is now just the cold-start fallback.
-      if let restored = pendingSessionRestore?.frame.map(NSRectFromString),
+      // Fixture mode ALWAYS gets the same deterministic size, ahead of session restore and the
+      // `Defaults` fallback below — neither is hermetic (both read real, cross-launch persisted
+      // state), so a UI test's window geometry otherwise depends on whatever a prior interactive
+      // `make app-run` session or an earlier automated run last left behind. Found chasing why
+      // several tab-strip overflow tests never overflowed on a wide monitor: the real
+      // `Defaults[.mainWindowFrame]` this machine had accumulated was 2469pt wide, plenty of room
+      // for tabs these tests need to NOT fit.
+      //
+      // 1450, not 1200: `UITestFixture.applyFixtureDefaults` always forces the right inspector open
+      // (300pt) and, since the sidebarVisible fixture override above, the Projects sidebar too
+      // (270pt) — together they leave the detail column ~1200-270-300=630pt wide at 1200, right on
+      // `TerminalSessions.fits()`'s floor (2×300pt panes + a 4pt divider = 604pt) with only single-digit
+      // points of margin against real layout overhead. That intermittently refused ⌘D/⇧⌘D splits
+      // (`SplitPaneUITests`, `TabActionsUITests`, etc.) — not a focus race, confirmed by the "Split
+      // Right" menu item reading enabled the whole time; `fits()` was silently declining the split. At
+      // 1450 the detail column is ~880pt: comfortably past the 604pt split floor, and still short of
+      // the ~1000pt of chip content `TabStripOverflowUITests`/`TabStripScrollIntoViewUITests` need to
+      // NOT fit, so overflow still triggers.
+      if UITestFixture.isActive {
+        window.setContentSize(NSSize(width: 1450, height: 780))
+        window.center()
+      } else if let restored = pendingSessionRestore?.frame.map(NSRectFromString),
+        // The saved session owns per-window frames (issue #46) and wins over both the
+        // "match the current window" size and the single-slot `Defaults` key, which can only ever
+        // describe one window and is now just the cold-start fallback.
         let frame = Self.frameOnAVisibleScreen(restored)
       {
         window.setFrame(frame, display: false)

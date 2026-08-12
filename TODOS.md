@@ -1870,6 +1870,37 @@ badge assertions need the notification a11y identifiers to be queryable — add 
 **Priority:** P3 (the smoke + opportunistic suites cover the basics; these harden the notification
 flows).
 
+### `ChangedFileRowInvalidationTests` flaked only inside the full serial `app-test` run — FIXED (beta.24 gate)
+
+**Fixed:** `ChangedFileOpenTests.swift`'s two `.filePathEditor` tests restored the key in `defer` but
+never drained the run loop, so the restore's `@Default` change notification (delivered async — see
+`ChangesPanel.swift`'s `filePathEditorID` comment: `@EnvironmentObject`/`@State`/`@Default` invalidate
+PAST the row's Equatable gate by design) could land inside the very next test class's window. In the
+2258-test full serial suite that landed inside `ChangedFileRowInvalidationTests`'s tight 0.6s `settle()`
+and ticked `ChangedFileRow.bodyPasses` — reproduced twice in a row during the beta.24 release gate,
+clean every time in isolation. Both restores now drain the run loop first
+(`restoreFilePathEditor(_:)`), closing the leak at its source rather than papering over the symptom.
+
+### `WindowDragUITests.testDraggingWorkroomTabReordersTwoChips` is a known gesture-timing flake
+
+**What:** Reproduced a pass then a fail on two consecutive back-to-back reruns of the identical test
+against the identical binary during the beta.24 release gate — nothing else running, same machine,
+same window geometry. Not caused by the beta.24 geometry fixes (fixture window 1200→1450pt): the
+test computes its drag distance from the chips' own on-screen positions, so it's width-independent.
+
+**Why:** The test's own comment already names the mechanism: "a slow drag with a hold at the end:
+SwiftUI's reorder `DragGesture` needs the interpolated `onChanged` events and a settle before release
+so `onEnded` commits (a fast one-shot drag can be missed)." `press(forDuration:thenDragTo:withVelocity:
+thenHoldForDuration:)` synthesizes the interpolation itself, and how many intermediate events land
+before the reorder's threshold check runs is not fully deterministic — occasionally too few land before
+the drop, and `onEnded` sees the chip still under the threshold to swap.
+
+**How to fix (not attempted — out of scope for the beta.24 gate, which needed to know this WASN'T a
+regression, not eliminate it):** either add a manual multi-step drag (several discrete `press`+`moveTo`
+calls before the final drop, giving the reorder logic more interpolated samples to react to) or lower
+the reorder swap threshold's dependency on event count. Low priority: single test, single known flake
+mode, not client-facing.
+
 ## P3 — Performance and diagnostics (WORKROOM-2B follow-ups)
 
 ### Status-aware avatar image loader (macapp) — WORKROOM-2B follow-up

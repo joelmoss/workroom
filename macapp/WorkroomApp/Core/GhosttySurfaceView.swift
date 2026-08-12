@@ -1087,6 +1087,18 @@ final class GhosttySurfaceView: NSView {
     return readSelectionText()
   }
 
+  /// Fixture-only backdoor for the exact string handed to the pty at spawn (e.g. the full
+  /// `claude '<prompt>'` Investigate seeds) — lets a UI test assert on the seeded ARGV directly
+  /// instead of waiting for the spawned process's own rendered output. Moot for a real `claude`
+  /// invocation: it gates on its own first-run trust prompt before rendering anything, so nothing
+  /// about the seed is ever visible on screen to wait for. Reuses `accessibilityContentEnabled`
+  /// rather than a bespoke gate — this is our own seeded INPUT, not terminal output, but one gate to
+  /// reason about beats two.
+  override func accessibilityPlaceholderValue() -> String? {
+    guard accessibilityContentEnabled else { return super.accessibilityPlaceholderValue() }
+    return runCommand
+  }
+
   /// **Fixture-only.** A stable id so an XCUITest can find this exact surface (e.g. issue #145's "did
   /// the Return actually submit" check) — VoiceOver has no use for it, only test code targeting one
   /// pane among several. Gated on `UITestFixture.isActive`, itself `#if DEBUG`: a release build

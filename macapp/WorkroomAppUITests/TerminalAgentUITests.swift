@@ -67,6 +67,14 @@ final class TerminalAgentUITests: XCTestCase {
   /// EITHER entry point must open a tab whose command carries the canned diagnosis text — not a
   /// bare `claude` with nothing to go on. Checked via the status-bar popover here (the tab-strip's
   /// popover is covered by `testFailedTabShowsAgentBadge`'s identical entry point, minus the click).
+  ///
+  /// Asserts on the seeded ARGV (`accessibilityPlaceholderValue`), not the spawned process's
+  /// rendered output: Investigate always shells out to the REAL `claude` binary (the agent stub only
+  /// fakes the earlier diagnosis step), and a fresh fixture workroom is untrusted to `claude` on
+  /// every run — its first-run trust prompt would block forever before anything the seed contains
+  /// ever reaches the screen. `RunCommandTests.testStartInvestigateBuildsCommandAndTracksTab` already
+  /// pins `AppStore.startInvestigate`'s own command construction exactly; this test's job is only to
+  /// confirm THIS click path (the status-bar popover) actually reaches it.
   func testClickingInvestigateSeedsTheRealDiagnosisNotABareCommand() {
     let app = launchedApp(runCommand: "echo 'boom: build failed'; exit 7")
     startRun(app)
@@ -81,21 +89,16 @@ final class TerminalAgentUITests: XCTestCase {
     investigate.click()
 
     // Investigate opens a new focused tab (titled "Run" until claude reports its own title, same
-    // as any run tab) seeded with the diagnosis — read its live surface content via the
-    // fixture-only accessibility value (`UITestFixture.isActive` → `readText(VIEWPORT)`).
+    // as any run tab) seeded with the diagnosis.
     let newSurface = app.descendants(matching: .any).matching(identifier: "terminal.surface")
       .element(boundBy: 0)
     XCTAssertTrue(newSurface.waitForExistence(timeout: 10), "Investigate opens a new terminal pane")
 
-    let containsDiagnosis = NSPredicate { _, _ in
-      (newSurface.value as? String)?.contains("UITEST diagnosis: port already in use") == true
-    }
-    let expectation = XCTNSPredicateExpectation(predicate: containsDiagnosis, object: nil)
-    let result = XCTWaiter().wait(for: [expectation], timeout: 10)
-    XCTAssertEqual(
-      result, .completed,
+    let seededCommand = newSurface.placeholderValue ?? "<nil>"
+    XCTAssertTrue(
+      seededCommand.contains("UITEST diagnosis: port already in use"),
       "the seeded command must carry the diagnosis text, not a bare `claude` invocation — got: "
-        + "\(newSurface.value ?? "<nil>")")
+        + seededCommand)
   }
 
   /// A failed tab carries a ✦ badge (the per-tab signal), which opens the same diagnosis popover.

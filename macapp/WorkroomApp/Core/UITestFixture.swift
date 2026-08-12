@@ -521,6 +521,14 @@ enum UITestFixture {
     Defaults[.showInspector] = true
     Defaults[.activeInspectorSection] = inspectorSection
     Defaults[.diffViewMode] = diffViewMode
+    // Pinned to their `DefaultsKeys` defaults, for the same reason as the booleans above: a dragged
+    // resize PERSISTS (real Dev domain, not fixture-isolated), and a fixture launch otherwise inherits
+    // whatever an earlier drag-resize test left. Found chasing `DiffViewerUITests.
+    // testSideBySideRendersTwoColumns`: the real domain had drifted to inspector.width=406/
+    // sidebar.width=281 (vs. the 300/270 defaults), narrowing the detail column below
+    // `DiffViewer.sideBySideMinWidth` (700) even at the fixture's otherwise-deterministic window width.
+    Defaults[.sidebarWidth] = 270
+    Defaults[.inspectorWidth] = 300
     // Every section expanded, equal heights. Not optional book-keeping: collapse state decides whether
     // a section's BODY renders at all (a collapsed section keeps only its header), and it's global +
     // persisted, so without this a test inherits whichever sections the developer — or the last UI test
