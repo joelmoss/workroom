@@ -2090,28 +2090,34 @@ user).
 
 ## P3 — Tests and tooling
 
-### Deferred UI workflow tests (macapp)
+### Deferred UI workflow tests (macapp) — FIXED
 
 **What:** The two workflow UI tests left to write on top of the now-landed fixture seam:
 1. **Notification badge + click-to-navigate** — drive a terminal to `printf '\e]9;…\a'`, assert the
    sidebar/tab badge appears, click it, assert it navigates to (and clears on) the right terminal.
 2. **Delete-workroom-clears-badges** — assert deleting a workroom withdraws its notifications/badges.
 
-**Why:** The fixture seam itself is done (`Core/UITestFixture.swift` + `-WorkroomUITestFixture 1`
-gives deterministic, CI-able state — see `AppStore.loadFixture()`), and the split-pane + basic
-workflow suites pass deterministically (no `XCTSkip`). These two notification/delete flows are the
-remaining gap, called out explicitly in `WorkroomWorkflowUITests.swift` ("Still to add: …").
+**Fixed, #1 — `WorkroomWorkflowUITests.testLiveNotificationBadgeAppearsAndClickNavigatesToTheRightTerminal`:**
+uses `-WorkroomUITestTwoTabs` for a second, off-screen workroom to raise the OSC from (firing it while
+selected would hit `handleActivity`'s `selected + cursor → SEEN: suppress` rule, so the command sleeps
+1s and the test switches away before it lands). Verified 3× clean.
 
-**How to start:** Add the tests to `macapp/WorkroomAppUITests/WorkroomWorkflowUITests.swift` using
-the existing fixture launch arg and the `sidebar.*` / `terminal.tab.*` accessibility identifiers. The
-badge assertions need the notification a11y identifiers to be queryable — add them if missing.
+**Found and fixed along the way — a real bug in `AppStore.loadFixture()`:** it unconditionally set
+`projects = UITestFixture.projects()` on every reload, with none of `apply`'s tombstone filtering
+(`applyingDeletionTombstones`) — a file-watcher-triggered reload mid-delete-teardown could resurrect a
+just-tombstoned fixture workroom (and its notifications) straight back. Now filtered the same way.
 
-**Depends on:** the fixture seam + accessibility identifiers already in place
-(`macapp/WorkroomApp/Core/UITestFixture.swift`, `Views/ProjectSidebar.swift`,
-`Views/TerminalTabStrip.swift`).
+**#2 — NOT done as a `WorkroomWorkflowUITests` XCUITest; done as `AppStoreDeleteRaceTests.testDeletingAWorkroomWithdrawsItsNotifications` instead:**
+investigated first as a UI test and hit a real architectural wall, not a flake: fixture-mode
+workrooms are never registered with the real CLI, so `deleteWorkroom`'s teardown call
+deterministically FAILS in this harness (confirmed live — a real `presentTeardownFailure` alert
+appears) — and a failed teardown is *supposed* to restore the workroom and its notifications
+(`testFailedTeardownRestoresWorkroom` already covers exactly this). There is no stable "withdrawn"
+state to assert via XCUITest here, only a transient one racing a real CLI subprocess round-trip.
+`AppStoreDeleteRaceTests` already has `DeleteRaceFakeCLI`, a fake CLI whose `delete` can be made to
+succeed — the right, fast, deterministic venue for this specific invariant.
 
-**Priority:** P3 (the smoke + opportunistic suites cover the basics; these harden the notification
-flows).
+**Priority:** done.
 
 ### `ChangedFileRowInvalidationTests` flaked only inside the full serial `app-test` run — FIXED (beta.24 gate)
 

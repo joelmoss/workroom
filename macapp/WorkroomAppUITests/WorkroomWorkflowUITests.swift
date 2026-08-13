@@ -14,8 +14,6 @@ import XCTest
 /// fixture workroom — so they're deterministic and never depend on local config. The chrome smoke
 /// test deliberately launches *without* the fixture, to prove the real bootstrap path renders chrome.
 ///
-/// Still to add: notification badge + click-to-navigate (type `printf '\e]9;…\a'` → assert
-/// sidebar/tab badge → click → navigates) and delete-workroom-clears-badges.
 final class WorkroomWorkflowUITests: XCTestCase {
   override func setUpWithError() throws {
     continueAfterFailure = false
@@ -24,11 +22,12 @@ final class WorkroomWorkflowUITests: XCTestCase {
   /// Launch with the deterministic UI-test fixture (fake projects, auto-selected workroom). Fixture
   /// mode also suppresses the close/quit confirmations in-app, so ⌘W closes synchronously and teardown
   /// never blocks. Pass `fixture: false` to exercise the real bootstrap path (no fake projects).
-  private func launchedApp(fixture: Bool = true) -> XCUIApplication {
+  private func launchedApp(fixture: Bool = true, extraArgs: [String] = []) -> XCUIApplication {
     let app = XCUIApplication()
     if fixture { app.launchArguments += ["-WorkroomUITestFixture", "1"] }
     // Start each test clean, ignoring persisted window state (cf. NewWindowUITests).
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+    app.launchArguments += extraArgs
     app.launch()
     return app
   }
@@ -230,4 +229,70 @@ final class WorkroomWorkflowUITests: XCTestCase {
       popover.waitForExistence(timeout: 4),
       "clicking the +N badge opens the extra-notifications popover")
   }
+
+  /// The workroom tab-bar chips (title bar), for tests exercising more than one workroom.
+  private func workroomChips(_ app: XCUIApplication) -> XCUIElementQuery {
+    app.descendants(matching: .any)
+      .matching(NSPredicate(format: "identifier BEGINSWITH 'workroom.tab.'"))
+  }
+
+  /// A REAL OSC 9 notification (not the fixture's seeded backlog) must reach the same notification
+  /// spine the bell already reads: the badge must appear, and clicking its row in the bell popover
+  /// must navigate to (and dismiss on) the terminal that raised it. The two-workroom fixture
+  /// (`-WorkroomUITestTwoTabs`) supplies a second, off-screen target to raise it from and navigate
+  /// back to — `handleActivity`'s `selected + cursor → SEEN: suppress` rule means firing it while
+  /// its OWN workroom is focused would drop it, exactly as looking straight at a terminal suppresses
+  /// its own notification, so the command sleeps 1s and this switches away before it fires.
+  func testLiveNotificationBadgeAppearsAndClickNavigatesToTheRightTerminal() throws {
+    let app = launchedApp(extraArgs: ["-WorkroomUITestTwoTabs", "1"])
+    let chips = workroomChips(app)
+    assertCount(chips, reaches: 2)
+
+    let a = chips.element(boundBy: 0)
+    let b = chips.element(boundBy: 1)
+    XCTAssertNotEqual(
+      a.isSelected, b.isSelected, "exactly one workroom should be selected on launch")
+    let (focused, background) = a.isSelected ? (a, b) : (b, a)
+
+    background.click()
+    XCTAssertTrue(background.isSelected, "clicking a chip should select its workroom")
+    app.typeText("sleep 1; printf '\\e]9;Live OSC Ping\\a'\r")
+    focused.click()  // switch away before the OSC fires — the notification must survive off-screen
+    XCTAssertTrue(focused.isSelected)
+
+    let bell = app.buttons["activityBar.notifications"]
+    XCTAssertTrue(bell.waitForExistence(timeout: 10))
+    bell.click()
+    var popover = app.popovers.firstMatch
+    XCTAssertTrue(popover.waitForExistence(timeout: 4), "the bell should open its popover")
+    let row = popover.buttons.matching(NSPredicate(format: "label CONTAINS 'Live OSC Ping'"))
+      .firstMatch
+    XCTAssertTrue(
+      row.waitForExistence(timeout: 8),
+      "a live OSC 9 notification raised off-screen should reach the bell's popover")
+
+    row.click()
+    XCTAssertTrue(
+      background.isSelected,
+      "clicking the notification should navigate to the workroom it came from")
+    XCTAssertFalse(focused.isSelected)
+
+    // Opening it dismisses it (`AppStore.openTerminal`'s `notifications.dismiss(notifID:)`) — it must
+    // not still be in the backlog. Re-open the popover (clicking a row closes it) to check.
+    bell.click()
+    popover = app.popovers.firstMatch
+    XCTAssertTrue(popover.waitForExistence(timeout: 4))
+    XCTAssertFalse(
+      popover.buttons.matching(NSPredicate(format: "label CONTAINS 'Live OSC Ping'")).firstMatch
+        .exists,
+      "opening the notification should have dismissed it")
+  }
+
+  // "Deleting a workroom withdraws its notifications" is covered by
+  // `AppStoreDeleteRaceTests.testDeletingAWorkroomWithdrawsItsNotifications` (a unit test, not
+  // here): fixture-mode workrooms are never registered with the real CLI, so `deleteWorkroom`'s
+  // teardown always fails in THIS harness (see `UITestFixture`'s doc + `testFailedTeardownRestoresWorkroom`),
+  // and a failed teardown legitimately restores the workroom and its notifications — there is no
+  // stable "withdrawn" state to assert here, only a transient one racing a real CLI round trip.
+  // `DeleteRaceFakeCLI` gives the succeeding-teardown case a fast, deterministic answer instead.
 }

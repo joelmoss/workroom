@@ -137,6 +137,47 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     XCTAssertFalse(store.deletingWorkrooms.contains(targetID("a")), "tombstone cleared on failure")
   }
 
+  // MARK: - Delete withdraws notifications
+
+  /// Deleting a workroom must withdraw its pending notifications (`AppStore.reapTargetLocally` calls
+  /// `notifications.removeForTarget`) — a sibling workroom's notifications must be untouched. A real
+  /// XCUITest fixture-mode round trip can't isolate this cleanly: fixture projects are never
+  /// registered with the CLI, so `deleteWorkroom`'s teardown always fails there (see
+  /// `testFailedTeardownRestoresWorkroom` above) and the notifications legitimately come back with
+  /// the restored workroom — this unit test exercises the SUCCEEDING path `DeleteRaceFakeCLI` can
+  /// give a fast, deterministic answer for.
+  func testDeletingAWorkroomWithdrawsItsNotifications() async {
+    let a = workroom("a")
+    let b = workroom("b")
+    let fake = DeleteRaceFakeCLI()
+    fake.listResult = [project([a, b])]
+    fake.allowDelete = true  // teardown completes immediately, and succeeds
+    let store = makeStore(fake)
+    await store.reload()
+
+    let aTarget = targetID("a")
+    let bTarget = targetID("b")
+    func notification(for target: TerminalTarget.ID, title: String) -> WorkroomNotification {
+      WorkroomNotification(
+        id: UUID(), targetID: target, tabID: UUID(), kind: .osc, source: "test", title: title,
+        body: nil, date: Date(), count: 1)
+    }
+    store.notifications.seedForTesting([
+      notification(for: aTarget, title: "a's notification"),
+      notification(for: bTarget, title: "b's notification"),
+    ])
+    XCTAssertEqual(store.notifications.count(target: aTarget), 1)
+    XCTAssertEqual(store.notifications.count(target: bTarget), 1)
+
+    store.deleteWorkroom(a, in: project([a, b]))
+    await waitUntil(
+      { store.notifications.count(target: aTarget) == 0 },
+      "deleting a workroom should withdraw its pending notifications")
+    XCTAssertEqual(
+      store.notifications.count(target: bTarget), 1,
+      "a sibling workroom's notifications must be untouched")
+  }
+
   /// The tombstone clears after a successful teardown, so re-creating a same-named workroom later
   /// isn't filtered out by a stale tombstone.
   func testTombstoneClearsAfterSuccessfulTeardown() async {

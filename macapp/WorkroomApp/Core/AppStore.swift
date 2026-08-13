@@ -2625,8 +2625,14 @@ final class AppStore: ObservableObject {
   /// then drive splits/closes without any fragile sidebar navigation. Branch resolution is skipped
   /// (the temp-dir paths aren't real repos), so no git/jj process is ever spawned. Idempotent: a
   /// later reload re-injects the same projects but preserves whatever the test has since selected.
+  ///
+  /// Tombstone-filtered like `apply`'s real-CLI path: `deleteWorkroom`'s teardown script touches the
+  /// fixture's temp directory, which the file watcher picks up and reloads mid-teardown — without
+  /// filtering, that reload re-injected the just-deleted workroom (and its notifications) straight
+  /// back from the unconditionally-canned fixture list a beat after the delete, since fixture mode
+  /// never reaches `apply` at all (caught writing the delete-clears-notifications UI test).
   private func loadFixture() {
-    let fixtures = UITestFixture.projects()
+    let fixtures = applyingDeletionTombstones(UITestFixture.projects())
     projects = fixtures
     // Fixture mode never reaches `apply`, so restore has to be released here or saves would stay
     // suspended for the whole run (issue #46). Fixture projects live in a temp directory that a real
