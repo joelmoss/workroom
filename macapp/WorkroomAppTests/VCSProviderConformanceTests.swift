@@ -185,6 +185,84 @@ final class VCSProviderConformanceTests: XCTestCase {
     XCTAssertTrue(addDiff.contains("+second"), "unstaged half missing: \(addDiff)")
   }
 
+  /// The other half of `combinedWorkingDiff`: the worktree half DELETES what was staged, rather
+  /// than further modifying it — `GitProvider.combinedWorkingDiff`'s dedicated `.deleted` branch,
+  /// untested until now. A file that existed at HEAD (staged edit, then `rm` before commit) must
+  /// still show as a deletion of the HEAD content — real `git diff HEAD` (not `--cached`) shows
+  /// exactly this: the staged intermediate content was never simultaneously on disk with the HEAD
+  /// blob, so it can't appear in a HEAD→worktree diff. A file that never existed at HEAD (staged as
+  /// new, then `rm` before commit) has nothing to show either way.
+  func testWorkingFileDiffHandlesStagedThenDeletedFromDisk() async throws {
+    try requireTool("git")
+    try requireTool("jj")
+    let root = try colocatedFixture()
+    let url = URL(fileURLWithPath: root)
+
+    // a.txt is "one\ntwo\n" at HEAD. Stage an edit, then delete the file from disk without staging
+    // the deletion.
+    let r = sh(
+      """
+      printf 'one\\ntwo\\nthree\\n' > a.txt
+      git add a.txt
+      rm a.txt
+      echo done
+      """, in: root)
+    XCTAssertTrue(r.out.contains("done"), "staged+deleted setup failed: \(r.out)")
+
+    let diff = try await GitProvider().workingFileDiff(root: url, path: "a.txt", base: .workingCopy)
+    XCTAssertTrue(diff.contains("diff --git a/a.txt b/a.txt"), "header: \(diff)")
+    XCTAssertTrue(diff.contains("-one"), "HEAD content must render as removed: \(diff)")
+    XCTAssertTrue(diff.contains("-two"), "HEAD content must render as removed: \(diff)")
+
+    // Same shape for a file that never existed at HEAD: staged as new, then deleted before commit.
+    let r2 = sh(
+      """
+      printf 'first\\n' > d.txt
+      git add d.txt
+      rm d.txt
+      echo done
+      """, in: root)
+    XCTAssertTrue(r2.out.contains("done"), "staged-add+deleted setup failed: \(r2.out)")
+
+    let addDiff = try await GitProvider().workingFileDiff(
+      root: url, path: "d.txt", base: .workingCopy)
+    XCTAssertEqual(
+      addDiff, "",
+      "staged-new-then-deleted never existed at HEAD and doesn't exist now — nothing to diff: \(addDiff)"
+    )
+  }
+
+  /// A third shape `combinedWorkingDiff` must not mislabel: the INDEX half is a staged DELETE
+  /// (`git rm`), then the worktree half recreates the file with new, untracked content. Both HEAD
+  /// and disk have real content here — `gitFormat`'s `type` param only controls which SIDE renders
+  /// as `/dev/null` (old side for `.added`/`.untracked`, new side for `.deleted`; it emits no
+  /// rename/copy metadata regardless of type), so deriving it from the staged delta's raw
+  /// `.deleted` type forced `/dev/null` onto the new side even though the patch's own hunks show
+  /// real added lines against the recreated content — a self-contradictory diff.
+  func testWorkingFileDiffHandlesStagedDeleteThenRecreatedOnDisk() async throws {
+    try requireTool("git")
+    try requireTool("jj")
+    let root = try colocatedFixture()
+    let url = URL(fileURLWithPath: root)
+
+    // a.txt is "one\ntwo\n" at HEAD. Stage its deletion, then recreate it with different content.
+    let r = sh(
+      """
+      git rm a.txt
+      printf 'brand new content\\n' > a.txt
+      echo done
+      """, in: root)
+    XCTAssertTrue(r.out.contains("done"), "staged-delete+recreated setup failed: \(r.out)")
+
+    let diff = try await GitProvider().workingFileDiff(root: url, path: "a.txt", base: .workingCopy)
+    XCTAssertTrue(diff.contains("diff --git a/a.txt b/a.txt"), "header: \(diff)")
+    XCTAssertFalse(
+      diff.contains("+++ /dev/null"),
+      "the new side has real content (the recreated file) — must not render as /dev/null: \(diff)")
+    XCTAssertTrue(
+      diff.contains("+brand new content"), "recreated content missing from the diff: \(diff)")
+  }
+
   /// A **merge** working copy must still produce real per-file diffs. `jj diff -r @` diffs a merge
   /// against its *auto-merged parents*, so it returns NOTHING for a file that differs only from the
   /// first parent — which is precisely what the Changes panel lists (`changed_files` diffs the first

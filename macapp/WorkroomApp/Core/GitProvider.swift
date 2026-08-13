@@ -250,17 +250,21 @@ struct GitProvider: VCSProviding {
   }
 
   /// The combined HEAD→worktree diff for a file that has BOTH a `.index` delta (HEAD→index) and a
-  /// `.workingTree` delta (index→worktree) — i.e. staged, then edited again. `indexDelta.oldFile.id`
-  /// is the file's blob at HEAD (empty/invalid, and so `nil` after `show`, when the file is new since
-  /// HEAD — same "no old side" case `gitFormat` already renders as `/dev/null`). The CURRENT on-disk
-  /// path/content comes from `workingTreeDelta` (its own `oldFile`/`newFile` are both the post-index
-  /// name — a rename only the worktree half made would show up there), never the staged blob, so both
-  /// legs of the edit show up as one diff. Mirrors `workingPatch`'s `.conflicted` case, which reads
-  /// HEAD→worktree the same way.
+  /// `.workingTree` delta (index→worktree) — i.e. staged, then edited again. A missing old side is
+  /// only EXPECTED when `indexDelta.type == .added` (the file is new since HEAD — `oldFile.id` is a
+  /// null OID, and `gitFormat` already renders that as `/dev/null`); checking the delta's own type
+  /// first, rather than inferring "new since HEAD" from whether the blob lookup happened to throw,
+  /// means a genuine read failure (corrupt object, partial clone) on a blob that's supposed to exist
+  /// propagates as an error instead of silently rendering the file as a fabricated whole-file add.
+  /// The CURRENT on-disk path/content comes from `workingTreeDelta` (its own `oldFile`/`newFile` are
+  /// both the post-index name — a rename only the worktree half made would show up there), never the
+  /// staged blob, so both legs of the edit show up as one diff. Mirrors `workingPatch`'s `.conflicted`
+  /// case, which reads HEAD→worktree the same way (that case's own blob lookup is a pre-existing,
+  /// separate gap — see TODOS.md).
   private static func combinedWorkingDiff(
     _ repo: Repository, indexDelta: Diff.Delta, workingTreeDelta: Diff.Delta, root: URL
   ) throws -> String {
-    let headBlob: Blob? = try? repo.show(id: indexDelta.oldFile.id)
+    let headBlob: Blob? = indexDelta.type == .added ? nil : try repo.show(id: indexDelta.oldFile.id)
     let oldPath =
       indexDelta.oldFile.path.isEmpty ? indexDelta.newFile.path : indexDelta.oldFile.path
     let currentPath =
@@ -272,10 +276,17 @@ struct GitProvider: VCSProviding {
       let patch = try repo.patch(from: headBlob, to: nil)
       return Self.gitFormat(patch, oldPath: oldPath, newPath: oldPath, type: .deleted)
     }
+    // `gitFormat`'s `type` only ever changes which SIDE renders as `/dev/null` (`.added`/`.untracked`
+    // ⇒ no old side, `.deleted` ⇒ no new side) — never rename/copy metadata, which this formatter
+    // doesn't emit regardless. Deriving it from `indexDelta.type` (e.g. `.deleted` for a staged
+    // delete that got recreated on disk with new content) forced `/dev/null` on a side the patch
+    // itself has real content for — a self-contradictory header against real hunks. There ARE real
+    // on-disk bytes past this point (this branch is reached only when `workingTreeDelta.type` isn't
+    // `.deleted`), so the only question `gitFormat` actually needs answered is whether a HEAD side
+    // exists at all.
     let patch = try repo.patch(from: headBlob, to: root.appendingPathComponent(currentPath))
     return Self.gitFormat(
-      patch, oldPath: oldPath, newPath: currentPath,
-      type: headBlob == nil ? .added : indexDelta.type)
+      patch, oldPath: oldPath, newPath: currentPath, type: headBlob == nil ? .added : .modified)
   }
 
   /// Build a single file's working-copy `Patch`. Prefers SwiftGitX's `patch(from: delta)` (handles
