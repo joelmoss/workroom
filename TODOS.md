@@ -69,7 +69,7 @@ Cheaper after the pin bump (engine-sent `selection_changed`), but not blocked by
 
 **Priority:** P2 (accessibility regression — address before GA, not blocking the beta).
 
-### Every shipped beta has an arm64-only CLI inside a universal app (macapp) — FIXED IN TREE, UNRELEASED
+### Every shipped beta has an arm64-only CLI inside a universal app (macapp) — SHIPPED (v2.0.0-beta.24)
 
 **What:** the app is universal; the `workroom` CLI it bundles is arm64-only. Verified on the
 published `v2.0.0-beta.23` DMG:
@@ -91,13 +91,10 @@ The standalone CLI's own `darwin_amd64` tarball was always fine; only the embedd
 
 **Fixed** in `build-helper.sh` (per-arch build + `lipo`), asserted at release time by
 `release.sh check_universal()`, and regression-tested by `macapp/Scripts/build-helper_test.sh`
-(proven to fail against the old logic). **Not yet released.**
+(proven to fail against the old logic). Confirmed released: `ff7bbb7f` is an ancestor of the
+`v2.0.0-beta.24` tag.
 
-**Open decision:** whether this warrants cutting a beta ahead of the normal cadence. It has been
-broken for two months, so urgency is lower than severity suggests — but any Intel user who has
-tried the app has a broken install.
-
-**Priority:** P2 — fixed, pending a release decision.
+**Priority:** done.
 
 ## P2 — perf, correctness, and the next VCS phase
 
@@ -2237,7 +2234,7 @@ than shipped on nightly.
 
 **Priority:** P3 — until the next hang report, symbols alone may be enough.
 
-### Focus-responder App Hang on a large diff (macapp) — WORKROOM-2T
+### Focus-responder App Hang on a large diff (macapp) — WORKROOM-2T — CLOSED (2026-08-11)
 
 **What:** Sentry WORKROOM-2T, nightly build 596 (macOS 26.5.2), 5 occurrences. **Pulling all events
 showed Sentry grouped two different bugs into one issue** (fingerprinted on `culprit: main` + "App
