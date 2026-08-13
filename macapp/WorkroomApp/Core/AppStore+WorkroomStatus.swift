@@ -14,8 +14,8 @@ extension AppStore {
   fileprivate static let localStatusTTL: TimeInterval = 15  // git/jj dirty/changed-files
   fileprivate static let ciStatusTTL: TimeInterval = 300  // gh CI (network)
   // The `gh auth status` TTL lives in `GitHubAuthCache`, which owns that probe's freshness outright.
-  fileprivate static let localConcurrency = 5
-  fileprivate static let ciConcurrency = 2
+  static let localConcurrency = 5
+  static let ciConcurrency = 2
   fileprivate static let selectionDebounce: TimeInterval = 0.3  // arrow-key row cycling coalesce
 
   struct StatusWorkItem: Sendable {

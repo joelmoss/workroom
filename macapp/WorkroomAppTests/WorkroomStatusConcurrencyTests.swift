@@ -125,10 +125,10 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
     store.refreshWorkroomStatuses(force: true)
     await store.statusSweepTask?.value
 
-    // Mirrors `AppStore.localConcurrency` (`AppStore+WorkroomStatus.swift`), which is `fileprivate`
-    // and so not reachable here by name — a change to that constant should update this literal too.
     XCTAssertLessThanOrEqual(
-      counter.peak, 5, "runLocalSweep let more than its cap of 5 local probes run at once")
+      counter.peak, AppStore.localConcurrency,
+      "runLocalSweep let more than its cap of \(AppStore.localConcurrency) local probes run at once"
+    )
     XCTAssertGreaterThan(
       counter.peak, 1,
       "the fan-out never actually overlapped — this test would pass even against a fully serial "
@@ -154,10 +154,9 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
     store.refreshWorkroomStatuses(force: true)
     await store.statusSweepTask?.value
 
-    // Mirrors `AppStore.ciConcurrency` (`AppStore+WorkroomStatus.swift`), `fileprivate` and so not
-    // reachable here by name — a change to that constant should update this literal too.
     XCTAssertLessThanOrEqual(
-      ghCounter.peak, 2, "runCISweep let more than its cap of 2 CI probes run at once")
+      ghCounter.peak, AppStore.ciConcurrency,
+      "runCISweep let more than its cap of \(AppStore.ciConcurrency) CI probes run at once")
     XCTAssertGreaterThan(
       ghCounter.peak, 1,
       "the fan-out never actually overlapped — this test would pass even against a fully serial "
