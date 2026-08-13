@@ -602,6 +602,32 @@ new write-flow UI.
 
 **Priority:** P2 (the product direction; large — see the plan for the real breakdown).
 
+### `.task(id:)` cancellation is not reliably delivered on an in-place value swap (macapp) — measured 2026-08-13
+
+**What:** while fixing an `AvatarView` staleness bug (a stale in-flight fetch for author A landing
+in `result` after the same slot switched to author B), the fix's first draft guarded on
+`Task.isCancelled` — SwiftUI's documented behavior for `.task(id:)` is "if the id value changes,
+SwiftUI cancels the previous task." Instrumented and measured directly (`Avatar.swift`, temporary
+`lastCancelObserved` seam, since removed): for an in-place `subject` swap at a stable view-identity
+slot (no `ForEach` re-keying, just a `@Published`/`@ObservedObject` value change), `Task.isCancelled`
+read **`false`** throughout the outgoing task's remaining lifetime, even though a brand-new `.task`
+invocation for the new value had already started and completed. The guard was dead code.
+
+**Fix applied there:** replaced it with a generation token — `@State private var activeTaskKey`,
+written at the START of every `.task` invocation (before its `await`) and compared against the
+invocation's own captured key before committing. `@State` survives the slot being reused (same
+mechanism `result` itself already relies on), so whichever invocation started LAST always wins the
+comparison, independent of whether SwiftUI ever delivers real cancellation. Red/green-verified:
+reverting the token guard reproduces the exact original failure.
+
+**Why this is worth a standalone entry:** any OTHER `.task(id:)` in this codebase that guards a
+stale-write race on `Task.isCancelled` alone is potentially relying on the same dead code. Grep for
+`Task.isCancelled` near a `.task(id:` call before trusting one; the working pattern is the
+generation-token comparison above, not the cancellation flag.
+
+**Priority:** informational — no other call site audited yet. Worth a pass if another stale-write bug
+surfaces in a `.task(id:)`-driven view.
+
 ### `withTimeout` doesn't observe the CALLER's own cancellation (macapp) — FIXED
 
 **Status:** the original version of this entry (a `withThrowingTaskGroup` awaiting a detached
