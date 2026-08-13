@@ -2405,28 +2405,53 @@ exist otherwise).
 
 ## P3 — CLI
 
-### Harden `vcs.Detect` to validate a real repo (CLI) — #103 follow-up
+### Harden `vcs.Detect` to validate a real repo (CLI) — #103 follow-up — RE-PRICED, not a fit for this batch
 
 **What:** `vcs.Detect` (`internal/vcs/vcs.go`) currently treats a directory as a repo if `.jj` is a
 dir OR `.git` merely *exists* (file or dir). A bogus/empty `.git` therefore registers as a project
 via `add-project` and only fails later, at workroom creation.
 
-**Why:** Surfaced by the Codex outside-voice pass during `/plan-eng-review` of issue #103 (the
-create-project work). It's a pre-existing robustness gap — the existing-path `add-project` already
-has it; #103's create flow inits a real repo so its happy path is unaffected — but a stricter check
-would fail fast with a clear error instead of a confusing late failure. Re-confirmed by the Codex
-pass during the jj→git stale-vcs fix: the new reconcile-on-list (`Service.effectiveVCS`) also uses
-marker-file truth, so a *present-but-broken* `.jj` dir would still reconcile as jj — hardening
-`Detect` fixes both the late-failure gap and the reconcile accuracy in one place.
+**Why we thought this:** Surfaced by the Codex outside-voice pass during `/plan-eng-review` of issue
+#103 (the create-project work). It's a pre-existing robustness gap — the existing-path `add-project`
+already has it; #103's create flow inits a real repo so its happy path is unaffected — but a
+stricter check would fail fast with a clear error instead of a confusing late failure. Re-confirmed
+by the Codex pass during the jj→git stale-vcs fix: the new reconcile-on-list (`Service.effectiveVCS`)
+also uses marker-file truth, so a *present-but-broken* `.jj` dir would still reconcile as jj —
+hardening `Detect` fixes both the late-failure gap and the reconcile accuracy in one place.
 
-**How to start:** In `Detect`, validate beyond existence — e.g. `git rev-parse --git-dir` (or read
-`.git`/`HEAD`) for git, and confirm `.jj/repo` for jj. Weigh that `Detect` runs on every
-create/list/delete (now also list-reconcile), so keep it cheap (a stat-level check may suffice over
-forking git).
+**What checking the actual call sites found:** `vcs.Detect` has exactly two callers
+(`internal/workroom/workroom.go`) — `detectVCS` (line ~103, registration-time: `add-project`/create)
+and `effectiveVCS` (line ~160, `Service.effectiveVCS`, which runs on **every `list`**, not just
+registration). The dual-purpose framing above is real, but it cuts the other way from how it reads:
+hardening `Detect` doesn't just gate new registrations, it changes what a healthy, already-registered
+repo reconciles to on every list. `effectiveVCS` fails soft today (`err != nil` → falls back to the
+stored type), so a hardened check wouldn't hard-fail `list` — but it would introduce a new case where
+a real repo whose `.git/HEAD` is momentarily unreadable (mid-`git gc`, a permissions blip, an
+NFS/sync stall) silently reconciles away from "git" for that one list, a failure mode that doesn't
+exist against today's bare `os.Stat(.git)` check.
+
+Separately, ~58 existing test-fixture sites across `vcs_test.go`, `reconcile_test.go`,
+`workroom_test.go`, `list_data_test.go` fake a repo with `os.Mkdir(dir/.git, 0o755)` / `.jj` and
+nothing inside — exactly the bare-marker shape a hardened check would reject. There's no way to catch
+the bug without invalidating all of them; that's the change's actual semantics reaching every test
+that ever faked a repo, not incidental churn. And `.git`-as-file (git worktrees) needs its own
+validated pointer-file path — worth flagging because a *workroom* is itself a git worktree, so
+getting that one subtly wrong would hit the product's core object, not an edge case.
+
+**Verdict:** not a fit for a pre-release stability batch. "Keep it cheap" in the original framing was
+about CPU cost (stat-level over forking git) and didn't anticipate this blast radius. A correct
+version of this needs: confirming both call sites' fail-soft behavior stays correct under the new
+check, updating the fixture set deliberately (not as a mechanical find-replace), and a validated
+`.git`-as-file path — real work, not a drive-by.
+
+**How to start (unchanged from the original framing, for whenever this is picked up):** In `Detect`,
+validate beyond existence — e.g. `git rev-parse --git-dir` (or read `.git`/`HEAD`) for git, and
+confirm `.jj/repo` for jj.
 
 **Depends on:** nothing; touches all VCS consumers (`create`, `list`, `delete`, `add-project`).
 
-**Priority:** P3 (pre-existing; create-new path inits a valid repo, so not blocking #103).
+**Priority:** P3 → hold. Re-open as its own deliberate pass (fixtures + both call sites + the
+worktree-pointer path), not folded into an unrelated batch.
 
 ### The config lock can be stolen from a live holder (CLI) — `withLock` audit — SHIPPED (2026-08-10)
 
