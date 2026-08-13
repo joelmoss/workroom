@@ -53,12 +53,24 @@ struct FilesPanel: View {
       + "\u{1F}\(store.activeInspectorSection == .files)"
   }
 
+  /// `LazyVStack`, not `VStack`: rows are fixed-height (single-line, truncated — no soft-wrap, unlike
+  /// `DiffViewer`'s lines, where lazy would cache a wrong estimate for a not-yet-materialized wrapping
+  /// row — see that type's doc for when lazy is wrong), and this already lives inside the inspector's
+  /// own `ScrollView` (see the type doc), which is what makes a `LazyVStack` here lazy at all instead
+  /// of behaving like `VStack` with no viewport to bound against.
   private var fileList: some View {
     let rows = model.rows
     let capped = Array(rows.prefix(FileTreeModel.renderCap))
-    return VStack(alignment: .leading, spacing: 0) {
+    return LazyVStack(alignment: .leading, spacing: 0) {
       ForEach(capped, id: \.node.path) { row in
-        FileTreeRowView(model: model, row: row)
+        FileTreeRowView(
+          row: row, isExpanded: model.expanded.contains(row.node.path),
+          onToggle: { model.toggle(row.node) },
+          onOpenPreview: { store.openFilePreview(path: row.node.path) },
+          onOpenPersistent: { store.openFilePersistent(path: row.node.path) },
+          onOpenInEditor: { store.openFileInEditor(path: row.node.path) }
+        )
+        .equatable()
       }
       if rows.count > capped.count {
         Text("+\(rows.count - capped.count) more — narrow the tree or open in your editor.")
@@ -81,10 +93,20 @@ struct FilesPanel: View {
 
 /// One row of the Files tree: an indented directory (with a disclosure chevron) or file. Its own
 /// view so hover + the click-timing state stay per-row.
-private struct FileTreeRowView: View {
-  @EnvironmentObject var store: AppStore
-  @ObservedObject var model: FileTreeModel
+///
+/// Deliberately `internal`, not `private` (same reason `HistoryRow`/`ChangedFileRow` are): this WAS a
+/// WORKROOM-2B eager-stack-plus-per-row-observation candidate (`FilesPanelInvalidationTests` proved it
+/// — an unrelated `AppStore` publish rebuilt all 200 visible rows), fixed the same way those two were:
+/// no `@EnvironmentObject`/`@ObservedObject` here at all. `FilesPanel` hoists `isExpanded` out of
+/// `FileTreeModel` and passes plain closures for the store-dependent actions, so this row observes
+/// NOTHING and `.equatable()` at the call site actually has something to gate on.
+struct FileTreeRowView: View, Equatable {
   let row: FileTreeRow
+  let isExpanded: Bool
+  let onToggle: () -> Void
+  let onOpenPreview: () -> Void
+  let onOpenPersistent: () -> Void
+  let onOpenInEditor: () -> Void
   @State private var hovering = false
   /// Tracks the previous click time so a quick second click promotes the preview to a persisted tab
   /// (same manual double-click handling the Changes panel uses).
@@ -92,10 +114,24 @@ private struct FileTreeRowView: View {
   private let theme = ThemeService.shared
 
   private var node: FileNode { row.node }
-  private var isExpanded: Bool { model.expanded.contains(node.path) }
+
+  /// The closures are excluded (same reasoning as `HistoryRow.open`): `FilesPanel` builds them from
+  /// `[store, row.node]`, so two rows differing only in closure identity are behaviourally identical.
+  static func == (lhs: FileTreeRowView, rhs: FileTreeRowView) -> Bool {
+    lhs.row == rhs.row && lhs.isExpanded == rhs.isExpanded
+  }
+
+  #if DEBUG
+    /// How many times ANY row's body has been evaluated this process — the measurement behind
+    /// `FilesPanelInvalidationTests` (WORKROOM-2B follow-up). Debug-only.
+    static var bodyPasses = 0
+  #endif
 
   var body: some View {
-    HStack(spacing: 4) {
+    #if DEBUG
+      Self.bodyPasses += 1
+    #endif
+    return HStack(spacing: 4) {
       Color.clear.frame(width: CGFloat(row.depth) * 13, height: 1)
       Image(systemName: "chevron.right")
         .font(.system(size: 9, weight: .semibold))
@@ -127,7 +163,7 @@ private struct FileTreeRowView: View {
     .contextMenu {
       if !node.isDirectory {
         Button {
-          store.openFileInEditor(path: node.path)
+          onOpenInEditor()
         } label: {
           Label("Open in \(ExternalEditor.remembered?.name ?? "Editor")", systemImage: "doc.text")
         }
@@ -146,21 +182,21 @@ private struct FileTreeRowView: View {
 
   private func handleTap() {
     if node.isDirectory {
-      model.toggle(node)
+      onToggle()
       lastClick = nil
       return
     }
     if NSEvent.modifierFlags.contains(.command) {
-      store.openFileInEditor(path: node.path)  // ⌘-click → external editor, not the in-app viewer
+      onOpenInEditor()  // ⌘-click → external editor, not the in-app viewer
       lastClick = nil
       return
     }
     let now = Date()
     if let last = lastClick, now.timeIntervalSince(last) < 0.35 {
-      store.openFilePersistent(path: node.path)  // quick second click → persist
+      onOpenPersistent()  // quick second click → persist
       lastClick = nil
     } else {
-      store.openFilePreview(path: node.path)  // eager: show the read-only preview immediately
+      onOpenPreview()  // eager: show the read-only preview immediately
       lastClick = now
     }
   }

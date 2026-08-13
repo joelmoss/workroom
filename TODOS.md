@@ -2183,31 +2183,29 @@ de-dup, and LRU eviction — 7 tests, all green, no real network in any of them.
 
 **Priority:** done.
 
-### `FilesPanel` renders up to 4000 rows eagerly (macapp) — WORKROOM-2B follow-up
+### `FilesPanel` renders up to 4000 rows eagerly (macapp) — FIXED
 
 **What:** `Views/FilesPanel.swift:58-60` builds every visible tree row in an eager `VStack`, capped at
 `FileTreeModel.renderCap = 4000`, and each row holds `@EnvironmentObject store` + `@ObservedObject
 model`.
 
-**Why:** this is the third instance of the pattern that produced the WORKROOM-2B App Hang — eager stack
-plus per-row observation of a publishing object — and its cap is 20× the Changes panel's 200. The
-History pane took >2 seconds of main thread at ~1000 rows of comparable per-row work.
+**Measured (per this entry's own instruction), then fixed:** `FilesPanelInvalidationTests` added the
+same `#if DEBUG bodyPasses` counter `HistoryRow`/`ChangedFileRow` use. Confirmed BOTH suspected
+mechanisms on the pre-fix code: an `AppStore` publish saying nothing about the file tree rebuilt all
+200 visible rows (`store` was read only inside tap/menu closures, never the rendered body — so this
+was the WORKROOM-2B mechanism, not a hypothetical); a 1000-file tree built all 1000 rows on first
+layout (the eager `VStack`).
 
-**Why it is NOT P1:** unmeasured. No hang report names Files, and `FileTreeModel` publishes far less
-often than `TerminalSessions` did (tree loads and expand/collapse, not terminal output), so the
-high-frequency trigger that made History fatal may simply not exist here. Tree rows also carry
-expand/collapse state, which lazy stacks handle less predictably than fixed-height list rows.
+Fixed the same way History/Changes were: `FileTreeRowView` now takes plain values + closures and
+observes NOTHING (`FilesPanel` hoists `isExpanded` out of `FileTreeModel` per-row and passes
+`onToggle`/`onOpenPreview`/`onOpenPersistent`/`onOpenInEditor`), gets an `Equatable` gate, and the
+list is a `LazyVStack` — safe here (unlike `DiffViewer`'s soft-wrapping lines) since rows are
+fixed-height and this already lives inside the inspector's own `ScrollView`. Re-measured: the
+unrelated-publish case is now 0 rebuilds (was 200); the 1000-file tree now builds ~20-odd rows, not
+1000; a 4000-file tree (the render cap) first-layouts in under the same 0.25s ceiling
+`HistoryRowInvalidationTests` uses.
 
-**How to start:** measure before changing anything — add a `#if DEBUG bodyPasses` counter to the row
-(same shape as `HistoryRow`/`ChangedFileRow`) and count passes per `FileTreeModel` publish with a large
-expanded tree. If the number is large, the fix is the one this branch established: hoist the selection
-lookup into the panel, give the row an `Equatable` gate, and switch the stack to `LazyVStack` (only if
-the rows are fixed-height — see the comment at `Views/DiffViewer.swift`'s `unifiedBody` for when lazy
-is wrong).
-
-**Depends on:** nothing; the counter harness and the pattern both exist now.
-
-**Priority:** P3 — structural risk, no measured symptom.
+**Priority:** done.
 
 ### Main-thread timing from a real hang (macapp) — WORKROOM-2B follow-up
 
