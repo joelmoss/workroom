@@ -2087,7 +2087,13 @@ run-command actions, `Core/TerminalSessions.swift` `addRunTab`).
 
 **Priority:** P3 (deferred from #7 — the feature is useful without it; surfaced by the eng-review).
 
-### Stopped run-tab silently closes instead of warning when its command is cleared (macapp) — #127 follow-up
+### Stopped run-tab silently closes instead of warning when its command is cleared (macapp) — #127 follow-up — FIXED
+
+**Fixed:** `respawnRunCommand`'s `hasRunCommand` guard now mirrors the `.armed`/`.none` branch —
+same non-clobber `pendingProjectSettings == nil` check, same warning sheet — and returns without
+touching `oldTab` at all, so the stopped pane stays open instead of being closed. Covered by
+`RunCommandTests.testRestartWithClearedCommandWarnsInsteadOfClosing` (confirmed it fails against
+the prior behaviour via a temporary revert, passes with the fix).
 
 **What:** `runOrFocusRunCommand()`'s `.stopped` case routes through `restartRunCommand` →
 `respawnRunCommand`, which checks `hasRunCommand` and — if false — just closes the stopped-but-open
@@ -2109,9 +2115,7 @@ logic wasn't reviewed against this change.
 **Depends on:** #127 shipping first (`AppStore.swift`'s `PendingProjectSettings` +
 `pendingProjectSettings`).
 
-**Priority:** P3 (pre-existing, narrow repro — needs a run to have started and stopped, then the
-command cleared before the next ⌘R; surfaced by the #127 eng/outside-voice review, not reported by a
-user).
+**Priority:** done.
 
 ## P3 — Tests and tooling
 
