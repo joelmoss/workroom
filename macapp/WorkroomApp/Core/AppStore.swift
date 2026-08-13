@@ -2135,6 +2135,15 @@ final class AppStore: ObservableObject {
       terminals.closeTab(oldTab, for: target)
       return
     }
+    // Reached only after `restartRunCommand`'s `signalSupervisor` call already confirmed the
+    // supervisor is gone — true regardless of which `RunState` the caller entered with
+    // (`.running`/`.restarting`/`.stopped`, per `restartRunCommand`'s shared branch). Normalize to
+    // `.stopped` up front so every exit below (including the no-command warning) reflects that
+    // confirmed-dead reality; a real respawn overwrites this again a few lines down with its own
+    // fresh `.running`/`.stopped` result. Without this, entering from `.running`/`.restarting` with
+    // the command cleared left the toast/sidebar dot reporting "running" against a pid that no
+    // longer exists.
+    runStates[target.id] = .stopped(tab: oldTab)
     guard hasRunCommand(forProject: project.path) else {
       // #127 follow-up: the command was cleared while a stopped-but-open run pane sat waiting for
       // this restart. Mirror the `.armed`/`.none` branch's warning (same non-clobber guard) instead

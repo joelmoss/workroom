@@ -433,6 +433,30 @@ final class RunCommandTests: XCTestCase {
       "the stopped pane must stay open — the fix is to warn, not to silently destroy it")
   }
 
+  /// The other entry state `respawnRunCommand`'s no-command guard has to handle: `restartRunCommand`
+  /// reaches it from `.running`/`.restarting`/`.stopped` alike (its shared branch when
+  /// `signalSupervisor` reports the supervisor gone), not only `.stopped`. Restarting while the store
+  /// still says `.running` — a dead supervisor that never got the chance to report its exit — must
+  /// not leave that stale "running" state behind once the warning sheet takes over; otherwise the
+  /// toast/sidebar dot keeps claiming a pid that's already confirmed gone.
+  func testRestartFromRunningWithClearedCommandStopsReportingAsRunning() {
+    let store = makeStoreDeadSupervisor([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.selectedTargetID = .workroom(project: "/a", name: "main")
+
+    store.startRunCommand(for: t)
+    XCTAssertTrue(store.isRunCommandRunning(for: t.id))  // still .running — no exit reported yet
+
+    store.setRunConfig(RunConfig(command: "", autoRun: false), forProject: "/a")  // cleared
+    store.restartRunCommand(for: t)  // dead supervisor → respawnRunCommand's no-command guard
+
+    XCTAssertFalse(
+      store.isRunCommandRunning(for: t.id),
+      "a confirmed-dead supervisor must not leave the state reporting .running")
+    XCTAssertEqual(store.pendingProjectSettings?.project.path, "/a")
+  }
+
   func testClosingRunTabClearsState() {
     let store = makeStore([project("/a", workrooms: ["main"])])
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
