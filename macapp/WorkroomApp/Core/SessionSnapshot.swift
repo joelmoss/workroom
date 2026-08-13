@@ -31,9 +31,10 @@ import Foundation
 ///
 /// - **The PTY of a dead session.** With background sessions on (the default), ordinary workroom
 ///   shells live in `workroom-session` and reattach via `TerminalPayload.sessionID`. A pane whose
-///   session is gone still opens a fresh shell in the remembered directory. Run-command tabs are
-///   never persisted. (Restored *text* for a dead session still comes from sidecar files. See
-///   `SessionStore` and issue #144.)
+///   session is gone just opens a fresh shell in the remembered directory, with no prior text —
+///   the daemon's own live output is the only source of restored content now (issue #144's old
+///   disk-sidecar capture/replay was removed once background sessions made it redundant).
+///   Run-command tabs are never persisted.
 /// - **Run tabs.** Restoring one would resurrect a dev server with no `AppStore.RunState` behind it —
 ///   an untracked process orphaned on its port, the failure `WindowRegistry.runOwner(for:excluding:)`
 ///   and issue #7 exist to prevent. `Defaults[.runCommands]` already survives, and `RunConfig.autoRun`
@@ -76,12 +77,6 @@ enum SessionLimits {
   static let maxFileBytes = 4 * 1024 * 1024
   /// Clamps paths, titles, and commit ids individually.
   static let maxStringLength = 4096
-  /// Per-pane scrollback kept in a sidecar file (issue #144). The value is overwhelmingly at the
-  /// recent end, and a cap keeps the quit path bounded no matter how much a pane logged.
-  static let maxScrollbackBytes = 256 * 1024
-  /// A sidecar larger than this on disk is corrupt by definition — twice the cap, so a legitimate
-  /// file can never trip it.
-  static let maxScrollbackFileBytes = 512 * 1024
 }
 
 // MARK: - Lossy array decoding

@@ -1,5 +1,4 @@
 import AppKit
-import Defaults
 import Foundation
 import OSLog
 
@@ -83,45 +82,6 @@ extension AppStore {
     }
   }
 
-  /// Write every live pane's scrollback to its sidecar (issue #144). Quit only — reading each
-  /// pane's history is far too heavy for a coalesced save.
-  ///
-  /// The tab key must match what `captureTargetSessions` wrote for the same tab, or the sidecar
-  /// belongs to nothing and is pruned the moment it is written.
-  ///
-  /// **Bounded by a wall-clock budget**, because this runs synchronously on the main thread inside
-  /// `applicationShouldTerminate` — and on the SIGTERM path it runs *before* run commands are stopped.
-  /// Per-pane cost is bounded in `GhosttySurfaceView.captureScrollback`; this bounds the total, so a
-  /// window full of busy panes cannot turn a quit into a spinning beachball. A pane past the deadline
-  /// restores with no text (tab keys are re-minted every launch, so there is no older sidecar for it
-  /// to fall back on) — losing one pane's history beats hanging the quit for every pane.
-  /// `isEnabled` is a parameter rather than a bare `Defaults` read so a test can drive the opt-out
-  /// without mutating a shared preference domain (the single-writer constraint parallel test workers
-  /// impose — see `SharedPrefDefaultsTests`).
-  func captureScrollback(
-    into store: SessionStore, isEnabled: Bool = Defaults[.persistScrollback],
-    deadline: Date = Date() + 1.5
-  ) {
-    guard isEnabled else { return }
-    var skipped = 0
-    for targetID in terminals.activeTargetIDs {
-      guard let captured = terminals.sessionCapture(forTargetID: targetID) else { continue }
-      for tab in captured.tabs {
-        // Run tabs are not persisted at all, so their output must not be either.
-        guard tab.surface?.isRunCommandSurface != true else { continue }
-        guard Date() < deadline else {
-          skipped += 1
-          continue
-        }
-        guard let text = tab.surface?.captureScrollback() else { continue }
-        store.writeScrollback(text, forTabKey: tab.id.uuidString)
-      }
-    }
-    if skipped > 0 {
-      Self.sessionLogger.notice("scrollback capture ran out of budget — \(skipped) panes skipped")
-    }
-  }
-
   /// Tell the coordinator this window changed. Every dirty source funnels through here so there is
   /// one place to look when asking "what causes a save?".
   func markSessionDirty() {
@@ -161,12 +121,6 @@ extension AppStore {
     pendingSessionRestore = nil
     defer { projectStore.finishSessionRestore() }
 
-    // Resolved once, not per tab: with the preference off, restore hands every pane a closure that
-    // returns nothing, so nothing is read and nothing is replayed. The layout still comes back.
-    let coordinator = projectStore.sessionCoordinator
-    let readScrollback: (String) -> String? =
-      Defaults[.persistScrollback] ? { coordinator.scrollback(forTabKey: $0) } : { _ in nil }
-
     // Captured before the restore ends, because `projectStore.sessionSavedAt` is cleared with it.
     let savedAt = projectStore.sessionSavedAt
     var restoredTargetIDs: Set<TerminalTarget.ID> = []
@@ -177,7 +131,7 @@ extension AppStore {
       guard let sid = Self.sidebarID(forTargetID: saved.targetID, in: projects),
         let target = target(for: sid)
       else { continue }
-      let result = terminals.restore(saved, for: target, scrollback: readScrollback)
+      let result = terminals.restore(saved, for: target)
       guard result.count > 0 else { continue }
       restoredTargetIDs.insert(target.id)
       restoredTerminals.append(contentsOf: result.terminals)

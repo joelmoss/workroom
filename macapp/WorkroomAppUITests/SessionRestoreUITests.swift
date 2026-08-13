@@ -189,60 +189,6 @@ final class SessionRestoreUITests: XCTestCase {
     assertCount(panes(relaunched), reaches: 2)
   }
 
-  // MARK: Scrollback (issue #144)
-
-  /// The headline for #144: what you were reading is still there after a relaunch, above a divider.
-  ///
-  /// Asserted through the session directory rather than the terminal's a11y tree — the libghostty
-  /// Metal surface contributes no text to it, which is why every other terminal assertion in this
-  /// suite counts panes and chips instead of reading content.
-  func testScrollbackIsCapturedOnQuitAndReplayed() throws {
-    let app = launchedApp()
-    waitForFirstPane(app)
-
-    let marker = "SCROLLBACK-UITEST-\(UUID().uuidString.prefix(8))"
-    app.typeText("echo \(marker)\n")
-    // Let the command run and the output render before quitting.
-    _ = XCTWaiter().wait(for: [expectation(description: "settle")], timeout: 3)
-    quitAndWaitForSave(app)
-
-    let scrollbackDir = sessionFile.deletingLastPathComponent()
-      .appendingPathComponent("scrollback")
-    let sidecars =
-      (try? FileManager.default.contentsOfDirectory(
-        at: scrollbackDir, includingPropertiesForKeys: nil))
-      ?? []
-    XCTAssertFalse(sidecars.isEmpty, "quitting should have written a scrollback sidecar")
-
-    let captured = sidecars.compactMap { try? String(contentsOf: $0, encoding: .utf8) }
-    XCTAssertTrue(
-      captured.contains { $0.contains(marker) },
-      "the pane's output should be in its sidecar")
-
-    // Relaunching must consume it without crashing, and leave exactly the restored pane.
-    let relaunched = launchedApp()
-    XCTAssertTrue(relaunched.wait(for: .runningForeground, timeout: 10))
-    waitForFirstPane(relaunched)
-    assertCount(panes(relaunched), reaches: 1)
-  }
-
-  /// A corrupt sidecar must cost the history, never the launch.
-  func testCorruptScrollbackSidecarStillLaunches() throws {
-    let app = launchedApp()
-    waitForFirstPane(app)
-    quitAndWaitForSave(app)
-
-    let scrollbackDir = sessionFile.deletingLastPathComponent()
-      .appendingPathComponent("scrollback")
-    try FileManager.default.createDirectory(at: scrollbackDir, withIntermediateDirectories: true)
-    try Data([0xFF, 0xFE, 0xFF]).write(to: scrollbackDir.appendingPathComponent("garbage.txt"))
-
-    let relaunched = launchedApp()
-    XCTAssertTrue(relaunched.wait(for: .runningForeground, timeout: 10))
-    waitForFirstPane(relaunched)
-    assertCount(panes(relaunched), reaches: 1)
-  }
-
   // MARK: Degradation
 
   /// Corrupt input on the launch path must never cost more than the restore itself.

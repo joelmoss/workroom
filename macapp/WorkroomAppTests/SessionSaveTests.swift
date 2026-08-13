@@ -247,61 +247,6 @@ final class SessionSaveTests: XCTestCase {
     XCTAssertEqual(readWindows()?.first?.targets.first?.tabs.count, 4)
   }
 
-  // MARK: Scrollback capture timing (issue #144)
-
-  /// Reading every pane's history is far too heavy for a coalesced save, so it must happen ONLY at
-  /// quit. A save triggered by ordinary layout churn must not touch scrollback at all.
-  func testScrollbackIsCapturedOnlyAtQuit() {
-    var captureCount = 0
-    let coordinator = SessionCoordinator(
-      store: SessionStore(url: url), debounce: 0.05, ceiling: 0.2,
-      capture: { [weak self] in self?.captured ?? [] },
-      captureScrollback: { _ in captureCount += 1 })
-
-    coordinator.markDirty()
-    pump(0.3)
-    XCTAssertEqual(captureCount, 0, "a coalesced save must not read scrollback")
-
-    captured = [window(tabCount: 2)]
-    coordinator.writeIfChanged()
-    pump(0.2)
-    XCTAssertEqual(captureCount, 0, "nor an explicit write")
-
-    coordinator.flushAndFreeze()
-    XCTAssertEqual(captureCount, 1, "quitting is the one moment worth reading history for")
-  }
-
-  /// Sidecars are pruned against the keys actually written, so a pane that is gone — or one whose
-  /// capture came back empty — cannot leave yesterday's output behind.
-  func testQuitPrunesSidecarsToTheWrittenKeys() {
-    let store = SessionStore(url: url)
-    store.writeScrollback("stale", forTabKey: "t0")
-    store.writeScrollback("gone", forTabKey: "orphan")
-
-    let coordinator = SessionCoordinator(
-      store: store, debounce: 0.05, ceiling: 0.2,
-      capture: { [weak self] in self?.captured ?? [] },
-      captureScrollback: { _ in })
-    captured = [window(tabCount: 1)]  // one tab, key "t0"
-    coordinator.flushAndFreeze()
-
-    XCTAssertEqual(store.readScrollback(forTabKey: "t0"), "stale", "a live pane keeps its sidecar")
-    XCTAssertNil(store.readScrollback(forTabKey: "orphan"), "a pane that is gone loses its sidecar")
-  }
-
-  /// A frozen or suspended coordinator writes no session, so it must not write scrollback either.
-  func testNoScrollbackCaptureWhileSuspended() {
-    var captureCount = 0
-    let coordinator = SessionCoordinator(
-      store: SessionStore(url: url), debounce: 0.05, ceiling: 0.2,
-      capture: { [weak self] in self?.captured ?? [] },
-      captureScrollback: { _ in captureCount += 1 })
-
-    coordinator.suspendSaves()
-    coordinator.flushAndFreeze()
-    XCTAssertEqual(captureCount, 0, "a half-restored session must not overwrite good sidecars")
-  }
-
   // MARK: Newer schema
 
   /// A session written by a newer build is read-only: this build restores nothing and, critically,

@@ -31,31 +31,6 @@ final class SessionRestoreTests: XCTestCase {
       second: .leaf(second))
   }
 
-  // MARK: Scrollback is fetched lazily (issue #144)
-
-  /// **REGRESSION.** Restore materialises EVERY target's tabs eagerly — the sidebar's terminal
-  /// subtree renders from them — so reading each pane's sidecar here would put one file read per
-  /// restored pane on the launch path and then hold every result (up to 256KB each) in memory for the
-  /// whole run, including for panes that are never opened. The surface asks for its own text when it
-  /// is created instead.
-  func testSidecarsAreNotReadUntilAPaneIsActuallyCreated() {
-    let sessions = makeSessions()
-    var reads: [String] = []
-    let session = TargetSession(
-      targetID: target.id,
-      tabs: [terminal("t0", title: "Terminal 1"), terminal("t1", title: "Terminal 2")])
-
-    let count = sessions.restore(
-      session, for: target,
-      scrollback: { key in
-        reads.append(key)
-        return "history for \(key)"
-      })
-
-    XCTAssertEqual(count.count, 2)
-    XCTAssertTrue(reads.isEmpty, "restoring a pane must not read its sidecar")
-  }
-
   // MARK: Restore reports what it created (issue #145)
 
   /// **REGRESSION.** Eligibility for a resume offer is "this pane came back from a restore", and

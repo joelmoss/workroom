@@ -47,15 +47,6 @@ extension Defaults.Keys {
   /// On by default; turn off to restore in-process PTYs that die with the app.
   static let backgroundSessions = Key<Bool>("backgroundSessions", default: true)
 
-  /// Whether a restored pane gets its previous text back (issue #144).
-  ///
-  /// Opt-OUT rather than opt-in: the feature is the point of the issue. But a sidecar is verbatim
-  /// terminal output written to disk in plain text, and terminals hold tokens, `env` dumps and
-  /// connection strings — which also means Time Machine and any folder sync pick them up. That is a
-  /// judgement only the user can make, so it is a switch rather than a decision baked into the build.
-  /// Off disables capture AND replay; the session layout (panes, splits, windows) still persists.
-  static let persistScrollback = Key<Bool>("persistScrollback", default: true)
-
   /// Whether the global ⌘§ show/hide hotkey is registered (issue #13).
   static let globalHotkey = Key<Bool>("globalHotkeyEnabled", default: true)
 

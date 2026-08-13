@@ -1089,55 +1089,6 @@ against a dropped skip entry / an emptied workflow (not just pass vacuously). Wi
 
 **Priority:** done.
 
-### Expose the alternate screen from libghostty (macapp) — issue #144 follow-up
-
-**What:** Patch `libghostty-spm` to add a `ghostty_surface_alt_screen_active()` export, and use it in
-`GhosttySurfaceView.captureScrollback` in place of today's inference.
-
-**Why:** Session scrollback capture must not persist a TUI's screen — restoring a frozen vim or
-Claude Code frame as dead text looks interactive and is not. The pinned libghostty offers no way to
-ask, so capture currently *infers* it: `SURFACE` returns history normally and false while the
-alternate screen is up, so "this pane produced scrollback before and reads false now" means a TUI.
-That covers the normal workflow (work in a pane, then open a TUI) but **misses a pane that launches
-a TUI before producing any output** — indistinguishable from a short session, so its frame is
-captured.
-
-`ghostty_surface_mouse_captured` was measured as a candidate and is useless: false for `less`, `man`,
-`vim` and Claude Code alike.
-
-**How to start:** feasibility is already verified against ghostty v1.3.1 source. `Terminal.zig` tracks
-it as `self.screens.active_key == .alternate` (line ~1331), and `Surface.zig` already reaches terminal
-state the same way for the existing API:
-
-```zig
-pub fn mouseCaptured(self: *Surface) bool {
-    self.renderer_state.mutex.lock();
-    defer self.renderer_state.mutex.unlock();
-    return self.io.terminal.flags.mouse_event != .none;
-}
-```
-
-An `altScreenActive()` beside it is the same four lines under the same lock, plus a C export in
-`embedded.zig`. `libghostty-spm` already carries eight patches, and `0002-host-managed-io.patch` is
-the worked example of adding a new `ghostty_surface_*` export. Upstream exposes nothing for this
-today (checked the whole C API), so a pin bump alone will not deliver it.
-
-**Depends on:** #144 landing. The call site is already isolated —
-`GhosttySurfaceView.shouldSkipViewport(hasHistoryNow:everHadScrollback:)` is the one place to
-replace, and its unit test documents the behaviour to preserve.
-
-**Priority:** P3 — the inference covers the common case, and the cost of the gap is one screenful of
-inert text, not data loss. The real price is carrying a ninth patch through every libghostty upgrade,
-which is why this is a deliberate deferral rather than an oversight.
-
-**Issue #145 made the gap easier to hit.** The unprotected case is "a pane launches a TUI before
-producing any output", and Resume is now a one-click way to do exactly that: click *Resume Claude…*
-in a freshly restored pane and Claude takes the alternate screen with nothing above it, so
-`everHadScrollback` is false and the inference cannot fire. Quit from there and the captured
-scrollback is Claude's frame. Still one screenful of inert text rather than data loss, so the
-priority stands — but the "you have to go out of your way to hit this" part of the P3 argument no
-longer holds.
-
 ### Resume offer doesn't know the shell is at a prompt (macapp) — issue #145 follow-up
 
 **What:** `AgentResumeCoordinator` publishes an offer as soon as discovery finishes, and

@@ -633,8 +633,7 @@ final class TerminalSessions: ObservableObject {
   /// constructing a surface is inert until it enters a window.
   @discardableResult
   func restore(
-    _ session: TargetSession, for target: TerminalTarget,
-    scrollback: @escaping (String) -> String? = { _ in nil }
+    _ session: TargetSession, for target: TerminalTarget
   ) -> RestoreResult {
     guard (tabsByTarget[target.id] ?? [:]).isEmpty else { return .nothing }
 
@@ -648,16 +647,11 @@ final class TerminalSessions: ObservableObject {
       if saved.kind == TabSession.terminalKind, let payload = saved.terminal {
         // `command:` is deliberately never passed: run tabs are not persisted, and this makes even a
         // hand-edited file unable to start a process on launch.
-        // The sidecar is fetched by the SURFACE when it is created, not here: restore materialises
-        // every target's tabs eagerly, so reading now would put one file read per restored pane on
-        // the launch path and hold every result in memory for the whole run.
-        let key = saved.key
         let cwd = Self.restoredCwd(payload.cwd, fallback: target.path)
         tab = makeTerminalTab(
           for: target,
           cwd: cwd,
           title: payload.defaultTitle,
-          restoredScrollback: { scrollback(key) },
           sessionID: payload.sessionID.flatMap(UUID.init(uuidString:)))
         restoredTerminals.append(
           RestoredTerminal(tabID: tab.id, targetID: target.id, cwd: cwd))
@@ -1534,12 +1528,11 @@ final class TerminalSessions: ObservableObject {
 
   private func makeTerminalTab(
     for target: TerminalTarget, cwd: String, command: String? = nil, title: String? = nil,
-    restoredScrollback: (() -> String?)? = nil, sessionID: UUID? = nil
+    sessionID: UUID? = nil
   ) -> TerminalTab {
     let count = (counts[target.id] ?? 0) + 1
     counts[target.id] = count
     let view = makeView(target, cwd, command)
-    view.adoptRestoredScrollback(restoredScrollback)
     let assignedSessionID = assignedSessionID(persisted: sessionID, isRunCommand: command != nil)
     view.persistentSessionID = assignedSessionID
     view.sessionMetadata = [
@@ -1646,7 +1639,6 @@ final class TerminalSessions: ObservableObject {
           let sessionID = state.sessionID,
           liveIDs.contains(sessionID)
         else { continue }
-        state.view.skipRestoredScrollback = true
         state.view.ensureSurfaceCreated(initialSize: CGSize(width: 800, height: 480))
       }
     }
