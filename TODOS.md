@@ -1020,7 +1020,7 @@ about a verdict taken too early, this one about a verdict kept too long — but 
 **Priority:** P3 — self-repairing on relaunch, and no report of it in the wild. The stale `.belowFloor`
 alone justifies it.
 
-### N-in-flight concurrency accounting test for status sweeps (macapp) — Muxy test-practices review follow-up — PARTIALLY FIXED
+### N-in-flight concurrency accounting test for status sweeps (macapp) — Muxy test-practices review follow-up — FIXED
 
 **What:** Add an injectable seam to `WorkroomStatusResolver.resolveGit`/`resolveJJ` (they called
 `GitProvider().workingStatus(root:)` and the native jj core directly, with no way to substitute a
@@ -1036,13 +1036,15 @@ drives a real `AppStore` with 8 throwaway git projects and a counting `GitStatus
 asserting peak-concurrent calls stay ≤ 5 (`AppStore.localConcurrency`) and that the fan-out actually
 overlapped (>1) — so the test can't pass vacuously against a fully serial sweep.
 
-**Still open — the `runCISweep` half:** the CI stage's own cap (`ciConcurrency`, 2) has no equivalent
-test. It fans out over `resolveCI`/`gh`, which already has an injectable `StatusCommandRunning` (see
-`GatedGHRunner` in `WorkroomStatusTests.swift`) — the seam problem this entry was filed for doesn't
-apply there, so it's a smaller remaining task: a counting `StatusCommandRunning` double + the same
-shape of test against `runCISweep`.
+**Fixed, the `runCISweep` half:** it fans out over `resolveCI`/`gh`, which already had an
+injectable `StatusCommandRunning` (see `GatedGHRunner` in `WorkroomStatusTests.swift`) — the seam
+problem this entry was filed for was only ever `resolveGit`/`resolveJJ`'s, so this half was a
+counting double, not a new seam. `WorkroomStatusConcurrencyTests.testCISweepNeverExceedsItsConcurrencyCap`
+drives 8 throwaway projects through a `CountingGHRunner` (counts concurrent `gh`/`git` calls while
+returning enough of a real answer to keep `resolveCI`'s chain moving), asserting peak-concurrent
+calls stay ≤ 2 (`AppStore.ciConcurrency`) and that the fan-out actually overlapped (>1).
 
-**Priority:** P3 for the remainder — real gap, not urgent; no incident has surfaced it yet.
+**Priority:** done.
 
 ### Repo-level meta-test for Makefile/CI test invariants (macapp) — FIXED
 
