@@ -1809,31 +1809,49 @@ a theme that fails the rail's contrast floor (`Violet Dark`, 3.94:1), six stock 
 terminal defaults, and a byte-identical duplicate (`Zenbones` ≡ `Zenbones Light`). So the heuristic is
 the easy half; the deny-list and a contrast gate are the real work.
 
-### Use ghostty's native `theme = dark:<X>,light:<Y>` syntax (macapp)
+### Use ghostty's native `theme = dark:<X>,light:<Y>` syntax (macapp) — RE-PRICED, not a fit for this batch
 
 **What:** Replace our rewrite-the-conf-on-every-appearance-change path with the engine's own
 per-appearance theme selection.
 
-**Why:** libghostty accepts `theme = dark:<X>,light:<Y>` and picks the variant itself. We instead
-write a single `theme = "<name>"` and, on every appearance change, rewrite
+**Why we thought this:** libghostty accepts `theme = dark:<X>,light:<Y>` and picks the variant
+itself. We instead write a single `theme = "<name>"` and, on every appearance change, rewrite
 `~/Library/Application Support/Workroom/ghostty.conf`, then `ghostty_config_load_file`,
 `ghostty_app_update_config`, then `updateConfig` on every surface
 (`GhosttyApp.swift` `writeThemeConfig`, `TerminalSessions.applyThemeToAll`). Muxy already uses the
-native form (`muxy/Muxy/Services/ThemeService.swift` `parseThemeSelection`). Rolling our own where a
-built-in exists is the finding.
+native form (`muxy/Muxy/Services/ThemeService.swift` `parseThemeSelection`).
 
-**Pros:** deletes a hand-rolled apply path; removes the force-reload from every light/dark flip, which
-is the most frequent theme operation there is.
+**What verification against the pinned engine (sha `35e1a016`) actually found:** the two-variant
+syntax itself works (`Config.zig:9837` `Theme.parseCLI` — `light:`/`dark:` keys, both required,
+order-independent). But "the engine picks the variant itself" is false for a *live* surface:
 
-**Cons:** the *chrome* still needs to know which variant is active, so `ThemeService.activeThemeName`
-and its parse stay either way — the win is narrower than it first looks. Also couples us to a config
-syntax the embedding C API doesn't version.
+- Which variant applies is resolved once, at config-derive time, from `_conditional_state.theme`
+  (`Config.zig:4457`).
+- `ghostty_app_set_color_scheme`/`ghostty_surface_set_color_scheme` (App.zig `colorSchemeEvent`,
+  Surface.zig:4716 `colorSchemeCallback`) only **flip that state and fire a
+  `.reload_config{.soft=true}` action** — neither one re-derives the config itself.
+- `apprt/embedded.zig:267` `performAction` forwards every action straight to the host `action_cb`;
+  there is no internal embedded-apprt handler that re-derives on our behalf.
+- `GhosttyRuntimeAdapter.swift:127` doesn't handle `GHOSTTY_ACTION_RELOAD_CONFIG` — it falls into
+  `default:` → `logUnhandled` → returns `false`.
 
-**How to start:** verify the pinned GhosttyKit accepts the two-variant form for new AND live surfaces
-before committing (the pin is exact — see `project.yml`). Then `writeThemeConfig` emits both names once
-and `applyThemeToAll` stops needing `force: true` on appearance changes.
+So adopting this syntax needs either (a) implementing that action for both the app-scoped and
+surface-scoped case, which means calling `ghostty_app_update_config`/`ghostty_surface_update_config`
+back into the engine from inside `action_cb` while it's mid-`colorSchemeEvent` — the same kind of
+reentrancy-off-callback-stacks hazard flagged for surface teardown (see the libghostty-surface-free
+memory note) — or (b) keeping our own explicit `updateConfig` calls, where scheme-flip-before-derive
+becomes a newly load-bearing ordering invariant (today's `applyThemeToAll` calls `reloadConfig`
+*before* `setColorScheme`, which is harmless only because today's single-name theme has no
+conditional state to get stale).
 
-**Priority:** P2 (removes a whole class of reload churn; no user-visible feature).
+**Verdict:** not a fit for a pre-release stability batch. There's no bug behind the current
+single-name-per-appearance path — it's shipped and correct — and the two ways to land the native
+syntax are either an engine-callback reentrancy change or a same-risk reorder of existing calls, both
+only verifiable by manually flip-testing OS appearance against live terminals. Re-pricing from "emit
+both names once, drop `force:`" to "action-handling change with a re-entrancy hazard and a new
+ordering invariant."
+
+**Priority:** P2 → hold. Re-open only alongside deliberate engine-callback work, not as a drive-by.
 
 ### Profile and fix the theme picker's invalidation storm (macapp)
 
