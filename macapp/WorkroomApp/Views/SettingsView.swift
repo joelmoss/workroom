@@ -344,51 +344,53 @@ private struct TerminalSettingsPane: View {
       Toggle("Confirm before closing a terminal", isOn: $confirmOnCloseTerminal)
         .help("Ask before closing a terminal (kills its shell and any running process, no undo).")
 
-      Toggle("Persist sessions", isOn: $backgroundSessions)
-        .help(
-          "Keep workroom terminals running after you quit Workroom, and reattach them on relaunch."
-        )
-        .accessibilityIdentifier("settings.control.backgroundSessions")
-        .onChange(of: backgroundSessions) { _, enabled in
-          disableTask?.cancel()
-          guard !enabled else { return }
-          disableTask = Task {
-            let sessions = await PersistentSessionService.shared.liveSessions()
-            guard !Task.isCancelled, !Defaults[.backgroundSessions] else { return }
-            let attached = Set(
-              WindowRegistry.shared.allStores.flatMap { $0.terminals.allOwnedSessionIDs })
-            let willStopAny = sessions.contains {
-              $0.identifier.uuid.map { !attached.contains($0) } ?? true
-            }
-            if !willStopAny { return }
-            pendingDisable = true
-          }
-        }
-        .alert("Stop persisted sessions?", isPresented: $pendingDisable) {
-          Button("Stop Sessions", role: .destructive) {
-            Task {
-              guard !Defaults[.backgroundSessions] else { return }
-              // Leave sessions still attached to an open tab in ANY window running — only the
-              // truly detached/orphaned ones get killed. An attached session dies naturally when
-              // its tab closes; this toggle must not yank a terminal out from under whoever is
-              // looking at it right now.
+      VStack(alignment: .leading, spacing: 4) {
+        Toggle("Persist sessions", isOn: $backgroundSessions)
+          .help(
+            "Keep workroom terminals running after you quit Workroom, and reattach them on relaunch."
+          )
+          .accessibilityIdentifier("settings.control.backgroundSessions")
+          .onChange(of: backgroundSessions) { _, enabled in
+            disableTask?.cancel()
+            guard !enabled else { return }
+            disableTask = Task {
+              let sessions = await PersistentSessionService.shared.liveSessions()
+              guard !Task.isCancelled, !Defaults[.backgroundSessions] else { return }
               let attached = Set(
                 WindowRegistry.shared.allStores.flatMap { $0.terminals.allOwnedSessionIDs })
-              await PersistentSessionService.shared.endAllSessions(excluding: attached)
+              let willStopAny = sessions.contains {
+                $0.identifier.uuid.map { !attached.contains($0) } ?? true
+              }
+              if !willStopAny { return }
+              pendingDisable = true
             }
           }
-          Button("Cancel", role: .cancel) { backgroundSessions = true }
-        } message: {
-          Text("Terminals that are still running in the background will be stopped.")
-        }
+          .alert("Stop persisted sessions?", isPresented: $pendingDisable) {
+            Button("Stop Sessions", role: .destructive) {
+              Task {
+                guard !Defaults[.backgroundSessions] else { return }
+                // Leave sessions still attached to an open tab in ANY window running — only the
+                // truly detached/orphaned ones get killed. An attached session dies naturally when
+                // its tab closes; this toggle must not yank a terminal out from under whoever is
+                // looking at it right now.
+                let attached = Set(
+                  WindowRegistry.shared.allStores.flatMap { $0.terminals.allOwnedSessionIDs })
+                await PersistentSessionService.shared.endAllSessions(excluding: attached)
+              }
+            }
+            Button("Cancel", role: .cancel) { backgroundSessions = true }
+          } message: {
+            Text("Terminals that are still running in the background will be stopped.")
+          }
 
-      Text(
-        "Ordinary terminals keep running in the background after you quit, and reattach "
-          + "automatically when you relaunch Workroom. Run commands and the Quick Terminal are "
-          + "never persisted."
-      )
-      .font(.caption)
-      .foregroundStyle(.secondary)
+        Text(
+          "Ordinary terminals keep running in the background after you quit, and reattach "
+            + "automatically when you relaunch Workroom. Closing a terminal ends its session "
+            + "immediately. Run commands and the Quick Terminal are never persisted."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      }
 
       Picker("Open file paths in", selection: $pathEditor) {
         Text("Default App").tag("")

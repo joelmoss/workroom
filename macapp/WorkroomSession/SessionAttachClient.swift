@@ -16,6 +16,19 @@ enum SessionAttachClient {
   static let handshakeAttempts = 3
   static let handshakeRetryMicroseconds: useconds_t = 100_000
   static let inputBacklogLimit = 4 * 1024 * 1024
+  /// How long after attaching to re-check the terminal size once more (seconds).
+  ///
+  /// A reattached session's redraw fires immediately on `.attached`, using whatever size THIS
+  /// process's controlling pty reports at that instant — which, for a pane the host app spawns
+  /// eagerly off-window at a placeholder size (so a restored session appears instantly instead of
+  /// waiting for a click), is not yet the pane's real on-screen size. The host's own later resize
+  /// SHOULD retrigger a correct redraw via the normal SIGWINCH path, but that depends on the
+  /// signal actually landing after this process has armed its handler — a race on process
+  /// startup. This settle re-check doesn't depend on catching any signal: it just re-reads the
+  /// CURRENT size (already updated by the kernel regardless of whether we saw a SIGWINCH for it)
+  /// once the host has almost certainly finished laying out the real pane, and resends it —
+  /// closing that race unconditionally rather than hoping it doesn't occur.
+  static let settleCheckDelaySeconds: Double = 0.3
 
   struct Configuration {
     let identifier: SessionIdentifier
@@ -108,6 +121,7 @@ enum SessionAttachClient {
   private static func loop(connection: SessionConnection, signalPipe: SessionSignalPipe) -> Outcome
   {
     var isAttached = false
+    var settleDeadline: Double?
     while true {
       guard connection.flush() else { return transportOutcome(isAttached: isAttached) }
 
@@ -123,7 +137,12 @@ enum SessionAttachClient {
         descriptors.append(pollfd(fd: STDIN_FILENO, events: Int16(POLLIN), revents: 0))
       }
 
-      let ready = poll(&descriptors, nfds_t(descriptors.count), -1)
+      let ready = poll(&descriptors, nfds_t(descriptors.count), pollTimeout(until: settleDeadline))
+      if ready == 0, let deadline = settleDeadline, monotonicSeconds() >= deadline {
+        settleDeadline = nil
+        sendResize(connection)
+        continue
+      }
       if ready < 0 {
         guard errno == EINTR else { return transportOutcome(isAttached: isAttached) }
         continue
@@ -141,7 +160,28 @@ enum SessionAttachClient {
           return outcome
         }
       }
+      // Arm the one-shot settle re-check the moment `.attached` lands, not before — there's
+      // nothing to settle until the daemon has actually accepted us.
+      if isAttached, settleDeadline == nil {
+        settleDeadline = monotonicSeconds() + settleCheckDelaySeconds
+      }
     }
+  }
+
+  /// `poll`'s timeout in milliseconds: bounded while a settle check is pending (so we wake up to
+  /// fire it even with no other activity), `-1` (block indefinitely) once there's nothing to wait
+  /// for — this is a single terminal session's I/O loop, not a busy-poll.
+  private static func pollTimeout(until deadline: Double?) -> Int32 {
+    guard let deadline else { return -1 }
+    let remaining = deadline - monotonicSeconds()
+    guard remaining > 0 else { return 0 }
+    return Int32((remaining * 1000).rounded(.up))
+  }
+
+  private static func monotonicSeconds() -> Double {
+    var ts = timespec()
+    clock_gettime(CLOCK_MONOTONIC, &ts)
+    return Double(ts.tv_sec) + Double(ts.tv_nsec) / 1_000_000_000
   }
 
   private static func transportOutcome(isAttached: Bool) -> Outcome {
