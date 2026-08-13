@@ -9,25 +9,31 @@ struct DetachedSessionsButton: View {
   @State private var showing = false
 
   var body: some View {
-    if !sessionsStore.detached(for: target.id).isEmpty {
-      Button {
-        showing.toggle()
-      } label: {
-        Image(systemName: "rectangle.stack")
-        Text("\(sessionsStore.detached(for: target.id).count)")
+    // The refresh task must run UNCONDITIONALLY, not just when `detached` is already non-empty:
+    // it's the only thing that ever populates `detached` in the first place. Nesting it inside
+    // the `if` below (as this used to) makes the button structurally unable to ever appear from a
+    // cold state — `detached` starts empty, so the branch that would refresh it never mounts.
+    Group {
+      if !sessionsStore.detached(for: target.id).isEmpty {
+        Button {
+          showing.toggle()
+        } label: {
+          Image(systemName: "rectangle.stack")
+          Text("\(sessionsStore.detached(for: target.id).count)")
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("terminal.detachedSessions")
+        .accessibilityLabel(
+          "\(sessionsStore.detached(for: target.id).count) detached background terminals"
+        )
+        .popover(isPresented: $showing, arrowEdge: .top) {
+          popover
+            .frame(minWidth: 280, maxWidth: 360)
+            .padding(12)
+        }
       }
-      .buttonStyle(.plain)
-      .accessibilityIdentifier("terminal.detachedSessions")
-      .accessibilityLabel(
-        "\(sessionsStore.detached(for: target.id).count) detached background terminals"
-      )
-      .popover(isPresented: $showing, arrowEdge: .top) {
-        popover
-          .frame(minWidth: 280, maxWidth: 360)
-          .padding(12)
-      }
-      .task(id: target.id) { await refresh() }
     }
+    .task(id: target.id) { await refresh() }
   }
 
   private var popover: some View {

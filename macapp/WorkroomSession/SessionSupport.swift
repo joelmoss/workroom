@@ -1,5 +1,16 @@
 import Darwin
 
+/// Monotonic clock, unaffected by wall-clock jumps (NTP, user changing the date) — used for
+/// short-lived deadlines (poll timeouts, settle windows) where a `Date()`-based one could stall
+/// or fire early.
+enum SessionClock {
+  static func monotonicSeconds() -> Double {
+    var ts = timespec()
+    clock_gettime(CLOCK_MONOTONIC, &ts)
+    return Double(ts.tv_sec) + Double(ts.tv_nsec) / 1_000_000_000
+  }
+}
+
 enum SessionReadOutcome {
   case bytes([UInt8])
   case wouldBlock

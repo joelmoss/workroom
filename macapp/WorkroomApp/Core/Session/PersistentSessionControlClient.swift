@@ -43,7 +43,14 @@ struct PersistentSessionControlClient {
     var address = sockaddr_un()
     address.sun_family = sa_family_t(AF_UNIX)
     let path = Array(socketPath.utf8CString)
-    guard path.count < MemoryLayout.size(ofValue: address.sun_path) else { return nil }
+    // Byte length EXCLUDING the NUL terminator, matching `SessionSocket.makeAddress` (the
+    // daemon's own check, also used by the attach client's `connect`) and
+    // `PersistentSessionPaths.resolveSocketPath` (which decides whether a path needs the /tmp
+    // fallback using the same non-NUL-inclusive count). `path.count` here already includes the
+    // NUL from `utf8CString`, so checking it directly against `sun_path`'s capacity was one byte
+    // stricter than everywhere else — a path of exactly 103 UTF-8 bytes let a terminal attach
+    // fine while list/kill/cleanup/recovery, which all go through this client, silently failed.
+    guard path.count - 1 < MemoryLayout.size(ofValue: address.sun_path) else { return nil }
     withUnsafeMutablePointer(to: &address.sun_path) { pointer in
       pointer.withMemoryRebound(to: CChar.self, capacity: path.count) { dest in
         for (index, byte) in path.enumerated() { dest[index] = byte }
@@ -72,7 +79,14 @@ struct PersistentSessionControlClient {
     var buffer = [UInt8](repeating: 0, count: 64 * 1024)
     while Date() < deadline {
       var pollfd = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
-      _ = poll(&pollfd, 1, 100)
+      let ready = poll(&pollfd, 1, 100)
+      // This socket is blocking (never put in non-blocking mode), so `read` MUST be gated on
+      // poll actually reporting the descriptor readable — otherwise a wedged or unresponsive
+      // daemon on the other end makes `read` block indefinitely, bypassing the 2-second deadline
+      // entirely (the deadline is only re-checked BETWEEN iterations, never inside a blocking
+      // call). Callers await this from `reap()`, which now gates workroom/project deletion on it
+      // completing — a hang here would silently stall deletion forever, not just this one call.
+      guard ready > 0, pollfd.revents & Int16(POLLIN) != 0 else { continue }
       let capacity = buffer.count
       let count = buffer.withUnsafeMutableBytes { pointer in
         Darwin.read(descriptor, pointer.baseAddress, capacity)

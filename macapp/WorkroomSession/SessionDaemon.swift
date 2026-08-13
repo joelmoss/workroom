@@ -15,6 +15,13 @@ final class SessionDaemon {
   static let maximumSessions = 256
   static let idleTimeoutMilliseconds: Int32 = 10000
   static let replayChunkSize = 32 * 1024
+  /// How long to leave a reattached session's pty bumped before resizing it back and signaling —
+  /// long enough for the child to actually be scheduled and observe the transient size (see
+  /// `SessionPTY.bumpedRowCount`), short enough nobody notices. Deferred through the poll loop
+  /// rather than a blocking sleep: this daemon is single-threaded and serves every session across
+  /// every open project, so blocking here would freeze all of them for the duration, worst-case
+  /// stacking to N × this value when many persisted tabs reattach at once on relaunch.
+  static let redrawSettleSeconds: Double = 0.03
 
   private let socketPath: String
   private let idleTimeout: Int32
@@ -26,6 +33,16 @@ final class SessionDaemon {
   private var sessionsByMaster: [Int32: SessionIdentifier] = [:]
   private var connections: [Int32: SessionConnection] = [:]
   private var closingDescriptors: [Int32] = []
+  /// Sessions bumped by `attach()`, awaiting their non-blocking resize-back-and-signal once
+  /// `redrawSettleSeconds` has elapsed. Keyed by identifier, not master fd, so a session that gets
+  /// killed and its fd reused before the deadline can't cause this to resize/signal the WRONG pty.
+  private var pendingRedraws: [SessionIdentifier: PendingRedraw] = [:]
+
+  private struct PendingRedraw {
+    let deadline: Double
+    let columns: UInt16
+    let rows: UInt16
+  }
 
   static func start(
     socketPath: String,
@@ -72,8 +89,9 @@ final class SessionDaemon {
     while true {
       let isIdle = sessions.isEmpty && connections.isEmpty
       var descriptors = buildPollDescriptors()
-      let ready = poll(&descriptors, nfds_t(descriptors.count), isIdle ? idleTimeout : -1)
+      let ready = poll(&descriptors, nfds_t(descriptors.count), pollTimeout(isIdle: isIdle))
       if ready == 0 {
+        if processExpiredRedraws() { continue }
         guard sessions.isEmpty, connections.isEmpty else { continue }
         acceptConnections()
         guard connections.isEmpty else { continue }
@@ -90,11 +108,43 @@ final class SessionDaemon {
         break
       }
       handle(descriptors)
+      processExpiredRedraws()
       reapChildren()
       flushConnections()
       closeMarkedConnections()
     }
     shutdown()
+  }
+
+  /// The nearest pending redraw's deadline overrides the ordinary idle/-1 timeout whenever one is
+  /// outstanding, so the loop wakes up to resize-back-and-signal even with no other activity —
+  /// without ever blocking inside a `usleep` the way the redraw used to.
+  private func pollTimeout(isIdle: Bool) -> Int32 {
+    guard let nearest = pendingRedraws.values.map(\.deadline).min() else {
+      return isIdle ? idleTimeout : -1
+    }
+    let remainingMilliseconds = (nearest - SessionClock.monotonicSeconds()) * 1000
+    return Int32(max(0, remainingMilliseconds.rounded(.up)))
+  }
+
+  /// Resize each expired pending redraw back to its real size and signal, non-blockingly. Collects
+  /// expired keys into a copy first — mutating `pendingRedraws` while iterating it directly is
+  /// unsafe. A session that died before its deadline is silently dropped: nothing to resize.
+  @discardableResult
+  private func processExpiredRedraws() -> Bool {
+    guard !pendingRedraws.isEmpty else { return false }
+    let now = SessionClock.monotonicSeconds()
+    let expired = pendingRedraws.filter { $0.value.deadline <= now }
+    guard !expired.isEmpty else { return false }
+    for (identifier, pending) in expired {
+      pendingRedraws.removeValue(forKey: identifier)
+      guard let session = sessions[identifier] else { continue }
+      SessionPTY.resize(
+        masterDescriptor: session.masterDescriptor, columns: pending.columns, rows: pending.rows)
+      SessionPTY.requestRedraw(
+        masterDescriptor: session.masterDescriptor, fallbackProcessID: session.processID)
+    }
+    return true
   }
 
   private func shutdown() {
@@ -307,9 +357,18 @@ final class SessionDaemon {
     // Query the CURRENT size fresh rather than trusting `request.columns/rows` — those may have
     // been rejected as unusable above (a transient tiny size from a not-yet-laid-out surface), in
     // which case the redraw must still bump from/to whatever size the session's pty actually has.
+    //
+    // The bump happens now (cheap, a single ioctl); the resize-back-and-signal is DEFERRED to the
+    // poll loop (`processExpiredRedraws`), not done here inline with a blocking sleep — this daemon
+    // is single-threaded and serves every session across every open project, so sleeping here would
+    // freeze all of them for the duration, worst case stacking to N × the settle window when many
+    // persisted tabs reattach at once on relaunch.
     if let current = SessionPTY.windowSize(descriptor: session.masterDescriptor) {
-      SessionPTY.requestRedraw(
-        masterDescriptor: session.masterDescriptor, fallbackProcessID: session.processID,
+      SessionPTY.resize(
+        masterDescriptor: session.masterDescriptor, columns: current.columns,
+        rows: SessionPTY.bumpedRowCount(current.rows))
+      pendingRedraws[session.identifier] = PendingRedraw(
+        deadline: SessionClock.monotonicSeconds() + Self.redrawSettleSeconds,
         columns: current.columns, rows: current.rows)
     }
   }

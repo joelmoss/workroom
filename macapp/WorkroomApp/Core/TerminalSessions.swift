@@ -422,6 +422,22 @@ final class TerminalSessions: ObservableObject {
   /// into the environment (see `WorkroomApp`) so the pane banner observes it. Opt-in, default off.
   let agentManager: TerminalAgentManager
 
+  /// `closeTab`'s persisted-session kill, in flight. Tracked so quitting can wait for it —
+  /// `closeTab` itself stays synchronous (it's called from UI actions, not `async` contexts), but
+  /// an unawaited kill racing an immediate app quit would leave that tab's daemon session running
+  /// despite the user having explicitly closed it moments before.
+  private var pendingCloseKills: [Task<Void, Never>] = []
+
+  /// Wait for every `closeTab`-initiated kill still in flight. Called at quit, across every
+  /// window's `TerminalSessions`, alongside (not instead of) the persistence-off `endAllSessions`
+  /// sweep — that sweep only fires when persistence is off, but a closed tab's session must not
+  /// outlive the quit either way.
+  func awaitPendingCloseKills() async {
+    let tasks = pendingCloseKills
+    pendingCloseKills.removeAll()
+    for task in tasks { await task.value }
+  }
+
   init() {
     // Under the UI-test agent fixture, drive a stub backend (no network) with the feature + auto on
     // so the XCUITest sees the banner; otherwise the normal opt-in, default-off real runner.
@@ -1239,7 +1255,7 @@ final class TerminalSessions: ObservableObject {
     // Compute the focus successor BEFORE mutating, using the on-screen order.
     let successor = closeSuccessor(of: tabID, for: target)
 
-    Task { await endPersistentSession(for: tab) }
+    pendingCloseKills.append(Task { await self.endPersistentSession(for: tab) })
     teardown(tab)
     tabsByTarget[target.id]?[tabID] = nil
     orderByTarget[target.id]?.removeAll { $0 == tabID }

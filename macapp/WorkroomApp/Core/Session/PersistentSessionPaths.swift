@@ -44,10 +44,16 @@ enum PersistentSessionPaths {
     return directory.appendingPathComponent(socketFileName).path
   }
 
+  /// Scoped by bundle id, same as the preferred path — the fallback only triggers when the
+  /// Application Support path is too long (an unusually long username/home directory), and that
+  /// length comes entirely from the username, not the bundle id, so adding it here costs nothing
+  /// against `sunPathLimit`. Without it, Workroom/Workroom Dev/Workroom Nightly would share one
+  /// `/tmp` socket and fight over the same daemon whenever any of them falls back to this path.
   static func fallbackSocketPath(userID: uid_t = getuid(), fileManager: FileManager = .default)
     throws -> String
   {
-    let directory = URL(fileURLWithPath: "/tmp/workroom-\(userID)", isDirectory: true)
+    let bundle = Bundle.main.bundleIdentifier ?? "com.developwithstyle.workroom"
+    let directory = URL(fileURLWithPath: "/tmp/workroom-\(userID)-\(bundle)", isDirectory: true)
     try prepareFallbackDirectory(directory, fileManager: fileManager)
     return directory.appendingPathComponent(socketFileName).path
   }

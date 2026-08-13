@@ -512,11 +512,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       MainActor.assumeIsolated {
         // SIGTERM is the path `XCUIApplication.terminate()`, `make app-run` and `pkill` take —
         // `applicationShouldTerminate` never runs for a signal, so the session flush has to happen
-        // here too or none of those exits save anything (issue #46).
+        // here too or none of those exits save anything (issue #46). Same reasoning covers
+        // persistent sessions: this path skips `stopRunCommandsThenTerminate` entirely, so without
+        // repeating its persistence-off cleanup here, a `make app-run` relaunch during development
+        // would leak the previous instance's daemon-held shells exactly like a real quit would.
         SessionCoordinator.shared.flushAndFreeze()
-        WindowRegistry.shared.gracefullyStopAllWindows(timeout: 4) {
-          exit(EXIT_SUCCESS)
+        let group = DispatchGroup()
+        if !Defaults[.backgroundSessions] {
+          group.enter()
+          Task {
+            await PersistentSessionService.shared.endAllSessions()
+            group.leave()
+          }
         }
+        // A tab closed moments before this signal fires an unstructured kill Task; without
+        // waiting for it here too, quitting fast enough after a close leaves that one session
+        // running despite the explicit close, regardless of the persistence setting.
+        group.enter()
+        Task {
+          for store in WindowRegistry.shared.allStores {
+            await store.terminals.awaitPendingCloseKills()
+          }
+          group.leave()
+        }
+        group.enter()
+        WindowRegistry.shared.gracefullyStopAllWindows(timeout: 4) { group.leave() }
+        group.notify(queue: .main) { exit(EXIT_SUCCESS) }
       }
     }
     source.resume()
@@ -639,11 +660,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // closes — which is exactly what the freeze protects, since the document is rebuilt from the
     // live windows.
     SessionCoordinator.shared.flushAndFreeze()
-    guard registry.hasAnyLiveRunCommand else { return .terminateNow }
-    // Stop every window's run commands, not just the focused one's.
-    registry.gracefullyStopAllWindows(timeout: 5) {
-      sender.reply(toApplicationShouldTerminate: true)
+    // With persistence off, the daemon does NOT get torn down by quitting (unlike an in-process
+    // PTY, which the OS SIGHUPs when libghostty's memory is reclaimed — see the doc comment on
+    // `applicationWillTerminate`): a daemon-held shell is a separate, independent process that
+    // outlives Workroom on purpose. Nothing else ever kills it once the setting is off, so without
+    // this every ordinary terminal's session would leak forever — silently contradicting the quit
+    // alert's own promise ("stops any running processes") the moment the preference is off.
+    let shouldStopPersistentSessions = !Defaults[.backgroundSessions]
+    let group = DispatchGroup()
+    if shouldStopPersistentSessions {
+      group.enter()
+      Task {
+        await PersistentSessionService.shared.endAllSessions()
+        group.leave()
+      }
     }
+    // A tab closed moments before quitting fires an unstructured kill Task (`closeTab`); wait for
+    // it too, unconditionally — the persistence setting and run-command state above don't cover it,
+    // so skipping this (the old early-return did, when neither applied) let that one session
+    // outlive the quit despite the user having explicitly closed it.
+    group.enter()
+    Task {
+      for store in registry.allStores { await store.terminals.awaitPendingCloseKills() }
+      group.leave()
+    }
+    if registry.hasAnyLiveRunCommand {
+      group.enter()
+      // Stop every window's run commands, not just the focused one's.
+      registry.gracefullyStopAllWindows(timeout: 5) { group.leave() }
+    }
+    group.notify(queue: .main) { sender.reply(toApplicationShouldTerminate: true) }
     return .terminateLater
   }
 

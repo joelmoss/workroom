@@ -95,30 +95,28 @@ enum SessionPTY {
     return group > 0 ? group : nil
   }
 
-  /// Force a full-screen program to repaint on reattach.
+  /// Row count to bump a pty to, transiently, to force an observable size delta.
   ///
-  /// A bare `SIGWINCH` is not enough: on reattach the pty's real size is already correct (it never
-  /// changed while the session sat alive in the background), so a program that checks "did the
-  /// terminal size actually change" before repainting — observed with Claude Code; Codex repaints
-  /// regardless — silently ignores it, leaving the new client showing stale primary-screen content
-  /// underneath the (unpainted) alternate screen until a genuine later resize forces a real delta.
+  /// A bare `SIGWINCH` is not enough to make a full-screen program repaint on reattach: the pty's
+  /// real size is already correct (it never changed while the session sat alive in the
+  /// background), so a program that checks "did the terminal size actually change" before
+  /// repainting — observed with Claude Code; Codex repaints regardless — silently ignores it,
+  /// leaving the new client showing stale primary-screen content underneath the (unpainted)
+  /// alternate screen until a genuine later resize forces a real delta.
   ///
-  /// Bumping the row count down then back — the same trick tmux/screen use to force a client
-  /// redraw on attach — guarantees the child observes an actual size transition either way. The
-  /// short sleep between the two `ioctl`s gives the child a real chance to be scheduled and read
-  /// the transient size before we revert it; without it the two `TIOCSWINSZ` calls can land close
-  /// enough together that the child only ever observes the final (unchanged) size. This blocks the
-  /// daemon's single event loop briefly — acceptable since attach is a rare, one-shot,
-  /// human-paced event, not a hot path.
-  static func requestRedraw(
-    masterDescriptor: Int32, fallbackProcessID: pid_t, columns: UInt16, rows: UInt16
-  ) {
+  /// Bumping the row count down (or up, at the 1-row floor) then back — the same trick tmux/screen
+  /// use to force a client redraw on attach — guarantees the child observes an actual size
+  /// transition either way. Pure arithmetic only: the daemon owns *when* to resize back and signal
+  /// (`SessionDaemon`'s deferred redraw scheduling), since giving the child time to actually observe
+  /// the transient size before reverting it needs a real delay — and this single-threaded daemon
+  /// serves every session across every open project, so that delay must not block its poll loop.
+  static func bumpedRowCount(_ rows: UInt16) -> UInt16 {
+    rows > 1 ? rows - 1 : rows + 1
+  }
+
+  static func requestRedraw(masterDescriptor: Int32, fallbackProcessID: pid_t) {
     let group = foregroundProcessGroup(masterDescriptor: masterDescriptor) ?? fallbackProcessID
     guard group > 0 else { return }
-    let bumpedRows = rows > 1 ? rows - 1 : rows + 1
-    resize(masterDescriptor: masterDescriptor, columns: columns, rows: bumpedRows)
-    usleep(30_000)
-    resize(masterDescriptor: masterDescriptor, columns: columns, rows: rows)
     _ = killpg(group, SIGWINCH)
   }
 

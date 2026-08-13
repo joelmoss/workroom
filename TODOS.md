@@ -98,6 +98,61 @@ The standalone CLI's own `darwin_amd64` tarball was always fine; only the embedd
 
 ## P2 — perf, correctness, and the next VCS phase
 
+### `workroom-session` daemon: the findings the `/review` pass didn't fix (macapp) — persist-sessions follow-up
+
+**What:** The `workroom-session` daemon (persisted ordinary terminals across quit, `b28e9134`) went
+through a two-round `/review` (checklist + specialist dispatch, then a full Claude+Codex adversarial
+pass). The three highest-value findings from round two were fixed directly (fallback-socket path
+colliding across Workroom/Dev/Nightly builds, an off-by-one in
+`PersistentSessionControlClient`'s own `sockaddr_un` length check that was one byte stricter than
+the daemon's/attach-client's, and a `closeTab`-initiated kill racing an immediate quit). What's left,
+in descending order of how much it matters:
+
+1. **The daemon reports a session as successfully created before `execve` runs.** `forkpty` returns
+   the child PID immediately in the parent; the daemon acknowledges the client's `create`/`attach`
+   at that point rather than waiting for the child to actually reach its shell. A child that fails
+   between `fork` and `execve` (e.g. the target `cwd` vanished, `posix_spawn`-style setup failure)
+   reports success and then the PTY silently closes moments later, rather than the client getting a
+   clean failure up front.
+2. **No connection-limit or reply-queue bound — a same-UID DoS vector.** Any process running as this
+   user can open unboundedly many connections to the socket, and the daemon's per-connection outbox
+   isn't capped, so a misbehaving or malicious same-UID client can exhaust descriptors or memory in
+   the single-threaded daemon that every project's persisted terminals depend on.
+3. **PID reuse after `waitpid` reaps a session's child.** Between the child exiting and the daemon
+   noticing (via `reapChildren`), the OS is free to recycle that PID for an unrelated process; a
+   narrow window exists where a stale `SIGHUP`/signal path could target the wrong process if any code
+   keyed off the raw PID past that point rather than the PTY master descriptor.
+4. **`SessionDescriptor.decodeList`'s wire encoding has no cap relative to `SessionFrame`'s max frame
+   size.** A host with enough concurrent persisted sessions (many projects, many tabs) could in
+   principle encode a `list` reply that exceeds the protocol's own frame-size ceiling, which would
+   fail in a way nothing currently tests for.
+5. **`setsid()`-spawned children can fork their own descendants that escape the daemon's forced
+   cleanup.** `killpg` on the session's process group covers ordinary shell children, but a
+   deliberately double-forking/re-`setsid`'d grandchild (rare, but not impossible from inside a
+   persisted shell) can survive a `killAll`/teardown.
+6. **`TerminalSessions.assignedSessionID`'s `isQuickTerminal` parameter is dead.** No caller passes
+   `true` for it any more (the quick-terminal exclusion is handled elsewhere in
+   `TerminalPersistentSessionPolicy` now) — cosmetic, but confusing for the next reader trying to
+   figure out which layer actually excludes quick terminals.
+
+**P0 architectural note, accepted as-is (not a bug for this PR):** the daemon's only authentication
+is `LOCAL_PEERCRED`/`peerUserID == getuid()` — any process running as the same user can list/attach/
+kill any of that user's persisted sessions across every open project. This is the same threat model
+tmux and screen have always had (a same-user socket is inherently shared trust), not a regression
+this feature introduces, and items 1-3 above assume that same boundary rather than trying to harden
+past it.
+
+**Why:** Residue of a two-round review (checklist + specialist dispatch, then Claude+Codex
+adversarial) on a brand-new always-on daemon that every persisted terminal now depends on. None of
+these are exploitable beyond the accepted same-UID trust boundary, and none causes silent data loss
+in the common path — they're edge cases (process launch races, resource exhaustion, PID reuse
+windows, an encoding ceiling, escaping cleanup, dead code) that are real but lower-value than the
+three fixed directly.
+
+**Priority:** P2. Worth a pass if any of these starts showing up in the wild (a "session shows created
+but the tab never attaches" report would point at #1; a "Workroom got slow/unresponsive with many
+terminals open" report would point at #2).
+
 ### Bump the libghostty pin (macapp) — SHIPPED, 2026-08-13
 
 **Landed 2026-08-13** across four commits: `2e37b446` (doc hygiene), `0f11f479` (pre-bump QA

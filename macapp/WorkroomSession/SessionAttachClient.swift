@@ -138,7 +138,7 @@ enum SessionAttachClient {
       }
 
       let ready = poll(&descriptors, nfds_t(descriptors.count), pollTimeout(until: settleDeadline))
-      if ready == 0, let deadline = settleDeadline, monotonicSeconds() >= deadline {
+      if ready == 0, let deadline = settleDeadline, SessionClock.monotonicSeconds() >= deadline {
         settleDeadline = nil
         sendResize(connection)
         continue
@@ -163,7 +163,7 @@ enum SessionAttachClient {
       // Arm the one-shot settle re-check the moment `.attached` lands, not before — there's
       // nothing to settle until the daemon has actually accepted us.
       if isAttached, settleDeadline == nil {
-        settleDeadline = monotonicSeconds() + settleCheckDelaySeconds
+        settleDeadline = SessionClock.monotonicSeconds() + settleCheckDelaySeconds
       }
     }
   }
@@ -173,15 +173,9 @@ enum SessionAttachClient {
   /// for — this is a single terminal session's I/O loop, not a busy-poll.
   private static func pollTimeout(until deadline: Double?) -> Int32 {
     guard let deadline else { return -1 }
-    let remaining = deadline - monotonicSeconds()
+    let remaining = deadline - SessionClock.monotonicSeconds()
     guard remaining > 0 else { return 0 }
     return Int32((remaining * 1000).rounded(.up))
-  }
-
-  private static func monotonicSeconds() -> Double {
-    var ts = timespec()
-    clock_gettime(CLOCK_MONOTONIC, &ts)
-    return Double(ts.tv_sec) + Double(ts.tv_nsec) / 1_000_000_000
   }
 
   private static func transportOutcome(isAttached: Bool) -> Outcome {
