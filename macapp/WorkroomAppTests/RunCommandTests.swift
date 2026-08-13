@@ -405,6 +405,34 @@ final class RunCommandTests: XCTestCase {
       store.runTabID(for: t.id), first, "re-run spawns a fresh tab (dead supervisor)")
   }
 
+  /// TODOS.md ("Stopped run-tab silently closes instead of warning when its command is cleared"):
+  /// a run stops (pane stays open), the command is cleared via Project Settings, and the next ⌘R
+  /// used to hit `respawnRunCommand`'s `hasRunCommand` guard and just close the pane — no warning,
+  /// indistinguishable from ⌘R doing nothing at all. It must now surface the same warning sheet the
+  /// `.armed`/`.none` no-command branch already shows, and leave the stopped pane alone.
+  func testRestartWithClearedCommandWarnsInsteadOfClosing() {
+    let store = makeStoreDeadSupervisor([project("/a", workrooms: ["main"])])
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+    let t = target(store, "/a", "main")
+    store.selectedTargetID = .workroom(project: "/a", name: "main")
+
+    store.startRunCommand(for: t)
+    let tabID = try! XCTUnwrap(store.runTabID(for: t.id))
+    store.applyRunStatus("exited 0", for: t)  // now stopped-but-open
+    XCTAssertFalse(store.isRunCommandRunning(for: t.id))
+
+    store.setRunConfig(RunConfig(command: "", autoRun: false), forProject: "/a")  // cleared
+    store.runOrFocusRunCommand()  // ⌘R again — dead supervisor → respawnRunCommand's guard
+
+    XCTAssertEqual(
+      store.pendingProjectSettings?.project.path, "/a",
+      "clearing the command must surface the same warning sheet as the no-command case")
+    XCTAssertEqual(store.pendingProjectSettings?.showsRunWarning, true)
+    XCTAssertEqual(
+      store.runTabID(for: t.id), tabID,
+      "the stopped pane must stay open — the fix is to warn, not to silently destroy it")
+  }
+
   func testClosingRunTabClearsState() {
     let store = makeStore([project("/a", workrooms: ["main"])])
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")

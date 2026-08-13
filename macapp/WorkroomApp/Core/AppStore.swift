@@ -2129,13 +2129,23 @@ final class AppStore: ObservableObject {
   /// exact slot, so restarting a run command that lives in a split keeps it in the split instead of
   /// pulling it out as a solo pane. Mirrors `startRunCommand`'s state wiring; `respawnRunTab` closes
   /// `oldTab` first so its port frees (SIGHUP) before the new instance binds — the graceful-restart
-  /// ordering. If the command was cleared between the restart and here, the old tab is just closed
-  /// (state then clears via `onTabsRemoved`), matching the former close-then-no-op behaviour.
+  /// ordering.
   private func respawnRunCommand(replacing oldTab: TerminalTab.ID, for target: TerminalTarget) {
-    guard !target.isMissing, let project = project(forTarget: target),
-      hasRunCommand(forProject: project.path)
-    else {
+    guard !target.isMissing, let project = project(forTarget: target) else {
       terminals.closeTab(oldTab, for: target)
+      return
+    }
+    guard hasRunCommand(forProject: project.path) else {
+      // #127 follow-up: the command was cleared while a stopped-but-open run pane sat waiting for
+      // this restart. Mirror the `.armed`/`.none` branch's warning (same non-clobber guard) instead
+      // of silently closing the pane — closing it here used to look exactly like ⌘R had done
+      // nothing, with no way to tell "there's no command" from "the restart itself failed". Leaving
+      // the pane open (not closing `oldTab`) also sidesteps issue #67's focus-preservation semantics
+      // entirely: nothing about focus changes until the user actually configures a command and
+      // restarts again.
+      if pendingProjectSettings == nil {
+        pendingProjectSettings = PendingProjectSettings(project: project, showsRunWarning: true)
+      }
       return
     }
     let config = runConfig(forProject: project.path)
