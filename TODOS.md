@@ -1853,25 +1853,30 @@ ordering invariant."
 
 **Priority:** P2 → hold. Re-open only alongside deliberate engine-callback work, not as a drive-by.
 
-### Profile and fix the theme picker's invalidation storm (macapp)
+### Profile and fix the theme picker's invalidation storm (macapp) — MEASURED, MOOT (2026-08-13)
 
 **What:** Measure the picker's per-keypress cost, then stop every row re-rendering on every apply.
 
-**Why:** `FamilyRow` holds `ThemeService.shared` and reads `theme.tokens`, while each ↑/↓ calls
-`applyFamily`, which replaces `tokens` — so one arrow press invalidates every instantiated row. The
-2026-08-06 change cached bundled theme previews, which removed the disk reads (up to 116 synchronous
-file reads per keypress at 58 families) but **not** the re-render. This is the shape of the logged
-WORKROOM-2B App Hang, and the repo already has the proven remedy: pass the needed values down instead
-of observing the service, then `Equatable` + `.equatable()` on the row.
+**Why we thought this:** `FamilyRow` holds `ThemeService.shared` and reads `theme.tokens`, while
+each ↑/↓ calls `applyFamily`, which replaces `tokens` — so one arrow press invalidates every
+instantiated row. The 2026-08-06 change cached bundled theme previews, which removed the disk reads
+(up to 116 synchronous file reads per keypress at 58 families) but **not** the re-render. This is
+the shape of the logged WORKROOM-2B App Hang, and the repo already has the proven remedy: pass the
+needed values down instead of observing the service, then `Equatable` + `.equatable()` on the row.
 
-**Pros:** the remedy is known and cheap; arrow-browsing a 58-row list is now a real user behaviour.
+**What measuring first actually found:** the storm is real (it does invalidate every row currently
+materialized, by construction — `ThemeService` is `@Observable` and every row reads `tokens`) but
+not remotely perceptible. `ThemePickerInvalidationTests.testArrowKeyReapplyRendersUnderTimeCeiling`
+hosts the real `ThemePicker` at its production popover size (300×420, ~8 rows materialized by the
+`LazyVStack`) and drives one `applyFamily` call with no terminal registered (isolating the picker's
+own render cost from the separate, already-shipped engine-reload path). Measured: 8 row rebuilds,
+~0.07s elapsed — three orders of magnitude under the multi-second WORKROOM-2B hang threshold this
+test family exists to catch, and most of that is `settle()`'s own poll granularity rather than row
+work. No fix applied — the known remedy (hoist values + closures, `Equatable`/`.equatable()`) would
+be real code churn to a subsystem that isn't the problem, for a payoff nobody would feel.
 
-**Cons:** the picker is a transient sheet, so the payoff is smaller than it was for `HistoryPanel`'s
-200-row list. Measure first — the cache may already have made it imperceptible.
-
-**Depends on:** the preview cache (landed 2026-08-06).
-
-**Priority:** P3.
+**Priority:** P3 → closed. The regression test (asserts `< 0.3s`) stays as the tripwire if the
+preview cache or something else on this path regresses later.
 
 ### Ship the remaining vetted theme families (macapp)
 

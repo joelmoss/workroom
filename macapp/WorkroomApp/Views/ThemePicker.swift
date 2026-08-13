@@ -145,7 +145,10 @@ struct ThemePicker: View {
 }
 
 /// One family row: the family name + a dual swatch (dark variant left, light variant right).
-private struct FamilyRow: View {
+///
+/// Deliberately `internal`, not `private` (same reason as `HistoryRow`/`FileTreeRowView`):
+/// `ThemePickerInvalidationTests` measures its rebuild cost directly.
+struct FamilyRow: View {
   private let theme = ThemeService.shared
   let family: ThemeFamily
   let isActive: Bool
@@ -154,8 +157,17 @@ private struct FamilyRow: View {
   let light: ThemePreview?
   @State private var hovered = false
 
+  #if DEBUG
+    /// How many times ANY row's body has been evaluated this process — the measurement behind
+    /// `ThemePickerInvalidationTests` (WORKROOM-2B follow-up, TODOS.md). Debug-only.
+    static var bodyPasses = 0
+  #endif
+
   var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
+    #if DEBUG
+      Self.bodyPasses += 1
+    #endif
+    return VStack(alignment: .leading, spacing: 6) {
       HStack(spacing: 6) {
         Text(family.name)
           .font(.system(size: 12, weight: isActive ? .semibold : .medium))
