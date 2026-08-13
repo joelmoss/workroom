@@ -1,4 +1,6 @@
 import AppKit
+import CryptoKit
+import SwiftUI
 import XCTest
 
 @testable import Workroom
@@ -9,6 +11,11 @@ import XCTest
 /// decoded images are cached too. A `URLProtocol` stub means no real network for any of this, exactly
 /// the testability gap `AsyncImage` couldn't offer.
 final class AvatarImageLoaderTests: XCTestCase {
+
+  override func setUp() {
+    super.setUp()
+    StubURLProtocol.registry.reset()
+  }
 
   /// Thread-safe canned-response registry `StubURLProtocol` reads from — `startLoading()` runs on a
   /// background queue URLSession owns, not the test's own thread.
@@ -53,6 +60,38 @@ final class AvatarImageLoaderTests: XCTestCase {
       defer { lock.unlock() }
       return errorURLs.contains(url)
     }
+
+    // MARK: gating — hold a response until the test releases it, for staleness tests that need to
+    // control exactly when an in-flight fetch resolves relative to a `taskKey` change.
+    private var gates: [URL: DispatchSemaphore] = [:]
+    func gate(_ url: URL) {
+      lock.lock()
+      gates[url] = DispatchSemaphore(value: 0)
+      lock.unlock()
+    }
+    func release(_ url: URL) {
+      lock.lock()
+      let sem = gates.removeValue(forKey: url)
+      lock.unlock()
+      sem?.signal()
+    }
+    fileprivate func gateSemaphore(for url: URL) -> DispatchSemaphore? {
+      lock.lock()
+      defer { lock.unlock() }
+      return gates[url]
+    }
+
+    /// `StubURLProtocol.registry` is a process-wide `static let`, shared across every test in this
+    /// class with no teardown of its own — a stale response/gate left by an earlier test would
+    /// otherwise silently leak into a later one. Called from `setUp()`.
+    func reset() {
+      lock.lock()
+      responses.removeAll()
+      errorURLs.removeAll()
+      callCounts.removeAll()
+      gates.removeAll()
+      lock.unlock()
+    }
   }
 
   private final class StubURLProtocol: URLProtocol {
@@ -64,19 +103,24 @@ final class AvatarImageLoaderTests: XCTestCase {
     override func startLoading() {
       guard let url = request.url else { return }
       Self.registry.recordCall(url)
-      if Self.registry.hasError(for: url) {
-        client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
-        return
+      // Off the calling thread: a gated URL's `sem.wait()` must not block whatever thread
+      // URLSession itself needs to keep making progress.
+      DispatchQueue.global().async {
+        Self.registry.gateSemaphore(for: url)?.wait()
+        if Self.registry.hasError(for: url) {
+          self.client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
+          return
+        }
+        guard let (status, data) = Self.registry.response(for: url) else {
+          self.client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+          return
+        }
+        let response = HTTPURLResponse(
+          url: url, statusCode: status, httpVersion: nil, headerFields: nil)!
+        self.client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        self.client?.urlProtocol(self, didLoad: data)
+        self.client?.urlProtocolDidFinishLoading(self)
       }
-      guard let (status, data) = Self.registry.response(for: url) else {
-        client?.urlProtocol(self, didFailWithError: URLError(.badURL))
-        return
-      }
-      let response = HTTPURLResponse(
-        url: url, statusCode: status, httpVersion: nil, headerFields: nil)!
-      client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-      client?.urlProtocol(self, didLoad: data)
-      client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}
   }
@@ -201,5 +245,112 @@ final class AvatarImageLoaderTests: XCTestCase {
     XCTAssertEqual(
       StubURLProtocol.registry.callCount(for: urls[0]), 2,
       "the oldest entry should have been evicted past capacity")
+  }
+
+  // MARK: - AvatarView staleness (a real `.task(id:)` cancellation, not just the loader)
+
+  /// Drives `AvatarSubject.hexString` (the same building block `gravatar(email:)` uses internally)
+  /// to reconstruct the exact Gravatar URL a `VCSAuthor` will resolve to, so the stub can be keyed on
+  /// it without a network call ever needing to compute a real one.
+  private func gravatarURL(email: String, pixelSize: Int = 16) -> URL {
+    let normalized = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let hash = AvatarSubject.hexString(Insecure.MD5.hash(data: Data(normalized.utf8)))
+    return URL(string: "https://www.gravatar.com/avatar/\(hash)?s=\(pixelSize)&d=404")!
+  }
+
+  /// Lets a test mutate `AvatarView`'s `subject` from outside the hosted SwiftUI tree, at a FIXED
+  /// view-tree position — reproducing `AvatarStack`'s own `ForEach(..., id: \.offset)` keying, where
+  /// a slot's `subject` can change without the slot's `@State` (and therefore `AvatarView`'s
+  /// in-flight `.task`) being torn down and recreated fresh.
+  @MainActor
+  private final class SubjectController: ObservableObject {
+    @Published var subject: AvatarSubject
+    init(_ subject: AvatarSubject) { self.subject = subject }
+  }
+
+  private struct HostWrapper: View {
+    @ObservedObject var controller: SubjectController
+    let loader: AvatarImageLoader
+    let onCommit: (@MainActor (AvatarImageLoader.LoadResult?) -> Void)?
+    var body: some View {
+      var view = AvatarView(subject: controller.subject, loader: loader)
+      view.onCommit = onCommit
+      return view
+    }
+  }
+
+  @MainActor
+  private func host(
+    _ controller: SubjectController, loader: AvatarImageLoader,
+    onCommit: (@MainActor (AvatarImageLoader.LoadResult?) -> Void)? = nil
+  ) -> (
+    NSWindow, NSView
+  ) {
+    let hosting = NSHostingView(
+      rootView: HostWrapper(controller: controller, loader: loader, onCommit: onCommit))
+    hosting.frame = NSRect(x: 0, y: 0, width: 32, height: 32)
+    let window = NSWindow(
+      contentRect: hosting.frame, styleMask: [.titled], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = hosting
+    window.makeKeyAndOrderFront(nil)
+    return (window, hosting)
+  }
+
+  /// REGRESSION: a slot showing author A raises a fetch; before it resolves, the SAME slot is
+  /// reused for author B. `AvatarImageLoader.load` neither checks nor propagates cancellation (its
+  /// `fetch` keeps running on an unstructured `Task` with no link back to the view's), and — measured
+  /// — SwiftUI does not actually mark this `.task`'s own `Task` as cancelled for an in-place subject
+  /// swap either, so a guard on `Task.isCancelled` is dead code here. If `AvatarView` ever stops
+  /// gating the commit on its own generation token (`activeTaskKey`), A's stale image lands in
+  /// `result` after B has already taken over the slot — the wrong person's avatar. `onCommit` is a
+  /// PER-INSTANCE observation seam (not a shared static): the macOS XCTest host runs the real,
+  /// fully-live app alongside this hosted view, and a shared static was measured catching commits
+  /// from unrelated `AvatarView`s already on screen elsewhere in the app.
+  @MainActor
+  func testStaleInFlightFetchNeverOverwritesANewerSubjectInTheSameSlot() throws {
+    let emailA = "author-a@example.com"
+    let emailB = "author-b@example.com"
+    let urlA = gravatarURL(email: emailA)
+    let urlB = gravatarURL(email: emailB)
+    // A resolves to `.notFound` (a 404) and B to a real image, so the race can be told apart by
+    // `LoadResult` case alone — no `NSImage` equality involved (two separately-decoded `NSImage`s
+    // from identical bytes are not reliably `==` via `NSImage.isEqual`).
+    StubURLProtocol.registry.setResponse(status: 404, data: Data(), for: urlA)
+    StubURLProtocol.registry.setResponse(status: 200, data: try pngData(.blue), for: urlB)
+    StubURLProtocol.registry.gate(urlA)  // hold A's response until this test releases it
+
+    let loader = AvatarImageLoader(session: makeSession())
+    let controller = SubjectController(
+      AvatarSubject(author: VCSAuthor(name: "A", email: emailA), pixelSize: 16))
+    var lastCommitted: AvatarImageLoader.LoadResult?
+    let (window, view) = host(controller, loader: loader) { lastCommitted = $0 }
+    defer { window.close() }
+
+    // Let A's `.task` start and actually reach the gated request (not just get scheduled).
+    settle(view, until: { StubURLProtocol.registry.callCount(for: urlA) > 0 })
+    XCTAssertGreaterThan(
+      StubURLProtocol.registry.callCount(for: urlA), 0,
+      "fixture must actually reach A's request before swapping the subject")
+
+    // Same slot, different person — B's `.task` starts even though A's own is left running.
+    controller.subject = AvatarSubject(author: VCSAuthor(name: "B", email: emailB), pixelSize: 16)
+    settle(view, until: { StubURLProtocol.registry.callCount(for: urlB) > 0 })
+    settle(view, until: { lastCommitted != nil })
+    guard case .image = lastCommitted else {
+      return XCTFail(
+        "B's own fetch must land before A's stale one arrives, to set up the real race below; "
+          + "got \(String(describing: lastCommitted))")
+    }
+
+    // NOW let A's held-open 404 land, well after B has already committed its own image.
+    StubURLProtocol.registry.release(urlA)
+    settle(view, seconds: 0.5)
+
+    guard case .image = lastCommitted else {
+      return XCTFail(
+        "A's late-arriving, stale 404 must never overwrite B's already-committed image; "
+          + "got \(String(describing: lastCommitted))")
+    }
   }
 }

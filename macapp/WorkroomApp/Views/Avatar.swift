@@ -152,7 +152,10 @@ final class AvatarImageLoader {
 
   /// `nil` ⇒ transient — the caller should show initials for now; a later realization retries.
   func load(_ url: URL) async -> LoadResult? {
-    if let cached = cache[url] { return cached }
+    if let cached = cache[url] {
+      touch(url)
+      return cached
+    }
     if let existing = inFlight[url] { return await existing.value }
     let task = Task<LoadResult?, Never> { [weak self] in
       await self?.fetch(url)
@@ -182,6 +185,16 @@ final class AvatarImageLoader {
     let result = LoadResult.image(image)
     store(result, for: url)
     return result
+  }
+
+  /// Move `url` to the back of `cacheOrder` (most-recently-used) — called on every cache HIT, not
+  /// just on insertion. Without this, `store`'s `removeFirst()` eviction is FIFO-by-insertion-time,
+  /// not LRU-by-actual-use: a frequently-viewed avatar inserted early would still be the next one
+  /// evicted, ahead of a cold one-off avatar inserted more recently.
+  private func touch(_ url: URL) {
+    guard let idx = cacheOrder.firstIndex(of: url) else { return }
+    cacheOrder.remove(at: idx)
+    cacheOrder.append(url)
   }
 
   private func store(_ result: LoadResult, for url: URL) {
@@ -216,6 +229,25 @@ struct AvatarView: View {
   /// Injected for tests (a real `URLProtocol` stub); defaults to the shared session-lifetime cache.
   var loader = AvatarImageLoader.shared
   @State private var result: AvatarImageLoader.LoadResult?
+  /// The `taskKey` of whichever `.task(id:)` invocation most recently started a fetch at this
+  /// view-identity slot — a generation token, NOT SwiftUI's own cancellation. Measured (see
+  /// `lastCancelObserved` history in git blame): an in-place `subject` swap at a stable slot
+  /// position does not actually cancel the outgoing `.task`'s `Task` — `Task.isCancelled` reads
+  /// `false` throughout its remaining lifetime — so a guard keyed on it is dead code. This token
+  /// works regardless of whether SwiftUI ever delivers real cancellation, because it's compared
+  /// against `@State`, which (like `result`) survives the slot being reused for a new subject.
+  @State private var activeTaskKey: String?
+
+  #if DEBUG
+    /// Test-only observation seam for the stale-in-flight-fetch regression test — fires with
+    /// whatever this SPECIFIC instance just committed to `result`. Deliberately per-instance
+    /// (an `@MainActor` closure the test owns), not a shared static: the macOS XCTest host runs the
+    /// real, fully-live app alongside the test's own hosted view, so a global observation point
+    /// would also catch commits from unrelated `AvatarView`s already on screen elsewhere in the app
+    /// (measured — a real sidebar avatar's own fetch landed on a shared static mid-test and was
+    /// mistaken for this test's own race).
+    var onCommit: (@MainActor (AvatarImageLoader.LoadResult?) -> Void)? = nil
+  #endif
 
   /// `.task(id:)` needs ONE Hashable key covering everything that should restart the fetch — the URL
   /// itself, and the privacy gate (so flipping it on mid-session retries immediately rather than
@@ -239,10 +271,26 @@ struct AvatarView: View {
     .accessibilityHidden(true)
     .task(id: taskKey) {
       guard loadRemoteAvatars, let url = subject.imageURL else {
+        activeTaskKey = taskKey
         result = nil
         return
       }
-      result = await loader.load(url)
+      let myKey = taskKey
+      activeTaskKey = myKey
+      let loaded = await loader.load(url)
+      // `loader.load` neither checks nor propagates cancellation (it awaits an unstructured
+      // `Task<LoadResult?, Never>` with no link back to this one). Measured: a `taskKey` change at
+      // a REUSED slot (`AvatarStack`'s `ForEach` keys by array offset, not by subject; the privacy
+      // gate flipping off mid-flight is the other case) does not actually deliver `Task.isCancelled
+      // == true` to this closure — SwiftUI starts the new `.task` invocation without cancelling the
+      // outgoing one in practice. `activeTaskKey` is the actual guard: it's `@State`, so it survives
+      // the slot being reused, and whichever invocation started LAST wins the comparison — the
+      // stale one's own captured `myKey` no longer matches by the time its fetch resolves.
+      guard activeTaskKey == myKey else { return }
+      result = loaded
+      #if DEBUG
+        await onCommit?(loaded)
+      #endif
     }
   }
 
