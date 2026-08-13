@@ -603,7 +603,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     if Defaults[.confirmOnQuit] {
       let alert = NSAlert()
       alert.messageText = "Quit Workroom?"
-      alert.informativeText = "Quitting closes all terminals and stops any running processes."
+      alert.informativeText =
+        Defaults[.backgroundSessions]
+        ? "Quitting leaves background terminals running. You can reattach them when you reopen Workroom."
+        : "Quitting closes all terminals and stops any running processes."
       alert.addButton(withTitle: "Quit")
       alert.addButton(withTitle: "Cancel")
       alert.showsSuppressionButton = true

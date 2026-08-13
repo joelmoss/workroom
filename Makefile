@@ -105,10 +105,10 @@ app-generate: app-vcs ## Force-regenerate the (gitignored) .xcodeproj from proje
 	cd macapp && xcodegen generate
 
 app-format: ## Format Swift sources in place (swift-format)
-	cd macapp && xcrun swift-format format --in-place --parallel --recursive WorkroomApp WorkroomAppTests WorkroomAppUITests
+	cd macapp && xcrun swift-format format --in-place --parallel --recursive WorkroomApp WorkroomAppTests WorkroomAppUITests WorkroomSessionProtocol WorkroomSession
 
 app-lint: ## Lint Swift with swift-format (--strict)
-	cd macapp && xcrun swift-format lint --strict --parallel --recursive WorkroomApp WorkroomAppTests WorkroomAppUITests
+	cd macapp && xcrun swift-format lint --strict --parallel --recursive WorkroomApp WorkroomAppTests WorkroomAppUITests WorkroomSessionProtocol WorkroomSession
 
 app-release: VCS_APPLE_FLAGS := --universal
 # `app-test-scripts` gates the release because it is the cheap half that catches an ARTIFACT bug

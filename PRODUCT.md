@@ -16,7 +16,7 @@ The native macOS app is the primary product. A standalone CLI is available as an
 
 Workroom gives each task an isolated, on-disk copy of its project, backed by a Git worktree or Jujutsu workspace, and brings those parallel contexts into a terminal-centered development environment. Success means a developer can create, run, inspect, review, and move between concurrent work safely while keeping the state and purpose of each workroom legible.
 
-Embedded terminals belong to each workroom and remain alive while Workroom is running, including when the developer navigates elsewhere in the app. Terminal sessions and their processes are not persisted or restored across app restarts.
+Embedded terminals belong to each workroom and remain alive while Workroom is running, including when the developer navigates elsewhere in the app. Ordinary workroom shells also persist across app restarts by default (background sessions); they can be turned off in Settings.
 
 ## Positioning
 
@@ -44,7 +44,7 @@ Workroom's durable distinction is parallel development context: each task gets a
 - Pull-request and CI integration depends on an installed and authenticated GitHub CLI.
 - The standalone CLI is an addon, and is the available interface on Linux and Windows.
 - Launch-facing product copy presents Workroom as released software and must not describe it as beta.
-- Embedded terminals have session-scoped continuity while Workroom is running. Persistence or restoration across app restarts is not a current capability and must not be promised in product copy or future designs.
+- Embedded terminals stay alive while Workroom is running. Ordinary workroom shells also persist across app restarts by default via background sessions, which can be turned off in Settings.
 
 ## Brand Commitments
 
@@ -69,7 +69,7 @@ Workroom's durable distinction is parallel development context: each task gets a
 2. Make every workroom's identity and current state immediately legible.
 3. Keep the terminal central while bringing navigation, review, and status into the same working context.
 4. Preserve developer control: use real repositories, directories, branches, bookmarks, scripts, and external editors rather than hiding them behind proprietary abstractions.
-5. Never imply that a planned or adjacent capability already exists; in particular, distinguish terminals that stay alive during the current app session from terminal persistence across app restarts.
+5. Never imply that a planned or adjacent capability already exists. Background sessions persist ordinary workroom shells across restarts by default; run-command tabs and the quick terminal do not.
 
 ## Accessibility & Inclusion
 

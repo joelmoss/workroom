@@ -185,7 +185,7 @@ private struct GeneralSettingsPane: View {
     Form {
       Toggle("Confirm before quitting", isOn: $confirmOnQuit)
         .help(
-          "Ask for confirmation before quitting (quitting closes every terminal, with no undo)."
+          "Ask for confirmation before quitting. Background sessions keep ordinary terminals running."
         )
         .accessibilityIdentifier("settings.control.confirmQuit")
 
@@ -338,8 +338,11 @@ private struct AppearanceSettingsPane: View {
 private struct TerminalSettingsPane: View {
   @Default(.copyOnSelect) private var copyOnSelect
   @Default(.confirmOnCloseTerminal) private var confirmOnCloseTerminal
+  @Default(.backgroundSessions) private var backgroundSessions
   // Bundle id of the editor for ⌘-clicked file paths; "" = the file's default app.
   @Default(.filePathEditor) private var pathEditor
+  @State private var pendingDisable = false
+  @State private var disableTask: Task<Void, Never>?
 
   var body: some View {
     Form {
@@ -349,6 +352,33 @@ private struct TerminalSettingsPane: View {
 
       Toggle("Confirm before closing a terminal", isOn: $confirmOnCloseTerminal)
         .help("Ask before closing a terminal (kills its shell and any running process, no undo).")
+
+      Toggle("Background sessions", isOn: $backgroundSessions)
+        .help(
+          "Keep workroom terminals running after you quit Workroom, and reattach them on relaunch."
+        )
+        .accessibilityIdentifier("settings.control.backgroundSessions")
+        .onChange(of: backgroundSessions) { _, enabled in
+          disableTask?.cancel()
+          guard !enabled else { return }
+          disableTask = Task {
+            let sessions = await PersistentSessionService.shared.liveSessions()
+            guard !Task.isCancelled, !Defaults[.backgroundSessions] else { return }
+            if sessions.isEmpty { return }
+            pendingDisable = true
+          }
+        }
+        .alert("Stop background sessions?", isPresented: $pendingDisable) {
+          Button("Stop Sessions", role: .destructive) {
+            Task {
+              guard !Defaults[.backgroundSessions] else { return }
+              await PersistentSessionService.shared.endAllSessions()
+            }
+          }
+          Button("Cancel", role: .cancel) { backgroundSessions = true }
+        } message: {
+          Text("Terminals that are still running in the background will be stopped.")
+        }
 
       Picker("Open file paths in", selection: $pathEditor) {
         Text("Default App").tag("")

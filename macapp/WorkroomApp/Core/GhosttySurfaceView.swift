@@ -34,6 +34,16 @@ final class GhosttySurfaceView: NSView {
   /// #7); nil for every ordinary terminal. The host passes a shell-wrapped string (`$SHELL -lic …`).
   private let runCommand: String?
 
+  /// Daemon session this surface attaches to. When set and the helper is available, `createSurface`
+  /// launches `workroom-session attach` instead of a login shell.
+  var persistentSessionID: UUID?
+
+  /// Project / workroom / tab / title metadata sent on attach.
+  var sessionMetadata: [(key: String, value: String)] = []
+
+  /// Skip issue #144 sidecar replay: the daemon already has live output.
+  var skipRestoredScrollback = false
+
   /// Test seam (view-layer unit tests): when `false`, `createSurface()` is a no-op, so the view still
   /// mounts as a real `NSView` in the window — letting `PaneRenderingTests` assert on the AppKit
   /// hierarchy (which panes are window-mounted, and at what size) — but without spawning libghostty's
@@ -120,6 +130,7 @@ final class GhosttySurfaceView: NSView {
   // Backing buffer for the surface config's `env_vars` array; held for the surface's lifetime
   // alongside `surfaceCStrings` and freed on teardown.
   private var envVarsBuffer: UnsafeMutablePointer<ghostty_env_var_s>?
+  private var envVarCount = 0
   private var pendingSurfaceCreation = false
   private var isShowingHandCursor = false
   /// Set in mouseDown when a ⌘-click opened a file (no terminal press was sent); makes the matching
@@ -249,29 +260,32 @@ final class GhosttySurfaceView: NSView {
     surfaceCStrings.append(cwd)
     config.working_directory = UnsafePointer(cwd)
 
-    // Inject `TERMINFO` into the shell's environment so it can resolve the bundled `xterm-ghostty`
-    // entry (libghostty sets `TERM` but not `TERMINFO`, and macOS has no system entry — without this
-    // line editing such as Backspace breaks). Process-level `setenv` doesn't reach the child, so we
-    // go through the surface config's env-var array, which libghostty applies to the spawned shell.
-    if let terminfo = GhosttyApp.shared.terminfoDirectory,
-      let key = strdup("TERMINFO"), let value = strdup(terminfo)
-    {
-      surfaceCStrings.append(key)
-      surfaceCStrings.append(value)
-      let buffer = UnsafeMutablePointer<ghostty_env_var_s>.allocate(capacity: 1)
-      buffer[0] = ghostty_env_var_s(key: UnsafePointer(key), value: UnsafePointer(value))
-      envVarsBuffer = buffer
-      config.env_vars = buffer
-      config.env_var_count = 1
+    var envPairs: [(String, String)] = []
+    if let terminfo = GhosttyApp.shared.terminfoDirectory {
+      envPairs.append(("TERMINFO", terminfo))
     }
 
-    // Run-command surface (issue #7): launch a specific command instead of the login shell and KEEP
-    // the pane open after it exits (`wait_after_command`) so its output stays visible. The pointer
-    // joins `surfaceCStrings`, freed on teardown like `working_directory` / the env vars above.
-    if let runCommand, !runCommand.isEmpty, let cmd = strdup(runCommand) {
+    let startedPersistent = applyPersistentSession(
+      to: &config, environment: &envPairs)
+
+    if !startedPersistent, let runCommand, !runCommand.isEmpty, let cmd = strdup(runCommand) {
       surfaceCStrings.append(cmd)
       config.command = UnsafePointer(cmd)
       config.wait_after_command = true
+    }
+
+    if !envPairs.isEmpty {
+      let buffer = UnsafeMutablePointer<ghostty_env_var_s>.allocate(capacity: envPairs.count)
+      for (index, pair) in envPairs.enumerated() {
+        guard let key = strdup(pair.0), let value = strdup(pair.1) else { continue }
+        surfaceCStrings.append(key)
+        surfaceCStrings.append(value)
+        buffer[index] = ghostty_env_var_s(key: UnsafePointer(key), value: UnsafePointer(value))
+      }
+      envVarsBuffer = buffer
+      envVarCount = envPairs.count
+      config.env_vars = buffer
+      config.env_var_count = envPairs.count
     }
 
     surface = ghostty_surface_new(app, &config)
@@ -374,8 +388,43 @@ final class GhosttySurfaceView: NSView {
   private func freeSurfaceCStrings() {
     for ptr in surfaceCStrings { free(ptr) }
     surfaceCStrings.removeAll()
+    envVarsBuffer?.deinitialize(count: envVarCount)
     envVarsBuffer?.deallocate()
     envVarsBuffer = nil
+    envVarCount = 0
+  }
+
+  /// Configure libghostty to spawn `workroom-session attach` for a background session.
+  @discardableResult
+  private func applyPersistentSession(
+    to config: inout ghostty_surface_config_s,
+    environment: inout [(String, String)]
+  ) -> Bool {
+    guard
+      let persistentSessionID,
+      PersistentSessionService.shared.isAvailable,
+      let attach = PersistentSessionService.shared.attachCommand(),
+      let attachPointer = strdup(attach)
+    else { return false }
+    surfaceCStrings.append(attachPointer)
+    config.command = UnsafePointer(attachPointer)
+    config.wait_after_command = false
+    environment.append(
+      contentsOf: PersistentSessionService.shared.launchEnvironment(
+        sessionID: persistentSessionID,
+        workingDirectory: workingDirectory,
+        metadata: sessionMetadata))
+    return true
+  }
+
+  func reattachPersistentSession() {
+    guard persistentSessionID != nil, !isTornDown else { return }
+    destroySurface()
+    skipRestoredScrollback = true
+    if bounds.width <= 0 || bounds.height <= 0 {
+      setFrameSize(CGSize(width: 800, height: 480))
+    }
+    createSurface()
   }
 
   // MARK: Geometry / render sizing
@@ -944,7 +993,9 @@ final class GhosttySurfaceView: NSView {
   /// spike). The bytes are rendered text, never escape sequences, and control bytes are stripped on
   /// the way in, so this cannot leave the parser mid-sequence.
   private func replayRestoredScrollback() {
-    guard !didReplayScrollback, let surface, let provider = restoredScrollback else { return }
+    guard !didReplayScrollback, !skipRestoredScrollback, let surface,
+      let provider = restoredScrollback
+    else { return }
     didReplayScrollback = true
     // Released as soon as it has run: the text is now the terminal's own scrollback, and keeping a
     // second copy on the view would double the memory cost of every restored pane for no purpose.

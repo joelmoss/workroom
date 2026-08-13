@@ -43,6 +43,10 @@ extension Defaults.Keys {
   /// Confirm before closing a terminal (closing kills its shell and any running process, no undo).
   static let confirmOnCloseTerminal = Key<Bool>("confirmOnCloseTerminal", default: true)
 
+  /// Keep ordinary workroom shells running after quit and reattach them on relaunch.
+  /// On by default; turn off to restore in-process PTYs that die with the app.
+  static let backgroundSessions = Key<Bool>("backgroundSessions", default: true)
+
   /// Whether a restored pane gets its previous text back (issue #144).
   ///
   /// Opt-OUT rather than opt-in: the feature is the point of the issue. But a sidecar is verbatim

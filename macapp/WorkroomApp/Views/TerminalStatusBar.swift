@@ -58,6 +58,7 @@ struct TerminalStatusBar: View {
       if let diagnosis { diagnosisSegment(diagnosis) }
       if let resumable { resumeSegment(resumable) }
       Spacer(minLength: 8)
+      DetachedSessionsButton(target: target)
       if isRunTab, let run = runStatePresentation { runSegment(run) }
     }
     // `.subheadline` (11pt) — the middle of the two sizes this bar has worn. `.caption` (10pt) was

@@ -234,6 +234,10 @@ targets:
         product: TreeSitterCSS
       - package: TreeSitterSql
         product: TreeSitterSql
+      - target: WorkroomSessionProtocol
+      - target: workroom-session
+        embed: false
+        link: false
       - sdk: Metal.framework
       - sdk: MetalKit.framework
       - sdk: CoreText.framework
@@ -344,7 +348,8 @@ targets:
         script: |
           if xcrun --find swift-format >/dev/null 2>&1; then
             xcrun swift-format lint --parallel --recursive \
-              "${SRCROOT}/WorkroomApp" "${SRCROOT}/WorkroomAppTests" || true
+              "${SRCROOT}/WorkroomApp" "${SRCROOT}/WorkroomAppTests" \
+              "${SRCROOT}/WorkroomSessionProtocol" "${SRCROOT}/WorkroomSession" || true
           else
             echo "warning: swift-format not found in the active toolchain; skipping lint"
           fi
@@ -354,6 +359,11 @@ targets:
         # the app signature. See Scripts/build-helper.sh.
         basedOnDependencyAnalysis: false
         script: '"${SRCROOT}/Scripts/build-helper.sh"'
+      - name: Embed workroom-session
+        # Copies the session daemon/attach helper next to the app binary and signs
+        # it with the same identity. See Scripts/embed-session-helper.sh.
+        basedOnDependencyAnalysis: false
+        script: '"${SRCROOT}/Scripts/embed-session-helper.sh"'
       - name: Symlink ghostty -> app binary
         # Ghostty's bundled shell integration calls "$GHOSTTY_BIN_DIR/ghostty" +ssh-cache, and the
         # engine sets GHOSTTY_BIN_DIR to the running executable's directory — i.e. Contents/MacOS.
@@ -385,6 +395,7 @@ targets:
       - path: WorkroomAppTests
     dependencies:
       - target: WorkroomApp
+      - target: WorkroomSessionProtocol
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
@@ -398,6 +409,41 @@ targets:
         # the Debug name is correct here; the module stays "Workroom" so @testable import is fine.
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Workroom Dev.app/Contents/MacOS/Workroom Dev"
         BUNDLE_LOADER: "$(TEST_HOST)"
+
+  # Binary protocol + replay buffer + shell-injection used by workroom-session and the app.
+  WorkroomSessionProtocol:
+    type: library.static
+    platform: macOS
+    sources:
+      - path: WorkroomSessionProtocol
+    settings:
+      base:
+        PRODUCT_NAME: WorkroomSessionProtocol
+        PRODUCT_MODULE_NAME: WorkroomSessionProtocol
+        SWIFT_VERSION: "5.0"
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
+        DEVELOPMENT_TEAM: B898J443L9
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: YES
+        SKIP_INSTALL: YES
+
+  # Detached PTY daemon + attach client. Lives in Contents/MacOS so it can outlive the app.
+  workroom-session:
+    type: tool
+    platform: macOS
+    sources:
+      - path: WorkroomSession
+    dependencies:
+      - target: WorkroomSessionProtocol
+    settings:
+      base:
+        PRODUCT_NAME: workroom-session
+        SWIFT_VERSION: "5.0"
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
+        DEVELOPMENT_TEAM: B898J443L9
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: YES
+        SKIP_INSTALL: YES
 
   # macOS UI tests (XCUITest). Deliberately kept OUT of the WorkroomApp scheme's test action (see
   # `schemes:` below) so `make app-test` stays unit-only and headless — UI tests need a GUI session
@@ -429,6 +475,7 @@ schemes:
     build:
       targets:
         WorkroomApp: all
+        workroom-session: all
     run:
       config: Debug
     test:

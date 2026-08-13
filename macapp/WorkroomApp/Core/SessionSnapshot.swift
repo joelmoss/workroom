@@ -29,9 +29,11 @@ import Foundation
 ///
 /// # What is deliberately absent
 ///
-/// - **The PTY and child processes.** A restored terminal is a fresh login shell in the remembered
-///   directory; the process it was running is gone. (Its *text* does come back — scrollback lives in
-///   sidecar files beside this document, never inside it. See `SessionStore` and issue #144.)
+/// - **The PTY of a dead session.** With background sessions on (the default), ordinary workroom
+///   shells live in `workroom-session` and reattach via `TerminalPayload.sessionID`. A pane whose
+///   session is gone still opens a fresh shell in the remembered directory. Run-command tabs are
+///   never persisted. (Restored *text* for a dead session still comes from sidecar files. See
+///   `SessionStore` and issue #144.)
 /// - **Run tabs.** Restoring one would resurrect a dev server with no `AppStore.RunState` behind it —
 ///   an untracked process orphaned on its port, the failure `WindowRegistry.runOwner(for:excluding:)`
 ///   and issue #7 exist to prevent. `Defaults[.runCommands]` already survives, and `RunConfig.autoRun`
@@ -309,6 +311,8 @@ struct TerminalPayload: Codable, Hashable, Sendable {
   /// directory the tab was originally opened at). Falls back to the target path when it no longer
   /// exists, since libghostty cannot spawn into a missing directory.
   var cwd: String?
+  /// Persistent background session (additive — older builds ignore it).
+  var sessionID: String? = nil
 }
 
 /// `DiffSource` on disk. Split into a kind plus an optional commit id so a new case is an additive

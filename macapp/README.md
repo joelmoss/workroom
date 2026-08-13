@@ -148,8 +148,9 @@ release is a baseline; auto-update kicks in for the release after it. **Never de
   launch. Stored as
   `~/Library/Application Support/Workroom/<bundle id>/session.json` — scoped by bundle id so
   Workroom, Workroom Dev and Workroom Nightly never restore each other's windows. Deleting that file
-  is always safe: the app then launches as it would on a fresh install. A restored terminal is a
-  fresh shell in its remembered directory (libghostty exposes no session dump), and run tabs are
+  is always safe: the app then launches as it would on a fresh install. Ordinary workroom shells
+  reattach via `workroom-session` when background sessions are on (the default). A pane whose
+  session is gone still opens a fresh shell in its remembered directory. Run tabs are
   deliberately never restored.
 - `Core/AgentSessionIndex.swift` / `AgentResumeCoordinator.swift` — the offer to reopen an agent
   conversation in a restored pane (issue #145). Because libghostty exposes no child pid, the app
@@ -169,7 +170,7 @@ release is a baseline; auto-update kicks in for the release after it. **Never de
    surface via `ghostty_surface_free` (callbacks cleared first). Still worth a runtime check:
    switch/delete workrooms repeatedly and confirm no orphaned shells in `ps`.
 3. **Signing/notarization**: ✓ configured (Developer ID for Release, team B898J443L9;
-   helper signed by `Scripts/build-helper.sh`). Run `Scripts/release.sh` to build + notarize
+   helpers signed by `Scripts/build-helper.sh` and `Scripts/embed-session-helper.sh`). Run `Scripts/release.sh` to build + notarize
    + staple + package the DMG installer (after the one-time `notarytool store-credentials`
    above). See "Signing & distribution".
 4. **Process-group kill** (`WorkroomCLI.run`): the MVP uses `terminate()` + non-interactive

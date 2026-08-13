@@ -203,5 +203,6 @@ extension AppStore {
     if let savedAt {
       terminals.resumeCoordinator.discover(restoredTerminals, savedAt: savedAt)
     }
+    Task { await PersistentSessionRecovery.recover(in: terminals) }
   }
 }

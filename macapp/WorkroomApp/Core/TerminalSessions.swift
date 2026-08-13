@@ -1,4 +1,5 @@
 import AppKit
+import WorkroomSessionProtocol
 
 /// One tab in a target's strip. A tab is exactly one PANE: historically always a terminal surface,
 /// and since issue #66 it can instead host non-terminal content (a file diff today; more kinds
@@ -222,7 +223,8 @@ extension TabSession {
         // the shell's latest report mirrored into observable state; `lastKnownCwd` is the surface's
         // own copy and covers a tab whose mirror never updated.
         terminal: TerminalPayload(
-          defaultTitle: state.defaultTitle, cwd: state.cwd ?? state.view.lastKnownCwd))
+          defaultTitle: state.defaultTitle, cwd: state.cwd ?? state.view.lastKnownCwd,
+          sessionID: (state.sessionID ?? state.view.persistentSessionID)?.uuidString))
     case .diff(let descriptor):
       self.init(
         key: key, kind: Self.diffKind,
@@ -299,6 +301,8 @@ protocol ContentDescriptor: Sendable {
 struct TerminalState {
   /// The 1:1 terminal surface this tab owns.
   let view: GhosttySurfaceView
+  /// Daemon session this pane attaches to (separate from `tab.id`, which remints on restore).
+  var sessionID: UUID?
   /// Shown until the surface reports a title — and again whenever it reports an empty one.
   let defaultTitle: String
   /// The surface's latest non-empty title (OSC 0/2 via shell integration): the running command while
@@ -324,8 +328,7 @@ struct TerminalState {
 /// it, otherwise the focused solo tab. The shared tab strip lists every tab; the split's members render
 /// as a contiguous bracketed run, ordered by the split tree (`displayedTabIDs`). The whole layout —
 /// tabs, order, split, focus — is captured to disk and rehydrated by `restore(_:for:)` (issue #46);
-/// what does NOT survive is a terminal's process, so a restored one is a fresh shell in the
-/// remembered directory.
+/// ordinary workroom shells reattach via `sessionID` when background sessions are on.
 ///
 /// ```
 ///   STRIP:  A  [ B │ C ]  D        focused == C, C ∈ split  →  CONTENT renders the split.
@@ -625,9 +628,9 @@ final class TerminalSessions: ObservableObject {
   /// - **No-op when the target already has tabs**, so a restore can never race or duplicate a live
   ///   session.
   ///
-  /// Terminals come back as fresh login shells — libghostty has no session dump — but in their
-  /// remembered directory, which is the half that matters. Nothing spawns here: constructing a
-  /// surface is inert until it enters a window.
+  /// Terminals come back in their remembered directory. When background sessions are on they
+  /// reattach to the daemon; otherwise they are a fresh login shell. Nothing spawns here:
+  /// constructing a surface is inert until it enters a window.
   @discardableResult
   func restore(
     _ session: TargetSession, for target: TerminalTarget,
@@ -654,7 +657,8 @@ final class TerminalSessions: ObservableObject {
           for: target,
           cwd: cwd,
           title: payload.defaultTitle,
-          restoredScrollback: { scrollback(key) })
+          restoredScrollback: { scrollback(key) },
+          sessionID: payload.sessionID.flatMap(UUID.init(uuidString:)))
         restoredTerminals.append(
           RestoredTerminal(tabID: tab.id, targetID: target.id, cwd: cwd))
       } else if let content = saved.restoredContent {
@@ -701,8 +705,8 @@ final class TerminalSessions: ObservableObject {
 
   /// Open a new solo terminal at the end of the strip and focus it (⌘T). Does not touch the split.
   @discardableResult
-  func addTab(for target: TerminalTarget) -> TerminalTab {
-    let tab = makeTerminalTab(for: target, cwd: target.path)
+  func addTab(for target: TerminalTarget, sessionID: UUID? = nil) -> TerminalTab {
+    let tab = makeTerminalTab(for: target, cwd: target.path, sessionID: sessionID)
     insert(tab, for: target)
     setFocused(tab.id, for: target.id)
     reconcileOcclusion(for: target)
@@ -1268,6 +1272,7 @@ final class TerminalSessions: ObservableObject {
     // Compute the focus successor BEFORE mutating, using the on-screen order.
     let successor = closeSuccessor(of: tabID, for: target)
 
+    endPersistentSession(for: tab)
     teardown(tab)
     tabsByTarget[target.id]?[tabID] = nil
     orderByTarget[target.id]?.removeAll { $0 == tabID }
@@ -1292,9 +1297,11 @@ final class TerminalSessions: ObservableObject {
   func reap(_ id: TerminalTarget.ID) {
     let removedIDs = Array((tabsByTarget[id] ?? [:]).keys)
     for tab in (tabsByTarget[id] ?? [:]).values {
+      endPersistentSession(for: tab)
       teardown(tab)
       activityPulses[tab.id] = nil
     }
+    Task { await PersistentSessionService.shared.endSessions(matchingWorkroom: id) }
     tabsByTarget[id] = nil
     orderByTarget[id] = nil
     splitByTarget[id] = nil
@@ -1524,13 +1531,24 @@ final class TerminalSessions: ObservableObject {
 
   private func makeTerminalTab(
     for target: TerminalTarget, cwd: String, command: String? = nil, title: String? = nil,
-    restoredScrollback: (() -> String?)? = nil
+    restoredScrollback: (() -> String?)? = nil, sessionID: UUID? = nil
   ) -> TerminalTab {
     let count = (counts[target.id] ?? 0) + 1
     counts[target.id] = count
     let view = makeView(target, cwd, command)
     view.adoptRestoredScrollback(restoredScrollback)
-    let tab = TerminalTab.terminal(view: view, defaultTitle: title ?? "Terminal \(count)")
+    let assignedSessionID = assignedSessionID(persisted: sessionID, isRunCommand: command != nil)
+    view.persistentSessionID = assignedSessionID
+    view.sessionMetadata = [
+      (SessionMetadataKey.project, projectPath(from: target.id) ?? target.path),
+      (SessionMetadataKey.workroom, target.id),
+      (SessionMetadataKey.title, title ?? "Terminal \(count)"),
+    ]
+    var tab = TerminalTab.terminal(view: view, defaultTitle: title ?? "Terminal \(count)")
+    if case .terminal(var state) = tab.content {
+      state.sessionID = assignedSessionID
+      tab.content = .terminal(state)
+    }
 
     let targetID = target.id
     let tabID = tab.id
@@ -1589,4 +1607,59 @@ final class TerminalSessions: ObservableObject {
   /// touches a dead view). A no-op for a content tab — it owns no surface, so there's nothing to free
   /// (and the refactor therefore frees *strictly fewer* surfaces than before — no new free races).
   private func teardown(_ tab: TerminalTab) { tab.surface?.tearDown() }
+
+  func owner(of sessionID: UUID, in target: TerminalTarget) -> TerminalTab.ID? {
+    (tabsByTarget[target.id] ?? [:]).first { _, tab in
+      if case .terminal(let state) = tab.content { return state.sessionID == sessionID }
+      return false
+    }?.key
+  }
+
+  func replace(_ tab: TerminalTab, for target: TerminalTarget) {
+    tabsByTarget[target.id]?[tab.id] = tab
+  }
+
+  func ownedSessionIDs(for target: TerminalTarget) -> Set<UUID> {
+    Set(
+      (tabsByTarget[target.id] ?? [:]).values.compactMap { tab in
+        if case .terminal(let state) = tab.content { return state.sessionID }
+        return nil
+      })
+  }
+
+  func materializeLivePersistentSessions(_ liveIDs: Set<UUID>) {
+    for tabs in tabsByTarget.values {
+      for tab in tabs.values {
+        guard case .terminal(let state) = tab.content,
+          let sessionID = state.sessionID,
+          liveIDs.contains(sessionID)
+        else { continue }
+        state.view.skipRestoredScrollback = true
+        state.view.ensureSurfaceCreated(initialSize: CGSize(width: 800, height: 480))
+      }
+    }
+  }
+
+  private func assignedSessionID(persisted: UUID?, isRunCommand: Bool) -> UUID? {
+    let policy = TerminalPersistentSessionPolicy.usesPersistentSession(
+      isAvailable: PersistentSessionService.shared.isAvailable,
+      isRunCommand: isRunCommand,
+      isQuickTerminal: false)
+    guard policy else { return nil }
+    return persisted ?? UUID()
+  }
+
+  private func endPersistentSession(for tab: TerminalTab) {
+    guard case .terminal(let state) = tab.content, let sessionID = state.sessionID else { return }
+    PersistentSessionService.shared.endSession(sessionID: sessionID)
+  }
+
+  private func projectPath(from targetID: TerminalTarget.ID) -> String? {
+    if targetID.hasPrefix("wr|") {
+      let rest = targetID.dropFirst(3)
+      if let sep = rest.lastIndex(of: "|") { return String(rest[..<sep]) }
+    }
+    if targetID.hasPrefix("root|") { return String(targetID.dropFirst(5)) }
+    return nil
+  }
 }
