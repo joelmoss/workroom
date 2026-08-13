@@ -2166,30 +2166,22 @@ Low priority: single test, single known flake mode, not client-facing.
 
 ## P3 — Performance and diagnostics (WORKROOM-2B follow-ups)
 
-### Status-aware avatar image loader (macapp) — WORKROOM-2B follow-up
+### Status-aware avatar image loader (macapp) — FIXED
 
 **What:** Replace `AsyncImage` in `AvatarView` (`Views/Avatar.swift`) with a small loader that reads the
 HTTP status, caches decoded images in memory, caches genuine 404s, and retries transient failures.
 
-**Why:** the shipped mitigation (`AvatarImageFailures`) is a session set of URLs whose load *failed* —
-and `AsyncImage`'s `.failure` phase carries an error, not a status, so "this author has no Gravatar"
-and "the network dropped" are indistinguishable. The set is therefore cleared on app activation, which
-bounds the damage but means an offline scroll shows initials until the user comes back to the app. A
-status-aware loader removes the ambiguity, and gets image caching (no flicker on re-realization) for
-free. Gravatar is requested with `d=404` on purpose, so a miss really is a 404 — the information is
-there, `AsyncImage` just doesn't expose it.
+**Fixed:** `AvatarImageLoader` — an actor-free `@MainActor` class with an injectable `URLSession`, a
+bounded (default 256) LRU cache of decoded `NSImage`s / confirmed-404 `URL`s, in-flight de-duplication
+per URL, and `nil` (never cached) for anything transient: a network error, a non-200/404 status, or an
+undecodable 200 body. `AvatarView` drives it via `.task(id:)` keyed on the URL + the
+`.loadRemoteAvatars` privacy gate (unchanged: no request issued while it's off). `AvatarImageFailures`
+(the old error-blind, app-activation-cleared mitigation) is deleted — nothing else referenced it.
+`AvatarImageLoaderTests.swift` covers it behind a `URLProtocol` stub: success/cache, genuine-404/cache,
+transient-network-error/no-cache/retries, non-200/404 status, undecodable body, concurrent-request
+de-dup, and LRU eviction — 7 tests, all green, no real network in any of them.
 
-**Current state:** `AvatarImageFailures.shared` + the `.failure` branch in `AvatarView.body`. Covered
-by no test: `AsyncImage` offers no injection seam, which is itself part of the argument for replacing it
-(a hand-rolled loader is testable behind a `URLProtocol` stub).
-
-**How to start:** `AvatarView.body`'s image branch and the `AvatarSubject.imageURL` contract. Keep the
-`.loadRemoteAvatars` privacy gate exactly as it is — no request may be issued when it's off. Bound the
-image cache (count or bytes); Gravatar/GitHub avatars are 16–54 px, so it stays small.
-
-**Depends on:** nothing (the lazy History list that made repeated loads visible has landed).
-
-**Priority:** P3 — the current mitigation covers the common case; this is the correct version.
+**Priority:** done.
 
 ### `FilesPanel` renders up to 4000 rows eagerly (macapp) — WORKROOM-2B follow-up
 

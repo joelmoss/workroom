@@ -111,52 +111,101 @@ struct AvatarSubject: Hashable {
   }
 }
 
-/// Avatar URLs whose load failed, for this session — so a row scrolling back into view doesn't
-/// re-request an image that isn't there.
+/// Fetches + decodes avatar images, reading the actual HTTP status — unlike `AsyncImage`, whose
+/// `.failure` phase carries only an `Error`, so "no avatar for this address" (Gravatar/GitHub 404,
+/// requested with `d=404` on purpose — a miss really is a 404) and "the network dropped" used to land
+/// identically. That ambiguity is why the OLD mitigation (`AvatarImageFailures`, a session `Set` of
+/// failed URLs) had to clear itself on every app activation — it couldn't tell a genuine miss from a
+/// transient one, so it could only bound the damage, not fix it. This loader can, and gets image
+/// caching (no flicker on re-realization, needed since the History list is a `LazyVStack` — rows are
+/// built as they scroll in) for free.
 ///
-/// Needed because the History list is a `LazyVStack` now: rows are built as they scroll in, and an
-/// author with no Gravatar (requested with `d=404`, so a miss really is a 404) would otherwise cost a
-/// request on every pass through the viewport, plus a visible flicker through `AsyncImage`'s loading
-/// phase before the initials chip settles.
-///
-/// **`AsyncImage` cannot tell us why a load failed** — its `.failure` phase carries an error, not an
-/// HTTP status — so "no avatar" and "wifi dropped" land here identically. That is why the set is
-/// cleared on app activation rather than kept for the whole session: a scroll performed offline
-/// self-heals the next time the user comes back to the app, instead of showing initials until relaunch.
-/// A loader that reads the status code (and can therefore cache only true 404s, and cache images too)
-/// is tracked in TODOS.md.
+/// Session-lifetime, bounded LRU cache (`capacity`): Gravatar/GitHub avatars are 16–54px, so even a
+/// few hundred cached decoded images stay small. A cached `.notFound` is permanent for the session (a
+/// real 404 doesn't change mid-session); a `nil` result (network error, non-200/404 status, or an
+/// undecodable 200 body) is NEVER cached, so the next realization of the row retries it — the same
+/// self-healing property the old mitigation had, without needing an app-activation hook to get it.
 @MainActor
-final class AvatarImageFailures: ObservableObject {
-  static let shared = AvatarImageFailures()
+final class AvatarImageLoader {
+  static let shared = AvatarImageLoader()
 
-  /// Bumped whenever the set is cleared, so views that consulted it re-evaluate and retry.
-  @Published private(set) var generation = 0
-  private var failed: Set<URL> = []
-  private var observer: Any?
-
-  private init() {
-    observer = NotificationCenter.default.addObserver(
-      forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
-    ) { _ in
-      MainActor.assumeIsolated { AvatarImageFailures.shared.clear() }
-    }
+  enum LoadResult: Equatable {
+    case image(NSImage)
+    case notFound
   }
 
-  func contains(_ url: URL) -> Bool { failed.contains(url) }
+  private let session: URLSession
+  private let capacity: Int
+  private var cache: [URL: LoadResult] = [:]
+  /// Oldest-first insertion order, for LRU eviction — a plain array is fine at this scale (capacity
+  /// is a few hundred at most).
+  private var cacheOrder: [URL] = []
+  /// De-duplicates concurrent requests for the same URL (e.g. two rows sharing an author scrolling
+  /// into view together) — the second caller awaits the first's in-flight fetch instead of firing a
+  /// second request.
+  private var inFlight: [URL: Task<LoadResult?, Never>] = [:]
 
-  func record(_ url: URL) { failed.insert(url) }
+  init(session: URLSession = .shared, capacity: Int = 256) {
+    self.session = session
+    self.capacity = capacity
+  }
 
-  /// Forget every failure so the next render retries. Called on app activation; also the test seam.
-  func clear() {
-    guard !failed.isEmpty else { return }
-    failed.removeAll()
-    generation += 1
+  /// `nil` ⇒ transient — the caller should show initials for now; a later realization retries.
+  func load(_ url: URL) async -> LoadResult? {
+    if let cached = cache[url] { return cached }
+    if let existing = inFlight[url] { return await existing.value }
+    let task = Task<LoadResult?, Never> { [weak self] in
+      await self?.fetch(url)
+    }
+    inFlight[url] = task
+    let result = await task.value
+    inFlight[url] = nil
+    return result
+  }
+
+  private func fetch(_ url: URL) async -> LoadResult? {
+    let data: Data
+    let response: URLResponse
+    do {
+      (data, response) = try await session.data(from: url)
+    } catch {
+      return nil  // transient: network error, cancellation, etc.
+    }
+    guard let http = response as? HTTPURLResponse else { return nil }
+    if http.statusCode == 404 {
+      store(.notFound, for: url)
+      return .notFound
+    }
+    guard http.statusCode == 200, let image = NSImage(data: data) else {
+      return nil  // transient: a non-200/404 status, or a 200 body that didn't decode
+    }
+    let result = LoadResult.image(image)
+    store(result, for: url)
+    return result
+  }
+
+  private func store(_ result: LoadResult, for url: URL) {
+    if cache[url] == nil {
+      cacheOrder.append(url)
+      if cacheOrder.count > capacity {
+        cache[cacheOrder.removeFirst()] = nil
+      }
+    }
+    cache[url] = result
+  }
+
+  /// Test/QA seam: forget every cached result and in-flight request.
+  func clearForTesting() {
+    cache.removeAll()
+    cacheOrder.removeAll()
+    inFlight.removeAll()
   }
 }
 
 /// A single circular avatar: the remote image once it loads, the coloured initials chip otherwise
-/// (nil URL, in-flight, or a 404/empty decode). Decorative — the adjacent name text carries the
-/// accessibility label, so the avatar is hidden from VoiceOver and only exposes a hover tooltip.
+/// (nil URL, still loading, a genuine 404, or a transient failure). Decorative — the adjacent name
+/// text carries the accessibility label, so the avatar is hidden from VoiceOver and only exposes a
+/// hover tooltip.
 struct AvatarView: View {
   let subject: AvatarSubject
   var size: CGFloat = 16
@@ -164,27 +213,21 @@ struct AvatarView: View {
   /// Privacy gate: when off, no avatar image is ever requested (the initials chip shows instead), so
   /// viewing an untrusted repo's history can't beacon the viewer to Gravatar/GitHub. See the key doc.
   @Default(.loadRemoteAvatars) private var loadRemoteAvatars
-  /// Session record of URLs that failed, so a lazily-rebuilt row doesn't re-request a missing avatar.
-  @ObservedObject private var failures = AvatarImageFailures.shared
+  /// Injected for tests (a real `URLProtocol` stub); defaults to the shared session-lifetime cache.
+  var loader = AvatarImageLoader.shared
+  @State private var result: AvatarImageLoader.LoadResult?
+
+  /// `.task(id:)` needs ONE Hashable key covering everything that should restart the fetch — the URL
+  /// itself, and the privacy gate (so flipping it on mid-session retries immediately rather than
+  /// waiting for some unrelated re-identity).
+  private var taskKey: String {
+    "\(subject.imageURL?.absoluteString ?? "")\u{1F}\(loadRemoteAvatars)"
+  }
 
   var body: some View {
     Group {
-      // `failures.generation` is read so a clear (app activation) re-evaluates this body and retries.
-      if loadRemoteAvatars, let url = subject.imageURL,
-        failures.generation >= 0, !failures.contains(url)
-      {
-        AsyncImage(url: url, transaction: Transaction(animation: .easeOut(duration: 0.15))) {
-          phase in
-          switch phase {
-          case .success(let image):
-            image.resizable().scaledToFill()
-          case .failure:
-            // Remembered so the next realization of this row draws initials without a second request.
-            initials.onAppear { failures.record(url) }
-          default:
-            initials  // still in flight
-          }
-        }
+      if case .image(let image) = result {
+        Image(nsImage: image).resizable().scaledToFill()
       } else {
         initials
       }
@@ -194,6 +237,13 @@ struct AvatarView: View {
     .overlay(Circle().strokeBorder(theme.tokens.border, lineWidth: 0.5))
     .help(subject.displayName)
     .accessibilityHidden(true)
+    .task(id: taskKey) {
+      guard loadRemoteAvatars, let url = subject.imageURL else {
+        result = nil
+        return
+      }
+      result = await loader.load(url)
+    }
   }
 
   private var initials: some View {
