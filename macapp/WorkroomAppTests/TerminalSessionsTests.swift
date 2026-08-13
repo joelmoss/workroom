@@ -136,11 +136,11 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertEqual(s.tabs(for: target).map(\.title), ["Terminal 2", "Terminal 3", "Terminal 1"])
   }
 
-  func testReapClearsTabsActiveAndCounter() {
+  func testReapClearsTabsActiveAndCounter() async {
     let s = makeSessions()
     s.addTab(for: target)
     s.addTab(for: target)
-    s.reap(target.id)
+    await s.reap(target.id)
     XCTAssertTrue(s.tabs(for: target).isEmpty)
     XCTAssertNil(s.activeTab(for: target))
     // Counter reset: the next tab is "Terminal 1" again.
@@ -524,7 +524,7 @@ final class TerminalSessionsTests: XCTestCase {
   // MARK: onFocusChange seam (issue #26)
 
   /// The seam fires for add and the close-successor (D6) but not for `reap` (notify: false).
-  func testOnFocusChangeFiresForAddAndCloseSuccessorButNotReap() {
+  func testOnFocusChangeFiresForAddAndCloseSuccessorButNotReap() async {
     let s = makeSessions()
     var events: [TerminalTab.ID?] = []
     s.onFocusChange = { _, tabID in events.append(tabID) }
@@ -540,7 +540,7 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertEqual(events, [t1])
 
     events.removeAll()
-    s.reap(target.id)  // teardown → notify: false → must NOT fire
+    await s.reap(target.id)  // teardown → notify: false → must NOT fire
     XCTAssertTrue(events.isEmpty)
   }
 
@@ -566,7 +566,7 @@ final class TerminalSessionsTests: XCTestCase {
   }
 
   /// onTabsRemoved fires for closeTab and reap, so history can prune dead entries (issue #26).
-  func testOnTabsRemovedFiresForCloseAndReap() {
+  func testOnTabsRemovedFiresForCloseAndReap() async {
     let s = makeSessions()
     var removed: [TerminalTab.ID] = []
     s.onTabsRemoved = { _, ids in removed.append(contentsOf: ids) }
@@ -579,7 +579,7 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertEqual(removed, [t2])
 
     removed.removeAll()
-    s.reap(target.id)  // remaining tab reaped
+    await s.reap(target.id)  // remaining tab reaped
     XCTAssertEqual(removed, [t1])
   }
 
@@ -779,10 +779,10 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertNotNil(s.activeTab(for: target)?.surface)  // revealed the terminal
   }
 
-  func testReapClearsContentTabs() {
+  func testReapClearsContentTabs() async {
     let s = makeSessions()
     s.openDiffPreview(diffDesc("a.swift"), for: target)
-    s.reap(target.id)
+    await s.reap(target.id)
     XCTAssertTrue(s.tabs(for: target).isEmpty)
   }
 

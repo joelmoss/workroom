@@ -1,6 +1,7 @@
 import AppKit
 import Defaults
 import GhosttyKit
+import os
 
 /// One terminal surface: an `NSView` that hosts a `ghostty_surface_t` (Metal-rendered by libghostty
 /// given our `nsview`), drives a local PTY, and bridges macOS keyboard/IME/mouse into libghostty.
@@ -14,6 +15,9 @@ import GhosttyKit
 /// `tearDown()`/`deinit`; callbacks are nil'd and the C-string config pointers freed on teardown so
 /// no in-flight libghostty callback can touch a dead view.
 final class GhosttySurfaceView: NSView {
+  private static let sessionLogger = Logger(
+    subsystem: "com.developwithstyle.workroom", category: "PersistentSession")
+
   /// The live surface, or nil before creation / after teardown. `nonisolated(unsafe)` because the
   /// runtime callbacks (via `ghostty_surface_userdata`) read it; all writes happen on the main thread.
   nonisolated(unsafe) private(set) var surface: ghostty_surface_t?
@@ -400,12 +404,24 @@ final class GhosttySurfaceView: NSView {
     to config: inout ghostty_surface_config_s,
     environment: inout [(String, String)]
   ) -> Bool {
+    // No session was requested for this pane — not a failure, nothing to log.
+    guard let persistentSessionID else { return false }
     guard
-      let persistentSessionID,
       PersistentSessionService.shared.isAvailable,
       let attach = PersistentSessionService.shared.attachCommand(),
       let attachPointer = strdup(attach)
-    else { return false }
+    else {
+      // A pane that expected a persisted session fell back to a plain login shell. Whatever the
+      // daemon-side session was doing is now orphaned/unreachable from this pane — worth a log
+      // line since the resulting terminal otherwise looks identical to a normal fresh shell.
+      Self.sessionLogger.error(
+        """
+        persistent session \(persistentSessionID.uuidString, privacy: .public) unavailable \
+        (helper isAvailable=\(PersistentSessionService.shared.isAvailable, privacy: .public)); \
+        falling back to a plain shell
+        """)
+      return false
+    }
     surfaceCStrings.append(attachPointer)
     config.command = UnsafePointer(attachPointer)
     config.wait_after_command = false

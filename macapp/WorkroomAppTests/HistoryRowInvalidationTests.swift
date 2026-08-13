@@ -139,7 +139,7 @@ final class HistoryRowInvalidationTests: XCTestCase {
     let store = await makeStore(provider)
     let (window, view) = host(store)
     defer {
-      store.terminals.reapAll()
+      Task { await store.terminals.reapAll() }
       window.close()
     }
     settle(view)
@@ -174,7 +174,7 @@ final class HistoryRowInvalidationTests: XCTestCase {
     let store = await makeStore(provider)
     let (window, view) = host(store)
     defer {
-      store.terminals.reapAll()
+      Task { await store.terminals.reapAll() }
       window.close()
     }
     settle(view)
@@ -196,7 +196,7 @@ final class HistoryRowInvalidationTests: XCTestCase {
     let store = await makeStore(provider)
     let (window, view) = host(store)
     defer {
-      store.terminals.reapAll()
+      Task { await store.terminals.reapAll() }
       window.close()
     }
     settle(view)
@@ -232,7 +232,7 @@ final class HistoryRowInvalidationTests: XCTestCase {
     let store = await makeStore(provider)
     let (window, view) = host(store)
     defer {
-      store.terminals.reapAll()
+      Task { await store.terminals.reapAll() }
       window.close()
     }
     settle(view)
@@ -256,7 +256,7 @@ final class HistoryRowInvalidationTests: XCTestCase {
     HistoryRow.bodyPasses = 0
     let (window, view) = host(store)
     defer {
-      store.terminals.reapAll()
+      Task { await store.terminals.reapAll() }
       window.close()
     }
     settle(view)
@@ -276,7 +276,7 @@ final class HistoryRowInvalidationTests: XCTestCase {
     let started = Date()
     let (window, view) = host(store)
     defer {
-      store.terminals.reapAll()
+      Task { await store.terminals.reapAll() }
       window.close()
     }
     view.layoutSubtreeIfNeeded()

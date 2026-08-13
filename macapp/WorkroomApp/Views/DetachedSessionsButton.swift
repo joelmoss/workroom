@@ -9,17 +9,17 @@ struct DetachedSessionsButton: View {
   @State private var showing = false
 
   var body: some View {
-    if !sessionsStore.detached.isEmpty {
+    if !sessionsStore.detached(for: target.id).isEmpty {
       Button {
         showing.toggle()
       } label: {
         Image(systemName: "rectangle.stack")
-        Text("\(sessionsStore.detached.count)")
+        Text("\(sessionsStore.detached(for: target.id).count)")
       }
       .buttonStyle(.plain)
       .accessibilityIdentifier("terminal.detachedSessions")
       .accessibilityLabel(
-        "\(sessionsStore.detached.count) detached background terminals"
+        "\(sessionsStore.detached(for: target.id).count) detached background terminals"
       )
       .popover(isPresented: $showing, arrowEdge: .top) {
         popover
@@ -33,7 +33,7 @@ struct DetachedSessionsButton: View {
   private var popover: some View {
     VStack(alignment: .leading, spacing: 8) {
       Text("Detached terminals").font(.headline)
-      ForEach(sessionsStore.detached, id: \.identifier.uuidString) { session in
+      ForEach(sessionsStore.detached(for: target.id), id: \.identifier.uuidString) { session in
         HStack(alignment: .firstTextBaseline, spacing: 8) {
           VStack(alignment: .leading, spacing: 2) {
             Text(session.value(forMetadataKey: SessionMetadataKey.title) ?? "Terminal")
@@ -78,7 +78,9 @@ struct DetachedSessionsButton: View {
 
   private func stop(_ session: SessionDescriptor) {
     guard let id = session.identifier.uuid else { return }
-    PersistentSessionService.shared.endSession(sessionID: id)
-    Task { await refresh() }
+    Task {
+      await PersistentSessionService.shared.endSession(sessionID: id)
+      await refresh()
+    }
   }
 }

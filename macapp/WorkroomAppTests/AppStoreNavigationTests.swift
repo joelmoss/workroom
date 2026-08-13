@@ -156,7 +156,7 @@ final class AppStoreNavigationTests: XCTestCase {
   }
 
   /// A gone workroom's entries are skipped (isLive resolves the target against live projects).
-  func testNavigateSkipsDeletedWorkroomEntry() {
+  func testNavigateSkipsDeletedWorkroomEntry() async {
     let store = makeStore([project("/a", workrooms: ["main"]), project("/b", workrooms: ["main"])])
     let a = SidebarID.workroom(project: "/a", name: "main")
     let b = SidebarID.workroom(project: "/b", name: "main")
@@ -164,7 +164,7 @@ final class AppStoreNavigationTests: XCTestCase {
     addTerminal(store, b)  // history [(a,t1), (b,tB)], cursor on B
 
     // Simulate a delete without the CLI: reap B's terminals and drop it from the project list.
-    store.terminals.reap(store.target(for: b)!.id)
+    await store.terminals.reap(store.target(for: b)!.id)
     store.projects = [project("/a", workrooms: ["main"])]
 
     store.navigateBack()  // (a,t1) is the only live earlier entry

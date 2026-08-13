@@ -1272,7 +1272,7 @@ final class TerminalSessions: ObservableObject {
     // Compute the focus successor BEFORE mutating, using the on-screen order.
     let successor = closeSuccessor(of: tabID, for: target)
 
-    endPersistentSession(for: tab)
+    Task { await endPersistentSession(for: tab) }
     teardown(tab)
     tabsByTarget[target.id]?[tabID] = nil
     orderByTarget[target.id]?.removeAll { $0 == tabID }
@@ -1294,14 +1294,17 @@ final class TerminalSessions: ObservableObject {
   }
 
   /// Terminate and forget every terminal for a target (on delete / when its directory disappears).
-  func reap(_ id: TerminalTarget.ID) {
+  ///
+  /// Awaits every persisted session's kill before returning — the caller relies on this to delete
+  /// the workroom's directory only after any daemon-held shell has actually exited (issue #7).
+  func reap(_ id: TerminalTarget.ID) async {
     let removedIDs = Array((tabsByTarget[id] ?? [:]).keys)
     for tab in (tabsByTarget[id] ?? [:]).values {
-      endPersistentSession(for: tab)
+      await endPersistentSession(for: tab)
       teardown(tab)
       activityPulses[tab.id] = nil
     }
-    Task { await PersistentSessionService.shared.endSessions(matchingWorkroom: id) }
+    await PersistentSessionService.shared.endSessions(matchingWorkroom: id)
     tabsByTarget[id] = nil
     orderByTarget[id] = nil
     splitByTarget[id] = nil
@@ -1314,8 +1317,8 @@ final class TerminalSessions: ObservableObject {
     if !removedIDs.isEmpty { onTabsRemoved?(id, removedIDs) }
   }
 
-  func reapAll() {
-    for id in Array(tabsByTarget.keys) { reap(id) }
+  func reapAll() async {
+    for id in Array(tabsByTarget.keys) { await reap(id) }
   }
 
   /// Re-theme every live terminal — visible and hidden, solo and split alike — to the active theme
@@ -1627,6 +1630,15 @@ final class TerminalSessions: ObservableObject {
       })
   }
 
+  /// Every session ID owned by an open tab across every target in this window.
+  var allOwnedSessionIDs: Set<UUID> {
+    Set(
+      tabsByTarget.values.flatMap { $0.values }.compactMap { tab in
+        if case .terminal(let state) = tab.content { return state.sessionID }
+        return nil
+      })
+  }
+
   func materializeLivePersistentSessions(_ liveIDs: Set<UUID>) {
     for tabs in tabsByTarget.values {
       for tab in tabs.values {
@@ -1649,9 +1661,9 @@ final class TerminalSessions: ObservableObject {
     return persisted ?? UUID()
   }
 
-  private func endPersistentSession(for tab: TerminalTab) {
+  private func endPersistentSession(for tab: TerminalTab) async {
     guard case .terminal(let state) = tab.content, let sessionID = state.sessionID else { return }
-    PersistentSessionService.shared.endSession(sessionID: sessionID)
+    await PersistentSessionService.shared.endSession(sessionID: sessionID)
   }
 
   private func projectPath(from targetID: TerminalTarget.ID) -> String? {

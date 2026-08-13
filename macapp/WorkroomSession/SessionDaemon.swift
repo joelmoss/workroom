@@ -106,8 +106,13 @@ final class SessionDaemon {
     }
     SessionIO.close(listener)
     unlink(socketPath)
+    // Deliberately NOT unlinking the lock file: closing this descriptor releases the flock on
+    // its inode, but the path stays put so the next daemon's `acquireLock` opens the SAME inode
+    // and re-flocks it. Unlinking here would leave a window where the path still exists but is
+    // unlocked — a racing daemon could open+flock that inode before we unlink it, and a THIRD
+    // daemon started after our unlink would then create a brand-new inode and also succeed,
+    // leaving two daemons simultaneously believing they're the sole instance.
     SessionIO.close(lockDescriptor)
-    unlink(socketPath + ".lock")
   }
 
   private func buildPollDescriptors() -> [pollfd] {

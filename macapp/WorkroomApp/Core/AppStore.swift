@@ -3220,8 +3220,10 @@ final class AppStore: ObservableObject {
     // the VCS teardown once — no dev server in any window left running against the deleted directory
     // (issue #7/#70). No live run command anywhere → immediate.
     stopRunsAcrossWindows([targetID], stores: stores) { [weak self] in
-      for store in stores { store.reapTargetLocally(targetID) }
-      self?.startWorkroomTeardown(workroom, in: project)
+      Task {
+        for store in stores { await store.reapTargetLocally(targetID) }
+        self?.startWorkroomTeardown(workroom, in: project)
+      }
     }
   }
 
@@ -3258,8 +3260,8 @@ final class AppStore: ObservableObject {
   /// project delete (which reaps a root + every workroom target) reuses the exact same
   /// cleanup — no second, drifting copy. Run only AFTER any live run process has been
   /// gracefully stopped (issue #7), so the dev server isn't orphaned against a deleted dir.
-  func reapTargetLocally(_ targetID: TerminalTarget.ID) {
-    terminals.reap(targetID)
+  func reapTargetLocally(_ targetID: TerminalTarget.ID) async {
+    await terminals.reap(targetID)
     // `reap` only fires `onTabsRemoved` (which clears run state) when tabs existed; a target armed
     // for auto-run but deleted before its pane mounted has none, so clear directly too (issue #7).
     runStates[targetID] = nil
@@ -3445,8 +3447,8 @@ final class AppStore: ObservableObject {
     // (issue #7/#70), then reap each target in every window, then run the CLI teardown once.
     stopRunsAcrossWindows(targetIDs, stores: stores) { [weak self] in
       guard let self else { return }
-      for store in stores { for id in targetIDs { store.reapTargetLocally(id) } }
       Task {
+        for store in stores { for id in targetIDs { await store.reapTargetLocally(id) } }
         let log =
           scope == .configOnly
           ? nil : ScriptLogSession(title: "Deleting \(project.displayName)", phase: "teardown")

@@ -80,7 +80,7 @@ final class PaneRenderingTests: XCTestCase {
     s.addTab(for: target)
     let (window, view) = host(s)
     defer {
-      s.reapAll()
+      Task { await s.reapAll() }
       window.close()
     }  // free surfaces so their render threads stop
     XCTAssertEqual(waitForSurfaces(in: view, count: 1).count, 1)
@@ -92,7 +92,7 @@ final class PaneRenderingTests: XCTestCase {
     s.splitFocusedPane(for: target, orientation: .horizontal)
     let (window, view) = host(s)
     defer {
-      s.reapAll()
+      Task { await s.reapAll() }
       window.close()
     }  // free surfaces so their render threads stop
     XCTAssertEqual(waitForSurfaces(in: view, count: 2).count, 2)
@@ -106,7 +106,7 @@ final class PaneRenderingTests: XCTestCase {
     s.splitFocusedPane(for: target, orientation: .horizontal)
     let (window, view) = host(s)
     defer {
-      s.reapAll()
+      Task { await s.reapAll() }
       window.close()
     }  // free surfaces so their render threads stop
     XCTAssertEqual(waitForSurfaces(in: view, count: 2).count, 2)
@@ -128,7 +128,7 @@ final class PaneRenderingTests: XCTestCase {
     s.splitFocusedPane(for: target, orientation: .vertical)  // [a, (b, c)]
     let (window, view) = host(s)
     defer {
-      s.reapAll()
+      Task { await s.reapAll() }
       window.close()
     }  // free surfaces so their render threads stop
     XCTAssertEqual(waitForSurfaces(in: view, count: 3).count, 3)
@@ -142,7 +142,7 @@ final class PaneRenderingTests: XCTestCase {
     let solo = s.addTab(for: target).id  // C solo, focused → split hidden
     let (window, view) = host(s)
     defer {
-      s.reapAll()
+      Task { await s.reapAll() }
       window.close()
     }  // free surfaces so their render threads stop
     let mounted = waitForSurfaces(in: view, count: 1)
@@ -157,7 +157,7 @@ final class PaneRenderingTests: XCTestCase {
     s.splitFocusedPane(for: target, orientation: .horizontal)  // [a, b], b focused
     let (window, view) = host(s)
     defer {
-      s.reapAll()
+      Task { await s.reapAll() }
       window.close()
     }
     XCTAssertEqual(waitForSurfaces(in: view, count: 2).count, 2)

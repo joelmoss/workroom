@@ -88,8 +88,20 @@ enum SessionAttachClient {
     defer { SessionIO.close(socket) }
     SessionIO.setNonBlocking(socket)
 
+    let payload = makeRequest(configuration).encoded()
+    guard payload.count <= SessionFrame.maximumPayloadSize else {
+      // Fail fast and specifically rather than retrying `handshakeAttempts` times against the
+      // same oversized payload and reporting the generic, misleading "could not reach the
+      // session daemon" — this is almost always a bloated shell environment (exported functions,
+      // PATH bloat from asdf/direnv/nvm hooks), not a daemon problem.
+      report(
+        "attach request too large (\(payload.count) bytes, limit "
+          + "\(SessionFrame.maximumPayloadSize)) — check for an oversized shell environment")
+      return .failed(SessionAttachExitCode.protocolFailure)
+    }
+
     let connection = SessionConnection(descriptor: socket)
-    connection.enqueue(SessionFrame(kind: .attach, payload: makeRequest(configuration).encoded()))
+    connection.enqueue(SessionFrame(kind: .attach, payload: payload))
     return loop(connection: connection, signalPipe: signalPipe)
   }
 

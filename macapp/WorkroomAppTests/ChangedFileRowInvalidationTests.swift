@@ -68,7 +68,7 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
     let store = makeStore(changedFiles: files(60))
     let (window, view) = host(store)
     defer {
-      store.terminals.reapAll()
+      Task { await store.terminals.reapAll() }
       window.close()
     }
     // No early-exit condition here: this settle must fully drain the initial render's transient
@@ -104,7 +104,7 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
     let store = makeStore(changedFiles: files(20))
     let (window, view) = host(store)
     defer {
-      store.terminals.reapAll()
+      Task { await store.terminals.reapAll() }
       window.close()
     }
     // Let the selection's status probe land and then restore the fixture list, as in the selection test
@@ -147,7 +147,7 @@ final class ChangedFileRowInvalidationTests: XCTestCase {
 
     let (window, view) = host(store)
     defer {
-      store.terminals.reapAll()
+      Task { await store.terminals.reapAll() }
       window.close()
     }
     // Let the tab-open status probe land and be overwritten BEFORE the measurement window opens. That

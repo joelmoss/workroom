@@ -106,27 +106,46 @@ final class PersistentSessionService {
     return false
   }
 
-  func endSession(sessionID: UUID) {
+  @discardableResult
+  func endSession(sessionID: UUID) async -> Bool {
     descriptors.removeValue(forKey: sessionID)
     guard let socketPath = existingSocketPath,
       let identifier = SessionIdentifier(uuidString: sessionID.uuidString)
-    else { return }
+    else { return true }
     let client = PersistentSessionControlClient(socketPath: socketPath)
-    Task.detached(priority: .utility) { _ = client.kill(identifier: identifier) }
+    let killed = await Task.detached(priority: .utility) { client.kill(identifier: identifier) }
+      .value
+    if !killed {
+      logger.error("failed to kill persistent session \(sessionID.uuidString, privacy: .public)")
+    }
+    return killed
   }
 
+  /// Awaits every kill before returning so a caller can safely delete the workroom's directory
+  /// afterward — a persisted shell that's still exiting must not be racing the teardown (issue #7).
   func endSessions(matchingWorkroom workroomID: String) async {
     let sessions = await liveSessions()
     for session in sessions
     where session.value(forMetadataKey: SessionMetadataKey.workroom) == workroomID {
-      if let uuid = session.identifier.uuid { endSession(sessionID: uuid) }
+      if let uuid = session.identifier.uuid { await endSession(sessionID: uuid) }
     }
   }
 
-  func endAllSessions() async {
-    descriptors.removeAll()
-    guard let socketPath = existingSocketPath else { return }
-    let client = PersistentSessionControlClient(socketPath: socketPath)
-    _ = await Task.detached(priority: .utility) { client.killAll() }.value
+  /// Kills every live daemon session except those in `attachedSessionIDs` — a session still owned
+  /// by an open tab in some window is left running rather than yanked out from under whoever is
+  /// looking at it right now. Pass an empty set (the default) to kill everything.
+  func endAllSessions(excluding attachedSessionIDs: Set<UUID> = []) async {
+    guard !attachedSessionIDs.isEmpty else {
+      descriptors.removeAll()
+      guard let socketPath = existingSocketPath else { return }
+      let client = PersistentSessionControlClient(socketPath: socketPath)
+      _ = await Task.detached(priority: .utility) { client.killAll() }.value
+      return
+    }
+    let sessions = await liveSessions()
+    for session in sessions {
+      guard let uuid = session.identifier.uuid, !attachedSessionIDs.contains(uuid) else { continue }
+      await endSession(sessionID: uuid)
+    }
   }
 }

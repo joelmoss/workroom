@@ -610,14 +610,14 @@ final class RunCommandTests: XCTestCase {
     XCTAssertNotNil(store.runTabID(for: t.id))
   }
 
-  func testReapClearsRunState() {
+  func testReapClearsRunState() async {
     let store = makeStore([project("/a", workrooms: ["main"])])
     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
     let t = target(store, "/a", "main")
     store.startRunCommand(for: t)
     XCTAssertTrue(store.isRunCommandRunning(for: t.id))
 
-    store.terminals.reap(t.id)
+    await store.terminals.reap(t.id)
 
     XCTAssertNil(store.runTabID(for: t.id))
     XCTAssertFalse(store.isRunCommandRunning(for: t.id))
@@ -935,14 +935,14 @@ final class RunCommandTests: XCTestCase {
   /// A third teardown path, distinct from `closeTab`/quit: deleting a workroom/project reaps the
   /// target directly (`reapTargetLocally`), which must also purge `investigateTabs` via the same
   /// `onTabsRemoved` route — this exercises that specific caller, not just `closeTab`.
-  func testInvestigateTabsClearedWhenTargetReapedWithLiveInvestigateTab() {
+  func testInvestigateTabsClearedWhenTargetReapedWithLiveInvestigateTab() async {
     let store = makeStore([project("/a", workrooms: ["main"])])
     let t = target(store, "/a", "main")
     let tab = store.startInvestigate(bannerState: investigateBanner(t), target: t, surface: nil)
     try! XCTUnwrap(tab.surface).liveProcessOverrideForTesting = true
     XCTAssertTrue(store.hasLiveRunCommand)
 
-    store.reapTargetLocally(t.id)
+    await store.reapTargetLocally(t.id)
 
     XCTAssertNil(store.investigateTabs[tab.id])
     XCTAssertFalse(store.hasLiveRunCommand)
