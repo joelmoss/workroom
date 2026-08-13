@@ -3,7 +3,7 @@ import XCTest
 
 /// Shared "let the SwiftUI/AppKit run loop catch up" waiter for the WORKROOM-2B/2T/2S app-hang
 /// regression suites (`ChangedFileRowInvalidationTests`, `HistoryRowInvalidationTests`,
-/// `DiffViewerLazyRenderingTests`, `AgentResumeCoordinatorTests`).
+/// `DiffViewerLazyRenderingTests`).
 ///
 /// Pumps the run loop in short slices, forcing layout each time, until either `condition` returns
 /// true or `seconds` elapses — whichever comes first. `condition` defaults to `{ false }`, which
@@ -26,9 +26,8 @@ extension XCTestCase {
     view.layoutSubtreeIfNeeded()
   }
 
-  /// View-less overload for model/coordinator-layer tests with nothing to lay out (e.g.
-  /// `AgentResumeCoordinatorTests`) — same poll-until-condition-or-ceiling mechanism, without the
-  /// `layoutSubtreeIfNeeded()` half.
+  /// View-less overload for model/coordinator-layer tests with nothing to lay out — same
+  /// poll-until-condition-or-ceiling mechanism, without the `layoutSubtreeIfNeeded()` half.
   @MainActor
   func settle(_ seconds: TimeInterval = 0.5, until condition: () -> Bool = { false }) {
     let deadline = Date().addingTimeInterval(seconds)

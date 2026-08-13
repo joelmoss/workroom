@@ -152,14 +152,6 @@ release is a baseline; auto-update kicks in for the release after it. **Never de
   reattach via `workroom-session` when background sessions are on (the default). A pane whose
   session is gone still opens a fresh shell in its remembered directory. Run tabs are
   deliberately never restored.
-- `Core/AgentSessionIndex.swift` / `AgentResumeCoordinator.swift` — the offer to reopen an agent
-  conversation in a restored pane (issue #145). Because libghostty exposes no child pid, the app
-  cannot know what a pane was running; it instead reads each agent's own store (`~/.claude/projects`,
-  `~/.codex/sessions`) and matches on the working directory those files **record**, never on a
-  reconstructed directory name. Nothing spawns at launch: clicking *Resume Claude…* types the
-  agent's own picker command into that pane, once, and only while the pane is still pristine. The
-  scan is bounded (files, bytes, wall clock) and is never awaited by the restore, because issue
-  #46's watchdog freezes session writes if a restore is still outstanding 15 seconds in.
 
 ## Things to verify on first build (marked `TODO` in code)
 

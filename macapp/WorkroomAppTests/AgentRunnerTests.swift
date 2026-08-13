@@ -82,6 +82,13 @@ final class AgentRunnerTests: XCTestCase {
     XCTAssertNil(AgentBackend.preferred(installed: []))
   }
 
+  func testDisplayNamesAreSeparateFromExecutables() {
+    XCTAssertEqual(AgentBackend.claude.displayName, "Claude")
+    XCTAssertEqual(AgentBackend.claude.executable, "claude")
+    XCTAssertEqual(AgentBackend.codex.displayName, "Codex")
+    XCTAssertEqual(AgentBackend.codex.executable, "codex")
+  }
+
   // MARK: classify
 
   private func result(_ stdout: String, _ stderr: String, _ code: Int32, timedOut: Bool = false)

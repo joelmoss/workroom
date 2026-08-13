@@ -212,10 +212,6 @@ final class GhosttyRuntimeAdapter {
     let view = Unmanaged<GhosttySurfaceView>.fromOpaque(userdata).takeUnretainedValue()
     guard let surface = view.surface else { return false }
     let text = NSPasteboard.general.string(forType: .string) ?? ""
-    // ⌘V never reaches `insertText` — libghostty owns the keybind and completes the read straight
-    // into the surface — so the pane has to be marked dirty here or issue #145's resume action would
-    // append a Return to whatever was just pasted and run it.
-    if !text.isEmpty { view.noteUserInput() }
     text.withCString { ghostty_surface_complete_clipboard_request(surface, $0, state, false) }
     return true
   }

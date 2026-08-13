@@ -121,10 +121,7 @@ extension AppStore {
     pendingSessionRestore = nil
     defer { projectStore.finishSessionRestore() }
 
-    // Captured before the restore ends, because `projectStore.sessionSavedAt` is cleared with it.
-    let savedAt = projectStore.sessionSavedAt
     var restoredTargetIDs: Set<TerminalTarget.ID> = []
-    var restoredTerminals: [TerminalSessions.RestoredTerminal] = []
     for saved in session.targets {
       // A target that no longer resolves — its workroom was deleted between launches — is dropped
       // whole, the same self-heal `validatedSelection` and `pruneWorkroomSplitToLiveLeaves` apply.
@@ -134,7 +131,6 @@ extension AppStore {
       let result = terminals.restore(saved, for: target)
       guard result.count > 0 else { continue }
       restoredTargetIDs.insert(target.id)
-      restoredTerminals.append(contentsOf: result.terminals)
     }
 
     // The workroom-into-workroom split groups (issue #23). A leaf whose workroom is gone collapses,
@@ -149,14 +145,6 @@ extension AppStore {
 
     refreshSelectionHasTabs()
 
-    // Agent resume offers (issue #145). Kicked LAST and never awaited: the `defer` above ends this
-    // window's restore, and issue #46's watchdog freezes session writes for the whole run if any
-    // window is still outstanding 15 seconds in. Blocking the restore on a filesystem scan would
-    // trade a button for the user's session persistence. `discover` returns immediately; the scan
-    // runs on its own queue and publishes back on the main actor.
-    if let savedAt {
-      terminals.resumeCoordinator.discover(restoredTerminals, savedAt: savedAt)
-    }
     Task { await PersistentSessionRecovery.recover(in: terminals) }
   }
 }

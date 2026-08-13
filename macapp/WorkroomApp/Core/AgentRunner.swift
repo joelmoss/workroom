@@ -43,25 +43,6 @@ enum AgentBackend: String, Sendable, CaseIterable {
 struct AgentInvocation: Equatable, Sendable {
   let executable: String
   let arguments: [String]
-
-  /// The invocation as one shell command line.
-  ///
-  /// Structured argv is the honest representation, but the two consumers both take a string — the
-  /// `StatusCommandRunning` executor spawns through `/usr/bin/env`, and a resumed session (issue
-  /// #145) is typed into a live shell. Rather than let each caller build its own join, there is one
-  /// here, quoting anything that is not plainly safe. For the resume invocations nothing needs
-  /// quoting, which is exactly what their unit test asserts character for character.
-  var commandLine: String {
-    ([executable] + arguments).map(Self.quotedIfNeeded).joined(separator: " ")
-  }
-
-  private static func quotedIfNeeded(_ argument: String) -> String {
-    let safe = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_./:=@,+"))
-    guard !argument.isEmpty, argument.unicodeScalars.allSatisfy(safe.contains) else {
-      return "'" + argument.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
-    return argument
-  }
 }
 
 /// Pure argv construction (unit-tested; no process spawning).
@@ -94,27 +75,6 @@ enum AgentInvocationBuilder {
     }
     arguments.append(prompt)
     return AgentInvocation(executable: AgentBackend.claude.executable, arguments: arguments)
-  }
-
-  /// Reopen a previous conversation in a restored pane (issue #145) — **always the agent's own
-  /// picker**, never a "most recent" shortcut.
-  ///
-  /// `claude --continue` and `codex resume --last` both resume the newest conversation *for the
-  /// current directory*, and two agent panes in one workroom share a directory: both would land in
-  /// the same conversation, confidently and wrongly. The app cannot know which pane owned which
-  /// session — libghostty exposes no child pid, so there is nothing to correlate — and a confident
-  /// wrong answer is worse than being asked. The picker asks.
-  ///
-  /// Both forms are compile-time constants. Nothing read off disk reaches the command line: the only
-  /// variable is `AgentBackend.executable`, a `rawValue` on a two-case enum. PATH resolution belongs
-  /// to the shell that receives it, which already carries the `ShellEnvironment` augmentation.
-  static func resume(_ backend: AgentBackend) -> AgentInvocation {
-    switch backend {
-    case .claude:
-      return AgentInvocation(executable: backend.executable, arguments: ["--resume"])
-    case .codex:
-      return AgentInvocation(executable: backend.executable, arguments: ["resume"])
-    }
   }
 }
 

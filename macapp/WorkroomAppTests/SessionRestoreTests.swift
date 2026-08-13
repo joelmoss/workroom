@@ -31,64 +31,20 @@ final class SessionRestoreTests: XCTestCase {
       second: .leaf(second))
   }
 
-  // MARK: Restore reports what it created (issue #145)
+  // MARK: Shape
 
-  /// **REGRESSION.** Eligibility for a resume offer is "this pane came back from a restore", and
-  /// that is answered by the list `restore` hands back — NOT by a `wasRestored` flag on the tab.
-  ///
-  /// A flag is state that outlives the moment it describes and has to be kept true through every
-  /// future mutation path. Returning the identities at the one instant they are known means a ⌘T
-  /// pane can never be mistaken for a restored one, because it was never in the list.
-  func testRestoreReportsItsTerminalsAndAddTabDoesNot() {
+  /// A pane whose remembered directory is gone opens in the target's own path instead, through
+  /// `restoredCwd` — not the dead path, which would just fail on shell startup.
+  func testRestoredCwdFallsBackWhenTheRememberedDirectoryIsGone() {
     let sessions = makeSessions()
-    let result = sessions.restore(
-      TargetSession(
-        targetID: target.id,
-        tabs: [terminal("a", title: "Terminal 1", cwd: "/tmp"), terminal("b", title: "Terminal 2")]),
-      for: target)
-
-    XCTAssertEqual(result.terminals.count, 2)
-    XCTAssertEqual(Set(result.terminals.map(\.tabID)), Set(sessions.tabs(for: target).map(\.id)))
-    XCTAssertEqual(result.terminals.map(\.targetID), [target.id, target.id])
-
-    let added = sessions.addTab(for: target)
-    XCTAssertFalse(
-      result.terminals.map(\.tabID).contains(added.id), "a ⌘T pane is not a restored pane")
-  }
-
-  /// The reported cwd is the one the pane actually opens in, already through `restoredCwd` — so a
-  /// pane whose remembered directory is gone reports the fallback, not the dead path that would
-  /// never match an agent's recorded cwd.
-  func testReportedCwdIsTheResolvedOneNotTheDeadRememberedPath() {
-    let sessions = makeSessions()
-    let result = sessions.restore(
+    sessions.restore(
       TargetSession(
         targetID: target.id,
         tabs: [terminal("a", title: "Terminal 1", cwd: "/definitely/not/a/real/directory")]),
       for: target)
 
-    XCTAssertEqual(result.terminals.first?.cwd, target.path)
+    XCTAssertEqual(sessions.tabs(for: target).first?.surface?.workingDirectory, target.path)
   }
-
-  /// Content tabs have no shell, so they are not terminals to resume into.
-  func testContentTabsAreNotReportedAsTerminals() {
-    let sessions = makeSessions()
-    let result = sessions.restore(
-      TargetSession(
-        targetID: target.id,
-        tabs: [
-          terminal("a", title: "Terminal 1"),
-          TabSession(
-            key: "f", kind: TabSession.fileKind,
-            file: FilePayload(path: "README.md", isPreview: true, markdownPreview: false)),
-        ]),
-      for: target)
-
-    XCTAssertEqual(result.count, 2)
-    XCTAssertEqual(result.terminals.count, 1)
-  }
-
-  // MARK: Shape
 
   func testRestoresTabsInOrderWithTitles() {
     let sessions = makeSessions()

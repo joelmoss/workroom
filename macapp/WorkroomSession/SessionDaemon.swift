@@ -304,8 +304,14 @@ final class SessionDaemon {
           ttyDevice: session.ttyDevice
         ).encoded()))
     enqueueReplay(session: session, connection: connection)
-    SessionPTY.requestRedraw(
-      masterDescriptor: session.masterDescriptor, fallbackProcessID: session.processID)
+    // Query the CURRENT size fresh rather than trusting `request.columns/rows` — those may have
+    // been rejected as unusable above (a transient tiny size from a not-yet-laid-out surface), in
+    // which case the redraw must still bump from/to whatever size the session's pty actually has.
+    if let current = SessionPTY.windowSize(descriptor: session.masterDescriptor) {
+      SessionPTY.requestRedraw(
+        masterDescriptor: session.masterDescriptor, fallbackProcessID: session.processID,
+        columns: current.columns, rows: current.rows)
+    }
   }
 
   private func enqueueReplay(session: PTYSession, connection: SessionConnection) {
