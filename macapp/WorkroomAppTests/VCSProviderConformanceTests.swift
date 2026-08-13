@@ -140,6 +140,51 @@ final class VCSProviderConformanceTests: XCTestCase {
     XCTAssertTrue(jjModified.contains("+three"), "jj missing the edit: \(jjModified)")
   }
 
+  /// A file staged AND further modified in the worktree carries BOTH a `.index` delta (HEAD→index)
+  /// and a `.workingTree` delta (index→worktree). `GitProvider.workingFileDiff` used to pick
+  /// `.workingTree` alone (`entry.workingTree ?? entry.index`), so the diff showed only the SECOND
+  /// edit and silently dropped the staged one.
+  func testWorkingFileDiffCombinesStagedAndFurtherModifiedEdits() async throws {
+    try requireTool("git")
+    try requireTool("jj")
+    let root = try colocatedFixture()
+    let url = URL(fileURLWithPath: root)
+
+    // a.txt is "one\ntwo\n" at HEAD (see `colocatedFixture`). Stage one edit, then make a second,
+    // unstaged edit on top of it.
+    let r = sh(
+      """
+      printf 'one\\ntwo\\nthree\\n' > a.txt
+      git add a.txt
+      printf 'one\\ntwo\\nthree\\nfour\\n' > a.txt
+      echo done
+      """, in: root)
+    XCTAssertTrue(r.out.contains("done"), "staged+further-modified setup failed: \(r.out)")
+
+    let diff = try await GitProvider().workingFileDiff(root: url, path: "a.txt", base: .workingCopy)
+    XCTAssertTrue(diff.contains("diff --git a/a.txt b/a.txt"), "header: \(diff)")
+    XCTAssertTrue(diff.contains("+three"), "staged half missing from combined diff: \(diff)")
+    XCTAssertTrue(diff.contains("+four"), "unstaged half missing from combined diff: \(diff)")
+
+    // Same shape for a file that never existed at HEAD: staged as a new file, then edited again —
+    // the combined diff must still read as a whole-file add (`/dev/null` old side), not a
+    // same-file modification against the STAGED snapshot.
+    let r2 = sh(
+      """
+      printf 'first\\n' > d.txt
+      git add d.txt
+      printf 'first\\nsecond\\n' > d.txt
+      echo done
+      """, in: root)
+    XCTAssertTrue(r2.out.contains("done"), "staged-add+further-modified setup failed: \(r2.out)")
+
+    let addDiff = try await GitProvider().workingFileDiff(
+      root: url, path: "d.txt", base: .workingCopy)
+    XCTAssertTrue(addDiff.contains("/dev/null"), "new-since-HEAD old side: \(addDiff)")
+    XCTAssertTrue(addDiff.contains("+first"), "staged half missing: \(addDiff)")
+    XCTAssertTrue(addDiff.contains("+second"), "unstaged half missing: \(addDiff)")
+  }
+
   /// A **merge** working copy must still produce real per-file diffs. `jj diff -r @` diffs a merge
   /// against its *auto-merged parents*, so it returns NOTHING for a file that differs only from the
   /// first parent — which is precisely what the Changes panel lists (`changed_files` diffs the first

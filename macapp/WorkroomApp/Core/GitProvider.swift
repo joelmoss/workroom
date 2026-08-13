@@ -140,10 +140,21 @@ struct GitProvider: VCSProviding {
           let entry = try repo.status(options: options).first(where: {
             let d = $0.workingTree ?? $0.index
             return d?.newFile.path == path || d?.oldFile.path == path
-          }),
-          let delta = entry.workingTree ?? entry.index
+          })
         else {
           return ""  // path clean / not a working-copy change
+        }
+        // A file staged AND further changed in the worktree carries BOTH deltas (HEAD→index,
+        // index→worktree). Picking either alone (the old `workingTree ?? index`) shows only that
+        // one leg — e.g. the staged half goes missing. Combine them the same way `.conflicted`
+        // already reads HEAD→worktree: diff the file's HEAD blob (nil if it's new since HEAD)
+        // against what's on disk now, or against nothing if the worktree half deleted it.
+        if let indexDelta = entry.index, let workingTreeDelta = entry.workingTree {
+          return try Self.combinedWorkingDiff(
+            repo, indexDelta: indexDelta, workingTreeDelta: workingTreeDelta, root: root)
+        }
+        guard let delta = entry.workingTree ?? entry.index else {
+          return ""
         }
         guard let patch = try Self.workingPatch(repo, delta: delta, root: root) else {
           return ""  // a delta type with no renderable per-file patch (e.g. copy without content)
@@ -236,6 +247,35 @@ struct GitProvider: VCSProviding {
       current = try repo.show(id: entry.id)
     }
     return nil
+  }
+
+  /// The combined HEAD→worktree diff for a file that has BOTH a `.index` delta (HEAD→index) and a
+  /// `.workingTree` delta (index→worktree) — i.e. staged, then edited again. `indexDelta.oldFile.id`
+  /// is the file's blob at HEAD (empty/invalid, and so `nil` after `show`, when the file is new since
+  /// HEAD — same "no old side" case `gitFormat` already renders as `/dev/null`). The CURRENT on-disk
+  /// path/content comes from `workingTreeDelta` (its own `oldFile`/`newFile` are both the post-index
+  /// name — a rename only the worktree half made would show up there), never the staged blob, so both
+  /// legs of the edit show up as one diff. Mirrors `workingPatch`'s `.conflicted` case, which reads
+  /// HEAD→worktree the same way.
+  private static func combinedWorkingDiff(
+    _ repo: Repository, indexDelta: Diff.Delta, workingTreeDelta: Diff.Delta, root: URL
+  ) throws -> String {
+    let headBlob: Blob? = try? repo.show(id: indexDelta.oldFile.id)
+    let oldPath =
+      indexDelta.oldFile.path.isEmpty ? indexDelta.newFile.path : indexDelta.oldFile.path
+    let currentPath =
+      workingTreeDelta.newFile.path.isEmpty
+      ? workingTreeDelta.oldFile.path : workingTreeDelta.newFile.path
+    // The worktree half deleted what was staged — nothing on disk to read as the new side.
+    if workingTreeDelta.type == .deleted {
+      guard let headBlob else { return "" }  // never existed at HEAD either: nothing to show
+      let patch = try repo.patch(from: headBlob, to: nil)
+      return Self.gitFormat(patch, oldPath: oldPath, newPath: oldPath, type: .deleted)
+    }
+    let patch = try repo.patch(from: headBlob, to: root.appendingPathComponent(currentPath))
+    return Self.gitFormat(
+      patch, oldPath: oldPath, newPath: currentPath,
+      type: headBlob == nil ? .added : indexDelta.type)
   }
 
   /// Build a single file's working-copy `Patch`. Prefers SwiftGitX's `patch(from: delta)` (handles

@@ -1266,18 +1266,20 @@ libgit2's `GIT_ELOCKED`/`GIT_ENOTFOUND`/`GIT_ENOTREPO`-shaped cases onto the tax
 
 **Priority:** P3 (no wrong diagnosis today, only a coarse one).
 
-### Git diff shows one side when a file is both staged and re-modified (macapp) — VCS-foundation eng-review
+### Git diff shows one side when a file is both staged and re-modified (macapp) — FIXED
 
 **What:** `GitProvider` working diff/status use `entry.workingTree ?? entry.index`, so a file that is
 staged AND further modified in the worktree renders only the working-tree (index→worktree) delta, not
 the combined HEAD→worktree change.
 
-**How to start:** Diff HEAD-tree → worktree directly for the file (or combine index + worktree deltas)
-rather than picking one status delta.
+**Fixed:** `workingFileDiff` now detects when a status entry carries BOTH an `.index` and a
+`.workingTree` delta and, in that case, builds the diff from the file's HEAD blob (`nil` if it's new
+since HEAD) to its current on-disk content (`GitProvider.combinedWorkingDiff`) — the same technique
+`workingPatch`'s `.conflicted` case already used for a HEAD→worktree read. Covered by
+`VCSProviderConformanceTests.testWorkingFileDiffCombinesStagedAndFurtherModifiedEdits` (staged-modify
++further-edit, and staged-add+further-edit).
 
-**Depends on:** VCS read foundation. Touches `Core/GitProvider.swift`.
-
-**Priority:** P3 (partial-staging is uncommon in the workroom flow; content still shown, just one side).
+**Priority:** done.
 
 ### The jj snapshot ignores the user's real jj/git config (macapp) — VCS-foundation eng-review
 
