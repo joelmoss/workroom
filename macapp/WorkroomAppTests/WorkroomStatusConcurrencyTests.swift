@@ -49,10 +49,47 @@ private struct MissingToolRunner: StatusCommandRunning {
   }
 }
 
+/// A `StatusCommandRunning` double that counts concurrent `gh` calls while returning just enough of
+/// a real answer to keep `resolveCI`'s chain moving: `gh auth status` reports available (so the CI
+/// stage's `githubCLIStatus == .available` gate opens at all), `git symbolic-ref`/`rev-parse` report
+/// a plausible branch/sha (so `ghProbeTarget`/`ciMatchCommit` don't bail before the counted work
+/// happens), and the final `gh api graphql` call returns an empty body — `classifyCheckRollup` reads
+/// that as `.keepPrior` on a decode failure, which is fine: this test only cares about `counter.peak`.
+private struct CountingGHRunner: StatusCommandRunning, @unchecked Sendable {
+  let counter: InFlightCounter
+
+  func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
+    async -> CommandResult
+  {
+    counter.enter()
+    defer { counter.leave() }
+    try? await Task.sleep(nanoseconds: 20_000_000)
+    if executable == "gh", args.contains("auth") {
+      return CommandResult(
+        stdout: "github.com\n  \u{2713} Logged in to github.com account test", stderr: "",
+        exitCode: 0, timedOut: false)
+    }
+    if args.contains("symbolic-ref") {
+      return CommandResult(stdout: "main", stderr: "", exitCode: 0, timedOut: false)
+    }
+    if args.contains("rev-parse") {
+      return CommandResult(
+        stdout: String(repeating: "a", count: 40), stderr: "", exitCode: 0, timedOut: false)
+    }
+    if args.contains("nameWithOwner") {
+      return CommandResult(stdout: "acme/repo", stderr: "", exitCode: 0, timedOut: false)
+    }
+    return CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: false)
+  }
+}
+
 /// REGRESSION (Muxy test-practices review, filed in TODOS.md — "N-in-flight concurrency accounting
 /// test for status sweeps"): `WorkroomStatusResolver.resolveGit`/`resolveJJ` called `GitProvider()`/
 /// `RustJJProvider()` directly, bypassing any injection seam, so this invariant was untestable until
-/// `GitStatusReading`/`JJStatusReading` existed.
+/// `GitStatusReading`/`JJStatusReading` existed. `testCISweepNeverExceedsItsConcurrencyCap` covers the
+/// remaining half of that same entry: the `runCISweep` stage's own cap, over `resolveCI`/`gh`, which
+/// already had an injectable `StatusCommandRunning` (see `GatedGHRunner` in `WorkroomStatusTests.swift`)
+/// — the seam gap this file was filed for was only ever `resolveGit`/`resolveJJ`'s.
 final class WorkroomStatusConcurrencyTests: XCTestCase {
   private var dirs: [String] = []
 
@@ -94,6 +131,35 @@ final class WorkroomStatusConcurrencyTests: XCTestCase {
       counter.peak, 5, "runLocalSweep let more than its cap of 5 local probes run at once")
     XCTAssertGreaterThan(
       counter.peak, 1,
+      "the fan-out never actually overlapped — this test would pass even against a fully serial "
+        + "sweep, so it isn't proving the cap does any work")
+  }
+
+  /// The `runCISweep` half TODOS.md left open: same shape as the local-sweep test above, but over
+  /// `resolveCI`/`gh`. 8 items across 8 distinct project roots (so each becomes CI-eligible in one
+  /// pass, and the per-project `nwoCache` prefetch — sequential by construction — can't be mistaken
+  /// for the bound under test) must never run more than `ciConcurrency` (2) `gh`/`git` calls at once.
+  @MainActor
+  func testCISweepNeverExceedsItsConcurrencyCap() async {
+    let store = AppStore()
+    store.projects = (0..<8).map { throwawayProject("ci-\($0)") }
+
+    let ghCounter = InFlightCounter()
+    // `dirty: false` (not counted here) only needs to make every item CI-eligible
+    // (`workroomStatuses[sid]?.dirty != nil`) — the assertion below is entirely about `ghCounter`.
+    store.statusResolver = WorkroomStatusResolver(
+      runner: CountingGHRunner(counter: ghCounter),
+      gitStatus: CountingGitStatus(counter: InFlightCounter()))
+
+    store.refreshWorkroomStatuses(force: true)
+    await store.statusSweepTask?.value
+
+    // Mirrors `AppStore.ciConcurrency` (`AppStore+WorkroomStatus.swift`), `fileprivate` and so not
+    // reachable here by name — a change to that constant should update this literal too.
+    XCTAssertLessThanOrEqual(
+      ghCounter.peak, 2, "runCISweep let more than its cap of 2 CI probes run at once")
+    XCTAssertGreaterThan(
+      ghCounter.peak, 1,
       "the fan-out never actually overlapped — this test would pass even against a fully serial "
         + "sweep, so it isn't proving the cap does any work")
   }
