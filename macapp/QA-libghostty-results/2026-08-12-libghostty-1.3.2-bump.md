@@ -53,6 +53,27 @@
 | ssh cache memoisation | NOT RUN — same reason; the manual checklist item specifically calls for a real `ssh <host>` round-trip, which this environment doesn't have. (The CLI-level cache mechanism itself, independent of a real host, is already covered by `GhosttyCLITests.testGhosttyRunsSshCacheActionAndWritesCache`.) |
 | Shell matrix (fish/elvish/nushell) | NOT RUN — not installed on this machine (pre-existing, documented in `QA-libghostty.md` §N). |
 
+## Post-bump retest (2026-08-13)
+
+- Package.resolved pin at retest time: `libghostty-spm` revision `b146b73a8ba3ed2678a22a9de5feecfcbf298d48`, version `1.3.2` (engine `35e1a016`)
+- Same machine, same build method (local Debug, isolated `$HOME`, `-WorkroomUITestFixture 1`) as the baseline
+- Runtime log confirms the linked engine directly: `ghostty version=1.3.2-HEAD-+35e1a0160`
+
+| Item | Result | vs. baseline |
+|---|---|---|
+| Surface churn | PASS. 20× ⌘T/⌘W. RSS 153952 → 193168 KB (+39216 KB). No crash. | Comparable delta magnitude, no regression signal. |
+| Split churn | PASS. 10× ⌘D/⌘W. Exactly one surviving `AXTextArea`, non-blank, full-size. | Unchanged. |
+| `free_text` leak spot-check | **FIX CONFIRMED.** Same isolated method: fresh launch, `leaks <pid>` baseline `0 leaks for 0 total leaked bytes`, then 300 accessibility-value reads (same `readText`/`ghostty_surface_free_text` call path verified in the baseline entry), `leaks <pid>` after: **`0 leaks for 0 total leaked bytes`**. | **299 leaks / 38272 bytes → 0.** This is the headline result of the whole bump — the upstream `ghostty_surface_free_text` fix lands exactly as documented. |
+| Backspace | PASS. `abc` + one Backspace → `ab`. Workaround (`GhosttySurfaceView.swift:1171`) still needed — engine hasn't fixed the underlying keycode issue at this pin. | Unchanged. |
+| ⌃Tab | PASS (unchanged baseline). No visible effect. | Unchanged. |
+| `$TERM` / infocmp | PASS. `xterm-ghostty` / `INFOCMP_OK`. | Unchanged. |
+| Cursor-style reset (new item, not in original §N — added per the terminfo `Se` capability change found during T6: `\E[2 q` → `\E[0 q`) | **NOT VERIFIED.** Attempted via `vim` + `screencapture -x` to visually compare cursor style before/after quitting vim. `screencapture -x` captures the **entire display**, not the target window — it pulled in unrelated windows including this Claude Code session and private browser content. Both screenshots were deleted immediately without further inspection once this was noticed, and the check was abandoned rather than retried with a window-scoped capture. **This behavioral consequence of the bump remains unverified** — flagging explicitly rather than silently dropping it: `Se`'s new value resets the cursor to the user's *configured default* style instead of hard-resetting to blinking block after a TUI like `vim` exits. Worth a deliberate, careful manual check (a human at the keyboard, not screen-scoped automation) before relying on this pin in production. |
+| Orphan-shell / quit-with-live-TUI | PASS — via `GhosttyOrphanShellUITests.testNormalQuitLeavesNoOrphanedShell` (T9), the new automated tripwire, run against this exact pin. Supersedes a manual repeat of the baseline's marker-shell method. | New automated coverage; no manual repeat needed. |
+| Action-dispatch (tab retitle, OSC 9;4 busy/idle) | PASS — `GhosttyActionDispatchUITests`'s two named tests (T11), run against this exact pin. | Unchanged behavior, now confirmed on the new engine. |
+| Workroom switch / delete, OSC 7, ssh items, shell matrix | Same NOT RUN status as the baseline, same reasons — not re-attempted this session (no new automation added for these; still needs a real mouse/XCUITest host, a real remote host, or shells not installed on this machine, respectively). | No change in coverage. |
+
+**Overall verdict: no regressions found.** The one confirmed *change* (the `free_text` leak fix) is the intended, documented benefit of this bump. The one item that could not be verified (cursor-style reset) is a low-risk cosmetic behavior, not a functional regression, and is called out above for a deliberate follow-up rather than silently assumed fine.
+
 ## Session notes (methodology, for whoever runs Phase 5's retest)
 
 - **This machine has an environment-specific shortcut collision**: ⇧⌥⌘←/→ (Workroom's workroom-tab-cycle shortcut) is intercepted by a system-wide Spaces binding here, moving the window to another Space instead of switching workrooms. Not a libghostty regression signal either direction — a future retest on a different machine may not hit this at all, or may hit it differently. Don't diff on it.
