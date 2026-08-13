@@ -2133,25 +2133,39 @@ and ticked `ChangedFileRow.bodyPasses` — reproduced twice in a row during the 
 clean every time in isolation. Both restores now drain the run loop first
 (`restoreFilePathEditor(_:)`), closing the leak at its source rather than papering over the symptom.
 
-### `WindowDragUITests.testDraggingWorkroomTabReordersTwoChips` is a known gesture-timing flake
+### `WindowDragUITests.testDraggingWorkroomTabReordersTwoChips` is a known gesture-timing flake — IMPROVED, still flaky, still skipped
 
 **What:** Reproduced a pass then a fail on two consecutive back-to-back reruns of the identical test
 against the identical binary during the beta.24 release gate — nothing else running, same machine,
 same window geometry. Not caused by the beta.24 geometry fixes (fixture window 1200→1450pt): the
 test computes its drag distance from the chips' own on-screen positions, so it's width-independent.
 
-**Why:** The test's own comment already names the mechanism: "a slow drag with a hold at the end:
-SwiftUI's reorder `DragGesture` needs the interpolated `onChanged` events and a settle before release
-so `onEnded` commits (a fast one-shot drag can be missed)." `press(forDuration:thenDragTo:withVelocity:
-thenHoldForDuration:)` synthesizes the interpolation itself, and how many intermediate events land
-before the reorder's threshold check runs is not fully deterministic — occasionally too few land before
-the drop, and `onEnded` sees the chip still under the threshold to swap.
+**Real bug found and fixed along the way:** `WorkroomTabBar.commitDrag`/`TerminalTabStrip.commitDrag`
+computed the reorder's drop index from the `dragTranslation` **state**, which is only ever written
+inside `onChanged` — so a drag whose LAST `onChanged` sample landed short of the true release point
+(any coarse/fast delivery, synthetic or real) commits off a stale, under-shot translation instead of
+the gesture's own accurate final `value.translation` at `onEnded`. Fixed in both strips (they
+deliberately mirror each other's reorder math) to read `value.translation` directly at commit time.
+Correct regardless of whether it's THE cause of this flake — verified via the full `WindowDragUITests`
++ `WorkroomStatus*`/`VCSProviderConformanceTests` suites, no regressions.
 
-**How to fix (not attempted — out of scope for the beta.24 gate, which needed to know this WASN'T a
-regression, not eliminate it):** either add a manual multi-step drag (several discrete `press`+`moveTo`
-calls before the final drop, giving the reorder logic more interpolated samples to react to) or lower
-the reorder swap threshold's dependency on event count. Low priority: single test, single known flake
-mode, not client-facing.
+**Measured, three iterations, ~30 back-to-back reruns total:**
+1. The `commitDrag` fix alone: 1/5 passed. Ruled out as a full fix on its own.
+2. + polling `chipsByX` until two reads agree (ruling out a race against the strip's own 0.2s
+   reorder-settle `withAnimation`): 3/5.
+3. + switching the gesture from the touch-oriented `press(forDuration:thenDragTo:…)` to the
+   macOS-native mouse `click(forDuration:thenDragTo:…)` (same API family, `XCUICoordinateMouseEvents`,
+   available on macOS): **9/10 in clean, uncontaminated batches** (one batch's first two runs were
+   invalidated by an unrelated concurrent edit to `WorkroomStatusResolver.swift` mid-build — excluded).
+
+**Still flaky — deliberately left skipped.** ~90% is a real improvement over the original coin-flip,
+but not deterministic, and a ~1-in-10 spurious red X right before a release is its own cost. The
+`APP_UITEST_FLAGS` skip entry (`Makefile:67`) stays as-is.
+
+**How to fix further (not attempted):** the TODO's original two ideas — a manual multi-step drag
+giving the reorder logic more interpolated samples, or loosening the swap threshold's dependency on
+event count — remain open, on top of whatever residual gap the native-mouse switch didn't close.
+Low priority: single test, single known flake mode, not client-facing.
 
 ## P3 — Performance and diagnostics (WORKROOM-2B follow-ups)
 

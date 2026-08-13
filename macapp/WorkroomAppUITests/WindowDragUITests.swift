@@ -45,6 +45,25 @@ final class WindowDragUITests: XCTestCase {
       .sorted { $0.minX < $1.minX }
   }
 
+  /// `chipsByX`, but polled until the left-to-right ID order stops changing between two reads. The
+  /// reorder commits synchronously on drop, but `WorkroomTabBar.commitDrag` animates each chip's own
+  /// `.offset` into its new slot over 0.2s — so a same-instant read after the drag gesture returns can
+  /// still see the OLD on-screen positions (a genuine flake, reproduced back-to-back: the gesture
+  /// itself lands the right translation every time, but the settle race is timing-dependent).
+  private func chipsByXSettled(_ app: XCUIApplication, timeout: TimeInterval = 3)
+    -> [(id: String, minX: CGFloat)]
+  {
+    let deadline = Date().addingTimeInterval(timeout)
+    var previous = chipsByX(app)
+    while Date() < deadline {
+      Thread.sleep(forTimeInterval: 0.05)
+      let current = chipsByX(app)
+      if current.map(\.id) == previous.map(\.id) { return current }
+      previous = current
+    }
+    return previous
+  }
+
   /// The other half of the contract: dragging an *empty* part of the title bar still MOVES the window
   /// (`WindowDragBackground` re-enables movement for its explicit `performDrag`). Uses the thin strip
   /// just above the chips, clear of every control.
@@ -108,14 +127,16 @@ final class WindowDragUITests: XCTestCase {
     let leading = workroomChips(app)
       .matching(NSPredicate(format: "identifier == %@", leadingID)).firstMatch
     let start = leading.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-    // A slow drag with a hold at the end: SwiftUI's reorder `DragGesture` needs the interpolated
-    // `onChanged` events and a settle before release so `onEnded` commits (a fast one-shot drag can be
-    // missed).
-    start.press(
+    // A slow, native MOUSE drag (`click…`, not the touch-oriented `press…`) with a hold at the end:
+    // SwiftUI's reorder `DragGesture` needs the interpolated `onChanged` events and a settle before
+    // release so `onEnded` commits, and `press(forDuration:thenDragTo:)`'s touch-event synthesis was a
+    // measured, reproduced flake here (back-to-back reruns of the identical test disagreed) — the
+    // native mouse-event path this app actually receives from is the more faithful simulation.
+    start.click(
       forDuration: 0.3, thenDragTo: start.withOffset(CGVector(dx: dx, dy: 0)),
       withVelocity: .slow, thenHoldForDuration: 0.5)
 
-    let after = chipsByX(app)
+    let after = chipsByXSettled(app)
     XCTAssertEqual(
       after.last?.id, leadingID,
       "the dragged chip should have moved to the trailing position — the reorder did not happen")

@@ -176,7 +176,12 @@ struct WorkroomTabBar: View {
                 draggingID = nil
                 dragTranslation = 0
               } else {
-                commitDrag()  // a plain strip reorder
+                // Recompute from `value.translation` rather than reading the `dragTranslation` state:
+                // that state is only ever written from `onChanged`, and a coarse/fast synthetic drag
+                // (XCUITest's interpolation, or a fast real trackpad flick) can deliver its last
+                // `onChanged` sample short of the true release point, before `onEnded` fires with the
+                // full, accurate displacement — committing off a stale, under-shot translation.
+                commitDrag(translation: clampReorder(value.translation.width, draggedIndex: index))
               }
               chipPaneDrag = nil
             }
@@ -333,7 +338,9 @@ struct WorkroomTabBar: View {
   /// re-renders with the new order — a bare `Defaults` write didn't re-render, so the chip snapped
   /// back), then clear drag state (animated, so the row settles). The order is filtered through
   /// `orderedActiveTargets` on every read, so writing the current active order is self-healing.
-  private func commitDrag() {
+  /// `translation` is the caller's own final, clamped displacement (from `onEnded`'s `value`), not the
+  /// `dragTranslation` state — see the call site's comment for why those two can disagree.
+  private func commitDrag(translation: CGFloat) {
     guard let id = draggingID, let di = tabs.firstIndex(where: { $0.sid == id }) else {
       draggingID = nil
       dragTranslation = 0
@@ -341,7 +348,7 @@ struct WorkroomTabBar: View {
     }
     let ti = TabReorder.dropTargetIndex(
       widths: tabs.map { widths[$0.sid] ?? 0 }, draggedIndex: di,
-      translation: dragTranslation, spacing: tabSpacing)
+      translation: translation, spacing: tabSpacing)
     withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
       if ti != di {
         var order = tabs.compactMap { AppStore.targetIDString(for: $0.sid) }

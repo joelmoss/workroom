@@ -64,7 +64,9 @@ struct TerminalTabStrip: View {
     let draggedIndex = draggingID.flatMap { id in tabs.firstIndex { $0.id == id } }
     // While dragging a chip down into a pane, the strip stops opening a reorder gap.
     let dropIndex =
-      chipPaneDrag != nil ? nil : draggedIndex.map { dropTargetIndex(tabs, draggedIndex: $0) }
+      chipPaneDrag != nil
+      ? nil
+      : draggedIndex.map { dropTargetIndex(tabs, draggedIndex: $0, translation: dragTranslation) }
     let draggedWidth = draggingID.flatMap { widths[$0] } ?? 0
     // Members of the split group (≥2), so a grouped chip's selected pill can inset itself to sit
     // *inside* the `splitWell` bracket rather than overrunning it.
@@ -201,7 +203,11 @@ struct TerminalTabStrip: View {
                 draggingID = nil
                 dragTranslation = 0
               } else {
-                commitDrag()  // a plain strip reorder
+                // Use `value.translation` (the gesture's own final, accurate displacement), not the
+                // `dragTranslation` state — that state is only ever written from `onChanged`, and a
+                // coarse/fast drag (synthetic or a real fast flick) can deliver its last `onChanged`
+                // sample short of the true release point. See `WorkroomTabBar`'s identical fix.
+                commitDrag(translation: value.translation.width)
               }
               chipPaneDrag = nil
             }
@@ -355,12 +361,16 @@ struct TerminalTabStrip: View {
       spacing: tabSpacing)
   }
 
-  /// Where the dragged tab would land given its current translation (delegates to the shared
-  /// `TabReorder` math, mapping this strip's tabs to position-indexed widths).
-  private func dropTargetIndex(_ tabs: [TerminalTab], draggedIndex di: Int) -> Int {
+  /// Where the dragged tab would land at `translation` (delegates to the shared `TabReorder` math,
+  /// mapping this strip's tabs to position-indexed widths). Callers pass the `dragTranslation` state
+  /// while rendering the live gap, but the commit path must pass the gesture's own final value — see
+  /// `commitDrag`'s comment.
+  private func dropTargetIndex(_ tabs: [TerminalTab], draggedIndex di: Int, translation: CGFloat)
+    -> Int
+  {
     TabReorder.dropTargetIndex(
       widths: tabs.map { widths[$0.id] ?? 0 }, draggedIndex: di,
-      translation: dragTranslation, spacing: tabSpacing)
+      translation: translation, spacing: tabSpacing)
   }
 
   /// Horizontal shift for a non-dragged chip so the row opens a gap at the drop target (delegates to
@@ -409,10 +419,12 @@ struct TerminalTabStrip: View {
   }
 
   /// Commit the reorder on drop, then clear drag state (animated, so everything settles).
-  private func commitDrag() {
+  /// `translation` is the caller's own final displacement (from `onEnded`'s `value`), not the
+  /// `dragTranslation` state — see the call site's comment for why those two can disagree.
+  private func commitDrag(translation: CGFloat) {
     let tabs = sessions.tabs(for: target)
     if let id = draggingID, let di = tabs.firstIndex(where: { $0.id == id }) {
-      let ti = dropTargetIndex(tabs, draggedIndex: di)
+      let ti = dropTargetIndex(tabs, draggedIndex: di, translation: translation)
       withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
         sessions.moveTab(id, toIndex: ti, for: target)
         draggingID = nil
