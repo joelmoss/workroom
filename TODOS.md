@@ -1018,32 +1018,29 @@ about a verdict taken too early, this one about a verdict kept too long — but 
 **Priority:** P3 — self-repairing on relaunch, and no report of it in the wild. The stale `.belowFloor`
 alone justifies it.
 
-### N-in-flight concurrency accounting test for status sweeps (macapp) — Muxy test-practices review follow-up
+### N-in-flight concurrency accounting test for status sweeps (macapp) — Muxy test-practices review follow-up — PARTIALLY FIXED
 
-**What:** Add an injectable seam to `WorkroomStatusResolver.resolveGit`/`resolveJJ` (they currently call
-`GitProvider().workingStatus(root:)` and the native jj core directly, bypassing the existing
-`StatusCommandRunning` injection point), then write an actor-gate test on `runLocalSweep`'s (and
-`runCISweep`'s) `cap`-bounded `withTaskGroup` fan-out (`AppStore+WorkroomStatus.swift:457-529`) that
-asserts the number of concurrent local-status probes never exceeds `cap`.
+**What:** Add an injectable seam to `WorkroomStatusResolver.resolveGit`/`resolveJJ` (they called
+`GitProvider().workingStatus(root:)` and the native jj core directly, with no way to substitute a
+double — `workingStatus` isn't on `VCSProviding`, so this was never `StatusCommandRunning`'s job),
+then write a counting test on `runLocalSweep`'s `cap`-bounded `withTaskGroup` fan-out
+(`AppStore+WorkroomStatus.swift:457-529`) that asserts the number of concurrent local-status probes
+never exceeds `cap`.
 
-**Why:** `runLocalSweep`/`runCISweep` have zero test coverage of the cap invariant today (confirmed by
-grep — no hits in `WorkroomAppTests/`). Workroom already has bug history in exactly this class of race
-(the DiffViewer `.task` re-fire loop, the History-loads-forever GCD starvation), so an untested
-concurrency bound here is a real, unguarded risk, not a hypothetical one. Muxy's equivalent
-(`GitRepositoryCheckCoordinatorTests`) proves this class of invariant deterministically via a private
-`actor` holding `CheckedContinuation`s that counts in-flight calls and asserts a max — Workroom already
-has the *gating* half of that mechanic (`GatedGHRunner` in `WorkroomStatusTests.swift:977`), just not the
-*counting* half.
+**Fixed, the `runLocalSweep` half:** `GitStatusReading`/`JJStatusReading` (`WorkroomStatusResolver.swift`)
+are the new seams, injected via `WorkroomStatusResolver.init(gitStatus:jjStatus:)`, defaulting to the
+real `GitProvider`/`RustJJProvider`. `WorkroomStatusConcurrencyTests.testLocalSweepNeverExceedsItsConcurrencyCap`
+drives a real `AppStore` with 8 throwaway git projects and a counting `GitStatusReading` double,
+asserting peak-concurrent calls stay ≤ 5 (`AppStore.localConcurrency`) and that the fan-out actually
+overlapped (>1) — so the test can't pass vacuously against a fully serial sweep.
 
-**Context:** This was originally scoped as "just write the test" during a Muxy-vs-Workroom test-practices
-comparison, then corrected during outside-voice (Codex) review: `resolveGit`/`resolveJJ` have no usable
-injection seam today, so this is two steps, not one — add the seam first (a protocol or closure around
-the local-status probe), then write the actor-gate test against it. Full writeup and the corrected
-reasoning live at `~/.claude/plans/take-a-look-at-melodic-scott.md`.
+**Still open — the `runCISweep` half:** the CI stage's own cap (`ciConcurrency`, 2) has no equivalent
+test. It fans out over `resolveCI`/`gh`, which already has an injectable `StatusCommandRunning` (see
+`GatedGHRunner` in `WorkroomStatusTests.swift`) — the seam problem this entry was filed for doesn't
+apply there, so it's a smaller remaining task: a counting `StatusCommandRunning` double + the same
+shape of test against `runCISweep`.
 
-**Depends on:** nothing else in flight.
-
-**Priority:** P3 — real gap, not urgent; no incident has surfaced it yet.
+**Priority:** P3 for the remainder — real gap, not urgent; no incident has surfaced it yet.
 
 ### Repo-level meta-test for Makefile/CI test invariants (macapp) — Muxy test-practices review follow-up
 

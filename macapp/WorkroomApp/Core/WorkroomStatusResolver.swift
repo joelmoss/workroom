@@ -25,6 +25,22 @@ enum ChecksResolution: Equatable, Sendable {
   case keepPrior
 }
 
+/// `resolveGit`'s native status seam (mirrors `StatusCommandRunning`'s role for the CLI-shelling
+/// probes) — real reads via `GitProvider`, a gated/counting double in tests.
+protocol GitStatusReading: Sendable {
+  func workingStatus(root: URL) throws -> GitWorkingStatus
+}
+extension GitProvider: GitStatusReading {}
+
+/// `resolveJJ`'s native status seam — real reads via `RustJJProvider`, a gated/counting double in
+/// tests. A separate protocol from `GitStatusReading` because the two backends' `workingStatus`
+/// return different concrete types (see "Unify `workingStatus` onto the `VCSProviding` protocol"
+/// in TODOS.md) — this seam doesn't need them unified, just each independently injectable.
+protocol JJStatusReading: Sendable {
+  func workingStatus(root: URL) throws -> WorkroomStatus
+}
+extension RustJJProvider: JJStatusReading {}
+
 /// Resolves a workroom's VCS + CI status app-side by shelling to git/jj/gh. App-side (not in
 /// the `workroom --json` contract) for the same reasons as `BranchResolver`: GUI-only, keeps
 /// `list` instant, isolates a slow repo to its own row. Stage 1 (`resolveLocal`) is fast/local;
@@ -37,6 +53,12 @@ struct WorkroomStatusResolver: Sendable {
   /// Serializes jj working-copy snapshots per project root (see `JJSnapshotGate`) — a project's
   /// workrooms share a backing repo, so concurrent snapshots can contend on it.
   var gate: JJSnapshotGate
+  /// `resolveGit`/`resolveJJ`'s native status seam — real reads by default (`GitProvider`/
+  /// `RustJJProvider`), a gated/counting double in tests. `workingStatus` isn't on `VCSProviding`
+  /// (the two backends return different concrete types today — see "Unify `workingStatus` onto the
+  /// `VCSProviding` protocol" in TODOS.md), so this is its own pair of seams, not that protocol.
+  var gitStatus: GitStatusReading
+  var jjStatus: JJStatusReading
 
   /// How long `resolveJJ` waits its turn behind other same-project jj snapshots, before the row
   /// reports `.timeout`. Deliberately larger than `timeout`: with the gate serializing a busy
@@ -47,12 +69,15 @@ struct WorkroomStatusResolver: Sendable {
 
   init(
     runner: StatusCommandRunning = StatusCommandRunner(), timeout: TimeInterval = 3,
-    ciTimeout: TimeInterval = 10, gate: JJSnapshotGate = .shared
+    ciTimeout: TimeInterval = 10, gate: JJSnapshotGate = .shared,
+    gitStatus: GitStatusReading = GitProvider(), jjStatus: JJStatusReading = RustJJProvider()
   ) {
     self.runner = runner
     self.timeout = timeout
     self.ciTimeout = ciTimeout
     self.gate = gate
+    self.gitStatus = gitStatus
+    self.jjStatus = jjStatus
   }
 
   /// `-c` overrides prepended to every `git` invocation. A workroom can be a clone of an *untrusted*
@@ -105,7 +130,8 @@ struct WorkroomStatusResolver: Sendable {
         // `runBlocking` (GCD), NOT `Task.detached`: the cooperative pool is fixed-width and this read
         // is fanned out ~5-wide per sweep (`runLocalSweep`), overlapping History/diff/branch reads —
         // exactly the burst the `runBlocking` doc flags as the "History loads forever" starvation.
-        try await runBlocking { try GitProvider().workingStatus(root: root) }
+        let gitStatus = self.gitStatus
+        return try await runBlocking { try gitStatus.workingStatus(root: root) }
       }
       return WorkroomStatus(
         dirty: ws.dirty, conflicted: ws.conflicted, changedFiles: ws.files,
@@ -143,7 +169,8 @@ struct WorkroomStatusResolver: Sendable {
           // `runBlocking` (GCD), NOT `Task.detached` — the blocking, snapshot-taking jj-lib read
           // must stay off the fixed-width cooperative pool (see `resolveGit` / the `runBlocking`
           // doc). Left un-timed inside the gate on purpose — see `JJSnapshotGate`'s doc.
-          try await runBlocking { try RustJJProvider().workingStatus(root: root) }
+          let jjStatus = self.jjStatus
+          return try await runBlocking { try jjStatus.workingStatus(root: root) }
         }
       }
     } catch is VCSTimeoutError {
