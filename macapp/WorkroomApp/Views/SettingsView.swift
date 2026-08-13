@@ -184,7 +184,7 @@ private struct GeneralSettingsPane: View {
     Form {
       Toggle("Confirm before quitting", isOn: $confirmOnQuit)
         .help(
-          "Ask for confirmation before quitting. Background sessions keep ordinary terminals running."
+          "Ask for confirmation before quitting. Persist sessions keeps ordinary terminals running."
         )
         .accessibilityIdentifier("settings.control.confirmQuit")
 
@@ -344,7 +344,7 @@ private struct TerminalSettingsPane: View {
       Toggle("Confirm before closing a terminal", isOn: $confirmOnCloseTerminal)
         .help("Ask before closing a terminal (kills its shell and any running process, no undo).")
 
-      Toggle("Background sessions", isOn: $backgroundSessions)
+      Toggle("Persist sessions", isOn: $backgroundSessions)
         .help(
           "Keep workroom terminals running after you quit Workroom, and reattach them on relaunch."
         )
@@ -364,7 +364,7 @@ private struct TerminalSettingsPane: View {
             pendingDisable = true
           }
         }
-        .alert("Stop background sessions?", isPresented: $pendingDisable) {
+        .alert("Stop persisted sessions?", isPresented: $pendingDisable) {
           Button("Stop Sessions", role: .destructive) {
             Task {
               guard !Defaults[.backgroundSessions] else { return }
@@ -381,6 +381,14 @@ private struct TerminalSettingsPane: View {
         } message: {
           Text("Terminals that are still running in the background will be stopped.")
         }
+
+      Text(
+        "Ordinary terminals keep running in the background after you quit, and reattach "
+          + "automatically when you relaunch Workroom. Run commands and the Quick Terminal are "
+          + "never persisted."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
 
       Picker("Open file paths in", selection: $pathEditor) {
         Text("Default App").tag("")
