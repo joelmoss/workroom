@@ -602,13 +602,25 @@ new write-flow UI.
 
 **Priority:** P2 (the product direction; large — see the plan for the real breakdown).
 
-### `withTimeout` doesn't observe the CALLER's own cancellation (macapp) — VCS-foundation eng-review, /review follow-up
+### `withTimeout` doesn't observe the CALLER's own cancellation (macapp) — FIXED
 
 **Status:** the original version of this entry (a `withThrowingTaskGroup` awaiting a detached
 operation child past its own deadline) is **fixed** — `Core/Timeout.swift` now races via a single
 `withCheckedThrowingContinuation` + a `TimeoutGate`, exactly the fix this entry used to recommend.
 Re-audited during the jj-snapshot-serialization `/review` (2026-07-24, cross-model: Codex found it)
-and found a **different, still-live** gap in that same seam.
+and found a **different, still-live** gap in that same seam — **now also fixed.**
+
+**Fixed:** `withTimeout` wraps its continuation in `withTaskCancellationHandler` (a `TimeoutCancelBox`
+bridges `onCancel`, which Swift can invoke before/during/after the continuation attaches, to settling
+the SAME `TimeoutGate` early with a new `VCSCancellationError`) — same shape `JJSnapshotGate.run`
+already used. `WorkroomStatusResolver`'s two catch sites treat `VCSCancellationError` the same as
+`VCSTimeoutError`; `BranchResolver`'s blanket `catch` and `JJSnapshotGate`'s own `try?` call were
+already safe either way. `TimeoutTests.swift` (previously zero coverage on this seam) covers the
+success/deadline baselines plus both cancellation orderings (mid-race and already-cancelled-at-call)
+and a 200-iteration stress test for the exactly-once settle guarantee; the cancellation test itself
+proves the fix by needing well under 1s against a 5s deadline/operation, not the full wait. Full
+`WorkroomStatusResolverTests`/`WorkroomStatusConcurrencyTests`/`BranchResolverTests`/
+`VCSProviderConformanceTests` sweep green, no regressions.
 
 **What:** `withTimeout`'s `withCheckedThrowingContinuation` only resolves on ITS OWN internal race
 (the operation finishing vs. its own `seconds` deadline firing) — it never wires up
@@ -639,17 +651,7 @@ child is never mistaken for a CLI that ran and failed) and `GHAuthProbe.keepPrio
 neither writes nor stamps). The `withTimeout` gap below is a genuinely different mechanism and stays
 deferred on its own merits.
 
-**How to start:** Wrap `withTimeout`'s continuation in `withTaskCancellationHandler` so cancelling
-the calling task settles the `TimeoutGate` early (same shape `JJSnapshotGate.run` already uses to
-propagate cancellation into its own chained `Task`). Verify the existing "operation keeps running,
-result dropped" contract still holds — this only makes the WAIT responsive to cancellation, not the
-underlying synchronous native call (still uncancellable, unchanged).
-
-**Depends on:** —. Touches `Core/Timeout.swift`. Broad blast radius (every `withTimeout` caller:
-`WorkroomStatusResolver`, `BranchResolver`, `JJSnapshotGate`'s own internal use) — needs its own
-careful review/testing, not a drive-by fix.
-
-**Priority:** P2 (efficiency/responsiveness, not correctness; no user-visible bug today).
+**Priority:** done.
 
 ### VCS toolbar: the findings the `/review` pass didn't fix (macapp)
 

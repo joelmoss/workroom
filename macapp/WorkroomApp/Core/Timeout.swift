@@ -18,20 +18,72 @@ struct VCSTimeoutError: Error {}
 /// would still block on the (uncancellable, synchronous) operation child until it finished —
 /// silently defeating the timeout for exactly the wedged-read case it exists to bound. The
 /// continuation resumes the caller the instant either side settles.
+///
+/// Also observes the CALLING task's own cancellation (`withTaskCancellationHandler`, the same shape
+/// `JJSnapshotGate.run` uses) — without it, a caller that's cancelled from outside (e.g. a superseded
+/// status sweep) still had to wait out the full race above before this could return, wasting the
+/// wait's own time and, downstream of `JJSnapshotGate`, occupying that project's queue slot for
+/// nothing. `onCancel` only unblocks the WAIT early, with `VCSCancellationError`; the underlying
+/// synchronous native call is exactly as uncancellable as the timeout path already documents above.
 func withTimeout<T: Sendable>(
   seconds: TimeInterval, _ operation: @escaping @Sendable () async throws -> T
 ) async throws -> T {
-  try await withCheckedThrowingContinuation { (cont: CheckedContinuation<T, Error>) in
-    let gate = TimeoutGate(cont)
-    let op = Task {
-      do { gate.settle(.success(try await operation())) } catch { gate.settle(.failure(error)) }
+  let cancelBox = TimeoutCancelBox()
+  return try await withTaskCancellationHandler {
+    try await withCheckedThrowingContinuation { (cont: CheckedContinuation<T, Error>) in
+      let gate = TimeoutGate(cont)
+      let op = Task {
+        do { gate.settle(.success(try await operation())) } catch { gate.settle(.failure(error)) }
+      }
+      cancelBox.attach {
+        gate.settle(.failure(VCSCancellationError()))
+        op.cancel()
+      }
+      Task {
+        try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+        gate.settle(.failure(VCSTimeoutError()))
+        // Best-effort: abandons the loser (uncancellable native work runs on to no effect).
+        op.cancel()
+      }
     }
-    Task {
-      try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
-      gate.settle(.failure(VCSTimeoutError()))
-      // Best-effort: abandons the loser (uncancellable native work runs on to no effect).
-      op.cancel()
-    }
+  } onCancel: {
+    cancelBox.fire()
+  }
+}
+
+/// Thrown by `withTimeout` when the CALLING task was cancelled before the operation/deadline race
+/// settled on its own — distinct from `VCSTimeoutError` (the deadline actually elapsed) and from
+/// Swift's own `CancellationError` (so a `catch is CancellationError` elsewhere in this seam's
+/// callers can't accidentally swallow it; every caller of `withTimeout` already has explicit
+/// `catch is VCSTimeoutError` handling to extend).
+struct VCSCancellationError: Error {}
+
+/// Bridges `withTaskCancellationHandler`'s `onCancel` — which Swift may invoke BEFORE `operation`
+/// even starts (a task already cancelled at the call site), concurrently with it, or not at all — to
+/// whatever `withTimeout` needs to run early-cancel. `onCancel` runs synchronously on whichever
+/// thread calls `.cancel()`, so both sides are lock-guarded rather than assuming an ordering.
+private final class TimeoutCancelBox: @unchecked Sendable {
+  private let lock = NSLock()
+  private var action: (() -> Void)?
+  private var firedEarly = false
+
+  /// Registers what "cancelled" means for this call. If `fire()` already ran (the task was
+  /// cancelled before this attached), runs `action` immediately instead of stashing it.
+  func attach(_ action: @escaping () -> Void) {
+    lock.lock()
+    let already = firedEarly
+    if !already { self.action = action }
+    lock.unlock()
+    if already { action() }
+  }
+
+  func fire() {
+    lock.lock()
+    firedEarly = true
+    let action = self.action
+    self.action = nil
+    lock.unlock()
+    action?()
   }
 }
 

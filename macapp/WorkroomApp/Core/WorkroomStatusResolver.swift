@@ -136,7 +136,7 @@ struct WorkroomStatusResolver: Sendable {
       return WorkroomStatus(
         dirty: ws.dirty, conflicted: ws.conflicted, changedFiles: ws.files,
         insertions: ws.insertions, deletions: ws.deletions, branchForCI: ws.branch)
-    } catch is VCSTimeoutError {
+    } catch is VCSTimeoutError, is VCSCancellationError {
       return WorkroomStatus(dirty: nil, failure: .timeout)
     } catch let error as VCSError {
       return WorkroomStatus(dirty: nil, failure: Self.failure(for: error))
@@ -173,7 +173,7 @@ struct WorkroomStatusResolver: Sendable {
           return try await runBlocking { try jjStatus.workingStatus(root: root) }
         }
       }
-    } catch is VCSTimeoutError {
+    } catch is VCSTimeoutError, is VCSCancellationError {
       return WorkroomStatus(dirty: nil, failure: .timeout)
     } catch let error as VCSError {
       return WorkroomStatus(dirty: nil, failure: Self.failure(for: error))
