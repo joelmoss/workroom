@@ -1021,6 +1021,61 @@ about a verdict taken too early, this one about a verdict kept too long — but 
 **Priority:** P3 — self-repairing on relaunch, and no report of it in the wild. The stale `.belowFloor`
 alone justifies it.
 
+### N-in-flight concurrency accounting test for status sweeps (macapp) — Muxy test-practices review follow-up
+
+**What:** Add an injectable seam to `WorkroomStatusResolver.resolveGit`/`resolveJJ` (they currently call
+`GitProvider().workingStatus(root:)` and the native jj core directly, bypassing the existing
+`StatusCommandRunning` injection point), then write an actor-gate test on `runLocalSweep`'s (and
+`runCISweep`'s) `cap`-bounded `withTaskGroup` fan-out (`AppStore+WorkroomStatus.swift:457-529`) that
+asserts the number of concurrent local-status probes never exceeds `cap`.
+
+**Why:** `runLocalSweep`/`runCISweep` have zero test coverage of the cap invariant today (confirmed by
+grep — no hits in `WorkroomAppTests/`). Workroom already has bug history in exactly this class of race
+(the DiffViewer `.task` re-fire loop, the History-loads-forever GCD starvation), so an untested
+concurrency bound here is a real, unguarded risk, not a hypothetical one. Muxy's equivalent
+(`GitRepositoryCheckCoordinatorTests`) proves this class of invariant deterministically via a private
+`actor` holding `CheckedContinuation`s that counts in-flight calls and asserts a max — Workroom already
+has the *gating* half of that mechanic (`GatedGHRunner` in `WorkroomStatusTests.swift:977`), just not the
+*counting* half.
+
+**Context:** This was originally scoped as "just write the test" during a Muxy-vs-Workroom test-practices
+comparison, then corrected during outside-voice (Codex) review: `resolveGit`/`resolveJJ` have no usable
+injection seam today, so this is two steps, not one — add the seam first (a protocol or closure around
+the local-status probe), then write the actor-gate test against it. Full writeup and the corrected
+reasoning live at `~/.claude/plans/take-a-look-at-melodic-scott.md`.
+
+**Depends on:** nothing else in flight.
+
+**Priority:** P3 — real gap, not urgent; no incident has surfaced it yet.
+
+### Repo-level meta-test for Makefile/CI test invariants (macapp) — Muxy test-practices review follow-up
+
+**What:** Add a check — in the existing dependency-free script tier alongside
+`Scripts/build-helper_test.sh`/`Scripts/channel-helper_test.sh` (run via `make app-test-scripts`), not a
+new XCTest class — that pins two invariants: the `APP_UITEST_FLAGS` skip list in `Makefile:67` (currently
+4 tests: `AgentResumeUITests`, `SessionRestoreUITests`,
+`HistoryStressUITests/testLargeHistoryStaysInteractive`,
+`WindowDragUITests/testDraggingWorkroomTabReordersTwoChips`), and that release/nightly CI workflows
+actually invoke `app-test` somewhere (not just that the Makefile's dependency graph excludes it from
+`app-release`).
+
+**Why:** These invariants live only in `Makefile` comments today. A refactor could silently drop a skip
+entry (re-enabling a flaky/expensive UI test in the default local run) or silently remove the CI safety
+net that runs `app-test` separately from `app-release` (since `app-release` deliberately does NOT depend
+on it — Debug-only single-arch builds pin a different arch/signing shape than the release artifact).
+Muxy has exactly this kind of guard (`TestIsolationScriptTests.swift`, reading its own `checks.sh` as
+text and asserting it still invokes a test-isolation wrapper).
+
+**Context:** Originally scoped as an XCTest class grepping `Makefile`/`ci.yml` strings; corrected during
+outside-voice review — that couples the expensive, host-app-launching `WorkroomAppTests` bundle to
+repository layout for what's really a spelling check, and the original CI-invariant framing (Makefile
+dependency graph) checks the wrong thing. Pin the CI workflow's actual test invocations, not the Makefile
+target graph. Full writeup at `~/.claude/plans/take-a-look-at-melodic-scott.md`.
+
+**Depends on:** nothing.
+
+**Priority:** P3 — real but low-urgency; nothing has drifted yet.
+
 ### Expose the alternate screen from libghostty (macapp) — issue #144 follow-up
 
 **What:** Patch `libghostty-spm` to add a `ghostty_surface_alt_screen_active()` export, and use it in
