@@ -99,6 +99,7 @@ app-test-supervisor: ## Run the run-command supervisor PTY integration test (rea
 app-test-scripts: ## Run the dependency-free shell-script tests (build-helper archs, channel classify)
 	sh macapp/Scripts/build-helper_test.sh
 	sh macapp/Scripts/channel-helper_test.sh
+	sh macapp/Scripts/test-invariants_test.sh
 
 app-generate: app-vcs ## Force-regenerate the (gitignored) .xcodeproj from project.yml
 	cd macapp && xcodegen generate

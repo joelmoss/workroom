@@ -1042,33 +1042,22 @@ shape of test against `runCISweep`.
 
 **Priority:** P3 for the remainder — real gap, not urgent; no incident has surfaced it yet.
 
-### Repo-level meta-test for Makefile/CI test invariants (macapp) — Muxy test-practices review follow-up
+### Repo-level meta-test for Makefile/CI test invariants (macapp) — FIXED
 
 **What:** Add a check — in the existing dependency-free script tier alongside
 `Scripts/build-helper_test.sh`/`Scripts/channel-helper_test.sh` (run via `make app-test-scripts`), not a
-new XCTest class — that pins two invariants: the `APP_UITEST_FLAGS` skip list in `Makefile:67` (currently
-4 tests: `AgentResumeUITests`, `SessionRestoreUITests`,
-`HistoryStressUITests/testLargeHistoryStaysInteractive`,
-`WindowDragUITests/testDraggingWorkroomTabReordersTwoChips`), and that release/nightly CI workflows
-actually invoke `app-test` somewhere (not just that the Makefile's dependency graph excludes it from
-`app-release`).
+new XCTest class — that pins two invariants: the `APP_UITEST_FLAGS` skip list in `Makefile:67`, and
+that CI/release/nightly workflows actually invoke `app-test` somewhere (not just that the Makefile's
+dependency graph excludes it from `app-release`).
 
-**Why:** These invariants live only in `Makefile` comments today. A refactor could silently drop a skip
-entry (re-enabling a flaky/expensive UI test in the default local run) or silently remove the CI safety
-net that runs `app-test` separately from `app-release` (since `app-release` deliberately does NOT depend
-on it — Debug-only single-arch builds pin a different arch/signing shape than the release artifact).
-Muxy has exactly this kind of guard (`TestIsolationScriptTests.swift`, reading its own `checks.sh` as
-text and asserting it still invokes a test-isolation wrapper).
+**Fixed:** `Scripts/test-invariants_test.sh` — pins the skip list literally (want vs. got string
+compare) and greps `ci.yml`/`release.yml`/`nightly.yml` for a bare `make app-test` invocation (word-
+bounded so it can't match `app-test-scripts`/`app-test-supervisor`). Overridable via
+`TEST_INVARIANTS_MAKEFILE`/`TEST_INVARIANTS_WORKFLOWS_DIR`, and both cases proven to actually fail
+against a dropped skip entry / an emptied workflow (not just pass vacuously). Wired into
+`app-test-scripts`.
 
-**Context:** Originally scoped as an XCTest class grepping `Makefile`/`ci.yml` strings; corrected during
-outside-voice review — that couples the expensive, host-app-launching `WorkroomAppTests` bundle to
-repository layout for what's really a spelling check, and the original CI-invariant framing (Makefile
-dependency graph) checks the wrong thing. Pin the CI workflow's actual test invocations, not the Makefile
-target graph. Full writeup at `~/.claude/plans/take-a-look-at-melodic-scott.md`.
-
-**Depends on:** nothing.
-
-**Priority:** P3 — real but low-urgency; nothing has drifted yet.
+**Priority:** done.
 
 ### Expose the alternate screen from libghostty (macapp) — issue #144 follow-up
 
