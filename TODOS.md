@@ -133,10 +133,25 @@ in descending order of how much it matters:
    session with a bulky metadata title makes each `list` reply large, so a client that floods `list`
    requests without draining its socket crosses the cap in well under a second) fails with the cap
    disabled and passes with it restored.
-3. **PID reuse after `waitpid` reaps a session's child.** Between the child exiting and the daemon
-   noticing (via `reapChildren`), the OS is free to recycle that PID for an unrelated process; a
-   narrow window exists where a stale `SIGHUP`/signal path could target the wrong process if any code
-   keyed off the raw PID past that point rather than the PTY master descriptor.
+3. ~~**PID reuse after `waitpid` reaps a session's child.**~~ **FIXED, and the window was real, not
+   theoretical.** `reapChildren`'s `waitpid` call REAPS the zombie — releasing its pid back to the
+   OS's available pool — before it calls `endSession`, which used to call `closeMaster`, which
+   unconditionally sent the session's process group a `SIGHUP`+`SIGCONT` via `SessionPTY.terminate`.
+   Any `kill`/`killpg` issued after that reap targets whatever the OS may have already recycled that
+   pid to, not the session's shell. The interleaving that triggers it is the ORDINARY case of a
+   command that prints trailing output right before exiting: the pty keeps that output buffered
+   until it's read, so the master fd doesn't report EOF (the OTHER path into `closeMaster`, which
+   runs before `reapChildren` in the same event-loop turn and is therefore always safe — the pid is
+   still an unreaped zombie at that point) until after `reapChildren`'s `waitpid` has already reaped
+   it. Fixed by threading a `signalProcess` flag through `closeMaster`/`endSession`, defaulting to
+   `true` everywhere except `reapChildren`'s call, which already knows — from the `waitpid` that just
+   returned this exact pid — that there is nothing left to signal.
+   `SessionDaemonEndToEndTests.testNaturalExitWithTrailingOutputReapsCleanly` exercises this precise
+   interleaving (trailing output immediately before exit) end to end and pins the outcome: correct
+   exit status delivered, session cleanly removed. It can't assert the skipped signal directly —
+   nothing in the protocol surfaces that — so treat the code review (the vulnerable call site is
+   simply gone from the reap path) as the other half of the verification, the same way other latent
+   races in this file are closed by reasoning plus a behavioral pin rather than a flaky repro.
 4. **`SessionDescriptor.decodeList`'s wire encoding has no cap relative to `SessionFrame`'s max frame
    size.** A host with enough concurrent persisted sessions (many projects, many tabs) could in
    principle encode a `list` reply that exceeds the protocol's own frame-size ceiling, which would
@@ -164,8 +179,8 @@ in the common path — they're edge cases (process launch races, resource exhaus
 windows, an encoding ceiling, escaping cleanup, dead code) that are real but lower-value than the
 three fixed directly.
 
-**Priority:** P2. (1) and (2) are fixed (see above) — what remains is (3)-(6), lower-value edge cases
-none of which have been reported in the wild yet.
+**Priority:** P2. (1), (2), and (3) are fixed (see above) — what remains is (4)-(6), lower-value edge
+cases none of which have been reported in the wild yet.
 
 ### Bump the libghostty pin (macapp) — SHIPPED, 2026-08-13
 

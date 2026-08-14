@@ -146,6 +146,52 @@ final class SessionDaemonEndToEndTests: XCTestCase {
     client.closeConnection()
   }
 
+  /// Regression test for the "PID reuse after `waitpid` reaps a child" finding: a command that
+  /// prints trailing output right before exiting leaves that output sitting in the pty's buffer,
+  /// so the daemon's `reapChildren` (SIGCHLD) can observe and reap the exited child BEFORE the
+  /// master fd reports EOF (which only happens once the buffered bytes are actually read). That
+  /// ordering used to make `closeMaster` send a termination signal to a pid `waitpid` had already
+  /// reaped moments earlier in the very same call. This doesn't assert the signal was skipped
+  /// directly (nothing in the protocol surfaces that), but it does exercise the exact interleaving
+  /// end to end and pins the still-correct outcome: the trailing output is delivered, the real
+  /// exit status survives, and the session is cleanly removed.
+  func testNaturalExitWithTrailingOutputReapsCleanly() throws {
+    let harness = try SessionDaemonHarness.start()
+    defer { harness.stop() }
+
+    let identifier = SessionIdentifier(UUID())
+    var client = try SessionTestClient.connect(socketPath: harness.socketPath)
+    let attach = SessionAttachRequest(
+      identifier: identifier,
+      columns: 80,
+      rows: 24,
+      workingDirectory: FileManager.default.temporaryDirectory.path,
+      command: "/bin/sh -c 'printf done; exit 7'",
+      shell: "/bin/sh",
+      resourcesDirectory: "",
+      environment: [
+        SessionEnvironmentEntry(key: "TERM", value: "dumb"),
+        SessionEnvironmentEntry(key: "PATH", value: "/bin:/usr/bin"),
+      ])
+    try client.send(SessionFrame(kind: .attach, payload: attach.encoded()))
+    _ = try client.wait(for: .attached, timeout: 3)
+
+    let output = try client.wait(for: .output, timeout: 3)
+    XCTAssertEqual(String(bytes: output.payload, encoding: .utf8), "done")
+
+    let exited = try client.wait(for: .exited, timeout: 3)
+    XCTAssertEqual(try SessionExitPayload.decode(exited.payload), 7)
+
+    var lister = try SessionTestClient.connect(socketPath: harness.socketPath)
+    try lister.send(SessionFrame(kind: .list))
+    let sessionsFrame = try lister.wait(for: .sessions, timeout: 2)
+    let listed = try SessionDescriptor.decodeList(sessionsFrame.payload)
+    XCTAssertTrue(listed.isEmpty)
+    lister.closeConnection()
+
+    client.closeConnection()
+  }
+
   func testVersionMismatchIsRefused() throws {
     let harness = try SessionDaemonHarness.start()
     defer { harness.stop() }

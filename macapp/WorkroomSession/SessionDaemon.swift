@@ -521,18 +521,28 @@ final class SessionDaemon {
     }
   }
 
-  private func closeMaster(_ session: PTYSession) {
+  /// `signalProcess: false` is for the one caller (`reapChildren`) that already knows — via a
+  /// `waitpid` call that JUST returned this same pid — that the process is dead. Sending it a
+  /// signal at that point isn't merely redundant: `waitpid` reaping a zombie releases its pid back
+  /// to the OS's available pool immediately, so a `killpg`/`kill` issued after that reap targets
+  /// WHATEVER process the OS may have already recycled that pid number to, not the session's shell.
+  /// Every other caller signals a process it hasn't just reaped itself, so the default stays `true`.
+  private func closeMaster(_ session: PTYSession, signalProcess: Bool = true) {
     guard session.masterDescriptor >= 0 else { return }
     sessionsByMaster.removeValue(forKey: session.masterDescriptor)
     SessionIO.close(session.masterDescriptor)
     session.masterDescriptor = -1
     session.isEnding = true
-    SessionPTY.terminate(processID: session.processID)
+    if signalProcess {
+      SessionPTY.terminate(processID: session.processID)
+    }
   }
 
   @discardableResult
-  private func endSession(_ session: PTYSession, status: Int32, force: Bool = false) -> Bool {
-    closeMaster(session)
+  private func endSession(
+    _ session: PTYSession, status: Int32, force: Bool = false, signalProcess: Bool = true
+  ) -> Bool {
+    closeMaster(session, signalProcess: signalProcess)
     guard !force || SessionPTY.forceTerminate(processID: session.processID) else {
       SessionLog.write("failed to stop session \(session.identifier.uuidString)")
       return false
@@ -581,7 +591,10 @@ final class SessionDaemon {
       guard let session = sessions.values.first(where: { $0.processID == processID }) else {
         continue
       }
-      endSession(session, status: Self.exitCode(status))
+      // This waitpid call just reaped processID, freeing it back to the OS — see closeMaster's
+      // doc comment for why signaling it now would be signaling whatever the OS may have already
+      // recycled that number to, not this session's (already-dead) shell.
+      endSession(session, status: Self.exitCode(status), signalProcess: false)
     }
   }
 
