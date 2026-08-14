@@ -95,6 +95,49 @@ enum SessionPTY {
     return group > 0 ? group : nil
   }
 
+  /// The basename of `argv[0]` as the process was originally exec'd (e.g. `claude`, `vim`), or nil
+  /// if it can't be resolved. Deliberately NOT `proc_name`/`p_comm`: some CLIs (Claude Code among
+  /// them, observed in the wild) rename their own process title after launch — `p_comm` then reads
+  /// as their version string ("2.1.232"), not the command a user typed. `KERN_PROCARGS2` returns
+  /// the ORIGINAL exec-time argv snapshot, unaffected by any later self-renaming, and matches what
+  /// the shell's own preexec title-report already uses for a live (non-reattached) pane.
+  static func executableName(processID: pid_t) -> String? {
+    guard processID > 0 else { return nil }
+    var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, processID]
+    var size = 0
+    guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 4 else { return nil }
+    var buffer = [UInt8](repeating: 0, count: size)
+    guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0, size > 4 else { return nil }
+
+    let argc = buffer.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
+    guard argc > 0 else { return nil }
+
+    // Layout: argc, then the exec path (NUL-terminated), then NUL padding, then argv[0..argc-1]
+    // each NUL-terminated. Skip the exec path and padding to reach argv[0].
+    var offset = 4
+    while offset < size, buffer[offset] != 0 { offset += 1 }
+    while offset < size, buffer[offset] == 0 { offset += 1 }
+    guard offset < size else { return nil }
+
+    let start = offset
+    while offset < size, buffer[offset] != 0 { offset += 1 }
+    guard offset > start else { return nil }
+    let argv0 = String(decoding: buffer[start..<offset], as: UTF8.self)
+    guard let lastSlash = argv0.lastIndex(of: "/") else { return argv0 }
+    return String(argv0[argv0.index(after: lastSlash)...])
+  }
+
+  /// A process's current working directory, or nil if it can't be resolved.
+  static func workingDirectory(processID: pid_t) -> String? {
+    var info = proc_vnodepathinfo()
+    let size = proc_pidinfo(
+      processID, PROC_PIDVNODEPATHINFO, 0, &info, Int32(MemoryLayout<proc_vnodepathinfo>.size))
+    guard size == Int32(MemoryLayout<proc_vnodepathinfo>.size) else { return nil }
+    return withUnsafeBytes(of: &info.pvi_cdir.vip_path) { raw in
+      raw.baseAddress.map { String(cString: $0.assumingMemoryBound(to: CChar.self)) }
+    }
+  }
+
   /// Row count to bump a pty to, transiently, to force an observable size delta.
   ///
   /// A bare `SIGWINCH` is not enough to make a full-screen program repaint on reattach: the pty's

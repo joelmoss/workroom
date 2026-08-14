@@ -353,6 +353,40 @@ final class SessionDaemon {
           shellProcessID: session.processID,
           ttyDevice: session.ttyDevice
         ).encoded()))
+    // Synthesize a fresh title (OSC 2) and pwd (OSC 7) from the pty's CURRENT foreground process
+    // before replaying anything. Both are normally set once by the shell's preexec/prompt hooks —
+    // one-shot escapes emitted on the PRIMARY screen, before the foreground program (typically)
+    // switches to the alternate screen — and `SessionReplayBuffer` drops its buffer the moment the
+    // alternate screen activates, so a reattaching client never sees them; the foreground program
+    // itself has no reason to re-emit either on the redraw `requestRedraw` forces. Excluding the
+    // shell's own pgid (`forkpty` makes an idle prompt's foreground group equal `session.processID`)
+    // keeps an idle reattached pane from showing a phantom "zsh"/"bash" title and stale pwd.
+    if let group = SessionPTY.foregroundProcessGroup(masterDescriptor: session.masterDescriptor),
+      group != session.processID
+    {
+      let name = SessionPTY.executableName(processID: group)
+      let cwd = SessionPTY.workingDirectory(processID: group)
+      SessionLog.write(
+        "attach \(session.identifier.uuidString): foreground pgid=\(group) name="
+          + "\(name ?? "?") cwd=\(cwd ?? "?")")
+      if let name {
+        connection.enqueue(
+          SessionFrame(kind: .output, payload: Array("\u{1B}]2;\(name)\u{07}".utf8)))
+      }
+      if let cwd, !cwd.isEmpty {
+        // Ghostty's OSC 7 handler validates the host against the local machine's hostname before
+        // accepting the path (`internal_os.hostname.isLocal`) — except for the literal string
+        // "localhost", which it special-cases as always-local. A locally-forked pty is never
+        // remote, so that's the simpler, mismatch-proof choice over resolving the real hostname.
+        connection.enqueue(
+          SessionFrame(
+            kind: .output, payload: Array("\u{1B}]7;kitty-shell-cwd://localhost\(cwd)\u{07}".utf8)))
+      }
+    } else {
+      SessionLog.write(
+        "attach \(session.identifier.uuidString): foreground is the login shell "
+          + "(pid=\(session.processID)); skipping title/pwd synthesis")
+    }
     enqueueReplay(session: session, connection: connection)
     // Query the CURRENT size fresh rather than trusting `request.columns/rows` — those may have
     // been rejected as unusable above (a transient tiny size from a not-yet-laid-out surface), in
