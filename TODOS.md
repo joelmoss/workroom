@@ -941,31 +941,6 @@ already fixed. What's left is real but none of it is a security hole or silent d
 correction found the triggering scenario doesn't reproduce (three revsets tried and falsified), and
 it was parked rather than fixed pending a fresh repro that never showed up.
 
-### jj sibling-workspace staleness after a rebase (macapp) — VCS-toolbar eng-review follow-up
-
-**What:** Detect and surface when a jj operation in one workroom leaves a *sibling* workspace stale.
-
-**Why:** All workrooms of a jj project share one repo and op-store. `jj rebase -b @` — what
-pull-with-rebase runs — rewrites commits, and any other workspace whose `@` descends from a rewritten
-commit is marked stale and needs `jj workspace update-stale` before its next command. Today that
-surfaces as an unexplained error in a **different** workroom from the one the user acted in, which is
-the worst attribution problem available: nothing on screen connects cause to effect.
-
-**Pros:** turns a mystery error into an explained one, and the repair is a single command Workroom
-could offer as a button.
-
-**Cons:** needs a cheap way to detect staleness across workspaces without reading each one (a per-op
-check would multiply the cost of every pull).
-
-**Context / how to start:** `VCSStatusFailure.staleWorkingCopy` already exists in the taxonomy, and
-`RustJJProvider.workingStatus` already maps jj's stale-working-copy error onto it — so the detection
-half may largely exist; the gap is noticing it for a workroom the user is NOT looking at, and offering
-the repair. The repair is itself a write, so it belongs on `VCSWriting`.
-
-**Depends on:** pull-with-rebase (shipped).
-
-**Priority:** P3 (jj projects only; wrong-workroom errors are rare but very confusing).
-
 ### jj `push-<id>` bookmarks accumulate on the remote (macapp) — VCS-toolbar eng-review follow-up
 
 **What:** Decide what happens to the `push-<change-id>` bookmarks that pushing an unbookmarked jj `@`
@@ -1437,9 +1412,20 @@ bit everyone has shipped. The fsmonitor half is still a real perf item on large 
 repository", and the panel says what to run — but the fix is still a manual trip to a terminal. The
 state is reachable in ordinary use: workrooms of one project are jj **workspaces** of one repo, so a
 `jj rebase`/`jj abandon` in workroom A can rewrite workroom B's `@` and leave B stale until B is
-updated. Deliberately not done with the read work: recovering a working copy is a **write**, and every
-VCS write belongs to the Phase-2 write-actions chunk (its own confirmation + undo story), not to a
-status probe. jj-lib exposes `Workspace::recover`/`RecoverWorkspaceError` for it.
+updated — often surfacing as a confusing error in a *different* workroom from the one the user
+actually acted in, with nothing on screen connecting cause to effect. Deliberately not done with the
+read work: recovering a working copy is a **write**, and every VCS write belongs to the Phase-2
+write-actions chunk (its own confirmation + undo story), not to a status probe. jj-lib exposes
+`Workspace::recover`/`RecoverWorkspaceError` for it.
+
+**Detection needs no new plumbing — checked 2026-08-14, folded in from a since-deleted duplicate
+entry that assumed otherwise.** `AppStore.statusWorkItems()` already builds one status-read item per
+workroom per project, unconditionally — not just the focused one — and the sweep it feeds
+(`refreshWorkroomStatuses`, triggered on load/app-focus/selection) already runs `resolveJJ` for every
+open workroom, which already maps jj's stale-snapshot error onto `VCSStatusFailure.staleWorkingCopy`.
+So a sibling left stale by a rebase is already caught on its own next routine sweep, with no proactive
+cross-workspace scan and no per-op cost added. The only gap this entry needs to close is presentation
+(the button) plus the write op itself — not detection.
 
 **Depends on:** the shipped `StaleSnapshot` classification (`jj_backend.rs` `snapshot_working_copy`)
 and `VCSStatusFailure.staleWorkingCopy`. Relates to "VCS write actions — Phase 2".
