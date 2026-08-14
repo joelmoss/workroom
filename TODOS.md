@@ -872,24 +872,6 @@ code; none is speculative. Ordered by what a user hits first.
   brand-new empty remote works and the counts stay ref-derived.
 - **(5), (6) and (7)** — the three a user noticed — see each entry.
 
-2. **jj Pull guesses `trunk()` as the base for an unbookmarked `@`.** Right for a workroom off trunk,
-   wrong for one off a feature branch: it reports "N behind" counting trunk's commits and the rebase
-   then refuses (`immutableHistory`, now typed and retry-free, so it fails honestly rather than looping).
-   **Correction (2026-08-10): the "wrong for a feature branch" claim above does not reproduce.**
-   Three ancestor-based revsets were tried against real jj repos while attempting a fix — `trunk() &
-   ::@`, either-direction ancestry, and `(trunk()..@) & ::(immutable_heads())` — and all were falsified
-   empirically; the last one was tested against a constructed feature-branch-with-independently-
-   advancing-trunk scenario, and the real `jj rebase -b @ -d trunk()` command in that exact scenario
-   **succeeded** (exit 0, "Rebased 2 commits to destination") rather than hitting
-   `immutable_heads()`. jj's default `immutable_heads()` is `trunk()`-ancestors only — a merely-pushed
-   feature bookmark isn't protected by it — which is likely why this entry's own measurement isn't
-   reproducible from its stated recipe. Reopening this needs a fresh, documented repro (the exact repo
-   shape and jj version that produced `Error: Commit 4c8e754829da is immutable`), not another revset
-   guess. The original "remember each workroom's own base" fix idea below is unaffected either way —
-   it was already out of scope for a bug-fix pass (needs persistence + a migration path), independent
-   of whether the triggering scenario reproduces.
-   The real fix is remembering each workroom's own base rather than deriving it — `::@ &
-   remote_bookmarks()` can't, because the base stops being an ancestor the moment it advances.
 3. ~~**jj bookmark names that need quoting never match.**~~ **SHIPPED.** jj's template pre-quotes
    non-identifier names (verified: `"main|evil"` comes back WITH the quotes) — `jjUnquote` (the exact
    inverse of `jjQuote`) now unquotes every name coming out of `parseJJBookmarks` before it's stored or
@@ -954,9 +936,10 @@ a terminal". It doesn't, for the terminals this app opens — a fetch inside a w
 Codex) whose P0s — argv option injection and jj push publishing the wrong workspace's commit — are
 already fixed. What's left is real but none of it is a security hole or silent data loss.
 
-**Priority:** P2. What remains is (2) alone, and even that isn't open work in the usual sense — see
-its 2026-08-10 correction above: the scenario it describes doesn't reproduce, so there's nothing left
-to fix without a fresh, documented repro first. Everything else in this list has shipped.
+**Priority:** done. Everything in this list has shipped; the sole remaining item (jj Pull guessing
+`trunk()` as the rebase base for an unbookmarked `@`) was dropped 2026-08-14 — its 2026-08-10
+correction found the triggering scenario doesn't reproduce (three revsets tried and falsified), and
+it was parked rather than fixed pending a fresh repro that never showed up.
 
 ### Gate git VCS *reads*, not just writes (macapp) — VCS-toolbar eng-review follow-up
 
