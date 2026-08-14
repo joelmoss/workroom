@@ -75,6 +75,22 @@ final class SessionReplayBufferTests: XCTestCase {
     XCTAssertEqual(String(bytes: buffer.replayBytes, encoding: .utf8), "beforeafter")
   }
 
+  func testReplayStripsClipboardQueryOSC52() {
+    var buffer = SessionReplayBuffer(capacity: 256)
+    buffer.append(Array("before".utf8))
+    buffer.append([0x1B, 0x5D] + Array("52;c;?".utf8) + [0x07])  // OSC 52 clipboard read query
+    buffer.append(Array("after".utf8))
+    XCTAssertEqual(String(bytes: buffer.replayBytes, encoding: .utf8), "beforeafter")
+  }
+
+  func testReplayKeepsClipboardWriteOSC52() {
+    var buffer = SessionReplayBuffer(capacity: 256)
+    // A real OSC 52 write payload is base64 — never ends in a bare `?` — so it must survive replay.
+    buffer.append([0x1B, 0x5D] + Array("52;c;aGVsbG8=".utf8) + [0x07])
+    let replayed = buffer.replayBytes
+    XCTAssertEqual(String(bytes: replayed, encoding: .utf8), "\u{1B}]52;c;aGVsbG8=\u{07}")
+  }
+
   func testReplayKeepsKittyKeyboardSetPushPop() {
     var buffer = SessionReplayBuffer(capacity: 256)
     buffer.append([0x1B, 0x5B, 0x3E, 0x35, 0x75])  // CSI >5u (push flags=5) — not a query

@@ -124,7 +124,10 @@ enum SessionPTY {
     guard offset > start else { return nil }
     let argv0 = String(decoding: buffer[start..<offset], as: UTF8.self)
     guard let lastSlash = argv0.lastIndex(of: "/") else { return argv0 }
-    return String(argv0[argv0.index(after: lastSlash)...])
+    // A trailing slash (argv0 == "foo/") makes this slice empty — nil, not "", so a caller's
+    // `if let name` doesn't pass through and synthesize a blank title.
+    let basename = argv0[argv0.index(after: lastSlash)...]
+    return basename.isEmpty ? nil : String(basename)
   }
 
   /// A process's current working directory, or nil if it can't be resolved.

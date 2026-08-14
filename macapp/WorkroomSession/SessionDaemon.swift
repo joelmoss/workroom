@@ -364,12 +364,18 @@ final class SessionDaemon {
     if let group = SessionPTY.foregroundProcessGroup(masterDescriptor: session.masterDescriptor),
       group != session.processID
     {
-      let name = SessionPTY.executableName(processID: group)
-      let cwd = SessionPTY.workingDirectory(processID: group)
+      // Sanitized before ANY use below — both the log line and the OSC payloads. `name`/`cwd` come
+      // from OS process introspection (an exec'd argv[0], a directory's real name) and can legally
+      // contain any byte a filesystem path or exec argument allows, including a raw ESC or BEL. Left
+      // unsanitized, such a byte would prematurely terminate the OSC 2/7 sequence it's interpolated
+      // into (from the terminal's perspective) and let the remainder be reinterpreted as fresh,
+      // attacker-chosen escape/terminal input in the reattaching client.
+      let name = SessionPTY.executableName(processID: group).map(Self.sanitizedForEscapeSequence)
+      let cwd = SessionPTY.workingDirectory(processID: group).map(Self.sanitizedForEscapeSequence)
       SessionLog.write(
         "attach \(session.identifier.uuidString): foreground pgid=\(group) name="
           + "\(name ?? "?") cwd=\(cwd ?? "?")")
-      if let name {
+      if let name, !name.isEmpty {
         connection.enqueue(
           SessionFrame(kind: .output, payload: Array("\u{1B}]2;\(name)\u{07}".utf8)))
       }
@@ -590,6 +596,20 @@ final class SessionDaemon {
     }
     if bytes.count > limit { result += "…(+\(bytes.count - limit) more bytes)" }
     return result
+  }
+
+  /// Strips C0 controls (0x00–0x1F), DEL (0x7F), and C1 controls (0x80–0x9F) — the bytes an 8-bit
+  /// or 7-bit terminal could read as an escape/CSI/OSC introducer or terminator — from a value
+  /// before it's interpolated into an OSC payload or a log line. `name`/`cwd` come from OS process
+  /// introspection (`SessionPTY.executableName`/`workingDirectory`), not from this daemon's own
+  /// generated data, so they must be treated as untrusted content here.
+  private static func sanitizedForEscapeSequence(_ value: String) -> String {
+    String(
+      String.UnicodeScalarView(
+        value.unicodeScalars.filter { scalar in
+          scalar.value >= 0x20 && scalar.value != 0x7F
+            && !(0x80...0x9F).contains(scalar.value)
+        }))
   }
 
   private func flushConnections() {

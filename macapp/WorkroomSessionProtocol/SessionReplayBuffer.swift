@@ -4,9 +4,9 @@
 /// instead). On wrap, leading/trailing escape and UTF-8 fragments are trimmed so a mid-sequence
 /// cut does not corrupt the terminal.
 ///
-/// `replayBytes` also strips terminal capability *queries* (color queries, device attributes,
-/// cursor position reports, keyboard-protocol flags) — see its doc comment for why a query is
-/// never safe to replay.
+/// `replayBytes` also strips terminal capability *queries* (color queries, clipboard reads, device
+/// attributes, cursor position reports, keyboard-protocol flags) — see its doc comment for why a
+/// query is never safe to replay.
 ///
 /// Inspired by Muxy's SessionReplayBuffer (MIT).
 public struct SessionReplayBuffer: Sendable {
@@ -53,16 +53,19 @@ public struct SessionReplayBuffer: Sendable {
     appendForReplay(Array(bytes))
   }
 
-  /// Replayable bytes, with terminal capability *queries* stripped (color queries — OSC 4/10-19/21
-  /// with a `?` payload — plus CSI device-attributes/status-report requests ending in `c`/`n`).
+  /// Replayable bytes, with terminal capability *queries* stripped (color queries and clipboard
+  /// reads — OSC 4/10-19/21/52 with a `?` payload — plus CSI device-attributes/status-report
+  /// requests ending in `c`/`n`).
   ///
   /// A query is a request for the CURRENT client to answer right now — a shell theme querying the
-  /// background color, or a program probing cursor position. The response is never captured here
-  /// (only PTY *output* is buffered; the client's reply is input, flowing the other way), so the
-  /// query byte sequence sits in the buffer having already been answered once, live, by whichever
-  /// client was attached at the time. Replaying it to a newly-attaching client makes that client
-  /// answer it AGAIN, as if it were a fresh request — and that answer lands on whatever's now in
-  /// the foreground with no reader expecting it (often an idle shell prompt), which echoes the
+  /// background color, a program probing cursor position, or (OSC 52) a request for the clipboard,
+  /// which Ghostty answers with the real pasteboard contents and no user confirmation. The response
+  /// is never captured here (only PTY *output* is buffered; the client's reply is input, flowing the
+  /// other way), so the query byte sequence sits in the buffer having already been answered once,
+  /// live, by whichever client was attached at the time. Replaying it to a newly-attaching client
+  /// makes that client answer it AGAIN, as if it were a fresh request — and that answer lands on
+  /// whatever's now in the foreground with no reader expecting it (often an idle shell prompt, or
+  /// for OSC 52, silently handing that foreground process the clipboard), which echoes the
   /// reply as visible garbage. Queries have no visual representation of their own, so dropping them
   /// from replay never loses anything the user could actually see.
   public var replayBytes: [UInt8] {
@@ -318,12 +321,17 @@ public struct SessionReplayBuffer: Sendable {
   }
 
   /// OSC commands that are exclusively used to QUERY the client (never to set anything), signaled
-  /// by a `?` payload — color queries and their relatives. Title (0/2), pwd (7), hyperlink (8),
-  /// notification (9), and shell-integration (133) OSCs are deliberately excluded: those are always
-  /// sets, so a payload that happens to end in a literal `?` (e.g. a title reading "Continue?")
-  /// must survive replay untouched.
-  private static let colorQueryOSCCommands: Set<Int> = [
-    4, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21,
+  /// by a `?` payload — color queries and their relatives, plus 52 (clipboard read). Title (0/2),
+  /// pwd (7), hyperlink (8), notification (9), and shell-integration (133) OSCs are deliberately
+  /// excluded: those are always sets, so a payload that happens to end in a literal `?` (e.g. a
+  /// title reading "Continue?") must survive replay untouched. 52 belongs here for a sharper reason
+  /// than the color queries: Ghostty's own OSC 52 read handler answers with the REAL system
+  /// clipboard and no user confirmation (`GhosttyRuntimeAdapter.readClipboard`), so a buffered query
+  /// replayed on reattach would silently hand the current clipboard contents to whatever's now in
+  /// the foreground. A legitimate OSC 52 WRITE payload is base64 and never ends in a bare `?`, so
+  /// including it here can't misfire on a set.
+  private static let queryOnlyOSCCommands: Set<Int> = [
+    4, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 52,
   ]
 
   private func oscCommandNumber(in bytes: [UInt8], from index: Int, to end: Int) -> Int? {
@@ -339,11 +347,11 @@ public struct SessionReplayBuffer: Sendable {
   }
 
   /// Whether the OSC sequence `bytes[start..<end]` (`start` right after `ESC ]`, `end` right after
-  /// the terminator) is a color-family query — its command number is query-only AND its payload's
-  /// last content byte (before the terminator) is a bare `?`.
-  private func isColorQueryOSC(in bytes: [UInt8], start: Int, end: Int) -> Bool {
+  /// the terminator) is a query-only command (color family, or clipboard) — its command number is
+  /// query-only AND its payload's last content byte (before the terminator) is a bare `?`.
+  private func isQueryOnlyOSC(in bytes: [UInt8], start: Int, end: Int) -> Bool {
     guard let command = oscCommandNumber(in: bytes, from: start, to: end),
-      Self.colorQueryOSCCommands.contains(command)
+      Self.queryOnlyOSCCommands.contains(command)
     else { return false }
     let payloadEnd: Int
     if end >= 1, bytes[end - 1] == 0x07 {
@@ -393,7 +401,7 @@ public struct SessionReplayBuffer: Sendable {
           index += 1
           continue
         }
-        if !isColorQueryOSC(in: bytes, start: index + 2, end: end) {
+        if !isQueryOnlyOSC(in: bytes, start: index + 2, end: end) {
           result.append(contentsOf: bytes[index..<end])
         }
         index = end
