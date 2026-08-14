@@ -86,6 +86,12 @@ enum TabStripMetrics {
   /// comment — is directly comparable and drifts visibly. Note a workroom chip spends it on two names
   /// (project + workroom) against a terminal chip's one, so it starts truncating sooner.
   static let maxChipTitle: CGFloat = 180
+  /// Narrowest a TERMINAL tab's title renders before the chip stops shrinking further (not shared with
+  /// the workroom chip/pane header above — those show a stable project/workroom name, never a
+  /// shell-driven title, so they have nothing to floor against). Without this, a shell retitling to a
+  /// short string (e.g. back to its idle prompt, or a short command) let the chip's width jump around
+  /// on every retitle.
+  static let minChipTitle: CGFloat = 70
 }
 
 /// The overflow decision for a horizontal tab strip (issue #129): does the *inline* layout — the chip

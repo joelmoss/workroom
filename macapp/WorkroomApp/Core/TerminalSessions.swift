@@ -355,6 +355,10 @@ final class TerminalSessions: ObservableObject {
   @Published private(set) var activityPulses: [TerminalTab.ID: Int] = [:]
   /// Per-target running counter so tab titles ("Terminal 1", "2", …) stay stable across closes.
   private var counts: [TerminalTarget.ID: Int] = [:]
+  /// A tab's pending idle→busy title commit, cancellable so a command that finishes before
+  /// `titleDebounce` elapses never shows a title at all (issue: fast commands like `ls` flashing the
+  /// tab).
+  private var pendingTitleWork: [TerminalTab.ID: DispatchWorkItem] = [:]
   /// Set once by `AppStore`: forwards each terminal's notification-worthy activity (OSC) up to the
   /// notification spine. A closure (not a store reference) so sessions stay ignorant of `AppStore`.
   var activityHandler: ((TerminalTarget.ID, TerminalTab.ID, TerminalActivity) -> Void)?
@@ -1274,6 +1278,8 @@ final class TerminalSessions: ObservableObject {
     tabsByTarget[target.id]?[tabID] = nil
     orderByTarget[target.id]?.removeAll { $0 == tabID }
     activityPulses[tabID] = nil
+    pendingTitleWork[tabID]?.cancel()
+    pendingTitleWork[tabID] = nil
 
     if let split = splitByTarget[target.id], split.contains(tabID) {
       if let collapsed = split.removingLeaf(tabID), collapsed.tabIDs.count >= 2 {
@@ -1389,6 +1395,13 @@ final class TerminalSessions: ObservableObject {
 
   // MARK: Live titles (issue #2)
 
+  /// How long a tab waits before showing its FIRST live title after being idle, so a command that
+  /// finishes faster than this (e.g. `ls`) never flashes the tab at all — `handleCommandFinished`
+  /// cancels the pending commit if the command is already done by the time it would fire. Only the
+  /// idle→busy transition debounces; once a title is already showing, a repaint from the same
+  /// still-running command/program (e.g. an agent's spinner) applies immediately, same as before.
+  private static let titleDebounce: TimeInterval = 0.15
+
   /// Show a surface-reported command title on its tab; directory/prompt titles are ignored so the
   /// command sticks until `command_finished` clears it.
   private func updateTitle(_ title: String, forTab tabID: TerminalTab.ID, target: TerminalTarget.ID)
@@ -1405,9 +1418,26 @@ final class TerminalSessions: ObservableObject {
     guard s.liveTitle != trimmed || (s.activeAgentBackend == nil && detectedAgent != nil) else {
       return
     }
+
+    guard s.liveTitle == nil else {
+      applyTitle(trimmed, agent: detectedAgent, forTab: tabID, target: target)
+      return
+    }
+    let work = DispatchWorkItem { [weak self] in
+      self?.applyTitle(trimmed, agent: detectedAgent, forTab: tabID, target: target)
+    }
+    pendingTitleWork[tabID]?.cancel()
+    pendingTitleWork[tabID] = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + Self.titleDebounce, execute: work)
+  }
+
+  private func applyTitle(
+    _ trimmed: String, agent: AgentBackend?, forTab tabID: TerminalTab.ID, target: TerminalTarget.ID
+  ) {
+    pendingTitleWork[tabID] = nil
     mutateTerminalState(tabID, target: target) {
       $0.liveTitle = trimmed
-      if $0.activeAgentBackend == nil { $0.activeAgentBackend = detectedAgent }
+      if $0.activeAgentBackend == nil { $0.activeAgentBackend = agent }
     }
   }
 
@@ -1439,6 +1469,12 @@ final class TerminalSessions: ObservableObject {
   private func handleCommandFinished(
     forTab tabID: TerminalTab.ID, target: TerminalTarget.ID, exitCode: Int32? = nil
   ) {
+    // Unconditional, and before the early-return below: a fast command (e.g. `ls`) can finish before
+    // its debounced title commit ever fires, in which case `liveTitle`/`progressActive` are still nil
+    // and that guard would return early — but the pending commit must still be cancelled, or it fires
+    // moments later and flashes a title for a command that's already done.
+    pendingTitleWork[tabID]?.cancel()
+    pendingTitleWork[tabID] = nil
     notifyAgentOfCommandFinish(tabID: tabID, target: target, exitCode: exitCode)
     guard let tab = tabsByTarget[target]?[tabID], case .terminal(let s) = tab.content,
       s.liveTitle != nil || s.progressActive != nil

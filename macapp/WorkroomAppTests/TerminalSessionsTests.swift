@@ -165,6 +165,7 @@ final class TerminalSessionsTests: XCTestCase {
     // already provider-owned rather than the shell's command line.
     view.foregroundProcessNameForTesting = "claude"
     view.onTitleChange?("✳ Claude Code")
+    settle(until: { s.tabs(for: target).first?.title == "✳ Claude Code" })
     XCTAssertFalse(s.isRunning(forTargetID: target.id))
     XCTAssertEqual(s.tabs(for: target).first?.title, "✳ Claude Code")
     XCTAssertEqual(activeAgent(in: s), .claude)
@@ -241,6 +242,7 @@ final class TerminalSessionsTests: XCTestCase {
 
     // A running command takes over from the default…
     view.onTitleChange?("npm run dev")
+    settle(until: { s.tabs(for: target).first?.title == "npm run dev" })
     XCTAssertEqual(s.tabs(for: target).first?.title, "npm run dev")
 
     // …a later command wins…
@@ -253,6 +255,22 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertNil(activeAgent(in: s), "command_finished removes quota immediately")
   }
 
+  /// A command faster than the debounce (e.g. `ls`) must never flash the tab's title at all — not
+  /// show-then-immediately-clear, just nothing visible.
+  func testFastCommandNeverFlashesTitle() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    let view = s.tabs(for: target).first!.surface!
+
+    view.onTitleChange?("ls")
+    view.handleCommandFinished(rawExitCode: 0)  // finishes before the debounce would have fired
+
+    // Give the (should-be-cancelled) pending commit a full window to fire if it wasn't actually
+    // cancelled, then confirm the title never changed at any point.
+    settle(0.25)
+    XCTAssertEqual(s.tabs(for: target).first?.title, "Terminal 1")
+  }
+
   func testCodexAgentSurvivesProviderTitleRepaint() {
     let s = makeSessions()
     s.addTab(for: target)
@@ -260,6 +278,7 @@ final class TerminalSessionsTests: XCTestCase {
 
     view.foregroundProcessNameForTesting = "codex"
     view.onTitleChange?("Implement the requested changes")
+    settle(until: { activeAgent(in: s) == .codex })
     XCTAssertEqual(activeAgent(in: s), .codex)
 
     view.onTitleChange?("Reviewing files")
@@ -281,6 +300,7 @@ final class TerminalSessionsTests: XCTestCase {
 
     // The command shows…
     view.onTitleChange?("sleep 5")
+    settle(until: { s.tabs(for: target).first?.title == "sleep 5" })
     XCTAssertEqual(s.tabs(for: target).first?.title, "sleep 5")
 
     // …and a directory title fired *during* the command doesn't clobber it.
@@ -293,6 +313,7 @@ final class TerminalSessionsTests: XCTestCase {
     s.addTab(for: target)
     s.addTab(for: target)
     s.tabs(for: target)[1].surface!.onTitleChange?("vim")
+    settle(until: { s.tabs(for: target)[1].title == "vim" })
     XCTAssertEqual(s.tabs(for: target).map(\.title), ["Terminal 1", "vim"])
   }
 

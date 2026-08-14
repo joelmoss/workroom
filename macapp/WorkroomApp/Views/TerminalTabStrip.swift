@@ -591,9 +591,11 @@ private struct TerminalTabChip: View {
         .truncationMode(.tail)
         // Cap the title (~25 chars at `.callout`) so a long name (a file path, a shell-set terminal
         // title) tail-truncates with an ellipsis instead of stretching the chip arbitrarily wide; the
-        // full title rides in the chip's `.help` tooltip below. A short title stays tight (leading
-        // alignment, Text sizes to its ideal width up to the cap).
-        .frame(maxWidth: TabStripMetrics.maxChipTitle, alignment: .leading)
+        // full title rides in the chip's `.help` tooltip below. Floored too, so a shell retitling to a
+        // short string doesn't jump the chip's width around on every retitle.
+        .frame(
+          minWidth: TabStripMetrics.minChipTitle, maxWidth: TabStripMetrics.maxChipTitle,
+          alignment: .leading)
       // The ✕ is always shown (every tab is closable at a glance), so the chip width is constant.
       TabCloseButton(action: onClose)
         .help("Close \(tab.title)")
