@@ -77,7 +77,10 @@ app-vcs: ## Build the Rust VCS core (xcframework + Swift bindings) the app links
 app-run: app-build ## Build (Debug) and launch the dev app, replacing any running dev instance
 	cd macapp || exit 1; \
 	pkill -x "$(APP_NAME)" 2>/dev/null || true; \
-	pkill -f "$(APP_NAME).app/Contents/MacOS/workroom-session" 2>/dev/null || true; \
+	if pgrep -f "$(APP_NAME).app/Contents/MacOS/workroom-session" >/dev/null 2>&1; then \
+	  echo "Stopping persisted $(APP_NAME) session daemon (its panes will come back empty)"; \
+	  pkill -f "$(APP_NAME).app/Contents/MacOS/workroom-session" 2>/dev/null || true; \
+	fi; \
 	i=0; \
 	while pgrep -x "$(APP_NAME)" >/dev/null 2>&1 && [ $$i -lt 40 ]; do \
 	  sleep 0.2; i=$$((i + 1)); \

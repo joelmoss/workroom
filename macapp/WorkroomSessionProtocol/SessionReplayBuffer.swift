@@ -4,6 +4,10 @@
 /// instead). On wrap, leading/trailing escape and UTF-8 fragments are trimmed so a mid-sequence
 /// cut does not corrupt the terminal.
 ///
+/// `replayBytes` also strips terminal capability *queries* (color queries, device attributes,
+/// cursor position reports, keyboard-protocol flags) — see its doc comment for why a query is
+/// never safe to replay.
+///
 /// Inspired by Muxy's SessionReplayBuffer (MIT).
 public struct SessionReplayBuffer: Sendable {
   private static let alternateScreenEnterSequences: [[UInt8]] = [
@@ -49,6 +53,18 @@ public struct SessionReplayBuffer: Sendable {
     appendForReplay(Array(bytes))
   }
 
+  /// Replayable bytes, with terminal capability *queries* stripped (color queries — OSC 4/10-19/21
+  /// with a `?` payload — plus CSI device-attributes/status-report requests ending in `c`/`n`).
+  ///
+  /// A query is a request for the CURRENT client to answer right now — a shell theme querying the
+  /// background color, or a program probing cursor position. The response is never captured here
+  /// (only PTY *output* is buffered; the client's reply is input, flowing the other way), so the
+  /// query byte sequence sits in the buffer having already been answered once, live, by whichever
+  /// client was attached at the time. Replaying it to a newly-attaching client makes that client
+  /// answer it AGAIN, as if it were a fresh request — and that answer lands on whatever's now in
+  /// the foreground with no reader expecting it (often an idle shell prompt), which echoes the
+  /// reply as visible garbage. Queries have no visual representation of their own, so dropping them
+  /// from replay never loses anything the user could actually see.
   public var replayBytes: [UInt8] {
     guard !alternateScreenActive else { return [] }
     var output = bytes
@@ -65,7 +81,7 @@ public struct SessionReplayBuffer: Sendable {
     }
     let trailing = trailingSafeEnd(in: output)
     guard trailing > 0 else { return [] }
-    return Array(output[..<trailing])
+    return strippingQueries(Array(output[..<trailing]))
   }
 
   public var bytes: [UInt8] {
@@ -299,6 +315,104 @@ public struct SessionReplayBuffer: Sendable {
       cursor += 1
     }
     return nil
+  }
+
+  /// OSC commands that are exclusively used to QUERY the client (never to set anything), signaled
+  /// by a `?` payload — color queries and their relatives. Title (0/2), pwd (7), hyperlink (8),
+  /// notification (9), and shell-integration (133) OSCs are deliberately excluded: those are always
+  /// sets, so a payload that happens to end in a literal `?` (e.g. a title reading "Continue?")
+  /// must survive replay untouched.
+  private static let colorQueryOSCCommands: Set<Int> = [
+    4, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21,
+  ]
+
+  private func oscCommandNumber(in bytes: [UInt8], from index: Int, to end: Int) -> Int? {
+    var cursor = index
+    var value = 0
+    var sawDigit = false
+    while cursor < end, bytes[cursor] >= 0x30, bytes[cursor] <= 0x39 {
+      value = value * 10 + Int(bytes[cursor] - 0x30)
+      sawDigit = true
+      cursor += 1
+    }
+    return sawDigit ? value : nil
+  }
+
+  /// Whether the OSC sequence `bytes[start..<end]` (`start` right after `ESC ]`, `end` right after
+  /// the terminator) is a color-family query — its command number is query-only AND its payload's
+  /// last content byte (before the terminator) is a bare `?`.
+  private func isColorQueryOSC(in bytes: [UInt8], start: Int, end: Int) -> Bool {
+    guard let command = oscCommandNumber(in: bytes, from: start, to: end),
+      Self.colorQueryOSCCommands.contains(command)
+    else { return false }
+    let payloadEnd: Int
+    if end >= 1, bytes[end - 1] == 0x07 {
+      payloadEnd = end - 1
+    } else if end >= 2, bytes[end - 2] == 0x1B, bytes[end - 1] == 0x5C {
+      payloadEnd = end - 2
+    } else {
+      payloadEnd = end
+    }
+    return payloadEnd > start && bytes[payloadEnd - 1] == 0x3F
+  }
+
+  /// Whether the CSI sequence `bytes[start..<end]` (`start` right after `ESC [`, `end` right after
+  /// the final byte) is a query: device attributes (`…c`) or device/cursor status report (`…n`) —
+  /// pure queries regardless of parameters — or the Kitty keyboard-protocol flags query, which is
+  /// query-only in its exact bare `? u` form (no digits). `= … u` (set), `> … u` (push), and `< u`
+  /// (pop) are the same final byte but are not queries, so `u` needs the parameter check the other
+  /// two finals don't.
+  private func isStatusQueryCSI(_ bytes: [UInt8], start: Int, end: Int) -> Bool {
+    guard end > start else { return false }
+    switch bytes[end - 1] {
+    case 0x63, 0x6E: return true
+    case 0x75: return end - start == 2 && bytes[start] == 0x3F
+    default: return false
+    }
+  }
+
+  /// Drops OSC color queries and CSI device-attributes/status-report requests from `bytes`,
+  /// leaving everything else — including their surroundings — byte-for-byte intact. `replayBytes`
+  /// calls this last, after leading/trailing fragment trimming, so most input is a run of complete
+  /// sequences — but a mid-buffer fragment left by that trimming is still possible; an incomplete
+  /// `ESC …` here is passed through byte-by-byte rather than misidentified as a query.
+  private func strippingQueries(_ bytes: [UInt8]) -> [UInt8] {
+    var result = [UInt8]()
+    result.reserveCapacity(bytes.count)
+    var index = 0
+    while index < bytes.count {
+      guard bytes[index] == 0x1B, index + 1 < bytes.count else {
+        result.append(bytes[index])
+        index += 1
+        continue
+      }
+      switch bytes[index + 1] {
+      case 0x5D:  // ']' — OSC
+        guard let end = oscTerminator(in: bytes, from: index + 2) else {
+          result.append(bytes[index])
+          index += 1
+          continue
+        }
+        if !isColorQueryOSC(in: bytes, start: index + 2, end: end) {
+          result.append(contentsOf: bytes[index..<end])
+        }
+        index = end
+      case 0x5B:  // '[' — CSI
+        guard let end = csiTerminator(in: bytes, from: index + 2) else {
+          result.append(bytes[index])
+          index += 1
+          continue
+        }
+        if !isStatusQueryCSI(bytes, start: index + 2, end: end) {
+          result.append(contentsOf: bytes[index..<end])
+        }
+        index = end
+      default:
+        result.append(bytes[index])
+        index += 1
+      }
+    }
+    return result
   }
 
   private func nextAlternateScreenSequence(in bytes: [UInt8], from index: Int, entering: Bool)

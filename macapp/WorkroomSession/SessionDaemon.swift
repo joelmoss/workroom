@@ -410,6 +410,9 @@ final class SessionDaemon {
   private func enqueueReplay(session: PTYSession, connection: SessionConnection) {
     let bytes = session.replay.replayBytes
     guard !bytes.isEmpty else { return }
+    SessionLog.write(
+      "attach \(session.identifier.uuidString): replaying \(bytes.count) bytes: "
+        + Self.escapedPreview(bytes))
     var index = 0
     while index < bytes.count {
       let end = min(index + Self.replayChunkSize, bytes.count)
@@ -565,6 +568,28 @@ final class SessionDaemon {
     if terminationSignal == 0 { return (status >> 8) & 0xFF }
     if terminationSignal == 0o177 { return 0 }
     return 128 + terminationSignal
+  }
+
+  /// Renders bytes for a log line: printable ASCII passes through, `ESC` becomes `<ESC>` (so
+  /// escape-sequence boundaries are visible at a glance), everything else becomes `\xNN`. Capped so
+  /// one attach with a large buffer can't blow up the log file.
+  private static func escapedPreview(_ bytes: [UInt8], limit: Int = 2048) -> String {
+    let hexDigits = Array("0123456789ABCDEF")
+    var result = ""
+    for byte in bytes.prefix(limit) {
+      switch byte {
+      case 0x1B:
+        result += "<ESC>"
+      case 0x20...0x7E:
+        result.append(Character(UnicodeScalar(byte)))
+      default:
+        result += "\\x"
+        result.append(hexDigits[Int(byte >> 4)])
+        result.append(hexDigits[Int(byte & 0x0F)])
+      }
+    }
+    if bytes.count > limit { result += "…(+\(bytes.count - limit) more bytes)" }
+    return result
   }
 
   private func flushConnections() {
