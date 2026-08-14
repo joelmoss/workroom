@@ -36,6 +36,14 @@ final class ClaudeUsageBridge: ObservableObject {
   var wrapperURL: URL { directoryURL.appendingPathComponent("claude-status-line-bridge.sh") }
   var metadataURL: URL { directoryURL.appendingPathComponent("claude-status-line-metadata.json") }
   var cacheURL: URL { directoryURL.appendingPathComponent("claude-rate-limits.json") }
+  /// Scratch space for the wrapper's per-invocation temp files, kept OUT of `directoryURL` itself.
+  /// `AgentUsageMonitor` watches `directoryURL` for `cacheURL` updates; every create/delete in a
+  /// watched directory fires that watch, so if the wrapper's transient files lived there too, every
+  /// status-line invocation (not just ones that change the cached rate limits) would trigger a
+  /// refresh for as long as an agent session runs.
+  private var scratchDirectoryURL: URL {
+    directoryURL.appendingPathComponent("tmp", isDirectory: true)
+  }
 
   private let fileManager: FileManager
   private let writer: (Data, URL, Int) throws -> Void
@@ -120,12 +128,25 @@ final class ClaudeUsageBridge: ObservableObject {
   func repair() throws {
     let settings = try readSettingsAllowingMissing()
     guard let current = settings["statusLine"] as? [String: Any],
-      current["command"] as? String == installedCommand,
-      let metadata = try? readMetadata(), equalJSON(current, metadata.installed)
+      current["command"] as? String == installedCommand
     else {
       throw BridgeError.settingChanged
     }
     try prepareDirectory()
+    // Workroom's own command is still installed. If the metadata that lets `disable()` restore the
+    // prior status line is missing or stale (e.g. the Agent Usage directory was cleared), rebuild it
+    // rather than getting permanently stuck: the true prior is unrecoverable at this point, so record
+    // none — a later disable clears the setting instead of guessing.
+    if let metadata = try? readMetadata(), equalJSON(current, metadata.installed) {
+      // Metadata already matches what's installed — nothing to rebuild.
+    } else {
+      let rebuilt: [String: Any] = [
+        "version": 1,
+        "priorStatusLine": NSNull(),
+        "installedStatusLine": current,
+      ]
+      try writeJSON(rebuilt, to: metadataURL, permissions: 0o600)
+    }
     try writeWrapper()
     state = .enabled
   }
@@ -152,6 +173,7 @@ final class ClaudeUsageBridge: ObservableObject {
     try? fileManager.removeItem(at: metadataURL)
     try? fileManager.removeItem(at: cacheURL)
     try? fileManager.removeItem(at: wrapperURL)
+    try? fileManager.removeItem(at: scratchDirectoryURL)
     state = .disabled
     lastError = nil
   }
@@ -161,16 +183,17 @@ final class ClaudeUsageBridge: ObservableObject {
   private func writeWrapper() throws {
     let cache = shellQuote(cacheURL.path)
     let metadata = shellQuote(metadataURL.path)
-    let directory = shellQuote(directoryURL.path)
+    let scratch = shellQuote(scratchDirectoryURL.path)
     let script = """
       #!/bin/sh
       set -u
       umask 077
-      bridge_dir=\(directory)
+      scratch_dir=\(scratch)
       cache_file=\(cache)
       metadata_file=\(metadata)
-      input_file="$bridge_dir/input.$$"
-      cache_tmp="$bridge_dir/rate-limits.$$"
+      /bin/mkdir -p "$scratch_dir" || exit $?
+      input_file="$scratch_dir/input.$$"
+      cache_tmp="$scratch_dir/rate-limits.$$"
       cleanup() { /bin/rm -f "$input_file" "$cache_tmp"; }
       trap cleanup EXIT HUP INT TERM
       /bin/cat > "$input_file" || exit $?
@@ -188,6 +211,9 @@ final class ClaudeUsageBridge: ObservableObject {
   private func prepareDirectory() throws {
     try fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
     try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directoryURL.path)
+    try fileManager.createDirectory(at: scratchDirectoryURL, withIntermediateDirectories: true)
+    try fileManager.setAttributes(
+      [.posixPermissions: 0o700], ofItemAtPath: scratchDirectoryURL.path)
     let settingsDirectory = settingsURL.deletingLastPathComponent()
     try fileManager.createDirectory(at: settingsDirectory, withIntermediateDirectories: true)
   }

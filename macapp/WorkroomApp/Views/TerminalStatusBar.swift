@@ -131,13 +131,20 @@ struct TerminalStatusBar: View {
       .accessibilityLabel(label)
       .accessibilityIdentifier("terminal.statusBar.agentUsage")
     } else {
+      let isLoading = agentUsage.loading.contains(backend)
       HStack(spacing: 4) {
-        if agentUsage.loading.contains(backend) { ProgressView().controlSize(.mini) }
-        Text("\(backend.displayName) usage unavailable")
+        if isLoading { ProgressView().controlSize(.mini) }
+        Text(
+          isLoading
+            ? "Loading \(backend.displayName) usage…" : "\(backend.displayName) usage unavailable")
       }
       .foregroundStyle(theme.tokens.fgDim)
       .help("Waiting for a fresh local \(backend.displayName) quota snapshot")
-      .accessibilityLabel("\(backend.displayName) quota usage unavailable")
+      .accessibilityLabel(
+        isLoading
+          ? "Loading \(backend.displayName) quota usage"
+          : "\(backend.displayName) quota usage unavailable"
+      )
       .accessibilityIdentifier("terminal.statusBar.agentUsage.unavailable")
     }
   }

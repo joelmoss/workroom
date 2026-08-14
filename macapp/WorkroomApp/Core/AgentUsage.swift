@@ -298,7 +298,6 @@ final class AgentUsageMonitor: ObservableObject {
   private let now: () -> Date
   private var refreshTask: Task<Void, Never>?
   private var watches: [DispatchSourceFileSystemObject] = []
-  private var watchedDescriptors: [Int32] = []
   private var debounce: DispatchWorkItem?
 
   init(
@@ -368,7 +367,6 @@ final class AgentUsageMonitor: ObservableObject {
   private func rebuildWatches() {
     for watch in watches { watch.cancel() }
     watches.removeAll()
-    watchedDescriptors.removeAll()
     var paths = [codexSessionsURL, claudeCacheURL.deletingLastPathComponent()]
     if let enumerator = FileManager.default.enumerator(
       at: codexSessionsURL, includingPropertiesForKeys: [.isDirectoryKey],
@@ -390,7 +388,6 @@ final class AgentUsageMonitor: ObservableObject {
       source.setCancelHandler { close(descriptor) }
       source.resume()
       watches.append(source)
-      watchedDescriptors.append(descriptor)
     }
   }
 
