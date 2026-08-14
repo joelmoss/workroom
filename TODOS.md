@@ -472,35 +472,6 @@ nobody has looked at it yet," filed so it isn't rediscovered from scratch.
 
 **Priority:** P3 — no known bug this fixes today.
 
-### Re-benchmark surface-budget perf after the bump's upstream perf work (macapp) — filed 2026-08-14
-
-**What:** the 1.3.2 bump's ~1300 upstream commits (`332b2aef...35e1a016`) include a cluster of perf
-work landing in the same window as the leak/crash fixes the bump's QA actually measured: scrollback
-pages get LZ4-compressed once off-screen (`7e02af87`, upstream-reported "70-90% memory savings"),
-render-state lock hold time cut (`98a7c0f6`), VT processing throughput increased (`634957c8`,
-`2da015cd`), pty-read/parse pipelining added (`0535770e`, upstream-reported "+25-55% IO throughput"),
-and occluded surfaces now skip `updateFrame` entirely (`14d9e600`). All five are confirmed ancestors of
-our pinned `35e1a016` via the same compare range the bump's own QA walked. **None of this was in the
-bump's QA scope** — `QA-libghostty-results/2026-08-12-libghostty-1.3.2-bump.md` measured leak
-counts and small-N (10-20 pane) churn deltas, not throughput or memory-under-load at volume.
-
-**Why:** `QA-libghostty.md` §J ("Surface budget") already asks for exactly this measurement — open
-50-100 tabs, watch CPU/GPU/memory, confirm occluded tabs idle — but it's an unchecked box with no
-recorded baseline, not a measured "before" to diff against. This perf work is squarely what §J exists
-to catch, and the bump shipped straight through it unmeasured.
-
-**How to start:** open 50-100 tabs across projects/workrooms (§J's own scale), record RSS/CPU/GPU via
-Activity Monitor or `vmmap`, and specifically confirm a backgrounded/occluded tab's render cost drops
-(switch away from an animating `htop` pane and watch its cost fall — §J's own check). There is no
-existing 50-100 tab baseline to diff against on the old pin — record this as the first real number, not
-a comparison.
-
-**Depends on:** nothing — can run today.
-
-**Priority:** P2 — a real, upstream-claimed perf win sitting completely unmeasured on a pin we already
-shipped; worth confirming it landed for us, since it's the kind of thing surface-churn overhead could
-also be masking either direction.
-
 ### Own the GhosttyKit xcframework (macapp) — CMT-2, GA-time supply-chain decision
 
 **What:** stop depending on the third-party `libghostty-spm` (Lakr233) package as the source of
@@ -1748,19 +1719,13 @@ default (Ghostty = allow).
 
 ### Quick-switcher deferrals (macapp) — #132 follow-ups
 
-**What:** Six things the ⌥Tab / ⌃Tab switcher shipped without, deliberately. Independent of each
+**What:** Five things the ⌥Tab / ⌃Tab switcher shipped without, deliberately. Independent of each
 other; take them one at a time.
 
 - **MRU order in the ⌘O Open Workroom picker.** `SwitcherRecency` already answers "what did I use
   last", so `OpenPickerModel` could rank by it instead of alphabetically. Cheap, but it reorders a
   shipped, tested surface (`OpenPickerModelTests`) — hence deferred until we've lived with MRU in the
   switcher and know it feels right there first.
-- **Settings UI for the two trigger modifiers.** `Defaults[.switcherWorkroomModifier]` /
-  `[.switcherPaneModifier]` ship with no picker, so retuning them needs `defaults write`. They exist
-  because a global-hotkey grabber (AltTab, HyperSwitch, Contexts all bind ⌥Tab) intercepts upstream of
-  `NSApp.sendEvent` where no local monitor can see the key — i.e. the *only* remedy for an affected
-  user is a preference they currently can't reach. The Keyboard Shortcuts sheet already renders the
-  configured chords (`SwitcherModifier.display`), so the picker is the missing half.
 - **Scope ⌥Tab to the current Space.** A cross-window commit to a window on another Space animates the
   Space switch for ~0.5–1s. Nothing is wrong, but it's a jarring result for a keystroke that reads as
   instant. Either filter `QuickSwitcher.workroomSlots` by `hostWindow?.isOnActiveSpace` (and lose the
@@ -1788,8 +1753,7 @@ rail draws marks and miniatures instead.
 
 **Depends on:** nothing. The badge item wants `dfcc0bd8` (the contrast-metric fix), which has landed.
 
-**Priority:** P3 for all six, except the Settings picker, which is **P2 for anyone running a hotkey
-grabber** — for those users ⌥Tab never arrives and the workaround is unreachable from the UI.
+**Priority:** P3 for all five.
 
 ### Stream the inline terminal agent's diagnosis into the banner — #49 follow-up
 
@@ -2047,38 +2011,6 @@ pretending the criterion endorses them. The a11y families' light sides are plain
 pins only what we already vendored.
 
 **Priority:** P3.
-
-### Report the gstack codex outside-voice fix upstream
-
-**What:** File upstream: `plan-eng-review`, `plan-ceo-review` and `plan-design-review` never got the
-codex timeout wrapper their own CHANGELOG claims is universal, and `--enable web_search_cached` is
-deprecated in codex 0.146.0.
-
-**Why:** measured 2026-08-06 — the outside voice never completed in 330s and was denied outright inside
-the command sandbox; a fixed invocation runs in 104s. `CHANGELOG.md` claims "every `codex exec` /
-`codex review` now runs under a 10-minute timeout wrapper", but those three skills had **zero**
-`_gstack_codex_timeout_wrapper` uses (`codex/SKILL.md` uses 330s, `autoplan/SKILL.md` 600s). Codex
-0.146 also prints `deprecated: [features].web_search_cached … web search is enabled by default`, so the
-flag silently bought live web search that a plan review never wanted, at 10 call sites.
-
-**Second, larger finding:** `/codex` and `/autoplan` call `_gstack_codex_timeout_wrapper` from Bash
-blocks that never `source` the probe. Bash functions do not survive across tool calls — the probe file
-says so itself — so the wrapper is undefined there and the invocation dies with exit 127. This likely
-explains the review-log entries recording `"source":"claude"` instead of `"source":"codex"`: the codex
-call fails and the skill silently falls back to the Claude subagent.
-
-**Pros:** fixes it for every gstack user; our local patch survives `gstack-upgrade` only if upstream
-takes it.
-
-**Cons:** upstream may have context we lack for why those three were left on a bare Bash timeout.
-
-**Also worth reporting, but to Claude Code rather than gstack:** `sandbox.excludedCommands: ["codex"]`
-in `~/.claude/settings.json` does not exempt codex from the *filesystem* sandbox — verified, a bare
-`codex` command still had a `/tmp` write denied. The working fix was adding `~/.codex` to
-`sandbox.filesystem.allowWrite` (codex fails with `failed to initialize in-process app-server client:
-Operation not permitted` without it).
-
-**Priority:** P2 (cheap, and it unblocks a review step that currently degrades silently).
 
 ## P3 — Pull requests and GitHub
 
