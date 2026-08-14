@@ -409,6 +409,10 @@ private struct AgentSettingsPane: View {
   @Default(.terminalAgentBackend) private var agentBackend
   @Default(.terminalAgentAutoDiagnose) private var agentAutoDiagnose
   @Default(.terminalAgentRedactSecrets) private var agentRedactSecrets
+  @EnvironmentObject private var claudeUsageBridge: ClaudeUsageBridge
+  @EnvironmentObject private var agentUsage: AgentUsageMonitor
+  @State private var confirmingClaudeAction = false
+  @State private var bridgeError: String?
 
   var body: some View {
     Form {
@@ -436,8 +440,95 @@ private struct AgentSettingsPane: View {
       )
       .font(.caption)
       .foregroundStyle(.secondary)
+
+      LabeledContent("Claude quota usage") {
+        HStack(spacing: 8) {
+          Text(claudeBridgeStatus)
+            .foregroundStyle(.secondary)
+          Button(claudeBridgeActionTitle) { confirmingClaudeAction = true }
+        }
+      }
+
+      Text(
+        "Optional. Workroom reads Claude's supported status-line rate-limit payload and Codex's "
+          + "local rollout snapshots. It never reads credentials or calls private usage endpoints."
+      )
+      .font(.caption)
+      .foregroundStyle(.secondary)
     }
     .formStyle(.grouped)
     .scrollContentBackground(.hidden)
+    .onAppear { claudeUsageBridge.refreshState() }
+    .alert(claudeBridgeAlertTitle, isPresented: $confirmingClaudeAction) {
+      Button("Cancel", role: .cancel) {}
+      Button(claudeBridgeActionVerb, role: claudeUsageBridge.state == .enabled ? .destructive : nil)
+      {
+        performClaudeBridgeAction()
+      }
+    } message: {
+      Text(claudeBridgeAlertMessage)
+    }
+    .alert("Claude usage change failed", isPresented: bridgeErrorPresented) {
+      Button("OK", role: .cancel) {}
+    } message: {
+      Text(bridgeError ?? "The Claude usage integration could not be changed.")
+    }
+  }
+
+  private var claudeBridgeStatus: String {
+    switch claudeUsageBridge.state {
+    case .disabled: return "Disabled"
+    case .enabled: return "Enabled"
+    case .needsRepair: return "Needs repair"
+    }
+  }
+
+  private var claudeBridgeActionTitle: String {
+    switch claudeUsageBridge.state {
+    case .disabled: return "Enable…"
+    case .enabled: return "Disable…"
+    case .needsRepair: return "Repair…"
+    }
+  }
+
+  private var claudeBridgeActionVerb: String {
+    switch claudeUsageBridge.state {
+    case .disabled: return "Enable"
+    case .enabled: return "Disable"
+    case .needsRepair: return "Repair"
+    }
+  }
+
+  private var claudeBridgeAlertTitle: String { "\(claudeBridgeActionVerb) Claude usage?" }
+
+  private var claudeBridgeAlertMessage: String {
+    switch claudeUsageBridge.state {
+    case .disabled, .needsRepair:
+      return
+        "Workroom will update ~/.claude/settings.json to run its status-line wrapper. It stores "
+        + "only rate_limits and forwards the original input unchanged to your current command."
+    case .enabled:
+      return
+        "Workroom will restore the exact statusLine setting saved when integration was enabled. "
+        + "If that setting has since changed, Workroom will leave it untouched."
+    }
+  }
+
+  private var bridgeErrorPresented: Binding<Bool> {
+    Binding(get: { bridgeError != nil }, set: { if !$0 { bridgeError = nil } })
+  }
+
+  private func performClaudeBridgeAction() {
+    do {
+      switch claudeUsageBridge.state {
+      case .disabled: try claudeUsageBridge.enable()
+      case .enabled: try claudeUsageBridge.disable()
+      case .needsRepair: try claudeUsageBridge.repair()
+      }
+      agentUsage.refresh()
+    } catch {
+      bridgeError = error.localizedDescription
+      claudeUsageBridge.refreshState()
+    }
   }
 }

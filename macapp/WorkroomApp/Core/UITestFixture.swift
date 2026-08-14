@@ -332,6 +332,37 @@ enum UITestFixture {
     flag("WorkroomUITestAgentStub")
   }
 
+  /// A provider title to seed into the fixture's first terminal, for quota-footer XCUITests. This is
+  /// a model-only fixture: no real agent is launched and no developer usage files are read.
+  static var usageAgentTitle: String? {
+    switch text("WorkroomUITestUsageAgent") {
+    case "claude": return "Claude Code"
+    case "codex": return "Codex"
+    default: return nil
+    }
+  }
+
+  static var usageSnapshot: AgentQuotaSnapshot? {
+    guard !flag("WorkroomUITestUsageUnavailable") else { return nil }
+    guard let title = usageAgentTitle, let backend = AgentTitleRecognition.backend(for: title)
+    else {
+      return nil
+    }
+    let now = Date()
+    let used = flag("WorkroomUITestUsageZero") ? 0.0 : 42.0
+    let weeklyUsed = flag("WorkroomUITestUsageZero") ? 0.0 : 61.0
+    return AgentQuotaSnapshot(
+      backend: backend,
+      windows: [
+        AgentQuotaWindow(
+          kind: .fiveHour, usedPercentage: used, duration: 5 * 60 * 60,
+          resetsAt: now.addingTimeInterval(3 * 60 * 60)),
+        AgentQuotaWindow(
+          kind: .weekly, usedPercentage: weeklyUsed, duration: 7 * 24 * 60 * 60,
+          resetsAt: now.addingTimeInterval(4 * 24 * 60 * 60)),
+      ], capturedAt: now)
+  }
+
   /// The canned claude `--output-format json` envelope the stub agent returns. Its inner JSON is the
   /// compact diagnosis the XCUITest asserts on (a recognisable `UITEST` summary + a safe fix).
   static let agentStubEnvelope: String = {

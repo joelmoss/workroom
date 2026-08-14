@@ -2697,6 +2697,9 @@ final class AppStore: ObservableObject {
         // workroom has a terminal (and thus a tab), don't race the pane's first appearance.
         let target = workroom.target(inProject: project.path)
         terminals.ensureTab(for: target)
+        if let title = UITestFixture.usageAgentTitle {
+          terminals.tabs(for: target).first?.surface?.onTitleChange?(title)
+        }
         // Two-tab scenario (drag/reorder XCUITest, issue #23): also open a terminal for the second
         // workroom so the workroom tab bar shows two chips to reorder.
         if UITestFixture.twoTabs, project.workrooms.count > 1 {

@@ -9,6 +9,8 @@ import UserNotifications
 struct WorkroomApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
   @StateObject private var updater = Updater()
+  @StateObject private var agentUsage = AgentUsageMonitor()
+  @StateObject private var claudeUsageBridge = ClaudeUsageBridge()
   /// Fetches release notes for the "What's New" dialog (shown automatically on the first launch
   /// after an update). One instance shared across windows; presentation is owned window-side,
   /// gated to the launch/restore window.
@@ -61,6 +63,8 @@ struct WorkroomApp: App {
       RootWindow(seed: seed ?? .launch)
         .environmentObject(updater)
         .environmentObject(whatsNew)
+        .environmentObject(agentUsage)
+        .environmentObject(claudeUsageBridge)
     }
     // The taller single-row title bar (with AppKit centering the traffic lights in it — the
     // "breathing room" above/below the chrome, issue #23) comes from an EMPTY, AppKit-owned
@@ -73,6 +77,8 @@ struct WorkroomApp: App {
     Settings {
       SettingsView()
         .environmentObject(updater)
+        .environmentObject(agentUsage)
+        .environmentObject(claudeUsageBridge)
     }
 
     // The system menu-bar item (issue #33) is hand-managed by `AppDelegate`'s `MenuBarController`

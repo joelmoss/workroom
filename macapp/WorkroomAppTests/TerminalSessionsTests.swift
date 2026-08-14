@@ -161,20 +161,29 @@ final class TerminalSessionsTests: XCTestCase {
     // A fresh tab sits at the prompt — nothing running.
     XCTAssertFalse(s.isRunning(forTargetID: target.id))
 
-    // Launching claude sets a command title — but the title alone must NOT mark it running.
-    view.onTitleChange?("claude")
+    // Claude is identified from the PTY foreground process even when its first visible OSC title is
+    // already provider-owned rather than the shell's command line.
+    view.foregroundProcessNameForTesting = "claude"
+    view.onTitleChange?("✳ Claude Code")
     XCTAssertFalse(s.isRunning(forTargetID: target.id))
-    XCTAssertEqual(s.tabs(for: target).first?.title, "claude")  // title still names the tab
+    XCTAssertEqual(s.tabs(for: target).first?.title, "✳ Claude Code")
+    XCTAssertEqual(activeAgent(in: s), .claude)
+
+    // Later title repaints while waiting or working must not hide quota.
+    view.onTitleChange?("✻ Planning…")
+    XCTAssertEqual(s.tabs(for: target).first?.title, "✻ Planning…")
+    XCTAssertEqual(activeAgent(in: s), .claude)
 
     // Only an OSC 9;4 progress report drives the spinner: working → running…
     view.handleProgressReport(true)
     XCTAssertTrue(s.isRunning(forTargetID: target.id))
     // …and the busy state doesn't change the title text.
-    XCTAssertEqual(s.tabs(for: target).first?.title, "claude")
+    XCTAssertEqual(s.tabs(for: target).first?.title, "✻ Planning…")
 
     // …and idle (REMOVE) → not running, even though "claude" is still the title.
     view.handleProgressReport(false)
     XCTAssertFalse(s.isRunning(forTargetID: target.id))
+    XCTAssertEqual(activeAgent(in: s), .claude, "OSC progress does not end the agent command")
   }
 
   func testCommandFinishedClearsProgress() {
@@ -241,6 +250,23 @@ final class TerminalSessionsTests: XCTestCase {
     // …and finishing the command falls back to the default "Terminal N".
     view.handleCommandFinished(rawExitCode: 0)
     XCTAssertEqual(s.tabs(for: target).first?.title, "Terminal 1")
+    XCTAssertNil(activeAgent(in: s), "command_finished removes quota immediately")
+  }
+
+  func testCodexAgentSurvivesProviderTitleRepaint() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    let view = s.tabs(for: target).first!.surface!
+
+    view.foregroundProcessNameForTesting = "codex"
+    view.onTitleChange?("Implement the requested changes")
+    XCTAssertEqual(activeAgent(in: s), .codex)
+
+    view.onTitleChange?("Reviewing files")
+    XCTAssertEqual(activeAgent(in: s), .codex)
+
+    view.handleCommandFinished(rawExitCode: 0)
+    XCTAssertNil(activeAgent(in: s))
   }
 
   func testDirectoryTitlesAreIgnoredSoTheCommandSurvives() {
@@ -854,5 +880,10 @@ final class TerminalSessionsTests: XCTestCase {
     s.splitTab(UUID(), on: .right, for: target)
     XCTAssertEqual(s.tabs(for: target).count, 1)
     XCTAssertNil(s.split(for: target))
+  }
+
+  private func activeAgent(in sessions: TerminalSessions) -> AgentBackend? {
+    guard case .terminal(let state)? = sessions.tabs(for: target).first?.content else { return nil }
+    return state.activeAgentBackend
   }
 }

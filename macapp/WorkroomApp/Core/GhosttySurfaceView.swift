@@ -29,6 +29,19 @@ final class GhosttySurfaceView: NSView {
   /// phantom dev server orphaned on its port ("A server is already running" next start; issue #7).
   private(set) var isTornDown = false
 
+  /// Unit-test seam for foreground-process recognition. Production always leaves this nil and asks
+  /// libghostty for the PTY foreground process group.
+  var foregroundProcessNameForTesting: String?
+
+  var foregroundAgentBackend: AgentBackend? {
+    if let foregroundProcessNameForTesting {
+      return AgentProcessRecognition.backend(forProcessName: foregroundProcessNameForTesting)
+    }
+    guard let surface else { return nil }
+    let pid = pid_t(ghostty_surface_foreground_pid(surface))
+    return AgentProcessRecognition.backend(forPID: pid)
+  }
+
   /// The cwd the surface spawned its shell in. `internal` (not `private`) so tests can assert it
   /// (e.g. the quick terminal at `~/`).
   let workingDirectory: String
@@ -103,8 +116,8 @@ final class GhosttySurfaceView: NSView {
 
   /// Set from `GHOSTTY_ACTION_MOUSE_OVER_LINK` (an OSC 8 / detected URL is under the pointer).
   var hasOSC8LinkUnderCursor = false
-  /// Latest shell cwd from `GHOSTTY_ACTION_PWD` (the cwd source for ⌘-click path resolution — CMT-1,
-  /// since libghostty exposes no PTY child PID for `proc_pidinfo`). Nil until shell integration reports.
+  /// Latest shell cwd from `GHOSTTY_ACTION_PWD` (the authoritative cwd source for ⌘-click path
+  /// resolution). Nil until shell integration reports.
   private(set) var lastKnownCwd: String?
 
   // Occlusion (plan A4): a surface renders only when its pane is active AND its window is visible.

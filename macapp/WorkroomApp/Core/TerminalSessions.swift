@@ -308,6 +308,10 @@ struct TerminalState {
   /// The surface's latest non-empty title (OSC 0/2 via shell integration): the running command while
   /// busy, the working directory when idle. Nil until the first report (issue #2).
   var liveTitle: String?
+  /// The agent identified from the PTY foreground process (or conservatively from shell title as a
+  /// fallback for multiplexed sessions). Providers repaint OSC titles while they run, so this is
+  /// deliberately latched until `command_finished` instead of being derived from `liveTitle`.
+  var activeAgentBackend: AgentBackend?
   /// The surface's latest reported cwd (`GHOSTTY_ACTION_PWD` via shell integration), mirrored here as
   /// observable state so the detail-panel status bar shows the live directory (issue #49). Nil until
   /// the shell first reports; the status bar falls back to the surface's `lastKnownCwd` / target path.
@@ -1353,8 +1357,15 @@ final class TerminalSessions: ObservableObject {
     guard !trimmed.isEmpty, !Self.isDirectoryTitle(trimmed, cwd: s.view.lastKnownCwd) else {
       return
     }
-    guard s.liveTitle != trimmed else { return }
-    mutateTerminalState(tabID, target: target) { $0.liveTitle = trimmed }
+    let detectedAgent =
+      s.view.foregroundAgentBackend ?? AgentTitleRecognition.backend(for: trimmed)
+    guard s.liveTitle != trimmed || (s.activeAgentBackend == nil && detectedAgent != nil) else {
+      return
+    }
+    mutateTerminalState(tabID, target: target) {
+      $0.liveTitle = trimmed
+      if $0.activeAgentBackend == nil { $0.activeAgentBackend = detectedAgent }
+    }
   }
 
   /// Mirror the surface's reported cwd into observable tab state so the status bar tracks it live
@@ -1391,6 +1402,7 @@ final class TerminalSessions: ObservableObject {
     else { return }
     mutateTerminalState(tabID, target: target) {
       $0.liveTitle = nil
+      $0.activeAgentBackend = nil
       $0.progressActive = nil
     }
   }

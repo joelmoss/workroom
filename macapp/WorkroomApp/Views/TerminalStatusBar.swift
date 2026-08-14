@@ -22,7 +22,11 @@ struct TerminalStatusBar: View {
   var filePath: String? = nil
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var agentManager: TerminalAgentManager
+  @EnvironmentObject var agentUsage: AgentUsageMonitor
+  @EnvironmentObject var claudeUsageBridge: ClaudeUsageBridge
   @State private var showingDiagnosis = false
+  @State private var confirmingClaudeUsage = false
+  @State private var claudeBridgeError: String?
   /// The AppKit view the cwd menu pops out of — see `MenuAnchor`.
   @State private var cwdMenuAnchor: NSView?
 
@@ -34,6 +38,10 @@ struct TerminalStatusBar: View {
   private var isRunTab: Bool { state != nil && store.runTabID(for: target.id) == tabID }
 
   private var diagnosis: AgentBannerState? { state == nil ? nil : agentManager.banners[tabID] }
+
+  private var activeAgent: AgentBackend? {
+    state?.activeAgentBackend
+  }
 
   var body: some View {
     HStack(spacing: 12) {
@@ -47,6 +55,7 @@ struct TerminalStatusBar: View {
       Spacer(minLength: 8)
       DetachedSessionsButton(target: target)
       if isRunTab, let run = runStatePresentation { runSegment(run) }
+      if let activeAgent { agentUsageSegment(activeAgent) }
     }
     // `.subheadline` (11pt) — the middle of the two sizes this bar has worn. `.caption` (10pt) was
     // too small to read at a glance for what the bar carries (a pane's identity: path, branch, run
@@ -67,6 +76,115 @@ struct TerminalStatusBar: View {
     .overlay(alignment: .top) { theme.tokens.border.frame(height: 1) }
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("terminal.statusBar")
+    .task(id: activeAgent) {
+      if activeAgent != nil { agentUsage.refresh() }
+    }
+    .alert("Enable Claude usage?", isPresented: $confirmingClaudeUsage) {
+      Button("Cancel", role: .cancel) {}
+      Button("Enable") {
+        do {
+          try claudeUsageBridge.enable()
+          agentUsage.refresh()
+        } catch {
+          claudeBridgeError = error.localizedDescription
+        }
+      }
+    } message: {
+      Text(
+        "Workroom will update ~/.claude/settings.json to run its status-line wrapper. The wrapper "
+          + "stores only Claude's rate_limits data, then passes the original status-line input "
+          + "unchanged to your current command. You can disable this from Agent Settings."
+      )
+    }
+    .alert("Claude usage wasn’t enabled", isPresented: bridgeErrorPresented) {
+      Button("OK", role: .cancel) {}
+    } message: {
+      Text(claudeBridgeError ?? "The Claude status-line bridge could not be installed.")
+    }
+  }
+
+  private var bridgeErrorPresented: Binding<Bool> {
+    Binding(
+      get: { claudeBridgeError != nil },
+      set: { if !$0 { claudeBridgeError = nil } })
+  }
+
+  // MARK: Agent quota
+
+  @ViewBuilder private func agentUsageSegment(_ backend: AgentBackend) -> some View {
+    if backend == .claude, claudeUsageBridge.state == .disabled {
+      Button("Enable Claude usage…") { confirmingClaudeUsage = true }
+        .buttonStyle(StatusBarSegmentButtonStyle())
+        .foregroundStyle(theme.tokens.accent)
+        .help("Enable the opt-in Claude status-line bridge")
+        .accessibilityIdentifier("terminal.statusBar.agentUsage.enableClaude")
+    } else if let snapshot = agentUsage.snapshot(for: backend) {
+      let label = quotaAccessibilityLabel(snapshot)
+      ViewThatFits(in: .horizontal) {
+        quotaFull(snapshot)
+        quotaCompact(snapshot)
+      }
+      .fixedSize(horizontal: true, vertical: false)
+      .foregroundStyle(quotaTint(snapshot))
+      .help(label)
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel(label)
+      .accessibilityIdentifier("terminal.statusBar.agentUsage")
+    } else {
+      HStack(spacing: 4) {
+        if agentUsage.loading.contains(backend) { ProgressView().controlSize(.mini) }
+        Text("\(backend.displayName) usage unavailable")
+      }
+      .foregroundStyle(theme.tokens.fgDim)
+      .help("Waiting for a fresh local \(backend.displayName) quota snapshot")
+      .accessibilityLabel("\(backend.displayName) quota usage unavailable")
+      .accessibilityIdentifier("terminal.statusBar.agentUsage.unavailable")
+    }
+  }
+
+  private func quotaFull(_ snapshot: AgentQuotaSnapshot) -> some View {
+    HStack(spacing: 5) {
+      Text(snapshot.backend.displayName)
+      ForEach(snapshot.windows) { window in
+        Text("·")
+        let used = Int(window.usedPercentage.rounded())
+        Text(
+          "\(window.kind.compactLabel) \(used)%"
+            + (used == 0 ? "" : " \(window.pace(at: Date()).compactDescription)"))
+      }
+    }
+  }
+
+  private func quotaCompact(_ snapshot: AgentQuotaSnapshot) -> some View {
+    HStack(spacing: 5) {
+      ForEach(snapshot.windows) { window in
+        Text("\(window.kind.compactLabel) \(Int(window.usedPercentage.rounded()))%")
+      }
+    }
+  }
+
+  private func quotaTint(_ snapshot: AgentQuotaSnapshot) -> AnyShapeStyle {
+    let now = Date()
+    if snapshot.windows.contains(where: {
+      $0.usedPercentage >= 90 || $0.pace(at: now).percentagePoints > 15
+    }) {
+      return AnyShapeStyle(theme.tokens.failure)
+    }
+    if snapshot.windows.contains(where: { $0.pace(at: now).percentagePoints > 5 }) {
+      return AnyShapeStyle(theme.tokens.warning)
+    }
+    return AnyShapeStyle(theme.tokens.fgMuted)
+  }
+
+  private func quotaAccessibilityLabel(_ snapshot: AgentQuotaSnapshot) -> String {
+    let now = Date()
+    let windows = snapshot.windows.map { window in
+      let used = Int(window.usedPercentage.rounded())
+      let pace = used == 0 ? "" : ", \(window.pace(at: now).accessibilityDescription)"
+      return
+        "\(window.kind.compactLabel) quota \(used)% used\(pace), \(window.resetDescription(at: now))"
+    }
+    return "\(snapshot.backend.displayName) quota. " + windows.joined(separator: ". ")
   }
 
   // MARK: File path / branch / cwd
