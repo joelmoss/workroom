@@ -25,12 +25,20 @@ struct TerminalStatusBar: View {
   @EnvironmentObject var agentUsage: AgentUsageMonitor
   @EnvironmentObject var claudeUsageBridge: ClaudeUsageBridge
   @State private var showingDiagnosis = false
+  /// Set by a click, and survives the mouse leaving the segment — the detail view stays open until
+  /// dismissed (another click, or clicking elsewhere) rather than closing the instant hover ends.
+  @State private var usageDetailPinned = false
+  /// Set after a short hover delay (`hoverRevealDelay`), so a mouse merely passing over the segment
+  /// doesn't pop a popover; cleared the instant the mouse leaves, independent of `usageDetailPinned`.
+  @State private var usageDetailHovering = false
+  @State private var usageHoverRevealWorkItem: DispatchWorkItem?
   @State private var confirmingClaudeUsage = false
   @State private var claudeBridgeError: String?
   /// The AppKit view the cwd menu pops out of — see `MenuAnchor`.
   @State private var cwdMenuAnchor: NSView?
 
   private let theme = ThemeService.shared
+  private let usageHoverRevealDelay: TimeInterval = 0.4
 
   /// This pane's live cwd (observed state first, then the surface's last-known); nil for a diff pane.
   private var cwd: String? { state.flatMap { $0.cwd ?? $0.view.lastKnownCwd } }
@@ -109,6 +117,19 @@ struct TerminalStatusBar: View {
       set: { if !$0 { claudeBridgeError = nil } })
   }
 
+  /// True while pinned (clicked) OR hovering — a system dismissal (clicking outside the popover, or
+  /// Escape) clears both, so a pin doesn't linger open after the platform already closed it.
+  private var usageDetailPresented: Binding<Bool> {
+    Binding(
+      get: { usageDetailPinned || usageDetailHovering },
+      set: { presented in
+        if !presented {
+          usageDetailPinned = false
+          usageDetailHovering = false
+        }
+      })
+  }
+
   // MARK: Agent quota
 
   @ViewBuilder private func agentUsageSegment(_ backend: AgentBackend) -> some View {
@@ -120,16 +141,33 @@ struct TerminalStatusBar: View {
         .accessibilityIdentifier("terminal.statusBar.agentUsage.enableClaude")
     } else if let snapshot = agentUsage.snapshot(for: backend) {
       let label = quotaAccessibilityLabel(snapshot)
-      ViewThatFits(in: .horizontal) {
-        quotaFull(snapshot)
-        quotaCompact(snapshot)
+      Button {
+        usageDetailPinned.toggle()
+      } label: {
+        ViewThatFits(in: .horizontal) {
+          quotaFull(snapshot)
+          quotaCompact(snapshot)
+        }
+        .fixedSize(horizontal: true, vertical: false)
       }
-      .fixedSize(horizontal: true, vertical: false)
-      .foregroundStyle(quotaTint(snapshot))
-      .help(label)
+      .buttonStyle(StatusBarSegmentButtonStyle())
       .accessibilityElement(children: .ignore)
       .accessibilityLabel(label)
       .accessibilityIdentifier("terminal.statusBar.agentUsage")
+      .onHover { hovering in
+        usageHoverRevealWorkItem?.cancel()
+        if hovering {
+          let workItem = DispatchWorkItem { usageDetailHovering = true }
+          usageHoverRevealWorkItem = workItem
+          DispatchQueue.main.asyncAfter(deadline: .now() + usageHoverRevealDelay, execute: workItem)
+        } else {
+          usageDetailHovering = false
+        }
+      }
+      .popover(isPresented: usageDetailPresented, arrowEdge: .bottom) {
+        AgentUsageDetailView(snapshot: snapshot, now: Date())
+          .frame(width: AgentUsageDetailView.popoverWidth)
+      }
     } else {
       let isLoading = agentUsage.loading.contains(backend)
       HStack(spacing: 4) {
@@ -149,38 +187,41 @@ struct TerminalStatusBar: View {
     }
   }
 
-  private func quotaFull(_ snapshot: AgentQuotaSnapshot) -> some View {
-    HStack(spacing: 5) {
-      Text(snapshot.backend.displayName)
-      ForEach(snapshot.windows) { window in
-        Text("·")
-        let used = Int(window.usedPercentage.rounded())
-        Text(
-          "\(window.kind.compactLabel) \(used)%"
-            + (used == 0 ? "" : " \(window.pace(at: Date()).compactDescription)"))
+  /// One concatenated `Text` (not an `HStack` of separate `Text`s, like `quotaCompact` below) because
+  /// the pace figure needs its own color run inline within a window's segment. Shown, and colored,
+  /// only in deficit — under-pace/on-pace is the unremarkable case and stays silent.
+  private func quotaFull(_ snapshot: AgentQuotaSnapshot) -> Text {
+    let now = Date()
+    // A single window needs no "5h"/"wk" prefix to disambiguate from — there's nothing else in the
+    // segment it could be confused with (e.g. Codex, which only ever reports one window).
+    let showsWindowKind = snapshot.windows.count > 1
+    return snapshot.windows.reduce(Text(snapshot.backend.displayName)) { text, window in
+      let used = Int(window.usedPercentage.rounded())
+      let usedText = showsWindowKind ? "\(window.kind.compactLabel) \(used)%" : "\(used)%"
+      var windowText = Text(" · \(usedText)")
+      let pace = window.pace(at: now)
+      if pace.isOver {
+        let paceText = Text(" (\(pace.compactDescription))").foregroundColor(paceColor(pace))
+        windowText = windowText + paceText
       }
+      return text + windowText
     }
   }
 
   private func quotaCompact(_ snapshot: AgentQuotaSnapshot) -> some View {
-    HStack(spacing: 5) {
+    let showsWindowKind = snapshot.windows.count > 1
+    return HStack(spacing: 5) {
       ForEach(snapshot.windows) { window in
-        Text("\(window.kind.compactLabel) \(Int(window.usedPercentage.rounded()))%")
+        let used = Int(window.usedPercentage.rounded())
+        Text(showsWindowKind ? "\(window.kind.compactLabel) \(used)%" : "\(used)%")
       }
     }
   }
 
-  private func quotaTint(_ snapshot: AgentQuotaSnapshot) -> AnyShapeStyle {
-    let now = Date()
-    if snapshot.windows.contains(where: {
-      $0.usedPercentage >= 90 || $0.pace(at: now).percentagePoints > 15
-    }) {
-      return AnyShapeStyle(theme.tokens.failure)
-    }
-    if snapshot.windows.contains(where: { $0.pace(at: now).percentagePoints > 5 }) {
-      return AnyShapeStyle(theme.tokens.warning)
-    }
-    return AnyShapeStyle(theme.tokens.fgMuted)
+  /// Only reached for a window already confirmed `pace.isOver` (in deficit) — a deeper deficit reads
+  /// as failure, a shallow one as warning, matching the thresholds the popover's marker uses.
+  private func paceColor(_ pace: AgentPace) -> Color {
+    pace.percentagePoints > 15 ? theme.tokens.failure : theme.tokens.warning
   }
 
   private func quotaAccessibilityLabel(_ snapshot: AgentQuotaSnapshot) -> String {

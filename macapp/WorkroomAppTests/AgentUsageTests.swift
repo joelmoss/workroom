@@ -60,10 +60,10 @@ final class AgentUsageTests: XCTestCase {
         .usedPercentage, 0)
   }
 
-  func testRelativeResetDescriptionUsesWholeDaysHoursAndMinutes() {
+  func testRelativeResetDescriptionCapsAtTwoUnits() {
     let window = AgentQuotaWindow(
       kind: .weekly, usedPercentage: 10, duration: 10, resetsAt: now.addingTimeInterval(93_000))
-    XCTAssertEqual(window.resetDescription(at: now), "resets in 1d, 1h, 50m")
+    XCTAssertEqual(window.resetDescription(at: now), "resets in 1d 1h")
     XCTAssertEqual(window.resetDescription(at: now.addingTimeInterval(92_999)), "resets in 1m")
     XCTAssertEqual(window.resetDescription(at: window.resetsAt), "resets now")
   }

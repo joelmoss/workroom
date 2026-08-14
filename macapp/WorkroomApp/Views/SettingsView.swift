@@ -429,32 +429,36 @@ private struct AgentSettingsPane: View {
         .help("Run the diagnosis as soon as a command fails, instead of waiting for a click.")
         .accessibilityIdentifier("settings.control.autoDiagnose")
 
-      Toggle("Redact obvious secrets before sending", isOn: $agentRedactSecrets)
-        .help("Mask obvious secrets in the command output before sending it to the agent.")
+      VStack(alignment: .leading, spacing: 4) {
+        Toggle("Redact obvious secrets before sending", isOn: $agentRedactSecrets)
+          .help("Mask obvious secrets in the command output before sending it to the agent.")
 
-      Text(
-        "A failed command's text and output are sent to the local "
-          + "\(agentBackend == "codex" ? "codex" : "claude") CLI for a suggested fix. "
-          + "Secret redaction is best-effort, not a guarantee — Codex is used only for the "
-          + "interactive “Investigate” action, never the automatic diagnosis."
-      )
-      .font(.caption)
-      .foregroundStyle(.secondary)
-
-      LabeledContent("Claude quota usage") {
-        HStack(spacing: 8) {
-          Text(claudeBridgeStatus)
-            .foregroundStyle(.secondary)
-          Button(claudeBridgeActionTitle) { confirmingClaudeAction = true }
-        }
+        Text(
+          "A failed command's text and output are sent to the local "
+            + "\(agentBackend == "codex" ? "codex" : "claude") CLI for a suggested fix. "
+            + "Secret redaction is best-effort, not a guarantee — Codex is used only for the "
+            + "interactive “Investigate” action, never the automatic diagnosis."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
       }
 
-      Text(
-        "Optional. Workroom reads Claude's supported status-line rate-limit payload and Codex's "
-          + "local rollout snapshots. It never reads credentials or calls private usage endpoints."
-      )
-      .font(.caption)
-      .foregroundStyle(.secondary)
+      VStack(alignment: .leading, spacing: 4) {
+        LabeledContent("Show usage") {
+          HStack(spacing: 8) {
+            Text(claudeBridgeStatus)
+              .foregroundStyle(.secondary)
+            Button(claudeBridgeActionTitle) { confirmingClaudeAction = true }
+          }
+        }
+
+        Text(
+          "Optional. Workroom reads Claude's supported status-line rate-limit payload and Codex's "
+            + "local rollout snapshots. It never reads credentials or calls private usage endpoints."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      }
     }
     .formStyle(.grouped)
     .scrollContentBackground(.hidden)

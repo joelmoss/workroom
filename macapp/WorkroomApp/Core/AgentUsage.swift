@@ -76,11 +76,13 @@ struct AgentQuotaWindow: Equatable, Sendable, Identifiable {
     let hours = minutes / 60
     minutes %= 60
 
+    // Capped at two units — "1d 3h", never "1d 3h 10m" — the third unit adds noise without adding
+    // anything actionable.
     var parts: [String] = []
     if days > 0 { parts.append("\(days)d") }
     if hours > 0 { parts.append("\(hours)h") }
     if minutes > 0 { parts.append("\(minutes)m") }
-    return "resets in " + parts.joined(separator: ", ")
+    return "resets in " + parts.prefix(2).joined(separator: " ")
   }
 }
 
