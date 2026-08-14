@@ -941,33 +941,6 @@ already fixed. What's left is real but none of it is a security hole or silent d
 correction found the triggering scenario doesn't reproduce (three revsets tried and falsified), and
 it was parked rather than fixed pending a fresh repro that never showed up.
 
-### Gate git VCS *reads*, not just writes (macapp) — VCS-toolbar eng-review follow-up
-
-**What:** Route git status reads through the same per-project `JJSnapshotGate` the writes now use.
-
-**Why:** The toolbar's write path gates git as well as jj, because a project's workrooms are
-`git worktree add` worktrees sharing ONE `.git` — a lock lost mid-`pull --rebase` can leave a workroom
-wedged in a rebase. But that only half-closes the contention: `WorkroomStatusResolver.resolveGit`
-never touches the gate (only `resolveJJ` does), so a fetch writing `packed-refs` while the ungated
-status sweep runs `git status` across N sibling worktrees reproduces exactly the
-`packed-refs.lock could not be obtained` failure the gate's own doc cites.
-
-**Pros:** removes the last window where `.locked` is an *expected* outcome rather than an anomaly, so
-the UI's Retry affordance becomes a genuine edge case.
-
-**Cons:** serialising reads could measurably slow the status sweep, which fans out per workroom by
-design. This wants measurement first — it may be that read/write contention is rare enough in practice
-that the cost isn't worth it.
-
-**Context / how to start:** `WorkroomStatusResolver.resolveGit` (the ungated read) vs `resolveJJ` (the
-gated one); `CLIVCSWriter.gated` for how the writes do it. Note the gate is key-based and
-backend-agnostic, so if this lands, renaming `JJSnapshotGate` → `RepoWriteGate` (3 call sites + its
-test suite) stops being speculative churn and starts being accurate.
-
-**Depends on:** the VCS toolbar (shipped).
-
-**Priority:** P3 (a real but narrow race; needs measurement before it's worth the sweep's latency).
-
 ### jj sibling-workspace staleness after a rebase (macapp) — VCS-toolbar eng-review follow-up
 
 **What:** Detect and surface when a jj operation in one workroom leaves a *sibling* workspace stale.
