@@ -165,12 +165,10 @@ func render(_ pixels: Int, to url: URL, label: String?) {
 
 // MARK: - Menu bar glyph
 
-// The status-bar item's icon (issue #33): a monochrome OUTLINE of the same three cascading "room"
-// cards, on a transparent background — no tile, gradient, or terminal prompt (all illegible at
-// 18px). Drawn back-to-front; each front card first knocks out (clears) the part of the card
-// behind it, so the cascade reads as overlapping cards rather than a tangle of crossing strokes.
-// Exported as a template image (see the imageset's Contents.json), so the system tints it to the
-// menu bar's appearance and dims it when the app is inactive.
+// The status-bar item's icon (issue #33): the same square-blocked Codaset/Workroom mark as the
+// app icon (`markBlocks`), filled solid on a transparent background — no tile, since the menu bar
+// is the tile. Exported as a template image (see the imageset's Contents.json), so the system
+// tints it to the menu bar's appearance and dims it when the app is inactive.
 func renderMenuBarGlyph(_ pixels: Int, to url: URL) {
     let S = CGFloat(pixels)
     let cs = CGColorSpace(name: CGColorSpace.sRGB)!
@@ -183,39 +181,14 @@ func renderMenuBarGlyph(_ pixels: Int, to url: URL) {
     ctx.setShouldAntialias(true)
     ctx.interpolationQuality = .high
 
-    let ink = rgb(0, 0, 0)  // template-rendered, so the system recolours it
-    let margin = S * 0.13
-    let content = CGRect(x: margin, y: margin, width: S - 2 * margin, height: S - 2 * margin)
-    let edge = content.width * 0.54     // card edge
-    let step = content.width * 0.17     // diagonal step between cards
-    let radius = edge * 0.26            // matches the app icon's card corner ratio
-    let stroke = max(1, S * 0.08)
-
-    func cardRect(_ dx: CGFloat, _ dy: CGFloat) -> CGRect {
-        CGRect(x: content.midX + dx - edge / 2, y: content.midY + dy - edge / 2, width: edge, height: edge)
-    }
-    // Back (up-right) → middle → front (down-left), echoing the app icon's cascade direction.
-    let cards = [cardRect(step, step), cardRect(0, 0), cardRect(-step, -step)]
-
-    ctx.setStrokeColor(ink)
-    ctx.setLineWidth(stroke)
-    ctx.setLineJoin(.round)
-
-    for (i, r) in cards.enumerated() {
-        if i > 0 {
-            // Clear a filled rounded rect (grown by ~a stroke) so this card erases the outline of
-            // the one behind where they overlap, leaving a clean "on top" edge.
-            ctx.saveGState()
-            ctx.setBlendMode(.clear)
-            let knock = r.insetBy(dx: -stroke * 0.9, dy: -stroke * 0.9)
-            ctx.addPath(CGPath(
-                roundedRect: knock, cornerWidth: radius + stroke, cornerHeight: radius + stroke,
-                transform: nil))
-            ctx.fillPath()
-            ctx.restoreGState()
-        }
-        ctx.addPath(CGPath(roundedRect: r, cornerWidth: radius, cornerHeight: radius, transform: nil))
-        ctx.strokePath()
+    // markBlocks is defined on a 36×36 artboard already inset ~2px on every edge, which reads as
+    // the right amount of menu-bar padding at this size — so it's scaled straight onto the canvas.
+    let scale = S / 36
+    ctx.setFillColor(rgb(0, 0, 0))  // template-rendered, so the system recolours it
+    for block in markBlocks {
+        ctx.fill(CGRect(
+            x: block.minX * scale, y: block.minY * scale,
+            width: block.width * scale, height: block.height * scale))
     }
 
     guard let image = ctx.makeImage() else { fatalError("makeImage") }
