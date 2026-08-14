@@ -16,17 +16,18 @@ struct TerminalHoverPreviewOverlay: View {
   let host: NSView
   let title: String
 
-  static let width: CGFloat = 260
-  static let height: CGFloat = 160
-  /// Rough total footprint including the caption row and chrome padding — used by the caller
-  /// (`WorkroomTerminalsView`) to position the overlay below a hovered chip without it overlapping.
-  static let estimatedTotalHeight: CGFloat = height + 20 + 12 * 2
+  /// Chrome overhead outside the host's own bounds — the caption row plus its padding. `host` is
+  /// sized (by `TransformScaleFrameSource.mount()`) to hug the previewed pane's own aspect ratio
+  /// within `TerminalHoverPreviewController.maxHostSize`, rather than a fixed box, so callers compute
+  /// this instance's real footprint from `host.frame.size`, not a static constant.
+  static let chromeHeight: CGFloat = 20 + 12 * 2
   private let theme = ThemeService.shared
+  private var hostSize: CGSize { host.frame.size }
 
   var body: some View {
     VStack(spacing: 0) {
       PreviewHostRepresentable(host: host)
-        .frame(width: Self.width, height: Self.height)
+        .frame(width: hostSize.width, height: hostSize.height)
         .clipShape(
           RoundedRectangle(
             cornerRadius: TerminalPanelMetrics.cornerRadius, style: .continuous)
@@ -37,7 +38,7 @@ struct TerminalHoverPreviewOverlay: View {
         .lineLimit(1)
         .truncationMode(.tail)
         .padding(.top, 4)
-        .frame(width: Self.width, alignment: .leading)
+        .frame(width: hostSize.width, alignment: .leading)
     }
     .padding(6)
     .background {

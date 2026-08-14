@@ -88,6 +88,14 @@ final class TerminalHoverPreviewControllerTests: XCTestCase {
   /// `NSView`. Requires the libghostty runtime to be ready in the test host — skip-gated by the one
   /// caller that constructs sessions this way, matching `TerminalFocusAdoptionLiveSurfaceTests`'
   /// precedent (a skipped test beats a flaky one).
+  ///
+  /// Also mimics `TerminalContainerView`'s real mount/detach behavior via `onFocusChange`: production
+  /// keeps only the currently-focused/visible tab's surface attached to a window — every OTHER tab's
+  /// surface is detached (`superview == nil`). Earlier versions of this fixture attached every surface
+  /// permanently, which is exactly the unrealistic setup that let a real bug through undetected: `mount()`
+  /// used to `guard let superview = surface.superview else { return }`, silently no-oping for every
+  /// genuinely-backgrounded tab (found via a real-mouse hover test showing nothing at all — no crash, no
+  /// log — after this test suite had already gone green against the too-generous old fixture).
   private func makeSessions() -> TerminalSessions {
     let sessions = TerminalSessions()
     sessions.makeView = { [window, weak self] _, cwd, _ in
@@ -96,6 +104,13 @@ final class TerminalHoverPreviewControllerTests: XCTestCase {
       window!.contentView!.addSubview(view)
       self?.createdSurfaces.append(view)
       return view
+    }
+    var previouslyFocused: TerminalTab.ID?
+    sessions.onFocusChange = { [weak sessions, target] _, newFocusedID in
+      if let previouslyFocused, previouslyFocused != newFocusedID {
+        sessions?.tab(previouslyFocused, for: target)?.surface?.removeFromSuperview()
+      }
+      previouslyFocused = newFocusedID
     }
     return sessions
   }

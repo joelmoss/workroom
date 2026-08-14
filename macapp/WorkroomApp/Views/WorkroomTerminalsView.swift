@@ -157,12 +157,21 @@ struct WorkroomTerminalsView: View {
           let anchor = anchors[tabID]
         {
           let chipFrame = geo[anchor]
+          let halfWidth = host.frame.width / 2
+          let margin: CGFloat = 6
+          // Clamp horizontally so a preview near either edge of the content column (e.g. the
+          // leftmost tab, next to the project sidebar) stays fully inside it instead of bleeding
+          // into a sibling NavigationSplitView column and getting clipped there (found via real-mouse
+          // QA).
+          let x = min(
+            max(chipFrame.midX, halfWidth + margin), geo.size.width - halfWidth - margin)
           TerminalHoverPreviewOverlay(
             host: host, title: sessions.tab(tabID, for: target)?.title ?? ""
           )
           .position(
-            x: chipFrame.midX,
-            y: chipFrame.maxY + TerminalHoverPreviewOverlay.estimatedTotalHeight / 2 + 6)
+            x: x,
+            y: chipFrame.maxY + (host.frame.height + TerminalHoverPreviewOverlay.chromeHeight) / 2
+              + 6)
         }
       }
     }

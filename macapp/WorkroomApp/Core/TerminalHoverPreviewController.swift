@@ -84,12 +84,11 @@ protocol PreviewFrameSource: AnyObject {
 
 /// Candidate A: CALayer `sublayerTransform` scale-compositing. Confirmed live against a real running
 /// build (2026-08-14) — libghostty's internally-installed `CAMetalLayer` composites correctly through
-/// an ancestor's `sublayerTransform`. Known residual risk, not blocking: the centering math below is
-/// a first pass (the spike's own quick version landed off-center) — verify visually during QA and
-/// adjust if the scaled content isn't centered in `host`.
+/// an ancestor's `sublayerTransform`.
 final class TransformScaleFrameSource: PreviewFrameSource {
   private let scheduling: PreviewScheduling
   private weak var mountedSurface: GhosttySurfaceView?
+  private weak var mountedHost: NSView?
   private var settleWork: PreviewCancellable?
 
   init(scheduling: PreviewScheduling) {
@@ -99,27 +98,44 @@ final class TransformScaleFrameSource: PreviewFrameSource {
   func mount(surface: GhosttySurfaceView, host: NSView) -> Bool {
     let originalSize = surface.frame.size
     guard originalSize.width > 0, originalSize.height > 0 else { return false }
-    let hostSize = host.bounds.size
-    guard hostSize.width > 0, hostSize.height > 0 else { return false }
+    // `host` arrives sized to the MAX envelope (`TerminalHoverPreviewController.maxHostSize`) — treated
+    // here as a bounding box, not a fixed box to letterbox into. Most terminal panes are far closer to
+    // square than the envelope's landscape aspect (found via real-mouse QA: a ~933×925 pane fit into a
+    // fixed 260×160 box left the content occupying well under half the box, height-constrained with
+    // big empty side bars). Shrinking `host` itself to hug the scaled content exactly removes the bars
+    // entirely — resizing `host` is fine, it's a private helper view this feature owns outright; only
+    // the `GhosttySurfaceView`'s own frame must never be resized (the critical finding).
+    let maxSize = host.bounds.size
+    guard maxSize.width > 0, maxSize.height > 0 else { return false }
 
-    let scale = min(hostSize.width / originalSize.width, hostSize.height / originalSize.height)
+    let scale = min(maxSize.width / originalSize.width, maxSize.height / originalSize.height)
     guard scale.isFinite, scale > 0 else { return false }
 
+    host.frame = NSRect(
+      origin: host.frame.origin,
+      size: CGSize(width: originalSize.width * scale, height: originalSize.height * scale))
     host.wantsLayer = true
     host.layer?.masksToBounds = true
 
-    // Reposition ONLY the origin (never the size) so the surface's own center lands at the host's
-    // center pre-transform — a pure scale transform on the host's sublayers scales each sublayer
-    // around its own (unchanged) position, so centering has to happen before the transform is applied.
-    let origin = NSPoint(
-      x: hostSize.width / 2 - originalSize.width / 2,
-      y: hostSize.height / 2 - originalSize.height / 2)
-    surface.frame = NSRect(origin: origin, size: originalSize)
+    // The surface fills the (now tightly-sized) host exactly, so no centering offset is needed —
+    // reposition ONLY the origin (never the size) to the host's own origin.
+    surface.frame = NSRect(origin: .zero, size: originalSize)
     surface.autoresizingMask = []
+    // `wantsFocus` is only ever written by `TerminalContainerView.mount(in:)` on whichever surface is
+    // CURRENTLY its `view:` — a backgrounded tab's surface keeps whatever stale value it had from when
+    // it was last actually active (usually `true`, from having been the newly-focused tab at creation;
+    // nothing resets it when a solo tab is swapped away entirely, unlike a co-displayed non-focused
+    // split member, which gets its own live `isFocusedPane: false` render). Left stale `true`,
+    // `addSubview` below triggers `viewDidMoveToWindow()`'s `if wantsFocus, window.firstResponder !==
+    // self { window.makeFirstResponder(self) }` — silently stealing first responder from the real
+    // active tab the moment a background tab is hovered (found via real-mouse QA: "hover selected the
+    // tab, detail pane went empty"). Force it false before this surface ever enters the window again.
+    surface.wantsFocus = false
     host.addSubview(surface)
     host.layer?.sublayerTransform = CATransform3DMakeScale(scale, scale, 1)
 
     mountedSurface = surface
+    mountedHost = host
     return true
   }
 
@@ -133,8 +149,16 @@ final class TransformScaleFrameSource: PreviewFrameSource {
   }
 
   func unmount() {
-    mountedSurface?.removeFromSuperview()
+    // Only detach if the surface is STILL our host's child — a real focus/tab switch can re-home it
+    // elsewhere (`TerminalContainerView.mount(in:)`) before this preview session tears down (found via
+    // real-mouse QA: clicking the previewed tab re-homed its surface into the real container, then
+    // teardown's unconditional `removeFromSuperview()` yanked it straight back out, blanking the pane
+    // the user had just switched to). If someone else already took it, leave it alone.
+    if mountedSurface?.superview === mountedHost {
+      mountedSurface?.removeFromSuperview()
+    }
     mountedSurface = nil
+    mountedHost = nil
   }
 }
 
@@ -145,6 +169,11 @@ final class TerminalHoverPreviewController: ObservableObject {
     case armed(tabID: TerminalTab.ID)
     case visible(tabID: TerminalTab.ID)
   }
+
+  /// The max bounding box a preview may occupy — `TransformScaleFrameSource.mount()` shrinks the host
+  /// to hug the scaled content's own aspect ratio within this envelope, rather than letterboxing a
+  /// fixed-size box (most terminal panes are far closer to square than this landscape envelope).
+  static let maxHostSize = CGSize(width: 520, height: 320)
 
   @Published private(set) var phase: Phase = .idle
   /// The host view currently showing the preview, once `.visible` — the SwiftUI overlay reads this to
@@ -268,10 +297,21 @@ final class TerminalHoverPreviewController: ObservableObject {
     // repositions the surface's frame origin into the host's own coordinate space, so capturing this
     // after mount() would record the wrong (tiny, host-relative) frame instead of the real one to
     // restore on teardown.
-    guard let superview = surface.superview else { return }
+    //
+    // `superview` is a plain optional, NOT unwrapped here — this was a real bug (found via a real-mouse
+    // hover test showing nothing, no crash, no log): a genuinely backgrounded tab's surface has ALREADY
+    // been detached from any container (`TerminalContainerView`'s mount/detach behavior, the entire
+    // reason this feature needs to re-home the surface at all), so `surface.superview` is normally nil
+    // for exactly the tabs this feature targets. A `guard let ... else { return }` here silently bailed
+    // on every real hover. Restoring later already handled a nil superview correctly
+    // (`teardownAllocatedState`'s `if let ... superview ...` is a no-op when there's nothing to restore
+    // to) — only this capture site needed the fix. The test suite didn't catch this because its
+    // `makeSessions()` fixture attached every surface to a shared window unconditionally, unlike
+    // production; see `TerminalHoverPreviewControllerTests`'s updated fixture.
+    let superview = surface.superview
     let preMountFrame = surface.frame
 
-    let host = PreviewHostView(frame: NSRect(x: 0, y: 0, width: 260, height: 160))
+    let host = PreviewHostView(frame: NSRect(origin: .zero, size: Self.maxHostSize))
     let frameSource = makeFrameSource()
 
     guard frameSource.mount(surface: surface, host: host) else {
@@ -323,9 +363,18 @@ final class TerminalHoverPreviewController: ObservableObject {
   /// above explains.
   private func teardownAllocatedState() {
     activeFrameSource?.stopPresenting()
+    // `unmount()` itself guards against detaching a surface that's since been legitimately re-homed
+    // elsewhere (a real focus/tab switch, `TerminalContainerView.mount(in:)`) — found via real-mouse
+    // QA: clicking the previewed tab re-homed its surface into the real container before this
+    // teardown ran; an unconditional `removeFromSuperview()` yanked it straight back out, blanking the
+    // pane the user had just switched to. See `TransformScaleFrameSource.unmount()`.
     activeFrameSource?.unmount()
     activeFrameSource = nil
 
+    // Nil-safe by construction: a preview-eligible tab is, by `isPreviewEligible`'s own definition,
+    // already detached (`superview == nil`) before a hover ever starts, so `originalSuperview` is
+    // always nil in production and this never actually restores anything today. Kept as a defensive
+    // no-op for any future case where a preview could start from a non-detached surface.
     if let surface = mountedSurface, let superview = originalSuperview, let frame = originalFrame {
       surface.frame = frame
       surface.autoresizingMask = [.width, .height]
