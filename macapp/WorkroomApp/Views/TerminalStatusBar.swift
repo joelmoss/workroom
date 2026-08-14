@@ -28,8 +28,9 @@ struct TerminalStatusBar: View {
   /// Set by a click, and survives the mouse leaving the segment — the detail view stays open until
   /// dismissed (another click, or clicking elsewhere) rather than closing the instant hover ends.
   @State private var usageDetailPinned = false
-  /// Set after a short hover delay (`hoverRevealDelay`), so a mouse merely passing over the segment
-  /// doesn't pop a popover; cleared the instant the mouse leaves, independent of `usageDetailPinned`.
+  /// Set after a short hover delay (`usageHoverRevealDelay`), so a mouse merely passing over the
+  /// segment doesn't pop a popover; cleared the instant the mouse leaves, independent of
+  /// `usageDetailPinned`.
   @State private var usageDetailHovering = false
   @State private var usageHoverRevealWorkItem: DispatchWorkItem?
   @State private var confirmingClaudeUsage = false
@@ -143,6 +144,10 @@ struct TerminalStatusBar: View {
       let label = quotaAccessibilityLabel(snapshot)
       Button {
         usageDetailPinned.toggle()
+        // The mouse is still over the segment right after this click, so `.onHover` never fires an
+        // exit — without this, unpinning while hovering left `usageDetailPinned || usageDetailHovering`
+        // true and the popover never actually closed.
+        if !usageDetailPinned { usageDetailHovering = false }
       } label: {
         ViewThatFits(in: .horizontal) {
           quotaFull(snapshot)
@@ -219,7 +224,8 @@ struct TerminalStatusBar: View {
   }
 
   /// Only reached for a window already confirmed `pace.isOver` (in deficit) — a deeper deficit reads
-  /// as failure, a shallow one as warning, matching the thresholds the popover's marker uses.
+  /// as failure, a shallower one as warning. Independent of the popover's marker, which only
+  /// distinguishes over/under pace, not degree.
   private func paceColor(_ pace: AgentPace) -> Color {
     pace.percentagePoints > 15 ? theme.tokens.failure : theme.tokens.warning
   }

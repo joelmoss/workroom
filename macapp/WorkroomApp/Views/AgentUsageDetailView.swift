@@ -9,12 +9,24 @@ struct AgentUsageDetailView: View {
   /// copy that could drift out of sync.
   static let popoverWidth: CGFloat = 320
   private static let horizontalPadding: CGFloat = 14
+  /// Matches `resetDescription`'s own minute-level precision (see its doc comment) — refreshing
+  /// faster wouldn't change anything the displayed text shows.
+  private static let refreshInterval: TimeInterval = 60
 
   let snapshot: AgentQuotaSnapshot
-  let now: Date
 
+  /// Seeds `currentTime` below; the view re-reads its own clock afterward rather than holding this
+  /// fixed, since a pinned popover (unlike the old hover-only tooltip) can stay open indefinitely —
+  /// without a live clock its "resets in" text and pace marker would freeze at whatever moment it
+  /// happened to open.
+  @State private var currentTime: Date
   private let theme = ThemeService.shared
   private var barWidth: CGFloat { Self.popoverWidth - Self.horizontalPadding * 2 }
+
+  init(snapshot: AgentQuotaSnapshot, now: Date) {
+    self.snapshot = snapshot
+    _currentTime = State(initialValue: now)
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
@@ -25,10 +37,14 @@ struct AgentUsageDetailView: View {
     .padding(Self.horizontalPadding)
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("terminal.statusBar.agentUsage.detail")
+    .onReceive(Timer.publish(every: Self.refreshInterval, on: .main, in: .common).autoconnect()) {
+      time in
+      currentTime = time
+    }
   }
 
   private func windowRow(_ window: AgentQuotaWindow) -> some View {
-    let pace = window.pace(at: now)
+    let pace = window.pace(at: currentTime)
     // The marker sits at the "sustainable pace" point — where usage would be if it exactly tracked
     // the window's elapsed time — derived from the pace already computed for the compact footer
     // (`usedPercentage - pace.percentagePoints` recovers that elapsed fraction) rather than a second,
@@ -67,7 +83,7 @@ struct AgentUsageDetailView: View {
   }
 
   private func capitalizedResetDescription(_ window: AgentQuotaWindow) -> String {
-    let raw = window.resetDescription(at: now)
+    let raw = window.resetDescription(at: currentTime)
     return raw.prefix(1).uppercased() + raw.dropFirst()
   }
 
