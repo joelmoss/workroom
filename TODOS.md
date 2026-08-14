@@ -108,16 +108,31 @@ colliding across Workroom/Dev/Nightly builds, an off-by-one in
 the daemon's/attach-client's, and a `closeTab`-initiated kill racing an immediate quit). What's left,
 in descending order of how much it matters:
 
-1. **The daemon reports a session as successfully created before `execve` runs.** `forkpty` returns
-   the child PID immediately in the parent; the daemon acknowledges the client's `create`/`attach`
-   at that point rather than waiting for the child to actually reach its shell. A child that fails
-   between `fork` and `execve` (e.g. the target `cwd` vanished, `posix_spawn`-style setup failure)
-   reports success and then the PTY silently closes moments later, rather than the client getting a
-   clean failure up front.
-2. **No connection-limit or reply-queue bound — a same-UID DoS vector.** Any process running as this
-   user can open unboundedly many connections to the socket, and the daemon's per-connection outbox
-   isn't capped, so a misbehaving or malicious same-UID client can exhaust descriptors or memory in
-   the single-threaded daemon that every project's persisted terminals depend on.
+1. ~~**The daemon reports a session as successfully created before `execve` runs.**~~ **FIXED.**
+   `SessionPTY.spawn` now uses the classic self-pipe trick: a `CLOEXEC` pipe created before
+   `forkpty`, whose write end the child holds open only until `execve` either succeeds (the kernel
+   closes it as part of the exec syscall) or fails (the child writes its `errno` and `_exit(127)`s).
+   The parent's blocking read on the other end distinguishes the two synchronously — EOF means the
+   child reached its shell, any bytes mean it didn't — so `spawn` now returns `nil` on a genuine
+   exec failure and `create()`'s existing failure path (which already sent a clean `.failure` frame
+   whenever `spawn` returned `nil`) fires instead of acking `.attached` and then closing moments
+   later. Red/green-verified: `SessionDaemonEndToEndTests.testExecFailureReportsFailureNotSilentExit`
+   (a nonexistent `shell` path forces a real `execve` failure) fails with the detection bypassed and
+   passes with it restored, with no regression across the other 197 session/store tests.
+2. ~~**No connection-limit or reply-queue bound — a same-UID DoS vector.**~~ **HALF-STALE, now
+   FIXED.** The connection-count half was already capped (`maximumConnections = 64`, landed in an
+   earlier round of this same review) — this entry hadn't been updated to reflect that. What was
+   still genuinely open: protocol replies (`list`/`info`/`attach`/`kill`/`killAll`) are generated
+   straight from client requests and aren't covered by the existing `clientOutputLimit` backpressure
+   (which only gates output frames sourced from a session's pty), so a same-UID client that kept
+   sending requests without ever reading its socket could grow a connection's outbox without bound.
+   Fixed with a `connectionOutboxLimit` (8 MB, deliberately above `clientOutputLimit` so a client
+   legitimately backed up on real terminal output isn't punished for it) checked after every frame
+   processed in `handleConnection`; a connection that crosses it is dropped as misbehaving.
+   Red/green-verified: `SessionDaemonEndToEndTests.testMisbehavingClientReplyQueueIsCapped` (a
+   session with a bulky metadata title makes each `list` reply large, so a client that floods `list`
+   requests without draining its socket crosses the cap in well under a second) fails with the cap
+   disabled and passes with it restored.
 3. **PID reuse after `waitpid` reaps a session's child.** Between the child exiting and the daemon
    noticing (via `reapChildren`), the OS is free to recycle that PID for an unrelated process; a
    narrow window exists where a stale `SIGHUP`/signal path could target the wrong process if any code
@@ -149,9 +164,8 @@ in the common path — they're edge cases (process launch races, resource exhaus
 windows, an encoding ceiling, escaping cleanup, dead code) that are real but lower-value than the
 three fixed directly.
 
-**Priority:** P2. Worth a pass if any of these starts showing up in the wild (a "session shows created
-but the tab never attaches" report would point at #1; a "Workroom got slow/unresponsive with many
-terminals open" report would point at #2).
+**Priority:** P2. (1) and (2) are fixed (see above) — what remains is (3)-(6), lower-value edge cases
+none of which have been reported in the wild yet.
 
 ### Bump the libghostty pin (macapp) — SHIPPED, 2026-08-13
 

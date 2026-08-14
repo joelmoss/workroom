@@ -31,6 +31,23 @@ enum SessionPTY {
       free(directory)
     }
 
+    // The classic self-pipe trick for synchronous fork/exec error reporting: both ends are
+    // close-on-exec, so a SUCCESSFUL execve closes the child's copy of the write end as part of
+    // the exec syscall itself, and the parent's blocking read below observes that as EOF. A
+    // FAILED execve never reaches that closure — the child is still running our Swift code, so it
+    // writes its errno first. Without this, `forkpty` returning a pid tells the parent only that
+    // fork succeeded, not that the child ever reached its shell; a bad shell path or resources
+    // directory would ack the attach as created, then close moments later with no explanation.
+    var execErrorPipe: [Int32] = [-1, -1]
+    guard pipe(&execErrorPipe) == 0 else {
+      SessionLog.write("pipe failed: \(String(cString: strerror(errno)))")
+      return nil
+    }
+    let execErrorReadDescriptor = execErrorPipe[0]
+    let execErrorWriteDescriptor = execErrorPipe[1]
+    SessionIO.setCloseOnExec(execErrorReadDescriptor)
+    SessionIO.setCloseOnExec(execErrorWriteDescriptor)
+
     var size = winsize(
       ws_row: rows == 0 ? 24 : rows,
       ws_col: columns == 0 ? 80 : columns,
@@ -42,10 +59,13 @@ enum SessionPTY {
     let processID = forkpty(&master, &name, nil, &size)
     if processID < 0 {
       SessionLog.write("forkpty failed: \(String(cString: strerror(errno)))")
+      SessionIO.close(execErrorReadDescriptor)
+      SessionIO.close(execErrorWriteDescriptor)
       return nil
     }
 
     if processID == 0 {
+      SessionIO.close(execErrorReadDescriptor)
       var empty = sigset_t()
       sigemptyset(&empty)
       sigprocmask(SIG_SETMASK, &empty, nil)
@@ -60,7 +80,37 @@ enum SessionPTY {
         }
       }
       execve(executable, argumentList.pointer, environmentList.pointer)
+      var failureErrno = errno
+      withUnsafeBytes(of: &failureErrno) { bytes in
+        _ = Darwin.write(execErrorWriteDescriptor, bytes.baseAddress, bytes.count)
+      }
       _exit(127)
+    }
+
+    // Parent must close its own copy of the write end before reading — otherwise the pipe never
+    // fully closes on a successful exec (the child's copy closes, but ours would still hold it
+    // open), and the read below would block forever instead of observing EOF.
+    SessionIO.close(execErrorWriteDescriptor)
+    var execFailureErrno: Int32 = 0
+    let errorByteCount = withUnsafeMutableBytes(of: &execFailureErrno) { buffer -> Int in
+      var total = 0
+      while total < buffer.count {
+        let result = Darwin.read(
+          execErrorReadDescriptor, buffer.baseAddress!.advanced(by: total), buffer.count - total)
+        if result > 0 {
+          total += result
+          continue
+        }
+        if result < 0, errno == EINTR { continue }
+        break
+      }
+      return total
+    }
+    SessionIO.close(execErrorReadDescriptor)
+    guard errorByteCount == 0 else {
+      SessionLog.write("execve failed: \(String(cString: strerror(execFailureErrno)))")
+      SessionIO.close(master)
+      return nil
     }
 
     SessionIO.setNonBlocking(master)

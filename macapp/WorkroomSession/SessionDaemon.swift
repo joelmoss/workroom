@@ -10,6 +10,15 @@ enum SessionDaemonStart {
 final class SessionDaemon {
   static let replayCapacity = 256 * 1024
   static let clientOutputLimit = 4 * 1024 * 1024
+  /// Caps a single connection's outbound reply queue. `clientOutputLimit` already bounds output
+  /// frames sourced from a session's pty (the daemon stops reading the master once a client is
+  /// backed up past it), but protocol replies (`list`/`info`/`attach`/`kill`/`killAll`) are
+  /// generated straight from client requests and aren't covered by that guard — a same-UID client
+  /// that keeps sending requests without ever reading its socket can otherwise grow this daemon's
+  /// memory without bound. Sized above `clientOutputLimit` so a client that is legitimately
+  /// backed up on real terminal output isn't punished for it; a connection that exceeds this is
+  /// misbehaving, not merely slow, and gets dropped.
+  static let connectionOutboxLimit = 8 * 1024 * 1024
   static let sessionInputLimit = 1024 * 1024
   static let maximumConnections = 64
   static let maximumSessions = 256
@@ -248,6 +257,13 @@ final class SessionDaemon {
         handle(frame: frame, connection: connection)
       } catch {
         SessionLog.write("dropping connection with a malformed frame")
+        markForClose(entry.fd)
+        return
+      }
+      if connection.pendingByteCount > Self.connectionOutboxLimit {
+        SessionLog.write(
+          "dropping connection \(entry.fd): reply queue exceeded \(Self.connectionOutboxLimit) bytes"
+        )
         markForClose(entry.fd)
         return
       }

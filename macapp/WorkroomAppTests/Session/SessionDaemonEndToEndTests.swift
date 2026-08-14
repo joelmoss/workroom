@@ -70,6 +70,82 @@ final class SessionDaemonEndToEndTests: XCTestCase {
     empty.closeConnection()
   }
 
+  /// Regression test for the "ack before execve" finding: `forkpty` returning a pid only proves
+  /// `fork` succeeded, not that the child ever reached its shell. A nonexistent `shell` path makes
+  /// our own `execve` fail deterministically, and the daemon must report that as a `.failure`
+  /// up front rather than acking `.attached` and then closing moments later.
+  func testExecFailureReportsFailureNotSilentExit() throws {
+    let harness = try SessionDaemonHarness.start()
+    defer { harness.stop() }
+
+    let identifier = SessionIdentifier(UUID())
+    var client = try SessionTestClient.connect(socketPath: harness.socketPath)
+    let attach = SessionAttachRequest(
+      identifier: identifier,
+      columns: 80,
+      rows: 24,
+      workingDirectory: FileManager.default.temporaryDirectory.path,
+      command: "",
+      shell: "/definitely/does-not-exist-\(UUID().uuidString)",
+      resourcesDirectory: "",
+      environment: [
+        SessionEnvironmentEntry(key: "TERM", value: "dumb"),
+        SessionEnvironmentEntry(key: "PATH", value: "/bin:/usr/bin"),
+      ])
+    try client.send(SessionFrame(kind: .attach, payload: attach.encoded()))
+    let failure = try client.wait(for: .failure, timeout: 3)
+    let message = try SessionTextPayload.decode(failure.payload)
+    XCTAssertTrue(message.contains("failed to start"), message)
+    client.closeConnection()
+  }
+
+  /// Regression test for the "no reply-queue bound" finding: a same-UID client that keeps sending
+  /// requests without ever reading its socket must not be able to grow the daemon's memory without
+  /// bound. Every `list` reply here is large (the session's metadata carries a bulky title), so a
+  /// handful of un-drained replies is enough to cross `connectionOutboxLimit`; the daemon should
+  /// drop the misbehaving connection rather than keep queuing.
+  func testMisbehavingClientReplyQueueIsCapped() throws {
+    signal(SIGPIPE, SIG_IGN)
+    let harness = try SessionDaemonHarness.start()
+    defer { harness.stop() }
+
+    let identifier = SessionIdentifier(UUID())
+    var client = try SessionTestClient.connect(socketPath: harness.socketPath)
+    let bulkyTitle = String(repeating: "x", count: 200_000)
+    let attach = SessionAttachRequest(
+      identifier: identifier,
+      columns: 80,
+      rows: 24,
+      workingDirectory: FileManager.default.temporaryDirectory.path,
+      command: "/bin/sh -c 'exec cat'",
+      shell: "/bin/sh",
+      resourcesDirectory: "",
+      environment: [
+        SessionEnvironmentEntry(key: "TERM", value: "dumb"),
+        SessionEnvironmentEntry(key: "PATH", value: "/bin:/usr/bin"),
+      ],
+      metadata: [SessionEnvironmentEntry(key: SessionMetadataKey.title, value: bulkyTitle)])
+    try client.send(SessionFrame(kind: .attach, payload: attach.encoded()))
+    _ = try client.wait(for: .attached, timeout: 3)
+
+    // Each `list` request is a handful of bytes, so a tight send loop races ahead of the daemon's
+    // poll loop without ever giving it a scheduling slice to read the requests, generate the
+    // (large) replies, and notice its outbox has grown past the cap. Spread the sends out instead.
+    var closed = false
+    let deadline = Date().addingTimeInterval(5)
+    while Date() < deadline {
+      do {
+        try client.send(SessionFrame(kind: .list))
+      } catch {
+        closed = true
+        break
+      }
+      usleep(2000)
+    }
+    XCTAssertTrue(closed, "daemon should drop a connection whose reply queue grows without bound")
+    client.closeConnection()
+  }
+
   func testVersionMismatchIsRefused() throws {
     let harness = try SessionDaemonHarness.start()
     defer { harness.stop() }
