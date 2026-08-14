@@ -19,11 +19,24 @@ struct WorkroomTerminalsView: View {
   @EnvironmentObject var store: AppStore
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+  /// Owned here (one per target) — `TerminalTabStrip` only drives it via `@ObservedObject` (eng review
+  /// D4, Codex #7). This is also where `TabChipAnchorKey` is consumed and the overlay rendered, so
+  /// ownership and rendering live together.
+  @StateObject private var hoverPreview: TerminalHoverPreviewController
+  @State private var chipAnchors: [TerminalTab.ID: Anchor<CGRect>] = [:]
+
   // Drag a tab chip down into a pane to split (issue #3). `chipPaneDrag` is the live drop preview
   // (content-local), shown by `PaneTreeView`; `contentFrame` is the pane area's global rect, used to
   // tell "over the strip" (reorder) from "over a pane" (drop-to-split) and to localise the cursor.
   @State private var chipPaneDrag: PaneDragState?
   @State private var contentFrame: CGRect = .zero
+
+  init(target: TerminalTarget, sessions: TerminalSessions, surfaceActive: Bool = true) {
+    self.target = target
+    self.sessions = sessions
+    self.surfaceActive = surfaceActive
+    _hoverPreview = StateObject(wrappedValue: TerminalHoverPreviewController(sessions: sessions))
+  }
 
   var body: some View {
     let tabs = sessions.tabs(for: target)
@@ -77,6 +90,7 @@ struct WorkroomTerminalsView: View {
       if !tabs.isEmpty {
         TerminalTabStrip(
           tabs: tabs, activeID: active?.id, target: target, sessions: sessions,
+          hoverPreview: hoverPreview,
           chipPaneDrag: $chipPaneDrag,
           localize: { chipLocal($0) },
           dropTarget: { chipDropTarget(at: $0) }
@@ -131,7 +145,30 @@ struct WorkroomTerminalsView: View {
     // blocking setup script withholds this view, so no item can act on a hidden split.
     .focusedSceneValue(
       \.terminalSplitVisible,
-      sessions.isSplitVisible(for: target) && !store.hasModalPresentation)
+      sessions.isSplitVisible(for: target) && !store.hasModalPresentation
+    )
+    // Positioned from the hovered chip's own anchor (`TabChipAnchorKey`, set by `TerminalTabStrip`),
+    // resolved here rather than inside the strip — the strip sits in a `safeAreaInset` and may clip an
+    // overlay bleeding below it.
+    .overlayPreferenceValue(TabChipAnchorKey.self) { anchors in
+      GeometryReader { geo in
+        if case .visible(let tabID) = hoverPreview.phase,
+          let host = hoverPreview.previewHost,
+          let anchor = anchors[tabID]
+        {
+          let chipFrame = geo[anchor]
+          TerminalHoverPreviewOverlay(
+            host: host, title: sessions.tab(tabID, for: target)?.title ?? ""
+          )
+          .position(
+            x: chipFrame.midX,
+            y: chipFrame.maxY + TerminalHoverPreviewOverlay.estimatedTotalHeight / 2 + 6)
+        }
+      }
+    }
+    // "Hover ends" alone isn't a reliable teardown signal (Codex #8) — this view disappearing (target
+    // switch, split collapse, window close tearing down the hierarchy) must force it too.
+    .onDisappear { hoverPreview.forceTeardown() }
   }
 
   /// The layout the content area renders: the split when it's visible, else the focused solo tab.

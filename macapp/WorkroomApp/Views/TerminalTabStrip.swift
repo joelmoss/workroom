@@ -19,6 +19,9 @@ struct TerminalTabStrip: View {
   let activeID: TerminalTab.ID?
   let target: TerminalTarget
   @ObservedObject var sessions: TerminalSessions
+  /// Owned by `WorkroomTerminalsView` (one per target) — this strip only drives it, it does not own
+  /// its own instance (eng review D4, Codex #7 — the original draft stated both, contradictorily).
+  @ObservedObject var hoverPreview: TerminalHoverPreviewController
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
   @EnvironmentObject var agentManager: TerminalAgentManager
@@ -149,11 +152,13 @@ struct TerminalTabStrip: View {
         // A ✦ badge marks any tab with a live diagnosis (issue #49) — the per-tab signal that
         // complements the active tab's diagnosis shown in the detail-panel status bar.
         let agentBadge = agentManager.banners[tab.id] != nil
+        let previewEligible = sessions.isPreviewEligible(tab, for: target)
         TerminalTabChip(
           tab: tab, isActive: tab.id == activeID, isHovered: isHovered,
           isDragging: isDragging, hasActivity: hasActivity, runState: runState,
           showLeadingSeparator: showsLeadingSeparator(at: index),
           isGrouped: groupMembers.contains(tab.id),
+          previewEligible: previewEligible,
           agentBadge: agentBadge, onAgentTap: { agentPopoverTab = tab.id }
         ) {
           store.requestCloseTerminalTab(tab.id, for: target)
@@ -166,7 +171,15 @@ struct TerminalTabStrip: View {
           agentPopover(for: tab)
         }
         .onHover { inside in
-          if inside { hoveredTab = tab.id } else if hoveredTab == tab.id { hoveredTab = nil }
+          if inside {
+            hoveredTab = tab.id
+            if previewEligible, draggingID == nil {
+              hoverPreview.armHover(tab: tab, target: target)
+            }
+          } else if hoveredTab == tab.id {
+            hoveredTab = nil
+            hoverPreview.cancelHover()
+          }
         }
         .onTapGesture {
           // Eager: select on the first click (changes `active.id`; the view's .onChange hook
@@ -189,7 +202,11 @@ struct TerminalTabStrip: View {
         .gesture(
           DragGesture(minimumDistance: 6, coordinateSpace: .global)
             .onChanged { value in
-              if draggingID == nil { draggingID = tab.id }
+              if draggingID == nil {
+                draggingID = tab.id
+                // A drag starting mid-dwell must not still resolve/mount.
+                hoverPreview.cancelHover()
+              }
               guard draggingID == tab.id else { return }
               dragTranslation = value.translation.width
               // Dragged down over the pane area → preview a drop-into-pane (the strip stops gapping).
@@ -481,6 +498,10 @@ private struct TerminalTabChip: View {
   /// A member of a split group — its fill insets so it sits *inside* the group's bracket, never
   /// overrunning it (the bracket hugs the chip run, so a full-bleed pill would cover the border).
   let isGrouped: Bool
+  /// Whether a hover-preview may fire for this chip (`TerminalSessions.isPreviewEligible`) — suppresses
+  /// the native `.help` tooltip so hovering doesn't show both a tooltip and (after the dwell) a live
+  /// preview. Computed by the strip, which has the model access this presentational view doesn't.
+  let previewEligible: Bool
   /// A ✦ badge marking an available inline-agent diagnosis (issue #49); tapping opens its popover.
   var agentBadge: Bool = false
   var onAgentTap: () -> Void = {}
@@ -608,6 +629,10 @@ private struct TerminalTabChip: View {
         Color.clear.preference(key: TabWidthKey.self, value: [tab.id: geo.size.width])
       }
     }
+    // The chip's own on-screen geometry, for the hover-preview overlay to anchor itself against —
+    // resolved by the consumer in its own coordinate space (`.overlayPreferenceValue`), same idiom as
+    // `TabWidthKey` above but capturing geometry instead of a resolved width.
+    .anchorPreference(key: TabChipAnchorKey.self, value: .bounds) { [tab.id: $0] }
     // Only the focused tab is outlined: unfocused tabs have a transparent border so they recede into
     // the strip, and the focused tab's outline is a stronger stroke (`fgDim`, not the old `border`
     // hairline) so it reads as clearly selected rather than washed out. Grouped tabs are framed by the
@@ -645,7 +670,12 @@ private struct TerminalTabChip: View {
     // For a content tab the full name is its PATH (issue #136): the chip shows only the basename, so
     // two `user.rb` tabs from different directories are otherwise indistinguishable without opening
     // each one. The close button's own `.help` (inner) wins when the cursor is over the ✕.
-    .help(tab.filePath ?? tab.title)
+    //
+    // Suppressed when a hover-preview is eligible to fire (eng review D4/1B): keying suppression on
+    // `hasSurface` alone would ALSO suppress it on an already-visible tab, which never gets a preview
+    // (v1 scope) — silently dropping the tooltip with nothing replacing it. `previewEligible` already
+    // encodes the exact condition a preview needs, so the two can't drift apart.
+    .modifier(OptionalHelp(text: tab.filePath ?? tab.title, enabled: !previewEligible))
     .accessibilityIdentifier("terminal.tab.\(tab.title)")
     // The running state is otherwise conveyed ONLY by the flowing underline above — invisible to
     // VoiceOver, and unassertable in XCUITest. `GhosttyActionDispatchUITests` reads this to prove
@@ -663,6 +693,30 @@ private struct TabWidthKey: PreferenceKey {
     value: inout [TerminalTab.ID: CGFloat], nextValue: () -> [TerminalTab.ID: CGFloat]
   ) {
     value.merge(nextValue()) { _, new in new }
+  }
+}
+
+/// Collects each tab chip's on-screen bounds, for the hover-preview overlay's positioning.
+struct TabChipAnchorKey: PreferenceKey {
+  static var defaultValue: [TerminalTab.ID: Anchor<CGRect>] = [:]
+  static func reduce(
+    value: inout [TerminalTab.ID: Anchor<CGRect>], nextValue: () -> [TerminalTab.ID: Anchor<CGRect>]
+  ) {
+    value.merge(nextValue()) { _, new in new }
+  }
+}
+
+/// Applies `.help(text)` only when `enabled` — used to suppress a chip's tooltip precisely when a
+/// hover-preview is eligible to fire instead (see the `.modifier(OptionalHelp(...))` call site).
+private struct OptionalHelp: ViewModifier {
+  let text: String
+  let enabled: Bool
+  func body(content: Content) -> some View {
+    if enabled {
+      content.help(text)
+    } else {
+      content
+    }
   }
 }
 

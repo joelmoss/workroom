@@ -593,6 +593,16 @@ final class TerminalSessions: ObservableObject {
     return []
   }
 
+  /// Whether a hover-preview may fire for this tab: it needs a live surface, and it must NOT already be
+  /// on screen — v1 shows no preview for an already-visible tab (re-parenting a currently-mounted
+  /// surface risks the blank-pane bug issue #3 already fixed once). Shared between the tab strip's
+  /// `.help` suppression and the hover controller's own arm gate so the two conditions can't drift
+  /// apart (eng review D4/1B — the original draft keyed suppression on `hasSurface` alone, which
+  /// silently dropped the tooltip on a tab that would never get a preview).
+  func isPreviewEligible(_ tab: TerminalTab, for target: TerminalTarget) -> Bool {
+    tab.surface?.hasSurface == true && !visibleTabIDs(for: target).contains(tab.id)
+  }
+
   // MARK: Lifecycle
 
   /// Create the target's first terminal the first time its pane appears. Once opened, an emptied tab
@@ -1326,11 +1336,44 @@ final class TerminalSessions: ObservableObject {
 
   // MARK: Occlusion (A4 / issue #3)
 
-  /// One reconciliation pass: exactly the on-screen tabs render; every other surface for the target is
-  /// paused (its shell keeps running — `setVisible(false)` toggles GPU occlusion, not the PTY). Called
-  /// from every state change that can alter what's on screen (focus / split / close / move / reap).
+  /// A hover-preview's claim on a background tab's occlusion, one per target. Carries a session token
+  /// (not just the tab id) because two sequential hover sessions of the *same* tab — hover, leave,
+  /// re-hover before the first session's async teardown completes — are otherwise indistinguishable by
+  /// tab id alone, letting an old session's teardown wrongly clear a newer session's still-active claim.
+  private struct PreviewClaim {
+    let tabID: TerminalTab.ID
+    let session: Int
+  }
+
+  @Published private var previewClaims: [TerminalTarget.ID: PreviewClaim] = [:]
+
+  /// The hover-preview controller's *only* way to keep a background tab's surface un-occluded. Never
+  /// call `surface.setVisible` directly from outside this file — `reconcileOcclusion` below is the
+  /// sole writer of occlusion state, and these two methods are the sole way to influence it for a
+  /// preview. Mirrors the same call immediately, so the claim takes effect synchronously.
+  func beginPreview(_ tabID: TerminalTab.ID, session: Int, for target: TerminalTarget) {
+    previewClaims[target.id] = PreviewClaim(tabID: tabID, session: session)
+    reconcileOcclusion(for: target)
+  }
+
+  /// Clears the claim ONLY if `session` still matches the current claim for this target — an older,
+  /// superseded session's teardown must not clobber a newer session's still-active claim (see
+  /// `PreviewClaim`'s doc comment). A stale `endPreview` call is therefore a safe no-op.
+  func endPreview(_ tabID: TerminalTab.ID, session: Int, for target: TerminalTarget) {
+    guard previewClaims[target.id]?.session == session else { return }
+    previewClaims[target.id] = nil
+    reconcileOcclusion(for: target)
+  }
+
+  /// One reconciliation pass: exactly the on-screen tabs render, plus any tab a hover-preview has
+  /// claimed for this target; every other surface for the target is paused (its shell keeps running —
+  /// `setVisible(false)` toggles GPU occlusion, not the PTY). Called from every state change that can
+  /// alter what's on screen (focus / split / close / move / reap), and from `beginPreview`/`endPreview`.
   func reconcileOcclusion(for target: TerminalTarget) {
-    let visible = Set(visibleTabIDs(for: target))
+    var visible = Set(visibleTabIDs(for: target))
+    if let claim = previewClaims[target.id] {
+      visible.insert(claim.tabID)
+    }
     for tab in (tabsByTarget[target.id] ?? [:]).values {
       // Only terminal tabs own a GPU surface to occlude; a content tab (diff) pauses itself by
       // unmounting from the window when it leaves the screen, so there's nothing to toggle here.

@@ -168,3 +168,34 @@ final class TerminalFocusAdoptionLiveSurfaceTests: XCTestCase {
       view.focusSyncCount, 1, "createSurface must re-sync focus for the first-responder view")
   }
 }
+
+/// `hasSurface` and `isPaneVisibleForTesting` — the two testing seams the hover-preview feature added
+/// (`GhosttySurfaceView.swift`).
+@MainActor
+final class GhosttySurfaceViewHoverPreviewSeamTests: XCTestCase {
+  func testHasSurfaceReflectsCreationAndTearDown() {
+    let window = NSWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+      styleMask: [.titled], backing: .buffered, defer: true)
+    let view = GhosttySurfaceView(
+      workingDirectory: NSTemporaryDirectory(), command: nil, spawnsSurface: true)
+    XCTAssertFalse(view.hasSurface, "not attached to a window yet — no surface")
+
+    view.frame = window.contentView!.bounds
+    window.contentView!.addSubview(view)
+    XCTAssertTrue(view.hasSurface, "attaching to a window creates the surface")
+
+    view.tearDown()
+    XCTAssertFalse(view.hasSurface, "tearDown must clear the surface")
+  }
+
+  func testIsPaneVisibleForTestingReflectsSetVisible() {
+    let view = GhosttySurfaceView(
+      workingDirectory: NSTemporaryDirectory(), command: nil, spawnsSurface: false)
+    XCTAssertTrue(view.isPaneVisibleForTesting, "a fresh view defaults to visible")
+    view.setVisible(false)
+    XCTAssertFalse(view.isPaneVisibleForTesting)
+    view.setVisible(true)
+    XCTAssertTrue(view.isPaneVisibleForTesting)
+  }
+}

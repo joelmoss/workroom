@@ -22,6 +22,11 @@ final class GhosttySurfaceView: NSView {
   /// runtime callbacks (via `ghostty_surface_userdata`) read it; all writes happen on the main thread.
   nonisolated(unsafe) private(set) var surface: ghostty_surface_t?
 
+  /// Whether this view has a live surface right now — `surface` is `private(set)`, so this is how
+  /// outside callers (the hover-preview feature) test "does this tab have something to preview"
+  /// without reaching into the raw C handle.
+  var hasSurface: Bool { surface != nil }
+
   /// Set once `tearDown()` runs — the view is dead and must NEVER re-spawn its surface. SwiftUI/AppKit
   /// can re-mount a still-referenced view after its tab closed (a `closeTab` teardown racing a pending
   /// view update); without this, `viewDidMoveToWindow` → `createSurface` would relaunch the command on
@@ -527,6 +532,11 @@ final class GhosttySurfaceView: NSView {
     isPaneVisible = visible
     applyOcclusionState()
   }
+
+  /// Unit-test seam: `isPaneVisible` is otherwise private, and a view with no real surface (the common
+  /// case in tests — `createSurface` only runs once the view enters a window) has no other observable
+  /// signal that `setVisible` was actually called with a given value.
+  var isPaneVisibleForTesting: Bool { isPaneVisible }
 
   private func updateWindowVisibility() {
     let visible = window?.occlusionState.contains(.visible) ?? true
