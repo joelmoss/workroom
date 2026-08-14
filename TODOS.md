@@ -1729,6 +1729,122 @@ rail draws marks and miniatures instead.
 
 **Priority:** P3 for all five.
 
+### A live "all terminals" mini-viewer — revisit, the old premise was wrong (macapp), filed 2026-08-14
+
+**What:** re-examined the standing belief that a live dashboard of many running terminals ("show every
+pane, with a detail view") isn't possible because libghostty doesn't support it. **That's not what
+happened, and it's worth correcting in place rather than re-citing.** The only thing actually built and
+shipped under #132 was OS-level capture (`8a1d2547`, "rail thumbnails via own-window capture") —
+`SCShareableContent.currentProcess`, no TCC/permission, real pixels confirmed end-to-end. It was
+**reverted** (`455d28e8`) and replaced by hue+monogram marks (`8de09cba`) for a UX reason — "an
+aspect-fit terminal thumbnail at card size is a grey smudge that looks like every other terminal" — not
+a technical block. **libghostty was never in that path at all**; the capture happened entirely at the
+AppKit/ScreenCaptureKit layer, over the window's on-screen pixels.
+
+**Hard requirement (stated explicitly, 2026-08-14): the mini view must be identical to the full pane,
+not a resized/reflowed one.** Ruled out on that basis: shrinking a pane by calling
+`ghostty_surface_set_size`/reducing font-size recomputes columns/rows, which reflows text and sends a
+real resize signal to whatever's running in the pane (confirmed existing behavior at this pin —
+`QA-libghostty.md:18-19`, "resize the window → reflows cleanly"). That's a different render of the same
+session, not a miniature of the current one, and it's structurally exclusive with the real pane (same
+NSView, one superview at a time — can't show both at once). Ruled out for that reason, not revisited
+below.
+
+**Validated path: a continuous `SCStream`, not the one-shot capture #132 used.**
+`ScreenCaptureKit` has two capture modes; #132/T12 only used the weaker one (`SCScreenshotManager`,
+single frame per call). `SCStream` is a persistent stream that pushes fresh frames as the source
+changes, with **output width/height set independently of the source's real point size**
+(`SCStreamConfiguration`) — the compositor scales server-side. **Confirmed empirically, not assumed
+from docs (2026-08-14):** a standalone compiled Swift binary (`swiftc`, own process, no Xcode project)
+opened a real `NSWindow`, fetched `SCShareableContent.currentProcess`, built
+`SCContentFilter(desktopIndependentWindow:)`, and started a real `SCStream` against it —
+**31 frames delivered over 3s, exit 0, no Screen Recording permission prompt, no TCC error.** Same
+own-process carve-out the one-shot method already used, now confirmed to extend to the continuous
+streaming API too, which was the actual open question this entry used to carry.
+
+Why this is the right fit for "identical, live, and doesn't monopolize the surface": the source pane's
+real `ghostty_surface_t` geometry is never touched — no `set_size`, no font change, no reflow, no
+resize signal to the child process. What's captured is the exact same columns/rows/content as the full
+pane, continuously, and — since it's compositor pixels, not the `NSView` object itself — the same pane
+can be full-size in its tab **and** live in a preview simultaneously (see the hover-preview entry below,
+which is the concrete first use of this).
+
+**One real, unremovable constraint:** the source still has to be actually rendering and mounted
+on-screen for there to be anything to capture. A tab that libghostty has occluded (or a view AppKit
+isn't compositing at all — confirmed the case for a backgrounded tab, see the hover-preview entry) has
+no pixels to stream. This is physical, not a technique flaw — every approach that shows a live
+background pane costs the same GPU work the occlusion-skip optimization exists to avoid; `SCStream`
+only makes delivery continuous and correctly-scaled instead of manually re-polling a screenshot.
+
+**Two options considered and set aside, kept for context:**
+- `ghostty_surface_read_text` (VoiceOver's own poll target, live regardless of on-screen visibility) —
+  ruled out once "identical" became a hard requirement: `ghostty_text_s` is plain bytes, no
+  color/attribute/cursor data, so it can never be visually identical to the real pane.
+- Upstream **`libghostty-vt`** (new, unlinked cell/grid/color API) — still real, but a second dependency
+  to vendor; `SCStream` gets the same "live and colored" result today with zero new dependency.
+
+**Depends on:** nothing to start. The concrete first application is the hover-preview entry below.
+
+**Priority:** P3 — no user complaint driving this; filed so the next person doesn't re-derive "we looked
+into this, wasn't possible" from a premise that was never quite right, and doesn't re-litigate the
+capture-mode question this entry just closed out empirically.
+
+### Tab-hover live mini-preview (macapp) — first concrete use of the `SCStream` finding above, planned 2026-08-14
+
+**What:** hovering a terminal tab chip shows a small **live**, pixel-identical preview of that pane —
+the first real feature built on the `SCStream` validation above, scoped down from "a dashboard of every
+terminal" to "one pane, on hover."
+
+**The one thing that makes this non-trivial, checked in the actual view code, not assumed:**
+`TerminalContainerView.swift:66-70` — "occlusion is driven by the model... a surface removed from the
+window pauses via `viewDidMoveToWindow`" — confirms a tab that is **not** the currently-displayed one in
+its strip has its `GhosttySurfaceView` fully detached from any window (`mount(in:)` at
+`TerminalContainerView.swift:82-83` explicitly detaches whatever was shown when a different tab is
+selected — "do NOT tear down — it lives on in the cache"). So for any tab that isn't already visible
+(the common case for a hover-preview), there is nothing on-screen for `SCStream` to capture *until* it's
+briefly re-mounted somewhere. The surface object itself is never destroyed — `TerminalTab.surface`
+(`TerminalSessions.swift:34`) holds it regardless of focus — so there's always something to re-home,
+never something to recreate.
+
+**How to start:**
+1. Debounce the hover (~150-200ms hover-intent delay, same shape as any tab-preview UX) before doing
+   anything — avoids mount/stream churn on a fast mouse sweep across several chips.
+2. Re-home the hovered tab's `GhosttySurfaceView` into a small preview-host container, reusing the exact
+   re-parenting mechanism `mount(in:)` already uses for split↔solo transitions (frame + autoresizing
+   mask, not AutoLayout — `TerminalContainerView.swift:85-89`'s own reasoning for why applies here too).
+   Do **not** reuse `TerminalContainerView` with `isFocusedPane: true` — pass `false` (or use a
+   dedicated minimal host that skips `applyFocus` entirely) so a hover can **never** claim first
+   responder or receive a keystroke. This is a correctness requirement, not polish.
+3. `setVisible(true)` (already what `mount` does) un-occludes it so it starts rendering again. **Not yet
+   measured: cold re-mount-to-first-frame latency.** The `SCStream` check above only proved streaming
+   works against an already-warm, already-visible window — it says nothing about how long a
+   just-unoccluded surface takes to produce its first composited frame. Spike and measure this before
+   any UI polish; if it's hundreds of ms the preview will feel sluggish and may need a skeleton/fade-in.
+4. Start an `SCStream` scoped via `SCContentFilter(desktopIndependentWindow:)` against the app's own real
+   window (own-process, confirmed no TCC above), sized to just the preview host's bounds — no separate
+   crop math needed for v1 (T12's crop-math module, `SnapshotSupport.swift`, still exists in git history
+   at `8a1d2547` if a later version needs to crop multiple regions from one shared capture instead of
+   one stream per hover).
+5. Render frames via `AVSampleBufferDisplayLayer.enqueue(_:)` — the idiomatic, cheap way to display a
+   live `CMSampleBuffer` feed, no manual per-frame `CGImage`/`NSImage` conversion.
+6. On hover-end: stop the stream, `removeFromSuperview()` the surface (re-triggers the existing
+   pause-on-detach path), and explicitly `setVisible(false)` too (belt-and-braces, not relying solely on
+   the detach side effect).
+7. **Fast tab-to-tab hovering must cancel the previous hover's mount+stream before starting the next** —
+   a plain generation counter or task cancellation. Flag explicitly: this codebase already has a filed,
+   confirmed gap in exactly this class of thing (`.task(id:)` cancellation not reliably delivered on an
+   in-place value swap — see that entry elsewhere in this file) — reuse its lesson rather than
+   rediscovering the same race here.
+
+**Scope for v1:** if the hovered tab is already one of the currently-visible split members, skip steps
+2-3 and 6 entirely — it's already mounted and rendering, so just start the stream against its existing
+on-screen region.
+
+**Depends on:** the `SCStream` validation above (done). Nothing else blocking.
+
+**Priority:** P3 — exploratory UI feature; the hard technical question (does continuous own-process
+capture need permission) is answered, what's left is UI/lifecycle engineering.
+
 ### Stream the inline terminal agent's diagnosis into the banner — #49 follow-up
 
 **What:** Show the diagnosis appearing live in the banner (claude `--output-format stream-json`)
