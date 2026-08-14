@@ -224,25 +224,26 @@ enum SessionPTY {
     _ = killpg(processID, SIGCONT)
   }
 
-  static func forceTerminate(processID: pid_t) -> Bool {
-    forceTerminate(processIDs: [processID]).isEmpty
-  }
-
-  static func forceTerminate(processIDs: [pid_t]) -> Set<pid_t> {
+  /// Every pid that must be signaled to end `processIDs`, captured by a parent-pid tree walk
+  /// BEFORE any signal goes out. A shell can `setsid()` a descendant into its own new session (a
+  /// deliberate double fork, rare but not impossible from inside a persisted shell) — at that
+  /// point it's escaped both `killpg` (process-group scoping) and the `getsid`-based matching in
+  /// `forceTerminate` (session scoping), since it is now the leader of a session nothing here is
+  /// tracking. Snapshotting by PARENT pid, once, up front, finds it anyway: whatever session it
+  /// has since made itself leader of, its ppid still chains back to a root here (unless an
+  /// intermediate ancestor has ALREADY exited and been reparented to launchd — a real but much
+  /// narrower race than the one this closes, and not one `pkill`-style tooling solves without pid
+  /// namespaces either). Callers that also close a session's pty master (itself a kernel-level
+  /// hangup that can kill the root out from under a later snapshot) must call this FIRST, before
+  /// that close, then pass the result to `forceTerminate(targets:)`.
+  static func terminationTargets(for processIDs: [pid_t]) -> Set<pid_t> {
     let roots = Set(processIDs.filter { $0 > 0 })
     guard !roots.isEmpty else { return [] }
-    // A shell can `setsid()` a descendant into its OWN new session (a deliberate double fork, rare
-    // but not impossible from inside a persisted shell) — at that point it's escaped both `killpg`
-    // (process-group scoping) and the `getsid`-based matching below (session scoping), since it is
-    // now the leader of a session nothing here is tracking. Snapshotting the process tree by
-    // PARENT pid, once, up front, finds it anyway: whatever session it has since made itself
-    // leader of, its ppid still chains back to a root here (unless an intermediate ancestor has
-    // ALREADY exited and it's been reparented to launchd — a real but much narrower race than the
-    // one this closes, and not one `pkill`-style tooling solves without pid namespaces either).
-    // Each descendant is tracked as its own additional target, so the existing per-session
-    // signal/wait loop below needs no other change to reach it.
-    let targets = roots.union(descendantProcessIDs(of: roots))
+    return roots.union(descendantProcessIDs(of: roots))
+  }
 
+  static func forceTerminate(targets: Set<pid_t>) -> Set<pid_t> {
+    guard !targets.isEmpty else { return [] }
     signalSessions(targets, signal: SIGTERM)
     let resistant = waitForSessionsExit(targets, attempts: gracefulTerminationAttempts)
     guard !resistant.isEmpty else { return [] }
