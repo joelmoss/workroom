@@ -236,6 +236,88 @@ final class SessionDaemonEndToEndTests: XCTestCase {
     lister.closeConnection()
   }
 
+  /// Regression test for the "`setsid()`-spawned children can fork their own descendants that
+  /// escape the daemon's forced cleanup" finding: a child that detaches into its own new session
+  /// escapes both `killpg` (process-group scoping) and the old `getsid`-based matching (session
+  /// scoping), since it becomes the leader of a session nothing was tracking. Uses a real detached
+  /// grandchild (perl's `setsid()`, not a simulation) and observes its actual pid from outside the
+  /// daemon.
+  func testKillAllReachesASetsidGrandchild() throws {
+    let harness = try SessionDaemonHarness.start()
+    defer { harness.stop() }
+
+    let workDirectory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("wr-setsid-\(UUID().uuidString.prefix(8))")
+    try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: workDirectory) }
+
+    let pidFile = workDirectory.appendingPathComponent("grandchild.pid")
+    let scriptFile = workDirectory.appendingPathComponent("detach.sh")
+    let script = """
+      #!/bin/sh
+      perl -MPOSIX=setsid -e '
+        setsid();
+        open(F, ">", $ARGV[0]) or exit 1;
+        print F $$;
+        close F;
+        while (1) { sleep 1 }
+      ' "$1" &
+      exec cat
+      """
+    try script.write(to: scriptFile, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes(
+      [.posixPermissions: 0o755], ofItemAtPath: scriptFile.path)
+
+    let identifier = SessionIdentifier(UUID())
+    var client = try SessionTestClient.connect(socketPath: harness.socketPath)
+    let attach = SessionAttachRequest(
+      identifier: identifier,
+      columns: 80,
+      rows: 24,
+      workingDirectory: workDirectory.path,
+      command: "/bin/sh \(scriptFile.path) \(pidFile.path)",
+      shell: "/bin/sh",
+      resourcesDirectory: "",
+      environment: [
+        SessionEnvironmentEntry(key: "TERM", value: "dumb"),
+        SessionEnvironmentEntry(key: "PATH", value: "/bin:/usr/bin"),
+      ])
+    try client.send(SessionFrame(kind: .attach, payload: attach.encoded()))
+    _ = try client.wait(for: .attached, timeout: 3)
+
+    let startDeadline = Date().addingTimeInterval(3)
+    var grandchildPID: pid_t = 0
+    while Date() < startDeadline {
+      if let contents = try? String(contentsOf: pidFile, encoding: .utf8),
+        let pid = pid_t(contents.trimmingCharacters(in: .whitespacesAndNewlines))
+      {
+        grandchildPID = pid
+        break
+      }
+      usleep(20_000)
+    }
+    XCTAssertGreaterThan(grandchildPID, 0, "the setsid'd grandchild never started")
+    XCTAssertEqual(kill(grandchildPID, 0), 0, "the grandchild should be alive before killAll")
+
+    var killer = try SessionTestClient.connect(socketPath: harness.socketPath)
+    try killer.send(SessionFrame(kind: .killAll))
+    _ = try killer.wait(for: .acknowledged, timeout: 3)
+    killer.closeConnection()
+
+    let goneDeadline = Date().addingTimeInterval(3)
+    var stillAlive = true
+    while Date() < goneDeadline {
+      if kill(grandchildPID, 0) != 0 {
+        stillAlive = false
+        break
+      }
+      usleep(20_000)
+    }
+    XCTAssertFalse(stillAlive, "a setsid'd grandchild must not survive killAll")
+
+    client.closeConnection()
+  }
+
   func testVersionMismatchIsRefused() throws {
     let harness = try SessionDaemonHarness.start()
     defer { harness.stop() }

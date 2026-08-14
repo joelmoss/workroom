@@ -167,10 +167,29 @@ in descending order of how much it matters:
    (six sessions with a bulky metadata title, each individually well under the frame cap but
    summing past it) reproduces the exact poisoning — `frameTooLarge(1200592)` — with the guard
    disabled, and gets a clean `.failure` with it restored.
-5. **`setsid()`-spawned children can fork their own descendants that escape the daemon's forced
-   cleanup.** `killpg` on the session's process group covers ordinary shell children, but a
-   deliberately double-forking/re-`setsid`'d grandchild (rare, but not impossible from inside a
-   persisted shell) can survive a `killAll`/teardown.
+5. ~~**`setsid()`-spawned children can fork their own descendants that escape the daemon's forced
+   cleanup.**~~ **FIXED, and the first attempt exposed a second, sharper bug.** `killpg` (the soft
+   `terminate()` used by `closeMaster`) and the old `getsid`-based matching (`forceTerminate`) both
+   scope by session/group, so a deliberately double-forking/re-`setsid`'d grandchild — now the
+   leader of a session nothing was tracking — escaped both. Fixed with a one-time, upfront
+   parent-pid tree walk (`SessionPTY.descendantProcessIDs`, sharing a `snapshotProcesses()` scan
+   with the existing `sessionProcessIDs`): every transitive descendant of the root pid is tracked
+   as its own additional signal target, found by ancestry rather than by whatever
+   session/group it has since made itself leader of.
+   **What the first version of this fix missed, caught by the regression test itself:** `endSession`/
+   `endSessions` call `closeMaster` (the soft `killpg`+`SIGHUP`) BEFORE `forceTerminate` — and SIGHUP's
+   default disposition is terminate, so that soft signal was reliably killing the session's shell
+   moments before `forceTerminate`'s own tree-walk snapshot ran, reparenting the detached grandchild to
+   launchd and erasing the very parent-pid link the walk depends on. The real fix needed the snapshot to
+   happen before ANY signal in the sequence, not just before the hard one — `closeMaster` now takes a
+   `signalProcess` flag (added for the PID-reuse fix above) and both force-path callers suppress the
+   soft signal, since `forceTerminate` immediately following is both more thorough and (with this fix)
+   the thing that actually needs to see the tree intact.
+   Red/green-verified with a REAL detached grandchild, not a simulation:
+   `SessionDaemonEndToEndTests.testKillAllReachesASetsidGrandchild` spawns a shell that backgrounds a
+   perl process calling `setsid()`, confirms it's alive from outside the daemon, sends `.killAll`, and
+   asserts the grandchild's pid is actually gone. Fails (reproducing survival) with either half of the
+   fix reverted on its own, passes with both restored.
 6. **`TerminalSessions.assignedSessionID`'s `isQuickTerminal` parameter is dead.** No caller passes
    `true` for it any more (the quick-terminal exclusion is handled elsewhere in
    `TerminalPersistentSessionPolicy` now) — cosmetic, but confusing for the next reader trying to
@@ -190,8 +209,7 @@ in the common path — they're edge cases (process launch races, resource exhaus
 windows, an encoding ceiling, escaping cleanup, dead code) that are real but lower-value than the
 three fixed directly.
 
-**Priority:** P2. (1)-(4) are fixed (see above) — what remains is (5) and (6), lower-value edge cases
-none of which have been reported in the wild yet.
+**Priority:** P2. (1)-(5) are fixed (see above) — what remains is (6), cosmetic dead code, not a bug.
 
 ### Bump the libghostty pin (macapp) — SHIPPED, 2026-08-13
 

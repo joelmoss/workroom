@@ -229,8 +229,19 @@ enum SessionPTY {
   }
 
   static func forceTerminate(processIDs: [pid_t]) -> Set<pid_t> {
-    let targets = Set(processIDs.filter { $0 > 0 })
-    guard !targets.isEmpty else { return [] }
+    let roots = Set(processIDs.filter { $0 > 0 })
+    guard !roots.isEmpty else { return [] }
+    // A shell can `setsid()` a descendant into its OWN new session (a deliberate double fork, rare
+    // but not impossible from inside a persisted shell) — at that point it's escaped both `killpg`
+    // (process-group scoping) and the `getsid`-based matching below (session scoping), since it is
+    // now the leader of a session nothing here is tracking. Snapshotting the process tree by
+    // PARENT pid, once, up front, finds it anyway: whatever session it has since made itself
+    // leader of, its ppid still chains back to a root here (unless an intermediate ancestor has
+    // ALREADY exited and it's been reparented to launchd — a real but much narrower race than the
+    // one this closes, and not one `pkill`-style tooling solves without pid namespaces either).
+    // Each descendant is tracked as its own additional target, so the existing per-session
+    // signal/wait loop below needs no other change to reach it.
+    let targets = roots.union(descendantProcessIDs(of: roots))
 
     signalSessions(targets, signal: SIGTERM)
     let resistant = waitForSessionsExit(targets, attempts: gracefulTerminationAttempts)
@@ -311,6 +322,48 @@ enum SessionPTY {
   }
 
   private static func sessionProcessIDs(sessionIDs: Set<pid_t>) -> [pid_t: [pid_t]]? {
+    guard let records = snapshotProcesses() else { return nil }
+    var members: [pid_t: [pid_t]] = [:]
+    for record in records {
+      let processID = record.kp_proc.p_pid
+      guard processID > 0 else { continue }
+      let sessionID = getsid(processID)
+      guard sessionIDs.contains(sessionID) else { continue }
+      members[sessionID, default: []].append(processID)
+    }
+    return members
+  }
+
+  /// Every transitive descendant of `roots`, found by walking parent-pid links rather than
+  /// session/group membership — the only way to still find a descendant that has `setsid()`'d
+  /// itself into its own session. Returns an empty set (never `nil`) on a scan failure: the caller
+  /// already falls back to signaling `roots` alone, exactly as it did before this existed.
+  private static func descendantProcessIDs(of roots: Set<pid_t>) -> Set<pid_t> {
+    guard let records = snapshotProcesses() else { return [] }
+    var childrenByParent: [pid_t: [pid_t]] = [:]
+    for record in records {
+      let processID = record.kp_proc.p_pid
+      guard processID > 0 else { continue }
+      childrenByParent[record.kp_eproc.e_ppid, default: []].append(processID)
+    }
+
+    var descendants: Set<pid_t> = []
+    var frontier = Array(roots)
+    while !frontier.isEmpty {
+      var next: [pid_t] = []
+      for parent in frontier {
+        for child in childrenByParent[parent] ?? []
+        where !descendants.contains(child) && !roots.contains(child) {
+          descendants.insert(child)
+          next.append(child)
+        }
+      }
+      frontier = next
+    }
+    return descendants
+  }
+
+  private static func snapshotProcesses() -> [kinfo_proc]? {
     let stride = MemoryLayout<kinfo_proc>.stride
     for _ in 0..<3 {
       var name: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL]
@@ -323,16 +376,7 @@ enum SessionPTY {
         guard errno == ENOMEM else { return nil }
         continue
       }
-
-      var members: [pid_t: [pid_t]] = [:]
-      for record in records.prefix(size / stride) {
-        let processID = record.kp_proc.p_pid
-        guard processID > 0 else { continue }
-        let sessionID = getsid(processID)
-        guard sessionIDs.contains(sessionID) else { continue }
-        members[sessionID, default: []].append(processID)
-      }
-      return members
+      return Array(records.prefix(size / stride))
     }
     return nil
   }

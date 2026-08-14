@@ -564,7 +564,13 @@ final class SessionDaemon {
   private func endSession(
     _ session: PTYSession, status: Int32, force: Bool = false, signalProcess: Bool = true
   ) -> Bool {
-    closeMaster(session, signalProcess: signalProcess)
+    // When `force` is set, `forceTerminate` runs right below and does its own, more thorough
+    // signaling (SIGTERM/SIGKILL, verified, and aware of setsid-detached descendants via a
+    // parent-pid walk) — so skip closeMaster's softer killpg(SIGHUP) here. Sending it first would
+    // very likely kill the session's shell immediately (SIGHUP's default disposition is
+    // terminate), which orphans any detached descendant to launchd BEFORE forceTerminate's own
+    // process-tree snapshot ever runs, defeating that walk for the exact case it exists to catch.
+    closeMaster(session, signalProcess: signalProcess && !force)
     guard !force || SessionPTY.forceTerminate(processID: session.processID) else {
       SessionLog.write("failed to stop session \(session.identifier.uuidString)")
       return false
@@ -574,7 +580,9 @@ final class SessionDaemon {
   }
 
   private func endSessions(_ endingSessions: [PTYSession], status: Int32) -> Bool {
-    for session in endingSessions { closeMaster(session) }
+    // Always force-path semantics here (there's no non-force `killAll`) — see endSession's doc
+    // comment for why closeMaster's soft signal must stay suppressed ahead of forceTerminate.
+    for session in endingSessions { closeMaster(session, signalProcess: false) }
     let failedProcessIDs = SessionPTY.forceTerminate(processIDs: endingSessions.map(\.processID))
     for session in endingSessions where !failedProcessIDs.contains(session.processID) {
       finishSession(session, status: status)
