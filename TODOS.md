@@ -1775,61 +1775,38 @@ only makes delivery continuous and correctly-scaled instead of manually re-polli
 into this, wasn't possible" from a premise that was never quite right, and doesn't re-litigate the
 capture-mode question this entry just closed out empirically.
 
-### Tab-hover live mini-preview (macapp) — first concrete use of the `SCStream` finding above, planned 2026-08-14
+### Tab-hover live mini-preview (macapp) — planned 2026-08-14, reviewed 2026-08-14, plan-eng-reviewed
 
-**What:** hovering a terminal tab chip shows a small **live**, pixel-identical preview of that pane —
-the first real feature built on the `SCStream` validation above, scoped down from "a dashboard of every
-terminal" to "one pane, on hover."
+**Superseded by a full plan + eng review** — this entry's original draft (SCStream-only,
+pixel-identical framing) is out of date; the reviewed plan corrected the architecture and closed 21
+findings (2 architecture, 2 code quality, 17 outside-voice via Codex — 3 cross-model tensions, 14 direct
+corrections). Full plan: `~/.claude/plans/ethereal-inventing-wolf.md` (eng review CLEAR, 0 unresolved).
+Summary for anyone picking this up without the plan file:
 
-**The one thing that makes this non-trivial, checked in the actual view code, not assumed:**
-`TerminalContainerView.swift:66-70` — "occlusion is driven by the model... a surface removed from the
-window pauses via `viewDidMoveToWindow`" — confirms a tab that is **not** the currently-displayed one in
-its strip has its `GhosttySurfaceView` fully detached from any window (`mount(in:)` at
-`TerminalContainerView.swift:82-83` explicitly detaches whatever was shown when a different tab is
-selected — "do NOT tear down — it lives on in the cache"). So for any tab that isn't already visible
-(the common case for a hover-preview), there is nothing on-screen for `SCStream` to capture *until* it's
-briefly re-mounted somewhere. The surface object itself is never destroyed — `TerminalTab.surface`
-(`TerminalSessions.swift:34`) holds it regardless of focus — so there's always something to re-home,
-never something to recreate.
+- **Hard requirements unchanged:** live (not a static snapshot), only live while actually hovered, and
+  the real pane's geometry (columns/rows) must never change — no `ghostty_surface_set_size` call, ever,
+  from this feature.
+- **Critical finding the original draft missed:** naively copying `TerminalContainerView.mount`'s
+  re-home code sets `view.frame` to the small preview size *before* `addSubview`, which triggers
+  `viewDidMoveToWindow` → `updateMetalLayerSize` → a real resize. Any implementation must never write
+  `.frame`/`.bounds`/`.autoresizingMask` on the surface.
+- **Architecture is now spike-first, two candidates, not SCStream-only:** (A) CALayer
+  `sublayerTransform` scale-compositing — mount the real surface untouched, shrink it via a visual
+  transform only; no new dependency, no capture pipeline; try this first. (B) The originally-planned
+  continuous `SCStream` capture — still validated (no TCC), but requires a dedicated real-size,
+  on-screen, unoccluded "parking" window per hover, whose actual unobtrusiveness is unverified (a Stage 0
+  spike question, not assumed). A third outcome (shelve the feature, or redefine the "identical"
+  requirement) is explicitly on the table if both candidates fail their spikes.
+- **Occlusion must go through a single writer:** `TerminalSessions.reconcileOcclusion` stays the only
+  caller of `surface.setVisible` — a hover claim is exposed via `beginPreview`/`endPreview(tab:session:
+  for:)` methods (per-target, session-tokened, not a bare tab id — two sequential hovers of the same tab
+  need to be distinguishable) that route through `reconcileOcclusion` themselves.
+- **Testability:** a minimal `Scheduling`/`FrameSource` seam (not a full second-backend abstraction) keeps
+  the state machine unit-testable without reopening a swappable-backend design.
 
-**How to start:**
-1. Debounce the hover (~150-200ms hover-intent delay, same shape as any tab-preview UX) before doing
-   anything — avoids mount/stream churn on a fast mouse sweep across several chips.
-2. Re-home the hovered tab's `GhosttySurfaceView` into a small preview-host container, reusing the exact
-   re-parenting mechanism `mount(in:)` already uses for split↔solo transitions (frame + autoresizing
-   mask, not AutoLayout — `TerminalContainerView.swift:85-89`'s own reasoning for why applies here too).
-   Do **not** reuse `TerminalContainerView` with `isFocusedPane: true` — pass `false` (or use a
-   dedicated minimal host that skips `applyFocus` entirely) so a hover can **never** claim first
-   responder or receive a keystroke. This is a correctness requirement, not polish.
-3. `setVisible(true)` (already what `mount` does) un-occludes it so it starts rendering again. **Not yet
-   measured: cold re-mount-to-first-frame latency.** The `SCStream` check above only proved streaming
-   works against an already-warm, already-visible window — it says nothing about how long a
-   just-unoccluded surface takes to produce its first composited frame. Spike and measure this before
-   any UI polish; if it's hundreds of ms the preview will feel sluggish and may need a skeleton/fade-in.
-4. Start an `SCStream` scoped via `SCContentFilter(desktopIndependentWindow:)` against the app's own real
-   window (own-process, confirmed no TCC above), sized to just the preview host's bounds — no separate
-   crop math needed for v1 (T12's crop-math module, `SnapshotSupport.swift`, still exists in git history
-   at `8a1d2547` if a later version needs to crop multiple regions from one shared capture instead of
-   one stream per hover).
-5. Render frames via `AVSampleBufferDisplayLayer.enqueue(_:)` — the idiomatic, cheap way to display a
-   live `CMSampleBuffer` feed, no manual per-frame `CGImage`/`NSImage` conversion.
-6. On hover-end: stop the stream, `removeFromSuperview()` the surface (re-triggers the existing
-   pause-on-detach path), and explicitly `setVisible(false)` too (belt-and-braces, not relying solely on
-   the detach side effect).
-7. **Fast tab-to-tab hovering must cancel the previous hover's mount+stream before starting the next** —
-   a plain generation counter or task cancellation. Flag explicitly: this codebase already has a filed,
-   confirmed gap in exactly this class of thing (`.task(id:)` cancellation not reliably delivered on an
-   in-place value swap — see that entry elsewhere in this file) — reuse its lesson rather than
-   rediscovering the same race here.
+**Depends on:** nothing blocking — Stage 0's spike is the very next step.
 
-**Scope for v1:** if the hovered tab is already one of the currently-visible split members, skip steps
-2-3 and 6 entirely — it's already mounted and rendering, so just start the stream against its existing
-on-screen region.
-
-**Depends on:** the `SCStream` validation above (done). Nothing else blocking.
-
-**Priority:** P3 — exploratory UI feature; the hard technical question (does continuous own-process
-capture need permission) is answered, what's left is UI/lifecycle engineering.
+**Priority:** P3 → actively being implemented (see the plan file's Implementation Tasks, T0-T6).
 
 ### Stream the inline terminal agent's diagnosis into the banner — #49 follow-up
 
