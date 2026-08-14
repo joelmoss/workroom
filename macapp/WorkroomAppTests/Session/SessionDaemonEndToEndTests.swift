@@ -192,6 +192,50 @@ final class SessionDaemonEndToEndTests: XCTestCase {
     client.closeConnection()
   }
 
+  /// Regression test for the "`SessionDescriptor.decodeList`'s wire encoding has no cap relative
+  /// to `SessionFrame`'s max frame size" finding: a `list` reply's size grows with both session
+  /// count and each session's client-supplied metadata, but unlike `.output` it's sent as a single
+  /// frame. Six sessions with a bulky metadata title comfortably clear `SessionFrame
+  /// .maximumPayloadSize` in aggregate while each individual `attach` stays well under it. The
+  /// daemon must refuse to build that oversized frame — sending it would poison the receiving
+  /// client's decoder outright (any reader that sees a declared length past the max permanently
+  /// fails), which is a stronger, more immediate failure than a timeout.
+  func testOversizedSessionListRepliesWithFailureNotAMalformedFrame() throws {
+    let harness = try SessionDaemonHarness.start()
+    defer { harness.stop() }
+
+    let bulkyTitle = String(repeating: "x", count: 200_000)
+    var clients: [SessionTestClient] = []
+    defer { for var client in clients { client.closeConnection() } }
+    for _ in 0..<6 {
+      let identifier = SessionIdentifier(UUID())
+      var client = try SessionTestClient.connect(socketPath: harness.socketPath)
+      let attach = SessionAttachRequest(
+        identifier: identifier,
+        columns: 80,
+        rows: 24,
+        workingDirectory: FileManager.default.temporaryDirectory.path,
+        command: "/bin/sh -c 'exec cat'",
+        shell: "/bin/sh",
+        resourcesDirectory: "",
+        environment: [
+          SessionEnvironmentEntry(key: "TERM", value: "dumb"),
+          SessionEnvironmentEntry(key: "PATH", value: "/bin:/usr/bin"),
+        ],
+        metadata: [SessionEnvironmentEntry(key: SessionMetadataKey.title, value: bulkyTitle)])
+      try client.send(SessionFrame(kind: .attach, payload: attach.encoded()))
+      _ = try client.wait(for: .attached, timeout: 3)
+      clients.append(client)
+    }
+
+    var lister = try SessionTestClient.connect(socketPath: harness.socketPath)
+    try lister.send(SessionFrame(kind: .list))
+    let reply = try lister.wait(for: .failure, timeout: 3)
+    let message = try SessionTextPayload.decode(reply.payload)
+    XCTAssertFalse(message.isEmpty)
+    lister.closeConnection()
+  }
+
   func testVersionMismatchIsRefused() throws {
     let harness = try SessionDaemonHarness.start()
     defer { harness.stop() }

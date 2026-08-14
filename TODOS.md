@@ -152,10 +152,21 @@ in descending order of how much it matters:
    nothing in the protocol surfaces that — so treat the code review (the vulnerable call site is
    simply gone from the reap path) as the other half of the verification, the same way other latent
    races in this file are closed by reasoning plus a behavioral pin rather than a flaky repro.
-4. **`SessionDescriptor.decodeList`'s wire encoding has no cap relative to `SessionFrame`'s max frame
-   size.** A host with enough concurrent persisted sessions (many projects, many tabs) could in
-   principle encode a `list` reply that exceeds the protocol's own frame-size ceiling, which would
-   fail in a way nothing currently tests for.
+4. ~~**`SessionDescriptor.decodeList`'s wire encoding has no cap relative to `SessionFrame`'s max
+   frame size.**~~ **FIXED, and the failure mode was worse than "fails somehow."** A `list`/`info`
+   reply's size grows with both session count (up to `maximumSessions`) and each session's
+   client-supplied metadata, but unlike `.output` (chunked across frames by `enqueueReplay`) it's a
+   single frame that `SessionControlClient.list` expects to decode whole. An oversized one wouldn't
+   just fail to decode — `SessionFrameDecoder.next()` permanently fails ANY reader the instant it
+   sees a declared length past `SessionFrame.maximumPayloadSize`, poisoning that connection for
+   every frame after. New `enqueueSessionList` checks the encoded payload against
+   `maximumPayloadSize` before ever building the frame and sends a `.failure` reply instead —
+   `SessionControlClient.list`'s existing `guard frame.kind == .sessions else { return nil }` already
+   treats any non-`.sessions` reply the same as a timeout, so no client-side change was needed.
+   Red/green-verified: `SessionDaemonEndToEndTests.testOversizedSessionListRepliesWithFailureNotAMalformedFrame`
+   (six sessions with a bulky metadata title, each individually well under the frame cap but
+   summing past it) reproduces the exact poisoning — `frameTooLarge(1200592)` — with the guard
+   disabled, and gets a clean `.failure` with it restored.
 5. **`setsid()`-spawned children can fork their own descendants that escape the daemon's forced
    cleanup.** `killpg` on the session's process group covers ordinary shell children, but a
    deliberately double-forking/re-`setsid`'d grandchild (rare, but not impossible from inside a
@@ -179,8 +190,8 @@ in the common path — they're edge cases (process launch races, resource exhaus
 windows, an encoding ceiling, escaping cleanup, dead code) that are real but lower-value than the
 three fixed directly.
 
-**Priority:** P2. (1), (2), and (3) are fixed (see above) — what remains is (4)-(6), lower-value edge
-cases none of which have been reported in the wild yet.
+**Priority:** P2. (1)-(4) are fixed (see above) — what remains is (5) and (6), lower-value edge cases
+none of which have been reported in the wild yet.
 
 ### Bump the libghostty pin (macapp) — SHIPPED, 2026-08-13
 
@@ -393,11 +404,102 @@ this was abandoned mid-session when it turned out to capture the whole display r
 target window (see the bump entry above) — needs either a window-scoped capture API or a human at
 the keyboard, not screen-wide automation.
 
+**Sharper target for whoever runs this, found while surveying the wider `332b2aef...35e1a016`
+upstream range (not just the diff of the terminfo file itself):** the `Se` change isn't a one-time
+fixed-escape swap. It was refined again after `\E[2 q`→`\E[0 q` — `Se` now restores whatever cursor
+style/blink the engine is *configured* with, paired with new default-cursor-style/blink options
+(ghostty `c19ce03b`, `42fcd58d`; both confirmed ancestors of our pinned `35e1a016`). So the right
+check is "does resetting after a TUI exit return to Workroom's actual configured default," not
+merely "does it emit `\E[0 q`" — a literal-escape assertion could pass while the dynamic-default
+behavior is still unverified.
+
 **Depends on:** nothing blocking — can start anytime. The two platform-constraint findings above
 mean whoever picks this up should design as a real XCUITest from the start, not attempt external
 AppleScript driving again.
 
 **Priority:** P3 — the manual checklist still covers this; nothing is unguarded, just unautomated.
+
+### Wire native `selection_changed` notification (macapp) — CMT-3 follow-up, unblocked by the pin bump, filed 2026-08-14
+
+**What:** `GhosttySurfaceView.startAccessibilityPolling`/`pollAccessibilityContent`
+(`GhosttySurfaceView.swift:990-1014`) drive VoiceOver's `.valueChanged`/`.selectedTextChanged` off a
+400ms `Timer`, gated cheaply on `NSWorkspace.shared.isVoiceOverEnabled` checked first each tick. The
+comment justifying the poll (lines 984-989) says libghostty has no per-frame content-changed callback
+to hook instead — true when CMT-3 shipped (2026-08-10), on the pre-bump engine. **Confirmed stale
+today** against the currently-linked header
+(`DerivedData/Build/Products/Debug/include/libghostty/ghostty.h:953`):
+`GHOSTTY_ACTION_SELECTION_CHANGED` exists on this exact pin, and `GhosttyRuntimeAdapter`'s action
+switch (`GhosttyRuntimeAdapter.swift:25-126`, `default:` fallback at 127) has no case for it — grepped,
+zero matches for `SELECTION_CHANGED` anywhere in `WorkroomApp` outside the vendored header.
+
+**Why:** replaces a 400ms poll with an engine-pushed event for the selection half of the a11y signal.
+Selection changes get announced immediately instead of up to 400ms late, and the poll's
+`readSelectionText()` call (the actual per-tick cost) only runs when the engine says something
+changed, instead of unconditionally on every tick while VoiceOver is on. The `.valueChanged` side
+(screen content) has no native hook in this action set and keeps polling — this only replaces the
+selection half, exactly as the original CMT-3 entry anticipated ("after the pin bump it comes from the
+engine as `GHOSTTY_ACTION_SELECTION_CHANGED`").
+
+**How to start:** the action carries no payload — checked the header's `ghostty_action_u` union, it has
+no `selection_changed` field, so it's a bare tag. Add a `case GHOSTTY_ACTION_SELECTION_CHANGED:` to
+`GhosttyRuntimeAdapter.handleAction` that resolves the view via `surfaceView(from: target)` and calls a
+new `view.handleSelectionChanged()` doing what `pollAccessibilityContent` already does for the
+selection half: `readSelectionText()`, diff against `lastAccessibilitySelectedText`, post
+`.selectedTextChanged` on change. Leave the poll running for `.valueChanged` until/unless a
+render-changed action shows up too.
+
+**Depends on:** nothing — the pin bump already landed (2026-08-13) and the header confirms the action
+tag exists on this exact linked build.
+
+**Priority:** P3 — no user-visible regression today (the poll works correctly), but it's a small,
+scoped cleanup the bump specifically unblocked, and the original CMT-3 entry already named it as the
+reason to revisit.
+
+### `ghostty_surface_tty_name` is available and unused (macapp) — filed 2026-08-14
+
+**What:** the pin bump also exposes `ghostty_surface_tty_name` (confirmed in the currently-linked
+header, `ghostty.h:1138`, right next to `ghostty_surface_foreground_pid` at `:1137` — which we DO
+already consume, for agent-backend recognition at `GhosttySurfaceView.swift:41`). `tty_name` has zero
+call sites anywhere in `WorkroomApp` (grepped).
+
+**Why it might matter:** session-daemon reattach and orphan-shell detection currently identify a pane's
+process by foreground-pgid + argv0 heuristics. A tty name is a firmer, OS-level identity than a pgid
+snapshot taken at one point in time — worth a look if a future reattach/process-matching bug turns out
+to need sturdier identity than pgid gives. Not chasing a known bug today; this is "available primitive,
+nobody has looked at it yet," filed so it isn't rediscovered from scratch.
+
+**Depends on:** nothing.
+
+**Priority:** P3 — no known bug this fixes today.
+
+### Re-benchmark surface-budget perf after the bump's upstream perf work (macapp) — filed 2026-08-14
+
+**What:** the 1.3.2 bump's ~1300 upstream commits (`332b2aef...35e1a016`) include a cluster of perf
+work landing in the same window as the leak/crash fixes the bump's QA actually measured: scrollback
+pages get LZ4-compressed once off-screen (`7e02af87`, upstream-reported "70-90% memory savings"),
+render-state lock hold time cut (`98a7c0f6`), VT processing throughput increased (`634957c8`,
+`2da015cd`), pty-read/parse pipelining added (`0535770e`, upstream-reported "+25-55% IO throughput"),
+and occluded surfaces now skip `updateFrame` entirely (`14d9e600`). All five are confirmed ancestors of
+our pinned `35e1a016` via the same compare range the bump's own QA walked. **None of this was in the
+bump's QA scope** — `QA-libghostty-results/2026-08-12-libghostty-1.3.2-bump.md` measured leak
+counts and small-N (10-20 pane) churn deltas, not throughput or memory-under-load at volume.
+
+**Why:** `QA-libghostty.md` §J ("Surface budget") already asks for exactly this measurement — open
+50-100 tabs, watch CPU/GPU/memory, confirm occluded tabs idle — but it's an unchecked box with no
+recorded baseline, not a measured "before" to diff against. This perf work is squarely what §J exists
+to catch, and the bump shipped straight through it unmeasured.
+
+**How to start:** open 50-100 tabs across projects/workrooms (§J's own scale), record RSS/CPU/GPU via
+Activity Monitor or `vmmap`, and specifically confirm a backgrounded/occluded tab's render cost drops
+(switch away from an animating `htop` pane and watch its cost fall — §J's own check). There is no
+existing 50-100 tab baseline to diff against on the old pin — record this as the first real number, not
+a comparison.
+
+**Depends on:** nothing — can run today.
+
+**Priority:** P2 — a real, upstream-claimed perf win sitting completely unmeasured on a pin we already
+shipped; worth confirming it landed for us, since it's the kind of thing surface-churn overhead could
+also be masking either direction.
 
 ### Own the GhosttyKit xcframework (macapp) — CMT-2, GA-time supply-chain decision
 
@@ -430,6 +532,12 @@ all — it bumps the package's own patch number and bails with `"main matches pa
 scheduled release"` when the package repo hasn't moved. Release-tag auto-detection existed up to
 package 1.2.9 and was **removed**. Five package releases in 17 days all shipped one engine. So when
 ghostty ships 1.4.0, nothing pulls it until one person edits a file.
+
+**Measured, not hypothetical (2026-08-14):** `ghostty-org/ghostty`'s own `main` is **652 commits
+ahead** of our pinned `35e1a016` (last moved 2026-07-10) — over a month of drift already, and
+counting. `libghostty-spm` has cut nothing since `1.3.2` (2026-07-27); its own `main` last moved
+2026-08-06 and is still building that same engine ref. Not urgent — nothing we need today is stuck
+behind it — but this is now a live, growing number, not a someday-risk.
 
 **How to start:** clone `ghostty-org/ghostty` at the chosen ref, decide deliberately which of the 11
 patches to carry (`0002-host-managed-io*` is load-bearing for embedding; the iOS/Catalyst ones are

@@ -291,15 +291,11 @@ final class SessionDaemon {
       SessionPTY.resize(
         masterDescriptor: session.masterDescriptor, columns: size.columns, rows: size.rows)
     case .list:
-      connection.enqueue(
-        SessionFrame(
-          kind: .sessions,
-          payload: SessionDescriptor.encodeList(sessions.values.map(\.descriptor))))
+      enqueueSessionList(sessions.values.map(\.descriptor), connection: connection)
     case .info:
       guard let identifier = try? SessionIdentifierPayload.decode(frame.payload) else { return }
       let matches = sessions[identifier].map { [$0.descriptor] } ?? []
-      connection.enqueue(
-        SessionFrame(kind: .sessions, payload: SessionDescriptor.encodeList(matches)))
+      enqueueSessionList(matches, connection: connection)
     case .kill:
       let stopped: Bool
       if let identifier = try? SessionIdentifierPayload.decode(frame.payload),
@@ -427,6 +423,32 @@ final class SessionDaemon {
         deadline: SessionClock.monotonicSeconds() + Self.redrawSettleSeconds,
         columns: current.columns, rows: current.rows)
     }
+  }
+
+  /// `SessionDescriptor.encodeList`'s wire encoding has no cap of its own relative to
+  /// `SessionFrame.maximumPayloadSize` — a `list` reply grows with both session COUNT (up to
+  /// `maximumSessions`) and each session's client-supplied metadata, and unlike `.output`
+  /// (`enqueueReplay`, chunked across multiple frames) a `.sessions` reply is a single frame that
+  /// callers (`SessionControlClient.list`) expect to decode whole. Enqueueing an oversized one
+  /// wouldn't just be slow — every reader's decoder, on ANY connection, permanently fails the
+  /// instant it sees a declared length past `maximumPayloadSize` (`SessionFrameDecoder.next()`
+  /// sets `failed = true` and throws `frameTooLarge` from then on), poisoning that connection.
+  /// Refuse to build that frame at all; the daemon is otherwise healthy; a `.failure` reply lets
+  /// the client's existing "no answer" handling apply cleanly rather than needing a new one.
+  private func enqueueSessionList(_ descriptors: [SessionDescriptor], connection: SessionConnection)
+  {
+    let payload = SessionDescriptor.encodeList(descriptors)
+    guard payload.count <= SessionFrame.maximumPayloadSize else {
+      SessionLog.write(
+        "session list payload (\(payload.count) bytes) exceeds the frame maximum "
+          + "(\(SessionFrame.maximumPayloadSize)); refusing to send a malformed frame")
+      connection.enqueue(
+        SessionFrame(
+          kind: .failure,
+          payload: SessionTextPayload.encode("too many sessions to list in a single reply")))
+      return
+    }
+    connection.enqueue(SessionFrame(kind: .sessions, payload: payload))
   }
 
   private func enqueueReplay(session: PTYSession, connection: SessionConnection) {
