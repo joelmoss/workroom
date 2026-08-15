@@ -2408,8 +2408,9 @@ final class AppStore: ObservableObject {
     }
     clearRunPidFile(for: target.id)
     // Backstop: a forked-free leaf (bin/dev/foreman in another pgroup) can outlive the supervisor —
-    // SIGKILL the captured session so it can't linger on the port.
-    waitForSessionsExit(sid > 1 ? [sid] : [], deadline: Date().addingTimeInterval(6)) {}
+    // SIGKILL the captured session so it can't linger on the port. No surfaces to poll here, so
+    // `views` is empty — this is `pollUntilExited`'s sessions-only, synchronous-empty-set path.
+    pollUntilExited([], sessions: sid > 1 ? [sid] : [], deadline: Date().addingTimeInterval(6)) {}
   }
 
   // MARK: Run command — graceful teardown (issue #7, Option B)
@@ -2462,6 +2463,13 @@ final class AppStore: ObservableObject {
   /// remains in those sessions, so a forked-free server is guaranteed dead before the caller frees the
   /// surface / quits — what makes teardown reliable for ANY run command, not just SIGINT-honouring ones
   /// (issue #7). Polling the surface (not just the session) keeps it unit-testable without a real PTY.
+  ///
+  /// Generalizes what used to be a separate `waitForSessionsExit(sids:deadline:then:)` (deleted): with
+  /// `views` empty, `surfacesDone` is vacuously true, reducing this to exactly a sessions-only wait —
+  /// the empty-set case still completes synchronously, so callers must already be off any libghostty
+  /// callback stack, same contract as before. The deadline branch signals every id in `sids` rather
+  /// than pre-filtering to only the still-live ones — behaviorally identical, since
+  /// `signalRunSession`/`runSessionMembers` already no-op for a session with no live members.
   private func pollUntilExited(
     _ views: [GhosttySurfaceView], sessions sids: [pid_t], deadline: Date,
     then: @escaping () -> Void
@@ -2480,29 +2488,6 @@ final class AppStore: ObservableObject {
     }
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
       self?.pollUntilExited(views, sessions: sids, deadline: deadline, then: then)
-    }
-  }
-
-  /// Poll until none of `sids` has a live member — i.e. everything the run command spawned has exited —
-  /// then run `then`. On `deadline`, SIGKILL whatever remains so the old server is guaranteed dead
-  /// before the caller respawns (the reliable, generic Restart/Stop ordering; issue #7). The empty-set
-  /// case completes synchronously, so callers must already be off any libghostty callback stack.
-  private func waitForSessionsExit(
-    _ sids: [pid_t], deadline: Date, then: @escaping () -> Void
-  ) {
-    let live = sids.filter { !runSessionMembers($0).isEmpty }
-    if live.isEmpty {
-      then()
-      return
-    }
-    if Date() >= deadline {
-      // Last resort — guarantee death before the caller respawns.
-      for sid in live { signalRunSession(sid, SIGKILL) }
-      then()
-      return
-    }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-      self?.waitForSessionsExit(sids, deadline: deadline, then: then)
     }
   }
 
