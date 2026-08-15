@@ -215,4 +215,22 @@ extension UnifiedDiff {
     flushReplacement()
     return rows
   }
+
+  /// Added/removed line counts across every hunk. Pure — callers (DiffViewer) compute this once
+  /// per load and cache it, the same as `sideBySideRows`/`IntraLineDiff.emphasis`, rather than
+  /// re-walking the diff on every render.
+  static func lineStats(for diff: UnifiedDiff) -> (additions: Int, removals: Int) {
+    var additions = 0
+    var removals = 0
+    for hunk in diff.hunks {
+      for line in hunk.lines {
+        switch line.kind {
+        case .addition: additions += 1
+        case .deletion: removals += 1
+        case .context: break
+        }
+      }
+    }
+    return (additions, removals)
+  }
 }

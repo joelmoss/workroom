@@ -69,6 +69,11 @@ struct DiffViewer: View {
   /// near-cap (2000-line) diff with long lines made that walk run long enough to trip a Sentry App
   /// Hang (WORKROOM-2S). The box makes AG's compare an O(1) reference check instead.
   @State private var sbsRows: SideBySideRows?
+  /// Added/removed line counts of the loaded diff, paired once in `load()` (same pattern as
+  /// `emphasis`/`sbsRows`) rather than recomputed by walking every hunk/line on each render
+  /// (`fileHeader` reads it on every highlight/theme/mode-flip re-render). `nil` until loaded, or
+  /// when there's no line diff.
+  @State private var loadedStats: (additions: Int, removals: Int)?
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   /// The global default diff layout (issue #66), used when this tab has no `viewModeOverride`. A
   /// narrow pane additionally falls back to unified (see `sideBySideMinWidth`).
@@ -214,23 +219,6 @@ struct DiffViewer: View {
     return Text(prefix).foregroundStyle(.tertiary) + Text(name)
   }
 
-  /// Added / removed line counts of the loaded diff (`nil` until loaded, or when there's no line diff).
-  private var loadedStats: (additions: Int, removals: Int)? {
-    guard case .loaded(let diff) = state else { return nil }
-    var additions = 0
-    var removals = 0
-    for hunk in diff.hunks {
-      for line in hunk.lines {
-        switch line.kind {
-        case .addition: additions += 1
-        case .deletion: removals += 1
-        case .context: break
-        }
-      }
-    }
-    return (additions, removals)
-  }
-
   /// Single-letter change symbol, matching the changeset file-list badges.
   private static func changeLetter(_ change: ChangedFile.Change) -> String {
     switch change {
@@ -280,9 +268,11 @@ struct DiffViewer: View {
       // Pair the side-by-side rows once here (same place/pattern as `emphasis`) — bounded by the
       // line cap, so the layout never re-pairs on a render-only update (highlight, theme).
       sbsRows = SideBySideRows(diff.hunks.map(UnifiedDiff.sideBySideRows(for:)))
+      loadedStats = UnifiedDiff.lineStats(for: diff)
     } else {
       emphasis = ([:], [:])
       sbsRows = nil
+      loadedStats = nil
     }
     loadToken &+= 1  // signal the highlight task to (re)build against this diff
   }

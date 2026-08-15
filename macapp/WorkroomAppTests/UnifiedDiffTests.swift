@@ -393,4 +393,44 @@ final class UnifiedDiffTests: XCTestCase {
     XCTAssertEqual(rows.map { $0.left?.text }, ["one", "two"])
     XCTAssertEqual(rows.map { $0.right?.text }, ["one", "two"])
   }
+
+  // MARK: - lineStats
+
+  func testLineStatsEmptyDiffIsZero() {
+    let diff = UnifiedDiff(hunks: [], truncated: false, renamedFrom: nil)
+    let stats = UnifiedDiff.lineStats(for: diff)
+    XCTAssertEqual(stats.additions, 0)
+    XCTAssertEqual(stats.removals, 0)
+  }
+
+  func testLineStatsCountsAdditionsAndRemovalsAcrossHunks() {
+    let diff = UnifiedDiff(
+      hunks: [
+        hunk([
+          line(.context, "ctx", old: 1, new: 1),
+          line(.deletion, "old", old: 2),
+          line(.addition, "new1", new: 2),
+          line(.addition, "new2", new: 3),
+        ]),
+        hunk([
+          line(.deletion, "old2", old: 10)
+        ]),
+      ], truncated: false, renamedFrom: nil)
+    let stats = UnifiedDiff.lineStats(for: diff)
+    XCTAssertEqual(stats.additions, 2)
+    XCTAssertEqual(stats.removals, 2)
+  }
+
+  func testLineStatsIgnoresContextLines() {
+    let diff = UnifiedDiff(
+      hunks: [
+        hunk([
+          line(.context, "one", old: 1, new: 1),
+          line(.context, "two", old: 2, new: 2),
+        ])
+      ], truncated: false, renamedFrom: nil)
+    let stats = UnifiedDiff.lineStats(for: diff)
+    XCTAssertEqual(stats.additions, 0)
+    XCTAssertEqual(stats.removals, 0)
+  }
 }
