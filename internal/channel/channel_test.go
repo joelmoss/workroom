@@ -28,6 +28,7 @@ func TestClassify(t *testing.T) {
 		{"v1.2.x", "", false}, // non-numeric
 		{"v1.2.3+build.5", Stable, true},
 		{"v2.0.0-beta.1+exp", Pre, true},
+		{"v1.2.3-", "", false}, // dangling hyphen, empty prerelease segment: excluded, not Stable
 	}
 	for _, tt := range tests {
 		t.Run(tt.tag, func(t *testing.T) {

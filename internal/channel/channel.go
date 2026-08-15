@@ -121,6 +121,9 @@ func splitSemver(tag string) (core, prerelease string, ok bool) {
 
 	core = v
 	if before, after, found := strings.Cut(v, "-"); found {
+		if after == "" {
+			return "", "", false
+		}
 		core, prerelease = before, after
 	}
 

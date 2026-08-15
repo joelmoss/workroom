@@ -51,6 +51,7 @@ expect "v1.2" "EXCLUDED"
 expect "v1.2.x" "EXCLUDED"
 expect "v1.2." "EXCLUDED"
 expect "v1..3" "EXCLUDED"
+expect "v1.2.3-" "EXCLUDED" # dangling hyphen, empty prerelease segment
 
 if [ "$fails" -ne 0 ]; then
   echo "channel-helper_test: $fails failure(s)" >&2

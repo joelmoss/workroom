@@ -45,7 +45,13 @@ wr_classify_channel() {
   fi
 
   if [ "$_wr_v" != "$_wr_core" ]; then
-    echo pre # had a prerelease suffix
+    # Had a "-": the part after the FIRST one is the prerelease segment. A dangling
+    # hyphen with nothing after it (e.g. "v1.2.3-") is not a valid prerelease tag.
+    _wr_pre="${_wr_v#*-}"
+    if [ -z "$_wr_pre" ]; then
+      return 1
+    fi
+    echo pre
   else
     echo stable
   fi
