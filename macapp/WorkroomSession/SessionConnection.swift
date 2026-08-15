@@ -59,7 +59,6 @@ final class PTYSession {
   var masterDescriptor: Int32
   var replay: SessionReplayBuffer
   var clientDescriptor: Int32?
-  var isEnding = false
   var metadata: [SessionEnvironmentEntry] = []
 
   private var pendingInput: [UInt8] = []

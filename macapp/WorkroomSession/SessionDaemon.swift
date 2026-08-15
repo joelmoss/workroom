@@ -554,7 +554,6 @@ final class SessionDaemon {
     sessionsByMaster.removeValue(forKey: session.masterDescriptor)
     SessionIO.close(session.masterDescriptor)
     session.masterDescriptor = -1
-    session.isEnding = true
     if signalProcess {
       SessionPTY.terminate(processID: session.processID)
     }
@@ -579,12 +578,16 @@ final class SessionDaemon {
     guard !force else {
       let targets = SessionPTY.terminationTargets(for: [session.processID])
       closeMaster(session, signalProcess: false)
-      guard SessionPTY.forceTerminate(targets: targets).isEmpty else {
+      // The master is closed either way, so the daemon can never serve this session again
+      // regardless of whether forceTerminate reports a failure — finishSession must run
+      // unconditionally or the session zombifies: still in `sessions`, masterDescriptor == -1,
+      // reachable by list/info/attach but never sent `.exited`.
+      let failed = !SessionPTY.forceTerminate(targets: targets).isEmpty
+      if failed {
         SessionLog.write("failed to stop session \(session.identifier.uuidString)")
-        return false
       }
       finishSession(session, status: status)
-      return true
+      return !failed
     }
     closeMaster(session, signalProcess: signalProcess)
     finishSession(session, status: status)
@@ -597,11 +600,14 @@ final class SessionDaemon {
     let targets = SessionPTY.terminationTargets(for: endingSessions.map(\.processID))
     for session in endingSessions { closeMaster(session, signalProcess: false) }
     let failedProcessIDs = SessionPTY.forceTerminate(targets: targets)
-    for session in endingSessions where !failedProcessIDs.contains(session.processID) {
+    // finishSession runs for every session regardless of forceTerminate's result — its master is
+    // already closed above either way, so leaving a "failed" session in `sessions` only zombifies
+    // it (see endSession's matching comment).
+    for session in endingSessions {
       finishSession(session, status: status)
-    }
-    for session in endingSessions where failedProcessIDs.contains(session.processID) {
-      SessionLog.write("failed to stop session \(session.identifier.uuidString)")
+      if failedProcessIDs.contains(session.processID) {
+        SessionLog.write("failed to stop session \(session.identifier.uuidString)")
+      }
     }
     return failedProcessIDs.isEmpty
   }
