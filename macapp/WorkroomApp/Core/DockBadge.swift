@@ -24,10 +24,11 @@ enum DockBadge {
   }
 
   /// The badge text for an unread count: `nil` clears the badge; the count is capped at "99+" to
-  /// match the in-app `UnreadBadge` pill. Pure, so it's unit-testable.
+  /// match the in-app `UnreadBadge` pill (the cap itself is owned by `UnreadCount.label`). Pure,
+  /// so it's unit-testable.
   static func label(for count: Int) -> String? {
     guard count > 0 else { return nil }
-    return count > 99 ? "99+" : "\(count)"
+    return UnreadCount.label(count)
   }
 
   /// The app icon with a red badge (white, bold `text`) drawn in the top-right corner.
