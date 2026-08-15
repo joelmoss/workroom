@@ -36,6 +36,8 @@ var updateCmd = &cobra.Command{
 		"side-by-side install (a `workroom-nightly` binary); see the install script's WORKROOM_CHANNEL.",
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		currentCommand = "update"
+
 		cfg, err := config.New("")
 		if err != nil {
 			return err
