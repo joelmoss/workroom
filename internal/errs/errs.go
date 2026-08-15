@@ -22,46 +22,58 @@ var (
 	ErrVCSCommand          = errors.New("version control command failed")
 )
 
+// classification is one sentinel error's entry in the registry: its stable --json code and
+// its process exit code. Kept in one table (a slice, not a map, so a future error that wraps
+// more than one sentinel resolves deterministically to the first match) instead of two
+// independently-hand-maintained switches, which had already drifted apart in shape: Code
+// switched on the sentinel, ExitCode re-derived its answer from Code's STRING OUTPUT rather
+// than the original error.
+type classification struct {
+	err      error
+	code     string
+	exitCode int
+}
+
+var registry = []classification{
+	{ErrInWorkroom, "InWorkroom", 3},
+	{ErrUnsupportedVCS, "UnsupportedVCS", 3},
+	{ErrNotDirectory, "NotADirectory", 3},
+	{ErrInvalidName, "InvalidName", 3},
+	{ErrDirExists, "DirExists", 3},
+	{ErrJJWorkspaceExists, "WorkspaceExists", 3},
+	{ErrGitWorktreeExists, "WorkspaceExists", 3},
+	{ErrJJWorkspaceNotFound, "WorkspaceNotFound", 3},
+	{ErrGitWorktreeNotFound, "WorkspaceNotFound", 3},
+	{ErrConfirmMismatch, "ConfirmationMismatch", 2},
+	{ErrUnsafeDeletePath, "UnsafeDeletePath", 2},
+	{ErrCancelled, "Cancelled", 4},
+	{ErrSetup, "SetupScriptFailed", 5},
+	{ErrTeardown, "TeardownScriptFailed", 5},
+	{ErrConfigRead, "ConfigReadFailed", 6},
+	{ErrConfigWrite, "ConfigWriteFailed", 6},
+	{ErrVCSCommand, "VCSCommandFailed", 1},
+}
+
+func classify(err error) (classification, bool) {
+	for _, c := range registry {
+		if errors.Is(err, c.err) {
+			return c, true
+		}
+	}
+	return classification{}, false
+}
+
 // Code returns a stable, machine-readable identifier for an error, suitable for
 // inclusion in the --json contract. Downstream consumers branch on the code, not
 // the human message (which may change). Unrecognised errors map to "InternalError".
 func Code(err error) string {
-	switch {
-	case err == nil:
+	if err == nil {
 		return ""
-	case errors.Is(err, ErrInWorkroom):
-		return "InWorkroom"
-	case errors.Is(err, ErrUnsupportedVCS):
-		return "UnsupportedVCS"
-	case errors.Is(err, ErrNotDirectory):
-		return "NotADirectory"
-	case errors.Is(err, ErrInvalidName):
-		return "InvalidName"
-	case errors.Is(err, ErrDirExists):
-		return "DirExists"
-	case errors.Is(err, ErrJJWorkspaceExists), errors.Is(err, ErrGitWorktreeExists):
-		return "WorkspaceExists"
-	case errors.Is(err, ErrJJWorkspaceNotFound), errors.Is(err, ErrGitWorktreeNotFound):
-		return "WorkspaceNotFound"
-	case errors.Is(err, ErrConfirmMismatch):
-		return "ConfirmationMismatch"
-	case errors.Is(err, ErrUnsafeDeletePath):
-		return "UnsafeDeletePath"
-	case errors.Is(err, ErrCancelled):
-		return "Cancelled"
-	case errors.Is(err, ErrSetup):
-		return "SetupScriptFailed"
-	case errors.Is(err, ErrTeardown):
-		return "TeardownScriptFailed"
-	case errors.Is(err, ErrConfigRead):
-		return "ConfigReadFailed"
-	case errors.Is(err, ErrConfigWrite):
-		return "ConfigWriteFailed"
-	case errors.Is(err, ErrVCSCommand):
-		return "VCSCommandFailed"
-	default:
-		return "InternalError"
 	}
+	if c, ok := classify(err); ok {
+		return c.code
+	}
+	return "InternalError"
 }
 
 // ExitCode maps an error to a stable process exit code so non-interactive callers
@@ -70,20 +82,11 @@ func Code(err error) string {
 //	0 success · 2 usage/validation · 3 domain precondition/not-found ·
 //	4 cancelled/no-op · 5 setup/teardown · 6 config read/write/parse · 1 internal.
 func ExitCode(err error) int {
-	switch Code(err) {
-	case "":
+	if err == nil {
 		return 0
-	case "ConfirmationMismatch", "UnsafeDeletePath":
-		return 2
-	case "UnsupportedVCS", "WorkspaceNotFound", "DirExists", "WorkspaceExists", "InvalidName", "InWorkroom", "NotADirectory":
-		return 3
-	case "Cancelled":
-		return 4
-	case "SetupScriptFailed", "TeardownScriptFailed":
-		return 5
-	case "ConfigReadFailed", "ConfigWriteFailed":
-		return 6
-	default:
-		return 1
 	}
+	if c, ok := classify(err); ok {
+		return c.exitCode
+	}
+	return 1
 }
