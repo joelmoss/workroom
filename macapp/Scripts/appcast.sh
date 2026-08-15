@@ -19,18 +19,40 @@ MIN_OS="14.0"
 # shellcheck source=channel-helper.sh
 . "${MACAPP_DIR}/Scripts/channel-helper.sh"
 
-# No signed fields → Sparkle isn't set up yet (no SPARKLE_PRIVATE_KEY). Skip without failing the
-# release, so the DMG still ships and auto-update activates once the key is configured.
+# release.sh always writes this file now, carrying an explicit SPARKLE_STATUS
+# (unconfigured|missing-tool|signed) instead of the file's mere presence standing in for "signed" —
+# a missing file here means release.sh itself never ran/wrote it, which is its own failure.
 if [ ! -f "$FIELDS" ]; then
-  echo "note: $FIELDS not found — DMG wasn't EdDSA-signed (set the SPARKLE_PRIVATE_KEY secret to" \
-    "enable the appcast). Skipping appcast publish." >&2
-  exit 0
+  echo "error: $FIELDS not found — Scripts/release.sh did not write it; cannot determine Sparkle signing status." >&2
+  exit 1
 fi
 
 # shellcheck disable=SC1090
-. "$FIELDS"  # SHORT_VERSION, BUILD_NUMBER, ENCLOSURE_ATTRS
+. "$FIELDS"  # SPARKLE_STATUS, SHORT_VERSION, BUILD_NUMBER, ENCLOSURE_ATTRS
+: "${SPARKLE_STATUS:?SPARKLE_STATUS required (missing from $FIELDS)}"
 : "${TAG:?TAG required}"
 : "${REPO:?REPO required}"
+
+case "$SPARKLE_STATUS" in
+unconfigured)
+  # No SPARKLE_PRIVATE_KEY configured — intentional, documented state. Skip without failing the
+  # release, so the DMG still ships and auto-update activates once the key is configured.
+  echo "note: Sparkle signing unconfigured (set the SPARKLE_PRIVATE_KEY secret to enable the" \
+    "appcast). Skipping appcast publish." >&2
+  exit 0
+  ;;
+missing-tool)
+  # sign_update was not found under SourcePackages — a packaging regression, not a config gap.
+  # Fail loudly instead of silently shipping a DMG with no matching appcast item.
+  echo "${GITHUB_ACTIONS:+::error::}Sparkle's sign_update tool was missing at release build time; the DMG was not EdDSA-signed. Refusing to publish an appcast with no signed enclosure." >&2
+  exit 1
+  ;;
+signed) ;;
+*)
+  echo "error: unrecognized SPARKLE_STATUS '$SPARKLE_STATUS' in $FIELDS." >&2
+  exit 1
+  ;;
+esac
 
 # Classify the release into a Sparkle channel. Stable items ship untagged (Sparkle's default
 # channel, offered to everyone); pre/nightly items carry <sparkle:channel> so only opted-in

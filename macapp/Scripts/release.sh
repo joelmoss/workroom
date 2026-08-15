@@ -259,10 +259,19 @@ spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG
 # turns these into a feed item). CI passes the private key via $SPARKLE_PRIVATE_KEY; locally
 # sign_update falls back to the key `generate_keys` stored in your login keychain. The EdDSA
 # `sign_update` ships in the Sparkle SPM package's artifacts (not the deprecated old_dsa_scripts).
+#
+# This is a 3-way outcome, not a pass/fail: no key configured is intentional and must stay silent;
+# sign_update missing under SourcePackages is a packaging regression (Sparkle SPM relocated/renamed
+# it before) and must be loud, exactly like the Sentry dSYM block above — a plain skip-only note is
+# what let a signing regression ship a DMG with no matching appcast item and no one notice. So the
+# fields file is now ALWAYS written, carrying an explicit SPARKLE_STATUS that Scripts/appcast.sh
+# branches on, instead of the file's mere presence standing in for "signed".
 SIGN_UPDATE="$(find "$BUILD/SourcePackages" -type f -name sign_update -not -path '*/old_dsa_scripts/*' 2>/dev/null | head -1 || true)"
+SPARKLE_STATUS=""
 SIG_ATTRS=""
 if [ -z "$SIGN_UPDATE" ]; then
-  echo "note: Sparkle's sign_update not found under SourcePackages; skipping appcast signing." >&2
+  SPARKLE_STATUS="missing-tool"
+  echo "${GITHUB_ACTIONS:+::warning::}Sparkle's sign_update not found under SourcePackages; DMG will not be EdDSA-signed (packaging regression?)." >&2
 elif [ -n "${SPARKLE_PRIVATE_KEY:-}" ]; then
   echo "==> EdDSA-signing the DMG for Sparkle (provided key)"
   # Use --ed-key-file: the -s key-string flag is deprecated and now errors. The secret holds the
@@ -271,20 +280,22 @@ elif [ -n "${SPARKLE_PRIVATE_KEY:-}" ]; then
   printf '%s' "$SPARKLE_PRIVATE_KEY" >"$SPARKLE_KEYFILE"
   SIG_ATTRS="$("$SIGN_UPDATE" "$DMG" --ed-key-file "$SPARKLE_KEYFILE")"
   rm -f "$SPARKLE_KEYFILE"
+  SPARKLE_STATUS="signed"
 elif SIG_ATTRS="$("$SIGN_UPDATE" "$DMG" 2>/dev/null)"; then
   echo "==> EdDSA-signed the DMG for Sparkle (keychain key)"
+  SPARKLE_STATUS="signed"
 else
   echo "note: no Sparkle EdDSA key (set SPARKLE_PRIVATE_KEY or run generate_keys); skipping appcast." >&2
+  SPARKLE_STATUS="unconfigured"
   SIG_ATTRS=""
 fi
-if [ -n "$SIG_ATTRS" ]; then
-  {
-    echo "SHORT_VERSION=$SHORT_VERSION"
-    echo "BUILD_NUMBER=$BUILD_NUMBER"
-    # Single-quoted: the value holds spaces and double quotes (sparkle:edSignature="…" length="…").
-    echo "ENCLOSURE_ATTRS='$SIG_ATTRS'"
-  } >"$BUILD/appcast-fields.env"
-  echo "    appcast fields → $BUILD/appcast-fields.env ($SIG_ATTRS)"
-fi
+{
+  echo "SPARKLE_STATUS=$SPARKLE_STATUS"
+  echo "SHORT_VERSION=$SHORT_VERSION"
+  echo "BUILD_NUMBER=$BUILD_NUMBER"
+  # Single-quoted: the value holds spaces and double quotes (sparkle:edSignature="…" length="…").
+  echo "ENCLOSURE_ATTRS='$SIG_ATTRS'"
+} >"$BUILD/appcast-fields.env"
+echo "    appcast fields → $BUILD/appcast-fields.env (SPARKLE_STATUS=$SPARKLE_STATUS)"
 
 echo "✅ Notarized + stapled installer: $DMG"
