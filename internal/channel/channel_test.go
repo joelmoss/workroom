@@ -1,36 +1,56 @@
 package channel
 
 import (
+	"bufio"
+	"os"
 	"reflect"
+	"strings"
 	"testing"
 )
 
-func TestClassify(t *testing.T) {
-	tests := []struct {
-		tag  string
-		want Channel
-		ok   bool
-	}{
-		{"v1.3.0", Stable, true},
-		{"v2.0.0", Stable, true},
-		{"1.3.0", Stable, true}, // v prefix optional
-		{"v2.0.0-beta.21", Pre, true},
-		{"v2.0.0-beta.1", Pre, true},
-		{"v1.4.0-rc1", Pre, true},
-		{"v1.4.0-rc.1", Pre, true},
-		{"v1.4.0-alpha", Pre, true},
-		{"v2.0.0-nightly.941", Pre, true}, // a -nightly *suffix* is still a prerelease tag; the nightly channel uses the fixed "nightly" tag, not a suffix
-		{"nightly", Nightly, true},
-		{"appcast", "", false}, // feed host, excluded
-		{"", "", false},
-		{"garbage", "", false},
-		{"v1.2", "", false},   // not three fields
-		{"v1.2.x", "", false}, // non-numeric
-		{"v1.2.3+build.5", Stable, true},
-		{"v2.0.0-beta.1+exp", Pre, true},
-		{"v1.2.3-", "", false}, // dangling hyphen, empty prerelease segment: excluded, not Stable
+type classifyCase struct {
+	tag  string
+	want Channel
+	ok   bool
+}
+
+// loadClassifyCases reads the tag -> channel fixture shared with
+// macapp/Scripts/channel-helper_test.sh (testdata/channel_cases.tsv), so a newly discovered
+// classification case is added once instead of independently to two hand-maintained lists —
+// which had already silently drifted apart (see the dangling-hyphen and -nightly-suffix cases).
+func loadClassifyCases(t *testing.T) []classifyCase {
+	t.Helper()
+	f, err := os.Open("testdata/channel_cases.tsv")
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, tt := range tests {
+	defer f.Close()
+
+	var cases []classifyCase
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		tag, want, found := strings.Cut(line, "\t")
+		if !found {
+			t.Fatalf("malformed fixture line (no tab): %q", line)
+		}
+		if want == "EXCLUDED" {
+			cases = append(cases, classifyCase{tag, "", false})
+		} else {
+			cases = append(cases, classifyCase{tag, Channel(want), true})
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return cases
+}
+
+func TestClassify(t *testing.T) {
+	for _, tt := range loadClassifyCases(t) {
 		t.Run(tt.tag, func(t *testing.T) {
 			got, ok := Classify(tt.tag)
 			if got != tt.want || ok != tt.ok {

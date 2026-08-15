@@ -1,0 +1,25 @@
+# Shared tag -> channel classification cases for internal/channel.Classify (Go) and
+# macapp/Scripts/channel-helper.sh's wr_classify_channel (shell). Both MUST agree on every row
+# here - see channel_test.go's TestClassify and channel-helper_test.sh for how each side reads
+# this file. Format: <tag><TAB><channel-or-EXCLUDED>. A row with an empty tag (a line starting
+# with a tab) tests the empty-string input.
+v1.3.0	stable
+v2.0.0	stable
+1.3.0	stable
+v2.0.0-beta.21	pre
+v2.0.0-beta.1	pre
+v1.4.0-rc1	pre
+v1.4.0-rc.1	pre
+v1.4.0-alpha	pre
+v2.0.0-nightly.941	pre
+nightly	nightly
+appcast	EXCLUDED
+	EXCLUDED
+garbage	EXCLUDED
+v1.2	EXCLUDED
+v1.2.x	EXCLUDED
+v1.2.3+build.5	stable
+v2.0.0-beta.1+exp	pre
+v1.2.3-	EXCLUDED
+v1.2.	EXCLUDED
+v1..3	EXCLUDED
