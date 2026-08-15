@@ -29,7 +29,6 @@ final class ClaudeUsageBridge: ObservableObject {
     .appendingPathComponent("Library/Application Support/Workroom/Agent Usage", isDirectory: true)
 
   @Published private(set) var state: State = .disabled
-  @Published private(set) var lastError: String?
 
   let settingsURL: URL
   let directoryURL: URL
@@ -77,7 +76,6 @@ final class ClaudeUsageBridge: ObservableObject {
   }
 
   func refreshState() {
-    lastError = nil
     guard let settings = try? readObject(at: settingsURL),
       let current = settings["statusLine"] as? [String: Any],
       current["command"] as? String == installedCommand
@@ -158,7 +156,6 @@ final class ClaudeUsageBridge: ObservableObject {
       equalJSON(current, metadata.installed)
     else {
       state = .needsRepair
-      lastError = BridgeError.settingChanged.localizedDescription
       throw BridgeError.settingChanged
     }
 
@@ -175,7 +172,6 @@ final class ClaudeUsageBridge: ObservableObject {
     try? fileManager.removeItem(at: wrapperURL)
     try? fileManager.removeItem(at: scratchDirectoryURL)
     state = .disabled
-    lastError = nil
   }
 
   private var installedCommand: String { shellQuote(wrapperURL.path) }
