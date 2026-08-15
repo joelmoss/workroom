@@ -712,7 +712,7 @@ enum UITestFixture {
       -> WorkroomNotification
     {
       WorkroomNotification(
-        id: UUID(), targetID: targetID, tabID: UUID(), kind: .osc, source: source,
+        id: UUID(), targetID: targetID, tabID: UUID(), source: source,
         title: title, body: body, date: Date().addingTimeInterval(-ago), count: count)
     }
     // Oldest first: the store appends chronologically and the panel reverses to newest-first, so the

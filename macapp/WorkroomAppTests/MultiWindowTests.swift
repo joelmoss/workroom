@@ -18,7 +18,7 @@ final class MultiWindowTests: XCTestCase {
 
   private func notification(_ targetID: String) -> WorkroomNotification {
     WorkroomNotification(
-      id: UUID(), targetID: targetID, tabID: UUID(), kind: .osc, source: "src",
+      id: UUID(), targetID: targetID, tabID: UUID(), source: "src",
       title: "t", body: nil, date: Date(timeIntervalSince1970: 0), count: 1)
   }
 

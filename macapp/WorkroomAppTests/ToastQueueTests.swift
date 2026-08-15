@@ -11,7 +11,7 @@ final class ToastQueueTests: XCTestCase {
 
   private func note(_ title: String) -> WorkroomNotification {
     WorkroomNotification(
-      id: UUID(), targetID: "wr|/a|foo", tabID: UUID(), kind: .osc, source: "a / foo",
+      id: UUID(), targetID: "wr|/a|foo", tabID: UUID(), source: "a / foo",
       title: title, body: nil, date: Date(timeIntervalSince1970: 0), count: 1)
   }
 

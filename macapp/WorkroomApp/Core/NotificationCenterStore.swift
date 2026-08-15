@@ -14,12 +14,9 @@ enum TerminalActivity: Equatable {
 /// click back to a live terminal is `(targetID, tabID)`; both are session-scoped (tab ids are
 /// per-launch UUIDs), so history is intentionally session-only — see `NotificationCenterStore`.
 struct WorkroomNotification: Identifiable, Equatable {
-  enum Kind: Equatable { case osc }
-
   let id: UUID
   let targetID: TerminalTarget.ID
   let tabID: TerminalTab.ID
-  let kind: Kind
   /// Human-readable origin captured at record time — the project name (and workroom, for a
   /// workroom terminal), e.g. "platform" or "platform / fix-auth". Shown in the panel + banner.
   let source: String
@@ -88,7 +85,7 @@ final class NotificationCenterStore: ObservableObject {
     // than showing a placeholder.
     return append(
       WorkroomNotification(
-        id: UUID(), targetID: targetID, tabID: tabID, kind: .osc, source: source,
+        id: UUID(), targetID: targetID, tabID: tabID, source: source,
         title: title, body: body, date: now(), count: 1))
   }
 

@@ -159,7 +159,7 @@ final class AppStoreDeleteRaceTests: XCTestCase {
     let bTarget = targetID("b")
     func notification(for target: TerminalTarget.ID, title: String) -> WorkroomNotification {
       WorkroomNotification(
-        id: UUID(), targetID: target, tabID: UUID(), kind: .osc, source: "test", title: title,
+        id: UUID(), targetID: target, tabID: UUID(), source: "test", title: title,
         body: nil, date: Date(), count: 1)
     }
     store.notifications.seedForTesting([

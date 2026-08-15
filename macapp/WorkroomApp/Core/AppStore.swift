@@ -1650,7 +1650,7 @@ final class AppStore: ObservableObject {
       return
     }
     let note = WorkroomNotification(
-      id: UUID(), targetID: targetID, tabID: tabID, kind: .osc,
+      id: UUID(), targetID: targetID, tabID: tabID,
       source: notificationSource(forTargetID: targetID), title: title, body: body, date: Date(),
       count: 1)
     Task { @MainActor in
