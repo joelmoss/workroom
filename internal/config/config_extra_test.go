@@ -89,6 +89,29 @@ func TestAllProjectsHandlesMissingWorkroomsKey(t *testing.T) {
 	}
 }
 
+func TestAllProjectsHandlesMalformedWorkroomsValue(t *testing.T) {
+	c := newTestConfig(t)
+	// A "workrooms" value that isn't an object (e.g. hand-edited or legacy config) must decode
+	// as zero workrooms, not panic.
+	if err := c.Write(map[string]any{"/proj": map[string]any{"vcs": "git", "workrooms": "oops"}}); err != nil {
+		t.Fatal(err)
+	}
+	all, err := c.AllProjects()
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, ok := all["/proj"]
+	if !ok {
+		t.Fatal("AllProjects dropped a project with a malformed workrooms value")
+	}
+	if project.VCS != "git" {
+		t.Fatalf("expected vcs git, got %q", project.VCS)
+	}
+	if len(project.Workrooms) != 0 {
+		t.Fatalf("expected 0 workrooms, got %d", len(project.Workrooms))
+	}
+}
+
 func TestRemoveWorkroomKeepProject(t *testing.T) {
 	c := newTestConfig(t)
 	if err := c.AddWorkroom("/proj", "foo", "/wr/foo", "jj"); err != nil {

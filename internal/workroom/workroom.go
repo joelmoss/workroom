@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"sort"
 	"strings"
 
 	"github.com/joelmoss/workroom/internal/config"
@@ -238,7 +240,7 @@ func (s *Service) CreateNamed(dir string, setupOut io.Writer) (CreateResult, err
 	}
 
 	if !s.Pretend {
-		exists, err := s.VCS.WorkroomExists(dir, name)
+		exists, err := s.workroomExists(dir, name)
 		if err != nil {
 			return res, err
 		}
@@ -345,19 +347,23 @@ func (s *Service) Create(dir string) error {
 }
 
 func (s *Service) generateUniqueName(dir string) (string, error) {
+	// List once for the whole retry loop below, rather than once per candidate name — a
+	// membership check against an in-memory set instead of up to 15 VCS shell-outs to answer
+	// what is really one question against a list that doesn't change during this operation.
+	existing, err := s.VCS.ListWorkrooms(dir)
+	if err != nil {
+		return "", err
+	}
+
 	var lastName string
 
 	for range 5 {
 		lastName = s.generateName()
-		exists, err := s.workroomExistsFor(dir, lastName)
-		if err != nil {
-			return "", err
-		}
 		wrPath, err := s.workroomPath(lastName)
 		if err != nil {
 			return "", err
 		}
-		if !exists {
+		if !slices.Contains(existing, lastName) {
 			if _, err := os.Stat(wrPath); os.IsNotExist(err) {
 				return lastName, nil
 			}
@@ -366,15 +372,11 @@ func (s *Service) generateUniqueName(dir string) (string, error) {
 
 	for range 10 {
 		candidate := fmt.Sprintf("%s-%d", lastName, rand.IntN(90)+10)
-		exists, err := s.workroomExistsFor(dir, candidate)
-		if err != nil {
-			return "", err
-		}
 		wrPath, err := s.workroomPath(candidate)
 		if err != nil {
 			return "", err
 		}
-		if !exists {
+		if !slices.Contains(existing, candidate) {
 			if _, err := os.Stat(wrPath); os.IsNotExist(err) {
 				return candidate, nil
 			}
@@ -384,8 +386,16 @@ func (s *Service) generateUniqueName(dir string) (string, error) {
 	return "", fmt.Errorf("failed to generate unique workroom name after multiple attempts")
 }
 
-func (s *Service) workroomExistsFor(dir, name string) (bool, error) {
-	return s.VCS.WorkroomExists(dir, name)
+// workroomExists reports whether name is among dir's VCS workrooms, listing once. Not a cheap
+// single-name probe — ListWorkrooms is the interface's sole membership primitive — so callers
+// needing several checks in one operation (e.g. generateUniqueName's retry loops) should list
+// once themselves rather than call this per candidate.
+func (s *Service) workroomExists(dir, name string) (bool, error) {
+	existing, err := s.VCS.ListWorkrooms(dir)
+	if err != nil {
+		return false, err
+	}
+	return slices.Contains(existing, name), nil
 }
 
 // List shows workrooms for the current project or all projects.
@@ -401,16 +411,12 @@ func (s *Service) List(cwd string) error {
 
 	// Inside a parent project
 	if found && project != nil {
-		workrooms, ok := project["workrooms"].(map[string]any)
-		if !ok || len(workrooms) == 0 {
+		if len(project.Workrooms) == 0 {
 			s.say("No workrooms found for this project.")
 			return nil
 		}
 
-		stored, _ := project["vcs"].(string)
-		vcsType := s.effectiveVCS(projectPath, stored, true)
-		vcsSet := s.vcsWorkspaceSet(projectPath, vcsType)
-		s.listWorkrooms(workrooms, vcsType, vcsSet)
+		s.printWorkroomsTable(s.projectInfo(projectPath, *project, WarningsFull))
 		return nil
 	}
 
@@ -425,51 +431,37 @@ func (s *Service) List(cwd string) error {
 		return nil
 	}
 
-	for path, proj := range projects {
+	paths := make([]string, 0, len(projects))
+	for path := range projects {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+
+	for _, path := range paths {
 		s.say(fmt.Sprintf("%s:", ui.DisplayPath(path)))
-		workrooms, _ := proj["workrooms"].(map[string]any)
-		stored, _ := proj["vcs"].(string)
-		vcsType := s.effectiveVCS(path, stored, true)
-		vcsSet := s.vcsWorkspaceSet(path, vcsType)
-		s.listWorkrooms(workrooms, vcsType, vcsSet)
+		s.printWorkroomsTable(s.projectInfo(path, projects[path], WarningsFull))
 		s.say("")
 	}
 
 	return nil
 }
 
-func (s *Service) listWorkrooms(workrooms map[string]any, vcsType string, vcsSet map[string]bool) {
+// printWorkroomsTable renders one project's already-computed warnings (see projectInfo) as the
+// human-readable table.
+func (s *Service) printWorkroomsTable(pinfo ProjectInfo) {
 	var rows [][]string
-	for name, info := range workrooms {
-		infoMap, ok := info.(map[string]any)
-		if !ok {
-			continue
-		}
-		wrPath, _ := infoMap["path"].(string)
-		warnings := s.workroomWarnings(name, wrPath, vcsType, vcsSet)
-
-		row := []string{ui.Bold(name), ui.Dim(ui.DisplayPath(wrPath))}
-		if len(warnings) > 0 {
-			row = append(row, ui.Yellow(fmt.Sprintf("[%s]", strings.Join(warnings, ", "))))
+	for _, wi := range pinfo.Workrooms {
+		row := []string{ui.Bold(wi.Name), ui.Dim(ui.DisplayPath(wi.Path))}
+		if len(wi.Warnings) > 0 {
+			messages := make([]string, len(wi.Warnings))
+			for i, w := range wi.Warnings {
+				messages[i] = w.Message
+			}
+			row = append(row, ui.Yellow(fmt.Sprintf("[%s]", strings.Join(messages, ", "))))
 		}
 		rows = append(rows, row)
 	}
 	ui.PrintTable(s.output(), rows, 2)
-}
-
-// workroomWarnings computes the display warnings for one workroom: a missing directory, and —
-// when vcsSet is non-nil (the project's VCS workspaces were listed successfully) — a missing
-// VCS workspace. A nil vcsSet means membership is unknown, so no VCS warning is emitted
-// (fail-open). git lists bare basenames; jj lists "workroom/<name>", so both keys are checked.
-func (s *Service) workroomWarnings(name, wrPath, vcsType string, vcsSet map[string]bool) []string {
-	var warnings []string
-	if _, err := os.Stat(wrPath); os.IsNotExist(err) {
-		warnings = append(warnings, "directory not found")
-	}
-	if vcsSet != nil && !vcsSet[name] && !vcsSet["workroom/"+name] {
-		warnings = append(warnings, vcsType+" workspace not found")
-	}
-	return warnings
 }
 
 // Delete removes a workroom by name.
@@ -487,7 +479,7 @@ func (s *Service) Delete(dir, name, confirmValue string) error {
 	}
 
 	if !s.Pretend {
-		exists, err := s.VCS.WorkroomExists(dir, name)
+		exists, err := s.workroomExists(dir, name)
 		if err != nil {
 			return err
 		}
@@ -529,14 +521,13 @@ func (s *Service) InteractiveDelete(dir string) error {
 		return nil
 	}
 
-	workrooms, ok := project["workrooms"].(map[string]any)
-	if !ok || len(workrooms) == 0 {
+	if len(project.Workrooms) == 0 {
 		s.say("No workrooms found for this project.")
 		return nil
 	}
 
-	names := make([]string, 0, len(workrooms))
-	for name := range workrooms {
+	names := make([]string, 0, len(project.Workrooms))
+	for name := range project.Workrooms {
 		names = append(names, name)
 	}
 

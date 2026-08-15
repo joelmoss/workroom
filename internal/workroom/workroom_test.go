@@ -453,6 +453,18 @@ func TestCreateErrorsAfterTooManyNameCollisions(t *testing.T) {
 	if !strings.Contains(err.Error(), "failed to generate unique workroom name") {
 		t.Fatalf("expected name generation error, got: %v", err)
 	}
+
+	// generateUniqueName lists workrooms exactly once for its whole 15-attempt retry loop
+	// (not once per candidate name) — this is the worst case, all 15 attempts collide.
+	listCalls := 0
+	for _, call := range mock.calls {
+		if len(call) >= 3 && call[0] == "jj" && call[1] == "workspace" && call[2] == "list" {
+			listCalls++
+		}
+	}
+	if listCalls != 1 {
+		t.Fatalf("expected exactly 1 'jj workspace list' call across all retry attempts, got %d", listCalls)
+	}
 }
 
 // --- Create: Editor prompt ---

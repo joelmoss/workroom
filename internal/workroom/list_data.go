@@ -3,6 +3,8 @@ package workroom
 import (
 	"os"
 	"sort"
+
+	"github.com/joelmoss/workroom/internal/config"
 )
 
 // WarningsLevel controls how much work ListData does to compute per-workroom warnings.
@@ -72,52 +74,55 @@ func (s *Service) ListData(level WarningsLevel) (ListResult, error) {
 	sort.Strings(paths)
 
 	for _, ppath := range paths {
-		project := projects[ppath]
-		vcsType, _ := project["vcs"].(string)
-		// Reconcile the stored vcs against on-disk reality (and heal config on drift) so a
-		// project converted between VCSes is reported correctly. Skipped for WarningsNone,
-		// which is contractually zero-filesystem.
-		if level != WarningsNone {
-			vcsType = s.effectiveVCS(ppath, vcsType, true)
-		}
-		pinfo := ProjectInfo{Path: ppath, VCS: vcsType, Workrooms: []WorkroomInfo{}}
-
-		wrMap, _ := project["workrooms"].(map[string]any)
-		names := make([]string, 0, len(wrMap))
-		for n := range wrMap {
-			names = append(names, n)
-		}
-		sort.Strings(names)
-
-		// For full warnings, list the project's VCS workspaces exactly once. A nil set means
-		// the listing was unavailable (fail-open — no warnings); a non-nil set is authoritative.
-		var vcsSet map[string]bool
-		if level == WarningsFull {
-			vcsSet = s.vcsWorkspaceSet(ppath, vcsType)
-		}
-
-		for _, name := range names {
-			info, _ := wrMap[name].(map[string]any)
-			wrPath, _ := info["path"].(string)
-			wi := WorkroomInfo{Name: name, Path: wrPath, VCSName: "workroom/" + name, Warnings: []Warning{}}
-
-			if level == WarningsFast || level == WarningsFull {
-				if wrPath != "" {
-					if _, err := os.Stat(wrPath); os.IsNotExist(err) {
-						wi.Warnings = append(wi.Warnings, Warning{Kind: "DirectoryMissing", Message: "directory not found", Path: wrPath})
-					}
-				}
-			}
-			if level == WarningsFull && vcsSet != nil {
-				// git lists bare basenames; jj lists "workroom/<name>".
-				if !vcsSet[name] && !vcsSet[wi.VCSName] {
-					wi.Warnings = append(wi.Warnings, Warning{Kind: "VCSWorkroomMissing", Message: vcsType + " workspace not found", VCS: vcsType})
-				}
-			}
-			pinfo.Workrooms = append(pinfo.Workrooms, wi)
-		}
-		result.Projects = append(result.Projects, pinfo)
+		result.Projects = append(result.Projects, s.projectInfo(ppath, projects[ppath], level))
 	}
 
 	return result, nil
+}
+
+// projectInfo builds one project's warnings-annotated view. Shared by ListData (--json) and
+// List (human) so the two paths compute identical Warning Kind/Message pairs from one place —
+// they used to diverge on whether an empty/missing workroom path warns "directory not found"
+// (List did unconditionally; ListData silently didn't). That's resolved here in favor of always
+// checking: an empty path is exactly as "not found" as a populated one that doesn't exist.
+func (s *Service) projectInfo(path string, project config.Project, level WarningsLevel) ProjectInfo {
+	vcsType := project.VCS
+	// Reconcile the stored vcs against on-disk reality (and heal config on drift) so a project
+	// converted between VCSes is reported correctly. Skipped for WarningsNone, which is
+	// contractually zero-filesystem.
+	if level != WarningsNone {
+		vcsType = s.effectiveVCS(path, vcsType, true)
+	}
+	checksDir := level == WarningsFast || level == WarningsFull
+	checksVCS := level == WarningsFull
+
+	names := make([]string, 0, len(project.Workrooms))
+	for n := range project.Workrooms {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	// List the project's VCS workspaces exactly once. A nil set means the listing was
+	// unavailable (fail-open — no warnings); a non-nil set is authoritative.
+	var vcsSet map[string]bool
+	if checksVCS {
+		vcsSet = s.vcsWorkspaceSet(path, vcsType)
+	}
+
+	pinfo := ProjectInfo{Path: path, VCS: vcsType, Workrooms: []WorkroomInfo{}}
+	for _, name := range names {
+		wrPath := project.Workrooms[name].Path
+		wi := WorkroomInfo{Name: name, Path: wrPath, VCSName: "workroom/" + name, Warnings: []Warning{}}
+
+		if checksDir {
+			if _, err := os.Stat(wrPath); os.IsNotExist(err) {
+				wi.Warnings = append(wi.Warnings, Warning{Kind: "DirectoryMissing", Message: "directory not found", Path: wrPath})
+			}
+		}
+		if checksVCS && vcsSet != nil && !vcsSet[name] {
+			wi.Warnings = append(wi.Warnings, Warning{Kind: "VCSWorkroomMissing", Message: vcsType + " workspace not found", VCS: vcsType})
+		}
+		pinfo.Workrooms = append(pinfo.Workrooms, wi)
+	}
+	return pinfo
 }

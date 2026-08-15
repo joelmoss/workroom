@@ -254,8 +254,8 @@ func TestFindCurrentProjectAsProject(t *testing.T) {
 	if path != "/project" {
 		t.Fatalf("expected /project, got %s", path)
 	}
-	if project["vcs"] != "jj" {
-		t.Fatalf("expected jj, got %v", project["vcs"])
+	if project.VCS != "jj" {
+		t.Fatalf("expected jj, got %v", project.VCS)
 	}
 }
 
@@ -272,8 +272,8 @@ func TestFindCurrentProjectAsWorkroom(t *testing.T) {
 	if path != "/project" {
 		t.Fatalf("expected /project, got %s", path)
 	}
-	if project["vcs"] != "jj" {
-		t.Fatalf("expected jj, got %v", project["vcs"])
+	if project.VCS != "jj" {
+		t.Fatalf("expected jj, got %v", project.VCS)
 	}
 }
 

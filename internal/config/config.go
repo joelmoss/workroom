@@ -31,6 +31,40 @@ var reservedKeys = map[string]bool{
 // isReserved reports whether key is a reserved scalar setting rather than a project path.
 func isReserved(key string) bool { return reservedKeys[key] }
 
+// Workroom describes one workroom entry as stored under a project's "workrooms" map.
+type Workroom struct {
+	Path string
+}
+
+// Project describes one top-level project entry in the config. It's a read-side view:
+// mutators (AddWorkroom, RemoveWorkroom, ...) keep working directly against the raw
+// map[string]any so Read/Write round-trip fidelity for unknown keys is unaffected.
+type Project struct {
+	VCS       string
+	Workrooms map[string]Workroom
+}
+
+// decodeProject converts a project's raw stored entry into a typed Project. A missing or
+// malformed "workrooms" value decodes as zero workrooms rather than failing, so a hand-edited
+// or legacy config entry degrades gracefully instead of panicking.
+func decodeProject(raw map[string]any) Project {
+	vcs, _ := raw["vcs"].(string)
+	project := Project{VCS: vcs, Workrooms: map[string]Workroom{}}
+	wrMap, ok := raw["workrooms"].(map[string]any)
+	if !ok {
+		return project
+	}
+	for name, v := range wrMap {
+		entry, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		path, _ := entry["path"].(string)
+		project.Workrooms[name] = Workroom{Path: path}
+	}
+	return project
+}
+
 // Config manages the workroom configuration stored at ~/.config/workroom/config.json.
 type Config struct {
 	path string
@@ -362,23 +396,24 @@ func (c *Config) WorkroomNames(parentPath string) ([]string, error) {
 
 // FindCurrentProject finds the project for the given directory. If cwd is a project path in the
 // config, returns it directly. Otherwise checks if cwd is a workroom path under any project.
-// Returns (projectPath, projectData, found).
-func (c *Config) FindCurrentProject(cwd string) (string, map[string]any, bool) {
+// Returns (projectPath, project, found). project is nil when found is false.
+func (c *Config) FindCurrentProject(cwd string) (string, *Project, bool) {
 	data, err := c.Read()
 	if err != nil {
 		return cwd, nil, false
 	}
 
-	if project, ok := data[cwd].(map[string]any); ok {
-		return cwd, project, true
+	if raw, ok := data[cwd].(map[string]any); ok {
+		project := decodeProject(raw)
+		return cwd, &project, true
 	}
 
 	for projectPath, v := range data {
-		project, ok := v.(map[string]any)
+		raw, ok := v.(map[string]any)
 		if !ok {
 			continue
 		}
-		workrooms, ok := project["workrooms"].(map[string]any)
+		workrooms, ok := raw["workrooms"].(map[string]any)
 		if !ok {
 			continue
 		}
@@ -388,7 +423,8 @@ func (c *Config) FindCurrentProject(cwd string) (string, map[string]any, bool) {
 				continue
 			}
 			if infoMap["path"] == cwd {
-				return projectPath, project, true
+				project := decodeProject(raw)
+				return projectPath, &project, true
 			}
 		}
 	}
@@ -397,42 +433,42 @@ func (c *Config) FindCurrentProject(cwd string) (string, map[string]any, bool) {
 }
 
 // ProjectsWithWorkrooms returns all projects that have at least one workroom.
-func (c *Config) ProjectsWithWorkrooms() (map[string]map[string]any, error) {
+func (c *Config) ProjectsWithWorkrooms() (map[string]Project, error) {
 	data, err := c.Read()
 	if err != nil {
 		return nil, err
 	}
 
-	result := map[string]map[string]any{}
+	result := map[string]Project{}
 	for path, v := range data {
-		project, ok := v.(map[string]any)
+		raw, ok := v.(map[string]any)
 		if !ok {
 			continue
 		}
-		workrooms, ok := project["workrooms"].(map[string]any)
+		workrooms, ok := raw["workrooms"].(map[string]any)
 		if !ok || len(workrooms) == 0 {
 			continue
 		}
-		result[path] = project
+		result[path] = decodeProject(raw)
 	}
 	return result, nil
 }
 
 // AllProjects returns every registered project, including those with zero
 // workrooms. Non-project top-level keys (e.g. workrooms_dir) are skipped.
-func (c *Config) AllProjects() (map[string]map[string]any, error) {
+func (c *Config) AllProjects() (map[string]Project, error) {
 	data, err := c.Read()
 	if err != nil {
 		return nil, err
 	}
 
-	result := map[string]map[string]any{}
+	result := map[string]Project{}
 	for path, v := range data {
-		project, ok := v.(map[string]any)
+		raw, ok := v.(map[string]any)
 		if !ok {
 			continue
 		}
-		result[path] = project
+		result[path] = decodeProject(raw)
 	}
 	return result, nil
 }

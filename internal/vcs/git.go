@@ -13,19 +13,6 @@ type Git struct {
 func (g *Git) Type() Type    { return TypeGit }
 func (g *Git) Label() string { return "Git worktree" }
 
-func (g *Git) WorkroomExists(dir, name string) (bool, error) {
-	worktrees, err := g.listWorktreePaths(dir)
-	if err != nil {
-		return false, err
-	}
-	for _, path := range worktrees {
-		if filepath.Base(path) == name {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
 func (g *Git) Create(dir, vcsName, path string) (string, error) {
 	return g.Executor.Run(dir, "git", "worktree", "add", "-b", vcsName, path)
 }

@@ -21,14 +21,14 @@ import (
 // os.RemoveAll path — nothing on disk is touched.
 type fakeVCS struct {
 	deleteCalls []string
-	failOn      string // vcsName to fail on (e.g. "workroom/bravo"); "" never fails
+	failOn      string   // vcsName to fail on (e.g. "workroom/bravo"); "" never fails
+	list        []string // names ListWorkrooms returns (Service.Delete's existence check)
 }
 
 func (f *fakeVCS) Type() vcs.Type                           { return vcs.TypeGit }
 func (f *fakeVCS) Label() string                            { return "Git" }
-func (f *fakeVCS) WorkroomExists(_, _ string) (bool, error) { return true, nil }
 func (f *fakeVCS) Create(_, _, _ string) (string, error)    { return "", nil }
-func (f *fakeVCS) ListWorkrooms(_ string) ([]string, error) { return nil, nil }
+func (f *fakeVCS) ListWorkrooms(_ string) ([]string, error) { return f.list, nil }
 func (f *fakeVCS) Delete(_, vcsName, _ string) (string, error) {
 	f.deleteCalls = append(f.deleteCalls, vcsName)
 	if f.failOn != "" && vcsName == f.failOn {
@@ -125,7 +125,7 @@ func TestDeleteProjectConfigOnly(t *testing.T) {
 }
 
 func TestDeleteProjectCascade(t *testing.T) {
-	fake := &fakeVCS{}
+	fake := &fakeVCS{list: []string{"alpha", "bravo"}}
 	svc, cfg := newTestSvc(t, fake)
 	proj := t.TempDir()
 	canon, _ := config.CanonicalPath(proj)
@@ -157,7 +157,7 @@ func TestDeleteProjectCascade(t *testing.T) {
 }
 
 func TestDeleteProjectCascadePartialFailureKeepsProject(t *testing.T) {
-	fake := &fakeVCS{failOn: "workroom/bravo"}
+	fake := &fakeVCS{failOn: "workroom/bravo", list: []string{"alpha", "bravo"}}
 	svc, cfg := newTestSvc(t, fake)
 	proj := t.TempDir()
 	canon, _ := config.CanonicalPath(proj)

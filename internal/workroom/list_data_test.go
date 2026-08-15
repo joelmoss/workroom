@@ -3,6 +3,7 @@ package workroom
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/joelmoss/workroom/internal/vcs"
@@ -77,6 +78,82 @@ func TestListDataFastFlagsMissingDirectory(t *testing.T) {
 	}
 	if len(mock.calls) != 0 {
 		t.Fatalf("warnings=fast must make no VCS calls, got %d", len(mock.calls))
+	}
+}
+
+func TestListDataFlagsEmptyPathAsMissingDirectory(t *testing.T) {
+	mock := &mockExecutor{}
+	svc, _, cfg := newTestService(t, &vcs.JJ{Executor: mock})
+
+	cfg.AddWorkroom("/a", "ghost", "", "jj")
+
+	res, err := svc.ListData(WarningsFast)
+	if err != nil {
+		t.Fatal(err)
+	}
+	warnings := res.Projects[0].Workrooms[0].Warnings
+	if len(warnings) != 1 || warnings[0].Kind != "DirectoryMissing" {
+		t.Fatalf("workroom with empty/missing path should warn DirectoryMissing, got %v", warnings)
+	}
+}
+
+// TestListAndListDataAgreeOnEmptyPath pins the fix for a real divergence: `workroom list`
+// (List, via os.Stat's unconditional call) used to warn on an empty/missing "path" config
+// entry while `workroom list --json` (ListData, guarded on wrPath != "") silently didn't. Both
+// now share projectInfo, so they must agree.
+func TestListAndListDataAgreeOnEmptyPath(t *testing.T) {
+	mock := &mockExecutor{}
+	svc, buf, cfg := newTestService(t, &vcs.JJ{Executor: mock})
+
+	cfg.AddWorkroom("/a", "ghost", "", "jj")
+
+	if err := svc.List("/a"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "directory not found") {
+		t.Fatalf("expected 'directory not found' in human list output, got %q", buf.String())
+	}
+
+	res, err := svc.ListData(WarningsFast)
+	if err != nil {
+		t.Fatal(err)
+	}
+	warnings := res.Projects[0].Workrooms[0].Warnings
+	if len(warnings) != 1 || warnings[0].Kind != "DirectoryMissing" {
+		t.Fatalf("workroom list --json disagreed with workroom list: got %v", warnings)
+	}
+}
+
+// TestListAndListDataAgreeOnMalformedWorkroomEntry pins a second, previously-silent divergence
+// this consolidation resolves: a workroom entry whose stored value isn't an object at all (e.g.
+// hand-edited config with `"ghost": "oops"` instead of `"ghost": {"path": ...}`). The old human
+// List skipped it outright; the old ListData's looser `info, _ := wrMap[name].(map[string]any)`
+// let it through as a bogus zero-value entry (path "", no warning, since its os.Stat guard was
+// `if wrPath != ""`). Both now go through config.decodeProject, which skips it the same way the
+// human path always did — deliberately, not by accident, and now proven on both outputs.
+func TestListAndListDataAgreeOnMalformedWorkroomEntry(t *testing.T) {
+	mock := &mockExecutor{}
+	svc, buf, cfg := newTestService(t, &vcs.JJ{Executor: mock})
+
+	if err := cfg.Write(map[string]any{
+		"/a": map[string]any{"vcs": "jj", "workrooms": map[string]any{"ghost": "oops"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.List("/a"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "ghost") {
+		t.Fatalf("expected malformed entry to be skipped from human list, got %q", buf.String())
+	}
+
+	res, err := svc.ListData(WarningsFull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Projects[0].Workrooms) != 0 {
+		t.Fatalf("expected malformed entry to be skipped from --json list, got %v", res.Projects[0].Workrooms)
 	}
 }
 

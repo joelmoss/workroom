@@ -20,9 +20,8 @@ type fakeVCS struct {
 	listCalls int
 }
 
-func (f *fakeVCS) Type() vcs.Type                                { return f.typ }
-func (f *fakeVCS) Label() string                                 { return string(f.typ) }
-func (f *fakeVCS) WorkroomExists(dir, name string) (bool, error) { return false, nil }
+func (f *fakeVCS) Type() vcs.Type { return f.typ }
+func (f *fakeVCS) Label() string  { return string(f.typ) }
 func (f *fakeVCS) Create(dir, vcsName, path string) (string, error) {
 	return "", nil
 }

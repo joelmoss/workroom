@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/joelmoss/workroom/internal/errs"
@@ -100,34 +101,49 @@ func TestJJListWorkrooms(t *testing.T) {
 	if len(workrooms) != 2 {
 		t.Fatalf("expected 2 workrooms, got %d: %v", len(workrooms), workrooms)
 	}
-	if workrooms[0] != "workroom/foo" {
-		t.Fatalf("expected workroom/foo, got %s", workrooms[0])
+	if workrooms[0] != "foo" {
+		t.Fatalf("expected foo (workroom/ prefix stripped), got %s", workrooms[0])
 	}
-	if workrooms[1] != "workroom/bar" {
-		t.Fatalf("expected workroom/bar, got %s", workrooms[1])
+	if workrooms[1] != "bar" {
+		t.Fatalf("expected bar (workroom/ prefix stripped), got %s", workrooms[1])
 	}
 }
 
-func TestJJWorkroomExists(t *testing.T) {
+func TestJJListWorkroomsKeepsUnprefixedName(t *testing.T) {
+	// A hand-made jj workspace with no "workroom/" prefix (this program is the sole creator of
+	// that prefix) must still list as-is, not be filtered out.
+	mock := &MockExecutor{
+		Output: "default: mk 6ec05f05 (no description set)\nscratch: qo a41890ed (empty) (no description set)\n",
+	}
+	jj := &JJ{Executor: mock}
+
+	workrooms, err := jj.ListWorkrooms("/project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(workrooms) != 1 || workrooms[0] != "scratch" {
+		t.Fatalf("expected [scratch], got %v", workrooms)
+	}
+}
+
+// TestJJListWorkroomsSupportsMembershipCheck pins that ListWorkrooms alone (no separate
+// WorkroomExists method — removed; it was a hidden full list-and-scan behind a signature that
+// looked like a cheap probe) is sufficient for a caller to do its own membership check.
+func TestJJListWorkroomsSupportsMembershipCheck(t *testing.T) {
 	mock := &MockExecutor{
 		Output: "default: mk 6ec05f05 (no description set)\nworkroom/foo: qo a41890ed (empty) (no description set)\n",
 	}
 	jj := &JJ{Executor: mock}
 
-	exists, err := jj.WorkroomExists("/project", "foo")
+	workrooms, err := jj.ListWorkrooms("/project")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !exists {
-		t.Fatal("expected workspace to exist")
+	if !slices.Contains(workrooms, "foo") {
+		t.Fatalf("expected foo to be present, got %v", workrooms)
 	}
-
-	exists, err = jj.WorkroomExists("/project", "bar")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if exists {
-		t.Fatal("expected workspace to not exist")
+	if slices.Contains(workrooms, "bar") {
+		t.Fatalf("expected bar to be absent, got %v", workrooms)
 	}
 }
 
@@ -187,26 +203,24 @@ func TestGitListWorktrees(t *testing.T) {
 	}
 }
 
-func TestGitWorktreeExists(t *testing.T) {
+// TestGitListWorktreesSupportsMembershipCheck pins that ListWorkrooms alone (no separate
+// WorkroomExists method — removed; it was a hidden full list-and-scan behind a signature that
+// looked like a cheap probe) is sufficient for a caller to do its own membership check.
+func TestGitListWorktreesSupportsMembershipCheck(t *testing.T) {
 	mock := &MockExecutor{
 		Output: "worktree /project\nHEAD cbace1f043eee2836c7b8494797dfe49f6985716\nbranch refs/heads/master\n\nworktree /workrooms/foo\nHEAD abc123\nbranch refs/heads/workroom/foo\n",
 	}
 	git := &Git{Executor: mock}
 
-	exists, err := git.WorkroomExists("/project", "foo")
+	worktrees, err := git.ListWorkrooms("/project")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !exists {
-		t.Fatal("expected worktree to exist")
+	if !slices.Contains(worktrees, "foo") {
+		t.Fatalf("expected foo to be present, got %v", worktrees)
 	}
-
-	exists, err = git.WorkroomExists("/project", "bar")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if exists {
-		t.Fatal("expected worktree to not exist")
+	if slices.Contains(worktrees, "bar") {
+		t.Fatalf("expected bar to be absent, got %v", worktrees)
 	}
 }
 

@@ -19,9 +19,11 @@ const (
 type VCS interface {
 	Type() Type
 	Label() string
-	WorkroomExists(dir, name string) (bool, error)
 	Create(dir, vcsName, path string) (string, error)
 	Delete(dir, vcsName, path string) (string, error)
+	// ListWorkrooms is the sole membership primitive: a caller that needs an existence check
+	// lists once and does an in-memory lookup, rather than the interface exposing a second
+	// method that looks like a cheap single-name check but is secretly a full list-and-scan.
 	ListWorkrooms(dir string) ([]string, error)
 }
 
