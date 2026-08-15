@@ -33,13 +33,7 @@ func attachConfiguration() -> SessionAttachClient.Configuration? {
 }
 
 func attachMetadata() -> [SessionEnvironmentEntry] {
-  let sources = [
-    (SessionMetadataKey.project, "WORKROOM_SESSION_PROJECT"),
-    (SessionMetadataKey.workroom, "WORKROOM_SESSION_WORKROOM"),
-    (SessionMetadataKey.tab, "WORKROOM_SESSION_TAB"),
-    (SessionMetadataKey.title, "WORKROOM_SESSION_TITLE"),
-  ]
-  return sources.compactMap { key, variable in
+  SessionMetadataKey.environmentVariables.compactMap { key, variable in
     guard let value = SessionProcessEnvironment.value(variable) else { return nil }
     return SessionEnvironmentEntry(key: key, value: value)
   }

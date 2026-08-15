@@ -70,12 +70,8 @@ final class PersistentSessionService {
     if let resourcesDirectory {
       entries.append(("WORKROOM_SESSION_RESOURCES", resourcesDirectory))
     }
-    let variables: [String: String] = [
-      SessionMetadataKey.project: "WORKROOM_SESSION_PROJECT",
-      SessionMetadataKey.workroom: "WORKROOM_SESSION_WORKROOM",
-      SessionMetadataKey.tab: "WORKROOM_SESSION_TAB",
-      SessionMetadataKey.title: "WORKROOM_SESSION_TITLE",
-    ]
+    let variables = Dictionary(
+      uniqueKeysWithValues: SessionMetadataKey.environmentVariables)
     for entry in metadata {
       guard let variable = variables[entry.key], !entry.value.isEmpty else { continue }
       entries.append((variable, entry.value))
