@@ -5,8 +5,8 @@ import XCTest
 /// Lane-A spike coverage + the highlighter's core contract: real tree-sitter parse → highlights
 /// query → resolved spans, for a no-scanner grammar (JSON) and an **external-scanner** grammar
 /// (Bash, whose `scanner.c` proves the grammar packaging links + runs). Also covers the
-/// `SyntaxLanguage.detect` registry. Pure logic — no repo, no temp files needed (the content is
-/// inline source strings).
+/// `SyntaxLanguage.grammar(forPath:)`/`grammar(forShebang:)` registry. Pure logic — no repo, no
+/// temp files needed (the content is inline source strings).
 final class SyntaxHighlighterTests: XCTestCase {
 
   // MARK: - Real parse + query (proves SPM grammar + query-bundle wiring)
@@ -111,47 +111,47 @@ final class SyntaxHighlighterTests: XCTestCase {
     XCTAssertEqual(first, second)
   }
 
-  // MARK: - Registry (SyntaxLanguage.detect)
+  // MARK: - Registry (SyntaxLanguage.grammar(forPath:))
+  //
+  // Retargeted from the deleted SyntaxLanguage.detect(newPath:oldPath:byteCount:), which had no
+  // production call sites — the live diff-highlight path (DiffViewer.applyHighlight) reimplements
+  // this same "new path, then old/renamed path" fallback inline via grammar(forPath:) directly
+  // (it also needs shebang detection, which detect couldn't do since it took no content). These
+  // tests now describe the code path that actually runs. The byte-cap invariant detect used to
+  // gate locally is enforced upstream instead (GitProvider/RustJJProvider/DiffResolver, at fetch
+  // time), outside this file's scope.
 
-  func testDetectByExtension() {
-    XCTAssertEqual(
-      SyntaxLanguage.detect(newPath: "config/app.json", oldPath: nil, byteCount: 10), .json)
-    XCTAssertEqual(
-      SyntaxLanguage.detect(newPath: "scripts/run.sh", oldPath: nil, byteCount: 10), .bash)
+  func testGrammarForPathByExtension() {
+    XCTAssertEqual(SyntaxLanguage.grammar(forPath: "config/app.json"), .json)
+    XCTAssertEqual(SyntaxLanguage.grammar(forPath: "scripts/run.sh"), .bash)
   }
 
-  func testDetectByFilename() {
-    XCTAssertEqual(
-      SyntaxLanguage.detect(newPath: "home/.bashrc", oldPath: nil, byteCount: 10), .bash)
+  func testGrammarForPathByFilename() {
+    XCTAssertEqual(SyntaxLanguage.grammar(forPath: "home/.bashrc"), .bash)
   }
 
-  func testDetectUnknownIsNil() {
-    XCTAssertNil(SyntaxLanguage.detect(newPath: "main.rs", oldPath: nil, byteCount: 10))
+  func testGrammarForPathUnknownIsNil() {
+    XCTAssertNil(SyntaxLanguage.grammar(forPath: "main.rs"))
   }
 
   func testSkipListWinsOverExtension() {
     // package-lock.json would match the json extension, but the skip-list must win → plain.
-    XCTAssertNil(SyntaxLanguage.detect(newPath: "package-lock.json", oldPath: nil, byteCount: 10))
+    XCTAssertNil(SyntaxLanguage.grammar(forPath: "package-lock.json"))
   }
 
   func testSkipMinifiedDoubleExtension() {
-    XCTAssertNil(SyntaxLanguage.detect(newPath: "dist/app.min.js", oldPath: nil, byteCount: 10))
+    XCTAssertNil(SyntaxLanguage.grammar(forPath: "dist/app.min.js"))
   }
 
-  func testByteCapRejectsLargeFiles() {
-    XCTAssertNil(
-      SyntaxLanguage.detect(
-        newPath: "big.json", oldPath: nil, byteCount: SyntaxLanguage.byteCap + 1),
-      "files over the byte cap must render plain")
+  func testGrammarForPathFallsBackToOldPathAcrossRename() {
+    // Mirrors DiffViewer.applyHighlight's real fallback composition — grammar(forPath: new) ??
+    // grammar(forPath: old) — for a rename across extensions: new side unknown, old side is
+    // JSON → highlight off the old path.
+    let newPath = "data.unknownext"
+    let oldPath = "data.json"
+    XCTAssertNil(SyntaxLanguage.grammar(forPath: newPath))
     XCTAssertEqual(
-      SyntaxLanguage.detect(newPath: "big.json", oldPath: nil, byteCount: SyntaxLanguage.byteCap),
-      .json, "files at exactly the cap are still parsed")
-  }
-
-  func testDetectFallsBackToOldPath() {
-    // A rename across extensions: new side unknown, old side is JSON → highlight off the old path.
-    XCTAssertEqual(
-      SyntaxLanguage.detect(newPath: "data.unknownext", oldPath: "data.json", byteCount: 10), .json)
+      SyntaxLanguage.grammar(forPath: newPath) ?? SyntaxLanguage.grammar(forPath: oldPath), .json)
   }
 
   // MARK: - Shebang detection (extension-less scripts)

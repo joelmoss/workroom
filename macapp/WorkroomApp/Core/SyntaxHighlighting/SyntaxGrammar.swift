@@ -116,17 +116,6 @@ enum SyntaxLanguage {
   /// sourcemaps. Double extensions (`min.js`, `min.css`) are matched before the bare extension.
   static let skipExtensions: Set<String> = ["csv", "tsv", "svg", "min.js", "min.css", "map"]
 
-  /// Resolve the grammar for a diff, or `nil` (⇒ render plain). Checks **both** the new and old
-  /// path — a rename across extensions (`a.js` → `a.ts`) or a deleted file should still highlight
-  /// off whichever side names a known language. `byteCount` is the new-file size; over the cap ⇒
-  /// plain. The skip-list wins over extension matches (a `*.lock`/`package-lock.json` never parses).
-  static func detect(newPath: String, oldPath: String?, byteCount: Int) -> GrammarID? {
-    guard byteCount <= byteCap else { return nil }
-    if let g = grammar(forPath: newPath) { return g }
-    if let oldPath, let g = grammar(forPath: oldPath) { return g }
-    return nil
-  }
-
   /// Grammar for a file, trying the path first (extension / known filename), then the **shebang** on
   /// the first line for an extension-less script (`#!/bin/bash`, `#!/usr/bin/env python3`). `nil` ⇒
   /// render plain. Used by the file viewer, which has the content to sniff.
