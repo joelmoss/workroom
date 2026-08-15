@@ -20,7 +20,10 @@ builds:
 archives:
   - formats: [tar.gz]
     # Already distinct from the macOS app DMG (workroom-macos-app_<version>.dmg) by suffix;
-    # `install.sh` and `internal/updater/updater.go` download this exact name, so keep them in sync.
+    # `install.sh` builds this exact name inline (it can't call into Go), so keep them in sync.
+    # internal/updater/updater.go's own download path never constructs a name — it takes
+    # browser_download_url straight from the GitHub API and locates the asset by scanning for a
+    # "_<goos>_<goarch>." fragment.
     name_template: "workroom_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows

@@ -29,8 +29,12 @@ type githubAsset struct {
 }
 
 type githubRelease struct {
-	TagName    string        `json:"tag_name"`
-	Name       string        `json:"name"` // for the nightly release, the resolved "X.Y.Z-nightly.<count>"
+	TagName string `json:"tag_name"`
+	Name    string `json:"name"` // for the nightly release, the resolved "X.Y.Z-nightly.<count>"
+	// Prerelease is decoded but deliberately unread: channel.Classify(TagName) is the sole
+	// channel-membership signal, not GitHub's own prerelease flag. Unlike Draft (which does
+	// gate selection below), this field participates in nothing — don't mistake that for an
+	// oversight.
 	Prerelease bool          `json:"prerelease"`
 	Draft      bool          `json:"draft"`
 	Assets     []githubAsset `json:"assets"`
@@ -221,20 +225,6 @@ func ensureV(v string) string {
 		return v
 	}
 	return "v" + v
-}
-
-// BuildArchiveURL constructs the download URL for the given version/os/arch.
-// Version should include the "v" prefix (e.g. "v1.3.0").
-func BuildArchiveURL(version, goos, goarch string) string {
-	ver := strings.TrimPrefix(version, "v")
-	ext := "tar.gz"
-	if goos == "windows" {
-		ext = "zip"
-	}
-	return fmt.Sprintf(
-		"https://github.com/joelmoss/workroom/releases/download/%s/workroom_%s_%s_%s.%s",
-		version, ver, goos, goarch, ext,
-	)
 }
 
 // Update installs the newest build on ch, replacing the running binary. When

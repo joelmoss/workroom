@@ -293,31 +293,3 @@ func TestVerifyChecksum(t *testing.T) {
 		}
 	})
 }
-
-func TestBuildArchiveURL(t *testing.T) {
-	tests := []struct {
-		name     string
-		version  string
-		goos     string
-		goarch   string
-		expected string
-	}{
-		{
-			"darwin arm64",
-			"v1.3.0", "darwin", "arm64",
-			"https://github.com/joelmoss/workroom/releases/download/v1.3.0/workroom_1.3.0_darwin_arm64.tar.gz",
-		},
-		{
-			"windows amd64",
-			"v1.0.0", "windows", "amd64",
-			"https://github.com/joelmoss/workroom/releases/download/v1.0.0/workroom_1.0.0_windows_amd64.zip",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := BuildArchiveURL(tt.version, tt.goos, tt.goarch); got != tt.expected {
-				t.Errorf("BuildArchiveURL(%q,%q,%q) = %q, want %q", tt.version, tt.goos, tt.goarch, got, tt.expected)
-			}
-		})
-	}
-}
