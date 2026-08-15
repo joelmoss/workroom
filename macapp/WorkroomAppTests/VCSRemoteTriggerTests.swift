@@ -181,7 +181,7 @@ final class VCSRemoteTriggerTests: XCTestCase {
     let target = store.remoteTarget()
     XCTAssertEqual(target?.path, "/p/feat")
     XCTAssertEqual(target?.projectRoot, "/p", "fetch runs here, not in the workroom")
-    XCTAssertEqual(target?.vcs, "git")
+    XCTAssertEqual(target?.vcs, .git)
   }
 
   func testTargetResolvesAProjectRoot() {

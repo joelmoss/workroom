@@ -12,9 +12,9 @@ import XCTest
 final class RemoteStateModelTests: XCTestCase {
 
   private let target = RemoteStateModel.Target(
-    sid: .workroom(project: "/p", name: "feat"), path: "/p/feat", vcs: "git", projectRoot: "/p")
+    sid: .workroom(project: "/p", name: "feat"), path: "/p/feat", vcs: .git, projectRoot: "/p")
   private let otherTarget = RemoteStateModel.Target(
-    sid: .workroom(project: "/p", name: "other"), path: "/p/other", vcs: "git", projectRoot: "/p")
+    sid: .workroom(project: "/p", name: "other"), path: "/p/other", vcs: .git, projectRoot: "/p")
 
   /// Reset in setUp as well as tearDown. `Defaults[.vcsLastFetch]` is a PERSISTED dictionary in the
   /// standard suite keyed by project ROOT PATH, and `VCSRemoteTriggerTests` drives real `.fetch`/`.pull`

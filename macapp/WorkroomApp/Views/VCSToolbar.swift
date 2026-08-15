@@ -87,7 +87,7 @@ struct VCSToolbar: View {
   private func presentation(now: Date) -> VCSSyncPresentation {
     VCSSyncPresenter.make(
       state: model.snapshot, hasTarget: model.target != nil,
-      toolsUsable: store.vcsAllowsRemoteActions(vcs: model.target?.vcs ?? "git"),
+      toolsUsable: store.vcsAllowsRemoteActions(vcs: (model.target?.vcs ?? .git).rawValue),
       // `activeAction`, not `inFlight`: the label must describe THIS workroom. `inFlight` is the
       // model-wide lock, so rendering it directly showed "Pushing…" on a workroom that wasn't pushing.
       activity: model.activeAction.map { .running($0) } ?? .idle,
@@ -130,7 +130,7 @@ struct VCSToolbar: View {
         // reintroduces the imbalance. (An earlier version gave sync `layoutPriority(1)` AND
         // `maxWidth: .infinity`, so it was offered the whole width first and claimed it, pinning the
         // branch cell at its floor even in a wide inspector: `feature/login` rendered as `fe…gin`.)
-        VCSBranchSegment(name: branchName, vcs: model.target?.vcs)
+        VCSBranchSegment(name: branchName, vcs: model.target?.vcs.rawValue)
           .frame(minWidth: VCSToolbarMetrics.segmentMinWidth, maxWidth: .infinity)
         divider
         VCSSyncSegment(
@@ -147,7 +147,7 @@ struct VCSToolbar: View {
         VCSFetchSegment(
           isRunning: model.activeAction == .fetch,
           isEnabled: model.canFetch
-            && store.vcsAllowsRemoteActions(vcs: model.target?.vcs ?? "git"),
+            && store.vcsAllowsRemoteActions(vcs: (model.target?.vcs ?? .git).rawValue),
           onFetch: { perform(.fetch) }
         )
         .frame(width: VCSToolbarMetrics.fetchWidth)

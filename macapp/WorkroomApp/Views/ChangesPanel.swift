@@ -136,7 +136,8 @@ struct RightInspector: View {
               guard let sid = store.inspectorTargetID,
                 let item = store.selectedStatusWorkItem(for: sid)
               else { return }
-              store.pendingCommit = PendingCommit(sid: sid, vcs: item.vcs)
+              store.pendingCommit = PendingCommit(
+                sid: sid, vcs: VCSBackend(rawValue: item.vcs) ?? .git)
             }
             .accessibilityIdentifier("changes.commitButton")
             InspectorHeaderButton(systemImage: "arrow.clockwise", help: "Refresh workroom status") {

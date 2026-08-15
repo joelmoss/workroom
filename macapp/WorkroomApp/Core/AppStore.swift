@@ -471,7 +471,8 @@ final class AppStore: ObservableObject {
     }
     guard let project = projects.first(where: { $0.path == projectPath }) else { return nil }
     return RemoteStateModel.Target(
-      sid: sid, path: path, vcs: project.vcs, projectRoot: project.path)
+      sid: sid, path: path, vcs: VCSBackend(rawValue: project.vcs) ?? .git,
+      projectRoot: project.path)
   }
 
   /// App-refocus safety net, mirroring `refreshHistoryIfActive`: a `git fetch` or a branch change made
@@ -757,7 +758,7 @@ final class AppStore: ObservableObject {
   /// the pull against a different workroom than the one the dirty-tree warning described.
   func runRemoteAction(_ action: VCSRemoteAction, on sid: SidebarID) {
     guard let target = remoteState.target, target.sid == sid else { return }
-    guard vcsAllowsRemoteActions(vcs: target.vcs) else { return }
+    guard vcsAllowsRemoteActions(vcs: target.vcs.rawValue) else { return }
     let workingCopy = workroomStatuses[target.sid]?.jjWorkingCopy
     let revision = CLIVCSWriter.jjPushRevision(
       hasChanges: !(workingCopy?.files.isEmpty ?? true),

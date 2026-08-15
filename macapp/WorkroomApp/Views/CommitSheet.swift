@@ -65,7 +65,7 @@ struct CommitSheet: View {
   /// Hard cap on rendered rows, matching `ChangesPanel`'s. See `fileSection`.
   private static let renderCap = 200
 
-  private var isJJ: Bool { pending.vcs == "jj" }
+  private var isJJ: Bool { pending.vcs == .jj }
   private var status: WorkroomStatus? { store.workroomStatuses[pending.sid] }
 
   /// Every changed file, from whichever shape this backend reports.

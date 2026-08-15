@@ -487,7 +487,7 @@ struct RootView: View {
   /// Whether the `git`/`jj` on PATH can run the remote commands for the toolbar's current target
   /// (`VCSToolVersions`). Scoped per project VCS, so an old `jj` doesn't disable a git project's menu.
   private var vcsToolsUsable: Bool {
-    store.vcsAllowsRemoteActions(vcs: store.remoteState.target?.vcs ?? "git")
+    store.vcsAllowsRemoteActions(vcs: (store.remoteState.target?.vcs ?? .git).rawValue)
   }
 
   private var selectedHasRunCommand: Bool {

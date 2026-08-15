@@ -172,7 +172,7 @@ final class QuickSwitcherTests: XCTestCase {
     }
 
     // Not `activePicker` — the *full* predicate, so a commit sheet counts too.
-    store.pendingCommit = PendingCommit(sid: .workroom(project: "/p", name: "w"), vcs: "git")
+    store.pendingCommit = PendingCommit(sid: .workroom(project: "/p", name: "w"), vcs: .git)
     guard case .swallow = AppDelegate.switcherGate(for: window, in: registry) else {
       return XCTFail("⌥Tab must not retarget the selection under a live commit sheet")
     }
@@ -201,7 +201,7 @@ final class QuickSwitcherTests: XCTestCase {
         .workrooms, window: nil, registry: registry, recency: SwitcherRecency()),
       "no key window at all ⇒ nothing to switch in")
 
-    store.pendingCommit = PendingCommit(sid: .workroom(project: "/p", name: "w1"), vcs: "git")
+    store.pendingCommit = PendingCommit(sid: .workroom(project: "/p", name: "w1"), vcs: .git)
     XCTAssertFalse(
       QuickSwitcher.stepFromKeyWindow(
         .workrooms, window: window, registry: registry, recency: SwitcherRecency()),

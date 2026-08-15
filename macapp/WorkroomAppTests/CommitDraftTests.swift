@@ -90,19 +90,19 @@ final class CommitDraftTests: XCTestCase {
   // MARK: - Button label
 
   func testCommitLabelNamesTheCount() {
-    XCTAssertEqual(CommitDraft.commitLabel(selectedCount: 1, vcs: "git"), "Commit 1 file")
-    XCTAssertEqual(CommitDraft.commitLabel(selectedCount: 12, vcs: "git"), "Commit 12 files")
+    XCTAssertEqual(CommitDraft.commitLabel(selectedCount: 1, vcs: .git), "Commit 1 file")
+    XCTAssertEqual(CommitDraft.commitLabel(selectedCount: 12, vcs: .git), "Commit 12 files")
   }
 
   /// jj offers no per-file selection, so a count would imply a choice that isn't on offer.
   func testCommitLabelOmitsTheCountForJJ() {
-    XCTAssertEqual(CommitDraft.commitLabel(selectedCount: 12, vcs: "jj"), "Commit")
+    XCTAssertEqual(CommitDraft.commitLabel(selectedCount: 12, vcs: .jj), "Commit")
   }
 
   // MARK: - Blocked reasons
 
   private func reason(
-    vcs: String = "git", summary: String = "Subject", selected: Int = 1, total: Int = 1,
+    vcs: VCSBackend = .git, summary: String = "Subject", selected: Int = 1, total: Int = 1,
     conflicted: Bool = false, sequencer: String? = nil
   ) -> String? {
     CommitDraft.blockedReason(
@@ -125,7 +125,7 @@ final class CommitDraftTests: XCTestCase {
   /// jj commits the whole change, so a zero count is meaningless there — and an empty jj change is
   /// still describable, which is why the box is offered at all.
   func testZeroFilesDoesNotBlockJJ() {
-    XCTAssertNil(reason(vcs: "jj", selected: 0, total: 0))
+    XCTAssertNil(reason(vcs: .jj, selected: 0, total: 0))
   }
 
   /// The sequencer reason is reachable from the UI now: `CommitSheet` resolves it on appear via
@@ -153,7 +153,7 @@ final class CommitDraftTests: XCTestCase {
   /// git refuses unmerged paths outright. jj would accept them, but "Commit" reading as "done" over
   /// unresolved conflicts is a UX decision rather than a capability one, so both say the same thing.
   func testConflictsBlockBothBackends() {
-    for vcs in ["git", "jj"] {
+    for vcs in [VCSBackend.git, .jj] {
       XCTAssertEqual(
         reason(vcs: vcs, conflicted: true),
         "Some files still have unresolved conflicts. Resolve them first.")

@@ -28,7 +28,7 @@ final class RemoteStateModel: ObservableObject {
   struct Target: Equatable, Sendable {
     let sid: SidebarID
     let path: String
-    let vcs: String
+    let vcs: VCSBackend
     let projectRoot: String
   }
 
