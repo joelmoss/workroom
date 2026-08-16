@@ -12,6 +12,12 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Pinned to jj-lib's version in vcs/Cargo.toml — bump both together. Exported into every job's
+# `run:` steps automatically (GitHub Actions workflow-level env), so `cli`, `vcs-core`, and `app`
+# all install the same jj from one declared value instead of independently-typed literals.
+env:
+  JJ_VERSION: 0.43.0
+
 jobs:
   cli:
     runs-on: ubuntu-latest
@@ -25,10 +31,8 @@ jobs:
       # `jj` is what TestAddProjectCreate_ExistingJJRepoUsedAsIs / TestDeleteProjectSafetyJJ_* shell
       # out to — both `t.Skip` silently without it, so without this step they never ran in CI at
       # all. Same pattern as the `vcs-core` job below (apt has no jj package, hence the release
-      # tarball); pinned to jj-lib's version in vcs/Cargo.toml: bump both together.
+      # tarball). $JJ_VERSION comes from the workflow-level env: above.
       - name: Install jj
-        env:
-          JJ_VERSION: 0.43.0
         run: |
           curl -fsSL "https://github.com/jj-vcs/jj/releases/download/v$JJ_VERSION/jj-v$JJ_VERSION-x86_64-unknown-linux-musl.tar.gz" \
             | sudo tar -xz -C /usr/local/bin ./jj
@@ -58,11 +62,9 @@ jobs:
 
       # protoc is a build-time dep of jj-lib. The `jj` CLI is what the working_status fixtures shell
       # out to for repo setup (and the test SKIPS silently without it, so it must be installed) —
-      # apt has no jj package, hence the release tarball. Pinned to the jj-lib version in
-      # vcs/Cargo.toml: bump both together.
+      # apt has no jj package, hence the release tarball. $JJ_VERSION comes from the
+      # workflow-level env: above.
       - name: Install protoc + jj
-        env:
-          JJ_VERSION: 0.43.0
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
           curl -fsSL "https://github.com/jj-vcs/jj/releases/download/v$JJ_VERSION/jj-v$JJ_VERSION-x86_64-unknown-linux-musl.tar.gz" \
@@ -108,16 +110,25 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # jj (Jujutsu) is required by WorkroomStatusIntegrationTests, which exercise the VCS
-      # status resolver against real git + jj repos. git + gh are preinstalled on the runner;
-      # jj is not. XcodeGen generates the (gitignored) .xcodeproj. protobuf provides protoc, a
-      # build-time dependency of jj-lib (the Rust VCS core, built by `make app-vcs`).
-      # aws/tap ships pre-tapped but untrusted on the runner image, which makes every `brew
-      # install` on this job emit a "tap trust" warning annotation unrelated to our formulae.
-      - name: Install XcodeGen + jj + protobuf
+      # XcodeGen generates the (gitignored) .xcodeproj. protobuf provides protoc, a build-time
+      # dependency of jj-lib (the Rust VCS core, built by `make app-vcs`). aws/tap ships
+      # pre-tapped but untrusted on the runner image, which makes every `brew install` on this
+      # job emit a "tap trust" warning annotation unrelated to our formulae.
+      - name: Install XcodeGen + protobuf
         run: |
           brew untap aws/tap
-          brew install xcodegen jj protobuf
+          brew install xcodegen protobuf
+
+      # jj (Jujutsu) is required by WorkroomStatusIntegrationTests, which exercise the VCS status
+      # resolver against real git + jj repos. git + gh are preinstalled on the runner; jj is not.
+      # Installed from the pinned release tarball (same mechanism as the `cli`/`vcs-core` jobs
+      # above) rather than `brew install jj`, so this job tracks the same $JJ_VERSION instead of
+      # whatever Homebrew resolves that day. macos-15 runners are Apple Silicon (arm64).
+      - name: Install jj
+        run: |
+          curl -fsSL "https://github.com/jj-vcs/jj/releases/download/v$JJ_VERSION/jj-v$JJ_VERSION-aarch64-apple-darwin.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin ./jj
+          jj --version
 
       - name: Lint (swift-format --strict)
         run: make app-lint
