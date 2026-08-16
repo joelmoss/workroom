@@ -2239,23 +2239,22 @@ under-shot final sample) is real-mouse-only — no synthetic test can prove a fa
 the true endpoint. Run a manual fast-flick drag test in both `TerminalTabStrip` and `WorkroomTabBar`
 before trusting this beyond the automated numbers above.
 
-### `SessionByteQueue`'s `wouldBlock` path has no dedicated test (macapp) — filed 2026-08-16
+### `SessionByteQueue`'s `wouldBlock` path has no dedicated test (macapp) — FIXED, 2026-08-16
 
-**What:** Add a unit test for `SessionByteQueue`'s (`WorkroomSession/SessionSupport.swift`)
-`wouldBlock` admission path — currently exercised only indirectly, through whatever
-`SessionConnection`/`PTYSession` behavior happens to touch it.
+Moved `SessionByteQueue` + `SessionIO` + the two outcome enums from `WorkroomSession/SessionSupport.swift`
+into `WorkroomSessionProtocol/SessionIO.swift` (marked `public`) — the module already shared by
+`WorkroomApp`, `WorkroomAppTests`, and `workroom-session`, per the second option this entry named.
+`WorkroomAppTests/Session/SessionByteQueueTests.swift` now drives `drain`'s `wouldBlock` path against
+a real, unread, non-blocking pipe (not a mock): a short write that would block, the queue left
+correctly positioned, then a full flush once the reader catches up.
 
-**Why:** `WorkroomSession` is a separate executable target, not reachable via `@testable import`
-from `WorkroomAppTests` — the same constraint the session-daemon findings entry (top of this file)
-already works around via `SessionDaemonHarness` end-to-end instead of in-process unit tests.
+**Trap while writing the test:** the first version set only the pipe's WRITE end non-blocking. The
+read-back loop's `SessionIO.read(readFD)` then blocked for real once the currently-buffered bytes
+were drained — hanging the test host (`Workroom Dev.app`, beach-balling) rather than failing, since
+the block happens deep inside a real `read()` syscall on the main test thread. Both ends of a pipe
+used for this kind of poll-until-`wouldBlock` loop need `SessionIO.setNonBlocking`.
 
-**How to start:** either add a lightweight test target for `WorkroomSession` (mirroring however
-`WorkroomAppTests` is wired to `WorkroomApp`), or move `SessionByteQueue` into a module both
-`WorkroomApp`/`WorkroomAppTests` and `WorkroomSession` can depend on.
-
-**Depends on:** nothing blocking.
-
-**Priority:** P3 — closes a coverage gap, not a known bug.
+**Priority:** done.
 
 ## P3 — Performance and diagnostics (WORKROOM-2B follow-ups)
 

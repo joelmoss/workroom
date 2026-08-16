@@ -1,4 +1,5 @@
 import Darwin
+import WorkroomSessionProtocol
 
 enum SessionSocket {
   static let backlog: Int32 = 16
