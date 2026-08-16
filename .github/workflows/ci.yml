@@ -12,15 +12,28 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Pinned to jj-lib's version in vcs/Cargo.toml — bump both together. Exported into every job's
-# `run:` steps automatically (GitHub Actions workflow-level env), so `cli`, `vcs-core`, and `app`
-# all install the same jj from one declared value instead of independently-typed literals.
+# Pinned to jj-lib's version in vcs/Cargo.toml — bump both together. This is the ONLY jj version
+# `app` (macOS, 10x the runner cost) installs — `cli` and `vcs-core` (cheap Linux jobs) instead
+# matrix over several jj CLI versions (see their own `strategy:` comments), since that's where a
+# real skew bug was caught (2026-08-16): fixtures shelling to `jj` assumed 0.44-only behavior and
+# silently broke on 0.43 without any CI signal until this version was exercised end to end.
 env:
   JJ_VERSION: 0.43.0
 
 jobs:
   cli:
     runs-on: ubuntu-latest
+    # Matrix over jj CLI versions the Go tests shell out to (see the "Install jj" step below) —
+    # NOT the same axis as $JJ_VERSION above, which stays the single version `app`'s fixed-cost
+    # macOS job installs. This caught a real bug (2026-08-16): fixtures shelling to `jj` assumed
+    # 0.44's "auto-advance @ off an immutable tip after push" and silently broke on 0.43, where
+    # `jj` behaves differently. Keep this list and vcs-core's in sync — both exercise the same
+    # CLI-shelling concern from different languages. Bump when jj cuts a new release worth
+    # covering; no need to chase every patch release.
+    strategy:
+      fail-fast: false
+      matrix:
+        jj-version: ["0.43.0", "0.44.0"]
     steps:
       - uses: actions/checkout@v5
 
@@ -31,8 +44,10 @@ jobs:
       # `jj` is what TestAddProjectCreate_ExistingJJRepoUsedAsIs / TestDeleteProjectSafetyJJ_* shell
       # out to — both `t.Skip` silently without it, so without this step they never ran in CI at
       # all. Same pattern as the `vcs-core` job below (apt has no jj package, hence the release
-      # tarball). $JJ_VERSION comes from the workflow-level env: above.
+      # tarball).
       - name: Install jj
+        env:
+          JJ_VERSION: ${{ matrix.jj-version }}
         run: |
           curl -fsSL "https://github.com/jj-vcs/jj/releases/download/v$JJ_VERSION/jj-v$JJ_VERSION-x86_64-unknown-linux-musl.tar.gz" \
             | sudo tar -xz -C /usr/local/bin ./jj
@@ -57,14 +72,25 @@ jobs:
   # and it's the only thing testing the core away from Apple targets.
   vcs-core:
     runs-on: ubuntu-latest
+    # Matrix over the jj CLI version the working_status fixtures shell out to for repo setup —
+    # see the `cli` job's comment for why this axis exists and is independent of $JJ_VERSION/the
+    # exact jj-lib pin in vcs/Cargo.toml. Also exercises jj-lib (always the pinned crate version)
+    # reading a repo laid out by a DIFFERENT jj CLI version — a real forward/backward-compat
+    # question given jj's on-disk format has changed across releases. Keep this list in sync with
+    # `cli`'s.
+    strategy:
+      fail-fast: false
+      matrix:
+        jj-version: ["0.43.0", "0.44.0"]
     steps:
       - uses: actions/checkout@v5
 
       # protoc is a build-time dep of jj-lib. The `jj` CLI is what the working_status fixtures shell
       # out to for repo setup (and the test SKIPS silently without it, so it must be installed) —
-      # apt has no jj package, hence the release tarball. $JJ_VERSION comes from the
-      # workflow-level env: above.
+      # apt has no jj package, hence the release tarball.
       - name: Install protoc + jj
+        env:
+          JJ_VERSION: ${{ matrix.jj-version }}
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
           curl -fsSL "https://github.com/jj-vcs/jj/releases/download/v$JJ_VERSION/jj-v$JJ_VERSION-x86_64-unknown-linux-musl.tar.gz" \

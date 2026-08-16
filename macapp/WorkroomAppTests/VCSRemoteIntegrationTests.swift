@@ -458,12 +458,14 @@ final class VCSRemoteIntegrationTests: XCTestCase {
     try requireTool("jj")
     guard let j = jjFixture() else { throw XCTSkip("jj fixture could not be created") }
     let env = "JJ_CONFIG=\(j.config)"
-    // `describe`, not `new` — see `testAnonymousJJPushCreatesATrackedPushBookmark`'s comment: the
-    // fixture's own push already left `@` on a fresh, unbookmarked, undescribed commit, and
-    // describing it in place (Workroom's real commit path) is one unpushed commit on the bookmark,
-    // not two — an extra `jj new` on top would leave that auto-created commit a permanent empty,
-    // undescribed ancestor and inflate the count.
-    sh("\(env) jj describe -m second && echo b > b.txt", in: j.project)
+    // `jj new main`, not a bare `describe` — whether the fixture's own push already left `@` on a
+    // fresh, unbookmarked commit depends on the jj version (0.44+ auto-advances off an immutable
+    // tip; 0.43 does not, leaving `@` ON the just-pushed, now-immutable `first`, where a `describe`
+    // silently no-ops). `jj new main` is correct either way: on a version that already advanced, the
+    // stale auto-created empty commit it abandons in favor of a fresh child of `main`; on one that
+    // didn't, it creates that same fresh child directly. Verified identical resulting shape (one
+    // unpushed, described commit on `main`) against both 0.43.0 and 0.44.0 by hand.
+    sh("\(env) jj new main -m second && echo b > b.txt", in: j.project)
     sh("\(env) jj bookmark set main -r @", in: j.project)
 
     let jjState = try await state(writer("jj"), path: j.project, projectRoot: j.project)
@@ -684,12 +686,13 @@ final class VCSRemoteIntegrationTests: XCTestCase {
     try requireTool("jj")
     guard let j = jjFixture() else { throw XCTSkip("jj fixture could not be created") }
     let env = "JJ_CONFIG=\(j.config)"
-    // `describe`, not `new` — the fixture's own push already left `@` on a fresh, unbookmarked,
-    // undescribed commit (jj 0.44 advances `@` off an immutable tip on its own, the instant the
-    // push lands). Describing it in place is what Workroom's real commit path does; layering an
-    // extra `jj new` on top instead would leave that auto-created commit as a permanent empty,
-    // undescribed ancestor — which jj's push guard then rejects the whole chain for.
-    sh("\(env) jj describe -m 'anonymous work' && echo c > c.txt", in: j.project)
+    // `jj new main`, not a bare `describe` — see `testJJAndGitAgreeOnAheadBehindForTheSameState`'s
+    // comment: whether the fixture's own push already left `@` on a fresh, unbookmarked commit
+    // depends on the jj version, and `jj new main` produces that same fresh, unbookmarked commit
+    // either way. A bare `describe` on 0.43 (no auto-advance) rewrites the already-pushed, immutable
+    // `first` in place instead — silently a no-op, leaving `@` still bookmarked `main`, which is
+    // exactly why the push below landed on `main` instead of minting a `push-` bookmark.
+    sh("\(env) jj new main -m 'anonymous work' && echo c > c.txt", in: j.project)
 
     let w = writer("jj")
     let s = try await state(w, path: j.project, projectRoot: j.project)
