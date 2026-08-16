@@ -7,95 +7,6 @@
 
 ## P1 — before GA
 
-### Terminal *content* accessibility (macapp) — CMT-3 — SHIPPED (2026-08-10)
-
-**Shipped:** `isAccessibilityElement()`/`accessibilityValue()` are real now (no longer gated behind
-the UI-test fixture), a new `accessibilitySelectedText()` reads the existing `readSelectionText()`,
-and a 400ms `Timer` poll posts coalesced `.valueChanged`/`.selectedTextChanged` only when the read
-content actually changed. There is no render/damage callback on the libghostty side to hook instead
-(checked `GhosttyRuntimeAdapter`'s full `GHOSTTY_ACTION_*` switch first) — the poll checks
-`NSWorkspace.shared.isVoiceOverEnabled` FIRST on every tick, so the real cost (materializing the
-viewport into a `String`) is paid only while VoiceOver is actually listening. The safety property
-below (a password prompt must never leak through this) was verified empirically, not by reasoning
-about terminal semantics: `TerminalAccessibilityUITests.testPasswordPromptWithEchoDisabledRendersNoTypedCharacters`
-drives a real `stty -echo` + `read` prompt in a real pane and asserts the typed secret never appears
-in the read viewport. Everything below this line is the pre-fix scoping and stays as the historical
-record of what was decided and why.
-
-**What:** VoiceOver support for the terminal's *rendered text* on `GhosttySurfaceView` — accessible
-value (screen text), selected text, and change notifications — so the terminal content is navigable
-with assistive tech.
-
-**Done so far:** the **UI-tree** a11y has landed (commit `f3859f9`) — `PaneTreeView` exposes each
-leaf as `terminal.pane` with a label ("Terminal <title>, pane N of M"), a focused/selected trait, and
-an adjustable split divider (`pane.grip`). That claim is unqualified: the one caveat raised against it
-(the tab strips' glyph buttons reporting `isHittable == false`) was investigated and closed as an
-XCUITest artefact — see **Recently done**. What's still missing is the *content* layer: the
-libghostty surface is Metal-rendered, so its text is pixels — invisible to the accessibility system.
-Today the surface view sets `role=.textArea` + a label only; it exposes **no value and no selection**,
-so VoiceOver reads nothing inside the terminal. Accepted regression for the beta (CMT-3). This is also
-the **enabler for content-level UI tests**: once terminal text is in the a11y tree, XCUITest can
-assert on rendered output (backspace deleted, TUI drew, scrollback) on top of the now-landed fixture
-seam — see `macapp/QA-libghostty.md` (Bucket 2).
-
-**When:** feasible on the currently pinned engine today (the read APIs exist), but ghostty upstream
-has merged a11y plumbing worth riding — **ghostty #12902** ("core: send selection_changed
-notification", merged 2026-06-04), which on macOS posts `.ghosttySelectionDidChange` → debounced →
-`NSAccessibility.selectedTextChanged`. On the pinned engine we'd have to post that notification
-ourselves from our own selection events; after the pin bump it comes from the engine as
-`GHOSTTY_ACTION_SELECTION_CHANGED`.
-
-This is unblocked by the **pin bump** (see "Bump the libghostty pin", P2), NOT by owning the
-xcframework — an earlier version of this entry sequenced it behind CMT-2, which was wrong. A
-before-GA item either way; doing it before the bump costs one self-posted notification.
-
-**How to start (minimal-viable, keep light per D1 — crib Muxy's `accessibilitySelectedText()`):**
-- `accessibilityValue()` → visible screen text via `ghostty_surface_read_text(surface, <viewport
-  ghostty_selection_s>, …)` (reuse the `extractString(from:)` helper).
-- `accessibilitySelectedText()` → `ghostty_surface_read_selection` (the same read that powers
-  copy-on-select).
-- Post `NSAccessibility.post(element:notification:)` `.selectedTextChanged` on selection change
-  (we already detect mouseUp / copy-on-select) and a throttled `.valueChanged` on output so
-  VoiceOver follows along; keep the role/label and report focus.
-- Skip the full `NSAccessibility` text protocol (line/char-range/bounds geometry) — overkill for a
-  terminal, and Muxy keeps it minimal too.
-
-**Caveat:** terminal a11y is inherently partial (dynamic output, scrollback, full-screen TUIs);
-target "announce output + selection, navigable text", not a perfect document model.
-
-**Depends on:** the read APIs already present in the pinned engine (`ghostty_surface_read_selection`,
-`ghostty_surface_read_text`, `extractString`) in `macapp/WorkroomApp/Core/GhosttySurfaceView.swift`.
-Cheaper after the pin bump (engine-sent `selection_changed`), but not blocked by it.
-
-**Priority:** P2 (accessibility regression — address before GA, not blocking the beta).
-
-### Every shipped beta has an arm64-only CLI inside a universal app (macapp) — SHIPPED (v2.0.0-beta.24)
-
-**What:** the app is universal; the `workroom` CLI it bundles is arm64-only. Verified on the
-published `v2.0.0-beta.23` DMG:
-
-```
-Workroom.app/Contents/MacOS/Workroom      x86_64 arm64
-Workroom.app/Contents/Resources/workroom  arm64        ← thin
-```
-
-**Why it matters:** the app drives *every* workroom operation through that binary
-(`create`/`list`/`delete`/`add-project`/`delete-project --json`). On an Intel Mac the app launches,
-renders, and then fails at all of it. Rosetta does not help — that translates the other direction.
-
-**Cause:** `ARCHS` is a space-separated list (`"arm64 x86_64"`), and `build-helper.sh` matched it as
-a single token, falling through to a `warn:`-and-default-to-arm64 branch. The warning was buried in
-xcodebuild output; codesign, notarization and Gatekeeper are all happy with a thin nested binary.
-Present since `8bae1b2a` (2026-06-02), the commit that added the app — so beta.1 through beta.23.
-The standalone CLI's own `darwin_amd64` tarball was always fine; only the embedded copy was thin.
-
-**Fixed** in `build-helper.sh` (per-arch build + `lipo`), asserted at release time by
-`release.sh check_universal()`, and regression-tested by `macapp/Scripts/build-helper_test.sh`
-(proven to fail against the old logic). Confirmed released: `ff7bbb7f` is an ancestor of the
-`v2.0.0-beta.24` tag.
-
-**Priority:** done.
-
 ## P2 — perf, correctness, and the next VCS phase
 
 ### `workroom-session` daemon: the findings the `/review` pass didn't fix (macapp) — persist-sessions follow-up
@@ -2651,6 +2562,29 @@ error) is one of the hardest to diagnose from a bug report.
 
 Condensed from the long status notes this file used to carry at the top; the full write-ups are in git
 history. Kept here for the parts that stay useful: what changed, and the traps found doing it.
+
+**2026-08-10 — the last two `## P1` entries shipped, so that section is now empty.** Both were filed
+before GA and are fully landed; retired out of the priority sections per this file's own rule (open
+work only lives there) rather than left to read as still-outstanding.
+
+- **Terminal *content* accessibility (CMT-3).** `isAccessibilityElement()`/`accessibilityValue()` are
+  real now (no longer gated behind the UI-test fixture); a new `accessibilitySelectedText()` reads
+  the existing `readSelectionText()`; a 400ms `Timer` poll posts coalesced
+  `.valueChanged`/`.selectedTextChanged` only when the read content actually changed, checking
+  `NSWorkspace.shared.isVoiceOverEnabled` FIRST on every tick so the real cost (materializing the
+  viewport into a `String`) is paid only while VoiceOver is actually listening. The no-password-leak
+  safety property was verified empirically, not by reasoning about terminal semantics:
+  `TerminalAccessibilityUITests.testPasswordPromptWithEchoDisabledRendersNoTypedCharacters` drives a
+  real `stty -echo` + `read` prompt in a real pane and asserts the typed secret never appears in the
+  read viewport.
+- **Every shipped beta had an arm64-only CLI inside a universal app.** `ARCHS` is a space-separated
+  list (`"arm64 x86_64"`), and `build-helper.sh` matched it as a single token, falling through to a
+  `warn:`-and-default-to-arm64 branch — buried in xcodebuild output, and codesign/notarization/
+  Gatekeeper are all happy with a thin nested binary. Present since `8bae1b2a` (beta.1 through
+  beta.23); the standalone CLI's own `darwin_amd64` tarball was always fine, only the embedded copy
+  was thin. Fixed in `build-helper.sh` (per-arch build + `lipo`), asserted at release time by
+  `release.sh check_universal()`, and regression-tested by `build-helper_test.sh` (proven to fail
+  against the old logic). Confirmed released: `ff7bbb7f` is an ancestor of the `v2.0.0-beta.24` tag.
 
 **2026-08-05 — four caches and surfaces that asserted stale or wrong things.** The three user-noticed
 findings from the VCS-toolbar review ((5), (6), (7) — see that entry) plus `DiffDescriptor.change` going
