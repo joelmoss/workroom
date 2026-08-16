@@ -2160,6 +2160,27 @@ logic wasn't reviewed against this change.
 
 ## P3 — Tests and tooling
 
+### `AppStore`'s default `cli` isn't hardened against a forgotten test double (macapp) — filed 2026-08-16
+
+**What:** `AppStore.init(cli: WorkroomCLIProtocol? = nil, ...)` defaults an un-injected `cli` to the
+real `WorkroomCLI.shared` — including under XCTest. A test that constructs a bare `AppStore()`,
+leaves `projectStore.projects` empty, and calls `bootstrap()`/`reload()` would silently shell out to
+the real bundled `workroom` binary and read the developer's actual `~/.config/workroom/config.json`.
+
+**Why not fixed now:** traced every current call site (`AppStoreSessionRestoreTests`'s two
+`bootstrap()` calls) — both pre-seed `projectStore.projects`, so `bootstrap` takes the
+`apply(projectStore.projects)` branch and never reaches `cli.list`. Nothing is broken today; this is
+defense against a future test, not a current bug. See the 2026-08-16 "Recently done" entry above for
+the actual bug this session found and fixed (the shared window's own bootstrap, not this).
+
+**How to start:** default the un-injected `cli` to a `WorkroomCLIProtocol` conformer, active only
+under `XCTestConfigurationFilePath != nil`, whose every method throws immediately — a test that
+forgot to inject a fake gets a loud, specific failure instead of a silent real-data read.
+
+**Depends on:** nothing blocking.
+
+**Priority:** P3 — hardening, not a known bug.
+
 ### Deferred UI workflow tests (macapp) — FIXED
 
 **What:** The two workflow UI tests left to write on top of the now-landed fixture seam:
@@ -2584,6 +2605,20 @@ error) is one of the hardest to diagnose from a bug report.
 
 Condensed from the long status notes this file used to carry at the top; the full write-ups are in git
 history. Kept here for the parts that stay useful: what changed, and the traps found doing it.
+
+**2026-08-16 — `make app-test` was silently reading and acting on the developer's real config.**
+`WorkroomApp`'s top-level `WindowGroup` scene has no test-mode branch of its own — `WorkroomAppTests`
+hosts the real app to get `@testable import Workroom`, so this real window rendered and its
+`.task { await store.bootstrap(...) }` ran on every `make app-test`, against the SHARED `AppStore`
+(production default `cli: WorkroomCLI.shared`, never a fake). Confirmed via the test log: an
+`io_exec: started subcommand path=/usr/bin/login` line — a real terminal opened in a real project
+directory — appeared on every run. Fixed with the same `XCTestConfigurationFilePath == nil` guard
+`WorkroomApp.init` already uses for `ShellEnvironment.refresh()`; verified the fix by rerunning the
+suite and confirming zero `io_exec`/`login` spawns. No unit test reads `ProjectStore.shared`
+directly (grepped first), so nothing depended on this window having bootstrapped. Manual
+`make app-run`/⌘R are unaffected by construction — `XCTestConfigurationFilePath` is set only by
+`xcodebuild test`, never a normal launch — so no new flag is needed to keep testing against real
+config by hand.
 
 **2026-08-10 — the last two `## P1` entries shipped, so that section is now empty.** Both were filed
 before GA and are fully landed; retired out of the priority sections per this file's own rule (open

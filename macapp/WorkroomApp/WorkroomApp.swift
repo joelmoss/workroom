@@ -153,6 +153,17 @@ struct RootWindow: View {
         }
       )
       .task {
+        // Not under XCTest: `WorkroomAppTests` hosts this app to get `@testable import Workroom`,
+        // which means this real WindowGroup scene renders too — and without this guard, its `.task`
+        // ran on every `make app-test`, unconditionally `bootstrap()`ing the SHARED, non-fake
+        // `AppStore` (production default `cli: WorkroomCLI.shared`) against the developer's REAL
+        // `~/.config/workroom/config.json`, then opening a REAL terminal in a REAL project
+        // directory for whatever it found. Same guard, same reasoning, as the `ShellEnvironment`
+        // skip in `init` above. Unit tests construct their own isolated `AppStore()`s and never see
+        // this window at all, so skipping its bootstrap breaks nothing under test.
+        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else {
+          return
+        }
         await store.bootstrap(restore: seed.restore)
         // Reopen the windows that were open at the last quit (issue #46). Only the launch window
         // fans out, and each key is handed out once, so a `.task` re-fire cannot double-open.
