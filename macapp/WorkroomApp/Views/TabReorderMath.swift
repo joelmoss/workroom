@@ -61,6 +61,76 @@ enum TabReorder {
   }
 }
 
+/// Shared drag-to-reorder STATE for a horizontal tab strip (issue #23), generic over the chip
+/// identity type (`TerminalTab.ID` for `TerminalTabStrip`, `SidebarID` for `WorkroomTabBar`) — the
+/// stateful choreography around `TabReorder`'s pure math, which had drifted into two
+/// hand-synchronized copies. Both strips independently discovered and fixed the SAME bug: `commit`
+/// must resolve off the gesture's own final translation, never the live `translation` this type
+/// tracks for rendering, because a fast/coarse drag's last `onChanged` sample can land short of
+/// `onEnded`'s true displacement. Each strip owns one `@State private var drag = TabReorderDrag<ID>()`
+/// and supplies its own commit action and drop-into-pane wiring as call-site closures — the
+/// division of labor `TabReorder` already uses successfully. Reorder-clamping (`WorkroomTabBar`'s
+/// `clampReorder`, absent in `TerminalTabStrip`) stays a call-site transform on `finalTranslation`/
+/// `translation`, not a flag on this type.
+struct TabReorderDrag<ID: Hashable> {
+  /// The chip currently dragging, or nil.
+  private(set) var id: ID?
+  /// Live translation for the render-time gap preview — NOT what `commit` resolves against.
+  private(set) var translation: CGFloat = 0
+  private(set) var widths: [ID: CGFloat] = [:]
+
+  var isDragging: Bool { id != nil }
+
+  /// The dragged chip's own measured width, or 0 while nothing is dragging / unmeasured.
+  var draggedWidth: CGFloat { id.flatMap { widths[$0] } ?? 0 }
+
+  mutating func setWidths(_ widths: [ID: CGFloat]) { self.widths = widths }
+
+  /// `DragGesture.onChanged` handler: latches `id` on the first call for this drag (subsequent
+  /// calls for a different id are ignored — mirrors both strips' `if draggingID == nil` guard),
+  /// then records the live translation for the render pass.
+  mutating func update(_ chipID: ID, translation: CGFloat) {
+    if id == nil { id = chipID }
+    guard id == chipID else { return }
+    self.translation = translation
+  }
+
+  /// Where the dragged chip would land right now, for the render-time gap preview. `nil` while
+  /// nothing is dragging, the dragged id isn't present in `ids`, or `suspendedByPaneDrag` is true
+  /// (a chip dragged down into a pane stops opening a reorder gap).
+  func dropIndex(ids: [ID], spacing: CGFloat, suspendedByPaneDrag: Bool) -> Int? {
+    guard !suspendedByPaneDrag, let id, let di = ids.firstIndex(of: id) else { return nil }
+    return TabReorder.dropTargetIndex(
+      widths: ids.map { widths[$0] ?? 0 }, draggedIndex: di, translation: translation,
+      spacing: spacing)
+  }
+
+  /// Resolve + clear the drag on drop. `finalTranslation` must be the gesture's own final value
+  /// (`onEnded`'s `value.translation`), never `translation` above — see the type's doc. Returns
+  /// the reorder to perform (`from`/`to` position indices), or `nil` when nothing was dragging or
+  /// the drop index didn't move (a caller that always wants to call its move action anyway can
+  /// ignore the nil case and use `id`/`ids.firstIndex(of:)` itself, but neither strip needs that).
+  mutating func commit(ids: [ID], spacing: CGFloat, finalTranslation: CGFloat) -> (
+    from: Int, to: Int
+  )? {
+    defer {
+      id = nil
+      translation = 0
+    }
+    guard let id, let di = ids.firstIndex(of: id) else { return nil }
+    let ti = TabReorder.dropTargetIndex(
+      widths: ids.map { widths[$0] ?? 0 }, draggedIndex: di, translation: finalTranslation,
+      spacing: spacing)
+    return ti != di ? (di, ti) : nil
+  }
+
+  /// Clear the drag without resolving a reorder (e.g. dropped into a pane instead).
+  mutating func cancel() {
+    id = nil
+    translation = 0
+  }
+}
+
 /// Geometry both tab strips must agree on (issue #129). One home, because the title-bar Workrooms bar
 /// and the terminal strip are on screen at the same time — a fade or gutter that differs between them
 /// is directly comparable, so a per-view copy of these numbers would drift visibly.

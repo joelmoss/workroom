@@ -289,3 +289,111 @@ final class TabStripSplitRunTests: XCTestCase {
     XCTAssertNil(TabStripSplitRun.rect(widths: [], memberIndices: [0, 1], spacing: spacing))
   }
 }
+
+/// Unit tests for `TabReorderDrag<ID>` — the stateful choreography `TerminalTabStrip` and
+/// `WorkroomTabBar` used to each hand-roll (3 `@State` vars + near-duplicate gesture code) and had
+/// already independently discovered and fixed the same bug in. These pin that fix at the shared
+/// type, so a future edit can't reintroduce it in either strip.
+final class TabReorderDragTests: XCTestCase {
+  private let ids = ["a", "b", "c"]
+  // Three equal 100pt chips with 4pt spacing, matching TabReorderMathTests's fixture.
+  private let widths: [String: CGFloat] = ["a": 100, "b": 100, "c": 100]
+  private let spacing: CGFloat = 4
+
+  private func makeDrag() -> TabReorderDrag<String> {
+    var drag = TabReorderDrag<String>()
+    drag.setWidths(widths)
+    return drag
+  }
+
+  func testFreshDragIsNotDragging() {
+    let drag = makeDrag()
+    XCTAssertFalse(drag.isDragging)
+    XCTAssertNil(drag.id)
+    XCTAssertEqual(drag.draggedWidth, 0)
+  }
+
+  func testUpdateLatchesTheFirstChipAndTracksTranslation() {
+    var drag = makeDrag()
+    drag.update("b", translation: 30)
+    XCTAssertEqual(drag.id, "b")
+    XCTAssertEqual(drag.translation, 30)
+    XCTAssertEqual(drag.draggedWidth, 100)
+  }
+
+  /// Mirrors both strips' `if draggingID == nil { draggingID = tab.id }` / `guard draggingID ==
+  /// tab.id else { return }`: once a chip has latched the drag, a different chip's gesture
+  /// callback (a SwiftUI quirk this codebase has hit before) must not steal or perturb it.
+  func testUpdateIgnoresADifferentChipOnceLatched() {
+    var drag = makeDrag()
+    drag.update("b", translation: 30)
+    drag.update("a", translation: 999)
+    XCTAssertEqual(drag.id, "b")
+    XCTAssertEqual(drag.translation, 30)
+  }
+
+  func testDropIndexNilWhenNotDragging() {
+    let drag = makeDrag()
+    XCTAssertNil(drag.dropIndex(ids: ids, spacing: spacing, suspendedByPaneDrag: false))
+  }
+
+  /// A chip dragged down into a pane stops opening a reorder gap.
+  func testDropIndexNilWhenSuspendedByPaneDrag() {
+    var drag = makeDrag()
+    drag.update("a", translation: 60)
+    XCTAssertNil(drag.dropIndex(ids: ids, spacing: spacing, suspendedByPaneDrag: true))
+  }
+
+  func testDropIndexMatchesTheSharedMath() {
+    var drag = makeDrag()
+    drag.update("a", translation: 60)  // crosses one neighbour, per TabReorderMathTests.
+    XCTAssertEqual(drag.dropIndex(ids: ids, spacing: spacing, suspendedByPaneDrag: false), 1)
+  }
+
+  /// THE bug both strips independently fixed: a fast/coarse drag's last `onChanged` sample
+  /// (`translation`) can land short of `onEnded`'s true final displacement. `commit` must resolve
+  /// off the caller-supplied `finalTranslation`, never the live `translation` field.
+  func testCommitUsesFinalTranslationNotLiveTranslation() {
+    var drag = makeDrag()
+    drag.update("a", translation: 5)  // stale/under-shot sample: would not cross any neighbour.
+    let move = drag.commit(ids: ids, spacing: spacing, finalTranslation: 60)  // true release point.
+    XCTAssertEqual(move?.from, 0)
+    XCTAssertEqual(move?.to, 1)
+  }
+
+  func testCommitReturnsNilWhenDropIndexDidNotChange() {
+    var drag = makeDrag()
+    drag.update("a", translation: 5)
+    XCTAssertNil(drag.commit(ids: ids, spacing: spacing, finalTranslation: 5))
+  }
+
+  func testCommitReturnsNilWhenNothingWasDragging() {
+    var drag = makeDrag()
+    XCTAssertNil(drag.commit(ids: ids, spacing: spacing, finalTranslation: 60))
+  }
+
+  /// `commit` must reset drag state even when it returns nil — otherwise a no-op drop (or one with
+  /// an unchanged index) would leave a stale `id`/`translation` haunting the next render.
+  func testCommitAlwaysResetsStateRegardlessOfOutcome() {
+    var drag = makeDrag()
+    drag.update("a", translation: 5)
+    _ = drag.commit(ids: ids, spacing: spacing, finalTranslation: 5)  // nil: unchanged index.
+    XCTAssertFalse(drag.isDragging)
+    XCTAssertNil(drag.id)
+    XCTAssertEqual(drag.translation, 0)
+
+    drag.update("b", translation: 60)
+    _ = drag.commit(ids: ids, spacing: spacing, finalTranslation: 60)  // non-nil: real move.
+    XCTAssertFalse(drag.isDragging)
+    XCTAssertEqual(drag.translation, 0)
+  }
+
+  func testCancelResetsWithoutReturningAMove() {
+    var drag = makeDrag()
+    drag.update("a", translation: 60)
+    drag.cancel()
+    XCTAssertFalse(drag.isDragging)
+    XCTAssertNil(drag.id)
+    XCTAssertEqual(drag.translation, 0)
+  }
+}

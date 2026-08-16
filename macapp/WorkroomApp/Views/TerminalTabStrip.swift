@@ -46,9 +46,7 @@ struct TerminalTabStrip: View {
   // Drag-to-reorder. The tab order is *frozen* for the duration of a drag: the dragged
   // chip simply follows the cursor (its slot never moves, so it can't jump), and the
   // other chips slide aside to open a gap. The reorder is committed once, on drop.
-  @State private var draggingID: TerminalTab.ID?
-  @State private var dragTranslation: CGFloat = 0
-  @State private var widths: [TerminalTab.ID: CGFloat] = [:]
+  @State private var drag = TabReorderDrag<TerminalTab.ID>()
 
   private let tabSpacing: CGFloat = 4
   /// The strip's own right inset. Lives here rather than on `tabToolbar` (which renders *nothing* when
@@ -61,13 +59,11 @@ struct TerminalTabStrip: View {
 
   var body: some View {
     // Resolve the drag once per layout: which tab is dragging, and where it would land.
-    let draggedIndex = draggingID.flatMap { id in tabs.firstIndex { $0.id == id } }
+    let draggedIndex = drag.id.flatMap { id in tabs.firstIndex { $0.id == id } }
     // While dragging a chip down into a pane, the strip stops opening a reorder gap.
-    let dropIndex =
-      chipPaneDrag != nil
-      ? nil
-      : draggedIndex.map { dropTargetIndex(tabs, draggedIndex: $0, translation: dragTranslation) }
-    let draggedWidth = draggingID.flatMap { widths[$0] } ?? 0
+    let dropIndex = drag.dropIndex(
+      ids: tabs.map(\.id), spacing: tabSpacing, suspendedByPaneDrag: chipPaneDrag != nil)
+    let draggedWidth = drag.draggedWidth
     // Members of the split group (≥2), so a grouped chip's selected pill can inset itself to sit
     // *inside* the `splitWell` bracket rather than overrunning it.
     let groupMembers = splitMemberSet
@@ -90,7 +86,7 @@ struct TerminalTabStrip: View {
         inlineLead: TabStripMetrics.inlineAddLead,
         // Scroll the focused tab into view on selection (issue #129 follow-up); suspended mid-drag,
         // like the reorder gap animation below.
-        scrollTarget: activeID, scrollSuspended: draggingID != nil
+        scrollTarget: activeID, scrollSuspended: drag.isDragging
       ) { overflowing in
         chipRun(
           tabs, draggedIndex: draggedIndex, dropIndex: dropIndex, draggedWidth: draggedWidth,
@@ -126,8 +122,8 @@ struct TerminalTabStrip: View {
   ) -> some View {
     HStack(spacing: tabSpacing) {
       ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
-        let isDragging = draggingID == tab.id
-        let isHovered = hoveredTab == tab.id && draggingID == nil
+        let isDragging = drag.id == tab.id
+        let isHovered = hoveredTab == tab.id && !drag.isDragging
         // Activity in an unfocused tab highlights the tab itself (accent title + faint accent
         // fill) instead of a count — a tab is too narrow for a number.
         let hasActivity = notifications.count(tab: tab.id) > 0
@@ -142,7 +138,7 @@ struct TerminalTabStrip: View {
         // Dragged chip tracks the cursor; the rest shift to open the gap.
         let offsetX =
           isDragging
-          ? dragTranslation
+          ? drag.translation
           : gapShift(
             for: index, draggedIndex: draggedIndex, target: dropIndex,
             amount: draggedWidth + tabSpacing)
@@ -184,14 +180,12 @@ struct TerminalTabStrip: View {
         }
         .tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions)
         // Measure in .global space: a .local drag reads coordinates relative to the
-        // chip, which itself moves via .offset(dragTranslation) — that feedback loop
+        // chip, which itself moves via .offset(drag.translation) — that feedback loop
         // dampens the translation so the chip lags the cursor. Global space is fixed.
         .gesture(
           DragGesture(minimumDistance: 6, coordinateSpace: .global)
             .onChanged { value in
-              if draggingID == nil { draggingID = tab.id }
-              guard draggingID == tab.id else { return }
-              dragTranslation = value.translation.width
+              drag.update(tab.id, translation: value.translation.width)
               // Dragged down over the pane area → preview a drop-into-pane (the strip stops gapping).
               chipPaneDrag = localize(value.location)
                 .map { PaneDragState(tabID: tab.id, location: $0) }
@@ -200,14 +194,13 @@ struct TerminalTabStrip: View {
               if let drop = dropTarget(value.location) {
                 sessions.moveTabIntoSplit(
                   tab.id, ontoEdge: drop.edge, of: drop.tab, for: target)
-                draggingID = nil
-                dragTranslation = 0
-              } else {
-                // Use `value.translation` (the gesture's own final, accurate displacement), not the
-                // `dragTranslation` state — that state is only ever written from `onChanged`, and a
-                // coarse/fast drag (synthetic or a real fast flick) can deliver its last `onChanged`
-                // sample short of the true release point. See `WorkroomTabBar`'s identical fix.
-                commitDrag(translation: value.translation.width)
+                drag.cancel()
+              } else if let move = drag.commit(
+                ids: tabs.map(\.id), spacing: tabSpacing, finalTranslation: value.translation.width)
+              {
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                  sessions.moveTab(tab.id, toIndex: move.to, for: target)
+                }
               }
               chipPaneDrag = nil
             }
@@ -241,7 +234,7 @@ struct TerminalTabStrip: View {
       }
     }
     .background(alignment: .leading) { splitWell(tabs) }
-    .onPreferenceChange(TabWidthKey.self) { widths = $0 }
+    .onPreferenceChange(TabWidthKey.self) { drag.setWidths($0) }
   }
 
   /// The "new terminal" (+) button, rendered in one of two positions (issue #129): inline as the last
@@ -339,7 +332,7 @@ struct TerminalTabStrip: View {
   /// (group-aware strip drag is Phase 2), and only shown for a real split (≥2).
   @ViewBuilder
   private func splitWell(_ tabs: [TerminalTab]) -> some View {
-    if draggingID == nil, let run = splitRunRect(tabs) {
+    if !drag.isDragging, let run = splitRunRect(tabs) {
       RoundedRectangle(cornerRadius: 7)
         .strokeBorder(ThemeService.shared.tokens.border, lineWidth: 1)
         .frame(width: run.width)
@@ -356,21 +349,9 @@ struct TerminalTabStrip: View {
     guard let members = sessions.split(for: target)?.tabIDs, members.count >= 2 else { return nil }
     let memberSet = Set(members)
     return TabStripSplitRun.rect(
-      widths: tabs.map { widths[$0.id] ?? 0 },
+      widths: tabs.map { drag.widths[$0.id] ?? 0 },
       memberIndices: tabs.indices.filter { memberSet.contains(tabs[$0].id) },
       spacing: tabSpacing)
-  }
-
-  /// Where the dragged tab would land at `translation` (delegates to the shared `TabReorder` math,
-  /// mapping this strip's tabs to position-indexed widths). Callers pass the `dragTranslation` state
-  /// while rendering the live gap, but the commit path must pass the gesture's own final value — see
-  /// `commitDrag`'s comment.
-  private func dropTargetIndex(_ tabs: [TerminalTab], draggedIndex di: Int, translation: CGFloat)
-    -> Int
-  {
-    TabReorder.dropTargetIndex(
-      widths: tabs.map { widths[$0.id] ?? 0 }, draggedIndex: di,
-      translation: translation, spacing: tabSpacing)
   }
 
   /// Horizontal shift for a non-dragged chip so the row opens a gap at the drop target (delegates to
@@ -388,7 +369,7 @@ struct TerminalTabStrip: View {
   /// at a split group's **outer** boundary (the `splitWell` bracket already separates the members
   /// there) and while dragging (reorder / drop-into-pane). Mirrors `WorkroomTabBar`.
   private func showsLeadingSeparator(at index: Int) -> Bool {
-    guard index > 0, draggingID == nil, chipPaneDrag == nil else { return false }
+    guard index > 0, !drag.isDragging, chipPaneDrag == nil else { return false }
     let here = tabs[index].id
     let prev = tabs[index - 1].id
     if here == activeID || prev == activeID { return false }
@@ -416,24 +397,6 @@ struct TerminalTabStrip: View {
   private var splitMemberSet: Set<TerminalTab.ID> {
     guard let members = sessions.split(for: target)?.tabIDs, members.count >= 2 else { return [] }
     return Set(members)
-  }
-
-  /// Commit the reorder on drop, then clear drag state (animated, so everything settles).
-  /// `translation` is the caller's own final displacement (from `onEnded`'s `value`), not the
-  /// `dragTranslation` state — see the call site's comment for why those two can disagree.
-  private func commitDrag(translation: CGFloat) {
-    let tabs = sessions.tabs(for: target)
-    if let id = draggingID, let di = tabs.firstIndex(where: { $0.id == id }) {
-      let ti = dropTargetIndex(tabs, draggedIndex: di, translation: translation)
-      withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-        sessions.moveTab(id, toIndex: ti, for: target)
-        draggingID = nil
-        dragTranslation = 0
-      }
-    } else {
-      draggingID = nil
-      dragTranslation = 0
-    }
   }
 
   /// The ✦ agent popover for a tab (inline presentation): the diagnosis + its actions, off the grid.

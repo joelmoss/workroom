@@ -42,9 +42,7 @@ struct WorkroomTabBar: View {
 
   // Drag-to-reorder: the order is frozen during a drag (the dragged chip follows the cursor, the rest
   // slide aside to open a gap), committed once on drop — mirrors `TerminalTabStrip`.
-  @State private var draggingID: SidebarID?
-  @State private var dragTranslation: CGFloat = 0
-  @State private var widths: [SidebarID: CGFloat] = [:]
+  @State private var drag = TabReorderDrag<SidebarID>()
 
   private let tabSpacing: CGFloat = 4
 
@@ -61,18 +59,12 @@ struct WorkroomTabBar: View {
   }
 
   var body: some View {
-    let draggedIndex = draggingID.flatMap { id in tabs.firstIndex { $0.sid == id } }
+    let draggedIndex = drag.id.flatMap { id in tabs.firstIndex { $0.sid == id } }
     // While dragging a chip down into the content (forming a split), the strip stops opening a reorder
     // gap — mirrors `TerminalTabStrip`.
-    let dropIndex =
-      chipPaneDrag != nil
-      ? nil
-      : draggedIndex.map {
-        TabReorder.dropTargetIndex(
-          widths: tabs.map { widths[$0.sid] ?? 0 }, draggedIndex: $0,
-          translation: dragTranslation, spacing: tabSpacing)
-      }
-    let draggedWidth = draggingID.flatMap { widths[$0] } ?? 0
+    let dropIndex = drag.dropIndex(
+      ids: tabs.map(\.sid), spacing: tabSpacing, suspendedByPaneDrag: chipPaneDrag != nil)
+    let draggedWidth = drag.draggedWidth
 
     // The bar fills the gap between the leading and trailing title-bar controls (the container's
     // `frame(maxWidth: .infinity)`), chips left-aligned; it scrolls horizontally when the chips overflow
@@ -84,7 +76,7 @@ struct WorkroomTabBar: View {
       leadingInset: 8, spacing: tabSpacing, inlineLead: 0,
       // Scroll the selected workroom into view on selection (issue #129 follow-up); suspended
       // mid-drag, like the reorder gap animation below.
-      scrollTarget: selectedID, scrollSuspended: draggingID != nil
+      scrollTarget: selectedID, scrollSuspended: drag.isDragging
     ) { overflowing in
       chipRun(
         draggedIndex: draggedIndex, dropIndex: dropIndex, draggedWidth: draggedWidth,
@@ -96,7 +88,7 @@ struct WorkroomTabBar: View {
     // chip drag reorders instead of moving the window — the empty bar still drags it. See
     // `WindowMovableController`. Deliberately NOT widened to the trailing buttons: they already work
     // while the window is movable, and churning a window-wide flag on button hover buys nothing.
-    .background(WindowMovableController(movable: draggingID == nil && hoveredID == nil))
+    .background(WindowMovableController(movable: !drag.isDragging && hoveredID == nil))
   }
 
   /// The open-workroom + new-workroom buttons as ONE block, rendered inline as the last element of the
@@ -135,11 +127,11 @@ struct WorkroomTabBar: View {
     let groupOf = store.workroomSplitGroupIndices()
     HStack(spacing: tabSpacing) {
       ForEach(Array(tabs.enumerated()), id: \.element.sid) { index, tab in
-        let isDragging = draggingID == tab.sid
-        let isHovered = hoveredID == tab.sid && draggingID == nil
+        let isDragging = drag.id == tab.sid
+        let isHovered = hoveredID == tab.sid && !drag.isDragging
         let offsetX =
           isDragging
-          ? dragTranslation
+          ? drag.translation
           : TabReorder.gapShift(
             index: index, draggedIndex: draggedIndex, target: dropIndex,
             amount: draggedWidth + tabSpacing)
@@ -157,13 +149,14 @@ struct WorkroomTabBar: View {
         .gesture(
           DragGesture(minimumDistance: 6, coordinateSpace: .global)
             .onChanged { value in
-              if draggingID == nil { draggingID = tab.sid }
-              guard draggingID == tab.sid else { return }
               // Clamp the reorder so the dragged chip stops at the leading and trailing ends of the
               // tab run — it can't be pulled left into the leading controls or right across the empty
               // fill (the bar spans the full title-bar width). Vertical drag-into-a-split is
               // unaffected (that reads `value.location`, below).
-              dragTranslation = clampReorder(value.translation.width, draggedIndex: index)
+              drag.update(
+                tab.sid,
+                translation: clampReorder(
+                  value.translation.width, draggedID: tab.sid, draggedIndex: index))
               // Dragged into the detail content → preview a drop-into-pane split (the strip stops
               // gapping); otherwise it's a plain reorder.
               chipPaneDrag = localize(value.location).map {
@@ -173,15 +166,16 @@ struct WorkroomTabBar: View {
             .onEnded { value in
               if let drop = dropTarget(value.location) {
                 store.insertWorkroomSplit(tab.sid, beside: drop.sid, edge: drop.edge)
-                draggingID = nil
-                dragTranslation = 0
+                drag.cancel()
               } else {
-                // Recompute from `value.translation` rather than reading the `dragTranslation` state:
-                // that state is only ever written from `onChanged`, and a coarse/fast synthetic drag
+                // Recompute the clamp from `value.translation` rather than reading `drag.translation`:
+                // that field is only ever written from `onChanged`, and a coarse/fast synthetic drag
                 // (XCUITest's interpolation, or a fast real trackpad flick) can deliver its last
                 // `onChanged` sample short of the true release point, before `onEnded` fires with the
                 // full, accurate displacement — committing off a stale, under-shot translation.
-                commitDrag(translation: clampReorder(value.translation.width, draggedIndex: index))
+                commitDrag(
+                  translation: clampReorder(
+                    value.translation.width, draggedID: tab.sid, draggedIndex: index))
               }
               chipPaneDrag = nil
             }
@@ -223,7 +217,7 @@ struct WorkroomTabBar: View {
         .opacity(showsTrailingDivider(overflowing: overflowing, groupOf: groupOf) ? 1 : 0)
     }
     .background(alignment: .leading) { splitWell(groupOf: groupOf) }
-    .onPreferenceChange(WorkroomTabWidthKey.self) { widths = $0 }
+    .onPreferenceChange(WorkroomTabWidthKey.self) { drag.setWidths($0) }
   }
 
   /// The in-progress create whose chip isn't yet a real tab (issue #116): shown as a provisional
@@ -243,7 +237,7 @@ struct WorkroomTabBar: View {
   /// member) and, symmetrically, whatever follows a member. The `splitWell` brackets separate the groups
   /// there instead. Interior member↔member boundaries (same group) keep their hairline. Never mid-drag.
   private func showsLeadingSeparator(at index: Int, groupOf: [SidebarID: Int]) -> Bool {
-    guard draggingID == nil else { return false }
+    guard !drag.isDragging else { return false }
     let here = tabs[index].sid
     // First tab: a leading divider unless it's the leading (outer) edge of a split group, or is itself
     // the selected/hovered pill (which stands alone).
@@ -277,7 +271,7 @@ struct WorkroomTabBar: View {
   /// relative to the first chip's leading edge, which is what this stack restores as every bracket's
   /// origin.
   @ViewBuilder private func splitWell(groupOf: [SidebarID: Int]) -> some View {
-    if draggingID == nil {
+    if !drag.isDragging {
       ZStack(alignment: .leading) {
         ForEach(Array(splitRunRects(groupOf: groupOf).enumerated()), id: \.offset) { index, run in
           RoundedRectangle(cornerRadius: 7)
@@ -304,7 +298,7 @@ struct WorkroomTabBar: View {
   /// bar yields no bracket.
   private func splitRunRects(groupOf: [SidebarID: Int]) -> [(x: CGFloat, width: CGFloat)] {
     guard !groupOf.isEmpty else { return [] }
-    let chipWidths = tabs.map { widths[$0.sid] ?? 0 }
+    let chipWidths = tabs.map { drag.widths[$0.sid] ?? 0 }
     // Bucket the chips by group in ONE pass over the bar (a filter per group would be O(groups × chips)).
     var byGroup: [Int: [Int]] = [:]
     for (index, tab) in tabs.enumerated() {
@@ -323,11 +317,22 @@ struct WorkroomTabBar: View {
   /// edge can't pass the last chip's trailing end. `runWidth` is the chips' contiguous run (the trailing
   /// `+` button isn't a reorder slot). Keeps a dragged chip from being pulled into the leading controls
   /// or across the empty fill now that the bar spans the full title-bar width.
-  private func clampReorder(_ translation: CGFloat, draggedIndex index: Int) -> CGFloat {
-    guard let id = draggingID, let chipW = widths[id] else { return translation }
-    let startX = (0..<index).reduce(CGFloat(0)) { $0 + (widths[tabs[$1].sid] ?? 0) + tabSpacing }
+  ///
+  /// Takes the dragged chip's id explicitly rather than reading it back from `drag.id`: the
+  /// caller (`onChanged`) must compute the clamped translation to pass INTO `drag.update`, which
+  /// is what latches `drag.id` for a fresh drag — reading `drag.id` here would race that latch on
+  /// the drag's first event.
+  private func clampReorder(
+    _ translation: CGFloat, draggedID id: SidebarID, draggedIndex index: Int
+  )
+    -> CGFloat
+  {
+    guard let chipW = drag.widths[id] else { return translation }
+    let startX = (0..<index).reduce(CGFloat(0)) {
+      $0 + (drag.widths[tabs[$1].sid] ?? 0) + tabSpacing
+    }
     let runWidth =
-      tabs.reduce(CGFloat(0)) { $0 + (widths[$1.sid] ?? 0) }
+      tabs.reduce(CGFloat(0)) { $0 + (drag.widths[$1.sid] ?? 0) }
       + tabSpacing * CGFloat(max(0, tabs.count - 1))
     let minT = -startX
     let maxT = max(minT, (runWidth - chipW) - startX)
@@ -338,26 +343,18 @@ struct WorkroomTabBar: View {
   /// re-renders with the new order — a bare `Defaults` write didn't re-render, so the chip snapped
   /// back), then clear drag state (animated, so the row settles). The order is filtered through
   /// `orderedActiveTargets` on every read, so writing the current active order is self-healing.
-  /// `translation` is the caller's own final, clamped displacement (from `onEnded`'s `value`), not the
-  /// `dragTranslation` state — see the call site's comment for why those two can disagree.
+  /// `translation` is the caller's own final, clamped displacement (from `onEnded`'s `value`) —
+  /// `drag.commit` itself resolves off exactly that, never the live `drag.translation`.
   private func commitDrag(translation: CGFloat) {
-    guard let id = draggingID, let di = tabs.firstIndex(where: { $0.sid == id }) else {
-      draggingID = nil
-      dragTranslation = 0
-      return
-    }
-    let ti = TabReorder.dropTargetIndex(
-      widths: tabs.map { widths[$0.sid] ?? 0 }, draggedIndex: di,
-      translation: translation, spacing: tabSpacing)
+    guard
+      let move = drag.commit(
+        ids: tabs.map(\.sid), spacing: tabSpacing, finalTranslation: translation)
+    else { return }
     withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-      if ti != di {
-        var order = tabs.compactMap { AppStore.targetIDString(for: $0.sid) }
-        let moved = order.remove(at: di)
-        order.insert(moved, at: ti)
-        store.workroomTabOrder = order
-      }
-      draggingID = nil
-      dragTranslation = 0
+      var order = tabs.compactMap { AppStore.targetIDString(for: $0.sid) }
+      let moved = order.remove(at: move.from)
+      order.insert(moved, at: move.to)
+      store.workroomTabOrder = order
     }
   }
 
