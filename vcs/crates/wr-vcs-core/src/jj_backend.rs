@@ -805,29 +805,12 @@ fn changed_files(
             // `copy_operation()` gate below).
             let path = entry.path.target().as_internal_file_string().to_string();
             let copy_op = entry.path.copy_operation();
-            // Conflict FIRST: an unresolved merge on the `after` side *is* the conflict, and it
-            // never satisfies `is_absent()` (which is `Some(None)` — a *resolved* absence), so
-            // without this branch a conflicted file reads as a plain `Modified`. Ordering:
-            // - after unresolved + before absent (both sides added) → Conflicted, not Added (git's `AA`)
-            // - before unresolved + after absent (conflict then deleted) → Deleted; nothing to resolve
-            // - before unresolved + after resolved (conflict resolved) → Modified
-            //
-            // Rename/copy comes SECOND, ahead of the presence tests: a rename's target is absent in
-            // `before`, so without this branch it reads as a plain `Added` (and jj-lib has already
-            // dropped the paired delete entry, so the old path would vanish entirely).
-            //
-            // Conflicted-before-rename is defensive ordering only: a conflicted path can't currently
-            // carry a copy record at all, because records come from each commit's *git* tree and jj
-            // exports a conflicted commit as `.jjconflict-*` sidecar trees — so gix's rewrite
-            // detection finds no blob to pair. A conflicted rename therefore decomposes into an
-            // `Added` at the new path + a `Conflicted` at the old one (pinned by
-            // `a_conflicted_rename_does_not_pair_into_one_row`). If a future jj-lib does pair them,
-            // this branch keeps the conflict badge rather than downgrading it to `Renamed`.
-            //
-            // Reading the kind off MATERIALIZED values keeps every one of those branches intact: an
-            // unresolved merge materializes to `FileConflict`/`OtherConflict` (never to `Absent`, the
-            // same reason `is_absent()` didn't catch it), and an absent side to `Absent`. `AccessDenied`
-            // is a present-but-unreadable value, so it stays a `Modified` as before — with `None`
+            // The change-kind ladder itself (conflict-before-rename, rename-before-presence, and
+            // why) is documented once on the shared `classify_kind`. Reading the kind off
+            // MATERIALIZED values keeps every one of its branches intact: an unresolved merge
+            // materializes to `FileConflict`/`OtherConflict` (never to `Absent`, the same reason
+            // `is_absent()` didn't catch it), and an absent side to `Absent`. `AccessDenied` is a
+            // present-but-unreadable value, so it stays a `Modified` as before — with `None`
             // counts, since there's no content to compare.
             let old_path = copy_op
                 .map(|_| entry.path.source().as_internal_file_string().to_string())
@@ -844,20 +827,12 @@ fn changed_files(
             // "Not a repository." for a workroom that is fine apart from that one file.
             let (kind, stats) = match entry.values {
                 Ok(diff) => {
-                    let kind = if is_conflict(&diff.after) {
-                        model::ChangeKind::Conflicted
-                    } else if let Some(op) = copy_op {
-                        match op {
-                            CopyOperation::Rename => model::ChangeKind::Renamed,
-                            CopyOperation::Copy => model::ChangeKind::Copied,
-                        }
-                    } else if diff.before.is_absent() {
-                        model::ChangeKind::Added
-                    } else if diff.after.is_absent() {
-                        model::ChangeKind::Deleted
-                    } else {
-                        model::ChangeKind::Modified
-                    };
+                    let kind = classify_kind(
+                        is_conflict(&diff.after),
+                        copy_op,
+                        diff.before.is_absent(),
+                        diff.after.is_absent(),
+                    );
                     let stats =
                         line_stats(entry.path.source(), entry.path.target(), diff, &materialize)
                             .await;
@@ -945,29 +920,66 @@ fn is_conflict(value: &MaterializedTreeValue) -> bool {
     )
 }
 
-/// The change kind read off RAW tree values — the fallback in `changed_files` for a file whose
-/// content wouldn't materialize. Same ladder, same order, same reasoning as the materialized one
-/// (see the comment there); only the two predicates differ, because a conflict is an *unresolved*
-/// merge before materialization rather than a `FileConflict`/`OtherConflict` value after it.
-fn raw_kind(
-    before: &MergedTreeValue,
-    after: &MergedTreeValue,
+/// The shared 5-way change-kind classification ladder — used against MATERIALIZED values in
+/// `changed_files` and against RAW tree values in `raw_kind` (the fallback for a file whose
+/// content wouldn't materialize); only the two predicates' *source* differs between those call
+/// sites, not this ordering.
+///
+/// Conflict FIRST: an unresolved merge on the "after" side *is* the conflict, and it never
+/// satisfies an absence check (materialized: `is_absent()` is `Some(None)`, a *resolved* absence;
+/// raw: `is_resolved()` on an unmerged value), so without this branch a conflicted file reads as a
+/// plain `Modified`. Ordering:
+/// - after unresolved + before absent (both sides added) → Conflicted, not Added (git's `AA`)
+/// - before unresolved + after absent (conflict then deleted) → Deleted; nothing to resolve
+/// - before unresolved + after resolved (conflict resolved) → Modified
+///
+/// Rename/copy comes SECOND, ahead of the presence tests: a rename's target is absent in `before`,
+/// so without this branch it reads as a plain `Added` (and jj-lib has already dropped the paired
+/// delete entry, so the old path would vanish entirely).
+///
+/// Conflicted-before-rename is defensive ordering only: a conflicted path can't currently carry a
+/// copy record at all, because records come from each commit's *git* tree and jj exports a
+/// conflicted commit as `.jjconflict-*` sidecar trees — so gix's rewrite detection finds no blob to
+/// pair. A conflicted rename therefore decomposes into an `Added` at the new path + a `Conflicted`
+/// at the old one (pinned by `a_conflicted_rename_does_not_pair_into_one_row`). If a future jj-lib
+/// does pair them, this ordering keeps the conflict badge rather than downgrading it to `Renamed`.
+fn classify_kind(
+    is_conflict: bool,
     copy_op: Option<CopyOperation>,
+    before_absent: bool,
+    after_absent: bool,
 ) -> model::ChangeKind {
-    if !after.is_resolved() {
+    if is_conflict {
         model::ChangeKind::Conflicted
     } else if let Some(op) = copy_op {
         match op {
             CopyOperation::Rename => model::ChangeKind::Renamed,
             CopyOperation::Copy => model::ChangeKind::Copied,
         }
-    } else if before.is_absent() {
+    } else if before_absent {
         model::ChangeKind::Added
-    } else if after.is_absent() {
+    } else if after_absent {
         model::ChangeKind::Deleted
     } else {
         model::ChangeKind::Modified
     }
+}
+
+/// The change kind read off RAW tree values — the fallback in `changed_files` for a file whose
+/// content wouldn't materialize. Delegates to `classify_kind`'s shared ladder; only the predicates'
+/// source differs, because a conflict is an *unresolved* merge before materialization rather than
+/// a `FileConflict`/`OtherConflict` value after it.
+fn raw_kind(
+    before: &MergedTreeValue,
+    after: &MergedTreeValue,
+    copy_op: Option<CopyOperation>,
+) -> model::ChangeKind {
+    classify_kind(
+        !after.is_resolved(),
+        copy_op,
+        before.is_absent(),
+        after.is_absent(),
+    )
 }
 
 /// jj's DEFAULT conflict-materialization options (its bundled `misc.toml`: `marker-style = "diff"`,
