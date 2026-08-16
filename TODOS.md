@@ -2234,6 +2234,29 @@ giving the reorder logic more interpolated samples, or loosening the swap thresh
 event count — remain open, on top of whatever residual gap the native-mouse switch didn't close.
 Low priority: single test, single known flake mode, not client-facing.
 
+**Still open regardless of state-machine cleanup elsewhere:** the bug class this entry is about (an
+under-shot final sample) is real-mouse-only — no synthetic test can prove a fast real flick commits
+the true endpoint. Run a manual fast-flick drag test in both `TerminalTabStrip` and `WorkroomTabBar`
+before trusting this beyond the automated numbers above.
+
+### `SessionByteQueue`'s `wouldBlock` path has no dedicated test (macapp) — filed 2026-08-16
+
+**What:** Add a unit test for `SessionByteQueue`'s (`WorkroomSession/SessionSupport.swift`)
+`wouldBlock` admission path — currently exercised only indirectly, through whatever
+`SessionConnection`/`PTYSession` behavior happens to touch it.
+
+**Why:** `WorkroomSession` is a separate executable target, not reachable via `@testable import`
+from `WorkroomAppTests` — the same constraint the session-daemon findings entry (top of this file)
+already works around via `SessionDaemonHarness` end-to-end instead of in-process unit tests.
+
+**How to start:** either add a lightweight test target for `WorkroomSession` (mirroring however
+`WorkroomAppTests` is wired to `WorkroomApp`), or move `SessionByteQueue` into a module both
+`WorkroomApp`/`WorkroomAppTests` and `WorkroomSession` can depend on.
+
+**Depends on:** nothing blocking.
+
+**Priority:** P3 — closes a coverage gap, not a known bug.
+
 ## P3 — Performance and diagnostics (WORKROOM-2B follow-ups)
 
 ### Status-aware avatar image loader (macapp) — FIXED
