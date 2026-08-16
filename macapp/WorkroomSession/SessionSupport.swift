@@ -24,6 +24,65 @@ enum SessionWriteOutcome {
   case failed
 }
 
+/// A byte buffer that drains to a descriptor via a write-then-compact loop — the shared mechanics
+/// behind `SessionConnection`'s outbound reply queue and `PTYSession`'s outbound pty input queue.
+/// Those were the same shape (append-only buffer, read cursor, threshold-based compaction at
+/// 1<<16 bytes) implemented twice, and had already drifted apart on outcome handling. This owns
+/// only the mechanics; callers keep their own outcome handling explicit — admission limits on
+/// enqueue, whether to clear the buffer on a hard write failure — as caller-side concerns, not a
+/// flag on this type.
+struct SessionByteQueue {
+  private var buffer: [UInt8] = []
+  private var offset = 0
+
+  var pendingByteCount: Int { buffer.count - offset }
+  var hasPendingOutput: Bool { pendingByteCount > 0 }
+
+  mutating func enqueue(_ bytes: [UInt8]) {
+    buffer.append(contentsOf: bytes)
+  }
+
+  /// Write until the buffer drains, a write would block, or one fails. On drain or wouldBlock the
+  /// buffer is left correctly positioned for the next call (fully reset, or compacted once the
+  /// consumed prefix crosses the 1<<16 threshold) — `.failed` leaves it untouched; only the caller
+  /// knows whether a hard failure means "discard everything" (PTYSession does) or "the whole
+  /// connection is about to be torn down anyway" (SessionConnection does).
+  @discardableResult
+  mutating func drain(to descriptor: Int32) -> SessionWriteOutcome {
+    while offset < buffer.count {
+      switch SessionIO.write(descriptor, buffer, from: offset) {
+      case .wrote(let count):
+        offset += count
+      case .wouldBlock:
+        compact()
+        return .wouldBlock
+      case .failed:
+        return .failed
+      }
+    }
+    buffer.removeAll(keepingCapacity: true)
+    offset = 0
+    return .wrote(0)
+  }
+
+  /// Discard everything — for a caller that treats a hard write failure as "start clean" rather
+  /// than "the buffer's fate no longer matters" (see `drain`'s doc).
+  mutating func clear() {
+    buffer.removeAll(keepingCapacity: true)
+    offset = 0
+  }
+
+  /// Only reachable with `offset < buffer.count` (the `wouldBlock` case above, still inside the
+  /// loop) — so `offset == buffer.count` can never happen here; the drained-to-completion path
+  /// resets directly in `drain` instead. Compacts once the consumed prefix is large enough to be
+  /// worth the `removeFirst` copy, rather than on every partial write.
+  private mutating func compact() {
+    guard offset >= 1 << 16 else { return }
+    buffer.removeFirst(offset)
+    offset = 0
+  }
+}
+
 enum SessionIO {
   static let chunkSize = 64 * 1024
 

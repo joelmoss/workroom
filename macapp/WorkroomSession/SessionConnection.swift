@@ -7,46 +7,24 @@ final class SessionConnection {
   var attachedSession: SessionIdentifier?
   var closesAfterFlush = false
 
-  private var outbox: [UInt8] = []
-  private var offset = 0
+  private var outbox = SessionByteQueue()
 
   init(descriptor: Int32) {
     self.descriptor = descriptor
   }
 
-  var pendingByteCount: Int { outbox.count - offset }
-  var hasPendingOutput: Bool { pendingByteCount > 0 }
+  var pendingByteCount: Int { outbox.pendingByteCount }
+  var hasPendingOutput: Bool { outbox.hasPendingOutput }
 
   func enqueue(_ frame: SessionFrame) {
-    outbox.append(contentsOf: frame.encoded())
+    outbox.enqueue(frame.encoded())
   }
 
+  /// A hard write failure leaves the outbox untouched — this connection is about to be discarded
+  /// entirely by the caller, so there's nothing left to clear it for.
   func flush() -> Bool {
-    while offset < outbox.count {
-      switch SessionIO.write(descriptor, outbox, from: offset) {
-      case .wrote(let count):
-        offset += count
-      case .wouldBlock:
-        compact()
-        return true
-      case .failed:
-        return false
-      }
-    }
-    outbox.removeAll(keepingCapacity: true)
-    offset = 0
+    if case .failed = outbox.drain(to: descriptor) { return false }
     return true
-  }
-
-  private func compact() {
-    guard offset > 0 else { return }
-    if offset == outbox.count {
-      outbox.removeAll(keepingCapacity: true)
-      offset = 0
-    } else if offset >= 1 << 16 {
-      outbox.removeFirst(offset)
-      offset = 0
-    }
   }
 }
 
@@ -61,8 +39,7 @@ final class PTYSession {
   var clientDescriptor: Int32?
   var metadata: [SessionEnvironmentEntry] = []
 
-  private var pendingInput: [UInt8] = []
-  private var inputOffset = 0
+  private var pendingInput = SessionByteQueue()
 
   init(
     identifier: SessionIdentifier,
@@ -78,7 +55,7 @@ final class PTYSession {
     replay = SessionReplayBuffer(capacity: replayCapacity)
   }
 
-  var hasPendingInput: Bool { inputOffset < pendingInput.count }
+  var hasPendingInput: Bool { pendingInput.hasPendingOutput }
 
   var descriptor: SessionDescriptor {
     SessionDescriptor(
@@ -91,36 +68,19 @@ final class PTYSession {
   }
 
   func appendInput(_ bytes: [UInt8], limit: Int) {
-    guard pendingInput.count - inputOffset + bytes.count <= limit else {
+    guard pendingInput.pendingByteCount + bytes.count <= limit else {
       SessionLog.write(
         "dropped \(bytes.count) input byte(s): the session is not draining its terminal")
       return
     }
-    pendingInput.append(contentsOf: bytes)
+    pendingInput.enqueue(bytes)
   }
 
+  /// A hard write failure clears the pending input outright, unlike `SessionConnection.flush` —
+  /// the pty itself (not this session's bookkeeping) is what's in an unknown state, so there's
+  /// nothing to usefully retry.
   func flushInput() {
     guard masterDescriptor >= 0 else { return }
-    while inputOffset < pendingInput.count {
-      switch SessionIO.write(masterDescriptor, pendingInput, from: inputOffset) {
-      case .wrote(let count):
-        inputOffset += count
-      case .wouldBlock:
-        compactInput()
-        return
-      case .failed:
-        pendingInput.removeAll(keepingCapacity: true)
-        inputOffset = 0
-        return
-      }
-    }
-    pendingInput.removeAll(keepingCapacity: true)
-    inputOffset = 0
-  }
-
-  private func compactInput() {
-    guard inputOffset >= 1 << 16 else { return }
-    pendingInput.removeFirst(inputOffset)
-    inputOffset = 0
+    if case .failed = pendingInput.drain(to: masterDescriptor) { pendingInput.clear() }
   }
 }
