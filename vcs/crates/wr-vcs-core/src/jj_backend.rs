@@ -865,8 +865,10 @@ fn changed_files(
                 path,
                 old_path,
                 kind,
-                insertions: stats.map(|(ins, _)| ins),
-                deletions: stats.map(|(_, del)| del),
+                line_stats: stats.map(|(insertions, deletions)| model::LineStats {
+                    insertions,
+                    deletions,
+                }),
             });
         }
         Ok(files)

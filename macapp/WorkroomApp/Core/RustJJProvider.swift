@@ -89,8 +89,8 @@ struct RustJJProvider: VCSProviding {
   private static func lineTotals(_ files: [WrVcs.ChangedFile]) -> (insertions: Int, deletions: Int)
   {
     files.reduce(into: (insertions: 0, deletions: 0)) { totals, f in
-      totals.insertions += Int(f.insertions ?? 0)
-      totals.deletions += Int(f.deletions ?? 0)
+      totals.insertions += Int(f.lineStats?.insertions ?? 0)
+      totals.deletions += Int(f.lineStats?.deletions ?? 0)
     }
   }
 

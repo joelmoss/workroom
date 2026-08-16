@@ -25,12 +25,22 @@ pub struct ChangedFile {
     pub old_path: Option<String>,
     pub kind: ChangeKind,
     /// Changed lines vs the same base the `kind` was computed against (the commit's FIRST parent).
-    /// `None` means "deliberately not counted", never zero: a binary file (jj's own NUL heuristic), a
-    /// file over the backend's size ceiling, or a non-file entry (symlink/tree/submodule/unreadable).
-    /// A conflicted file counts its MATERIALIZED marker text, matching what `jj diff --stat` and a
-    /// git worktree diff both report for the same state.
-    pub insertions: Option<u32>,
-    pub deletions: Option<u32>,
+    /// `None` means "deliberately not counted", never a zero-valued `LineStats`: a binary file (jj's
+    /// own NUL heuristic), a file over the backend's size ceiling, or a non-file entry
+    /// (symlink/tree/submodule/unreadable). A conflicted file counts its MATERIALIZED marker text,
+    /// matching what `jj diff --stat` and a git worktree diff both report for the same state.
+    ///
+    /// One `Option`, not two independently-nullable fields: the sole producer (`changed_files` in
+    /// wr-vcs-core) always counts both sides together or neither, so "counted" vs "deliberately not
+    /// counted" is one decision, not two that merely happen to always agree.
+    pub line_stats: Option<LineStats>,
+}
+
+/// Paired ± line counts for one changed file. See `ChangedFile::line_stats`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LineStats {
+    pub insertions: u32,
+    pub deletions: u32,
 }
 
 /// A commit author (git) or the author of a jj change. Plural authors on a `Commit` come from

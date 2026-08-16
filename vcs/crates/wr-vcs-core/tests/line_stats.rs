@@ -115,8 +115,8 @@ fn file<'a>(files: &'a [ChangedFile], path: &str) -> &'a ChangedFile {
 fn totals(files: &[ChangedFile]) -> (u32, u32) {
     files.iter().fold((0, 0), |(ins, del), f| {
         (
-            ins + f.insertions.unwrap_or(0),
-            del + f.deletions.unwrap_or(0),
+            ins + f.line_stats.map(|s| s.insertions).unwrap_or(0),
+            del + f.line_stats.map(|s| s.deletions).unwrap_or(0),
         )
     })
 }
@@ -173,8 +173,16 @@ fn counts_match_a_simple_edit() {
     let files = working_files(&dir);
     let a = file(&files, "a.txt");
     assert_eq!(a.kind, ChangeKind::Modified);
-    assert_eq!(a.insertions, Some(3), "ONE + four + five; got {a:?}");
-    assert_eq!(a.deletions, Some(1), "the replaced `one`; got {a:?}");
+    assert_eq!(
+        a.line_stats.map(|s| s.insertions),
+        Some(3),
+        "ONE + four + five; got {a:?}"
+    );
+    assert_eq!(
+        a.line_stats.map(|s| s.deletions),
+        Some(1),
+        "the replaced `one`; got {a:?}"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -195,10 +203,22 @@ fn whole_file_add_and_delete_count_every_line() {
     let files = working_files(&dir);
     let gone = file(&files, "gone.txt");
     assert_eq!(gone.kind, ChangeKind::Deleted);
-    assert_eq!((gone.insertions, gone.deletions), (Some(0), Some(4)));
+    assert_eq!(
+        (
+            gone.line_stats.map(|s| s.insertions),
+            gone.line_stats.map(|s| s.deletions)
+        ),
+        (Some(0), Some(4))
+    );
     let fresh = file(&files, "fresh.txt");
     assert_eq!(fresh.kind, ChangeKind::Added);
-    assert_eq!((fresh.insertions, fresh.deletions), (Some(2), Some(0)));
+    assert_eq!(
+        (
+            fresh.line_stats.map(|s| s.insertions),
+            fresh.line_stats.map(|s| s.deletions)
+        ),
+        (Some(2), Some(0))
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -237,7 +257,7 @@ fn merge_working_copy_counts_against_the_first_parent() {
     let files = working_files(&dir);
     let arriving = file(&files, "right.txt");
     assert_eq!(
-        (arriving.insertions, arriving.deletions),
+        (arriving.line_stats.map(|s| s.insertions), arriving.line_stats.map(|s| s.deletions)),
         (Some(3), Some(0)),
         "a file arriving from the merge's other side is listed, so it must be counted; got {arriving:?}"
     );
@@ -287,7 +307,10 @@ fn conflicted_file_counts_its_materialized_markers() {
     let files = working_files(&dir);
     let f = file(&files, "f.txt");
     assert_eq!(f.kind, ChangeKind::Conflicted);
-    let insertions = f.insertions.expect("a conflicted file is still counted");
+    let insertions = f
+        .line_stats
+        .map(|s| s.insertions)
+        .expect("a conflicted file is still counted");
     assert!(
         insertions > 1,
         "the marker text is the file's content, so a 1-line conflict counts more than 1 line; got {f:?}"
@@ -322,12 +345,18 @@ fn binary_file_reports_no_counts() {
     let blob = file(&files, "blob.bin");
     assert_eq!(blob.kind, ChangeKind::Modified, "still a listed change");
     assert_eq!(
-        (blob.insertions, blob.deletions),
+        (
+            blob.line_stats.map(|s| s.insertions),
+            blob.line_stats.map(|s| s.deletions)
+        ),
         (None, None),
         "a binary file is not counted; got {blob:?}"
     );
     // And it doesn't poison the file beside it, or the total.
-    assert_eq!(file(&files, "text.txt").insertions, Some(1));
+    assert_eq!(
+        file(&files, "text.txt").line_stats.map(|s| s.insertions),
+        Some(1)
+    );
     assert_eq!(totals(&files), (1, 0));
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -360,7 +389,10 @@ fn rename_with_an_edit_counts_on_the_renamed_row() {
     assert_eq!(new.kind, ChangeKind::Renamed);
     assert_eq!(new.old_path.as_deref(), Some("old.txt"));
     assert_eq!(
-        (new.insertions, new.deletions),
+        (
+            new.line_stats.map(|s| s.insertions),
+            new.line_stats.map(|s| s.deletions)
+        ),
         (Some(1), Some(1)),
         "only the edited line, counted once; got {new:?}"
     );
@@ -461,13 +493,23 @@ fn an_unreadable_blob_degrades_one_row_not_the_whole_read() {
     let a = file(&files, "a.txt");
     assert_eq!(a.kind, ChangeKind::Modified, "kind survives; got {a:?}");
     assert_eq!(
-        (a.insertions, a.deletions),
+        (
+            a.line_stats.map(|s| s.insertions),
+            a.line_stats.map(|s| s.deletions)
+        ),
         (None, None),
         "an unreadable blob can't be counted; got {a:?}"
     );
     // …and the file beside it is unaffected, counts included.
     let b = file(&files, "b.txt");
-    assert_eq!((b.insertions, b.deletions), (Some(1), Some(0)), "got {b:?}");
+    assert_eq!(
+        (
+            b.line_stats.map(|s| s.insertions),
+            b.line_stats.map(|s| s.deletions)
+        ),
+        (Some(1), Some(0)),
+        "got {b:?}"
+    );
     assert_eq!(totals(&files), (1, 0));
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -515,13 +557,19 @@ fn a_text_file_over_the_size_cap_reports_no_counts() {
         "an oversized file is still a listed change; got {big:?}"
     );
     assert_eq!(
-        (big.insertions, big.deletions),
+        (
+            big.line_stats.map(|s| s.insertions),
+            big.line_stats.map(|s| s.deletions)
+        ),
         (None, None),
         "over the cap is not counted — `None`, never a partial count from the truncated read; got \
          {big:?}"
     );
     // And it poisons neither its neighbour nor the header total.
-    assert_eq!(file(&files, "small.txt").insertions, Some(1));
+    assert_eq!(
+        file(&files, "small.txt").line_stats.map(|s| s.insertions),
+        Some(1)
+    );
     assert_eq!(totals(&files), (1, 0));
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -610,11 +658,17 @@ fn a_conflicted_file_over_the_size_cap_reports_no_counts() {
         "the fixture must actually be conflicted, or this measures nothing; got {files:?}"
     );
     assert_eq!(
-        (f.insertions, f.deletions),
+        (
+            f.line_stats.map(|s| s.insertions),
+            f.line_stats.map(|s| s.deletions)
+        ),
         (None, None),
         "an oversized conflict is not counted, materialized markers or not; got {f:?}"
     );
-    assert_eq!(file(&files, "note.txt").insertions, Some(1));
+    assert_eq!(
+        file(&files, "note.txt").line_stats.map(|s| s.insertions),
+        Some(1)
+    );
     assert_eq!(totals(&files), (1, 0));
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -663,7 +717,10 @@ fn symlink_changes_report_no_counts() {
         "a retargeted symlink is still a listed change; got {link:?}"
     );
     assert_eq!(
-        (link.insertions, link.deletions),
+        (
+            link.line_stats.map(|s| s.insertions),
+            link.line_stats.map(|s| s.deletions)
+        ),
         (None, None),
         "a symlink has a target, not lines; got {link:?}"
     );
@@ -674,11 +731,17 @@ fn symlink_changes_report_no_counts() {
         "a new symlink is an Added row; got {fresh:?}"
     );
     assert_eq!(
-        (fresh.insertions, fresh.deletions),
+        (
+            fresh.line_stats.map(|s| s.insertions),
+            fresh.line_stats.map(|s| s.deletions)
+        ),
         (None, None),
         "an absent before-side must not rescue an uncountable after-side; got {fresh:?}"
     );
-    assert_eq!(file(&files, "c.txt").insertions, Some(1));
+    assert_eq!(
+        file(&files, "c.txt").line_stats.map(|s| s.insertions),
+        Some(1)
+    );
     assert_eq!(totals(&files), (1, 0));
 
     let _ = std::fs::remove_dir_all(&dir);

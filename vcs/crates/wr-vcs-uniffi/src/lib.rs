@@ -75,6 +75,13 @@ pub enum ChangeKind {
     Other,
 }
 
+/// Mirrors `model::LineStats`.
+#[derive(uniffi::Record)]
+pub struct LineStats {
+    pub insertions: u32,
+    pub deletions: u32,
+}
+
 #[derive(uniffi::Record)]
 pub struct ChangedFile {
     pub path: String,
@@ -82,8 +89,7 @@ pub struct ChangedFile {
     pub kind: ChangeKind,
     /// Changed lines vs the same (first-parent) base as `kind`. `None` = not counted (binary,
     /// oversized, or a non-file entry) — never zero. See `model::ChangedFile`.
-    pub insertions: Option<u32>,
-    pub deletions: Option<u32>,
+    pub line_stats: Option<LineStats>,
 }
 
 #[derive(uniffi::Record)]
@@ -230,14 +236,22 @@ impl From<model::ChangeKind> for ChangeKind {
     }
 }
 
+impl From<model::LineStats> for LineStats {
+    fn from(s: model::LineStats) -> Self {
+        LineStats {
+            insertions: s.insertions,
+            deletions: s.deletions,
+        }
+    }
+}
+
 impl From<model::ChangedFile> for ChangedFile {
     fn from(f: model::ChangedFile) -> Self {
         ChangedFile {
             path: f.path,
             old_path: f.old_path,
             kind: f.kind.into(),
-            insertions: f.insertions,
-            deletions: f.deletions,
+            line_stats: f.line_stats.map(LineStats::from),
         }
     }
 }
@@ -564,16 +578,32 @@ mod tests {
             path: "a/b.txt".into(),
             old_path: Some("a/old.txt".into()),
             kind: model::ChangeKind::Conflicted,
-            insertions: Some(3),
-            deletions: None,
+            line_stats: Some(model::LineStats {
+                insertions: 3,
+                deletions: 1,
+            }),
         });
         assert_eq!(file.path, "a/b.txt");
         assert_eq!(file.old_path.as_deref(), Some("a/old.txt"));
         assert_eq!(change_kind_name(&file.kind), "Conflicted");
-        // The counts are `Option`s carrying a real distinction (`None` = not counted, not zero), so
-        // the mapping has to preserve BOTH shapes, not default them.
-        assert_eq!(file.insertions, Some(3));
-        assert_eq!(file.deletions, None);
+        // `line_stats` is one `Option<LineStats>` (paired insertions+deletions), not two
+        // independently-nullable fields — the mapping has to preserve both the record's fields AND
+        // the "counted vs not" `Option` shape, not default either away.
+        let stats = file
+            .line_stats
+            .expect("Some(LineStats) must map through as Some, not None");
+        assert_eq!((stats.insertions, stats.deletions), (3, 1));
+
+        let uncounted = ChangedFile::from(model::ChangedFile {
+            path: "bin.dat".into(),
+            old_path: None,
+            kind: model::ChangeKind::Modified,
+            line_stats: None,
+        });
+        assert!(
+            uncounted.line_stats.is_none(),
+            "None must map through as None, not a zero-valued LineStats"
+        );
 
         let bare = |id: &str| model::Commit {
             commit_id: id.into(),
