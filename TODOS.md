@@ -2260,6 +2260,27 @@ under-shot final sample) is real-mouse-only — no synthetic test can prove a fa
 the true endpoint. Run a manual fast-flick drag test in both `TerminalTabStrip` and `WorkroomTabBar`
 before trusting this beyond the automated numbers above.
 
+**Second real bug found doing that manual check, 2026-08-16 — FIXED.** The reorder itself always
+landed correctly; what the manual flick surfaced was a visual glitch on the SUCCESS path: the dragged
+chip visibly flicked back to its pre-drag position for one frame, THEN the reorder animated it to its
+new home — reads as "the drag failed, then something else moved it." Root cause: both strips'
+commit function called `drag.commit(...)` (which resets `drag.id`/`translation` — the state driving
+the dragged chip's `offsetX` — as a side effect) OUTSIDE the `withAnimation` block, and wrapped only
+the resulting `moveTab`/order-write inside it. The offset-reset therefore applied instantly,
+unanimated, one render pass before the reorder's own animated transition started. Fixed by moving the
+`drag.commit(...)` call itself inside `withAnimation` in both `TerminalTabStrip.swift` and
+`WorkroomTabBar.commitDrag`, so the offset resetting to 0 and the array reordering land in the same
+animated transaction — one continuous motion from under the cursor to the new slot, whether or not a
+reorder actually resulted.
+
+**Re-measuring the flake rate while verifying this, same day:** got 7/12 fails with the fix, then (to
+rule out a regression) 4/8 fails on the ORIGINAL unfixed code — both far worse than the "9/10" figure
+above. `uptime` showed a load average of 7+ at the time (this machine had been running back-to-back
+`xcodebuild` invocations for hours). Confirms the fix isn't the cause and the flake is genuinely
+load-sensitive, not a fixed ~10% — the original measurement's "clean, uncontaminated batches" caveat
+undersold how much machine load moves this number. Re-verify on a quiet machine before trusting any
+future pass-rate measurement of this test.
+
 ### `SessionByteQueue`'s `wouldBlock` path has no dedicated test (macapp) — FIXED, 2026-08-16
 
 Moved `SessionByteQueue` + `SessionIO` + the two outcome enums from `WorkroomSession/SessionSupport.swift`

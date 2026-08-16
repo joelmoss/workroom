@@ -195,11 +195,19 @@ struct TerminalTabStrip: View {
                 sessions.moveTabIntoSplit(
                   tab.id, ontoEdge: drop.edge, of: drop.tab, for: target)
                 drag.cancel()
-              } else if let move = drag.commit(
-                ids: tabs.map(\.id), spacing: tabSpacing, finalTranslation: value.translation.width)
-              {
+              } else {
+                // `drag.commit` itself must run INSIDE `withAnimation`, not just the `moveTab` it
+                // gates: `commit` resets `drag.id`/`translation` as a side effect (see its doc), which
+                // is what drives this chip's `offsetX` back to 0. Calling it outside the animation
+                // block snapped the chip back to its pre-drag position instantly, one frame before
+                // `moveTab`'s reorder animated in — a visible flick-back before the tab settled.
                 withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-                  sessions.moveTab(tab.id, toIndex: move.to, for: target)
+                  if let move = drag.commit(
+                    ids: tabs.map(\.id), spacing: tabSpacing,
+                    finalTranslation: value.translation.width)
+                  {
+                    sessions.moveTab(tab.id, toIndex: move.to, for: target)
+                  }
                 }
               }
               chipPaneDrag = nil

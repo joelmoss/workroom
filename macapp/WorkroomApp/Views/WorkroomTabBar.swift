@@ -345,12 +345,18 @@ struct WorkroomTabBar: View {
   /// `orderedActiveTargets` on every read, so writing the current active order is self-healing.
   /// `translation` is the caller's own final, clamped displacement (from `onEnded`'s `value`) —
   /// `drag.commit` itself resolves off exactly that, never the live `drag.translation`.
+  ///
+  /// `drag.commit` must be CALLED inside `withAnimation`, not just the order write it gates: `commit`
+  /// resets `drag.id`/`translation` as a side effect, which is what drives this chip's `offsetX` back
+  /// to 0. Calling it outside the animation block (as a prior version of this function did, via a
+  /// `guard` ahead of `withAnimation`) snapped the chip back to its pre-drag position instantly, one
+  /// frame before the reorder animated in — a visible flick-back before the tab settled.
   private func commitDrag(translation: CGFloat) {
-    guard
-      let move = drag.commit(
-        ids: tabs.map(\.sid), spacing: tabSpacing, finalTranslation: translation)
-    else { return }
     withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+      guard
+        let move = drag.commit(
+          ids: tabs.map(\.sid), spacing: tabSpacing, finalTranslation: translation)
+      else { return }
       var order = tabs.compactMap { AppStore.targetIDString(for: $0.sid) }
       let moved = order.remove(at: move.from)
       order.insert(moved, at: move.to)
