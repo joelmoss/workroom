@@ -505,7 +505,7 @@ fn working_status_snapshots_disk_edits_without_corrupting() {
 
     // The read must snapshot `@` so the on-disk file shows up as a change.
     let status = wr_vcs_core::working_status(&dir).expect("working_status");
-    assert!(status.dirty, "an on-disk edit should make @ dirty");
+    assert!(status.is_dirty(), "an on-disk edit should make @ dirty");
     assert!(
         status
             .working_copy

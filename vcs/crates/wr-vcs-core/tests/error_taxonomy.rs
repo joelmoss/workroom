@@ -192,7 +192,7 @@ fn a_stale_second_workspace_reports_stale_snapshot() {
     // than the operation we're about to restore.
     std::fs::write(ws2.join("mine.txt"), b"second workspace\n").unwrap();
     let status = wr_vcs_core::working_status(&ws2).expect("snapshot the second workspace");
-    assert!(status.dirty, "the second workspace has its own change");
+    assert!(status.is_dirty(), "the second workspace has its own change");
 
     let restore = jj(
         &["op", "restore", &before, "--ignore-working-copy"],

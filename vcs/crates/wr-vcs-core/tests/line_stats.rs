@@ -453,7 +453,7 @@ fn an_unreadable_blob_degrades_one_row_not_the_whole_read() {
 
     let status =
         wr_vcs_core::working_status(&dir).expect("one missing blob must not fail the read");
-    assert!(status.dirty, "the working copy is still dirty");
+    assert!(status.is_dirty(), "the working copy is still dirty");
     let files = status.working_copy.files;
 
     // The damaged file keeps its row and its real kind; only the counts go missing — which is

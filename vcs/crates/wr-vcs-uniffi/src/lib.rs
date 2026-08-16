@@ -280,8 +280,9 @@ impl From<model::CommitChanges> for CommitChanges {
 
 impl From<model::WorkingStatus> for WorkingStatus {
     fn from(s: model::WorkingStatus) -> Self {
+        let dirty = s.is_dirty();
         WorkingStatus {
-            dirty: s.dirty,
+            dirty,
             conflicted: s.conflicted,
             working_copy: s.working_copy.into(),
             branch_for_ci: s.branch_for_ci,

@@ -691,7 +691,6 @@ pub fn working_status(root: &Path) -> model::Result<model::WorkingStatus> {
         .cloned()
     else {
         return Ok(model::WorkingStatus {
-            dirty: false,
             conflicted: false,
             working_copy: model::CommitChanges {
                 change_id: None,
@@ -722,7 +721,6 @@ pub fn working_status(root: &Path) -> model::Result<model::WorkingStatus> {
         first_bookmark_in_log_order(repo.as_ref(), &wc_id, &bookmarks)?.map(|(name, _)| name);
 
     Ok(model::WorkingStatus {
-        dirty: !working_copy.files.is_empty() || conflicted,
         conflicted,
         working_copy,
         branch_for_ci,

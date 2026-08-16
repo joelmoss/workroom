@@ -152,8 +152,6 @@ pub struct CommitChanges {
 /// between the two reads skewed them). Callers sum the rows they display.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkingStatus {
-    /// `true` when `@` has changed files or a conflict.
-    pub dirty: bool,
     pub conflicted: bool,
     /// The working copy `@`'s change set (metadata + files vs `@-`).
     pub working_copy: CommitChanges,
@@ -166,6 +164,16 @@ pub struct WorkingStatus {
     /// backend's `first_bookmark_in_log_order` documents the case). Treat it as a label, not as
     /// "the branch this commit will land on".
     pub branch_for_ci: Option<String>,
+}
+
+impl WorkingStatus {
+    /// `true` when `@` has changed files or a conflict. Computed rather than stored: a stored
+    /// `dirty` beside `working_copy.files`/`conflicted` is a second representation that can
+    /// disagree with them — exactly the class of bug this struct's own diffstat design (see its
+    /// doc comment) already guards against elsewhere.
+    pub fn is_dirty(&self) -> bool {
+        !self.working_copy.files.is_empty() || self.conflicted
+    }
 }
 
 /// A full changeset: its commit metadata, full (multi-line) message, and changed-file list.
