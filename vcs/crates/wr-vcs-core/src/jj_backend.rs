@@ -186,6 +186,20 @@ fn unknown_push(_: &jj_lib::backend::CommitId) -> model::PushState {
     model::PushState::Unknown
 }
 
+/// Map a `containing_fn` membership probe's result to `PushState` — the match ladder `log_page`
+/// and `changeset` each independently hand-rolled inside their `push_of` closure. Generic over the
+/// probe's error type so this stays a pure mapper with no jj-lib closure/lifetime to name; a
+/// membership read that errors is `Unknown`, never `Unpushed` (a missing badge beats a wrong one),
+/// same as `None` (nothing to compare against — see `pushed_revset`).
+fn push_state_of<E>(result: Option<Result<bool, E>>) -> model::PushState {
+    match result {
+        None => model::PushState::Unknown,
+        Some(Ok(true)) => model::PushState::Pushed,
+        Some(Ok(false)) => model::PushState::Unpushed,
+        Some(Err(_)) => model::PushState::Unknown,
+    }
+}
+
 /// jj's short change-id for display: the reverse-hex ("z-k" digit) form truncated to the shortest
 /// prefix that still uniquely resolves in this repo — exactly what `jj log` shows (e.g. `wo`, `znl`),
 /// rather than the full 32-digit hex. The empty prefix index falls back to the repo's own index +
@@ -358,15 +372,7 @@ pub fn log_page(root: &Path, limit: usize) -> model::Result<HistoryPage> {
     let (tips, tip_names) = origin_tips(&repo);
     let pushed = pushed_revset(repo.as_ref(), &tips);
     let contains = pushed.as_ref().map(|r| r.containing_fn());
-    let push_of = |id: &jj_lib::backend::CommitId| match &contains {
-        None => model::PushState::Unknown,
-        Some(f) => match f(id) {
-            Ok(true) => model::PushState::Pushed,
-            Ok(false) => model::PushState::Unpushed,
-            // A membership read that errors is unknown, never "unpushed".
-            Err(_) => model::PushState::Unknown,
-        },
-    };
+    let push_of = |id: &jj_lib::backend::CommitId| push_state_of(contains.as_ref().map(|f| f(id)));
     let scope = push_scope(tip_names);
 
     let Some(wc_id) = wc_id else {
@@ -741,14 +747,7 @@ pub fn changeset(root: &Path, commit_id_hex: &str) -> model::Result<model::Chang
     let (tips, tip_names) = origin_tips(&repo);
     let pushed = pushed_revset(repo.as_ref(), &tips);
     let contains = pushed.as_ref().map(|r| r.containing_fn());
-    let push_of = |id: &jj_lib::backend::CommitId| match &contains {
-        None => model::PushState::Unknown,
-        Some(f) => match f(id) {
-            Ok(true) => model::PushState::Pushed,
-            Ok(false) => model::PushState::Unpushed,
-            Err(_) => model::PushState::Unknown,
-        },
-    };
+    let push_of = |id: &jj_lib::backend::CommitId| push_state_of(contains.as_ref().map(|f| f(id)));
     let model_commit = to_model_commit(&commit, None, &bookmarks, repo.as_ref(), &push_of);
     Ok(model::Changeset {
         is_merge: commit.parent_ids().len() > 1,
