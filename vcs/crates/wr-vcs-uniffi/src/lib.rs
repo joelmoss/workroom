@@ -126,6 +126,15 @@ pub struct WorkingStatus {
     pub branch_for_ci: Option<String>,
 }
 
+/// Mirrors `model::RepoKind` — the backend-selection discriminant `probe_repo` resolves a path to.
+#[derive(uniffi::Enum)]
+pub enum RepoKind {
+    PlainGit,
+    JjColocated,
+    JjNonColocated,
+    Unsupported { reason: String },
+}
+
 /// Mirrors `model::VcsError`; each variant maps to a distinct, recoverable Swift-side UI state.
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum VcsError {
@@ -290,6 +299,18 @@ impl From<model::WorkingStatus> for WorkingStatus {
     }
 }
 
+impl From<model::RepoKind> for RepoKind {
+    fn from(k: model::RepoKind) -> Self {
+        use model::RepoKind as M;
+        match k {
+            M::PlainGit => RepoKind::PlainGit,
+            M::JjColocated => RepoKind::JjColocated,
+            M::JjNonColocated => RepoKind::JjNonColocated,
+            M::Unsupported(reason) => RepoKind::Unsupported { reason },
+        }
+    }
+}
+
 impl From<model::VcsError> for VcsError {
     fn from(e: model::VcsError) -> Self {
         use model::VcsError as M;
@@ -305,10 +326,10 @@ impl From<model::VcsError> for VcsError {
     }
 }
 
-/// Classify a repository path (git / colocated-jj / unsupported) — debug string for now.
+/// Classify a repository path (git / colocated-jj / unsupported).
 #[uniffi::export]
-pub fn probe_repo(root: String) -> String {
-    format!("{:?}", wr_vcs_core::probe_repo(Path::new(&root)))
+pub fn probe_repo(root: String) -> RepoKind {
+    wr_vcs_core::probe_repo(Path::new(&root)).into()
 }
 
 /// A bounded, newest-first page of history for the repo rooted at `root`.
@@ -459,6 +480,33 @@ mod tests {
             let want = model_ref_kind_name(&kind);
             let got = ref_kind_name(&RefKind::from(kind));
             assert_eq!(got, want, "model::RefKind::{want} mapped to {got}");
+        }
+    }
+
+    /// `Unsupported` carries the reason the Swift side would show, so this asserts the variant AND
+    /// that the reason survives — the same class of check as `vcs_error_maps_every_variant_and_keeps_its_payload`.
+    #[test]
+    fn repo_kind_maps_every_variant_and_keeps_its_payload() {
+        let cases = [
+            (model::RepoKind::PlainGit, "PlainGit", None),
+            (model::RepoKind::JjColocated, "JjColocated", None),
+            (model::RepoKind::JjNonColocated, "JjNonColocated", None),
+            (
+                model::RepoKind::Unsupported("why".into()),
+                "Unsupported",
+                Some("why"),
+            ),
+        ];
+        for (kind, want_variant, want_payload) in cases {
+            let mapped = RepoKind::from(kind);
+            let (variant, payload) = match &mapped {
+                RepoKind::PlainGit => ("PlainGit", None),
+                RepoKind::JjColocated => ("JjColocated", None),
+                RepoKind::JjNonColocated => ("JjNonColocated", None),
+                RepoKind::Unsupported { reason } => ("Unsupported", Some(reason.as_str())),
+            };
+            assert_eq!(variant, want_variant, "{want_variant} mapped to {variant}");
+            assert_eq!(payload, want_payload, "{want_variant} lost its payload");
         }
     }
 
