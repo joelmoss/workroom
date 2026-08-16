@@ -861,6 +861,37 @@ final class WorkroomStatusTests: XCTestCase {
     XCTAssertEqual(store.workroomStatuses[sid]?.pr?.state, .open)
   }
 
+  /// `performMerge` shares `performPRAction`'s gh-write lifecycle (`performPRWrite`) but had no direct
+  /// test of its own failure/revert path — this closes that gap, mirroring
+  /// `testPerformPRActionRevertsOnFailure`.
+  @MainActor
+  func testPerformMergeRevertsOnFailure() async {
+    let store = AppStore()
+    store.projects = [Project(path: "/p", vcs: "git", workrooms: [])]
+    store.statusResolver = WorkroomStatusResolver(
+      runner: StubPRRunner { _, _ in
+        CommandResult(stdout: "", stderr: "not mergeable", exitCode: 1, timedOut: false)
+      })
+    let sid = SidebarID.root(project: "/p")
+    let open = PullRequestInfo(
+      number: 9, title: "t", state: .open, isDraft: false, url: "u", reviewDecision: nil,
+      reviewers: [], mergeable: true)
+    store.workroomStatuses[sid] = WorkroomStatus(dirty: false, pr: open)
+
+    store.performMerge(.squash, number: 9, on: sid)
+    // Optimistic: flipped to merged (and unmergeable) the instant the action is invoked.
+    XCTAssertEqual(store.workroomStatuses[sid]?.pr?.state, .merged)
+    XCTAssertEqual(store.workroomStatuses[sid]?.pr?.mergeable, false)
+    XCTAssertTrue(store.prActionInFlight)
+
+    await waitUntilIdle(store)
+
+    // gh failed → reverted to the original open/mergeable PR, with the error surfaced.
+    XCTAssertEqual(store.workroomStatuses[sid]?.pr, open)
+    XCTAssertEqual(store.errorTitle, "Couldn\u{2019}t merge pull request")
+    XCTAssertEqual(store.errorMessage, "not mergeable")
+  }
+
   // MARK: - refreshGitHubCLI must never publish a non-answer
 
   /// REGRESSION: the false, sticky "GitHub CLI not signed in".

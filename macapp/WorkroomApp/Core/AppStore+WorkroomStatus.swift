@@ -195,15 +195,34 @@ extension AppStore {
 
   /// Run a PR write action (Phase 2b) on the selected workroom's PR: shell to `gh`, refresh the PR
   /// on success, surface `stderr` on failure. In fixture mode it optimistically updates the seeded
-  /// status instead of spawning `gh`, so the actions menu is exercisable hermetically.
+  /// status instead of spawning `gh`, so the actions menu is exercisable hermetically. Delegates the
+  /// whole lifecycle to `performPRWrite`, shared with `performMerge`.
   func performPRAction(_ action: PRAction, number: Int, on sid: SidebarID) {
+    performPRWrite(
+      arguments: action.arguments(number: number), on: sid,
+      applyOptimistic: { self.applyOptimisticPRAction(action, on: $0) },
+      errorTitle: "Couldn’t \(action.label.lowercased())")
+  }
+
+  /// The gh-write lifecycle shared by `performPRAction` and `performMerge` (issue #88): guard the
+  /// selected item, capture the prior PR to restore on failure, apply the optimistic update, then —
+  /// UNLESS in fixture mode, where the optimistic flip is itself the final result — flip the
+  /// in-flight flag, resolve the gh working directory, and run the command. On success re-probe for
+  /// GitHub's authoritative state; on failure revert the optimistic flip and surface `stderr`.
+  ///
+  /// `UITestFixture.isActive` must be checked AFTER `applyOptimistic` but BEFORE `prActionInFlight`
+  /// flips — fixture-mode tests rely on seeing the optimistic update with no in-flight flag ever set.
+  private func performPRWrite(
+    arguments: [String], on sid: SidebarID,
+    applyOptimistic: (SidebarID) -> Void, errorTitle: String
+  ) {
     guard let item = selectedStatusWorkItem(for: sid) else { return }
     // Flip the PR state immediately so the badge/buttons react the instant the user acts — otherwise
     // nothing visibly changes during the (multi-second) `gh` call + status re-probe, which reads as
     // "the click did nothing". Keep the prior PR to restore if `gh` fails (and in fixture mode, this
     // optimistic update *is* the result — no `gh` to confirm it).
     let priorPR = workroomStatuses[sid]?.pr
-    applyOptimisticPRAction(action, on: sid)
+    applyOptimistic(sid)
     if UITestFixture.isActive { return }
     prActionInFlight = true
     let resolver = statusResolver
@@ -212,7 +231,7 @@ extension AppStore {
     let dir = WorkroomStatusResolver.ghProbeDirectory(
       path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
     Task { [weak self] in
-      let r = await resolver.runPRCommand(action.arguments(number: number), in: dir)
+      let r = await resolver.runPRCommand(arguments, in: dir)
       guard let self else { return }
       self.prActionInFlight = false
       if r.ok {
@@ -224,7 +243,7 @@ extension AppStore {
           s.pr = priorPR
           self.workroomStatuses[sid] = s
         }
-        self.errorTitle = "Couldn’t \(action.label.lowercased())"
+        self.errorTitle = errorTitle
         let stderr = r.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
         self.errorMessage = stderr.isEmpty ? "The gh command failed." : stderr
       }
@@ -362,34 +381,14 @@ extension AppStore {
 
   /// Merge the selected workroom's PR (issue #88) with `method`: shell to `gh pr merge`, refresh on
   /// success, surface `stderr` on failure. Mirrors `performPRAction` — same in-flight gate, same
-  /// `gh` repo context, same optimistic-then-authoritative flow — but the strategy is a parameter,
-  /// so it's kept separate from the state-only `PRAction` verbs. In fixture mode it optimistically
-  /// flips the PR to merged instead of spawning `gh`.
+  /// `gh` repo context, same optimistic-then-authoritative flow, both via `performPRWrite` — but the
+  /// strategy is a parameter, so it's kept separate from the state-only `PRAction` verbs. In fixture
+  /// mode it optimistically flips the PR to merged instead of spawning `gh`.
   func performMerge(_ method: PRMergeMethod, number: Int, on sid: SidebarID) {
-    guard let item = selectedStatusWorkItem(for: sid) else { return }
-    let priorPR = workroomStatuses[sid]?.pr
-    applyOptimisticMerge(on: sid)
-    if UITestFixture.isActive { return }
-    prActionInFlight = true
-    let resolver = statusResolver
-    let dir = WorkroomStatusResolver.ghProbeDirectory(
-      path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
-    Task { [weak self] in
-      let r = await resolver.runPRCommand(method.arguments(number: number), in: dir)
-      guard let self else { return }
-      self.prActionInFlight = false
-      if r.ok {
-        self.scheduleSelectedStatusRefresh()
-      } else {
-        if var s = self.workroomStatuses[sid] {
-          s.pr = priorPR
-          self.workroomStatuses[sid] = s
-        }
-        self.errorTitle = "Couldn’t merge pull request"
-        let stderr = r.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.errorMessage = stderr.isEmpty ? "The gh command failed." : stderr
-      }
-    }
+    performPRWrite(
+      arguments: method.arguments(number: number), on: sid,
+      applyOptimistic: { self.applyOptimisticMerge(on: $0) },
+      errorTitle: "Couldn’t merge pull request")
   }
 
   /// Optimistically flip the PR to merged (no `gh`): the badge turns purple and the Merge button
