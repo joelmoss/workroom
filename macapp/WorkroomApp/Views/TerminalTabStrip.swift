@@ -519,6 +519,21 @@ private struct TerminalTabChip: View {
           .foregroundStyle(theme.tokens.fgMuted)
           .accessibilityHidden(true)
       }
+      // A recognized CLI/TUI's real brand favicon (issue #141). `tab.recognizedTool` is nil for a
+      // content tab, an unrecognized command, or a registry entry whose logo hasn't been fetched yet
+      // — `ToolLogoRegistry` only vends entries with a bundled image, so this never renders a
+      // missing/broken asset. Dynamic (unlike the diff/file/changeset glyphs, which are fixed for the
+      // tab's life), same category of mid-session width change as the ✦ agent badge above — no
+      // special-casing needed, `TabWidthKey` already re-measures on every body re-evaluation.
+      if let tool = tab.recognizedTool {
+        Image(ToolLogoRegistry.assetName(for: tool.id))
+          .resizable()
+          .aspectRatio(contentMode: .fit)
+          .frame(width: 12, height: 12)
+          .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+          .help(tool.displayName)
+          .accessibilityHidden(true)
+      }
       // Unread activity is marked by a leading accent dot (+ accent title) — a different visual
       // primitive from the selected tab's neutral fill, so the two never read alike.
       if hasActivity {
@@ -618,6 +633,16 @@ private struct TerminalTabChip: View {
     // each one. The close button's own `.help` (inner) wins when the cursor is over the ✕.
     .help(tab.filePath ?? tab.title)
     .accessibilityIdentifier("terminal.tab.\(tab.title)")
+    // The recognized tool's favicon (issue #141) is otherwise conveyed ONLY by a plain `Image` — a
+    // container that carries its own accessibility identifier/value (as this chip does, below)
+    // auto-combines its children into ONE element, so a leaf `.accessibilityIdentifier` on the icon
+    // itself is silently unreachable (measured: an XCUITest querying it never found the element,
+    // even though the model-layer detection and the image asset both resolved correctly). Folded
+    // into the chip's own label instead — the same fix this file already applies to the busy state
+    // below, and the title stays in the label so VoiceOver still reads the tab's name.
+    .accessibilityLabel(
+      tab.recognizedTool.map { "\(tab.title), \($0.displayName)" } ?? tab.title
+    )
     // The running state is otherwise conveyed ONLY by the flowing underline above — invisible to
     // VoiceOver, and unassertable in XCUITest. `GhosttyActionDispatchUITests` reads this to prove
     // `GHOSTTY_ACTION_PROGRESS_REPORT` (OSC 9;4) still reaches the tab model after an engine change.

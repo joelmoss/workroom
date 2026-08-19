@@ -181,6 +181,12 @@ targets:
       - path: Resources/markdown
         type: folder
         buildPhase: resources
+      # Curated CLI/TUI tool-logo registry + fetched favicons (issue #141). Folder reference → copied
+      # verbatim to Contents/Resources/tool-logos; ToolLogoRegistry loads it offline via
+      # Bundle.main.url(forResource:withExtension:subdirectory:). See Resources/tool-logos/registry.json.
+      - path: Resources/tool-logos
+        type: folder
+        buildPhase: resources
     dependencies:
       - package: Sparkle
       # Workroom VCS core: the Rust engine (jj-lib + gix) exposed via UniFFI, wrapped as a local SPM

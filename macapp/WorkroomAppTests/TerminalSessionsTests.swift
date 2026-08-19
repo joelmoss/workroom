@@ -12,6 +12,10 @@ final class TerminalSessionsTests: XCTestCase {
   private func makeSessions() -> TerminalSessions {
     let sessions = TerminalSessions()
     sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
+    // Defaults to a no-op so a future test setting `foregroundProcessNameForTesting` to an
+    // unrecognized name doesn't silently write to the developer's real `Application Support` file
+    // (review finding) — the same reasoning `makeView` above already applies to spawning real shells.
+    sessions.recordUnrecognizedTool = { _ in }
     return sessions
   }
 
@@ -267,6 +271,48 @@ final class TerminalSessionsTests: XCTestCase {
 
     view.handleCommandFinished(rawExitCode: 0)
     XCTAssertNil(activeAgent(in: s))
+  }
+
+  /// The curated tool favicon (issue #141) is a broader, data-driven sibling of `activeAgentBackend`
+  /// — same latch-until-`command_finished` lifecycle, same first-wins semantics. Modeled directly on
+  /// `testCodexAgentSurvivesProviderTitleRepaint` above.
+  func testRecognizedToolLatchesSurvivesRepaintAndClears() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    let view = s.tabs(for: target).first!.surface!
+
+    view.foregroundProcessNameForTesting = "git"
+    view.onTitleChange?("git status")
+    XCTAssertEqual(s.tabs(for: target).first?.recognizedTool?.id, "git")
+
+    // A later, unrelated title repaint must not clear or re-derive the latch (first-wins).
+    view.onTitleChange?("vim README.md")
+    XCTAssertEqual(
+      s.tabs(for: target).first?.recognizedTool?.id, "git",
+      "the icon swaps between commands, not mid-repaint")
+
+    view.handleCommandFinished(rawExitCode: 0)
+    XCTAssertNil(s.tabs(for: target).first?.recognizedTool, "command_finished clears the icon")
+  }
+
+  /// A foreground command not in the curated `ToolLogoRegistry` (issue #141 follow-up) is tallied
+  /// exactly once per new title — not per repaint of the same still-unrecognized command — and a
+  /// recognized command (e.g. "git") is never tallied at all.
+  func testUnrecognizedForegroundCommandIsRecordedOncePerNewTitleNotRecognizedOnes() {
+    let s = makeSessions()
+    var recorded: [String] = []
+    s.recordUnrecognizedTool = { recorded.append($0) }
+    s.addTab(for: target)
+    let view = s.tabs(for: target).first!.surface!
+
+    view.foregroundProcessNameForTesting = "some-random-tool"
+    view.onTitleChange?("some-random-tool --flag")
+    view.onTitleChange?("some-random-tool --flag")  // repaint of the same command: no re-count
+    XCTAssertEqual(recorded, ["some-random-tool"])
+
+    view.foregroundProcessNameForTesting = "git"
+    view.onTitleChange?("git status")
+    XCTAssertEqual(recorded, ["some-random-tool"], "a recognized command is never tallied")
   }
 
   func testDirectoryTitlesAreIgnoredSoTheCommandSurvives() {

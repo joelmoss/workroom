@@ -10,7 +10,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 .DEFAULT_GOAL := help
 .PHONY: help \
         cli-build cli-test cli-install cli-lint cli-clean \
-        app-vcs app-run app-build app-test app-uitest app-test-supervisor app-test-scripts app-generate app-format app-lint app-release app-icon app-clean
+        app-vcs app-run app-build app-test app-uitest app-test-supervisor app-test-scripts app-generate app-format app-lint app-release app-icon app-tool-logos app-clean
 
 help: ## List available targets
 	@grep -hE '^[a-z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
@@ -129,6 +129,9 @@ app-release: app-vcs app-test-scripts ## Build, notarize, staple + package a DMG
 
 app-icon: ## Regenerate release, dev + nightly AppIcon PNGs (macapp/Scripts/make-icon.swift)
 	cd macapp && swift Scripts/make-icon.swift
+
+app-tool-logos: ## Fetch/refresh curated tool-logo assets (macapp/Scripts/fetch-tool-logos.sh)
+	cd macapp && Scripts/fetch-tool-logos.sh
 
 app-clean: ## Remove the app's DerivedData + .xcodeproj
 	cd macapp && rm -rf DerivedData $(APP_PROJECT)

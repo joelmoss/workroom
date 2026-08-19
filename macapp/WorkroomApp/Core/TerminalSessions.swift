@@ -75,6 +75,14 @@ struct TerminalTab: Identifiable {
     return false
   }
 
+  /// The curated CLI/TUI tool recognized as currently running in this terminal's foreground (issue
+  /// #141) — a broader, data-driven sibling of `activeAgentBackend`, latched/cleared identically.
+  /// Always nil for content tabs.
+  var recognizedTool: RecognizedTool? {
+    if case .terminal(let s) = content { return s.activeTool }
+    return nil
+  }
+
   /// A terminal tab wrapping a freshly-created surface.
   static func terminal(view: GhosttySurfaceView, defaultTitle: String) -> TerminalTab {
     TerminalTab(content: .terminal(TerminalState(view: view, defaultTitle: defaultTitle)))
@@ -312,6 +320,9 @@ struct TerminalState {
   /// fallback for multiplexed sessions). Providers repaint OSC titles while they run, so this is
   /// deliberately latched until `command_finished` instead of being derived from `liveTitle`.
   var activeAgentBackend: AgentBackend?
+  /// The curated CLI/TUI tool recognized as currently running in this terminal's foreground (issue
+  /// #141) — a broader, data-driven sibling of `activeAgentBackend`, latched/cleared identically.
+  var activeTool: RecognizedTool?
   /// The surface's latest reported cwd (`GHOSTTY_ACTION_PWD` via shell integration), mirrored here as
   /// observable state so the detail-panel status bar shows the live directory (issue #49). Nil until
   /// the shell first reports; the status bar falls back to the surface's `lastKnownCwd` / target path.
@@ -395,6 +406,29 @@ final class TerminalSessions: ObservableObject {
   /// argument lets a ⌘D split inherit the focused pane's directory.
   var makeView: (TerminalTarget, String, String?) -> GhosttySurfaceView = { _, cwd, command in
     GhosttySurfaceView(workingDirectory: cwd, command: command)
+  }
+
+  /// How a foreground command not in the curated `ToolLogoRegistry` gets tallied (issue #141
+  /// follow-up). Overridable in tests so exercising `updateTitle` never writes the developer's own
+  /// `Application Support` file as a side effect — same reasoning as `makeView`.
+  ///
+  /// Two things the production default must do, found by review:
+  /// - **Hop off the main thread.** `updateTitle` runs synchronously inside `ghostty_app_tick`
+  ///   (`GhosttyApp.swift`'s render/IO pump, confirmed `DispatchQueue.main`-bound), and the dedup
+  ///   gate here is a title-STRING change, not a per-executable-per-session memo — every distinct
+  ///   command line typed in an uncurated shell (which is most ordinary commands) does a blocking
+  ///   read-decode-encode-atomic-write if this ran inline. This app has two prior documented
+  ///   AppHang incidents of exactly this shape (unbounded synchronous work in a main-thread runtime
+  ///   callback) — this must not be a third.
+  /// - **Skip under `UITestFixture.isActive`.** Every other side-effecting path added around this
+  ///   era of the codebase gates on it; without it, any XCUITest run (or an ordinary `⌘R`/`make
+  ///   app-run` Dev session) writes real entries into the same file the developer inspects for
+  ///   curation signal, defeating the feature's own purpose.
+  var recordUnrecognizedTool: (String) -> Void = { name in
+    guard !UITestFixture.isActive else { return }
+    DispatchQueue.global(qos: .utility).async {
+      UnrecognizedToolUsage.recordUnrecognized(name)
+    }
   }
 
   /// Smallest usable pane WIDTH (points). A split is refused when it would shrink a pane below this;
@@ -1357,14 +1391,35 @@ final class TerminalSessions: ObservableObject {
     guard !trimmed.isEmpty, !Self.isDirectoryTitle(trimmed, cwd: s.view.lastKnownCwd) else {
       return
     }
+    // Read once — `foregroundTool` used to re-derive this internally via a second live PID read, a
+    // TOCTOU gap where the foreground process could differ between the two reads (review finding).
+    let foregroundExecutableName = s.view.foregroundExecutableName
     let detectedAgent =
       s.view.foregroundAgentBackend ?? AgentTitleRecognition.backend(for: trimmed)
-    guard s.liveTitle != trimmed || (s.activeAgentBackend == nil && detectedAgent != nil) else {
+    let detectedTool =
+      ToolLogoRegistry.tool(forExecutableName: foregroundExecutableName)
+      ?? ToolLogoRegistry.tool(forTitle: trimmed)
+    guard
+      s.liveTitle != trimmed || (s.activeAgentBackend == nil && detectedAgent != nil)
+        || (s.activeTool == nil && detectedTool != nil)
+    else {
       return
+    }
+    // Usage tracking for issue #141: a genuinely new foreground command that ISN'T in the curated
+    // registry at all (not merely missing its fetched asset — `matchingEntry` is the ungated check)
+    // gets tallied, so a periodic look at the file shows which non-curated tools are worth adding
+    // next. Gated on `s.liveTitle != trimmed` (a real title change, not a repaint of the same still-
+    // unrecognized command) so a long-running unmatched program is counted once, not per repaint.
+    if s.liveTitle != trimmed, detectedTool == nil,
+      let rawName = foregroundExecutableName,
+      ToolLogoRegistry.matchingEntry(forExecutableName: rawName) == nil
+    {
+      recordUnrecognizedTool(rawName)
     }
     mutateTerminalState(tabID, target: target) {
       $0.liveTitle = trimmed
       if $0.activeAgentBackend == nil { $0.activeAgentBackend = detectedAgent }
+      if $0.activeTool == nil { $0.activeTool = detectedTool }
     }
   }
 
@@ -1403,6 +1458,7 @@ final class TerminalSessions: ObservableObject {
     mutateTerminalState(tabID, target: target) {
       $0.liveTitle = nil
       $0.activeAgentBackend = nil
+      $0.activeTool = nil
       $0.progressActive = nil
     }
   }

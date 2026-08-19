@@ -1741,6 +1741,34 @@ parser, banner partial-text state, and its own entry in `AgentDiagnosisEvalTests
 
 **Priority:** P3 (polish; marginal over a 2-3s spinner, and must not regress the structured fix).
 
+### Unify foreground-process detection onto argv0 (macapp) — issue #141 eng-review follow-up, filed 2026-08-17
+
+**What:** `AgentProcessRecognition.backend(forPID:)` (`AgentUsage.swift`, backs the issue #49 inline
+diagnosis badge) and the new `GhosttySurfaceView.foregroundExecutableName` (issue #141 favicon) both
+resolve a live pane's foreground process via `proc_name`. Extract `SessionPTY.executableName(processID:)`'s
+argv0/`KERN_PROCARGS2` logic (already correct, used only at daemon reattach time) into a shared
+`WorkroomSessionProtocol` helper, and use it from both call sites in place of `proc_name`.
+
+**Why:** `proc_name` is defeated by any CLI that renames its own process title post-launch — confirmed
+case: Claude Code, whose `p_comm` reads as a version string ("2.1.232"), not "claude". No known live
+bug today: both features have a title-based fallback (`AgentTitleRecognition`/
+`ToolLogoRegistry.tool(forTitle:)`) that catches Claude regardless. But every tool added to the
+favicon registry is one more surface where this could matter if it also self-renames, and the daemon
+side already proves the fix works.
+
+**How to start:** Move `SessionPTY.swift`'s `executableName(processID:)` into a new
+`WorkroomSessionProtocol/ProcessArgv0.swift` (that target is already linked into both `WorkroomApp`
+and `workroom-session`, no new project.yml wiring). Delete it from `SessionPTY.swift`; update
+`SessionDaemon.swift`'s one call site. Replace `AgentProcessRecognition.backend(forPID:)`'s
+`proc_name`/`MAXPATHLEN` body with a call through the shared helper. Replace
+`GhosttySurfaceView.foregroundExecutableName`'s inlined `proc_name` block the same way.
+
+**Depends on:** nothing. Scoped out of the issue #141 PR deliberately (D1, plan-eng-review
+scope-reduction) to keep that PR single-purpose; this session's review confirmed the trade-off
+(3-file/2-target diff for a bug with no live symptom).
+
+**Priority:** P3 — no known bug today; worth doing next time either recognizer needs to get sturdier.
+
 ## P3 — Inspector, window layout, and theming
 
 ### Back/forward doesn't reinstate the inspector section (macapp) — nav-history follow-up
