@@ -642,7 +642,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       alert.messageText = "Quit Workroom?"
       alert.informativeText =
         Defaults[.backgroundSessions]
-        ? "Quitting leaves background terminals running. You can reattach them when you reopen Workroom."
+        ? "Quitting leaves terminals running in the background. They'll be waiting when you reopen Workroom, but any running dev servers will still stop."
         : "Quitting closes all terminals and stops any running processes."
       alert.addButton(withTitle: "Quit")
       alert.addButton(withTitle: "Cancel")
