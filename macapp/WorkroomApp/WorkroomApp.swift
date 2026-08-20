@@ -55,6 +55,17 @@ struct WorkroomApp: App {
   }
 
   var body: some Scene {
+    // First-run onboarding (issue #151): computed once per `body` evaluation (effectively once, at
+    // launch — nothing here is `@Default`-observed, so this doesn't re-run reactively later), and
+    // used to flip BOTH scenes' `.defaultLaunchBehavior` below so that at genuine app launch, EXACTLY
+    // ONE of them auto-opens: the wizard while onboarding might still be needed, the normal main
+    // window once it's done. `projectsEmpty` isn't knowable this early (it needs the async
+    // project-list load), so `mightShow` is a synchronous approximation — `OnboardingWindow`'s own
+    // `.task` double-checks the real gate once it can, and corrects course if this guess was wrong
+    // (an existing install with projects that just never completed onboarding).
+    let onboardingMightShow = OnboardingGate.mightShow(
+      hasCompleted: Defaults[.hasCompletedOnboarding])
+
     // Value-based scene (issue #70): SwiftUI mints one window — and one fresh `AppStore` — per
     // `WindowSeed`, guaranteeing independent per-window state (and sidestepping the documented
     // `@StateObject`-in-`WindowGroup` cross-window sharing bug). ⌘N opens a new seed; the launch
@@ -73,6 +84,13 @@ struct WorkroomApp: App {
     // recompute that caused the macOS-26 AppHangs (see WindowBackgroundThemer). The chrome lives in a
     // full-width `.left` titlebar accessory (never overflows).
     .commands { WorkroomCommands(updater: updater) }
+    // Suppressed while onboarding might still be needed — an `orderOut(nil)` in `RootWindow`'s
+    // `WindowAccessor` was tried first and doesn't reliably stick (SwiftUI's own WindowGroup launch
+    // machinery re-asserts the window's visibility after that callback runs); `.defaultLaunchBehavior`
+    // is the actual, Apple-provided lever for "don't auto-open this scene's window at launch."
+    // Explicit `openWindow(value:)` calls later (from `OnboardingWindow`, once it's done) are
+    // unaffected by this — it only governs automatic launch behavior.
+    .defaultLaunchBehavior(onboardingMightShow ? .suppressed : .automatic)
 
     Settings {
       SettingsView()
@@ -80,6 +98,33 @@ struct WorkroomApp: App {
         .environmentObject(agentUsage)
         .environmentObject(claudeUsageBridge)
     }
+
+    // The first-run onboarding wizard (issue #151). A plain `Window` scene, like `Settings` — no
+    // `AppStore`, so it falls through the same aux-window carve-outs (⌘W fallback, shortcut/switcher
+    // no-ops, quit/window-count exclusion, ⌘` cycle exclusion) for free; see `OnboardingWindow`'s doc
+    // comment. `.windowResizability(.contentSize)` is required because — unlike `Settings`, whose
+    // non-resizability comes from the scene TYPE — a plain `Window` defaults to user-resizable
+    // regardless of a fixed content `.frame()`.
+    //
+    // `.presented` forces this scene to auto-open at launch instead of `WindowGroup`'s suppressed
+    // one, exactly when `onboardingMightShow` — so a genuinely fresh launch shows ONLY the wizard,
+    // not the (empty) main window underneath it. See `OnboardingWindow`'s own `.task` for what
+    // happens if this guess turns out wrong, and its close-notification handler for bringing the main
+    // window up once the wizard is dismissed or finished, by any path.
+    //
+    // The auto Window-menu entry ("Welcome to Workroom") is left in place permanently, not suppressed
+    // once onboarding completes. `SceneBuilder` does NOT support an `if/else` between two `Scene`
+    // values the way `ViewBuilder` supports `if/else` between two `View`s ("closure containing
+    // control flow statement cannot be used with result builder `SceneBuilder`" — confirmed by
+    // trying it), so conditionally applying `.commandsRemoved()` only post-completion isn't
+    // straightforward. Reopening it after completion just replays the tour (harmless — Add Project
+    // still works correctly if used) rather than being suppressed; a real fix would need a manual
+    // `CommandGroup` item wired through `openWindow`, disabled post-completion, in place of the
+    // scene's automatic one — left as a follow-up rather than built speculatively here.
+    Window("Welcome to Workroom", id: OnboardingWindow.sceneID) { OnboardingWindow() }
+      .windowResizability(.contentSize)
+      .windowStyle(.hiddenTitleBar)
+      .defaultLaunchBehavior(onboardingMightShow ? .presented : .suppressed)
 
     // The system menu-bar item (issue #33) is hand-managed by `AppDelegate`'s `MenuBarController`
     // (an `NSStatusItem`), not a SwiftUI `MenuBarExtra`, so a click with no pending notifications can

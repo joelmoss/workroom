@@ -188,6 +188,14 @@ extension Defaults.Keys {
   /// no historical backfill. The What's-New dialog shows only when the running version is newer.
   static let lastSeenVersion = Key<String?>("app.lastSeenVersion", default: nil)
 
+  /// Whether the first-launch onboarding wizard (issue #151) has been completed. Unset (false) on a
+  /// fresh install. Flips true the moment the wizard reaches its "Done" step, by any path (skip or a
+  /// successful add) — not gated behind which button the user then uses to close the window. The
+  /// show-gate (`OnboardingGate.shouldShow`) also checks `projects.isEmpty`, so a project added some
+  /// other way suppresses the wizard too — this flag only needs writing from the wizard itself, not
+  /// from `AppStore.addProject`'s general path.
+  static let hasCompletedOnboarding = Key<Bool>("onboarding.hasCompleted", default: false)
+
   /// Bounded-retry bookkeeping for the auto What's-New fetch (so a firewalled machine doesn't fire a
   /// doomed GitHub request every launch forever). `whatsNewAttemptVersion` is the version those
   /// attempts were for; the count resets when the running version changes. After

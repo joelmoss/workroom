@@ -386,6 +386,54 @@ enum UITestFixture {
     flag("WorkroomUITestWhatsNew")
   }
 
+  /// Override for whether the onboarding wizard (issue #151) should open
+  /// (`-WorkroomUITestOnboarding show|hide`), for deterministic UI tests. Read independent of
+  /// `isActive` — like `forceWhatsNew` — because `WorkroomWorkflowUITests.testAppLaunchesWithChrome`
+  /// runs with `fixture: false` against the real `~/.config/workroom` and the real Dev `Defaults`
+  /// domain: on a machine with no config and `hasCompletedOnboarding` never set, the real gate would
+  /// otherwise fire during that unrelated chrome smoke test. A plain string read via `text(_:)`, not a
+  /// `Defaults`-typed bool from a bare launch arg, so it doesn't hit the argument-domain-shadowing
+  /// gotcha that would apply to a bool `Defaults` key instead. `nil` = no override, defer to the real
+  /// gate (`OnboardingGate.shouldShow`).
+  static var onboardingOverride: Bool? {
+    switch text("WorkroomUITestOnboarding") {
+    case "show": return true
+    case "hide": return false
+    default: return nil
+    }
+  }
+
+  /// When set (`-WorkroomUITestOnboardingRealGate 1`), `applyFixtureDefaults` does NOT pin
+  /// `hasCompletedOnboarding` to `true` — for tests that need fixture mode's deterministic
+  /// zero-project state (`-WorkroomUITestNoProjects 1`) alongside the REAL, unpinned onboarding flag,
+  /// to test the actual persistence gate rather than the `onboardingOverride` short-circuit. A
+  /// genuinely isolated `HOME` (non-fixture mode) was tried first and empirically doesn't work for
+  /// this: a GUI-launched app's bundled CLI subprocess doesn't reliably see
+  /// `XCUIApplication.launchEnvironment`'s `HOME` override the way a plain CLI process would, so it
+  /// kept reading the real `~/.config/workroom/config.json` instead of an isolated one. Fixture
+  /// mode's synthetic project data sidesteps that entirely.
+  static var onboardingRealGate: Bool {
+    flag("WorkroomUITestOnboardingRealGate")
+  }
+
+  /// Explicit starting value for `hasCompletedOnboarding`, written FROM INSIDE the app itself
+  /// (`-WorkroomUITestOnboardingSeed true|false`) — the same pattern every other fixture pin already
+  /// uses (`themeFamily`, `sidebarWidth`, etc: the app writes what it's about to read, no external
+  /// process in between). An external `defaults write` from the TEST process, confirmed via its own
+  /// readback, was tried first for seeding the persistence tests' starting state and empirically
+  /// does NOT reliably reach a freshly xcodebuild-test-launched app's own `UserDefaults` read moments
+  /// later — some cross-process cfprefsd domain quirk specific to that launch path, not a production
+  /// bug. Only the FIRST launch of a relaunch pair passes this; the second launch omits it (alongside
+  /// `onboardingRealGate` alone) so it reads whatever the running app itself persisted in between —
+  /// ordinary same-app cross-launch persistence, which needs no special seam.
+  static var onboardingSeed: Bool? {
+    switch text("WorkroomUITestOnboardingSeed") {
+    case "true": return true
+    case "false": return false
+    default: return nil
+    }
+  }
+
   /// Reveal the quick-switcher rail with no delay (issue #132). The real gesture holds a modifier for
   /// 250 ms, which neither XCUITest nor AppleScript can drive reliably — synthetic modifier holds do
   /// not consistently reach `NSEvent.modifierFlags`, the *global hardware* snapshot the session polls.
@@ -562,6 +610,19 @@ enum UITestFixture {
     // Without this a theme test inherits whatever the developer last picked, and a test that applies
     // a theme leaves it applied for the next run.
     Defaults[.themeFamily] = themeFamily
+    // Pinned "already onboarded" for the same reason as `themeFamily`/`diffViewMode` above: the flag
+    // PERSISTS in the real Dev `Defaults` domain, so a fresh machine with zero registered projects
+    // would otherwise pop the onboarding wizard (issue #151) over e.g. `NewWorkroomDialogUITests`'
+    // `-WorkroomUITestNoProjects 1` scenario. A test that wants onboarding itself passes
+    // `-WorkroomUITestOnboarding show`, which `OnboardingGate` checks first. `onboardingSeed` (an
+    // explicit true/false) wins when given — the persistence tests use it to seed a known starting
+    // value; otherwise `onboardingRealGate` alone just skips this generic pin, leaving whatever's
+    // already persisted (used on the SECOND launch of a relaunch pair, to read what the first one left).
+    if let seed = onboardingSeed {
+      Defaults[.hasCompletedOnboarding] = seed
+    } else if !onboardingRealGate {
+      Defaults[.hasCompletedOnboarding] = true
+    }
   }
 
   /// The fake project list. Idempotent within a launch: the backing temp directories are created if

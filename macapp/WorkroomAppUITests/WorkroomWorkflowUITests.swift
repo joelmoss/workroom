@@ -91,7 +91,10 @@ final class WorkroomWorkflowUITests: XCTestCase {
   /// present. The Add Project control lives in the sidebar's bottom bar regardless of config, so this
   /// has no dependency on the developer's projects.
   func testAppLaunchesWithChrome() {
-    let app = launchedApp(fixture: false)
+    // Runs against real config/Defaults (fixture: false) — without this, a machine with zero
+    // registered projects and a never-set `hasCompletedOnboarding` would pop the onboarding wizard
+    // (issue #151) over this unrelated chrome smoke test.
+    let app = launchedApp(fixture: false, extraArgs: ["-WorkroomUITestOnboarding", "hide"])
     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10), "app did not reach foreground")
     XCTAssertGreaterThan(app.windows.count, 0, "expected a main window")
     XCTAssertTrue(

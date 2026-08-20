@@ -139,11 +139,24 @@ struct RootView: View {
     // `TitlebarAccessoryHost` (see `accessoryBarContent`), which NavigationSplitView does not clip. So
     // we get correct hover back with no clipping. The empty native sidebar column is unused — the real
     // sidebar is our own `SidebarColumn` in the detail HStack, flush below the bar.
-    NavigationSplitView(columnVisibility: .constant(.detailOnly)) {
+    // The inspector has nothing to show without a selected target (its panes all render a "Select a
+    // workroom…" placeholder instead), so it's also gated on that — not just the user's `showInspector`
+    // toggle — closing itself whenever nothing's open instead of sitting there empty. A pure view-layer
+    // gate, not a write to `Defaults[.showInspector]`: that key is shared across every window, so
+    // flipping it here would also close the inspector in any OTHER window that still has something
+    // selected. The toggle's own on/off state (View menu, `ActivityBar`) is untouched either way — it
+    // just resumes controlling real visibility again the moment something's selected.
+    let inspectorVisible = showInspector && store.selectedTarget != nil
+    // Same reasoning as `inspectorVisible`: with zero projects, `SidebarColumn` has nothing to list
+    // but its own "No projects yet" empty state — which `detailContent`'s empty state now also shows
+    // (with the same "Add Project…" action), so the sidebar just doubles it. Gated on the store's
+    // own `projects`, not a write to `Defaults[.sidebarVisible]`, for the same other-window reason.
+    let sidebarShown = store.sidebarVisible && !store.projects.isEmpty
+    return NavigationSplitView(columnVisibility: .constant(.detailOnly)) {
       Color.clear.frame(width: 0)
     } detail: {
       HStack(spacing: 0) {
-        if store.sidebarVisible {
+        if sidebarShown {
           SidebarColumn(
             paneDrag: $workroomChipDrag,
             localize: { workroomChipLocal($0) },
@@ -153,7 +166,7 @@ struct RootView: View {
         }
         detail
           .frame(maxWidth: .infinity, maxHeight: .infinity)
-        if showInspector {
+        if inspectorVisible {
           InspectorColumn()
             .transition(.move(edge: .trailing))
         }
@@ -162,8 +175,8 @@ struct RootView: View {
         // NavigationSplitView so its icon buttons get working `.onHover` (issue #114).
         ActivityBar()
       }
-      .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.sidebarVisible)
-      .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: showInspector)
+      .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: sidebarShown)
+      .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: inspectorVisible)
     }
   }
 
@@ -633,13 +646,35 @@ struct RootView: View {
       workroomSplitBody
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     } else {
-      ContentUnavailableView(
-        "Nothing selected",
-        systemImage: "terminal",
-        description: Text(
-          "Select a project's root or a workroom to open a terminal in its directory, or create one."
-        )
-      )
+      ContentUnavailableView {
+        Label {
+          Text("Work it!")
+        } icon: {
+          // `AppMark`, not `MenuBarIcon`: same monochrome glyph (`Scripts/make-icon.swift`'s
+          // `renderMenuBarGlyph` draws both, just at different pixel sizes) but rendered at 128pt
+          // instead of 18pt — `MenuBarIcon`'s 36px-max source went visibly blurry upscaled this far.
+          // Both are template images (`template-rendering-intent: template`), so no rounded-square
+          // plate/border, just the mark, tinted like any other secondary icon here.
+          Image("AppMark")
+            .resizable()
+            .scaledToFit()
+            .frame(width: 128, height: 128)
+            .foregroundStyle(.secondary)
+        }
+      } description: {
+        // Zero projects: the sidebar's own empty-state copy (`ProjectSidebar`) — the sidebar itself
+        // is hidden in this state (see `splitView`), so this is the only place left to say it.
+        if store.projects.isEmpty {
+          Text("Add a Git or Jujutsu project folder to start managing its workrooms.")
+        } else {
+          Text("Select a project's root, or open (⌘O) or create (⌘N) a workroom to get started.")
+        }
+      } actions: {
+        if store.projects.isEmpty {
+          Button("Add Project…") { store.requestAddProject = true }
+            .buttonStyle(.borderedProminent)
+        }
+      }
     }
   }
 

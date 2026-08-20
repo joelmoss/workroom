@@ -2188,6 +2188,32 @@ logic wasn't reviewed against this change.
 
 ## P3 — Tests and tooling
 
+### Onboarding wizard's failed-add step has no test coverage (macapp) — filed 2026-08-19, issue #151
+
+**What:** `OnboardingWindow.handleAdd`'s failure branch (a CLI-level `addProject` failure leaves the
+Add Project step up, no `hasCompletedOnboarding` flag set, so the user can retry) has zero test
+coverage at any level — unit or UI.
+
+**Why not fixed now:** `AddProjectSheetModel.isValid` already disables Add for the common failure
+case (malformed path), so this only fires for a genuine CLI-level failure (permission denied, a
+race). Forcing that reliably in an XCUITest needs a filesystem trick (e.g. a chmod'd-unwritable temp
+dir) that can behave differently under CI sandboxing/root, trading real coverage for CI flakiness —
+and `AppStore.addProject`'s fixture-mode branch (added after this was filed, to stop UI tests from
+touching the real `~/.config/workroom/config.json`) always simulates success, so it can no longer
+even reach a failure via fixture mode at all; only a real (non-fixture) run or an injectable
+`WorkroomCLIProtocol` fake could exercise this now. Flagged during `/plan-eng-review` of issue #151's
+onboarding wizard plan; accepted as a deferred gap rather than a blocking test.
+
+**How to start:** a UI test that creates a temp dir, `chmod`s it unwritable, points the wizard's Add
+Project step at a path under it in create mode, and asserts the step stays up with no flag set. If
+CI sandboxing makes the permission trick unreliable, an alternative is injecting a fake
+`WorkroomCLIProtocol` that fails deterministically — but that requires the onboarding window to take
+an injectable store/CLI, which it currently doesn't (see the plan for issue #151).
+
+**Depends on:** nothing blocking — the onboarding wizard itself (issue #151) shipping first.
+
+**Priority:** P3 — narrow, low-probability gap, not a known bug.
+
 ### `AppStore`'s default `cli` isn't hardened against a forgotten test double (macapp) — filed 2026-08-16
 
 **What:** `AppStore.init(cli: WorkroomCLIProtocol? = nil, ...)` defaults an un-injected `cli` to the

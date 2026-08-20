@@ -2980,7 +2980,26 @@ final class AppStore: ObservableObject {
   /// Registers a project at `path`. With `create`, a non-existent directory is
   /// created and git-initialized by the CLI (issue #103, "Create new directory…");
   /// otherwise `path` must already be a Git/JJ repo ("From existing path…").
-  func addProject(_ path: String, create: Bool) async {
+  ///
+  /// Returns the outcome so a caller with its own inline error UI (the onboarding wizard, issue
+  /// #151) can react locally, in addition to (not instead of) the alert this always presents on
+  /// failure — the sidebar's own Add Project flow relies on that alert and ignores the return value.
+  @discardableResult
+  func addProject(_ path: String, create: Bool) async -> Result<Void, Error> {
+    // Fixture mode never shells out to the real CLI for anything else (`bootstrap`/`load` both
+    // short-circuit to `loadFixture()`) — this is the one mutation that didn't follow that rule,
+    // which meant a UI test driving the wizard's real Add Project step (issue #151) genuinely
+    // registered a project in the developer's own `~/.config/workroom/config.json` (the CLI has no
+    // config-path override to isolate against instead). Simulate the same success shape locally.
+    if UITestFixture.isActive {
+      let canonical = AddProjectSheetModel.normalize(path)
+      if !projects.contains(where: { $0.path == canonical }) {
+        projects.append(Project(path: canonical, vcs: "git", workrooms: []))
+      }
+      selectedProjectID = canonical
+      selectedTargetID = .root(project: canonical)
+      return .success(())
+    }
     do {
       let canonical = try await cli.addProject(path, create: create)
       await reload()
@@ -2993,8 +3012,10 @@ final class AppStore: ObservableObject {
         selectedProjectID = match.id
         selectedTargetID = .root(project: match.path)
       }
+      return .success(())
     } catch {
       present(error)
+      return .failure(error)
     }
   }
 

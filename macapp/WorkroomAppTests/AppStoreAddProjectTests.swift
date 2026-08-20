@@ -10,6 +10,8 @@ final class FakeWorkroomCLI: WorkroomCLIProtocol {
   private(set) var addProjectCalls: [(path: String, create: Bool)] = []
   var canonicalToReturn: String
   var projectsToList: [Project]
+  /// When set, `addProject` throws this instead of succeeding — for the `Result` failure case.
+  var addProjectError: Error?
 
   init(canonical: String, projects: [Project]) {
     self.canonicalToReturn = canonical
@@ -22,6 +24,7 @@ final class FakeWorkroomCLI: WorkroomCLIProtocol {
 
   func addProject(_ path: String, create: Bool) async throws -> String {
     addProjectCalls.append((path, create))
+    if let addProjectError { throw addProjectError }
     return canonicalToReturn
   }
 
@@ -79,5 +82,35 @@ final class AppStoreAddProjectTests: XCTestCase {
 
     XCTAssertEqual(fake.addProjectCalls.first?.create, false)
     XCTAssertEqual(store.selectedProjectID, canonical)
+  }
+
+  /// The `Result` contract (issue #151 — the onboarding wizard reads this to decide whether to
+  /// advance, instead of relying on `errorMessage`): a successful add returns `.success`.
+  func testAddProjectReturnsSuccessOnSuccess() async {
+    let canonical = "/private/var/tmp/wr-result-success"
+    let fake = FakeWorkroomCLI(
+      canonical: canonical,
+      projects: [Project(path: canonical, vcs: "git", workrooms: [])])
+    let store = makeStore(fake)
+
+    let result = await store.addProject(canonical, create: false)
+
+    guard case .success = result else { return XCTFail("expected .success, got \(result)") }
+  }
+
+  /// A CLI-level failure returns `.failure` carrying the same error `present(error)` already
+  /// displays — not silently swallowed into a bare `false`.
+  func testAddProjectReturnsFailureOnCLIError() async {
+    let fake = FakeWorkroomCLI(canonical: "/unused", projects: [])
+    fake.addProjectError = WorkroomCLIError.cli(kind: "permission_denied", message: "denied")
+    let store = makeStore(fake)
+
+    let result = await store.addProject("/some/path", create: true)
+
+    guard case .failure(let error) = result else {
+      return XCTFail("expected .failure, got \(result)")
+    }
+    XCTAssertEqual((error as? WorkroomCLIError)?.errorDescription, "denied")
+    XCTAssertNotNil(store.errorMessage, "present(error) should still fire on the store, unchanged")
   }
 }

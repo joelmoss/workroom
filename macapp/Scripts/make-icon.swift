@@ -169,7 +169,7 @@ func render(_ pixels: Int, to url: URL, label: String?) {
 // app icon (`markBlocks`), filled solid on a transparent background — no tile, since the menu bar
 // is the tile. Exported as a template image (see the imageset's Contents.json), so the system
 // tints it to the menu bar's appearance and dims it when the app is inactive.
-func renderMenuBarGlyph(_ pixels: Int, to url: URL) {
+func renderMenuBarGlyph(_ pixels: Int, to url: URL, fill: CGColor = rgb(0, 0, 0)) {
     let S = CGFloat(pixels)
     let cs = CGColorSpace(name: CGColorSpace.sRGB)!
     guard let ctx = CGContext(
@@ -184,7 +184,7 @@ func renderMenuBarGlyph(_ pixels: Int, to url: URL) {
     // markBlocks is defined on a 36×36 artboard already inset ~2px on every edge, which reads as
     // the right amount of menu-bar padding at this size — so it's scaled straight onto the canvas.
     let scale = S / 36
-    ctx.setFillColor(rgb(0, 0, 0))  // template-rendered, so the system recolours it
+    ctx.setFillColor(fill)  // black (default) is template-rendered, so the system recolours it
     for block in markBlocks {
         ctx.fill(CGRect(
             x: block.minX * scale, y: block.minY * scale,
@@ -262,6 +262,59 @@ do {
           ],
           "info" : { "author" : "xcode", "version" : 1 },
           "properties" : { "template-rendering-intent" : "template" }
+        }
+        """
+    try! glyphContents.write(
+        to: dir.appendingPathComponent("Contents.json"), atomically: false, encoding: .utf8)
+}
+
+// Same template glyph, rendered at 128pt instead of 18pt — for large in-content uses (e.g. the
+// "Nothing selected" empty state), which upscaling `MenuBarIcon`'s 18pt/36px source made blurry.
+// `renderMenuBarGlyph` is resolution-independent (it draws `markBlocks` at whatever pixel size it's
+// asked for), so this is just the same call at a bigger size rather than a second glyph to keep in
+// sync.
+do {
+    let dir = URL(fileURLWithPath: assetsDir, isDirectory: true)
+        .appendingPathComponent("AppMark.imageset", isDirectory: true)
+    try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    print("Rendering AppMark.imageset → \(dir.path)")
+    let glyphOutputs: [(String, Int)] = [("mark_128.png", 128), ("mark_128@2x.png", 256)]
+    for (name, px) in glyphOutputs {
+        renderMenuBarGlyph(px, to: dir.appendingPathComponent(name))
+    }
+    let glyphContents = """
+        {
+          "images" : [
+            { "idiom" : "universal", "scale" : "1x", "filename" : "mark_128.png" },
+            { "idiom" : "universal", "scale" : "2x", "filename" : "mark_128@2x.png" }
+          ],
+          "info" : { "author" : "xcode", "version" : 1 },
+          "properties" : { "template-rendering-intent" : "template" }
+        }
+        """
+    try! glyphContents.write(
+        to: dir.appendingPathComponent("Contents.json"), atomically: false, encoding: .utf8)
+}
+
+// Same glyph again, in brand yellow and NOT template-rendered — for spots that want the full-colour
+// mark with no plate/tile behind it (e.g. the onboarding welcome step), as opposed to `AppMark`'s
+// monochrome/system-tinted use elsewhere.
+do {
+    let dir = URL(fileURLWithPath: assetsDir, isDirectory: true)
+        .appendingPathComponent("AppMarkColor.imageset", isDirectory: true)
+    try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    print("Rendering AppMarkColor.imageset → \(dir.path)")
+    let glyphOutputs: [(String, Int)] = [("mark_color_128.png", 128), ("mark_color_128@2x.png", 256)]
+    for (name, px) in glyphOutputs {
+        renderMenuBarGlyph(px, to: dir.appendingPathComponent(name), fill: brandYellow)
+    }
+    let glyphContents = """
+        {
+          "images" : [
+            { "idiom" : "universal", "scale" : "1x", "filename" : "mark_color_128.png" },
+            { "idiom" : "universal", "scale" : "2x", "filename" : "mark_color_128@2x.png" }
+          ],
+          "info" : { "author" : "xcode", "version" : 1 }
         }
         """
     try! glyphContents.write(

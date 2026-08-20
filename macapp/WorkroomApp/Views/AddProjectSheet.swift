@@ -53,6 +53,55 @@ enum AddProjectSheetModel {
   }
 }
 
+/// The `Picker`/path-`TextField`/"Choose…" row shared by `AddProjectSheet` (which wraps it in its
+/// own header + Cancel/Add footer) and the onboarding wizard's Add-Project step (issue #151, which
+/// wraps it in a step header + the wizard's own footer buttons instead) — one tested core, two
+/// differently-chromed shells, so neither has to duplicate path validation/normalization or the
+/// folder-picker wiring.
+struct AddProjectFields: View {
+  @Binding var mode: AddProjectMode
+  @Binding var path: String
+  @Binding var showChooser: Bool
+  var pathFieldFocused: FocusState<Bool>.Binding
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 16) {
+      Picker("Source", selection: $mode) {
+        Text("From existing path…").tag(AddProjectMode.existing)
+        Text("Create new directory…").tag(AddProjectMode.createNew)
+      }
+      .pickerStyle(.radioGroup)
+      .labelsHidden()
+      .accessibilityIdentifier("addProject.modePicker")
+
+      VStack(alignment: .leading, spacing: 6) {
+        Text(mode == .existing ? "Repository path" : "New project path")
+          .font(.subheadline.weight(.semibold))
+        HStack(spacing: 8) {
+          TextField("/path/to/project", text: $path)
+            .textFieldStyle(.roundedBorder)
+            .focused(pathFieldFocused)
+            .lineLimit(1)
+            .accessibilityIdentifier("addProject.pathField")
+          Button("Choose…") { showChooser = true }
+            .accessibilityIdentifier("addProject.chooseButton")
+        }
+        Text(AddProjectSheetModel.footer(mode: mode))
+          .font(.callout)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .fileImporter(isPresented: $showChooser, allowedContentTypes: [.folder]) { result in
+      // Existing mode: the picked folder IS the project. Create mode: it's a base
+      // directory the user extends with a new folder name in the field.
+      if case .success(let url) = result {
+        path = url.path
+      }
+    }
+  }
+}
+
 /// The "New Project" dialog (issue #103). Two modes share one editable path field:
 /// "From existing path…" adds an existing repo (the prior folder-picker behaviour),
 /// and "Create new directory…" lets the user type a path that the CLI creates and
@@ -94,32 +143,10 @@ struct AddProjectSheet: View {
         }
       }
 
-      Picker("Source", selection: $mode) {
-        Text("From existing path…").tag(AddProjectMode.existing)
-        Text("Create new directory…").tag(AddProjectMode.createNew)
-      }
-      .pickerStyle(.radioGroup)
-      .labelsHidden()
-      .accessibilityIdentifier("addProject.modePicker")
-
-      VStack(alignment: .leading, spacing: 6) {
-        Text(mode == .existing ? "Repository path" : "New project path")
-          .font(.subheadline.weight(.semibold))
-        HStack(spacing: 8) {
-          TextField("/path/to/project", text: $path)
-            .textFieldStyle(.roundedBorder)
-            .focused($pathFieldFocused)
-            .lineLimit(1)
-            .onSubmit(submit)
-            .accessibilityIdentifier("addProject.pathField")
-          Button("Choose…") { showChooser = true }
-            .accessibilityIdentifier("addProject.chooseButton")
-        }
-        Text(AddProjectSheetModel.footer(mode: mode))
-          .font(.callout)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-      }
+      AddProjectFields(
+        mode: $mode, path: $path, showChooser: $showChooser, pathFieldFocused: $pathFieldFocused
+      )
+      .onSubmit(submit)
 
       Divider()
       HStack {
@@ -136,12 +163,5 @@ struct AddProjectSheet: View {
     .padding(20)
     .frame(width: 460)
     .onAppear { pathFieldFocused = true }
-    .fileImporter(isPresented: $showChooser, allowedContentTypes: [.folder]) { result in
-      // Existing mode: the picked folder IS the project. Create mode: it's a base
-      // directory the user extends with a new folder name in the field.
-      if case .success(let url) = result {
-        path = url.path
-      }
-    }
   }
 }
