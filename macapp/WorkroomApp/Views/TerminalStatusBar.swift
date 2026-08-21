@@ -28,21 +28,15 @@ struct TerminalStatusBar: View {
   /// button can know whether it's actually showing anything.
   @ObservedObject private var sessionsStore = TerminalSessionsStore.shared
   @State private var showingDiagnosis = false
-  /// Set by a click, and survives the mouse leaving the segment — the detail view stays open until
-  /// dismissed (another click, or clicking elsewhere) rather than closing the instant hover ends.
+  /// Set by a click; the detail view stays open until dismissed (another click, or clicking
+  /// elsewhere) rather than opening on hover.
   @State private var usageDetailPinned = false
-  /// Set after a short hover delay (`usageHoverRevealDelay`), so a mouse merely passing over the
-  /// segment doesn't pop a popover; cleared the instant the mouse leaves, independent of
-  /// `usageDetailPinned`.
-  @State private var usageDetailHovering = false
-  @State private var usageHoverRevealWorkItem: DispatchWorkItem?
   @State private var confirmingClaudeUsage = false
   @State private var claudeBridgeError: String?
   /// The AppKit view the cwd menu pops out of — see `MenuAnchor`.
   @State private var cwdMenuAnchor: NSView?
 
   private let theme = ThemeService.shared
-  private let usageHoverRevealDelay: TimeInterval = 0.4
 
   /// This pane's live cwd (observed state first, then the surface's last-known); nil for a diff pane.
   private var cwd: String? { state.flatMap { $0.cwd ?? $0.view.lastKnownCwd } }
@@ -140,17 +134,10 @@ struct TerminalStatusBar: View {
       set: { if !$0 { claudeBridgeError = nil } })
   }
 
-  /// True while pinned (clicked) OR hovering — a system dismissal (clicking outside the popover, or
-  /// Escape) clears both, so a pin doesn't linger open after the platform already closed it.
+  /// A system dismissal (clicking outside the popover, or Escape) unpins too, so a pin doesn't
+  /// linger open after the platform already closed it.
   private var usageDetailPresented: Binding<Bool> {
-    Binding(
-      get: { usageDetailPinned || usageDetailHovering },
-      set: { presented in
-        if !presented {
-          usageDetailPinned = false
-          usageDetailHovering = false
-        }
-      })
+    Binding(get: { usageDetailPinned }, set: { usageDetailPinned = $0 })
   }
 
   // MARK: Agent quota
@@ -166,10 +153,6 @@ struct TerminalStatusBar: View {
       let label = quotaAccessibilityLabel(snapshot)
       Button {
         usageDetailPinned.toggle()
-        // The mouse is still over the segment right after this click, so `.onHover` never fires an
-        // exit — without this, unpinning while hovering left `usageDetailPinned || usageDetailHovering`
-        // true and the popover never actually closed.
-        if !usageDetailPinned { usageDetailHovering = false }
       } label: {
         ViewThatFits(in: .horizontal) {
           quotaFull(snapshot)
@@ -181,16 +164,6 @@ struct TerminalStatusBar: View {
       .accessibilityElement(children: .ignore)
       .accessibilityLabel(label)
       .accessibilityIdentifier("terminal.statusBar.agentUsage")
-      .onHover { hovering in
-        usageHoverRevealWorkItem?.cancel()
-        if hovering {
-          let workItem = DispatchWorkItem { usageDetailHovering = true }
-          usageHoverRevealWorkItem = workItem
-          DispatchQueue.main.asyncAfter(deadline: .now() + usageHoverRevealDelay, execute: workItem)
-        } else {
-          usageDetailHovering = false
-        }
-      }
       .popover(isPresented: usageDetailPresented, arrowEdge: .bottom) {
         AgentUsageDetailView(snapshot: snapshot, now: Date())
           .frame(width: AgentUsageDetailView.popoverWidth)
