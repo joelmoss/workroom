@@ -119,7 +119,9 @@ final class WorkroomsViewTests: XCTestCase {
     XCTAssertFalse(
       store.orderedWorkroomTargets().contains { $0.sid == a },
       "the tab hides when the last terminal closes, even though it's still selected")
-    XCTAssertEqual(store.selectedTargetID, a)  // selection itself is unchanged
+    // It was the only workroom open, so there's no fallback tab to land on — selection clears
+    // rather than stranding the window on the now-empty workroom (`selectFallbackWorkroom`).
+    XCTAssertNil(store.selectedTargetID)
   }
 
   // MARK: focusWorkroomTab (⌥⌘1–9)
