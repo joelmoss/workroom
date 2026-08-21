@@ -4,9 +4,11 @@ import XCTest
 
 /// Issue #80: when the last panel (terminal *or* diff) closes in the workroom you're viewing, jump to
 /// the rightmost remaining workroom tab — by *displayed* (split-aware, on-screen) order, not raw
-/// persisted order. When no other tab is open, do nothing. Also covers the delete-path re-point, which
-/// reuses the same `selectFallbackWorkroom` helper. Drives a real isolated `AppStore` with the terminal
-/// factory seam overridden (no live PTY) and close-confirm **off** (synchronous close, no AppKit modal).
+/// persisted order. When no other tab is open, clear selection so the window drops to the "no
+/// workroom selected" launch state (and the inspector closes with it) instead of sitting on the
+/// emptied workroom. Also covers the delete-path re-point, which reuses the same
+/// `selectFallbackWorkroom` helper. Drives a real isolated `AppStore` with the terminal factory seam
+/// overridden (no live PTY) and close-confirm **off** (synchronous close, no AppKit modal).
 ///
 /// The delete-path tests exercise `detachTarget` + `reselectAfterWorkroomDetached` — the synchronous
 /// prefix of `deleteWorkroom` — directly, so they never touch `deleteWorkroom`'s async CLI/VCS teardown.
@@ -92,7 +94,7 @@ final class EmptiedWorkroomSelectionTests: XCTestCase {
       "rightmost = visible chip (displayedWorkroomTargets), not raw-last (review)")
   }
 
-  func testClosingLastPanelInOnlyActiveWorkroomDoesNothing() {
+  func testClosingLastPanelInOnlyOpenWorkroomClearsSelection() {
     let store = storeWithTabs(["solo"])  // the only workroom with a terminal → only tab in the bar
     let target = store.target(for: wr("solo"))!
     store.selectedTargetID = wr("solo")
@@ -100,32 +102,29 @@ final class EmptiedWorkroomSelectionTests: XCTestCase {
 
     store.terminals.closeTab(tab.id, for: target)
 
-    XCTAssertEqual(
-      store.selectedTargetID, wr("solo"),
-      "no other tab → selection unchanged; the empty 'New Terminal' state stays (do nothing)")
+    XCTAssertNil(
+      store.selectedTargetID,
+      "no other tab to land on → selection clears to the 'no workroom selected' launch state")
   }
 
-  /// Closing all tabs of the selected workroom empties the inspector (History/Changes/PR key on
-  /// `inspectorTargetID`, which drops to nil when the selection has no tabs) — even though the
-  /// selection itself deliberately stays. Re-opening a terminal re-populates it.
-  func testInspectorEmptiesWhenSelectedWorkroomLosesAllTabs() {
-    let store = storeWithTabs(["solo"])
+  /// A workroom selected before it has any open tab (e.g. a sidebar row picked ahead of spawning a
+  /// terminal) empties the inspector (History/Changes/PR key on `inspectorTargetID`, which drops to
+  /// nil when the selection has no tabs) even though the selection itself stays put — unlike the
+  /// close path above, nothing here re-points selection away. Opening a terminal re-populates it.
+  func testInspectorEmptiesForSelectedWorkroomWithNoTabs() {
+    let store = makeStore([project("/a", workrooms: ["solo"])])
     let target = store.target(for: wr("solo"))!
     store.selectedTargetID = wr("solo")
-    XCTAssertTrue(store.selectionHasTabs)
-    XCTAssertEqual(store.inspectorTargetID, wr("solo"))
-
-    let tab = store.terminals.tabs(for: target).first!
-    store.terminals.closeTab(tab.id, for: target)
-
-    XCTAssertEqual(store.selectedTargetID, wr("solo"), "the close path leaves the selection")
     XCTAssertFalse(store.selectionHasTabs)
     XCTAssertNil(
-      store.inspectorTargetID, "inspector empties when the selected workroom has no open tabs")
+      store.inspectorTargetID, "inspector empties for a selected workroom with no open tabs")
 
-    store.terminals.addTab(for: target)  // re-open a terminal
+    store.terminals.addTab(for: target)
+    store.refreshSelectionHasTabs()  // mirrors the real tab-focus hook (test drives it directly)
+
+    XCTAssertEqual(store.selectedTargetID, wr("solo"))
     XCTAssertTrue(store.selectionHasTabs)
-    XCTAssertEqual(store.inspectorTargetID, wr("solo"), "re-opening a terminal re-populates it")
+    XCTAssertEqual(store.inspectorTargetID, wr("solo"), "opening a terminal re-populates it")
   }
 
   func testClosingNonLastPanelDoesNotChangeSelection() {

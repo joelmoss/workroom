@@ -216,10 +216,13 @@ extension AppStore {
 
   /// When the *currently-viewed* workroom loses its last panel (terminal or diff), jump to the
   /// rightmost remaining workroom tab so you aren't stranded on the empty "New Terminal" state of a
-  /// workroom whose chip has already left the bar (issue #80). No-op unless the emptied target is the
-  /// selected one — a *background* workroom emptying must never steal focus, and a *delete* nils (or
-  /// re-points to a split survivor) selection before its async reap fires `onTabsRemoved`, so this is a
-  /// no-op there too. The split-member case is already handled by `autoCloseEmptiedSplitMember`, which
+  /// workroom whose chip has already left the bar (issue #80) — or, if it was the only workroom open,
+  /// clear selection so the window drops to the "no workroom selected" launch state instead of sitting
+  /// on the now-empty workroom (`selectFallbackWorkroom`'s no-fallback branch). No-op unless the emptied
+  /// target is the selected one — a *background* workroom emptying must never steal focus, and a
+  /// *delete* nils (or re-points to a split survivor) selection before its async reap fires
+  /// `onTabsRemoved`, so this is a no-op there too. The split-member case is already handled by
+  /// `autoCloseEmptiedSplitMember`, which
   /// runs first and moves selection to the survivor — so by here the emptied target is no longer
   /// selected and this no-ops (no double-jump). Called from the `onTabsRemoved` hook AFTER the split
   /// auto-close.
@@ -234,13 +237,19 @@ extension AppStore {
   /// Select the rightmost workroom tab *as the eye sees it* (issue #80). Uses `displayedWorkroomTargets`
   /// — the split-aware on-screen order that `cycleWorkroomTab` / `focusWorkroomTab` also index — so
   /// "rightmost" is the rightmost *chip*, not the last id in raw persisted order (which a split regroups
-  /// away from). No-op when no other workroom tab is open (`last == nil`): the caller's emptied workroom
-  /// stays selected on its empty state, or the delete caller's selection stays nil — "do nothing else".
-  /// Records nav history via `focusWorkroomMember`, matching how the neighbour auto-focused after a close
+  /// away from). Clears selection when no other workroom tab is open (`last == nil`): the emptied
+  /// workroom was the only one open, so there's nothing to land on — this drops to the "no workroom
+  /// selected" launch state (and the inspector closes with it, `RootView.inspectorVisible`) instead of
+  /// leaving the caller stranded on the emptied workroom's empty state. A no-op for the delete caller,
+  /// whose selection is already nil by the time it calls this. Records nav history via
+  /// `focusWorkroomMember` on the non-empty path, matching how the neighbour auto-focused after a close
   /// is a real back/forward step (`NavigationHistory`). Shared by the close-path hook above and
   /// `deleteWorkroom`'s last-workroom re-point.
   func selectFallbackWorkroom() {
-    guard let last = displayedWorkroomTargets().last else { return }
+    guard let last = displayedWorkroomTargets().last else {
+      selectedTargetID = nil
+      return
+    }
     focusWorkroomMember(last.sid)
   }
 
