@@ -24,6 +24,9 @@ struct TerminalStatusBar: View {
   @EnvironmentObject var agentManager: TerminalAgentManager
   @EnvironmentObject var agentUsage: AgentUsageMonitor
   @EnvironmentObject var claudeUsageBridge: ClaudeUsageBridge
+  /// Observed here too (`DetachedSessionsButton` already observes it) so a divider next to that
+  /// button can know whether it's actually showing anything.
+  @ObservedObject private var sessionsStore = TerminalSessionsStore.shared
   @State private var showingDiagnosis = false
   /// Set by a click, and survives the mouse leaving the segment — the detail view stays open until
   /// dismissed (another click, or clicking elsewhere) rather than closing the instant hover ends.
@@ -53,17 +56,30 @@ struct TerminalStatusBar: View {
   }
 
   var body: some View {
+    // Computed once per render so a divider between two segments only appears when BOTH sides are
+    // actually showing something — each segment is independently optional.
+    let hasLeading = filePath != nil || cwd != nil
+    let hasBranch = store.branchLabel(for: target) != nil
+    let hasDiagnosis = diagnosis != nil
+    let hasDetached = !sessionsStore.detached(for: target.id).isEmpty
+    let hasRun = isRunTab && runStatePresentation != nil
+    let hasAgentUsage = activeAgent != nil
+
     HStack(spacing: 12) {
       // Path and cwd are mutually exclusive in practice — a content pane has no cwd, a terminal has
       // no file — so they share the leading slot, ahead of the branch.
       pathSegment
       cwdSegment
+      if hasLeading, hasBranch { statusBarDivider }
       branchSegment
       // Diagnosis sits left-aligned right after the branch, not pushed to the far edge.
+      if hasLeading || hasBranch, hasDiagnosis { statusBarDivider }
       if let diagnosis { diagnosisSegment(diagnosis) }
       Spacer(minLength: 8)
       DetachedSessionsButton(target: target)
+      if hasDetached, hasRun { statusBarDivider }
       if isRunTab, let run = runStatePresentation { runSegment(run) }
+      if hasDetached || hasRun, hasAgentUsage { statusBarDivider }
       if let activeAgent { agentUsageSegment(activeAgent) }
     }
     // `.subheadline` (11pt) — the middle of the two sizes this bar has worn. `.caption` (10pt) was
@@ -110,6 +126,12 @@ struct TerminalStatusBar: View {
     } message: {
       Text(claudeBridgeError ?? "The Claude status-line bridge could not be installed.")
     }
+  }
+
+  /// A thin vertical rule between two segments, shorter than the 28pt bar so it reads as a
+  /// separator rather than a full-height rail.
+  private var statusBarDivider: some View {
+    theme.tokens.border.frame(width: 1, height: 14)
   }
 
   private var bridgeErrorPresented: Binding<Bool> {
