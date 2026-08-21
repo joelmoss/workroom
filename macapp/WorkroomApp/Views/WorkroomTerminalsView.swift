@@ -60,12 +60,12 @@ struct WorkroomTerminalsView: View {
         }
       }
     }
-    // A thin 2pt frame inside the workroom's card, so the card's lighter fill reads as a border rather
+    // A thin 1pt frame inside the workroom's card, so the card's lighter fill reads as a border rather
     // than a margin. Top is 0 so the tab strip sits flush on the content (the active tab bridges the
     // panel→bg colour step) — the Chrome-style merge with the strip above. Applied to the whole Group,
     // not just the pane tree, so the "No terminal" empty state is inset by the same gutter.
-    .padding(.horizontal, 2)
-    .padding(.bottom, 2)
+    .padding(.horizontal, 1)
+    .padding(.bottom, 1)
     .padding(.top, 0)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .onPreferenceChange(ContentFrameKey.self) { contentFrame = $0 }

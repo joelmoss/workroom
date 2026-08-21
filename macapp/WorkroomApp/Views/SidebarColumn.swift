@@ -43,7 +43,8 @@ struct SidebarColumn: View {
       // which reads as a misalignment with the two cards side by side. `vibrant` matches the right
       // inspector's frosted `.sidebar` material so both sidebars read as the same surface.
       .sidebarCard(
-        topMargin: WorkroomPaneMetrics.gutter, bottomMargin: WorkroomPaneMetrics.gutter,
+        topMargin: WorkroomPaneMetrics.gutter,
+        bottomMargin: WorkroomPaneMetrics.gutter + WorkroomPaneMetrics.windowBottomMargin,
         trailingMargin: 2, vibrant: true
       )
       // AppKit drag handle over the trailing edge (a SwiftUI gesture doesn't get events over the

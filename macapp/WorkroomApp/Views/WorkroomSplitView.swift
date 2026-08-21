@@ -8,7 +8,13 @@ enum WorkroomPaneMetrics {
   /// (`SidebarColumn`/`InspectorColumn`), so the three columns' cards start and end on the same lines
   /// rather than each choosing its own inset; they're side by side, so any difference reads as a
   /// misalignment.
-  static let gutter: CGFloat = 4
+  static let gutter: CGFloat = 2
+  /// Extra bottom-only margin, ADDED ON TOP of `gutter`, so the window's bottom edge keeps its
+  /// original 8pt clearance even though `gutter` itself was tightened. Bottom-only because only the
+  /// bottom margin was asked to stay put — the top, inter-pane, and sidebar/inspector side gutters
+  /// are meant to shrink. Mirrored into `SidebarColumn`/`InspectorColumn`'s `bottomMargin` (added to
+  /// their own `gutter`) so all three columns still end on the same line.
+  static let windowBottomMargin: CGFloat = 4
 }
 
 /// A drag from the workroom tab bar into the split content (content-local point + the dragged tab's id).
@@ -56,9 +62,9 @@ struct WorkroomSplitView: View {
   private static let space = "workroomSplitContent"
   /// The gutter holding the pane cards off the left/right sidebars (issue #110). Unconditional since
   /// issue #139 — a solo workroom is a card too. **Shared** because `RootView`'s chip-drop hit-testing
-  /// plans against the *unpadded* detail rect and must subtract this, or every drop lands 6pt off the
+  /// plans against the *unpadded* detail rect and must subtract this, or every drop lands 3pt off the
   /// pane the renderer actually drew (a drop inside the gutter would split with no preview shown).
-  static let outerGutter: CGFloat = 6
+  static let outerGutter: CGFloat = 3
   private let theme = ThemeService.shared
 
   /// The divider ratio being dragged right now — held here rather than written to the store on every
@@ -108,6 +114,7 @@ struct WorkroomSplitView: View {
     }
     // Applied outside the GeometryReader so the panes reflow within the inset.
     .padding(.horizontal, Self.outerGutter)
+    .padding(.bottom, WorkroomPaneMetrics.windowBottomMargin)
   }
 
   /// The layout to draw: the stored one, with the in-flight divider ratio overlaid while a drag is

@@ -183,12 +183,12 @@ enum PaneTreeLayout {
     orientation == .horizontal ? minPaneWidth : minPaneHeight
   }
   /// Draggable hit-zone thickness for the resize divider (issue #83). The visible gutter stays
-  /// `dividerThickness` (4pt); the hit zone is widened to this so the divider is easier to grab. It is
-  /// capped at `dividerThickness + 2pt pane padding on each side` (= 8pt) — the widest band that stays
-  /// over only the transparent gutter + the panes' 2pt padding (see `PaneLeafView`'s `.padding(2)`), so
+  /// `dividerThickness` (2pt); the hit zone is widened to this so the divider is easier to grab. It is
+  /// capped at `dividerThickness + 1pt pane padding on each side` (= 4pt) — the widest band that stays
+  /// over only the transparent gutter + the panes' 1pt padding (see `PaneLeafView`'s `.padding(1)`), so
   /// it never overhangs a live terminal surface and can't intercept the terminal's own mouse input
   /// (text selection, OSC8 link clicks, right-click menu, TUI mouse reporting).
-  static var dividerHitThickness: CGFloat { dividerThickness + 4 }
+  static var dividerHitThickness: CGFloat { dividerThickness + 2 }
 
   /// Lengths of the first/second child along the split axis for a container of `total` points. Rounds
   /// the first child to whole points (avoids sub-pixel seams) and clamps so neither child falls below
@@ -429,12 +429,12 @@ private struct PaneLeafView: View {
       } message: {
         Text("Workroom can diagnose failed commands automatically, instead of waiting for a click.")
       }
-      // A uniform 2pt pad on EVERY pane (solo or split) — split panes need it as the inter-pane gutter
+      // A uniform 1pt pad on EVERY pane (solo or split) — split panes need it as the inter-pane gutter
       // (plus the surrounding panel gutter from WorkroomTerminalsView) so the rounded panes read as
       // separate cards, and a solo pane keeps the same pad so the panel doesn't shift when you switch
       // between a solo tab and a grouped/split one. Surface identity is held by `.id(tabID)` on the
       // host (not this padding), so no surface is re-parented across the change (issue #3).
-      .padding(2)
+      .padding(1)
       // Non-terminal panes (a diff) have no first responder to claim focus on click, so a click
       // anywhere in the body focuses the pane. Gated on `!isTerminal` ONLY — the content type is
       // stable for a pane's lifetime, so the gesture is never attached/detached mid-interaction

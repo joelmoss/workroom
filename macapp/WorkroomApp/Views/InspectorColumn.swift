@@ -36,7 +36,8 @@ struct InspectorColumn: View {
       // Top and bottom take the workroom pane card's gutter, so this card's edges land on the same
       // lines as the detail pane's and the left sidebar's — see `SidebarColumn`.
       .sidebarCard(
-        topMargin: WorkroomPaneMetrics.gutter, bottomMargin: WorkroomPaneMetrics.gutter,
+        topMargin: WorkroomPaneMetrics.gutter,
+        bottomMargin: WorkroomPaneMetrics.gutter + WorkroomPaneMetrics.windowBottomMargin,
         leadingMargin: 2, vibrant: true
       )
       // AppKit drag handle over the leading edge (a SwiftUI gesture doesn't get events over the

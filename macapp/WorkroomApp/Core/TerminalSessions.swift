@@ -452,7 +452,7 @@ final class TerminalSessions: ObservableObject {
   /// Inter-pane gutter thickness (points), shared by the fit guard and the renderer. No separator
   /// rule is drawn anymore, so this is just the gap between panes and the width of the (invisible)
   /// resize hit-zone — kept tight, since the panes' own rounded borders mark the boundary.
-  static let dividerThickness: CGFloat = 4
+  static let dividerThickness: CGFloat = 2
 
   private var appearanceObserver: NSObjectProtocol?
 

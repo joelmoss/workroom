@@ -571,14 +571,17 @@ struct RootView: View {
   }
 
   /// The rect the split renderer actually lays its panes out in: the detail content inset by
-  /// `WorkroomSplitView.outerGutter` left and right, because that padding is applied OUTSIDE the
-  /// renderer's `GeometryReader`, so its pane coordinates start at the inset edge. Hit-testing against
-  /// the unpadded frame puts every drop 6pt off the pane that was drawn — worst in the gutter itself,
-  /// where the drop would land (RootView's rect contains it) with no edge preview ever shown (the
+  /// `WorkroomSplitView.outerGutter` left and right, and by `windowBottomMargin` on the bottom only
+  /// (top gets no outer inset), because that padding is applied OUTSIDE the renderer's
+  /// `GeometryReader`, so its pane coordinates start at the inset edge. Hit-testing against the
+  /// unpadded frame puts every drop off the pane that was drawn — worst in the gutter itself, where
+  /// the drop would land (RootView's rect contains it) with no edge preview ever shown (the
   /// renderer's rect does not). Solo used to be exempt because it had no gutter; since issue #139 it
   /// has one too.
   private var workroomPaneSpace: CGRect {
-    detailContentFrame.insetBy(dx: WorkroomSplitView.outerGutter, dy: 0)
+    var space = detailContentFrame.insetBy(dx: WorkroomSplitView.outerGutter, dy: 0)
+    space.size.height -= WorkroomPaneMetrics.windowBottomMargin
+    return space
   }
 
   /// The layout a chip drop targets — the same one the detail is rendering, so the drop edges match
