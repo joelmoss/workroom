@@ -98,6 +98,18 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     return (project, root, wrPath)
   }
 
+  /// Poll a condition on the main actor instead of a fixed sleep, so a slow/contended machine still
+  /// passes once the awaited effect lands (bounded so a genuinely broken condition still fails).
+  private func waitUntil(
+    _ condition: () -> Bool, _ message: String, file: StaticString = #filePath, line: UInt = #line
+  ) async {
+    for _ in 0..<250 {
+      if condition() { return }
+      try? await Task.sleep(nanoseconds: 2_000_000)  // 2ms; up to ~500ms total
+    }
+    XCTFail(message, file: file, line: line)
+  }
+
   // MARK: - Async create flow
 
   /// With NO setup script there's no dialog — just the loader — and the create clears itself when it
@@ -290,11 +302,10 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     store.selectedTargetID = sid
     store.creatingWorkrooms.remove(wrID)  // setup finished
     store.handleWorkroomFileChange(["\(wrPath)/src/main.swift"])
-    try? await Task.sleep(nanoseconds: 500_000_000)
 
     // A probe ran and resolved a status: wrPath isn't a real repo, so it's `.notRepository`.
-    XCTAssertEqual(
-      store.workroomStatuses[sid]?.failure, .notRepository,
+    await waitUntil(
+      { store.workroomStatuses[sid]?.failure == .notRepository },
       "once setup completes the worktree must be probed again")
   }
 
