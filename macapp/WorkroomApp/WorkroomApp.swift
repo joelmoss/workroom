@@ -112,19 +112,13 @@ struct WorkroomApp: App {
     // happens if this guess turns out wrong, and its close-notification handler for bringing the main
     // window up once the wizard is dismissed or finished, by any path.
     //
-    // The auto Window-menu entry ("Welcome to Workroom") is left in place permanently, not suppressed
-    // once onboarding completes. `SceneBuilder` does NOT support an `if/else` between two `Scene`
-    // values the way `ViewBuilder` supports `if/else` between two `View`s ("closure containing
-    // control flow statement cannot be used with result builder `SceneBuilder`" — confirmed by
-    // trying it), so conditionally applying `.commandsRemoved()` only post-completion isn't
-    // straightforward. Reopening it after completion just replays the tour (harmless — Add Project
-    // still works correctly if used) rather than being suppressed; a real fix would need a manual
-    // `CommandGroup` item wired through `openWindow`, disabled post-completion, in place of the
-    // scene's automatic one — left as a follow-up rather than built speculatively here.
+    // `.commandsRemoved()` drops this scene's auto Window-menu entry ("Welcome to Workroom") —
+    // reopening it is still possible via the explicit `openWindow(value:)` calls above, unaffected.
     Window("Welcome to Workroom", id: OnboardingWindow.sceneID) { OnboardingWindow() }
       .windowResizability(.contentSize)
       .windowStyle(.hiddenTitleBar)
       .defaultLaunchBehavior(onboardingMightShow ? .presented : .suppressed)
+      .commandsRemoved()
 
     // The system menu-bar item (issue #33) is hand-managed by `AppDelegate`'s `MenuBarController`
     // (an `NSStatusItem`), not a SwiftUI `MenuBarExtra`, so a click with no pending notifications can
