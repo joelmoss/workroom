@@ -1,6 +1,6 @@
 import XCTest
 
-/// Multi-window UI tests (issue #70): File ▸ New Window opens a second, independent window that
+/// Multi-window UI tests (issue #70): Window ▸ New Window opens a second, independent window that
 /// starts blank (no open workroom/terminal), and closing it leaves the app — and the first window —
 /// alive. Driven through the accessibility tree in UI-test fixture mode (`-WorkroomUITestFixture 1`),
 /// where the launch window auto-selects the fixture workroom (so it has one terminal) and a ⌘N window
@@ -32,7 +32,7 @@ final class NewWindowUITests: XCTestCase {
   }
 
   private func newWindowMenuItem(_ app: XCUIApplication) -> XCUIElement {
-    app.menuBars.menuBarItems["File"].menuItems["New Window"]
+    app.menuBars.menuBarItems["Window"].menuItems["New Window"]
   }
 
   /// Wait for the fixture launch window to be fully up — its one terminal pane is in the a11y tree.

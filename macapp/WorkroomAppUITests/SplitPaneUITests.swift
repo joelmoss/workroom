@@ -106,8 +106,6 @@ final class SplitPaneUITests: XCTestCase {
     assertCount(panes(app), reaches: 2)
 
     panes(app).firstMatch.rightClick()
-    // "Close Terminal" titles two items — the right-click menu's AND the File-menu ⌘W command (which
-    // lives in the collapsed menu bar with a zero frame). Click the on-screen, hittable one.
     let closeItems = app.menuItems.matching(NSPredicate(format: "title == %@", "Close Terminal"))
     XCTAssertTrue(
       closeItems.firstMatch.waitForExistence(timeout: 3),

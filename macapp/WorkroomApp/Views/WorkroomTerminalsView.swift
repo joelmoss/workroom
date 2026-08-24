@@ -120,7 +120,7 @@ struct WorkroomTerminalsView: View {
     // menu key equivalent still fires while a dialog or sheet is up, so ⌘W / ⌘F / ⌘↑ / ⌘↓ / ⌘D would
     // otherwise act on the terminal behind it. Disabling the item drops the key equivalent.
     //
-    // Drive the "Close Terminal" menu command's enabled state.
+    // Drive the "Close Tab" menu command's enabled state.
     .focusedSceneValue(\.hasTerminal, !tabs.isEmpty && !store.hasModalPresentation)
     // Drive the Go-menu Previous/Next Terminal Tab items (issue #29) — only meaningful with ≥2 tabs.
     .focusedSceneValue(\.multipleTerminalTabs, tabs.count > 1 && !store.hasModalPresentation)

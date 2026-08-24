@@ -1,7 +1,7 @@
 import AppKit
 
 /// Marker type for the quick-terminal window so the `AppDelegate` key monitor can recognise it and
-/// route ⌘W to close it. (The app rebinds ⌘W to a "Close Terminal" menu command that targets the
+/// route ⌘W to close it. (The app rebinds ⌘W to a "Close Tab" menu command that targets the
 /// main window's tabs and wins over a window's own `performKeyEquivalent`, so ⌘W is caught in the
 /// monitor — the same mechanism the app already uses for ⌘R / ⌘1–9.)
 final class QuickTerminalWindow: NSWindow {}

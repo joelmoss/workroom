@@ -1236,7 +1236,7 @@ final class GhosttySurfaceView: NSView {
     if flags == [.command, .control] { return key == "s" }
     guard flags == .command else { return false }
     if ("1"..."9").contains(ch) { return true }  // focus tab N
-    // ⌘N is New Window (issue #70); ⌘T/⌘W/⌘O/⌘D are real menu commands; ⌘Q/⌘H/⌘M/⌘, are system
+    // ⌘N is New Workroom (issue #81); ⌘T/⌘W/⌘O/⌘D are real menu commands; ⌘Q/⌘H/⌘M/⌘, are system
     // standards; ⌘[ / ⌘] are Back/Forward navigation (issue #26); ⌘R is Run (issue #7); ⌘F opens the
     // scrollback find bar and ⌘G / ⇧⌘G step through matches; ⌘B toggles the Inspector panel — all
     // reserved so the menu key-equivalent fires instead of being swallowed by the terminal (a no-op

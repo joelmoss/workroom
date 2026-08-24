@@ -335,7 +335,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
       let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
-      // ⌘W closes the quick terminal (issue #39) when its window is key. The menu's "Close Terminal"
+      // ⌘W closes the quick terminal (issue #39) when its window is key. The menu's "Close Tab"
       // ⌘W targets the main window's tabs and would otherwise win, so catch it here (like ⌘R / ⌘1–9
       // above) and route to the quick-terminal window — its delegate (QuickTerminalController) tears
       // the surface down. Gated on the key window being a QuickTerminalWindow, so ⌘W still closes a
@@ -347,9 +347,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         return nil
       }
       // ⌘W on an auxiliary window (Settings, About) — a window with no AppStore (not a workroom
-      // window). The menu's "Close Terminal" owns ⌘W app-wide but is disabled there (no focused
+      // window). The menu's "Close Tab" owns ⌘W app-wide but is disabled there (no focused
       // terminal), so ⌘W would otherwise just beep. Close the window, as the standard File ▸ Close
-      // would. Workroom windows (store != nil) fall through so their "Close Terminal" still fires.
+      // would. Workroom windows (store != nil) fall through so their "Close Tab" still fires.
       if flags == .command, event.charactersIgnoringModifiers == "w",
         let keyWindow = event.window ?? NSApp.keyWindow,
         MainActor.assumeIsolated({ WindowRegistry.shared.store(for: keyWindow) }) == nil
@@ -791,7 +791,7 @@ struct WorkroomSelectedKey: FocusedValueKey {
 }
 
 /// Whether the selected workroom has at least one open terminal — published by
-/// WorkroomTerminalsView (which observes the sessions), so "Close Terminal" can disable
+/// WorkroomTerminalsView (which observes the sessions), so "Close Tab" can disable
 /// when there's nothing to close.
 struct HasTerminalKey: FocusedValueKey {
   typealias Value = Bool
@@ -1051,6 +1051,98 @@ struct WorkroomCommands: Commands {
       set: { store?[keyPath: keyPath] = $0 })
   }
 
+  // File ▸ New Project sits at the very top (before New Workroom/Open Workroom), with a divider
+  // beneath it. New Workroom (⌘N, issue #81) raises the project-picker dialog (RootView observes
+  // `requestNewWorkroomPicker`); picking a project creates + opens a workroom in it. Disabled with
+  // no projects, so ⌘N is a silent no-op rather than an empty dialog (issue #81 D3). Replaces the
+  // standard WindowGroup item so the labels are explicit. Bundled into one computed property (the
+  // Commands builder caps its child count) rather than three separate top-level groups.
+  @CommandsBuilder
+  private var newItemFileMenuCommands: some Commands {
+    CommandGroup(replacing: .newItem) {
+      Button("New Project…") {
+        store?.requestAddProject = true
+      }
+
+      Divider()
+
+      Button("New Workroom…") { store?.requestNewWorkroomPicker = true }
+        .keyboardShortcut("n", modifiers: .command)
+        .disabled(hasProjects != true)
+      // Open workroom… (⌘O, issue #94): raises the open-existing picker (RootView observes
+      // `requestOpenWorkroomPicker`); picking a root/workroom switches + focuses it. ⌘O moved here
+      // from the Go-menu "Open in Editor" (which keeps its menu item, no shortcut). Disabled with no
+      // projects, so ⌘O is a silent no-op rather than an empty picker.
+      Button("Open Workroom…") { store?.requestOpenWorkroomPicker = true }
+        .keyboardShortcut("o", modifiers: .command)
+        .disabled(hasProjects != true)
+
+      Divider()
+    }
+
+    CommandGroup(after: .newItem) {
+      Button("New Terminal") {
+        store?.newTerminalInSelectedTarget()
+      }
+      .keyboardShortcut("t", modifiers: .command)
+      .disabled(workroomSelected != true)
+
+      // Quick terminal at ~/ in its own chrome-less window (issue #39) — same open/focus action as
+      // the toolbar button. Always enabled (needs no workroom). Shows ⌥§ as its equivalent: no
+      // double-fire, because the registered Carbon hotkey consumes ⌥§ system-wide before it reaches
+      // the menu (Release). In a Debug-only dev run (no Release build owning the global ⌥§), the
+      // menu equivalent is what makes the shortcut work — handy for QA.
+      Button("Quick Terminal") {
+        NotificationCenter.default.post(name: .showQuickTerminal, object: nil)
+      }
+      .keyboardShortcut("§", modifiers: .option)
+      // ⌥§ carries no ⌘, so the key monitor's `flags.contains(.command)` path never sees it and
+      // nothing else would stop it opening a whole new window from behind a dialog.
+      .disabled(modalBlocked)
+
+      Divider()
+
+      // ⌘W: "Close Tab" sits above the standard File ▸ Close, so it wins the ⌘W
+      // equivalent while enabled (Close keeps no shortcut).
+      Button("Close Tab") {
+        store?.closeCurrentTerminalTab()
+      }
+      .keyboardShortcut("w", modifiers: .command)
+      .disabled(hasTerminal != true)
+
+      // Bulk close (issue #72), no shortcuts. Labelled "Tabs" (not "Terminals") since they act on
+      // diff/content tabs too. "Close Other Tabs" needs ≥2 tabs; "Close All Tabs" needs ≥1.
+      Button("Close Other Tabs") {
+        store?.closeOtherTerminalTabsInSelectedTarget()
+      }
+      .disabled(multipleTerminalTabs != true)
+      Button("Close All Tabs") {
+        store?.closeAllTerminalTabsInSelectedTarget()
+      }
+      .disabled(hasTerminal != true)
+
+      Divider()
+
+      // Reveal the selected target's directory in Finder (moved off the detail toolbar). Acts on the
+      // current selection like the terminal items above; reads `store.selectedTarget` directly so the
+      // enabled state tracks selection live (the `@ObservedObject store` re-evaluates this body).
+      // Disabled with no selection or a missing directory.
+      Button("Reveal in Finder") {
+        if let path = store?.selectedTarget?.path {
+          NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+        }
+      }
+      .disabled(store?.selectedTarget == nil || store?.selectedTarget?.isMissing == true)
+
+      // Gate the close-terminal confirmation (default on). A set-and-forget preference, so a divider
+      // sets it apart from the File actions above (like the Quit toggle); no shortcut. Binds the same
+      // key as the Settings checkbox and the dialog's "Don't ask me again", so ticking that box in the
+      // confirm alert unchecks this item, and vice versa.
+      Divider()
+      Toggle("Confirm Before Closing a Terminal", isOn: $confirmOnCloseTerminal)
+    }
+  }
+
   var body: some Commands {
     CommandGroup(after: .appInfo) {
       // Sparkle update check, sitting directly beneath "About Workroom". Disabled while a check is
@@ -1295,94 +1387,14 @@ struct WorkroomCommands: Commands {
       Toggle("Copy on Select", isOn: $copyOnSelect)
     }
 
-    // File ▸ New Workroom (⌘N, issue #81) + New Window. New Workroom raises the project-picker
-    // dialog (RootView observes `requestNewWorkroomPicker`); picking a project creates + opens a
-    // workroom in it. It takes ⌘N — the more frequent action — so New Window keeps its menu item but
-    // loses the accelerator rather than taking a second-choice "N" combo (⇧⌘N is Next Notification;
-    // ⌥⌘N went unbound when issue #118 removed the Notifications inspector). New Workroom is
-    // disabled with no projects, so ⌘N is a silent no-op rather than an empty dialog (issue #81 D3).
-    // Replaces the standard WindowGroup item so the labels are explicit.
-    CommandGroup(replacing: .newItem) {
+    // New Window lives at the top of the Window menu (not File) so it sits beside the other
+    // window-management commands (Minimize, Zoom, …).
+    CommandGroup(before: .windowSize) {
       Button("New Window") { openWindow(value: WindowSeed(id: UUID(), restore: false)) }
-      Button("New Workroom…") { store?.requestNewWorkroomPicker = true }
-        .keyboardShortcut("n", modifiers: .command)
-        .disabled(hasProjects != true)
-      // Open workroom… (⌘O, issue #94): raises the open-existing picker (RootView observes
-      // `requestOpenWorkroomPicker`); picking a root/workroom switches + focuses it. ⌘O moved here
-      // from the Go-menu "Open in Editor" (which keeps its menu item, no shortcut). Disabled with no
-      // projects, so ⌘O is a silent no-op rather than an empty picker.
-      Button("Open Workroom…") { store?.requestOpenWorkroomPicker = true }
-        .keyboardShortcut("o", modifiers: .command)
-        .disabled(hasProjects != true)
+      Divider()
     }
 
-    CommandGroup(after: .newItem) {
-      // No key equivalent: ⌘O is File ▸ Open workroom…, ⇧⌘O is Go ▸ Open in Editor (issue #94).
-      // New Project keeps its menu item without an accelerator.
-      Button("New Project…") {
-        store?.requestAddProject = true
-      }
-
-      Divider()
-
-      Button("New Terminal") {
-        store?.newTerminalInSelectedTarget()
-      }
-      .keyboardShortcut("t", modifiers: .command)
-      .disabled(workroomSelected != true)
-
-      // Quick terminal at ~/ in its own chrome-less window (issue #39) — same open/focus action as
-      // the toolbar button. Always enabled (needs no workroom). Shows ⌥§ as its equivalent: no
-      // double-fire, because the registered Carbon hotkey consumes ⌥§ system-wide before it reaches
-      // the menu (Release). In a Debug-only dev run (no Release build owning the global ⌥§), the
-      // menu equivalent is what makes the shortcut work — handy for QA.
-      Button("Quick Terminal") {
-        NotificationCenter.default.post(name: .showQuickTerminal, object: nil)
-      }
-      .keyboardShortcut("§", modifiers: .option)
-      // ⌥§ carries no ⌘, so the key monitor's `flags.contains(.command)` path never sees it and
-      // nothing else would stop it opening a whole new window from behind a dialog.
-      .disabled(modalBlocked)
-
-      // ⌘W: "Close Terminal" sits above the standard File ▸ Close, so it wins the ⌘W
-      // equivalent while enabled (Close keeps no shortcut).
-      Button("Close Terminal") {
-        store?.closeCurrentTerminalTab()
-      }
-      .keyboardShortcut("w", modifiers: .command)
-      .disabled(hasTerminal != true)
-
-      // Bulk close (issue #72), no shortcuts. Labelled "Tabs" (not "Terminals") since they act on
-      // diff/content tabs too. "Close Other Tabs" needs ≥2 tabs; "Close All Tabs" needs ≥1.
-      Button("Close Other Tabs") {
-        store?.closeOtherTerminalTabsInSelectedTarget()
-      }
-      .disabled(multipleTerminalTabs != true)
-      Button("Close All Tabs") {
-        store?.closeAllTerminalTabsInSelectedTarget()
-      }
-      .disabled(hasTerminal != true)
-
-      Divider()
-
-      // Reveal the selected target's directory in Finder (moved off the detail toolbar). Acts on the
-      // current selection like the terminal items above; reads `store.selectedTarget` directly so the
-      // enabled state tracks selection live (the `@ObservedObject store` re-evaluates this body).
-      // Disabled with no selection or a missing directory.
-      Button("Reveal in Finder") {
-        if let path = store?.selectedTarget?.path {
-          NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
-        }
-      }
-      .disabled(store?.selectedTarget == nil || store?.selectedTarget?.isMissing == true)
-
-      // Gate the close-terminal confirmation (default on). A set-and-forget preference, so a divider
-      // sets it apart from the File actions above (like the Quit toggle); no shortcut. Binds the same
-      // key as the Settings checkbox and the dialog's "Don't ask me again", so ticking that box in the
-      // confirm alert unchecks this item, and vice versa.
-      Divider()
-      Toggle("Confirm Before Closing a Terminal", isOn: $confirmOnCloseTerminal)
-    }
+    newItemFileMenuCommands
 
     // Browser/Finder-style back/forward over the workroom + terminal history (issue #26), plus
     // the ⇧⌘N jump to the oldest pending notification. ⌘[ / ⌘] are reserved from the terminal in

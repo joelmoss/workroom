@@ -128,7 +128,7 @@ final class SessionRestoreUITests: XCTestCase {
   /// New Window is **menu-only** — ⌘N belongs to New Workroom (issue #81), so typing it here would
   /// open a dialog instead of a window.
   private func openSecondWindow(_ app: XCUIApplication) {
-    app.menuBars.menuBarItems["File"].menuItems["New Window"].click()
+    app.menuBars.menuBarItems["Window"].menuItems["New Window"].click()
   }
 
   /// Every window that was open at quit comes back. The one assertion covering the whole multi-window
@@ -141,7 +141,7 @@ final class SessionRestoreUITests: XCTestCase {
 
     openSecondWindow(app)
     XCTAssertTrue(
-      waitForWindowCount(app, before + 1), "File ▸ New Window should add exactly one window")
+      waitForWindowCount(app, before + 1), "Window ▸ New Window should add exactly one window")
     quitAndWaitForSave(app)
 
     let relaunched = launchedApp()

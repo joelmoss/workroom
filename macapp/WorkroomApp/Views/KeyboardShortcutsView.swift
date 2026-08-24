@@ -125,7 +125,7 @@ extension KeyboardShortcutsView {
       title: "Terminals",
       items: [
         ShortcutItem(label: "New Terminal", keys: "⌘T"),
-        ShortcutItem(label: "Close Terminal", keys: "⌘W"),
+        ShortcutItem(label: "Close Tab", keys: "⌘W"),
         ShortcutItem(label: "Scroll to Top", keys: "⌘↑"),
         ShortcutItem(label: "Scroll to Bottom", keys: "⌘↓"),
       ]),
