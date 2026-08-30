@@ -1,0 +1,1 @@
+the codex outside voice keeps failing: first the sandbox is blocking it, and then when run outside the sandbox, codex always times out. fix that before continuing
