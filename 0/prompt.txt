@@ -1,0 +1,28 @@
+<task-notification>
+<task-id>a2119502b6632ab38</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/9fbed976-fffa-441d-b5b7-af5788f240e9/tasks/a2119502b6632ab38.output</output-file>
+<status>completed</status>
+<summary>Agent "Summarize libghostty-spm wrapper changes" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## libghostty-spm wrapper diff: `1.2.3` (df168f41) → `1.3.2` (b146b73a)
+
+**Important correction to the "known items already spotted":** PR #45 (command/wait_after_command), PR #44 (resize coalescing), and PR #43 (paste confirmation) are **not** part of 1.3.2. All three merged to `main` between 2026-07-28 and 2026-08-06 — after `b146b73a`'s autopublish timestamp (2026-07-27) and after the `1.3.2`/`storage.1.3.2` tags (confirmed via `list_tags`, both tags point at `b146b73a`). They sit on top of 1.3.2, unreleased, for a future tag. They are out of scope for this upgrade and should not be attributed to it.
+
+**Package.swift / Package.swift.template:** byte-identical between the two refs except the binary-target URL/checksum. No new targets, dependencies, or platform-version bumps.
+
+**Chronological functional changes (Sources/ Swift layer):**
+
+- **PR #23** (Wonkyoo Nam, ~1.2.6): *Fix AppKit selection copy leak.* `AppTerminalView.copySelectedTextToPasteboard()` no longer builds an `NSString` and writes `NSPasteboard` itself — it now checks `surface.hasSelection()` and delegates fully to `performBindingAction("copy_to_clipboard")`; `copy(_:)` dropped its old two-step fallback. Also flips `ghostty_runtime_config_s.supports_selection_clipboard` false→true. **Behavior change** for anything overriding the copy path or expecting a raw `.string` pasteboard write.
+- **PR #27** (Chris Zhu): Adds `TerminalSurface.foregroundPid: pid_t?` / `.ttyName: String?` plus `TerminalView` accessors — lets hosts correlate a surface with an external process (cwd alone can't disambiguate two shells).
+- **PR #29** *Queue host-managed terminal output*: `InMemoryTerminalSession.receive`/`finish` are no longer synchronous — writes now enqueue on an internal serial queue (`InMemoryTerminalSurfaceAccess`) instead of writing under a lock inline; adds `waitForPendingOutput()`. **Timing-behavior change**: a write followed immediately by `readViewportText()` can now race.
+- **PR #30** *Expose terminal prompt navigation*: adds public `jumpToPrompt(by:) -&gt; Bool` and `scrollToRow(_:) -&gt; Bool` on `TerminalSurface`/`TerminalViewState`/both platform views; also widens `TerminalSurface.performBindingAction(_:)` from internal to `public` (additive).
+- **PR #32** (sasagar): `TerminalSurfaceOptions.envVars: [String:String]`, marshalled in `TerminalController.createSurface` — per-surface env vars.
+- **PR #37** (Marcus Breese): Surfaces `GHOSTTY_ACTION_SCROLLBAR` via new `TerminalScrollbar`, `TerminalSurfaceScrollbarDelegate`, and published `TerminalViewState.scrollbar` — additive/inert unless observed.
+- **PR #38** (predict-woo/andyye): Namespaces the XCFramework's headers under `Headers/libghostty/` to avoid `module.modulemap` collisions when two static XCFrameworks are linked into one Xcode target — build-only, but **directly relevant**: Workroom's own VCS toolchain already carries a workaround for this exact GhosttyKit modulemap collision (per project memory `vcs-foundation-toolchain.md`); worth re-testing whether that workaround is still needed post-upgrade.
+- `arm64e` slices were added (07-21) then fully reverted, along with a Sentry TLS patch, by PR #39 (07-24) — net no-op packaging churn by 1.3.2.
+- Version markers: 1.2.4→1.2.11, 1.3.0, 1.3.1, 1.3.2 (PR #36 just splits package-vs-upstream version numbering in CI, no API effect). PR #25 (iOS15/macOS13.0-13.2 launch-crash fix) and the Zig patch in PR #34 (scroll-remainder zeroing) are vendored-core/build-patch layer, not wrapper API — out of this thread's scope but functionally significant fixes.
+
+**Breaking changes:** none (no removed/renamed public API). The two behavior-changing items are PR #23 (AppKit copy now always routes through the binding action, dropping the previous pasteboard fallback) and PR #29 (host-managed output writes became asynchronous).</result>
+<usage><subagent_tokens>105967</subagent_tokens><tool_uses>25</tool_uses><duration_ms>322212</duration_ms></usage>
+</task-notification>
