@@ -1,0 +1,1 @@
+all tests (including UI) should be run before any pre or stable release. UI tests cannot be run on Github CI, so they have to run locally here. remember that
