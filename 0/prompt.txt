@@ -1,0 +1,1 @@
+summarise the steps taken to create a new beta release
