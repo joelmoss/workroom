@@ -1,0 +1,1 @@
+remove the "Welcome to workroom" item from window menu
