@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b93u9mmtc</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/2eef3988-b2b3-4a16-b709-eac7203d8da8/tasks/b93u9mmtc.output</output-file>
+<status>completed</status>
+<summary>Background command "UI test batch 5c: remaining VCSToolbarJJUITests methods + ViewMenuShortcuts + WorkroomPaneHeader" completed (exit code 0)</summary>
+</task-notification>
