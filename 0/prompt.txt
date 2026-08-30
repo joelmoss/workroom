@@ -1,0 +1,1 @@
+footer text should only show the pace percentage when in deficit
