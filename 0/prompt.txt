@@ -1,0 +1,1 @@
+the workroom-play-jj project had no Git remote. I have added one now and can see it listed with `jj git remote list`, but the changes headers still says "no remote configured"
