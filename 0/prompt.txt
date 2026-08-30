@@ -1,0 +1,3916 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Views/SwitcherRailView.swift
+  - macapp/WorkroomAppTests/QuickSwitcherControllerTests.swift
+  - macapp/WorkroomApp/Core/QuickSwitcherController.swift
+  - macapp/WorkroomApp/Views/RailGlassBackground.swift
+  - macapp/WorkroomAppTests/ThemeTokensTests.swift
+  - macapp/WorkroomApp/Core/ThemeTokens.swift
+  - macapp/WorkroomApp/Views/RootView.swift
+  - macapp/WorkroomApp/Views/UnreadBadge.swift
+  - macapp/WorkroomApp/Views/PaneTreeView.swift
+  - macapp/WorkroomApp/Views/WorkroomSplitView.swift
+  - macapp/WorkroomAppTests/SwitcherMarkTests.swift
+  - macapp/WorkroomApp/Core/SwitcherMark.swift
+  - macapp/WorkroomAppTests/SwitcherThemeSweepTests.swift
+  - macapp/WorkroomAppTests/SwitcherRailLayoutTests.swift
+  - macapp/WorkroomApp/Core/QuickSwitcher.swift
+  - macapp/WorkroomApp/Core/SwitcherRailLayout.swift
+  - macapp/WorkroomAppTests/QuickSwitcherTests.swift
+  - macapp/WorkroomApp/WorkroomApp.swift
+  - macapp/WorkroomAppTests/SwitcherRecencyTests.swift
+  - macapp/WorkroomApp/Core/SwitcherPanel.swift
+  - macapp/WorkroomApp/Core/SwitcherRecency.swift
+  - macapp/WorkroomAppTests/QuickSwitcherReducerTests.swift
+  - macapp/WorkroomAppTests/SwitcherPanelTests.swift
+  - macapp/WorkroomApp/Core/QuickSwitcherReducer.swift
+  - macapp/WorkroomApp/Core/AppStore.swift
+  - macapp/WorkroomApp/Core/Snapshots/SnapshotRegistry.swift
+  - macapp/WorkroomApp/Core/Snapshots/SnapshotService.swift
+  - macapp/WorkroomApp/Core/Snapshots/SnapshotSupport.swift
+  - macapp/WorkroomAppTests/SnapshotCacheTests.swift
+  - macapp/WorkroomAppTests/SnapshotGeometryTests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Views/SwitcherRailView.swift ===
+@@ -8,18 +8,32 @@ import SwiftUI
+ /// so a card observing it to decide "am I the cursor" would re-render at OSC frequency — the
+ /// WORKROOM-2B hang. Everything a card draws is snapshotted here instead.
+ struct SwitcherCard: Identifiable, Equatable {
++  /// What the well draws. The two switchers have genuinely different identity problems, so they get
++  /// genuinely different wells: workrooms differ from each other by *which workroom they are*, panes
++  /// inside one workroom differ by *what kind of thing they are*.
++  enum Well: Equatable {
++    /// ⌥Tab: a stable colour + monogram you learn, the way you learn an app icon.
++    case mark(SwitcherMark)
++    /// ⌃Tab: a small graphic drawn from the pane's own data, so the shape says the kind.
++    case miniature(PaneMiniature)
++  }
++
+   let id: String
+-  /// The primary line. Already prefix-stripped by `WorkroomLabel.railTitles` where applicable.
+-  let title: String
++  /// The primary line. Workroom titles are finalised by `cards(for:)` through
++  /// `WorkroomLabel.railTitles`, which keeps the `project / workroom` form when the rail spans more than
++  /// one project — otherwise two workrooms both named `main` render identically.
++  var title: String
+   /// The stable identity zone of the subtitle — never empty, never churns.
+   let stableSubtitle: String
+   /// The live tail (a command line, a diffstat). Truncates before `stableSubtitle` does.
+   let liveSubtitle: String?
+-  let glyph: String
++  var well: Well
+   let badge: Int
+   let isRunning: Bool
+-  /// Set once the snapshot layer lands (T12); until then every card draws its glyph well.
+-  let snapshot: CGImage?
++  /// The mark's tile colour, resolved once when the cards are built. Resolving it in `body` instead ran
++  /// `SwitcherMark.tileColor`'s saturation-ladder × brightness-step search — NSColor allocations and a
++  /// contrast ratio per candidate — on every re-render of every card.
++  var tile: NSColor?
+ 
+   var subtitle: String {
+     guard let liveSubtitle, !liveSubtitle.isEmpty else { return stableSubtitle }
+@@ -28,60 +42,87 @@ struct SwitcherCard: Identifiable, Equatable {
+ }
+ 
+ extension SwitcherCard {
++  /// Build the rail's cards: hues rotated so no two visible marks share a colour, titles resolved
++  /// against the whole set (D12), and each tile colour computed once, here, rather than per render.
++  @MainActor
++  static func cards(for items: [QuickSwitcherController.Item]) -> [SwitcherCard] {
++    var cards = items.map(SwitcherCard.init(item:))
++    let tokens = ThemeService.shared.tokens
++    // Only workroom cards carry marks; pane miniatures are unaffected.
++    let markIndices = cards.indices.filter {
++      if case .mark = cards[$0].well { true } else { false }
++    }
++    let hues = markIndices.map { index -> Int in
++      guard case .mark(let mark) = cards[index].well else { return 0 }
++      return mark.hue
++    }
++    for (position, index) in zip(SwitcherMark.disambiguate(hues), markIndices) {
++      guard case .mark(let mark) = cards[index].well else { continue }
++      cards[index].well = .mark(SwitcherMark(monogram: mark.monogram, hue: position))
++      cards[index].tile = SwitcherMark.tileColor(hue: position, tokens: tokens)
++    }
++    // D12: drop the project prefix only when EVERY workroom on the rail shares it. Applied over the
++    // whole set, which is the only place the set is in hand — per-card `.distinguishing` always dropped
++    // it, so two workrooms named `main` in different projects rendered identically.
++    let labels = items.compactMap { item -> WorkroomLabel? in
++      guard case .workroom(let slot) = item else { return nil }
++      return slot.store?.label(for: slot.sid)
++    }
++    if labels.count == markIndices.count {
++      for (title, index) in zip(WorkroomLabel.railTitles(labels), markIndices) {
++        cards[index].title = title
++      }
++    }
++    return cards
++  }
++
+   /// Snapshot a controller item into a card. Reads the stores ONCE, here, and never again — which is
+   /// also why this is `@MainActor` while `SwitcherCard` itself is not: the reads happen on the main
+   /// actor at reveal, and what the views then hold is inert.
+   @MainActor
+   init(item: QuickSwitcherController.Item) {
+-    let generation = ThemeService.shared.generation
+     switch item {
+     case .workroom(let slot):
+       let label = slot.store?.label(for: slot.sid)
+-      id = "wr:\(slot.target.id)"
+-      title = label?.distinguishing ?? slot.target.title
++      // The window token is part of the id because `TerminalTarget.id` is project+name and carries no
++      // window — and the same workroom open in two windows is deliberately two slots. Without it the
++      // `ForEach` got duplicate ids (undefined rows, a runtime warning, and an ambiguous `scrollTo`).
++      let window = slot.store.map { "\($0.windowToken.key):" } ?? ""
++      id = "wr:\(window)\(slot.target.id)"
++      let displayed = label?.distinguishing ?? slot.target.title
++      title = displayed
++      // The monogram follows the DISPLAYED name so it matches what you read; the colour follows the
++      // target id, which a relabel doesn't change — so relabelling re-letters the mark without moving
++      // the hue you actually recognise.
++      well = .mark(SwitcherMark(displayName: displayed, stableKey: slot.target.id))
+       stableSubtitle = label?.branch ?? label?.project ?? ""
+-      liveSubtitle = nil
+-      glyph = "cube"
++      liveSubtitle = slot.store.flatMap { Self.vcsTail(for: slot.sid, in: $0) }
+       badge = slot.store?.notifications.count(target: slot.target.id) ?? 0
+       isRunning = slot.store?.isRunCommandRunning(for: slot.target.id) ?? false
+-      snapshot =
+-        slot.store.map { store in
+-          SnapshotService.shared.snapshot(
+-            for: .workroom(slot.sid, store.windowToken), themeGeneration: generation)
+-        } ?? nil
+     case .pane(let tab):
+       id = "pane:\(tab.id)"
+       title = tab.title
+-      stableSubtitle = Self.kindLabel(tab.content)
++      let miniature = PaneMiniature(content: tab.content, isRunning: tab.isRunning)
++      well = .miniature(miniature)
++      stableSubtitle = miniature.label
+       liveSubtitle = nil
+-      glyph = Self.glyph(for: tab.content)
+       badge = 0
+       isRunning = tab.isRunning
+-      snapshot = SnapshotService.shared.snapshot(
+-        for: .pane(tab.id), themeGeneration: generation)
+-    }
+-  }
+-
+-  /// The tab-strip / sidebar glyph vocabulary, so a pane reads the same everywhere. Exhaustive on
+-  /// purpose: a fifth `TabContent` kind must be a compile error, not a silent fallback to "terminal".
+-  static func glyph(for content: TabContent) -> String {
+-    switch content {
+-    case .terminal: "terminal"
+-    case .diff: "plusminus"
+-    case .file: "doc"
+-    case .changeset: "clock"
+     }
+   }
+ 
+-  /// The subtitle's stable zone for a pane: what kind of thing this is. Present even when there is no
+-  /// live text, which is the point — identity must not disappear (D13).
+-  static func kindLabel(_ content: TabContent) -> String {
+-    switch content {
+-    case .terminal: "Terminal"
+-    case .diff: "Diff"
+-    case .file: "File"
+-    case .changeset: "Commit"
++  /// A workroom's VCS state as the subtitle's live tail: line counts when known, otherwise the coarse
++  /// state. Conflicts win — they are the one state you want to notice from a switcher.
++  @MainActor
++  static func vcsTail(for sid: SidebarID, in store: AppStore) -> String? {
++    guard let status = store.workroomStatuses[sid] else { return nil }
++    if status.conflicted { return "conflicts" }
++    if let added = status.insertions, let removed = status.deletions, added + removed > 0 {
++      return "+\(added) −\(removed)"
+     }
++    if status.dirty == true { return "modified" }
++    if status.dirty == false { return "clean" }
++    return nil
+   }
+ }
+ 
+@@ -107,9 +148,12 @@ final class SwitcherRailModel: ObservableObject {
+ 
+ /// The rail: **one** row of label-led cards, centred in a floating translucent panel.
+ ///
+-/// Label-led, not thumbnail-led: drawn at the originally-planned 220×140 a terminal thumbnail is a
+-/// near-blank rectangle (output hugs the top-left), so the loudest element carried the least
+-/// information while the name — the thing you actually decide on — was the smallest. Inverted here.
++/// Label-led, and screenshot-free. Window captures were built and removed: at any size that fits a
++/// switcher rail an aspect-fit terminal capture is a grey smudge, and it is neither stable nor
++/// distinctive — it changes every time and every terminal looks like every other terminal. What
++/// replaced it differs per switcher, because the two have different identity problems: a workroom is
++/// distinguished by *which workroom it is* (so it gets a learnable mark), a pane inside one workroom by
++/// *what kind of thing it is* (so it gets a drawn miniature of its type).
+ struct SwitcherRailView: View {
+   @ObservedObject var model: SwitcherRailModel
+   private let theme = ThemeService.shared
+@@ -134,14 +178,67 @@ struct SwitcherRailView: View {
+   var body: some View {
+     row
+       .id(model.themeVersion)  // see `palette` — the only thing that invalidates this view
+-      // The app's own floating-translucent recipe (the inspector reveal uses it). No full-screen dim:
+-      // a 250ms gesture must not flash the whole screen, so separation comes from material + hairline
+-      // + shadow instead.
+-      .sidebarCard(cornerRadius: 16, margin: 0, vibrant: !palette.needsOpaqueFill, elevated: true)
++      // The system's Liquid Glass — the same surface ⌘Tab sits on — rather than the app's
++      // `sidebarCard` recipe, whose `.withinWindow` material has nothing to sample inside a transparent
++      // floating panel. No full-screen dim: a 250ms gesture must not flash the whole screen, so the
++      // separation is the material itself.
++      .background {
++        ZStack {
++          RailGlassBackground(cornerRadius: Self.cornerRadius)
++          // D14's last resort: a theme whose foreground cannot clear the text floor against a
++          // translucent surface gets an opaque one instead. Legibility outranks the material — and
++          // without this the glass would keep washing text that already failed its contrast check.
++          if palette.needsOpaqueFill { theme.tokens.panel }
++        }
++      }
++      .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
++      .background { shadowCaster }
++      // The halo the rail's drop shadow lands in. The window is `shadowMargin` bigger than the slab on
++      // every side for exactly this — a drawn shadow is clipped at the window's edge, and the window
++      // itself casts none (see `SwitcherRailLayout.shadowMargin`).
++      .padding(SwitcherRailLayout.shadowMargin)
+       .accessibilityElement(children: .contain)
+       .accessibilityIdentifier("switcher.rail")
+   }
+ 
++  /// Matches the system switcher's generous curvature; also handed to the glass view, which rounds the
++  /// material itself rather than relying on a clip.
++  static let cornerRadius: CGFloat = 20
++
++  /// The rail's drop shadow: the shape's shadow with **the shape itself punched out**, mounted behind the
++  /// glass and after the clip.
++  ///
++  /// Every part of that is load-bearing, and each was measured rather than reasoned:
++  ///
++  /// - **The window can't cast it.** A borderless, non-opaque `NSPanel` produces no system shadow at all —
++  ///   `hasShadow = true` with `invalidateShadow()` darkened nothing at 6/14/26/44pt out on any side, with
++  ///   glass content and with a solid opaque fill alike.
++  /// - **A clip applies to a view's background**, so a shadow mounted alongside the glass was clipped away
++  ///   entirely. Hence a second `.background`, after `.clipShape`.
++  /// - **A layer shadow on the representable never rendered**, `shadowPath` and all. A SwiftUI shape's
++  ///   shadow does.
++  /// - **The hole is what keeps the glass alive.** A shadow needs an opaque caster, and an opaque layer
++  ///   anywhere beneath a glass view destroys the material completely: sampled across the rail's interior,
++  ///   glass normally tracks its backdrop (correlation +0.81), and with an opaque fill behind it the
++  ///   correlation and the variation both fall to exactly zero — a flat slab. So the caster keeps only its
++  ///   spill: `destinationOut` removes its own footprint, and the mask's rectangle is expanded by
++  ///   `shadowMargin` because a mask hides whatever falls outside it, which would otherwise take the
++  ///   spill with it.
++  private var shadowCaster: some View {
++    let shape = RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
++    return
++      shape
++      .fill(Color.black)
++      .shadow(color: .black.opacity(0.32), radius: 14, y: 5)
++      .compositingGroup()
++      .mask {
++        Rectangle()
++          .padding(-SwitcherRailLayout.shadowMargin)
++          .overlay { shape.blendMode(.destinationOut) }
++          .compositingGroup()
++      }
++  }
++
+   @ViewBuilder private var row: some View {
+     if scrolls {
+       ScrollViewReader { proxy in
+@@ -158,6 +255,12 @@ struct SwitcherRailView: View {
+           // lands on card 4.
+           proxy.scrollTo(model.cards[safe: index]?.id, anchor: .center)
+         }
++        // A theme change re-`id`s the row, which resets the ScrollView — and the cursor didn't move, so
++        // the handler above can't put it back. Without this the highlighted card is simply gone from
++        // view on a scrolling rail.
++        .onChange(of: model.themeVersion) { _, _ in
++          proxy.scrollTo(model.cards[safe: model.cursor]?.id, anchor: .center)
++        }
+       }
+     } else {
+       cards
+@@ -189,7 +292,11 @@ struct SwitcherRailView: View {
+   }
+ }
+ 
+-/// One card: a fixed thumbnail well, then a label column that absorbs every point of width loss.
++/// One card: the well above its label, the way ⌘Tab and the Dock stack an icon over its name.
++///
++/// Stacked rather than side-by-side because that is what buys horizontal room: a side-by-side card pays
++/// for the well's width *and* a label column beside it, while a stacked card gives the full width to the
++/// label — so the card shrank 200pt → 120pt and roughly twice as many fit before the row scrolls.
+ private struct SwitcherCardView: View {
+   let card: SwitcherCard
+   let isCursor: Bool
+@@ -197,23 +304,32 @@ private struct SwitcherCardView: View {
+   let palette: SwitcherRailLayout.Palette
+   private let theme = ThemeService.shared
+ 
++  /// The cursor fill and ring share it, and it sits inside the rail's own 20pt so the two curves nest
++  /// rather than fight.
++  static let cursorRadius: CGFloat = 14
++
+   var body: some View {
+-    // No trailing `Spacer` here. A `Spacer(minLength: 0)` is a *flexible* child, so SwiftUI splits the
+-    // card's spare width between it and the label column — which truncated "uitest-room-2" at a card
+-    // width that fits it twice over. `maxWidth: .infinity` on the labels claims that space instead.
+-    HStack(spacing: 10) {
++    VStack(spacing: 7) {
+       well
+       labels
+     }
+-    .padding(.horizontal, 10)
++    .padding(.horizontal, 6)
++    .padding(.vertical, 10)
+     .frame(width: width, height: SwitcherRailLayout.cardHeight)
+     .background(
+-      RoundedRectangle(cornerRadius: 10, style: .continuous)
+-        .fill(isCursor ? theme.tokens.accentSoft : theme.tokens.panel)
++      RoundedRectangle(cornerRadius: Self.cursorRadius, style: .continuous)
++        .fill(isCursor ? theme.tokens.accentSoft : Color.clear)
+     )
+     .overlay(
+-      RoundedRectangle(cornerRadius: 10, style: .continuous)
+-        .strokeBorder(isCursor ? palette.ring : theme.tokens.border, lineWidth: 1)
++      // Only the cursor is outlined. On glass, giving every card its own border produced a row of
++      // competing boxes and buried the one signal that matters — which card you are about to commit to.
++      //
++      // A hairline at a generous radius, not a 1.5pt box: the ring's job is to say *which* card, and the
++      // `accentSoft` fill already says that. Thinning and rounding it softens the edge without touching
++      // its colour, which is what D14's 3:1 floor is measured on — dropping the stroke's opacity instead
++      // would look identical and quietly fail that floor.
++      RoundedRectangle(cornerRadius: Self.cursorRadius, style: .continuous)
++        .strokeBorder(isCursor ? palette.ring : .clear, lineWidth: 1)
+     )
+     .contentShape(Rectangle())
+     .help(tooltip)
+@@ -222,53 +338,55 @@ private struct SwitcherCardView: View {
+     .accessibilityIdentifier("switcher.card.\(card.title)")
+   }
+ 
+-  /// The well: the pane capture aspect-**fit** (never cropped — a crop-zoom can make two different
+-  /// panes look identical), or the pane-kind glyph when there is no snapshot, which is the normal
+-  /// first-run case since capture only happens while a pane is visible.
++  /// The well, with its badge and running pip riding on its corners.
++  ///
++  /// Screenshots were tried and removed: at any size that fits a switcher rail an aspect-fit window
++  /// capture is a grey smudge, and it is neither stable nor distinctive — it changes every time and every
++  /// terminal looks like every other terminal. So each switcher draws what distinguishes its own items.
+   private var well: some View {
+-    RoundedRectangle(cornerRadius: 6, style: .continuous)
+-      .fill(card.snapshot == nil ? theme.tokens.accentSoft : theme.tokens.surface)
+-      .frame(width: SwitcherRailLayout.wellSize.width, height: SwitcherRailLayout.wellSize.height)
+-      .overlay {
+-        if let snapshot = card.snapshot {
+-          Image(decorative: snapshot, scale: 1)
+-            .resizable()
+-            .aspectRatio(contentMode: .fit)
+-        } else {
+-          Image(systemName: card.glyph)
+-            .font(.system(size: 20))
+-            .foregroundStyle(palette.ring)
+-        }
++    ZStack(alignment: .topTrailing) {
++      switch card.well {
++      case .mark(let mark): MarkWell(mark: mark, tile: card.tile)
++      case .miniature(let miniature): MiniatureWell(miniature: miniature, palette: palette)
++      }
++      // Badge on the icon's corner, the Dock/⌘Tab idiom — and in a stacked card it costs no width at
++      // all, where in the label row it competed with the name for the same points.
++      if card.badge > 0 {
++        // The rail's own contrast-corrected pair, not the component's raw accent — see
++        // `Palette.nsBadgeFill`. Its `.help` is redundant with the card's tooltip on purpose: a badge is a
++        // control-sized indicator, and the project rule is that every one of them names itself.
++        UnreadBadge(count: card.badge, fill: palette.badgeFill, ink: palette.badgeInk)
++          .offset(x: 7, y: -6)
++          .help("\(card.badge) unread")
++      } else if card.isRunning {
++        Circle()
++          .fill(palette.dot)
++          .frame(width: 7, height: 7)
++          .overlay(Circle().strokeBorder(theme.tokens.panel, lineWidth: 1.5))
++          .offset(x: 3, y: -3)
++          .help("Running")
++          .accessibilityLabel("running")
+       }
+-      .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
++    }
+   }
+ 
+   private var labels: some View {
+-    VStack(alignment: .leading, spacing: 3) {
+-      HStack(spacing: 5) {
+-        // Middle truncation, never tail: generated workroom names share a prefix and differ at the
+-        // END, which is exactly what tail truncation deletes (D12).
+-        Text(card.title)
+-          .font(.system(size: 13, weight: .semibold))
+-          .foregroundStyle(palette.name)
+-          .lineLimit(1)
+-          .truncationMode(.middle)
+-        // Badge and running dot sit in the LABEL row, not over the thumbnail — which also removes the
+-        // contrast problem of an accent pill over arbitrary screenshot pixels.
+-        if card.badge > 0 { UnreadBadge(count: card.badge) }
+-        if card.isRunning {
+-          Circle().fill(palette.dot).frame(width: 6, height: 6)
+-            .help("Running")
+-            .accessibilityLabel("running")
+-        }
+-      }
++    VStack(spacing: 1) {
++      // Middle truncation, never tail: generated workroom names share a prefix and differ at the END,
++      // which is exactly what tail truncation deletes (D12).
++      Text(card.title)
++        .font(.system(size: 12, weight: .semibold))
++        .foregroundStyle(palette.name)
++        .lineLimit(1)
++        .truncationMode(.middle)
+       Text(card.subtitle)
+-        .font(.system(size: 11))
++        .font(.system(size: 10))
+         .foregroundStyle(palette.subtitle)
+         .lineLimit(1)
+         .truncationMode(.tail)
+     }
+-    .frame(maxWidth: .infinity, alignment: .leading)
++    .multilineTextAlignment(.center)
++    .frame(maxWidth: .infinity)
+   }
+ 
+   private var tooltip: String {
+@@ -291,3 +409,124 @@ extension Array {
+     indices.contains(index) ? self[index] : nil
+   }
+ }
++
++/// A workroom's identity mark: a solid theme-derived tile with its monogram.
++///
++/// Solid rather than a tinted wash on purpose — the tile is the thing you are meant to recognise from
++/// the corner of your eye, and a 10%-opacity wash of six different hues all reads as "grey-ish". The
++/// colour comes from `SwitcherMark.tileColor`, which keeps the theme's hue angle but imposes its own
++/// saturation and brightness; the monogram takes whichever of black/white is legible on the result.
++private struct MarkWell: View {
++  let mark: SwitcherMark
++  /// Resolved by `SwitcherCard.cards(for:)`, once per reveal. `tileColor` is a search — a saturation
++  /// ladder × brightness steps, each rung allocating an NSColor and measuring a contrast ratio — so
++  /// running it from `body` re-ran it on every render of every card.
++  let tile: NSColor?
++  private let theme = ThemeService.shared
++
++  var body: some View {
++    let tile = tile ?? SwitcherMark.tileColor(hue: mark.hue, tokens: theme.tokens)
++    RoundedRectangle(cornerRadius: 8, style: .continuous)
++      .fill(Color(nsColor: tile))
++      .frame(width: SwitcherRailLayout.wellSize.width, height: SwitcherRailLayout.wellSize.height)
++      .overlay {
++        Text(mark.monogram)
++          .font(.system(size: 13, weight: .semibold, design: .rounded))
++          .foregroundStyle(Color(nsColor: SwitcherMark.ink(on: tile)))
++      }
++  }
++}
++
++/// A pane's type miniature, drawn from its own data.
++private struct MiniatureWell: View {
++  let miniature: PaneMiniature
++  let palette: SwitcherRailLayout.Palette
++  private let theme = ThemeService.shared
++
++  var body: some View {
++    RoundedRectangle(cornerRadius: 8, style: .continuous)
++      .fill(theme.tokens.surface)
++      .frame(width: SwitcherRailLayout.wellSize.width, height: SwitcherRailLayout.wellSize.height)
++      .overlay { shape }
++      .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
++  }
++
++  @ViewBuilder private var shape: some View {
++    switch miniature {
++    case .terminal(let running): terminal(running: running)
++    case .diff(let change): diff(change)
++    case .file: file
++    case .changeset: changeset
++    }
++  }
++
++  /// A prompt chevron, with a filled pip while something is running — the one pane state you care about
++  /// mid-switch is "is this the one that's still working".
++  private func terminal(running: Bool) -> some View {
++    HStack(spacing: 3) {
++      Image(systemName: "chevron.right")
++        .font(.system(size: 13, weight: .bold))
++        .foregroundStyle(palette.name)
++      if running {
++        Circle().fill(palette.dot).frame(width: 5, height: 5)
++      } else {
++        RoundedRectangle(cornerRadius: 1).fill(palette.subtitle).frame(width: 8, height: 2)
++      }
++    }
++  }
++
++  /// Stacked add/remove bars. Composition follows the change *kind*, not magnitude: per-file line counts
++  /// don't exist on `ChangedFile`, so an added file reads all-add, a deletion all-remove, a modification
++  /// split, and a conflict takes the conflict token outright.
++  private func diff(_ change: ChangedFile.Change) -> some View {
++    VStack(spacing: 2) {
++      ForEach(Array(bars(for: change).enumerated()), id: \.offset) { _, bar in
++        RoundedRectangle(cornerRadius: 1)
++          .fill(bar.color)
++          .frame(width: bar.width, height: 4)
++      }
++    }
++  }
++
++  private func bars(for change: ChangedFile.Change) -> [(color: Color, width: CGFloat)] {
++    let add = palette.diffAdd
++    let remove = palette.diffRemove
++    switch change {
++    case .added, .untracked:
++      return [(add, 26), (add, 20), (add, 14)]
++    case .deleted:
++      return [(remove, 26), (remove, 20), (remove, 14)]
++    case .modified, .other:
++      return [(add, 26), (remove, 18), (add, 12)]
++    case .renamed:
++      return [(palette.subtitle, 26), (add, 18), (remove, 12)]
++    case .conflicted:
++      return [(Color(nsColor: theme.tokens.nsFg), 24), (remove, 24), (add, 24)]
++    }
++  }
++
++  /// Abstract text lines — a page, with no pretence of showing the real content.
++  private var file: some View {
++    VStack(alignment: .leading, spacing: 3) {
++      ForEach([24, 18, 22, 13], id: \.self) { width in
++        RoundedRectangle(cornerRadius: 1)
++          .fill(palette.subtitle)
++          .frame(width: CGFloat(width), height: 2.5)
++      }
++    }
++  }
++
++  /// A chain of commit dots.
++  private var changeset: some View {
++    HStack(spacing: 0) {
++      ForEach(0..<3, id: \.self) { index in
++        Circle()
++          .fill(index == 0 ? palette.name : palette.subtitle)
++          .frame(width: 6, height: 6)
++        if index < 2 {
++          Rectangle().fill(palette.subtitle).frame(width: 6, height: 1.5)
++        }
++      }
++    }
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppTests/QuickSwitcherControllerTests.swift ===
+@@ -45,6 +45,8 @@ final class QuickSwitcherControllerTests: XCTestCase {
+     controller.pointerProvider = { .zero }
+     controller.announce = { recorder.announcements.append($0) }
+     controller.onReveal = { items, cursor in recorder.reveals.append((items.count, cursor)) }
++    // Both land on `show(items:cursor:)` in production, so they land in one list here too.
++    controller.onItemsChanged = { items, cursor in recorder.reveals.append((items.count, cursor)) }
+     controller.onCursorMoved = { recorder.cursorMoves.append($0) }
+     controller.onEnd = { recorder.ends += 1 }
+     recorder.held = held
+@@ -101,6 +103,34 @@ final class QuickSwitcherControllerTests: XCTestCase {
+     XCTAssertTrue(recorder.reveals.isEmpty, "and no rail")
+   }
+ 
++  /// VoiceOver switched on **mid-gesture** (⌘F5 is one keystroke). AppKit ships no VoiceOver-status
++  /// notification — `isVoiceOverEnabled` is KVO-only — so the controller watches it that way and ends the
++  /// session, because D16's answer to "a panel that can't take VoiceOver focus" is to have no panel. It
++  /// must end WITHOUT committing: the user is mid-hold on a rail that just became invisible to them.
++  func testVoiceOverComingOnMidSessionEndsTheRailWithoutCommitting() {
++    let store = makeStore(workrooms: ["fox", "owl"])
++    store.selectedTargetID = .workroom(project: "/p", name: "fox")
++    attach(store)
++    let (controller, recorder) = makeController()
++    var voiceOverRunning = false
++    controller.voiceOverEnabled = { voiceOverRunning }
++    _ = controller.handleTrigger(
++      .workrooms, reverse: false, in: store, registry: registry, recency: recency)
++    controller.revealTimerFired()
++    XCTAssertTrue(controller.isRevealed)
++
++    controller.voiceOverStatusChanged()
++    XCTAssertTrue(controller.isLive, "the status changed to still-off — nothing to do")
++
++    voiceOverRunning = true
++    controller.voiceOverStatusChanged()
++    XCTAssertFalse(controller.isLive, "VoiceOver on ⇒ the session ends")
++    XCTAssertEqual(recorder.ends, 1)
++    XCTAssertEqual(
++      store.selectedTargetID, .workroom(project: "/p", name: "fox"),
++      "cancelled, not committed — the rail was steering a choice the user can no longer see")
++  }
++
+   func testNonVoiceOverDoesOpenASession() {
+     let store = makeStore(workrooms: ["fox", "owl"])
+     store.selectedTargetID = .workroom(project: "/p", name: "fox")
+@@ -242,6 +272,56 @@ final class QuickSwitcherControllerTests: XCTestCase {
+     XCTAssertEqual(recorder.cursorMoves.last, 1, "and ← walks the other way")
+   }
+ 
++  func testArrowsArePassedOnBeforeTheRailIsRevealed() {
++    // The 250 ms pending phase has nothing on screen to steer, so eating an arrow there both swallowed
++    // the keystroke and popped the rail — ⌥Tab followed by ⌥← (word-back in a shell) did exactly that.
++    let store = seededStore()
++    let (controller, _) = makeController()
++    _ = controller.handleTrigger(
++      .workrooms, reverse: false, in: store, registry: registry, recency: recency)
++    XCTAssertTrue(controller.isLive)
++    XCTAssertFalse(controller.isRevealed)
++    XCTAssertFalse(
++      controller.handleArrow(reverse: false, flags: [.option]),
++      "live but not revealed — the arrow belongs to whatever is focused")
++  }
++
++  func testArrowsCarryingExtraModifiersAreNotStolen() {
++    // ⌥⌘←/→ cycles terminal tabs and ⇧⌥⌘←/→ cycles workroom tabs; ⌃⌘arrows moves pane focus. All three
++    // need a modifier the user is *already* holding for the rail, so the branch has to check flags —
++    // its comment claimed it did while the code matched on keyCode alone.
++    let store = seededStore()
++    let (controller, _) = makeController()
++    _ = controller.handleTrigger(
++      .workrooms, reverse: false, in: store, registry: registry, recency: recency)
++    controller.revealTimerFired()
++    XCTAssertFalse(
++      controller.handleArrow(reverse: false, flags: [.option, .command]),
++      "⌥⌘→ belongs to the terminal-tab cycler, not the rail")
++    XCTAssertFalse(controller.handleArrow(reverse: true, flags: [.option, .command, .shift]))
++    XCTAssertTrue(
++      controller.handleArrow(reverse: false, flags: [.option]), "the bare trigger still steers")
++  }
++
++  // MARK: Live-session ownership
++
++  func testAPaneTriggerDoesNotStealAWorkroomSession() {
++    // Release is a 30 ms poll, so a ⌃Tab landing just after ⌥ came up used to step the WORKROOM rail,
++    // consume the key, and then commit a workroom nobody asked for.
++    let store = seededStore()
++    let (controller, recorder) = makeController()
++    _ = controller.handleTrigger(
++      .workrooms, reverse: false, in: store, registry: registry, recency: recency)
++    controller.revealTimerFired()
++    XCTAssertEqual(recorder.reveals.count, 1)
++    _ = controller.handleTrigger(
++      .panes, reverse: false, in: store, registry: registry, recency: recency)
++    XCTAssertEqual(
++      recorder.ends, 1, "the workroom session was cancelled rather than steered by ⌃Tab")
++    XCTAssertEqual(
++      controller.reducer.kind, .panes, "and the new session is the one that was pressed")
++  }
++
+   // MARK: Click commit
+ 
+   func testClickCommitsAndTheFollowingReleaseIsSwallowed() {
+@@ -275,6 +355,55 @@ final class QuickSwitcherControllerTests: XCTestCase {
+     XCTAssertEqual(recorder.ends, 1)
+   }
+ 
++  func testReconcileKeepsTheCursorOnTheItemItWasTrackingAndRerendersTheRail() {
++    // The bug this pins: `filter` compacts the array, so losing an item BEFORE the cursor shifts every
++    // later item down one. The reducer used to only clamp, so the release committed the highlighted
++    // card's neighbour — and the rail was never re-rendered, so a click indexed a stale card list.
++    let a = makeStore(workrooms: ["fox"])
++    let b = makeStore(workrooms: ["owl", "elk"])
++    attach(a)
++    attach(b)
++    let (controller, recorder) = makeController()
++    _ = controller.handleTrigger(
++      .workrooms, reverse: false, in: b, registry: registry, recency: recency)
++    controller.revealTimerFired()
++    XCTAssertEqual(controller.items.count, 3, "fox + owl + elk")
++    // The rail opens on index 1, and index 0 belongs to the OTHER window — so killing that window is
++    // exactly the case where every later index shifts down one under the cursor.
++    XCTAssertEqual(controller.reducer.cursor, 1)
++    let tracked = controller.items[controller.reducer.cursor]
++    let trackedID: WorkroomSlotID? = {
++      guard case .workroom(let slot) = tracked else { return nil }
++      return slot.id
++    }()
++    a.errorMessage = "a sheet went up in the other window"  // `hasModalPresentation` ⇒ fox is dead
++    let revealsBefore = recorder.reveals.count
++    controller.reconcileItems()
++
++    XCTAssertTrue(controller.isLive, "two candidates remain — the session survives")
++    XCTAssertEqual(controller.items.count, 2)
++    guard case .workroom(let stillAt) = controller.items[controller.reducer.cursor] else {
++      return XCTFail("cursor no longer on a workroom")
++    }
++    XCTAssertEqual(stillAt.id, trackedID, "the cursor followed the ITEM, not its old index")
++    XCTAssertEqual(controller.reducer.cursor, 0, "which is now index 0, one lower than before")
++    XCTAssertGreaterThan(
++      recorder.reveals.count, revealsBefore, "and the rail was re-rendered from the survivors")
++    XCTAssertEqual(recorder.reveals.last?.count, 2)
++  }
++
++  func testReconcileWithNothingDeadLeavesTheRailAlone() {
++    let store = seededStore()
++    let (controller, recorder) = makeController()
++    _ = controller.handleTrigger(
++      .workrooms, reverse: false, in: store, registry: registry, recency: recency)
++    controller.revealTimerFired()
++    let reveals = recorder.reveals.count
++    controller.reconcileItems()
++    XCTAssertEqual(recorder.reveals.count, reveals, "no churn when nothing changed")
++    XCTAssertTrue(controller.isLive)
++  }
++
+   func testReconcileWhileIdleIsHarmless() {
+     let (controller, recorder) = makeController()
+     controller.reconcileItems()
+
+
+=== DIFF: macapp/WorkroomApp/Core/QuickSwitcherController.swift ===
+@@ -37,6 +37,13 @@ final class QuickSwitcherController {
+   var pointerProvider: () -> NSPoint = { NSEvent.mouseLocation }
+ 
+   /// Speaks a destination on the VoiceOver path. Replaced in tests to assert what was announced.
++  ///
++  /// This is the switcher's **only** announcement, and deliberately so. The rail was originally going to
++  /// narrate every cursor move ("uitest-room-2, 2 of 5") because a panel that can't become key can never
++  /// hold VoiceOver focus — but D16 then removed the rail under VoiceOver entirely, and the KVO watch in
++  /// `installObservers` ends any session VoiceOver joins late. There is therefore no reachable state in
++  /// which a cursor move happens with a screen reader listening, and posting per-step announcements to
++  /// nobody would only queue speech that lands after the commit — the exact failure D16 exists to avoid.
+   var announce: (String) -> Void = { message in
+     NSAccessibility.post(
+       element: NSApp as Any, notification: .announcementRequested,
+@@ -56,6 +63,10 @@ final class QuickSwitcherController {
+   // MARK: Rail seam (T11)
+ 
+   var onReveal: (([Item], Int) -> Void)?
++  /// The item list changed mid-session and the rail must be re-rendered from it. Separate from
++  /// `onCursorMoved`, which moves the highlight only: the rail is handed a frozen array at reveal, so
++  /// without this the cards on screen and the array a commit indexes into drift apart.
++  var onItemsChanged: (([Item], Int) -> Void)?
+   var onCursorMoved: ((Int) -> Void)?
+   var onEnd: (() -> Void)?
+ 
+@@ -65,9 +76,15 @@ final class QuickSwitcherController {
+   private(set) var items: [Item] = []
+   /// The window the gesture started in — the commit's "am I already here" reference.
+   private weak var originStore: AppStore?
++  /// For a `.panes` session, the workroom whose panes are on the rail, frozen at open. Resolving it
++  /// live off `originStore.selectedTarget` instead let a sidebar click (or a project reload) mid-gesture
++  /// either kill every item or, worse, commit a pane into whatever workroom is selected *now*.
++  private var paneTargetID: SidebarID?
+   /// The modifier that must stay held. Released ⇒ commit.
+   private var triggerFlags: NSEvent.ModifierFlags = []
+   private var observers: [NSObjectProtocol] = []
++  /// KVO on `NSWorkspace.isVoiceOverEnabled`, live only while a session is (see `installObservers`).
++  private var voiceOverObservation: NSKeyValueObservation?
+   private var pollTimer: Timer?
+   private var revealTimer: Timer?
+   private var ceilingTimer: Timer?
+@@ -80,6 +97,11 @@ final class QuickSwitcherController {
+   /// How far the pointer must actually travel before hover may steer the cursor (D17).
+   static let hoverArmDistance: CGFloat = 4
+ 
++  /// How often the trigger modifier is sampled. Named alongside the reducer's `revealDelay` and
++  /// `sessionCeiling` rather than left inline: it is the gesture's release latency, so it belongs with
++  /// the other two numbers that define how the hold feels.
++  static let pollInterval: TimeInterval = 0.03
++
+   // MARK: Entry
+ 
+   /// The key monitor's entry point. Returns whether the event was consumed.
+@@ -93,27 +115,38 @@ final class QuickSwitcherController {
+     // queue announcements that land *after* the commit. So this degrades to the stage-1 tap flip, which
+     // is a complete interaction on its own, and says where it landed.
+     if voiceOverEnabled() {
+-      let switched = QuickSwitcher.step(
++      // VoiceOver can come on *mid-session* (or the rail can already be up when it does). Without this
++      // the live session keeps its timers and its rail, the tap below commits immediately, and the
++      // modifier release then commits a SECOND time off the frozen list.
++      if isLive { cancel(.escape) }
++      let outcome = QuickSwitcher.stepDescribing(
+         kind, reverse: reverse, in: store, registry: registry, recency: recency)
+-      if switched, let spoken = Self.announcement(for: kind, in: store) { announce(spoken) }
+-      return switched
++      // Spoken from what the commit actually wrote, not from the origin store: a cross-window switch
++      // leaves the origin's own selection untouched, so reading it back announced the workroom the user
++      // just left — on the one path where the announcement *is* the entire UI.
++      if let spoken = outcome.spoken { announce(spoken) }
++      return outcome.switched
+     }
+ 
+     if isLive {
+-      apply(reducer.handle(.step(reverse: reverse)))
+-      return true
++      // A live session owns only its own kind and its own window. Dropping both (as this did) meant a
++      // ⌃Tab landing inside the 30 ms poll window after ⌥ came up would step the *workroom* rail, eat
++      // the key so the pane switch never happened, and then commit a workroom nobody asked for. Start
++      // over instead: cancel and re-open for what was actually pressed.
++      if kind == reducer.kind, store === originStore {
++        apply(reducer.handle(.step(reverse: reverse)))
++        return true
++      }
++      cancel(.escape)
+     }
+ 
+     let frozen = Self.collect(kind, in: store, registry: registry, recency: recency)
+-    // Capture BEFORE the panel is ordered in, so the rail can't photograph itself. Fired unbounded on
+-    // open (the per-window debounce is a background-refresh rule, not this one) and asynchronous, so a
+-    // first-ever hold still shows glyph wells and fills in next time.
+-    captureOnOpen(kind, in: store, registry: registry)
+     let effect = reducer.handle(.open(kind: kind, count: frozen.count, reverse: reverse))
+     // Under 2 items there is nothing to switch to, so the key passes through to the terminal.
+     guard effect != .none else { return false }
+     items = frozen
+     originStore = store
++    paneTargetID = kind == .panes ? store.selectedTargetID : nil
+     triggerFlags =
+       (kind == .workrooms
+       ? Defaults[.switcherWorkroomModifier] : Defaults[.switcherPaneModifier]).flags
+@@ -126,23 +159,6 @@ final class QuickSwitcherController {
+     return true
+   }
+ 
+-  /// Refresh the thumbnails a session is about to show. ⌥Tab spans windows, so every window with a
+-  /// live region is captured; ⌃Tab only ever shows the current window's panes.
+-  private func captureOnOpen(
+-    _ kind: QuickSwitcherKind, in store: AppStore, registry: WindowRegistry
+-  ) {
+-    let generation = ThemeService.shared.generation
+-    switch kind {
+-    case .workrooms:
+-      for window in registry.allStores.compactMap(\.hostWindow) {
+-        SnapshotService.shared.capture(window: window, themeGeneration: generation)
+-      }
+-    case .panes:
+-      guard let window = store.hostWindow else { return }
+-      SnapshotService.shared.capture(window: window, themeGeneration: generation)
+-    }
+-  }
+-
+   /// Escape while a session is live.
+   @discardableResult
+   func handleEscape() -> Bool {
+@@ -151,10 +167,17 @@ final class QuickSwitcherController {
+     return true
+   }
+ 
+-  /// ←/→ while the rail is up. Returns whether it was consumed.
++  /// ←/→ while the rail is **up**, carrying nothing but the trigger modifier. Returns whether it was
++  /// consumed.
++  ///
++  /// Both guards are load-bearing, and the branch that calls this used to have neither. `isRevealed`
++  /// rather than `isLive`: during the 250 ms pending phase there is nothing on screen to steer, so
++  /// eating an arrow there both swallowed the keystroke and popped the rail. And extra modifiers must
++  /// disqualify it, or a live session steals ⌥⌘←/→ (terminal tabs), ⇧⌥⌘←/→ (workroom tabs) and
++  /// ⌃⌘arrows (pane focus) — every one of which the user is already holding the trigger for.
+   @discardableResult
+-  func handleArrow(reverse: Bool) -> Bool {
+-    guard isLive else { return false }
++  func handleArrow(reverse: Bool, flags: NSEvent.ModifierFlags = []) -> Bool {
++    guard isRevealed, flags.subtracting(triggerFlags).isEmpty else { return false }
+     apply(reducer.handle(.step(reverse: reverse)))
+     return true
+   }
+@@ -201,12 +224,32 @@ final class QuickSwitcherController {
+     apply(reducer.handle(.modifierReleased))
+   }
+ 
+-  /// A window closed (or its workroom went away): drop dead candidates and tell the reducer the new
+-  /// count, which clamps the cursor or ends the session.
++  /// A window closed, a pane died, or a sheet went up: drop dead candidates, keep the cursor on the
++  /// **item** it was tracking, and re-render the rail from the surviving list.
++  ///
++  /// Every part of that matters. `filter` compacts the array, so removing anything before the cursor
++  /// shifts every later item down one — remapping by identity is what stops the release committing the
++  /// card's neighbour. And the rail was handed a frozen array at reveal, so it has to be re-pushed or
++  /// the cards on screen no longer line up with the array a click indexes into (a visible card then
++  /// either switches to the wrong place or silently does nothing).
+   func reconcileItems() {
+     guard isLive else { return }
+-    items = items.filter(isAlive)
+-    apply(reducer.handle(.itemsChanged(count: items.count)))
++    let tracked = items.indices.contains(reducer.cursor) ? items[reducer.cursor] : nil
++    let survivors = items.filter(isAlive)
++    guard survivors.count != items.count else { return }  // nothing died; leave the rail alone
++    items = survivors
++    let remapped = tracked.flatMap { item in items.firstIndex { Self.sameItem($0, item) } }
++    apply(reducer.handle(.itemsChanged(count: items.count, cursor: remapped ?? reducer.cursor)))
++    if reducer.isRevealed { onItemsChanged?(items, reducer.cursor) }
++  }
++
++  /// Identity, not index — the two things `reconcileItems` has to line up.
++  private static func sameItem(_ lhs: Item, _ rhs: Item) -> Bool {
++    switch (lhs, rhs) {
++    case (.workroom(let a), .workroom(let b)): a.id == b.id && a.id != nil
++    case (.pane(let a), .pane(let b)): a.id == b.id
++    default: false
++    }
+   }
+ 
+   // MARK: Effects
+@@ -227,19 +270,24 @@ final class QuickSwitcherController {
+     case .end(let commit):
+       let chosen = commit.flatMap { items.indices.contains($0) ? items[$0] : nil }
+       let store = originStore
++      let target = store.flatMap(frozenPaneTarget(in:))
+       teardown()
+       onEnd?()
+-      if let chosen, let store { Self.perform(chosen, from: store) }
++      // `target` was read before `teardown()` cleared it.
++      if let chosen, let store { Self.perform(chosen, from: store, target: target) }
+     }
+   }
+ 
+   private func teardown() {
+     items = []
+     originStore = nil
++    paneTargetID = nil
+     triggerFlags = []
+     pointerAtReveal = nil
+     for observer in observers { NotificationCenter.default.removeObserver(observer) }
+     observers = []
++    voiceOverObservation?.invalidate()
++    voiceOverObservation = nil
+     for timer in [pollTimer, revealTimer, ceilingTimer] { timer?.invalidate() }
+     pollTimer = nil
+     revealTimer = nil
+@@ -265,6 +313,21 @@ final class QuickSwitcherController {
+         DispatchQueue.main.async { MainActor.assumeIsolated { self?.reconcileItems() } }
+       },
+     ]
++    // VoiceOver switched on mid-gesture (⌘F5 is one keystroke, and the rail can be up when it lands).
++    // KVO, not a notification: AppKit ships **no** VoiceOver-status notification — `isVoiceOverEnabled`
++    // is documented "observable through KVO" and that is the only signal there is.
++    voiceOverObservation = NSWorkspace.shared.observe(\.isVoiceOverEnabled, options: [.new]) {
++      [weak self] _, _ in
++      MainActor.assumeIsolated { self?.voiceOverStatusChanged() }
++    }
++  }
++
++  /// VoiceOver's running state changed while a session was live. Reads through the injected
++  /// `voiceOverEnabled` seam rather than the notification's payload, so a test drives this directly
++  /// instead of starting a screen reader.
++  func voiceOverStatusChanged() {
++    guard isLive, voiceOverEnabled() else { return }
++    cancel(.voiceOver)
+   }
+ 
+   /// The production timers. `.common` run-loop mode is load-bearing: the default mode does not run
+@@ -276,7 +339,7 @@ final class QuickSwitcherController {
+     ) { [weak self] _ in
+       MainActor.assumeIsolated { self?.revealTimerFired() }
+     }
+-    let poll = Timer(timeInterval: 0.03, repeats: true) { [weak self] _ in
++    let poll = Timer(timeInterval: Self.pollInterval, repeats: true) { [weak self] _ in
+       MainActor.assumeIsolated { self?.poll() }
+     }
+     let ceiling = Timer(
+@@ -318,27 +381,26 @@ final class QuickSwitcherController {
+       guard let store = slot.store, !store.hasModalPresentation else { return false }
+       return store.displayedWorkroomTargets().contains { $0.sid == slot.sid }
+     case .pane(let tab):
+-      guard let store = originStore, let target = store.selectedTarget else { return false }
++      guard let store = originStore, let target = frozenPaneTarget(in: store) else { return false }
+       return store.terminals.tabs(for: target).contains { $0.id == tab.id }
+     }
+   }
+ 
+-  private static func perform(_ item: Item, from store: AppStore) {
+-    switch item {
+-    case .workroom(let slot): QuickSwitcher.commit(slot, from: store)
+-    case .pane(let tab): QuickSwitcher.commit(pane: tab.id, in: store)
++  /// The `.panes` session's workroom, resolved from the id frozen at open.
++  private func frozenPaneTarget(in store: AppStore) -> TerminalTarget? {
++    guard let sid = paneTargetID, let target = store.target(for: sid), !target.isMissing else {
++      return nil
+     }
++    return target
+   }
+ 
+-  /// What the VoiceOver path speaks after a tap flip: where it actually landed.
+-  private static func announcement(for kind: QuickSwitcherKind, in store: AppStore) -> String? {
+-    switch kind {
+-    case .workrooms:
+-      guard let sid = store.selectedTargetID else { return nil }
+-      return store.label(for: sid).full
+-    case .panes:
+-      guard let target = store.selectedTarget else { return nil }
+-      return store.terminals.activeTab(for: target)?.title
++  /// `target` is the session's frozen workroom, needed only by a pane commit.
++  private static func perform(_ item: Item, from store: AppStore, target: TerminalTarget?) {
++    switch item {
++    case .workroom(let slot): QuickSwitcher.commit(slot, from: store)
++    case .pane(let tab):
++      guard let target else { return }
++      QuickSwitcher.commit(pane: tab.id, in: store, target: target)
+     }
+   }
+ }
+
+
+=== DIFF: macapp/WorkroomApp/Views/RailGlassBackground.swift ===
+@@ -0,0 +1,57 @@
++import AppKit
++import SwiftUI
++
++/// The switcher rail's backing material: the system's Liquid Glass, the same surface the macOS ⌘Tab
++/// switcher sits on (issue #132).
++///
++/// Two reasons this is not the app's usual `sidebarCard(vibrant:)` recipe:
++///
++/// 1. **The material has to sample what is behind the *window*.** `VisualEffectView` defaults to
++///    `.withinWindow`, which blends against the host window's own backdrop — deliberately, so the left
++///    and right sidebar cards get an identical tint. But this panel is transparent and floats over other
++///    windows and the desktop, so `.withinWindow` has nothing to sample and the glass reads flat.
++///    `.behindWindow` is what makes it glass.
++/// 2. **⌘Tab's surface is a HUD**, not a sidebar. `.hudWindow` is the material that reads as a floating
++///    overlay rather than a piece of window chrome.
++///
++/// On macOS 26+ this uses the real thing — `NSGlassEffectView`, which is what the system switcher
++/// itself draws — and falls back to the `.hudWindow` vibrancy that approximated it before Liquid Glass
++/// existed, because the app still deploys to macOS 15.
++struct RailGlassBackground: NSViewRepresentable {
++  var cornerRadius: CGFloat = 20
++
++  func makeNSView(context: Context) -> NSView {
++    material()
++  }
++
++  func updateNSView(_ view: NSView, context: Context) {
++    if #available(macOS 26.0, *), let glass = view as? NSGlassEffectView {
++      glass.cornerRadius = cornerRadius
++      return
++    }
++    view.layer?.cornerRadius = cornerRadius
++  }
++
++  private func material() -> NSView {
++    if #available(macOS 26.0, *) {
++      let glass = NSGlassEffectView()
++      glass.cornerRadius = cornerRadius
++      // `.regular` rather than `.clear`: the rail carries text over arbitrary windows and wallpapers, and
++      // `.clear` leaves too little separation for a 12pt subtitle to survive a busy backdrop.
++      glass.style = .regular
++      glass.autoresizingMask = [.width, .height]
++      return glass
++    }
++    let effect = NSVisualEffectView()
++    effect.material = .hudWindow
++    effect.blendingMode = .behindWindow
++    effect.state = .active  // NOT `.followsWindowActiveState`: this panel is never the key window
++    effect.autoresizingMask = [.width, .height]
++    effect.wantsLayer = true
++    effect.layer?.cornerRadius = cornerRadius
++    effect.layer?.cornerCurve = .continuous
++    effect.layer?.masksToBounds = true
++    return effect
++  }
++
++}
+
+
+=== DIFF: macapp/WorkroomAppTests/ThemeTokensTests.swift ===
+@@ -70,11 +70,53 @@ final class ThemeTokensTests: XCTestCase {
+     XCTAssertEqual(ThemeTokens.contrastingForeground(for: ns("#1c1c1e")), .white)
+   }
+ 
++  /// The band a brightness threshold gets wrong. This used to be `luminance > 0.6 ? .black : .white`, and
++  /// a mid-tone fill sits just under 0.6 *apparent* brightness while black beats white on it several times
++  /// over — the illegible-monogram bug (1.77:1 where black gave 11.8:1). Picking by measurement has no
++  /// threshold to miscalibrate.
++  func testContrastingForegroundPicksByMeasurementNotBrightness() {
++    for hex in ["#8a8a8a", "#7f9f5f", "#a08a4a", "#9a7fbf"] {
++      let fill = ns(hex)
++      let ink = ThemeTokens.contrastingForeground(for: fill)
++      let chosen = ThemeTokens.contrastRatio(ink, fill)
++      let rejected = ThemeTokens.contrastRatio(ink == .black ? .white : .black, fill)
++      XCTAssertGreaterThanOrEqual(chosen, rejected, "\(hex) took the worse of black/white")
++    }
++  }
++
+   func testLuminanceBounds() {
+     XCTAssertEqual(ThemeTokens.luminance(of: ns("#ffffff")), 1.0, accuracy: 0.001)
+     XCTAssertEqual(ThemeTokens.luminance(of: ns("#000000")), 0.0, accuracy: 0.001)
+   }
+ 
++  /// `luminance` is WCAG — sRGB **linearized** before weighting — and `perceivedBrightness` is the
++  /// gamma-encoded weighting it used to be. Mid-grey separates them: 0.5 encoded, 0.216 linear.
++  ///
++  /// Not a pedantic distinction. Weighting encoded components inflates dark colours (`#2e3440` reads 0.20
++  /// against a true 0.033), which collapses dark-background/light-text ratios: the switcher rail's name
++  /// text measured under 4.5:1 for 43 of the 56 bundled themes on the old formula and for 3 on this one,
++  /// and its "this theme is unreadable, drop the material" fallback was firing for 38 legible themes.
++  func testLuminanceIsWCAGWhileBrightnessStaysPerceptual() {
++    XCTAssertEqual(ThemeTokens.luminance(of: ns("#808080")), 0.216, accuracy: 0.005)
++    XCTAssertEqual(ThemeTokens.perceivedBrightness(of: ns("#808080")), 0.502, accuracy: 0.005)
++    // A real theme: Nord's foreground on its background — 9.2:1, legible as anyone can see. The old
++    // formula scored that same pair 3.6:1, which is what had the rail treating Nord as a contrast failure.
++    XCTAssertEqual(ThemeTokens.contrastRatio(ns("#d8dee9"), ns("#2e3440")), 9.25, accuracy: 0.15)
++  }
++
++  /// Light/dark classification must keep reading the *encoded* value, or a visibly light background whose
++  /// linearized luminance is under 0.5 flips to dark and re-themes the whole app.
++  func testColorSchemeStillFollowsApparentBrightness() {
++    for (hex, expected) in [
++      ("#c8c8c8", ColorScheme.light), ("#8f8f8f", .light), ("#4a4a4a", .dark),
++    ] {
++      XCTAssertEqual(
++        ThemeTokens(preview: full(bg: hex, fg: "#101010", accent4: "#1e7fa8")).colorScheme,
++        expected,
++        "\(hex)")
++    }
++  }
++
+   func testTerminalDimIsBackgroundAndFocusedIsForeground() {
+     let t = ThemeTokens(preview: full(bg: "#1c1c1e", fg: "#d8d8dc", accent4: "#3b9ec4"))
+     XCTAssertEqual(
+
+
+=== DIFF: macapp/WorkroomApp/Core/ThemeTokens.swift ===
+@@ -199,18 +199,52 @@ struct ThemeTokens {
+     splitGroupFill = Color(nsColor: fgColor.withAlphaComponent(0.06))
+     splitGroupFocusedFill = Color(nsColor: accentColor.withAlphaComponent(0.10))
+ 
+-    colorScheme = Self.luminance(of: bgColor) > 0.5 ? .light : .dark
++    // `perceivedBrightness`, not `luminance`: this is "does the background look light", which is the
++    // encoded value. WCAG luminance is not perceptual — mid-grey linearizes to 0.216, so a threshold of
++    // 0.5 against it would classify visibly light backgrounds as dark.
++    colorScheme = Self.perceivedBrightness(of: bgColor) > 0.5 ? .light : .dark
+   }
+ 
+-  /// Relative luminance (sRGB, Rec. 709 coefficients), 0…1.
++  /// WCAG relative luminance, 0…1 — sRGB components **linearized** first, then weighted (Rec. 709).
++  ///
++  /// The linearization is the whole point, and this function did not do it until it was measured against
++  /// the bundled themes. Weighting the gamma-encoded components directly inflates every dark colour
++  /// (`#2E3440` reads 0.20 instead of 0.033), which collapses the ratio between a dark background and
++  /// light text: the rail's 13pt name measured under 4.5:1 for **43 of 56** bundled themes by that
++  /// formula and for **4** by this one, and the switcher's "this theme can't be read, drop the material"
++  /// fallback was firing for 38 themes that are perfectly legible. Every floor in the app is stated in
++  /// WCAG terms, so the metric has to actually be WCAG.
++  ///
++  /// For "is this colour light or dark to look at" use `perceivedBrightness` instead — that question is
++  /// about the encoded value, not about contrast.
+   static func luminance(of color: NSColor) -> CGFloat {
++    guard let srgb = color.usingColorSpace(.sRGB) else { return 0 }
++    func linear(_ component: CGFloat) -> CGFloat {
++      component <= 0.04045 ? component / 12.92 : pow((component + 0.055) / 1.055, 2.4)
++    }
++    return 0.2126 * linear(srgb.redComponent) + 0.7152 * linear(srgb.greenComponent)
++      + 0.0722 * linear(srgb.blueComponent)
++  }
++
++  /// The gamma-encoded, non-linearized weighting — a proxy for *apparent* brightness, not contrast.
++  ///
++  /// Kept as its own function because light/dark classification genuinely wants this: a theme background
++  /// is "light" when it looks light, and WCAG luminance is deliberately not perceptual (mid-grey
++  /// `#808080` is 0.216 linearized, which would read as a dark background). This is exactly the formula
++  /// `luminance` used to be, so `colorScheme` behaves as it always has.
++  static func perceivedBrightness(of color: NSColor) -> CGFloat {
+     guard let srgb = color.usingColorSpace(.sRGB) else { return 0 }
+     return 0.2126 * srgb.redComponent + 0.7152 * srgb.greenComponent + 0.0722 * srgb.blueComponent
+   }
+ 
+-  /// Black on light accents, white on dark ones — for text/icons drawn *on* the accent fill.
++  /// Black or white on a fill — whichever actually measures better against it.
++  ///
++  /// Chosen by measurement rather than by a brightness threshold, which is what this used to do
++  /// (`luminance > 0.6 ? .black : .white`) and which fails in a whole band: a tile at 0.54 apparent
++  /// brightness took white at 1.77:1 where black gives 11.8:1 — a real, illegible monogram, found on a
++  /// dark-theme fixture. Comparing both ratios has no threshold to get wrong.
+   static func contrastingForeground(for color: NSColor) -> NSColor {
+-    luminance(of: color) > 0.6 ? .black : .white
++    contrastRatio(.black, color) >= contrastRatio(.white, color) ? .black : .white
+   }
+ 
+   // MARK: Syntax highlighting
+
+
+=== DIFF: macapp/WorkroomApp/Views/RootView.swift ===
+@@ -446,6 +446,12 @@ struct RootView: View {
+           // Go-menu Previous/Next Workroom Tab (issue #29) — only meaningful with ≥2 tabs.
+           multipleWorkroomTabs: store.orderedWorkroomTargets().count > 1
+             && !store.hasModalPresentation,
++          // Go-menu "Last-Used Workroom" (⌥⇥, issue #132). Counted across every window, so it stays
++          // enabled when this window holds the only workroom and another window holds a second one.
++          // This window's body is what recomputes it, so another window's change lands here only on the
++          // next pass — harmless in both directions: the monitor owns the keystroke either way, and the
++          // menu item merely no-ops (or greys) until then.
++          canSwitchWorkrooms: QuickSwitcher.canSwitchWorkrooms() && !store.hasModalPresentation,
+           // Go-menu "Open in…" + ⌘O — enabled only with an editor and a valid selection.
+           canOpenInEditor: store.canOpenInEditor && !store.hasModalPresentation,
+           // View ▸ "Resize Workroom Splits Evenly" (#83) — only when the selected workroom is a live
+@@ -684,6 +690,7 @@ private struct MenuStateValues: ViewModifier {
+   let vcsCanPull: Bool
+   let hasRunTerminal: Bool
+   let multipleWorkroomTabs: Bool
++  let canSwitchWorkrooms: Bool
+   let canOpenInEditor: Bool
+   let workroomSplitVisible: Bool
+   /// Published for the items that have no other boolean to fold it into (see `ModalPresentedKey`).
+@@ -705,6 +712,7 @@ private struct MenuStateValues: ViewModifier {
+       .focusedSceneValue(\.runCommandActive, runCommandActive)
+       .focusedSceneValue(\.hasRunTerminal, hasRunTerminal)
+       .focusedSceneValue(\.multipleWorkroomTabs, multipleWorkroomTabs)
++      .focusedSceneValue(\.canSwitchWorkrooms, canSwitchWorkrooms)
+       .focusedSceneValue(\.canOpenInEditor, canOpenInEditor)
+       .focusedSceneValue(\.workroomSplitVisible, workroomSplitVisible)
+   }
+
+
+=== DIFF: macapp/WorkroomApp/Views/UnreadBadge.swift ===
+@@ -10,6 +10,12 @@ enum UnreadCount {
+ /// a number). Renders nothing when `count` is 0.
+ struct UnreadBadge: View {
+   let count: Int
++  /// Contrast-corrected colours, for a host that has measured its own surface. Defaults to the raw accent
++  /// pair — the switcher rail passes `SwitcherRailLayout.Palette`'s, whose ink is chosen by measurement
++  /// rather than by `contrastingForeground`'s luminance-0.6 switch, and whose fill matches the rail's
++  /// cursor ring so one card can't show two different "accents" (D14).
++  var fill: Color?
++  var ink: Color?
+   private let theme = ThemeService.shared
+ 
+   var body: some View {
+@@ -17,11 +23,11 @@ struct UnreadBadge: View {
+       Text(UnreadCount.label(count))
+         .font(.caption2)
+         .fontWeight(.semibold)
+-        .foregroundStyle(theme.tokens.accentForeground)
++        .foregroundStyle(ink ?? theme.tokens.accentForeground)
+         .monospacedDigit()
+         .padding(.horizontal, 5)
+         .padding(.vertical, 1)
+-        .background(Capsule().fill(theme.tokens.accent))
++        .background(Capsule().fill(fill ?? theme.tokens.accent))
+         .accessibilityLabel("\(count) unread")
+     }
+   }
+
+
+=== DIFF: macapp/WorkroomApp/Views/PaneTreeView.swift ===
+@@ -382,11 +382,6 @@ private struct PaneLeafView: View {
+ 
+   var body: some View {
+     paneContent
+-      // Report where this pane is, so a window capture can be cropped into its rail thumbnail
+-      // (issue #132). Zero-drawing and always mounted — it covers all four `TabContent` kinds because
+-      // it sits on the one slot they all pass through. `.background` so it inherits the pane's exact
+-      // bounds without touching layout.
+-      .background(SnapshotRectReporter(key: .pane(tabID)))
+       // Dim every pane that isn't the focused one so the active terminal reads instantly. This fires
+       // for split-mates AND for every pane of a co-displayed *backgrounded* workroom — which passes
+       // `surfaceActive: false`, so all its panes arrive here `focused == false` (`shouldDim` gates on
+
+
+=== DIFF: macapp/WorkroomApp/Views/WorkroomSplitView.swift ===
+@@ -224,10 +224,6 @@ private struct WorkroomPaneLeaf: View {
+       // both live INSIDE `TargetTerminalDetail`'s own ZStack, so nothing here ever swaps branches.
+       TargetTerminalDetail(target: target, surfaceActive: focused)
+     }
+-    // Report where this workroom is, for its rail thumbnail (issue #132). Mounted here rather than on
+-    // the split container because this leaf is the one view that covers BOTH solo and split — every
+-    // workroom renders through `WorkroomSplitView`, so a solo pane arrives here too.
+-    .background(snapshotReporter)
+     // No border: the pane reads as a unit by a subtle raised fill over the `panel` base plus the
+     // shadow + rounded corners (issue #110). The focused member's fill is accent-tinted so focus reads
+     // as a colour; the rest take a faint neutral lift. Unconditional since issue #139 — a solo pane is
+@@ -256,12 +252,6 @@ private struct WorkroomPaneLeaf: View {
+   /// the run controls' `hasRunCommand` check.
+   private var projectPath: String? { AppStore.projectPath(of: sid) }
+ 
+-  /// The rail-thumbnail region reporter, keyed by `(sid, window)` — the same `SidebarID` shown in two
+-  /// windows is two different pictures, so the window has to be part of the key.
+-  @ViewBuilder private var snapshotReporter: some View {
+-    SnapshotRectReporter(key: .workroom(sid, store.windowToken))
+-  }
+-
+   /// Which trailing controls the header shows — resolved in one pass so the group's divider can't
+   /// disagree with the buttons on either side of it. The editor list is cached, so this is cheap enough
+   /// to compute per render.
+
+
+=== DIFF: macapp/WorkroomAppTests/SwitcherMarkTests.swift ===
+@@ -0,0 +1,272 @@
++import AppKit
++import XCTest
++
++@testable import Workroom
++
++/// `SwitcherMark` + `PaneMiniature` (issue #132): the per-switcher card identities that replaced
++/// screenshots.
++final class SwitcherMarkTests: XCTestCase {
++
++  // MARK: Hue stability — the property the whole idea rests on
++
++  func testTheHueIsStableAcrossProcessesNotJustWithinOne() {
++    // Swift seeds String hashing PER PROCESS, so `hashValue` would give a workroom a different colour on
++    // every launch — which destroys the entire premise of a mark you learn to recognise. These are the
++    // hard-coded outputs of the FNV-1a implementation: if someone swaps it for `hashValue`, this fails.
++    XCTAssertEqual(SwitcherMark.hue(for: "wr|/p|partitioned-crescent"), 0)
++    XCTAssertEqual(SwitcherMark.hue(for: "wr|/p|flaky-tests"), 10)
++    XCTAssertEqual(SwitcherMark.hue(for: "root|/p"), 0)
++  }
++
++  func testTheHueIsDeterministicForTheSameKey() {
++    for key in ["a", "wr|/p|fox", "", "🙂-room"] {
++      XCTAssertEqual(SwitcherMark.hue(for: key), SwitcherMark.hue(for: key), "key \(key)")
++    }
++  }
++
++  func testTheHueIsAlwaysInRange() {
++    for index in 0..<500 {
++      let hue = SwitcherMark.hue(for: "wr|/project-\(index)|room-\(index)")
++      XCTAssertTrue((0..<SwitcherMark.hueCount).contains(hue), "hue \(hue) out of range")
++    }
++  }
++
++  func testHuesSpreadAcrossThePaletteRatherThanClustering() {
++    // A mark scheme where 40 workrooms all land on two hues would be useless. Not a distribution proof —
++    // just a guard against a hash that collapses (e.g. summing bytes, which similar names defeat).
++    let hues = Set((0..<80).map { SwitcherMark.hue(for: "wr|/p|room-\($0)") })
++    XCTAssertEqual(hues.count, SwitcherMark.hueCount, "every hue gets used across 80 names")
++  }
++
++  // MARK: Rail-level uniqueness
++
++  func testCollidingHuesAreRotatedApart() {
++    // A stable per-name hue is right in isolation and not enough in practice: two of four tiles came out
++    // the same colour in BOTH live checks. The rail's job is telling *these* items apart.
++    XCTAssertEqual(SwitcherMark.disambiguate([3, 3, 3]), [3, 4, 5])
++    XCTAssertEqual(SwitcherMark.disambiguate([0, 5, 0, 5]), [0, 5, 1, 6])
++  }
++
++  func testDistinctHuesAreLeftAlone() {
++    XCTAssertEqual(SwitcherMark.disambiguate([1, 4, 9]), [1, 4, 9], "no needless churn")
++    XCTAssertEqual(SwitcherMark.disambiguate([]), [])
++  }
++
++  func testEarlierItemsKeepTheirNaturalHue() {
++    // MRU order, so the workrooms you switch between most — and have therefore learned — never move.
++    let rotated = SwitcherMark.disambiguate([7, 7, 7, 7])
++    XCTAssertEqual(rotated.first, 7)
++    XCTAssertEqual(Set(rotated).count, 4, "and the rest are pushed to free hues")
++  }
++
++  func testRotationWrapsAroundTheWheel() {
++    let rotated = SwitcherMark.disambiguate([11, 11, 11])
++    XCTAssertEqual(rotated, [11, 0, 1], "wraps past the last hue rather than running off the end")
++  }
++
++  func testMoreItemsThanHuesDegradesWithoutHanging() {
++    let hues = Array(repeating: 0, count: SwitcherMark.hueCount + 5)
++    let rotated = SwitcherMark.disambiguate(hues)
++    XCTAssertEqual(rotated.count, hues.count, "every item still gets a hue")
++    XCTAssertTrue(rotated.allSatisfy { (0..<SwitcherMark.hueCount).contains($0) })
++  }
++
++  // MARK: Monogram
++
++  func testMonogramKeepsATrailingNumberBecauseThatIsTheDifference() {
++    // The bug this exists to prevent, seen live: plain initials turned uitest-room / -2 / -3 / -4 into
++    // four identical "UR" tiles — the same failure D12 fixed for titles, and worse than no tile at all.
++    XCTAssertEqual(SwitcherMark.monogram(for: "uitest-room"), "UR")
++    XCTAssertEqual(SwitcherMark.monogram(for: "uitest-room-2"), "R2")
++    XCTAssertEqual(SwitcherMark.monogram(for: "uitest-room-3"), "R3")
++    XCTAssertEqual(
++      Set(
++        ["uitest-room", "uitest-room-2", "uitest-room-3", "uitest-room-4"].map(
++          SwitcherMark.monogram)
++      )
++      .count, 4, "four numbered siblings must produce four distinct monograms")
++    XCTAssertEqual(
++      SwitcherMark.monogram(for: "room-12"), "R2", "last digit of a multi-digit suffix")
++  }
++
++  func testMonogramTakesInitialsFromAGeneratedName() {
++    // `namegen` produces adjective-noun pairs, so initials carry far more than the first two letters.
++    XCTAssertEqual(SwitcherMark.monogram(for: "partitioned-crescent"), "PC")
++    XCTAssertEqual(SwitcherMark.monogram(for: "flaky-tests"), "FT")
++    XCTAssertEqual(SwitcherMark.monogram(for: "dusk_harbor"), "DH")
++    XCTAssertEqual(SwitcherMark.monogram(for: "Auth refactor"), "AR")
++  }
++
++  func testMonogramFallsBackToTwoLettersForASingleWord() {
++    XCTAssertEqual(SwitcherMark.monogram(for: "crescent"), "CR")
++    XCTAssertEqual(SwitcherMark.monogram(for: "x"), "X")
++  }
++
++  func testMonogramSurvivesJunkNames() {
++    XCTAssertEqual(
++      SwitcherMark.monogram(for: ""), "?", "never empty — the tile would read as a blank")
++    XCTAssertEqual(SwitcherMark.monogram(for: "---"), "?")
++    XCTAssertEqual(SwitcherMark.monogram(for: "  spaced  out "), "SO")
++  }
++
++  func testMonogramUsesMoreThanTwoWordsGracefully() {
++    XCTAssertEqual(
++      SwitcherMark.monogram(for: "one-two-three"), "OT", "first two words, not all three")
++  }
++
++  // MARK: Relabel behaviour — the split that makes a mark learnable
++
++  func testARelabelChangesTheLettersButNotTheColour() {
++    // The colour is what you recognise from the corner of your eye, so it keys on the target id (which a
++    // relabel does not change); the letters key on what you actually read.
++    let key = "wr|/p|partitioned-crescent"
++    let before = SwitcherMark(displayName: "partitioned-crescent", stableKey: key)
++    let after = SwitcherMark(displayName: "Auth refactor", stableKey: key)
++    XCTAssertEqual(before.hue, after.hue, "the hue must survive a relabel")
++    XCTAssertEqual(before.monogram, "PC")
++    XCTAssertEqual(after.monogram, "AR")
++  }
++
++  func testTwoWorkroomsWithTheSameNameInDifferentProjectsCanDiffer() {
++    let a = SwitcherMark(displayName: "fox", stableKey: "wr|/alpha|fox")
++    let b = SwitcherMark(displayName: "fox", stableKey: "wr|/beta|fox")
++    XCTAssertEqual(a.monogram, b.monogram, "same name reads the same")
++    // Not guaranteed to differ (6 buckets), but the keys are distinct so the mapping had the chance.
++    XCTAssertNotEqual("wr|/alpha|fox", "wr|/beta|fox")
++    _ = (a.hue, b.hue)
++  }
++
++  // MARK: Mark palette
++
++  /// Themes with real headroom, one at each end. Explicit rather than `ThemeTokens(preview: nil)`: the
++  /// system fallback follows the machine's own appearance preference, so a floor asserted against it
++  /// passes or fails depending on who runs it — which happened on this very branch, when the fallback's
++  /// card moved to mid-grey and the sibling layout tests began failing on untouched code.
++  private func fixtureTokens(dark: Bool) -> ThemeTokens {
++    let ansi: [NSColor] = [
++      NSColor(srgbRed: 0.16, green: 0.16, blue: 0.18, alpha: 1),
++      NSColor(srgbRed: 0.78, green: 0.25, blue: 0.28, alpha: 1),
++      NSColor(srgbRed: 0.25, green: 0.62, blue: 0.35, alpha: 1),
++      NSColor(srgbRed: 0.80, green: 0.64, blue: 0.24, alpha: 1),
++      NSColor(srgbRed: 0.24, green: 0.48, blue: 0.82, alpha: 1),
++      NSColor(srgbRed: 0.60, green: 0.34, blue: 0.75, alpha: 1),
++      NSColor(srgbRed: 0.22, green: 0.62, blue: 0.66, alpha: 1),
++      NSColor(srgbRed: 0.86, green: 0.86, blue: 0.88, alpha: 1),
++    ]
++    return ThemeTokens(
++      preview: ThemePreview(
++        name: dark ? "dark fixture" : "light fixture",
++        background: dark
++          ? NSColor(srgbRed: 0.07, green: 0.07, blue: 0.09, alpha: 1)
++          : NSColor(srgbRed: 0.98, green: 0.98, blue: 0.98, alpha: 1),
++        foreground: dark
++          ? NSColor(srgbRed: 0.94, green: 0.94, blue: 0.95, alpha: 1)
++          : NSColor(srgbRed: 0.11, green: 0.11, blue: 0.13, alpha: 1),
++        palette: ansi))
++  }
++
++  func testTileColoursAreDistinctAndClearTheContrastFloor() {
++    // The other half of the live bug: `legible` walks a colour TOWARD THE FOREGROUND, so on a light
++    // theme every insufficiently-contrasty palette entry became near-black and all six tiles collapsed
++    // into identical charcoal. `tileColor` keeps only the hue angle and imposes its own S/B instead.
++    for dark in [true, false] {
++      let tokens = fixtureTokens(dark: dark)
++      var seen: Set<String> = []
++      for hue in 0..<SwitcherMark.hueCount {
++        let tile = SwitcherMark.tileColor(hue: hue, tokens: tokens)
++        let srgb = tile.usingColorSpace(.sRGB)!
++        seen.insert(String(format: "%.3f-%.3f", srgb.hueComponent, srgb.brightnessComponent))
++        XCTAssertGreaterThanOrEqual(
++          ThemeTokens.contrastRatio(tile, tokens.nsPanel), 3.0 - 0.01,
++          "hue \(hue) vs the card (dark: \(dark))")
++        XCTAssertGreaterThan(
++          srgb.saturationComponent, 0.3, "hue \(hue) must stay a colour, not a grey (dark: \(dark))"
++        )
++      }
++      XCTAssertEqual(
++        seen.count, SwitcherMark.hueCount, "every hue must be visually distinct (dark: \(dark))")
++    }
++  }
++
++  func testEveryMarkTileCanCarryALegibleMonogram() {
++    // The tile clears 3:1 against the card, then the monogram takes whichever of black/white is legible
++    // on the result — so no hue can produce an unreadable tile.
++    //
++    // The monogram floor is 3:1, not 4.5:1, and that is a real constraint rather than a relaxation: a
++    // MID-TONE hue (measured 3.15–4.2:1 here) cannot carry either black or white at 4.5:1 — no ink
++    // choice exists. 17pt semibold is WCAG "large text" (well past the 14pt-bold / 18.66px threshold),
++    // for which 3:1 is the conforming ratio. Body text on the card keeps its 4.5:1 floor.
++    for dark in [true, false] {
++      let tokens = fixtureTokens(dark: dark)
++      for hue in 0..<SwitcherMark.hueCount {
++        let tile = SwitcherMark.tileColor(hue: hue, tokens: tokens)
++        XCTAssertGreaterThanOrEqual(
++          ThemeTokens.contrastRatio(tile, tokens.nsPanel), 3.0 - 0.01,
++          "tile vs card (dark: \(dark))")
++        let ink = SwitcherMark.ink(on: tile)
++        XCTAssertGreaterThanOrEqual(
++          ThemeTokens.contrastRatio(ink, tile), 3.0 - 0.01,
++          "monogram vs tile, large-text floor (dark: \(dark))")
++      }
++    }
++  }
++
++  // MARK: Pane miniatures
++
++  func testEachPaneKindMapsToItsOwnMiniature() {
++    // `GhosttySurfaceView(workingDirectory:)` is inert until it enters a window, so building one here
++    // costs nothing and spawns no shell.
++    let state = TerminalState(
++      view: GhosttySurfaceView(workingDirectory: "/tmp"), defaultTitle: "zsh")
++    let terminal = PaneMiniature(content: TabContent.terminal(state), isRunning: true)
++    XCTAssertEqual(terminal, .terminal(running: true))
++
++    let diff = PaneMiniature(
++      content: TabContent.diff(
++        DiffDescriptor(path: "a.swift", change: .modified, source: .gitWorktree, isPreview: false)),
++      isRunning: false)
++    XCTAssertEqual(diff, .diff(.modified))
++
++    let file = PaneMiniature(
++      content: TabContent.file(FileDescriptor(path: "README.md", isPreview: false)),
++      isRunning: false)
++    XCTAssertEqual(file, .file)
++
++    let commit = PaneMiniature(
++      content: TabContent.changeset(
++        ChangesetDescriptor(commitID: "abc", title: "fix", isPreview: false)), isRunning: false)
++    XCTAssertEqual(commit, .changeset)
++  }
++
++  func testTheDiffMiniatureCarriesTheChangeKindNotJustDiffness() {
++    // Two diff panes in one workroom must not read identically — the change kind is the only per-file
++    // signal available (`ChangedFile` has no line counts), so it has to reach the well.
++    let added = PaneMiniature.diff(.added)
++    let deleted = PaneMiniature.diff(.deleted)
++    XCTAssertNotEqual(added, deleted)
++    XCTAssertEqual(added.label, "Added")
++    XCTAssertEqual(deleted.label, "Deleted")
++    XCTAssertEqual(PaneMiniature.diff(.conflicted).label, "Conflicted")
++  }
++
++  func testTheRunningTerminalIsADistinctMiniature() {
++    XCTAssertNotEqual(PaneMiniature.terminal(running: true), .terminal(running: false))
++  }
++
++  func testATerminalReportsItsStateRatherThanRepeatingItsKind() {
++    // Seen live: "Terminal 3" over the subtitle "Terminal" says the same thing twice. The title is
++    // already the shell or command, so the subtitle spends itself on state instead.
++    XCTAssertEqual(PaneMiniature.terminal(running: true).label, "Running")
++    XCTAssertEqual(PaneMiniature.terminal(running: false).label, "Idle")
++  }
++
++  func testEveryMiniatureNamesItsKindInText() {
++    // A shape alone is not accessible, and an unlearned shape is not yet meaningful — the kind is always
++    // spelled out under the name too.
++    for miniature: PaneMiniature in [
++      .terminal(running: false), .diff(.modified), .file, .changeset,
++    ] {
++      XCTAssertFalse(miniature.label.isEmpty)
++    }
++  }
++}
+
+
+=== DIFF: macapp/WorkroomApp/Core/SwitcherMark.swift ===
+@@ -0,0 +1,209 @@
++import AppKit
++
++/// A workroom's identity mark for the ⌥Tab rail (issue #132): a colour and a monogram, both derived,
++/// neither stored.
++///
++/// The point is **recognition before reading**. ⌘Tab works because app icons are stable and distinctive;
++/// a screenshot of a terminal is neither — it changes every time and looks like every other terminal.
++/// So a workroom gets a mark it keeps for the life of the workroom, and you learn "the teal AR one" the
++/// same way you learn an app icon.
++struct SwitcherMark: Equatable {
++  /// One or two characters. Derived from the **displayed** name, so it matches what you read on the card.
++  let monogram: String
++  /// Which of `hueCount` hues. Derived from the **stable** name, so a relabel (issue #41) changes the
++  /// letters without moving the colour — the thing you actually recognise stays put.
++  let hue: Int
++
++  /// Number of distinct hues. **12, not 6.** With six buckets and four open workrooms a collision is
++  /// more likely than not — measured live: two of four tiles came out the same colour. Twelve keeps
++  /// neighbouring hues clearly apart (30° of the wheel) while making a clash uncommon.
++  static let hueCount = 12
++
++  init(displayName: String, stableKey: String) {
++    monogram = Self.monogram(for: displayName)
++    hue = Self.hue(for: stableKey)
++  }
++
++  /// Direct construction, for `disambiguate` reassigning a hue without re-deriving the monogram.
++  init(monogram: String, hue: Int) {
++    self.monogram = monogram
++    self.hue = hue
++  }
++
++  /// Two characters that actually *distinguish* the name.
++  ///
++  /// Tuned for what Workroom generates: `namegen` produces adjective-noun pairs like
++  /// `partitioned-crescent`, where initials ("PC") carry far more than the first two letters ("PA").
++  ///
++  /// But plain initials repeat the mistake D12 fixed for titles. `uitest-room`, `uitest-room-2` and
++  /// `uitest-room-3` all reduce to "UR" — four identical tiles, which is worse than no tile at all. So a
++  /// **trailing number is always kept**, because when a name ends in one that digit is the whole
++  /// difference: "uitest-room-2" → "R2".
++  static func monogram(for name: String) -> String {
++    let separators = CharacterSet(charactersIn: "-_. /")
++    let words = name.components(separatedBy: separators).filter { !$0.isEmpty }
++    guard let first = words.first else { return "?" }
++
++    // A trailing number is the distinguishing part — pair it with the initial of the word before it.
++    if words.count >= 2, let last = words.last, last.allSatisfy(\.isNumber) {
++      let stem = words.count >= 3 ? words[words.count - 2] : first
++      return (String(stem.prefix(1)) + String(last.suffix(1))).uppercased()
++    }
++    if words.count >= 2, let second = words.dropFirst().first(where: { $0.first != nil }) {
++      return (String(first.prefix(1)) + String(second.prefix(1))).uppercased()
++    }
++    return String(first.prefix(2)).uppercased()
++  }
++
++  /// The tile colour for a hue bucket.
++  ///
++  /// Deliberately **not** `ThemeTokens.legible`, which walks a colour toward the foreground until it
++  /// clears a contrast floor. That is right for text and wrong here: on a light theme it walked every
++  /// insufficiently-contrasty hue to near-black, so every tile collapsed into identical charcoal and the
++  /// mark stopped marking anything — observed live before this existed.
++  ///
++  /// So hue is treated as identity and never adjusted; only saturation and brightness move, until the
++  /// tile clears its floor against this theme's panel.
++  static func tileColor(hue index: Int, tokens: ThemeTokens) -> NSColor {
++    // Anchored on the theme's accent hue and spaced evenly around the wheel from there, so the marks
++    // belong to the theme without being limited to the six ANSI slots — and a greyscale accent still
++    // yields twelve usable angles.
++    let accent = tokens.nsAccent.usingColorSpace(.sRGB)
++    let anchor = (accent?.saturationComponent ?? 0) > 0.15 ? (accent?.hueComponent ?? 0) : 0
++    let hueAngle = (anchor + CGFloat(index % hueCount) / CGFloat(hueCount)).truncatingRemainder(
++      dividingBy: 1)
++    let dark = tokens.colorScheme == .dark
++    func ratio(_ color: NSColor) -> CGFloat { ThemeTokens.contrastRatio(color, tokens.nsPanel) }
++    // Search brightness first, then give saturation ground — hue is identity and never moves.
++    //
++    // Two things this gets right that a single fixed walk did not, both measured rather than reasoned:
++    //
++    // 1. **Both directions.** The preferred one comes from `colorScheme`, which is derived from the
++    //    theme's *background*, while the tile is measured against its *panel*. On a theme where those sit
++    //    on opposite sides of mid-grey, a one-way walk moved the tile TOWARD the panel and nothing ever
++    //    cleared 3:1.
++    // 2. **Saturation is a fallback axis.** A mid-tone card caps how much contrast a saturated colour can
++    //    reach at all: against this app's grey card (luminance 0.186) the *best* a 0.62-saturated hue can
++    //    do is 2.71:1 at full brightness, because a saturated colour can't get light enough. Desaturating
++    //    buys the luminance that brightness alone cannot — a pale blue clears the floor where a vivid one
++    //    can't — and it stays visibly a hue, which a walk toward the foreground (`legible`) would not.
++    let ladder: [CGFloat] = dark ? [0.55, 0.46, 0.38, 0.34] : [0.62, 0.52, 0.42, 0.34]
++    var best: NSColor?
++    for saturation in ladder {
++      func tile(_ brightness: CGFloat) -> NSColor {
++        NSColor(hue: hueAngle, saturation: saturation, brightness: brightness, alpha: 1)
++      }
++      let start: CGFloat = dark ? 0.72 : 0.62
++      let lighter = Array(stride(from: start, through: 0.98, by: 0.03)).map(tile)
++      let darker = Array(stride(from: start, through: 0.10, by: -0.03)).map(tile)
++      let ordered = dark ? lighter + darker : darker + lighter
++      if let clears = ordered.first(where: { ratio($0) >= Self.tileContrastFloor }) {
++        return clears
++      }
++      if let rung = ordered.max(by: { ratio($0) < ratio($1) }),
++        ratio(rung) > ratio(best ?? rung) || best == nil
++      {
++        best = rung
++      }
++    }
++    // Nothing in the ladder clears the floor against this card — take the best available rather than
++    // whatever the last walk happened to stop on. `SwitcherRailLayout.Palette.needsOpaqueFill` is the
++    // wider guard for a theme this hostile.
++    return best ?? NSColor(hue: hueAngle, saturation: ladder[0], brightness: 0.62, alpha: 1)
++  }
++
++  /// The tile's contrast floor against the card. 3:1 — the tile is a large solid shape, not text.
++  static let tileContrastFloor: CGFloat = 3.0
++
++  /// The monogram's ink: whichever of black/white actually measures better on this tile.
++  ///
++  /// This existed as its own implementation because `ThemeTokens.contrastingForeground` used to switch on
++  /// a brightness threshold (`> 0.6`), which left a tile at 0.54 taking WHITE at 1.77:1 where black gives
++  /// 11.8:1 — an illegible monogram, measured on a dark-theme fixture. That helper now measures both
++  /// candidates, exactly as this did, so this is a name for the rail's use of it rather than a second
++  /// rule. Kept as the call site the rail reads, and as the record of why the threshold went.
++  static func ink(on tile: NSColor) -> NSColor {
++    ThemeTokens.contrastingForeground(for: tile)
++  }
++
++  /// Rotate hues so that **no two marks on one rail share a colour**.
++  ///
++  /// A stable per-name hue is right in isolation and not sufficient in practice: with 12 buckets and 4
++  /// open workrooms a clash happens ~43% of the time, and it happened in both live checks. Since the
++  /// rail's job is telling *these* items apart, uniqueness is enforced over the visible set — a colliding
++  /// mark steps to the next free hue. Deterministic for a given ordered list, and a no-op once there are
++  /// more items than hues.
++  ///
++  /// Earlier items keep their natural hue, so the most-recent workrooms — the ones you switch between
++  /// most and have therefore learned — are the ones that never move.
++  static func disambiguate(_ hues: [Int]) -> [Int] {
++    var taken: Set<Int> = []
++    return hues.map { hue in
++      var candidate = hue
++      var steps = 0
++      while taken.contains(candidate), steps < hueCount {
++        candidate = (candidate + 1) % hueCount
++        steps += 1
++      }
++      taken.insert(candidate)
++      return candidate
++    }
++  }
++
++  /// A stable hue bucket for a name.
++  ///
++  /// **Not `hashValue`.** Swift seeds string hashing per process, so `hashValue` would give a workroom a
++  /// different colour on every launch — which destroys the entire premise of a mark you learn. This is
++  /// FNV-1a over the UTF-8 bytes: same input, same output, forever, on every machine.
++  static func hue(for stableKey: String) -> Int {
++    var hash: UInt64 = 0xcbf2_9ce4_8422_2325
++    for byte in stableKey.utf8 {
++      hash ^= UInt64(byte)
++      hash = hash &* 0x100_0000_01b3
++    }
++    return Int(hash % UInt64(hueCount))
++  }
++}
++
++/// What a ⌃Tab pane card draws in its well — a small graphic made of the pane's own data, so the *shape*
++/// says what kind of thing this is before any text is read.
++///
++/// A screenshot would in principle have distinguished these best (a diff really does look unlike a
++/// terminal), but not at any size that fits a switcher rail. These are drawn, so they stay legible at
++/// 52pt and cost nothing to produce.
++enum PaneMiniature: Equatable {
++  /// A prompt chevron, with a filled pip while a command is running.
++  case terminal(running: Bool)
++  /// Stacked add/remove bars whose composition follows the change kind. Per-file line counts are NOT
++  /// available (`ChangedFile` carries no insertions/deletions), so this encodes *kind*, not magnitude —
++  /// an added file reads all-add, a deletion all-remove, a modification split.
++  case diff(ChangedFile.Change)
++  /// Abstract text lines — a page of prose or code, with no attempt to render the real content.
++  case file
++  /// A chain of commit dots.
++  case changeset
++
++  init(content: TabContent, isRunning: Bool) {
++    switch content {
++    case .terminal: self = .terminal(running: isRunning)
++    case .diff(let descriptor): self = .diff(descriptor.change)
++    case .file: self = .file
++    case .changeset: self = .changeset
++    }
++  }
++
++  /// The words under the name, naming the kind so the shape is never the *only* signal — a shape alone
++  /// is not accessible, and an unfamiliar shape is not yet learned.
++  ///
++  /// A terminal is the exception: its title is already its shell/command, so "Terminal" under
++  /// "Terminal 3" says the same thing twice. It reports its state instead, which is the thing you
++  /// actually want mid-switch.
++  var label: String {
++    switch self {
++    case .terminal(let running): running ? "Running" : "Idle"
++    case .diff(let change): change.rawValue.capitalized
++    case .file: "File"
++    case .changeset: "Commit"
++    }
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppTests/SwitcherThemeSweepTests.swift ===
+@@ -0,0 +1,148 @@
++import AppKit
++import XCTest
++
++@testable import Workroom
++
++/// D14 / T15: every rail role's contrast floor, measured against **every bundled ghostty theme** rather
++/// than a hand-picked pair.
++///
++/// Two fixtures can't answer this. The rail's colours are derived from a *user-supplied* theme — the tile
++/// hues, the accent, the two diff foregrounds and the dimmed subtitle are all computed from whatever
++/// `background`/`foreground`/ANSI palette a theme file happens to carry — and the ways that goes wrong are
++/// specific to real palettes: a near-monochrome theme, a theme whose ANSI blue is nearly its background, a
++/// light theme with a pale accent. The 56 bundled themes ARE the product's input set, so they are what the
++/// floors get asserted against.
++///
++/// The sweep is also what caught the contrast metric itself: `ThemeTokens.luminance` was weighting
++/// gamma-encoded sRGB, so 43 of the 56 themes scored below the body-text floor and 38 of them lost the
++/// Liquid Glass surface to the opaque fallback. A floor that holds for two fixtures says nothing about the
++/// fiftieth theme.
++@MainActor
++final class SwitcherThemeSweepTests: XCTestCase {
++
++  /// Every bundled theme, parsed. Read from the app bundle's own `ghostty/themes` — deliberately NOT
++  /// through `ThemeService.themeDirectories()`, whose first entry is `~/.config/ghostty/themes`: a user
++  /// override there would make this test's result depend on the machine running it.
++  private func bundledThemes() throws -> [ThemePreview] {
++    let root = try XCTUnwrap(
++      Bundle.main.resourceURL?.appendingPathComponent("ghostty/themes"),
++      "the app bundle must carry its themes — the terminal can't start without them")
++    let names = try FileManager.default.contentsOfDirectory(atPath: root.path).sorted()
++    let themes = names.compactMap {
++      ThemeService.parseThemeFile(atPath: root.path + "/" + $0, name: $0)
++    }
++    XCTAssertGreaterThan(
++      themes.count, 40, "the bundled set is ~56 themes; a near-empty sweep is a bug")
++    return themes
++  }
++
++  /// Text roles. The guarantee is *two-tiered* by design (D14): a card keeps its Liquid Glass while its
++  /// text clears `opaqueFillFloor`, and drops to an opaque fill below that. So the invariant asserted here
++  /// is the floor, not the 4.5:1 target — a theme landing in the 4.0–4.5 band deliberately keeps the
++  /// material, because going opaque wouldn't raise the ratio anyway (it's measured against `nsPanel`
++  /// either way; what it buys is certainty, and that isn't worth the whole surface for a near miss).
++  ///
++  /// The counts are asserted too, loosely. They are what makes this a regression net rather than a
++  /// tautology: if a future change pushes half the bundled set into the near-miss band or into the opaque
++  /// fallback, every per-theme assertion above still passes while the rail quietly stops being glass.
++  func testEveryBundledThemeKeepsTheRailsTextLegible() throws {
++    var fellBack: [String] = []
++    var nearMiss: [String] = []
++    let themes = try bundledThemes()
++    for theme in themes {
++      let tokens = ThemeTokens(preview: theme)
++      let palette = SwitcherRailLayout.palette(for: tokens)
++      if palette.needsOpaqueFill {
++        fellBack.append(theme.name)
++        continue
++      }
++      for (role, color) in [("name", palette.nsName), ("subtitle", palette.nsSubtitle)] {
++        XCTAssertGreaterThanOrEqual(
++          ThemeTokens.contrastRatio(color, tokens.nsPanel),
++          SwitcherRailLayout.Palette.opaqueFillFloor - 0.01,
++          "\(theme.name): the \(role) is below the floor that keeps the material on")
++      }
++      if ThemeTokens.contrastRatio(palette.nsName, tokens.nsPanel)
++        < SwitcherRailLayout.Palette.textTarget
++      {
++        nearMiss.append(theme.name)
++      }
++    }
++    // Measured at the time of writing: 1 fallback (iTerm2 Solarized Light, 3.90:1) and 3 in the band
++    // (Everforest Light Med 4.39, TokyoNight Day 4.25, iTerm2 Solarized Dark 4.35).
++    XCTAssertLessThanOrEqual(
++      fellBack.count, 4,
++      "the opaque fallback is the exception, not the rule — fell back: \(fellBack)")
++    XCTAssertLessThanOrEqual(
++      nearMiss.count, 6, "the 4.0–4.5 band should stay a handful — in it: \(nearMiss)")
++  }
++
++  /// Indicator roles: 3:1 for the ring, the running dot and the diff bars.
++  func testEveryBundledThemeKeepsTheRailsIndicatorsVisible() throws {
++    for theme in try bundledThemes() {
++      let tokens = ThemeTokens(preview: theme)
++      let palette = SwitcherRailLayout.palette(for: tokens)
++      for (role, color) in [
++        ("ring", palette.nsRing), ("dot", palette.nsDot), ("diffAdd", palette.nsDiffAdd),
++        ("diffRemove", palette.nsDiffRemove),
++      ] {
++        XCTAssertGreaterThanOrEqual(
++          ThemeTokens.contrastRatio(color, tokens.nsPanel),
++          SwitcherRailLayout.Palette.indicatorTarget - 0.01,
++          "\(theme.name): \(role) is below the indicator floor")
++      }
++    }
++  }
++
++  /// Every mark tile, on every theme: the tile must be visible against the card, and its monogram legible
++  /// on the tile. The second half is what a brightness-threshold ink rule failed — it took white on a
++  /// 0.54-brightness tile at 1.77:1 where black gives 11.8:1 — so `ink` measures both candidates.
++  func testEveryBundledThemeKeepsEveryMonogramLegible() throws {
++    for theme in try bundledThemes() {
++      let tokens = ThemeTokens(preview: theme)
++      for hue in 0..<SwitcherMark.hueCount {
++        let tile = SwitcherMark.tileColor(hue: hue, tokens: tokens)
++        XCTAssertGreaterThanOrEqual(
++          ThemeTokens.contrastRatio(tile, tokens.nsPanel), SwitcherMark.tileContrastFloor - 0.01,
++          "\(theme.name) hue \(hue): the tile itself disappears into the card")
++        XCTAssertGreaterThanOrEqual(
++          ThemeTokens.contrastRatio(SwitcherMark.ink(on: tile), tile),
++          SwitcherRailLayout.Palette.textTarget - 0.01,
++          "\(theme.name) hue \(hue): the monogram is illegible on its own tile")
++      }
++    }
++  }
++
++  /// The badge's own pill: its label against the fill it sits on, and the fill against the card.
++  ///
++  /// This is the role D14 lists last and the one the rail nearly shipped wrong: `UnreadBadge`'s own colours
++  /// are the RAW `accent` with ink on top, and the raw accent is exactly what the ring gets corrected away
++  /// from — so a pale-accent theme drew an invisible pill beside a visible ring. The rail passes its own
++  /// pair instead, which is `nsRing` plus measured ink.
++  func testEveryBundledThemeKeepsTheBadgeReadable() throws {
++    for theme in try bundledThemes() {
++      let tokens = ThemeTokens(preview: theme)
++      let palette = SwitcherRailLayout.palette(for: tokens)
++      XCTAssertGreaterThanOrEqual(
++        ThemeTokens.contrastRatio(palette.nsBadgeInk, palette.nsBadgeFill),
++        SwitcherRailLayout.Palette.textTarget - 0.01,
++        "\(theme.name): the unread count is illegible on its own pill")
++      XCTAssertGreaterThanOrEqual(
++        ThemeTokens.contrastRatio(palette.nsBadgeFill, tokens.nsPanel),
++        SwitcherRailLayout.Palette.indicatorTarget - 0.01,
++        "\(theme.name): the pill disappears into the card")
++    }
++  }
++
++  /// The rail's badge and its cursor ring must be the SAME accent. Flagged as an open judgment call when
++  /// the rail landed: `legible` walked the ring away from a pale accent while the badge kept the raw one,
++  /// so on those themes the two disagreed about what the app's accent is.
++  func testTheBadgeAndTheCursorRingAgreeOnTheAccent() throws {
++    for theme in try bundledThemes() {
++      let palette = SwitcherRailLayout.palette(for: ThemeTokens(preview: theme))
++      XCTAssertEqual(
++        palette.nsBadgeFill, palette.nsRing,
++        "\(theme.name): the badge pill and the cursor ring are both 'the accent'")
++    }
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppTests/SwitcherRailLayoutTests.swift ===
+@@ -16,33 +16,92 @@ final class SwitcherRailLayoutTests: XCTestCase {
+   }
+ 
+   func testCardsShrinkTowardsTheFloorAsTheCountGrows() {
+-    let wide = L.cardWidth(count: 5, available: 1100)
+-    let tight = L.cardWidth(count: 6, available: 1100)
++    let wide = L.cardWidth(count: 9, available: 1100)
++    let tight = L.cardWidth(count: 10, available: 1100)
+     XCTAssertLessThan(tight, wide, "more cards ⇒ narrower cards, before any scrolling")
+     XCTAssertLessThanOrEqual(wide, L.maxCardWidth)
+   }
+ 
+   func testCardWidthNeverGoesBelowTheFloor() {
+-    // The whole point of the 180pt floor (Codex #1): at 140 the label column is ~36pt, so every name
+-    // fragments and the badge collides — the densest state would read the worst.
+-    for count in [8, 12, 40, 200] {
++    // The floor exists so the densest state never becomes the least readable one — the original 140pt
++    // side-by-side card left ~36pt of label, which fragmented every name.
++    for count in [12, 20, 40, 200] {
+       XCTAssertEqual(
+         L.cardWidth(count: count, available: 1100), L.minCardWidth,
+         "\(count) cards must shrink to the floor and then scroll, never past it")
+     }
+   }
+ 
+-  func testTheFloorIs180Not140() {
+-    XCTAssertEqual(L.minCardWidth, 180)
+-    // And the floor must leave a usable label column: card − well − padding − gap.
+-    let label = L.minCardWidth - L.wellSize.width - 10 * 2 - 10
+-    XCTAssertGreaterThan(label, 60, "a 13pt name plus a badge needs real width")
++  func testTheFloorLeavesAUsableLabelWidth() {
++    XCTAssertEqual(L.minCardWidth, 104)
++    // Stacked cards give the label the FULL card width (the well is above it, not beside it), so only
++    // the horizontal padding comes off — which is why the card could shrink from 180 to 104 and still
++    // hold MORE label than before.
++    let label = L.minCardWidth - 6 * 2
++    XCTAssertGreaterThan(label, 80, "a 12pt name needs real width")
++    XCTAssertGreaterThan(
++      label, L.maxCardWidth - L.wellSize.width - 30,
++      "the stacked label beats what a side-by-side card of the same width would give it")
++  }
++
++  func testStackingRoughlyDoubledHowManyCardsFit() {
++    // The reason for the layout change: at the old 200pt a 1100pt rail held 5 cards, and it now holds 8.
++    let viewport: CGFloat = 1100
++    let fits = Int((viewport - L.railPadding * 2) / (L.maxCardWidth + L.cardSpacing))
++    XCTAssertGreaterThanOrEqual(fits, 8, "the whole point of stacking was horizontal room")
++  }
++
++  // MARK: Panel width — snug, so the cards read as centred
++
++  func testThePanelIsOnlyAsWideAsItsCards() {
++    let visible = CGRect(x: 0, y: 0, width: 2000, height: 1200)
++    let panel = L.panelWidth(count: 4, visibleFrame: visible)
++    let expected = L.contentWidth(
++      count: 4, cardWidth: L.cardWidth(count: 4, available: L.viewportWidth(visibleFrame: visible)))
++    XCTAssertEqual(
++      panel, expected, "sizing the panel to the viewport made 4 cards look left-aligned")
++    XCTAssertLessThan(panel, L.viewportWidth(visibleFrame: visible))
++  }
++
++  func testThePanelTakesTheWholeViewportOnceCardsOverflow() {
++    let visible = CGRect(x: 0, y: 0, width: 1200, height: 900)
++    let viewport = L.viewportWidth(visibleFrame: visible)
++    XCTAssertEqual(
++      L.panelWidth(count: 40, visibleFrame: visible), viewport,
++      "past the floor the row scrolls inside a full-width panel")
++  }
++
++  func testASingleCardGetsASnugPanel() {
++    let visible = CGRect(x: 0, y: 0, width: 2000, height: 1200)
++    let panel = L.panelWidth(count: 1, visibleFrame: visible)
++    XCTAssertEqual(panel, L.maxCardWidth + L.railPadding * 2)
+   }
+ 
+   func testCardWidthWithNoCards() {
+     XCTAssertEqual(L.cardWidth(count: 0, available: 1100), L.maxCardWidth, "no division by zero")
+   }
+ 
++  // MARK: The shadow halo
++
++  func testTheWindowIsTheSlabPlusAShadowHalo() {
++    let visible = CGRect(x: 0, y: 0, width: 2000, height: 1200)
++    let size = L.panelSize(count: 4, visibleFrame: visible)
++    XCTAssertEqual(
++      size.width, L.panelWidth(count: 4, visibleFrame: visible) + L.shadowMargin * 2,
++      "a drawn shadow is clipped at the window edge, so the window is bigger than the rail")
++    XCTAssertEqual(size.height, L.railHeight + L.shadowMargin * 2)
++  }
++
++  func testOnANarrowScreenTheHaloComesOutOfTheRailNotTheScreenMargin() {
++    // Otherwise the window would overhang `visibleFrame` and `panelOrigin`'s clamp would shove the rail
++    // off centre — the one thing the centring work was for.
++    let narrow = CGRect(x: 0, y: 0, width: 900, height: 700)
++    let size = L.panelSize(count: 40, visibleFrame: narrow)
++    XCTAssertLessThanOrEqual(size.width, narrow.width - L.screenMargin * 2)
++    let origin = L.panelOrigin(size: size, windowFrame: narrow, visibleFrame: narrow)
++    XCTAssertEqual(origin.x + size.width / 2, narrow.midX, accuracy: 0.5, "still centred")
++  }
++
+   // MARK: Overflow (D9)
+ 
+   func testFewCardsDoNotScroll() {
+@@ -51,7 +110,7 @@ final class SwitcherRailLayoutTests: XCTestCase {
+ 
+   func testManyCardsScrollRatherThanWrapping() {
+     XCTAssertTrue(
+-      L.scrolls(count: 12, available: 1100),
++      L.scrolls(count: 40, available: 1100),
+       "past the floor the single row scrolls — never a second row")
+   }
+ 
+@@ -137,20 +196,52 @@ final class SwitcherRailLayoutTests: XCTestCase {
+         palette: (0..<8).map { _ in NSColor(srgbRed: 0.52, green: 0.52, blue: 0.55, alpha: 1) }))
+   }
+ 
++  /// A theme with real headroom, at either end. Explicit rather than `ThemeTokens(preview: nil)`: the
++  /// system fallback follows the machine's own appearance preference, so a floor asserted against it
++  /// passes or fails depending on who runs it — which is exactly what happened (the fallback's card moved
++  /// to mid-grey, where even pure white text caps at 4.45:1, and these tests started failing on a
++  /// codebase nobody had touched).
++  private func healthyTokens(dark: Bool) -> ThemeTokens {
++    let ansi: [NSColor] = [
++      NSColor(srgbRed: 0.16, green: 0.16, blue: 0.18, alpha: 1),
++      NSColor(srgbRed: 0.78, green: 0.25, blue: 0.28, alpha: 1),
++      NSColor(srgbRed: 0.25, green: 0.62, blue: 0.35, alpha: 1),
++      NSColor(srgbRed: 0.80, green: 0.64, blue: 0.24, alpha: 1),
++      NSColor(srgbRed: 0.24, green: 0.48, blue: 0.82, alpha: 1),
++      NSColor(srgbRed: 0.60, green: 0.34, blue: 0.75, alpha: 1),
++      NSColor(srgbRed: 0.22, green: 0.62, blue: 0.66, alpha: 1),
++      NSColor(srgbRed: 0.86, green: 0.86, blue: 0.88, alpha: 1),
++    ]
++    return ThemeTokens(
++      preview: ThemePreview(
++        name: dark ? "dark fixture" : "light fixture",
++        background: dark
++          ? NSColor(srgbRed: 0.07, green: 0.07, blue: 0.09, alpha: 1)
++          : NSColor(srgbRed: 0.98, green: 0.98, blue: 0.98, alpha: 1),
++        foreground: dark
++          ? NSColor(srgbRed: 0.94, green: 0.94, blue: 0.95, alpha: 1)
++          : NSColor(srgbRed: 0.11, green: 0.11, blue: 0.13, alpha: 1),
++        palette: ansi))
++  }
++
+   func testTextRolesAreLiftedToTheTextFloorWherePossible() {
+-    let tokens = ThemeTokens(preview: nil)  // system fallback: a sane, high-contrast baseline
+-    let palette = SwitcherRailLayout.palette(for: tokens)
+-    let base = tokens.nsPanel
+-    XCTAssertGreaterThanOrEqual(
+-      ThemeTokens.contrastRatio(palette.nsName, base),
+-      SwitcherRailLayout.Palette.textTarget - 0.01, "the 13pt name must clear 4.5:1")
+-    XCTAssertGreaterThanOrEqual(
+-      ThemeTokens.contrastRatio(palette.nsSubtitle, base),
+-      SwitcherRailLayout.Palette.textTarget - 0.01, "the 11pt subtitle too — this is body text")
++    for dark in [true, false] {
++      let tokens = healthyTokens(dark: dark)
++      let palette = SwitcherRailLayout.palette(for: tokens)
++      let base = tokens.nsPanel
++      XCTAssertGreaterThanOrEqual(
++        ThemeTokens.contrastRatio(palette.nsName, base),
++        SwitcherRailLayout.Palette.textTarget - 0.01,
++        "the 13pt name must clear 4.5:1 (dark: \(dark))")
++      XCTAssertGreaterThanOrEqual(
++        ThemeTokens.contrastRatio(palette.nsSubtitle, base),
++        SwitcherRailLayout.Palette.textTarget - 0.01,
++        "the 11pt subtitle too — this is body text (dark: \(dark))")
++    }
+   }
+ 
+   func testIndicatorRolesClearTheIndicatorFloor() {
+-    let tokens = ThemeTokens(preview: nil)
++    let tokens = healthyTokens(dark: true)
+     let palette = SwitcherRailLayout.palette(for: tokens)
+     let base = tokens.nsPanel
+     for (role, color) in [
+@@ -172,8 +263,33 @@ final class SwitcherRailLayoutTests: XCTestCase {
+   }
+ 
+   func testAHealthyThemeKeepsItsVibrancy() {
+-    XCTAssertFalse(
+-      SwitcherRailLayout.palette(for: ThemeTokens(preview: nil)).needsOpaqueFill,
+-      "the normal case keeps the frosted material")
++    for dark in [true, false] {
++      XCTAssertFalse(
++        SwitcherRailLayout.palette(for: healthyTokens(dark: dark)).needsOpaqueFill,
++        "the normal case keeps the frosted material (dark: \(dark))")
++    }
++  }
++
++  func testAHairsBreadthMissKeepsTheMaterial() {
++    // Going opaque doesn't raise the ratio — it's measured against `nsPanel` either way — so a theme that
++    // lands just under 4.5:1 must not lose the whole Liquid Glass surface for it. A mid-tone card with
++    // white text, sized so the ratio lands in the 4.0–4.5 band: the card is `bg` blended 5.5%
++    // toward `fg`, so an encoded 0.44 background yields a 0.47 card at 4.41:1 against white.
++    //
++    // Three of the 56 bundled themes really do live in this band (Everforest Light Med, TokyoNight Day,
++    // iTerm2 Solarized Dark) — see `SwitcherThemeSweepTests`. This fixture is the arithmetic; those are
++    // the product's own evidence that the band is worth having.
++    let midTone = ThemeTokens(
++      preview: ThemePreview(
++        name: "mid-tone card",
++        background: NSColor(srgbRed: 0.44, green: 0.44, blue: 0.44, alpha: 1),
++        foreground: NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 1),
++        palette: (0..<8).map { _ in NSColor(srgbRed: 0.10, green: 0.12, blue: 0.16, alpha: 1) }))
++    let palette = SwitcherRailLayout.palette(for: midTone)
++    let achieved = ThemeTokens.contrastRatio(palette.nsName, midTone.nsPanel)
++    XCTAssertLessThan(
++      achieved, SwitcherRailLayout.Palette.textTarget, "the premise: it misses 4.5:1")
++    XCTAssertGreaterThan(achieved, SwitcherRailLayout.Palette.opaqueFillFloor, "but only just")
++    XCTAssertFalse(palette.needsOpaqueFill, "a near miss must not cost the material")
+   }
+ }
+
+
+=== DIFF: macapp/WorkroomApp/Core/QuickSwitcher.swift ===
+@@ -1,5 +1,6 @@
+ import AppKit
+ import Defaults
++import SwiftUI
+ 
+ /// Which of the two quick switchers a keystroke opened (issue #132).
+ enum QuickSwitcherKind: Equatable {
+@@ -41,6 +42,17 @@ enum SwitcherModifier: String, CaseIterable, Defaults.Serializable {
+     }
+   }
+ 
++  /// The same chord as SwiftUI states it, for the Go-menu items' key equivalents (D11) — which is how
++  /// macOS teaches a shortcut, so it has to track the preference rather than hard-code ⌥/⌃.
++  var eventModifiers: EventModifiers {
++    switch self {
++    case .option: [.option]
++    case .control: [.control]
++    case .commandOption: [.command, .option]
++    case .commandControl: [.command, .control]
++    }
++  }
++
+   /// Menu-style glyphs, for the keyboard-shortcuts sheet.
+   var display: String {
+     switch self {
+@@ -104,11 +116,63 @@ enum QuickSwitcher {
+     _ kind: QuickSwitcherKind, reverse: Bool, in store: AppStore,
+     registry: WindowRegistry = .shared, recency: SwitcherRecency = .shared
+   ) -> Bool {
++    stepDescribing(kind, reverse: reverse, in: store, registry: registry, recency: recency).switched
++  }
++
++  /// `step`, plus what to say out loud. The VoiceOver path (D16) has no rail, so the announcement is
++  /// the whole interface — and it has to name the **destination**, which for a cross-window switch is
++  /// not something the origin store can be asked for: its own selection never moves, so reading it back
++  /// announced the workroom the user just left.
++  static func stepDescribing(
++    _ kind: QuickSwitcherKind, reverse: Bool, in store: AppStore,
++    registry: WindowRegistry = .shared, recency: SwitcherRecency = .shared
++  ) -> (switched: Bool, spoken: String?) {
+     switch kind {
+     case .workrooms:
+-      stepWorkrooms(reverse: reverse, in: store, registry: registry, recency: recency)
+-    case .panes: stepPanes(reverse: reverse, in: store, recency: recency)
++      return stepWorkrooms(reverse: reverse, in: store, registry: registry, recency: recency)
++    case .panes: return stepPanes(reverse: reverse, in: store, recency: recency)
++    }
++  }
++
++  // MARK: The Go-menu path (D11)
++
++  /// Switch from a Go-menu item rather than a keystroke (D11 — the shortcut is otherwise invisible, and
++  /// mouse-only users can't reach the feature at all).
++  ///
++  /// Resolved through the monitor's own gate on the **key window**, not through the `Commands` body's
++  /// `@FocusedObject` store, for two reasons. A `focusedSceneValue` survives an aux window or the quick
++  /// terminal becoming key, so a menu-fired switch could otherwise retarget a background workroom
++  /// window the user isn't looking at; and the gate is what encodes "not one of our windows" and "a
++  /// modal is up" — the exact cases where this must do nothing. No session and no rail: a menu click
++  /// has no modifier to hold, so this is always the stage-1 immediate flip.
++  ///
++  /// There is no double-fire with the monitor: it runs inside `NSApp.sendEvent` ahead of menu
++  /// key-equivalent dispatch and consumes the event whenever it switched, so the menu's key equivalent
++  /// is only ever reached in the pass-through cases — where this returns false and changes nothing.
++  @discardableResult
++  static func stepFromKeyWindow(
++    _ kind: QuickSwitcherKind, reverse: Bool = false, window: NSWindow? = NSApp.keyWindow,
++    registry: WindowRegistry = .shared, recency: SwitcherRecency = .shared
++  ) -> Bool {
++    guard case .act(let store) = AppDelegate.switcherGate(for: window, in: registry) else {
++      return false
+     }
++    return step(kind, reverse: reverse, in: store, registry: registry, recency: recency)
++  }
++
++  /// Whether ⌥Tab has anywhere to go — the enablement for its Go-menu item, and load-bearing rather
++  /// than cosmetic: **a disabled menu item drops its key equivalent**, which is what stops the item
++  /// swallowing a Tab the monitor deliberately passed through.
++  ///
++  /// Counts rather than building `workroomSlots()`: this is recomputed on every RootView body pass, and
++  /// the MRU ordering it would do is irrelevant to "is there more than one".
++  static func canSwitchWorkrooms(registry: WindowRegistry = .shared) -> Bool {
++    var count = 0
++    for store in registry.allStores where !store.hasModalPresentation {
++      count += store.orderedWorkroomTargets().count
++      if count > 1 { return true }
++    }
++    return false
+   }
+ 
+   // MARK: Workrooms (⌥Tab, every window)
+@@ -131,14 +195,16 @@ enum QuickSwitcher {
+ 
+   private static func stepWorkrooms(
+     reverse: Bool, in store: AppStore, registry: WindowRegistry, recency: SwitcherRecency
+-  ) -> Bool {
++  ) -> (switched: Bool, spoken: String?) {
+     let slots = workroomSlots(registry: registry, recency: recency)
+-    guard slots.count > 1 else { return false }
++    guard slots.count > 1 else { return (false, nil) }
+     let current = store.selectedTargetID.flatMap { sid in
+       slots.firstIndex { $0.store === store && $0.sid == sid }
+     }
+     let next = destination(from: current, count: slots.count, reverse: reverse)
+-    return commit(slots[next], from: store)
++    let slot = slots[next]
++    guard commit(slot, from: store) else { return (false, nil) }
++    return (true, slot.store?.label(for: slot.sid).full ?? slot.target.title)
+   }
+ 
+   /// Switch to one workroom slot. Shared by the tap-only path above and the held-modifier session's
+@@ -148,10 +214,22 @@ enum QuickSwitcher {
+     guard let target = slot.store, target !== store || slot.sid != store.selectedTargetID else {
+       return false  // already here: no raise, no selection write, no history entry
+     }
++    // Re-checked HERE, not just when the session opened. A sheet going up posts no notification the
++    // session watches, so a window that was clean at open can be modal by the time the modifier is
++    // released — and this is the write the monitor's `.swallow` gate exists to prevent: a raise plus a
++    // selection change underneath a dialog that is already acting on a different workroom.
++    guard !target.hasModalPresentation else { return false }
+     if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
+     // Raise first, then select: `AppStore.persistsSidebarPrefs` keys on being `lastActiveStore`, so
+     // the registry's didBecomeKey observer must have run before the selection write.
+-    target.hostWindow?.makeKeyAndOrderFront(nil)
++    //
++    // That raise makes the destination window key, which fires the registry's own recency hook and
++    // would record the selection the window is *about to leave* — putting a workroom the user never
++    // visited at MRU[1] and breaking the ⌥Tab⌥Tab ping-pong. Suppressed across the raise; the
++    // `openExisting` below records the real destination.
++    SwitcherRecency.shared.suppressingRecord {
++      target.hostWindow?.makeKeyAndOrderFront(nil)
++    }
+     target.openExisting(slot.sid)
+     return true
+   }
+@@ -166,20 +244,27 @@ enum QuickSwitcher {
+ 
+   private static func stepPanes(
+     reverse: Bool, in store: AppStore, recency: SwitcherRecency
+-  ) -> Bool {
+-    guard let target = store.selectedTarget, !target.isMissing else { return false }
++  ) -> (switched: Bool, spoken: String?) {
++    guard let target = store.selectedTarget, !target.isMissing else { return (false, nil) }
+     let tabs = paneTabs(in: store, recency: recency)
+-    guard tabs.count > 1 else { return false }
++    guard tabs.count > 1 else { return (false, nil) }
+     let activeID = store.terminals.activeTab(for: target)?.id
+     let current = activeID.flatMap { id in tabs.firstIndex { $0.id == id } }
+     let next = destination(from: current, count: tabs.count, reverse: reverse)
+-    return commit(pane: tabs[next].id, in: store)
++    let tab = tabs[next]
++    guard commit(pane: tab.id, in: store, target: target) else { return (false, nil) }
++    return (true, tab.title)
+   }
+ 
+-  /// Switch to one pane by id. Shared with the held-modifier session's release commit (T10).
++  /// Switch to one pane by id, within `target`. Shared with the held-modifier session's release commit
++  /// (T10), which passes the workroom it froze at open rather than whatever is selected now — a
++  /// mid-gesture selection change would otherwise write the pane into the wrong workroom.
+   @discardableResult
+-  static func commit(pane id: TerminalTab.ID, in store: AppStore) -> Bool {
+-    guard let target = store.selectedTarget, !target.isMissing else { return false }
++  static func commit(
++    pane id: TerminalTab.ID, in store: AppStore, target: TerminalTarget? = nil
++  ) -> Bool {
++    guard let target = target ?? store.selectedTarget, !target.isMissing else { return false }
++    guard !store.hasModalPresentation else { return false }
+     guard store.terminals.activeTab(for: target)?.id != id else { return false }
+     guard store.terminals.tabs(for: target).contains(where: { $0.id == id }) else { return false }
+     // `select`, not `focus`: it also promotes the owning workroom in a split and takes keyboard focus.
+
+
+=== DIFF: macapp/WorkroomApp/Core/SwitcherRailLayout.swift ===
+@@ -10,18 +10,22 @@ enum SwitcherRailLayout {
+   // MARK: Card geometry (D9)
+ 
+   /// The comfortable card width, used while the whole rail fits.
+-  static let maxCardWidth: CGFloat = 200
+-  /// The floor. **180, not 140**: with a fixed 72pt well plus padding and the gap, a 140pt card leaves
+-  /// roughly 36pt of label column — every name becomes a fragment and the badge collides with it, so
+-  /// the densest state would read the worst. At 180 the label keeps ~76pt (a readable name plus the
+-  /// badge) and the row simply starts scrolling sooner.
+-  static let minCardWidth: CGFloat = 180
+-  static let cardHeight: CGFloat = 88
+-  static let cardSpacing: CGFloat = 10
++  ///
++  /// Cards are **stacked** — well above label, the way ⌘Tab and the Dock put an icon above its name —
++  /// rather than well-beside-label. That change alone nearly halved the card: a side-by-side card has to
++  /// pay for the well's width *and* a label column beside it, while a stacked one gives the full card
++  /// width to the label. Roughly twice as many workrooms now fit before the row has to scroll.
++  static let maxCardWidth: CGFloat = 120
++  /// The floor. The label spans the whole card here, so ~96pt of 12pt text survives — comfortably more
++  /// than the side-by-side layout had at 180pt, where a 52pt well and its gap came off the top first.
++  static let minCardWidth: CGFloat = 104
++  static let cardHeight: CGFloat = 104
++  static let cardSpacing: CGFloat = 8
+   /// Inset from the rail's own edge to the first card.
+-  static let railPadding: CGFloat = 14
+-  /// The thumbnail well. Fixed at every card width — the label column absorbs all of the shrink.
+-  static let wellSize = CGSize(width: 72, height: 56)
++  static let railPadding: CGFloat = 12
++  /// The well. Small on purpose: at 52pt it dominated a card whose *label* is the thing you read, and a
++  /// mark only has to be recognisable, not large. This is close to a Dock icon's proportion of its label.
++  static let wellSize = CGSize(width: 38, height: 38)
+ 
+   /// Card width for `count` items in `available` points: the comfortable width while everything fits,
+   /// shrinking no further than the floor. Past the floor the row scrolls instead (never a second row).
+@@ -50,11 +54,51 @@ enum SwitcherRailLayout {
+   /// Clearance kept between the rail and the screen edge.
+   static let screenMargin: CGFloat = 24
+ 
+-  /// The rail's width for a given screen: capped, and never wider than the usable frame.
++  /// Empty room kept between the rail and the WINDOW's edge, for the rail's drop shadow to land in.
++  ///
++  /// The shadow is drawn in-content rather than by the window, because a borderless non-opaque panel
++  /// casts no system shadow at all — measured, not assumed: with `hasShadow = true` and
++  /// `invalidateShadow()`, a pixel diff of the same screen with and without the panel found **zero**
++  /// darkening at 6/14/26/44pt out on every side, with glass content *and* with a solid opaque fill. A
++  /// drawn shadow, though, is clipped at the window's edge, so the window has to be this much bigger
++  /// than the rail on all four sides.
++  ///
++  /// Deliberately equal to `screenMargin`: the halo then *is* the screen clearance, so a full-width rail
++  /// plus its shadow lands exactly inside `visibleFrame` and `panelOrigin`'s clamp never has to fire.
++  static let shadowMargin: CGFloat = 24
++
++  /// The rail slab's height — one row of cards plus its inset.
++  static var railHeight: CGFloat { cardHeight + railPadding * 2 }
++
++  /// The widest the rail may be on a given screen: capped, and never wider than the usable frame. This
++  /// is the space available for cards, NOT the panel's width — see `panelWidth`.
+   static func viewportWidth(visibleFrame: CGRect) -> CGFloat {
+     min(maxViewportWidth, max(minCardWidth, visibleFrame.width - screenMargin * 2))
+   }
+ 
++  /// The panel's actual width: **snug around its cards**, not the full viewport.
++  ///
++  /// Sizing the panel to the viewport left the glass extending far past the last card, so a rail of four
++  /// looked left-aligned inside a wide slab even though the slab itself was centred. Fitting the panel to
++  /// its content is what makes the *cards* look centred, which is the thing anyone actually perceives.
++  /// Once the cards overflow, the panel takes the whole viewport and the row scrolls inside it.
++  static func panelWidth(count: Int, visibleFrame: CGRect) -> CGFloat {
++    let viewport = viewportWidth(visibleFrame: visibleFrame)
++    let content = contentWidth(
++      count: count, cardWidth: cardWidth(count: count, available: viewport))
++    return min(content, viewport)
++  }
++
++  /// The **window's** size: the rail slab plus its shadow halo on every side. `panelWidth` is the slab;
++  /// this is the window that carries it. Capped so the halo can never push the slab off the screen —
++  /// on a narrow display the rail gives the halo its points rather than the reverse.
++  static func panelSize(count: Int, visibleFrame: CGRect) -> CGSize {
++    let rail = panelWidth(count: count, visibleFrame: visibleFrame)
++    let cap = max(minCardWidth, visibleFrame.width - screenMargin * 2)
++    return CGSize(
++      width: min(rail + shadowMargin * 2, cap), height: railHeight + shadowMargin * 2)
++  }
++
+   /// Where to place a `size` panel for a key window on a screen: centred on the **window**, then
+   /// pushed back inside `visibleFrame` if that overhangs. Centring on the window rather than the
+   /// screen is what keeps the rail where the user is looking with Stage Manager or an off-centre
+@@ -76,9 +120,10 @@ enum SwitcherRailLayout {
+   ///
+   /// The cursor ring clearing 3:1 says nothing about the rest, and the rail's surface is
+   /// vibrancy + `panel.opacity(0.7)` over a *user-supplied* ghostty theme — a theme whose foreground
+-  /// sits close to its background washes out the name, the subtitle and the diff numbers while the
+-  /// ring still passes. So each role gets its own floor: 4.5:1 for text (11–13pt body), 3:1 for
+-  /// indicators and the ring.
++  /// sits close to its background washes out the name, the subtitle and the diff bars while the ring
++  /// still passes. So each role gets its own floor: 4.5:1 for text (11–13pt body), 3:1 for indicators,
++  /// the ring and the drawn miniatures.
++  ///
+   /// Resolved as **`NSColor`**, with `Color` accessors on top. Never the other way round: converting a
+   /// SwiftUI `Color` back with `NSColor(_:)` yields a lazily-resolved, SwiftUI-backed colour whose
+   /// `usingColorSpace` returns nil outside a view update — so a contrast check silently no-ops and
+@@ -91,6 +136,14 @@ enum SwitcherRailLayout {
+     let nsDot: NSColor
+     let nsDiffAdd: NSColor
+     let nsDiffRemove: NSColor
++    /// The unread pill, and the count drawn on it. The rail can't use the shared `UnreadBadge`'s own
++    /// colours: those are the raw `accent` with `accentForeground` on top, and `accentForeground` comes
++    /// from `ThemeTokens.contrastingForeground`, which flips ink at luminance 0.6 — the same threshold
++    /// that left a mark's monogram at 1.77:1 on a 0.54-luminance tile. `nsBadgeFill` is deliberately the
++    /// SAME colour as `nsRing`: both are "the accent", and on a pale-accent theme the ring gets corrected
++    /// while a raw-accent badge would not, leaving two elements on one card disagreeing about it.
++    let nsBadgeFill: NSColor
++    let nsBadgeInk: NSColor
+     /// True when a floor could not be met by nudging alone, so the card drops vibrancy for an opaque
+     /// fill. Legibility outranks the material.
+     let needsOpaqueFill: Bool
+@@ -101,9 +154,21 @@ enum SwitcherRailLayout {
+     var dot: Color { Color(nsColor: nsDot) }
+     var diffAdd: Color { Color(nsColor: nsDiffAdd) }
+     var diffRemove: Color { Color(nsColor: nsDiffRemove) }
++    var badgeFill: Color { Color(nsColor: nsBadgeFill) }
++    var badgeInk: Color { Color(nsColor: nsBadgeInk) }
+ 
+     static let textTarget: CGFloat = 4.5
+     static let indicatorTarget: CGFloat = 3.0
++
++    /// When to abandon the material, which is **lower** than `textTarget` on purpose.
++    ///
++    /// Dropping vibrancy doesn't raise the contrast ratio — it's computed against `nsPanel` either way.
++    /// What it buys is *certainty*: an opaque card makes the measured background the real one instead of
++    /// whatever the glass happened to sample. That's worth having when text is genuinely hard to read,
++    /// and not worth the whole Liquid Glass surface when a theme misses the floor by a hair. Measured
++    /// case: a mid-grey card caps white text at 4.45:1 — 99% of the floor, no perceptible difference —
++    /// and keying the fallback on `textTarget` turned the glass off for it.
++    static let opaqueFillFloor: CGFloat = 4.0
+   }
+ 
+   static func palette(for tokens: ThemeTokens) -> Palette {
+@@ -124,9 +189,13 @@ enum SwitcherRailLayout {
+       nsDot: accent,
+       nsDiffAdd: fix(tokens.nsDiffAddFg, Palette.indicatorTarget),
+       nsDiffRemove: fix(tokens.nsDiffRemoveFg, Palette.indicatorTarget),
+-      // `legible` walks towards the foreground and stops at 100%; if even the pure foreground can't
+-      // clear the text floor against this fill, the fill itself is the problem.
+-      needsOpaqueFill: ThemeTokens.contrastRatio(name, base) < Palette.textTarget
++      nsBadgeFill: accent,
++      // Whichever of black/white actually wins on this fill, measured — not chosen by a luminance
++      // threshold. Shared with the mark's monogram, which is where the measurement came from.
++      nsBadgeInk: SwitcherMark.ink(on: accent),
++      // `legible` walks towards the foreground and stops at 100%; if even the pure foreground can't come
++      // close to the text floor against this fill, the fill itself is the problem.
++      needsOpaqueFill: ThemeTokens.contrastRatio(name, base) < Palette.opaqueFillFloor
+     )
+   }
+ }
+
+
+=== DIFF: macapp/WorkroomAppTests/QuickSwitcherTests.swift ===
+@@ -1,4 +1,5 @@
+ import AppKit
++import SwiftUI
+ import XCTest
+ 
+ @testable import Workroom
+@@ -177,6 +178,86 @@ final class QuickSwitcherTests: XCTestCase {
+     }
+   }
+ 
++  // MARK: the Go-menu path (D11)
++
++  /// The menu item resolves its store from the KEY window through the same gate, not from the menu's
++  /// own focused store: a `focusedSceneValue` survives an aux window or the quick terminal becoming key,
++  /// so reading the focused store would let a menu-fired switch retarget a background window.
++  func testTheMenuPathRefusesAnyWindowTheKeyMonitorWouldNotActOn() {
++    let shared = ProjectStore()
++    shared.projects = [project("/p", workrooms: ["w1", "w2"])]
++    let store = makeStore(shared, project: "/p", workrooms: ["w1", "w2"])
++    store.selectedTargetID = .workroom(project: "/p", name: "w1")
++    let window = NSWindow()
++    let registry = WindowRegistry()
++    registry.register(window: window, store: store)
++
++    XCTAssertFalse(
++      QuickSwitcher.stepFromKeyWindow(
++        .workrooms, window: NSWindow(), registry: registry, recency: SwitcherRecency()),
++      "an unregistered key window (Settings, the quick terminal) is not ours to switch in")
++    XCTAssertFalse(
++      QuickSwitcher.stepFromKeyWindow(
++        .workrooms, window: nil, registry: registry, recency: SwitcherRecency()),
++      "no key window at all ⇒ nothing to switch in")
++
++    store.pendingCommit = PendingCommit(sid: .workroom(project: "/p", name: "w1"), vcs: "git")
++    XCTAssertFalse(
++      QuickSwitcher.stepFromKeyWindow(
++        .workrooms, window: window, registry: registry, recency: SwitcherRecency()),
++      "and a modal is swallowed here too, not just in the monitor")
++    XCTAssertEqual(
++      store.selectedTargetID, .workroom(project: "/p", name: "w1"), "the selection never moved")
++  }
++
++  func testTheMenuPathSwitchesOnTheKeyWindow() {
++    let shared = ProjectStore()
++    shared.projects = [project("/p", workrooms: ["w1", "w2"])]
++    let store = makeStore(shared, project: "/p", workrooms: ["w1", "w2"])
++    store.selectedTargetID = .workroom(project: "/p", name: "w1")
++    let window = NSWindow()
++    let registry = WindowRegistry()
++    registry.register(window: window, store: store)
++
++    XCTAssertTrue(
++      QuickSwitcher.stepFromKeyWindow(
++        .workrooms, window: window, registry: registry, recency: SwitcherRecency()))
++    XCTAssertEqual(
++      store.selectedTargetID, .workroom(project: "/p", name: "w2"),
++      "the menu item performs the same immediate flip a tap does — no session, no rail")
++  }
++
++  /// `canSwitchWorkrooms` gates the menu item's key equivalent, and a disabled item drops it — so this
++  /// answering true when nothing is switchable is what would eat a pass-through Tab.
++  func testCanSwitchWorkroomsCountsAcrossWindowsAndSkipsModalOnes() {
++    let shared = ProjectStore()
++    shared.projects = [project("/p", workrooms: ["w1", "w2"])]
++    let a = makeStore(shared, project: "/p", workrooms: ["w1"])
++    let registry = WindowRegistry()
++    registry.register(window: NSWindow(), store: a)
++    XCTAssertFalse(
++      QuickSwitcher.canSwitchWorkrooms(registry: registry), "one workroom is nowhere to go")
++
++    let b = makeStore(shared, project: "/p", workrooms: ["w2"])
++    registry.register(window: NSWindow(), store: b)
++    XCTAssertTrue(
++      QuickSwitcher.canSwitchWorkrooms(registry: registry),
++      "the second window's workroom counts — the switcher's scope is the whole app")
++
++    b.activePicker = .open
++    XCTAssertFalse(
++      QuickSwitcher.canSwitchWorkrooms(registry: registry),
++      "…and a window with a dialog up isn't a destination, exactly as `workroomSlots` has it")
++  }
++
++  /// The chords the Go items render. Wrong glyphs here and macOS teaches the user the wrong shortcut.
++  func testEveryTriggerModifierHasAMatchingSwiftUIChord() {
++    XCTAssertEqual(SwitcherModifier.option.eventModifiers, [.option])
++    XCTAssertEqual(SwitcherModifier.control.eventModifiers, [.control])
++    XCTAssertEqual(SwitcherModifier.commandOption.eventModifiers, [.command, .option])
++    XCTAssertEqual(SwitcherModifier.commandControl.eventModifiers, [.command, .control])
++  }
++
+   // MARK: pane stepping (the ⌃Tab commit path)
+ 
+   func testPaneStepFlipsToThePreviouslyUsedPaneAndBack() {
+
+
+=== DIFF: macapp/WorkroomApp/WorkroomApp.swift ===
+@@ -283,14 +283,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
+       // the app owns it depends on runtime state (a workroom with one pane has nothing to switch to,
+       // so ⌃Tab must still reach a TUI). Both trigger modifiers are preferences — a global hotkey
+       // grabber like AltTab beats this monitor and can't be detected.
+-      if let hit = QuickSwitcherKey.classify(keyCode: event.keyCode, flags: flags) {
+-        // Autorepeat would spin the switcher (~15 steps/sec); macOS's own ⌘Tab ignores repeats too.
+-        if event.isARepeat { return nil }
++      if QuickSwitcherKey.classify(keyCode: event.keyCode, flags: flags) != nil {
+         return MainActor.assumeIsolated {
+           switch Self.switcherGate(for: window) {
+           case .passThrough: return event
+           case .swallow: return nil
+           case .act(let store):
++            // Autorepeat would spin the switcher (~15 steps/sec); macOS's own ⌘Tab ignores repeats too.
++            // Tested INSIDE `.act`, not above the gate: above it, a held ⌃Tab in the quick terminal or
++            // in a single-pane workroom — the cases deliberately handed to the TUI — passed its first
++            // keystroke through and had every repeat after it silently eaten.
++            if event.isARepeat { return nil }
++            guard let hit = QuickSwitcherKey.classify(keyCode: event.keyCode, flags: flags) else {
++              return event
++            }
+             // Consumed only when it switched, so ⌃Tab still reaches a TUI in a single-pane workroom —
+             // the same rule as the ⌥⌘digit / ⌥⌘arrow branches below.
+             return QuickSwitcherController.shared.handleTrigger(
+@@ -300,9 +306,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
+       }
+       // Escape and ←/→ while a switcher session is live (issue #132). Ahead of every other branch that
+       // could claim them, because a live session owns the keyboard until it ends — and behind the Tab
+-      // branch above, which is what starts one. Plain arrows only: ⌥⌘arrows (the tab cyclers) still
+-      // carry ⌘, so a held-⌥ rail and those shortcuts can't collide.
+-      if MainActor.assumeIsolated({ QuickSwitcherController.shared.isLive }) {
++      // branch above, which is what starts one.
++      //
++      // Gated on the window like the Tab branch, and on the modifiers: without the window gate, Escape
++      // pressed in the quick terminal or in Settings was swallowed to cancel the rail instead of
++      // dismissing what was actually in front of the user. `handleArrow` enforces the rest — revealed
++      // only, and no modifier beyond the trigger, so a live session can't steal ⌥⌘←/→ or ⇧⌥⌘←/→.
++      if MainActor.assumeIsolated({ QuickSwitcherController.shared.isLive }),
++        MainActor.assumeIsolated({
++          if case .passThrough = Self.switcherGate(for: window) { false } else { true }
++        })
++      {
+         if event.keyCode == 53 {  // Escape
+           return MainActor.assumeIsolated { QuickSwitcherController.shared.handleEscape() }
+             ? nil : event
+@@ -310,7 +324,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
+         if event.keyCode == 123 || event.keyCode == 124 {  // ← / →
+           let reverse = event.keyCode == 123
+           return MainActor.assumeIsolated {
+-            QuickSwitcherController.shared.handleArrow(reverse: reverse)
++            QuickSwitcherController.shared.handleArrow(reverse: reverse, flags: flags)
+           } ? nil : event
+         }
+       }
+@@ -689,6 +703,13 @@ struct MultipleWorkroomTabsKey: FocusedValueKey {
+   typealias Value = Bool
+ }
+ 
++/// Whether ⌥Tab has anywhere to go — published by RootView, so the Go-menu "Last-Used Workroom" item
++/// (D11, issue #132) disables when this window's is the only open workroom in the app. Counted across
++/// every window, unlike `MultipleWorkroomTabsKey`, because that's the switcher's scope.
++struct CanSwitchWorkroomsKey: FocusedValueKey {
++  typealias Value = Bool
++}
++
+ /// Whether the selected target can be opened in an external editor — published by RootView, so the
+ /// Go-menu "Open in…" item (⌘O) disables when there's no selection / a missing dir / no editor.
+ struct CanOpenInEditorKey: FocusedValueKey {
+@@ -774,6 +795,10 @@ extension FocusedValues {
+     get { self[MultipleWorkroomTabsKey.self] }
+     set { self[MultipleWorkroomTabsKey.self] = newValue }
+   }
++  var canSwitchWorkrooms: Bool? {
++    get { self[CanSwitchWorkroomsKey.self] }
++    set { self[CanSwitchWorkroomsKey.self] = newValue }
++  }
+   var canOpenInEditor: Bool? {
+     get { self[CanOpenInEditorKey.self] }
+     set { self[CanOpenInEditorKey.self] = newValue }
+@@ -821,6 +846,7 @@ struct WorkroomCommands: Commands {
+   @FocusedValue(\.hasRunTerminal) private var hasRunTerminal
+   @FocusedValue(\.multipleTerminalTabs) private var multipleTerminalTabs
+   @FocusedValue(\.multipleWorkroomTabs) private var multipleWorkroomTabs
++  @FocusedValue(\.canSwitchWorkrooms) private var canSwitchWorkrooms
+   @FocusedValue(\.canOpenInEditor) private var canOpenInEditor
+   @FocusedValue(\.terminalSplitVisible) private var terminalSplitVisible
+   @FocusedValue(\.workroomSplitVisible) private var workroomSplitVisible
+@@ -840,6 +866,10 @@ struct WorkroomCommands: Commands {
+   // Drives the quick dark/light toggle (⌘⇧L, issue #57). RootView's `.onChange(of: theme)` applies
+   // it through the single theme chokepoint; same key as the sidebar's 3-state cycle button.
+   @Default(.theme) private var theme
++  // The two quick-switcher trigger chords (issue #132). Read here so the Go-menu items re-render — and
++  // so their key equivalents follow the preference — when either is retuned in Settings.
++  @Default(.switcherWorkroomModifier) private var switcherWorkroomModifier
++  @Default(.switcherPaneModifier) private var switcherPaneModifier
+   /// Opens a new Workroom window (issue #70) — a fresh `WindowSeed` so the window starts blank.
+   @Environment(\.openWindow) private var openWindow
+ 
+@@ -1242,6 +1272,27 @@ struct WorkroomCommands: Commands {
+         .keyboardShortcut(.leftArrow, modifiers: [.command, .option, .shift])
+         .disabled(multipleWorkroomTabs != true)
+ 
++      // The quick switchers (issue #132, D11), by recency rather than position — here because a
++      // shortcut nobody can see is a shortcut nobody uses, and because this is the only way to reach
++      // the feature with the mouse. Both key equivalents track their `Defaults` chord.
++      //
++      // The action goes through the key window, not this menu's focused store — see
++      // `QuickSwitcher.stepFromKeyWindow`. Enablement is load-bearing rather than cosmetic: the monitor
++      // consumes the keystroke whenever it switched, so these key equivalents are reached only in the
++      // pass-through cases, and a disabled item drops its key equivalent — which is what keeps ⌃⇥
++      // reaching a TUI in a single-pane workroom instead of being eaten by a menu that would no-op.
++      //
++      // Set both preferences to the same chord and these two items share a key equivalent; AppKit fires
++      // the first enabled match, which is Workrooms — the same tie-break `QuickSwitcherKey.classify`
++      // makes, so the menu and the monitor agree even in that configuration.
++      Divider()
++      Button("Last-Used Workroom") { QuickSwitcher.stepFromKeyWindow(.workrooms) }
++        .keyboardShortcut(.tab, modifiers: switcherWorkroomModifier.eventModifiers)
++        .disabled(canSwitchWorkrooms != true)
++      Button("Last-Used Pane") { QuickSwitcher.stepFromKeyWindow(.panes) }
++        .keyboardShortcut(.tab, modifiers: switcherPaneModifier.eventModifiers)
++        .disabled(multipleTerminalTabs != true)
++
+       Divider()
+ 
+       // Jump to the run terminal if one exists (issue #7) — navigation only, so it's named distinctly
+
+
+=== DIFF: macapp/WorkroomAppTests/SwitcherRecencyTests.swift ===
+@@ -114,6 +114,53 @@ final class SwitcherRecencyTests: XCTestCase {
+     XCTAssertTrue(recency.workrooms.ids.isEmpty)
+   }
+ 
++  // MARK: Suppression around a commit's own window raise
++
++  func testRecordingIsSuppressedWhileACommitIsInFlight() {
++    // `QuickSwitcher.commit` raises the destination window before writing the selection, and that raise
++    // fires `WindowRegistry`'s recency hook for the selection the window is about to LEAVE. Unsuppressed,
++    // that put a workroom the user never visited at MRU[1] and broke the ⌥Tab⌥Tab ping-pong.
++    let store = AppStore()
++    let leaving = SidebarID.workroom(project: "/p", name: "leaving")
++    let arriving = SidebarID.workroom(project: "/p", name: "arriving")
++    let recency = SwitcherRecency()
++
++    recency.suppressingRecord {
++      recency.recordWorkroom(store: store, sid: leaving)  // what the raise would record
++      recency.recordPane(UUID())
++    }
++    XCTAssertTrue(recency.workrooms.ids.isEmpty, "the raise's phantom use is not recorded")
++    XCTAssertTrue(recency.panes.ids.isEmpty)
++
++    recency.recordWorkroom(store: store, sid: arriving)
++    XCTAssertEqual(
++      recency.workrooms.ids, [WorkroomSlotID(window: store.windowToken, sid: arriving)],
++      "and recording resumes after the commit")
++  }
++
++  func testOrderingDoesNotPruneWhatItWasNotShown() {
++    // `workroomOrder` is handed an ALREADY-FILTERED list (windows with a sheet up are excluded), so
++    // pruning against it permanently forgot the MRU rank of any window that merely had a dialog open.
++    let visible = AppStore()
++    let busy = AppStore()
++    let sid = SidebarID.workroom(project: "/p", name: "w")
++    let recency = SwitcherRecency()
++    recency.recordWorkroom(store: busy, sid: sid)
++    recency.recordWorkroom(store: visible, sid: sid)
++    XCTAssertEqual(recency.workrooms.ids.count, 2)
++
++    _ = recency.workroomOrder([
++      WorkroomSlot(
++        store: visible, sid: sid,
++        target: TerminalTarget(
++          id: TerminalTarget.workroomID(project: "/p", name: "w"), title: "w", path: "/p/w",
++          isMissing: false))
++    ])
++    XCTAssertEqual(
++      recency.workrooms.ids.count, 2,
++      "the excluded window keeps its rank — it comes back when its sheet closes")
++  }
++
+   // MARK: Pane recency
+ 
+   func testPaneRecordingAndPruning() {
+
+
+=== DIFF: macapp/WorkroomApp/Core/SwitcherPanel.swift ===
+@@ -14,6 +14,20 @@ final class SwitcherPanel: NSPanel {
+   override var canBecomeMain: Bool { false }
+ }
+ 
++/// The panel's content view: the rail plus the empty `shadowMargin` halo its drop shadow lands in.
++///
++/// The halo must not eat clicks. The panel is bigger than the rail it shows, and a plain `NSView`
++/// hit-tests its whole bounds — so without this a click in the transparent border would be swallowed by
++/// the rail's window instead of reaching the window underneath.
++final class HaloContentView: NSView {
++  override func hitTest(_ point: NSPoint) -> NSView? {
++    let local = superview.map { convert(point, from: $0) } ?? point
++    let rail = bounds.insetBy(
++      dx: SwitcherRailLayout.shadowMargin, dy: SwitcherRailLayout.shadowMargin)
++    return rail.contains(local) ? super.hitTest(point) : nil
++  }
++}
++
+ /// Owns the panel and its hosting view, and hands the rail its data. Pre-creates the panel at launch:
+ /// the first `NSHostingView` render costs real milliseconds, and paying that at the 250 ms reveal is
+ /// exactly the wrong moment.
+@@ -41,6 +55,12 @@ final class SwitcherPanelController {
+     // surface behind the rail believes it is occluded and stops rendering.
+     panel.isOpaque = false
+     panel.backgroundColor = .clear
++    // Stays FALSE, and the rail draws its own shadow instead (`SwitcherRailView.shadowCaster`). Not a
++    // style preference — measured: a borderless non-opaque panel casts no system shadow at all. With
++    // `hasShadow = true` plus `invalidateShadow()`, a pixel diff of the same screen with and without the
++    // panel showed zero darkening at 6/14/26/44pt out on every side, with glass content and with a solid
++    // opaque fill alike. Turning this on would buy nothing except a square shadow around the shadow
++    // halo if it ever started working.
+     panel.hasShadow = false
+     panel.isReleasedWhenClosed = false
+     panel.isExcludedFromWindowsMenu = true
+@@ -48,9 +68,11 @@ final class SwitcherPanelController {
+     panel.ignoresMouseEvents = false
+     panel.setAccessibilityIdentifier("switcher.panel")
+ 
++    let content = HaloContentView()
+     let host = NSHostingView(rootView: SwitcherRailView(model: model))
+-    host.translatesAutoresizingMaskIntoConstraints = false
+-    panel.contentView = host
++    host.autoresizingMask = [.width, .height]
++    content.addSubview(host)
++    panel.contentView = content
+     self.panel = panel
+   }
+ 
+@@ -58,6 +80,13 @@ final class SwitcherPanelController {
+   /// Called once at launch.
+   func attach(to controller: QuickSwitcherController) {
+     controller.onReveal = { [weak self] items, cursor in self?.show(items: items, cursor: cursor) }
++    // Re-render from the surviving items when something dies mid-session. `show` is idempotent — it
++    // re-sizes and re-centres the panel for the new count — and without this the cards on screen keep
++    // showing a workroom that is gone while the controller's array has already moved on, so a click or
++    // a release lands on the wrong one.
++    controller.onItemsChanged = { [weak self] items, cursor in
++      self?.show(items: items, cursor: cursor)
++    }
+     controller.onCursorMoved = { [weak self] index in self?.model.cursor = index }
+     controller.onEnd = { [weak self] in self?.hide() }
+     // Hover goes through the controller, not straight to the model: the D17 movement threshold lives
+@@ -69,27 +98,26 @@ final class SwitcherPanelController {
+     themeObserver = NotificationCenter.default.addObserver(
+       forName: .themeDidChange, object: nil, queue: .main
+     ) { [weak self] _ in
+-      MainActor.assumeIsolated {
+-        self?.model.themeVersion &+= 1
+-        // Every cached thumbnail is now a picture of the OLD theme — the terminals in it are the wrong
+-        // colours. The cache also refuses stale-generation reads, but dropping them here reclaims the
+-        // bytes instead of holding pictures nothing will ever return.
+-        SnapshotService.shared.invalidateAll()
+-      }
++      MainActor.assumeIsolated { self?.model.themeVersion &+= 1 }
+     }
+   }
+ 
+   private func show(items: [QuickSwitcherController.Item], cursor: Int) {
+     prepare()
+     guard let panel else { return }
+-    let cards = items.map(SwitcherCard.init(item:))
++    let cards = SwitcherCard.cards(for: items)
+     let screen = NSApp.keyWindow?.screen ?? NSScreen.main
+     let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+-    let width = SwitcherRailLayout.viewportWidth(visibleFrame: visible)
+-    model.update(cards: cards, cursor: cursor, width: width)
++    // The window is the rail slab plus its shadow halo; the SLAB is only as wide as the cards turned out
++    // to be — otherwise the glass runs on past the last card and a rail of four reads as left-aligned
++    // inside a wide slab, even though the slab is perfectly centred.
++    let size = SwitcherRailLayout.panelSize(count: cards.count, visibleFrame: visible)
++    // The cards lay out in the slab they actually get, not the viewport they were sized against: on a
++    // narrow display the halo comes out of the slab, and cards measured against the wider viewport would
++    // overflow it.
++    model.update(
++      cards: cards, cursor: cursor, width: size.width - SwitcherRailLayout.shadowMargin * 2)
+ 
+-    let size = NSSize(
+-      width: width, height: SwitcherRailLayout.cardHeight + SwitcherRailLayout.railPadding * 2)
+     let origin = SwitcherRailLayout.panelOrigin(
+       size: size, windowFrame: NSApp.keyWindow?.frame ?? visible, visibleFrame: visible)
+     panel.setFrame(NSRect(origin: origin, size: size), display: false)
+
+
+=== DIFF: macapp/WorkroomApp/Core/SwitcherRecency.swift ===
+@@ -13,6 +13,11 @@ import Foundation
+ struct WindowToken: Hashable {
+   private let raw: UUID
+   init() { raw = UUID() }
++
++  /// A string form, for composing view identities. The rail needs it because a workroom's
++  /// `TerminalTarget.id` is project+name with no window in it, so the same workroom open in two windows
++  /// — deliberately two slots — yielded two cards with the *same* SwiftUI id.
++  var key: String { raw.uuidString }
+ }
+ 
+ /// A workroom *as opened in one window* — the unit ⌥Tab switches between.
+@@ -114,13 +119,31 @@ final class SwitcherRecency {
+   /// Test seam: a fresh instance, so a test never mutates the singleton's order.
+   init() {}
+ 
++  /// True while a switcher commit is mid-flight, so the window raise it performs doesn't record a
++  /// "use" of its own. See `suppressingRecord`.
++  private(set) var isSuppressed = false
++
++  /// Run `body` with recording disabled.
++  ///
++  /// Exists for one caller: `QuickSwitcher.commit` raises the destination window *before* writing the
++  /// selection (`persistsSidebarPrefs` requires that order), and the raise makes the window key, which
++  /// fires `WindowRegistry`'s own recency hook for the selection that window is about to leave. That put
++  /// a workroom the user never visited at MRU[1] and broke the ⌥Tab⌥Tab ping-pong the whole feature is
++  /// built on.
++  func suppressingRecord(_ body: () -> Void) {
++    let wasSuppressed = isSuppressed
++    isSuppressed = true
++    defer { isSuppressed = wasSuppressed }
++    body()
++  }
++
+   func recordWorkroom(store: AppStore, sid: SidebarID?) {
+-    guard let sid else { return }
++    guard !isSuppressed, let sid else { return }
+     workrooms.touch(WorkroomSlotID(window: store.windowToken, sid: sid))
+   }
+ 
+   func recordPane(_ id: TerminalTab.ID?) {
+-    guard let id else { return }
++    guard !isSuppressed, let id else { return }
+     panes.touch(id)
+   }
+ 
+@@ -128,13 +151,18 @@ final class SwitcherRecency {
+     for id in ids { panes.forget(id) }
+   }
+ 
+-  /// MRU-order the rail's workroom slots, pruning recency down to what is live while here. A slot
+-  /// whose store has gone away has no identity and drops out.
++  /// MRU-order the rail's workroom slots. A slot whose store has gone away has no identity and drops
++  /// out.
++  ///
++  /// It deliberately does **not** prune, which it used to. The slots it is handed are already filtered —
++  /// `QuickSwitcher.workroomSlots` drops every window with a sheet up — so pruning against them wiped
++  /// the MRU rank of any window that merely had a dialog open at the moment ⌥Tab was pressed, and those
++  /// workrooms then sorted last as never-visited once the sheet closed. `ordered` only ever emits ids
++  /// belonging to the items it was given, so nothing needed the prune; the 200-entry cap is the bound.
+   func workroomOrder(_ slots: [WorkroomSlot]) -> [WorkroomSlot] {
+     let identified = slots.compactMap { slot -> (slot: WorkroomSlot, id: WorkroomSlotID)? in
+       slot.id.map { (slot, $0) }
+     }
+-    workrooms.retain(Set(identified.map(\.id)))
+     return workrooms.ordered(identified) { $0.id }.map(\.slot)
+   }
+ 
+
+
+=== DIFF: macapp/WorkroomAppTests/QuickSwitcherReducerTests.swift ===
+@@ -185,7 +185,7 @@ final class QuickSwitcherReducerTests: XCTestCase {
+ 
+   func testEveryCancelReasonEndsWithoutCommitting() {
+     for reason in [
+-      QuickSwitcherReducer.Cancel.escape, .deactivated, .empty, .timeout,
++      QuickSwitcherReducer.Cancel.escape, .deactivated, .empty, .timeout, .voiceOver,
+     ] {
+       var r = revealed(count: 5)
+       XCTAssertEqual(r.handle(.cancel(reason)), .end(commit: nil), "\(reason) must not commit")
+@@ -210,32 +210,48 @@ final class QuickSwitcherReducerTests: XCTestCase {
+   func testItemsChangedToZeroEndsWithoutCommitting() {
+     // RULE: every item went away (the last window closed) — end, don't commit into nothing.
+     var r = revealed(count: 5)
+-    XCTAssertEqual(r.handle(.itemsChanged(count: 0)), .end(commit: nil))
++    XCTAssertEqual(r.handle(.itemsChanged(count: 0, cursor: 0)), .end(commit: nil))
+     XCTAssertEqual(r.phase, .idle)
+   }
+ 
+-  func testItemsChangedClampsTheCursor() {
+-    var r = revealed(count: 5)
++  func testItemsChangedTakesTheCallersRemappedCursor() {
++    // The caller recomputes the cursor from the ITEM it was tracking, because `filter` shifts every
++    // later index down one. Clamping alone silently moved the selection to a neighbour, and the release
++    // then committed that neighbour — the rail highlighting one card and landing on the next.
++    var r = revealed(count: 4)
+     _ = r.handle(.step(reverse: false))
+     _ = r.handle(.step(reverse: false))
+     XCTAssertEqual(r.cursor, 3)
+     XCTAssertEqual(
+-      r.handle(.itemsChanged(count: 2)), .moveCursor(1),
+-      "clamped to the new last index, not dangling")
+-    XCTAssertEqual(r.count, 2)
++      r.handle(.itemsChanged(count: 3, cursor: 2)), .moveCursor(2),
++      "the item that was at 3 is now at 2 — follow it, don't just clamp")
++    XCTAssertEqual(r.count, 3)
+     XCTAssertEqual(r.phase, .revealed, "the session survives — only the cursor moved")
+   }
+ 
+-  func testItemsChangedWithNoClampNeededEmitsNothing() {
++  func testItemsChangedClampsAnOutOfRangeCursor() {
++    var r = revealed(count: 5)
++    _ = r.handle(.step(reverse: false))
++    _ = r.handle(.step(reverse: false))
++    XCTAssertEqual(r.cursor, 3)
++    XCTAssertEqual(
++      r.handle(.itemsChanged(count: 2, cursor: 9)), .moveCursor(1),
++      "a cursor past the new end lands on the last item, never dangling")
++    XCTAssertEqual(
++      r.handle(.itemsChanged(count: 2, cursor: -3)), .moveCursor(0), "and never negative")
++  }
++
++  func testItemsChangedWithNoMoveNeededEmitsNothing() {
+     var r = revealed(count: 5)
+-    XCTAssertEqual(r.handle(.itemsChanged(count: 4)), .none, "cursor 1 still valid — no scroll")
++    XCTAssertEqual(
++      r.handle(.itemsChanged(count: 4, cursor: 1)), .none, "cursor 1 still valid — no scroll")
+     XCTAssertEqual(r.count, 4)
+   }
+ 
+   func testItemsChangedWhilePendingClampsSilently() {
+     var r = opened(count: 5)  // cursor 1, no panel on screen yet
+     XCTAssertEqual(
+-      r.handle(.itemsChanged(count: 1)), .none,
++      r.handle(.itemsChanged(count: 1, cursor: 0)), .none,
+       "clamped with no panel on screen, so there is nothing to scroll")
+     XCTAssertEqual(r.cursor, 0)
+     XCTAssertEqual(r.phase, .pending, "the session survives a shrink to one item")
+@@ -243,7 +259,7 @@ final class QuickSwitcherReducerTests: XCTestCase {
+ 
+   func testItemsChangedWhileIdleIsANoOp() {
+     var r = QuickSwitcherReducer()
+-    XCTAssertEqual(r.handle(.itemsChanged(count: 3)), .none)
++    XCTAssertEqual(r.handle(.itemsChanged(count: 3, cursor: 0)), .none)
+   }
+ 
+   // MARK: Reuse + constants
+
+
+=== DIFF: macapp/WorkroomAppTests/SwitcherPanelTests.swift ===
+@@ -46,6 +46,31 @@ final class SwitcherPanelTests: XCTestCase {
+     XCTAssertEqual(panel.backgroundColor, .clear)
+   }
+ 
++  func testTheRailDrawsItsOwnShadowRatherThanTheWindow() {
++    // Measured, not assumed: a borderless non-opaque panel casts NO system shadow — `hasShadow = true`
++    // plus `invalidateShadow()` darkened nothing at 6/14/26/44pt out on any side, with glass content and
++    // with a solid opaque fill alike. So the rail draws the shadow itself and the window stays shadowless.
++    let panel = makePanel()
++    panel.hasShadow = false
++    XCTAssertFalse(
++      panel.hasShadow, "a window shadow here would only duplicate the drawn one, squarely")
++  }
++
++  func testTheHaloDoesNotEatClicksMeantForTheWindowBelow() {
++    // The window is bigger than the rail by `shadowMargin` on every side so the drawn shadow has room.
++    // That border is empty, and a plain NSView would hit-test it — swallowing clicks that should reach
++    // whatever is underneath.
++    let content = HaloContentView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
++    let inner = NSView(frame: content.bounds)
++    inner.autoresizingMask = [.width, .height]
++    content.addSubview(inner)
++    let margin = SwitcherRailLayout.shadowMargin
++    XCTAssertNil(
++      content.hitTest(NSPoint(x: margin / 2, y: 100)), "the shadow halo must be click-through")
++    XCTAssertNotNil(
++      content.hitTest(NSPoint(x: 200, y: 100)), "the rail itself still takes hover and clicks")
++  }
++
+   func testThePanelIsAFloatingNonActivatingHUD() {
+     let panel = makePanel()
+     panel.isFloatingPanel = true
+
+
+=== DIFF: macapp/WorkroomApp/Core/QuickSwitcherReducer.swift ===
+@@ -45,6 +45,10 @@ struct QuickSwitcherReducer: Equatable {
+     case empty
+     /// The hard ceiling — a stuck modifier must not leave the rail up forever.
+     case timeout
++    /// VoiceOver came on mid-gesture. D16 says there is no rail under VoiceOver at all, so a session
++    /// that started without it cannot continue with it: the panel can never take VoiceOver focus, so it
++    /// would be steering a commit that is invisible to the one user who most needs to hear it.
++    case voiceOver
+   }
+ 
+   enum Event: Equatable {
+@@ -61,8 +65,11 @@ struct QuickSwitcherReducer: Equatable {
+     case commit(index: Int?)
+     case modifierReleased
+     case cancel(Cancel)
+-    /// The item list changed under us (a window closed, a pane died).
+-    case itemsChanged(count: Int)
++    /// The item list changed under us (a window closed, a pane died). `cursor` is where the caller
++    /// wants the cursor now — it must be recomputed from the *item* the cursor was tracking, because
++    /// removing an earlier item shifts every later index down by one. Clamping alone silently moves the
++    /// selection to a neighbour, which the release then commits.
++    case itemsChanged(count: Int, cursor: Int)
+   }
+ 
+   enum Effect: Equatable {
+@@ -160,14 +167,14 @@ struct QuickSwitcherReducer: Equatable {
+       end()
+       return .end(commit: nil)
+ 
+-    case .itemsChanged(let newCount):
++    case .itemsChanged(let newCount, let newCursor):
+       guard phase != .idle else { return .none }
+       guard newCount > 0 else {
+         end()
+         return .end(commit: nil)
+       }
+       count = newCount
+-      let clamped = min(cursor, newCount - 1)
++      let clamped = min(max(newCursor, 0), newCount - 1)
+       guard clamped != cursor else { return .none }
+       cursor = clamped
+       return phase == .revealed ? .moveCursor(cursor) : .none
+
+
+=== DIFF: macapp/WorkroomApp/Core/AppStore.swift ===
+@@ -858,7 +858,6 @@ final class AppStore: ObservableObject {
+     terminals.onTabsRemoved = { [weak self] targetID, ids in
+       guard let self else { return }
+       SwitcherRecency.shared.forgetPanes(ids)  // drop closed panes from the ⌃Tab order (issue #132)
+-      SnapshotService.shared.forgetPanes(ids)  // and their cached rail thumbnails
+       self.history.prune(removing: Set(ids))
+       if self.terminals.tabCount(forTargetID: targetID) < 2 {
+         self.expandedTerminalTargets.remove(targetID)
+@@ -1153,13 +1152,6 @@ final class AppStore: ObservableObject {
+     return true
+   }
+ 
+-  /// Switch to the next (`forward`) or previous workroom tab, wrapping at the ends — bound to
+-  /// ⇧⌥⌘→ / ⇧⌥⌘← (issue #29), the workroom-level counterpart to ⌥⌘arrows' terminal-tab cycle. When
+-  /// the current selection isn't in the bar (e.g. a root with no terminals), enters at the rightmost
+-  /// tab (forward, →) or the leftmost (back, ←) — spatially matching the arrow, like the on-tab step.
+-  /// Returns whether it switched, so the AppDelegate monitor
+-  /// consumes the key in the monitor only when there's a tab to move to (it's a no-op otherwise —
+-  /// the key is reserved in `isAppShortcut` either way, so it never reaches the terminal).
+   /// Step `index` by `delta` around a list of `count` items, wrapping at both ends. The one wrap rule
+   /// for every cycling shortcut — the workroom bar (⇧⌥⌘←/→), the terminal strip (⌥⌘←/→) and the quick
+   /// switcher's MRU step (issue #132) all read it, so an off-by-one can only ever exist in one place.
+@@ -1169,6 +1161,13 @@ final class AppStore: ObservableObject {
+     return ((index + delta) % count + count) % count
+   }
+ 
++  /// Switch to the next (`forward`) or previous workroom tab, wrapping at the ends — bound to
++  /// ⇧⌥⌘→ / ⇧⌥⌘← (issue #29), the workroom-level counterpart to ⌥⌘arrows' terminal-tab cycle. When
++  /// the current selection isn't in the bar (e.g. a root with no terminals), enters at the rightmost
++  /// tab (forward, →) or the leftmost (back, ←) — spatially matching the arrow, like the on-tab step.
++  /// Returns whether it switched, so the AppDelegate monitor
++  /// consumes the key in the monitor only when there's a tab to move to (it's a no-op otherwise —
++  /// the key is reserved in `isAppShortcut` either way, so it never reaches the terminal).
+   @discardableResult
+   func cycleWorkroomTab(forward: Bool) -> Bool {
+     // Step the on-screen order (`displayedWorkroomTargets`, == ordered with no split): a split pulls its
+
+
+=== DIFF: macapp/WorkroomApp/Core/Snapshots/SnapshotRegistry.swift ===
+@@ -1,101 +0,0 @@
+-import AppKit
+-import SwiftUI
+-
+-/// Where each snapshottable region currently is on screen, reported by the views that own them.
+-///
+-/// The rects have to come from the view tree because nothing else knows the split geometry — a
+-/// workroom's pane can be any leaf of an arbitrary split tree. They're read *synchronously* when a
+-/// capture is planned, never stored across an await, so a layout change between plan and delivery can't
+-/// mislabel a crop (the service's epoch guard is what enforces that).
+-@MainActor
+-final class SnapshotRegistry {
+-  static let shared = SnapshotRegistry()
+-
+-  /// One reported region: the view, and the key whose picture it is.
+-  private struct Region {
+-    weak var view: NSView?
+-    let key: SnapshotKey
+-  }
+-
+-  private var regions: [ObjectIdentifier: Region] = [:]
+-
+-  func register(_ view: NSView, for key: SnapshotKey) {
+-    regions[ObjectIdentifier(view)] = Region(view: view, key: key)
+-  }
+-
+-  func unregister(_ view: NSView) {
+-    regions[ObjectIdentifier(view)] = nil
+-  }
+-
+-  /// Every live region in `window`, as `(key, rect-in-AppKit-screen-coordinates)`.
+-  ///
+-  /// Prunes dead views as it goes — the reporter's `removeFromSuperview` is not a guaranteed hook, so
+-  /// the weak reference is the real lifetime signal.
+-  func regions(in window: NSWindow) -> [(key: SnapshotKey, rect: CGRect)] {
+-    var dead: [ObjectIdentifier] = []
+-    var result: [(key: SnapshotKey, rect: CGRect)] = []
+-    for (id, region) in regions {
+-      guard let view = region.view else {
+-        dead.append(id)
+-        continue
+-      }
+-      guard view.window === window, !view.bounds.isEmpty else { continue }
+-      // View → window → screen, in AppKit's y-up space. `SnapshotGeometry` performs the single flip.
+-      let inWindow = view.convert(view.bounds, to: nil)
+-      result.append((region.key, window.convertToScreen(inWindow)))
+-    }
+-    for id in dead { regions[id] = nil }
+-    return result
+-  }
+-
+-  /// Test seam: how many regions are currently registered.
+-  var count: Int { regions.count }
+-}
+-
+-/// A zero-drawing `NSView` that reports its own frame to `SnapshotRegistry` for as long as it is in a
+-/// window. Mounted with `.background { }` so it inherits the exact bounds of whatever it decorates
+-/// without affecting layout.
+-///
+-/// Deliberately NOT a `GhosttySurfaceView` read: the surface is Metal-backed, so there is no
+-/// `cacheDisplay` to draw it into. All this does is say *where* to crop the window capture.
+-struct SnapshotRectReporter: NSViewRepresentable {
+-  let key: SnapshotKey
+-
+-  func makeNSView(context: Context) -> ReporterView {
+-    let view = ReporterView()
+-    view.key = key
+-    return view
+-  }
+-
+-  func updateNSView(_ view: ReporterView, context: Context) {
+-    // A leaf can be re-used for a different pane when a split changes shape, so re-key rather than
+-    // assuming the first key is forever.
+-    if view.key != key {
+-      SnapshotRegistry.shared.unregister(view)
+-      view.key = key
+-      if view.window != nil { SnapshotRegistry.shared.register(view, for: key) }
+-    }
+-  }
+-
+-  static func dismantleNSView(_ view: ReporterView, coordinator: ()) {
+-    MainActor.assumeIsolated { SnapshotRegistry.shared.unregister(view) }
+-  }
+-
+-  final class ReporterView: NSView {
+-    var key: SnapshotKey?
+-
+-    override var isOpaque: Bool { false }
+-    /// Never take a click — this sits behind real content.
+-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+-
+-    override func viewDidMoveToWindow() {
+-      super.viewDidMoveToWindow()
+-      guard let key else { return }
+-      if window != nil {
+-        SnapshotRegistry.shared.register(self, for: key)
+-      } else {
+-        SnapshotRegistry.shared.unregister(self)
+-      }
+-    }
+-  }
+-}
+
+
+=== DIFF: macapp/WorkroomApp/Core/Snapshots/SnapshotService.swift ===
+@@ -1,204 +0,0 @@
+-import AppKit
+-import ScreenCaptureKit
+-
+-/// One window capture: the pixels plus the two things every crop taken from them depends on.
+-struct WindowCapture {
+-  let image: CGImage
+-  /// `SCContentFilter.contentRect` — the crop reference. **Not** the window frame; see
+-  /// `SnapshotGeometry`.
+-  let contentRect: CGRect
+-  /// `SCContentFilter.pointPixelScale`.
+-  let scale: CGFloat
+-}
+-
+-/// How a window's pixels are obtained. A protocol so the service is testable with no windows, no
+-/// ScreenCaptureKit and no timing.
+-protocol SnapshotCapturing: Sendable {
+-  func capture(window: NSWindow, maxLongEdge: CGFloat) async throws -> WindowCapture?
+-}
+-
+-/// The real capturer.
+-///
+-/// Needs **no Screen Recording permission**: `SCShareableContent.currentProcess` (macOS 14.4+) returns
+-/// content capturable "without user consent via TCC", and the T1 spike confirmed the *capture* also
+-/// returns real pixels — `CGPreflightScreenCaptureAccess() == false`, no prompt, and a
+-/// never-activated background window captured fine. So there is no permission flow, no Info.plist key
+-/// and no entitlement here by design.
+-struct ScreenCaptureKitCapturer: SnapshotCapturing {
+-  func capture(window: NSWindow, maxLongEdge: CGFloat) async throws -> WindowCapture? {
+-    let number = CGWindowID(window.windowNumber)
+-    let content = try await SCShareableContent.currentProcess
+-    // Match on `windowID` alone: `currentProcess` content is REDACTED, so `title` and
+-    // `owningApplication` may both be nil.
+-    guard let scWindow = content.windows.first(where: { $0.windowID == number }) else { return nil }
+-
+-    let filter = SCContentFilter(desktopIndependentWindow: scWindow)
+-    let config = SCStreamConfiguration()
+-    let size = SnapshotGeometry.capturePixelSize(
+-      contentRect: filter.contentRect, scale: CGFloat(filter.pointPixelScale),
+-      maxLongEdge: maxLongEdge)
+-    guard size.width >= 1, size.height >= 1 else { return nil }
+-    config.width = Int(size.width)
+-    config.height = Int(size.height)
+-    config.showsCursor = false
+-    config.ignoreShadowsSingleWindow = true
+-    config.ignoreGlobalClipSingleWindow = true
+-    config.captureResolution = .best
+-
+-    let image = try await SCScreenshotManager.captureImage(
+-      contentFilter: filter, configuration: config)
+-    // The delivered image is `contentRect × pointPixelScale`, possibly downscaled by the long-edge cap.
+-    // Report the ACTUAL scale so crops stay aligned when the cap kicked in.
+-    let effectiveScale = CGFloat(image.width) / filter.contentRect.width
+-    return WindowCapture(
+-      image: image, contentRect: filter.contentRect, scale: effectiveScale)
+-  }
+-}
+-
+-/// Captures nothing. Used by tests and by the `railPreviews` opt-out.
+-struct StubSnapshotCapturer: SnapshotCapturing {
+-  func capture(window: NSWindow, maxLongEdge: CGFloat) async throws -> WindowCapture? { nil }
+-}
+-
+-/// Plans window captures, crops them into per-region thumbnails, and caches the result.
+-///
+-/// The ordering that makes a *mislabelled* card structurally impossible:
+-///
+-/// ```
+-///  request                                  resume
+-///  ───────                                  ──────
+-///  read epoch, window.frame, and every  ──▶ await capture ──▶ epoch changed? ──yes──▶ DISCARD shot
+-///  visible region's screen rect                              frame changed? ──yes──▶ DISCARD shot
+-///  (all synchronously, one runloop turn)             │no
+-///                                                   ▼
+-///                                    crop planned rects → downscale → cache
+-/// ```
+-///
+-/// Worst case is therefore a *stale* card, never a wrong one.
+-@MainActor
+-final class SnapshotService {
+-  static let shared = SnapshotService()
+-
+-  private let cache: SnapshotCache
+-  private var capturer: SnapshotCapturing
+-  private let registry: SnapshotRegistry
+-  /// Bumped by anything that invalidates in-flight work: a resize, a theme change, a layout change.
+-  private(set) var epoch = 0
+-  private var inFlight: Set<CGWindowID> = []
+-  private var warmed = false
+-
+-  /// Long-edge cap on a window capture. Above this, a 6K window costs far more to crop than the
+-  /// 72×56 wells can use.
+-  static let maxLongEdge: CGFloat = 1440
+-
+-  init(
+-    cache: SnapshotCache = SnapshotCache(),
+-    capturer: SnapshotCapturing = ScreenCaptureKitCapturer(),
+-    registry: SnapshotRegistry = .shared
+-  ) {
+-    self.cache = cache
+-    self.capturer = capturer
+-    self.registry = registry
+-  }
+-
+-  /// Swap the capturer (the `railPreviews` opt-out, and tests).
+-  func setCapturer(_ capturer: SnapshotCapturing) {
+-    self.capturer = capturer
+-  }
+-
+-  func snapshot(for key: SnapshotKey, themeGeneration: Int) -> CGImage? {
+-    cache.snapshot(for: key, themeGeneration: themeGeneration)?.image
+-  }
+-
+-  /// Invalidate in-flight work. A resize doesn't get its own capture trigger: it bumps the epoch, so
+-  /// nothing stale lands, and the next natural trigger fixes the card.
+-  func invalidate() {
+-    epoch += 1
+-  }
+-
+-  func forgetPanes(_ ids: [TerminalTab.ID]) {
+-    cache.forgetPanes(ids)
+-  }
+-
+-  /// Drop every cached picture — a theme change makes all of them stale at once.
+-  func invalidateAll() {
+-    epoch += 1
+-    cache.removeAll()
+-  }
+-
+-  /// Pay ScreenCaptureKit's one-time subsystem initialization (hundreds of ms) at idle, so the first
+-  /// hold doesn't lose the 250 ms reveal race to it.
+-  func warm(window: NSWindow) {
+-    guard !warmed else { return }
+-    warmed = true
+-    capture(window: window, themeGeneration: -1)
+-  }
+-
+-  /// Capture `window` and refresh every region it currently shows.
+-  func capture(window: NSWindow, themeGeneration: Int) {
+-    // A window on an inactive Space can return an all-black *successful* image, which "keep the old
+-    // entry on failure" would happily cache as the new truth.
+-    guard window.isVisible, !window.isMiniaturized, window.isOnActiveSpace else { return }
+-    let id = CGWindowID(window.windowNumber)
+-    guard !inFlight.contains(id) else { return }
+-
+-    // Everything below is read synchronously, before any await.
+-    let plannedEpoch = epoch
+-    let plannedFrame = window.frame
+-    let planned = registry.regions(in: window)
+-    guard !planned.isEmpty else { return }
+-    let screenHeight = NSScreen.screens.first?.frame.height ?? window.frame.maxY
+-
+-    inFlight.insert(id)
+-    Task { @MainActor [weak self] in
+-      defer { self?.inFlight.remove(id) }
+-      guard let self else { return }
+-      let capture: WindowCapture?
+-      do {
+-        capture = try await self.capturer.capture(window: window, maxLongEdge: Self.maxLongEdge)
+-      } catch {
+-        return  // keep whatever was cached; a failed shot must not blank a card
+-      }
+-      guard let capture else { return }
+-      // The two guards that make a mislabelled card impossible rather than unlikely.
+-      guard self.epoch == plannedEpoch, window.frame == plannedFrame else { return }
+-      self.store(
+-        capture, regions: planned, screenHeight: screenHeight, themeGeneration: themeGeneration)
+-    }
+-  }
+-
+-  private func store(
+-    _ capture: WindowCapture, regions: [(key: SnapshotKey, rect: CGRect)], screenHeight: CGFloat,
+-    themeGeneration: Int
+-  ) {
+-    for region in regions {
+-      guard
+-        let crop = SnapshotGeometry.cropRect(
+-          regionOnScreen: region.rect, windowContentRect: capture.contentRect,
+-          mainScreenHeight: screenHeight, scale: capture.scale),
+-        let cropped = capture.image.cropping(to: crop)
+-      else { continue }
+-      guard let thumbnail = Self.downscale(cropped) else { continue }
+-      cache.store(thumbnail, for: region.key, themeGeneration: themeGeneration)
+-    }
+-  }
+-
+-  /// Aspect-fit down to the well's pixel size. Storing full-resolution crops would blow the cache's
+-  /// byte cap after a handful of panes for pictures drawn at 72×56.
+-  static func downscale(_ image: CGImage) -> CGImage? {
+-    let target = SnapshotGeometry.thumbnailPixelSize(
+-      source: CGSize(width: image.width, height: image.height),
+-      maxPointSize: SwitcherRailLayout.wellSize, scale: 2)
+-    guard target.width >= 1, target.height >= 1 else { return nil }
+-    guard Int(target.width) < image.width || Int(target.height) < image.height else { return image }
+-    guard
+-      let context = CGContext(
+-        data: nil, width: Int(target.width), height: Int(target.height), bitsPerComponent: 8,
+-        bytesPerRow: 0, space: image.colorSpace ?? CGColorSpaceCreateDeviceRGB(),
+-        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+-    else { return nil }
+-    context.interpolationQuality = .high
+-    context.draw(image, in: CGRect(origin: .zero, size: target))
+-    return context.makeImage()
+-  }
+-}
+
+
+=== DIFF: macapp/WorkroomApp/Core/Snapshots/SnapshotSupport.swift ===
+@@ -1,166 +0,0 @@
+-import CoreGraphics
+-import Foundation
+-
+-/// What a snapshot belongs to. A workroom is keyed by its window too, because the same `SidebarID` can
+-/// be displayed in two windows at once and their captures are different pictures.
+-enum SnapshotKey: Hashable {
+-  case pane(TerminalTab.ID)
+-  case workroom(SidebarID, WindowToken)
+-}
+-
+-/// One cached capture.
+-struct Snapshot {
+-  let image: CGImage
+-  /// The theme generation it was captured under. An older generation reads stale — the terminal's own
+-  /// colours changed, so the picture is of a theme that is no longer on screen.
+-  let themeGeneration: Int
+-  let capturedAt: Date
+-  /// Rough decoded size, for the cache's byte cap.
+-  var byteSize: Int { image.bytesPerRow * image.height }
+-}
+-
+-/// The pixel arithmetic for turning one window capture into N per-pane thumbnails.
+-///
+-/// Pure and separately tested because **the plan was wrong here and the T1 spike caught it**. Two
+-/// assumptions that both look obviously true and are both false:
+-///
+-/// ```
+-/// NSWindow.frame       (200, 200, 820, 552)   AppKit: y-UP,   origin bottom-left
+-/// filter.contentRect   (205, 872, 810, 544)   CG:     y-DOWN, origin top-left, inset ~5pt x / ~4pt y
+-/// captured image        1620 x 1088  ==  contentRect × pointPixelScale(2.0), EXACTLY
+-/// ```
+-///
+-/// So (1) `contentRect` is **not** the window frame — deriving the scale from the delivered image
+-/// against the frame gave 1.9756 (x) and 1.9710 (y), neither 2.0 nor even equal to each other, a ~1.2%
+-/// error that drifts ~10px by the far edge of a large window; and (2) the y-flips do **not** cancel,
+-/// because `convertToScreen` is y-up while `contentRect` is y-down.
+-///
+-/// Hence: the reference rect is always `filter.contentRect`, the scale is always
+-/// `filter.pointPixelScale`, and the region is flipped exactly once.
+-enum SnapshotGeometry {
+-
+-  /// Where `regionOnScreen` lands inside a window capture, in image pixels.
+-  ///
+-  /// - `regionOnScreen`: the pane's rect in AppKit screen coordinates (y-up).
+-  /// - `windowContentRect`: `SCContentFilter.contentRect` (CG, y-down) — NOT `NSWindow.frame`.
+-  /// - `mainScreenHeight`: `NSScreen.screens[0].frame.height`, the y-flip constant. One `NSScreen`
+-  ///   read the plan hoped to avoid and cannot.
+-  /// - `scale`: `SCContentFilter.pointPixelScale`.
+-  ///
+-  /// Returns nil when the region falls entirely outside the capture.
+-  static func cropRect(
+-    regionOnScreen: CGRect, windowContentRect: CGRect, mainScreenHeight: CGFloat, scale: CGFloat
+-  ) -> CGRect? {
+-    guard scale > 0, !regionOnScreen.isEmpty, !windowContentRect.isEmpty else { return nil }
+-    // The single y-flip: AppKit's bottom-left origin to CG's top-left.
+-    let cgMinY = mainScreenHeight - regionOnScreen.maxY
+-    let rect = CGRect(
+-      x: (regionOnScreen.minX - windowContentRect.minX) * scale,
+-      y: (cgMinY - windowContentRect.minY) * scale,
+-      width: regionOnScreen.width * scale,
+-      height: regionOnScreen.height * scale
+-    ).integral
+-    let bounds = CGRect(
+-      x: 0, y: 0, width: (windowContentRect.width * scale).rounded(),
+-      height: (windowContentRect.height * scale).rounded())
+-    let clamped = rect.intersection(bounds)
+-    return clamped.isNull || clamped.isEmpty ? nil : clamped
+-  }
+-
+-  /// The capture's configured pixel size. **Strictly proportional to `contentRect`** — `width`/`height`
+-  /// are the only knobs the config exposes (`scalesToFit` aside), and a size whose aspect doesn't match
+-  /// letterboxes, which silently misaligns every crop taken from it.
+-  static func capturePixelSize(contentRect: CGRect, scale: CGFloat, maxLongEdge: CGFloat) -> CGSize
+-  {
+-    let full = CGSize(width: contentRect.width * scale, height: contentRect.height * scale)
+-    let longEdge = max(full.width, full.height)
+-    guard longEdge > maxLongEdge, longEdge > 0 else {
+-      return CGSize(width: full.width.rounded(), height: full.height.rounded())
+-    }
+-    let factor = maxLongEdge / longEdge
+-    return CGSize(
+-      width: (full.width * factor).rounded(), height: (full.height * factor).rounded())
+-  }
+-
+-  /// Aspect-**fit** target for a thumbnail well — never a crop. A crop-zoom of two different panes can
+-  /// look identical, and at 72×56 the well's job is "which pane is this", not "read the output".
+-  static func thumbnailPixelSize(source: CGSize, maxPointSize: CGSize, scale: CGFloat) -> CGSize {
+-    guard source.width > 0, source.height > 0, scale > 0 else { return .zero }
+-    let target = CGSize(width: maxPointSize.width * scale, height: maxPointSize.height * scale)
+-    let factor = min(target.width / source.width, target.height / source.height, 1)
+-    return CGSize(
+-      width: max(1, (source.width * factor).rounded()),
+-      height: max(1, (source.height * factor).rounded()))
+-  }
+-}
+-
+-/// An LRU cache of captures, bounded by both count and bytes.
+-///
+-/// Correctness does not depend on a purge-on-window-close hook: `WindowToken` is a UUID that is never
+-/// reused, so a workroom key from a closed window can never collide with a live one. The purges that
+-/// exist are about memory, not staleness.
+-final class SnapshotCache {
+-  static let maxEntries = 32
+-  /// ~48 MB of decoded bitmaps. A 1440-long-edge Retina window capture is roughly 4–6 MB.
+-  static let maxBytes = 48 * 1024 * 1024
+-
+-  private var entries: [SnapshotKey: Snapshot] = [:]
+-  /// Most-recently-used last.
+-  private var order: [SnapshotKey] = []
+-  private let now: () -> Date
+-
+-  init(now: @escaping () -> Date = Date.init) {
+-    self.now = now
+-  }
+-
+-  var count: Int { entries.count }
+-  var byteSize: Int { entries.values.reduce(0) { $0 + $1.byteSize } }
+-
+-  /// A snapshot, if one is cached and still matches the current theme. A stale-theme entry is dropped
+-  /// rather than returned: the terminal's own colours changed, so the picture is of a theme that is no
+-  /// longer on screen.
+-  func snapshot(for key: SnapshotKey, themeGeneration: Int) -> Snapshot? {
+-    guard let entry = entries[key] else { return nil }
+-    guard entry.themeGeneration == themeGeneration else {
+-      remove(key)
+-      return nil
+-    }
+-    touch(key)
+-    return entry
+-  }
+-
+-  func store(_ image: CGImage, for key: SnapshotKey, themeGeneration: Int) {
+-    entries[key] = Snapshot(image: image, themeGeneration: themeGeneration, capturedAt: now())
+-    touch(key)
+-    evictIfNeeded()
+-  }
+-
+-  func remove(_ key: SnapshotKey) {
+-    entries[key] = nil
+-    order.removeAll { $0 == key }
+-  }
+-
+-  func removeAll() {
+-    entries.removeAll()
+-    order.removeAll()
+-  }
+-
+-  /// Drop everything for panes that no longer exist.
+-  func forgetPanes(_ ids: [TerminalTab.ID]) {
+-    for id in ids { remove(.pane(id)) }
+-  }
+-
+-  private func touch(_ key: SnapshotKey) {
+-    order.removeAll { $0 == key }
+-    order.append(key)
+-  }
+-
+-  private func evictIfNeeded() {
+-    while entries.count > Self.maxEntries, let oldest = order.first {
+-      remove(oldest)
+-    }
+-    while byteSize > Self.maxBytes, order.count > 1, let oldest = order.first {
+-      remove(oldest)
+-    }
+-  }
+-}
+
+
+=== DIFF: macapp/WorkroomAppTests/SnapshotCacheTests.swift ===
+@@ -1,114 +0,0 @@
+-import CoreGraphics
+-import XCTest
+-
+-@testable import Workroom
+-
+-/// `SnapshotCache` (issue #132, T12): bounded by count and bytes, with an injected clock, and stale on
+-/// a theme change rather than wrong.
+-final class SnapshotCacheTests: XCTestCase {
+-
+-  /// A real `CGImage` of a known size, so the byte accounting is measured rather than asserted.
+-  private func image(_ side: Int = 8) -> CGImage {
+-    let context = CGContext(
+-      data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side * 4,
+-      space: CGColorSpaceCreateDeviceRGB(),
+-      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+-    return context.makeImage()!
+-  }
+-
+-  private func paneKey(_ n: Int) -> SnapshotKey {
+-    // A UUID per index, stable within the test.
+-    .pane(UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", n))!)
+-  }
+-
+-  func testStoreAndFetch() {
+-    let cache = SnapshotCache()
+-    cache.store(image(), for: paneKey(1), themeGeneration: 3)
+-    XCTAssertNotNil(cache.snapshot(for: paneKey(1), themeGeneration: 3))
+-    XCTAssertEqual(cache.count, 1)
+-  }
+-
+-  func testAMissIsNil() {
+-    XCTAssertNil(SnapshotCache().snapshot(for: paneKey(9), themeGeneration: 1))
+-  }
+-
+-  func testAStaleThemeEntryIsDroppedNotReturned() {
+-    // The terminal's own colours changed, so the cached picture is of a theme that is no longer on
+-    // screen. Returning it would show the old theme inside the new one.
+-    let cache = SnapshotCache()
+-    cache.store(image(), for: paneKey(1), themeGeneration: 3)
+-    XCTAssertNil(cache.snapshot(for: paneKey(1), themeGeneration: 4), "stale ⇒ miss")
+-    XCTAssertEqual(cache.count, 0, "and evicted, so it can't linger")
+-  }
+-
+-  func testTheClockIsInjected() {
+-    let fixed = Date(timeIntervalSince1970: 1_000_000)
+-    let cache = SnapshotCache(now: { fixed })
+-    cache.store(image(), for: paneKey(1), themeGeneration: 1)
+-    XCTAssertEqual(cache.snapshot(for: paneKey(1), themeGeneration: 1)?.capturedAt, fixed)
+-  }
+-
+-  func testEvictionIsLeastRecentlyUsedNotInsertionOrder() {
+-    let cache = SnapshotCache()
+-    for n in 0..<SnapshotCache.maxEntries {
+-      cache.store(image(), for: paneKey(n), themeGeneration: 1)
+-    }
+-    // Re-read the oldest, making it most-recent — it must now SURVIVE the next insert.
+-    _ = cache.snapshot(for: paneKey(0), themeGeneration: 1)
+-    cache.store(image(), for: paneKey(999), themeGeneration: 1)
+-    XCTAssertEqual(cache.count, SnapshotCache.maxEntries)
+-    XCTAssertNotNil(cache.snapshot(for: paneKey(0), themeGeneration: 1), "recently used, kept")
+-    XCTAssertNil(
+-      cache.snapshot(for: paneKey(1), themeGeneration: 1), "least recently used, evicted")
+-  }
+-
+-  func testTheCountCapHolds() {
+-    let cache = SnapshotCache()
+-    for n in 0..<(SnapshotCache.maxEntries * 2) {
+-      cache.store(image(), for: paneKey(n), themeGeneration: 1)
+-    }
+-    XCTAssertEqual(cache.count, SnapshotCache.maxEntries)
+-  }
+-
+-  func testTheByteCapHolds() {
+-    let cache = SnapshotCache()
+-    // ~4 MB each: a handful blows the byte cap well before the count cap.
+-    let big = image(1024)
+-    for n in 0..<20 { cache.store(big, for: paneKey(n), themeGeneration: 1) }
+-    XCTAssertLessThanOrEqual(cache.byteSize, SnapshotCache.maxBytes)
+-    XCTAssertLessThan(cache.count, 20, "bytes bound before the count does")
+-    XCTAssertGreaterThanOrEqual(cache.count, 1, "never evicts down to empty")
+-  }
+-
+-  func testForgetPanesDropsClosedTabs() {
+-    let cache = SnapshotCache()
+-    cache.store(image(), for: paneKey(1), themeGeneration: 1)
+-    cache.store(image(), for: paneKey(2), themeGeneration: 1)
+-    guard case .pane(let id1) = paneKey(1) else { return XCTFail("key shape") }
+-    cache.forgetPanes([id1])
+-    XCTAssertNil(cache.snapshot(for: paneKey(1), themeGeneration: 1))
+-    XCTAssertNotNil(cache.snapshot(for: paneKey(2), themeGeneration: 1), "siblings untouched")
+-  }
+-
+-  func testTheSameWorkroomInTwoWindowsGetsTwoEntries() {
+-    // The whole reason a workroom key carries a WindowToken: co-displayed workrooms are two different
+-    // pictures, and one must not overwrite the other.
+-    let cache = SnapshotCache()
+-    let sid = SidebarID.workroom(project: "/p", name: "fox")
+-    let a = SnapshotKey.workroom(sid, WindowToken())
+-    let b = SnapshotKey.workroom(sid, WindowToken())
+-    cache.store(image(), for: a, themeGeneration: 1)
+-    cache.store(image(), for: b, themeGeneration: 1)
+-    XCTAssertEqual(cache.count, 2)
+-    XCTAssertNotNil(cache.snapshot(for: a, themeGeneration: 1))
+-    XCTAssertNotNil(cache.snapshot(for: b, themeGeneration: 1))
+-  }
+-
+-  func testRemoveAll() {
+-    let cache = SnapshotCache()
+-    cache.store(image(), for: paneKey(1), themeGeneration: 1)
+-    cache.removeAll()
+-    XCTAssertEqual(cache.count, 0)
+-    XCTAssertEqual(cache.byteSize, 0)
+-  }
+-}
+
+
+=== DIFF: macapp/WorkroomAppTests/SnapshotGeometryTests.swift ===
+@@ -1,170 +0,0 @@
+-import CoreGraphics
+-import XCTest
+-
+-@testable import Workroom
+-
+-/// `SnapshotGeometry` (issue #132, T12): the pixel arithmetic that turns one window capture into N pane
+-/// thumbnails.
+-///
+-/// These tests exist because the plan's original crop recipe was **wrong in two independent ways** and
+-/// the T1 spike measured it. The measured configuration is pinned below verbatim: a fixture where
+-/// `contentRect.size == frame.size` passes a wrong implementation, so it must not be the only case.
+-final class SnapshotGeometryTests: XCTestCase {
+-
+-  // The T1 spike's measured numbers (macOS 26.5.2, 2× display).
+-  //   NSWindow.frame      (200, 200, 820, 552)  AppKit, y-up
+-  //   filter.contentRect  (205, 872, 810, 544)  CG, y-down, inset ~5pt x / ~4pt y
+-  //   captured image       1620 × 1088  ==  contentRect × pointPixelScale(2.0), exactly
+-  private let windowFrame = CGRect(x: 200, y: 200, width: 820, height: 552)
+-  private let contentRect = CGRect(x: 205, y: 872, width: 810, height: 544)
+-  private let scale: CGFloat = 2.0
+-  /// The y-flip constant that makes the measured pair consistent: `contentRect.minY` = H − frame.maxY − inset.
+-  private let mainScreenHeight: CGFloat = 1624
+-
+-  // MARK: The measured case
+-
+-  func testTheCaptureIsExactlyContentRectTimesScaleNotTheFrame() {
+-    let fromContent = SnapshotGeometry.capturePixelSize(
+-      contentRect: contentRect, scale: scale, maxLongEdge: 4000)
+-    XCTAssertEqual(
+-      fromContent, CGSize(width: 1620, height: 1088), "the spike measured exactly this")
+-    // The trap: sizing from the window frame instead gives a different image, and every crop taken
+-    // from it is then off by a scale factor of 1.9756/1.9710 rather than 2.0.
+-    let fromFrame = SnapshotGeometry.capturePixelSize(
+-      contentRect: windowFrame, scale: scale, maxLongEdge: 4000)
+-    XCTAssertNotEqual(
+-      fromFrame, fromContent, "contentRect is NOT the window frame — in size either")
+-  }
+-
+-  func testARegionSpanningTheWholeContentRectMapsToTheWholeImage() {
+-    // Express the content rect back in AppKit screen coordinates and crop it: the result must be the
+-    // entire image, which is only true if the reference rect and the single y-flip are both right.
+-    let regionOnScreen = CGRect(
+-      x: contentRect.minX, y: mainScreenHeight - contentRect.maxY,
+-      width: contentRect.width, height: contentRect.height)
+-    let crop = SnapshotGeometry.cropRect(
+-      regionOnScreen: regionOnScreen, windowContentRect: contentRect,
+-      mainScreenHeight: mainScreenHeight, scale: scale)
+-    XCTAssertEqual(crop, CGRect(x: 0, y: 0, width: 1620, height: 1088))
+-  }
+-
+-  func testTheYFlipsDoNotCancel() {
+-    // A region in the TOP half of the window must crop from the TOP of the image (small y in CG).
+-    // Getting the flip wrong is silent: the crop is a valid rect, just of the wrong pane.
+-    let topHalf = CGRect(
+-      x: contentRect.minX, y: mainScreenHeight - contentRect.maxY + contentRect.height / 2,
+-      width: contentRect.width, height: contentRect.height / 2)
+-    let crop = SnapshotGeometry.cropRect(
+-      regionOnScreen: topHalf, windowContentRect: contentRect,
+-      mainScreenHeight: mainScreenHeight, scale: scale)
+-    XCTAssertEqual(crop?.minY, 0, "the top of the window is y=0 in the capture")
+-    XCTAssertEqual(crop?.height, 544, "half the window, in pixels")
+-  }
+-
+-  func testABottomRegionCropsFromTheBottomOfTheImage() {
+-    let bottomHalf = CGRect(
+-      x: contentRect.minX, y: mainScreenHeight - contentRect.maxY,
+-      width: contentRect.width, height: contentRect.height / 2)
+-    let crop = SnapshotGeometry.cropRect(
+-      regionOnScreen: bottomHalf, windowContentRect: contentRect,
+-      mainScreenHeight: mainScreenHeight, scale: scale)
+-    XCTAssertEqual(crop?.minY, 544)
+-    XCTAssertEqual(crop?.maxY, 1088)
+-  }
+-
+-  func testASplitPanesTwoHalvesTileTheImageExactly() {
+-    // The real use: two side-by-side panes must partition the capture with no gap and no overlap.
+-    let leftOnScreen = CGRect(
+-      x: contentRect.minX, y: mainScreenHeight - contentRect.maxY,
+-      width: contentRect.width / 2, height: contentRect.height)
+-    let rightOnScreen = leftOnScreen.offsetBy(dx: contentRect.width / 2, dy: 0)
+-    let left = SnapshotGeometry.cropRect(
+-      regionOnScreen: leftOnScreen, windowContentRect: contentRect,
+-      mainScreenHeight: mainScreenHeight, scale: scale)
+-    let right = SnapshotGeometry.cropRect(
+-      regionOnScreen: rightOnScreen, windowContentRect: contentRect,
+-      mainScreenHeight: mainScreenHeight, scale: scale)
+-    XCTAssertEqual(left?.maxX, right?.minX, "no seam and no overlap between split members")
+-    XCTAssertEqual(left?.width, 810)
+-    XCTAssertEqual(right?.maxX, 1620)
+-  }
+-
+-  // MARK: Degenerate inputs
+-
+-  func testARegionOutsideTheCaptureIsNil() {
+-    let offscreen = CGRect(x: 5000, y: 5000, width: 100, height: 100)
+-    XCTAssertNil(
+-      SnapshotGeometry.cropRect(
+-        regionOnScreen: offscreen, windowContentRect: contentRect,
+-        mainScreenHeight: mainScreenHeight, scale: scale),
+-      "a pane scrolled out of the window yields no crop, not a bogus rect")
+-  }
+-
+-  func testAPartiallyOffscreenRegionIsClampedToTheImage() {
+-    // Straddling the leading edge: keep the visible part rather than reading out of bounds.
+-    let straddling = CGRect(
+-      x: contentRect.minX - 100, y: mainScreenHeight - contentRect.maxY,
+-      width: 300, height: contentRect.height)
+-    let crop = SnapshotGeometry.cropRect(
+-      regionOnScreen: straddling, windowContentRect: contentRect,
+-      mainScreenHeight: mainScreenHeight, scale: scale)
+-    XCTAssertEqual(crop?.minX, 0, "clamped, never negative")
+-    XCTAssertEqual(crop?.width, 400, "only the 200pt that overlaps, at 2×")
+-  }
+-
+-  func testZeroScaleAndEmptyRectsAreRejected() {
+-    let region = CGRect(x: 205, y: 200, width: 100, height: 100)
+-    XCTAssertNil(
+-      SnapshotGeometry.cropRect(
+-        regionOnScreen: region, windowContentRect: contentRect, mainScreenHeight: mainScreenHeight,
+-        scale: 0))
+-    XCTAssertNil(
+-      SnapshotGeometry.cropRect(
+-        regionOnScreen: .zero, windowContentRect: contentRect,
+-        mainScreenHeight: mainScreenHeight, scale: scale))
+-    XCTAssertNil(
+-      SnapshotGeometry.cropRect(
+-        regionOnScreen: region, windowContentRect: .zero, mainScreenHeight: mainScreenHeight,
+-        scale: scale))
+-  }
+-
+-  // MARK: Capture sizing
+-
+-  func testCaptureSizeIsCappedButStaysStrictlyProportional() {
+-    let big = CGRect(x: 0, y: 0, width: 3000, height: 1000)
+-    let size = SnapshotGeometry.capturePixelSize(contentRect: big, scale: 2, maxLongEdge: 1440)
+-    XCTAssertEqual(max(size.width, size.height), 1440, "long edge capped")
+-    // A mismatched aspect letterboxes and silently misaligns every crop, so the ratio must survive.
+-    XCTAssertEqual(size.width / size.height, 3, accuracy: 0.01)
+-  }
+-
+-  func testASmallWindowIsNotUpscaled() {
+-    let small = CGRect(x: 0, y: 0, width: 400, height: 300)
+-    let size = SnapshotGeometry.capturePixelSize(contentRect: small, scale: 2, maxLongEdge: 1440)
+-    XCTAssertEqual(size, CGSize(width: 800, height: 600))
+-  }
+-
+-  // MARK: Thumbnail sizing
+-
+-  func testThumbnailAspectFitsWithoutCropping() {
+-    // A wide window into a 72×56 well: width binds, height comes out short — letterboxed, not cropped.
+-    let size = SnapshotGeometry.thumbnailPixelSize(
+-      source: CGSize(width: 1620, height: 1088), maxPointSize: CGSize(width: 72, height: 56),
+-      scale: 2)
+-    XCTAssertEqual(size.width, 144, "the binding edge fills the well")
+-    XCTAssertLessThanOrEqual(size.height, 112)
+-    XCTAssertEqual(size.width / size.height, 1620 / 1088, accuracy: 0.02, "aspect preserved")
+-  }
+-
+-  func testATinySourceIsNotUpscaled() {
+-    let size = SnapshotGeometry.thumbnailPixelSize(
+-      source: CGSize(width: 40, height: 30), maxPointSize: CGSize(width: 72, height: 56), scale: 2)
+-    XCTAssertEqual(size, CGSize(width: 40, height: 30), "never blown up past 1:1")
+-  }
+-
+-  func testThumbnailOfAnEmptySourceIsZero() {
+-    XCTAssertEqual(
+-      SnapshotGeometry.thumbnailPixelSize(
+-        source: .zero, maxPointSize: CGSize(width: 72, height: 56), scale: 2), .zero)
+-  }
+-}
+
+
+Investigate per the method in your instructions, then return the findings list.
