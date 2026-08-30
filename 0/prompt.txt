@@ -1,0 +1,1 @@
+a run command that starts a server or long running process always shows the notification toast, and it never goes away unless I close it
