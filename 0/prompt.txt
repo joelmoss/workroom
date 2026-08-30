@@ -1,0 +1,1 @@
+sometimes the PR panel says "Github CLI not signed in", then it seems to recover itself.
