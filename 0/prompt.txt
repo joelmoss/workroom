@@ -1,0 +1,2237 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - internal/config/config.go
+  - internal/config/config_extra_test.go
+  - internal/config/lock_test.go
+  - macapp/WorkroomApp/Core/AgentRunner.swift
+  - macapp/WorkroomApp/Core/AppStore+WorkroomStatus.swift
+  - macapp/WorkroomApp/Core/AppStore.swift
+  - macapp/WorkroomApp/Core/FileTreeModel.swift
+  - macapp/WorkroomApp/Core/GhosttySurfaceView.swift
+  - macapp/WorkroomApp/Core/GitHubAuthCache.swift
+  - macapp/WorkroomApp/Core/ProjectStore.swift
+  - macapp/WorkroomApp/Core/RemoteStateModel.swift
+  - macapp/WorkroomApp/Core/RustJJProvider.swift
+  - macapp/WorkroomApp/Core/StatusCommandRunner.swift
+  - macapp/WorkroomApp/Core/TerminalAgentManager.swift
+  - macapp/WorkroomApp/Core/VCSSyncPresentation.swift
+  - macapp/WorkroomApp/Core/VCSToolVersions.swift
+  - macapp/WorkroomApp/Core/VCSWriting.swift
+  - macapp/WorkroomAppTests/AgentRunnerTests.swift
+  - macapp/WorkroomAppTests/AppStoreWritingProjectTests.swift
+  - macapp/WorkroomAppTests/FileTreeTests.swift
+  - macapp/WorkroomAppTests/GitHubAuthCacheTests.swift
+  - macapp/WorkroomAppTests/RemoteStateModelTests.swift
+  - macapp/WorkroomAppTests/RustJJProviderRunTests.swift
+  - macapp/WorkroomAppTests/StatusCommandRunnerTests.swift
+  - macapp/WorkroomAppTests/TerminalAgentManagerTests.swift
+  - macapp/WorkroomAppTests/VCSRemoteIntegrationTests.swift
+  - macapp/WorkroomAppTests/VCSToolVersionsTests.swift
+  - macapp/WorkroomAppTests/VCSWritingTests.swift
+  - macapp/WorkroomAppUITests/TerminalAccessibilityUITests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: internal/config/config.go ===
+@@ -1,6 +1,7 @@
+ package config
+ 
+ import (
++	"context"
+ 	"encoding/json"
+ 	"fmt"
+ 	"os"
+@@ -9,6 +10,7 @@ import (
+ 	"strings"
+ 	"time"
+ 
++	"github.com/gofrs/flock"
+ 	"github.com/joelmoss/workroom/internal/errs"
+ )
+ 
+@@ -111,36 +113,48 @@ func (c *Config) Write(data map[string]any) error {
+ 	return nil
+ }
+ 
+-// withLock runs fn while holding a best-effort cross-process advisory lock on the
+-// config (an exclusive sidecar lock file). It serialises read-modify-write cycles
+-// between the standalone CLI and the desktop app's bundled binary. It is
+-// best-effort: on any lock-acquisition trouble it degrades to running fn unlocked
+-// rather than failing the operation, and it steals a stale lock left by a crashed
+-// process.
++// withLock runs fn while holding a cross-process OS advisory lock on the config
++// (an exclusive sidecar lock file, taken via flock(2) on Unix / LockFileEx on
++// Windows through github.com/gofrs/flock). It serialises read-modify-write
++// cycles between the standalone CLI and the desktop app's bundled binary. It is
++// best-effort: on any lock-acquisition trouble, or on hitting the pathological-
++// hang backstop below, it degrades to running fn unlocked rather than failing
++// the operation. Unlike a stale-file mtime heuristic, an OS advisory lock is
++// released by the kernel the instant the holding process dies or crashes —
++// there is no elapsed-time staleness window to reason about or steal from a
++// still-live holder, so ordinary contention (even an unusually slow
++// read-modify-write) is never mistaken for abandonment.
++//
++// Rollout note: an OLD CLI binary built before this change still runs the
++// previous O_CREATE|O_EXCL + mtime-staleness scheme against the same ".lock"
++// path, and the two mechanisms do not recognise each other at all. During a
++// mixed-version window (an un-upgraded standalone CLI alongside a freshly
++// updated one) this is no worse than the pre-fix status quo for that specific
++// pairing, but it isn't fully closed by this change either. Decide, before
++// cutting the next tag that ships this, whether withLock should also touch the
++// legacy sidecar file for one release cycle so an old binary's staleness
++// heuristic at least sees a fresh mtime from a live new-style holder instead of
++// misreading it as abandoned.
+ func (c *Config) withLock(fn func() error) error {
+ 	lockPath := c.path + ".lock"
+ 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+ 		return fn()
+ 	}
+-	const staleAfter = 10 * time.Second
+-	for range 200 {
+-		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+-		if err == nil {
+-			f.Close()
+-			defer func() { _ = os.Remove(lockPath) }()
+-			return fn()
+-		}
+-		if !os.IsExist(err) {
+-			// Cannot create the lock for some other reason; proceed unlocked.
+-			return fn()
+-		}
+-		if info, e := os.Stat(lockPath); e == nil && time.Since(info.ModTime()) > staleAfter {
+-			_ = os.Remove(lockPath) // steal a stale lock from a crashed process
+-			continue
+-		}
+-		time.Sleep(10 * time.Millisecond)
++	fl := flock.New(lockPath)
++	// 30s is a backstop against a genuinely pathological hang (e.g. a suspended
++	// or wedged holder), not a throttle on ordinary contention: a config
++	// read-modify-write is microseconds to low milliseconds of work, so any real
++	// holder releases long before this fires. Sized to match JJSnapshotGate's own
++	// "well above any routine case" self-heal ceiling elsewhere in this codebase.
++	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
++	defer cancel()
++	locked, err := fl.TryLockContext(ctx, 10*time.Millisecond)
++	if err != nil || !locked {
++		// Lock-acquisition trouble, or the pathological-hang backstop fired:
++		// proceed unlocked rather than fail the operation or block forever.
++		return fn()
+ 	}
+-	// Gave up waiting (~2s); proceed unlocked rather than block forever.
++	defer func() { _ = fl.Unlock() }()
+ 	return fn()
+ }
+ 
+
+
+=== DIFF: internal/config/config_extra_test.go ===
+@@ -209,7 +209,7 @@ func TestWorkroomNames(t *testing.T) {
+ 	}
+ }
+ 
+-func TestWriteAtomicLeavesNoTempOrLockFiles(t *testing.T) {
++func TestWriteAtomicLeavesNoTempFiles(t *testing.T) {
+ 	c := newTestConfig(t)
+ 	in := map[string]any{
+ 		"workrooms_dir": "/x",
+@@ -226,15 +226,18 @@ func TestWriteAtomicLeavesNoTempOrLockFiles(t *testing.T) {
+ 		t.Fatalf("atomic write round-trip mismatch: %v", out)
+ 	}
+ 
+-	// Exercise the lock path and confirm no temp/lock artifacts are left behind.
++	// Exercise the lock path and confirm no temp-write artifacts are left behind.
++	// The ".lock" sidecar itself is expected to persist across calls — it's a
++	// real OS advisory lock (flock), not a create-then-delete marker file, so
++	// its file staying on disk between calls is correct, not a leak.
+ 	if err := c.AddProject("/p", "git"); err != nil {
+ 		t.Fatal(err)
+ 	}
+ 	entries, _ := os.ReadDir(filepath.Dir(c.Path()))
+ 	for _, e := range entries {
+ 		n := e.Name()
+-		if strings.HasPrefix(n, ".config-") || strings.HasSuffix(n, ".lock") {
+-			t.Fatalf("leftover temp/lock file after write: %s", n)
++		if strings.HasPrefix(n, ".config-") {
++			t.Fatalf("leftover temp file after write: %s", n)
+ 		}
+ 	}
+ }
+
+
+=== DIFF: internal/config/lock_test.go ===
+@@ -0,0 +1,142 @@
++package config
++
++import (
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/gofrs/flock"
++)
++
++// TestWithLockSerializesAgainstALiveSlowHolder proves the bug this fix closes:
++// a holder that is merely slow (not crashed) must never have its lock stolen,
++// and the two writers' fn calls must never run concurrently. The old
++// mtime-staleness scheme would misdiagnose a holder still working past 10s as
++// abandoned; a real OS advisory lock never does, however long the holder runs.
++func TestWithLockSerializesAgainstALiveSlowHolder(t *testing.T) {
++	c := newTestConfig(t)
++
++	var mu sync.Mutex
++	inFlight := false
++	overlapped := false
++	var order []string
++
++	holdFor := 150 * time.Millisecond
++
++	run := func(name string, hold time.Duration) {
++		err := c.withLock(func() error {
++			mu.Lock()
++			if inFlight {
++				overlapped = true
++			}
++			inFlight = true
++			order = append(order, name+":start")
++			mu.Unlock()
++
++			time.Sleep(hold)
++
++			mu.Lock()
++			order = append(order, name+":end")
++			inFlight = false
++			mu.Unlock()
++			return nil
++		})
++		if err != nil {
++			t.Errorf("%s: withLock returned error: %v", name, err)
++		}
++	}
++
++	var wg sync.WaitGroup
++	wg.Add(2)
++	go func() {
++		defer wg.Done()
++		run("A", holdFor)
++	}()
++	// Give A a head start so it reliably acquires the lock first.
++	time.Sleep(20 * time.Millisecond)
++	go func() {
++		defer wg.Done()
++		run("B", 10*time.Millisecond)
++	}()
++	wg.Wait()
++
++	if overlapped {
++		t.Fatalf("A and B's fn calls overlapped — lock did not serialize a live holder: %v", order)
++	}
++	if len(order) != 4 {
++		t.Fatalf("expected 4 ordered events, got %v", order)
++	}
++	// A must fully finish (start+end) before B starts, since A held the lock
++	// first and B must wait for the real holder rather than stealing it.
++	if !(order[0] == "A:start" && order[1] == "A:end" && order[2] == "B:start" && order[3] == "B:end") {
++		t.Fatalf("expected A to fully finish before B started, got %v", order)
++	}
++}
++
++// TestWithLockConcurrentWritersNeverCorruptTheFile drives many concurrent
++// AddWorkroom calls (real withLock-guarded mutators) and asserts every one of
++// them lands in the final config — proving the lock actually prevents the
++// lost-update race the old stale-timeout scheme allowed.
++func TestWithLockConcurrentWritersNeverCorruptTheFile(t *testing.T) {
++	c := newTestConfig(t)
++
++	const n = 20
++	var wg sync.WaitGroup
++	errs := make([]error, n)
++	for i := range n {
++		wg.Add(1)
++		go func(i int) {
++			defer wg.Done()
++			errs[i] = c.AddWorkroom("/proj", nameFor(i), pathFor(i), "git")
++		}(i)
++	}
++	wg.Wait()
++
++	for i, err := range errs {
++		if err != nil {
++			t.Fatalf("AddWorkroom %d failed: %v", i, err)
++		}
++	}
++
++	names, err := c.WorkroomNames("/proj")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(names) != n {
++		t.Fatalf("expected %d workrooms, got %d: %v (lost-update corruption)", n, len(names), names)
++	}
++}
++
++func nameFor(i int) string { return "wr" + string(rune('a'+i%26)) + string(rune('0'+i/26)) }
++func pathFor(i int) string { return "/wr/" + nameFor(i) }
++
++// TestWithLockReleasedImmediatelyWhenHolderDies proves the property that makes
++// the stale-timeout heuristic unnecessary: an OS advisory lock is released by
++// the kernel the instant the holding file descriptor closes (simulating a
++// crashed process), not after some elapsed-time guess. A fresh acquisition on
++// the same path must succeed right away — no waiting for any staleness window.
++func TestWithLockReleasedImmediatelyWhenHolderDies(t *testing.T) {
++	c := newTestConfig(t)
++	lockPath := c.Path() + ".lock"
++
++	// Simulate another process holding the lock, then dying without a clean
++	// unlock — closing the fd is what a crash does; gofrs/flock's Close() is
++	// the OS-level equivalent (no explicit Unlock call).
++	crashed := flock.New(lockPath)
++	locked, err := crashed.TryLock()
++	if err != nil || !locked {
++		t.Fatalf("setup: could not take the simulated crashed holder's lock: locked=%v err=%v", locked, err)
++	}
++	if err := crashed.Close(); err != nil {
++		t.Fatalf("setup: closing the simulated crashed holder's fd: %v", err)
++	}
++
++	// A fresh call must succeed immediately — no 10s (or any) staleness wait.
++	start := time.Now()
++	if err := c.withLock(func() error { return nil }); err != nil {
++		t.Fatalf("withLock after a crashed holder returned error: %v", err)
++	}
++	if elapsed := time.Since(start); elapsed > time.Second {
++		t.Fatalf("withLock took %v after a crashed holder — expected near-instant reacquisition", elapsed)
++	}
++}
+
+
+=== DIFF: macapp/WorkroomApp/Core/AgentRunner.swift ===
+@@ -125,10 +125,20 @@ enum AgentRunOutcome: Sendable, Equatable {
+   case success(stdout: String)
+   /// `/usr/bin/env` exit 127 — the agent CLI isn't on PATH.
+   case cliNotFound
++  /// The process never launched at all (e.g. the workroom's cwd vanished) — `CommandResult
++  /// .launchFailed`, not a real exit code. Distinct from `cliNotFound`: that means env ran and
++  /// searched PATH, a different fact from "nothing ran."
++  case launchFailed
+   /// Non-zero exit whose output looks like an auth/login failure.
+   case notAuthenticated
+   /// The timeout fired.
+   case timedOut
++  /// Killed by a signal (our own cancellation SIGKILL, an OS kill under memory pressure, a crash) —
++  /// NOT a timeout, which is checked first and reported as `.timedOut` instead (a timeout's
++  /// `terminate()` call also sets `signaled`, so order matters). `exitCode` on a signalled result is
++  /// the SIGNAL NUMBER, not a real CLI exit status, so it must never reach `.failed(exitCode:)` — a
++  /// killed `claude` showing "exit 9" is exactly the nonsense class the gh-flap fix ended elsewhere.
++  case interrupted
+   /// Succeeded but produced no usable text.
+   case emptyOutput
+   /// Any other non-zero exit (stderr tail kept for the banner / logs).
+@@ -173,6 +183,8 @@ struct AgentRunner: AgentRunning {
+   /// JSON; stderr is treated only as diagnostics (CLI warnings must not be mistaken for the result).
+   static func classify(_ result: CommandResult) -> AgentRunOutcome {
+     if result.timedOut { return .timedOut }
++    if result.signaled { return .interrupted }
++    if result.exitCode == CommandResult.launchFailed { return .launchFailed }
+     if result.exitCode == CommandResult.commandNotFound { return .cliNotFound }
+     if result.exitCode != 0 {
+       if isAuthFailure(result.stderr + "\n" + result.stdout) {
+
+
+=== DIFF: macapp/WorkroomApp/Core/AppStore+WorkroomStatus.swift ===
+@@ -253,8 +253,22 @@ extension AppStore {
+     // captured-sid refresh), so the one tier that drives this code end to end exercised none of it.
+     // `refreshStatus(for:)` already no-ops under the fixture, so the rest is safe to run.
+     let root = item.projectRoot
++    // Refuse outright rather than queue behind another write (commit/fetch/push/pull, this window
++    // or another) on the same project root — see `isWritingProject`'s doc for why queuing into
++    // `JJSnapshotGate` here would risk racing it past the gate's own wedge-detection ceiling.
++    guard !isWritingProject(root) else {
++      return completion(.failed(.locked(nil)))
++    }
+     committingTargets.insert(sid)
+     committingProjectRoots[root, default: 0] += 1
++    beginWrite(projectRoot: root)
++    // Captured STRONGLY, not through `self`: `committingProjectRoots`/`writingProjectRoots` live on
++    // this shared, cross-window store, and their release below must run even if THIS window's
++    // `AppStore` is deallocated before the write finishes (e.g. the window is closed mid-commit). A
++    // release gated on `self` staying alive would leak both counters — `writingProjectRoots`
++    // permanently, since nothing else ever decrements it, refusing every future write for this
++    // project, in every window, until the app restarts.
++    let projectStore = self.projectStore
+     Task { [weak self] in
+       let result: VCSCommitResult
+       if UITestFixture.isActive {
+@@ -268,16 +282,17 @@ extension AppStore {
+           result = .failed(.other("\(error)"))
+         }
+       }
+-      guard let self else { return }
+-      self.committingTargets.remove(sid)
+       // Decremented, never cleared: a sibling workroom of the same project can be committing too, and
+       // dropping the key would re-open every read lane against a write still in progress.
+-      let remaining = (self.committingProjectRoots[root] ?? 1) - 1
+-      if remaining > 0 {
+-        self.committingProjectRoots[root] = remaining
++      let remainingCommits = (projectStore.committingProjectRoots[root] ?? 1) - 1
++      if remainingCommits > 0 {
++        projectStore.committingProjectRoots[root] = remainingCommits
+       } else {
+-        self.committingProjectRoots.removeValue(forKey: root)
++        projectStore.committingProjectRoots.removeValue(forKey: root)
+       }
++      Self.releaseWrite(projectRoot: root, in: projectStore)
++      guard let self else { return }
++      self.committingTargets.remove(sid)
+       switch result {
+       case .ok, .committedThenFailed:
+         // Refresh by the CAPTURED sid. The Changes list is the load-bearing one for jj:
+@@ -676,6 +691,46 @@ extension AppStore {
+     committingProjectRoots[projectRoot, default: 0] > 0
+   }
+ 
++  /// Whether ANY write (commit, fetch, push, or pull) is in flight against this project root, in
++  /// this window or another. Checked by the write actions themselves BEFORE they start — the
++  /// umbrella `isCommittingProject` above never was, and neither was any fetch/push/pull call
++  /// site, which is what let two windows each queue a write on the same project and run them
++  /// concurrently once `JJSnapshotGate`'s self-heal ceiling passed. A write that finds this true
++  /// refuses outright (surfaced as `.locked(nil)` — "The repository was busy. Try again.") rather
++  /// than queuing into the gate and racing the one already running.
++  func isWritingProject(_ projectRoot: String) -> Bool {
++    writingProjectRoots[projectRoot, default: 0] > 0
++  }
++
++  /// Mark a write starting against `projectRoot`. Pair with `endWrite(projectRoot:)` — always in a
++  /// `defer` or an equivalent unconditional cleanup, mirroring how `committingProjectRoots` is
++  /// incremented/decremented around `performCommit`'s own write below.
++  func beginWrite(projectRoot: String) {
++    writingProjectRoots[projectRoot, default: 0] += 1
++  }
++
++  /// Mark a write finishing against `projectRoot`. Decremented rather than cleared, matching
++  /// `committingProjectRoots`'s own shape: in steady state this should only ever be 0 or 1, since
++  /// `isWritingProject` refuses a second write before `beginWrite` is ever called for it — but
++  /// decrementing (not clearing) is the robust form if that invariant is ever violated by a future
++  /// caller, the same defensive reasoning `committingProjectRoots` already applies.
++  func endWrite(projectRoot: String) {
++    Self.releaseWrite(projectRoot: projectRoot, in: projectStore)
++  }
++
++  /// The shared logic behind `endWrite`, taking `ProjectStore` explicitly so a caller that only has
++  /// a STRONGLY-captured `ProjectStore` (not a live `AppStore`) can release the mark directly —
++  /// `performCommit`'s Task and the `writeDidFinish` closure wired in `AppStore.init` both need this,
++  /// since either can run after the `AppStore`/`RemoteStateModel` that started the write is gone.
++  static func releaseWrite(projectRoot: String, in projectStore: ProjectStore) {
++    let remaining = (projectStore.writingProjectRoots[projectRoot] ?? 1) - 1
++    if remaining > 0 {
++      projectStore.writingProjectRoots[projectRoot] = remaining
++    } else {
++      projectStore.writingProjectRoots.removeValue(forKey: projectRoot)
++    }
++  }
++
+   /// Re-probe ONE row's local status, named explicitly.
+   ///
+   /// `scheduleSelectedStatusRefresh` cannot serve a commit: it derives its target from the LIVE
+
+
+=== DIFF: macapp/WorkroomApp/Core/AppStore.swift ===
+@@ -315,6 +315,7 @@ final class AppStore: ObservableObject {
+   /// timestamp that used to live here is gone: two owners for one truth is how the staleness gate and
+   /// the write drifted apart in the first place.
+   var ghAuthCache: GitHubAuthCache { projectStore.ghAuthCache }
++  var vcsToolVersionCache: VCSToolVersionCache { projectStore.vcsToolVersionCache }
+   /// A PR write action (Phase 2b) is running — disables the PR actions menu so it can't double-fire.
+   @Published var prActionInFlight = false
+ 
+@@ -341,6 +342,12 @@ final class AppStore: ObservableObject {
+     set { projectStore.committingProjectRoots = newValue }
+   }
+ 
++  /// In-flight write (commit/fetch/push/pull) counts per project root — see `ProjectStore`'s doc.
++  var writingProjectRoots: [String: Int] {
++    get { projectStore.writingProjectRoots }
++    set { projectStore.writingProjectRoots = newValue }
++  }
++
+   // Inspector section collapse (issue #24). Held on the store rather than as `@Default` in the
+   // inspector view: the `.inspector` content doesn't observe `@Default` changes, but it DOES observe
+   // this `@EnvironmentObject`. These are the *live* state for the currently selected workroom;
+@@ -750,8 +757,9 @@ final class AppStore: ObservableObject {
+       ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
+     else { return }
+     let probeJJ = projects.contains { $0.vcs == "jj" }
++    let cache = vcsToolVersionCache
+     Task { [weak self] in
+-      let report = await VCSToolVersionCache.shared.report(probeJJ: probeJJ)
++      let report = await cache.report(probeJJ: probeJJ)
+       self?.vcsToolReport = report
+     }
+   }
+@@ -873,6 +881,22 @@ final class AppStore: ObservableObject {
+     // Only the store can name a target, and the model needs the name to attribute a failure that
+     // outlived the selection it started from.
+     self.remoteState.describeTarget = { [weak self] sid in self?.label(for: sid).full }
++    // Cross-window write-in-flight refusal (VCS-foundation eng-review) — see `isWritingProject`'s
++    // doc. `canStartWrite` defaults to "never busy" when unwired, so a model built without an
++    // `AppStore` (unit tests) behaves as it did before this was added.
++    self.remoteState.canStartWrite = { [weak self] root in !(self?.isWritingProject(root) ?? false)
++    }
++    self.remoteState.writeDidStart = { [weak self] root in self?.beginWrite(projectRoot: root) }
++    // Captured STRONGLY, not through `self`: `writingProjectRoots` lives on the shared, cross-window
++    // `ProjectStore`, and this release must run even if THIS window's `AppStore` (and its
++    // `RemoteStateModel`) is deallocated before the write finishes — e.g. the window closed
++    // mid-fetch/push/pull. A release gated on `self` staying alive would leak the counter
++    // permanently, refusing every future write for this project, in every window, until relaunch.
++    // `RemoteStateModel.perform` already captures this closure's VALUE as a local before its own
++    // `Task` starts, for the identical reason on its side of the chain.
++    self.remoteState.writeDidFinish = { [projectStore = self.projectStore] root in
++      AppStore.releaseWrite(projectRoot: root, in: projectStore)
++    }
+     pendingRestoreSelection = Defaults[.sidebarSelection]
+     // Route each terminal's activity (OSC/bell) through the notification spine, gated on
+     // focus, and raise a native banner only when the app is backgrounded.
+
+
+=== DIFF: macapp/WorkroomApp/Core/FileTreeModel.swift ===
+@@ -91,15 +91,21 @@ final class FileTreeModel: ObservableObject {
+     loadTask?.cancel()
+     loadTask = Task { [weak self] in
+       guard let self else { return }
+-      let paths = await FileTreeModel.list(
++      let result = await FileTreeModel.list(
+         path: path, projectRoot: projectRoot, runner: self.runner, gate: self.gate)
+       guard !Task.isCancelled, self.currentPath == path else { return }
+-      if let paths {
++      switch result {
++      case .listing(let paths):
+         self.roots = FileTreeBuilder.build(from: paths)
+         self.state = .loaded
+-      } else {
++      case .unavailable:
+         self.roots = []
+         self.state = .unavailable
++      case .interrupted:
++        // An external kill, not evidence `path` stopped being a repo — leave whatever tree/state
++        // is already showing alone (the same "keep the existing tree visible" contract this
++        // function already promises while a listing is in flight) rather than blanking it.
++        break
+       }
+     }
+   }
+@@ -125,17 +131,31 @@ final class FileTreeModel: ObservableObject {
+     self.watcher = watcher
+   }
+ 
++  /// The outcome of listing a working tree — richer than a bare optional so a killed probe can be
++  /// told apart from a genuine "not a repo" or "tool missing".
++  enum ListResult: Equatable {
++    case listing([String])
++    /// Neither tool yielded a listing for an ordinary reason (not a repo, tool missing).
++    case unavailable
++    /// A tool's probe was killed by a signal — our own cancellation is caught earlier by the caller
++    /// checking `Task.isCancelled`, so reaching this means an EXTERNAL kill (OS memory pressure, a
++    /// crash). Distinct from `.unavailable`: this says nothing about whether `path` is a repo, so
++    /// the caller must not blank an existing tree over it — the sensible read is "try again", not
++    /// "this isn't a repo any more".
++    case interrupted
++  }
++
+   /// List the working tree at `path`: try git first (covers git worktrees and colocated jj repos),
+-  /// then jj (a non-colocated jj workspace has no `.git`). Returns the parsed repo-relative paths, or
+-  /// `nil` when neither tool yields a listing (not a repo / tool missing). Static + injectable
+-  /// runner so the git→jj fallthrough is testable. `jj file list` has no `--ignore-working-copy` —
+-  /// like `WorkroomStatusResolver.resolveJJ`/`DiffResolver`'s `.jjWorkingCopy`, it snapshots `@`, so
+-  /// it's serialized per project root through `JJSnapshotGate` (`git ls-files` is read-only and
+-  /// never gated). `projectRoot` falls back to `path` itself when unavailable (never skip the gate
++  /// then jj (a non-colocated jj workspace has no `.git`). Static + injectable runner so the
++  /// git→jj fallthrough is testable. `jj file list` has no `--ignore-working-copy` — like
++  /// `WorkroomStatusResolver.resolveJJ`/`DiffResolver`'s `.jjWorkingCopy`, it snapshots `@`, so it's
++  /// serialized per project root through `JJSnapshotGate` (`git ls-files` is read-only and never
++  /// gated). `projectRoot` falls back to `path` itself when unavailable (never skip the gate
+   /// entirely — see `DiffResolver.resolve`'s identical fallback).
+   static func list(
+     path: String, projectRoot: String?, runner: StatusCommandRunning, gate: JJSnapshotGate = .shared
+-  ) async -> [String]? {
++  ) async -> ListResult {
++    var sawSignal = false
+     for vcs in [FileListVCS.git, .jj] {
+       let command = FileListing.command(vcs)
+       let result: CommandResult
+@@ -147,8 +167,11 @@ final class FileTreeModel: ObservableObject {
+       } else {
+         result = await runner.run(command.executable, command.args, in: path, timeout: 10)
+       }
+-      if result.ok { return FileListing.parse(result.stdout, vcs: vcs) }
++      if result.ok { return .listing(FileListing.parse(result.stdout, vcs: vcs)) }
++      // A killed probe is not evidence `path` isn't a repo — remember it, but still try the other
++      // tool before giving up, exactly as an ordinary failure does.
++      if result.signaled { sawSignal = true }
+     }
+-    return nil
++    return sawSignal ? .interrupted : .unavailable
+   }
+ }
+
+
+=== DIFF: macapp/WorkroomApp/Core/GhosttySurfaceView.swift ===
+@@ -153,6 +153,19 @@ final class GhosttySurfaceView: NSView {
+   private var progressActive = false
+   private static let progressTimeout: TimeInterval = 30
+ 
++  // MARK: Terminal content accessibility (CMT-3)
++  //
++  // A libghostty surface renders through Metal, so its content is otherwise invisible to VoiceOver —
++  // there is no per-frame "content changed" callback from the engine to drive notifications off (the
++  // adapter's `GHOSTTY_ACTION_*` switch has nothing render-shaped), so this polls instead. The poll
++  // itself is near-free when VoiceOver is off (one boolean check), which is the common case for every
++  // user of every pane, so the timer runs unconditionally and the real work — materializing the
++  // viewport into a `String` and diffing it — happens only while VoiceOver is actually listening.
++  private var accessibilityPollTimer: Timer?
++  private static let accessibilityPollInterval: TimeInterval = 0.4
++  private var lastAccessibilityValue: String?
++  private var lastAccessibilitySelectedText: String?
++
+   /// How to fetch this pane's previous text, replayed once the surface exists (issue #144). Nil for a
+   /// pane that is not being restored, and cleared the moment it has been used.
+   ///
+@@ -338,6 +351,7 @@ final class GhosttySurfaceView: NSView {
+     progressActive = false
+     progressTimeoutTimer?.invalidate()
+     progressTimeoutTimer = nil
++    stopAccessibilityPolling()
+     if let occlusionObserver {
+       NotificationCenter.default.removeObserver(occlusionObserver)
+       self.occlusionObserver = nil
+@@ -350,6 +364,7 @@ final class GhosttySurfaceView: NSView {
+ 
+   deinit {
+     progressTimeoutTimer?.invalidate()
++    accessibilityPollTimer?.invalidate()
+     if let occlusionObserver { NotificationCenter.default.removeObserver(occlusionObserver) }
+     for observer in keyWindowObservers { NotificationCenter.default.removeObserver(observer) }
+     if let surface { ghostty_surface_free(surface) }
+@@ -401,9 +416,11 @@ final class GhosttySurfaceView: NSView {
+       // when window is nil, so set it explicitly here rather than leaving the last (stale) value.
+       isWindowVisible = false
+       applyOcclusionState()
++      stopAccessibilityPolling()
+       return
+     }
+     if surface == nil { createSurface() }
++    startAccessibilityPolling()
+     occlusionObserver = NotificationCenter.default.addObserver(
+       forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
+     ) { [weak self] _ in self?.updateWindowVisibility() }
+@@ -1032,30 +1049,87 @@ final class GhosttySurfaceView: NSView {
+     _ = ghostty_surface_key(surface, keyEvent)
+   }
+ 
+-  /// **Fixture-only.** Expose the visible screen text to the accessibility tree so an XCUITest can
+-  /// assert what a terminal actually did.
+-  ///
+-  /// A libghostty surface renders through Metal, so its contents are invisible to XCUITest — which
+-  /// leaves whole behaviours unassertable end to end. The one that forced this: issue #145 types a
+-  /// command in and submits it with `\r`, and if a libghostty version ever filtered control bytes out
+-  /// of the text path the command would be typed and never run. That failure is silent from the
+-  /// outside and there is no unit test for it, because the behaviour under test belongs to the engine.
++  /// Gate for every accessibility override below: real content publishes only while something is
++  /// actually listening. Without this, `isAccessibilityElement()`/`accessibilityValue()` being
++  /// unconditionally true would let ANY process holding the Accessibility (TCC) permission read a
++  /// mounted pane's live content at any time via `AXUIElementCopyAttributeValue` — silently, with no
++  /// pasteboard write or synthesized keystroke to leave a trace — not just VoiceOver. That's a wider
++  /// exposure than this feature's actual purpose (VoiceOver support), so content is published only
++  /// while VoiceOver is genuinely on, or under the UI-test fixture (which needs it regardless, to
++  /// assert terminal content in XCUITest — see `accessibilityIdentifier`'s doc).
++  private var accessibilityContentEnabled: Bool {
++    UITestFixture.isActive || NSWorkspace.shared.isVoiceOverEnabled
++  }
++
++  /// Expose the visible screen text to the accessibility tree (CMT-3) — VoiceOver's only way to read a
++  /// libghostty pane, since it renders through Metal and has no text layer of its own.
+   ///
+-  /// Gated on `UITestFixture.isActive`, which is itself `#if DEBUG` — a release build reads nothing
+-  /// and publishes nothing. `VIEWPORT` is the visible screen only, never the scrollback.
++  /// **Exposes exactly what copy/select already exposes, no more.** `VIEWPORT` reads the same rendered
++  /// screen a sighted user can select and copy; it cannot see anything a terminal itself would mask.
++  /// That parity is *why* this is safe rather than an accident that happens to be: a password prompt
++  /// with local echo disabled (`read -s`, an `ssh` passphrase) renders nothing for the typed
++  /// characters — the PTY never emits them for the terminal to draw in the first place — so there is
++  /// nothing here for VoiceOver to leak. Verified against a real `read`-with-echo-disabled prompt in
++  /// `TerminalAccessibilityUITests.testPasswordPromptWithEchoDisabledRendersNoTypedCharacters`. A TUI
++  /// drawing its own masked field (`••••`) is a different case — the mask characters DO render, and DO
++  /// get exposed, exactly as they're visible to a sighted user.
+   override func isAccessibilityElement() -> Bool {
+-    UITestFixture.isActive ? true : super.isAccessibilityElement()
++    accessibilityContentEnabled ? true : super.isAccessibilityElement()
+   }
+ 
+   override func accessibilityValue() -> Any? {
+-    guard UITestFixture.isActive else { return super.accessibilityValue() }
++    guard accessibilityContentEnabled else { return super.accessibilityValue() }
+     return readText(tag: GHOSTTY_POINT_VIEWPORT) ?? ""
+   }
+ 
++  override func accessibilitySelectedText() -> String? {
++    guard accessibilityContentEnabled else { return nil }
++    return readSelectionText()
++  }
++
++  /// **Fixture-only.** A stable id so an XCUITest can find this exact surface (e.g. issue #145's "did
++  /// the Return actually submit" check) — VoiceOver has no use for it, only test code targeting one
++  /// pane among several. Gated on `UITestFixture.isActive`, itself `#if DEBUG`: a release build
++  /// publishes no identifier.
+   override func accessibilityIdentifier() -> String {
+     UITestFixture.isActive ? "terminal.surface" : super.accessibilityIdentifier()
+   }
+ 
++  /// Poll the visible screen and selection at a fixed interval and tell VoiceOver when either changed.
++  ///
++  /// Libghostty gives no per-frame "content changed" callback to drive notifications off (the runtime
++  /// adapter's `GHOSTTY_ACTION_*` switch has nothing render-shaped — checked before building this), so
++  /// this polls instead. Gated on `NSWorkspace.shared.isVoiceOverEnabled`, checked FIRST and cheaply on
++  /// every tick: the real cost — materializing the whole viewport into a `String` — is paid only while
++  /// VoiceOver is actually listening, which is the rare case, not the common one. The timer itself runs
++  /// unconditionally so turning VoiceOver on mid-session is picked up within one interval, with no
++  /// separate on/off notification to subscribe to.
++  private func startAccessibilityPolling() {
++    guard accessibilityPollTimer == nil else { return }
++    accessibilityPollTimer = Timer.scheduledTimer(
++      withTimeInterval: Self.accessibilityPollInterval, repeats: true
++    ) { [weak self] _ in self?.pollAccessibilityContent() }
++  }
++
++  private func stopAccessibilityPolling() {
++    accessibilityPollTimer?.invalidate()
++    accessibilityPollTimer = nil
++  }
++
++  private func pollAccessibilityContent() {
++    guard NSWorkspace.shared.isVoiceOverEnabled else { return }
++    let value = readText(tag: GHOSTTY_POINT_VIEWPORT) ?? ""
++    if value != lastAccessibilityValue {
++      lastAccessibilityValue = value
++      NSAccessibility.post(element: self, notification: .valueChanged)
++    }
++    let selected = readSelectionText()
++    if selected != lastAccessibilitySelectedText {
++      lastAccessibilitySelectedText = selected
++      NSAccessibility.post(element: self, notification: .selectedTextChanged)
++    }
++  }
++
+   /// Fired the FIRST time anything lands on this pane's input line, and never again.
+   ///
+   /// "Anything" is the operative word, and getting it wrong is a code-execution bug rather than a
+
+
+=== DIFF: macapp/WorkroomApp/Core/GitHubAuthCache.swift ===
+@@ -26,12 +26,13 @@ import Foundation
+ ///                           (concurrent forced callers still join each other)
+ /// ```
+ ///
+-/// Deliberately an INSTANCE, not the `static let shared` actor that `VCSToolVersionCache` uses for
+-/// the same category of fact. `AppStore.init` documents that "tests build an isolated `AppStore()`
+-/// (own fresh `ProjectStore`)", and `make app-test` runs classes in PARALLEL — with static state one
+-/// test's injected fake runner can serve another test's probe, and a tests-only `reset()` cannot stop
+-/// an already-in-flight task from repopulating the cache afterwards. Per-`ProjectStore` ownership
+-/// gets that isolation from a guarantee the codebase already makes.
++/// Deliberately an INSTANCE, owned per-`ProjectStore` rather than a `static let shared` — the same
++/// reasoning `VCSToolVersionCache` now follows too. `AppStore.init` documents that "tests build an
++/// isolated `AppStore()` (own fresh `ProjectStore`)", and `make app-test` runs classes in PARALLEL —
++/// with static state one test's injected fake runner can serve another test's probe, and a
++/// tests-only `reset()` cannot stop an already-in-flight task from repopulating the cache
++/// afterwards. Per-`ProjectStore` ownership gets that isolation from a guarantee the codebase
++/// already makes.
+ actor GitHubAuthCache {
+   typealias Probe = WorkroomStatusResolver.GHAuthProbe
+ 
+
+
+=== DIFF: macapp/WorkroomApp/Core/ProjectStore.swift ===
+@@ -42,6 +42,15 @@ final class ProjectStore: ObservableObject {
+   /// reassigns it.
+   var ghAuthCache = GitHubAuthCache()
+ 
++  /// Owns the git/jj `--version` probe: its freshness clock AND its single-flight, per tool, so N
++  /// windows share one probe each rather than racing two. `vcsToolReport` on `AppStore` mirrors what
++  /// this decided (per-window, since `apply(projects)` runs per-window even though the underlying
++  /// facts are machine-wide).
++  ///
++  /// A `var` for the same reason `ghAuthCache` is: tests swap in an instance with millisecond TTLs;
++  /// production never reassigns it.
++  var vcsToolVersionCache = VCSToolVersionCache()
++
+   /// Project paths with an in-flight create/delete (for per-row progress + disabling).
+   @Published var busyProjects: Set<String> = []
+ 
+@@ -69,6 +78,17 @@ final class ProjectStore: ObservableObject {
+   /// commit at once and the first to finish must not clear the other's suppression.
+   @Published var committingProjectRoots: [String: Int] = [:]
+ 
++  /// How many writes (commit, fetch, push, or pull) are in flight against each project root,
++  /// across every window. Checked by the write ACTIONS THEMSELVES before starting — not just
++  /// by read lanes — so a second write on the same project root is refused outright rather than
++  /// queuing into `JJSnapshotGate` and possibly racing a live one past its wedge-detection
++  /// ceiling (VCS-foundation eng-review: the gate's `maxChainWait` self-heal is far shorter than
++  /// fetch/pull's own timeouts, so two windows could otherwise both queue a write and run them
++  /// concurrently on the shared `.git`). Distinct from `committingProjectRoots`, which exists for
++  /// a different reason (suppressing READ lanes during a commit specifically) and keeps its own
++  /// narrower role unchanged; this counter is the umbrella that all four write kinds share.
++  @Published var writingProjectRoots: [String: Int] = [:]
++
+   /// Target ids of workrooms with an in-flight optimistic deletion — dropped from the sidebar but
+   /// their teardown (worktree/config removal) not yet finished. `AppStore.apply` filters these out of
+   /// every incoming CLI `list`, so a stale snapshot taken before the teardown persisted can't
+
+
+=== DIFF: macapp/WorkroomApp/Core/RemoteStateModel.swift ===
+@@ -97,6 +97,20 @@ final class RemoteStateModel: ObservableObject {
+   /// to when it is no longer the selected one. Wired post-init to `AppStore.label(for:)` for the same
+   /// reason the two callbacks above are: the model stays `AppStore`-free and unit-testable.
+   var describeTarget: (@MainActor (SidebarID) -> String?)?
++  /// Whether a write is already in flight for this project root, IN ANY WINDOW — `inFlight` above is
++  /// only this one model's own single-action lock, which does nothing against a second window's
++  /// `RemoteStateModel` (each has its own `inFlight`, as it must to render its own spinner). Checked
++  /// before starting an action; a `true` result refuses with `.locked(nil)` rather than queuing into
++  /// `JJSnapshotGate` and possibly racing a live write past its wedge-detection ceiling. Wired post-init
++  /// to `AppStore.isWritingProject`, same `AppStore`-free reasoning as the callbacks above. Defaults to
++  /// "never busy" so a model built without this wired (e.g. in isolation for a unit test) behaves as
++  /// today rather than silently refusing everything.
++  var canStartWrite: (@MainActor (String) -> Bool)?
++  /// Marks a write starting/finishing against a project root, wired to `AppStore.beginWrite`/`endWrite`.
++  /// Paired unconditionally around the action's `Task` in `perform`/`finish`, mirroring how
++  /// `performCommit` pairs its own `beginWrite`/`endWrite` calls.
++  var writeDidStart: (@MainActor (String) -> Void)?
++  var writeDidFinish: (@MainActor (String) -> Void)?
+ 
+   init(
+     makeWriter: @escaping @Sendable (URL) throws -> VCSWriting = { try VCS.writer(for: $0) },
+@@ -300,6 +314,15 @@ final class RemoteStateModel: ObservableObject {
+       if userInitiated { raiseFailureReport(.noRemote, action: action) }
+       return
+     }
++    // Refuse outright rather than queue behind another write (this window or another) on the same
++    // project root — see `canStartWrite`'s doc for why. `inFlight == nil` above only rules out THIS
++    // model's own action; this is the cross-window half.
++    if canStartWrite?(target.projectRoot) == false {
++      lastFailure = .locked(nil)
++      lastAction = action
++      if userInitiated { raiseFailureReport(.locked(nil), action: action) }
++      return
++    }
+     inFlight = action
+     inFlightTarget = target
+     lastAction = action
+@@ -309,6 +332,13 @@ final class RemoteStateModel: ObservableObject {
+     let makeWriter = self.makeWriter
+     let current = snapshot.current
+     let tracking = snapshot.tracking
++    let projectRoot = target.projectRoot
++    writeDidStart?(projectRoot)
++    // Captured as a local NOW, not read through `self` after the `await` below: if this model (or
++    // its owning `AppStore`) is deallocated before the write finishes — the window closed mid-write
++    // — `self?.writeDidFinish` would silently no-op and leak the cross-window write-in-flight mark
++    // forever. The closure value itself is held by this `Task`, independent of `self`'s lifetime.
++    let finishWrite = writeDidFinish
+     actionTask = Task { [weak self] in
+       let root = URL(fileURLWithPath: target.path, isDirectory: true)
+       let result: VCSRemoteActionResult
+@@ -332,6 +362,7 @@ final class RemoteStateModel: ObservableObject {
+       } catch {
+         result = .failed(.other("\(error)"))
+       }
++      finishWrite?(projectRoot)
+       self?.finish(action, result: result, for: target, userInitiated: userInitiated)
+     }
+   }
+
+
+=== DIFF: macapp/WorkroomApp/Core/RustJJProvider.swift ===
+@@ -229,11 +229,18 @@ struct RustJJProvider: VCSProviding {
+   /// The runner drains stdout/stderr concurrently on GCD global-queue threads, so this blocking work
+   /// never touches the fixed-width Swift cooperative pool (the pool-starvation class documented on
+   /// `runBlocking`). Non-zero exit / timeout throw `VCSError.io`.
+-  private static func run(
+-    _ exe: String, _ args: [String], cwd: URL, timeout: TimeInterval = 30
++  /// `runner` is injectable (default the real `StatusCommandRunner`) purely so
++  /// `RustJJProviderRunTests` can prove the `signaled` branch below without spawning real jj.
++  static func run(
++    _ exe: String, _ args: [String], cwd: URL, timeout: TimeInterval = 30,
++    runner: StatusCommandRunning = StatusCommandRunner()
+   ) async throws -> String {
+-    let result = await StatusCommandRunner().run(exe, args, in: cwd.path, timeout: timeout)
++    let result = await runner.run(exe, args, in: cwd.path, timeout: timeout)
+     if result.timedOut { throw VCSError.io("\(exe) timed out after \(Int(timeout))s") }
++    // Checked before the generic exit-code guard: `result.exitCode` on a signalled result is the
++    // SIGNAL number, not a real CLI exit status — "jj exited 9" is exactly the nonsense class the
++    // gh-flap fix ended elsewhere, and this call site never learned that lesson.
++    if result.signaled { throw VCSError.io("\(exe) was interrupted") }
+     guard result.exitCode == 0 else {
+       throw VCSError.io("\(exe) exited \(result.exitCode): \(result.stderr)")
+     }
+
+
+=== DIFF: macapp/WorkroomApp/Core/StatusCommandRunner.swift ===
+@@ -25,10 +25,19 @@ struct CommandResult: Sendable, Equatable {
+   /// `timedOut` first, or a timeout gets misreported as a bare interruption.
+   let signaled: Bool
+ 
+-  /// `/usr/bin/env` exits 127 when the command (git/jj/gh) isn't on PATH.
++  /// `/usr/bin/env` exits 127 when the command (git/jj/gh) isn't on PATH. A REAL exit from a REAL
++  /// process — env ran, tried to exec the tool, and failed to find it.
+   static let commandNotFound: Int32 = 127
+   /// git exits 128 for "not a git repository" and similar fatal usage errors.
+   static let gitFatal: Int32 = 128
++  /// The process never ran at all — `Process.run()` itself threw, which on this runner's setup
++  /// (`proc.currentDirectoryURL` set unconditionally) is dominated by one cause: the working
++  /// directory vanished between when the caller decided to probe it and when this runner tried to
++  /// launch. Deliberately NOT `commandNotFound`/127: that value means env itself ran and searched
++  /// PATH, which is a completely different fact from "nothing ran." Every consumer that read 127 as
++  /// "tool not installed" would otherwise misdiagnose a deleted workroom as a missing git/jj/gh.
++  /// Negative and outside 0-255, so it can never collide with a real exit code or a signal number.
++  static let launchFailed: Int32 = -1
+ 
+   /// Written out rather than synthesized: a `let` with an initial value is EXCLUDED from the
+   /// memberwise init entirely, so `let signaled = false` would compile at all ~60 construction
+@@ -317,7 +326,8 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
+           }
+         } catch {
+           // Launch failed (e.g. cwd vanished). Close the write ends so the drain readers hit
+-          // EOF instead of blocking forever, then resolve as command-not-found.
++          // EOF instead of blocking forever, then resolve as launchFailed — NOT commandNotFound,
++          // which would misreport this as a missing tool. See `CommandResult.launchFailed`'s doc.
+           timeoutItem.cancel()
+           killItem.cancel()
+           try? inPipe?.fileHandleForWriting.close()
+@@ -325,7 +335,7 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
+           try? errPipe.fileHandleForWriting.close()
+           gate.resume(
+             CommandResult(
+-              stdout: "", stderr: "\(error)", exitCode: CommandResult.commandNotFound,
++              stdout: "", stderr: "\(error)", exitCode: CommandResult.launchFailed,
+               timedOut: false))
+         }
+       }
+
+
+=== DIFF: macapp/WorkroomApp/Core/TerminalAgentManager.swift ===
+@@ -235,6 +235,12 @@ final class TerminalAgentManager: ObservableObject {
+     case .cliNotFound: resolved = .failure(failure, .cliNotFound)
+     case .notAuthenticated: resolved = .failure(failure, .notAuthenticated)
+     case .timedOut: resolved = .failure(failure, .timedOut)
++    // The workroom's folder is gone, not a real exit code — see `AgentRunOutcome.launchFailed`.
++    case .launchFailed: resolved = .failure(failure, .other("workroom folder is gone"))
++    // Not `.other("exit \(code)")`: `result.exitCode` on a signalled outcome is the SIGNAL number,
++    // not a real CLI exit status — showing "exit 9" for a killed agent is the nonsense the gh-flap
++    // fix ended elsewhere. Same `.other` case as `.failed` below, distinct copy.
++    case .interrupted: resolved = .failure(failure, .other("interrupted"))
+     case .emptyOutput: resolved = .failure(failure, .emptyOutput)
+     case .failed(let code, _): resolved = .failure(failure, .other("exit \(code)"))
+     }
+
+
+=== DIFF: macapp/WorkroomApp/Core/VCSSyncPresentation.swift ===
+@@ -386,6 +386,9 @@ enum VCSSyncPresenter {
+     // Permanent until the user does something outside Workroom: describe the commit, or move off a base
+     // whose history is protected. Retrying either runs the identical command and fails identically.
+     case .needsDescription, .immutableHistory: return nil
++    // The workroom's folder is gone. Retrying spawns the identical command against the identical
++    // missing path — there is no "later" where this changes, unlike ordinary contention.
++    case .launchFailed: return nil
+     case .timedOut, .authRequired, .hostKeyUnverified, .dirtyWorkingTree, .other:
+       return lastAction
+     // A LOCATED lock file offers nothing, for `rebaseInProgress`'s reason: the file is sitting there, so
+@@ -412,6 +415,8 @@ enum VCSSyncPresenter {
+     // Permanent until the user acts outside Workroom: install the tool, add a remote, describe the
+     // commit, move off protected history.
+     case .toolMissing, .noRemote, .needsDescription, .immutableHistory: return false
++    // The workroom's folder is gone — re-reading the same missing path can't succeed.
++    case .launchFailed: return false
+     // Both carry an ACTION recovery, so this is only reached if that path is ever changed — and neither
+     // is fixed by re-reading.
+     case .rejected, .rebaseInProgress: return false
+@@ -435,6 +440,8 @@ enum VCSSyncPresenter {
+     switch failure {
+     case .toolMissing(let tool):
+       return "\(tool) isn’t on Workroom’s PATH."
++    case .launchFailed:
++      return "This workroom’s folder is no longer there."
+     case .timedOut(let action):
+       return "\(action.label) timed out."
+     case .authRequired:
+@@ -553,6 +560,11 @@ enum VCSSyncPresenter {
+ 
+         jj describe -m "…"
+         """
++    case .launchFailed:
++      return """
++        The workroom may have been deleted, or its folder moved or removed outside Workroom. \
++        Refresh the sidebar, or recreate the workroom if it's genuinely gone.
++        """
+     // `.locked` is answered by `explain` in full; `.other` is raw tool output we have no advice for.
+     case .locked, .other:
+       return nil
+@@ -568,7 +580,7 @@ enum VCSSyncPresenter {
+       .dirtyWorkingTree(let m),
+       .immutableHistory(let m), .needsDescription(let m), .other(let m):
+       raw = m
+-    case .toolMissing, .timedOut, .noRemote, .rebaseInProgress, .locked:
++    case .toolMissing, .timedOut, .noRemote, .rebaseInProgress, .locked, .launchFailed:
+       raw = nil
+     }
+     let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines)
+@@ -641,6 +653,7 @@ enum VCSSyncPresenter {
+   static func describeCommit(_ failure: VCSCommitFailure) -> String {
+     switch failure {
+     case .toolMissing(let tool): return "\(tool) isn’t on Workroom’s PATH."
++    case .launchFailed: return "This workroom’s folder is no longer there."
+     case .timedOut: return "The commit was stopped at its time limit."
+     case .nothingToCommit: return "Nothing to commit."
+     case .identityMissing: return "git doesn’t know who you are yet."
+@@ -707,6 +720,11 @@ enum VCSSyncPresenter {
+ 
+         If no git command is running for this repository, deleting the file is safe.
+         """
++    case .launchFailed:
++      return """
++        The workroom may have been deleted, or its folder moved or removed outside Workroom. \
++        Refresh the sidebar, or recreate the workroom if it's genuinely gone.
++        """
+     case .unsupportedMode, .other:
+       return nil
+     }
+@@ -719,7 +737,8 @@ enum VCSSyncPresenter {
+     case .identityMissing(let m), .signingFailed(let m), .hookRejected(let m),
+       .unmergedFiles(let m), .other(let m):
+       raw = m
+-    case .toolMissing, .timedOut, .nothingToCommit, .sequencerInProgress, .locked, .unsupportedMode:
++    case .toolMissing, .launchFailed, .timedOut, .nothingToCommit, .sequencerInProgress, .locked,
++      .unsupportedMode:
+       raw = nil
+     }
+     let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+
+=== DIFF: macapp/WorkroomApp/Core/VCSToolVersions.swift ===
+@@ -80,19 +80,6 @@ enum VCSToolVersions {
+       }
+     }
+ 
+-    /// Whether a tool we actually RAN reported absent from PATH (exit 127).
+-    ///
+-    /// Used to decide a verdict is too fragile to cache: absence is the one `Status` that can be an
+-    /// artefact of WHEN we probed rather than what is installed, because the PATH is still the
+-    /// deterministic floor until the interactive-shell probe lands. See `VCSToolVersionCache.report`.
+-    ///
+-    /// `probedJJ` is load-bearing, not decoration: when it is false `jj` is reported `.notInstalled`
+-    /// WITHOUT running anything, so counting that would refuse to cache on every launch with no jj
+-    /// project registered — turning a one-shot `git --version` into one per call.
+-    func hasMissingTool(probedJJ: Bool) -> Bool {
+-      git == .notInstalled || (probedJJ && jj == .notInstalled)
+-    }
+-
+     /// Whether remote actions are permitted for a project of this VCS (`"git"` / `"jj"`).
+     func allowsRemoteActions(vcs: String) -> Bool {
+       guard Self.isUsable(git) else { return false }
+@@ -184,50 +171,148 @@ enum VCSToolVersions {
+   }
+ }
+ 
+-/// Process-wide single-flight cache for the version probe.
++/// Cache for the version probe — the `GitHubAuthCache` shape (freshness lease, generation-stamped
++/// in-flight, instance ownership) applied to git and jj as TWO INDEPENDENT slots, not one combined
++/// `Report`.
++///
++/// **Why two slots, not one.** The previous single-slot design cached one `(Report, probedJJ)` pair.
++/// A `probeJJ: false` caller and a `probeJJ: true` caller racing meant whichever's completion landed
++/// LAST won the shared slot unconditionally — so a jj-blind result (which reports `jj: .notInstalled`
++/// outright, without running anything) could overwrite a jj-aware one that had already cached a real
++/// verdict. `GitHubAuthCache`'s generation stamp alone doesn't fix this: it orders by RECENCY, and it
++/// has no analogous "coverage" axis to protect, because it only ever answers one question. Splitting
++/// git and jj into their own slots removes the shared state those two kinds of caller could race
++/// over in the first place — a jj-blind caller never touches the jj slot at all.
++///
++/// **Why instance-owned, not `static let shared`.** `AppStore.init` documents that "tests build an
++/// isolated `AppStore()` (own fresh `ProjectStore`)", and `make app-test` runs classes in PARALLEL —
++/// with `static let shared` one test's injected fake runner could serve another's probe, and the
++/// tests-only `reset()` couldn't stop an already-in-flight task from repopulating the cache
++/// afterwards. Same reasoning `GitHubAuthCache` documents; owned on `ProjectStore` the same way.
+ ///
+ /// The tool versions are a fact about the machine, not about a window, but `AppStore` is per-window
+-/// (`WorkroomApp.swift` mints one per `WindowSeed`). Without this, every window would spawn its own
+-/// `git --version` at launch. Concurrent callers share one probe rather than racing two.
++/// (`WorkroomApp.swift` mints one per `WindowSeed`) while this lives on the shared `ProjectStore`, so
++/// concurrent callers across windows still share one probe per tool rather than racing two.
+ ///
+-/// `probedJJ` is remembered: a first probe taken before any jj project was registered legitimately
+-/// skipped `jj`, and reporting that cached `.notInstalled` once a jj project appears would warn about
+-/// a tool nobody ever looked for. Needing jj after skipping it re-probes.
++/// `probedJJ` is still remembered at the `report(probeJJ:)` call boundary (see below): a first probe
++/// taken before any jj project was registered legitimately skips `jj` outright, and reporting a
++/// cached `.notInstalled` once a jj project appears would warn about a tool nobody ever looked for.
++/// Needing jj after skipping it re-probes — but that re-probe now only ever touches the jj slot.
+ actor VCSToolVersionCache {
+-  static let shared = VCSToolVersionCache()
++  /// Flat, per-tool stored properties rather than a shared `Slot` struct passed by `inout`:
++  /// mutating a stored property through an `inout` binding held across an `await` is an actor
++  /// reentrancy hazard (a second call landing on the same actor while the first is suspended would
++  /// be a simultaneous exclusive access to the same property, a runtime crash) — the exact class of
++  /// bug this type exists to get away from. `GitHubAuthCache` avoids it the same way: read/write
++  /// `self.<property>` directly inside each `await`-separated step, never borrow it across one.
++  ///
++  /// `belowFloor` gets a short TTL lease — an upgrade is the expected repair, and the whole point of
++  /// warning about it is that it should be noticed once fixed — while `ok` gets a long one, since an
++  /// installed tool's version is effectively static for a session. TTLs match `GitHubAuthCache`'s
++  /// exact numbers (60s / 10s): a tool's version changes far less than GitHub auth state, but the
++  /// cost of a redundant local `--version` is cheap enough that a bespoke, longer TTL isn't worth
++  /// its own tuning surface.
++  private let clock = ContinuousClock()
++  private let ttl: Duration
++  private let belowFloorTTL: Duration
++
++  private var gitCached: (status: VCSToolVersions.Status, at: ContinuousClock.Instant)?
++  private var gitInFlight: Task<VCSToolVersions.Status, Never>?
++  /// Generation-stamped like `GitHubAuthCache`, so a superseded probe can't clear a newer flight or
++  /// overwrite a newer verdict when it finally lands.
++  private var gitGeneration = 0
+ 
+-  private var cached: (report: VCSToolVersions.Report, probedJJ: Bool)?
+-  private var inFlight: (task: Task<VCSToolVersions.Report, Never>, probedJJ: Bool)?
++  private var jjCached: (status: VCSToolVersions.Status, at: ContinuousClock.Instant)?
++  private var jjInFlight: Task<VCSToolVersions.Status, Never>?
++  private var jjGeneration = 0
+ 
++  /// TTLs are injectable so tests can age a verdict in milliseconds instead of sleeping for a minute.
++  init(ttl: Duration = .seconds(60), belowFloorTTL: Duration = .seconds(10)) {
++    self.ttl = ttl
++    self.belowFloorTTL = belowFloorTTL
++  }
++
++  /// `probeJJ: false` ⇒ the jj slot is never touched at all — jj reports `.notInstalled` without a
++  /// process ever spawning, exactly as `VCSToolVersions.probe` itself behaves, and nothing about that
++  /// non-answer is cached (there is nothing to age out of a slot that was never written).
+   func report(probeJJ: Bool, runner: StatusCommandRunning = StatusCommandRunner()) async
+     -> VCSToolVersions.Report
+   {
+-    // Reuse only a result that covers what this caller needs.
+-    if let cached, cached.probedJJ || !probeJJ { return cached.report }
+-    if let inFlight, inFlight.probedJJ || !probeJJ { return await inFlight.task.value }
+-    let task = Task { await VCSToolVersions.probe(runner: runner, probeJJ: probeJJ) }
+-    inFlight = (task, probeJJ)
+-    let report = await task.value
+-    // Never cache a `.notInstalled`. That verdict comes from exit 127, i.e. the tool wasn't on PATH —
+-    // and at launch the PATH may still be the deterministic floor, because `ShellEnvironment.path()`
+-    // silently returns the floor until the interactive-shell probe lands and nothing joins that probe
+-    // (it is fired detached in `WorkroomApp.init`, while `refreshVCSToolReport` runs from
+-    // `apply(projects)`). The floor covers Homebrew but NOT a version-manager shim dir, Nix, or
+-    // MacPorts, so a jj living in one of those reads as missing — and caching that pinned "jj isn't
+-    // installed" for the entire process, since `cached` is only cleared by the tests-only `reset()`.
+-    // Re-probing costs one `--version` and by then the enriched PATH has usually landed.
+-    //
+-    // `.unknown` is safe to cache by contrast: `warnings(hasJJProject:)` ignores it, so it never
+-    // becomes a false claim.
+-    if !report.hasMissingTool(probedJJ: probeJJ) { cached = (report, probeJJ) }
+-    inFlight = nil
+-    return report
+-  }
+-
+-  /// Tests only — the cache is process-wide, so a test that probed must clear it.
++    let gitStatus = await gitStatus(runner: runner)
++    guard probeJJ else { return VCSToolVersions.Report(git: gitStatus, jj: .notInstalled) }
++    let jjStatus = await jjStatus(runner: runner)
++    return VCSToolVersions.Report(git: gitStatus, jj: jjStatus)
++  }
++
++  private func gitStatus(runner: StatusCommandRunning) async -> VCSToolVersions.Status {
++    if let gitCached, isFresh(gitCached) { return gitCached.status }
++    if let gitInFlight { return await gitInFlight.value }
++    gitGeneration += 1
++    let gen = gitGeneration
++    let task = Task { [self] () -> VCSToolVersions.Status in
++      let result = await runner.run("git", ["--version"], in: NSTemporaryDirectory(), timeout: 5)
++      let status = VCSToolVersions.status(result, floor: VCSToolVersions.gitFloor)
++      return await recordGit(status, gen: gen)
++    }
++    gitInFlight = task
++    return await task.value
++  }
++
++  private func jjStatus(runner: StatusCommandRunning) async -> VCSToolVersions.Status {
++    if let jjCached, isFresh(jjCached) { return jjCached.status }
++    if let jjInFlight { return await jjInFlight.value }
++    jjGeneration += 1
++    let gen = jjGeneration
++    let task = Task { [self] () -> VCSToolVersions.Status in
++      let result = await runner.run("jj", ["--version"], in: NSTemporaryDirectory(), timeout: 5)
++      let status = VCSToolVersions.status(result, floor: VCSToolVersions.jjFloor)
++      return await recordJJ(status, gen: gen)
++    }
++    jjInFlight = task
++    return await task.value
++  }
++
++  /// Fold a finished git probe into the git slot. Never caches `.notInstalled` — see the type doc on
++  /// the original single-slot design for why: at launch the PATH may still be the deterministic
++  /// floor, because `ShellEnvironment.path()` returns the floor until the detached interactive-shell
++  /// probe lands, so an absence can be an artefact of WHEN we probed rather than what is installed.
++  /// `.unknown` is safe to cache by contrast: `warnings(hasJJProject:)` ignores it.
++  private func recordGit(_ status: VCSToolVersions.Status, gen: Int) -> VCSToolVersions.Status {
++    if gen == gitGeneration {
++      gitInFlight = nil
++      if status != .notInstalled { gitCached = (status, clock.now) }
++    }
++    return status
++  }
++
++  /// The jj-slot counterpart of `recordGit` — kept as its own method rather than sharing one
++  /// parameterized by tool, because that would need `inout` access to whichever property the
++  /// caller means, the exact hazard this design avoids (see the type doc above).
++  private func recordJJ(_ status: VCSToolVersions.Status, gen: Int) -> VCSToolVersions.Status {
++    if gen == jjGeneration {
++      jjInFlight = nil
++      if status != .notInstalled { jjCached = (status, clock.now) }
++    }
++    return status
++  }
++
++  private func isFresh(_ entry: (status: VCSToolVersions.Status, at: ContinuousClock.Instant))
++    -> Bool
++  {
++    entry.at.duration(to: clock.now) < effectiveTTL(for: entry.status)
++  }
++
++  private func effectiveTTL(for status: VCSToolVersions.Status) -> Duration {
++    if case .belowFloor = status { return belowFloorTTL }
++    return ttl
++  }
++
++  /// Tests only — clears both slots.
+   func reset() {
+-    cached = nil
+-    inFlight = nil
++    gitCached = nil
++    gitInFlight = nil
++    jjCached = nil
++    jjInFlight = nil
+   }
+ }
+ 
+
+
+=== DIFF: macapp/WorkroomApp/Core/VCSWriting.swift ===
+@@ -27,6 +27,11 @@ enum VCSRemoteFailure: Equatable, Sendable {
+   /// `git`/`jj` not on PATH. Distinct from `VCSToolVersions`' floor check, which runs at launch —
+   /// this is the same condition caught at the point of use.
+   case toolMissing(String)
++  /// The command never ran — `CommandResult.launchFailed`, dominated by the working directory
++  /// having vanished (e.g. the workroom was deleted mid-action) between the toolbar deciding to
++  /// act and the runner trying to launch. Distinct from `toolMissing`: that means the TOOL wasn't
++  /// found on PATH, which is a completely different, unrelated fact from "this folder is gone."
++  case launchFailed
+   case timedOut(VCSRemoteAction)
+   /// Credentials were needed and none were available.
+   case authRequired(String)
+@@ -182,6 +187,9 @@ enum VCSCommitResult: Equatable, Sendable {
+ /// reusing it would force a meaningless value.
+ enum VCSCommitFailure: Equatable, Sendable {
+   case toolMissing(String)
++  /// The command never ran — see `VCSRemoteFailure.launchFailed`'s doc for why this must not be
++  /// folded into `toolMissing`.
++  case launchFailed
+   case timedOut
+   /// Nothing staged/changed for the selection. jj reports this as an ordinary success ("Nothing
+   /// changed."), so the writer maps it rather than surfacing a phantom commit.
+@@ -758,6 +766,32 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+     return "\"\(escaped)\""
+   }
+ 
++  /// Reverse jj's own template quoting. `self.name()` renders a bookmark name bare when it's a plain
++  /// identifier and `"quoted\"like\\this"` (jjQuote's exact escaping) when it isn't — verified against
++  /// jj 0.43: a bookmark named `main|evil` prints as `"main|evil"` from `self.name()`. Comparing that
++  /// raw template output against an unquoted name (from `currentRef`, or a UI-typed name) never
++  /// matches, so every downstream lookup (`parseJJBookmarks`'s tracking-by-name, `jjRemoteState`'s
++  /// bookmark match) needs the literal name back.
++  ///
++  /// Not a naive strip of the first/last character: an embedded escaped quote or backslash must
++  /// round-trip exactly, so this walks the escape sequences jjQuote produces (`\\` → `\`, `\"` → `"`)
++  /// rather than assuming the only quotes present are the wrapping pair.
++  static func jjUnquote(_ name: String) -> String {
++    guard name.count >= 2, name.hasPrefix("\""), name.hasSuffix("\"") else { return name }
++    let inner = name.dropFirst().dropLast()
++    var result = ""
++    var chars = Substring(inner)
++    while let c = chars.popFirst() {
++      guard c == "\\", let next = chars.first, next == "\\" || next == "\"" else {
++        result.append(c)
++        continue
++      }
++      result.append(next)
++      chars.removeFirst()
++    }
++    return result
++  }
++
+   /// The base an unbookmarked `@` is measured — and rebased — against.
+   ///
+   /// `trunk()` is jj's own alias, so this defers to the user's `revset-aliases.'trunk()'` when they've
+@@ -797,16 +831,21 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+ 
+   /// Where a jj pull rebases `@`.
+   ///
+-  /// A bookmarked `@` goes onto its own remote counterpart. An unbookmarked one has no counterpart —
+-  /// `VCSTracking.comparedTo` carries the bare remote name as the sentinel for that state — and goes onto
+-  /// `trunk()`, the same base its behind count is measured from.
++  /// A bookmarked `@` goes onto its own remote counterpart. An unbookmarked one has no counterpart and
++  /// goes onto `trunk()`, the same base its behind count is measured from.
+   ///
+   /// That second case used to return early without rebasing at all, so Pull fetched and stopped: the
+   /// toolbar offered "Pull" beside a count the button could not act on. git's Pull has always been
+   /// pull-and-rebase, and this is what makes jj's the same operation.
+-  static func jjRebaseDestination(comparedTo: String?, remote: String) -> String {
+-    guard let comparedTo, comparedTo != remote else { return jjTrunkRevset }
+-    return comparedTo
++  ///
++  /// Builds the revset from the raw bookmark name and remote, quoting each independently with
++  /// `jjQuote`, rather than reusing a pre-joined "name@remote" display string — a bookmark name needing
++  /// quoting (e.g. `main|evil`) parses as a union inside a bare revset, exactly the bug `jjQuote`'s own
++  /// doc comment warns about, so the destination must be built quoted from the start, not patched after
++  /// the fact.
++  static func jjRebaseDestination(current: VCSRef, remote: String) -> String {
++    guard current.kind == .branch, let name = current.name else { return jjTrunkRevset }
++    return "\(jjQuote(name))@\(jjQuote(remote))"
+   }
+ 
+   static func jjFetchArgs(remote: String) -> [String] {
+@@ -978,14 +1017,24 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+   /// `@origin` ref means *the remote is ahead of local*, which is git's **behind** — jj's own default
+   /// template proves it by printing "ahead by N commits" next to `@origin`. One line, one comment, and
+   /// a cross-backend integration test pins it.
+-  static func parseJJBookmarks(_ stdout: String) -> (bookmarks: [JJBookmark], remotes: [String]) {
++  ///
++  /// `primaryRemote` breaks ties when the SAME bookmark is tracked on more than one remote (`origin`
++  /// AND `upstream` both tracking `main`, say): the primary remote's row wins, rather than whichever
++  /// line happened to parse last. Every UI string interpolates `primaryRemote` elsewhere in this file,
++  /// so the counts have to agree with the name being shown. `nil` (no primary known yet, or only one
++  /// remote in the output — the common case) falls back to an arbitrary row, which is harmless because
++  /// there is only ever one candidate to choose from.
++  static func parseJJBookmarks(_ stdout: String, primaryRemote: String? = nil) -> (
++    bookmarks: [JJBookmark], remotes: [String]
++  ) {
+     var remotes: [String] = []
+-    var trackingByName: [String: VCSTracking] = [:]
++    var trackingByNameAndRemote: [String: [String: VCSTracking]] = [:]
+     var localNames: [String] = []
+     for line in stdout.split(whereSeparator: \.isNewline) {
+       let f = line.components(separatedBy: "\0")
+       guard f.count == 8 else { continue }
+-      let (name, remote) = (f[0], f[1])
++      // `self.name()` renders quoted for a non-identifier name (e.g. `"main|evil"`) — see `jjUnquote`.
++      let (name, remote) = (Self.jjUnquote(f[0]), f[1])
+       let present = f[3] == "1"
+       let tracked = f[5] == "1"
+       guard !name.isEmpty else { continue }
+@@ -1002,13 +1051,17 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+       // reports the deletion; nil counts report "unanswerable" rather than a misleading zero.
+       let jjAhead = Int(f[6])
+       let jjBehind = Int(f[7])
+-      trackingByName[name] = VCSTracking(
++      trackingByNameAndRemote[name, default: [:]][remote] = VCSTracking(
+         comparedTo: "\(name)@\(remote)",
+         ahead: tracked && present ? jjBehind : nil,  // swapped — see the doc comment
+         behind: tracked && present ? jjAhead : nil,
+         gone: !present)
+     }
+-    let bookmarks = localNames.map { JJBookmark(name: $0, tracking: trackingByName[$0]) }
++    let bookmarks = localNames.map { name in
++      let byRemote = trackingByNameAndRemote[name]
++      let tracking = primaryRemote.flatMap { byRemote?[$0] } ?? byRemote?.values.first
++      return JJBookmark(name: name, tracking: tracking)
++    }
+     return (bookmarks, remotes)
+   }
+ 
+@@ -1040,6 +1093,9 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+     _ result: CommandResult, action: VCSRemoteAction, tool: String,
+     gitDir: URL? = nil
+   ) -> VCSRemoteFailure? {
++    // Checked BEFORE commandNotFound: launchFailed means the process never ran at all (dominated by
++    // a vanished cwd), which is a different fact from commandNotFound's "env ran and searched PATH".
++    if result.exitCode == CommandResult.launchFailed { return .launchFailed }
+     if result.exitCode == CommandResult.commandNotFound { return .toolMissing(tool) }
+     let err = result.stderr + "\n" + result.stdout
+     // A timed-out pull may have left a rebase behind; that reads better than "timed out".
+@@ -1168,6 +1224,7 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+   /// moved `HEAD` by the time it runs, so a hook that fails or runs past the timeout leaves a
+   /// perfectly good commit behind a non-zero exit.
+   static func classifyCommit(_ result: CommandResult, tool: String) -> VCSCommitFailure? {
++    if result.exitCode == CommandResult.launchFailed { return .launchFailed }
+     if result.exitCode == CommandResult.commandNotFound { return .toolMissing(tool) }
+     // jj says "Nothing changed." and exits ZERO, so its no-op has to be read BEFORE the success
+     // guard — an untouched working copy must not be reported as a commit that happened.
+@@ -1423,11 +1480,15 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+       if case .timedOut = failure { return .keepPrior }
+       return .failed(failure)
+     }
+-    let parsed = Self.parseJJBookmarks(list.stdout)
+     let remoteList = await run(Self.jjRemoteListArgs(), in: path, timeout: refTimeout)
+-    let remotes = Self.mergeRemotes(
+-      configured: remoteList.ok ? Self.parseJJRemoteList(remoteList.stdout) : [],
+-      derived: parsed.remotes)
++    let configuredRemotes = remoteList.ok ? Self.parseJJRemoteList(remoteList.stdout) : []
++    // Resolved from the CONFIGURED remotes alone, ahead of the merge below — every remote a
++    // bookmark can be tracked on is itself configured, so this is the same answer `primary` below
++    // reaches in the success case, just available in time to hand to `parseJJBookmarks`, which
++    // needs it to pick the right row when more than one remote tracks the same bookmark name.
++    let parsed = Self.parseJJBookmarks(
++      list.stdout, primaryRemote: Self.primaryRemote(configuredRemotes))
++    let remotes = Self.mergeRemotes(configured: configuredRemotes, derived: parsed.remotes)
+     let primary = Self.primaryRemote(remotes)
+     var tracking: VCSTracking?
+     if let primary {
+@@ -1586,7 +1647,7 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+       // as far behind as it started while the toolbar went on offering Pull. Already a descendant of the
+       // destination is not an error — jj prints "Nothing changed." and exits 0.
+       args = Self.jjRebaseArgs(
+-        onto: Self.jjRebaseDestination(comparedTo: tracking?.comparedTo, remote: remote))
++        onto: Self.jjRebaseDestination(current: current, remote: remote))
+     } else {
+       guard let branch = Self.pullBranch(current: current, tracking: tracking) else {
+         return .failed(.other("no remote branch to pull from."))
+@@ -1616,8 +1677,13 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+   }
+ 
+   func abortRebase(path: String, projectRoot: String) async -> VCSRemoteActionResult {
+-    guard vcs != "jj" else {
+-      // jj's rebase is atomic and undoable — there is no half-finished state to abort.
++    if vcs == "jj", !Self.rebaseInProgress(gitDir: Self.worktreeGitDir(at: path)) {
++      // jj's own rebase is atomic and undoable — there is no half-finished state to abort. But a
++      // COLOCATED jj root still has a real `.git`, and a `git rebase` run in that root's terminal
++      // can leave a real `rebase-merge`/`rebase-apply` behind — exactly what `classify` checks for
++      // (via this same `rebaseInProgress`) to hand this action `.rebaseInProgress` in the first
++      // place. Only report "nothing to abort" when that check finds no such state on disk;
++      // otherwise fall through to the real `git rebase --abort` below, same as the plain-git path.
+       return .ok(summary: "Nothing to abort")
+     }
+     let dir = Self.opDirectory(.abortRebase, path: path, projectRoot: projectRoot)
+@@ -1625,10 +1691,17 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+       let result = await gated(
+         projectRoot,
+         { [self] in
+-          await run(Self.gitAbortRebaseArgs(), in: dir, timeout: refTimeout)
++          // Explicitly "git" here, never the private `run(_:in:timeout:)` helper — that helper
++          // spawns `self.vcs`, which for a colocated root falling through from the guard above is
++          // "jj", not "git". Running `jj` with git's rebase-abort args is not "abort a rebase" —
++          // jj's own default-command fallback rejects the flags outright, which is exactly what
++          // this was measured doing before this explicit executable was added.
++          await runner.run("git", Self.gitAbortRebaseArgs(), in: dir, timeout: refTimeout)
+         })
+     else { return .failed(.other("abort was cancelled")) }
+-    if let failure = Self.classify(result, action: .abortRebase, tool: vcs) {
++    // Always "git" here too, never `vcs`, for the same reason: attributing a failure to the wrong
++    // tool would misdirect ".toolMissing"/"exited N" messages.
++    if let failure = Self.classify(result, action: .abortRebase, tool: "git") {
+       return .failed(failure)
+     }
+     return .ok(summary: "Rebase aborted")
+@@ -1826,6 +1899,7 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+     case .locked(let file):
+       return file.map { "Blocked by \($0.filename)." } ?? "The repository was busy."
+     case .unsupportedMode: return "That action isn’t available for this repository."
++    case .launchFailed: return "This workroom’s folder is no longer there."
+     }
+   }
+ }
+
+
+=== DIFF: macapp/WorkroomAppTests/AgentRunnerTests.swift ===
+@@ -98,6 +98,14 @@ final class AgentRunnerTests: XCTestCase {
+     XCTAssertEqual(AgentRunner.classify(result("", "env: claude: No such file", 127)), .cliNotFound)
+   }
+ 
++  /// A vanished cwd (the workroom deleted mid-action) must classify as `.launchFailed`, never
++  /// `.failed(exitCode:)` — `CommandResult.launchFailed` (-1) is a sentinel, not a real exit code,
++  /// and never `.cliNotFound` either, which would misreport a missing tool instead of a gone folder.
++  func testClassifyLaunchFailedIsNotFailedOrCliNotFound() {
++    let launchFailed = result("", "The file couldn't be opened.", CommandResult.launchFailed)
++    XCTAssertEqual(AgentRunner.classify(launchFailed), .launchFailed)
++  }
++
+   func testClassifyAuthFailure() {
+     XCTAssertEqual(
+       AgentRunner.classify(result("", "Invalid API key · Please run `claude login`", 1)),
+@@ -109,6 +117,23 @@ final class AgentRunnerTests: XCTestCase {
+     XCTAssertEqual(out, .failed(exitCode: 2, stderr: "boom"))
+   }
+ 
++  /// A killed agent (our own cancellation, an OS kill under memory pressure) must classify as
++  /// `.interrupted`, never `.failed(exitCode:)` — `exitCode` on a signalled result is the SIGNAL
++  /// number, not a real CLI exit status, so "exit 9" is exactly the nonsense the gh-flap fix ended
++  /// elsewhere.
++  func testClassifySignaledIsInterruptedNotFailed() {
++    let signaled = CommandResult(
++      stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
++    XCTAssertEqual(AgentRunner.classify(signaled), .interrupted)
++  }
++
++  /// `timedOut` implies `signaled` (the timeout path SIGTERMs), so timeout must win the check order.
++  func testClassifyTimeoutWinsOverSignaled() {
++    let timedOutAndSignaled = CommandResult(
++      stdout: "", stderr: "", exitCode: 15, timedOut: true, signaled: true)
++    XCTAssertEqual(AgentRunner.classify(timedOutAndSignaled), .timedOut)
++  }
++
+   func testClassifyEmptyStdoutIsEmptyOutput() {
+     XCTAssertEqual(AgentRunner.classify(result("   \n", "", 0)), .emptyOutput)
+   }
+
+
+=== DIFF: macapp/WorkroomAppTests/AppStoreWritingProjectTests.swift ===
+@@ -0,0 +1,121 @@
++import XCTest
++
++@testable import Workroom
++
++/// `AppStore.isWritingProject`/`beginWrite`/`endWrite` — the cross-window write-in-flight refusal
++/// (VCS-foundation eng-review). `committingProjectRoots`/`isCommittingProject` exist to suppress READ
++/// lanes during a commit; this is the separate, umbrella mechanism that all four write kinds
++/// (commit/fetch/push/pull) check BEFORE starting, so a second write on the same project root is
++/// refused outright instead of queuing into `JJSnapshotGate` and possibly racing a live one past the
++/// gate's own wedge-detection ceiling.
++@MainActor
++final class AppStoreWritingProjectTests: XCTestCase {
++
++  private func makeStore(_ projects: [Project]) -> AppStore {
++    let store = AppStore()
++    store.projects = projects
++    return store
++  }
++
++  private func project(_ path: String, workrooms: [String]) -> Project {
++    Project(
++      path: path, vcs: "git",
++      workrooms: workrooms.map {
++        Workroom(name: $0, path: "\(path)/\($0)", vcsName: "main", warnings: [])
++      })
++  }
++
++  func testIsWritingProjectTracksBeginAndEnd() {
++    let store = makeStore([])
++    XCTAssertFalse(store.isWritingProject("/proj"))
++    store.beginWrite(projectRoot: "/proj")
++    XCTAssertTrue(store.isWritingProject("/proj"))
++    store.endWrite(projectRoot: "/proj")
++    XCTAssertFalse(store.isWritingProject("/proj"))
++  }
++
++  func testIsWritingProjectIsPerProjectRoot() {
++    let store = makeStore([])
++    store.beginWrite(projectRoot: "/a")
++    XCTAssertTrue(store.isWritingProject("/a"))
++    XCTAssertFalse(store.isWritingProject("/b"), "a different project root must be unaffected")
++  }
++
++  /// Counted, not a flag: two sibling writes can legitimately be marked in flight against one root
++  /// (defensive symmetry with `committingProjectRoots`, even though in steady state
++  /// `isWritingProject` refuses a second write before a second `beginWrite` is ever reached).
++  func testEndWriteDecrementsRatherThanClears() {
++    let store = makeStore([])
++    store.beginWrite(projectRoot: "/proj")
++    store.beginWrite(projectRoot: "/proj")
++    store.endWrite(projectRoot: "/proj")
++    XCTAssertTrue(
++      store.isWritingProject("/proj"), "one of two writes finished — the other is still in flight")
++    store.endWrite(projectRoot: "/proj")
++    XCTAssertFalse(store.isWritingProject("/proj"))
++  }
++
++  /// `endWrite` on a root with no recorded write must not underflow into a negative count that
++  /// would make `isWritingProject` report busy forever.
++  func testEndWriteOnAnUntrackedRootIsSafe() {
++    let store = makeStore([])
++    store.endWrite(projectRoot: "/never-began")
++    XCTAssertFalse(store.isWritingProject("/never-began"))
++  }
++
++  /// `performCommit` must refuse immediately — never touching the writer, never entering
++  /// `committingTargets` — when another write is already in flight for the same project root.
++  func testPerformCommitRefusesWhenAnotherWriteIsInFlight() {
++    let store = makeStore([project("/proj", workrooms: ["feat"])])
++    let sid = SidebarID.workroom(project: "/proj", name: "feat")
++    store.beginWrite(projectRoot: "/proj")
++
++    let request = VCSCommitRequest(message: "msg", files: [], mode: .commit)
++    var results: [VCSCommitResult] = []
++    store.performCommit(request, on: sid) { results.append($0) }
++
++    XCTAssertEqual(results, [.failed(.locked(nil))])
++    XCTAssertFalse(
++      store.isCommitting(sid), "the refused commit must never have marked itself as committing")
++  }
++
++  /// **The mechanism the write-in-flight leak fix depends on.** `AppStore.releaseWrite` must release
++  /// the mark against a `ProjectStore` directly, with no live `AppStore` involved at all — this is
++  /// what lets `performCommit`'s Task and `RemoteStateModel`'s `writeDidFinish` wiring release the
++  /// mark even after the `AppStore`/`RemoteStateModel` that started the write has already been
++  /// deallocated (e.g. the window closed mid-write). If this ever required a live `AppStore`, a
++  /// closed window mid-write would leak the mark forever and refuse every future write for that
++  /// project, in every window, until the app restarts.
++  func testReleaseWriteWorksAgainstAProjectStoreAloneNoAppStoreNeeded() {
++    let projectStore = ProjectStore()
++    projectStore.writingProjectRoots["/proj"] = 1
++    AppStore.releaseWrite(projectRoot: "/proj", in: projectStore)
++    XCTAssertNil(
++      projectStore.writingProjectRoots["/proj"],
++      "the mark must clear even though no AppStore instance was ever touched")
++  }
++
++  /// Two writes marked against the same root (defensive symmetry, mirrors `testEndWriteDecrements
++  /// RatherThanClears`): releasing must decrement, not clear outright, so a sibling write still in
++  /// flight isn't falsely freed.
++  func testReleaseWriteDecrementsRatherThanClears() {
++    let projectStore = ProjectStore()
++    projectStore.writingProjectRoots["/proj"] = 2
++    AppStore.releaseWrite(projectRoot: "/proj", in: projectStore)
++    XCTAssertEqual(projectStore.writingProjectRoots["/proj"], 1)
++  }
++
++  /// The common case: no other write in flight, so `performCommit` must proceed past the guard (it
++  /// marks `committingTargets`/`committingProjectRoots`/`writingProjectRoots` synchronously before
++  /// its `Task` even starts) rather than refusing.
++  func testPerformCommitProceedsWhenNoOtherWriteIsInFlight() {
++    let store = makeStore([project("/proj", workrooms: ["feat"])])
++    let sid = SidebarID.workroom(project: "/proj", name: "feat")
++
++    let request = VCSCommitRequest(message: "msg", files: [], mode: .commit)
++    store.performCommit(request, on: sid) { _ in }
++
++    XCTAssertTrue(store.isCommitting(sid), "a real attempt must mark itself as committing")
++    XCTAssertTrue(store.isWritingProject("/proj"))
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppTests/FileTreeTests.swift ===
+@@ -92,8 +92,8 @@ final class FileTreeTests: XCTestCase {
+     let runner = StubRunner(byExecutable: [
+       "git": CommandResult(stdout: "a.txt\u{0}b.txt\u{0}", stderr: "", exitCode: 0, timedOut: false)
+     ])
+-    let paths = await FileTreeModel.list(path: "/repo", projectRoot: nil, runner: runner)
+-    XCTAssertEqual(paths, ["a.txt", "b.txt"])
++    let result = await FileTreeModel.list(path: "/repo", projectRoot: nil, runner: runner)
++    XCTAssertEqual(result, .listing(["a.txt", "b.txt"]))
+   }
+ 
+   func testListFallsThroughToJJWhenGitFails() async {
+@@ -101,14 +101,35 @@ final class FileTreeTests: XCTestCase {
+       "git": CommandResult(stdout: "", stderr: "not a repo", exitCode: 128, timedOut: false),
+       "jj": CommandResult(stdout: "x.txt\ny.txt\n", stderr: "", exitCode: 0, timedOut: false),
+     ])
+-    let paths = await FileTreeModel.list(path: "/repo", projectRoot: nil, runner: runner)
+-    XCTAssertEqual(paths, ["x.txt", "y.txt"])
++    let result = await FileTreeModel.list(path: "/repo", projectRoot: nil, runner: runner)
++    XCTAssertEqual(result, .listing(["x.txt", "y.txt"]))
+   }
+ 
+-  func testListReturnsNilWhenNeitherVCSResponds() async {
++  func testListReturnsUnavailableWhenNeitherVCSResponds() async {
+     let runner = StubRunner(byExecutable: [:])  // every command → not-found
+-    let paths = await FileTreeModel.list(path: "/repo", projectRoot: nil, runner: runner)
+-    XCTAssertNil(paths)
++    let result = await FileTreeModel.list(path: "/repo", projectRoot: nil, runner: runner)
++    XCTAssertEqual(result, .unavailable)
++  }
++
++  /// A signalled probe is not evidence `path` stopped being a repo — it must read `.interrupted`,
++  /// never silently fold into `.unavailable` (which the UI treats as "not a repo").
++  func testListReturnsInterruptedWhenAToolIsSignalled() async {
++    let runner = StubRunner(byExecutable: [
++      "git": CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true),
++      "jj": CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true),
++    ])
++    let result = await FileTreeModel.list(path: "/repo", projectRoot: nil, runner: runner)
++    XCTAssertEqual(result, .interrupted)
++  }
++
++  /// If the OTHER tool succeeds after one is signalled, that's a real listing, not an interruption.
++  func testListPrefersARealListingOverAnEarlierSignal() async {
++    let runner = StubRunner(byExecutable: [
++      "git": CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true),
++      "jj": CommandResult(stdout: "x.txt\n", stderr: "", exitCode: 0, timedOut: false),
++    ])
++    let result = await FileTreeModel.list(path: "/repo", projectRoot: nil, runner: runner)
++    XCTAssertEqual(result, .listing(["x.txt"]))
+   }
+ 
+   /// `jj file list` has no `--ignore-working-copy` — it snapshots `@`, so same-project calls must
+
+
+=== DIFF: macapp/WorkroomAppTests/GitHubAuthCacheTests.swift ===
+@@ -150,8 +150,8 @@ final class GitHubAuthCacheTests: XCTestCase {
+   // MARK: - Isolation
+ 
+   /// Two `GitHubAuthCache` instances share nothing. This is the whole reason it is an instance rather
+-  /// than the `static let shared` actor `VCSToolVersionCache` uses: `make app-test` runs classes in
+-  /// parallel, and static state would let one test's fake runner answer another test's probe.
++  /// than a `static let shared` actor: `make app-test` runs classes in parallel, and static state
++  /// would let one test's fake runner answer another test's probe.
+   func testTwoInstancesDoNotShareState() async {
+     let runnerA = CountingGHRunner(stdout: successJSON)
+     let runnerB = CountingGHRunner(stdout: #"{"hosts":{}}"#)
+
+
+=== DIFF: macapp/WorkroomAppTests/RemoteStateModelTests.swift ===
+@@ -290,6 +290,72 @@ final class RemoteStateModelTests: XCTestCase {
+     XCTAssertEqual(pulls, 0)
+   }
+ 
++  /// The CROSS-window guard: `inFlight == nil` only rules out this model's own action, so a second
++  /// window's write on the same project root must be caught by `canStartWrite` instead — refusing
++  /// outright (never queuing into the gate) rather than letting two writes physically race.
++  func testActionRefusedWhenAnotherWriteIsInFlightForTheProject() async {
++    let writer = StubWriter(state: .state(state(ahead: 1)))
++    let m = model(writer, ttl: 0)
++    m.canStartWrite = { _ in false }
++    m.focus(target)
++    await m.awaitCurrentLoad()
++    m.perform(.fetch)
++    await m.awaitCurrentLoad()
++    let fetches = await writer.fetches
++    XCTAssertEqual(fetches, 0, "must not have reached the writer at all")
++    XCTAssertNil(m.inFlight, "never entered the in-flight state")
++    XCTAssertEqual(m.lastFailure, .locked(nil))
++    XCTAssertEqual(m.lastAction, .fetch)
++  }
++
++  /// `canStartWrite` returning true (the common case) must not block anything new.
++  func testActionProceedsWhenNoOtherWriteIsInFlight() async {
++    let writer = StubWriter(state: .state(state(ahead: 1)))
++    let m = model(writer, ttl: 0)
++    m.canStartWrite = { _ in true }
++    m.focus(target)
++    await m.awaitCurrentLoad()
++    m.perform(.fetch)
++    await m.awaitCurrentLoad()
++    let fetches = await writer.fetches
++    XCTAssertEqual(fetches, 1)
++    XCTAssertNil(m.lastFailure)
++  }
++
++  /// `writeDidStart`/`writeDidFinish` must bracket the actual write exactly once each, with the
++  /// project root the action ran against — this is what lets the store maintain a per-project
++  /// write-in-flight count that `canStartWrite` (wired to `AppStore.isWritingProject`) reads.
++  func testWriteStartAndFinishBracketASuccessfulAction() async {
++    let writer = StubWriter(state: .state(state(ahead: 1)))
++    let m = model(writer, ttl: 0)
++    var started: [String] = []
++    var finished: [String] = []
++    m.writeDidStart = { root in started.append(root) }
++    m.writeDidFinish = { root in finished.append(root) }
++    m.focus(target)
++    await m.awaitCurrentLoad()
++    m.perform(.push)
++    XCTAssertEqual(started, [target.projectRoot], "started before the write returns")
++    XCTAssertEqual(finished, [], "not finished yet — the write is still in flight")
++    await m.awaitCurrentLoad()
++    XCTAssertEqual(started, [target.projectRoot])
++    XCTAssertEqual(finished, [target.projectRoot])
++  }
++
++  /// A failed action must still call `writeDidFinish` — otherwise a project that fails to push once
++  /// would stay marked "busy" forever, refusing every future write for that root.
++  func testWriteDidFinishFiresEvenOnFailure() async {
++    let writer = StubWriter(state: .state(state()), action: .failed(.authRequired("no")))
++    let m = model(writer, ttl: 0)
++    var finished: [String] = []
++    m.writeDidFinish = { root in finished.append(root) }
++    m.focus(target)
++    await m.awaitCurrentLoad()
++    m.perform(.push)
++    await m.awaitCurrentLoad()
++    XCTAssertEqual(finished, [target.projectRoot])
++  }
++
+   func testMutationCallbackDoesNotFireOnFailure() async {
+     let writer = StubWriter(state: .state(state()), action: .failed(.locked(nil)))
+     let m = model(writer, ttl: 0)
+
+
+=== DIFF: macapp/WorkroomAppTests/RustJJProviderRunTests.swift ===
+@@ -0,0 +1,51 @@
++import XCTest
++
++@testable import Workroom
++
++/// `RustJJProvider.run` — the CLI shell-out helper a few native-provider methods fall back to.
++private struct StubRunner: StatusCommandRunning {
++  let result: CommandResult
++  func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
++    async -> CommandResult
++  { result }
++}
++
++final class RustJJProviderRunTests: XCTestCase {
++  /// A signalled result must throw a distinct "was interrupted" error, never the generic
++  /// exit-code message — `result.exitCode` on a signalled result is the SIGNAL number, not a real
++  /// CLI exit status, so "jj exited 9" is exactly the nonsense class the gh-flap fix ended
++  /// elsewhere.
++  func testSignaledResultThrowsInterruptedNotExitCode() async {
++    let runner = StubRunner(
++      result: CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true))
++    do {
++      _ = try await RustJJProvider.run(
++        "jj", ["log"], cwd: URL(fileURLWithPath: "/tmp"), runner: runner)
++      XCTFail("expected a throw")
++    } catch let error as VCSError {
++      guard case .io(let message) = error else { return XCTFail("expected .io, got \(error)") }
++      XCTAssertEqual(message, "jj was interrupted")
++      XCTAssertFalse(
++        message.contains("exited 9"), "must not read the signal number as an exit code")
++    } catch {
++      XCTFail("expected VCSError.io, got \(error)")
++    }
++  }
++
++  /// The un-signalled path is unchanged: a real non-zero exit still reports its exit code.
++  func testOrdinaryNonZeroExitStillReportsExitCode() async {
++    let runner = StubRunner(
++      result: CommandResult(
++        stdout: "", stderr: "boom", exitCode: 1, timedOut: false, signaled: false))
++    do {
++      _ = try await RustJJProvider.run(
++        "jj", ["log"], cwd: URL(fileURLWithPath: "/tmp"), runner: runner)
++      XCTFail("expected a throw")
++    } catch let error as VCSError {
++      guard case .io(let message) = error else { return XCTFail("expected .io, got \(error)") }
++      XCTAssertEqual(message, "jj exited 1: boom")
++    } catch {
++      XCTFail("expected VCSError.io, got \(error)")
++    }
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppTests/StatusCommandRunnerTests.swift ===
+@@ -92,12 +92,18 @@ final class StatusCommandRunnerTests: XCTestCase {
+     XCTAssertEqual(r.exitCode, 9)  // SIGKILL, not a CLI exit status
+   }
+ 
+-  func testLaunchFailureInMissingDirIsCommandNotFound() async {
++  /// A missing cwd must classify as `launchFailed`, NOT `commandNotFound` — the two are different
++  /// facts (nothing ran at all vs. `env` ran and searched PATH), and every consumer that reads 127
++  /// as "tool not installed" would otherwise misdiagnose a deleted workroom as a missing git/jj/gh.
++  func testLaunchFailureInMissingDirIsLaunchFailedNotCommandNotFound() async {
+     let r = await runner.run(
+       "git", ["status"], in: "/no/such/dir-\(UUID().uuidString)", timeout: 5)
+-    XCTAssertEqual(r.exitCode, CommandResult.commandNotFound)
+-    // Nothing was ever spawned, so nothing was signalled — this must stay a clean 127 so it keeps
+-    // classifying as "not installed" rather than as an interruption.
++    XCTAssertEqual(r.exitCode, CommandResult.launchFailed)
++    XCTAssertNotEqual(
++      r.exitCode, CommandResult.commandNotFound,
++      "a vanished directory is not the same fact as env searching PATH and failing")
++    XCTAssertFalse(r.stderr.isEmpty, "the underlying launch error must be preserved for diagnosis")
++    // Nothing was ever spawned, so nothing was signalled — this must stay a clean, fixed sentinel.
+     XCTAssertFalse(r.signaled)
+   }
+ 
+
+
+=== DIFF: macapp/WorkroomAppTests/TerminalAgentManagerTests.swift ===
+@@ -165,6 +165,26 @@ final class TerminalAgentManagerTests: XCTestCase {
+     XCTAssertEqual(manager.banners[tab], .failure(failure(1), .cliNotFound))
+   }
+ 
++  /// A killed diagnosis must map to `.other("interrupted")`, never `.other("exit 9")` — the whole
++  /// point of `AgentRunOutcome.interrupted` existing as its own case.
++  func testInterruptedMapsToItsOwnFailureNotAnExitCode() async {
++    let (manager, _) = makeManager(outcome: .interrupted, auto: true)
++    let tab = UUID()
++    manager.commandFinished(tab: tab, target: target, failure: failure(1))
++    await manager.inFlight[tab]?.value
++    XCTAssertEqual(manager.banners[tab], .failure(failure(1), .other("interrupted")))
++  }
++
++  /// A vanished-cwd diagnosis must map to a folder-gone message, never `.cliNotFound` (which would
++  /// misreport a missing tool) or `.other("exit -1")` (the `launchFailed` sentinel, not a real code).
++  func testLaunchFailedMapsToFolderGoneNotCliNotFound() async {
++    let (manager, _) = makeManager(outcome: .launchFailed, auto: true)
++    let tab = UUID()
++    manager.commandFinished(tab: tab, target: target, failure: failure(1))
++    await manager.inFlight[tab]?.value
++    XCTAssertEqual(manager.banners[tab], .failure(failure(1), .other("workroom folder is gone")))
++  }
++
+   func testMalformedSuccessMapsToFailure() async {
+     let (manager, _) = makeManager(outcome: .success(stdout: "not json"), auto: true)
+     let tab = UUID()
+
+
+=== DIFF: macapp/WorkroomAppTests/VCSRemoteIntegrationTests.swift ===
+@@ -516,6 +516,47 @@ final class VCSRemoteIntegrationTests: XCTestCase {
+     XCTAssertEqual(s.tracking?.ahead, 0, "an empty, undescribed `@` is not pushable and not ahead")
+   }
+ 
++  /// **A colocated jj root's `abortRebase` must run the REAL git abort, not fake success.** Before
++  /// the fix, the jj branch returned `.ok(summary: "Nothing to abort")` unconditionally for ANY jj
++  /// repo, without ever checking whether a real `git rebase` — run in this workroom's terminal, as
++  /// `classify`'s own `rebaseInProgress` check anticipates — had actually left `rebase-merge`
++  /// behind. Set up that exact state with plain git inside the colocated root, then abort through
++  /// the writer and assert the real `.git/rebase-merge` is gone afterward, not just papered over.
++  func testAbortRebaseOnAColocatedRootRunsTheRealGitAbort() async throws {
++    try requireTool("git")
++    try requireTool("jj")
++    guard let j = jjFixture() else { throw XCTSkip("jj fixture could not be created") }
++    // A conflicting rebase, created with plain git — exactly what a `git rebase` run by hand in this
++    // workroom's terminal would leave behind. jj's bookmark auto-export gives the colocated repo a
++    // real `refs/heads/main` to branch from. `-f` on every checkout: right after `jj describe`, git's
++    // own index isn't yet in sync with jj's working-copy commit, so a plain checkout refuses with
++    // "local changes would be overwritten" — an artifact of this fixture's ordering, not something
++    // `abortRebase` itself needs to care about.
++    sh("git checkout -q -f -b other main", in: j.project)
++    sh("echo other >> a.txt && git commit -qam other", in: j.project)
++    sh("git checkout -q -f main", in: j.project)
++    sh("echo mainedit >> a.txt && git commit -qam mainedit", in: j.project)
++    sh("git checkout -q -f other", in: j.project)
++    sh("git rebase main", in: j.project)
++    let rebaseMerge = j.project + "/.git/rebase-merge"
++    XCTAssertTrue(
++      FileManager.default.fileExists(atPath: rebaseMerge),
++      "setup must actually leave a rebase-merge behind, or this test proves nothing")
++
++    let result = await writer("jj").abortRebase(path: j.project, projectRoot: j.project)
++
++    guard case .ok(let summary) = result else {
++      return XCTFail("expected .ok, got \(result)")
++    }
++    XCTAssertEqual(
++      summary, "Rebase aborted",
++      "must run the real git abort — \"Nothing to abort\" is the old, unconditional-fake-success bug"
++    )
++    XCTAssertFalse(
++      FileManager.default.fileExists(atPath: rebaseMerge),
++      "the real `git rebase --abort` must have cleared it")
++  }
++
+   /// **Pull must actually rebase an unbookmarked `@`.** It used to fetch and return `.ok` — jj moves the
+   /// remote bookmarks on fetch but does NOT move `@`, so the workroom stayed exactly as far behind as it
+   /// started while the toolbar went on offering Pull. git's Pull has always been pull-and-rebase.
+
+
+=== DIFF: macapp/WorkroomAppTests/VCSToolVersionsTests.swift ===
+@@ -280,6 +280,71 @@ final class VCSToolVersionsTests: XCTestCase {
+     XCTAssertEqual(gitProbes, 1, "a skipped jj was mistaken for a discovered absence")
+   }
+ 
++  // MARK: - VCSToolVersionCache: two independent slots
++
++  /// A `.belowFloor` verdict must clear after its (short) TTL, so a user who upgrades and is told to
++  /// relaunch actually sees it clear without relaunching — the bug the single, pinned-forever cache
++  /// used to have. `.ok` gets a long TTL by contrast (see `testStillCachedWithinTheDefaultLongTTL`).
++  func testBelowFloorExpiresAfterItsShortTTLAndReprobes() async {
++    let runner = RecordingVersionRunner(responses: [
++      "git": CommandResult(stdout: "git version 2.30.0", stderr: "", exitCode: 0, timedOut: false)
++    ])
++    let cache = VCSToolVersionCache(ttl: .seconds(60), belowFloorTTL: .milliseconds(20))
++
++    let first = await cache.report(probeJJ: false, runner: runner)
++    XCTAssertEqual(first.git, .belowFloor("2.30.0"))
++
++    try? await Task.sleep(for: .milliseconds(60))
++
++    _ = await cache.report(probeJJ: false, runner: runner)
++    let gitProbes = await runner.executables().filter { $0 == "git" }.count
++    XCTAssertEqual(gitProbes, 2, "a stale belowFloor verdict must re-probe, not stay pinned")
++  }
++
++  /// The counterpart: within the TTL, a settled verdict — including `.belowFloor` — must NOT
++  /// re-probe on every call. Only proven with an injectable clock would this be airtight against a
++  /// slow CI runner, but the default TTL (60s) is generous enough that two immediate calls prove the
++  /// cache is doing anything at all.
++  func testStillCachedWithinTheDefaultLongTTL() async {
++    let runner = RecordingVersionRunner(responses: [
++      "git": CommandResult(stdout: "git version 2.55.0", stderr: "", exitCode: 0, timedOut: false)
++    ])
++    let cache = VCSToolVersionCache()
++
++    _ = await cache.report(probeJJ: false, runner: runner)
++    _ = await cache.report(probeJJ: false, runner: runner)
++
++    let gitProbes = await runner.executables().filter { $0 == "git" }.count
++    XCTAssertEqual(gitProbes, 1)
++  }
++
++  /// **The reentrancy bug the split-slot design exists to close, structurally.** In the old
++  /// single-slot design, a `probeJJ: false` call finishing after a `probeJJ: true` call could
++  /// overwrite the jj-aware verdict with a jj-blind one. Here, a `probeJJ: false` call must not
++  /// touch the jj slot AT ALL — proven by never giving its runner a "jj" response, so any attempt to
++  /// probe jj would surface as a spawned (and unanswered) call, not silently as `.notInstalled`.
++  func testProbeJJFalseNeverTouchesTheJJSlotOnceCached() async {
++    let runner = RecordingVersionRunner(responses: [
++      "git": CommandResult(stdout: "git version 2.55.0", stderr: "", exitCode: 0, timedOut: false),
++      "jj": CommandResult(stdout: "jj 0.43.0", stderr: "", exitCode: 0, timedOut: false),
++    ])
++    let cache = VCSToolVersionCache()
++
++    // Cache a REAL jj-aware verdict first.
++    let aware = await cache.report(probeJJ: true, runner: runner)
++    XCTAssertEqual(aware.jj, .ok("0.43.0"))
++
++    // Any number of jj-blind callers must not disturb it.
++    for _ in 0..<3 { _ = await cache.report(probeJJ: false, runner: runner) }
++
++    // Re-asking with probeJJ:true must return the STILL-CACHED verdict — one jj probe total, not
++    // clobbered and not re-run.
++    let stillAware = await cache.report(probeJJ: true, runner: runner)
++    XCTAssertEqual(stillAware.jj, .ok("0.43.0"), "a jj-blind caller must never clobber the jj slot")
++    let jjProbes = await runner.executables().filter { $0 == "jj" }.count
++    XCTAssertEqual(jjProbes, 1, "the cached jj verdict must not be re-probed either")
++  }
++
+ }
+ 
+ /// Records which executables were asked for, so a test can assert `jj` was never spawned.
+
+
+=== DIFF: macapp/WorkroomAppTests/VCSWritingTests.swift ===
+@@ -283,20 +283,32 @@ final class VCSWritingTests: XCTestCase {
+       "the count must be measured from the base the rebase targets")
+   }
+ 
+-  /// A bookmarked `@` rebases onto its counterpart; an unbookmarked one onto `trunk()`. The sentinel for
+-  /// "no counterpart" is `comparedTo` carrying the bare remote name, which is what `jjRemoteState` sets.
++  /// A bookmarked `@` rebases onto its counterpart; an unbookmarked one (or a detached/none ref) onto
++  /// `trunk()`.
+   func testJJPullRebaseDestinationFallsBackToTrunk() {
+     XCTAssertEqual(
+-      CLIVCSWriter.jjRebaseDestination(comparedTo: "main@origin", remote: "origin"), "main@origin")
++      CLIVCSWriter.jjRebaseDestination(
++        current: VCSRef(name: "main", kind: .branch), remote: "origin"),
++      "\"main\"@\"origin\"")
+     XCTAssertEqual(
+-      CLIVCSWriter.jjRebaseDestination(comparedTo: "origin", remote: "origin"),
++      CLIVCSWriter.jjRebaseDestination(
++        current: VCSRef(name: nil, kind: .ancestor), remote: "origin"),
+       CLIVCSWriter.jjTrunkRevset,
+       "an unbookmarked `@` must still rebase — returning early left Pull as a fetch")
+     XCTAssertEqual(
+-      CLIVCSWriter.jjRebaseDestination(comparedTo: nil, remote: "origin"),
++      CLIVCSWriter.jjRebaseDestination(current: .none, remote: "origin"),
+       CLIVCSWriter.jjTrunkRevset)
+   }
+ 
++  /// A bookmark name needing revset quoting (e.g. containing `|`) must not be interpolated bare into
++  /// the rebase destination — bare `|` parses as a union, exactly the bug `jjQuote` exists to prevent.
++  func testJJPullRebaseDestinationQuotesANameThatNeedsIt() {
++    XCTAssertEqual(
++      CLIVCSWriter.jjRebaseDestination(
++        current: VCSRef(name: "main|evil", kind: .branch), remote: "origin"),
++      "\"main|evil\"@\"origin\"")
++  }
++
+   /// Interpolating a remote name bare is a parse bug. Verified against jj 0.43: `a b`, `a)b` and `a:b`
+   /// fail with `Failed to parse revset`, and `a|b` silently parses as a UNION of two patterns — a wrong
+   /// count with no error. Every one of them parses once quoted.
+@@ -319,6 +331,24 @@ final class VCSWritingTests: XCTestCase {
+     }
+   }
+ 
++  /// `jjUnquote` must be the exact inverse of `jjQuote`, not a naive strip of the first/last character —
++  /// an embedded escaped quote or backslash has to round-trip exactly, since a naive strip would mangle
++  /// either one.
++  func testJJUnquoteRoundTripsJJQuoteExactly() {
++    for name in ["origin", "a b", "a|b", #"a"b"#, #"a\b"#, #"a\"b"#, #"a\\b"#, #""a"#, ""] {
++      XCTAssertEqual(
++        CLIVCSWriter.jjUnquote(CLIVCSWriter.jjQuote(name)), name,
++        "round-trip failed for \(name.debugDescription)")
++    }
++  }
++
++  /// A bare (unquoted) name — what jj's template prints for an ordinary identifier-like bookmark — must
++  /// pass through unchanged, since it was never quoted to begin with.
++  func testJJUnquoteLeavesABareNameUnchanged() {
++    XCTAssertEqual(CLIVCSWriter.jjUnquote("main"), "main")
++    XCTAssertEqual(CLIVCSWriter.jjUnquote(""), "")
++  }
++
+   /// jj refuses to push a commit with an empty description, and a fresh `@` after `jj new` has neither
+   /// changes nor a description — the state a new workroom sits in.
+   func testAnonymousPushRevisionAvoidsAnEmptyWorkingCopy() {
+@@ -424,6 +454,30 @@ final class VCSWritingTests: XCTestCase {
+     XCTAssertEqual(parsed.bookmarks.first?.tracking?.comparedTo, "main@origin")
+   }
+ 
++  /// **The bug T9 exists to close.** `origin` and `upstream` both tracking `main`: the PRIMARY
++  /// remote's row must win, not whichever line the parser read last. Two identical inputs differing
++  /// only in ROW ORDER must produce the SAME tracking once a primary is given.
++  func testMultiRemoteTrackingPicksThePrimaryNotTheLastRowRead() {
++    let originLast = [
++      nul("main", "", "aaa", "1", "0", "0", "", ""),
++      nul("main", "upstream", "aaa", "1", "0", "1", "9", "9"),
++      nul("main", "origin", "aaa", "1", "0", "1", "1", "2"),
++    ].joined(separator: "\n")
++    let upstreamLast = [
++      nul("main", "", "aaa", "1", "0", "0", "", ""),
++      nul("main", "origin", "aaa", "1", "0", "1", "1", "2"),
++      nul("main", "upstream", "aaa", "1", "0", "1", "9", "9"),
++    ].joined(separator: "\n")
++    for out in [originLast, upstreamLast] {
++      let tracking = CLIVCSWriter.parseJJBookmarks(out, primaryRemote: "origin").bookmarks.first?
++        .tracking
++      XCTAssertEqual(
++        tracking?.comparedTo, "main@origin", "row order must not decide the winner")
++      XCTAssertEqual(tracking?.ahead, 2)
++      XCTAssertEqual(tracking?.behind, 1)
++    }
++  }
++
+   func testAbsentRemoteBookmarkIsGone() {
+     let out = [
+       nul("feature", "", "aaa", "1", "0", "0", "", ""),
+@@ -464,6 +518,25 @@ final class VCSWritingTests: XCTestCase {
+     XCTAssertEqual(parsed.remotes, [])
+   }
+ 
++  /// **The bug T8 exists to close.** jj's `self.name()` template field renders a non-identifier
++  /// bookmark name pre-quoted — verified against jj 0.43: `bookmark list -T 'self.name()'` for a
++  /// bookmark literally named `main|evil` prints `"main|evil"`, quotes included. Before `jjUnquote`,
++  /// `JJBookmark.name` carried that literal quoted string, so `parsed.bookmarks.first { $0.name ==
++  /// name }` against the raw name from `currentRef` never matched — tracking, counts and Pull went
++  /// silently nil for any workroom using such a name.
++  func testAQuotedBookmarkNameIsUnquotedNotLeftLiteral() {
++    let out = [
++      nul(#""main|evil""#, "", "aaa", "1", "0", "0", "", ""),
++      nul(#""main|evil""#, "origin", "aaa", "1", "0", "1", "2", "1"),
++    ].joined(separator: "\n")
++    let parsed = CLIVCSWriter.parseJJBookmarks(out)
++    XCTAssertEqual(parsed.bookmarks.map(\.name), ["main|evil"], "must be unquoted, not literal")
++    let tracking = parsed.bookmarks.first { $0.name == "main|evil" }?.tracking
++    XCTAssertNotNil(tracking, "the raw name must match the parsed, unquoted name")
++    XCTAssertEqual(tracking?.ahead, 1)
++    XCTAssertEqual(tracking?.behind, 2)
++  }
++
+   // MARK: - parseJJFetchOp
+ 
+   func testTakesTheNewestFetchOperation() {
+@@ -639,6 +712,14 @@ final class VCSWritingTests: XCTestCase {
+     XCTAssertEqual(CLIVCSWriter.classify(r, action: .fetch, tool: "git"), .toolMissing("git"))
+   }
+ 
++  /// A vanished workroom folder (`launchFailed`) must never be reported as `.toolMissing` — the
++  /// version toast would say git is fine while the action's own failure blamed git's PATH, exactly
++  /// the contradiction this distinct sentinel exists to end.
++  func testLaunchFailedIsDistinctFromToolMissing() {
++    let r = failed("some launch error", exit: CommandResult.launchFailed)
++    XCTAssertEqual(CLIVCSWriter.classify(r, action: .fetch, tool: "git"), .launchFailed)
++  }
++
+   func testTimeout() {
+     let r = CommandResult(stdout: "", stderr: "", exitCode: 1, timedOut: true)
+     XCTAssertEqual(CLIVCSWriter.classify(r, action: .push, tool: "git"), .timedOut(.push))
+@@ -1231,6 +1312,10 @@ final class VCSWritingTests: XCTestCase {
+   func testClassifyCommitToolMissingAndTimeout() {
+     XCTAssertEqual(
+       CLIVCSWriter.classifyCommit(commitResult("", exit: 127), tool: "git"), .toolMissing("git"))
++    XCTAssertEqual(
++      CLIVCSWriter.classifyCommit(
++        commitResult("", exit: CommandResult.launchFailed), tool: "git"), .launchFailed,
++      "a vanished workroom folder must not be reported as .toolMissing")
+     XCTAssertEqual(
+       CLIVCSWriter.classifyCommit(commitResult("", exit: 15, timedOut: true), tool: "git"),
+       .timedOut)
+
+
+=== DIFF: macapp/WorkroomAppUITests/TerminalAccessibilityUITests.swift ===
+@@ -0,0 +1,88 @@
++import XCTest
++
++/// **CMT-3's safety precondition, checked before the feature ships.** Exposing terminal content to
++/// the accessibility tree (`GhosttySurfaceView.accessibilityValue`/`accessibilitySelectedText`) is
++/// only safe if it exposes exactly what a sighted user's own copy/select already exposes — never
++/// more. The concrete risk: a password prompt with local echo disabled (`read -s`, `ssh`'s passphrase
++/// prompt) must render NOTHING for the typed characters, so there is nothing for an accessibility
++/// client to read that a shoulder-surfer couldn't already see on screen.
++///
++/// Verified here against a REAL PTY and a REAL `read -s`, not by reasoning about terminal semantics —
++/// the same empirical standard `GhosttyCLIUITests` and `AgentResumeUITests` hold the engine to.
++final class TerminalAccessibilityUITests: XCTestCase {
++  override func setUp() {
++    super.setUp()
++    continueAfterFailure = false
++  }
++
++  /// One terminal tab, no run command — a run tab would compete for the surface we read.
++  private func launchedApp() -> XCUIApplication {
++    let app = XCUIApplication()
++    app.launchArguments += ["-WorkroomUITestFixture", "1"]
++    app.launchArguments += ["-WorkroomUITestNoRunCommand", "1"]
++    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
++    app.launch()
++    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
++    return app
++  }
++
++  /// Focus the terminal so keystrokes reach the PTY. Clicks the TAB CHIP, not the pane — see
++  /// `GhosttyCLIUITests.focusTerminal` for why.
++  private func focusTerminal(_ app: XCUIApplication) {
++    app.activate()
++    let chip = app.descendants(matching: .any)
++      .matching(NSPredicate(format: "identifier BEGINSWITH %@", "terminal.tab."))
++      .firstMatch
++    XCTAssertTrue(chip.waitForExistence(timeout: 20), "the fixture workroom has a terminal tab")
++    chip.click()
++    RunLoop.current.run(until: Date().addingTimeInterval(1))
++  }
++
++  @discardableResult
++  private func waitForScreen(
++    _ surface: XCUIElement, containing needle: String, timeout: TimeInterval = 30
++  ) -> (found: Bool, screen: String) {
++    var screen = ""
++    let deadline = Date().addingTimeInterval(timeout)
++    while Date() < deadline {
++      screen = (surface.value as? String) ?? ""
++      if screen.contains(needle) { return (true, screen) }
++      usleep(250_000)
++    }
++    return (false, screen)
++  }
++
++  /// **The check that gates CMT-3.** `read -s` disables local echo at the TTY level, so the terminal
++  /// never renders the typed characters at all — there is nothing on screen for `accessibilityValue`
++  /// (or copy/select) to expose. If this ever fails, a secret typed into any password-style prompt
++  /// would leak through the accessibility tree, and CMT-3's production wiring must not ship as-is.
++  func testPasswordPromptWithEchoDisabledRendersNoTypedCharacters() {
++    let app = launchedApp()
++    focusTerminal(app)
++
++    let surface = app.descendants(matching: .any).matching(identifier: "terminal.surface")
++      .firstMatch
++    XCTAssertTrue(surface.waitForExistence(timeout: 10))
++
++    // `stty -echo` + plain `read`, not `read -s`/`read -p`: zsh's `-p` means "read from a coprocess,"
++    // not "show a prompt" (bash-only flag), so this is written to be shell-agnostic. Deliberately
++    // never echoes `$x` back — the point is that the secret must not render ANYWHERE on screen, so
++    // nothing here prints it on purpose either. `WRDONE` alone proves the prompt completed, echo was
++    // restored, and the shell moved on.
++    let secret = "WRSECRET9f3a"
++    app.typeText("echo -n 'WRPROMPT: '; stty -echo; read x; stty echo; echo; echo WRDONE\r")
++    waitForScreen(surface, containing: "WRPROMPT:")
++    app.typeText("\(secret)\r")
++
++    let done = waitForScreen(surface, containing: "WRDONE")
++    XCTAssertTrue(done.found, "the prompt never completed — screen was:\n\(done.screen)")
++    XCTAssertFalse(
++      done.screen.contains(secret),
++      """
++      a secret typed at a `read -s` prompt appeared in the rendered viewport — echo-disabled input \
++      must never reach the screen, so exposing that screen via accessibilityValue would leak it. \
++      Screen was:
++      \(done.screen)
++      """)
++  }
++}
+
+
+Investigate per the method in your instructions, then return the findings list.
