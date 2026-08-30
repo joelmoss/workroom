@@ -1,0 +1,1 @@
+Replace the new panel with a dropdown anchored to a new theme switcher button in the app toolbar (left of the quick terminal button). Then any other action that may happen while the switcher dropdown is visible, would simply close the dropdown.
