@@ -1,0 +1,1 @@
+the rule of thumb here is that navigating back should ignore anything that was closed - nothing should be reopened.
