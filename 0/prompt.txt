@@ -1,0 +1,1 @@
+move "new window" from File menu to top of window menu, with divider beneath it.
