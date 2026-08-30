@@ -1,0 +1,283 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/VCSWriting.swift
+  - macapp/WorkroomAppTests/VCSRemoteIntegrationTests.swift
+  - macapp/WorkroomAppTests/VCSWritingTests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/VCSWriting.swift ===
+@@ -309,6 +309,17 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+     ]
+   }
+ 
++  /// The CONFIGURED remotes, one name per line.
++  ///
++  /// Deliberately separate from `gitRemoteRefsArgs`: remote-tracking refs prove a remote has been
++  /// *fetched*, not that one is configured. `git remote add origin …` writes config and no refs, so a
++  /// remotes list derived from `refs/remotes` reads as "No remote configured" on a repo that can push
++  /// perfectly well. Config is the authority for "is there a remote"; the refs still answer "does my
++  /// branch have a counterpart".
++  static func gitRemoteListArgs() -> [String] {
++    WorkroomStatusResolver.gitHardening + ["remote"]
++  }
++
+   /// Exact two-way divergence, independent of the user's `push.default`.
+   ///
+   /// **Deliberately not `%(push:track)`/`%(upstream:track)`.** Under `push.default=simple` — git's
+@@ -430,6 +441,19 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+     return ["bookmark", "list", "--all-remotes"] + jjReadFlags + ["-T", template]
+   }
+ 
++  /// The CONFIGURED remotes, `<name> <url>` per line.
++  ///
++  /// The same distinction `gitRemoteListArgs` documents, and jj makes it sharper: `jj git remote add`
++  /// creates no remote bookmarks at all, so `bookmark list --all-remotes` on a freshly-remoted repo
++  /// lists only local rows and `@git`, and the toolbar said "No remote configured" while
++  /// `jj git remote list` showed origin.
++  ///
++  /// `--ignore-working-copy` is load-bearing for a second reason here: without it this command takes
++  /// the **Git import/export** lock (verified, jj 0.43), which no other read in this file does.
++  static func jjRemoteListArgs() -> [String] {
++    ["git", "remote", "list"] + jjReadFlags
++  }
++
+   /// Newest-first operations, for the last-fetch scan.
+   static func jjOpLogArgs(limit: Int = 200) -> [String] {
+     ["op", "log", "--no-graph"] + jjReadFlags + [
+@@ -574,6 +598,36 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+     return RemoteRefs(remotes: remotes, shortNames: shortNames)
+   }
+ 
++  /// `git remote` output → remote names, listed order preserved.
++  static func parseGitRemoteList(_ stdout: String) -> [String] {
++    var remotes: [String] = []
++    for line in stdout.split(whereSeparator: \.isNewline) {
++      let name = line.trimmingCharacters(in: .whitespaces)
++      guard !name.isEmpty, !remotes.contains(name) else { continue }
++      remotes.append(name)
++    }
++    return remotes
++  }
++
++  /// `jj git remote list` output (`<name> <url>` per line) → remote names, listed order preserved.
++  ///
++  /// Split on the LAST space, not the first: jj accepts a remote name containing spaces (the same
++  /// permissiveness `jjQuote` exists for), while a URL has none.
++  static func parseJJRemoteList(_ stdout: String) -> [String] {
++    var remotes: [String] = []
++    for line in stdout.split(whereSeparator: \.isNewline) {
++      let row = String(line)
++      guard let lastSpace = row.lastIndex(of: " ") else { continue }
++      let name = String(row[row.startIndex..<lastSpace])
++      // `git` is jj's colocated pseudo-remote, not a server. `jj git remote list` doesn't list it
++      // (verified, jj 0.43) and `parseJJBookmarks` drops it — dropped here too so the invariant holds
++      // wherever the name comes from.
++      guard !name.isEmpty, name != "git", !remotes.contains(name) else { continue }
++      remotes.append(name)
++    }
++    return remotes
++  }
++
+   /// `"3\t1"` → (ahead: 3, behind: 1). `nil` for anything unexpected — never a misleading zero.
+   static func parseCounts(_ stdout: String) -> (ahead: Int, behind: Int)? {
+     let fields = stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+@@ -868,7 +922,10 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+       return .failed(failure)
+     }
+     let parsed = Self.parseGitRemoteRefs(refs.stdout)
+-    let primary = Self.primaryRemote(parsed.remotes)
++    let list = await run(Self.gitRemoteListArgs(), in: path, timeout: refTimeout)
++    let remotes = Self.mergeRemotes(
++      configured: list.ok ? Self.parseGitRemoteList(list.stdout) : [], derived: parsed.remotes)
++    let primary = Self.primaryRemote(remotes)
+     var tracking: VCSTracking?
+     if let primary, let branch = current.name, current.kind == .branch {
+       let counterpart = "\(primary)/\(branch)"
+@@ -890,7 +947,7 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+     }
+     return .state(
+       VCSRemoteState(
+-        current: current, tracking: tracking, remotes: parsed.remotes, primaryRemote: primary,
++        current: current, tracking: tracking, remotes: remotes, primaryRemote: primary,
+         lastFetch: Self.gitLastFetch(commonGitDir: Self.commonGitDir(at: path)),
+         resolvedAt: Date()))
+   }
+@@ -905,13 +962,24 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+       return .failed(failure)
+     }
+     let parsed = Self.parseJJBookmarks(list.stdout)
+-    let primary = Self.primaryRemote(parsed.remotes)
++    let remoteList = await run(Self.jjRemoteListArgs(), in: path, timeout: refTimeout)
++    let remotes = Self.mergeRemotes(
++      configured: remoteList.ok ? Self.parseJJRemoteList(remoteList.stdout) : [],
++      derived: parsed.remotes)
++    let primary = Self.primaryRemote(remotes)
+     var tracking: VCSTracking?
+     if let primary {
+       switch current.kind {
+       case .branch:
+-        tracking = current.name.flatMap { name in
+-          parsed.bookmarks.first { $0.name == name }?.tracking
++        if let name = current.name {
++          // No `@<remote>` row for this bookmark ⇒ it has never been pushed. Reported as `gone`, exactly
++          // as the git path reports a missing counterpart, so the toolbar offers Publish. Leaving it nil
++          // fell through to the fetch tier, which offered a Fetch that can never produce the counterpart
++          // — the permanent dead end a freshly-remoted repo landed in.
++          tracking =
++            parsed.bookmarks.first { $0.name == name }?.tracking
++            ?? VCSTracking(
++              comparedTo: "\(name)@\(primary)", ahead: nil, behind: nil, gone: true)
+         }
+       // `.none` belongs with `.ancestor`, and leaving it out was a bug that hid the exact case this
+       // toolbar exists for. `jj git fetch` fast-forwards a tracked local bookmark, so as soon as the
+@@ -946,7 +1014,7 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+     let lastFetch = ops.ok ? Self.parseJJFetchOp(ops.stdout) : nil
+     return .state(
+       VCSRemoteState(
+-        current: current, tracking: tracking, remotes: parsed.remotes, primaryRemote: primary,
++        current: current, tracking: tracking, remotes: remotes, primaryRemote: primary,
+         lastFetch: lastFetch.map { .at($0) } ?? (ops.ok ? .never : .unknown),
+         resolvedAt: Date()))
+   }
+@@ -957,6 +1025,16 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+     remotes.contains("origin") ? "origin" : remotes.first
+   }
+ 
++  /// Configured remotes, plus any ref-derived name config didn't mention.
++  ///
++  /// A union rather than a replacement so a failed remote-list call degrades to the old ref-derived
++  /// answer instead of blanking a toolbar that was working — the same "a blip must not blank a good
++  /// toolbar" rule the resolution paths follow. Configured order comes first, so `primaryRemote`'s
++  /// first-listed fallback picks a real remote over a stale ref's.
++  static func mergeRemotes(configured: [String], derived: [String]) -> [String] {
++    configured + derived.filter { !configured.contains($0) }
++  }
++
+   static func countLines(_ stdout: String) -> Int {
+     stdout.split(whereSeparator: \.isNewline).count
+   }
+
+
+=== DIFF: macapp/WorkroomAppTests/VCSRemoteIntegrationTests.swift ===
+@@ -190,6 +190,26 @@ final class VCSRemoteIntegrationTests: XCTestCase {
+     XCTAssertEqual(s.primaryRemote, "origin")
+   }
+ 
++  /// git's half of the same bug: `git remote add` writes config and no `refs/remotes/*`, so a
++  /// ref-derived remotes list reads as "No remote configured" on a repo that can publish.
++  func testGitRemoteAddedButNeverFetchedIsStillARemote() async throws {
++    try requireTool("git")
++    let root = tempDir()
++    sh("git init -q --bare origin.git", in: root)
++    sh("git init -q app", in: root)
++    let project = root + "/app"
++    sh("git commit -q --allow-empty -m initial", in: project)
++    sh("git remote add origin ../origin.git", in: project)
++    XCTAssertTrue(
++      sh("git for-each-ref refs/remotes", in: project).out.isEmpty,
++      "precondition: no remote-tracking ref exists yet")
++
++    let s = try await state(writer("git"), path: project, projectRoot: project)
++    XCTAssertEqual(s.remotes, ["origin"])
++    XCTAssertEqual(s.primaryRemote, "origin")
++    XCTAssertEqual(s.tracking?.gone, true, "no counterpart yet — this is the Publish state")
++  }
++
+   /// `refs/remotes/origin/HEAD` is a symref whose short name is the bare remote — without dropping it,
+   /// `origin` looks like a branch. Real repos DO have it (verified), so this is not hypothetical.
+   func testOriginHeadSymrefIsNotMistakenForABranch() async throws {
+@@ -539,6 +559,42 @@ final class VCSRemoteIntegrationTests: XCTestCase {
+         + "absent time forever")
+   }
+ 
++  /// **The reported bug.** `jj git remote add origin …` configures a remote and creates NO remote
++  /// bookmark, so a remotes list derived from `bookmark list --all-remotes` was empty and the toolbar
++  /// said "No remote configured" while `jj git remote list` showed origin — on a repo that could push.
++  func testJJRemoteAddedButNeverFetchedIsStillARemote() async throws {
++    try requireTool("git")
++    try requireTool("jj")
++    let root = tempDir()
++    let config = root + "/jjconfig.toml"
++    try "[user]\nname=\"T\"\nemail=\"t@e.com\"\n".write(
++      toFile: config, atomically: true, encoding: .utf8)
++    let env = "JJ_CONFIG=\(config)"
++    sh("git init -q --bare origin.git", in: root)
++    guard sh("\(env) jj git init --colocate app", in: root).exit == 0 else {
++      throw XCTSkip("jj repo could not be created")
++    }
++    let project = root + "/app"
++    sh("echo hi > a.txt && \(env) jj describe -m first", in: project)
++    sh("\(env) jj bookmark create main -r @", in: project)
++    // Configured, never pushed and never fetched — so no `main@origin` row exists anywhere.
++    sh("\(env) jj git remote add origin ../origin.git", in: project)
++    XCTAssertFalse(
++      sh("\(env) jj bookmark list --all-remotes --ignore-working-copy", in: project).out
++        .contains("@origin"),
++      "precondition: no remote bookmark exists, which is what made this invisible")
++
++    let s = try await state(writer("jj"), path: project, projectRoot: project)
++    XCTAssertEqual(
++      s.remotes, ["origin"], "the configured remote must be seen without any ref for it")
++    XCTAssertEqual(s.primaryRemote, "origin")
++    XCTAssertEqual(s.current.kind, .branch, "precondition: `@` carries the `main` bookmark")
++    XCTAssertEqual(
++      s.tracking?.gone, true,
++      "a bookmark with no `@origin` row has never been pushed — that's Publish, not a Fetch that "
++        + "could never create the counterpart")
++  }
++
+   /// The `git` pseudo-remote a colocated repo exposes is not a remote, and must never appear.
+   func testJJColocatedGitPseudoRemoteIsNotListed() async throws {
+     try requireTool("git")
+
+
+=== DIFF: macapp/WorkroomAppTests/VCSWritingTests.swift ===
+@@ -572,6 +572,43 @@ final class VCSWritingTests: XCTestCase {
+     XCTAssertNil(CLIVCSWriter.primaryRemote([]))
+   }
+ 
++  // MARK: - remote lists
++
++  func testParseGitRemoteList() {
++    XCTAssertEqual(
++      CLIVCSWriter.parseGitRemoteList("origin\nupstream\n\n"), ["origin", "upstream"])
++    XCTAssertEqual(CLIVCSWriter.parseGitRemoteList(""), [])
++  }
++
++  func testParseJJRemoteList() {
++    XCTAssertEqual(
++      CLIVCSWriter.parseJJRemoteList(
++        "origin https://example.com/x.git\nupstream ../bare.git\n"), ["origin", "upstream"])
++    XCTAssertEqual(CLIVCSWriter.parseJJRemoteList(""), [])
++  }
++
++  /// jj permits a remote name containing spaces, so the split must be on the LAST space — the URL has
++  /// none. Splitting on the first would report a remote called `my`.
++  func testParseJJRemoteListSplitsOnTheLastSpace() {
++    XCTAssertEqual(
++      CLIVCSWriter.parseJJRemoteList("my remote ../bare.git\n"), ["my remote"])
++  }
++
++  /// `git` is jj's colocated pseudo-remote, not a server.
++  func testParseJJRemoteListDropsTheGitPseudoRemote() {
++    XCTAssertEqual(
++      CLIVCSWriter.parseJJRemoteList("git /some/path\norigin ../bare.git\n"), ["origin"])
++  }
++
++  func testMergeRemotesPutsConfiguredFirstAndKeepsRefOnlyNames() {
++    XCTAssertEqual(
++      CLIVCSWriter.mergeRemotes(configured: ["origin"], derived: ["origin", "stale"]),
++      ["origin", "stale"], "a ref-only remote still counts; config order wins")
++    XCTAssertEqual(
++      CLIVCSWriter.mergeRemotes(configured: [], derived: ["origin"]), ["origin"],
++      "a failed remote-list call must degrade to the ref-derived answer, not blank the toolbar")
++  }
++
+   // MARK: - pullBranch
+ 
+   func testPullBranchStripsTheRemotePrefix() {
+
+
+Investigate per the method in your instructions, then return the findings list.
