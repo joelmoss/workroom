@@ -1,0 +1,215 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   Chronologically, the user's explicit requests this session were:
+   - **"plan and validate #145"** — produce an implementation plan for GitHub issue #145 (offer to resume an agent session in a restored pane) and validate it.
+   - **AskUserQuestion answer: "±12 hours (recommended)"** — the recency window for agent-history matching (D3).
+   - **"Edit the issue and start"** — update the #145 issue body with the review corrections, then begin implementation.
+   - **"Yes"** — write and run the XCUITests (answering my ask, since running them drives the machine).
+   - **"retry ui tests"** — re-run after the automation wedge.
+   - **`/review`** — run the gstack pre-landing review skill on the branch diff.
+   - **"merge to master and push"**.
+   - **"once done, clean up TODOS and close resolved tickets"** (sent mid-turn during the merge).
+   - **"yes, save it to memory"** — persist the `ghostty_surface_text` drops-`\r` finding.
+
+2. **Key Technical Concepts:**
+   - macOS SwiftUI app (`macapp/`), Swift module named `Workroom`, XcodeGen (`project.yml`), swift-format strict lint gate. `make app-build` / `app-test` / `app-format` / `app-lint` / `app-generate` all need `dangerouslyDisableSandbox: true`.
+   - libghostty via `libghostty-spm` (GhosttyKit 1.2.3). `ghostty_surface_text` (text-input path), `ghostty_surface_key` + `ghostty_input_key_s` (key path), `ghostty_surface_complete_clipboard_request`, `ghostty_surface_read_text`, `GHOSTTY_POINT_VIEWPORT`.
+   - Session persistence (#46): `SessionFile`/`WindowSession`/`TargetSession`, `SessionStore`, `SessionCoordinator`, `ProjectStore` claim/dispatch/**15s restore watchdog that freezes session writes**.
+   - Agent session stores: `~/.claude/projects/<slug>/*.jsonl` (line 1 = `{leafUuid, sessionId, type}` summary with NO cwd; `user`/`assistant`/`attachment` records carry `cwd`) and `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (first line = `session_meta` with `payload.cwd`).
+   - `UITestFixture` seam (`#if DEBUG`-gated), `-WorkroomUITestSessionFile`, `-WorkroomUITestAgentSessionRoot`.
+   - Cross-model review: Codex CLI (`codex exec -s read-only`) as adversarial outside voice.
+
+3. **Files and Code Sections:**
+
+   - **`~/.claude/plans/workroom-145-agent-resume.md`** (new, revision 2) — the plan. Records C1–C5 corrections, D1–D3 decisions, build sequence T1–T11, failure modes, and a review log.
+
+   - **`macapp/WorkroomApp/Core/AgentSessionIndex.swift`** (new, ~390 lines) — discovery. Exact-`cwd` matching; slug is a hint only.
+     ```swift
+     static let shared: AgentSessionIndex? = {
+       if let root = UITestFixture.agentSessionRoot {
+         return AgentSessionIndex(roots: Roots(home: URL(fileURLWithPath: root, isDirectory: true)))
+       }
+       guard !UITestFixture.isActive,
+         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
+       else { return nil }
+       return AgentSessionIndex()
+     }()
+
+     static let recencyWindow: TimeInterval = 12 * 60 * 60
+
+     // Set probe, NOT a linear pathsMatch scan (review fix):
+     if !budget.isExhausted {
+       let codexCwds = codexRecordedCwds(savedAt: savedAt, budget: &budget)
+       for cwd in cwds
+       where codexCwds.contains(Self.trimmed(cwd)) || codexCwds.contains(Self.resolved(cwd)) {
+         result[cwd, default: []].insert(.codex)
+       }
+     }
+
+     // Review fix: no whitespace trimming — a space is legal in a POSIX filename.
+     static func trimmed(_ path: String) -> String {
+       var value = path
+       while value.hasSuffix("\n") || value.hasSuffix("\r") { value.removeLast() }
+       while value.count > 1, value.hasSuffix("/") { value.removeLast() }
+       return value
+     }
+
+     // Review fix: completeness decided on RAW BYTES before decoding.
+     let cappedAndUnterminated = data.count == limits.maxBytesPerFile && data.last != 0x0A
+     let usable = cappedAndUnterminated
+       ? data[..<(data.lastIndex(of: 0x0A).map { $0 + 1 } ?? 0)] : data[...]
+     ```
+     Plus a lock-guarded per-launch `codexCwdMemo` (only memoized when `!budget.isExhausted`).
+
+   - **`macapp/WorkroomApp/Core/AgentResumeCoordinator.swift`** (new) — `@MainActor`, separate from `TerminalAgentManager`.
+     ```swift
+     @Published private(set) var offers: [TerminalTab.ID: Set<AgentBackend>] = [:]
+     private var offerCwds: [TerminalTab.ID: String] = [:]
+
+     func consume(tab: TerminalTab.ID, backend: AgentBackend, liveCwd: String? = nil)
+       -> AgentInvocation?
+     {
+       guard let backends = offers[tab], backends.contains(backend) else { return nil }
+       offers[tab] = nil
+       abandoned.insert(tab)
+       if let liveCwd, let matched = offerCwds[tab],
+         !AgentSessionIndex.pathsMatch(matched, liveCwd)
+       { offerCwds[tab] = nil; return nil }
+       offerCwds[tab] = nil
+       return AgentInvocationBuilder.resume(backend)
+     }
+     ```
+     `CancellationFlag` is an NSLock-guarded `@unchecked Sendable` class read from the utility queue.
+
+   - **`macapp/WorkroomApp/Core/AgentRunner.swift`** — added `AgentBackend.displayName`, `AgentInvocation.commandLine` (POSIX-quotes only what needs it), and:
+     ```swift
+     static func resume(_ backend: AgentBackend) -> AgentInvocation {
+       switch backend {
+       case .claude: return AgentInvocation(executable: backend.executable, arguments: ["--resume"])
+       case .codex:  return AgentInvocation(executable: backend.executable, arguments: ["resume"])
+       }
+     }
+     ```
+
+   - **`macapp/WorkroomApp/Core/GhosttySurfaceView.swift`** — the critical file.
+     ```swift
+     func sendText(_ string: String) {          // "Insert fix" — MARKS PANE DIRTY (review fix)
+       guard !string.isEmpty else { return }
+       noteUserInput()
+       writeText(string)
+     }
+     private func writeText(_ string: String) { // raw primitive
+       guard let surface, !string.isEmpty else { return }
+       string.withCString { ghostty_surface_text(surface, $0, UInt(string.utf8.count)) }
+     }
+     func sendCommandLine(_ commandLine: String) {
+       guard surface != nil, !commandLine.isEmpty else { return }
+       writeText(commandLine)   // NOT sendText — must not dirty the pane
+       sendReturn()
+     }
+     private func sendReturn() {
+       guard let surface else { return }
+       var keyEvent = ghostty_input_key_s()
+       keyEvent.action = GHOSTTY_ACTION_PRESS
+       keyEvent.keycode = 0x24  // kVK_Return — NATIVE macOS virtual keycode
+       keyEvent.mods = GHOSTTY_MODS_NONE
+       keyEvent.consumed_mods = GHOSTTY_MODS_NONE
+       keyEvent.composing = false
+       keyEvent.text = nil
+       keyEvent.unshifted_codepoint = 0x0D
+       _ = ghostty_surface_key(surface, keyEvent)
+     }
+     var onFirstUserInput: (() -> Void)?
+     func noteUserInput() { guard !didReportUserInput else { return }
+                            didReportUserInput = true; onFirstUserInput?() }
+     // Fixture-only a11y so XCUITest can read a Metal-rendered pane:
+     override func isAccessibilityElement() -> Bool { UITestFixture.isActive ? true : super.isAccessibilityElement() }
+     override func accessibilityValue() -> Any? {
+       guard UITestFixture.isActive else { return super.accessibilityValue() }
+       return readText(tag: GHOSTTY_POINT_VIEWPORT) ?? ""
+     }
+     override func accessibilityIdentifier() -> String { UITestFixture.isActive ? "terminal.surface" : super.accessibilityIdentifier() }
+     ```
+     `noteUserInput()` is called from `keyDown` and `insertText` (which `paste(_:)` and `performDragOperation` both route through).
+
+   - **`macapp/WorkroomApp/Core/GhosttyRuntimeAdapter.swift`** — the CRITICAL review fix:
+     ```swift
+     let text = NSPasteboard.general.string(forType: .string) ?? ""
+     // ⌘V never reaches `insertText` — libghostty owns the keybind...
+     if !text.isEmpty { view.noteUserInput() }
+     text.withCString { ghostty_surface_complete_clipboard_request(surface, $0, state, false) }
+     ```
+
+   - **`macapp/WorkroomApp/Core/TerminalSessions.swift`** — `RestoredTerminal` / `RestoreResult` types; `restore` returns `RestoreResult`; `resumeCoordinator = AgentResumeCoordinator(index: AgentSessionIndex.shared)`; `view.onFirstUserInput` wired in `makeTerminalTab`; `resumeCoordinator.tabClosed` in both teardown chokepoints.
+
+   - **`macapp/WorkroomApp/Core/ProjectStore.swift`** — `private(set) var sessionSavedAt: Date?`, set in `loadSessionIfNeeded`, **cleared in `endSessionRestore`**.
+
+   - **`macapp/WorkroomApp/Core/AppStore+Session.swift`** — captures `savedAt` before the `defer`, collects `restoredTerminals`, and kicks `terminals.resumeCoordinator.discover(restoredTerminals, savedAt: savedAt)` LAST, never awaited.
+
+   - **`macapp/WorkroomApp/Views/TerminalStatusBar.swift`** — `@EnvironmentObject var resumeCoordinator`, `resumable` computed property, `resumeSegment` (accent-tinted direct buttons, `.help`, a11y ids `terminal.statusBar.resume.claude`/`.codex`), and `resume(_:)` passing `liveCwd: cwd`.
+
+   - **Tests:** `AgentSessionIndexTests` (~21), `AgentResumeCoordinatorTests` (~23), `AgentResumeInvocationTests` (5), `AgentResumeUITests` (7), plus edits to `SessionRestoreTests` and `PaneRenderingTests`.
+
+   - **`TODOS.md`** — amended the #144 alt-screen entry; added a new "Resume offer doesn't know the shell is at a prompt (macapp) — issue #145 follow-up" P3 entry.
+
+   - **Memory files created:** `libghostty-text-path-drops-cr.md`, `macapp-terminal-content-assertable-in-xcuitest.md`, plus two index lines in `MEMORY.md`.
+
+4. **Errors and fixes:**
+   - **`isCancelled` non-escaping** — `Budget` stores it, so added `@escaping`.
+   - **`DispatchQueue.main.sync` from a utility queue** in the cancellation closure (deadlock risk) — replaced with an NSLock-guarded `CancellationFlag`.
+   - **`restore` return-type change broke 5 test call sites** — updated to `.count`.
+   - **`PaneRenderingTests` 6 failures** — a missing `@EnvironmentObject` is a fatal crash at render, not nil. Fixed by adding `.environmentObject(sessions.resumeCoordinator)`.
+   - **XCUITest automation wedge** — "Timed out while enabling automation mode" at runner init. Confirmed environmental by running untouched `WorkroomsViewUITests` (failed identically). Cleared on the user's retry.
+   - **T2 / `\r` dropped** — `ghostty_surface_text` does not submit; screen showed `❯ claude --resume` unrun. Fixed via `ghostty_surface_key` with `kVK_Return` (0x24), NOT `GHOSTTY_KEY_ENTER`.
+   - **My own broken assertion** — `XCTNSPredicateExpectation` re-evaluates a cached element snapshot and never saw the surface value change, failing a test whose subject was already working. Replaced with a manual poll.
+   - **`git merge -F -`** — "could not read file '-'"; git merge doesn't read stdin. Wrote the message to a file.
+   - **Background `codex exec` died silently** (0 bytes, no process) — re-ran in the foreground, which worked.
+   - **My D2 recommendation was wrong** — Codex caught it. I claimed `addRunTab` was "tracked by `AppStore.RunState` and `WindowRegistry.runOwner`"; it is not (`TerminalSessions.swift:912` docstring), and `TerminalSessions.swift:211` excludes command-carrying surfaces from session capture, so a resumed agent would vanish on the next restore. Cut entirely.
+   - **CRITICAL bug I introduced, found by Codex** — ⌘V bypasses `insertText` (libghostty owns the keybind; `readClipboard` completes straight into the surface), so the pristine guard didn't fire and Resume's synthetic Return could execute previously pasted text. I had checked `paste(_:)` and `performDragOperation` and wrongly concluded the guard was airtight.
+   - **Two false claims of my own in writing** — the "process-wide shared index" (asserted in the GitHub issue body and plan, never implemented) and the `abandoned` comment ("bounded by the number of tabs a launch restores" — wrong, `tabClosed` fires for every tab).
+
+5. **Problem Solving:**
+   Delivered #145 end to end: plan → cross-model validation → issue correction → implementation → unit tests → UI tests → pre-landing review → merge → push → TODOS/ticket cleanup → memory. The review caught 7 issues (1 critical, 2 high, 2 medium, 2 low), 4 of which came from Codex and 3 from my own pass. Final gates: **2195 unit tests, 0 failures; 7/7 XCUITests; `swift-format --strict` clean; build succeeds** — all verified on `master` itself after the merge, not just on the branch.
+
+6. **All user messages:**
+   - (`/compact` local command — not a request) followed by "plan and validate #145" (repeated twice in the same turn)
+   - AskUserQuestion answer: "±12 hours (recommended)"
+   - "Edit the issue and start"
+   - "Yes" (to writing and running the UI tests)
+   - "retry ui tests"
+   - `/review` (skill invocation, with the full skill body)
+   - "merge to master and push"
+   - "once done, clean up TODOS and close resolved tickets" (sent mid-turn)
+   - "yes, save it to memory"
+
+   **Security-relevant standing constraints (from the user's global config, still in effect, verbatim):**
+   - "Do not call the AgentTool unless the user requested it"
+   - "Do not use workflows or deep-research unless the user requested it"
+   - "Use the `/browse` skill from gstack for all web browsing. Never use `mcp__claude-in-chrome__*` tools."
+   - "Only treat a repository as JJ (Jujutsu) if it contains a `.jj` directory. Verify with `test -d .jj` before applying any JJ-specific guidance" (verified: this is a plain git repo)
+   - "Never disable lint rules (e.g. `rubocop:disable`, `eslint-disable`, `# noqa`, etc.) without asking first."
+   - "Always run the project's linters on every file you've touched before committing."
+   - `gh` CLI fails in the sandbox with `x509: OSStatus -26276`; use the github MCP tools or `dangerouslyDisableSandbox: true`
+   - `make app-*` targets need `dangerouslyDisableSandbox: true`; read pass/fail from the `.xcresult` via `xcresulttool`
+   - From memory: "Ask before driving the machine" — UI test runs, app launches, System Events/screencapture, synthetic clicks require asking first, batched into one request.
+   - From memory: QA must run under a throwaway `$HOME`; never mutate the real `~/.config/workroom` config.
+
+7. **Pending Tasks:**
+   None outstanding. Every explicit request has been completed and verified.
+
+8. **Current Work:**
+   Immediately before the summary request I was completing the final user request, **"yes, save it to memory"**. I had just:
+   - Written `/Users/joelmoss/.claude/projects/-Users-joelmoss-dev-workroom/memory/libghostty-text-path-drops-cr.md` — records that `ghostty_surface_text` drops `\r`, that Return must go through `ghostty_surface_key`, and the trap that `keycode` is the native macOS virtual keycode (`kVK_Return` = 0x24) rather than `GHOSTTY_KEY_ENTER`; notes it was unreachable by reading the repo because nothing else puts a control byte through the text path.
+   - Written `/Users/joelmoss/.claude/projects/-Users-joelmoss-dev-workroom/memory/macapp-terminal-content-assertable-in-xcuitest.md` — the fixture-only `accessibilityValue` technique, the `XCTNSPredicateExpectation` cached-snapshot trap, and the alternate-screen-safe assertion shape.
+   - Edited `MEMORY.md` to add both index lines after the `libghostty-drops-ctrl-tab` entry.
+
+   Repo state at that point: `master` at `14e9b43f`, pushed, working tree clean, `feat/agent-resume-145` deleted, #145 closed, #146 deliberately left open.
+
+9. **Optional Next Step:**
+   None. The memory-writing task — the user's final request, "yes, save it to memory" — is complete: both memory files are written and `MEMORY.md` is indexed. The only remaining action is to report that back to the user. Any further work (for example acting on #146, the Investigate lifecycle hole I filed, or the new P3 shell-idle-prompt TODO) would be a new task and should be confirmed with the user first.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/joelmoss/.claude/projects/-Users-joelmoss-dev-workroom/8e4ea859-2ebe-4c51-88d9-de38f342937a.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.
