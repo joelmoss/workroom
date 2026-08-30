@@ -1,0 +1,192 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. Primary Request and Intent:
+
+   The user pointed at **GitHub issue #132** in `joelmoss/workroom` and progressively drove it from issue → plan → reviewed plan → shipped stage 1 → QA → commit → capture spike → design review → (in flight) a Codex design critique.
+
+   Issue #132 asks for a macOS ⌘Tab-style quick switcher in the Workroom macOS app:
+   - **⌥Tab** to see and switch open **workrooms**; **⌃Tab** for open **detail panes** (terminals, diffs, files).
+   - Quick tap switches to next; press-and-hold the modifier shows a screen-centred horizontal rail of **screenshots** with labels; ←/→ walk the rail; mouse hover and click supported; each item shows a notification count badge.
+
+   Explicit user decisions along the way:
+   - Rail cards use **real screenshots** (not text/glyph previews), **MRU ordering**, host must **support multiple windows**, **all-windows** scope for ⌥Tab.
+   - Split delivery: **PR1 = keyboard/MRU only, PR2 = panel + rail + capture**.
+   - Asked mid-review: "**are the suggested KB shortcuts conflict free?**" → led to the stored-modifier preference decision.
+   - On capture triggers: "go with 1, but also refresh on theme change (not window resize)".
+   - "**commit**" (done, `4266d32f`), "no need for PR. start #2" (the capture spike), and finally "**re-run codex**".
+   - On rail overflow, overriding my recommendation: "**Only ever show one row. Shrink to fit. left/right keys should allow scrolling, as should the mouse horizontal scroller**".
+
+   Standing constraints stated in project/global config and memory that must keep applying: **QA must run in fixture mode / throwaway `$HOME` and never mutate the real `~/.config/workroom`**; **never use `mcp__claude-in-chrome__*` tools — use the `/browse` skill**; **commit or push only when the user asks**; **never disable lint rules without asking**; `make app-*` targets require `dangerouslyDisableSandbox`; `gh` CLI fails inside the sandbox (use the GitHub MCP tools or disable the sandbox); `rm -rf` is blocked by the dcg guard and must not be retried.
+
+2. Key Technical Concepts:
+   - Workroom macOS app: SwiftUI + AppKit, macOS 15 target, Swift module named `Workroom`, target `WorkroomApp`.
+   - `NSEvent.addLocalMonitorForEvents(matching: .keyDown)` in `AppDelegate` — runs inside `NSApp.sendEvent` before menu key-equivalent dispatch and before the focused terminal surface, so returning `nil` consumes an event app-wide.
+   - `GhosttySurfaceView.isAppShortcut` — a static allowlist of app-reserved keys; every branch requires `.command`; Tab deliberately NOT added (runtime-conditional consumption can't be expressed statically).
+   - Per-window `AppStore` (+ its own `TerminalSessions`), shared `ProjectStore`; `WindowRegistry.shared` as the only app-level coordinator.
+   - `applyLocation` raises `isNavigatingHistory` for its whole body → recency must be recorded above that guard.
+   - MRU: pure `RecencyList<ID>` value type; identity `WindowToken` (UUID, never reused) because `windowNumber` is reclaimed and `ObjectIdentifier` is a reusable address.
+   - ScreenCaptureKit own-process capture: `SCShareableContent.currentProcess` (macOS 14.4+) + `SCContentFilter(desktopIndependentWindow:)` + `SCScreenshotManager.captureImage` — **verified TCC-free**.
+   - libghostty/GhosttyKit 1.2.3: Metal-backed surfaces (no `cacheDisplay`), occlusion via `ghostty_surface_set_occlusion`, text reads via `readCommandRegion`/`readFullSurface`, and **no bytes emitted for ⌃Tab**.
+   - Theme system: `ThemeTokens` derived from a ghostty theme (`Workroom Light`: bg `#fbfbfd`, fg `#1d1d1f`, accent `palette[4] #1e7fa8`), plus `legible(_:on:towards:target:)` and `contrastRatio`.
+   - Component conventions: `sidebarCard(cornerRadius:margin:vibrant:elevated:)`, `DialogOverlayStyle` (backdrop 0.08/0.25, spring 0.32/0.85), `UnreadBadge`/`UnreadDot`, `VisualEffectView`.
+   - Test conventions: pure reducers unit-tested headlessly; `GhosttySurfaceView(workingDirectory:)` is inert until it enters a window; `-WorkroomUITestFixture 1` fixture seam with flags including `WorkroomUITestWorkroomCount` and `WorkroomUITestTerminalTabs`.
+
+3. Files and Code Sections:
+
+   **Created — `macapp/WorkroomApp/Core/SwitcherRecency.swift`** (the MRU core; pure and headlessly testable):
+   ```swift
+   struct WindowToken: Hashable { private let raw: UUID; init() { raw = UUID() } }
+   struct WorkroomSlotID: Hashable { let window: WindowToken; let sid: SidebarID }
+   struct WorkroomSlot { weak var store: AppStore?; let sid: SidebarID; let target: TerminalTarget
+     var id: WorkroomSlotID? { store.map { WorkroomSlotID(window: $0.windowToken, sid: sid) } } }
+
+   struct RecencyList<ID: Hashable>: Equatable {
+     private(set) var ids: [ID] = []
+     static var maxEntries: Int { 200 }
+     mutating func touch(_ id: ID) { … insert at 0, trim to maxEntries }
+     mutating func forget(_ id: ID); mutating func retain(_ live: Set<ID>)
+     func ordered<T>(_ items: [T], id: (T) -> ID) -> [T]   // MRU first, untouched appended positionally
+   }
+
+   @MainActor final class SwitcherRecency {
+     static let shared = SwitcherRecency()
+     private(set) var workrooms = RecencyList<WorkroomSlotID>()
+     private(set) var panes = RecencyList<TerminalTab.ID>()
+     func recordWorkroom(store: AppStore, sid: SidebarID?)
+     func recordPane(_ id: TerminalTab.ID?)
+     func forgetPanes(_ ids: [TerminalTab.ID])
+     func workroomOrder(_ slots: [WorkroomSlot]) -> [WorkroomSlot]
+     func paneOrder(_ tabs: [TerminalTab]) -> [TerminalTab]
+   }
+   ```
+
+   **Created — `macapp/WorkroomApp/Core/QuickSwitcher.swift`**:
+   ```swift
+   enum QuickSwitcherKind: Equatable { case workrooms, panes }
+   enum SwitcherGate { case passThrough, swallow, act(AppStore) }
+   enum SwitcherModifier: String, CaseIterable, Defaults.Serializable {
+     case option, control, commandOption, commandControl
+     var flags: NSEvent.ModifierFlags { … }; var display: String { … }
+   }
+   enum QuickSwitcherKey {
+     static let tabKeyCode: UInt16 = 48
+     nonisolated static func classify(keyCode: UInt16, flags: NSEvent.ModifierFlags,
+       workroomModifier: SwitcherModifier = Defaults[.switcherWorkroomModifier],
+       paneModifier: SwitcherModifier = Defaults[.switcherPaneModifier]
+     ) -> (kind: QuickSwitcherKind, reverse: Bool)?
+   }
+   @MainActor enum QuickSwitcher {
+     @discardableResult static func step(_ kind:reverse:in:registry:recency:) -> Bool
+     static func workroomSlots(registry:recency:) -> [WorkroomSlot]   // filters !hasModalPresentation
+     static func paneTabs(in:recency:) -> [TerminalTab]
+     nonisolated static func destination(from current: Int?, count: Int, reverse: Bool) -> Int
+   }
+   ```
+   Commit path: `if !NSApp.isActive { NSApp.activate(...) }; target.hostWindow?.makeKeyAndOrderFront(nil); target.openExisting(slot.sid)`; panes use `store.terminals.select(tabs[next].id, for: target)`.
+
+   **Modified — `macapp/WorkroomApp/Core/AppStore.swift`**: added `let windowToken = WindowToken()` beside `windowNumber` (:113); unconditional `SwitcherRecency.shared.recordWorkroom(store: self, sid: selectedTargetID)` in `selectedTargetID.didSet` **above** the `isNavigatingHistory` guard; `recordPane(tabID)` at the top of `terminals.onFocusChange` (signature changed from `{ _, _ in` to `{ _, tabID in`); `forgetPanes(ids)` in `onTabsRemoved`; new pure helper:
+   ```swift
+   nonisolated static func wrapped(index: Int, by delta: Int, count: Int) -> Int {
+     guard count > 0 else { return index }
+     return ((index + delta) % count + count) % count
+   }
+   ```
+   adopted in both `cycleWorkroomTab` and `cycleTerminalTab` (replacing two verbatim copies).
+
+   **Modified — `macapp/WorkroomApp/Core/WindowRegistry.swift`**: `didBecomeKeyNotification` observer now also calls `SwitcherRecency.shared.recordWorkroom(store: store, sid: store.selectedTargetID)`.
+
+   **Modified — `macapp/WorkroomApp/WorkroomApp.swift`**: refreshed the stale AppDelegate doc comment; added `switcherGate(for:in:)`:
+   ```swift
+   @MainActor static func switcherGate(for window: NSWindow?, in registry: WindowRegistry = .shared) -> SwitcherGate {
+     guard let store = registry.store(for: window) else { return .passThrough }
+     return store.hasModalPresentation ? .swallow : .act(store)
+   }
+   ```
+   and the monitor branch immediately after the ⌘` branch:
+   ```swift
+   if let hit = QuickSwitcherKey.classify(keyCode: event.keyCode, flags: flags) {
+     if event.isARepeat { return nil }
+     return MainActor.assumeIsolated {
+       switch Self.switcherGate(for: window) {
+       case .passThrough: return event
+       case .swallow: return nil
+       case .act(let store):
+         return QuickSwitcher.step(hit.kind, reverse: hit.reverse, in: store) ? nil : event
+       }
+     }
+   }
+   ```
+
+   **Modified — `Core/DefaultsKeys.swift`** (`switcherWorkroomModifier` default `.option`, `switcherPaneModifier` default `.control`), **`Views/KeyboardShortcutsView.swift`** (2 rows rendered from the stored modifiers + `import Defaults`), **`macapp/CLAUDE.md`** (why Tab is monitor-only).
+
+   **Created tests**: `WorkroomAppTests/SwitcherRecencyTests.swift` (10 tests), `WorkroomAppTests/QuickSwitcherTests.swift` (17 tests incl. `testRecencyIsRecordedEvenWhileHistoryIsSuppressed` and the `switcherGate` cases), and an addition to `AppShortcutReservationTests.swift`:
+   ```swift
+   func testTabIsNeverReservedForAnyModifierCombination() { /* 10 combos, all XCTAssertFalse */ }
+   ```
+
+   **Plan file — `/Users/joelmoss/.claude/plans/https-github-com-joelmoss-workroom-issue-partitioned-crescent.md`**: rewritten twice (eng review, then design review). Now contains Context, Stage 1 (shipped), Stage 2 spec with the designed rail, Files, Failure modes, Tests, Implementation Tasks (T1–T15), Worktree parallelization, NOT in scope, What already exists, **Approved Mockups**, Verification, Risks, and `## GSTACK REVIEW REPORT` as the terminal heading ending with `**UNRESOLVED DECISIONS:**` + one bullet (4 from prior CEO review).
+
+   **Design artifacts — `~/.gstack/projects/joelmoss-workroom/designs/switcher-rail-20260804/`**: `mock.html` (hand-built, real tokens), `mock-full.png`, `variant-A-macos-faithful.png`, `variant-B-workroom-native.png`, `variant-C-compact-strip.png`, `card-states.png`, `overflow.png`, `design-board.html`.
+
+   **Spike (throwaway) — `scratchpad/spike/main.swift`** + `Spike.app`: ad-hoc-signed own-bundle-id app that captures its own window and logs to `/tmp/sck-spike.log`.
+
+4. Errors and fixes:
+   - **Codex timed out at 5 min** during the eng-review outside voice → fell back to a Claude subagent per the skill; for the re-run I shrank the prompt from ~27KB to ~4KB and backgrounded it.
+   - **SourceKit "No such module 'Defaults'" / "Cannot find type in scope"** → known noise per `macapp/CLAUDE.md`; ignored, `xcodebuild` is authoritative (build succeeded).
+   - **`rm -rf` blocked by the dcg guard** → dropped it and used `rm -f` on the two files only; did not retry the blocked form.
+   - **Swift 6 actor-isolation errors in the spike** → annotated `Delegate` with `@MainActor` and wrapped the top-level setup in `MainActor.assumeIsolated { }` with a `nonisolated(unsafe)` holder.
+   - **`browse` rendered a blank page and refused a screenshot path** → its allowlist is `/private/tmp` (+ the repo themes dir); copied the HTML there, screenshotted there, then copied the PNG into the designs dir.
+   - **My QA slips:** `cat -A` is GNU-only → used `cat -vte`; `key code 4` is `h` not `d`, so my intended Ctrl-D was Ctrl-H and the first `cat` never exited (the kitty-protocol test was swallowed as input) → re-ran at a clean prompt with `key code 2`.
+   - **`printf` invalid-directive error** while appending to MEMORY.md left a truncated line → repaired it with an Edit.
+   - **`DESIGN_READY` was a false positive** (binary exists, no OpenAI key) → hand-built the HTML mock instead and disclosed it.
+   - **User corrections to my recommendations:** capture triggers → "also refresh on theme change (not window resize)"; overflow → "Only ever show one row. Shrink to fit. left/right keys should allow scrolling, as should the mouse horizontal scroller".
+
+5. Problem Solving:
+   - Proved own-process ScreenCaptureKit capture needs no TCC, using a separate code identity so the shell's existing grant couldn't confound the result.
+   - Caught, before implementation, that `filter.contentRect` ≠ `NSWindow.frame` in both size and y-direction (measured 810×544 vs 820×552; derived scale 1.9756/1.9710 vs the true 2.0) and rewrote the plan's crop recipe.
+   - Proved GhosttyKit 1.2.3 emits nothing for ⌃Tab (A/B by retuning the pane modifier), so the <2-panes passthrough is correct but currently unobservable.
+   - Used a real-token HTML mock to show a terminal thumbnail is near-blank at 220×140, which inverted the card hierarchy decision and cascaded into the no-snapshot, fit, and subtitle decisions.
+   - Verified stage 1 end-to-end live in fixture mode using window-title reads rather than screenshots for exactness.
+
+6. All user messages:
+   - `https://github.com/joelmoss/workroom/issues/132`
+   - (AskUserQuestion answers): "Real screenshots"; "MRU (Recommended)"; "needs to support muktiple windows"; "All windows"
+   - `/plan-eng-review` (command invocation)
+   - (Answers) "The #132 plan file (recommended)"; "Skip — go to review (recommended)"; "Split: keys first, rail second (recommended)"; "Record unconditionally (recommended)"; "One WindowToken for both (recommended)"; "Exclude those windows' items (recommended)"; "Pass through under 2 panes (recommended)"
+   - "**are the suggested KB shortcuts conflict free?**"
+   - (Answers) "Stored modifier per switcher (recommended)"; "Reuse openExisting (recommended)"; "Extract, refactor all three (recommended)"; "Injected clock + fixture flag + manual list (recommended)"; "Cap the long edge ~1440px (recommended)"; "**go with 1, but also refresh on theme change (not window resize)**"; "Drop reservation + hoist (recommended)"; "Keep screenshots, bigger cards, text fallback (recommended)"; "PR1 = tap-only, immediate commit (recommended)"; "30ms poll only (recommended)"; "Defer as a TODO (recommended)"; "Implement now (recommended)"
+   - "continue"
+   - "**commit**"
+   - "next steps?"
+   - "**no need for PR. start #2**"
+   - `/plan-design-review` with args "**on the rail**"
+   - (Answers) "The rail + all card states (recommended)"; "All 7, weighted (recommended)"; "Grounded variants (recommended)"; "Submitted / here's my pick"; "D · Hybrid: label-led + small thumb (recommended)"; "Glyph well + live text in the subtitle (recommended)"; "Aspect-fit whole pane (recommended)"; "Vibrancy + panel wash, no dim (recommended)"; "**Only ever show one row. Shrink to fit. left/right keys should allow scrolling, as should the mouse horizontal scroller**"; "Snap ring + scroll; animate only reveal (recommended)"; "C · Add Go-menu items in PR2 (recommended)"
+   - "**re-run codex**"
+
+7. Pending Tasks:
+   - **In flight:** collect and present the backgrounded Codex design critique (job `bs3ew2md0`), then per the skill: present it under a `CODEX SAYS (design critique):` header, fill the litmus scorecard, flag any cross-model tension via AskUserQuestion (never auto-incorporate), and log `design-outside-voices` with `source: "codex"`.
+   - **T7** (`AppStore.label(for: SidebarID)` hoist) — deliberately deferred to PR2; task #6 still pending.
+   - **PR2 / stage 2** — reducer + 250ms reveal, 30ms modifier poll, non-activating panel, the designed rail (T11), snapshot layer (T12–T13), Go-menu items (T14), rail a11y (T15).
+   - Not pushed, no PR opened (user said no PR needed).
+
+8. Current Work:
+
+   Immediately before this summary, the user said "**re-run codex**" — re-running the design outside voice that had been skipped. I wrote a ~4KB prompt to `scratchpad/codex-design-prompt.txt` containing the skill's design classifier, 7 hard-rejection criteria, 7 litmus checks, and the full as-designed rail spec (non-activating panel, 200×88 cards shrinking to a 140pt floor, 72×56 aspect-fit well with SF-Symbol fallback on `accentSoft`, 13pt name + 11pt live-status subtitle, badge/dot in the label row, accent cursor with a 3:1 floor, one-row shrink-then-scroll, snapped cursor/scroll with only the panel reveal animating, VoiceOver announcements), plus the three rejected alternatives so Codex looks for what the review *missed*.
+
+   I launched it as a background job:
+   ```
+   codex exec "$(cat "$SP/codex-design-prompt.txt")" -C "$_REPO_ROOT" -s read-only \
+     -c 'model_reasoning_effort="high"' --enable web_search_cached < /dev/null \
+     > /private/tmp/codex-design-out.txt 2>"$TMPERR"
+   ```
+   → "Command running in background with ID: bs3ew2md0. Output is being written to: `/private/tmp/claude-501/-Users-joelmoss-dev-workroom/3550f850-2eb1-41c3-8866-543c08bb8bcb/tasks/bs3ew2md0.output`". The stderr path is recorded in `/tmp/codex_design_err.txt`. That job was still running when the summary was requested.
+
+   Everything else from the design review is already committed to disk: plan file updated (rail section rewritten, Approved Mockups table, NOT-in-scope additions, T14/T15 added, review report regenerated as the last section), 8-task JSONL at `~/.gstack/projects/joelmoss-workroom/tasks-design-review-20260804-183547.jsonl`, review log (`plan-design-review` clean, 5→9, 0 unresolved), decision log, 2 learnings, telemetry.
+
+9. Optional Next Step:
+
+   Read `/private/tmp/codex-design-out.txt` (and its stderr file) once job `bs3ew2md0` completes, then present the result per the skill's Design Outside Voices contract: verbatim under `CODEX SAYS (design critique):`, fill in the litmus scorecard (Claude / Codex / Consensus columns), surface any cross-model tension with the seven decisions already made via AskUserQuestion rather than auto-applying, and update the `design-outside-voices` review-log entry from `"status":"unavailable","source":"unavailable"` to the real result. The user's instruction was exactly "**re-run codex**", and my last statement before launching it was: "Re-running Codex as the design outside voice — much smaller prompt this time (the rail spec, not the whole plan), since size is what blew the 5-minute bound before. Backgrounding it so it can't stall the session."
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/joelmoss/.claude/projects/-Users-joelmoss-dev-workroom/aeed7d2d-72fa-42aa-8880-04883ab4ceb4.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.
