@@ -1,0 +1,290 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/QuickSwitcher.swift
+  - macapp/WorkroomApp/Views/RootView.swift
+  - macapp/WorkroomApp/WorkroomApp.swift
+  - macapp/WorkroomAppTests/QuickSwitcherTests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/QuickSwitcher.swift ===
+@@ -1,5 +1,6 @@
+ import AppKit
+ import Defaults
++import SwiftUI
+ 
+ /// Which of the two quick switchers a keystroke opened (issue #132).
+ enum QuickSwitcherKind: Equatable {
+@@ -41,6 +42,17 @@ enum SwitcherModifier: String, CaseIterable, Defaults.Serializable {
+     }
+   }
+ 
++  /// The same chord as SwiftUI states it, for the Go-menu items' key equivalents (D11) — which is how
++  /// macOS teaches a shortcut, so it has to track the preference rather than hard-code ⌥/⌃.
++  var eventModifiers: EventModifiers {
++    switch self {
++    case .option: [.option]
++    case .control: [.control]
++    case .commandOption: [.command, .option]
++    case .commandControl: [.command, .control]
++    }
++  }
++
+   /// Menu-style glyphs, for the keyboard-shortcuts sheet.
+   var display: String {
+     switch self {
+@@ -122,6 +134,47 @@ enum QuickSwitcher {
+     }
+   }
+ 
++  // MARK: The Go-menu path (D11)
++
++  /// Switch from a Go-menu item rather than a keystroke (D11 — the shortcut is otherwise invisible, and
++  /// mouse-only users can't reach the feature at all).
++  ///
++  /// Resolved through the monitor's own gate on the **key window**, not through the `Commands` body's
++  /// `@FocusedObject` store, for two reasons. A `focusedSceneValue` survives an aux window or the quick
++  /// terminal becoming key, so a menu-fired switch could otherwise retarget a background workroom
++  /// window the user isn't looking at; and the gate is what encodes "not one of our windows" and "a
++  /// modal is up" — the exact cases where this must do nothing. No session and no rail: a menu click
++  /// has no modifier to hold, so this is always the stage-1 immediate flip.
++  ///
++  /// There is no double-fire with the monitor: it runs inside `NSApp.sendEvent` ahead of menu
++  /// key-equivalent dispatch and consumes the event whenever it switched, so the menu's key equivalent
++  /// is only ever reached in the pass-through cases — where this returns false and changes nothing.
++  @discardableResult
++  static func stepFromKeyWindow(
++    _ kind: QuickSwitcherKind, reverse: Bool = false, window: NSWindow? = NSApp.keyWindow,
++    registry: WindowRegistry = .shared, recency: SwitcherRecency = .shared
++  ) -> Bool {
++    guard case .act(let store) = AppDelegate.switcherGate(for: window, in: registry) else {
++      return false
++    }
++    return step(kind, reverse: reverse, in: store, registry: registry, recency: recency)
++  }
++
++  /// Whether ⌥Tab has anywhere to go — the enablement for its Go-menu item, and load-bearing rather
++  /// than cosmetic: **a disabled menu item drops its key equivalent**, which is what stops the item
++  /// swallowing a Tab the monitor deliberately passed through.
++  ///
++  /// Counts rather than building `workroomSlots()`: this is recomputed on every RootView body pass, and
++  /// the MRU ordering it would do is irrelevant to "is there more than one".
++  static func canSwitchWorkrooms(registry: WindowRegistry = .shared) -> Bool {
++    var count = 0
++    for store in registry.allStores where !store.hasModalPresentation {
++      count += store.orderedWorkroomTargets().count
++      if count > 1 { return true }
++    }
++    return false
++  }
++
+   // MARK: Workrooms (⌥Tab, every window)
+ 
+   /// Every window's open workrooms, MRU-ordered. Windows with a sheet/dialog up are excluded: raising
+
+
+=== DIFF: macapp/WorkroomApp/Views/RootView.swift ===
+@@ -446,6 +446,12 @@ struct RootView: View {
+           // Go-menu Previous/Next Workroom Tab (issue #29) — only meaningful with ≥2 tabs.
+           multipleWorkroomTabs: store.orderedWorkroomTargets().count > 1
+             && !store.hasModalPresentation,
++          // Go-menu "Last-Used Workroom" (⌥⇥, issue #132). Counted across every window, so it stays
++          // enabled when this window holds the only workroom and another window holds a second one.
++          // This window's body is what recomputes it, so another window's change lands here only on the
++          // next pass — harmless in both directions: the monitor owns the keystroke either way, and the
++          // menu item merely no-ops (or greys) until then.
++          canSwitchWorkrooms: QuickSwitcher.canSwitchWorkrooms() && !store.hasModalPresentation,
+           // Go-menu "Open in…" + ⌘O — enabled only with an editor and a valid selection.
+           canOpenInEditor: store.canOpenInEditor && !store.hasModalPresentation,
+           // View ▸ "Resize Workroom Splits Evenly" (#83) — only when the selected workroom is a live
+@@ -684,6 +690,7 @@ private struct MenuStateValues: ViewModifier {
+   let vcsCanPull: Bool
+   let hasRunTerminal: Bool
+   let multipleWorkroomTabs: Bool
++  let canSwitchWorkrooms: Bool
+   let canOpenInEditor: Bool
+   let workroomSplitVisible: Bool
+   /// Published for the items that have no other boolean to fold it into (see `ModalPresentedKey`).
+@@ -705,6 +712,7 @@ private struct MenuStateValues: ViewModifier {
+       .focusedSceneValue(\.runCommandActive, runCommandActive)
+       .focusedSceneValue(\.hasRunTerminal, hasRunTerminal)
+       .focusedSceneValue(\.multipleWorkroomTabs, multipleWorkroomTabs)
++      .focusedSceneValue(\.canSwitchWorkrooms, canSwitchWorkrooms)
+       .focusedSceneValue(\.canOpenInEditor, canOpenInEditor)
+       .focusedSceneValue(\.workroomSplitVisible, workroomSplitVisible)
+   }
+
+
+=== DIFF: macapp/WorkroomApp/WorkroomApp.swift ===
+@@ -703,6 +703,13 @@ struct MultipleWorkroomTabsKey: FocusedValueKey {
+   typealias Value = Bool
+ }
+ 
++/// Whether ⌥Tab has anywhere to go — published by RootView, so the Go-menu "Last-Used Workroom" item
++/// (D11, issue #132) disables when this window's is the only open workroom in the app. Counted across
++/// every window, unlike `MultipleWorkroomTabsKey`, because that's the switcher's scope.
++struct CanSwitchWorkroomsKey: FocusedValueKey {
++  typealias Value = Bool
++}
++
+ /// Whether the selected target can be opened in an external editor — published by RootView, so the
+ /// Go-menu "Open in…" item (⌘O) disables when there's no selection / a missing dir / no editor.
+ struct CanOpenInEditorKey: FocusedValueKey {
+@@ -788,6 +795,10 @@ extension FocusedValues {
+     get { self[MultipleWorkroomTabsKey.self] }
+     set { self[MultipleWorkroomTabsKey.self] = newValue }
+   }
++  var canSwitchWorkrooms: Bool? {
++    get { self[CanSwitchWorkroomsKey.self] }
++    set { self[CanSwitchWorkroomsKey.self] = newValue }
++  }
+   var canOpenInEditor: Bool? {
+     get { self[CanOpenInEditorKey.self] }
+     set { self[CanOpenInEditorKey.self] = newValue }
+@@ -835,6 +846,7 @@ struct WorkroomCommands: Commands {
+   @FocusedValue(\.hasRunTerminal) private var hasRunTerminal
+   @FocusedValue(\.multipleTerminalTabs) private var multipleTerminalTabs
+   @FocusedValue(\.multipleWorkroomTabs) private var multipleWorkroomTabs
++  @FocusedValue(\.canSwitchWorkrooms) private var canSwitchWorkrooms
+   @FocusedValue(\.canOpenInEditor) private var canOpenInEditor
+   @FocusedValue(\.terminalSplitVisible) private var terminalSplitVisible
+   @FocusedValue(\.workroomSplitVisible) private var workroomSplitVisible
+@@ -854,6 +866,10 @@ struct WorkroomCommands: Commands {
+   // Drives the quick dark/light toggle (⌘⇧L, issue #57). RootView's `.onChange(of: theme)` applies
+   // it through the single theme chokepoint; same key as the sidebar's 3-state cycle button.
+   @Default(.theme) private var theme
++  // The two quick-switcher trigger chords (issue #132). Read here so the Go-menu items re-render — and
++  // so their key equivalents follow the preference — when either is retuned in Settings.
++  @Default(.switcherWorkroomModifier) private var switcherWorkroomModifier
++  @Default(.switcherPaneModifier) private var switcherPaneModifier
+   /// Opens a new Workroom window (issue #70) — a fresh `WindowSeed` so the window starts blank.
+   @Environment(\.openWindow) private var openWindow
+ 
+@@ -1256,6 +1272,27 @@ struct WorkroomCommands: Commands {
+         .keyboardShortcut(.leftArrow, modifiers: [.command, .option, .shift])
+         .disabled(multipleWorkroomTabs != true)
+ 
++      // The quick switchers (issue #132, D11), by recency rather than position — here because a
++      // shortcut nobody can see is a shortcut nobody uses, and because this is the only way to reach
++      // the feature with the mouse. Both key equivalents track their `Defaults` chord.
++      //
++      // The action goes through the key window, not this menu's focused store — see
++      // `QuickSwitcher.stepFromKeyWindow`. Enablement is load-bearing rather than cosmetic: the monitor
++      // consumes the keystroke whenever it switched, so these key equivalents are reached only in the
++      // pass-through cases, and a disabled item drops its key equivalent — which is what keeps ⌃⇥
++      // reaching a TUI in a single-pane workroom instead of being eaten by a menu that would no-op.
++      //
++      // Set both preferences to the same chord and these two items share a key equivalent; AppKit fires
++      // the first enabled match, which is Workrooms — the same tie-break `QuickSwitcherKey.classify`
++      // makes, so the menu and the monitor agree even in that configuration.
++      Divider()
++      Button("Last-Used Workroom") { QuickSwitcher.stepFromKeyWindow(.workrooms) }
++        .keyboardShortcut(.tab, modifiers: switcherWorkroomModifier.eventModifiers)
++        .disabled(canSwitchWorkrooms != true)
++      Button("Last-Used Pane") { QuickSwitcher.stepFromKeyWindow(.panes) }
++        .keyboardShortcut(.tab, modifiers: switcherPaneModifier.eventModifiers)
++        .disabled(multipleTerminalTabs != true)
++
+       Divider()
+ 
+       // Jump to the run terminal if one exists (issue #7) — navigation only, so it's named distinctly
+
+
+=== DIFF: macapp/WorkroomAppTests/QuickSwitcherTests.swift ===
+@@ -1,4 +1,5 @@
+ import AppKit
++import SwiftUI
+ import XCTest
+ 
+ @testable import Workroom
+@@ -177,6 +178,86 @@ final class QuickSwitcherTests: XCTestCase {
+     }
+   }
+ 
++  // MARK: the Go-menu path (D11)
++
++  /// The menu item resolves its store from the KEY window through the same gate, not from the menu's
++  /// own focused store: a `focusedSceneValue` survives an aux window or the quick terminal becoming key,
++  /// so reading the focused store would let a menu-fired switch retarget a background window.
++  func testTheMenuPathRefusesAnyWindowTheKeyMonitorWouldNotActOn() {
++    let shared = ProjectStore()
++    shared.projects = [project("/p", workrooms: ["w1", "w2"])]
++    let store = makeStore(shared, project: "/p", workrooms: ["w1", "w2"])
++    store.selectedTargetID = .workroom(project: "/p", name: "w1")
++    let window = NSWindow()
++    let registry = WindowRegistry()
++    registry.register(window: window, store: store)
++
++    XCTAssertFalse(
++      QuickSwitcher.stepFromKeyWindow(
++        .workrooms, window: NSWindow(), registry: registry, recency: SwitcherRecency()),
++      "an unregistered key window (Settings, the quick terminal) is not ours to switch in")
++    XCTAssertFalse(
++      QuickSwitcher.stepFromKeyWindow(
++        .workrooms, window: nil, registry: registry, recency: SwitcherRecency()),
++      "no key window at all ⇒ nothing to switch in")
++
++    store.pendingCommit = PendingCommit(sid: .workroom(project: "/p", name: "w1"), vcs: "git")
++    XCTAssertFalse(
++      QuickSwitcher.stepFromKeyWindow(
++        .workrooms, window: window, registry: registry, recency: SwitcherRecency()),
++      "and a modal is swallowed here too, not just in the monitor")
++    XCTAssertEqual(
++      store.selectedTargetID, .workroom(project: "/p", name: "w1"), "the selection never moved")
++  }
++
++  func testTheMenuPathSwitchesOnTheKeyWindow() {
++    let shared = ProjectStore()
++    shared.projects = [project("/p", workrooms: ["w1", "w2"])]
++    let store = makeStore(shared, project: "/p", workrooms: ["w1", "w2"])
++    store.selectedTargetID = .workroom(project: "/p", name: "w1")
++    let window = NSWindow()
++    let registry = WindowRegistry()
++    registry.register(window: window, store: store)
++
++    XCTAssertTrue(
++      QuickSwitcher.stepFromKeyWindow(
++        .workrooms, window: window, registry: registry, recency: SwitcherRecency()))
++    XCTAssertEqual(
++      store.selectedTargetID, .workroom(project: "/p", name: "w2"),
++      "the menu item performs the same immediate flip a tap does — no session, no rail")
++  }
++
++  /// `canSwitchWorkrooms` gates the menu item's key equivalent, and a disabled item drops it — so this
++  /// answering true when nothing is switchable is what would eat a pass-through Tab.
++  func testCanSwitchWorkroomsCountsAcrossWindowsAndSkipsModalOnes() {
++    let shared = ProjectStore()
++    shared.projects = [project("/p", workrooms: ["w1", "w2"])]
++    let a = makeStore(shared, project: "/p", workrooms: ["w1"])
++    let registry = WindowRegistry()
++    registry.register(window: NSWindow(), store: a)
++    XCTAssertFalse(
++      QuickSwitcher.canSwitchWorkrooms(registry: registry), "one workroom is nowhere to go")
++
++    let b = makeStore(shared, project: "/p", workrooms: ["w2"])
++    registry.register(window: NSWindow(), store: b)
++    XCTAssertTrue(
++      QuickSwitcher.canSwitchWorkrooms(registry: registry),
++      "the second window's workroom counts — the switcher's scope is the whole app")
++
++    b.activePicker = .open
++    XCTAssertFalse(
++      QuickSwitcher.canSwitchWorkrooms(registry: registry),
++      "…and a window with a dialog up isn't a destination, exactly as `workroomSlots` has it")
++  }
++
++  /// The chords the Go items render. Wrong glyphs here and macOS teaches the user the wrong shortcut.
++  func testEveryTriggerModifierHasAMatchingSwiftUIChord() {
++    XCTAssertEqual(SwitcherModifier.option.eventModifiers, [.option])
++    XCTAssertEqual(SwitcherModifier.control.eventModifiers, [.control])
++    XCTAssertEqual(SwitcherModifier.commandOption.eventModifiers, [.command, .option])
++    XCTAssertEqual(SwitcherModifier.commandControl.eventModifiers, [.command, .control])
++  }
++
+   // MARK: pane stepping (the ⌃Tab commit path)
+ 
+   func testPaneStepFlipsToThePreviouslyUsedPaneAndBack() {
+
+
+Investigate per the method in your instructions, then return the findings list.
