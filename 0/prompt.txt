@@ -1,0 +1,1 @@
+I've changed the "nothing selected" text. Show relevant keyboard shortcuts in brackets next to open and create workroom text
