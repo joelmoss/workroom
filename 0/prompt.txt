@@ -1,0 +1,1 @@
+<bash-input>rm -rf /Users/joelmoss/dev/workroom/bare.git</bash-input>
