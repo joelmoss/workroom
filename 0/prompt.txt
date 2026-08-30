@@ -1,0 +1,1 @@
+move the stop and restart buttons a little closer.
