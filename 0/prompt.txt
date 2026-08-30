@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b7uthwbim</task-id>
+<tool-use-id>toolu_01DjDb6grFv17T3xssA7eCbj</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/63f6f04e-9491-4528-9983-70076912bbe4/tasks/b7uthwbim.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch CI rerun to completion" completed (exit code 0)</summary>
+</task-notification>
