@@ -1,0 +1,41 @@
+<task-notification>
+<task-id>a2a53fd9b6aa501b4</task-id>
+<tool-use-id>toolu_01Kg9edshPoiAsULCJ9oCNxd</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/6b6da5a6-5d6f-49ea-8b2a-a61c143807d7/tasks/a2a53fd9b6aa501b4.output</output-file>
+<status>completed</status>
+<summary>Agent "Re-extract open bug TODOs by priority" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>**Task:** Re-surveyed all of /Users/joelmoss/dev/workroom/TODOS.md (full read, front to back, post-pruning and post-daemon-fixes) for open "bug" entries — correctness/race/crash/hang/leak/data-loss defects only, excluding shipped/fixed/closed/moot work, pure features/roadmap, and test-infra asks with no underlying defect.
+
+P1 — before GA
+(none open)
+
+P2 — perf, correctness, and the next VCS phase
+- VCS toolbar: the findings the /review pass didn't fix — jj Pull still guesses trunk() as the rebase base for an unbookmarked @, misreporting ahead/behind and risking a bad target for a feature-branch workroom; parked, no fresh repro since the 2026-08-10 correction falsified three revset attempts [TODOS.md:875]
+
+P3 — VCS engine, diffs, and status
+- Gate git VCS reads, not just writes — resolveGit bypasses JJSnapshotGate, so a fetch writing packed-refs can race the status sweep into a packed-refs.lock failure [TODOS.md:961]
+- jj sibling-workspace staleness after a rebase — a jj rebase in one workroom silently leaves a sibling workspace stale, surfacing as an unexplained error in the wrong workroom [TODOS.md:988]
+- XDG_CONFIG_HOME never reaches the gh auth probe — a user with a custom XDG_CONFIG_HOME gets a permanent false "GitHub CLI not signed in" [TODOS.md:1089]
+- ShellEnvironment exposes no probe-readiness signal — early callers can't tell if the PATH probe landed, so a launch-time tool check can read floor-only PATH and misreport a tool as missing [TODOS.md:1151]
+- Deterministic tab lookup for content panes — .first{} over an unordered Dictionary makes which duplicate-content tab gets focused nondeterministic [TODOS.md:1295]
+- The jj snapshot ignores parts of the user's real jj/git config — fsmonitor, EOL conversion, exec-bit policy, and a custom core.excludesFile aren't honored/chained by the auto-snapshot path [TODOS.md:1408]
+
+P3 — Terminal, panes, and focus
+- Consolidate terminal focus authority + cross-window reconciliation — window key-gain reconciliation is missing, so first responder can drift to a non-terminal view on Cmd-Tab/Mission Control reactivation and never reclaim the focused pane [TODOS.md:1562]
+- Workroom split: deferred follow-ups — queued first-responder stale-state recheck: an async focus enqueue rechecks only "not this view," not a fresh condition, leaving a residual (largely defused) cross-target focus race [TODOS.md:1599]
+- Two split paths still bypass the pane floor — insertWorkroomSplit and content-pane splits skip the 300×120pt floor, producing sub-200pt panes [TODOS.md:1626]
+
+P3 — Inspector, window layout, and theming
+- Back/forward doesn't reinstate the inspector section — ⌘[/⌘] can leave the Files section showing while the detail pane shows a diff, so no row highlights [TODOS.md:1800]
+
+P3 — Notifications and run commands
+- OSC 99 desktop notifications — libghostty doesn't parse OSC 99, a regression against the app's prior (SwiftTerm-based) behavior; blocked upstream until ghostty 1.4.0 [TODOS.md:2089]
+
+P3 — Tests and tooling
+- WindowDragUITests.testDraggingWorkroomTabReordersTwoChips — a real gesture-timing bug (commitDrag read a stale under-shot translation) was fixed but the test remains ~1-in-10 flaky and is deliberately left skipped [TODOS.md:2257]
+
+P3 — CLI
+- Harden vcs.Detect to validate a real repo — a bogus/empty .git registers as a project and only fails later at workroom creation instead of at registration; re-priced and parked, not a fit for the current batch [TODOS.md:2503]</result>
+<usage><subagent_tokens>482939</subagent_tokens><tool_uses>10</tool_uses><duration_ms>120715</duration_ms></usage>
+</task-notification>
