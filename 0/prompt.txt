@@ -1,0 +1,1 @@
+update app quit dialog to reflect what will happen if persistant terminal sessions are enabled
