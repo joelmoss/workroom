@@ -1,0 +1,1 @@
+use the same liquid glass bacground for the rail, that the MacOS app switcher uses. and make sure the rail is centered. decrease monograms/icons, and optimise use of horizontal space. maybe stack the monogram/icons above?
