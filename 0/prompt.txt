@@ -1,0 +1,519 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/AgentResumeCoordinator.swift
+  - macapp/WorkroomApp/Core/AgentSessionIndex.swift
+  - macapp/WorkroomApp/Core/GhosttyRuntimeAdapter.swift
+  - macapp/WorkroomApp/Core/GhosttySurfaceView.swift
+  - macapp/WorkroomApp/Core/TerminalSessions.swift
+  - macapp/WorkroomApp/Views/TerminalStatusBar.swift
+  - macapp/WorkroomAppTests/AgentResumeCoordinatorTests.swift
+  - macapp/WorkroomAppTests/AgentSessionIndexTests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/AgentResumeCoordinator.swift ===
+@@ -31,6 +31,10 @@ final class AgentResumeCoordinator: ObservableObject {
+   /// the app cannot know which agent a pane was running.
+   @Published private(set) var offers: [TerminalTab.ID: Set<AgentBackend>] = [:]
+ 
++  /// The directory each offer was matched against, so `consume` can refuse a pane that has since
++  /// moved. Kept beside `offers` rather than inside it because the view has no use for it.
++  private var offerCwds: [TerminalTab.ID: String] = [:]
++
+   /// A cancellation flag the scan can read from its own queue.
+   ///
+   /// `DispatchWorkItem.isCancelled` would do, but reading it means capturing the work item inside its
+@@ -60,8 +64,13 @@ final class AgentResumeCoordinator: ObservableObject {
+     label: "com.developwithstyle.workroom.agent-resume", qos: .utility)
+   private var discovery: CancellationFlag?
+   /// Tabs whose offer must not be published, because the pane is gone or its offer was already
+-  /// spent. Never pruned: it is bounded by the number of tabs a launch restores, and forgetting an
+-  /// entry would let a late scan re-offer a pane the user already resumed.
++  /// spent.
++  ///
++  /// Only meaningful while a scan is in flight — its whole job is to stop `publish` re-offering a
++  /// pane that was closed, typed into, or resumed while the scan ran. So it is cleared once the scan
++  /// lands. An earlier version never pruned it, on the stated grounds that it was "bounded by the
++  /// number of tabs a launch restores"; that was wrong, because `tabClosed` fires for EVERY tab
++  /// closed in the process, restored or not, so it grew for the life of the app.
+   private var abandoned: Set<TerminalTab.ID> = []
+ 
+   /// `index: nil` disables discovery entirely — the fixture default, so the existing UI tests can
+@@ -114,8 +123,12 @@ final class AgentResumeCoordinator: ObservableObject {
+       guard !abandoned.contains(pane.tabID) else { continue }
+       guard let backends = found[pane.cwd], !backends.isEmpty else { continue }
+       offers[pane.tabID] = backends
++      offerCwds[pane.tabID] = pane.cwd
+       offered += 1
+     }
++    // The scan has landed, so the suppression list has done its job. Clearing it is what keeps it
++    // from growing for the life of the process on every tab close.
++    abandoned.removeAll()
+     if offered > 0 {
+       Self.logger.notice("resume offers published for \(offered, privacy: .public) restored panes")
+     }
+@@ -129,10 +142,26 @@ final class AgentResumeCoordinator: ObservableObject {
+   /// not tidiness: the action starts a billed agent session, and a double-click, a SwiftUI re-render
+   /// firing the button's action twice, or two windows racing on the same pane would otherwise each
+   /// start one. Returning nil on the second call is the button being spent, not an error.
+-  func consume(tab: TerminalTab.ID, backend: AgentBackend) -> AgentInvocation? {
++  /// `liveCwd` is the pane's CURRENT directory, when it has reported one. The offer was matched
++  /// against the directory the pane was restored into, and a shell hook (`direnv`, a `cd` in
++  /// `.zshrc`, a project activator) can move it before the user ever touches the keyboard — none of
++  /// which trips the pristine guard. Resuming there would open a picker listing a different
++  /// project's conversations, which is precisely the confident-wrong-answer this feature refuses to
++  /// give. A moved pane spends the offer and returns nothing.
++  func consume(tab: TerminalTab.ID, backend: AgentBackend, liveCwd: String? = nil)
++    -> AgentInvocation?
++  {
+     guard let backends = offers[tab], backends.contains(backend) else { return nil }
+     offers[tab] = nil
+     abandoned.insert(tab)
++    if let liveCwd, let matched = offerCwds[tab],
++      !AgentSessionIndex.pathsMatch(matched, liveCwd)
++    {
++      offerCwds[tab] = nil
++      Self.logger.notice("resume offer dropped — the pane's directory changed since discovery")
++      return nil
++    }
++    offerCwds[tab] = nil
+     return AgentInvocationBuilder.resume(backend)
+   }
+ 
+@@ -145,18 +174,23 @@ final class AgentResumeCoordinator: ObservableObject {
+   /// it trades a wrong command for lost work.
+   func paneReceivedInput(tab: TerminalTab.ID) {
+     offers[tab] = nil
+-    abandoned.insert(tab)
++    offerCwds[tab] = nil
++    // Only worth remembering while a scan could still publish for it; see `abandoned`.
++    if discovery != nil { abandoned.insert(tab) }
+   }
+ 
+   /// The pane went away: drop its offer and make sure an in-flight scan cannot resurrect it.
+   func tabClosed(_ tab: TerminalTab.ID) {
+     offers[tab] = nil
+-    abandoned.insert(tab)
++    offerCwds[tab] = nil
++    if discovery != nil { abandoned.insert(tab) }
+   }
+ 
+   /// Cancel any scan still running — the offers it would publish are for panes nobody is waiting on.
+   func cancelDiscovery() {
+     discovery?.cancel()
+     discovery = nil
++    // Nothing can publish now, so the suppression list has nothing left to suppress.
++    abandoned.removeAll()
+   }
+ }
+
+
+=== DIFF: macapp/WorkroomApp/Core/AgentSessionIndex.swift ===
+@@ -77,6 +77,14 @@ final class AgentSessionIndex {
+   /// Injected so tests drive the deadline without sleeping.
+   private let now: () -> Date
+ 
++  /// The Codex cwd set, computed once per launch and reused by every window.
++  ///
++  /// Walking the date tree is the expensive half of discovery and its answer does not vary by pane,
++  /// so a second restoring window must not repeat it. Lock-guarded because `backends` runs on a
++  /// utility queue and two windows can start within milliseconds of each other.
++  private let memoLock = NSLock()
++  private var codexCwdMemo: Set<String>?
++
+   init(
+     roots: Roots = .standard, limits: Limits = .standard, fileManager: FileManager = .default,
+     now: @escaping () -> Date = Date.init
+@@ -93,7 +101,13 @@ final class AgentSessionIndex {
+   /// the developer, not to the app. A UI test gets a seeded fake `$HOME` only when it asks for one,
+   /// and a unit test never gets a real store at all — otherwise `AgentSessionIndexTests` would pass
+   /// or fail depending on which directories the developer had used an agent in that day.
+-  static func forCurrentEnvironment() -> AgentSessionIndex? {
++  ///
++  /// **One instance for the process.** `TerminalSessions` is per-`AppStore`, and `AppStore` is
++  /// per-window, so a per-owner index would mean N restored windows each walking the Codex date
++  /// tree from scratch — the duplicate work this was specified to avoid, quietly not avoided
++  /// because the owner looked like a natural place to hang it. The instance is immutable and its
++  /// only mutable state is the per-launch memo below, guarded by a lock, so sharing is safe.
++  static let shared: AgentSessionIndex? = {
+     if let root = UITestFixture.agentSessionRoot {
+       return AgentSessionIndex(roots: Roots(home: URL(fileURLWithPath: root, isDirectory: true)))
+     }
+@@ -101,7 +115,7 @@ final class AgentSessionIndex {
+       ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil
+     else { return nil }
+     return AgentSessionIndex()
+-  }
++  }()
+ 
+   // MARK: Recency
+ 
+@@ -146,13 +160,21 @@ final class AgentSessionIndex {
+     return resolved(a) == resolved(b)
+   }
+ 
+-  private static func trimmed(_ path: String) -> String {
+-    var value = path.trimmingCharacters(in: .whitespacesAndNewlines)
++  /// Normalize only what is genuinely equivalent: a redundant trailing slash.
++  ///
++  /// Deliberately NOT `trimmingCharacters(in: .whitespacesAndNewlines)`. A space is a legal
++  /// character in a POSIX filename, so trimming would make history recorded for `/work/project `
++  /// match a pane at `/work/project` — two different directories, and the offer would open a picker
++  /// for history the pane does not have. Only a trailing newline is stripped, since that is a
++  /// transport artefact of reading the value out of a JSON line rather than part of the path.
++  static func trimmed(_ path: String) -> String {
++    var value = path
++    while value.hasSuffix("\n") || value.hasSuffix("\r") { value.removeLast() }
+     while value.count > 1, value.hasSuffix("/") { value.removeLast() }
+     return value
+   }
+ 
+-  private static func resolved(_ path: String) -> String {
++  static func resolved(_ path: String) -> String {
+     trimmed(URL(fileURLWithPath: path).resolvingSymlinksInPath().path)
+   }
+ 
+@@ -220,9 +242,17 @@ final class AgentSessionIndex {
+     // Codex cannot be addressed by path — its tree is keyed by date — so the day directories are
+     // scanned once and every pane is answered from the resulting set, rather than re-walking them
+     // per pane.
++    //
++    // The lookup is a Set membership test, NOT a linear scan with `pathsMatch`. That distinction is
++    // the difference between bounded and not: `pathsMatch` falls through to
++    // `resolvingSymlinksInPath()` on every non-equal pair, so scanning a 2,000-entry set for each of
++    // 40 restored panes would be 160,000 filesystem syscalls — on the launch path, *after* the
++    // budget had already said stop, because this loop never consulted it. Indexing both the textual
++    // and the resolved form up front pays the syscalls once per recorded cwd instead.
+     if !budget.isExhausted {
+       let codexCwds = codexRecordedCwds(savedAt: savedAt, budget: &budget)
+-      for cwd in cwds where codexCwds.contains(where: { Self.pathsMatch($0, cwd) }) {
++      for cwd in cwds
++      where codexCwds.contains(Self.trimmed(cwd)) || codexCwds.contains(Self.resolved(cwd)) {
+         result[cwd, default: []].insert(.codex)
+       }
+     }
+@@ -274,8 +304,17 @@ final class AgentSessionIndex {
+     contents(of: roots.claudeProjects).filter { directoryExists($0) }
+   }
+ 
+-  /// Every `cwd` recorded by a Codex rollout inside the recency window.
++  /// Every `cwd` recorded by a Codex rollout inside the recency window, indexed for O(1) lookup.
++  ///
++  /// Each recorded path is inserted BOTH textually and symlink-resolved, so the caller can answer
++  /// "does this pane match?" with two Set probes instead of a linear scan that resolves symlinks per
++  /// comparison. Resolution happens once per recorded cwd, not once per (pane, cwd) pair.
+   private func codexRecordedCwds(savedAt: Date, budget: inout Budget) -> Set<String> {
++    memoLock.lock()
++    let memo = codexCwdMemo
++    memoLock.unlock()
++    if let memo { return memo }
++
+     var found: Set<String> = []
+     for day in codexDayDirectories(savedAt: savedAt) where !budget.isExhausted {
+       for file in recentJSONLFiles(in: day, savedAt: savedAt, prefix: "rollout-")
+@@ -284,9 +323,17 @@ final class AgentSessionIndex {
+         guard let first = head(of: file, lines: 1).first,
+           let recorded = Self.codexCwd(inFirstLine: first)
+         else { continue }
+-        found.insert(recorded)
++        found.insert(Self.trimmed(recorded))
++        found.insert(Self.resolved(recorded))
+       }
+     }
++    // Only memoize a COMPLETE walk. Caching a budget-truncated set would make the first window's
++    // bad luck permanent for every window after it.
++    if !budget.isExhausted {
++      memoLock.lock()
++      codexCwdMemo = found
++      memoLock.unlock()
++    }
+     return found
+   }
+ 
+@@ -354,9 +401,17 @@ final class AgentSessionIndex {
+     guard let data = try? handle.read(upToCount: limits.maxBytesPerFile), !data.isEmpty else {
+       return []
+     }
+-    let text = String(decoding: data, as: UTF8.self)
+-    var split = text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+-    if data.count == limits.maxBytesPerFile, split.count > 1 { split.removeLast() }
++    // Whether the last line is complete is decided on the RAW BYTES, before decoding. Two bugs live
++    // here otherwise: a capped read that happens to end exactly on a newline had its last (complete)
++    // record thrown away, and a capped read with only one line kept a truncated one. Checking for a
++    // trailing LF answers both, and slicing at the last LF keeps a multi-byte scalar cut by the cap
++    // from decoding as a replacement character inside a line we actually parse.
++    let cappedAndUnterminated = data.count == limits.maxBytesPerFile && data.last != 0x0A
++    let usable =
++      cappedAndUnterminated ? data[..<(data.lastIndex(of: 0x0A).map { $0 + 1 } ?? 0)] : data[...]
++    guard !usable.isEmpty else { return [] }
++    let text = String(decoding: usable, as: UTF8.self)
++    let split = text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+     return Array(split.prefix(lines))
+   }
+ 
+
+
+=== DIFF: macapp/WorkroomApp/Core/GhosttyRuntimeAdapter.swift ===
+@@ -212,6 +212,10 @@ final class GhosttyRuntimeAdapter {
+     let view = Unmanaged<GhosttySurfaceView>.fromOpaque(userdata).takeUnretainedValue()
+     guard let surface = view.surface else { return false }
+     let text = NSPasteboard.general.string(forType: .string) ?? ""
++    // ⌘V never reaches `insertText` — libghostty owns the keybind and completes the read straight
++    // into the surface — so the pane has to be marked dirty here or issue #145's resume action would
++    // append a Return to whatever was just pasted and run it.
++    if !text.isEmpty { view.noteUserInput() }
+     text.withCString { ghostty_surface_complete_clipboard_request(surface, $0, state, false) }
+     return true
+   }
+
+
+=== DIFF: macapp/WorkroomApp/Core/GhosttySurfaceView.swift ===
+@@ -969,7 +969,18 @@ final class GhosttySurfaceView: NSView {
+ 
+   /// Type literal text into the surface WITHOUT a trailing newline ("Insert fix", issue #49): the
+   /// user reviews and presses Return themselves — we never auto-execute an AI-suggested command.
++  ///
++  /// **Marks the pane dirty** (issue #145). Inserted text sits unsubmitted on the input line, which
++  /// is exactly the state a resume offer must not append a Return to.
+   func sendText(_ string: String) {
++    guard !string.isEmpty else { return }
++    noteUserInput()
++    writeText(string)
++  }
++
++  /// Put text on the PTY with no side effects. The raw primitive behind `sendText` and
++  /// `sendCommandLine`, split out so those two can differ on whether the pane becomes dirty.
++  private func writeText(_ string: String) {
+     guard let surface, !string.isEmpty else { return }
+     string.withCString { ghostty_surface_text(surface, $0, UInt(string.utf8.count)) }
+   }
+@@ -995,9 +1006,11 @@ final class GhosttySurfaceView: NSView {
+   ///
+   /// `ghostty_surface_text` is the *text input* path (it also backs `NSTextInputClient.insertText`),
+   /// so a control byte there is not a keystroke. Return has to arrive as one.
++  /// Writes through `writeText`, NOT `sendText`: this is the one caller that must not mark the pane
++  /// dirty, because the offer it is spending has already been consumed.
+   func sendCommandLine(_ commandLine: String) {
+     guard surface != nil, !commandLine.isEmpty else { return }
+-    sendText(commandLine)
++    writeText(commandLine)
+     sendReturn()
+   }
+ 
+@@ -1043,15 +1056,27 @@ final class GhosttySurfaceView: NSView {
+     UITestFixture.isActive ? "terminal.surface" : super.accessibilityIdentifier()
+   }
+ 
+-  /// Fired the FIRST time this pane sees real user input, and never again.
++  /// Fired the FIRST time anything lands on this pane's input line, and never again.
++  ///
++  /// "Anything" is the operative word, and getting it wrong is a code-execution bug rather than a
++  /// cosmetic one: issue #145's resume action appends a synthetic Return, so ANY text sitting
++  /// unsubmitted on the prompt when that fires gets executed. Every path that can put text there
++  /// must call this.
++  ///
++  /// The one that was missed, and it is not an AppKit path at all: **⌘V does not go through
++  /// `insertText`.** libghostty owns the keybind and asks the runtime to read the clipboard, which
++  /// completes straight into the surface (`GhosttyRuntimeAdapter.readClipboard` →
++  /// `ghostty_surface_complete_clipboard_request`). Paste `rm -rf ~/x; ` without Return, click
++  /// Resume, and the Return runs it. `sendText` ("Insert fix", issue #49) had the same hole.
+   ///
+-  /// "Real" means a keystroke, an IME commit or a paste — the AppKit entry points. Text this app
+-  /// writes in itself (`sendText` / `sendCommandLine`) goes straight to libghostty and does not pass
+-  /// through them, which is what stops the Resume action from cancelling its own offer.
++  /// The only writer that deliberately does NOT mark the pane dirty is `sendCommandLine`, which
++  /// spends an offer that was already consumed.
+   var onFirstUserInput: (() -> Void)?
+   private var didReportUserInput = false
+ 
+-  private func noteUserInput() {
++  /// Safe to call from a libghostty callback: those arrive on the main thread, and this view is
++  /// main-thread-confined like any `NSView`.
++  func noteUserInput() {
+     guard !didReportUserInput else { return }
+     didReportUserInput = true
+     onFirstUserInput?()
+
+
+=== DIFF: macapp/WorkroomApp/Core/TerminalSessions.swift ===
+@@ -422,7 +422,9 @@ final class TerminalSessions: ObservableObject {
+   /// Resume-an-agent offers for restored panes (issue #145). Owned here beside `agentManager` so the
+   /// same tab-teardown chokepoints feed both, but a SEPARATE object: see the type comment for why an
+   /// offer cannot live in `agentManager.banners`.
+-  let resumeCoordinator = AgentResumeCoordinator(index: AgentSessionIndex.forCurrentEnvironment())
++  /// Shares the PROCESS-WIDE index: this type is per-`AppStore` and `AppStore` is per-window, so a
++  /// per-owner index would have every restored window walk the Codex date tree again.
++  let resumeCoordinator = AgentResumeCoordinator(index: AgentSessionIndex.shared)
+ 
+   init() {
+     // Under the UI-test agent fixture, drive a stub backend (no network) with the feature + auto on
+
+
+=== DIFF: macapp/WorkroomApp/Views/TerminalStatusBar.swift ===
+@@ -285,7 +285,10 @@ struct TerminalStatusBar: View {
+   /// double-click, or SwiftUI evaluating the action again, would otherwise each start a billed agent
+   /// session. A nil return is the button already being spent, not an error.
+   private func resume(_ backend: AgentBackend) {
+-    guard let invocation = resumeCoordinator.consume(tab: tabID, backend: backend) else { return }
++    // `cwd` is the pane's LIVE directory: the coordinator refuses the offer if a shell hook has
++    // moved the pane since discovery matched it.
++    guard let invocation = resumeCoordinator.consume(tab: tabID, backend: backend, liveCwd: cwd)
++    else { return }
+     state?.view.sendCommandLine(invocation.commandLine)
+   }
+ 
+
+
+=== DIFF: macapp/WorkroomAppTests/AgentResumeCoordinatorTests.swift ===
+@@ -192,6 +192,74 @@ final class AgentResumeCoordinatorTests: XCTestCase {
+     XCTAssertNil(coordinator.offers[restored.tabID])
+   }
+ 
++  /// **REGRESSION.** The suppression set is cleared once a scan lands.
++  ///
++  /// It only exists to stop `publish` re-offering a pane that closed mid-scan. `tabClosed` fires for
++  /// EVERY tab closed in the process, not just restored ones, so never pruning it meant it grew for
++  /// the life of the app — and the comment claiming otherwise was what hid that.
++  func testClosingUnrelatedTabsAfterAScanDoesNotAccumulateState() throws {
++    let cwd = "/tmp/project"
++    try seedClaude(cwd: cwd)
++    let coordinator = makeCoordinator()
++    let restored = pane(cwd)
++    coordinator.discover([restored], savedAt: savedAt)
++    XCTAssertNotNil(waitForOffer(coordinator, tab: restored.tabID))
++
++    // Panes that have nothing to do with this restore, closed later in the session.
++    for _ in 0..<50 { coordinator.tabClosed(UUID()) }
++
++    // A fresh restore in the same process still offers — nothing stale is suppressing it.
++    let second = pane(cwd)
++    coordinator.discover([second], savedAt: savedAt)
++    XCTAssertEqual(waitForOffer(coordinator, tab: second.tabID), [.claude])
++  }
++
++  /// **REGRESSION.** A pane whose directory moved since discovery does not resume.
++  ///
++  /// The offer was matched against the directory the pane was RESTORED into. A shell hook (`direnv`,
++  /// a `cd` in `.zshrc`, a project activator) can move it before the user touches the keyboard, so
++  /// nothing trips the pristine guard. Resuming there would open a picker listing another project's
++  /// conversations — the confident wrong answer this whole feature refuses to give.
++  func testAPaneThatChangedDirectorySinceDiscoveryDoesNotResume() throws {
++    let cwd = "/tmp/project"
++    try seedClaude(cwd: cwd)
++    let coordinator = makeCoordinator()
++    let restored = pane(cwd)
++    coordinator.discover([restored], savedAt: savedAt)
++    XCTAssertNotNil(waitForOffer(coordinator, tab: restored.tabID))
++
++    XCTAssertNil(
++      coordinator.consume(tab: restored.tabID, backend: .claude, liveCwd: "/tmp/somewhere-else"),
++      "a moved pane must not resume another directory's history")
++    XCTAssertNil(coordinator.offers[restored.tabID], "and the offer is spent either way")
++  }
++
++  func testAPaneStillInItsRestoredDirectoryResumes() throws {
++    let cwd = "/tmp/project"
++    try seedClaude(cwd: cwd)
++    let coordinator = makeCoordinator()
++    let restored = pane(cwd)
++    coordinator.discover([restored], savedAt: savedAt)
++    XCTAssertNotNil(waitForOffer(coordinator, tab: restored.tabID))
++
++    XCTAssertEqual(
++      coordinator.consume(tab: restored.tabID, backend: .claude, liveCwd: cwd)?.arguments,
++      ["--resume"])
++  }
++
++  /// A pane that has not reported a cwd yet still resumes — the guard refuses a MOVE, not an
++  /// unknown. Refusing on nil would make the button dead until shell integration reports in.
++  func testAPaneWithNoReportedCwdStillResumes() throws {
++    let cwd = "/tmp/project"
++    try seedClaude(cwd: cwd)
++    let coordinator = makeCoordinator()
++    let restored = pane(cwd)
++    coordinator.discover([restored], savedAt: savedAt)
++    XCTAssertNotNil(waitForOffer(coordinator, tab: restored.tabID))
++
++    XCTAssertNotNil(coordinator.consume(tab: restored.tabID, backend: .claude, liveCwd: nil))
++  }
++
+   // MARK: Independence from the diagnosis banner
+ 
+   /// **CRITICAL REGRESSION.** An offer and a diagnosis are separate state, in both orders.
+
+
+=== DIFF: macapp/WorkroomAppTests/AgentSessionIndexTests.swift ===
+@@ -214,6 +214,16 @@ final class AgentSessionIndexTests: XCTestCase {
+     XCTAssertTrue(AgentSessionIndex.pathsMatch("/tmp/project", "/tmp/project"))
+     XCTAssertFalse(AgentSessionIndex.pathsMatch("", "/tmp/project"))
+ 
++    // **REGRESSION.** A space is legal in a POSIX filename, so these are two different directories.
++    // Trimming whitespace as "normalization" made them match, which would offer a picker for
++    // history the pane does not have.
++    XCTAssertFalse(AgentSessionIndex.pathsMatch("/tmp/project ", "/tmp/project"))
++    XCTAssertTrue(
++      AgentSessionIndex.pathsMatch("/tmp/my project", "/tmp/my project"),
++      "a path with an interior space still matches itself")
++    // A trailing newline IS a transport artefact of reading the value out of a JSON line.
++    XCTAssertTrue(AgentSessionIndex.pathsMatch("/tmp/project\n", "/tmp/project"))
++
+     // Case-folding would merge two genuinely different directories on a case-sensitive volume.
+     XCTAssertFalse(AgentSessionIndex.pathsMatch("/tmp/Project", "/tmp/project"))
+ 
+@@ -260,6 +270,42 @@ final class AgentSessionIndexTests: XCTestCase {
+     XCTAssertNil(index.backends(forCwds: [cwd], savedAt: savedAt)[cwd])
+   }
+ 
++  /// **REGRESSION.** The Codex match was a linear scan calling `pathsMatch` per (pane, recorded)
++  /// pair, and `pathsMatch` falls through to `resolvingSymlinksInPath()` on every non-equal pair —
++  /// so 40 panes against a 2,000-entry set was ~160k filesystem syscalls, on the launch path, in a
++  /// loop that never consulted the budget. Matching is now a Set probe.
++  ///
++  /// Asserted by cost, not by wall clock: a pane with NO codex history is the worst case, because
++  /// it can never short-circuit. The whole call has to stay well inside the deadline.
++  func testCodexMatchingDoesNotScaleWithTheNumberOfRecordedSessions() throws {
++    for index in 0..<400 {
++      try seedCodex(day: savedAtDay, cwd: "/tmp/other-\(index)", file: "rollout-\(index).jsonl")
++    }
++    let panes = (0..<40).map { "/tmp/no-history-\($0)" }
++
++    let started = Date()
++    let found = makeIndex().backends(forCwds: panes, savedAt: savedAt)
++    let elapsed = Date().timeIntervalSince(started)
++
++    XCTAssertTrue(found.isEmpty, "none of these panes has any history")
++    XCTAssertLessThan(
++      elapsed, AgentSessionIndex.Limits.standard.deadline,
++      "matching must not do per-pair symlink resolution")
++  }
++
++  /// A pane whose directory is recorded through a symlink still matches — the set carries both the
++  /// textual and the resolved form, so O(1) lookup did not cost the symlink case.
++  func testCodexMatchesASessionRecordedThroughASymlink() throws {
++    let target = home.appendingPathComponent("real", isDirectory: true)
++    let link = home.appendingPathComponent("link", isDirectory: true)
++    try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
++    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
++    try seedCodex(day: savedAtDay, cwd: link.path)
++
++    XCTAssertEqual(
++      makeIndex().backends(forCwds: [target.path], savedAt: savedAt)[target.path], [.codex])
++  }
++
+   func testCancellationStopsTheScan() throws {
+     let cwd = "/tmp/project"
+     try seedClaude(directory: AgentSessionIndex.claudeSlugHint(for: cwd), cwd: cwd)
+@@ -297,8 +343,6 @@ final class AgentSessionIndexTests: XCTestCase {
+ 
+   /// The store belongs to the developer, not to the test suite.
+   func testDiscoveryIsDisabledUnderXCTestWithNoSeededRoot() {
+-    XCTAssertNil(
+-      AgentSessionIndex.forCurrentEnvironment(),
+-      "a unit test must never read the real ~/.claude")
++    XCTAssertNil(AgentSessionIndex.shared, "a unit test must never read the real ~/.claude")
+   }
+ }
+
+
+Investigate per the method in your instructions, then return the findings list.
