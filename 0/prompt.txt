@@ -1,0 +1,29 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/Scripts/release.sh
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/Scripts/release.sh ===
+@@ -75,10 +75,13 @@ notarize() {
+   fi
+ }
+ 
+-if [ ! -d "$PROJ" ]; then
+-  echo "Generating Xcode project…"
+-  ( cd "$MACAPP_DIR" && xcodegen generate )
+-fi
++# ALWAYS regenerate, like every `make app-*` target does — never gate on the directory existing.
++# `.xcodeproj/` is gitignored EXCEPT the tracked `project.xcworkspace/.../Package.resolved` (see
++# .gitignore), so a fresh CI checkout already has the bundle DIRECTORY without a `project.pbxproj`
++# in it. A `[ ! -d "$PROJ" ]` guard therefore skipped generation and xcodebuild died with
++# "missing its project.pbxproj file" — which is exactly how nightly 2.0.0-nightly.576 failed.
++echo "Generating Xcode project…"
++( cd "$MACAPP_DIR" && xcodegen generate )
+ 
+ # Version for this build. CI passes the exact tag via $VERSION; locally we fall back to the
+ # latest tag. CFBundleVersion is the commit count — monotonic, so Sparkle always treats a newer
+
+
+Investigate per the method in your instructions, then return the findings list.
