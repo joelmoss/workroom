@@ -1,0 +1,1 @@
+<bash-input>git checkout master</bash-input>
