@@ -1,0 +1,8 @@
+<task-notification>
+<task-id>bzgvg99oj</task-id>
+<summary>Monitor event: "full XCUITest suite progress and failures"</summary>
+<event>Test Suite 'RunSettingsPromptUITests' passed at 2026-08-04 13:54:44.178.
+Test Suite 'RunStatusUITests' started at 2026-08-04 13:54:44.180.
+Test Suite 'RunStatusUITests' passed at 2026-08-04 13:55:10.039.
+Test Suite 'SettingsSidebarUITests' started at 2026-08-04 13:55:10.041.</event>
+</task-notification>
