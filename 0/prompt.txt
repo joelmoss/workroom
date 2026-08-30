@@ -1,0 +1,554 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - .github/workflows/ci.yml
+  - .github/workflows/nightly.yml
+  - .github/workflows/release.yml
+  - Makefile
+  - macapp/Resources/ghostty/CHECKSUMS
+  - macapp/Scripts/build-helper.sh
+  - macapp/Scripts/build-helper_test.sh
+  - macapp/Scripts/release.sh
+  - macapp/WorkroomAppTests/GhosttyResourcesTests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: .github/workflows/ci.yml ===
+@@ -221,3 +221,9 @@ jobs:
+       # tests (mocked seam) can't see. python3 is preinstalled on the macOS runner.
+       - name: Test (run-command supervisor)
+         run: make app-test-supervisor
++
++      # Shell-script tests. `make app-test` builds Debug with a single native arch, so it can never
++      # exercise build-helper.sh's multi-arch path — the branch whose absence shipped an arm64-only
++      # CLI inside every universal .app. These run it directly with ARCHS="arm64 x86_64".
++      - name: Test (build + channel helper scripts)
++        run: make app-test-scripts
+
+
+=== DIFF: .github/workflows/nightly.yml ===
+@@ -168,6 +168,17 @@ jobs:
+           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+           security list-keychain -d user -s "$KEYCHAIN" login.keychain
+ 
++      # Gate the nightly on the suite that guards the ARTIFACT — the bundled-resource checksum
++      # tripwires and the universal-arch cases. Runs BEFORE the release step, or it is not a gate.
++      #
++      # `make app-release` cannot depend on this itself: app-test builds Debug, which pins automatic
++      # "Apple Development" signing (project.yml), and this runner imports only a Developer ID cert.
++      # Hence the same ad-hoc overrides ci.yml uses.
++      - name: Test (artifact gate)
++        run: >-
++          make app-test
++          APP_SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM="
++
+       - name: Build, sign, notarize, staple, package DMG
+         env:
+           NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
+
+
+=== DIFF: .github/workflows/release.yml ===
+@@ -99,6 +99,7 @@ jobs:
+           SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+         run: |
+           echo "$NOTARY_KEY" | openssl base64 -d -A > "$RUNNER_TEMP/notary.p8"
++          NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8" make app-test APP_SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM="
+           NOTARY_KEY_PATH="$RUNNER_TEMP/notary.p8" make app-release
+ 
+       - name: Upload installer to the release
+
+
+=== DIFF: Makefile ===
+@@ -10,7 +10,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+ .DEFAULT_GOAL := help
+ .PHONY: help \
+         cli-build cli-test cli-install cli-lint cli-clean \
+-        app-vcs app-run app-build app-test app-uitest app-test-supervisor app-generate app-format app-lint app-release app-icon app-clean
++        app-vcs app-run app-build app-test app-uitest app-test-supervisor app-test-scripts app-generate app-format app-lint app-release app-icon app-clean
+ 
+ help: ## List available targets
+ 	@grep -hE '^[a-z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
+@@ -87,6 +87,10 @@ app-uitest: app-vcs ## Run the app's UI tests (XCUITest — needs a real GUI log
+ app-test-supervisor: ## Run the run-command supervisor PTY integration test (real shell + fake server)
+ 	python3 macapp/Tests/run-supervisor/test_supervisor.py
+ 
++app-test-scripts: ## Run the dependency-free shell-script tests (build-helper archs, channel classify)
++	sh macapp/Scripts/build-helper_test.sh
++	sh macapp/Scripts/channel-helper_test.sh
++
+ app-generate: app-vcs ## Force-regenerate the (gitignored) .xcodeproj from project.yml
+ 	cd macapp && xcodegen generate
+ 
+@@ -97,7 +101,16 @@ app-lint: ## Lint Swift with swift-format (--strict)
+ 	cd macapp && xcrun swift-format lint --strict --parallel --recursive WorkroomApp WorkroomAppTests WorkroomAppUITests
+ 
+ app-release: VCS_APPLE_FLAGS := --universal
+-app-release: app-vcs ## Build, notarize, staple + package a DMG installer (macapp/Scripts/release.sh)
++# `app-test-scripts` gates the release because it is the cheap half that catches an ARTIFACT bug
++# (the universal-arch cases) and needs no toolchain, no keychain and no Xcode.
++#
++# `app-test` is deliberately NOT a prerequisite here. It builds Debug, and Debug pins
++# `CODE_SIGN_STYLE: Automatic` + `CODE_SIGN_IDENTITY: "Apple Development"` (project.yml). The
++# release and nightly runners import a Developer ID certificate ONLY, and pass no APP_SIGN_FLAGS —
++# so making it a prerequisite fails provisioning on a fresh runner before anything is archived.
++# The xcodebuild suite runs as an explicit gate step in release.yml / nightly.yml instead, with the
++# same ad-hoc overrides ci.yml uses.
++app-release: app-vcs app-test-scripts ## Build, notarize, staple + package a DMG installer (macapp/Scripts/release.sh)
+ 	cd macapp && Scripts/release.sh
+ 
+ app-icon: ## Regenerate release, dev + nightly AppIcon PNGs (macapp/Scripts/make-icon.swift)
+
+
+=== DIFF: macapp/Resources/ghostty/CHECKSUMS ===
+@@ -0,0 +1,9 @@
++24d8b80577fa0e630e89a6b0284205323df568559ea85b4168074714832996e4  shell-integration/bash/bash-preexec.sh
++57e1847a302875ef5e690680469702ed57ee2ba243b4ea844fdefc4ebb8db0dd  shell-integration/bash/ghostty.bash
++a8c10034e811c29470e2fbee5950f4d115134bc6968eea84b52e7bfdff469fca  shell-integration/elvish/lib/ghostty-integration.elv
++04d8196390a228f495077faac4f5bdedbb5f58eee60321b2a42372683637bdaa  shell-integration/fish/vendor_conf.d/ghostty-shell-integration.fish
++fc79d3235a577cc3bcffe82124393b37d67319d0e5f3477f9bf08edda16ebb6b  shell-integration/nushell/vendor/autoload/ghostty.nu
++a9885383cd13cd9f0297b1d13a7bade2526f7f91c0a097f255e9a39a508fcba4  shell-integration/zsh/.zshenv
++5c23e6e99a6d2d41e8256ec36968cf31245e081cdf48193a66fdddfa63fc8817  shell-integration/zsh/ghostty-integration
++707349400682f7e3d4e29792035847875fa55879672dfae39247b3d23eb58f91  terminfo/67/ghostty
++707349400682f7e3d4e29792035847875fa55879672dfae39247b3d23eb58f91  terminfo/78/xterm-ghostty
+
+
+=== DIFF: macapp/Scripts/build-helper.sh ===
+@@ -6,7 +6,7 @@
+ # app signature — an unsigned/post-sign-modified helper fails notarization/Gatekeeper.
+ #
+ # Env vars provided by Xcode: SRCROOT, TARGET_BUILD_DIR, UNLOCALIZED_RESOURCES_FOLDER_PATH,
+-# EXPANDED_CODE_SIGN_IDENTITY, ARCHS, MACOSX_DEPLOYMENT_TARGET, MARKETING_VERSION.
++# EXPANDED_CODE_SIGN_IDENTITY, ARCHS, DERIVED_FILE_DIR, MACOSX_DEPLOYMENT_TARGET, MARKETING_VERSION.
+ set -euo pipefail
+ 
+ # The Go module lives one level up from macapp/ (this repo's root).
+@@ -25,14 +25,31 @@ if ! command -v go >/dev/null 2>&1; then
+   exit 1
+ fi
+ 
+-# Match the app's architecture(s). For an arm64-only MVP this is arm64; for a
+-# universal app, build each arch and lipo. Default to the host arch when ARCHS unset.
+-ARCH="${ARCHS:-$(uname -m)}"
+-case "$ARCH" in
+-  arm64) GOARCH=arm64 ;;
+-  x86_64) GOARCH=amd64 ;;
+-  *) echo "warn: unexpected ARCHS='$ARCH', defaulting to arm64" >&2; GOARCH=arm64 ;;
+-esac
++# Match the app's architecture(s). `ARCHS` is a SPACE-SEPARATED LIST — a universal Release build
++# passes "arm64 x86_64" — so this must iterate, not match a single token.
++#
++# It used to `case "$ARCHS"` against `arm64` / `x86_64` and fall through to a `warn:` default of
++# arm64 for anything else. That default is exactly what a universal build hit, so the shipped
++# Release app was fat while the CLI inside it was arm64-only, with the warning buried in xcodebuild
++# output. The app drives *every* workroom operation through this binary, so on an Intel Mac it
++# launched and then failed at everything. Unknown archs are now a hard error for the same reason.
++ARCH_LIST="${ARCHS:-$(uname -m)}"
++GOARCHES=()
++for arch in $ARCH_LIST; do
++  case "$arch" in
++    arm64) GOARCHES+=(arm64) ;;
++    x86_64) GOARCHES+=(amd64) ;;
++    *) echo "error: unsupported arch '$arch' in ARCHS='$ARCH_LIST'." >&2; exit 1 ;;
++  esac
++done
++# `${ARCHS:-...}` only substitutes when unset or empty, so a whitespace-only ARCHS survives the
++# default and yields no iterations. On bash 3.2 (what /bin/bash still is on macOS) an empty array
++# under `set -u` is "unbound", so without this the script would die on `${GOARCHES[*]}` below with
++# an unreadable error instead of the deliberate one.
++if [ "${#GOARCHES[@]}" -eq 0 ]; then
++  echo "error: ARCHS='$ARCH_LIST' yielded no architectures to build." >&2
++  exit 1
++fi
+ 
+ mkdir -p "$HELPER_DIR"
+ # Stamp the embedded CLI with the app's version so `workroom version` (and channel/update logic)
+@@ -43,10 +60,44 @@ VERSION="${MARKETING_VERSION:-dev}"
+ # Bake the app's channel identity into the bundled CLI (issue #91): "nightly" for the Workroom
+ # Nightly build, empty otherwise. Matches the standalone `workroom-nightly` binary's -X main.channel.
+ CHANNEL="${WORKROOM_RELEASE_CHANNEL:-}"
+-echo "Building workroom helper ($GOARCH, version=$VERSION, channel=${CHANNEL:-<main>}) -> $HELPER"
+-( cd "$GO_MODULE_DIR" && \
+-  CGO_ENABLED=0 GOOS=darwin GOARCH="$GOARCH" \
+-  go build -trimpath -ldflags "-s -w -X main.version=${VERSION} -X main.channel=${CHANNEL}" -o "$HELPER" . )
++echo "Building workroom helper (${GOARCHES[*]}, version=$VERSION, channel=${CHANNEL:-<main>}) -> $HELPER"
++LDFLAGS="-s -w -X main.version=${VERSION} -X main.channel=${CHANNEL}"
++if [ "${#GOARCHES[@]}" -eq 1 ]; then
++  ( cd "$GO_MODULE_DIR" && \
++    CGO_ENABLED=0 GOOS=darwin GOARCH="${GOARCHES[0]}" \
++    go build -trimpath -ldflags "$LDFLAGS" -o "$HELPER" . )
++else
++  # Build each slice to its own file, then lipo. CGO is off, so cross-compiling is just a GOARCH
++  # change — no toolchain per arch.
++  #
++  # Slices go to Xcode's intermediates dir (or beside the helper as a fallback), NOT `mktemp -d`:
++  # a build script should keep its intermediates in the build tree, and the system temp dir isn't
++  # writable under every environment this runs in.
++  #
++  # The fallback can put them inside the bundle's Resources, so cleanup must be unconditional. If
++  # the first `go build` succeeds and the second dies (or the phase is interrupted), a cleanup that
++  # only ran after a successful `lipo` would leave an unsigned per-arch Mach-O in Resources — and a
++  # later single-arch build never touches it, so the final app signature seals it in. Hence a trap,
++  # plus a sweep of stale slices from a previous interrupted run before we start.
++  SLICE_DIR="${DERIVED_FILE_DIR:-$HELPER_DIR}"
++  mkdir -p "$SLICE_DIR"
++  rm -f "$SLICE_DIR"/workroom-slice-*
++  trap 'rm -f "$SLICE_DIR"/workroom-slice-*' EXIT
++  SLICES=()
++  for goarch in "${GOARCHES[@]}"; do
++    ( cd "$GO_MODULE_DIR" && \
++      CGO_ENABLED=0 GOOS=darwin GOARCH="$goarch" \
++      go build -trimpath -ldflags "$LDFLAGS" -o "$SLICE_DIR/workroom-slice-$goarch" . )
++    SLICES+=("$SLICE_DIR/workroom-slice-$goarch")
++  done
++  lipo -create "${SLICES[@]}" -output "$HELPER"
++  rm -f "${SLICES[@]}"
++  trap - EXIT
++fi
++
++# A single-arch build must also clear slices a previous multi-arch run may have stranded here —
++# switching Release -> Debug is exactly the sequence that would otherwise leave one behind.
++rm -f "$HELPER_DIR"/workroom-slice-*
+ 
+ # Sign the helper. Use the app's identity + hardened runtime + timestamp when a real
+ # Developer ID is present; otherwise ad-hoc sign for local dev.
+
+
+=== DIFF: macapp/Scripts/build-helper_test.sh ===
+@@ -0,0 +1,120 @@
++#!/bin/sh
++#
++# Dependency-free test for build-helper.sh's architecture handling. No bats/toolchain — just sh,
++# go, and lipo. Run: sh macapp/Scripts/build-helper_test.sh   (exits non-zero on any mismatch).
++#
++# Why this exists: `ARCHS` is a SPACE-SEPARATED LIST, and build-helper.sh used to match it as a
++# single token. A universal build hit the fallback and produced an arm64-only Go CLI inside a fat
++# .app, with nothing louder than a `warn:` in the xcodebuild log. That shipped in every release from
++# the app's first commit until it was caught by hand — on an Intel Mac the app launched and then
++# failed at every workroom operation, since the app drives all of them through this binary.
++#
++# CI never catches it: `make app-test` builds Debug with a single native arch, so the multi-arch
++# branch is only exercised by a real Release/Nightly build. Hence a standalone test.
++set -u
++
++DIR="$(cd "$(dirname "$0")" && pwd)"
++# Overridable so the suite can be pointed at a modified copy — used to confirm these cases actually
++# FAIL against the pre-fix single-token ARCHS logic rather than passing vacuously.
++HELPER="${BUILD_HELPER:-${DIR}/build-helper.sh}"
++fails=0
++
++command -v go >/dev/null 2>&1 || { echo "build-helper_test: SKIP (go not on PATH)"; exit 0; }
++command -v lipo >/dev/null 2>&1 || { echo "build-helper_test: SKIP (lipo not on PATH)"; exit 0; }
++
++WORK="$(mktemp -d)"
++trap 'rm -rf "$WORK"' EXIT
++
++# A throwaway Go module standing in for the repo root, so the test never depends on the real CLI
++# building (or on its build time). build-helper.sh cds to $SRCROOT/.. to find the module.
++mkdir -p "$WORK/module/macapp"
++cat > "$WORK/module/go.mod" <<'EOF'
++module buildhelpertest
++
++go 1.21
++EOF
++cat > "$WORK/module/main.go" <<'EOF'
++package main
++
++var version = "dev"
++var channel = ""
++
++func main() {}
++EOF
++
++# run_helper <case-name> <ARCHS value> -> sets $OUT to the built helper path, $RC to the exit code
++run_helper() {
++  case_name="$1"
++  archs="$2"
++  dest="$WORK/out-$case_name"
++  mkdir -p "$dest/Resources"
++  OUT="$dest/Resources/workroom"
++  SRCROOT="$WORK/module/macapp" \
++  TARGET_BUILD_DIR="$dest" \
++  UNLOCALIZED_RESOURCES_FOLDER_PATH="Resources" \
++  ARCHS="$archs" \
++  MARKETING_VERSION="0.0.0-test" \
++    sh "$HELPER" >"$dest/log" 2>&1
++  RC=$?
++}
++
++# expect_archs <case-name> <ARCHS value> <space-separated wanted archs>
++expect_archs() {
++  run_helper "$1" "$2"
++  if [ "$RC" -ne 0 ]; then
++    echo "FAIL: ARCHS='$2' exited $RC, want 0. Log:"
++    sed 's/^/    /' "$WORK/out-$1/log"
++    fails=$((fails + 1))
++    return
++  fi
++  got="$(lipo -archs "$OUT" 2>/dev/null)"
++  for want in $3; do
++    case " $got " in
++      *" $want "*) ;;
++      *)
++        echo "FAIL: ARCHS='$2' produced '$got', missing '$want'"
++        fails=$((fails + 1))
++        ;;
++    esac
++  done
++  # No slice files may be left inside the bundle's Resources folder — they would be unsigned
++  # binaries sealed into the shipped app.
++  if ls "$(dirname "$OUT")"/workroom-slice-* >/dev/null 2>&1; then
++    echo "FAIL: ARCHS='$2' left workroom-slice-* inside Resources"
++    fails=$((fails + 1))
++  fi
++}
++
++# expect_failure <case-name> <ARCHS value> <substring the error must contain>
++expect_failure() {
++  run_helper "$1" "$2"
++  if [ "$RC" -eq 0 ]; then
++    echo "FAIL: ARCHS='$2' succeeded, want non-zero exit"
++    fails=$((fails + 1))
++    return
++  fi
++  if ! grep -q "$3" "$WORK/out-$1/log"; then
++    echo "FAIL: ARCHS='$2' error did not mention '$3'. Log:"
++    sed 's/^/    /' "$WORK/out-$1/log"
++    fails=$((fails + 1))
++  fi
++}
++
++# The regression this file exists for: a universal build must produce BOTH slices.
++expect_archs universal "arm64 x86_64" "arm64 x86_64"
++# Order must not matter — Xcode does not promise one.
++expect_archs reversed "x86_64 arm64" "arm64 x86_64"
++# Single arch still works (the Debug path), and stays thin.
++expect_archs solo_arm "arm64" "arm64"
++expect_archs solo_intel "x86_64" "x86_64"
++# An arch we cannot map is a hard error, not a silent arm64 fallback — that fallback IS the bug.
++expect_failure unknown_arch "arm64 ppc64" "unsupported arch"
++# Whitespace-only ARCHS survives `${ARCHS:-...}` and yields no iterations; on bash 3.2 an empty
++# array under `set -u` is "unbound", so this must fail with the deliberate message.
++expect_failure blank_arch "   " "yielded no architectures"
++
++if [ "$fails" -ne 0 ]; then
++  echo "build-helper_test: $fails failure(s)" >&2
++  exit 1
++fi
++echo "build-helper_test: all cases passed"
+
+
+=== DIFF: macapp/Scripts/release.sh ===
+@@ -145,6 +145,45 @@ echo "==> Exporting (Developer ID; re-signs nested code with a secure timestamp)
+ xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportPath "$EXPORT_DIR" \
+   -exportOptionsPlist "$EXPORT_PLIST"
+ 
++# A release must be universal all the way down. This is asserted, not assumed, because it silently
++# regressed once: `ARCHS` is a space-separated list ("arm64 x86_64") and build-helper.sh used to
++# match it as a single token, falling back to an arm64-only Go build with nothing but a `warn:` in
++# the xcodebuild log. The result shipped as a fat app wrapping a thin CLI — and since the app drives
++# every workroom operation through that CLI, it launched fine on an Intel Mac and then failed at
++# everything. Nothing downstream catches this: codesign, notarization and Gatekeeper are all happy
++# with a thin nested binary.
++echo "==> Verifying architectures (app + embedded CLI)"
++check_universal() {
++  local label="$1" path="$2" archs
++  # Distinguish the three ways this can go wrong. Collapsing them into one "missing the arm64 slice"
++  # message sends whoever hits it at 2am hunting an architecture problem that isn't one.
++  command -v lipo >/dev/null 2>&1 || { echo "error: 'lipo' not on PATH — cannot verify $label." >&2; exit 1; }
++  [ -f "$path" ] || { echo "error: $label not found at $path." >&2; exit 1; }
++  archs="$(lipo -archs "$path" 2>/dev/null || true)"
++  [ -n "$archs" ] || { echo "error: $label is not a Mach-O binary (lipo read no architectures) — $path" >&2; exit 1; }
++  for want in arm64 x86_64; do
++    case " $archs " in
++      *" $want "*) ;;
++      *) echo "error: $label is missing the $want slice (has: ${archs:-none}) — $path" >&2; exit 1 ;;
++    esac
++  done
++  echo "    $label: $archs"
++}
++check_universal "app binary" "$APP/Contents/MacOS/${APP_NAME}"
++check_universal "embedded workroom CLI" "$APP/Contents/Resources/workroom"
++
++# Naming only those two would leave the invariant narrower than the sentence above claims: Sparkle
++# ships XPC services, an Autoupdate tool and an Updater app, and notarization is just as happy with
++# a thin one of those. So sweep EVERY Mach-O in the bundle. `file` decides what is executable code,
++# rather than a path allowlist that a future dependency silently escapes.
++echo "    sweeping all nested Mach-O binaries…"
++while IFS= read -r macho; do
++  case "$macho" in
++    "$APP/Contents/MacOS/${APP_NAME}" | "$APP/Contents/Resources/workroom") continue ;;
++  esac
++  check_universal "nested: ${macho#"$APP/"}" "$macho"
++done < <(find "$APP" -type f -perm -u+x -exec sh -c 'file -b "$1" | grep -q "Mach-O" && echo "$1"' _ {} \;)
++
+ echo "==> Verifying signatures"
+ codesign --verify --strict --verbose=2 "$APP"
+ echo "--- embedded helper ---"
+
+
+=== DIFF: macapp/WorkroomAppTests/GhosttyResourcesTests.swift ===
+@@ -0,0 +1,161 @@
++import CryptoKit
++import XCTest
++
++@testable import Workroom
++
++/// The bundled libghostty runtime resources (`Resources/ghostty/terminfo` + `shell-integration`) are
++/// a **coupled contract** with the engine's own Zig-side injection, and nothing at runtime validates
++/// it: `GhosttyApp.resolveResources` only checks that the directory exists. When the pair drifts,
++/// OSC 7 and OSC 133 degrade *silently* — no error, no log — taking ⌘-click path resolution, tab
++/// titles and the busy indicator with them.
++///
++/// So `ghostty/CHECKSUMS` pins the bytes and this suite is the tripwire. It is the same shape as
++/// `ThemeServiceTests.testBundledThemeChecksumsMatch`, for the same reason: a structural test cannot
++/// see byte drift, because a drifted script still parses and still ships.
++///
++/// `themes/` is deliberately NOT covered here — it is ours, not upstream's, and carries its own
++/// `themes/CHECKSUMS` with its own test.
++final class GhosttyResourcesTests: XCTestCase {
++  /// Read from `Bundle.main.resourceURL` rather than the source tree so this asserts on what
++  /// actually ships — a resource dropped from the folder reference fails here, not silently at
++  /// launch on a user's machine.
++  private func resourceDir() throws -> String {
++    try XCTUnwrap(
++      Bundle.main.resourceURL?.appendingPathComponent("ghostty").path,
++      "the app bundle must carry its ghostty resources — the terminal can't start without them")
++  }
++
++  /// Every shipped file under `terminfo/` and `shell-integration/`, as paths relative to the
++  /// `ghostty/` directory. `.DS_Store` is excluded because Finder can mint one in a folder
++  /// reference at any time and it is not a resource.
++  ///
++  /// **Symlinks are a hard failure, not a skip.** `FileManager.enumerator(atPath:)` does not descend
++  /// into a symlinked directory, and `fileExists` resolves the link — so classifying one as "a
++  /// directory, skip it" would hide every file underneath from BOTH directions of the membership
++  /// assertion, and the manifest would silently stop pinning what it claims to pin. That is not
++  /// hypothetical here: upstream ships `terminfo/67/ghostty` as a symlink, so a regeneration done by
++  /// copying a Ghostty.app tree reintroduces one. Dereference on copy (`cp -RL`); don't relax this.
++  private func trackedRelativePaths() throws -> Set<String> {
++    let root = try resourceDir()
++    var found: Set<String> = []
++    for subtree in ["terminfo", "shell-integration"] {
++      let base = root + "/" + subtree
++      let walker = FileManager.default.enumerator(atPath: base)
++      while let entry = walker?.nextObject() as? String {
++        let full = base + "/" + entry
++        guard (entry as NSString).lastPathComponent != ".DS_Store" else { continue }
++
++        // lstat, so a link is seen as a link rather than as whatever it points at.
++        let type =
++          try FileManager.default.attributesOfItem(atPath: full)[.type] as? FileAttributeType
++        if type == .typeSymbolicLink {
++          XCTFail(
++            "\(subtree)/\(entry) is a symlink — checksums can't pin it and a symlinked directory "
++              + "would hide its contents from the manifest. Re-vendor with `cp -RL`.")
++          continue
++        }
++        guard type == .typeRegular else { continue }
++        found.insert(subtree + "/" + entry)
++      }
++    }
++    return found
++  }
++
++  /// The shipped bytes are the vetted bytes, for both the terminfo entries and every shell script.
++  ///
++  /// Membership is asserted in *both* directions on purpose. A checksum-only test passes when a file
++  /// is deleted from the bundle, and a listing-only test passes when a file's contents change —
++  /// which is precisely the drift this exists to catch.
++  func testBundledResourceChecksumsMatch() throws {
++    let dir = try resourceDir()
++    let manifest = try XCTUnwrap(
++      try? String(contentsOfFile: dir + "/CHECKSUMS", encoding: .utf8),
++      "ghostty/CHECKSUMS must ship — it is what makes the vendored ref verifiable")
++
++    // Every non-blank line must parse, and every path must appear once. Skipping malformed lines
++    // and last-write-wins on duplicates would both let a bad manifest pass: a merge artifact
++    // carrying an obsolete AND a current checksum for one path would satisfy this test while
++    // `shasum -c` rejected the file.
++    var expected: [String: String] = [:]
++    for line in manifest.split(separator: "\n", omittingEmptySubsequences: false) {
++      let raw = String(line)
++      guard !raw.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
++      // `shasum -a 256` format: "<64 hex>  <path>" (two spaces; a path may itself contain spaces).
++      let parts = raw.components(separatedBy: "  ")
++      guard parts.count >= 2, parts[0].count == 64,
++        parts[0].allSatisfy({ $0.isHexDigit })
++      else {
++        XCTFail("CHECKSUMS has a malformed line: \(raw)")
++        continue
++      }
++      let path = parts.dropFirst().joined(separator: "  ")
++      if expected[path] != nil {
++        XCTFail("CHECKSUMS lists \(path) more than once — likely a merge artifact")
++      }
++      expected[path] = parts[0].lowercased()
++    }
++    XCTAssertFalse(expected.isEmpty, "CHECKSUMS parsed to nothing — wrong format?")
++
++    XCTAssertEqual(
++      Set(expected.keys), try trackedRelativePaths(),
++      "CHECKSUMS and the shipped terminfo / shell-integration files disagree on membership")
++
++    for (path, want) in expected {
++      guard let data = FileManager.default.contents(atPath: dir + "/" + path) else {
++        XCTFail("\(path): listed in CHECKSUMS but unreadable")
++        continue
++      }
++      XCTAssertEqual(
++        Self.sha256Hex(data), want,
++        "\(path): contents differ from the vendored ghostty ref recorded in ghostty/SOURCE.md")
++    }
++  }
++
++  /// Nothing unexpected rides along inside the folder reference.
++  ///
++  /// `Resources/ghostty` is a **folder reference** in `project.yml`, so the whole directory is copied
++  /// into the bundle verbatim and code-signing seals whatever is in it. Xcode's copy skips
++  /// `.DS_Store`/`.git`/`.svn`/`.hg` and nothing else. That is a real hole rather than a theoretical
++  /// one: agent-harness `.claude/.cc-writes` directories were found shipping inside the built app,
++  /// and because they match a *global* gitignore they never appeared in `git status` — so neither
++  /// the manifest (scoped to two subtrees) nor code review could see them.
++  func testNoUnexpectedTopLevelResources() throws {
++    let dir = try resourceDir()
++    let allowed: Set<String> = [
++      "terminfo", "shell-integration", "themes", "SOURCE.md", "CHECKSUMS",
++    ]
++    let present = Set(
++      try FileManager.default.contentsOfDirectory(atPath: dir).filter { $0 != ".DS_Store" })
++    XCTAssertEqual(
++      present.subtracting(allowed), [],
++      "unexpected entries in the ghostty folder reference — they ship inside the signed bundle")
++  }
++
++  /// `themes/` must stay out of this manifest. It is ours, it changes on its own schedule, and it
++  /// already has `themes/CHECKSUMS`. Folding it in here would make a theme refresh look like engine
++  /// drift and vice versa — the two signals have to stay separable.
++  func testChecksumsExcludesThemes() throws {
++    let manifest = try XCTUnwrap(
++      try? String(contentsOfFile: try resourceDir() + "/CHECKSUMS", encoding: .utf8))
++    XCTAssertFalse(
++      manifest.contains("themes/"),
++      "themes/ is tracked by themes/CHECKSUMS — keep the two manifests disjoint")
++  }
++
++  /// Both terminfo entries are the same compiled record under two names. Upstream ships the
++  /// `ghostty` alias as a symlink; we ship a byte copy (see `ghostty/SOURCE.md`), so the two files
++  /// can drift apart in our tree in a way they cannot in upstream's. Asserted so a regeneration that
++  /// updates one and forgets the other is a test failure rather than a `TERM=ghostty` session
++  /// quietly running on a stale entry.
++  func testTerminfoAliasMatchesPrimaryEntry() throws {
++    let dir = try resourceDir()
++    let primary = FileManager.default.contents(atPath: dir + "/terminfo/78/xterm-ghostty")
++    let alias = FileManager.default.contents(atPath: dir + "/terminfo/67/ghostty")
++    XCTAssertNotNil(primary, "terminfo/78/xterm-ghostty must ship — line editing breaks without it")
++    XCTAssertEqual(primary, alias, "the `ghostty` alias entry has drifted from `xterm-ghostty`")
++  }
++
++  private static func sha256Hex(_ data: Data) -> String {
++    SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
++  }
++}
+
+
+Investigate per the method in your instructions, then return the findings list.
