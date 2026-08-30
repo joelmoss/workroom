@@ -1,0 +1,96 @@
+# App Hanging: App hanging for at least 2000 ms.
+
+**Issue ID:** 7664498955
+**Short ID:** WORKROOM-2S
+**Project:** workroom
+**Date:** Aug 10, 2026 9:15:02 PM UTC
+
+## Tags
+
+- **app.device:** 5bbea68d7a5231f7046c4a1b594554fb8d16bfb1
+- **device:** MacBookPro18,1
+- **device.family:** macOS
+- **dist:** 596
+- **environment:** nightly
+- **interface_type:** exception
+- **level:** error
+- **mechanism:** AppHang
+- **os:** macOS 26.5.2
+- **os.build:** 25F84
+- **os.name:** macOS
+- **os.rooted:** no
+- **release:** com.developwithstyle.workroom.nightly@2.0.0-nightly.596+596
+- **user:** id:C659B14C-8DF1-4A5B-B84D-311E1CFD58F8
+
+## Exception
+
+### Exception 1
+**Type:** App Hanging
+**Value:** App hanging for at least 2000 ms.
+
+#### Stacktrace
+
+```
+ _ArrayBuffer.count.getter in unknown file [Line null] (Not in app)
+ _ArrayBuffer.count.getter in unknown file [Line null] (Not in app)
+ infix in unknown file [Line null] (Not in app)
+ AGDispatchEquatable in unknown file [Line null] (Not in app)
+ AG::LayoutDescriptor::Compare::operator() in unknown file [Line null] (Not in app)
+ AG::LayoutDescriptor::compare in unknown file [Line null] (Not in app)
+ AGGraphSetOutputValue in unknown file [Line null] (Not in app)
+ closure in Attribute.init<T> in unknown file [Line null] (Not in app)
+ AG::Graph::UpdateStack::update in unknown file [Line null] (Not in app)
+ AG::Subgraph::update in unknown file [Line null] (Not in app)
+ GraphHost.runTransaction in unknown file [Line null] (Not in app)
+ ViewGraph.updateOutputs in unknown file [Line null] (Not in app)
+ closure in ViewGraphRootValueUpdater.render in unknown file [Line null] (Not in app)
+ ViewGraphRootValueUpdater.render in unknown file [Line null] (Not in app)
+ block_destroy_helper in unknown file [Line null] (Not in app)
+ block_destroy_helper in unknown file [Line null] (Not in app)
+```
+
+## Thread:  Thread 0 (current)
+
+#### Stacktrace
+
+```
+ _ArrayBuffer.count.getter in unknown file [Line null] (Not in app)
+ _ArrayBuffer.count.getter in unknown file [Line null] (Not in app)
+ infix in unknown file [Line null] (Not in app)
+ AGDispatchEquatable in unknown file [Line null] (Not in app)
+ AG::LayoutDescriptor::Compare::operator() in unknown file [Line null] (Not in app)
+ AG::LayoutDescriptor::compare in unknown file [Line null] (Not in app)
+ AGGraphSetOutputValue in unknown file [Line null] (Not in app)
+ closure in Attribute.init<T> in unknown file [Line null] (Not in app)
+ AG::Graph::UpdateStack::update in unknown file [Line null] (Not in app)
+ AG::Subgraph::update in unknown file [Line null] (Not in app)
+ GraphHost.runTransaction in unknown file [Line null] (Not in app)
+ ViewGraph.updateOutputs in unknown file [Line null] (Not in app)
+ closure in ViewGraphRootValueUpdater.render in unknown file [Line null] (Not in app)
+ ViewGraphRootValueUpdater.render in unknown file [Line null] (Not in app)
+ block_destroy_helper in unknown file [Line null] (Not in app)
+ block_destroy_helper in unknown file [Line null] (Not in app)
+```
+
+## Breadcrumbs
+
+- **http** `http` [info]
+  {"http.query":"s=48&d=404","method":"GET","reason":"no error","request_start":"2026-08-10T17:17:12.373Z","response_body_size":2602,"status_code":200,"url":"https://www.gravatar.com/avatar/4fe35d76373429a6bdd9326b5ebbd515"}
+- **http** `http` [info]
+  {"http.query":"s=48&d=404","method":"GET","reason":"no error","request_start":"2026-08-10T17:17:17.261Z","response_body_size":2602,"status_code":200,"url":"https://www.gravatar.com/avatar/4fe35d76373429a6bdd9326b5ebbd515"}
+- **http** `http` [info]
+  {"http.query":"s=48&d=404","method":"GET","reason":"no error","request_start":"2026-08-10T17:17:22.505Z","response_body_size":2602,"status_code":200,"url":"https://www.gravatar.com/avatar/4fe35d76373429a6bdd9326b5ebbd515"}
+- **http** `http` [info]
+  {"http.query":"s=48&d=404","method":"GET","reason":"no error","request_start":"2026-08-10T17:18:54.338Z","response_body_size":2602,"status_code":200,"url":"https://www.gravatar.com/avatar/4fe35d76373429a6bdd9326b5ebbd515"}
+- **http** `http` [info]
+  {"http.query":"s=48&d=404","method":"GET","reason":"no error","request_start":"2026-08-10T17:18:58.081Z","response_body_size":2602,"status_code":200,"url":"https://www.gravatar.com/avatar/4fe35d76373429a6bdd9326b5ebbd515"}
+- **http** `http` [info]
+  {"http.query":"s=48&d=404","method":"GET","reason":"no error","request_start":"2026-08-10T17:19:04.784Z","response_body_size":2602,"status_code":200,"url":"https://www.gravatar.com/avatar/4fe35d76373429a6bdd9326b5ebbd515"}
+- **navigation** `app.lifecycle` [info]
+  {"state":"inactive"}
+- **navigation** `app.lifecycle` [info]
+  {"state":"active"}
+- **navigation** `app.lifecycle` [info]
+  {"state":"inactive"}
+- **navigation** `app.lifecycle` [info]
+  {"state":"active"}
