@@ -1,0 +1,1258 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/AppStore.swift
+  - macapp/WorkroomApp/Core/QuickSwitcherController.swift
+  - macapp/WorkroomApp/Core/Snapshots/SnapshotRegistry.swift
+  - macapp/WorkroomApp/Core/Snapshots/SnapshotService.swift
+  - macapp/WorkroomApp/Core/Snapshots/SnapshotSupport.swift
+  - macapp/WorkroomApp/Core/SwitcherPanel.swift
+  - macapp/WorkroomApp/Views/PaneTreeView.swift
+  - macapp/WorkroomApp/Views/SwitcherRailView.swift
+  - macapp/WorkroomApp/Views/WorkroomSplitView.swift
+  - macapp/WorkroomAppTests/SnapshotCacheTests.swift
+  - macapp/WorkroomAppTests/SnapshotGeometryTests.swift
+  - macapp/WorkroomAppTests/SnapshotServiceTests.swift
+  - macapp/project.yml
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/AppStore.swift ===
+@@ -858,6 +858,7 @@ final class AppStore: ObservableObject {
+     terminals.onTabsRemoved = { [weak self] targetID, ids in
+       guard let self else { return }
+       SwitcherRecency.shared.forgetPanes(ids)  // drop closed panes from the ⌃Tab order (issue #132)
++      SnapshotService.shared.forgetPanes(ids)  // and their cached rail thumbnails
+       self.history.prune(removing: Set(ids))
+       if self.terminals.tabCount(forTargetID: targetID) < 2 {
+         self.expandedTerminalTargets.remove(targetID)
+
+
+=== DIFF: macapp/WorkroomApp/Core/QuickSwitcherController.swift ===
+@@ -105,6 +105,10 @@ final class QuickSwitcherController {
+     }
+ 
+     let frozen = Self.collect(kind, in: store, registry: registry, recency: recency)
++    // Capture BEFORE the panel is ordered in, so the rail can't photograph itself. Fired unbounded on
++    // open (the per-window debounce is a background-refresh rule, not this one) and asynchronous, so a
++    // first-ever hold still shows glyph wells and fills in next time.
++    captureOnOpen(kind, in: store, registry: registry)
+     let effect = reducer.handle(.open(kind: kind, count: frozen.count, reverse: reverse))
+     // Under 2 items there is nothing to switch to, so the key passes through to the terminal.
+     guard effect != .none else { return false }
+@@ -122,6 +126,23 @@ final class QuickSwitcherController {
+     return true
+   }
+ 
++  /// Refresh the thumbnails a session is about to show. ⌥Tab spans windows, so every window with a
++  /// live region is captured; ⌃Tab only ever shows the current window's panes.
++  private func captureOnOpen(
++    _ kind: QuickSwitcherKind, in store: AppStore, registry: WindowRegistry
++  ) {
++    let generation = ThemeService.shared.generation
++    switch kind {
++    case .workrooms:
++      for window in registry.allStores.compactMap(\.hostWindow) {
++        SnapshotService.shared.capture(window: window, themeGeneration: generation)
++      }
++    case .panes:
++      guard let window = store.hostWindow else { return }
++      SnapshotService.shared.capture(window: window, themeGeneration: generation)
++    }
++  }
++
+   /// Escape while a session is live.
+   @discardableResult
+   func handleEscape() -> Bool {
+
+
+=== DIFF: macapp/WorkroomApp/Core/Snapshots/SnapshotRegistry.swift ===
+@@ -0,0 +1,101 @@
++import AppKit
++import SwiftUI
++
++/// Where each snapshottable region currently is on screen, reported by the views that own them.
++///
++/// The rects have to come from the view tree because nothing else knows the split geometry — a
++/// workroom's pane can be any leaf of an arbitrary split tree. They're read *synchronously* when a
++/// capture is planned, never stored across an await, so a layout change between plan and delivery can't
++/// mislabel a crop (the service's epoch guard is what enforces that).
++@MainActor
++final class SnapshotRegistry {
++  static let shared = SnapshotRegistry()
++
++  /// One reported region: the view, and the key whose picture it is.
++  private struct Region {
++    weak var view: NSView?
++    let key: SnapshotKey
++  }
++
++  private var regions: [ObjectIdentifier: Region] = [:]
++
++  func register(_ view: NSView, for key: SnapshotKey) {
++    regions[ObjectIdentifier(view)] = Region(view: view, key: key)
++  }
++
++  func unregister(_ view: NSView) {
++    regions[ObjectIdentifier(view)] = nil
++  }
++
++  /// Every live region in `window`, as `(key, rect-in-AppKit-screen-coordinates)`.
++  ///
++  /// Prunes dead views as it goes — the reporter's `removeFromSuperview` is not a guaranteed hook, so
++  /// the weak reference is the real lifetime signal.
++  func regions(in window: NSWindow) -> [(key: SnapshotKey, rect: CGRect)] {
++    var dead: [ObjectIdentifier] = []
++    var result: [(key: SnapshotKey, rect: CGRect)] = []
++    for (id, region) in regions {
++      guard let view = region.view else {
++        dead.append(id)
++        continue
++      }
++      guard view.window === window, !view.bounds.isEmpty else { continue }
++      // View → window → screen, in AppKit's y-up space. `SnapshotGeometry` performs the single flip.
++      let inWindow = view.convert(view.bounds, to: nil)
++      result.append((region.key, window.convertToScreen(inWindow)))
++    }
++    for id in dead { regions[id] = nil }
++    return result
++  }
++
++  /// Test seam: how many regions are currently registered.
++  var count: Int { regions.count }
++}
++
++/// A zero-drawing `NSView` that reports its own frame to `SnapshotRegistry` for as long as it is in a
++/// window. Mounted with `.background { }` so it inherits the exact bounds of whatever it decorates
++/// without affecting layout.
++///
++/// Deliberately NOT a `GhosttySurfaceView` read: the surface is Metal-backed, so there is no
++/// `cacheDisplay` to draw it into. All this does is say *where* to crop the window capture.
++struct SnapshotRectReporter: NSViewRepresentable {
++  let key: SnapshotKey
++
++  func makeNSView(context: Context) -> ReporterView {
++    let view = ReporterView()
++    view.key = key
++    return view
++  }
++
++  func updateNSView(_ view: ReporterView, context: Context) {
++    // A leaf can be re-used for a different pane when a split changes shape, so re-key rather than
++    // assuming the first key is forever.
++    if view.key != key {
++      SnapshotRegistry.shared.unregister(view)
++      view.key = key
++      if view.window != nil { SnapshotRegistry.shared.register(view, for: key) }
++    }
++  }
++
++  static func dismantleNSView(_ view: ReporterView, coordinator: ()) {
++    MainActor.assumeIsolated { SnapshotRegistry.shared.unregister(view) }
++  }
++
++  final class ReporterView: NSView {
++    var key: SnapshotKey?
++
++    override var isOpaque: Bool { false }
++    /// Never take a click — this sits behind real content.
++    override func hitTest(_ point: NSPoint) -> NSView? { nil }
++
++    override func viewDidMoveToWindow() {
++      super.viewDidMoveToWindow()
++      guard let key else { return }
++      if window != nil {
++        SnapshotRegistry.shared.register(self, for: key)
++      } else {
++        SnapshotRegistry.shared.unregister(self)
++      }
++    }
++  }
++}
+
+
+=== DIFF: macapp/WorkroomApp/Core/Snapshots/SnapshotService.swift ===
+@@ -0,0 +1,204 @@
++import AppKit
++import ScreenCaptureKit
++
++/// One window capture: the pixels plus the two things every crop taken from them depends on.
++struct WindowCapture {
++  let image: CGImage
++  /// `SCContentFilter.contentRect` — the crop reference. **Not** the window frame; see
++  /// `SnapshotGeometry`.
++  let contentRect: CGRect
++  /// `SCContentFilter.pointPixelScale`.
++  let scale: CGFloat
++}
++
++/// How a window's pixels are obtained. A protocol so the service is testable with no windows, no
++/// ScreenCaptureKit and no timing.
++protocol SnapshotCapturing: Sendable {
++  func capture(window: NSWindow, maxLongEdge: CGFloat) async throws -> WindowCapture?
++}
++
++/// The real capturer.
++///
++/// Needs **no Screen Recording permission**: `SCShareableContent.currentProcess` (macOS 14.4+) returns
++/// content capturable "without user consent via TCC", and the T1 spike confirmed the *capture* also
++/// returns real pixels — `CGPreflightScreenCaptureAccess() == false`, no prompt, and a
++/// never-activated background window captured fine. So there is no permission flow, no Info.plist key
++/// and no entitlement here by design.
++struct ScreenCaptureKitCapturer: SnapshotCapturing {
++  func capture(window: NSWindow, maxLongEdge: CGFloat) async throws -> WindowCapture? {
++    let number = CGWindowID(window.windowNumber)
++    let content = try await SCShareableContent.currentProcess
++    // Match on `windowID` alone: `currentProcess` content is REDACTED, so `title` and
++    // `owningApplication` may both be nil.
++    guard let scWindow = content.windows.first(where: { $0.windowID == number }) else { return nil }
++
++    let filter = SCContentFilter(desktopIndependentWindow: scWindow)
++    let config = SCStreamConfiguration()
++    let size = SnapshotGeometry.capturePixelSize(
++      contentRect: filter.contentRect, scale: CGFloat(filter.pointPixelScale),
++      maxLongEdge: maxLongEdge)
++    guard size.width >= 1, size.height >= 1 else { return nil }
++    config.width = Int(size.width)
++    config.height = Int(size.height)
++    config.showsCursor = false
++    config.ignoreShadowsSingleWindow = true
++    config.ignoreGlobalClipSingleWindow = true
++    config.captureResolution = .best
++
++    let image = try await SCScreenshotManager.captureImage(
++      contentFilter: filter, configuration: config)
++    // The delivered image is `contentRect × pointPixelScale`, possibly downscaled by the long-edge cap.
++    // Report the ACTUAL scale so crops stay aligned when the cap kicked in.
++    let effectiveScale = CGFloat(image.width) / filter.contentRect.width
++    return WindowCapture(
++      image: image, contentRect: filter.contentRect, scale: effectiveScale)
++  }
++}
++
++/// Captures nothing. Used by tests and by the `railPreviews` opt-out.
++struct StubSnapshotCapturer: SnapshotCapturing {
++  func capture(window: NSWindow, maxLongEdge: CGFloat) async throws -> WindowCapture? { nil }
++}
++
++/// Plans window captures, crops them into per-region thumbnails, and caches the result.
++///
++/// The ordering that makes a *mislabelled* card structurally impossible:
++///
++/// ```
++///  request                                  resume
++///  ───────                                  ──────
++///  read epoch, window.frame, and every  ──▶ await capture ──▶ epoch changed? ──yes──▶ DISCARD shot
++///  visible region's screen rect                              frame changed? ──yes──▶ DISCARD shot
++///  (all synchronously, one runloop turn)             │no
++///                                                   ▼
++///                                    crop planned rects → downscale → cache
++/// ```
++///
++/// Worst case is therefore a *stale* card, never a wrong one.
++@MainActor
++final class SnapshotService {
++  static let shared = SnapshotService()
++
++  private let cache: SnapshotCache
++  private var capturer: SnapshotCapturing
++  private let registry: SnapshotRegistry
++  /// Bumped by anything that invalidates in-flight work: a resize, a theme change, a layout change.
++  private(set) var epoch = 0
++  private var inFlight: Set<CGWindowID> = []
++  private var warmed = false
++
++  /// Long-edge cap on a window capture. Above this, a 6K window costs far more to crop than the
++  /// 72×56 wells can use.
++  static let maxLongEdge: CGFloat = 1440
++
++  init(
++    cache: SnapshotCache = SnapshotCache(),
++    capturer: SnapshotCapturing = ScreenCaptureKitCapturer(),
++    registry: SnapshotRegistry = .shared
++  ) {
++    self.cache = cache
++    self.capturer = capturer
++    self.registry = registry
++  }
++
++  /// Swap the capturer (the `railPreviews` opt-out, and tests).
++  func setCapturer(_ capturer: SnapshotCapturing) {
++    self.capturer = capturer
++  }
++
++  func snapshot(for key: SnapshotKey, themeGeneration: Int) -> CGImage? {
++    cache.snapshot(for: key, themeGeneration: themeGeneration)?.image
++  }
++
++  /// Invalidate in-flight work. A resize doesn't get its own capture trigger: it bumps the epoch, so
++  /// nothing stale lands, and the next natural trigger fixes the card.
++  func invalidate() {
++    epoch += 1
++  }
++
++  func forgetPanes(_ ids: [TerminalTab.ID]) {
++    cache.forgetPanes(ids)
++  }
++
++  /// Drop every cached picture — a theme change makes all of them stale at once.
++  func invalidateAll() {
++    epoch += 1
++    cache.removeAll()
++  }
++
++  /// Pay ScreenCaptureKit's one-time subsystem initialization (hundreds of ms) at idle, so the first
++  /// hold doesn't lose the 250 ms reveal race to it.
++  func warm(window: NSWindow) {
++    guard !warmed else { return }
++    warmed = true
++    capture(window: window, themeGeneration: -1)
++  }
++
++  /// Capture `window` and refresh every region it currently shows.
++  func capture(window: NSWindow, themeGeneration: Int) {
++    // A window on an inactive Space can return an all-black *successful* image, which "keep the old
++    // entry on failure" would happily cache as the new truth.
++    guard window.isVisible, !window.isMiniaturized, window.isOnActiveSpace else { return }
++    let id = CGWindowID(window.windowNumber)
++    guard !inFlight.contains(id) else { return }
++
++    // Everything below is read synchronously, before any await.
++    let plannedEpoch = epoch
++    let plannedFrame = window.frame
++    let planned = registry.regions(in: window)
++    guard !planned.isEmpty else { return }
++    let screenHeight = NSScreen.screens.first?.frame.height ?? window.frame.maxY
++
++    inFlight.insert(id)
++    Task { @MainActor [weak self] in
++      defer { self?.inFlight.remove(id) }
++      guard let self else { return }
++      let capture: WindowCapture?
++      do {
++        capture = try await self.capturer.capture(window: window, maxLongEdge: Self.maxLongEdge)
++      } catch {
++        return  // keep whatever was cached; a failed shot must not blank a card
++      }
++      guard let capture else { return }
++      // The two guards that make a mislabelled card impossible rather than unlikely.
++      guard self.epoch == plannedEpoch, window.frame == plannedFrame else { return }
++      self.store(
++        capture, regions: planned, screenHeight: screenHeight, themeGeneration: themeGeneration)
++    }
++  }
++
++  private func store(
++    _ capture: WindowCapture, regions: [(key: SnapshotKey, rect: CGRect)], screenHeight: CGFloat,
++    themeGeneration: Int
++  ) {
++    for region in regions {
++      guard
++        let crop = SnapshotGeometry.cropRect(
++          regionOnScreen: region.rect, windowContentRect: capture.contentRect,
++          mainScreenHeight: screenHeight, scale: capture.scale),
++        let cropped = capture.image.cropping(to: crop)
++      else { continue }
++      guard let thumbnail = Self.downscale(cropped) else { continue }
++      cache.store(thumbnail, for: region.key, themeGeneration: themeGeneration)
++    }
++  }
++
++  /// Aspect-fit down to the well's pixel size. Storing full-resolution crops would blow the cache's
++  /// byte cap after a handful of panes for pictures drawn at 72×56.
++  static func downscale(_ image: CGImage) -> CGImage? {
++    let target = SnapshotGeometry.thumbnailPixelSize(
++      source: CGSize(width: image.width, height: image.height),
++      maxPointSize: SwitcherRailLayout.wellSize, scale: 2)
++    guard target.width >= 1, target.height >= 1 else { return nil }
++    guard Int(target.width) < image.width || Int(target.height) < image.height else { return image }
++    guard
++      let context = CGContext(
++        data: nil, width: Int(target.width), height: Int(target.height), bitsPerComponent: 8,
++        bytesPerRow: 0, space: image.colorSpace ?? CGColorSpaceCreateDeviceRGB(),
++        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
++    else { return nil }
++    context.interpolationQuality = .high
++    context.draw(image, in: CGRect(origin: .zero, size: target))
++    return context.makeImage()
++  }
++}
+
+
+=== DIFF: macapp/WorkroomApp/Core/Snapshots/SnapshotSupport.swift ===
+@@ -0,0 +1,166 @@
++import CoreGraphics
++import Foundation
++
++/// What a snapshot belongs to. A workroom is keyed by its window too, because the same `SidebarID` can
++/// be displayed in two windows at once and their captures are different pictures.
++enum SnapshotKey: Hashable {
++  case pane(TerminalTab.ID)
++  case workroom(SidebarID, WindowToken)
++}
++
++/// One cached capture.
++struct Snapshot {
++  let image: CGImage
++  /// The theme generation it was captured under. An older generation reads stale — the terminal's own
++  /// colours changed, so the picture is of a theme that is no longer on screen.
++  let themeGeneration: Int
++  let capturedAt: Date
++  /// Rough decoded size, for the cache's byte cap.
++  var byteSize: Int { image.bytesPerRow * image.height }
++}
++
++/// The pixel arithmetic for turning one window capture into N per-pane thumbnails.
++///
++/// Pure and separately tested because **the plan was wrong here and the T1 spike caught it**. Two
++/// assumptions that both look obviously true and are both false:
++///
++/// ```
++/// NSWindow.frame       (200, 200, 820, 552)   AppKit: y-UP,   origin bottom-left
++/// filter.contentRect   (205, 872, 810, 544)   CG:     y-DOWN, origin top-left, inset ~5pt x / ~4pt y
++/// captured image        1620 x 1088  ==  contentRect × pointPixelScale(2.0), EXACTLY
++/// ```
++///
++/// So (1) `contentRect` is **not** the window frame — deriving the scale from the delivered image
++/// against the frame gave 1.9756 (x) and 1.9710 (y), neither 2.0 nor even equal to each other, a ~1.2%
++/// error that drifts ~10px by the far edge of a large window; and (2) the y-flips do **not** cancel,
++/// because `convertToScreen` is y-up while `contentRect` is y-down.
++///
++/// Hence: the reference rect is always `filter.contentRect`, the scale is always
++/// `filter.pointPixelScale`, and the region is flipped exactly once.
++enum SnapshotGeometry {
++
++  /// Where `regionOnScreen` lands inside a window capture, in image pixels.
++  ///
++  /// - `regionOnScreen`: the pane's rect in AppKit screen coordinates (y-up).
++  /// - `windowContentRect`: `SCContentFilter.contentRect` (CG, y-down) — NOT `NSWindow.frame`.
++  /// - `mainScreenHeight`: `NSScreen.screens[0].frame.height`, the y-flip constant. One `NSScreen`
++  ///   read the plan hoped to avoid and cannot.
++  /// - `scale`: `SCContentFilter.pointPixelScale`.
++  ///
++  /// Returns nil when the region falls entirely outside the capture.
++  static func cropRect(
++    regionOnScreen: CGRect, windowContentRect: CGRect, mainScreenHeight: CGFloat, scale: CGFloat
++  ) -> CGRect? {
++    guard scale > 0, !regionOnScreen.isEmpty, !windowContentRect.isEmpty else { return nil }
++    // The single y-flip: AppKit's bottom-left origin to CG's top-left.
++    let cgMinY = mainScreenHeight - regionOnScreen.maxY
++    let rect = CGRect(
++      x: (regionOnScreen.minX - windowContentRect.minX) * scale,
++      y: (cgMinY - windowContentRect.minY) * scale,
++      width: regionOnScreen.width * scale,
++      height: regionOnScreen.height * scale
++    ).integral
++    let bounds = CGRect(
++      x: 0, y: 0, width: (windowContentRect.width * scale).rounded(),
++      height: (windowContentRect.height * scale).rounded())
++    let clamped = rect.intersection(bounds)
++    return clamped.isNull || clamped.isEmpty ? nil : clamped
++  }
++
++  /// The capture's configured pixel size. **Strictly proportional to `contentRect`** — `width`/`height`
++  /// are the only knobs the config exposes (`scalesToFit` aside), and a size whose aspect doesn't match
++  /// letterboxes, which silently misaligns every crop taken from it.
++  static func capturePixelSize(contentRect: CGRect, scale: CGFloat, maxLongEdge: CGFloat) -> CGSize
++  {
++    let full = CGSize(width: contentRect.width * scale, height: contentRect.height * scale)
++    let longEdge = max(full.width, full.height)
++    guard longEdge > maxLongEdge, longEdge > 0 else {
++      return CGSize(width: full.width.rounded(), height: full.height.rounded())
++    }
++    let factor = maxLongEdge / longEdge
++    return CGSize(
++      width: (full.width * factor).rounded(), height: (full.height * factor).rounded())
++  }
++
++  /// Aspect-**fit** target for a thumbnail well — never a crop. A crop-zoom of two different panes can
++  /// look identical, and at 72×56 the well's job is "which pane is this", not "read the output".
++  static func thumbnailPixelSize(source: CGSize, maxPointSize: CGSize, scale: CGFloat) -> CGSize {
++    guard source.width > 0, source.height > 0, scale > 0 else { return .zero }
++    let target = CGSize(width: maxPointSize.width * scale, height: maxPointSize.height * scale)
++    let factor = min(target.width / source.width, target.height / source.height, 1)
++    return CGSize(
++      width: max(1, (source.width * factor).rounded()),
++      height: max(1, (source.height * factor).rounded()))
++  }
++}
++
++/// An LRU cache of captures, bounded by both count and bytes.
++///
++/// Correctness does not depend on a purge-on-window-close hook: `WindowToken` is a UUID that is never
++/// reused, so a workroom key from a closed window can never collide with a live one. The purges that
++/// exist are about memory, not staleness.
++final class SnapshotCache {
++  static let maxEntries = 32
++  /// ~48 MB of decoded bitmaps. A 1440-long-edge Retina window capture is roughly 4–6 MB.
++  static let maxBytes = 48 * 1024 * 1024
++
++  private var entries: [SnapshotKey: Snapshot] = [:]
++  /// Most-recently-used last.
++  private var order: [SnapshotKey] = []
++  private let now: () -> Date
++
++  init(now: @escaping () -> Date = Date.init) {
++    self.now = now
++  }
++
++  var count: Int { entries.count }
++  var byteSize: Int { entries.values.reduce(0) { $0 + $1.byteSize } }
++
++  /// A snapshot, if one is cached and still matches the current theme. A stale-theme entry is dropped
++  /// rather than returned: the terminal's own colours changed, so the picture is of a theme that is no
++  /// longer on screen.
++  func snapshot(for key: SnapshotKey, themeGeneration: Int) -> Snapshot? {
++    guard let entry = entries[key] else { return nil }
++    guard entry.themeGeneration == themeGeneration else {
++      remove(key)
++      return nil
++    }
++    touch(key)
++    return entry
++  }
++
++  func store(_ image: CGImage, for key: SnapshotKey, themeGeneration: Int) {
++    entries[key] = Snapshot(image: image, themeGeneration: themeGeneration, capturedAt: now())
++    touch(key)
++    evictIfNeeded()
++  }
++
++  func remove(_ key: SnapshotKey) {
++    entries[key] = nil
++    order.removeAll { $0 == key }
++  }
++
++  func removeAll() {
++    entries.removeAll()
++    order.removeAll()
++  }
++
++  /// Drop everything for panes that no longer exist.
++  func forgetPanes(_ ids: [TerminalTab.ID]) {
++    for id in ids { remove(.pane(id)) }
++  }
++
++  private func touch(_ key: SnapshotKey) {
++    order.removeAll { $0 == key }
++    order.append(key)
++  }
++
++  private func evictIfNeeded() {
++    while entries.count > Self.maxEntries, let oldest = order.first {
++      remove(oldest)
++    }
++    while byteSize > Self.maxBytes, order.count > 1, let oldest = order.first {
++      remove(oldest)
++    }
++  }
++}
+
+
+=== DIFF: macapp/WorkroomApp/Core/SwitcherPanel.swift ===
+@@ -69,7 +69,13 @@ final class SwitcherPanelController {
+     themeObserver = NotificationCenter.default.addObserver(
+       forName: .themeDidChange, object: nil, queue: .main
+     ) { [weak self] _ in
+-      MainActor.assumeIsolated { self?.model.themeVersion &+= 1 }
++      MainActor.assumeIsolated {
++        self?.model.themeVersion &+= 1
++        // Every cached thumbnail is now a picture of the OLD theme — the terminals in it are the wrong
++        // colours. The cache also refuses stale-generation reads, but dropping them here reclaims the
++        // bytes instead of holding pictures nothing will ever return.
++        SnapshotService.shared.invalidateAll()
++      }
+     }
+   }
+ 
+
+
+=== DIFF: macapp/WorkroomApp/Views/PaneTreeView.swift ===
+@@ -382,6 +382,11 @@ private struct PaneLeafView: View {
+ 
+   var body: some View {
+     paneContent
++      // Report where this pane is, so a window capture can be cropped into its rail thumbnail
++      // (issue #132). Zero-drawing and always mounted — it covers all four `TabContent` kinds because
++      // it sits on the one slot they all pass through. `.background` so it inherits the pane's exact
++      // bounds without touching layout.
++      .background(SnapshotRectReporter(key: .pane(tabID)))
+       // Dim every pane that isn't the focused one so the active terminal reads instantly. This fires
+       // for split-mates AND for every pane of a co-displayed *backgrounded* workroom — which passes
+       // `surfaceActive: false`, so all its panes arrive here `focused == false` (`shouldDim` gates on
+
+
+=== DIFF: macapp/WorkroomApp/Views/SwitcherRailView.swift ===
+@@ -33,17 +33,22 @@ extension SwitcherCard {
+   /// actor at reveal, and what the views then hold is inert.
+   @MainActor
+   init(item: QuickSwitcherController.Item) {
++    let generation = ThemeService.shared.generation
+     switch item {
+     case .workroom(let slot):
+       let label = slot.store?.label(for: slot.sid)
+       id = "wr:\(slot.target.id)"
+       title = label?.distinguishing ?? slot.target.title
+       stableSubtitle = label?.branch ?? label?.project ?? ""
+-      liveSubtitle = nil  // the live command tail arrives with the snapshot layer (T12)
++      liveSubtitle = nil
+       glyph = "cube"
+       badge = slot.store?.notifications.count(target: slot.target.id) ?? 0
+       isRunning = slot.store?.isRunCommandRunning(for: slot.target.id) ?? false
+-      snapshot = nil
++      snapshot =
++        slot.store.map { store in
++          SnapshotService.shared.snapshot(
++            for: .workroom(slot.sid, store.windowToken), themeGeneration: generation)
++        } ?? nil
+     case .pane(let tab):
+       id = "pane:\(tab.id)"
+       title = tab.title
+@@ -52,7 +57,8 @@ extension SwitcherCard {
+       glyph = Self.glyph(for: tab.content)
+       badge = 0
+       isRunning = tab.isRunning
+-      snapshot = nil
++      snapshot = SnapshotService.shared.snapshot(
++        for: .pane(tab.id), themeGeneration: generation)
+     }
+   }
+ 
+
+
+=== DIFF: macapp/WorkroomApp/Views/WorkroomSplitView.swift ===
+@@ -224,6 +224,10 @@ private struct WorkroomPaneLeaf: View {
+       // both live INSIDE `TargetTerminalDetail`'s own ZStack, so nothing here ever swaps branches.
+       TargetTerminalDetail(target: target, surfaceActive: focused)
+     }
++    // Report where this workroom is, for its rail thumbnail (issue #132). Mounted here rather than on
++    // the split container because this leaf is the one view that covers BOTH solo and split — every
++    // workroom renders through `WorkroomSplitView`, so a solo pane arrives here too.
++    .background(snapshotReporter)
+     // No border: the pane reads as a unit by a subtle raised fill over the `panel` base plus the
+     // shadow + rounded corners (issue #110). The focused member's fill is accent-tinted so focus reads
+     // as a colour; the rest take a faint neutral lift. Unconditional since issue #139 — a solo pane is
+@@ -252,6 +256,12 @@ private struct WorkroomPaneLeaf: View {
+   /// the run controls' `hasRunCommand` check.
+   private var projectPath: String? { AppStore.projectPath(of: sid) }
+ 
++  /// The rail-thumbnail region reporter, keyed by `(sid, window)` — the same `SidebarID` shown in two
++  /// windows is two different pictures, so the window has to be part of the key.
++  @ViewBuilder private var snapshotReporter: some View {
++    SnapshotRectReporter(key: .workroom(sid, store.windowToken))
++  }
++
+   /// Which trailing controls the header shows — resolved in one pass so the group's divider can't
+   /// disagree with the buttons on either side of it. The editor list is cached, so this is cheap enough
+   /// to compute per render.
+
+
+=== DIFF: macapp/WorkroomAppTests/SnapshotCacheTests.swift ===
+@@ -0,0 +1,114 @@
++import CoreGraphics
++import XCTest
++
++@testable import Workroom
++
++/// `SnapshotCache` (issue #132, T12): bounded by count and bytes, with an injected clock, and stale on
++/// a theme change rather than wrong.
++final class SnapshotCacheTests: XCTestCase {
++
++  /// A real `CGImage` of a known size, so the byte accounting is measured rather than asserted.
++  private func image(_ side: Int = 8) -> CGImage {
++    let context = CGContext(
++      data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side * 4,
++      space: CGColorSpaceCreateDeviceRGB(),
++      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
++    return context.makeImage()!
++  }
++
++  private func paneKey(_ n: Int) -> SnapshotKey {
++    // A UUID per index, stable within the test.
++    .pane(UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", n))!)
++  }
++
++  func testStoreAndFetch() {
++    let cache = SnapshotCache()
++    cache.store(image(), for: paneKey(1), themeGeneration: 3)
++    XCTAssertNotNil(cache.snapshot(for: paneKey(1), themeGeneration: 3))
++    XCTAssertEqual(cache.count, 1)
++  }
++
++  func testAMissIsNil() {
++    XCTAssertNil(SnapshotCache().snapshot(for: paneKey(9), themeGeneration: 1))
++  }
++
++  func testAStaleThemeEntryIsDroppedNotReturned() {
++    // The terminal's own colours changed, so the cached picture is of a theme that is no longer on
++    // screen. Returning it would show the old theme inside the new one.
++    let cache = SnapshotCache()
++    cache.store(image(), for: paneKey(1), themeGeneration: 3)
++    XCTAssertNil(cache.snapshot(for: paneKey(1), themeGeneration: 4), "stale ⇒ miss")
++    XCTAssertEqual(cache.count, 0, "and evicted, so it can't linger")
++  }
++
++  func testTheClockIsInjected() {
++    let fixed = Date(timeIntervalSince1970: 1_000_000)
++    let cache = SnapshotCache(now: { fixed })
++    cache.store(image(), for: paneKey(1), themeGeneration: 1)
++    XCTAssertEqual(cache.snapshot(for: paneKey(1), themeGeneration: 1)?.capturedAt, fixed)
++  }
++
++  func testEvictionIsLeastRecentlyUsedNotInsertionOrder() {
++    let cache = SnapshotCache()
++    for n in 0..<SnapshotCache.maxEntries {
++      cache.store(image(), for: paneKey(n), themeGeneration: 1)
++    }
++    // Re-read the oldest, making it most-recent — it must now SURVIVE the next insert.
++    _ = cache.snapshot(for: paneKey(0), themeGeneration: 1)
++    cache.store(image(), for: paneKey(999), themeGeneration: 1)
++    XCTAssertEqual(cache.count, SnapshotCache.maxEntries)
++    XCTAssertNotNil(cache.snapshot(for: paneKey(0), themeGeneration: 1), "recently used, kept")
++    XCTAssertNil(
++      cache.snapshot(for: paneKey(1), themeGeneration: 1), "least recently used, evicted")
++  }
++
++  func testTheCountCapHolds() {
++    let cache = SnapshotCache()
++    for n in 0..<(SnapshotCache.maxEntries * 2) {
++      cache.store(image(), for: paneKey(n), themeGeneration: 1)
++    }
++    XCTAssertEqual(cache.count, SnapshotCache.maxEntries)
++  }
++
++  func testTheByteCapHolds() {
++    let cache = SnapshotCache()
++    // ~4 MB each: a handful blows the byte cap well before the count cap.
++    let big = image(1024)
++    for n in 0..<20 { cache.store(big, for: paneKey(n), themeGeneration: 1) }
++    XCTAssertLessThanOrEqual(cache.byteSize, SnapshotCache.maxBytes)
++    XCTAssertLessThan(cache.count, 20, "bytes bound before the count does")
++    XCTAssertGreaterThanOrEqual(cache.count, 1, "never evicts down to empty")
++  }
++
++  func testForgetPanesDropsClosedTabs() {
++    let cache = SnapshotCache()
++    cache.store(image(), for: paneKey(1), themeGeneration: 1)
++    cache.store(image(), for: paneKey(2), themeGeneration: 1)
++    guard case .pane(let id1) = paneKey(1) else { return XCTFail("key shape") }
++    cache.forgetPanes([id1])
++    XCTAssertNil(cache.snapshot(for: paneKey(1), themeGeneration: 1))
++    XCTAssertNotNil(cache.snapshot(for: paneKey(2), themeGeneration: 1), "siblings untouched")
++  }
++
++  func testTheSameWorkroomInTwoWindowsGetsTwoEntries() {
++    // The whole reason a workroom key carries a WindowToken: co-displayed workrooms are two different
++    // pictures, and one must not overwrite the other.
++    let cache = SnapshotCache()
++    let sid = SidebarID.workroom(project: "/p", name: "fox")
++    let a = SnapshotKey.workroom(sid, WindowToken())
++    let b = SnapshotKey.workroom(sid, WindowToken())
++    cache.store(image(), for: a, themeGeneration: 1)
++    cache.store(image(), for: b, themeGeneration: 1)
++    XCTAssertEqual(cache.count, 2)
++    XCTAssertNotNil(cache.snapshot(for: a, themeGeneration: 1))
++    XCTAssertNotNil(cache.snapshot(for: b, themeGeneration: 1))
++  }
++
++  func testRemoveAll() {
++    let cache = SnapshotCache()
++    cache.store(image(), for: paneKey(1), themeGeneration: 1)
++    cache.removeAll()
++    XCTAssertEqual(cache.count, 0)
++    XCTAssertEqual(cache.byteSize, 0)
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppTests/SnapshotGeometryTests.swift ===
+@@ -0,0 +1,170 @@
++import CoreGraphics
++import XCTest
++
++@testable import Workroom
++
++/// `SnapshotGeometry` (issue #132, T12): the pixel arithmetic that turns one window capture into N pane
++/// thumbnails.
++///
++/// These tests exist because the plan's original crop recipe was **wrong in two independent ways** and
++/// the T1 spike measured it. The measured configuration is pinned below verbatim: a fixture where
++/// `contentRect.size == frame.size` passes a wrong implementation, so it must not be the only case.
++final class SnapshotGeometryTests: XCTestCase {
++
++  // The T1 spike's measured numbers (macOS 26.5.2, 2× display).
++  //   NSWindow.frame      (200, 200, 820, 552)  AppKit, y-up
++  //   filter.contentRect  (205, 872, 810, 544)  CG, y-down, inset ~5pt x / ~4pt y
++  //   captured image       1620 × 1088  ==  contentRect × pointPixelScale(2.0), exactly
++  private let windowFrame = CGRect(x: 200, y: 200, width: 820, height: 552)
++  private let contentRect = CGRect(x: 205, y: 872, width: 810, height: 544)
++  private let scale: CGFloat = 2.0
++  /// The y-flip constant that makes the measured pair consistent: `contentRect.minY` = H − frame.maxY − inset.
++  private let mainScreenHeight: CGFloat = 1624
++
++  // MARK: The measured case
++
++  func testTheCaptureIsExactlyContentRectTimesScaleNotTheFrame() {
++    let fromContent = SnapshotGeometry.capturePixelSize(
++      contentRect: contentRect, scale: scale, maxLongEdge: 4000)
++    XCTAssertEqual(
++      fromContent, CGSize(width: 1620, height: 1088), "the spike measured exactly this")
++    // The trap: sizing from the window frame instead gives a different image, and every crop taken
++    // from it is then off by a scale factor of 1.9756/1.9710 rather than 2.0.
++    let fromFrame = SnapshotGeometry.capturePixelSize(
++      contentRect: windowFrame, scale: scale, maxLongEdge: 4000)
++    XCTAssertNotEqual(
++      fromFrame, fromContent, "contentRect is NOT the window frame — in size either")
++  }
++
++  func testARegionSpanningTheWholeContentRectMapsToTheWholeImage() {
++    // Express the content rect back in AppKit screen coordinates and crop it: the result must be the
++    // entire image, which is only true if the reference rect and the single y-flip are both right.
++    let regionOnScreen = CGRect(
++      x: contentRect.minX, y: mainScreenHeight - contentRect.maxY,
++      width: contentRect.width, height: contentRect.height)
++    let crop = SnapshotGeometry.cropRect(
++      regionOnScreen: regionOnScreen, windowContentRect: contentRect,
++      mainScreenHeight: mainScreenHeight, scale: scale)
++    XCTAssertEqual(crop, CGRect(x: 0, y: 0, width: 1620, height: 1088))
++  }
++
++  func testTheYFlipsDoNotCancel() {
++    // A region in the TOP half of the window must crop from the TOP of the image (small y in CG).
++    // Getting the flip wrong is silent: the crop is a valid rect, just of the wrong pane.
++    let topHalf = CGRect(
++      x: contentRect.minX, y: mainScreenHeight - contentRect.maxY + contentRect.height / 2,
++      width: contentRect.width, height: contentRect.height / 2)
++    let crop = SnapshotGeometry.cropRect(
++      regionOnScreen: topHalf, windowContentRect: contentRect,
++      mainScreenHeight: mainScreenHeight, scale: scale)
++    XCTAssertEqual(crop?.minY, 0, "the top of the window is y=0 in the capture")
++    XCTAssertEqual(crop?.height, 544, "half the window, in pixels")
++  }
++
++  func testABottomRegionCropsFromTheBottomOfTheImage() {
++    let bottomHalf = CGRect(
++      x: contentRect.minX, y: mainScreenHeight - contentRect.maxY,
++      width: contentRect.width, height: contentRect.height / 2)
++    let crop = SnapshotGeometry.cropRect(
++      regionOnScreen: bottomHalf, windowContentRect: contentRect,
++      mainScreenHeight: mainScreenHeight, scale: scale)
++    XCTAssertEqual(crop?.minY, 544)
++    XCTAssertEqual(crop?.maxY, 1088)
++  }
++
++  func testASplitPanesTwoHalvesTileTheImageExactly() {
++    // The real use: two side-by-side panes must partition the capture with no gap and no overlap.
++    let leftOnScreen = CGRect(
++      x: contentRect.minX, y: mainScreenHeight - contentRect.maxY,
++      width: contentRect.width / 2, height: contentRect.height)
++    let rightOnScreen = leftOnScreen.offsetBy(dx: contentRect.width / 2, dy: 0)
++    let left = SnapshotGeometry.cropRect(
++      regionOnScreen: leftOnScreen, windowContentRect: contentRect,
++      mainScreenHeight: mainScreenHeight, scale: scale)
++    let right = SnapshotGeometry.cropRect(
++      regionOnScreen: rightOnScreen, windowContentRect: contentRect,
++      mainScreenHeight: mainScreenHeight, scale: scale)
++    XCTAssertEqual(left?.maxX, right?.minX, "no seam and no overlap between split members")
++    XCTAssertEqual(left?.width, 810)
++    XCTAssertEqual(right?.maxX, 1620)
++  }
++
++  // MARK: Degenerate inputs
++
++  func testARegionOutsideTheCaptureIsNil() {
++    let offscreen = CGRect(x: 5000, y: 5000, width: 100, height: 100)
++    XCTAssertNil(
++      SnapshotGeometry.cropRect(
++        regionOnScreen: offscreen, windowContentRect: contentRect,
++        mainScreenHeight: mainScreenHeight, scale: scale),
++      "a pane scrolled out of the window yields no crop, not a bogus rect")
++  }
++
++  func testAPartiallyOffscreenRegionIsClampedToTheImage() {
++    // Straddling the leading edge: keep the visible part rather than reading out of bounds.
++    let straddling = CGRect(
++      x: contentRect.minX - 100, y: mainScreenHeight - contentRect.maxY,
++      width: 300, height: contentRect.height)
++    let crop = SnapshotGeometry.cropRect(
++      regionOnScreen: straddling, windowContentRect: contentRect,
++      mainScreenHeight: mainScreenHeight, scale: scale)
++    XCTAssertEqual(crop?.minX, 0, "clamped, never negative")
++    XCTAssertEqual(crop?.width, 400, "only the 200pt that overlaps, at 2×")
++  }
++
++  func testZeroScaleAndEmptyRectsAreRejected() {
++    let region = CGRect(x: 205, y: 200, width: 100, height: 100)
++    XCTAssertNil(
++      SnapshotGeometry.cropRect(
++        regionOnScreen: region, windowContentRect: contentRect, mainScreenHeight: mainScreenHeight,
++        scale: 0))
++    XCTAssertNil(
++      SnapshotGeometry.cropRect(
++        regionOnScreen: .zero, windowContentRect: contentRect,
++        mainScreenHeight: mainScreenHeight, scale: scale))
++    XCTAssertNil(
++      SnapshotGeometry.cropRect(
++        regionOnScreen: region, windowContentRect: .zero, mainScreenHeight: mainScreenHeight,
++        scale: scale))
++  }
++
++  // MARK: Capture sizing
++
++  func testCaptureSizeIsCappedButStaysStrictlyProportional() {
++    let big = CGRect(x: 0, y: 0, width: 3000, height: 1000)
++    let size = SnapshotGeometry.capturePixelSize(contentRect: big, scale: 2, maxLongEdge: 1440)
++    XCTAssertEqual(max(size.width, size.height), 1440, "long edge capped")
++    // A mismatched aspect letterboxes and silently misaligns every crop, so the ratio must survive.
++    XCTAssertEqual(size.width / size.height, 3, accuracy: 0.01)
++  }
++
++  func testASmallWindowIsNotUpscaled() {
++    let small = CGRect(x: 0, y: 0, width: 400, height: 300)
++    let size = SnapshotGeometry.capturePixelSize(contentRect: small, scale: 2, maxLongEdge: 1440)
++    XCTAssertEqual(size, CGSize(width: 800, height: 600))
++  }
++
++  // MARK: Thumbnail sizing
++
++  func testThumbnailAspectFitsWithoutCropping() {
++    // A wide window into a 72×56 well: width binds, height comes out short — letterboxed, not cropped.
++    let size = SnapshotGeometry.thumbnailPixelSize(
++      source: CGSize(width: 1620, height: 1088), maxPointSize: CGSize(width: 72, height: 56),
++      scale: 2)
++    XCTAssertEqual(size.width, 144, "the binding edge fills the well")
++    XCTAssertLessThanOrEqual(size.height, 112)
++    XCTAssertEqual(size.width / size.height, 1620 / 1088, accuracy: 0.02, "aspect preserved")
++  }
++
++  func testATinySourceIsNotUpscaled() {
++    let size = SnapshotGeometry.thumbnailPixelSize(
++      source: CGSize(width: 40, height: 30), maxPointSize: CGSize(width: 72, height: 56), scale: 2)
++    XCTAssertEqual(size, CGSize(width: 40, height: 30), "never blown up past 1:1")
++  }
++
++  func testThumbnailOfAnEmptySourceIsZero() {
++    XCTAssertEqual(
++      SnapshotGeometry.thumbnailPixelSize(
++        source: .zero, maxPointSize: CGSize(width: 72, height: 56), scale: 2), .zero)
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppTests/SnapshotServiceTests.swift ===
+@@ -0,0 +1,298 @@
++import AppKit
++import XCTest
++
++@testable import Workroom
++
++/// `SnapshotService` + `SnapshotRegistry` (issue #132, T12): the plan/capture/crop pipeline, driven
++/// with a stub capturer so nothing here touches ScreenCaptureKit, and offscreen plain `NSView`s so
++/// nothing mounts a live `GhosttySurfaceView`.
++@MainActor
++final class SnapshotServiceTests: XCTestCase {
++
++  /// A capturer that returns a canned image and records how often it ran. `beforeReturning` lets a test
++  /// interleave a layout change between the plan and the delivery, which is the epoch guard's purpose.
++  ///
++  /// `contentRect` is derived from the window at capture time **in CG coordinates** — y-down, origin
++  /// top-left — because that is what `SCContentFilter.contentRect` actually is. Handing this an AppKit
++  /// frame instead puts every crop outside the image, which is exactly the confusion `SnapshotGeometry`
++  /// exists to prevent.
++  private final class FakeCapturer: SnapshotCapturing, @unchecked Sendable {
++    let scale: CGFloat
++    var calls = 0
++    var beforeReturning: (@MainActor () -> Void)?
++
++    init(scale: CGFloat) {
++      self.scale = scale
++    }
++
++    @MainActor
++    static func cgContentRect(of window: NSWindow) -> CGRect {
++      let screenHeight = NSScreen.screens.first?.frame.height ?? window.frame.maxY
++      return CGRect(
++        x: window.frame.minX, y: screenHeight - window.frame.maxY,
++        width: window.frame.width, height: window.frame.height)
++    }
++
++    func capture(window: NSWindow, maxLongEdge: CGFloat) async throws -> WindowCapture? {
++      calls += 1
++      let contentRect = await MainActor.run { Self.cgContentRect(of: window) }
++      let w = Int(contentRect.width * scale)
++      let h = Int(contentRect.height * scale)
++      let context = CGContext(
++        data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
++        space: CGColorSpaceCreateDeviceRGB(),
++        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
++      context.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.8, alpha: 1))
++      context.fill(CGRect(x: 0, y: 0, width: w, height: h))
++      let image = context.makeImage()!
++      if let hook = beforeReturning { await MainActor.run { hook() } }
++      return WindowCapture(image: image, contentRect: contentRect, scale: scale)
++    }
++  }
++
++  private var windows: [NSWindow] = []
++
++  override func tearDown() {
++    for window in windows { window.orderOut(nil) }
++    windows = []
++    super.tearDown()
++  }
++
++  /// An on-screen window with `count` plain subviews registered as snapshot regions. Real views, real
++  /// coordinate conversion — never a `GhosttySurfaceView`.
++  private func window(regions count: Int, registry: SnapshotRegistry) -> (NSWindow, [SnapshotKey]) {
++    let window = NSWindow(
++      contentRect: NSRect(x: 100, y: 100, width: 400, height: 300), styleMask: [.titled],
++      backing: .buffered, defer: false)
++    let root = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
++    window.contentView = root
++    window.orderFrontRegardless()
++    windows.append(window)
++
++    var keys: [SnapshotKey] = []
++    let sliceWidth = 400 / CGFloat(max(1, count))
++    for index in 0..<count {
++      let view = NSView(
++        frame: NSRect(x: sliceWidth * CGFloat(index), y: 0, width: sliceWidth, height: 300))
++      root.addSubview(view)
++      let key = SnapshotKey.pane(UUID())
++      registry.register(view, for: key)
++      keys.append(key)
++    }
++    return (window, keys)
++  }
++
++  private func makeService(_ capturer: SnapshotCapturing, registry: SnapshotRegistry)
++    -> SnapshotService
++  {
++    SnapshotService(cache: SnapshotCache(), capturer: capturer, registry: registry)
++  }
++
++  // MARK: Registry
++
++  func testRegistryReportsRectsInScreenCoordinates() {
++    let registry = SnapshotRegistry()
++    let (window, keys) = window(regions: 2, registry: registry)
++    let reported = registry.regions(in: window)
++    XCTAssertEqual(reported.count, 2)
++    XCTAssertEqual(Set(reported.map(\.key)), Set(keys))
++    for entry in reported {
++      XCTAssertTrue(
++        window.frame.intersects(entry.rect), "a reported rect must land inside its own window")
++    }
++  }
++
++  func testRegistryIgnoresOtherWindowsAndPrunesDeadViews() {
++    let registry = SnapshotRegistry()
++    let (windowA, _) = window(regions: 2, registry: registry)
++    let (windowB, _) = window(regions: 3, registry: registry)
++    XCTAssertEqual(registry.regions(in: windowA).count, 2, "scoped to one window")
++    XCTAssertEqual(registry.regions(in: windowB).count, 3)
++    // Drop A's views: the weak reference is the real lifetime signal, not an explicit unregister.
++    windowA.contentView = NSView()
++    XCTAssertEqual(registry.regions(in: windowA).count, 0)
++  }
++
++  func testRegistrySkipsZeroSizedRegions() {
++    let registry = SnapshotRegistry()
++    let window = NSWindow(
++      contentRect: NSRect(x: 0, y: 0, width: 200, height: 200), styleMask: [.titled],
++      backing: .buffered, defer: false)
++    let root = NSView(frame: NSRect(x: 0, y: 0, width: 200, height: 200))
++    window.contentView = root
++    window.orderFrontRegardless()
++    windows.append(window)
++    let empty = NSView(frame: .zero)
++    root.addSubview(empty)
++    registry.register(empty, for: .pane(UUID()))
++    XCTAssertTrue(registry.regions(in: window).isEmpty, "a collapsed pane has nothing to crop")
++  }
++
++  // MARK: Capture → crop → cache
++
++  func testCapturePopulatesOneThumbnailPerRegion() async {
++    let registry = SnapshotRegistry()
++    let (window, keys) = window(regions: 2, registry: registry)
++    let capturer = FakeCapturer(scale: 2)
++    let service = makeService(capturer, registry: registry)
++
++    service.capture(window: window, themeGeneration: 1)
++    await settle()
++
++    for key in keys {
++      XCTAssertNotNil(service.snapshot(for: key, themeGeneration: 1), "\(key) got a thumbnail")
++    }
++  }
++
++  func testThumbnailsAreDownscaledToTheWellNotStoredFullSize() async {
++    let registry = SnapshotRegistry()
++    let (window, keys) = window(regions: 1, registry: registry)
++    let capturer = FakeCapturer(scale: 2)
++    let service = makeService(capturer, registry: registry)
++    service.capture(window: window, themeGeneration: 1)
++    await settle()
++    let image = service.snapshot(for: keys[0], themeGeneration: 1)
++    XCTAssertNotNil(image)
++    // Well is 72×56pt at 2× ⇒ nothing wider than 144px. Storing full-res crops would blow the byte cap
++    // after a handful of panes for pictures drawn at 72×56.
++    XCTAssertLessThanOrEqual(image!.width, 144)
++  }
++
++  func testAStaleThemeGenerationReadsAsAMiss() async {
++    let registry = SnapshotRegistry()
++    let (window, keys) = window(regions: 1, registry: registry)
++    let service = makeService(FakeCapturer(scale: 2), registry: registry)
++    service.capture(window: window, themeGeneration: 1)
++    await settle()
++    XCTAssertNotNil(service.snapshot(for: keys[0], themeGeneration: 1))
++    XCTAssertNil(
++      service.snapshot(for: keys[0], themeGeneration: 2),
++      "after a theme change the cached picture is of the wrong colours")
++  }
++
++  // MARK: The guards
++
++  func testAShotThatLandsAfterAnInvalidateIsDiscarded() async {
++    // The epoch guard: a layout change between plan and delivery must throw the whole shot away rather
++    // than crop old pixels against new rects — that is what would produce a MISLABELLED card.
++    let registry = SnapshotRegistry()
++    let (window, keys) = window(regions: 1, registry: registry)
++    let capturer = FakeCapturer(scale: 2)
++    let service = makeService(capturer, registry: registry)
++    capturer.beforeReturning = { service.invalidate() }
++
++    service.capture(window: window, themeGeneration: 1)
++    await settle()
++    XCTAssertNil(service.snapshot(for: keys[0], themeGeneration: 1), "stale shot discarded")
++  }
++
++  func testAShotThatLandsAfterTheWindowMovedIsDiscarded() async {
++    let registry = SnapshotRegistry()
++    let (window, keys) = window(regions: 1, registry: registry)
++    let capturer = FakeCapturer(scale: 2)
++    let service = makeService(capturer, registry: registry)
++    capturer.beforeReturning = { window.setFrameOrigin(NSPoint(x: 600, y: 600)) }
++
++    service.capture(window: window, themeGeneration: 1)
++    await settle()
++    XCTAssertNil(
++      service.snapshot(for: keys[0], themeGeneration: 1),
++      "the frame moved under the capture — every crop would be offset")
++  }
++
++  func testAMiniaturizedOrHiddenWindowIsNotCaptured() async {
++    // A window on an inactive Space returns an all-black *successful* image, which "keep the old entry
++    // on failure" would cache as the new truth. The gate is on visibility, before any capture.
++    let registry = SnapshotRegistry()
++    let (window, _) = window(regions: 1, registry: registry)
++    let capturer = FakeCapturer(scale: 2)
++    let service = makeService(capturer, registry: registry)
++    window.orderOut(nil)
++    service.capture(window: window, themeGeneration: 1)
++    await settle()
++    XCTAssertEqual(capturer.calls, 0, "not even attempted")
++  }
++
++  func testAWindowWithNoRegionsIsNotCaptured() async {
++    let registry = SnapshotRegistry()
++    let window = NSWindow(
++      contentRect: NSRect(x: 0, y: 0, width: 200, height: 200), styleMask: [.titled],
++      backing: .buffered, defer: false)
++    window.orderFrontRegardless()
++    windows.append(window)
++    let capturer = FakeCapturer(scale: 2)
++    let service = makeService(capturer, registry: registry)
++    service.capture(window: window, themeGeneration: 1)
++    await settle()
++    XCTAssertEqual(capturer.calls, 0, "nothing to crop ⇒ no shot")
++  }
++
++  func testConcurrentRequestsForOneWindowCoalesce() async {
++    let registry = SnapshotRegistry()
++    let (window, _) = window(regions: 1, registry: registry)
++    let capturer = FakeCapturer(scale: 2)
++    let service = makeService(capturer, registry: registry)
++    for _ in 0..<5 { service.capture(window: window, themeGeneration: 1) }
++    await settle()
++    XCTAssertEqual(capturer.calls, 1, "one in-flight shot per window, not five")
++  }
++
++  func testAFailingCapturerLeavesTheExistingThumbnailAlone() async {
++    struct Failing: SnapshotCapturing {
++      func capture(window: NSWindow, maxLongEdge: CGFloat) async throws -> WindowCapture? {
++        struct Boom: Error {}
++        throw Boom()
++      }
++    }
++    let registry = SnapshotRegistry()
++    let (window, keys) = window(regions: 1, registry: registry)
++    let service = makeService(FakeCapturer(scale: 2), registry: registry)
++    service.capture(window: window, themeGeneration: 1)
++    await settle()
++    XCTAssertNotNil(service.snapshot(for: keys[0], themeGeneration: 1))
++
++    service.setCapturer(Failing())
++    service.capture(window: window, themeGeneration: 1)
++    await settle()
++    XCTAssertNotNil(
++      service.snapshot(for: keys[0], themeGeneration: 1),
++      "a failed shot must not blank a card that already had a picture")
++  }
++
++  func testTheStubCapturerYieldsNoThumbnails() async {
++    // The `railPreviews` opt-out path: cards fall back to their glyph wells.
++    let registry = SnapshotRegistry()
++    let (window, keys) = window(regions: 1, registry: registry)
++    let service = makeService(StubSnapshotCapturer(), registry: registry)
++    service.capture(window: window, themeGeneration: 1)
++    await settle()
++    XCTAssertNil(service.snapshot(for: keys[0], themeGeneration: 1))
++  }
++
++  func testForgetPanesDropsThumbnails() async {
++    let registry = SnapshotRegistry()
++    let (window, keys) = window(regions: 1, registry: registry)
++    let service = makeService(FakeCapturer(scale: 2), registry: registry)
++    service.capture(window: window, themeGeneration: 1)
++    await settle()
++    guard case .pane(let id) = keys[0] else { return XCTFail("key shape") }
++    service.forgetPanes([id])
++    XCTAssertNil(service.snapshot(for: keys[0], themeGeneration: 1))
++  }
++
++  func testInvalidateAllClearsEverything() async {
++    let registry = SnapshotRegistry()
++    let (window, keys) = window(regions: 2, registry: registry)
++    let service = makeService(FakeCapturer(scale: 2), registry: registry)
++    service.capture(window: window, themeGeneration: 1)
++    await settle()
++    service.invalidateAll()
++    for key in keys { XCTAssertNil(service.snapshot(for: key, themeGeneration: 1)) }
++  }
++
++  /// Let the capture task run to completion. It hops to the main actor, so yielding is enough — no
++  /// wall-clock sleep and no expectation timeout.
++  private func settle() async {
++    for _ in 0..<40 { await Task.yield() }
++  }
++}
+
+
+=== DIFF: macapp/project.yml ===
+@@ -226,6 +226,10 @@ targets:
+       - sdk: CoreText.framework
+       - sdk: IOKit.framework
+       - sdk: QuartzCore.framework
++      # Own-window capture for the quick-switcher rail's thumbnails (issue #132). No entitlement and
++      # no Info.plist key: `SCShareableContent.currentProcess` captures our own windows with no TCC
++      # grant, measured in the T1 spike.
++      - sdk: ScreenCaptureKit.framework
+     info:
+       path: WorkroomApp/Info.plist
+       properties:
+
+
+Investigate per the method in your instructions, then return the findings list.
