@@ -1,0 +1,84 @@
+<task-notification>
+<task-id>acd1b848c4cd6ad62</task-id>
+<tool-use-id>toolu_011aQ57dkSMEXEiXHvREdrbs</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/aed8926d-2d0e-4e9c-8c02-c5f98d2554f8/tasks/acd1b848c4cd6ad62.output</output-file>
+<status>completed</status>
+<summary>Agent "Explore macapp tab icon and process detection code" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result># Investigation Report: Issue #141 — Favicons for Terminal Tabs (Workroom macOS app)
+
+All paths are absolute from repo root `/Users/joelmoss/dev/workroom/`.
+
+---
+
+## 1. Tab strip / tab view UI
+
+**Terminal tab strip** (per-workroom row of terminal/content tabs):
+- `macapp/WorkroomApp/Views/TerminalTabStrip.swift:17` — `struct TerminalTabStrip: View`, the strip itself (scroller, "+", reorder/drag, per-tab toolbar).
+- `macapp/WorkroomApp/Views/TerminalTabStrip.swift:438` — `private struct TerminalTabChip: View`, the per-tab chip subview that renders icon(s) + title + close button. Takes `tab: TerminalTab` (line 444) plus caller-computed booleans (`isActive`, `isHovered`, `runState`, `agentBadge`, etc.).
+- Chip content order (body starts line 472): optional ✦ agent-diagnosis badge (`sparkles`, line 477-487, only when `agentManager.banners[tab.id] != nil`) → optional run-state dot (`runIconSpec`, lines 464-470, 491-500 — green/dim `play.circle.fill` or red `xmark.octagon.fill`, only on the dedicated *run* tab, computed by the strip at lines 133-137) → content-kind glyph (`plusminus` for diff :502-507, `doc` for file :509-514, `clock` for changeset :516-521) → unread-activity dot (:524-529) → `Text(tab.title)` (:530-546) → always-visible `TabCloseButton` (:548, defined :682-704).
+- Busy/spinner indicator: **not an icon** — a flowing accent underline, `RunningUnderline` (struct at :644-678), drawn as a `.overlay(alignment: .bottom)` on the chip (:607-613) keyed on `tab.isRunning` (`TerminalSessions.swift:73-76`), deliberately an overlay (not an HStack element) so it never perturbs the chip's *measured* width (comment at :605-606). Also exposed via `.accessibilityValue(tab.isRunning ? "Busy" : "Idle")` (:624).
+- Every icon in the chip is an SF Symbol (`Image(systemName:)`) — no bundled image assets are used anywhere in this view.
+- **Width is load-bearing.** The chip's natural width is measured via `TabWidthKey` preference (struct :631-638, read at :245 `drag.setWidths($0)`) and feeds `TabReorderMath`/`TabStripSplitRun`/the overflow predicate (`OverflowingTabScroller`). That's exactly why `RunningUnderline`, the leading-separator hairline (:596-604), and the close-button hover well are all `.overlay`s rather than HStack children — a new icon added as an ordinary HStack element (like the existing diff/file/changeset glyphs at :502-521) *would* change measured width and interact with that math; an overlay badge would not.
+
+**Workroom tab strip** (the higher-level bar of workroom/project tabs, above the terminal strip):
+- `macapp/WorkroomApp/Views/WorkroomTabBar.swift:21` — `struct WorkroomTabBar: View`.
+- `macapp/WorkroomApp/Views/WorkroomTabBar.swift:434` — `private struct WorkroomTabChip: View`, icon row `contentRow` at :518-581 (house/cube glyph :525-527, missing-folder warning :528-533, title text :538-560, run-state dot :565-579). Reuses the same `RunningUnderline` (:619-624) keyed on `terminals.isRunning(forTargetID: target.id)` (an aggregate OR across every tab of that target, `TerminalSessions.swift:549-550`).
+
+**Sidebar rows** (`macapp/WorkroomApp/Views/ProjectSidebar.swift`) additionally show a native `ProgressView()`-based `RunningSpinner` (struct :665-672, used at :316 and :375) for the same OSC-9;4 aggregate signal — a third, independent rendering of "something is busy" alongside the two tab strips.
+
+---
+
+## 2. "What's running" / foreground-process detection
+
+**The core type — `AgentBackend`** (only two cases exist today):
+- `macapp/WorkroomApp/Core/AgentRunner.swift:9-40` — `enum AgentBackend: String { case claude, codex }`, with `executable`, `displayName` ("Claude"/"Codex"), `supportsInlineDiagnosis`. Used for the inline-diagnosis feature (issue #49), not currently for any icon.
+
+**Per-tab state** — `macapp/WorkroomApp/Core/TerminalSessions.swift:301-324`, `struct TerminalState`:
+- `liveTitle: String?` (:310) — surface's latest OSC 0/2 title.
+- `activeAgentBackend: AgentBackend?` (:314) — **"which CLI tool is running," already present**. Comment: "identified from the PTY foreground process (or conservatively from shell title as a fallback for multiplexed sessions)... latched until `command_finished`."
+- `progressActive: Bool?` (:323) — OSC 9;4 busy/idle, the *sole* driver of `isRunning`.
+- `TerminalTab.isRunning` computed property, `TerminalSessions.swift:73-76`.
+
+**Detection wiring (app-side, live pane):**
+- `macapp/WorkroomApp/Core/GhosttySurfaceView.swift:36-43` — `foregroundAgentBackend` computed property: asks libghostty for the PTY foreground pid (`ghostty_surface_foreground_pid`) and resolves it via `AgentProcessRecognition.backend(forPID:)`.
+- `macapp/WorkroomApp/Core/AgentUsage.swift:129-145` — `enum AgentProcessRecognition`: `backend(forProcessName:)` (:130-137) matches lowercased basename `"claude"`/`"codex"`; `backend(forPID:)` (:139-144) resolves the name via **`proc_name(pid, ...)`**.
+- `macapp/WorkroomApp/Core/AgentUsage.swift:101-127` — `enum AgentTitleRecognition.backend(for title:)`: the title-based fallback, matching provider-owned titles (`"claude code"`, `"codex"`) or the first token's basename (`"claude"`/`"codex"`).
+- `macapp/WorkroomApp/Core/TerminalSessions.swift:1360-1368` (`updateTitle`) is where the two are combined and latched: `s.view.foregroundAgentBackend ?? AgentTitleRecognition.backend(for: trimmed)`, only written into `activeAgentBackend` once (`if $0.activeAgentBackend == nil { … }`) until `command_finished` clears it (:1403-1407, `handleCommandFinished`).
+
+**Known asymmetry worth flagging for planning (not something to fix here):** the daemon-side foreground detector (`SessionPTY.swift`, next section) deliberately avoids `proc_name`/`p_comm` with an explicit comment that Claude Code renames its own process title post-launch (so `p_comm` reads as a version string like `"2.1.232"`, not `"claude"`). The **live-pane** detector, `AgentProcessRecognition.backend(forPID:)` (`AgentUsage.swift:139-144`), still calls `proc_name` today. In practice this likely means `foregroundAgentBackend` returns `nil` for a live Claude pane and detection actually succeeds via the `AgentTitleRecognition` title fallback in `updateTitle` (`TerminalSessions.swift:1360-1361`) instead — i.e. the two recognizers in the codebase disagree on method, and only one of the two call sites (daemon reattach) uses the method the code itself says is correct.
+
+**Daemon-side foreground detection ("session-daemon reattach foreground detection"):**
+- `macapp/WorkroomSession/SessionPTY.swift:143-146` — `foregroundProcessGroup(masterDescriptor:)`, via `tcgetpgrp`.
+- `macapp/WorkroomSession/SessionPTY.swift:148-181` — `executableName(processID:)`: reads `argv[0]` at exec time via `sysctl(KERN_PROCARGS2, …)`, explicitly **not** `proc_name`/`p_comm`, with the rationale above.
+- `macapp/WorkroomSession/SessionDaemon.swift:343-407` (`attach(session:request:connection:)`), esp. :368-407: on client reattach, resolves the foreground pgid (excluding the shell's own pgid), resolves its `executableName`/`workingDirectory`, and synthesizes fresh OSC 2 (title, :390-393) and OSC 7 (cwd, :394-402) frames before replay — because the shell's original preexec/prompt OSC escapes were one-shot and lost once the alternate screen took over (`SessionReplayBuffer` drops on alt-screen).
+- **Does the tool identity survive relaunch?** No — it is not persisted. `TerminalSessions.swift:216-227` (`TabSession.init?`, the on-disk snapshot bridge) writes only `defaultTitle`, `cwd`, `sessionID` into `TerminalPayload`; `activeAgentBackend`/`liveTitle`/`progressActive` are pure runtime state and never serialize. On relaunch, a tab that reattaches to a still-alive daemon session gets its title (and thus `activeAgentBackend`, via the `AgentTitleRecognition` fallback in `updateTitle`) **re-derived fresh** from the daemon's synthesized OSC 2 (the path in the paragraph above); a tab that spawns a brand-new shell has no agent identity until the next real title/foreground-process report arrives.
+
+**OSC 9;4 parsing / busy indicator (Agent OSC 9;4 cadence):**
+- `macapp/WorkroomApp/Core/GhosttyRuntimeAdapter.swift:51-59` — `GHOSTTY_ACTION_PROGRESS_REPORT` case: `REMOVE` ⇒ idle, everything else (`SET`/`INDETERMINATE`/`PAUSE`/`ERROR`) ⇒ working; calls `view.handleProgressReport(working)`.
+- `macapp/WorkroomApp/Core/GhosttySurfaceView.swift:762-771` — `handleProgressReport(_:)`: sets `progressActive`, arms/disarms a 30s safety timer (`progressTimeoutTimer`, declared :170-179), forwards via `onProgressReport` closure.
+- `macapp/WorkroomApp/Core/GhosttySurfaceView.swift:779-782` — `handleTitleChange(_:)`: while `progressActive`, treats each title repaint as a liveness heartbeat that re-arms the timer — this is exactly the documented "Claude emits OSC 9;4 once at start/end, Codex never — both animate a title spinner" cadence (comment at :174-176: "OSC 9;4 is edge-triggered — Claude emits it once at the start (and once at finish), Codex never — but both animate their title ~1–10×/s the whole time they work").
+- `macapp/WorkroomApp/Core/TerminalSessions.swift:1436-1446` — `updateProgress(_:forTab:target:)`, the sole writer of `progressActive`, hence sole driver of `TerminalTab.isRunning`.
+- Rendered as `RunningUnderline` (`TerminalTabStrip.swift:644-678`) and `RunningSpinner`/native `ProgressView` (`ProjectSidebar.swift:665-672`) — no icon glyph, just an accent underline/spinner, everywhere it's shown today.
+
+---
+
+## 3. Existing icon/asset infrastructure
+
+- Virtually everything in the app UI is an **SF Symbol** via `Image(systemName:)` — confirmed pattern across `TerminalTabStrip.swift`, `WorkroomTabBar.swift`, `TerminalStatusBar.swift`, `ProjectSidebar.swift`, etc.
+- `macapp/WorkroomApp/Assets.xcassets/` contains only `AppIcon.appiconset`, `AppIcon-Dev.appiconset`, `AppIcon-Nightly.appiconset`, and **one** bundled-image precedent: `MenuBarIcon.imageset` (`menubar_18.png` + `menubar_18@2x.png`, `Contents.json` marks it `template-rendering-intent: template`), consumed at `macapp/WorkroomApp/Core/MenuBarController.swift:29` via `NSImage(named: "MenuBarIcon")`. This is the one existing example in the codebase of how a bundled (non-SF-Symbol) image asset is declared and referenced — the template a per-tool logo asset would follow.
+- `macapp/Resources/` holds only non-UI runtime resources: `markdown/` (the in-app Markdown preview's JS/CSS bundle — `mermaid.min.js`, `marked.min.js`, `dompurify.min.js`, `render.js`, `styles.css`, `template.html`), `run-supervisor/supervisor.sh`, and `ghostty/` (terminfo + shell-integration + `SOURCE.md`/`CHECKSUMS`). No Claude/Codex/CLI-tool logo files exist anywhere in the repo (`macapp/Resources`, `Assets.xcassets`, or elsewhere) — confirmed by directory listing and by name search.
+- **No existing command→logo mapping anywhere.** `AgentBackend.displayName` (`AgentRunner.swift:18-23`) maps to plain text ("Claude"/"Codex") only, used purely as text in `TerminalStatusBar.swift` (quota labels at :182-241) and nowhere rendered as a distinct glyph/logo. The ✦ `sparkles` badge (`TerminalTabStrip.swift:477-487`) marks "a diagnosis is available," generically, not which agent produced it.
+
+---
+
+## 4. Session/pane model &amp; data flow
+
+- `macapp/WorkroomApp/Core/TerminalSessions.swift:15-97` — `struct TerminalTab: Identifiable` is the single terminal-pane/tab model (a value type by design — comment at :11-14 explains why: "a live-title/progress/preview update mutates a copy and reassigns the dict, which is what drives `@Published`"). It already exposes computed conveniences over its `.terminal` payload: `title` (:41-48), `filePath` (:57), `isPreview` (:61-68), `isRunning` (:73-76), `surface` (:34-37).
+- `macapp/WorkroomApp/Core/TerminalSessions.swift:301-324` — `struct TerminalState` is the terminal-specific payload (`view: GhosttySurfaceView`, `sessionID`, `liveTitle`, `activeAgentBackend`, `cwd`, `progressActive`). **The natural slot for a computed "current running tool" property is on `TerminalTab`, mirroring `isRunning` (:73-76)** — e.g. reading `activeAgentBackend` out of the `.terminal` case the same way `isRunning` reads `progressActive`.
+- `macapp/WorkroomApp/Core/GhosttySurfaceView.swift:17` — `final class GhosttySurfaceView: NSView`, the AppKit/libghostty surface each `.terminal` tab owns; owns `foregroundAgentBackend` (:36-43) and the OSC/progress plumbing (§2).
+- **Ownership/mutation seam:** all `TerminalState` field writes funnel through `mutateTerminalState(_:target:_:)` (`TerminalSessions.swift:1383-1392`), which mutates a copy and reassigns into `@Published private var tabsByTarget` (:344) — the one path that republishes `TerminalSessions` (`final class TerminalSessions: ObservableObject`, :342).
+- **Data flow to the tab strip:** `WorkroomTerminalsView` (`macapp/WorkroomApp/Views/WorkroomTerminalsView.swift`) holds `@ObservedObject var sessions: TerminalSessions` (:14); its `body` (:28-30) calls `sessions.tabs(for: target)` to get a fresh `[TerminalTab]` snapshot every time `sessions` republishes, then passes it as a plain `let tabs: [TerminalTab]` into `TerminalTabStrip(tabs: tabs, activeID: active?.id, target: target, sessions: sessions, …)` (:78-83). `TerminalTabStrip` itself (`TerminalTabStrip.swift:18-21`) takes `tabs` as a plain `let` (not observed directly) plus `@ObservedObject var sessions: TerminalSessions` for the operations it performs (select/reorder/close); a per-tool icon would read straight off each `TerminalTab` in that already-passed array, needing no new plumbing.
+- `macapp/WorkroomApp/Core/Models.swift:89` — `struct TerminalTarget: Identifiable, Hashable`, the workroom/project-root key everything above is scoped by (`tabsByTarget: [TerminalTarget.ID: …]`).</result>
+<usage><subagent_tokens>132387</subagent_tokens><tool_uses>40</tool_uses><duration_ms>322276</duration_ms></usage>
+</task-notification>
