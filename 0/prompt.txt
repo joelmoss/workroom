@@ -1,0 +1,621 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/AppStore+WorkroomStatus.swift
+  - macapp/WorkroomApp/Core/StatusCommandRunner.swift
+  - macapp/WorkroomApp/Core/VCSWriting.swift
+  - macapp/WorkroomApp/Core/WorkroomStatusResolver.swift
+  - macapp/WorkroomAppTests/StatusCommandRunnerTests.swift
+  - macapp/WorkroomAppTests/VCSWritingTests.swift
+  - macapp/WorkroomAppTests/WorkroomStatusResolverTests.swift
+  - macapp/WorkroomAppTests/WorkroomStatusTests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/AppStore+WorkroomStatus.swift ===
+@@ -100,6 +100,20 @@ extension AppStore {
+ 
+   /// Refresh `githubCLIStatus` if stale (own short TTL), so the warning + probe guards reflect
+   /// whether `gh` is usable. No-ops in fixture mode (the fixture seeds `.available`).
++  ///
++  /// **This is the one status mutation that happens INSIDE an awaited function**, so the callers'
++  /// own `Task.isCancelled` checks (`:86`/`:144`) run too late to protect it — the guard has to live
++  /// here. It was missing, and that was the false, sticky "GitHub CLI not signed in": a superseded
++  /// sweep or a workroom switched mid-probe SIGKILLs the `gh` child, `StatusCommandRunner`'s
++  /// non-throwing continuation still hands back `exitCode: 9` with empty stdout, and the classifier
++  /// read that as a logout. Publishing it then STAMPED the TTL, so the gate above turned every lane
++  /// that would have healed the value into an early return for a full minute — the wrong answer
++  /// suppressing its own repair, escapable only via the Refresh button's `force`.
++  ///
++  /// The tempting instinct — "gh's auth state is machine-global, so record it even from a cancelled
++  /// task" — is wrong: a cancelled probe holds no fact at all, neither a value nor a freshness. Bail
++  /// on both. Same for `.keepPrior`: leaving the stamp alone is what makes the next lane re-probe
++  /// instead of trusting a non-answer.
+   func refreshGitHubCLI(resolver: WorkroomStatusResolver, force: Bool = false) async {
+     if UITestFixture.isActive { return }
+     if !force, let at = ghStatusCheckedAt,
+@@ -107,7 +121,9 @@ extension AppStore {
+     {
+       return
+     }
+-    let status = await resolver.resolveGitHubCLI()
++    let probe = await resolver.resolveGitHubCLI()
++    if Task.isCancelled { return }
++    guard case .verdict(let status) = probe else { return }
+     githubCLIStatus = status
+     ghStatusCheckedAt = Date()
+   }
+
+
+=== DIFF: macapp/WorkroomApp/Core/StatusCommandRunner.swift ===
+@@ -10,12 +10,38 @@ struct CommandResult: Sendable, Equatable {
+   let stderr: String
+   let exitCode: Int32
+   let timedOut: Bool
++  /// The child was killed by a signal (`terminationReason == .uncaughtSignal`) rather than exiting
++  /// normally — our own cancellation SIGKILL, our timeout's SIGTERM, an OS kill under memory
++  /// pressure, a crash, or a signal delivered around sleep/wake. `exitCode` is then the **signal
++  /// number** (SIGKILL = 9, SIGTERM = 15), NOT a CLI exit status, so no classifier may read it as
++  /// one: `gh` "exited 9" is not a logout, and `git` "exited 15" is not a push failure.
++  ///
++  /// `WorkroomCLI.CLIResult` has carried this exact field since `a64e4269` ("stop 'exited with code
++  /// 15' dialog on wake from sleep"); this is the same fact for the runner that *deliberately*
++  /// SIGKILLs on cancellation.
++  ///
++  /// **`timedOut` implies `signaled`.** The timeout path marks `timedOut` and then calls
++  /// `terminate()` (SIGTERM), so a timed-out child sets BOTH. Every consumer must therefore test
++  /// `timedOut` first, or a timeout gets misreported as a bare interruption.
++  let signaled: Bool
+ 
+   /// `/usr/bin/env` exits 127 when the command (git/jj/gh) isn't on PATH.
+   static let commandNotFound: Int32 = 127
+   /// git exits 128 for "not a git repository" and similar fatal usage errors.
+   static let gitFatal: Int32 = 128
+ 
++  /// Written out rather than synthesized: a `let` with an initial value is EXCLUDED from the
++  /// memberwise init entirely, so `let signaled = false` would compile at all ~60 construction
++  /// sites and then fail only where the runner tries to set it. Defaulted last so those sites —
++  /// almost all tests, none of which care about signals — keep compiling untouched.
++  init(stdout: String, stderr: String, exitCode: Int32, timedOut: Bool, signaled: Bool = false) {
++    self.stdout = stdout
++    self.stderr = stderr
++    self.exitCode = exitCode
++    self.timedOut = timedOut
++    self.signaled = signaled
++  }
++
+   var ok: Bool { exitCode == 0 && !timedOut }
+ }
+ 
+@@ -264,7 +290,12 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
+               stdout: String(decoding: state.stdout, as: UTF8.self),
+               stderr: String(decoding: state.stderr, as: UTF8.self),
+               exitCode: finished.terminationStatus,
+-              timedOut: state.timedOut))
++              timedOut: state.timedOut,
++              // A killed child reports its SIGNAL in `terminationStatus`, so record which kind of
++              // exit this was — otherwise a cancelled/killed probe is indistinguishable from a CLI
++              // that ran and failed, which is how a SIGKILLed `gh auth status` came to be read as
++              // "not signed in" and a SIGTERMed `git push` as "git exited 15".
++              signaled: finished.terminationReason == .uncaughtSignal))
+         }
+ 
+         do {
+
+
+=== DIFF: macapp/WorkroomApp/Core/VCSWriting.swift ===
+@@ -1099,6 +1099,13 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+     // doesn't.
+     if lockSymptom(err), let lock = existingLockFile(gitDir: gitDir) { return .locked(lock) }
+     let trimmed = err.trimmingCharacters(in: .whitespacesAndNewlines)
++    // Killed rather than finished, with nothing to say for itself: `exitCode` is the SIGNAL number,
++    // so the fallback below would render "git exited 15" — literally the dialog `a64e4269` ("stop
++    // 'exited with code 15' dialog on wake from sleep") set out to end. That fix taught
++    // `WorkroomCLI.CLIResult` about signals but never reached this runner. Deliberately last, and
++    // only when there is no stderr: a child that explained itself before dying keeps its real
++    // classification. `.other` retries, which is the right recovery for an interrupted write.
++    if trimmed.isEmpty, result.signaled { return .other("\(tool) was interrupted") }
+     return .other(trimmed.isEmpty ? "\(tool) exited \(result.exitCode)" : trimmed)
+   }
+ 
+@@ -1197,6 +1204,8 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+       return .locked(lockFile(in: err))
+     }
+     let trimmed = err.trimmingCharacters(in: .whitespacesAndNewlines)
++    // Same reasoning as `classify`: a signal number is not an exit status, so don't print it as one.
++    if trimmed.isEmpty, result.signaled { return .other("\(tool) was interrupted") }
+     return .other(trimmed.isEmpty ? "\(tool) exited \(result.exitCode)" : trimmed)
+   }
+ 
+
+
+=== DIFF: macapp/WorkroomApp/Core/WorkroomStatusResolver.swift ===
+@@ -422,7 +422,11 @@ struct WorkroomStatusResolver: Sendable {
+   /// invalid" and exits non-zero — a false "not signed in". The `--json` form instead always exits
+   /// zero (barring a fatal error) and emits a per-account `state`/`error`, so we can tell a
+   /// transport failure (transient → don't cry wolf) from a genuine 401 (really logged out).
+-  func resolveGitHubCLI() async -> GitHubCLIStatus {
++  ///
++  /// Measured against gh 2.97.0: the JSON goes to **stdout** and the exit code is **0** in every
++  /// genuine state — signed in, token rejected (a 401 in the per-account `error`), and no config at
++  /// all (`{"hosts":{}}`). So a non-zero exit means we learned nothing, not that you're logged out.
++  func resolveGitHubCLI() async -> GHAuthProbe {
+     let r = await runner.run(
+       "gh", ["auth", "status", "--active", "--json", "hosts"], in: NSTemporaryDirectory(),
+       timeout: ciTimeout)
+@@ -431,16 +435,54 @@ struct WorkroomStatusResolver: Sendable {
+ 
+   // MARK: - Pure parsers / classifiers (unit-tested directly)
+ 
+-  static func classifyGitHubCLI(_ r: CommandResult) -> GitHubCLIStatus {
+-    if r.exitCode == CommandResult.commandNotFound { return .notInstalled }
+-    if r.timedOut { return .available }  // network/keyring blip — don't cry wolf
++  /// The outcome of one `gh auth status` probe: either a verdict about the machine, or "the probe
++  /// told us nothing" — which is a THIRD thing, not a synonym for "gh works".
++  ///
++  /// Forcing "no news" into a `GitHubCLIStatus` is what made the old timeout path lie: reporting
++  /// `.available` for a probe that never answered doesn't just fail to warn, it actively ERASES a
++  /// correct `.notAuthenticated`/`.notInstalled`/`.tooOld` and leaves the user with a silent panel
++  /// and PR probes that fail for no visible reason. `.keepPrior` mirrors `GHPreflight.keepPrior` and
++  /// `CIResolution.keepPrior`, and — critically — the store does not stamp the TTL for it, so the
++  /// next lane re-probes instead of trusting a non-answer for a full minute.
++  enum GHAuthProbe: Equatable {
++    case verdict(GitHubCLIStatus)
++    case keepPrior
++  }
++
++  /// Classify one `gh auth status --active --json hosts` result.
++  ///
++  /// ```
++  ///   exit 127 ─────────────────────────► .verdict(.notInstalled)
++  ///   timedOut ─────────────────────────► .keepPrior      ◄─ MUST precede `signaled`:
++  ///        │                                                 the timeout SIGTERMs the child,
++  ///        │                                                 so a timeout sets BOTH flags
++  ///   parseable JSON ───────────────────► .verdict(from the payload)
++  ///        │                              ◄─ BEFORE `signaled`: a child that emitted a COMPLETE
++  ///        │                                 401 and was killed afterwards really did tell us
++  ///        │                                 the token is bad. Don't discard evidence.
++  ///   signaled (no parseable payload) ──► .keepPrior      ◄─ killed/crashed: no verdict, no news
++  ///        │
++  ///   exit 0 ───────────────────────────► .verdict(.available)
++  ///   non-zero ─────────────────────────► .verdict(.notAuthenticated)
++  /// ```
++  static func classifyGitHubCLI(_ r: CommandResult) -> GHAuthProbe {
++    if r.exitCode == CommandResult.commandNotFound { return .verdict(.notInstalled) }
++    if r.timedOut { return .keepPrior }  // network/keyring blip — and always also `signaled`
+     // `--json hosts` exits 0 even when the active token fails to validate, emitting structured
+     // per-account state. Parse that to tell a transient network failure from a real logout (#86).
+-    if let status = classifyGitHubCLIJSON(r.stdout) { return status }
+-    // Fallback for an unparseable payload (pre-2.57 gh without `--json`, or a fatal gh error): the
+-    // old exit-code heuristic. A non-zero exit here is rare and ambiguous, so keep the prior
+-    // behaviour of treating it as not-authenticated rather than silently masking a real problem.
+-    return r.ok ? .available : .notAuthenticated
++    if let status = classifyGitHubCLIJSON(r.stdout) { return .verdict(status) }
++    // Killed with nothing parseable to show for it (superseded probe, jetsam, crash, sleep/wake
++    // signal): `exitCode` is a signal number, so the heuristic below would read SIGKILL as a
++    // logout. That was the false, sticky "GitHub CLI not signed in".
++    if r.signaled { return .keepPrior }
++    // Remaining non-zero exits are a fatal gh error with no parseable JSON. Ambiguous, and
++    // deliberately still reported as not-authenticated rather than silently masking a real problem.
++    //
++    // NOTE: one identifiable shape lands here today and is WRONG — an old gh (< 2.57) rejects
++    // `--active`/`--json` outright (measured: exit 1, empty stdout, `unknown flag: --json` on
++    // stderr), so a perfectly signed-in user reads as permanently logged out. That gets its own
++    // `.tooOld` verdict and an upgrade message; see the PR2 hardening pass.
++    return .verdict(r.ok ? .available : .notAuthenticated)
+   }
+ 
+   /// Classify `gh auth status --active --json hosts` output, or `nil` if it isn't the expected JSON
+@@ -494,6 +536,12 @@ struct WorkroomStatusResolver: Sendable {
+ 
+   static func ghPreflight(_ r: CommandResult) -> GHPreflight {
+     if r.timedOut { return .keepPrior }
++    // Killed rather than finished (cancelled lane, jetsam, crash, sleep/wake signal): `exitCode` is
++    // a signal number, so `!r.ok` below would read SIGKILL as "gh failed" and clear a good PR/CI
++    // badge. Belt is the callers' `Task.isCancelled` guards (`:153`/`:156`/`:166`/`:169`); this is
++    // braces, because those guards are non-local and a future call site can forget them — which is
++    // exactly how the gh *auth* probe came to publish a killed child's verdict.
++    if r.signaled { return .keepPrior }
+     if r.exitCode == CommandResult.commandNotFound { return .absent }  // gh not installed
+     let lowerErr = r.stderr.lowercased()
+     if lowerErr.contains("rate limit") || lowerErr.contains("503") || lowerErr.contains("timeout") {
+
+
+=== DIFF: macapp/WorkroomAppTests/StatusCommandRunnerTests.swift ===
+@@ -17,6 +17,9 @@ final class StatusCommandRunnerTests: XCTestCase {
+     XCTAssertEqual(r.exitCode, 3)
+     XCTAssertFalse(r.timedOut)
+     XCTAssertFalse(r.ok)
++    // A child that CHOSE its exit status is not signalled, so 3 really is an exit code here. This is
++    // the baseline the flag distinguishes from a 9/15 that only looks like one.
++    XCTAssertFalse(r.signaled)
+   }
+ 
+   func testLargeOutputCappedWithoutDeadlock() async {
+@@ -33,6 +36,11 @@ final class StatusCommandRunnerTests: XCTestCase {
+     let r = await runner.run("sh", ["-c", "sleep 10"], in: tmp, timeout: 0.3)
+     XCTAssertTrue(r.timedOut)
+     XCTAssertFalse(r.ok)
++    // ORDERING LOCK: the timeout path SIGTERMs the child, so a timed-out result carries `signaled`
++    // too and `exitCode` is the signal number, not an exit status. Every classifier must therefore
++    // test `timedOut` BEFORE `signaled` — see `WorkroomStatusResolver.classifyGitHubCLI`.
++    XCTAssertTrue(r.signaled, "our timeout kills the child, so a timeout is also a signal")
++    XCTAssertEqual(r.exitCode, 15)  // SIGTERM, not something `sleep` chose
+   }
+ 
+   func testSigtermIgnoringChildIsSigkilledAndStillReturns() async {
+@@ -75,12 +83,22 @@ final class StatusCommandRunnerTests: XCTestCase {
+     let r = await task.value
+     XCTAssertFalse(r.ok, "a cancelled probe's result is abandoned, not a success")
+     XCTAssertLessThan(Date().timeIntervalSince(start), 10, "not the 30s sleep")
++    // The result shape a cancelled probe actually has — and the one `classifyGitHubCLI` used to read
++    // as a logout. Killed by SIGKILL, so `exitCode` is the SIGNAL NUMBER (9), `timedOut` is false
++    // (the 30s deadline never fired), and stdout is empty or half-written. Nothing here is evidence
++    // about gh's auth state, which is why the flag exists.
++    XCTAssertTrue(r.signaled, "a cancelled probe's child was killed by a signal")
++    XCTAssertFalse(r.timedOut, "cancellation is not a timeout")
++    XCTAssertEqual(r.exitCode, 9)  // SIGKILL, not a CLI exit status
+   }
+ 
+   func testLaunchFailureInMissingDirIsCommandNotFound() async {
+     let r = await runner.run(
+       "git", ["status"], in: "/no/such/dir-\(UUID().uuidString)", timeout: 5)
+     XCTAssertEqual(r.exitCode, CommandResult.commandNotFound)
++    // Nothing was ever spawned, so nothing was signalled — this must stay a clean 127 so it keeps
++    // classifying as "not installed" rather than as an interruption.
++    XCTAssertFalse(r.signaled)
+   }
+ 
+   // MARK: stdin
+
+
+=== DIFF: macapp/WorkroomAppTests/VCSWritingTests.swift ===
+@@ -892,6 +892,43 @@ final class VCSWritingTests: XCTestCase {
+     XCTAssertEqual(message, "jj exited 3")
+   }
+ 
++  /// REGRESSION for the dialog `a64e4269` ("stop 'exited with code 15' dialog on wake from sleep")
++  /// set out to end. That fix taught `WorkroomCLI.CLIResult` about signals but never reached
++  /// `StatusCommandRunner`, so a `git push` SIGTERMed around sleep/wake wrote nothing to stderr and
++  /// the failure sheet rendered the signal number as an exit code: literally "git exited 15".
++  func testSignalledFailureWithNoStderrReportsAnInterruption() {
++    let killed = CommandResult(
++      stdout: "", stderr: "", exitCode: 15, timedOut: false, signaled: true)
++    guard case .other(let message) = CLIVCSWriter.classify(killed, action: .push, tool: "git")
++    else {
++      return XCTFail("expected .other")
++    }
++    XCTAssertEqual(message, "git was interrupted")
++    XCTAssertFalse(message.contains("15"), "a signal number must never surface as an exit code")
++  }
++
++  /// A child that explained itself before dying keeps its real classification: the interruption
++  /// message is a fallback for an EMPTY stderr, not a blanket override that would discard a genuine
++  /// diagnosis (a rejected push, a host-key failure) just because the process was later killed.
++  func testSignalledFailureWithStderrStillClassifiesByMessage() {
++    let killed = CommandResult(
++      stdout: "", stderr: "Updates were rejected because the remote contains work", exitCode: 15,
++      timedOut: false, signaled: true)
++    guard case .rejected = CLIVCSWriter.classify(killed, action: .push, tool: "git") else {
++      return XCTFail("expected .rejected")
++    }
++  }
++
++  /// ORDERING LOCK: our own timeout SIGTERMs the child, so a timed-out result also carries
++  /// `signaled`. The timeout branch runs first and must keep winning, or every timeout would be
++  /// reported as a bare interruption and lose its Retry-with-context recovery.
++  func testTimedOutFailureStillReportsTimeoutNotInterruption() {
++    let timedOut = CommandResult(
++      stdout: "", stderr: "", exitCode: 15, timedOut: true, signaled: true)
++    XCTAssertEqual(
++      CLIVCSWriter.classify(timedOut, action: .fetch, tool: "git"), .timedOut(.fetch))
++  }
++
+   // MARK: - Routing
+ 
+   func testWriterRoutesByRepoKind() throws {
+
+
+=== DIFF: macapp/WorkroomAppTests/WorkroomStatusResolverTests.swift ===
+@@ -674,24 +674,75 @@ final class WorkroomStatusResolverTests: XCTestCase {
+   func testClassifyGitHubCLINotInstalled() {
+     let r = CommandResult(
+       stdout: "", stderr: "env: gh: No such file", exitCode: 127, timedOut: false)
+-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .notInstalled)
++    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .verdict(.notInstalled))
+   }
+ 
+   func testClassifyGitHubCLINotAuthenticated() {
+     let r = CommandResult(
+       stdout: "", stderr: "You are not logged into any GitHub hosts.", exitCode: 1, timedOut: false)
+-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .notAuthenticated)
++    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .verdict(.notAuthenticated))
+   }
+ 
+   func testClassifyGitHubCLIAvailable() {
+     let r = ok("github.com\n  \u{2713} Logged in to github.com account joelmoss")
+-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .available)
++    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .verdict(.available))
+   }
+ 
+-  func testClassifyGitHubCLITimeoutIsAvailable() {
+-    // A network/keyring blip must not raise a false "not signed in" warning.
++  /// A timeout learned NOTHING, so it must not publish a verdict in either direction. It used to
++  /// report `.available`, which is not "no news" — it is a positive claim that would erase a correct
++  /// `.notAuthenticated` and leave the user with a silent panel.
++  func testClassifyGitHubCLITimeoutKeepsPrior() {
+     let r = CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: true)
+-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .available)
++    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .keepPrior)
++  }
++
++  /// REGRESSION (the false, sticky "GitHub CLI not signed in"): a cancelled probe is SIGKILLed, so
++  /// `StatusCommandRunner`'s non-throwing continuation resumes with the SIGNAL number as `exitCode`
++  /// (9), `timedOut` false, and no output. The exit-code fallback read that as a logout, and
++  /// publishing it stamped the TTL that then suppressed every repair for a minute.
++  func testClassifyGitHubCLISignalledKeepsPrior() {
++    let killed = CommandResult(
++      stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
++    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(killed), .keepPrior)
++  }
++
++  /// The exact cancellation shape: gh had begun writing its JSON when the SIGKILL landed, so the
++  /// payload is real but unparseable.
++  func REDACTED() {
++    let partial = CommandResult(
++      stdout: #"{"hosts":{"github.com":[{"sta"#, stderr: "", exitCode: 9, timedOut: false,
++      signaled: true)
++    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(partial), .keepPrior)
++  }
++
++  /// ORDERING LOCK: `signaled` suppresses only the ambiguous exit-code FALLBACK, never a complete
++  /// verdict. A child that emitted a full 401 payload and was killed AFTERWARDS really did tell us
++  /// the token is rejected — moving the `signaled` check above the JSON parse would throw that away
++  /// and delay a genuine logout warning.
++  func testClassifyGitHubCLISignalledStillHonoursACompleteVerdict() {
++    let json = #"""
++      {"hosts":{"github.com":[{"state":"error","active":true,"error":"HTTP 401: Bad credentials"}]}}
++      """#
++    let r = CommandResult(stdout: json, stderr: "", exitCode: 9, timedOut: false, signaled: true)
++    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .verdict(.notAuthenticated))
++  }
++
++  /// ORDERING LOCK: our own timeout SIGTERMs the child, so a timed-out result carries `signaled` too.
++  /// `timedOut` must be tested first or a timeout gets reported as a bare interruption. Both land on
++  /// `.keepPrior` today, so this pins the ordering rather than an observable difference — which is
++  /// exactly what stops a later edit from reordering them into a real bug.
++  func testClassifyGitHubCLITimeoutAlsoCarriesSignaled() {
++    let r = CommandResult(stdout: "", stderr: "", exitCode: 15, timedOut: true, signaled: true)
++    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .keepPrior)
++  }
++
++  /// A signalled `gh pr list`/`gh run list` must not clear a good PR/CI badge either.
++  func testGHPreflightSignalledKeepsPrior() {
++    let killed = CommandResult(
++      stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
++    XCTAssertEqual(WorkroomStatusResolver.ghPreflight(killed), .keepPrior)
++    XCTAssertEqual(WorkroomStatusResolver.classifyPR(killed), .keepPrior)
++    XCTAssertEqual(WorkroomStatusResolver.classifyCheckRollup(killed), .keepPrior)
+   }
+ 
+   // MARK: - resolveGitHubCLI (end-to-end via the mock)
+@@ -702,7 +753,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
+         (exe == "gh" && args.contains("auth")) ? ok("Logged in") : ok("")
+       })
+     let status = await r.resolveGitHubCLI()
+-    XCTAssertEqual(status, .available)
++    XCTAssertEqual(status, .verdict(.available))
+   }
+ 
+   func testResolveGitHubCLIMissing() async {
+@@ -711,7 +762,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
+         CommandResult(stdout: "", stderr: "env: gh: No such file", exitCode: 127, timedOut: false)
+       })
+     let status = await r.resolveGitHubCLI()
+-    XCTAssertEqual(status, .notInstalled)
++    XCTAssertEqual(status, .verdict(.notInstalled))
+   }
+ 
+   /// Regression lock for issues #50 + #86. The auth probe MUST pass `--active` (scope to the active
+@@ -726,7 +777,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
+     }
+     let r = WorkroomStatusResolver(runner: runner)
+     let status = await r.resolveGitHubCLI()
+-    XCTAssertEqual(status, .available)
++    XCTAssertEqual(status, .verdict(.available))
+     let authCall = runner.calls.first { $0.exe == "gh" && $0.args.contains("auth") }
+     XCTAssertNotNil(authCall, "resolveGitHubCLI should invoke `gh auth status`")
+     XCTAssertEqual(authCall?.args, ["auth", "status", "--active", "--json", "hosts"])
+@@ -737,7 +788,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
+   /// A validated active account → available.
+   func testClassifyGitHubCLIJSONSuccess() {
+     let json = #"{"hosts":{"github.com":[{"state":"success","active":true,"login":"joelmoss"}]}}"#
+-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(json)), .available)
++    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(json)), .verdict(.available))
+   }
+ 
+   /// The #86 bug: a network blip while validating the token surfaces as a *transport* error (no HTTP
+@@ -747,7 +798,7 @@ final class WorkroomStatusResolverTests: XCTestCase {
+     let json = #"""
+       {"hosts":{"github.com":[{"state":"error","active":true,"login":"joelmoss","error":"Get \"https://api.github.com/\": dial tcp: lookup api.github.com: no such host"}]}}
+       """#
+-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(json)), .available)
++    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(json)), .verdict(.available))
+   }
+ 
+   /// Policy lock (#86): the classifier recognizes a 401 as a real logout and treats *every other*
+@@ -758,12 +809,12 @@ final class WorkroomStatusResolverTests: XCTestCase {
+   func REDACTED() {
+     let weird =
+       #"{"hosts":{"github.com":[{"state":"error","active":true,"error":"something unexpected"}]}}"#
+-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(weird)), .available)
++    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(weird)), .verdict(.available))
+     let sso =
+       #"{"hosts":{"github.com":[{"state":"error","active":true,"error":"HTTP 403: Resource protected by organization SAML enforcement"}]}}"#
+-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(sso)), .available)
++    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(sso)), .verdict(.available))
+     let noErrorKey = #"{"hosts":{"github.com":[{"state":"error","active":true}]}}"#
+-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(noErrorKey)), .available)
++    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(noErrorKey)), .verdict(.available))
+   }
+ 
+   /// A genuinely rejected token (HTTP 401 / bad credentials) → really logged out, keep the warning.
+@@ -771,13 +822,13 @@ final class WorkroomStatusResolverTests: XCTestCase {
+     let json = #"""
+       {"hosts":{"github.com":[{"state":"error","active":true,"login":"joelmoss","error":"HTTP 401: Bad credentials (https://api.github.com/)"}]}}
+       """#
+-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(json)), .notAuthenticated)
++    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(json)), .verdict(.notAuthenticated))
+   }
+ 
+   /// No accounts configured → genuinely logged out.
+   func testClassifyGitHubCLIJSONNoAccountsIsNotAuthenticated() {
+     XCTAssertEqual(
+-      WorkroomStatusResolver.classifyGitHubCLI(ok(#"{"hosts":{}}"#)), .notAuthenticated)
++      WorkroomStatusResolver.classifyGitHubCLI(ok(#"{"hosts":{}}"#)), .verdict(.notAuthenticated))
+   }
+ 
+   /// A working active account wins even when a *secondary* host's account errors (#50): the default
+@@ -786,17 +837,20 @@ final class WorkroomStatusResolverTests: XCTestCase {
+     let json = #"""
+       {"hosts":{"github.com":[{"state":"success","active":true}],"ghe.example.com":[{"state":"error","active":true,"error":"HTTP 401: Bad credentials"}]}}
+       """#
+-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(json)), .available)
++    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(ok(json)), .verdict(.available))
+   }
+ 
+-  /// Unparseable stdout (pre-2.57 gh without `--json`, or a fatal error) falls back to the exit-code
+-  /// heuristic: a clean exit is available, a non-zero exit is not-authenticated.
++  /// Unparseable stdout (a fatal gh error) falls back to the exit-code heuristic: a clean exit is
++  /// available, a non-zero exit is not-authenticated.
++  ///
++  /// This is also the lock that `signaled` did NOT blanket-mask the fallback: both results below
++  /// default to `signaled: false`, so they must still produce verdicts rather than `.keepPrior`.
+   func testClassifyGitHubCLINonJSONFallback() {
+     XCTAssertEqual(
+-      WorkroomStatusResolver.classifyGitHubCLI(ok("Logged in to github.com")), .available)
++      WorkroomStatusResolver.classifyGitHubCLI(ok("Logged in to github.com")), .verdict(.available))
+     let failed = CommandResult(
+       stdout: "", stderr: "You are not logged into any GitHub hosts.", exitCode: 1, timedOut: false)
+-    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(failed), .notAuthenticated)
++    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(failed), .verdict(.notAuthenticated))
+   }
+ 
+   // MARK: - classifyChecks (issue #75)
+
+
+=== DIFF: macapp/WorkroomAppTests/WorkroomStatusTests.swift ===
+@@ -861,6 +861,65 @@ final class WorkroomStatusTests: XCTestCase {
+     XCTAssertEqual(store.workroomStatuses[sid]?.pr?.state, .open)
+   }
+ 
++  // MARK: - refreshGitHubCLI must never publish a non-answer
++
++  /// REGRESSION: the false, sticky "GitHub CLI not signed in".
++  ///
++  /// A cancelled probe's child is SIGKILLed, and `StatusCommandRunner`'s continuation is
++  /// NON-throwing, so it still resumes with `exitCode: 9` and empty stdout. The classifier read that
++  /// as `.notAuthenticated`. Publishing it was bad; STAMPING the TTL alongside it was what made the
++  /// wrong answer stick, because the staleness gate then turned every lane that would have healed it
++  /// into an early return for a full minute. So both halves must stay untouched — asserting only the
++  /// status would let a regression that skips the value but keeps the stamp pass.
++  ///
++  /// The double deliberately returns a CLEAN, verdict-producing payload rather than the signalled
++  /// shape (see `GatedGHRunner`), so `Task.isCancelled` is the only thing under test here. Deleting
++  /// that guard must fail this test; `.keepPrior` is covered separately below.
++  @MainActor
++  func testCancelledGitHubCLIProbePublishesNothingAndDoesNotStamp() async {
++    let store = AppStore()
++    let runner = GatedGHRunner()
++    store.statusResolver = WorkroomStatusResolver(runner: runner)
++    store.githubCLIStatus = .available
++    store.ghStatusCheckedAt = nil
++
++    let resolver = store.statusResolver
++    let task = Task { await store.refreshGitHubCLI(resolver: resolver) }
++    // Cancel only once the probe is genuinely in flight, or the guard under test never runs.
++    let deadline = Date().addingTimeInterval(2)
++    while !runner.enteredGHProbe && Date() < deadline {
++      try? await Task.sleep(nanoseconds: 2_000_000)
++    }
++    XCTAssertTrue(runner.enteredGHProbe, "the gh auth probe never started")
++    task.cancel()
++    await task.value
++
++    XCTAssertEqual(store.githubCLIStatus, .available, "a cancelled probe published a verdict")
++    XCTAssertNil(
++      store.ghStatusCheckedAt, "a cancelled probe stamped the TTL, suppressing the re-probe")
++  }
++
++  /// `.keepPrior` (a killed or crashed child that was never cancelled — jetsam, SIGSEGV, a signal
++  /// around sleep/wake) keeps the previous verdict AND leaves the stamp alone, so the next lane
++  /// re-probes rather than trusting a non-answer for the full TTL.
++  @MainActor
++  func testKeepPriorGitHubCLIProbeLeavesStatusAndStampUntouched() async {
++    let store = AppStore()
++    store.statusResolver = WorkroomStatusResolver(
++      runner: StubPRRunner { _, _ in
++        CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
++      })
++    store.githubCLIStatus = .notAuthenticated  // a TRUE warning that must not be erased
++    store.ghStatusCheckedAt = nil
++
++    await store.refreshGitHubCLI(resolver: store.statusResolver)
++
++    XCTAssertEqual(
++      store.githubCLIStatus, .notAuthenticated,
++      "an uninformative probe erased a correct warning — the inverse false claim")
++    XCTAssertNil(store.ghStatusCheckedAt, "a non-answer must not refresh the TTL")
++  }
++
+   /// Spin until the in-flight `gh` task settles (the stub returns promptly), with a bound so a hang
+   /// fails the test rather than wedging it.
+   @MainActor
+@@ -883,3 +942,44 @@ private struct StubPRRunner: StatusCommandRunning {
+     handler(executable, args)
+   }
+ }
++
++/// Blocks inside the `gh auth status` probe until the awaiting Task is cancelled, then returns a
++/// result that WOULD produce a real verdict.
++///
++/// Two details make this test the cancellation guard's test rather than a duplicate of the
++/// `.keepPrior` one:
++///
++/// 1. It RETURNS rather than throws. `StatusCommandRunner` resolves a **non-throwing**
++///    `withCheckedContinuation`, so its `terminationHandler` always resumes with a value even when
++///    the child was SIGKILLed out from under it. A double that threw `CancellationError` would model
++///    a runner we don't have, and would pass against the buggy code.
++/// 2. It returns a **parseable, verdict-producing** payload (`{"hosts":{}}` with exit 0), NOT the
++///    signalled shape. The signalled shape is already caught by `.keepPrior`, so using it here would
++///    make the test pass even with the cancellation guard deleted — green for the wrong reason. With
++///    a clean verdict, `Task.isCancelled` is the ONLY thing standing between a cancelled probe and a
++///    published `.notAuthenticated`.
++private final class GatedGHRunner: StatusCommandRunning, @unchecked Sendable {
++  private let lock = NSLock()
++  private var entered = false
++
++  var enteredGHProbe: Bool {
++    lock.lock()
++    defer { lock.unlock() }
++    return entered
++  }
++
++  func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
++    async -> CommandResult
++  {
++    guard executable == "gh", args.contains("auth") else {
++      return CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: false)
++    }
++    lock.lock()
++    entered = true
++    lock.unlock()
++    // Sleeps until cancelled (then throws immediately, which `try?` drops). Long enough that the
++    // test's own deadline fails first if cancellation never propagates.
++    try? await Task.sleep(nanoseconds: 60_000_000_000)
++    return CommandResult(stdout: #"{"hosts":{}}"#, stderr: "", exitCode: 0, timedOut: false)
++  }
++}
+
+
+Investigate per the method in your instructions, then return the findings list.
