@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bz2l9h29i</task-id>
+<tool-use-id>toolu_01KtQ5b31AQMg18q4a9EQ62D</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/ad9e5754-d4c8-4063-beb8-947970ea5d8f/tasks/bz2l9h29i.output</output-file>
+<status>completed</status>
+<summary>Background command "Bisect the 13 new failures in isolation" completed (exit code 0)</summary>
+</task-notification>
