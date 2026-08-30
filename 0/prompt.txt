@@ -1,0 +1,36 @@
+<task-notification>
+<task-id>ade2580c629d62a06</task-id>
+<tool-use-id>toolu_016Ye5fukLxxX9Eu75GvT8Gx</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/6b6da5a6-5d6f-49ea-8b2a-a61c143807d7/tasks/ade2580c629d62a06.output</output-file>
+<status>completed</status>
+<summary>Agent "Locate jj Pull base-derivation code for investigation" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>**Task:** investigated TODOS.md:875-892 ("jj Pull guesses `trunk()` as base for unbookmarked `@`") — current implementation, test coverage, and evidence of recurrence. No code modified.
+
+**Current implementation** (`macapp/WorkroomApp/Core/VCSWriting.swift`) — unchanged since the TODO was written, still literally `trunk()`:
+
+```swift
+// line 805
+static let jjTrunkRevset = "trunk()"
+
+// line 828
+static let jjBehindRevset = "@..\(jjTrunkRevset)"
+
+// line 846-848
+static func jjRebaseDestination(current: VCSRef, remote: String) -&gt; String {
+  guard current.kind == .branch, let name = current.name else { return jjTrunkRevset }
+  return "\(jjQuote(name))@\(jjQuote(remote))"
+}
+```
+
+An unbookmarked `@` (i.e. `current.kind != .branch`) always falls back to `trunk()` for both the "N behind" count and the actual `jj rebase -b @ -d trunk()` destination — exactly the behavior the TODO flags.
+
+Notably, the `.immutableHistory` case's doc comment (line 65-73) still cites the *original* measurement as its justification: `"Measured on jj 0.43 for a workroom based off a feature branch while trunk moved on: Error: Commit 4c8e754829da is immutable."` — the same commit hash the 2026-08-10 correction says needs a fresh repro. So the shipped code's own rationale still rests on the unreproduced original claim; nothing has independently reconfirmed it since.
+
+**Test coverage:** `VCSWritingTests.swift` covers only the pure functions in isolation — `testJJBehindRevsetIsScopedToTrunk`, `testJJPullRebaseDestinationFallsBackToTrunk`, `testJJPullRebaseDestinationQuotesANameThatNeedsIt` — asserting the fallback literal and quoting, not behavior against a real repo. `testJJPermanentRefusalsAreClassified` only checks that a canned porcelain error string classifies as `.immutableHistory` — no real `jj rebase` invocation. There is **no integration test** constructing "unbookmarked `@` on a feature branch that keeps advancing on the remote while trunk also advances independently" and asserting what actually happens. The TODO's own three ancestor-based revset repro attempts were exploratory and not preserved as tests.
+
+**Recurrence check:** `git log --since=2026-08-10 -- macapp/WorkroomApp/Core/VCSWriting.swift` returns nothing — no commits, no follow-up, no indication anyone hit this again since the correction.
+
+**Assessment:** stays theoretical. The TODO explicitly says "reopening this needs a fresh, documented repro... not another revset guess," and nothing has changed that supplies one. Attempting a code fix now would be guessing at a scenario that's twice failed to reproduce (three revsets already falsified). Recommend leaving parked exactly as the entry says, rather than spending more revset-guessing effort — the next actionable step is someone hitting the real error message again with a preserved repo state, not more code changes.</result>
+<usage><subagent_tokens>399768</subagent_tokens><tool_uses>10</tool_uses><duration_ms>75303</duration_ms></usage>
+</task-notification>
