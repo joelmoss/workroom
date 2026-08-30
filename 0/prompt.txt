@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bew0p240y</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/2eef3988-b2b3-4a16-b709-eac7203d8da8/tasks/bew0p240y.output</output-file>
+<status>killed</status>
+<summary>Background command "Relaunch full macapp UI test suite (previous run was killed, likely by an intervening shell reset)" was stopped</summary>
+</task-notification>
