@@ -1,0 +1,1 @@
+is it worth using libghostty directly, and avoiding using libghostty-spm completely?
