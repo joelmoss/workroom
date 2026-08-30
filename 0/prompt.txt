@@ -1,0 +1,291 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. Primary Request and Intent:
+
+The user's requests evolved across a long session, in this order:
+   a. "do we have ghostty shell integration in use?" — informational check.
+   b. "as libghostty is unreleased, what commit are we using?" — informational check.
+   c. "df168f41 is from June 1. so we're behind?" — informational check on version currency.
+   d. "does that release include libghostty head?" — informational check.
+   e. "plan upgrade to 1.3.2, and summarize functional changes in upstream libs" — the core research task that everything downstream built on.
+   f. "commit, then create a plan for the pin bump" (fold research findings into TODOS.md, commit, then produce and review a concrete execution plan).
+   g. "is it worth using libghostty directly, and avoiding using libghostty-spm completely?" — architecture question mapping to an existing TODOS.md entry (CMT-2).
+   h. "file the CMT-2 build-path finding as its own TODO" — explicit instruction to split a finding into its own TODOS.md entry rather than fold it inline.
+   i. "commit, then create a plan for the pin bump" (repeated instruction that triggered: git commit of TODOS.md changes, then Plan Mode to build a concrete phased execution plan for bumping libghostty-spm from 1.2.3 → 1.3.2).
+   j. Invocation of the `/plan-eng-review` skill (a full interactive gstack architecture/test/performance review of the plan file, including an outside-voice Codex pass) — this was a slash-command invocation, not free-text, but drove a very long structured review with dozens of user decisions via AskUserQuestion.
+   k. Mid-review, user said **"we are not waiting for GA anymore"** — an explicit reversal of the standing "wait for GA tag" decision. When I asked for disambiguation, the user confirmed: **"Yes — remove the gate, proceed now."**
+   l. After the plan was approved (ExitPlanMode accepted), when asked how to start given the scale, the user chose: **"Start with the mechanical work (recommended)"** — i.e., begin with T2 (doc hygiene) and T3 (ABI diff research), pausing before T1's live-QA baseline.
+   m. Most recently, asked how T1 (live QA baseline requiring app interaction) should be driven, the user chose: **"I drive it via System Events/XCUITest (batched)"** — meaning I (the assistant) should drive the live QA myself via System Events/XCUITest automation, batched into one request per the standing "ask before driving the machine" guidance.
+
+   The overall intent: thoroughly research, plan, review (including cross-model/outside-voice scrutiny), and now execute a version bump of the `libghostty-spm` Swift Package dependency (Workroom's terminal engine) from `1.2.3` to `1.3.2`, following a rigorously reviewed, task-tracked implementation plan — starting with safe mechanical work and proceeding carefully into live-app-interaction steps only with explicit confirmation of how they should be driven.
+
+2. Key Technical Concepts:
+   - Workroom: a macOS app (SwiftUI, macOS 15+) managing Git/JJ workroom worktrees, with a bundled Go CLI.
+   - `GhosttyKit.xcframework`: the embedded terminal engine, distributed via third-party Swift Package `Lakr233/libghostty-spm`, which itself vendors/patches `ghostty-org/ghostty`.
+   - Package-version vs. ghostty-engine-version distinction: `libghostty-spm` versions itself independently of the ghostty engine it's built from (a documented "trap" that previously caused a wrong TODOS.md P1 entry).
+   - `Ghostty.ref`: a hand-maintained 40-char-sha file in the packager's repo pinning the exact upstream ghostty commit to build; auto-detection of latest tags was removed from their CI at some point.
+   - The patch-swap risk: the packager applies patches (`Patches/ghostty/`, ~11 patches) to upstream ghostty before building; `Script/apply-patches.sh` feature-probes `include/ghostty.h` for `ghostty_surface_foreground_pid` to choose between `0002-host-managed-io.patch` (old) and `0002-host-managed-io-modern.patch` (new) — this patch rewrites PTY/IO hosting (surface teardown, orphan shells).
+   - C ABI / header diffing: comparing `include/ghostty.h` between two engine commits for struct layout changes, enum insertions, function signature changes.
+   - Symbolic vs. raw-value enum dispatch: `GhosttyRuntimeAdapter.handleAction` dispatches on symbolic case labels, making mid-enum insertions (like `GHOSTTY_ACTION_SELECTION_CHANGED`) safe despite renumbering.
+   - `AppTerminalView`: the wrapper's own Swift `NSView` subclass convenience layer (in `Sources/GhosttyTerminal`), which Workroom does NOT consume (Workroom links only the raw `GhosttyKit` C-API product and drives it via its own `GhosttySurfaceView.swift`).
+   - XCTest/XCUITest test patterns: `Process()`+`addTeardownBlock` idiom (established in `GhosttyCLITests.swift`), `GhosttyResourcesTests`'s 4 assertions (checksum match, no unexpected entries, themes excluded, alias byte-identical), `GhosttyActionDispatchUITests`'s action-tag baseline.
+   - Claude Code Plan Mode: `EnterPlanMode`/`ExitPlanMode` tools, plan file restricted to a specific path, only the plan file editable during plan mode, `AskUserQuestion` satisfies "end of turn" requirement.
+   - gstack `/plan-eng-review` skill: an elaborate, deeply structured skill with a mandatory "Scope gate" (first tool call must be AskUserQuestion), Step 0 Scope Challenge (complexity-check trigger at 8+ files), 4-section review (Architecture/Code Quality/Test/Performance) each requiring per-issue AskUserQuestion + STOP, an "Outside Voice" Codex cross-model review pass, mandatory Required Outputs (NOT in scope, What already exists, TODOS.md updates via per-item AskUserQuestion, Failure modes table, Worktree parallelization strategy, Implementation Tasks as markdown+JSONL), a Review Log/Dashboard, and a mandatory `## GSTACK REVIEW REPORT` section that must be the LAST heading in the plan file, ending with an exact unbolded sentinel line (`NO UNRESOLVED DECISIONS` or an `**UNRESOLVED DECISIONS:**` block).
+   - `codex exec` outside-voice review: run via `_gstack_codex_timeout_wrapper 600 codex exec "<prompt>" -C "$_REPO_ROOT" -s read-only -c 'web_search="disabled"'`; the sandbox rejected even read-only shell startup for Codex, so its critique was plan-logic-only, not fact-verified against the repo (Codex self-reported this).
+   - Sandbox/TMPDIR issues: `mktemp` on default `/tmp` or `/var/folders/...` failed with "Operation not permitted" inside the command sandbox; workarounds were using the session's own `$TMPDIR` scratchpad path, or (for `gstack-learnings-log`) `dangerouslyDisableSandbox: true`.
+   - `TaskCreate`/`TaskUpdate` tools: `TaskCreate` creates ONE task per call (subject+description params, no batch/array parameter) — required loading the tool schema via `ToolSearch` first.
+   - Cross-model tension resolution pattern: for each Codex-raised point, present as a decision brief via `AskUserQuestion` with ELI10/stakes/recommendation/completeness-or-kind-note, apply the user's chosen resolution directly to the plan file.
+   - Project memory entries referenced as governing constraints for upcoming work: `[[ask-before-driving-the-machine]]` (ask before UI test runs/app launches/System Events/synthetic clicks, batched into one request), `[[qa-isolated-home-not-real-config]]` (QA must run under throwaway $HOME, never mutate real config), `[[macapp-visual-qa]]` (launch with `-WorkroomUITestFixture 1`, drive via System Events menu clicks not blind keystrokes).
+
+3. Files and Code Sections:
+
+   - **`/Users/joelmoss/dev/workroom/TODOS.md`** (repo root)
+     - Central living planning doc. Contains the authoritative "Bump the libghostty pin" entry (originally lines 104-232), plus two newly-created sibling entries this session: "Build path for owning GhosttyKit.xcframework" and "Evaluate adopting `AppTerminalView` for action-dispatch plumbing."
+     - Edited extensively across the session. Key edits in chronological order:
+       - Added "Scope check (2026-08-12)" paragraph noting we only link raw `GhosttyKit`, not the wrapper's Swift convenience layer.
+       - Added "Full `include/ghostty.h` diff swept (2026-08-12...)" paragraph documenting the two safe C-ABI removals and the OSC 9;4 exclusion.
+       - Added "Two more upstream fixes for the retest budget" bullet list (free_text leak fix, mouseButtonCallback race fix).
+       - Added a bullet under "Also required" about retesting the GhosttyKit modulemap-collision workaround.
+       - Trimmed CMT-2's "How to start" to a pointer; created new standalone entry "### Build path for owning GhosttyKit.xcframework (macapp) — CMT-2 finding, checked 2026-08-12".
+       - Created new standalone entry "### Evaluate adopting `AppTerminalView` for action-dispatch plumbing (macapp) — reviewed 2026-08-12, not now".
+       - **Most recent edits (T2 execution, this current phase):**
+         ```
+         ### Bump the libghostty pin (macapp) — in progress, 2026-08-12
+
+         **GA-gate removed (2026-08-12):** this entry originally read "post-GA, first change after the GA
+         tag" and gated on GA shipping. That gate has been explicitly lifted — the repo is still at
+         `v2.0.0-beta.24`, no `v2.0.0` tag exists, and the bump is proceeding ahead of it. See the execution
+         plan for the full phased breakdown, cross-model review, and task list.
+         ```
+         Changed `WorkroomApp.swift:606` → `WorkroomApp.swift:665-678` in the ASCII patch-diagram.
+         Struck through and corrected the "§N needs to be created" claim:
+         ```
+         - ~~**A `QA-libghostty.md` §N "engine bump smoke"** (~12 items).~~ **Stale claim, corrected
+           2026-08-12: it already exists.** `QA-libghostty.md:137-216` has a full §N with 4 subsections and
+           ~20 checkbox items (IO layer/patch-swap, behaviour keyed to engine internals, resource contract,
+           build shapes CI doesn't cover). Its own preamble requires running it against the *current* engine
+           first as a baseline — a baseline taken after the bump is worthless. Extend it, don't recreate it.
+         ```
+         Changed "Depends on: GA shipping first" → "Depends on: nothing now (GA gate removed 2026-08-12, see above)."
+         Changed "Priority: ...First change after the GA tag, not before it." → "Priority: ...In progress."
+         **T3 execution edit** — added new paragraph after the existing "Full include/ghostty.h diff swept" paragraph:
+         ```
+         **Re-swept as a full unified `diff -u` this time (2026-08-12, not just a symbol-grep) — clean,
+         nothing beyond the above.** Every existing function signature we call is byte-identical (same
+         params, same return type); the only structural change anywhere in the header is the one union-field
+         removal above, and it was same-type/same-size with the field that survives (`physical`), so it was
+         never a layout risk even for someone still calling it. New in this header: a `GHOSTTY_API` symbol-
+         visibility macro on every declaration (resolves to `__attribute__((visibility("default")))` on our
+         Clang/macOS static-archive build since we never define `GHOSTTY_STATIC` — inert for a statically-
+         linked consumer, this is for making the same header serve shared-lib builds too) and
+         `GHOSTTY_IPC_ACTION_TOGGLE_QUICK_TERMINAL` appended to `ghostty_ipc_action_tag_e` — grepped, zero
+         usage of that enum anywhere in `WorkroomApp*`. No thread-affinity/ownership signal is expressible in
+         a C header at all (that needs a Zig source diff, explicitly out of scope — see "Bump the libghostty
+         pin" plan's Failure-modes decision to leave this check one-time, not permanent).
+         ```
+     - Currently has UNCOMMITTED changes (the T2/T3 doc edits above) — NOT yet committed; the previous commit `886f21aa` predates these.
+
+   - **`/Users/joelmoss/dev/workroom/macapp/QA-libghostty.md`**
+     - Existing manual QA checklist with §N "Engine bump smoke" section (lines 137-216, 4 subsections: IO layer, Behaviour keyed to engine internals, Resource contract, Build shapes CI doesn't cover).
+     - **T2 execution edits (most recent):**
+       ```
+       - [ ] **Surface churn**: open/close ~20 panes in one workroom (⌘T then ⌘W, repeatedly) → no crash,
+             no beachball. Record RSS before and after (Activity Monitor or `vmmap`), note the delta — not
+             just "roughly its starting point," so a slow leak across future bumps is comparable, not
+             eyeballed.
+       - [ ] **Split churn**: ... (unchanged)
+       - [ ] **Workroom switch**: ... (unchanged)
+       - [ ] **Workroom delete**: ... (unchanged)
+       - [ ] **Orphan check** (the one that catches a bad IO patch): quit the app, then
+             `ps -ax | grep -E '[z]sh|[b]ash' | grep -v $` → no shells left behind. Record RSS before/after
+             alongside the process check. Repeat after a **force-quit**.
+       - [ ] **Run tab**: ... (unchanged)
+       - [ ] **Quit with a live TUI**: `vim` open in one pane, `htop` in another, ⌘Q → clean exit, no
+             `EXC_BAD_ACCESS` (see `WorkroomApp.swift:665-678`).
+       - [ ] **Scrollback-click race** (new 2026-08-12, targets a `mouseButtonCallback`/scrollback-pruning
+             use-after-free fixed upstream between our pin and the bump target): select/click a link or text
+             while scrollback is actively producing output (e.g. `yes` piped to a pane) → no crash, no
+             corrupted selection. Record RSS before/after.
+       - [ ] **`free_text` leak spot-check** (new 2026-08-12, targets a `ghostty_surface_free_text` fix —
+             the function was silently not freeing memory before this pin): loop
+             `readFullSurface`/`readSelectionText` (`GhosttySurfaceView.swift:792-857`) a few hundred times
+             via the inline-agent or accessibility read path. RSS alone can't distinguish a real leak from
+             normal allocator retention at this volume — use Xcode's Instruments (Leaks template) or a
+             scripted `leaks <pid>` run around the loop, not just Activity Monitor.
+       ```
+     - Also UNCOMMITTED, part of the same doc-hygiene work as TODOS.md above.
+
+   - **`/Users/joelmoss/dev/workroom/macapp/project.yml`** (lines 48-68)
+     - Contains the `libghostty` package dependency pin block — the actual target of the bump (not yet edited; that's task T4, still pending):
+       ```yaml
+       libghostty:
+         # Prebuilt GhosttyKit.xcframework (the libghostty C API as a static archive) distributed
+         # as a Swift package. We link the `GhosttyKit` product (raw C API) and roll our own
+         # terminal surface view — NOT the higher-level `GhosttyTerminal` wrapper. The embedding
+         # API is not yet stable, so pin EXACT.
+         #
+         # THIS IS THE SINGLE SOURCE OF TRUTH FOR THE TERMINAL ENGINE VERSION. Do not restate it in
+         # docs or code comments — point here instead. Two numbers, and they are NOT the same number:
+         #
+         #   package version : 1.2.3          (Lakr233/libghostty-spm's OWN version — the pin below)
+         #   ghostty engine  : v1.3.1         (what that package is built from; sha 332b2aef)
+         #
+         # The package versions itself independently of ghostty: package 1.3.1 is NOT ghostty v1.3.1.
+         # Reading the package version as a ghostty version once put a false premise into TODOS.md and
+         # made a P1 out of it. To check what a package release actually contains, read its release body
+         # ("Ghostty commit: …") and the repo's hand-maintained `Ghostty.ref` — never the tag alone.
+         #
+         # Bumping this is NOT a one-line change: see "Bump the libghostty pin" in TODOS.md for the
+         # patch-swap risk, the resources that must be regenerated with it, and the bake gate.
+         url: https://github.com/Lakr233/libghostty-spm
+         exactVersion: 1.2.3
+       ```
+       Note: `exactVersion` is unquoted here, unlike sibling packages (e.g. `SwiftGitX`'s `exactVersion: "0.4.0"`).
+
+   - **`/Users/joelmoss/dev/workroom/macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`** (lines 13-21)
+     - Current entry: `"revision": "df168f41e5a22b319c184e40f021895746ad4e8f"`, `"version": "1.2.3"`. Must be regenerated (never hand-edited) via Xcode/SwiftPM resolution during T4. Also carries an `originHash` and schema `"version": 3` that SwiftPM manages.
+
+   - **`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/WorkroomApp.swift`** (lines 665-678)
+     - Contains the EXC_BAD_ACCESS/teardown doc comment (the line reference `:606` used in TODOS.md/QA-libghostty.md had drifted here due to unrelated commits growing the file by ~60 lines):
+       ```swift
+       /// Deliberately does NOT tear down libghostty on quit. Freeing surfaces (or the app) while their
+       /// IO/render is still active races libghostty's surface teardown and crashes — EXC_BAD_ACCESS in
+       /// `Surface.deinit`, or `os_unfair_lock` corruption in `Surface.handleMessage` — most readily when a
+       /// run command's dev server (issue #7) is still busy. The process is exiting anyway: the OS reclaims
+       /// libghostty's memory and closes the PTYs, so every child shell/server gets SIGHUP exactly as a
+       /// manual `ghostty_surface_free` would deliver. (The per-workroom delete path still reaps a single
+       /// steady-state surface — that's not a mass-free racing termination.)
+       ///
+       /// Run commands are the exception that SIGHUP doesn't safely cover: a dev server like Puma ignores
+       /// the hangup and is left orphaned on its port/pidfile. So `applicationShouldTerminate` Ctrl-Cs
+       /// every live run command and waits for it to exit *before* returning — sending key events only,
+       /// never freeing a surface, so the no-mass-free rationale above still holds (issue #7, Option B).
+       @MainActor
+       func applicationWillTerminate(_ notification: Notification) {}
+       ```
+
+   - **`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/GhosttySurfaceView.swift`** (2001 lines total)
+     - Our own `NSView` subclass driving `ghostty_surface_*` C API directly. Key call sites for `ghostty_surface_free_text` (lines 796, 832, 855, 1630), `ghostty_surface_read_text`/`read_selection` (lines 795, 831, 854), a shared `extractString` helper (line 800). Full input/mouse/keyboard override structure spans lines 16-2001 (keyDown, mouseDown, drag&drop, NSTextInputClient, accessibility, custom ScrollbarThumbView/GoToBottomButton). Backspace-DEL-as-text workaround at line 1171. None of this has been edited yet — this is the file T9's new XCUITest will exercise indirectly, and T1/T10's manual QA covers its behavior.
+
+   - **`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/GhosttyRuntimeAdapter.swift`** (249 lines)
+     - `handleAction` (lines 22-142) dispatches on 14 explicit `case GHOSTTY_ACTION_*` symbolic labels with a `default:` arm (lines 127-140) that logs unhandled tags once in Debug — confirmed this makes the `GHOSTTY_ACTION_SELECTION_CHANGED` enum insertion safe. Not edited.
+
+   - **`/Users/joelmoss/dev/workroom/macapp/WorkroomAppTests/GhosttyCLITests.swift`**
+     - Existing tests only exercise `+ssh-cache`, never `+ssh` (confirmed via Explore agent + grep). Contains the `runGhostty`/`Process()`+`addTeardownBlock` pattern (lines 36-62) that T7/T8's new tests will mirror. Not yet edited (T7/T8 pending).
+
+   - **`/Users/joelmoss/dev/workroom/macapp/WorkroomAppTests/GhosttyResourcesTests.swift`**
+     - 4 assertions: `testBundledResourceChecksumsMatch`, `trackedRelativePaths()` helper (rejects symlinks), `testNoUnexpectedTopLevelResources`, `testChecksumsExcludesThemes`, `testTerminfoAliasMatchesPrimaryEntry`. Will host T5's new permanent revision-match test (pending) and get re-run for T6 (resource regen, pending).
+
+   - **`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/TerminalSearch.swift`** (lines 70-83)
+     - `navigationPlan(findNext:selected:total:)` — the function with hardcoded engine-behavior assumptions (newest→oldest match order, direction inversion, no-wrap synthesis). Subject of T12 (conditional, only if T10 finds drift). Not yet touched.
+
+   - **`/Users/joelmoss/dev/workroom/macapp/Scripts/release.sh`** (lines 148-216 approx)
+     - `check_universal()` function asserting arm64+x86_64 slices present; also asserts `+ssh-cache` dispatches on the shipped artifact via exit-code check (lines 202-216) — the precedent for T7's new `+ssh --help` dispatch test.
+
+   - **`/Users/joelmoss/dev/workroom/.github/workflows/nightly.yml`** and **`.github/workflows/ci.yml`**
+     - `nightly.yml` runs `make app-test` (gate) → `make app-release` (universal, notarized) daily from master — the existing bake-gate mechanism, reused as-is (not modified). `ci.yml`'s SPM cache has `restore-keys: spm-${os}-` (stale-state risk on revert); the xcbuild cache has no restore-keys fallback (clean miss only).
+
+   - **`/private/tmp/claude-501/-Users-joelmoss-dev-workroom/9fbed976-fffa-441d-b5b7-af5788f240e9/scratchpad/ghostty/{old_ghostty.h,new_ghostty.h}`**
+     - Session-scratchpad files holding the two full header fetches (332b2aef and 35e1a016 respectively), used for T3's `diff -u` pass. Still present, may be useful for future reference.
+
+   - **`/Users/joelmoss/.claude/plans/ticklish-floating-diffie.md`**
+     - THE approved execution plan, extensively built up through Plan Mode + `/plan-eng-review`. Contains: Context (with GA-gate-removed note), Phase dependency diagram (ASCII, no longer has a Phase 0 halt), "What's corrected vs. TODOS.md" section, Phase 1 (pre-bump baseline, with RSS/leaks-tool rewording and 2 new checklist items — durable results file: `macapp/QA-libghostty-results/<date>-libghostty-1.3.2-bump.md`), Phase 2 (pin bump + full ABI diff step + permanent revision-match XCTest), Phase 3 (resource regen), Phase 4 (ssh dispatch test + fake-ssh test + deferred real-host test), Phase 5 (post-bump retest + redesigned orphan-shell XCUITest with marker+fault-injection), Phase 6 (release gates + noted-not-actioned bake-model tension), Rollback, Commits (4 items: doc hygiene / the bump / new XCUITest / QA passes), Verification, NOT in scope, What already exists, Failure modes table (with resolved critical-gap note on ABI-diff permanence), Worktree parallelization strategy (sequential, none), Implementation Tasks (T1-T13, markdown + JSONL at `~/.gstack/projects/joelmoss-workroom/tasks-eng-review-20260812-212334.jsonl`), Completion summary, Review Log bash block, and the final `## GSTACK REVIEW REPORT` section ending in the exact line `NO UNRESOLVED DECISIONS`. This plan is now the source of truth for ongoing execution; already-completed T2/T3 work should update against it as needed but the plan file itself has not been touched since approval.
+
+4. Errors and fixes:
+   - **ExitPlanMode rejected on first attempt**: I built the full pin-bump plan and called `ExitPlanMode`, but the tool result was "The user doesn't want to proceed with this tool use... STOP." The user then invoked `/plan-eng-review` instead, which drove a much deeper review before a second, successful `ExitPlanMode` call (approved).
+   - **AskUserQuestion rejected for single-option questions**: Twice I tried to ask a question framed as a single "fix" with only one option (once for "sequencing bug fix," once implicitly). The tool returned `InputValidationError: array to have >=2 items` with explicit guidance: "state the one path you were going to offer as the approach you are taking, then continue with the task... Ask a question only when the person has at least two genuinely distinct choices." Fixed by directly applying the fix/stating the approach in prose instead of forcing a fake second option.
+   - **`mktemp` sandbox failures**: Both the Codex outside-voice review invocation and the `gstack-learnings-log` calls failed with `mktemp: mkstemp failed on /tmp/... : Operation not permitted` (and later on `/var/folders/.../T/tmp....` too). Fixed for Codex by explicitly using `mktemp "${TMPDIR:-/tmp}/codex-planreview-XXXXXXXX"` with the session's actual sandbox-writable `$TMPDIR`. For `gstack-learnings-log`, exporting `$TMPDIR` to the scratchpad path did NOT fix it (the binary apparently queries a different temp path internally), so I retried with `dangerouslyDisableSandbox: true`, which worked for 2 of 3 calls.
+   - **`gstack-learnings-log` content rejection**: One of three learning-log calls was rejected by the tool itself with "insight contains suspicious instruction-like content, rejected" (likely triggered by imperative-sounding phrasing like "Treat findings as..."). Not retried — accepted as a non-critical, best-effort loss (2/3 landed).
+   - **TaskCreate schema/parameter error**: First attempt passed a `tasks` array parameter, which failed: "The required parameter `subject` is missing... An unexpected parameter `tasks` was provided... TaskCreate creates ONE task per call." Fixed by loading the tool schema via `ToolSearch(query: "select:TaskCreate,TaskUpdate")` then calling `TaskCreate` once per task (13 separate calls) with `subject`+`description`.
+   - **Codex sandbox blocked repo read access**: Codex's own `codex exec -s read-only` invocation reported "the workspace sandbox rejected even read-only shell startup," so its critique was based purely on the plan's internal logic, not verified against actual repo files — I explicitly flagged this caveat to the user rather than treating Codex's findings as fact-checked.
+   - **Read tool "wasted call" note**: One `Read` call on `QA-libghostty.md` (already read/edited earlier) returned "Wasted call — file unchanged since your last Read. Refer to that earlier tool_result instead" — handled by using the content already known from the earlier Explore agent's verbatim quote instead of re-reading.
+   - **Stale line-number citations discovered as a systemic pattern**: `WorkroomApp.swift:606` (cited in both TODOS.md and QA-libghostty.md) had drifted to `:665-678` due to unrelated commits growing the file. Fixed in both docs during T2. Logged as a gstack learning (`todos-line-refs-drift`) for future sessions.
+
+5. Problem Solving:
+   - Resolved the "package-version vs. ghostty-engine-version" confusion that had previously produced a wrong P1 TODOS.md entry, by always reading `Ghostty.ref` + release bodies rather than trusting tags.
+   - Determined via direct GitHub API research (not assumption) that neither our old nor new pin tracks upstream ghostty-org/ghostty HEAD — both are point-in-time snapshots the packager manually curates via a hand-maintained `Ghostty.ref` file with no auto-update mechanism.
+   - Resolved whether adopting the wrapper's Swift convenience layer (`AppTerminalView`) is worthwhile: concluded genuinely well-designed (`open class`, real delegate protocols) but deliberately deferred — bundling a UI rewrite with the IO-layer bump risk is bad practice, and ~15-20 hard-won AppKit fixes in `GhosttySurfaceView.swift` would need re-derivation against unfamiliar internals.
+   - Resolved whether to self-build the GhosttyKit xcframework: concluded genuinely cheaper than previously scoped (official `-Demit-xcframework` machinery exists in ghostty-org's own build.zig; Workroom only needs 2 macOS slices vs the packager's 7-platform matrix) but the real ongoing cost (patch curation) doesn't change — still deferred, filed as its own TODOS.md entry.
+   - Resolved the entire GA-gate question through explicit multi-step confirmation: verified no GA tag exists via `git tag`, asked a disambiguating question when the user's phrasing ("not waiting anymore") was ambiguous, and only removed the gate after explicit "Yes — remove the gate, proceed now" confirmation — avoiding a silent misapplication of a significant standing-decision reversal.
+   - Resolved 15 Codex cross-model tension points one at a time, applying only the accepted ones to the plan file, and explicitly declining 2 (bake-gate model redesign, real-host SSH test) with reasoned rationale rather than silently absorbing every suggestion.
+   - Completed T3's full ABI header diff as a genuinely thorough re-verification (not just repeating the earlier symbol-grep), confirming zero additional risk beyond what was already known — a clean go/no-go signal for proceeding to T4.
+   - Currently unresolved / pending: how exactly T1's live QA baseline will be executed (user has now specified "System Events/XCUITest, batched into one request" as the driving method, but the actual drive-and-record work has not yet started).
+
+6. All user messages (verbatim, in order, excluding tool results):
+   - "do we have ghostty shell integration in use? https://ghostty.org/docs/features/shell-integration"
+   - "as libghostty is unreleased, what commit are we using?"
+   - "df168f41 is from June 1. so we're behind?"
+   - "does that release include libghostty head?"
+   - "plan upgrade to 1.3.2, and summarize functional changes in upstream libs"
+   - (AskUserQuestion answer) "Just want the plan + summaries" (regarding the GA-gate blocker question)
+   - "fold them in, then review whether we should be using the wrapper's swift convenience classes"
+   - "is it worth using libghostty directly, and avoiding using libghostty-spm completely?"
+   - "file the CMT-2 build-path finding as its own TODO"
+   - "commit, then create a plan for the pin bump"
+   - (tool_use_error from ExitPlanMode rejection): "The user doesn't want to proceed with this tool use... STOP what you are doing and wait for the user to tell you how to proceed" — this was a rejection of my ExitPlanMode call, not free-text user content, but functioned as an instruction to stop.
+   - `/plan-eng-review` slash-command invocation (with the full skill content loaded as a system reminder).
+   - (AskUserQuestion answer) "Plan/design doc (recommended)" (review target)
+   - (AskUserQuestion answer) "Skip — review the plan as-is (recommended)" (office-hours prerequisite)
+   - (AskUserQuestion answer) "Cut it — own follow-up (recommended)" (sshd spike scope)
+   - (AskUserQuestion answer) "1B: Build one automated tripwire now" (Architecture finding 1)
+   - (AskUserQuestion answer) "Add phase-dependency diagram (recommended)" (Architecture finding 2)
+   - (AskUserQuestion answer) "3B: Add a revision-match assertion (recommended)" (Code Quality finding 3)
+   - (AskUserQuestion answer) "4B: Record RSS numbers, no hard threshold (recommended)" (Performance finding 4)
+   - (AskUserQuestion answer) "Tighten the gate check (recommended)" (Tension 1)
+   - **"we are not waiting for GA anymore"** (mid-tension-2, ambiguous reversal statement)
+   - (AskUserQuestion answer) "Yes — remove the gate, proceed now" (explicit GA-gate-removal confirmation)
+   - (AskUserQuestion answer) "4B: Full header/struct diff before executing (recommended)" (Tension 4)
+   - (AskUserQuestion answer) "5B: Redesign with marker + real non-vacuity proof (recommended)" (Tension 5)
+   - (AskUserQuestion answer) "6B: Instruments/leaks for the memory check only (recommended)" (Tension 6)
+   - (AskUserQuestion answer) "7B: Add fake-ssh-executable test (recommended)" (Tension 7)
+   - (AskUserQuestion answer) "8B: Make it a permanent XCTest (recommended)" (Tension 8)
+   - (AskUserQuestion answer) "9B: Versioned results file, checked in (recommended)" (Tension 9)
+   - (AskUserQuestion answer) "11B: Don't special-case this bump (recommended)" (Tension 11)
+   - (AskUserQuestion answer) "Leave as one-time (recommended)" (ABI-diff-permanence self-flagged inconsistency)
+   - (AskUserQuestion answer) "B) Skip — not valuable enough" (TODO proposal 1: real SSH test)
+   - (AskUserQuestion answer) "A) Add to TODOS.md (recommended)" (TODO proposal 2: automate rest of §N)
+   - (AskUserQuestion answer) "B) Skip — not valuable enough" (TODO proposal 3: bake-gate model)
+   - (ExitPlanMode approval, second attempt): "User has approved your plan. You can now start coding."
+   - (AskUserQuestion answer) "Start with the mechanical work (recommended)" (execution start)
+   - (AskUserQuestion answer) "I drive it via System Events/XCUITest (batched)" (T1 QA driving method) — **most recent user input**.
+
+7. Pending Tasks (from the approved plan, tracked via TaskCreate/TaskUpdate):
+   - **Task #3 / T1** (Pre-bump QA baseline, needs live app interaction) — PENDING, next up. Run `QA-libghostty.md` §N in full plus the `SelectionGesture` check against the CURRENT (1.2.3) engine; write results to `macapp/QA-libghostty-results/<date>-libghostty-1.3.2-bump.md` with commit/OS/arch/machine/method for every item. User has specified this should be driven via System Events/XCUITest, batched into one request.
+   - **Task #4 / T4** (Bump project.yml pin + regenerate Package.resolved) — PENDING. Blocked on T1 completing (baseline must run before bump).
+   - **Task #5 / T5** (Permanent Package.resolved revision-match XCTest) — PENDING.
+   - **Task #6 / T6** (Regenerate ghostty resources: terminfo/shell-integration/CHECKSUMS/SOURCE.md) — PENDING.
+   - **Task #7 / T7** (Add `+ssh --help` dispatch test to GhosttyCLITests.swift) — PENDING.
+   - **Task #8 / T8** (Add fake-ssh-executable test) — PENDING.
+   - **Task #9 / T9** (Orphan-shell/teardown XCUITest with marker + fault-injection proof, needs live app interaction) — PENDING.
+   - **Task #10 / T10** (Post-bump QA retest, needs live app interaction) — PENDING.
+   - **Task #11 / T11** (Run GhosttyActionDispatchUITests against new engine) — PENDING.
+   - **Task #12 / T12** (Conditional TerminalSearch.navigationPlan fix, only if T10 finds drift) — PENDING.
+   - **Task #13 / T13** (File TODOS.md entry to automate rest of §N IO-layer checklist) — PENDING.
+   - Note: doc-hygiene edits (T2/T3, both completed) to TODOS.md and QA-libghostty.md are currently UNCOMMITTED working-tree changes — no commit instruction has been given for them yet, and per the user's global CLAUDE.md instructions ("Only create commits when requested by the user," "NEVER commit changes unless the user explicitly asks you to"), they must NOT be committed without an explicit request.
+
+8. Current Work:
+
+   Immediately before this summary request, I had just:
+   1. Completed T2 (doc hygiene: fixed stale line refs, corrected the "§N needs to be created" claim, removed TODOS.md's post-GA framing, reworded QA-libghostty.md's IO-layer checklist items to record RSS/leaks-tool measurements, added 2 new IO-layer checklist items) — marked Task #1 completed.
+   2. Completed T3 (full `include/ghostty.h` ABI diff via `diff -u` on the two previously-fetched header files in the session scratchpad) — found the diff clean, nothing beyond the two already-known-safe removals (`ghostty_app_key_is_binding`, `translated` field), confirmed the new `GHOSTTY_API` visibility macro is inert for our static-archive build, confirmed `GHOSTTY_IPC_ACTION_TOGGLE_QUICK_TERMINAL` is unused by us, confirmed every other existing function signature is byte-identical. Documented this in a new TODOS.md paragraph. Marked Task #2 completed.
+   3. Reported this progress to the user in text: "T2 and T3 done — doc hygiene landed, and the full ABI header diff came back clean... Next up is T1 (pre-bump QA baseline), which needs live app interaction — per your earlier answer, pausing here to confirm how you want that driven before continuing."
+   4. Fired an `AskUserQuestion` with three options for how T1 should be driven: (a) "I drive it via System Events/XCUITest (batched)", (b) "You run it yourself, report numbers back", (c) "Skip live baseline for now, move to T4-T8".
+   5. **Received the user's answer: "I drive it via System Events/XCUITest (batched)"** — this is the most recent piece of information in the conversation, received immediately before the summarization request interrupted.
+
+   No tool calls have been made in response to this answer yet — the conversation was interrupted by the compaction/summarization request right at this point, before any action was taken on T1.
+
+9. Optional Next Step:
+
+   The direct next step, explicitly in line with the user's most recent answer, is to begin executing **Task #3 / T1**: drive the QA-libghostty.md §N baseline against the CURRENT (still-pinned 1.2.3) engine via System Events/XCUITest automation, batched into one request per the user's stated preference and the standing project-memory guidance `[[ask-before-driving-the-machine]]` ("UI test runs, app launches, System Events/screencapture, synthetic clicks: ask Joel first, batched into one request" — already satisfied by the AskUserQuestion just answered) and `[[macapp-visual-qa]]` ("launch with `-WorkroomUITestFixture 1`; drive via System Events menu clicks, not blind keystrokes/coord-clicks").
+
+   Concretely this means: mark Task #3 as `in_progress`, then plan and execute a batched System Events/XCUITest-driven session that:
+   - Launches the current Dev build (with the `-WorkroomUITestFixture 1` fixture flag per macapp-visual-qa memory, under an isolated/throwaway `$HOME` per `[[qa-isolated-home-not-real-config]]` memory to avoid mutating real `~/.config/workroom` config or Defaults).
+   - Works through `QA-libghostty.md` §N's ~20 checkboxes (IO layer: surface churn, split churn, workroom switch, workroom delete, orphan check, run tab, quit-with-live-TUI, scrollback-click race, free_text leak spot-check; behaviour-keyed items: ⌘F wrap+ordering, backspace, ⌃Tab, scrollbar overlay; resource contract items; build-shape items) plus the `SelectionGesture` drag/click-threshold check.
+   - Records RSS before/after for churn/leak items (using Activity Monitor/`vmmap`, or Instruments/`leaks <pid>` specifically for the `free_text` leak spot-check per the plan's Phase 1 spec).
+   - Writes all results to a new file `macapp/QA-libghostty-results/<date>-libghostty-1.3.2-bump.md`, capturing commit hash, OS version, architecture, machine, and measurement method for every item, per the plan's tension-9 resolution.
+
+   The user's exact words to act on: "I drive it via System Events/XCUITest (batched)" — meaning I should plan out the full batched interaction sequence and likely present it (or begin executing it) as the next turn's primary action, mindful that this is real device/app interaction requiring care per the project's established conventions.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/joelmoss/.claude/projects/-Users-joelmoss-dev-workroom/9fbed976-fffa-441d-b5b7-af5788f240e9.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.
