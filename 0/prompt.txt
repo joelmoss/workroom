@@ -1,0 +1,1 @@
+want a way to track other popular tools when used in Workroom, so we can add favicons based on usage
