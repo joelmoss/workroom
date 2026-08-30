@@ -1,0 +1,1 @@
+is session replay even needed anymore as we now have backgrounded sessions?
