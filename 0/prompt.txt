@@ -1,0 +1,787 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/SwitcherMark.swift
+  - macapp/WorkroomApp/Core/SwitcherPanel.swift
+  - macapp/WorkroomApp/Core/SwitcherRailLayout.swift
+  - macapp/WorkroomApp/Views/SwitcherRailView.swift
+  - macapp/WorkroomAppTests/SwitcherMarkTests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/SwitcherMark.swift ===
+@@ -0,0 +1,178 @@
++import AppKit
++
++/// A workroom's identity mark for the ⌥Tab rail (issue #132): a colour and a monogram, both derived,
++/// neither stored.
++///
++/// The point is **recognition before reading**. ⌘Tab works because app icons are stable and distinctive;
++/// a screenshot of a terminal is neither — it changes every time and looks like every other terminal.
++/// So a workroom gets a mark it keeps for the life of the workroom, and you learn "the teal AR one" the
++/// same way you learn an app icon.
++struct SwitcherMark: Equatable {
++  /// One or two characters. Derived from the **displayed** name, so it matches what you read on the card.
++  let monogram: String
++  /// Which of `hueCount` hues. Derived from the **stable** name, so a relabel (issue #41) changes the
++  /// letters without moving the colour — the thing you actually recognise stays put.
++  let hue: Int
++
++  /// Number of distinct hues. **12, not 6.** With six buckets and four open workrooms a collision is
++  /// more likely than not — measured live: two of four tiles came out the same colour. Twelve keeps
++  /// neighbouring hues clearly apart (30° of the wheel) while making a clash uncommon.
++  static let hueCount = 12
++
++  init(displayName: String, stableKey: String) {
++    monogram = Self.monogram(for: displayName)
++    hue = Self.hue(for: stableKey)
++  }
++
++  /// Direct construction, for `disambiguate` reassigning a hue without re-deriving the monogram.
++  init(monogram: String, hue: Int) {
++    self.monogram = monogram
++    self.hue = hue
++  }
++
++  /// Two characters that actually *distinguish* the name.
++  ///
++  /// Tuned for what Workroom generates: `namegen` produces adjective-noun pairs like
++  /// `partitioned-crescent`, where initials ("PC") carry far more than the first two letters ("PA").
++  ///
++  /// But plain initials repeat the mistake D12 fixed for titles. `uitest-room`, `uitest-room-2` and
++  /// `uitest-room-3` all reduce to "UR" — four identical tiles, which is worse than no tile at all. So a
++  /// **trailing number is always kept**, because when a name ends in one that digit is the whole
++  /// difference: "uitest-room-2" → "R2".
++  static func monogram(for name: String) -> String {
++    let separators = CharacterSet(charactersIn: "-_. /")
++    let words = name.components(separatedBy: separators).filter { !$0.isEmpty }
++    guard let first = words.first else { return "?" }
++
++    // A trailing number is the distinguishing part — pair it with the initial of the word before it.
++    if words.count >= 2, let last = words.last, last.allSatisfy(\.isNumber) {
++      let stem = words.count >= 3 ? words[words.count - 2] : first
++      return (String(stem.prefix(1)) + String(last.suffix(1))).uppercased()
++    }
++    if words.count >= 2, let second = words.dropFirst().first(where: { $0.first != nil }) {
++      return (String(first.prefix(1)) + String(second.prefix(1))).uppercased()
++    }
++    return String(first.prefix(2)).uppercased()
++  }
++
++  /// The tile colour for a hue bucket.
++  ///
++  /// Deliberately **not** `ThemeTokens.legible`, which walks a colour toward the foreground until it
++  /// clears a contrast floor. That is right for text and wrong here: on a light theme it walked every
++  /// insufficiently-contrasty hue to near-black, so every tile collapsed into identical charcoal and the
++  /// mark stopped marking anything — observed live before this existed.
++  ///
++  /// So hue is treated as identity and never adjusted; only saturation and brightness move, until the
++  /// tile clears its floor against this theme's panel.
++  static func tileColor(hue index: Int, tokens: ThemeTokens) -> NSColor {
++    // Anchored on the theme's accent hue and spaced evenly around the wheel from there, so the marks
++    // belong to the theme without being limited to the six ANSI slots — and a greyscale accent still
++    // yields twelve usable angles.
++    let accent = tokens.nsAccent.usingColorSpace(.sRGB)
++    let anchor = (accent?.saturationComponent ?? 0) > 0.15 ? (accent?.hueComponent ?? 0) : 0
++    let hueAngle = (anchor + CGFloat(index % hueCount) / CGFloat(hueCount)).truncatingRemainder(
++      dividingBy: 1)
++    let dark = tokens.colorScheme == .dark
++    let saturation: CGFloat = dark ? 0.55 : 0.62
++    // Step brightness until the tile clears its floor against the card, rather than trusting one
++    // constant: a mid-brightness colour of ANY hue sits near 2:1 against a near-white panel, which is
++    // exactly what measured wrong. Hue and saturation are held fixed, so the tile darkens (or lightens
++    // on a dark theme) without drifting toward grey.
++    var brightness: CGFloat = dark ? 0.72 : 0.62
++    let step: CGFloat = dark ? 0.03 : -0.03
++    var candidate = NSColor(hue: hueAngle, saturation: saturation, brightness: brightness, alpha: 1)
++    var steps = 0
++    while ThemeTokens.contrastRatio(candidate, tokens.nsPanel) < Self.tileContrastFloor,
++      brightness > 0.12, brightness < 0.98, steps < 40
++    {
++      brightness += step
++      steps += 1
++      candidate = NSColor(hue: hueAngle, saturation: saturation, brightness: brightness, alpha: 1)
++    }
++    return candidate
++  }
++
++  /// The tile's contrast floor against the card. 3:1 — the tile is a large solid shape, not text.
++  static let tileContrastFloor: CGFloat = 3.0
++
++  /// Rotate hues so that **no two marks on one rail share a colour**.
++  ///
++  /// A stable per-name hue is right in isolation and not sufficient in practice: with 12 buckets and 4
++  /// open workrooms a clash happens ~43% of the time, and it happened in both live checks. Since the
++  /// rail's job is telling *these* items apart, uniqueness is enforced over the visible set — a colliding
++  /// mark steps to the next free hue. Deterministic for a given ordered list, and a no-op once there are
++  /// more items than hues.
++  ///
++  /// Earlier items keep their natural hue, so the most-recent workrooms — the ones you switch between
++  /// most and have therefore learned — are the ones that never move.
++  static func disambiguate(_ hues: [Int]) -> [Int] {
++    var taken: Set<Int> = []
++    return hues.map { hue in
++      var candidate = hue
++      var steps = 0
++      while taken.contains(candidate), steps < hueCount {
++        candidate = (candidate + 1) % hueCount
++        steps += 1
++      }
++      taken.insert(candidate)
++      return candidate
++    }
++  }
++
++  /// A stable hue bucket for a name.
++  ///
++  /// **Not `hashValue`.** Swift seeds string hashing per process, so `hashValue` would give a workroom a
++  /// different colour on every launch — which destroys the entire premise of a mark you learn. This is
++  /// FNV-1a over the UTF-8 bytes: same input, same output, forever, on every machine.
++  static func hue(for stableKey: String) -> Int {
++    var hash: UInt64 = 0xcbf2_9ce4_8422_2325
++    for byte in stableKey.utf8 {
++      hash ^= UInt64(byte)
++      hash = hash &* 0x100_0000_01b3
++    }
++    return Int(hash % UInt64(hueCount))
++  }
++}
++
++/// What a ⌃Tab pane card draws in its well — a small graphic made of the pane's own data, so the *shape*
++/// says what kind of thing this is before any text is read.
++///
++/// A screenshot would in principle have distinguished these best (a diff really does look unlike a
++/// terminal), but not at any size that fits a switcher rail. These are drawn, so they stay legible at
++/// 52pt and cost nothing to produce.
++enum PaneMiniature: Equatable {
++  /// A prompt chevron, with a filled pip while a command is running.
++  case terminal(running: Bool)
++  /// Stacked add/remove bars whose composition follows the change kind. Per-file line counts are NOT
++  /// available (`ChangedFile` carries no insertions/deletions), so this encodes *kind*, not magnitude —
++  /// an added file reads all-add, a deletion all-remove, a modification split.
++  case diff(ChangedFile.Change)
++  /// Abstract text lines — a page of prose or code, with no attempt to render the real content.
++  case file
++  /// A chain of commit dots.
++  case changeset
++
++  init(content: TabContent, isRunning: Bool) {
++    switch content {
++    case .terminal: self = .terminal(running: isRunning)
++    case .diff(let descriptor): self = .diff(descriptor.change)
++    case .file: self = .file
++    case .changeset: self = .changeset
++    }
++  }
++
++  /// The words under the name, naming the kind so the shape is never the *only* signal — a shape alone
++  /// is not accessible, and an unfamiliar shape is not yet learned.
++  ///
++  /// A terminal is the exception: its title is already its shell/command, so "Terminal" under
++  /// "Terminal 3" says the same thing twice. It reports its state instead, which is the thing you
++  /// actually want mid-switch.
++  var label: String {
++    switch self {
++    case .terminal(let running): running ? "Running" : "Idle"
++    case .diff(let change): change.rawValue.capitalized
++    case .file: "File"
++    case .changeset: "Commit"
++    }
++  }
++}
+
+
+=== DIFF: macapp/WorkroomApp/Core/SwitcherPanel.swift ===
+@@ -76,7 +76,7 @@ final class SwitcherPanelController {
+   private func show(items: [QuickSwitcherController.Item], cursor: Int) {
+     prepare()
+     guard let panel else { return }
+-    let cards = items.map(SwitcherCard.init(item:))
++    let cards = SwitcherCard.cards(for: items)
+     let screen = NSApp.keyWindow?.screen ?? NSScreen.main
+     let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+     let width = SwitcherRailLayout.viewportWidth(visibleFrame: visible)
+
+
+=== DIFF: macapp/WorkroomApp/Core/SwitcherRailLayout.swift ===
+@@ -11,17 +11,18 @@ enum SwitcherRailLayout {
+ 
+   /// The comfortable card width, used while the whole rail fits.
+   static let maxCardWidth: CGFloat = 200
+-  /// The floor. **180, not 140**: with a fixed 72pt well plus padding and the gap, a 140pt card leaves
+-  /// roughly 36pt of label column — every name becomes a fragment and the badge collides with it, so
+-  /// the densest state would read the worst. At 180 the label keeps ~76pt (a readable name plus the
+-  /// badge) and the row simply starts scrolling sooner.
++  /// The floor. **180, not 140**: with the well plus padding and the gap, a 140pt card leaves far too
++  /// little label column — every name becomes a fragment and the badge collides with it, so the densest
++  /// state would read the worst. At 180 the label keeps a readable name plus the badge, and the row
++  /// simply starts scrolling sooner.
+   static let minCardWidth: CGFloat = 180
+   static let cardHeight: CGFloat = 88
+   static let cardSpacing: CGFloat = 10
+   /// Inset from the rail's own edge to the first card.
+   static let railPadding: CGFloat = 14
+-  /// The thumbnail well. Fixed at every card width — the label column absorbs all of the shrink.
+-  static let wellSize = CGSize(width: 72, height: 56)
++  /// The well. Square, and smaller than the 72×56 the screenshot era needed: a mark or a drawn
++  /// miniature reads fine at this size, and the 20pt saved goes to the label column.
++  static let wellSize = CGSize(width: 52, height: 52)
+ 
+   /// Card width for `count` items in `available` points: the comfortable width while everything fits,
+   /// shrinking no further than the floor. Past the floor the row scrolls instead (never a second row).
+@@ -76,9 +77,10 @@ enum SwitcherRailLayout {
+   ///
+   /// The cursor ring clearing 3:1 says nothing about the rest, and the rail's surface is
+   /// vibrancy + `panel.opacity(0.7)` over a *user-supplied* ghostty theme — a theme whose foreground
+-  /// sits close to its background washes out the name, the subtitle and the diff numbers while the
+-  /// ring still passes. So each role gets its own floor: 4.5:1 for text (11–13pt body), 3:1 for
+-  /// indicators and the ring.
++  /// sits close to its background washes out the name, the subtitle and the diff bars while the ring
++  /// still passes. So each role gets its own floor: 4.5:1 for text (11–13pt body), 3:1 for indicators,
++  /// the ring and the drawn miniatures.
++  ///
+   /// Resolved as **`NSColor`**, with `Color` accessors on top. Never the other way round: converting a
+   /// SwiftUI `Color` back with `NSColor(_:)` yields a lazily-resolved, SwiftUI-backed colour whose
+   /// `usingColorSpace` returns nil outside a view update — so a contrast check silently no-ops and
+
+
+=== DIFF: macapp/WorkroomApp/Views/SwitcherRailView.swift ===
+@@ -8,6 +8,16 @@ import SwiftUI
+ /// so a card observing it to decide "am I the cursor" would re-render at OSC frequency — the
+ /// WORKROOM-2B hang. Everything a card draws is snapshotted here instead.
+ struct SwitcherCard: Identifiable, Equatable {
++  /// What the well draws. The two switchers have genuinely different identity problems, so they get
++  /// genuinely different wells: workrooms differ from each other by *which workroom they are*, panes
++  /// inside one workroom differ by *what kind of thing they are*.
++  enum Well: Equatable {
++    /// ⌥Tab: a stable colour + monogram you learn, the way you learn an app icon.
++    case mark(SwitcherMark)
++    /// ⌃Tab: a small graphic drawn from the pane's own data, so the shape says the kind.
++    case miniature(PaneMiniature)
++  }
++
+   let id: String
+   /// The primary line. Already prefix-stripped by `WorkroomLabel.railTitles` where applicable.
+   let title: String
+@@ -15,11 +25,9 @@ struct SwitcherCard: Identifiable, Equatable {
+   let stableSubtitle: String
+   /// The live tail (a command line, a diffstat). Truncates before `stableSubtitle` does.
+   let liveSubtitle: String?
+-  let glyph: String
++  var well: Well
+   let badge: Int
+   let isRunning: Bool
+-  /// Set once the snapshot layer lands (T12); until then every card draws its glyph well.
+-  let snapshot: CGImage?
+ 
+   var subtitle: String {
+     guard let liveSubtitle, !liveSubtitle.isEmpty else { return stableSubtitle }
+@@ -28,6 +36,25 @@ struct SwitcherCard: Identifiable, Equatable {
+ }
+ 
+ extension SwitcherCard {
++  /// Build the rail's cards, with mark hues rotated so no two visible marks share a colour.
++  @MainActor
++  static func cards(for items: [QuickSwitcherController.Item]) -> [SwitcherCard] {
++    var cards = items.map(SwitcherCard.init(item:))
++    // Only workroom cards carry marks; pane miniatures are unaffected.
++    let markIndices = cards.indices.filter {
++      if case .mark = cards[$0].well { true } else { false }
++    }
++    let hues = markIndices.map { index -> Int in
++      guard case .mark(let mark) = cards[index].well else { return 0 }
++      return mark.hue
++    }
++    for (position, index) in zip(SwitcherMark.disambiguate(hues), markIndices) {
++      guard case .mark(let mark) = cards[index].well else { continue }
++      cards[index].well = .mark(SwitcherMark(monogram: mark.monogram, hue: position))
++    }
++    return cards
++  }
++
+   /// Snapshot a controller item into a card. Reads the stores ONCE, here, and never again — which is
+   /// also why this is `@MainActor` while `SwitcherCard` itself is not: the reads happen on the main
+   /// actor at reveal, and what the views then hold is inert.
+@@ -37,45 +64,40 @@ extension SwitcherCard {
+     case .workroom(let slot):
+       let label = slot.store?.label(for: slot.sid)
+       id = "wr:\(slot.target.id)"
+-      title = label?.distinguishing ?? slot.target.title
++      let displayed = label?.distinguishing ?? slot.target.title
++      title = displayed
++      // The monogram follows the DISPLAYED name so it matches what you read; the colour follows the
++      // target id, which a relabel doesn't change — so relabelling re-letters the mark without moving
++      // the hue you actually recognise.
++      well = .mark(SwitcherMark(displayName: displayed, stableKey: slot.target.id))
+       stableSubtitle = label?.branch ?? label?.project ?? ""
+-      liveSubtitle = nil  // the live command tail arrives with the snapshot layer (T12)
+-      glyph = "cube"
++      liveSubtitle = slot.store.flatMap { Self.vcsTail(for: slot.sid, in: $0) }
+       badge = slot.store?.notifications.count(target: slot.target.id) ?? 0
+       isRunning = slot.store?.isRunCommandRunning(for: slot.target.id) ?? false
+-      snapshot = nil
+     case .pane(let tab):
+       id = "pane:\(tab.id)"
+       title = tab.title
+-      stableSubtitle = Self.kindLabel(tab.content)
++      let miniature = PaneMiniature(content: tab.content, isRunning: tab.isRunning)
++      well = .miniature(miniature)
++      stableSubtitle = miniature.label
+       liveSubtitle = nil
+-      glyph = Self.glyph(for: tab.content)
+       badge = 0
+       isRunning = tab.isRunning
+-      snapshot = nil
+     }
+   }
+ 
+-  /// The tab-strip / sidebar glyph vocabulary, so a pane reads the same everywhere. Exhaustive on
+-  /// purpose: a fifth `TabContent` kind must be a compile error, not a silent fallback to "terminal".
+-  static func glyph(for content: TabContent) -> String {
+-    switch content {
+-    case .terminal: "terminal"
+-    case .diff: "plusminus"
+-    case .file: "doc"
+-    case .changeset: "clock"
+-    }
+-  }
+-
+-  /// The subtitle's stable zone for a pane: what kind of thing this is. Present even when there is no
+-  /// live text, which is the point — identity must not disappear (D13).
+-  static func kindLabel(_ content: TabContent) -> String {
+-    switch content {
+-    case .terminal: "Terminal"
+-    case .diff: "Diff"
+-    case .file: "File"
+-    case .changeset: "Commit"
++  /// A workroom's VCS state as the subtitle's live tail: line counts when known, otherwise the coarse
++  /// state. Conflicts win — they are the one state you want to notice from a switcher.
++  @MainActor
++  static func vcsTail(for sid: SidebarID, in store: AppStore) -> String? {
++    guard let status = store.workroomStatuses[sid] else { return nil }
++    if status.conflicted { return "conflicts" }
++    if let added = status.insertions, let removed = status.deletions, added + removed > 0 {
++      return "+\(added) −\(removed)"
+     }
++    if status.dirty == true { return "modified" }
++    if status.dirty == false { return "clean" }
++    return nil
+   }
+ }
+ 
+@@ -101,9 +123,12 @@ final class SwitcherRailModel: ObservableObject {
+ 
+ /// The rail: **one** row of label-led cards, centred in a floating translucent panel.
+ ///
+-/// Label-led, not thumbnail-led: drawn at the originally-planned 220×140 a terminal thumbnail is a
+-/// near-blank rectangle (output hugs the top-left), so the loudest element carried the least
+-/// information while the name — the thing you actually decide on — was the smallest. Inverted here.
++/// Label-led, and screenshot-free. Window captures were built and removed: at any size that fits a
++/// switcher rail an aspect-fit terminal capture is a grey smudge, and it is neither stable nor
++/// distinctive — it changes every time and every terminal looks like every other terminal. What
++/// replaced it differs per switcher, because the two have different identity problems: a workroom is
++/// distinguished by *which workroom it is* (so it gets a learnable mark), a pane inside one workroom by
++/// *what kind of thing it is* (so it gets a drawn miniature of its type).
+ struct SwitcherRailView: View {
+   @ObservedObject var model: SwitcherRailModel
+   private let theme = ThemeService.shared
+@@ -216,25 +241,15 @@ private struct SwitcherCardView: View {
+     .accessibilityIdentifier("switcher.card.\(card.title)")
+   }
+ 
+-  /// The well: the pane capture aspect-**fit** (never cropped — a crop-zoom can make two different
+-  /// panes look identical), or the pane-kind glyph when there is no snapshot, which is the normal
+-  /// first-run case since capture only happens while a pane is visible.
+-  private var well: some View {
+-    RoundedRectangle(cornerRadius: 6, style: .continuous)
+-      .fill(card.snapshot == nil ? theme.tokens.accentSoft : theme.tokens.surface)
+-      .frame(width: SwitcherRailLayout.wellSize.width, height: SwitcherRailLayout.wellSize.height)
+-      .overlay {
+-        if let snapshot = card.snapshot {
+-          Image(decorative: snapshot, scale: 1)
+-            .resizable()
+-            .aspectRatio(contentMode: .fit)
+-        } else {
+-          Image(systemName: card.glyph)
+-            .font(.system(size: 20))
+-            .foregroundStyle(palette.ring)
+-        }
+-      }
+-      .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
++  /// The well. Screenshots were tried and removed: at any size that fits a switcher rail, an aspect-fit
++  /// window capture is a grey smudge, and it is neither stable nor distinctive — it changes every time
++  /// and every terminal looks like every other terminal. So each switcher draws what actually
++  /// distinguishes its own items.
++  @ViewBuilder private var well: some View {
++    switch card.well {
++    case .mark(let mark): MarkWell(mark: mark)
++    case .miniature(let miniature): MiniatureWell(miniature: miniature, palette: palette)
++    }
+   }
+ 
+   private var labels: some View {
+@@ -285,3 +300,121 @@ extension Array {
+     indices.contains(index) ? self[index] : nil
+   }
+ }
++
++/// A workroom's identity mark: a solid theme-derived tile with its monogram.
++///
++/// Solid rather than a tinted wash on purpose — the tile is the thing you are meant to recognise from
++/// the corner of your eye, and a 10%-opacity wash of six different hues all reads as "grey-ish". The
++/// colour comes from `SwitcherMark.tileColor`, which keeps the theme's hue angle but imposes its own
++/// saturation and brightness; the monogram takes whichever of black/white is legible on the result.
++private struct MarkWell: View {
++  let mark: SwitcherMark
++  private let theme = ThemeService.shared
++
++  var body: some View {
++    let tokens = theme.tokens
++    let tile = SwitcherMark.tileColor(hue: mark.hue, tokens: tokens)
++    RoundedRectangle(cornerRadius: 8, style: .continuous)
++      .fill(Color(nsColor: tile))
++      .frame(width: SwitcherRailLayout.wellSize.width, height: SwitcherRailLayout.wellSize.height)
++      .overlay {
++        Text(mark.monogram)
++          .font(.system(size: 17, weight: .semibold, design: .rounded))
++          .foregroundStyle(Color(nsColor: ThemeTokens.contrastingForeground(for: tile)))
++      }
++  }
++}
++
++/// A pane's type miniature, drawn from its own data.
++private struct MiniatureWell: View {
++  let miniature: PaneMiniature
++  let palette: SwitcherRailLayout.Palette
++  private let theme = ThemeService.shared
++
++  var body: some View {
++    RoundedRectangle(cornerRadius: 8, style: .continuous)
++      .fill(theme.tokens.surface)
++      .frame(width: SwitcherRailLayout.wellSize.width, height: SwitcherRailLayout.wellSize.height)
++      .overlay { shape }
++      .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
++  }
++
++  @ViewBuilder private var shape: some View {
++    switch miniature {
++    case .terminal(let running): terminal(running: running)
++    case .diff(let change): diff(change)
++    case .file: file
++    case .changeset: changeset
++    }
++  }
++
++  /// A prompt chevron, with a filled pip while something is running — the one pane state you care about
++  /// mid-switch is "is this the one that's still working".
++  private func terminal(running: Bool) -> some View {
++    HStack(spacing: 3) {
++      Image(systemName: "chevron.right")
++        .font(.system(size: 13, weight: .bold))
++        .foregroundStyle(palette.name)
++      if running {
++        Circle().fill(palette.dot).frame(width: 5, height: 5)
++      } else {
++        RoundedRectangle(cornerRadius: 1).fill(palette.subtitle).frame(width: 8, height: 2)
++      }
++    }
++  }
++
++  /// Stacked add/remove bars. Composition follows the change *kind*, not magnitude: per-file line counts
++  /// don't exist on `ChangedFile`, so an added file reads all-add, a deletion all-remove, a modification
++  /// split, and a conflict takes the conflict token outright.
++  private func diff(_ change: ChangedFile.Change) -> some View {
++    VStack(spacing: 2) {
++      ForEach(Array(bars(for: change).enumerated()), id: \.offset) { _, bar in
++        RoundedRectangle(cornerRadius: 1)
++          .fill(bar.color)
++          .frame(width: bar.width, height: 4)
++      }
++    }
++  }
++
++  private func bars(for change: ChangedFile.Change) -> [(color: Color, width: CGFloat)] {
++    let add = palette.diffAdd
++    let remove = palette.diffRemove
++    switch change {
++    case .added, .untracked:
++      return [(add, 26), (add, 20), (add, 14)]
++    case .deleted:
++      return [(remove, 26), (remove, 20), (remove, 14)]
++    case .modified, .other:
++      return [(add, 26), (remove, 18), (add, 12)]
++    case .renamed:
++      return [(palette.subtitle, 26), (add, 18), (remove, 12)]
++    case .conflicted:
++      return [(Color(nsColor: theme.tokens.nsFg), 24), (remove, 24), (add, 24)]
++    }
++  }
++
++  /// Abstract text lines — a page, with no pretence of showing the real content.
++  private var file: some View {
++    VStack(alignment: .leading, spacing: 3) {
++      ForEach([24, 18, 22, 13], id: \.self) { width in
++        RoundedRectangle(cornerRadius: 1)
++          .fill(palette.subtitle)
++          .frame(width: CGFloat(width), height: 2.5)
++      }
++    }
++  }
++
++  /// A chain of commit dots.
++  private var changeset: some View {
++    HStack(spacing: 0) {
++      ForEach(0..<3, id: \.self) { index in
++        Circle()
++          .fill(index == 0 ? palette.name : palette.subtitle)
++          .frame(width: 6, height: 6)
++        if index < 2 {
++          Rectangle().fill(palette.subtitle).frame(width: 6, height: 1.5)
++        }
++      }
++    }
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppTests/SwitcherMarkTests.swift ===
+@@ -0,0 +1,236 @@
++import AppKit
++import XCTest
++
++@testable import Workroom
++
++/// `SwitcherMark` + `PaneMiniature` (issue #132): the per-switcher card identities that replaced
++/// screenshots.
++final class SwitcherMarkTests: XCTestCase {
++
++  // MARK: Hue stability — the property the whole idea rests on
++
++  func testTheHueIsStableAcrossProcessesNotJustWithinOne() {
++    // Swift seeds String hashing PER PROCESS, so `hashValue` would give a workroom a different colour on
++    // every launch — which destroys the entire premise of a mark you learn to recognise. These are the
++    // hard-coded outputs of the FNV-1a implementation: if someone swaps it for `hashValue`, this fails.
++    XCTAssertEqual(SwitcherMark.hue(for: "wr|/p|partitioned-crescent"), 0)
++    XCTAssertEqual(SwitcherMark.hue(for: "wr|/p|flaky-tests"), 10)
++    XCTAssertEqual(SwitcherMark.hue(for: "root|/p"), 0)
++  }
++
++  func testTheHueIsDeterministicForTheSameKey() {
++    for key in ["a", "wr|/p|fox", "", "🙂-room"] {
++      XCTAssertEqual(SwitcherMark.hue(for: key), SwitcherMark.hue(for: key), "key \(key)")
++    }
++  }
++
++  func testTheHueIsAlwaysInRange() {
++    for index in 0..<500 {
++      let hue = SwitcherMark.hue(for: "wr|/project-\(index)|room-\(index)")
++      XCTAssertTrue((0..<SwitcherMark.hueCount).contains(hue), "hue \(hue) out of range")
++    }
++  }
++
++  func testHuesSpreadAcrossThePaletteRatherThanClustering() {
++    // A mark scheme where 40 workrooms all land on two hues would be useless. Not a distribution proof —
++    // just a guard against a hash that collapses (e.g. summing bytes, which similar names defeat).
++    let hues = Set((0..<80).map { SwitcherMark.hue(for: "wr|/p|room-\($0)") })
++    XCTAssertEqual(hues.count, SwitcherMark.hueCount, "every hue gets used across 80 names")
++  }
++
++  // MARK: Rail-level uniqueness
++
++  func testCollidingHuesAreRotatedApart() {
++    // A stable per-name hue is right in isolation and not enough in practice: two of four tiles came out
++    // the same colour in BOTH live checks. The rail's job is telling *these* items apart.
++    XCTAssertEqual(SwitcherMark.disambiguate([3, 3, 3]), [3, 4, 5])
++    XCTAssertEqual(SwitcherMark.disambiguate([0, 5, 0, 5]), [0, 5, 1, 6])
++  }
++
++  func testDistinctHuesAreLeftAlone() {
++    XCTAssertEqual(SwitcherMark.disambiguate([1, 4, 9]), [1, 4, 9], "no needless churn")
++    XCTAssertEqual(SwitcherMark.disambiguate([]), [])
++  }
++
++  func testEarlierItemsKeepTheirNaturalHue() {
++    // MRU order, so the workrooms you switch between most — and have therefore learned — never move.
++    let rotated = SwitcherMark.disambiguate([7, 7, 7, 7])
++    XCTAssertEqual(rotated.first, 7)
++    XCTAssertEqual(Set(rotated).count, 4, "and the rest are pushed to free hues")
++  }
++
++  func testRotationWrapsAroundTheWheel() {
++    let rotated = SwitcherMark.disambiguate([11, 11, 11])
++    XCTAssertEqual(rotated, [11, 0, 1], "wraps past the last hue rather than running off the end")
++  }
++
++  func testMoreItemsThanHuesDegradesWithoutHanging() {
++    let hues = Array(repeating: 0, count: SwitcherMark.hueCount + 5)
++    let rotated = SwitcherMark.disambiguate(hues)
++    XCTAssertEqual(rotated.count, hues.count, "every item still gets a hue")
++    XCTAssertTrue(rotated.allSatisfy { (0..<SwitcherMark.hueCount).contains($0) })
++  }
++
++  // MARK: Monogram
++
++  func testMonogramKeepsATrailingNumberBecauseThatIsTheDifference() {
++    // The bug this exists to prevent, seen live: plain initials turned uitest-room / -2 / -3 / -4 into
++    // four identical "UR" tiles — the same failure D12 fixed for titles, and worse than no tile at all.
++    XCTAssertEqual(SwitcherMark.monogram(for: "uitest-room"), "UR")
++    XCTAssertEqual(SwitcherMark.monogram(for: "uitest-room-2"), "R2")
++    XCTAssertEqual(SwitcherMark.monogram(for: "uitest-room-3"), "R3")
++    XCTAssertEqual(
++      Set(
++        ["uitest-room", "uitest-room-2", "uitest-room-3", "uitest-room-4"].map(
++          SwitcherMark.monogram)
++      )
++      .count, 4, "four numbered siblings must produce four distinct monograms")
++    XCTAssertEqual(
++      SwitcherMark.monogram(for: "room-12"), "R2", "last digit of a multi-digit suffix")
++  }
++
++  func testMonogramTakesInitialsFromAGeneratedName() {
++    // `namegen` produces adjective-noun pairs, so initials carry far more than the first two letters.
++    XCTAssertEqual(SwitcherMark.monogram(for: "partitioned-crescent"), "PC")
++    XCTAssertEqual(SwitcherMark.monogram(for: "flaky-tests"), "FT")
++    XCTAssertEqual(SwitcherMark.monogram(for: "dusk_harbor"), "DH")
++    XCTAssertEqual(SwitcherMark.monogram(for: "Auth refactor"), "AR")
++  }
++
++  func testMonogramFallsBackToTwoLettersForASingleWord() {
++    XCTAssertEqual(SwitcherMark.monogram(for: "crescent"), "CR")
++    XCTAssertEqual(SwitcherMark.monogram(for: "x"), "X")
++  }
++
++  func testMonogramSurvivesJunkNames() {
++    XCTAssertEqual(
++      SwitcherMark.monogram(for: ""), "?", "never empty — the tile would read as a blank")
++    XCTAssertEqual(SwitcherMark.monogram(for: "---"), "?")
++    XCTAssertEqual(SwitcherMark.monogram(for: "  spaced  out "), "SO")
++  }
++
++  func testMonogramUsesMoreThanTwoWordsGracefully() {
++    XCTAssertEqual(
++      SwitcherMark.monogram(for: "one-two-three"), "OT", "first two words, not all three")
++  }
++
++  // MARK: Relabel behaviour — the split that makes a mark learnable
++
++  func testARelabelChangesTheLettersButNotTheColour() {
++    // The colour is what you recognise from the corner of your eye, so it keys on the target id (which a
++    // relabel does not change); the letters key on what you actually read.
++    let key = "wr|/p|partitioned-crescent"
++    let before = SwitcherMark(displayName: "partitioned-crescent", stableKey: key)
++    let after = SwitcherMark(displayName: "Auth refactor", stableKey: key)
++    XCTAssertEqual(before.hue, after.hue, "the hue must survive a relabel")
++    XCTAssertEqual(before.monogram, "PC")
++    XCTAssertEqual(after.monogram, "AR")
++  }
++
++  func testTwoWorkroomsWithTheSameNameInDifferentProjectsCanDiffer() {
++    let a = SwitcherMark(displayName: "fox", stableKey: "wr|/alpha|fox")
++    let b = SwitcherMark(displayName: "fox", stableKey: "wr|/beta|fox")
++    XCTAssertEqual(a.monogram, b.monogram, "same name reads the same")
++    // Not guaranteed to differ (6 buckets), but the keys are distinct so the mapping had the chance.
++    XCTAssertNotEqual("wr|/alpha|fox", "wr|/beta|fox")
++    _ = (a.hue, b.hue)
++  }
++
++  // MARK: Mark palette
++
++  func testTileColoursAreDistinctAndClearTheContrastFloor() {
++    // The other half of the live bug: `legible` walks a colour TOWARD THE FOREGROUND, so on a light
++    // theme every insufficiently-contrasty palette entry became near-black and all six tiles collapsed
++    // into identical charcoal. `tileColor` keeps only the hue angle and imposes its own S/B instead.
++    let tokens = ThemeTokens(preview: nil)
++    var seen: Set<String> = []
++    for hue in 0..<SwitcherMark.hueCount {
++      let tile = SwitcherMark.tileColor(hue: hue, tokens: tokens)
++      let srgb = tile.usingColorSpace(.sRGB)!
++      seen.insert(String(format: "%.3f-%.3f", srgb.hueComponent, srgb.brightnessComponent))
++      XCTAssertGreaterThanOrEqual(
++        ThemeTokens.contrastRatio(tile, tokens.nsPanel), 3.0 - 0.01, "hue \(hue) vs the card")
++      XCTAssertGreaterThan(
++        srgb.saturationComponent, 0.3, "hue \(hue) must stay a colour, not a grey")
++    }
++    XCTAssertEqual(seen.count, SwitcherMark.hueCount, "every hue must be visually distinct")
++  }
++
++  func testEveryMarkTileCanCarryALegibleMonogram() {
++    // The tile clears 3:1 against the card, then the monogram takes whichever of black/white is legible
++    // on the result — so no hue can produce an unreadable tile.
++    //
++    // The monogram floor is 3:1, not 4.5:1, and that is a real constraint rather than a relaxation: a
++    // MID-TONE hue (measured 3.15–4.2:1 here) cannot carry either black or white at 4.5:1 — no ink
++    // choice exists. 17pt semibold is WCAG "large text" (well past the 14pt-bold / 18.66px threshold),
++    // for which 3:1 is the conforming ratio. Body text on the card keeps its 4.5:1 floor.
++    let tokens = ThemeTokens(preview: nil)
++    for hue in 0..<SwitcherMark.hueCount {
++      let tile = SwitcherMark.tileColor(hue: hue, tokens: tokens)
++      XCTAssertGreaterThanOrEqual(
++        ThemeTokens.contrastRatio(tile, tokens.nsPanel), 3.0 - 0.01, "tile vs card")
++      let ink = ThemeTokens.contrastingForeground(for: tile)
++      XCTAssertGreaterThanOrEqual(
++        ThemeTokens.contrastRatio(ink, tile), 3.0 - 0.01, "monogram vs tile (large-text floor)")
++    }
++  }
++
++  // MARK: Pane miniatures
++
++  func testEachPaneKindMapsToItsOwnMiniature() {
++    // `GhosttySurfaceView(workingDirectory:)` is inert until it enters a window, so building one here
++    // costs nothing and spawns no shell.
++    let state = TerminalState(
++      view: GhosttySurfaceView(workingDirectory: "/tmp"), defaultTitle: "zsh")
++    let terminal = PaneMiniature(content: TabContent.terminal(state), isRunning: true)
++    XCTAssertEqual(terminal, .terminal(running: true))
++
++    let diff = PaneMiniature(
++      content: TabContent.diff(
++        DiffDescriptor(path: "a.swift", change: .modified, source: .gitWorktree, isPreview: false)),
++      isRunning: false)
++    XCTAssertEqual(diff, .diff(.modified))
++
++    let file = PaneMiniature(
++      content: TabContent.file(FileDescriptor(path: "README.md", isPreview: false)),
++      isRunning: false)
++    XCTAssertEqual(file, .file)
++
++    let commit = PaneMiniature(
++      content: TabContent.changeset(
++        ChangesetDescriptor(commitID: "abc", title: "fix", isPreview: false)), isRunning: false)
++    XCTAssertEqual(commit, .changeset)
++  }
++
++  func testTheDiffMiniatureCarriesTheChangeKindNotJustDiffness() {
++    // Two diff panes in one workroom must not read identically — the change kind is the only per-file
++    // signal available (`ChangedFile` has no line counts), so it has to reach the well.
++    let added = PaneMiniature.diff(.added)
++    let deleted = PaneMiniature.diff(.deleted)
++    XCTAssertNotEqual(added, deleted)
++    XCTAssertEqual(added.label, "Added")
++    XCTAssertEqual(deleted.label, "Deleted")
++    XCTAssertEqual(PaneMiniature.diff(.conflicted).label, "Conflicted")
++  }
++
++  func testTheRunningTerminalIsADistinctMiniature() {
++    XCTAssertNotEqual(PaneMiniature.terminal(running: true), .terminal(running: false))
++  }
++
++  func testATerminalReportsItsStateRatherThanRepeatingItsKind() {
++    // Seen live: "Terminal 3" over the subtitle "Terminal" says the same thing twice. The title is
++    // already the shell or command, so the subtitle spends itself on state instead.
++    XCTAssertEqual(PaneMiniature.terminal(running: true).label, "Running")
++    XCTAssertEqual(PaneMiniature.terminal(running: false).label, "Idle")
++  }
++
++  func testEveryMiniatureNamesItsKindInText() {
++    // A shape alone is not accessible, and an unlearned shape is not yet meaningful — the kind is always
++    // spelled out under the name too.
++    for miniature: PaneMiniature in [
++      .terminal(running: false), .diff(.modified), .file, .changeset,
++    ] {
++      XCTAssertFalse(miniature.label.isEmpty)
++    }
++  }
++}
+
+
+Investigate per the method in your instructions, then return the findings list.
