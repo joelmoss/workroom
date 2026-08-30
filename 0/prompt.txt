@@ -1,0 +1,1 @@
+[Image #1] creating two workroom split groups ends up with the hroup border all over the place
