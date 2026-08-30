@@ -1,0 +1,63 @@
+<task-notification>
+<task-id>a53b51857678479d1</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/85057c1d-7a50-422d-a310-af45bba739d0/tasks/a53b51857678479d1.output</output-file>
+<status>completed</status>
+<summary>Agent "Review PTY and process lifecycle code" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Review Findings — commit b28e9134
+
+**[CRITICAL] (confidence: 8/10) `PersistentSessionService.swift:109-124`, `TerminalSessions.swift:1296-1304`, `AppStore.swift:3222-3224` — persistent-session teardown isn't awaited before the workroom's directory is deleted**
+
+```swift
+// PersistentSessionService.swift:109-116
+func endSession(sessionID: UUID) {
+    descriptors.removeValue(forKey: sessionID)
+    guard let socketPath = existingSocketPath, ... else { return }
+    let client = PersistentSessionControlClient(socketPath: socketPath)
+    Task.detached(priority: .utility) { _ = client.kill(identifier: identifier) }
+}
+```
+`reap()` fires this via an un-awaited `Task { await PersistentSessionService.shared.endSessions(matchingWorkroom: id) }` (TerminalSessions.swift:1304), and the caller proceeds synchronously:
+```swift
+// AppStore.swift:3222-3224
+stopRunsAcrossWindows([targetID], stores: stores) { [weak self] in
+  for store in stores { store.reapTargetLocally(targetID) }
+  self?.startWorkroomTeardown(workroom, in: project)   // deletes the worktree
+}
+```
+`stopRunsAcrossWindows` deliberately blocks on a `DispatchGroup` so run-command dev servers exit before the worktree is deleted (comment cites issue #7: "the worktree must not be deleted while its dev server still holds the directory"). The new persistent-terminal kill path reintroduces exactly that hazard for ordinary shells: `endSession`'s `Task.detached` and `cli.delete`'s `Task` race with no ordering, so the worktree can be removed while the daemon's shell (and its child processes) still has the directory as CWD. Fix: make `endSession`/`endSessions(matchingWorkroom:)` awaitable-to-completion and gate `startWorkroomTeardown` on them the same way `stopRunsAcrossWindows` gates on run commands.
+
+**[INFORMATIONAL] (confidence: 6/10) `PersistentSessionService.swift:115` — kill failures are silently discarded**
+
+`Task.detached(priority: .utility) { _ = client.kill(identifier: identifier) }` drops the boolean result with no logging or retry, unlike `endAllSessions()` (line 130) which awaits `client.killAll()`'s result. A daemon that's slow/unreachable leaves an orphaned session with zero diagnostic trace, and (per the finding above) zero back-pressure on the directory delete that follows.
+
+**[INFORMATIONAL] (confidence: 6/10) `PersistentSessionPaths.swift:56-65` — TOCTOU between the symlink check and the directory setup, chmod follows symlinks**
+
+```swift
+if fileManager.fileExists(atPath: url.path, isDirectory: &amp;isDirectory) {
+  if (try? fileManager.destinationOfSymbolicLink(atPath: url.path)) != nil {
+    throw PathError.directoryUnavailable
+  }
+  guard isDirectory.boolValue else { throw PathError.directoryUnavailable }
+} else {
+  try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+}
+try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
+```
+This only re-checks for a symlink in the "already exists" branch. In the `/tmp/workroom-&lt;uid&gt;` fallback path (world-writable dir, predictable name), if an attacker wins the race between the earlier `fileExists` (false) and this `createDirectory` call by planting a symlink to a directory the victim owns, `createDirectory(withIntermediateDirectories:true)` treats "EEXIST + stat-follows-to-a-directory" as success, and the subsequent `setAttributes(.posixPermissions:)` (which calls `chmod`, following symlinks) silently `chmod 0700`s whatever the symlink points at instead of failing closed. Narrow window, but it's the exact class of bug called out as priority #1. Fix: `open()`/`mkdir()` the leaf with `O_NOFOLLOW`/`lstat` before `createDirectory`, or re-check `destinationOfSymbolicLink` immediately before `setAttributes` too.
+
+**[INFORMATIONAL] (confidence: 5/10) `PersistentSessionRecovery.swift:7-12` + `SessionDaemon.swift:267-273` — stale "live" snapshot can cause a silent respawn under the recovered UUID**
+
+```swift
+// PersistentSessionRecovery.swift
+let live = await PersistentSessionService.shared.liveSessions()
+let liveIDs = Set(live.compactMap(\.identifier.uuid))
+...
+sessions.materializeLivePersistentSessions(liveIDs)
+```
+`liveSessions()` is a point-in-time snapshot; the actual attach happens later via `GhosttySurfaceView`/`SessionAttachClient`. If the daemon session exits in between, `SessionDaemon.handleAttach` (lines 267-273) finds no `sessions[request.identifier]` and falls through to `create(request:...)`, silently spawning a brand-new shell under the same `SessionIdentifier`. The user sees what looks like a reattach to their persisted terminal but is actually a fresh shell with no scrollback/state — the "dead session → sidecar replay" UX path is bypassed. Not a wrong-session/security issue (UUIDs are unique), but a real recovery-correctness gap worth a `created` check against the pane's expectation.
+
+**Not flagged as bugs**: fd handling in `PersistentSessionControlClient.transact`, `SessionAttachClient.attach`/`loop`, and `SessionControlClient.transact` all use `defer { close(...) }` immediately after acquiring the descriptor, covering every early-return and loop-exit path — no leaks found. `SessionPTY`'s CLOEXEC discipline (set on listener/connections/lock/master fds) prevents a spawned shell from inheriting daemon-internal descriptors. `SessionDaemon.start`'s `flock`-based single-instance lock correctly prevents duplicate daemon spawns when multiple attach clients race on startup.</result>
+<usage><subagent_tokens>112467</subagent_tokens><tool_uses>21</tool_uses><duration_ms>383083</duration_ms></usage>
+</task-notification>
