@@ -1,0 +1,1 @@
+I plan to a release a v2 final (GA) very soon, so am concentrating on bugs and polish. which items from TODOS.md should I include?
