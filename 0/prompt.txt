@@ -1,0 +1,61 @@
+<bash-stdout><persisted-output>
+Output too large (70.4KB). Full output saved to: /Users/joelmoss/.claude/projects/-Users-joelmoss-dev-workroom/1d87ba48-cde2-404f-bd39-1c1da34fd079/tool-results/bl4iqdkka.txt
+
+Preview (first 2KB):
+HEAD is now at 1d41ee3a v1.63.0.0 feat: GStack 2 fork port wave — egress receipts, context-bill, sharded gate, /health fix (#2541)
+Building browse binary...
+bun install v1.3.13 (bf2e2cec)
+
+Checked 305 installs across 339 packages (no changes) [86.00ms]
+$ bash scripts/build.sh
+$ mkdir -p extension/lib && cp node_modules/xterm/lib/xterm.js extension/lib/xterm.js && cp node_modules/xterm/css/xterm.css extension/lib/xterm.css && cp node_modules/xterm-addon-fit/lib/xterm-addon-fit.js extension/lib/xterm-addon-fit.js
+$ bun run scripts/gen-skill-docs.ts --host all
+GENERATED: SKILL.md
+GENERATED: pair-agent/SKILL.md
+GENERATED: benchmark/SKILL.md
+GENERATED: design-html/SKILL.md
+GENERATED: plan-tune/SKILL.md
+GENERATED: design-shotgun/SKILL.md
+GENERATED: plan-design-review/SKILL.md
+GENERATED: autoplan/SKILL.md
+GENERATED: design-consultation/SKILL.md
+GENERATED: learn/SKILL.md
+GENERATED: freeze/SKILL.md
+GENERATED: ios-qa/SKILL.md
+GENERATED: careful/SKILL.md
+GENERATED: cso/SKILL.md
+GENERATED: canary/SKILL.md
+GENERATED: open-gstack-browser/SKILL.md
+GENERATED: diagram/SKILL.md
+GENERATED: investigate/SKILL.md
+GENERATED: context-restore/SKILL.md
+GENERATED: document-release/SKILL.md
+GENERATED: health/SKILL.md
+GENERATED: gstack-upgrade/SKILL.md
+GENERATED: land-and-deploy/SKILL.md
+GENERATED: codex/SKILL.md
+GENERATED: spec/SKILL.md
+GENERATED: qa/SKILL.md
+GENERATED: scrape/SKILL.md
+GENERATED: qa-only/SKILL.md
+GENERATED: skillify/SKILL.md
+GENERATED: sync-gbrain/SKILL.md
+GENERATED: setup-browser-cookies/SKILL.md
+GENERATED: ios-fix/SKILL.md
+GENERATED: ios-clean/SKILL.md
+GENERATED: setup-gbrain/SKILL.md
+GENERATED: document-generate/SKILL.md
+GENERATED: review/SKILL.md
+GENERATED: plan-ceo-review/SKILL.md
+GENERATED: office-hours/SKILL.md
+GENERATED: landing-report/SKILL.md
+GENERATED: retro/SKILL.md
+GENERATED: ios-design-review/SKILL.md
+GENERATED: devex-review/SKILL.md
+GENERATED: benchmark-models/SKILL.md
+GENERATED: plan-devex-review/SKILL.md
+GENERATED: ios-sync/SKILL.md
+GENERATED: browse/SKILL.md
+...
+</persisted-output></bash-stdout><bash-stderr>
+Shell cwd was reset to /Users/joelmoss/dev/workroom</bash-stderr>
