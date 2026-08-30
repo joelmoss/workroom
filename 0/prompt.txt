@@ -1,0 +1,1 @@
+forget about issue 97 - its now closed. tackle the whole list in order, finishing with a first release candidate
