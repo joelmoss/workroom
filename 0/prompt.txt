@@ -1,0 +1,1 @@
+<bash-input>git push</bash-input>
