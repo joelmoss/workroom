@@ -1,0 +1,5 @@
+add branch selection and push/pull button, with fetch status to top of VCS sidebar. A new toolbar should be positioned above the changes header, but within the sidebar. It should be split in three.
+1. Current branch name, as a clickable dropdown with list of branches.
+2. Fetch status ("last fetched X minutes ago"). If changes to push, should be "Push origin". If changes to pull, should be "Pull origin with rebase".
+3. Fetch button as an icon.
+[Image #1] < similar to how Github Desktop shows it.
