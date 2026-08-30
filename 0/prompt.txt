@@ -1,0 +1,1 @@
+A while ago we looked into showing a live view of all running terminals and detail panels, as a mini viewer, but the conclusion was that libghostty didn’t support it and it wasn’t possible. How about now, or with the latest?
