@@ -1,0 +1,499 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+## 1. Primary Request and Intent
+
+This is a long, multi-phase session that evolved through several explicit user requests:
+
+1. "are we running the latest version of libghostty?" — version-check request.
+2. "summarise the major changes between the version we previously had, and identify areas where we can improve things, or introduce new features. think about stability, performance and functionality" — research/analysis request.
+3. "Let's document these possible improvements and features, with concrete and validated todo items" — asked to write findings into TODOS.md as properly formatted, validated entries (not speculation).
+4. "A while ago we looked into showing a live view of all running terminals and detail panels, as a mini viewer, but the conclusion was that libghostty didn't support it and it wasn't possible. How about now, or with the latest?" — asked to re-investigate a previously-shelved feature idea.
+5. "Not acceptable. I want shrunken identical view. Not resized" — explicit hard requirement correction when I proposed a resize-based approach.
+6. "Check it" — asked me to empirically verify (not just reason about) whether continuous `SCStream` needs Screen Recording permission for own-process capture.
+7. "Yes. And let's plan an early version of this now. Hovering a terminal tab should show the mini live view" — approved documenting the SCStream finding and asked to plan a hover-preview feature.
+8. "Plan the live tab min view" — asked for a full implementation plan (triggered `EnterPlanMode`).
+9. Invoked `/plan-eng-review` skill mid-flow (interrupting my `ExitPlanMode` call) — asked for a full structured engineering review of the plan, including an outside-voice (Codex) pass.
+10. Approved the reviewed plan; then said "yes" to running T0 (TODOS.md sync) and starting the Stage 0 spike ("building it, launching the app, driving a real hover").
+11. "continue" — asked me to implement the reviewed plan's tasks (T2–T6) for real.
+12. "create branch and commit, then manual QA" — asked to create a git branch, commit the implementation, then perform manual QA.
+13. "tab hover shows nothing" — real bug report after a real-mouse test.
+14. "now a hover selected the tab, but the detail pane is empty" — second real bug report after the first fix.
+15. (Mid-turn, sent alongside a tool result) "should be UI tests for this to avoid manual testing" — explicit instruction that this class of bug must be covered by automated UI tests, not manual verification, going forward.
+
+The overarching intent: research and validate technical claims empirically (not by assumption), correct a stale/wrong belief about libghostty's capabilities, design and rigorously review an architecture for a "hover a terminal tab to see a live mini-preview" feature, implement it fully with real test coverage, and fix real bugs found via actual (not synthetic) testing — with an explicit standing instruction that future regressions of this kind must be caught by automated UI tests, not manual clicking.
+
+## 2. Key Technical Concepts
+
+- **libghostty / GhosttyKit**: the embedded terminal engine (Zig-based `ghostty` core), pinned via `libghostty-spm` package (Lakr233), version 1.3.2 / engine commit `35e1a0160c4f6797e1bb1ef8e7a2b8c6b114ab58`.
+- **`ghostty_surface_t`**: the C handle for one terminal surface; `GhosttySurfaceView` (`NSView` subclass) wraps it 1:1.
+- **`CAMetalLayer` compositing**: libghostty installs its own Metal layer internally on the `NSView` it's handed (`ghostty_platform_macos_s(nsview:)`); Workroom's own Swift never touches `CAMetalLayer` directly.
+- **`CATransform3DMakeScale` / `sublayerTransform`**: the mechanism behind "Candidate A" — a compositing-only visual shrink of a surface's rendered output via an ancestor layer's `sublayerTransform`, without touching the surface's actual `.frame.size`.
+- **`ghostty_surface_set_size` / `updateMetalLayerSize()`**: the resize path that must NEVER be triggered by a preview feature (confirmed: any `.frame.size` write on a mounted `GhosttySurfaceView` retriggers this via `viewDidMoveToWindow`).
+- **`ghostty_surface_set_occlusion` / `GhosttySurfaceView.setVisible(_:)` / `applyOcclusionState()`**: the per-surface GPU-render pause mechanism; `TerminalSessions.reconcileOcclusion(for:)` is documented as the SOLE caller of `setVisible`.
+- **`TerminalContainerView.mount(in:)`**: the real production re-homing code for the ACTIVE tab; sets `view.wantsFocus = isFocusedPane` and re-parents the surface via frame+autoresizingMask (never AutoLayout, to avoid stale-constraint bugs from issue #3).
+- **`ScreenCaptureKit` / `SCStream` vs `SCScreenshotManager`**: continuous capture vs one-shot; `SCShareableContent.currentProcess` (macOS 14.4+) grants own-process capture with NO Screen Recording permission — empirically confirmed via a standalone compiled Swift binary (not assumed).
+- **XCTest / XCUITest**: `@testable import Workroom`; `XCTSkipUnless(GhosttyApp.shared.app != nil, ...)` is the established pattern for tests needing a real libghostty runtime; `.staticTexts.matching(NSPredicate(format: "identifier BEGINSWITH %@", ...))` is the established pattern for reliably counting/indexing tab chips (vs `.descendants(matching: .any)`, which double-matches title+close-button).
+- **Claude Code workflow tools used**: `EnterPlanMode`/`ExitPlanMode` (native plan mode), `/plan-eng-review` (gstack skill — heavy structured review with AskUserQuestion gates, Codex outside-voice via `codex exec`, mandatory `## GSTACK REVIEW REPORT` footer with exact unbolded `NO UNRESOLVED DECISIONS` sentinel), `Agent` (Explore/Plan subagents), `AskUserQuestion`.
+- **Sandbox/build conventions**: `dangerouslyDisableSandbox: true` required for `make app-*`, `screencapture`, `osascript` real-mouse driving; `make app-generate` (xcodegen) required after adding/removing Swift files before direct `xcodebuild -only-testing` picks them up.
+- **Session-tokened claims**: `PreviewClaim { tabID, session }` pattern to prevent a stale/superseded async session's teardown from clobbering a newer session's still-active state — a generation counter used as both cancellation token AND occlusion-claim session identity.
+- **Dependency-injection testability seam**: `PreviewScheduling`/`PreviewCancellable` (wraps `DispatchQueue.main.asyncAfter`) and `PreviewFrameSource` protocol (real: `TransformScaleFrameSource`; fake: `FakeFrameSource` in tests) — added specifically to keep the state machine unit-testable without resurrecting a full swappable-capture-backend abstraction (a scope cut, "D3", made during eng review).
+
+## 3. Files and Code Sections
+
+### `/Users/joelmoss/dev/workroom/TODOS.md`
+- Edited multiple times: added "Wire native `selection_changed` notification", "`ghostty_surface_tty_name` is available and unused", "Re-benchmark surface-budget perf" entries; added measured drift numbers (652 commits) to "Own the GhosttyKit xcframework" entry; corrected "A live 'all terminals' mini-viewer" entry to lead with the SCStream finding; added and later rewrote "Tab-hover live mini-preview" entry to point at the reviewed plan file.
+- Committed as `9d0fa99a` (first TODOS batch) and `c183b9dd` (hover-preview plan pointer, superseding the earlier SCStream-only draft).
+
+### `~/.claude/plans/ethereal-inventing-wolf.md` (plan file, NOT in the git repo)
+- Built up through `EnterPlanMode` → heavily revised during `/plan-eng-review` (architecture fixes, Codex findings, task list T0–T6, verification steps, and the mandatory `## GSTACK REVIEW REPORT` footer ending in the exact literal line `NO UNRESOLVED DECISIONS`, unbolded).
+- Updated post-implementation: T1 marked done with spike results (screenshot-confirmed live compositing, off-center anchor math flagged as a known follow-up), T2–T6 marked done with test-pass counts and the two real bugs found+fixed during implementation (phase-stuck-at-armed bug; generation-vs-session-token teardown bug).
+- **Still needs updating** (not yet done): the two NEW bugs found via real-mouse QA (superview guard bug; wantsFocus stale-focus-steal bug) and the new test files (`TransformScaleFrameSourceTests.swift`, `TerminalHoverPreviewUITests.swift`) are NOT yet reflected in this plan file.
+
+### `macapp/WorkroomApp/Core/TerminalSessions.swift` (edited)
+Key additions:
+```swift
+private struct PreviewClaim {
+  let tabID: TerminalTab.ID
+  let session: Int
+}
+@Published private var previewClaims: [TerminalTarget.ID: PreviewClaim] = [:]
+
+func beginPreview(_ tabID: TerminalTab.ID, session: Int, for target: TerminalTarget) {
+  previewClaims[target.id] = PreviewClaim(tabID: tabID, session: session)
+  reconcileOcclusion(for: target)
+}
+
+func endPreview(_ tabID: TerminalTab.ID, session: Int, for target: TerminalTarget) {
+  guard previewClaims[target.id]?.session == session else { return }
+  previewClaims[target.id] = nil
+  reconcileOcclusion(for: target)
+}
+
+func reconcileOcclusion(for target: TerminalTarget) {
+  var visible = Set(visibleTabIDs(for: target))
+  if let claim = previewClaims[target.id] { visible.insert(claim.tabID) }
+  for tab in (tabsByTarget[target.id] ?? [:]).values {
+    tab.surface?.setVisible(visible.contains(tab.id))
+  }
+}
+
+func isPreviewEligible(_ tab: TerminalTab, for target: TerminalTarget) -> Bool {
+  tab.surface?.hasSurface == true && !visibleTabIDs(for: target).contains(tab.id)
+}
+```
+
+### `macapp/WorkroomApp/Core/GhosttySurfaceView.swift` (edited)
+```swift
+var hasSurface: Bool { surface != nil }
+...
+var isPaneVisibleForTesting: Bool { isPaneVisible }
+```
+Also inspected in depth: `viewDidMoveToWindow()` (lines ~461-505), specifically:
+```swift
+if wantsFocus, window.firstResponder !== self {
+  window.makeFirstResponder(self)
+}
+```
+and `var wantsFocus = false` (line 560), only ever set by `TerminalContainerView.mount(in:)` (`view.wantsFocus = isFocusedPane`) or `QuickTerminalController.swift:88`.
+
+### `macapp/WorkroomApp/Core/TerminalHoverPreviewController.swift` (new file, ~350 lines)
+Full state machine. Key pieces:
+```swift
+protocol PreviewCancellable { func cancel() }
+protocol PreviewScheduling {
+  @discardableResult
+  func schedule(after delay: TimeInterval, _ block: @escaping () -> Void) -> PreviewCancellable
+}
+final class DispatchQueueScheduling: PreviewScheduling { ... }
+
+protocol PreviewFrameSource: AnyObject {
+  func mount(surface: GhosttySurfaceView, host: NSView) -> Bool
+  func startPresenting(onFirstFrame: @escaping () -> Void)
+  func stopPresenting()
+  func unmount()
+}
+
+final class TransformScaleFrameSource: PreviewFrameSource {
+  private let scheduling: PreviewScheduling
+  private weak var mountedSurface: GhosttySurfaceView?
+  private var settleWork: PreviewCancellable?
+
+  func mount(surface: GhosttySurfaceView, host: NSView) -> Bool {
+    let originalSize = surface.frame.size
+    guard originalSize.width > 0, originalSize.height > 0 else { return false }
+    let hostSize = host.bounds.size
+    guard hostSize.width > 0, hostSize.height > 0 else { return false }
+    let scale = min(hostSize.width / originalSize.width, hostSize.height / originalSize.height)
+    guard scale.isFinite, scale > 0 else { return false }
+    host.wantsLayer = true
+    host.layer?.masksToBounds = true
+    let origin = NSPoint(
+      x: hostSize.width / 2 - originalSize.width / 2,
+      y: hostSize.height / 2 - originalSize.height / 2)
+    surface.frame = NSRect(origin: origin, size: originalSize)
+    surface.autoresizingMask = []
+    // FIX (bug #2, wantsFocus): force false before ever re-entering a window.
+    surface.wantsFocus = false
+    host.addSubview(surface)
+    host.layer?.sublayerTransform = CATransform3DMakeScale(scale, scale, 1)
+    mountedSurface = surface
+    return true
+  }
+  func startPresenting(onFirstFrame: @escaping () -> Void) {
+    settleWork = scheduling.schedule(after: 0.05, onFirstFrame)
+  }
+  func stopPresenting() { settleWork?.cancel(); settleWork = nil }
+  func unmount() { mountedSurface?.removeFromSuperview(); mountedSurface = nil }
+}
+
+final class PreviewHostView: NSView {
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+@MainActor
+final class TerminalHoverPreviewController: ObservableObject {
+  enum Phase: Equatable { case idle; case armed(tabID: TerminalTab.ID); case visible(tabID: TerminalTab.ID) }
+  @Published private(set) var phase: Phase = .idle
+  @Published private(set) var previewHost: NSView?
+  private(set) var generation = 0
+  private var activeSession: Int?  // FIX (bug: generation-vs-session-token) — NOT the live `generation`
+  ...
+
+  func armHover(tab: TerminalTab, target: TerminalTarget) {
+    guard sessions.isPreviewEligible(tab, for: target) else { return }
+    cancelHover()
+    let gen = generation
+    phase = .armed(tabID: tab.id)
+    armWork = scheduling.schedule(after: dwell) { [weak self] in
+      self?.resolve(tabID: tab.id, target: target, gen: gen)
+    }
+  }
+
+  func cancelHover() {
+    armWork?.cancel(); armWork = nil; generation += 1
+    if case .visible = phase { teardown() } else { phase = .idle }
+  }
+
+  private func resolve(tabID: TerminalTab.ID, target: TerminalTarget, gen: Int) {
+    guard gen == generation else { return }
+    guard let tab = sessions.tab(tabID, for: target) else { phase = .idle; return }
+    guard sessions.isPreviewEligible(tab, for: target) else { phase = .idle; return }
+    guard let surface = tab.surface else { phase = .idle; return }
+    mount(surface: surface, tabID: tabID, target: target, gen: gen)
+  }
+
+  private func mount(surface: GhosttySurfaceView, tabID: TerminalTab.ID, target: TerminalTarget, gen: Int) {
+    // FIX (bug #1, superview guard): superview is now a PLAIN OPTIONAL, not force-unwrapped —
+    // a genuinely backgrounded tab's surface has ALREADY been detached (superview == nil), which
+    // is the entire premise of why re-homing is needed. The old `guard let superview = ... else
+    // { return }` silently no-op'd on every real hover.
+    let superview = surface.superview
+    let preMountFrame = surface.frame
+    let host = PreviewHostView(frame: NSRect(x: 0, y: 0, width: 260, height: 160))
+    let frameSource = makeFrameSource()
+    guard frameSource.mount(surface: surface, host: host) else { phase = .idle; return }
+    activeFrameSource = frameSource
+    mountedSurface = surface
+    originalSuperview = superview
+    originalFrame = preMountFrame
+    activeTarget = target; activeTabID = tabID; activeSession = gen
+    sessions.beginPreview(tabID, session: gen, for: target)
+    guard gen == generation else { teardownAllocatedState(); return }
+    previewHost = host
+    frameSource.startPresenting { [weak self] in
+      guard let self, gen == self.generation else { return }
+      self.phase = .visible(tabID: tabID)
+    }
+  }
+
+  private func teardown() { teardownAllocatedState(); phase = .idle }
+
+  private func teardownAllocatedState() {
+    activeFrameSource?.stopPresenting(); activeFrameSource?.unmount(); activeFrameSource = nil
+    if let surface = mountedSurface, let superview = originalSuperview, let frame = originalFrame {
+      surface.frame = frame; surface.autoresizingMask = [.width, .height]; superview.addSubview(surface)
+    }
+    if let target = activeTarget, let tabID = activeTabID, let session = activeSession {
+      sessions.endPreview(tabID, session: session, for: target)
+    }
+    mountedSurface = nil; originalSuperview = nil; originalFrame = nil; previewHost = nil
+    activeTarget = nil; activeTabID = nil; activeSession = nil
+  }
+}
+```
+Also has a `resignActiveObserver` (NSApplication.willResignActiveNotification) calling `forceTeardown()`, added/removed in `init`/`deinit`.
+
+### `macapp/WorkroomApp/Views/TerminalTabStrip.swift` (edited)
+- Added `hoverPreview: TerminalHoverPreviewController` (`@ObservedObject`) param.
+- Added `TabChipAnchorKey: PreferenceKey` (mirrors existing `TabWidthKey`).
+- Added `OptionalHelp: ViewModifier` (conditionally applies `.help(text)`).
+- `TerminalTabChip` got a new `previewEligible: Bool` stored property; `.help(...)` call site replaced with `.modifier(OptionalHelp(text: tab.filePath ?? tab.title, enabled: !previewEligible))`; added `.anchorPreference(key: TabChipAnchorKey.self, value: .bounds) { [tab.id: $0] }`.
+- `.onHover` in `chipRun`'s `ForEach`:
+```swift
+let previewEligible = sessions.isPreviewEligible(tab, for: target)
+...
+.onHover { inside in
+  if inside {
+    hoveredTab = tab.id
+    if previewEligible, draggingID == nil { hoverPreview.armHover(tab: tab, target: target) }
+  } else if hoveredTab == tab.id {
+    hoveredTab = nil
+    hoverPreview.cancelHover()
+  }
+}
+```
+- Drag-start now also cancels hover: `if draggingID == nil { draggingID = tab.id; hoverPreview.cancelHover() }`.
+
+### `macapp/WorkroomApp/Views/TerminalHoverPreviewOverlay.swift` (new file)
+`PreviewHostRepresentable` (NSViewRepresentable wrapping the controller's `previewHost`), `TerminalHoverPreviewOverlay` (border/caption/material chrome, `static let width/height/estimatedTotalHeight`, `.allowsHitTesting(false)`).
+
+### `macapp/WorkroomApp/Views/WorkroomTerminalsView.swift` (edited)
+- Added `@StateObject private var hoverPreview: TerminalHoverPreviewController`, custom `init(target:sessions:surfaceActive:)` wiring `_hoverPreview = StateObject(wrappedValue: TerminalHoverPreviewController(sessions: sessions))`.
+- Passes `hoverPreview: hoverPreview` into `TerminalTabStrip(...)`.
+- Added `.overlayPreferenceValue(TabChipAnchorKey.self) { anchors in GeometryReader { geo in if case .visible(let tabID) = hoverPreview.phase, let host = hoverPreview.previewHost, let anchor = anchors[tabID] { let chipFrame = geo[anchor]; TerminalHoverPreviewOverlay(host: host, title: sessions.tab(tabID, for: target)?.title ?? "").position(x: chipFrame.midX, y: chipFrame.maxY + TerminalHoverPreviewOverlay.estimatedTotalHeight / 2 + 6) } } }` and `.onDisappear { hoverPreview.forceTeardown() }`.
+
+### `macapp/WorkroomAppTests/TerminalSessionsPreviewOcclusionTests.swift` (new, 6 tests)
+Covers: no-active-claim regression, begin/end-preview un/re-occlusion, unrelated-reconcile-respects-claim, cross-target non-leak, old-session-cannot-clear-newer-session's-claim.
+
+### `macapp/WorkroomAppTests/TerminalHoverPreviewControllerTests.swift` (new, 7 tests)
+`FakeCancellable`/`FakeScheduling`/`FakeFrameSource` fakes. `makeSessions()` factory (uses REAL `spawnsSurface: true` surfaces, `XCTSkipUnless(GhosttyApp.shared.app != nil, ...)` guard, `createdSurfaces` array torn down in `tearDown()`). **Critical fixture fix added later**:
+```swift
+var previouslyFocused: TerminalTab.ID?
+sessions.onFocusChange = { [weak sessions, target] _, newFocusedID in
+  if let previouslyFocused, previouslyFocused != newFocusedID {
+    sessions?.tab(previouslyFocused, for: target)?.surface?.removeFromSuperview()
+  }
+  previouslyFocused = newFocusedID
+}
+```
+This mimics production's real detach-on-switch-away behavior — its absence originally masked the "superview guard" bug.
+
+### `macapp/WorkroomAppTests/GhosttySurfaceViewTests.swift` (edited)
+Added `GhosttySurfaceViewHoverPreviewSeamTests` class (2 tests: `testHasSurfaceReflectsCreationAndTearDown`, `testIsPaneVisibleForTestingReflectsSetVisible`).
+
+### `macapp/WorkroomAppTests/TransformScaleFrameSourceTests.swift` (new file, just created)
+```swift
+import AppKit
+import QuartzCore
+import XCTest
+@testable import Workroom
+
+@MainActor
+final class TransformScaleFrameSourceTests: XCTestCase {
+  private var window: NSWindow!
+  override func setUpWithError() throws {
+    try super.setUpWithError()
+    try XCTSkipUnless(GhosttyApp.shared.app != nil, "requires the libghostty runtime")
+    window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 480), styleMask: [.titled], backing: .buffered, defer: true)
+  }
+
+  func testMountNeverStealsFirstResponderFromCurrentlyFocusedView() {
+    let surface = GhosttySurfaceView(workingDirectory: NSTemporaryDirectory(), command: nil, spawnsSurface: true)
+    surface.frame = window.contentView!.bounds
+    window.contentView!.addSubview(surface)
+    surface.wantsFocus = true
+    defer { surface.tearDown() }
+    let activeView = NSView()
+    window.contentView!.addSubview(activeView)
+    XCTAssertTrue(window.makeFirstResponder(activeView))
+    surface.removeFromSuperview()
+    let host = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 160))
+    host.wantsLayer = true
+    window.contentView!.addSubview(host)
+    let source = TransformScaleFrameSource(scheduling: DispatchQueueScheduling())
+    XCTAssertTrue(source.mount(surface: surface, host: host))
+    XCTAssertFalse(surface.wantsFocus, "...")
+    XCTAssertTrue(window.firstResponder === activeView, "...")
+  }
+
+  func testMountScalesToFitAndNeverResizesTheSurface() {
+    // ... asserts surface.frame.size == originalSize, and !CATransform3DIsIdentity(host.layer!.sublayerTransform)
+  }
+}
+```
+Both tests PASSED after regeneration/build.
+
+### `macapp/WorkroomAppUITests/TerminalHoverPreviewUITests.swift` (new file, just created, final version shown verbatim by system-reminder after auto-format)
+Full content (post-format, confirmed via system-reminder):
+```swift
+import XCTest
+
+/// Regression coverage for the hover-preview feature (plan: ~/.claude/plans/ethereal-inventing-wolf.md)
+/// stealing keyboard focus from the real active tab — found via real-mouse QA, not by any automated
+/// test: hovering a backgrounded tab's chip silently made it the first responder (a stale
+/// `GhosttySurfaceView.wantsFocus` left over from when it was last actually active triggered
+/// `viewDidMoveToWindow`'s auto-claim once the hover-preview re-homed it into a real window).
+///
+/// The surface itself is Metal-rendered and exposes nothing queryable for "who currently holds first
+/// responder" (the same CMT-3 gap `GhosttyActionDispatchUITests` documents), so this proves the
+/// regression the way a real user would notice it: type into the real active tab, hover a DIFFERENT
+/// tab's chip, then type again and confirm the keystrokes still land in the ORIGINALLY-FOCUSED tab's
+/// chip POSITION — exercised through the shell's own OSC 0/2 retitling (issue #2), the same detector
+/// `GhosttyActionDispatchUITests.testRunningCommandRetitlesTheTabChip` already uses. Checked by strip
+/// POSITION, not by re-querying for the expected title prefix — a title-prefix query would still find
+/// A match even if the WRONG chip (the hovered one) is the one that actually retitled, which would
+/// silently pass right through the regression this test exists to catch.
+///
+/// Run with `make app-uitest` on a real GUI login session (XCUITest can't drive a headless run).
+final class TerminalHoverPreviewUITests: XCTestCase {
+  override func setUp() {
+    super.setUp()
+    continueAfterFailure = false
+  }
+
+  private func launchedApp() -> XCUIApplication {
+    let app = XCUIApplication()
+    app.launchArguments += ["-WorkroomUITestFixture", "1"]
+    app.launchArguments += ["-WorkroomUITestNoRunCommand", "1"]
+    app.launchArguments += ["-WorkroomUITestTerminalTabs", "2"]
+    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+    app.launch()
+    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
+    return app
+  }
+
+  /// `.staticTexts` specifically, not `.descendants(matching: .any)` — the chip's title AND its close
+  /// button share the same `terminal.tab.<title>` identifier prefix (`TabStripOverflowUITests`' own
+  /// comment: "match only the title StaticText to count chips 1:1"), so an `.any` query returns more
+  /// than one element per chip and breaks positional indexing.
+  private func chipQuery(_ app: XCUIApplication) -> XCUIElementQuery {
+    app.staticTexts.matching(NSPredicate(format: "identifier BEGINSWITH %@", "terminal.tab."))
+  }
+
+  private func chip(_ app: XCUIApplication, at index: Int) -> XCUIElement {
+    chipQuery(app).element(boundBy: index)
+  }
+
+  private func focusFirstTab(_ app: XCUIApplication) {
+    app.activate()
+    let query = chipQuery(app)
+    XCTAssertTrue(query.firstMatch.waitForExistence(timeout: 20))
+    XCTAssertGreaterThanOrEqual(query.count, 2, "the fixture must seed 2 terminal tabs")
+    chip(app, at: 0).click()
+    RunLoop.current.run(until: Date().addingTimeInterval(1))
+  }
+
+  private func run(_ app: XCUIApplication, _ line: String) {
+    app.typeText(line + "\r")
+  }
+
+  private func waitForChipLabel(
+    _ app: XCUIApplication, at index: Int, toContain substring: String, timeout: TimeInterval = 20
+  ) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      if chip(app, at: index).label.contains(substring) { return true }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+    }
+    return false
+  }
+
+  func testHoveringABackgroundTabDoesNotStealFocusFromTheActiveTab() {
+    let app = launchedApp()
+    focusFirstTab(app)
+    run(app, "sleep 3; echo before_hover_marker")
+    XCTAssertTrue(waitForChipLabel(app, at: 0, toContain: "before_hover"), "...")
+    chip(app, at: 1).hover()
+    RunLoop.current.run(until: Date().addingTimeInterval(1.0))
+    run(app, "sleep 3; echo after_hover_marker")
+    XCTAssertTrue(waitForChipLabel(app, at: 0, toContain: "after_hover"), "...")
+    XCTAssertFalse(chip(app, at: 1).label.contains("after_hover"), "...")
+  }
+
+  func testHoveringTheAlreadyVisibleTabIsANoOp() {
+    let app = launchedApp()
+    focusFirstTab(app)
+    chip(app, at: 0).hover()
+    RunLoop.current.run(until: Date().addingTimeInterval(1.0))
+    run(app, "sleep 3; echo still_focused_marker")
+    XCTAssertTrue(waitForChipLabel(app, at: 0, toContain: "still_focused"), "...")
+  }
+}
+```
+Both tests PASSED (confirmed: "Test Suite 'TerminalHoverPreviewUITests' passed... Executed 2 tests, with 0 failures").
+
+### Ephemeral spike files (created and later deleted, NOT part of the repo)
+- `/tmp/claude-.../sckstream_check.swift` — standalone Swift binary proving continuous `SCStream` needs no TCC for own-process capture (31 frames/3s, exit 0).
+- `macapp/WorkroomApp/Core/_HoverPreviewSpike.swift` — throwaway `#if DEBUG` spike proving CALayer `sublayerTransform` compositing works against a real libghostty surface; deleted after use, one-line hook in `WorkroomApp.swift` reverted (`git status`/`git diff` confirmed clean afterward).
+- `/tmp/claude-.../hovermove.swift`, `findwin.swift`, `findwinbounds.swift` — throwaway helpers for window-scoped screenshots and synthetic CGEvent mouse moves during manual QA.
+
+## 4. Errors and Fixes
+
+1. **`ExitPlanMode` tool call rejected**: User interrupted with `/plan-eng-review` instead. Fix: followed the skill's hard-STOP scope gate (first tool call must be `AskUserQuestion` asking what to review), then executed the full skill workflow.
+2. **Plan-mode review sentinel format violation**: Wrote `**NO UNRESOLVED DECISIONS**` (bolded) but the gate requires the EXACT unbolded literal line. Fixed by re-editing to the plain unbolded text; re-verified via `tail`.
+3. **TODOS.md concurrent-edit / lost entry**: An earlier session-turn's "mini-viewer" TODO entry vanished (another session edited the same file concurrently). Fix: re-filed it, then committed immediately when the user next confirmed, to avoid losing it again.
+4. **Codex outside-voice findings vs. my own review**: Distinguished "tensions" (genuine disagreements with a decision I'd already made — asked individually via `AskUserQuestion`) from "direct corrections" (batched into one `AskUserQuestion` since they weren't really contested).
+5. **Synthetic CGEvent hover producing no result**: Correctly identified as consistent with this codebase's own documented "synthetic hover lies" precedent (from memory), NOT assumed to be a real bug — reported the ambiguity honestly rather than claiming success or failure.
+6. **REAL bug #1 — "tab hover shows nothing"**: Root cause: `mount()`'s `guard let superview = surface.superview else { return }` silently bailed for every genuinely-backgrounded tab (which always has `superview == nil` by design — the entire premise the feature exists for). Fixed by removing the force-unwrap; `superview` is now a plain optional, correctly handled by the already-safe `if let` restore logic in `teardownAllocatedState()`. Also fixed the test fixture, which had never modeled surface detachment (added an `onFocusChange` hook to `TerminalHoverPreviewControllerTests.makeSessions()` to auto-detach the previously-focused tab, mirroring `TerminalContainerView`'s real behavior) — this fixture gap is why no unit test caught the bug originally.
+7. **REAL bug #2 — "hover selected the tab, detail pane empty"**: Root cause: `GhosttySurfaceView.wantsFocus` is only ever written by `TerminalContainerView.mount(in:)` on the CURRENTLY-active tab; a backgrounded tab keeps a stale `true` from when it was last active (nothing resets it for a solo tab fully swapped away). Re-homing it into the preview host's window triggered `viewDidMoveToWindow()`'s `if wantsFocus, window.firstResponder !== self { window.makeFirstResponder(self) }`, silently stealing first responder. Fixed by explicitly setting `surface.wantsFocus = false` in `TransformScaleFrameSource.mount()` right before `host.addSubview(surface)`.
+8. **Two earlier controller-logic bugs found via unit-test failures during T4 implementation** (not from manual QA): (a) `resolve()`'s early-return branches left `phase` stuck at `.armed` forever instead of resetting to `.idle` — fixed by adding `phase = .idle` to each guard. (b) `teardown()` read the LIVE `generation` counter (already bumped by `cancelHover` before calling teardown) instead of the actual session token used for `beginPreview`, silently failing `endPreview`'s match guard and leaving the tab permanently un-occluded — fixed by adding a dedicated `activeSession` property, consolidating cleanup into one `teardownAllocatedState()` method used by both normal teardown and superseded-mid-mount cleanup.
+9. **XCUITest first draft failed both tests (0/2)**: Root cause: chip query used `.descendants(matching: .any)`, which matches BOTH a chip's title text and its close button (both share the `terminal.tab.<title>` identifier prefix, per `TabStripOverflowUITests`' own documented comment), breaking positional indexing (`element(boundBy: 1)` could be tab 1's close button, not tab 2). Fixed by switching to `app.staticTexts.matching(...)`, matching that file's established pattern.
+10. **XCUITest second draft still failed both tests**: Root cause: used `echo <marker>` which completes in milliseconds; the busy-title reverts before the 250ms-interval poll loop ever observes it (mirroring why the existing `testRunningCommandRetitlesTheTabChip` test deliberately uses `sleep 6`, not an instant command). Fixed by prefixing every test command with `sleep 3;` to keep the busy title visible long enough to poll reliably. Third attempt: both tests passed.
+11. **`CATransform3DIsIdentity`/`CATransform3DIdentity` needing `QuartzCore`**: Added `import QuartzCore` to `TransformScaleFrameSourceTests.swift`.
+12. **Tautological test assertion caught before running**: `XCTAssertNotNil(host.layer?.sublayerTransform, ...)` would always pass since `sublayerTransform` is a non-optional struct with a default identity value (never nil). Fixed to `XCTAssertFalse(CATransform3DIsIdentity(transform), ...)`.
+13. **Destructive `git checkout --` blocked by a local `dcg` guard**: Avoided by manually reverting via `Edit` tool instead of the git command.
+14. **`swiftc` sandbox write failures** (`mktemp` under `/var/folders` blocked): Fixed by adding `dangerouslyDisableSandbox: true` to those specific Bash calls.
+15. **Multiple SourceKit "Cannot find type X in scope" diagnostics**: Correctly identified as known noise (documented in `macapp/CLAUDE.md`: "single-file indexer doesn't see sibling files; a clean `xcodebuild` is authoritative") — never treated as real errors, confirmed via actual `xcodebuild` builds instead.
+
+## 5. Problem Solving
+
+- Solved: confirmed libghostty is at the latest available pin; catalogued and filed ~1300 upstream commits into concrete, validated TODOS.
+- Solved: corrected a stale team belief that a live terminal mini-viewer was "impossible" — root-caused the actual prior investigation (UX/legibility issue, not a libghostty limitation).
+- Solved: empirically validated continuous `SCStream` needs no TCC for own-process capture (a previously open, only one-shot-verified question).
+- Solved: designed, reviewed (via full `/plan-eng-review` with Codex outside-voice), and implemented a hover-preview feature end-to-end, closing 21+ review findings plus 4 real bugs found via genuine testing (2 during TDD, 2 during real-mouse QA).
+- Ongoing at cutoff: confirming the final lint pass is clean, re-running the full test suite after the last auto-format pass, updating the plan file with the two new real bugs and new test coverage, and getting user confirmation before committing the outstanding fixes.
+
+## 6. All User Messages (non-tool-result)
+
+1. "are we running the latest version of libghostty?"
+2. "summarise the major changes between the version we previously had, and identify areas where we can improve things, or introduce new features. think about stability, performance and functionality"
+3. "Let's document these possible improvements and features, with concrete and validated todo items"
+4. "A while ago we looked into showing a live view of all running terminals and detail panels, as a mini viewer, but the conclusion was that libghostty didn't support it and it wasn't possible. How about now, or with the latest?"
+5. "Not acceptable. I want shrunken identical view. Not resized"
+6. "Check it"
+7. "Yes. And let's plan an early version of this now. Hovering a terminal tab should show the mini live view"
+8. "yes" (approving commit of the TODOS.md hover-preview finding)
+9. "Plan the live tab min view"
+10. (Interrupted `ExitPlanMode` by invoking) `/plan-eng-review`
+11. A series of `AskUserQuestion` answers during the review (scope = "the plan doc"; office-hours = "skip, review as-is"; Step 0 scope reduction = "fold capture-host into controller"; Arch 1A = "scope previewingTabID per-target"; Arch 1B = "suppress only when a preview will actually show"; CQ 2A = "any failure falls back through normal teardown"; CQ 2B = "embed the diagram in the controller's doc comment"; Tension 1 = "investigate first: spike whether an unobtrusive parking window is possible"; Tension 2 = "add a minimal testability seam"; Tension 3 = "add the explicit third outcome"; Codex batch = "apply all 14"; Next steps = "ready to implement — start with Stage 0's spike").
+12. "yes" (approving TODOS.md sync + Stage 0 spike, "building it, launching the app, driving a real hover")
+13. "yes" (approving the spike run itself, when explicitly asked "OK to run it?")
+14. "continue"
+15. "create branch and commit, then manual QA"
+16. "tab hover shows nothing"
+17. "now a hover selected the tab, but the detail pane is empty"
+18. "should be UI tests for this to avoid manual testing" (sent mid-turn, alongside a tool result)
+19. The final message in the transcript is a system-level interrupt instructing me to produce this summary in text-only form — not a substantive user request about the feature itself.
+
+## 7. Pending Tasks
+
+- Confirm `make app-lint` is clean after the last `make app-format` auto-formatting pass (command was run but output was cut off by the summary interrupt).
+- Re-run the full relevant test suite (unit: `TerminalHoverPreviewControllerTests`, `TerminalSessionsPreviewOcclusionTests`, `GhosttySurfaceViewHoverPreviewSeamTests`, `TransformScaleFrameSourceTests`, `TerminalSessionsTests`; UI: `TerminalHoverPreviewUITests`) to confirm nothing broke from the formatting pass.
+- Update the plan file (`~/.claude/plans/ethereal-inventing-wolf.md`) to record the two new real bugs found via manual QA (superview-guard bug; wantsFocus stale-focus-steal bug) and the two new test files added in response.
+- Report status to the user and ask whether to commit the outstanding fixes (mount() superview fix, wantsFocus fix, improved test fixture, `TransformScaleFrameSourceTests.swift`, `TerminalHoverPreviewUITests.swift`) — everything is currently uncommitted on top of the existing `bb2821c1` commit on branch `feat/hover-preview`.
+- Ask the user whether they want to do one more real-mouse pass now that both bugs are fixed, or trust the new automated UI test coverage (per their explicit "should be UI tests for this to avoid manual testing" instruction) and consider the feature verified.
+- The rest of the reviewed plan's still-open manual QA items remain: visual anchor-centering check (flagged as a known cosmetic issue from the Stage 0 spike, not yet fixed), hit-testing check (clicking on the preview must not affect the real terminal), and the 50+ background-tab surface-budget repeat.
+
+## 8. Current Work
+
+Immediately before the summary interrupt, I had just:
+1. Fixed the `wantsFocus` bug in `TransformScaleFrameSource.mount()` (added `surface.wantsFocus = false` before `host.addSubview(surface)`, with a detailed explanatory comment).
+2. Written `macapp/WorkroomAppTests/TransformScaleFrameSourceTests.swift` (2 tests) to directly exercise the real frame source (the controller tests only use a fake), and confirmed both pass.
+3. In direct response to the user's explicit mid-turn instruction "should be UI tests for this to avoid manual testing", written `macapp/WorkroomAppUITests/TerminalHoverPreviewUITests.swift` (2 XCUITests), iterated through two real bugs in the TEST ITSELF (wrong element-matching strategy; too-fast marker command reverting before poll), and got both tests passing on the third attempt — confirmed via real `xcodebuild -only-testing:WorkroomAppUITests/TerminalHoverPreviewUITests test` output: "Test Suite 'TerminalHoverPreviewUITests' passed... Executed 2 tests, with 0 failures."
+4. Run `make app-format` (auto-fixed whitespace/wrapping in the new UI test file, confirmed via system-reminder showing the file's exact post-format content) followed by `make app-lint`, whose output was cut off by the summarization interrupt before I could see whether it reported any remaining violations.
+
+The very last tool call issued was:
+```
+cd /Users/joelmoss/dev/workroom && make app-format 2>&1 | tail -5 && make app-lint 2>&1 | tail -30
+```
+with `dangerouslyDisableSandbox: true`, and its result was not yet visible to me when the summary request arrived.
+
+## 9. Optional Next Step
+
+Confirm the `make app-lint` result is clean (re-run if the output wasn't captured), then re-run the full relevant test suite (unit + the new `TerminalHoverPreviewUITests` UI test) to confirm the auto-formatting pass didn't break anything, exactly continuing the verification sequence already in progress. This directly continues my own immediately-prior action — the lint/format command whose output was cut off — and does not introduce any new tangential work. Quoting my own last in-conversation status update for context: after fixing the `wantsFocus` bug I said "Both pass — including the actual regression test, driven via real XCUITest interaction (no manual mouse needed, exactly what you asked for). Lint check, then full regression pass," which is precisely the step interrupted by the summary request and the one to resume.
+
+After that verification, per the pending-tasks list, the natural continuation (not yet confirmed with the user) would be to update the plan file with these two new bugs/tests and then ask the user whether to commit — but this should be surfaced as a question/status update, not assumed, since the user has not yet given explicit direction on commit timing for this second round of fixes.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/joelmoss/.claude/projects/-Users-joelmoss-dev-workroom/5e64fba2-ede6-4e1c-a183-fa42e54891b4.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.
