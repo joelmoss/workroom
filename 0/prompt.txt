@@ -1,0 +1,1 @@
+what are the options for including analytics and diagnostic recording and reporting in the mac app?
