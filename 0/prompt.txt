@@ -1,0 +1,1 @@
+claude usage is still not showing after restart. [Image #1] after quitting codex, leaving the terminal open, restarting the app, i see these characters
