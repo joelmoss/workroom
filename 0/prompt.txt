@@ -1,0 +1,16 @@
+<task-notification>
+<task-id>a76b37366b741d7d4</task-id>
+<tool-use-id>toolu_01LTEqj5c934ssqcPuFceAfv</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/3ee247a6-8416-4d29-bc9b-ce21bb5267ad/tasks/a76b37366b741d7d4.output</output-file>
+<status>completed</status>
+<summary>Agent "Find restart run command state transition code" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>**Function:** `restartRunCommand`
+
+**Assignment location:** `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/AppStore.swift:2274`
+
+`.restarting` is set when `signalSupervisor(SIGUSR1, ...)` succeeds in `restartRunCommand`. The code path does **not** call `resetRunToast(for:)` or `scheduleRunToastAutoDismiss(for:)` at that point—those are only invoked in `respawnRunCommand` (line 2075) if the supervisor is dead, or in `startRunCommand` (line 1990) for fresh starts.
+
+**Post-restart transition:** The same `applyRunStatus` parsing (lines 1903–1906) is reused. When the supervisor writes "running" to its status file, `pollRunStatus` invokes `applyRunStatus`, which unconditionally transitions `.restarting` to `.running(tab: tab, interrupted: false)` — no special code path exists. The line comment at 1908 confirms `"stopping"` preserves the in-flight state, but once "running" arrives, the transition is identical for any prior state.</result>
+<usage><subagent_tokens>47834</subagent_tokens><tool_uses>5</tool_uses><duration_ms>35981</duration_ms></usage>
+</task-notification>
