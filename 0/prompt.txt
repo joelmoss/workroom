@@ -1,0 +1,1 @@
+Yes. And let’s plan an early version of this now. Hovering a terminal tab should show the mini live view
