@@ -1,0 +1,1554 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/AppStore.swift
+  - macapp/WorkroomApp/Core/FocusedTabSelection.swift
+  - macapp/WorkroomApp/Core/NavigationHistory.swift
+  - macapp/WorkroomApp/Core/TerminalSessions.swift
+  - macapp/WorkroomApp/Views/ChangesetDetailView.swift
+  - macapp/WorkroomApp/Views/TitlebarBars.swift
+  - macapp/WorkroomAppTests/AppStoreContentNavigationTests.swift
+  - macapp/WorkroomAppTests/NavigationHistoryTests.swift
+  - macapp/WorkroomAppTests/TerminalSessionsTests.swift
+  - macapp/WorkroomAppUITests/NavigationHistoryContentUITests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/AppStore.swift ===
+@@ -851,6 +851,20 @@ final class AppStore: ObservableObject {
+       guard !self.isNavigatingHistory else { return }
+       self.recordCurrentLocation()
+     }
++    // A tab's content changed underneath an unmoved focus (the shared preview tab being retargeted, or
++    // a file selected inside a commit). `onFocusChange` cannot see either, which is why browsing the
++    // Changes/Files panels used to record nothing after the first click.
++    //
++    // Scoped to the on-screen cursor location: a content change in a co-displayed but NON-selected
++    // workroom is not where the user is, and `recordCurrentLocation` records the *selected* target's
++    // focused tab, so recording here would log the wrong place at the wrong moment.
++    terminals.onTabContentChange = { [weak self] targetID, tabID in
++      guard let self, !self.isNavigatingHistory else { return }
++      guard let selected = self.selectedTarget, selected.id == targetID,
++        self.terminals.focusedTab(for: selected)?.id == tabID
++      else { return }
++      self.recordCurrentLocation()
++    }
+     // Prune dead entries when tabs are closed/reaped, so canGoBack/Forward stay honest (issue #26).
+     // Also collapse a target's sidebar terminal subtree once a close drops it below the 2-tab
+     // disclosure threshold (issue #30), so a stale expand flag can't auto-reveal if the count climbs
+@@ -1009,10 +1023,10 @@ final class AppStore: ObservableObject {
+       let sid = Self.sidebarID(forTargetID: targetID, in: projects), group.contains(sid),
+       selectedTargetID != sid
+     else { return }
+-    isNavigatingHistory = true
+-    defer { isNavigatingHistory = false }
+-    selectedTargetID = sid
+-    selectedProjectID = Self.projectPath(of: sid)
++    withHistorySuppressed {
++      selectedTargetID = sid
++      selectedProjectID = Self.projectPath(of: sid)
++    }
+   }
+ 
+   var selectedProject: Project? {
+@@ -3513,9 +3527,6 @@ final class AppStore: ObservableObject {
+     guard let target = selectedTarget else { return }
+     terminals.openContentPreview(
+       ChangesetDescriptor(commitID: commitID, title: title, isPreview: true), for: target)
+-    // Retargeting the preview tab fires no focus change, so record the commit view explicitly (a
+-    // dedup collapses the double when a genuine focus change also recorded it).
+-    if !isNavigatingHistory { recordCurrentLocation() }
+   }
+ 
+   /// Open a commit's changeset detail as a *persisted* content tab (double-click a History row).
+@@ -3524,21 +3535,21 @@ final class AppStore: ObservableObject {
+     guard let target = selectedTarget else { return }
+     terminals.openContentPersistent(
+       ChangesetDescriptor(commitID: commitID, title: title, isPreview: false), for: target)
+-    if !isNavigatingHistory { recordCurrentLocation() }
+   }
+ 
+   /// Select a file within a changeset tab (a tap in the History detail's file list). Updates the tab
+-  /// so `ChangesetDetailView` shows that file's diff (no reload — its `.task` keys on the commit),
+-  /// and records a back/forward step, so each in-commit file selection is its own step. Records only
+-  /// when this changeset is the active (focused) location, to avoid a wrong-tab entry.
+-  func selectChangesetFile(_ path: String, tab tabID: TerminalTab.ID, in target: TerminalTarget) {
+-    guard case .changeset(let d)? = terminals.tab(tabID, for: target)?.content,
+-      d.selectedPath != path
+-    else { return }
++  /// so `ChangesetDetailView` shows that file's diff (no reload — its `.task` keys on the commit).
++  /// Each in-commit selection is its own back/forward step, recorded by `onTabContentChange` rather
++  /// than here — one seam, so no opener can forget. A plain forward: `setChangesetSelectedPath` already
++  /// applies the same two preconditions (the tab exists and is a changeset, and the path actually
++  /// changed), so re-checking them here would just be two guards to keep in sync.
++  ///
++  /// `path` is optional because "the commit's first file" has exactly ONE representation: `nil`. The
++  /// detail view renders the first file when the selection is empty, so recording that same file
++  /// *by name* would create a second location that renders identically to the first — Back would spend a
++  /// press going nowhere visible. The caller canonicalises, because only it knows the file list.
++  func selectChangesetFile(_ path: String?, tab tabID: TerminalTab.ID, in target: TerminalTarget) {
+     terminals.setChangesetSelectedPath(path, forTab: tabID, in: target)
+-    if !isNavigatingHistory, terminals.focusedTab(for: target)?.id == tabID {
+-      recordCurrentLocation()
+-    }
+   }
+ 
+   /// Open a repo file in the configured external editor (⌘-click / context menu in the Files
+@@ -3690,31 +3701,42 @@ final class AppStore: ObservableObject {
+     history.record(Self.location(target: sid, tab: tab))
+   }
+ 
+-  /// Build a `NavLocation` from a focused tab, capturing the content selection (commit + file) so
+-  /// back/forward can restore not just which tab, but which commit's changeset and which file within
+-  /// it were on screen (issue: commit browser).
++  /// Build a `NavLocation` from a focused tab: which tab, *what it was showing* (identity), and the
++  /// descriptor needed to put it back. Every content kind is captured — a diff and a file used to
++  /// record a bare path and nothing at all respectively, which is why back/forward could not reinstate
++  /// them.
+   private static func location(target sid: SidebarID, tab: TerminalTab) -> NavLocation {
+-    switch tab.content {
+-    case .changeset(let d):
+-      return NavLocation(
+-        target: sid, tab: tab.id, commitID: d.commitID, commitTitle: d.title,
+-        filePath: d.selectedPath)
+-    case .diff(let d):
+-      return NavLocation(target: sid, tab: tab.id, filePath: d.path)
+-    default:
+-      return NavLocation(target: sid, tab: tab.id)
+-    }
++    var selectedPath: String? = nil
++    if case .changeset(let d) = tab.content { selectedPath = d.selectedPath }
++    return NavLocation(
++      target: sid, tab: tab.id, contentID: FocusedTabSelection(content: tab.content),
++      selectedPath: selectedPath, payload: NavPayload(tab.content))
++  }
++
++  /// Run `body` with history recording suppressed, reinstating the *previous* value afterwards rather
++  /// than clearing the flag outright.
++  ///
++  /// Nothing nests today: `applyLocation(_:)`'s two suppressed regions are sequential, so `wasNavigating`
++  /// is `false` at all three call sites. Save-and-reinstate is the cheap insurance that keeps it that
++  /// way — a bare `defer { isNavigatingHistory = false }` inside a future nested region would reopen
++  /// recording halfway through the outer one and replay would silently record itself, which no
++  /// assertion outside `testReplayAppendsNothing` would catch.
++  private func withHistorySuppressed(_ body: () -> Void) {
++    let wasNavigating = isNavigatingHistory
++    isNavigatingHistory = true
++    defer { isNavigatingHistory = wasNavigating }
++    body()
+   }
+ 
+   /// Go back one step, skipping entries whose target/tab no longer exist (D2). No-op when there's no
+   /// live earlier location.
+   func navigateBack() {
+-    if let loc = history.step(-1, isLive: isLive) { applyLocation(loc, recordHistory: false) }
++    if let loc = history.step(-1, isLive: isLive) { applyLocation(loc) }
+   }
+ 
+   /// Go forward one step (mirrors `navigateBack`).
+   func navigateForward() {
+-    if let loc = history.step(+1, isLive: isLive) { applyLocation(loc, recordHistory: false) }
++    if let loc = history.step(+1, isLive: isLive) { applyLocation(loc) }
+   }
+ 
+   /// The single primitive for "go to (target, tab)": used by back/forward replay and by
+@@ -3725,49 +3747,117 @@ final class AppStore: ObservableObject {
+   /// requested tab when it still exists, else the target's current focused tab.
+   private func applyLocation(target sid: SidebarID, tab tabID: TerminalTab.ID?, recordHistory: Bool)
+   {
+-    isNavigatingHistory = true
+-    defer { isNavigatingHistory = false }
+-    selectedProjectID = Self.projectPath(of: sid)
+-    selectedTargetID = sid
+-    guard let target = selectedTarget, !target.isMissing else { return }
+-    let resolved =
+-      tabID.flatMap { id in terminals.tabs(for: target).contains { $0.id == id } ? id : nil }
+-      ?? terminals.focusedTab(for: target)?.id
+-    guard let resolved else { return }
+-    terminals.focus(resolved, for: target)
+-    if recordHistory, let tab = terminals.tab(resolved, for: target) {
+-      history.record(Self.location(target: sid, tab: tab))
+-    }
+-  }
+-
+-  /// Back/forward replay of a full `NavLocation`: select + focus its tab, then restore the recorded
+-  /// content selection. For a changeset, re-establish the recorded commit + file — the preview tab
+-  /// drifts as you browse (retargets record no focus change), so replay reopens the recorded commit
+-  /// there; a persisted tab already shows the right commit, so only its file is restored. All under
+-  /// `isNavigatingHistory`, so nothing re-records.
+-  private func applyLocation(_ loc: NavLocation, recordHistory: Bool) {
+-    applyLocation(target: loc.target, tab: loc.tab, recordHistory: recordHistory)
+-    guard let commitID = loc.commitID, let target = selectedTarget, !target.isMissing else {
+-      return
++    withHistorySuppressed {
++      selectedProjectID = Self.projectPath(of: sid)
++      selectedTargetID = sid
++      guard let target = selectedTarget, !target.isMissing else { return }
++      let resolved =
++        tabID.flatMap { id in terminals.tabs(for: target).contains { $0.id == id } ? id : nil }
++        ?? terminals.focusedTab(for: target)?.id
++      guard let resolved else { return }
++      terminals.focus(resolved, for: target)
++      if recordHistory, let tab = terminals.tab(resolved, for: target) {
++        history.record(Self.location(target: sid, tab: tab))
++      }
+     }
+-    isNavigatingHistory = true
+-    defer { isNavigatingHistory = false }
+-    if let focused = terminals.focusedTab(for: target), case .changeset(let d) = focused.content,
+-      d.commitID == commitID
+-    {
+-      terminals.setChangesetSelectedPath(loc.filePath, forTab: focused.id, in: target)
+-    } else {
+-      terminals.openContentPreview(
+-        ChangesetDescriptor(
+-          commitID: commitID, title: loc.commitTitle ?? commitID, isPreview: true,
+-          selectedPath: loc.filePath),
+-        for: target)
++  }
++
++  /// Back/forward replay of a full `NavLocation`: select the workroom, focus the tab, then put the
++  /// recorded content back on screen.
++  ///
++  /// **Replay never creates a tab** — back ignores anything that was closed, and nothing is reopened.
++  /// It always has somewhere to land, because `isLive` guarantees `loc.tab` still exists and a content
++  /// tab can always be retargeted back to what it was showing:
++  ///
++  /// ```
++  ///   applyLocation(loc)
++  ///     │ select loc.target, focus loc.tab  (suppressed, so nothing re-records)
++  ///     ├── payload == nil ─▶ a terminal ─▶ done: the focus above IS the whole replay
++  ///     └── payload != nil ─▶ refresh a working-copy diff's change kind, then:
++  ///           ├─ 1. loc.tab already shows it     ─▶ nothing to re-open, it is already there
++  ///           ├─ 2. another live tab shows it     ─▶ focus that tab, rather than render the same
++  ///           │                                      content twice (the ⌘D twin / a pinned copy)
++  ///           └─ 3. else                          ─▶ retarget loc.tab IN PLACE, pin and all
++  ///         then: reinstate the in-commit file selection
++  /// ```
++  ///
++  /// Step 3 retargets a *pinned* `loc.tab` too. Restoring a tab's own earlier content is not the same as
++  /// dropping unrelated content on it, which is what Keep Open protects against — and the alternative
++  /// was worse: `persist` removes the preview slot, so requiring one stranded every entry browsed before
++  /// a pin and left the Back chevron enabled-but-dead (one double-click re-armed the original bug).
++  ///
++  /// Not idempotent across a round trip when a ⌘D twin is involved: step 2 can focus the pinned anchor
++  /// while the twin keeps whatever step 3 last put in it, so Back-then-Forward may leave a split
++  /// arranged differently than it started. Content is always right; pane *placement* is not restored.
++  private func applyLocation(_ loc: NavLocation) {
++    applyLocation(target: loc.target, tab: loc.tab, recordHistory: false)
++    guard let payload = loc.payload, let target = selectedTarget, !target.isMissing else { return }
++    withHistorySuppressed {
++      // A diff's `change` is rendered (the header letter) and acted on ("Open file in…" is disabled for
++      // a deleted source), so replaying a record-time value could offer to open a file that is gone.
++      // Take the live kind from the same changed-file list the Changes panel renders; keep the recorded
++      // one when status has not loaded yet.
++      let landing = Self.refreshingChangeKind(payload, from: workroomStatuses[loc.target])
++
++      let landedTab: TerminalTab.ID
++      if let recorded = terminals.tab(loc.tab, for: target), landing.matchesTab(recorded.content) {
++        landedTab = recorded.id  // 1 — already showing it
++      } else if let other = terminals.tabs(for: target).first(where: {
++        landing.matchesTab($0.content)
++      }) {
++        terminals.focus(other.id, for: target)
++        landedTab = other.id  // 2 — a different tab has it
++      } else {
++        terminals.setContent(landing, forTab: loc.tab, in: target)  // 3 — retarget in place
++        landedTab = loc.tab
++      }
++
++      if case .changeset = landing {
++        terminals.setChangesetSelectedPath(loc.selectedPath, forTab: landedTab, in: target)
++      }
+     }
+   }
+ 
+-  /// Whether a recorded location is still reachable: its target resolves to a live, non-missing
+-  /// target and the recorded tab still exists there. Skips dead entries (closed tab / deleted
+-  /// workroom) on back/forward.
++  /// A payload with a working-copy `.diff`'s change kind refreshed from live status; everything else
++  /// returned untouched. `nonisolated` + pure so the freshness rule is unit-testable without a store.
++  ///
++  /// Needed because `DiffDescriptor.change` is not inert: `DiffViewer` paints it as the header letter
++  /// and the tab strip disables "Open file in…" when it is `.deleted`. A record-time value written back
++  /// on replay could offer to open a file that has since been deleted, or refuse one that has since
++  /// come back.
++  nonisolated static func refreshingChangeKind(_ payload: NavPayload, from status: WorkroomStatus?)
++    -> NavPayload
++  {
++    guard case .diff(var descriptor) = payload else { return payload }
++    switch descriptor.source {
++    case .gitWorktree, .jjWorkingCopy:
++      break  // the working copy drifts under us — refresh it
++    case .jjParent, .commit:
++      return payload  // a commit's own diff is immutable; there is nothing fresher to read
++    }
++    // `changedFiles` mirrors the jj working copy's own file list (both come from the one summary
++    // probe), so this single lookup serves git worktrees and jj `@` alike. No entry ⇒ status has not
++    // loaded, or the file is no longer changed: keep what we recorded and let the pane report.
++    guard let live = status?.changedFiles?.first(where: { $0.path == descriptor.path }) else {
++      return payload
++    }
++    descriptor.change = live.change
++    return .diff(descriptor)
++  }
++
++  /// Whether a recorded location is still reachable — the mechanism behind "back ignores what was
++  /// closed". `step(_:isLive:)` skips every entry this rejects.
++  ///
++  /// Deliberately structural, and deliberately the SAME question `prune` asks: does the recorded tab
++  /// still exist? Content needs no extra condition, because replay can always retarget that tab back to
++  /// what it was showing (`applyLocation` step 3). An earlier version also demanded a landing spot — a
++  /// matching tab or a free preview slot — which made this predicate disagree with `prune`: pinning a
++  /// tab silently stranded every entry browsed before it while `canGoBack` (a raw cursor read) stayed
++  /// true, so the chevron lit up and did nothing. Two predicates, one question.
++  ///
++  /// Does NOT ask whether the file or commit still exists on disk: that needs I/O inside a predicate run
++  /// per candidate while stepping, and the pane already renders its own "Diff unavailable" /
++  /// "Changeset unavailable" state.
+   private func isLive(_ loc: NavLocation) -> Bool {
+     guard let target = target(for: loc.target), !target.isMissing else { return false }
+     return terminals.tabs(for: target).contains { $0.id == loc.tab }
+
+
+=== DIFF: macapp/WorkroomApp/Core/FocusedTabSelection.swift ===
+@@ -34,16 +34,9 @@ enum FocusedTabSelection: Equatable {
+     guard let target = store.selectedTarget, let tab = sessions.focusedTab(for: target) else {
+       return nil
+     }
+-    switch tab.content {
+-    case .changeset(let descriptor):
+-      return .changeset(commitID: descriptor.commitID)
+-    case .diff(let descriptor):
+-      return .diff(path: descriptor.path, source: descriptor.source)
+-    case .file(let descriptor):
+-      return .file(path: descriptor.path)
+-    case .terminal:
+-      return nil
+-    }
++    // The per-kind switch lives in `init?(content:)`, beside `TabContent` — navigation history reduces
++    // a tab the same way, and one switch means a new case cannot be taught here and forgotten there.
++    return Self(content: tab.content)
+   }
+ 
+   /// The focused changeset's commit id, if a changeset tab is focused. What the History rows compare
+
+
+=== DIFF: macapp/WorkroomApp/Core/NavigationHistory.swift ===
+@@ -1,23 +1,59 @@
+ import Foundation
+ 
+-/// One visited location in the back/forward history (issue #26): a terminal target plus the
+-/// specific terminal tab focused there. `(target, tab)` is the whole identity — every focused
+-/// terminal is a distinct step (including the two on-screen panes of a split, and the neighbour
+-/// auto-focused after a close), so there is no split special-casing.
++/// One visited location in the back/forward history (issue #26): a target, the tab focused there, and
++/// what that tab was showing.
++///
++/// Identity is `(target, tab, contentID, selectedPath)`; `payload` is replay data and is deliberately
++/// outside `==` (see its doc). `tab` alone was the whole identity until content panes joined — every
++/// focused terminal is still a distinct step (including the two on-screen panes of a split, and the
++/// neighbour auto-focused after a close), so there is no split special-casing. Content needed more,
++/// because the Changes/Files/History panels share ONE preview tab that is retargeted in place.
+ struct NavLocation: Equatable {
+   let target: SidebarID
+   /// The tab focused at the time. Always a real tab: a location is only ever recorded once a
+   /// terminal is actually focused (see `AppStore.recordCurrentLocation`/`applyLocation`).
+   let tab: TerminalTab.ID
+-  /// For a changeset tab, the commit it showed at record time — so the preview tab (retargeted across
+-  /// commits, which drifts its content) restores the right commit on replay. `nil` for other tabs.
+-  var commitID: String? = nil
+-  /// The commit's title, captured so replay can reopen the changeset without re-resolving it. `nil`
+-  /// unless `commitID` is set.
+-  var commitTitle: String? = nil
+-  /// The selected file at record time: the changed file within a changeset (or a diff tab's path).
+-  /// `nil` ⇒ the default (first) file. Makes each in-commit file selection its own step.
+-  var filePath: String? = nil
++
++  /// What the tab was *showing*, reduced to identity — `nil` for a terminal pane. Reuses
++  /// `FocusedTabSelection`, the app's one canonical identity reduction of `TabContent` (the inspector
++  /// rows already compare against it), so "the same place" cannot mean two different things in two
++  /// places. Part of `==`.
++  ///
++  /// This is what makes back/forward work at all for content panes: the panels share ONE preview tab
++  /// that is retargeted in place, so `(target, tab)` alone cannot tell "the diff I was just looking
++  /// at" from "the diff I am looking at now".
++  var contentID: FocusedTabSelection? = nil
++
++  /// A changeset's in-commit file selection. Identity too — each selection is its own step — but it
++  /// rides alongside `contentID` because `FocusedTabSelection.changeset` deliberately carries only the
++  /// commit id (an inspector row matches on the commit, not the file). `nil` ⇒ the default (first) file.
++  var selectedPath: String? = nil
++
++  /// The descriptor replay needs to put this content back on screen. **Excluded from `==`** on
++  /// purpose: descriptors carry fields that drift without changing which place this is —
++  /// `DiffDescriptor.change` flips as a file is staged or deleted, `ChangesetDescriptor.title` is
++  /// rebuilt from a fallback on replay, and `isPreview` flips on Keep Open (it is normalised to
++  /// `false` here anyway). Including them would defeat `record`'s dedup and pile up steps that look
++  /// identical on screen.
++  var payload: NavPayload? = nil
++
++  /// Identity only — see `payload`. Hand-written rather than derived for exactly that reason.
++  static func == (lhs: Self, rhs: Self) -> Bool {
++    lhs.target == rhs.target && lhs.tab == rhs.tab && lhs.contentID == rhs.contentID
++      && lhs.selectedPath == rhs.selectedPath
++  }
++}
++
++/// What replay needs to re-open a content pane: the whole descriptor, not just its identity.
++///
++/// Three cases, not four, and that asymmetry is deliberate: `TabContent.terminal` owns a live
++/// `GhosttySurfaceView`, which a value-type history entry must never retain. A terminal location is
++/// `payload == nil` — replay just re-focuses its tab. The `TabContent` bridge (and the exhaustive
++/// switches that make a fifth content kind a compile error) lives beside `TabContent` itself.
++enum NavPayload: Sendable {
++  case diff(DiffDescriptor)
++  case file(FileDescriptor)
++  case changeset(ChangesetDescriptor)
+ }
+ 
+ /// A linear, browser-style back/forward history of visited terminal locations (issue #26).
+@@ -71,7 +107,17 @@ struct NavigationHistory {
+   }
+ 
+   /// Drop every entry whose tab was removed (a closed tab / reaped workroom), so back/forward
+-  /// enablement stays honest — no entry that would no-op on replay survives (issue #26). The cursor
++  /// enablement stays honest — no entry that would no-op on replay survives (issue #26).
++  ///
++  /// Keyed on the tab id even for content entries, which now carry a `payload` that could in
++  /// principle be re-opened without their original tab. That is the **rule**, not an oversight: back
++  /// ignores anything that was closed, and nothing is ever reopened. The visible consequence, pinned
++  /// by `NavigationHistoryTests`: browse three files in the shared preview tab and close it, and all
++  /// three steps go with it — but an entry naming a tab you later pinned survives that tab's close,
++  /// because the tab is still there. Two browse runs, different Back behaviour, decided by what you
++  /// pinned afterwards.
++  ///
++  /// The cursor
+   /// is kept on the right surviving location: on the current entry if it survives, else just after
+   /// the nearest surviving earlier entry (so Back lands on it). Any adjacent duplicate the removal
+   /// exposes (the entry between two visits to the same place is gone) is collapsed, so Back never
+
+
+=== DIFF: macapp/WorkroomApp/Core/TerminalSessions.swift ===
+@@ -121,6 +121,80 @@ enum TabContent {
+   }
+ }
+ 
++// MARK: - Navigation-history bridge
++//
++// The `TabContent` → history projections live here, next to `TabContent`, so a fifth content kind is a
++// compile error in ONE place instead of failing silently in several. Both switches below are
++// exhaustive on purpose — no `default` arm.
++
++extension NavPayload {
++  /// The replay payload for a tab's content, or `nil` for a terminal (nothing to re-open — replay just
++  /// re-focuses the tab).
++  ///
++  /// Two fields are normalised OUT, and for the same reason: they are not part of a location, so leaving
++  /// them here would give one value two homes. `isPreview` — a Keep Open must not read as a new place.
++  /// `selectedPath` — the in-commit file selection is identity, and it lives on `NavLocation` where `==`
++  /// can see it; a second copy in here would let dedup read one value while replay applied the other.
++  init?(_ content: TabContent) {
++    switch content {
++    case .terminal:
++      return nil
++    case .diff(var d):
++      d.isPreview = false
++      self = .diff(d)
++    case .file(var f):
++      f.isPreview = false
++      self = .file(f)
++    case .changeset(var c):
++      c.isPreview = false
++      c.selectedPath = nil
++      self = .changeset(c)
++    }
++  }
++
++  /// This payload as tab content, taking its preview flag from the tab it is landing in — see
++  /// `TerminalSessions.setContent`.
++  func makeTabContent(isPreview: Bool) -> TabContent {
++    switch self {
++    case .diff(var d):
++      d.isPreview = isPreview
++      return .diff(d)
++    case .file(var f):
++      f.isPreview = isPreview
++      return .file(f)
++    case .changeset(var c):
++      c.isPreview = isPreview
++      return .changeset(c)
++    }
++  }
++
++  /// Whether `content` is already showing this payload — delegates to each descriptor's own identity
++  /// rule (`sameFile` / `sameChangeset` via `ContentDescriptor.matches`), so the rule stays defined
++  /// once per type.
++  func matchesTab(_ content: TabContent) -> Bool {
++    switch self {
++    case .diff(let d): return d.matches(content)
++    case .file(let f): return f.matches(content)
++    case .changeset(let c): return c.matches(content)
++    }
++  }
++
++}
++
++extension FocusedTabSelection {
++  /// The content identity of a tab, or `nil` for a terminal (no inspector row corresponds to it, and
++  /// history represents it as "no content"). The single switch `current(store:sessions:)` and
++  /// navigation history both resolve through.
++  init?(content: TabContent) {
++    switch content {
++    case .changeset(let descriptor): self = .changeset(commitID: descriptor.commitID)
++    case .diff(let descriptor): self = .diff(path: descriptor.path, source: descriptor.source)
++    case .file(let descriptor): self = .file(path: descriptor.path)
++    case .terminal: return nil
++    }
++  }
++}
++
+ /// A non-terminal content-tab payload the preview/persist openers drive uniformly (issue #59). Diffs,
+ /// files, and changesets differ only in how they wrap into a `TabContent` case and what makes two of
+ /// them the *same* tab (the dedup / retarget identity) — extracting this collapses the otherwise
+@@ -196,6 +270,21 @@ final class TerminalSessions: ObservableObject {
+   /// mirroring `activityHandler`, so sessions stay ignorant of `AppStore`. `tabID` is nil when the
+   /// target's focus was cleared (a `reap` passes `notify: false`, so that case never reaches here).
+   var onFocusChange: ((TerminalTarget.ID, TerminalTab.ID?) -> Void)?
++  /// Set once by `AppStore`: fired when a tab's recorded **location** changes underneath a focus that
++  /// did not move, so navigation history can record it. `onFocusChange` cannot cover this: retargeting
++  /// the shared preview tab in place mutates `content` and leaves `focusedTabByTarget` untouched, so
++  /// every Changes/Files click after the first recorded nothing at all — the whole bug.
++  ///
++  /// "Location", not "content identity": one of the two fire sites is `setChangesetSelectedPath`, and a
++  /// changeset's selected file is deliberately NOT part of content identity (`sameChangeset` excludes
++  /// it, which is why the preview can be retargeted across files without becoming a different tab). It
++  /// is still its own back/forward step, so it belongs here.
++  ///
++  /// Fired from exactly the two sites that mutate content identity (`openContentPreview`'s retarget
++  /// branch and `setChangesetSelectedPath`) and nowhere else. The other opener branches all end in
++  /// `setFocused` on a tab that was not focused, so `onFocusChange` already records them; firing here
++  /// too would redefine this seam as "an open happened", which is not what it means.
++  var onTabContentChange: ((TerminalTarget.ID, TerminalTab.ID) -> Void)?
+   /// Set once by `AppStore`: the tabs just removed by a `closeTab` or `reap`, so navigation history
+   /// can prune their now-dead entries (issue #26 — honest back/forward enablement).
+   var onTabsRemoved: ((TerminalTarget.ID, [TerminalTab.ID]) -> Void)?
+@@ -387,6 +476,15 @@ final class TerminalSessions: ObservableObject {
+   //                                          └─ else → new preview tab           (≤1 preview/target: Inv A)
+   //   double-click file ─▶ openDiffPersistent ─ create-or-promote a persisted tab
+   //   double-click chip / "Keep Open" ─▶ persist ─ flip preview → persisted
++  //
++  // EVERY branch above must end up recorded in navigation history, and they get there two ways —
++  // forget this and back/forward silently stops seeing a whole content kind (that WAS the bug):
++  //
++  //   Inv A         ─▶ setFocused (a brand-new tab) ─▶ onFocusChange ─▶ AppStore records
++  //   Inv B         ─▶ content mutates, focus does NOT ─▶ onTabContentChange ─▶ AppStore records
++  //   Inv C         ─▶ focus may EARLY-RETURN (already focused) ─▶ onTabContentChange too, so a
++  //                    re-select can reconcile a cursor that a replay left elsewhere
++  //   persist / setDiffViewMode / setMarkdownPreview ─▶ NEITHER — a pin and a view mode are not places
+ 
+   /// Open `descriptor` as the target's single PREVIEW content tab (VS-Code semantics). Returns the
+   /// id of the tab now shown. Generic over `ContentDescriptor` so diffs, files, and changesets share
+@@ -404,12 +502,21 @@ final class TerminalSessions: ObservableObject {
+     desc.isPreview = true
+     if let existing = contentTab(matching: desc, in: target.id) {
+       focus(existing, for: target)
++      // Re-selecting content that is ALREADY the focused tab moves nothing, so `onFocusChange` stays
++      // quiet — yet after a replay landed in a tab the history cursor doesn't name, the cursor and the
++      // screen disagree, and staying quiet leaves the forward stack pointing at a future that is no
++      // longer on screen. Report it and let `record`'s dedup decide: same place ⇒ free no-op, different
++      // place ⇒ the entry the user actually re-selected, which truncates forward.
++      onTabContentChange?(target.id, existing)
+       return existing
+     }
+     if let previewID = previewTabID(in: target.id), var tab = tabsByTarget[target.id]?[previewID] {
+       tab.content = desc.makeTabContent()
+       tabsByTarget[target.id]?[previewID] = tab
+       focus(previewID, for: target)
++      // The content moved but the focus did not, so `onFocusChange` will not fire — this is the one
++      // opener branch navigation history cannot otherwise see (issue #26 follow-up).
++      onTabContentChange?(target.id, previewID)
+       return previewID
+     }
+     let tab = TerminalTab(content: desc.makeTabContent())
+@@ -431,6 +538,7 @@ final class TerminalSessions: ObservableObject {
+     if let existing = contentTab(matching: desc, in: target.id) {
+       persist(existing, for: target)
+       focus(existing, for: target)
++      onTabContentChange?(target.id, existing)  // same reconciliation as the preview dedup branch
+       return existing
+     }
+     let tab = TerminalTab(content: desc.makeTabContent())
+@@ -524,6 +632,9 @@ final class TerminalSessions: ObservableObject {
+     desc.selectedPath = path
+     tab.content = .changeset(desc)
+     tabsByTarget[target.id]?[tabID] = tab
++    // A selection change inside a commit is its own location, and it moves no focus — so, like the
++    // preview retarget, only this seam can tell navigation history about it.
++    onTabContentChange?(target.id, tabID)
+   }
+ 
+   /// Set a file tab's Markdown source/preview override, from the tab toolbar's Source/Preview switch.
+@@ -537,7 +648,32 @@ final class TerminalSessions: ObservableObject {
+     tabsByTarget[target.id]?[tabID] = tab
+   }
+ 
++  /// Put `payload` back into a SPECIFIC tab, in place — back/forward replay's landing primitive, and the
++  /// only caller. Distinct from `openContentPreview`, which retargets whichever tab is *currently* the
++  /// preview slot; replay needs the tab the location was recorded in, which may since have been pinned.
++  ///
++  /// Restoring a tab's own earlier content is not the same as dropping unrelated content on it, which is
++  /// what the pin protects against — so `isPreview` is carried over untouched. That also keeps the
++  /// ≤1-preview invariant by construction: a pinned tab stays pinned, the preview slot stays the slot,
++  /// and no tab is created.
++  ///
++  /// Refuses a terminal tab. A tab that recorded content cannot become a terminal (only the content
++  /// openers write `content`, and none of them writes `.terminal`), so this is a guard against a future
++  /// caller rather than a live case — but silently freeing a live surface would be unrecoverable.
++  func setContent(_ payload: NavPayload, forTab tabID: TerminalTab.ID, in target: TerminalTarget) {
++    guard var tab = tabsByTarget[target.id]?[tabID] else { return }
++    let wasPreview = tab.isPreview
++    guard case .terminal = tab.content else {
++      tab.content = payload.makeTabContent(isPreview: wasPreview)
++      tabsByTarget[target.id]?[tabID] = tab
++      onTabContentChange?(target.id, tabID)
++      return
++    }
++    assertionFailure("replay must never overwrite a terminal tab's content")
++  }
++
+   /// The id of the target's single preview content tab, if one exists (the ≤1-preview invariant).
++
+   private func previewTabID(in target: TerminalTarget.ID) -> TerminalTab.ID? {
+     tabsByTarget[target]?.first { _, tab in tab.isPreview }?.key
+   }
+
+
+=== DIFF: macapp/WorkroomApp/Views/ChangesetDetailView.swift ===
+@@ -264,7 +264,9 @@ struct ChangesetDetailView: View {
+     ScrollView {
+       VStack(alignment: .leading, spacing: 0) {
+         ForEach(files) { file in
+-          fileRow(file)
++          // `isFirst` is what lets the row canonicalise its tap: an empty selection renders the first
++          // file, so the first file must always be recorded as an empty selection rather than by name.
++          fileRow(file, isFirst: file.path == files.first?.path)
+         }
+       }
+       .padding(.vertical, 4)
+@@ -272,7 +274,7 @@ struct ChangesetDetailView: View {
+     .accessibilityIdentifier("ChangesetFileList")
+   }
+ 
+-  private func fileRow(_ file: VCSChangedFile) -> some View {
++  private func fileRow(_ file: VCSChangedFile, isFirst: Bool) -> some View {
+     let isSelected = (selectedPath ?? "") == file.path
+     return HStack(alignment: .firstTextBaseline, spacing: 6) {
+       Text(Self.badge(file.kind))
+@@ -308,7 +310,12 @@ struct ChangesetDetailView: View {
+         hoveredPath = nil
+       }
+     }
+-    .onTapGesture { store.selectChangesetFile(file.path, tab: tabID, in: target) }
++    // The first file is reported as `nil` — the single canonical spelling of "the default selection",
++    // since that is what this view renders when the descriptor's selection is empty. Recording it by
++    // name instead would make two history entries that render identically, and Back would spend a press
++    // going nowhere visible. With one spelling, `setChangesetSelectedPath`'s own "did it change" guard
++    // is enough; no view-level tap guard is needed.
++    .onTapGesture { store.selectChangesetFile(isFirst ? nil : file.path, tab: tabID, in: target) }
+     .help(ChangeBadge.pathLine(path: file.path, oldPath: file.oldPath))
+     .accessibilityElement(children: .combine)
+     .accessibilityIdentifier("ChangesetFileRow")
+
+
+=== DIFF: macapp/WorkroomApp/Views/TitlebarBars.swift ===
+@@ -110,6 +110,11 @@ struct LeadingTitlebarBar: View {
+ 
+       TitlebarDivider()
+ 
++      // The two identifiers below are a deliberate hook with no test behind them yet: the nav UI test
++      // drives ⌘[/⌘] instead, because these buttons live in an AppKit titlebar accessory that no
++      // XCUITest has ever queried, and a tap on a `.disabled` one fails silently (a green test proving
++      // nothing). Kept so a future titlebar test has a handle. `accessibilityLabel` is what assistive
++      // tech actually reads.
+       Button {
+         store.navigateBack()
+       } label: {
+@@ -117,6 +122,7 @@ struct LeadingTitlebarBar: View {
+       }
+       .help("Back (⌘[)")
+       .accessibilityLabel("Back")
++      .accessibilityIdentifier("toolbar.navigateBack")
+       .disabled(!store.canGoBack)
+ 
+       Button {
+@@ -126,6 +132,7 @@ struct LeadingTitlebarBar: View {
+       }
+       .help("Forward (⌘])")
+       .accessibilityLabel("Forward")
++      .accessibilityIdentifier("toolbar.navigateForward")
+       .disabled(!store.canGoForward)
+     }
+     .buttonStyle(ToolbarIconButtonStyle())
+
+
+=== DIFF: macapp/WorkroomAppTests/AppStoreContentNavigationTests.swift ===
+@@ -0,0 +1,496 @@
++import XCTest
++
++@testable import Workroom
++
++/// Back/forward across *content* tabs (diffs, files, changesets) — the half of issue #26 that was
++/// never wired. `AppStoreNavigationTests` covers terminal tabs only.
++///
++/// The first two tests were written against unmodified `master` and failed there (only 2 entries
++/// recorded for two browsed files, and Back landed on the terminal), which is what proved the bug.
++///
++/// The governing rule these pin: **back ignores anything that was closed, and nothing is ever
++/// reopened.** Replay never creates a tab — it doesn't need to, because a content tab can always be
++/// retargeted back to what it was showing, pin included. Only a CLOSED tab takes its steps with it
++/// (`prune`), which is the same question `isLive` asks.
++@MainActor
++final class AppStoreContentNavigationTests: XCTestCase {
++
++  private func makeStore(_ projects: [Project]) -> AppStore {
++    let store = AppStore()
++    // A GhosttySurfaceView only spawns its PTY once it enters a window, so this is inert in tests.
++    store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
++    store.projects = projects
++    return store
++  }
++
++  private func project(_ path: String, workrooms: [String]) -> Project {
++    Project(
++      path: path, vcs: "git",
++      workrooms: workrooms.map {
++        Workroom(name: $0, path: "\(path)/\($0)", vcsName: "workroom/\($0)", warnings: [])
++      })
++  }
++
++  @discardableResult
++  private func addTerminal(_ store: AppStore, _ sid: SidebarID) -> UUID {
++    store.selectedTargetID = sid
++    store.newTerminalInSelectedTarget()
++    return store.terminals.focusedTab(for: store.target(for: sid)!)!.id
++  }
++
++  /// Single-clicking two files in the Changes panel is two visited locations, so Back must return to
++  /// the first file's diff.
++  ///
++  /// The original bug, and why it hid: the second click retargets the shared preview tab in place
++  /// (`TerminalSessions.openContentPreview` invariant B), which moves no focus, and the diff opener
++  /// recorded nothing of its own — so only ONE content entry ever existed and Back walked straight past
++  /// both files to the terminal. This test failed exactly that way before the fix.
++  func testBackShowsThePreviousDiff() {
++    let store = makeStore([project("/a", workrooms: ["main"])])
++    let a = SidebarID.workroom(project: "/a", name: "main")
++    let targetA = store.target(for: a)!
++    addTerminal(store, a)  // history: [terminal]
++
++    store.openDiffPreview(ChangedFile(path: "A.swift", change: .modified), source: .gitWorktree)
++    store.openDiffPreview(ChangedFile(path: "B.swift", change: .modified), source: .gitWorktree)
++
++    // The two clicks share one preview tab — that part is correct and deliberate.
++    XCTAssertEqual(
++      store.terminals.tabs(for: targetA).count, 2, "expected the terminal + one shared preview tab")
++
++    XCTAssertEqual(
++      store.history.entries.count, 3,
++      "expected one entry per visited location (terminal, A.swift, B.swift)")
++
++    store.navigateBack()
++
++    let landed = store.terminals.focusedTab(for: targetA)?.content
++    guard case .diff(let descriptor)? = landed else {
++      return XCTFail("Back left a non-diff pane focused: \(String(describing: landed))")
++    }
++    XCTAssertEqual(descriptor.path, "A.swift", "Back must show the previously viewed file's diff")
++  }
++
++  /// The same gap for the Files panel: a repo file opened as a preview records no location, so Back
++  /// cannot return to it.
++  func testBackShowsThePreviousFile() {
++    let store = makeStore([project("/a", workrooms: ["main"])])
++    let a = SidebarID.workroom(project: "/a", name: "main")
++    let targetA = store.target(for: a)!
++    addTerminal(store, a)
++
++    store.openFilePreview(path: "A.swift")
++    store.openFilePreview(path: "B.swift")
++
++    XCTAssertEqual(
++      store.history.entries.count, 3,
++      "expected one entry per visited location (terminal, A.swift, B.swift)")
++
++    store.navigateBack()
++
++    let landed = store.terminals.focusedTab(for: targetA)?.content
++    guard case .file(let descriptor)? = landed else {
++      return XCTFail("Back left a non-file pane focused: \(String(describing: landed))")
++    }
++    XCTAssertEqual(descriptor.path, "A.swift", "Back must show the previously viewed file")
++  }
++
++  /// Commits already worked before this fix (their opener recorded explicitly), which is exactly why
++  /// the bug looked unreproducible when tested from History rows. Kept as a regression.
++  func testBackShowsThePreviousChangeset() {
++    let store = makeStore([project("/a", workrooms: ["main"])])
++    let a = SidebarID.workroom(project: "/a", name: "main")
++    let targetA = store.target(for: a)!
++    addTerminal(store, a)
++
++    store.openChangesetPreview(commitID: "aaa111", title: "first")
++    store.openChangesetPreview(commitID: "bbb222", title: "second")
++
++    XCTAssertEqual(store.history.entries.count, 3)
++
++    store.navigateBack()
++
++    let landed = store.terminals.focusedTab(for: targetA)?.content
++    guard case .changeset(let descriptor)? = landed else {
++      return XCTFail("Back left a non-changeset pane focused: \(String(describing: landed))")
++    }
++    XCTAssertEqual(descriptor.commitID, "aaa111")
++  }
++
++  /// A diff and a plain file for the same path are different panes, so Back returns to the diff.
++  func testBackCrossesFromFileToDiffOnTheSamePath() {
++    let store = makeStore([project("/a", workrooms: ["main"])])
++    let a = SidebarID.workroom(project: "/a", name: "main")
++    let targetA = store.target(for: a)!
++    addTerminal(store, a)
++
++    store.openDiffPreview(ChangedFile(path: "A.swift", change: .modified), source: .gitWorktree)
++    store.openFilePreview(path: "A.swift")  // shares the one preview slot
++
++    store.navigateBack()
++
++    guard case .diff(let descriptor)? = store.terminals.focusedTab(for: targetA)?.content else {
++      return XCTFail("Back must return to the diff, not stay on the file viewer")
++    }
++    XCTAssertEqual(descriptor.path, "A.swift")
++  }
++
++  /// Preview then persist for the same file is ONE place: `isPreview` is not identity.
++  func testPreviewThenPersistRecordsOneEntry() {
++    let store = makeStore([project("/a", workrooms: ["main"])])
++    let a = SidebarID.workroom(project: "/a", name: "main")
++    addTerminal(store, a)
++    let file = ChangedFile(path: "A.swift", change: .modified)
++
++    store.openDiffPreview(file, source: .gitWorktree)
++    let afterPreview = store.history.entries.count
++    store.openDiffPersistent(file, source: .gitWorktree)  // the <350ms second click
++
++    XCTAssertEqual(store.history.entries.count, afterPreview, "pinning is not a new location")
++  }
++
++  /// THE RULE: replay never creates a tab. It doesn't need to — a content tab can always be retargeted
++  /// back to what it was showing, INCLUDING a pinned one.
++  ///
++  /// Pinning must not strand the steps browsed before it. An earlier version required a free preview
++  /// slot, which `persist` removes: every earlier entry went unreachable while `canGoBack` (a raw cursor
++  /// read) stayed true, so one double-click re-armed the original bug behind an enabled-but-dead chevron.
++  func testReplayRetargetsAPinnedTabRatherThanCreatingOne() {
++    let store = makeStore([project("/a", workrooms: ["main"])])
++    let a = SidebarID.workroom(project: "/a", name: "main")
++    let targetA = store.target(for: a)!
++    addTerminal(store, a)
++
++    // Browse two files in the shared preview tab, then pin it — no preview slot is left.
++    store.openDiffPreview(ChangedFile(path: "A.swift", change: .modified), source: .gitWorktree)
++    store.openDiffPreview(ChangedFile(path: "B.swift", change: .modified), source: .gitWorktree)
++    let pinned = store.terminals.focusedTab(for: targetA)!.id
++    store.terminals.persist(pinned, for: targetA)
++    let tabCount = store.terminals.tabs(for: targetA).count
++
++    store.navigateBack()  // wants A.swift; the only content tab is pinned
++
++    XCTAssertEqual(
++      store.terminals.tabs(for: targetA).count, tabCount, "Back must not create a tab")
++    XCTAssertEqual(
++      store.terminals.focusedTab(for: targetA)?.id, pinned, "it lands in the tab it was recorded in"
++    )
++    guard case .diff(let d)? = store.terminals.tab(pinned, for: targetA)?.content else {
++      return XCTFail("expected the pinned tab to show the recorded diff")
++    }
++    XCTAssertEqual(d.path, "A.swift")
++    XCTAssertFalse(d.isPreview, "retargeting carries the pin over — it does not un-pin the tab")
++  }
++
++  /// Enablement and reachability must agree: whenever `canGoBack` is true, Back actually moves. The
++  /// regression this pins made the chevron live while `step` silently returned nil.
++  func testBackAlwaysMovesWhenEnabled() {
++    let store = makeStore([project("/a", workrooms: ["main"])])
++    let a = SidebarID.workroom(project: "/a", name: "main")
++    let targetA = store.target(for: a)!
++    addTerminal(store, a)
++    store.openDiffPreview(ChangedFile(path: "A.swift", change: .modified), source: .gitWorktree)
++    store.openDiffPreview(ChangedFile(path: "B.swift", change: .modified), source: .gitWorktree)
++    store.terminals.persist(store.terminals.focusedTab(for: targetA)!.id, for: targetA)
++
++    var seen: [String] = []
++    while store.canGoBack {
++      let before = store.history.cursor
++      store.navigateBack()
++      XCTAssertNotEqual(
++        store.history.cursor, before, "canGoBack was true but the cursor did not move")
++      if case .diff(let d)? = store.terminals.focusedTab(for: targetA)?.content {
++        seen.append(d.path)
++      }
++    }
++    XCTAssertEqual(seen, ["A.swift"], "the pinned run's earlier file is still reachable")
++  }
++
++  /// Replay prefers the tab the location was recorded in, so ⌘D twins (two tabs, same content) do not
++  /// send Back to the wrong pane. Also pins that replay focuses rather than duplicating.
++  func testReplayPrefersTheRecordedTab() {
++    let store = makeStore([project("/a", workrooms: ["main"])])
++    let a = SidebarID.workroom(project: "/a", name: "main")
++    let targetA = store.target(for: a)!
++    addTerminal(store, a)
++
++    store.openDiffPreview(ChangedFile(path: "A.swift", change: .modified), source: .gitWorktree)
++    let anchor = store.terminals.focusedTab(for: targetA)!.id
++    // ⌘D on a diff pane → a twin of A.swift
++    store.terminals.splitFocusedPane(for: targetA, orientation: .horizontal)
++    let twin = store.terminals.focusedTab(for: targetA)!.id
++    XCTAssertNotEqual(anchor, twin, "⌘D on a diff pane makes a second view of the same file")
++    let tabCount = store.terminals.tabs(for: targetA).count
++
++    store.navigateBack()  // the anchor's entry
++
++    XCTAssertEqual(store.terminals.focusedTab(for: targetA)?.id, anchor)
++    XCTAssertEqual(store.terminals.tabs(for: targetA).count, tabCount)
++  }
++
++  /// Selecting files inside a commit is its own step, recorded by the content seam, and reinstated.
++  func testBackReinstatesTheInCommitFileSelection() {
++    let store = makeStore([project("/a", workrooms: ["main"])])
++    let a = SidebarID.workroom(project: "/a", name: "main")
++    let targetA = store.target(for: a)!
++    addTerminal(store, a)
++    store.openChangesetPreview(commitID: "aaa111", title: "first")
++    let tab = store.terminals.focusedTab(for: targetA)!.id
++
++    store.selectChangesetFile("one.swift", tab: tab, in: targetA)
++    store.selectChangesetFile("two.swift", tab: tab, in: targetA)
++
++    store.navigateBack()
++    guard case .changeset(let back)? = store.terminals.focusedTab(for: targetA)?.content else {
++      return XCTFail("expected the changeset pane")
++    }
++    XCTAssertEqual(back.selectedPath, "one.swift")
++
++    store.navigateForward()
++    guard case .changeset(let fwd)? = store.terminals.focusedTab(for: targetA)?.content else {
++      return XCTFail("expected the changeset pane")
++    }
++    XCTAssertEqual(fwd.selectedPath, "two.swift")
++  }
++
++  /// Replay must not record. Nested suppression (`applyLocation` calls `applyLocation`) used to be able
++  /// to reopen recording halfway through, so a replay logged itself.
++  func testReplayAppendsNothing() {
++    let store = makeStore([project("/a", workrooms: ["main"])])
++    let a = SidebarID.workroom(project: "/a", name: "main")
++    addTerminal(store, a)
++    store.openDiffPreview(ChangedFile(path: "A.swift", change: .modified), source: .gitWorktree)
++    store.openDiffPreview(ChangedFile(path: "B.swift", change: .modified), source: .gitWorktree)
++    store.openChangesetPreview(commitID: "aaa111", title: "first")
++    let count = store.history.entries.count
++
++    store.navigateBack()
++    store.navigateBack()
++    store.navigateForward()
++    store.navigateForward()
++
++    XCTAssertEqual(store.history.entries.count, count, "replay must never record")
++  }
++
++  /// Back across a workroom boundary must carry the selection AND the content together.
++  func testBackCrossesWorkroomsAndReinstatesContent() {
++    let store = makeStore([project("/a", workrooms: ["main"]), project("/b", workrooms: ["main"])])
++    let a = SidebarID.workroom(project: "/a", name: "main")
++    let b = SidebarID.workroom(project: "/b", name: "main")
++    let targetA = store.target(for: a)!
++    addTerminal(store, a)
++    store.openDiffPreview(ChangedFile(path: "A.swift", change: .modified), source: .gitWorktree)
++    addTerminal(store, b)  // now viewing B
++
++    store.navigateBack()
++
++    XCTAssertEqual(store.selectedTargetID, a)
++    guard case .diff(let descriptor)? = store.terminals.focusedTab(for: targetA)?.content else {
++      return XCTFail("Back must reinstate A's diff, not just select A")
++    }
++    XCTAssertEqual(descriptor.path, "A.swift")
++  }
++
++  /// A content change in a co-displayed but NON-selected workroom is not where the user is, so it must
++  /// not record — `recordCurrentLocation` logs the *selected* target, which would be the wrong place.
++  func testContentChangeInANonSelectedTargetRecordsNothing() {
++    let store = makeStore([project("/a", workrooms: ["main"]), project("/b", workrooms: ["main"])])
++    let a = SidebarID.workroom(project: "/a", name: "main")
++    let b = SidebarID.workroom(project: "/b", name: "main")
++    let targetA = store.target(for: a)!
++    addTerminal(store, a)
++    store.openChangesetPreview(commitID: "aaa111", title: "first")
++    let tabInA = store.terminals.focusedTab(for: targetA)!.id
++    addTerminal(store, b)  // selection moves to B; A's changeset tab stays as it was
++    let count = store.history.entries.count
++
++    store.selectChangesetFile("one.swift", tab: tabInA, in: targetA)
++
++    XCTAssertEqual(store.history.entries.count, count)
++  }
++
++  /// Closing the tab that carried a browse run drops its steps (back ignores what was closed).
++  func testClosingTheBrowsePreviewPrunesItsEntries() {
++    let store = makeStore([project("/a", workrooms: ["main"])])
++    let a = SidebarID.workroom(project: "/a", name: "main")
++    let targetA = store.target(for: a)!
++    addTerminal(store, a)
++    store.openDiffPreview(ChangedFile(path: "A.swift", change: .modified), source: .gitWorktree)
++    store.openDiffPreview(ChangedFile(path: "B.swift", change: .modified), source: .gitWorktree)
++    let preview = store.terminals.focusedTab(for: targetA)!.id
++    XCTAssertTrue(store.canGoBack)
++
++    store.terminals.closeTab(preview, for: targetA)
++
++    XCTAssertFalse(store.canGoBack, "both browse steps went with the tab")
++  }
++
++  /// Replay step 2 — the recorded tab drifted, but ANOTHER live tab still shows the content, so focus
++  /// moves there and the preview slot is left alone. Reachable via ⌘D, which pins the anchor and makes
++  /// the twin the sole preview slot.
++  func testReplayFocusesAnotherTabAlreadyShowingTheContent() {
++    let store = makeStore([project("/a", workrooms: ["main"])])
++    let a = SidebarID.workroom(project: "/a", name: "main")
++    let targetA = store.target(for: a)!
++    addTerminal(store, a)
++    store.openDiffPreview(ChangedFile(path: "A.swift", change: .modified), source: .gitWorktree)
++    store.terminals.splitFocusedPane(for: targetA, orientation: .horizontal)
++    let pinned = store.terminals.tabs(for: targetA).first {
++      if case .diff(let d) = $0.content { return d.path == "A.swift" && !d.isPreview }
++      return false
++    }!.id
++    store.openDiffPreview(ChangedFile(path: "B.swift", change: .modified), source: .gitWorktree)
++    let twin = store.terminals.focusedTab(for: targetA)!.id
++    let tabCount = store.terminals.tabs(for: targetA).count
++
++    store.navigateBack()  // the twin's A.swift entry; the twin shows B, `pinned` still shows A
++
++    XCTAssertEqual(
++      store.terminals.focusedTab(for: targetA)?.id, pinned,
++      "step 2 must focus the tab that already shows the recorded content")
++    XCTAssertEqual(store.terminals.tabs(for: targetA).count, tabCount)
++    guard case .diff(let stillB)? = store.terminals.tab(twin, for: targetA)?.content else {
++      return XCTFail("the twin should be untouched")
++    }
++    XCTAssertEqual(
++      stillB.path, "B.swift", "replay must not retarget the slot Forward returns through")
++  }
++
++  /// Back and Forward both work through a pinned tab, and the round trip returns the content it started
++  /// on — the pin is carried through every hop.
++  func testBackAndForwardRoundTripThroughAPinnedTab() {
++    let store = makeStore([project("/a", workrooms: ["main"])])
++    let a = SidebarID.workroom(project: "/a", name: "main")
++    let targetA = store.target(for: a)!
++    addTerminal(store, a)
++    store.openDiffPreview(ChangedFile(path: "A.swift", change: .modified), source: .gitWorktree)
++    store.openDiffPreview(ChangedFile(path: "B.swift", change: .modified), source: .gitWorktree)
++    let tab = store.terminals.focusedTab(for: targetA)!.id
++    store.terminals.persist(tab, for: targetA)  // no preview slot left
++
++    store.navigateBack()
++    guard case .diff(let back)? = store.terminals.tab(tab, for: targetA)?.content else {
++      return XCTFail("expected the pinned tab to hold the recorded diff")
++    }
++    XCTAssertEqual(back.path, "A.swift")
++
++    store.navigateForward()
++    guard case .diff(let fwd)? = store.terminals.tab(tab, for: targetA)?.content else {
++      return XCTFail("expected the pinned tab to hold the recorded diff")
++    }
++    XCTAssertEqual(fwd.path, "B.swift", "Forward returns to where the round trip started")
++    XCTAssertFalse(fwd.isPreview, "still pinned after two hops")
++  }
++
++  /// The first file in a commit has ONE spelling in history: an empty selection. Recording it by name
++  /// would make a second entry that renders identically, so Back would spend a press going nowhere.
++  func testTheFirstFileIsRecordedAsTheDefaultSelection() {
++    let store = makeStore([project("/a", workrooms: ["main"])])
++    let a = SidebarID.workroom(project: "/a", name: "main")
++    let targetA = store.target(for: a)!
++    addTerminal(store, a)
++    store.openChangesetPreview(commitID: "aaa111", title: "first")
++    let tab = store.terminals.focusedTab(for: targetA)!.id
++
++    store.selectChangesetFile("two.swift", tab: tab, in: targetA)
++    let afterTwo = store.history.entries.count
++    // The view reports the first file as nil — the value the descriptor already holds by default.
++    store.selectChangesetFile(nil, tab: tab, in: targetA)
++    let afterFirst = store.history.entries.count
++    store.selectChangesetFile(nil, tab: tab, in: targetA)  // tapping it again changes nothing
++
++    XCTAssertEqual(afterFirst, afterTwo + 1, "returning to the default selection is one step")
++    XCTAssertEqual(store.history.entries.count, afterFirst, "re-tapping it records nothing")
++
++    store.navigateBack()
++    guard case .changeset(let d)? = store.terminals.focusedTab(for: targetA)?.content else {
++      return XCTFail("expected the changeset pane")
++    }
++    XCTAssertEqual(d.selectedPath, "two.swift")
++  }
++
++  /// A payload carries no `selectedPath` of its own — it lives on the location, where `==` can see it.
++  /// Two copies would let dedup read one value while replay applied the other.
++  func testChangesetPayloadCarriesNoSelectedPath() {
++    let descriptor = ChangesetDescriptor(
++      commitID: "aaa111", title: "first", isPreview: true, selectedPath: "two.swift")
++    guard case .changeset(let stripped)? = NavPayload(.changeset(descriptor)) else {
++      return XCTFail("expected a changeset payload")
++    }
++    XCTAssertNil(
++      stripped.selectedPath, "the selection is identity, and identity lives on NavLocation")
++    XCTAssertFalse(stripped.isPreview, "as with isPreview, normalised out")
++  }
++
++  /// The double-click openers lost their explicit `recordCurrentLocation()` in this change, so pin the
++  /// replacement: opening NEW content persistently is exactly one new step, and Back still works.
++  func testPersistentOpenOfNewContentRecordsOneStep() {
++    let store = makeStore([project("/a", workrooms: ["main"])])
++    let a = SidebarID.workroom(project: "/a", name: "main")
++    let targetA = store.target(for: a)!
++    addTerminal(store, a)
++    store.openChangesetPreview(commitID: "aaa111", title: "first")
++    let afterPreview = store.history.entries.count
++
++    store.openChangesetPersistent(commitID: "bbb222", title: "second")
++
++    XCTAssertEqual(
++      store.history.entries.count, afterPreview + 1,
++      "a persisted open of new content is one new place")
++
++    store.navigateBack()
++    guard case .changeset(let back)? = store.terminals.focusedTab(for: targetA)?.content else {
++      return XCTFail("Back must return to the first commit")
++    }
++    XCTAssertEqual(back.commitID, "aaa111")
++  }
++
++  /// The seam's second rejection clause: content changing in a NON-FOCUSED tab of the SELECTED target.
++  /// Reachable because `ChangesetDetailView`'s row tap does not focus its pane first.
++  func testContentChangeInANonFocusedTabRecordsNothing() {
++    let store = makeStore([project("/a", workrooms: ["main"])])
++    let a = SidebarID.workroom(project: "/a", name: "main")
++    let targetA = store.target(for: a)!
++    addTerminal(store, a)
++    store.openChangesetPreview(commitID: "aaa111", title: "first")
++    let changesetTab = store.terminals.focusedTab(for: targetA)!.id
++    addTerminal(store, a)  // same target, focus moves off the changeset tab
++    let count = store.history.entries.count
++
++    store.selectChangesetFile("one.swift", tab: changesetTab, in: targetA)
++
++    XCTAssertEqual(
++      store.history.entries.count, count, "a change in a non-focused tab is not where the cursor is"
++    )
++  }
++
++  /// A replayed working-copy diff takes its change kind from live status, so Back cannot reinstate a
++  /// `.modified` badge — or an enabled "Open file in…" — for a file that has since been deleted.
++  func testReplayRefreshesAStaleChangeKind() {
++    let recorded = NavPayload.diff(
++      DiffDescriptor(
++        path: "A.swift", change: .modified, source: .gitWorktree, isPreview: false))
++    var status = WorkroomStatus()
++    status.changedFiles = [ChangedFile(path: "A.swift", change: .deleted)]
++
++    guard case .diff(let refreshed) = AppStore.refreshingChangeKind(recorded, from: status) else {
++      return XCTFail("expected a diff payload back")
++    }
++    XCTAssertEqual(refreshed.change, .deleted)
++
++    // A commit's own diff is immutable — never refreshed, even if a path happens to match.
++    let commitDiff = NavPayload.diff(
++      DiffDescriptor(
++        path: "A.swift", change: .modified, source: .commit("abc"), isPreview: false))
++    guard case .diff(let untouched) = AppStore.refreshingChangeKind(commitDiff, from: status) else {
++      return XCTFail("expected a diff payload back")
++    }
++    XCTAssertEqual(untouched.change, .modified)
++
++    // No status yet ⇒ keep what we recorded rather than inventing a kind.
++    guard case .diff(let kept) = AppStore.refreshingChangeKind(recorded, from: nil) else {
++      return XCTFail("expected a diff payload back")
++    }
++    XCTAssertEqual(kept.change, .modified)
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppTests/NavigationHistoryTests.swift ===
+@@ -13,6 +13,27 @@ final class NavigationHistoryTests: XCTestCase {
+     NavLocation(target: target, tab: tab)
+   }
+ 
++  /// A changeset location: identity is the commit + the in-commit file. `title` rides in the payload
++  /// only, so it can drift without inventing a step.
++  private func changeset(
++    _ target: SidebarID, _ tab: UUID, commit: String, title: String = "t", file: String? = nil
++  ) -> NavLocation {
++    NavLocation(
++      target: target, tab: tab, contentID: .changeset(commitID: commit), selectedPath: file,
++      payload: .changeset(
++        ChangesetDescriptor(commitID: commit, title: title, isPreview: false, selectedPath: file)))
++  }
++
++  /// A working-copy diff location: identity is path + source; `change` rides in the payload only.
++  private func diff(
++    _ target: SidebarID, _ tab: UUID, path: String, change: ChangedFile.Change = .modified
++  ) -> NavLocation {
++    NavLocation(
++      target: target, tab: tab, contentID: .diff(path: path, source: .gitWorktree),
++      payload: .diff(
++        DiffDescriptor(path: path, change: change, source: .gitWorktree, isPreview: false)))
++  }
++
+   /// The exact issue #26 example at the stack level: T1 of A → new terminal (Tnew, in A) →
+   /// T2 of B → Back lands Tnew → Back lands T1 → Forward lands Tnew.
+   func testIssueExampleTrace() {
+@@ -49,10 +70,9 @@ final class NavigationHistoryTests: XCTestCase {
+   func testCommitAndFileAreDistinctSteps() {
+     let a = SidebarID.workroom(project: "/a", name: "main")
+     let tab = UUID()
+-    let cA = NavLocation(target: a, tab: tab, commitID: "A", commitTitle: "a", filePath: nil)
+-    let cAfile = NavLocation(
+-      target: a, tab: tab, commitID: "A", commitTitle: "a", filePath: "x.swift")
+-    let cB = NavLocation(target: a, tab: tab, commitID: "B", commitTitle: "b", filePath: nil)
++    let cA = changeset(a, tab, commit: "A")
++    let cAfile = changeset(a, tab, commit: "A", file: "x.swift")
++    let cB = changeset(a, tab, commit: "B")
+     var h = NavigationHistory()
+     h.record(cA)
+     h.record(cAfile)
+@@ -65,13 +85,128 @@ final class NavigationHistoryTests: XCTestCase {
+ 
+   func testSameCommitAndFileDedups() {
+     let a = SidebarID.workroom(project: "/a", name: "main")
+-    let same = NavLocation(target: a, tab: UUID(), commitID: "A", commitTitle: "a", filePath: "x")
++    let same = changeset(a, UUID(), commit: "A", file: "x")
+     var h = NavigationHistory()
+     h.record(same)
+     h.record(same)  // identical content → no-op
+     XCTAssertEqual(h.entries, [same])
+   }
+ 
++  // MARK: Identity excludes the drifting payload fields
++
++  /// A commit's title is rebuilt from a fallback on replay, so it must not make a new location —
++  /// otherwise revisiting one commit piles up steps that look identical on screen.
++  func testChangesetTitleDriftDedups() {
++    let a = SidebarID.workroom(project: "/a", name: "main")
++    let tab = UUID()
++    var h = NavigationHistory()
++    h.record(changeset(a, tab, commit: "A", title: "written at record time"))
++    h.record(changeset(a, tab, commit: "A", title: "A"))  // replay's `commitTitle ?? commitID`
++    XCTAssertEqual(h.entries.count, 1, "a title change is not a new place")
++  }
++
++  /// A file's change kind flips as it is staged, reverted or deleted. Same file, same place.
++  func testDiffChangeKindDriftDedups() {
++    let a = SidebarID.workroom(project: "/a", name: "main")
++    let tab = UUID()
++    var h = NavigationHistory()
++    h.record(diff(a, tab, path: "x.swift", change: .modified))
++    h.record(diff(a, tab, path: "x.swift", change: .deleted))
++    XCTAssertEqual(h.entries.count, 1, "a change-kind flip is not a new place")
++  }
++
++  /// Keep Open flips `isPreview`; the location is unchanged. (`NavPayload.init` normalises it, and
++  /// `==` ignores the payload anyway — this pins both.)
++  func testPreviewToPersistDedups() {
++    let a = SidebarID.workroom(project: "/a", name: "main")
++    let tab = UUID()
++    let preview = DiffDescriptor(
++      path: "x.swift", change: .modified, source: .gitWorktree, isPreview: true)
++    var h = NavigationHistory()
++    h.record(
++      NavLocation(
++        target: a, tab: tab, contentID: .diff(path: "x.swift", source: .gitWorktree),
++        payload: NavPayload(.diff(preview))))
++    h.record(diff(a, tab, path: "x.swift"))
++    XCTAssertEqual(h.entries.count, 1, "pinning a preview is not a new place")
++  }
++
++  /// The same path viewed as a diff and as a plain file are different panes, so different steps.
++  func testDiffAndFileOnTheSamePathAreDistinctSteps() {
++    let a = SidebarID.workroom(project: "/a", name: "main")
++    let tab = UUID()
++    let asDiff = diff(a, tab, path: "x.swift")
++    let asFile = NavLocation(
++      target: a, tab: tab, contentID: .file(path: "x.swift"),
++      payload: .file(FileDescriptor(path: "x.swift", isPreview: false)))
++    var h = NavigationHistory()
++    h.record(asDiff)
++    h.record(asFile)
++    XCTAssertEqual(h.entries, [asDiff, asFile])
++    XCTAssertEqual(h.step(-1, isLive: alwaysLive), asDiff)
++  }
++
++  /// A terminal pane and a content pane in the same tab are different places.
++  func testTerminalAndContentAreDistinctSteps() {
++    let a = SidebarID.workroom(project: "/a", name: "main")
++    let tab = UUID()
++    let term = NavLocation(target: a, tab: tab)  // contentID nil ⇒ a terminal
++    let content = diff(a, tab, path: "x.swift")
++    var h = NavigationHistory()
++    h.record(term)
++    h.record(content)
++    XCTAssertEqual(h.entries, [term, content])
++  }
++
++  /// `prune`'s adjacent-duplicate collapse is the one place the hand-written `==` runs during removal,
++  /// and for content entries in the SAME tab only the content can tell two steps apart. Both directions:
++  /// identical content collapses, a different path does not.
++  func testPruneCollapseIsContentAware() {
++    let a = SidebarID.workroom(project: "/a", name: "main")
++    let preview = UUID()
++    let term = UUID()
++
++    var same = NavigationHistory()
++    same.record(diff(a, preview, path: "x.swift"))
++    same.record(NavLocation(target: a, tab: term))
++    same.record(diff(a, preview, path: "x.swift"))
++    same.prune(removing: [term])
++    XCTAssertEqual(same.entries.count, 1, "revisiting the same file in one tab is one place")
++
++    var differing = NavigationHistory()
++    differing.record(diff(a, preview, path: "x.swift"))
++    differing.record(NavLocation(target: a, tab: term))
++    differing.record(diff(a, preview, path: "y.swift"))
++    differing.prune(removing: [term])
++    XCTAssertEqual(
++      differing.entries.count, 2, "two files browsed in one preview tab are two distinct steps")
++    XCTAssertEqual(
++      differing.step(-1, isLive: alwaysLive)?.contentID,
++      .diff(path: "x.swift", source: .gitWorktree))
++  }
++
++  /// Pruning keys on the tab id even for content entries — back ignores what was closed, and nothing
++  /// is reopened. Browsing several files in ONE preview tab therefore loses every step when that tab
++  /// closes. Deliberate; see `prune`'s doc comment.
++  func testPruneDropsContentEntriesOfAClosedTab() {
++    let a = SidebarID.workroom(project: "/a", name: "main")
++    let preview = UUID()
++    let pinned = UUID()
++    var h = NavigationHistory()
++    h.record(diff(a, pinned, path: "kept.swift"))
++    h.record(diff(a, preview, path: "one.swift"))
++    h.record(diff(a, preview, path: "two.swift"))
++    XCTAssertEqual(h.entries.count, 3)
++
++    h.prune(removing: [preview])
++    XCTAssertEqual(h.entries.count, 1, "both browse steps die with the tab that carried them")
++    // The cursor was ON a removed entry, so it parks just past the last survivor (existing contract:
++    // `current` is nil, and Back lands on that survivor rather than skipping it).
++    XCTAssertTrue(h.canGoBack)
++    XCTAssertEqual(
++      h.step(-1, isLive: alwaysLive)?.tab, pinned, "the entry naming a still-open tab survives")
++  }
++
+   func testRecordAfterBackTruncatesForward() {
+     let l0 = loc()
+     let l1 = loc()
+
+
+=== DIFF: macapp/WorkroomAppTests/TerminalSessionsTests.swift ===
+@@ -15,6 +15,67 @@ final class TerminalSessionsTests: XCTestCase {
+     return sessions
+   }
+ 
++  // MARK: onTabContentChange — the navigation-history seam
++
++  /// Retargeting the shared preview tab mutates content without moving focus, so `onFocusChange` never
++  /// fires. This seam is the only way history can see it — the whole cause of "Back skips the files you
++  /// browsed".
++  func testContentSeamFiresOnPreviewRetarget() {
++    let s = makeSessions()
++    var fired: [TerminalTab.ID] = []
++    s.onTabContentChange = { _, tabID in fired.append(tabID) }
++    let first = s.openDiffPreview(
++      DiffDescriptor(path: "A.swift", change: .modified, source: .gitWorktree, isPreview: true),
++      for: target)
++    XCTAssertTrue(fired.isEmpty, "a NEW preview tab changes focus, so onFocusChange covers it")
++
++    let second = s.openDiffPreview(
++      DiffDescriptor(path: "B.swift", change: .modified, source: .gitWorktree, isPreview: true),
++      for: target)
++
++    XCTAssertEqual(second, first, "the preview slot is retargeted in place")
++    XCTAssertEqual(fired, [first], "the retarget must report itself")
++  }
++
++  /// Selecting a file inside a commit is its own location and moves no focus.
++  func testContentSeamFiresOnChangesetFileSelection() {
++    let s = makeSessions()
++    let tab = s.openContentPreview(
++      ChangesetDescriptor(commitID: "abc", title: "t", isPreview: true), for: target)
++    var fired: [TerminalTab.ID] = []
++    s.onTabContentChange = { _, tabID in fired.append(tabID) }
++
++    s.setChangesetSelectedPath("one.swift", forTab: tab, in: target)
++    s.setChangesetSelectedPath("one.swift", forTab: tab, in: target)  // unchanged → no event
++
++    XCTAssertEqual(fired, [tab])
++  }
++
++  /// Pinning a tab and changing how a pane is rendered are not locations, so they must stay silent —
++  /// otherwise Keep Open and the view-mode toggle would litter back/forward with phantom steps.
++  ///
++  /// The file preview is opened BEFORE the pin so it is a genuine retarget of the one preview slot: that
++  /// is the only fire this body is allowed, and asserting the count around it proves the overrides are
++  /// silent rather than proving a counter that was already zero.
++  func testContentSeamStaysSilentForPinAndViewMode() {
++    let s = makeSessions()
++    let tab = s.openDiffPreview(
++      DiffDescriptor(path: "A.swift", change: .modified, source: .gitWorktree, isPreview: true),
++      for: target)
++    var fired = 0
++    s.onTabContentChange = { _, _ in fired += 1 }
++
++    let file = s.openFilePreview(FileDescriptor(path: "R.md", isPreview: true), for: target)
++    XCTAssertEqual(tab, file, "the file preview retargets the one preview slot")
++    XCTAssertEqual(fired, 1, "a retarget is a location change")
++
++    s.persist(file, for: target)
++    s.setMarkdownPreview(true, forTab: file, in: target)
++    s.setDiffViewMode(.sideBySide, forTab: file, in: target)
++
++    XCTAssertEqual(fired, 1, "pin and view-mode overrides add no locations")
++  }
++
+   func testAddTabAppendsAndActivates() {
+     let s = makeSessions()
+     s.addTab(for: target)
+
+
+=== DIFF: macapp/WorkroomAppUITests/NavigationHistoryContentUITests.swift ===
+@@ -0,0 +1,109 @@
++import XCTest
++
++/// End-to-end coverage for back/forward across *content* panes — the one thing the store-level tests
++/// cannot show, because the reported bug was about what the DETAIL PANE displays.
++///
++/// Asserts `terminal.statusBar.path` (the pane's own file footer, issue #136), not the tab chip. The
++/// chip moved correctly even while the bug was live, so a chip-only assertion would have passed
++/// against broken code.
++///
++/// Driven with `⌘[` / `⌘]` rather than the titlebar chevrons: that is the idiom ten other UI tests in
++/// this suite use, `Go ▸ Back` already owns the shortcut, and it is reserved from the terminal via
++/// `isAppShortcut`. The chevrons live in an AppKit titlebar accessory that no UI test has ever driven,
++/// where a tap on a `.disabled` button fails *silently* — a green test proving nothing.
++///
++/// Run with `make app-uitest` on a real GUI login session, or scoped:
++/// `xcodebuild … -only-testing:WorkroomAppUITests/NavigationHistoryContentUITests/<method> test`
++final class NavigationHistoryContentUITests: XCTestCase {
++  override func setUpWithError() throws { continueAfterFailure = false }
++
++  private func launchedApp() -> XCUIApplication {
++    let app = XCUIApplication()
++    app.launchArguments += ["-WorkroomUITestFixture", "1"]
++    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
++    app.launch()
++    app.activate()
++    return app
++  }
++
++  private func element(_ app: XCUIApplication, id: String) -> XCUIElement {
++    app.descendants(matching: .any).matching(identifier: id).firstMatch
++  }
++
++  /// A changed-file row, by identifier. Deliberately NOT by label: a row reads
++  /// "user.rb, modified, in app/models, open diff", so the full repo-relative path never appears in it.
++  private func fileRow(_ app: XCUIApplication, _ path: String) -> XCUIElement {
++    element(app, id: "changes.file.\(path)")
++  }
++
++  /// The pane footer naming the file this pane shows (issue #136). Matched on the path as well as the
++  /// id, because a split shows one bar per pane. The segment's string arrives as the element's `value`
++  /// rather than its `label` on macOS, so match either.
++  private func paneShowingFile(_ app: XCUIApplication, _ path: String) -> XCUIElement {
++    app.descendants(matching: .any).matching(
++      NSPredicate(
++        format: "identifier == %@ AND (label CONTAINS %@ OR value CONTAINS %@)",
++        "terminal.statusBar.path", path, path)
++    ).firstMatch
++  }
++
++  private func waitGone(_ el: XCUIElement, _ timeout: TimeInterval = 6) -> Bool {
++    let p = NSPredicate(format: "exists == false")
++    return XCTWaiter().wait(
++      for: [XCTNSPredicateExpectation(predicate: p, object: el)], timeout: timeout) == .completed
++  }
++
++  private func tabChipCount(_ app: XCUIApplication) -> Int {
++    app.descendants(matching: .any).matching(
++      NSPredicate(format: "identifier BEGINSWITH %@", "terminal.tab.")
++    ).count
++  }
++
++  /// Browse two changed files, then go Back: the PANE must return to the first file's diff.
++  ///
++  /// Before the fix this failed at the final assertion in a specific way worth remembering — Back
++  /// landed on the *terminal*, because browsing recorded only one entry (the first click, which
++  /// created the tab) and every later click retargeted that tab silently.
++  func testBackReturnsThePaneToThePreviousDiff() throws {
++    let app = launchedApp()
++    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
++    XCTAssertTrue(
++      element(app, id: "changes.workingCopy").waitForExistence(timeout: 10),
++      "the Changes panel should render its working copy")
++
++    // Single-click two different rows. Different rows, so the 350ms double-click promotion that would
++    // create a second tab (and record on its own) cannot trigger.
++    fileRow(app, "Gemfile").click()
++    XCTAssertTrue(
++      paneShowingFile(app, "Gemfile").waitForExistence(timeout: 10),
++      "the first click should open Gemfile's diff in the pane")
++    let chipsAfterFirst = tabChipCount(app)
++
++    fileRow(app, "app/models/user.rb").click()
++    XCTAssertTrue(
++      paneShowingFile(app, "user.rb").waitForExistence(timeout: 10),
++      "the second click should retarget the pane to user.rb")
++    XCTAssertFalse(
++      element(app, id: "terminal.tab.Gemfile").exists,
++      "the shared preview tab is retargeted in place, so Gemfile's chip is gone")
++    XCTAssertEqual(chipsAfterFirst, tabChipCount(app), "retargeting must not add a tab")
++
++    app.typeKey("[", modifierFlags: .command)
++
++    XCTAssertTrue(
++      paneShowingFile(app, "Gemfile").waitForExistence(timeout: 10),
++      "⌘[ must put Gemfile's diff back in the PANE — not merely move the sidebar highlight")
++    XCTAssertTrue(
++      waitGone(paneShowingFile(app, "user.rb")),
++      "and user.rb must be gone from the pane — the pane switched, it did not gain a second one")
++    XCTAssertEqual(
++      chipsAfterFirst, tabChipCount(app),
++      "replay reuses the preview slot: back never creates a tab")
++
++    app.typeKey("]", modifierFlags: .command)
++
++    XCTAssertTrue(
++      paneShowingFile(app, "user.rb").waitForExistence(timeout: 10),
++      "⌘] must return to user.rb")
++  }
++}
+
+
+Investigate per the method in your instructions, then return the findings list.
