@@ -1,0 +1,1 @@
+I plan on adding licensing, so maybe now is a good time. Any new install will auto-create and register a license key with the server, which can then be used for analytics and licensing
