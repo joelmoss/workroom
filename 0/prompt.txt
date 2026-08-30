@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>blykmkd1v</task-id>
+<tool-use-id>toolu_01U61qGmv6mvENDDz868suQx</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/c55d64aa-154c-477d-a181-18c86c6e8ed8/tasks/blykmkd1v.output</output-file>
+<status>completed</status>
+<summary>Background command "Build and launch Workroom Dev app" completed (exit code 0)</summary>
+</task-notification>
