@@ -1,0 +1,1 @@
+use full colour logo in welcome screen
