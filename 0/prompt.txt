@@ -1,0 +1,630 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/AppStore.swift
+  - macapp/WorkroomApp/Core/ThemeService.swift
+  - macapp/WorkroomApp/Views/KeyboardShortcutsView.swift
+  - macapp/WorkroomApp/Views/RootView.swift
+  - macapp/WorkroomApp/Views/ThemePicker.swift
+  - macapp/WorkroomApp/Views/TitlebarBars.swift
+  - macapp/WorkroomApp/WorkroomApp.swift
+  - macapp/WorkroomAppTests/SwitcherThemeSweepTests.swift
+  - macapp/WorkroomAppTests/ThemeServiceTests.swift
+  - macapp/WorkroomAppUITests/ThemePickerUITests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/AppStore.swift ===
+@@ -575,8 +575,9 @@ final class AppStore: ObservableObject {
+   /// Drives the immediate full-pane setup dialog AND the provisional "Creating…" tab chip — both
+   /// appear before the CLI has even reported the (generated) name. Per-window, like selection.
+   @Published var creation: WorkroomCreation?
+-  /// Mirrors whether one of RootView's *view-local* sheets is up (Add Project, Theme Picker, Keyboard
+-  /// Shortcuts, What's New). Those four are `@State` in RootView rather than store-level like the
++  /// Mirrors whether one of RootView's *view-local* sheets is up (Add Project, Keyboard Shortcuts,
++  /// What's New — the theme dropdown is a transient popover, not modal, and deliberately NOT counted:
++  /// it closes itself when one of these comes up). Those are `@State` in RootView rather than the
+   /// `pending*` ones, so `hasModalPresentation` can't see them directly; RootView keeps this in sync
+   /// with a single `onChange`. Deliberately a mirror rather than re-homing the four flags onto the
+   /// store: re-homing a local sheet flag to a store-level published item needs a clobber guard to stop
+
+
+=== DIFF: macapp/WorkroomApp/Core/ThemeService.swift ===
+@@ -235,22 +235,23 @@ final class ThemeService {
+   /// SAME precedence as ghostty's terminal resolution, so chrome and terminal never diverge for a
+   /// user-overridden theme file.
+   nonisolated static func themePreview(named name: String) -> ThemePreview? {
+-    // User dir stays uncached and is checked first, preserving both ghostty's precedence and the
+-    // ability to edit a theme live.
+-    if let userDir = themeDirectories().first {
+-      let path = userDir + "/" + name
+-      if FileManager.default.fileExists(atPath: path),
+-        let theme = parseThemeFile(atPath: path, name: name)
+-      {
+-        return theme
+-      }
++    // The user's dir is checked first and NEVER cached, preserving both ghostty's precedence and the
++    // ability to edit a theme live. Named directly rather than as `themeDirectories().first`: which
++    // entry is user-writable (and therefore uncacheable) is the whole correctness argument for the
++    // cache below, and an index into an array pins nothing — a third directory added at the front
++    // would silently start being cached forever.
++    let userPath = userThemeDirectory() + "/" + name
++    if FileManager.default.fileExists(atPath: userPath),
++      let theme = parseThemeFile(atPath: userPath, name: name)
++    {
++      return theme
+     }
+ 
+     bundledPreviewCacheLock.lock()
+     defer { bundledPreviewCacheLock.unlock() }
+     if let hit = bundledPreviewCache[name] { return hit }
+-    for dir in themeDirectories().dropFirst() {
+-      let path = dir + "/" + name
++    if let bundledDir = bundledThemeDirectory() {
++      let path = bundledDir + "/" + name
+       if FileManager.default.fileExists(atPath: path),
+         let theme = parseThemeFile(atPath: path, name: name)
+       {
+@@ -261,13 +262,55 @@ final class ThemeService {
+     return nil
+   }
+ 
+-  /// User config dir first (wins on resolution), bundled dir second.
++  /// User config dir first (wins on resolution), bundled dir second. A convenience over the two
++  /// accessors below — `themePreview` deliberately does NOT resolve through this, because the
++  /// user/bundled distinction is what decides cacheability and a position in an array can't carry that.
+   nonisolated static func themeDirectories() -> [String] {
+-    var dirs = [NSHomeDirectory() + "/.config/ghostty/themes"]
+-    if let bundled = Bundle.main.resourceURL?.appendingPathComponent("ghostty/themes").path {
+-      dirs.append(bundled)
++    guard let bundled = bundledThemeDirectory() else { return [userThemeDirectory()] }
++    return [userThemeDirectory(), bundled]
++  }
++
++  /// The user's own theme dir — the same `~/.config/ghostty/themes` ghostty itself reads, so a file
++  /// dropped there overrides a bundled theme of the same name in the terminal AND the chrome.
++  /// User-writable, therefore never cached.
++  nonisolated static func userThemeDirectory() -> String {
++    userThemeDirectoryLock.lock()
++    defer { userThemeDirectoryLock.unlock() }
++    return userThemeDirectoryOverride ?? NSHomeDirectory() + "/.config/ghostty/themes"
++  }
++
++  /// The bundled theme dir. Immutable for the process lifetime, which is what makes caching its parsed
++  /// files correct rather than merely fast.
++  nonisolated static func bundledThemeDirectory() -> String? {
++    Bundle.main.resourceURL?.appendingPathComponent("ghostty/themes").path
++  }
++
++  private nonisolated(unsafe) static var userThemeDirectoryOverride: String?
++  private static let userThemeDirectoryLock = NSLock()
++
++  /// Redirect `userThemeDirectory()` at `path` for the duration of `body`. **Tests only.**
++  ///
++  /// This exists because the alternative was untestable: proving "a user's own theme file beats a warm
++  /// bundled cache" needs a real file in the user dir, and the only user dir available was the
++  /// developer's actual `~/.config/ghostty/themes`. The test that stood here before asserted the
++  /// *ordering* of `themeDirectories()` instead and would still have passed if the cache had been
++  /// consulted before the user dir — the exact regression the cache introduced the risk of.
++  ///
++  /// Scoped rather than a settable property so a test can't leak the override into later cases. It is
++  /// process-wide while set, so a concurrent reader in another test class sees it — harmless in
++  /// practice, since a lookup only diverges for a name that exists in `path`.
++  nonisolated static func withUserThemeDirectory<T>(_ path: String, _ body: () throws -> T) rethrows
++    -> T
++  {
++    userThemeDirectoryLock.lock()
++    userThemeDirectoryOverride = path
++    userThemeDirectoryLock.unlock()
++    defer {
++      userThemeDirectoryLock.lock()
++      userThemeDirectoryOverride = nil
++      userThemeDirectoryLock.unlock()
+     }
+-    return dirs
++    return try body()
+   }
+ 
+   // MARK: Theme-file parser (ported from muxy — pure)
+@@ -338,7 +381,7 @@ extension Notification.Name {
+   /// sites that read `ThemeService.shared.tokens` outside a SwiftUI body can refresh.
+   static let themeDidChange = Notification.Name("workroom.themeDidChange")
+ 
+-  /// Posted by the `Theme…` (⌘⇧K) command; `RootView` presents the picker as a sheet (a menu
+-  /// command can't anchor a popover).
++  /// Posted by the `Theme…` (⌘⇧K) command; `TrailingTitlebarBar` toggles the dropdown anchored to its
++  /// theme button (a menu command can't anchor a popover itself).
+   static let showThemePicker = Notification.Name("workroom.showThemePicker")
+ }
+
+
+=== DIFF: macapp/WorkroomApp/Views/KeyboardShortcutsView.swift ===
+@@ -2,8 +2,9 @@ import Defaults
+ import SwiftUI
+ 
+ /// Reference sheet listing every available keyboard shortcut, grouped by area (raised by the
+-/// "Keyboard Shortcuts…" command via the `.showKeyboardShortcuts` notification — a menu command
+-/// can't anchor a sheet, so `RootView` observes it and presents this, mirroring the Theme… picker).
++/// "Keyboard Shortcuts…" command via the `.showKeyboardShortcuts` notification — a menu command can't
++/// anchor a sheet, so `RootView` observes it and presents this). A sheet is right *here*, unlike the
++/// Theme… dropdown: this is something you read, not something you preview the app against.
+ ///
+ /// The catalog below is **hand-maintained**: SwiftUI exposes no API to enumerate menu shortcuts, so
+ /// any change to `WorkroomCommands` (`WorkroomApp.swift`) or the `AppDelegate` key monitor (⌘1–9,
+@@ -175,7 +176,8 @@ extension KeyboardShortcutsView {
+ }
+ 
+ /// Posted by the "Keyboard Shortcuts…" command; `RootView` presents this view as a sheet (a menu
+-/// command can't anchor one — same pattern as `.showThemePicker`).
++/// command can't anchor one — the same notification hop `.showThemePicker` uses, though that one is
++/// received by the trailing toolbar bar, which owns the button its dropdown hangs off).
+ extension Notification.Name {
+   static let showKeyboardShortcuts = Notification.Name("workroom.showKeyboardShortcuts")
+ }
+
+
+=== DIFF: macapp/WorkroomApp/Views/RootView.swift ===
+@@ -26,11 +26,8 @@ struct RootView: View {
+   /// modes: add an existing repo, or create + git-init a new directory.
+   @State private var showAddProject = false
+ 
+-  /// Presents the theme picker (issue #36), raised by the `Theme…` (⌘⇧K) command via notification.
+-  @State private var showThemePicker = false
+-
+   /// Presents the keyboard-shortcuts reference, raised by the `Keyboard Shortcuts…` command via
+-  /// notification (same menu-can't-anchor-a-sheet pattern as the theme picker).
++  /// notification (a menu command can't anchor a sheet).
+   @State private var showKeyboardShortcuts = false
+ 
+   /// The "What's New" dialog's content, or nil when closed. Set by the launch-window auto-check.
+@@ -339,15 +336,8 @@ struct RootView: View {
+       }
+       .onDisappear { ThemeService.shared.unregisterTerminals(store.terminals) }
+       .onChange(of: theme) { _ in applyAppearance() }
+-      // Present only in the key window — the notification is broadcast to every window's RootView, so
+-      // without this guard the sheet would pop in all of them (issue #70, OV #6).
+-      .onReceive(NotificationCenter.default.publisher(for: .showThemePicker)) { _ in
+-        guard store.hostWindow?.isKeyWindow ?? false else { return }
+-        showThemePicker = true
+-      }
+-      .sheet(isPresented: $showThemePicker) {
+-        ThemePicker(presentedAsSheet: true)
+-      }
++      // The theme picker is deliberately NOT here: it's a dropdown anchored to a toolbar button
++      // (`TrailingTitlebarBar`), because a sheet is the wrong shape for a live preview.
+       .onReceive(NotificationCenter.default.publisher(for: .showKeyboardShortcuts)) { _ in
+         guard store.hostWindow?.isKeyWindow ?? false else { return }
+         showKeyboardShortcuts = true
+@@ -460,9 +450,13 @@ struct RootView: View {
+           modalPresented: store.hasModalPresentation))
+   }
+ 
+-  /// The four sheets RootView owns as `@State` rather than store state, ORed for the store mirror.
++  /// The sheets RootView owns as `@State` rather than store state, ORed for the store mirror.
++  ///
++  /// The theme panel is absent on purpose: it is not modal. Counting it would make every shortcut and
++  /// menu item inert while it's up, and the whole point of it being a panel is that you keep using the
++  /// app — ⌘⇧L especially — to see what the theme you just picked actually looks like.
+   private var auxSheetPresented: Bool {
+-    showAddProject || showThemePicker || showKeyboardShortcuts || whatsNewContent != nil
++    showAddProject || showKeyboardShortcuts || whatsNewContent != nil
+   }
+ 
+   /// The project path of the selected root or workroom (nil for no selection) — the run command is
+
+
+=== DIFF: macapp/WorkroomApp/Views/ThemePicker.swift ===
+@@ -3,19 +3,23 @@ import SwiftUI
+ 
+ /// Theme chooser (issue #36). A searchable list of **families**, each row a dual (light + dark)
+ /// swatch — pick one and its variant follows the appearance. ↑/↓ apply families live; the selected
+-/// one is scrolled into view on open. Used in Settings and from the `Theme…` (⌘⇧K) command.
++/// one is scrolled into view on open. Both hosts are popovers: the toolbar's theme dropdown
++/// (`TrailingTitlebarBar`, ⌘⇧K) and the Settings row's swatch button.
+ struct ThemePicker: View {
++  /// The size this picker frames itself to; both popovers size themselves from the rendered frame.
++  static let contentSize = CGSize(width: 300, height: 420)
++
+   private let theme = ThemeService.shared
+   @Environment(\.dismiss) private var dismiss
+   @Default(.themeFamily) private var familyName
+ 
+-  /// When true (the ⌘⇧K sheet) the view shows a title bar + Done button; embedded in Settings it
+-  /// doesn't.
+-  var presentedAsSheet = false
+-
+   @State private var query = ""
+   /// Index into `filteredFamilies` of the keyboard-highlighted row (↑/↓ move it, ⏎ applies).
+   @State private var highlighted = 0
++  /// Focus on the search field, claimed explicitly on appear rather than left to the host. Without
++  /// focus in this tree nothing works — not typing, and not ↑/↓, which reach `.onKeyPress` only
++  /// through the focused SwiftUI view.
++  @FocusState private var searchFocused: Bool
+ 
+   private var filteredFamilies: [ThemeFamily] {
+     let q = query.trimmingCharacters(in: .whitespaces)
+@@ -45,16 +49,6 @@ struct ThemePicker: View {
+ 
+   var body: some View {
+     VStack(spacing: 0) {
+-      if presentedAsSheet {
+-        HStack {
+-          Text("Theme").font(.headline)
+-          Spacer()
+-          Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+-        }
+-        .padding(12)
+-        Divider()
+-      }
+-
+       searchField
+ 
+       ScrollViewReader { proxy in
+@@ -92,7 +86,7 @@ struct ThemePicker: View {
+         }
+       }
+     }
+-    .frame(width: 300, height: presentedAsSheet ? 460 : 420)
++    .frame(width: Self.contentSize.width, height: Self.contentSize.height)
+     // ↑/↓ move through the list and apply the family live; ⏎ dismisses. The search field keeps
+     // text focus; single-line fields don't consume the arrow keys, so they bubble here.
+     .onKeyPress(.upArrow) {
+@@ -107,7 +101,17 @@ struct ThemePicker: View {
+       dismiss()
+       return .handled
+     }
++    // Esc closes too, explicitly rather than trusting the host: a popover's own cancel handling depends
++    // on its behaviour mode, which SwiftUI doesn't expose, and the Settings popover has no other way out
++    // besides clicking away.
++    .onExitCommand { dismiss() }
+     .onChange(of: query) { _, _ in highlighted = 0 }
++    // `.task`, not `.onAppear`: it runs after the view is installed in its window, and focus set before
++    // that is dropped — which leaves a picker you can't type into. There is no `await` here, so this is
++    // not a suspension; it relies only on when SwiftUI schedules the task. Both hosts are popovers,
++    // which rebuild their content on each presentation, so `searchFocused` starts false every time and
++    // this can't no-op on a reused view.
++    .task { searchFocused = true }
+   }
+ 
+   private var searchField: some View {
+@@ -115,6 +119,7 @@ struct ThemePicker: View {
+       Image(systemName: "magnifyingglass").foregroundStyle(theme.tokens.fgDim)
+       TextField("Search themes", text: $query)
+         .textFieldStyle(.plain)
++        .focused($searchFocused)
+         .multilineTextAlignment(.leading)
+         .frame(maxWidth: .infinity, alignment: .leading)
+       if !query.isEmpty {
+
+
+=== DIFF: macapp/WorkroomApp/Views/TitlebarBars.swift ===
+@@ -151,6 +151,13 @@ struct LeadingTitlebarBar: View {
+ /// are reachable too. With no update pending this collapses to just the quick terminal.
+ struct TrailingTitlebarBar: View {
+   @EnvironmentObject var updater: Updater
++  @EnvironmentObject var store: AppStore
++
++  /// The theme dropdown (issue #36), anchored to its own toolbar button.
++  ///
++  /// Window-local `@State`, like the sheets `RootView` owns: the `Theme…` command's notification is
++  /// broadcast to every window, and the key-window guard below is what decides which one opens.
++  @State private var showThemePicker = false
+ 
+   var body: some View {
+     HStack(spacing: 6) {
+@@ -164,6 +171,26 @@ struct TrailingTitlebarBar: View {
+         TitlebarDivider()
+       }
+ 
++      // Theme (⌘⇧K) — a dropdown anchored here rather than a sheet or a window of its own, because
++      // picking a theme is a live-preview gesture: ↑/↓ apply families as you move through them, so the
++      // app behind the dropdown IS the preview. A sheet made that impossible twice over (measured on
++      // the real build): its modality had AppKit render the whole window inactive — traffic lights
++      // greyed, the sidebar's VCS dot badges orange → dull brown — and being anchored under the title
++      // bar it sat on top of the content whose colours you were choosing, with nothing to drag.
++      //
++      // A popover is transient, so it needs no dismiss affordance and no modal bookkeeping: clicking
++      // anywhere else closes it, and anything that raises a dialog closes it too (below). It is
++      // therefore deliberately absent from `AppStore.hasModalPresentation`.
++      Button {
++        showThemePicker.toggle()
++      } label: {
++        Image(systemName: "paintpalette")
++      }
++      .help("Theme (⌘⇧K)")
++      .accessibilityLabel("Theme")
++      .accessibilityIdentifier("toolbar.theme")
++      .popover(isPresented: $showThemePicker, arrowEdge: .bottom) { ThemePicker() }
++
+       // Quick Terminal (⌥§) — a ~/ shell in its own window. Always present, and since issue #139 moved
+       // the selected target's run/open-in actions into the workroom pane title bars, the only control
+       // left at the window's trailing edge besides the update pill.
+@@ -186,5 +213,37 @@ struct TrailingTitlebarBar: View {
+     .padding(.trailing, 10)
+     // Fill the full-height (52pt) accessory host so the HStack centres its buttons — see LeadingTitlebarBar.
+     .frame(maxHeight: .infinity)
++    // The `Theme…` command (⌘⇧K) can't anchor a popover from a menu, so it posts and this bar — which
++    // owns the anchor — presents. Guarded on the key window because the post reaches every window's
++    // accessory; toggling means the shortcut closes the dropdown as well as opening it.
++    //
++    // The guard and the toggle only compose because a popover does NOT take key from the window it is
++    // attached to — measured: with the dropdown open and its search field holding first responder,
++    // ⌘⇧K still closes it, so `isKeyWindow` was still true. If that ever changed, the shortcut could
++    // open the dropdown and then never close it, which is why `ThemePickerUITests` presses ⌘⇧K twice.
++    .onReceive(NotificationCenter.default.publisher(for: .showThemePicker)) { _ in
++      guard store.hostWindow?.isKeyWindow ?? false else { return }
++      showThemePicker.toggle()
++    }
++    // A popover dismisses itself on a click outside, but a *keyboard* command never sends that click, so
++    // the two window-level changes a command can make close it explicitly: a dialog or sheet coming up
++    // (a dropdown hanging over a modal is confusing and unreachable past), and the selection moving
++    // (⌥⌘digit, the quick switchers), which a stale dropdown would be sitting on top of.
++    //
++    // Deliberately NOT exhaustive, so don't read it as "any keystroke closes it": ⌘⇧L (flip light/dark)
++    // and ⌘1–9 (focus a terminal tab) change neither value and leave the dropdown up. ⌘⇧L especially is
++    // the point — flipping appearance with the picker still open is how you check a family's other
++    // variant.
++    .onChange(of: store.hasModalPresentation) { _, blocked in
++      if blocked { showThemePicker = false }
++    }
++    // Only a real navigation BETWEEN two targets closes it. Both transitions involving nil are
++    // background events that would otherwise yank away a dropdown the user just opened: `selectedTargetID`
++    // is nil until the project list resolves and is then filled from the persisted selection
++    // (`AppStore` — "a restore that loses the race to a user click"), and a reload that finds the selected
++    // workroom gone nils it back out. Neither is the user navigating.
++    .onChange(of: store.selectedTargetID) { old, new in
++      if old != nil, new != nil { showThemePicker = false }
++    }
+   }
+ }
+
+
+=== DIFF: macapp/WorkroomApp/WorkroomApp.swift ===
+@@ -1026,8 +1026,8 @@ struct WorkroomCommands: Commands {
+       .keyboardShortcut("f", modifiers: [.command, .option])
+       .disabled(modalBlocked)
+ 
+-      // Theme chooser (issue #36). A menu command can't anchor a popover, so it posts a
+-      // notification RootView observes to present the picker as a sheet.
++      // Theme chooser (issue #36). A menu command can't anchor a popover, so it posts a notification
++      // that `TrailingTitlebarBar` — which owns the toolbar button the dropdown hangs off — observes.
+       Divider()
+       Button("Theme…") { NotificationCenter.default.post(name: .showThemePicker, object: nil) }
+         .keyboardShortcut("k", modifiers: [.command, .shift])
+
+
+=== DIFF: macapp/WorkroomAppTests/SwitcherThemeSweepTests.swift ===
+@@ -14,7 +14,7 @@ import XCTest
+ /// floors get asserted against.
+ ///
+ /// The sweep is also what caught the contrast metric itself: `ThemeTokens.luminance` was weighting
+-/// gamma-encoded sRGB, so 43 of the 56 themes scored below the body-text floor and 38 of them lost the
++/// gamma-encoded sRGB, so 43 of the then-56 themes scored below the body-text floor and 38 of them lost the
+ /// Liquid Glass surface to the opaque fallback. A floor that holds for two fixtures says nothing about the
+ /// fiftieth theme.
+ @MainActor
+
+
+=== DIFF: macapp/WorkroomAppTests/ThemeServiceTests.swift ===
+@@ -275,33 +275,72 @@ final class ThemeServiceTests: XCTestCase {
+ 
+   // MARK: preview cache
+ 
+-  /// The bundled cache must never shadow a user's own theme file. `~/.config` is re-read on every
+-  /// call for exactly this reason: a user editing their theme has to see it change.
+-  func testUserThemeOverrideIsNotServedFromTheBundledCache() throws {
+-    let dir = try bundledThemeDir()
++  /// The bundled cache must never shadow a user's own theme file — asserted by actually writing one.
++  ///
++  /// This is the cache's one real hazard. Bundled files can't change while the app runs, so a cached
++  /// entry can't go stale; a file the USER edits can, which is why `themePreview` reads their dir on
++  /// every call and caches only the bundle. A regression that consulted the cache first would be
++  /// invisible to any test that only inspects `themeDirectories()` — it would still report the user dir
++  /// first while the lookup never reached it.
++  ///
++  /// The override lands in a temp dir via `withUserThemeDirectory`, so this never touches the
++  /// developer's real `~/.config/ghostty/themes`.
++  func testAUserOverrideBeatsAWarmBundledCache() throws {
+     let name = try XCTUnwrap(ThemeService.families.first?.dark)
++    let userDir = URL(fileURLWithPath: NSTemporaryDirectory())
++      .appendingPathComponent("workroom-theme-override-\(UUID().uuidString)")
++    try FileManager.default.createDirectory(at: userDir, withIntermediateDirectories: true)
++    defer { try? FileManager.default.removeItem(at: userDir) }
+ 
+     ThemeService.resetPreviewCacheForTesting()
+-    let bundled = try XCTUnwrap(ThemeService.parseThemeFile(atPath: dir + "/" + name, name: name))
+-    // Prime the cache from the bundle.
++    // Warm the cache from the bundle first — that is the state the hazard needs.
++    let bundled = try XCTUnwrap(ThemeService.themePreview(named: name))
++
++    let overridePath = userDir.appendingPathComponent(name).path
++    try "background = #ff00ff\nforeground = #000000\n".write(
++      toFile: overridePath, atomically: true, encoding: .utf8)
++    // Parsed through the same code path as the assertion below, so this can't fail on NSColor
++    // colour-space equality rather than on precedence.
++    let expected = try XCTUnwrap(
++      ThemeService.parseThemeFile(atPath: overridePath, name: name))
++    XCTAssertNotEqual(
++      expected.background, bundled.background, "the fixture must differ from the bundled theme")
++
++    try ThemeService.withUserThemeDirectory(userDir.path) {
++      let resolved = try XCTUnwrap(ThemeService.themePreview(named: name))
++      XCTAssertEqual(
++        resolved.background, expected.background,
++        "the warm bundled cache shadowed the user's own theme file — a theme they edit would appear "
++          + "not to change")
++    }
++
++    // And the bundled theme comes back once the override is gone, so the override can't have poisoned
++    // the cache on its way through.
+     XCTAssertEqual(ThemeService.themePreview(named: name)?.background, bundled.background)
++  }
+ 
+-    // A user override for the same name must win even though the cache is warm. The user dir may
+-    // not exist on this machine, so this asserts the *precedence rule* via themeDirectories()
+-    // ordering rather than by writing into the real ~/.config.
++  /// The search order every other reader relies on. Kept as a separate, honest assertion now that
++  /// `themePreview` resolves the two directories by name instead of by index.
++  func testThemeDirectoriesReportTheUserDirFirst() {
+     let dirs = ThemeService.themeDirectories()
+     XCTAssertTrue(
+-      dirs.first?.hasSuffix("/.config/ghostty/themes") == true,
+-      "the user dir must stay first — it is what makes an override win over the cache")
+-    XCTAssertGreaterThan(dirs.count, 1, "the bundled dir must still be searched after it")
++      dirs.first?.hasSuffix("/.config/ghostty/themes") == true, "user dir must come first")
++    XCTAssertEqual(dirs.count, 2, "user dir + bundled dir")
++    XCTAssertEqual(dirs.last, ThemeService.bundledThemeDirectory())
+   }
+ 
+   func testResetPreviewCacheForTestingClearsIt() throws {
+     let name = try XCTUnwrap(ThemeService.families.first?.dark)
+-    XCTAssertNotNil(ThemeService.themePreview(named: name))
++    // Reset FIRST: the cache is a process-lifetime static, so without this the test silently inherits
++    // whatever an earlier case in the same process left warm and proves nothing about a cold start.
++    ThemeService.resetPreviewCacheForTesting()
++    let cold = try XCTUnwrap(ThemeService.themePreview(named: name))
+     ThemeService.resetPreviewCacheForTesting()
+-    // Still resolvable after a reset — the cache is an optimisation, never the source of truth.
+-    XCTAssertNotNil(ThemeService.themePreview(named: name))
++    // Same colours after a reset — the cache is an optimisation, never the source of truth, so a
++    // repopulated entry must be indistinguishable from the one it replaced.
++    let repopulated = try XCTUnwrap(ThemeService.themePreview(named: name))
++    XCTAssertEqual(repopulated.background, cold.background)
++    XCTAssertEqual(repopulated.palette, cold.palette)
+   }
+ 
+   // MARK: dark/light quick toggle (issue #57)
+
+
+=== DIFF: macapp/WorkroomAppUITests/ThemePickerUITests.swift ===
+@@ -17,6 +17,10 @@ import XCTest
+ /// engine exposes no error surface for an unresolvable `theme =`, so a bad file is indistinguishable
+ /// from a good one at this level. `themes/CHECKSUMS` is what pins the bytes instead.
+ ///
++/// The picker is a transient popover anchored to a toolbar button (`TrailingTitlebarBar`), not a sheet
++/// and not a window — so it is queried through the app's descendants, and `app.sheets` staying empty is
++/// part of what the dropdown test asserts.
++///
+ /// The starting family comes from `-WorkroomUITestThemeFamily`, mirrored into `Defaults` by
+ /// `UITestFixture.applyFixtureDefaults`. That is app-side on purpose: `Defaults` is not isolated by a
+ /// throwaway `$HOME`, so a runner-side save/restore would be writing the developer's real preference.
+@@ -118,6 +122,116 @@ final class ThemePickerUITests: XCTestCase {
+         + "or '\(lightVariantFile)' (light appearance) for the '\(family)' family")
+   }
+ 
++  /// The dropdown hangs off its own toolbar button, and clicking away closes it — the shape that makes
++  /// a live preview possible at all. It used to be a `.sheet`, which was document-modal: AppKit rendered
++  /// the whole window inactive behind it (traffic lights greyed, the sidebar's VCS dot badges orange →
++  /// dull brown), and being anchored under the title bar it covered the content whose colours you were
++  /// choosing.
++  ///
++  /// What this can and cannot see: XCUITest exposes no window key/main state and no pixels, so the
++  /// *inactive rendering* itself isn't assertable here. What is assertable — and is what rules it out —
++  /// is that the picker is a transient popover rather than a sheet: `app.sheets` stays empty, and a
++  /// click elsewhere dismisses it, which no modal presentation does.
++  func testTheDropdownHangsOffTheToolbarAndClosesOnAClickAway() throws {
++    let app = launchedApp()
++
++    let button = app.descendants(matching: .any)
++      .matching(identifier: "toolbar.theme").firstMatch
++    XCTAssertTrue(
++      button.waitForExistence(timeout: 5), "no theme button in the window's trailing toolbar")
++
++    // Click the centre coordinate rather than the element: the button lives in a window-level titlebar
++    // accessory hosting tree, and an identifier query there can resolve to a container whose centre is
++    // not over the glyph.
++    button.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
++
++    // The presentation KIND is the assertion, not any particular row: a popover registers in
++    // `app.popovers`, a sheet in `app.sheets`. That distinction IS the fix — a sheet is modal, which is
++    // what had AppKit render the window inactive behind the picker.
++    let popover = app.popovers.firstMatch
++    XCTAssertTrue(
++      popover.waitForExistence(timeout: 5),
++      "the button did not open the theme dropdown — button frame \(button.frame), hittable "
++        + "\(button.isHittable), sheets \(app.sheets.count)")
++    XCTAssertEqual(app.sheets.count, 0, "the picker came up as a sheet, not a dropdown")
++
++    // Content really rendered, not just an empty popover. `Workroom` is the family the fixture starts on
++    // and the list scrolls the selected family into view, so that row is materialised. The family used by
++    // the other cases is row 33 of 58, and a `LazyVStack` never builds it until the search filters it in
++    // — which is exactly what failed an earlier version of this test against working code.
++    XCTAssertTrue(
++      row(app, "Workroom").waitForExistence(timeout: 3), "the dropdown rendered no rows")
++
++    // Click in the DETAIL area (0.6 across), not the leading 0.25 a previous version used: the sidebar
++    // occupies up to 360pt at the leading edge, so a click there can land on a workroom row, change the
++    // selection, and close the dropdown through the explicit selection handler — passing this test via a
++    // different mechanism than the native outside-click dismissal it claims to prove.
++    app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.8)).click()
++    XCTAssertTrue(
++      popover.waitForNonExistence(timeout: 5),
++      "the dropdown survived a click elsewhere — it is not transient, so any other action leaves it "
++        + "hanging over the app")
++  }
++
++  /// ⌘⇧K opens the dropdown AND closes it again.
++  ///
++  /// The second press is the load-bearing half. The command is a broadcast notification, and the handler
++  /// toggles only if `store.hostWindow?.isKeyWindow` — so the shortcut can close an OPEN dropdown only
++  /// because a popover doesn't take key from the window it hangs off. That is measured behaviour, not a
++  /// documented guarantee, and an independent reviewer flagged the opposite as a P1 wedge (open it, then
++  /// never able to close it by keyboard). This is the assertion that would catch it if AppKit ever
++  /// changed its mind.
++  func testTheShortcutOpensAndClosesTheDropdown() throws {
++    let app = launchedApp()
++    let popover = app.popovers.firstMatch
++
++    openPicker(app)
++    XCTAssertTrue(popover.waitForExistence(timeout: 5), "⌘⇧K did not open the dropdown")
++
++    openPicker(app)
++    XCTAssertTrue(
++      popover.waitForNonExistence(timeout: 5),
++      "⌘⇧K did not close the dropdown it had just opened — if the popover now takes key focus from its "
++        + "window, the isKeyWindow guard in TrailingTitlebarBar rejects the toggle and the shortcut can "
++        + "only ever open it")
++  }
++
++  /// Esc closes it. `ThemePicker` handles this itself (`.onExitCommand`) rather than trusting the host,
++  /// because a popover's own cancel handling depends on a behaviour mode SwiftUI doesn't expose.
++  func testEscapeClosesTheDropdown() throws {
++    let app = launchedApp()
++    let popover = app.popovers.firstMatch
++
++    openPicker(app)
++    XCTAssertTrue(popover.waitForExistence(timeout: 5))
++
++    app.typeKey(.escape, modifierFlags: [])
++    XCTAssertTrue(popover.waitForNonExistence(timeout: 5), "Esc must dismiss the dropdown")
++  }
++
++  /// A dialog raised by KEYBOARD closes the dropdown — the `hasModalPresentation` path in
++  /// `TrailingTitlebarBar`.
++  ///
++  /// Driven with ⌘N rather than a menu click on purpose: a click anywhere outside would dismiss the
++  /// popover natively, so a mouse-driven version of this test would pass without the handler existing.
++  /// A keystroke sends no outside click, which is exactly why the handler has to exist — a dropdown left
++  /// hanging over a modal is both confusing and unreachable past.
++  func testAKeyboardRaisedDialogClosesTheDropdown() throws {
++    let app = launchedApp()
++    let popover = app.popovers.firstMatch
++
++    openPicker(app)
++    XCTAssertTrue(popover.waitForExistence(timeout: 5))
++
++    app.typeKey("n", modifierFlags: [.command])  // New Workroom — sets store.activePicker
++    XCTAssertTrue(
++      popover.waitForNonExistence(timeout: 5),
++      "a modal presentation must close the dropdown; without the hasModalPresentation handler a "
++        + "keyboard-raised dialog leaves it hanging over the modal")
++
++    app.typeKey(.escape, modifierFlags: [])  // leave no dialog up for the next case
++  }
++
+   /// Both of a new family's swatches render a **resolved** theme. A variant whose file doesn't resolve
+   /// renders the grey fallback swatch, which is the visible symptom of a registry typo — and the one
+   /// failure a bundle-reading unit test cannot see, because it happens in the view.
+
+
+Investigate per the method in your instructions, then return the findings list.
