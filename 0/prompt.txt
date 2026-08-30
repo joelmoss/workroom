@@ -1,0 +1,1 @@
+remove commas from times, and only show max two units, eg. "1d 3h", not "1d 3h 10m ". remove the tooltip
