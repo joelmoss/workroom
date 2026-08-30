@@ -1,0 +1,1 @@
+when UI tests are running, my whole macbook is hijacked and I cannot do anything until tests complete. I have an external monitor. Is it possible to run the UI tests only one screen so I can continue using my mac as normal on the other screen?
