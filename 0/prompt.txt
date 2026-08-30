@@ -1,0 +1,112 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Views/WorkroomTabBar.swift
+  - macapp/WorkroomAppUITests/SplitPaneUITests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Views/WorkroomTabBar.swift ===
+@@ -255,13 +255,33 @@ struct WorkroomTabBar: View {
+   /// `TerminalTabStrip.splitWell` — an outline, not a fill, so it doesn't compete with the active-chip
+   /// fill. Hidden during a drag. One bracket per group: `displayedWorkroomTargets` keeps each group's
+   /// members contiguous, so every group is one block.
++  ///
++  /// The `ZStack(alignment: .leading)` is load-bearing and NOT redundant with the caller's
++  /// `.background(alignment: .leading)`: that alignment places the background *content as a whole*, and
++  /// several `ForEach` brackets are wrapped in an implicit stack whose own alignment is the default
++  /// `.center` — so every bracket narrower than the widest one was centred inside it and drawn
++  /// `(widest − mine) / 2` too far right, while the widest one alone landed correctly. With one group
++  /// (all this bar could hold before several groups per window) the sole bracket *was* the widest, so
++  /// the fault was invisible until then. `TabStripSplitRun.rect` was right all along — each `run.x` is
++  /// relative to the first chip's leading edge, which is what this stack restores as every bracket's
++  /// origin.
+   @ViewBuilder private func splitWell(groupOf: [SidebarID: Int]) -> some View {
+     if draggingID == nil {
+-      ForEach(Array(splitRunRects(groupOf: groupOf).enumerated()), id: \.offset) { _, run in
+-        RoundedRectangle(cornerRadius: 7)
+-          .strokeBorder(ThemeService.shared.tokens.border, lineWidth: 1)
+-          .frame(width: run.width)
+-          .offset(x: run.x)
++      ZStack(alignment: .leading) {
++        ForEach(Array(splitRunRects(groupOf: groupOf).enumerated()), id: \.offset) { index, run in
++          RoundedRectangle(cornerRadius: 7)
++            .strokeBorder(ThemeService.shared.tokens.border, lineWidth: 1)
++            .frame(width: run.width)
++            .offset(x: run.x)
++            // A frame XCUITest can read, so the misalignment above is testable at all — a stroked
++            // shape is otherwise invisible to it, and the arithmetic was never the faulty half. Kept
++            // OUT of the a11y tree in a normal run (`accessibilityHidden`): it's pure decoration, and
++            // VoiceOver users get the grouping from each chip's own label. Same fixture-gated handle
++            // idea as `PaneTreeView`'s single-pane `.isSelected`.
++            .accessibilityElement()
++            .accessibilityHidden(!UITestFixture.isActive)
++            .accessibilityIdentifier("workroom.tab.splitBracket.\(index)")
++        }
+       }
+     }
+   }
+
+
+=== DIFF: macapp/WorkroomAppUITests/SplitPaneUITests.swift ===
+@@ -317,4 +317,57 @@ final class SplitPaneUITests: XCTestCase {
+   private func memberTitleBar(_ app: XCUIApplication, labelled name: String) -> XCUIElement {
+     titlebars(app).matching(NSPredicate(format: "label CONTAINS[c] %@", name)).firstMatch
+   }
++
++  /// Each group's chip bracket must sit ON its own members, with two groups in the bar. It regressed the
++  /// moment a window could hold several groups: the brackets are `ForEach` children of ONE background,
++  /// whose implicit stack centres them, so the narrower bracket was drawn `(widest − mine) / 2` too far
++  /// right — over its neighbour's chips and, in the reported case, cutting through a chip's name. The
++  /// widest bracket landed correctly either way, which is why one group never showed it.
++  ///
++  /// Asserted against the member chips' own frames rather than absolute geometry: the bracket wraps the
++  /// group's contiguous run, so it starts at the first member's leading edge and ends at the last's
++  /// trailing edge. The tolerance is a couple of points (stroke width + rounding); the fault it catches
++  /// was ~48pt.
++  func testEachSplitGroupBracketFramesItsOwnChips() throws {
++    let app = XCUIApplication()
++    app.launchArguments += [
++      "-WorkroomUITestFixture", "1",
++      "-WorkroomUITestWorkroomSplit", "1",
++      "-WorkroomUITestSecondWorkroomSplit", "1",
++      "-WorkroomUITestWorkroomCount", "3",
++      "-ApplePersistenceIgnoreState", "YES",
++    ]
++    app.launch()
++    try openWorkroom(app)
++
++    let bracketA = app.descendants(matching: .any)["workroom.tab.splitBracket.0"]
++    let bracketB = app.descendants(matching: .any)["workroom.tab.splitBracket.1"]
++    XCTAssertTrue(bracketA.waitForExistence(timeout: 8), "group A's bracket is in the bar")
++    XCTAssertTrue(bracketB.exists, "group B's bracket too — two groups, two brackets")
++
++    // Group A = project root + the fixture workroom; group B = the 2nd + 3rd workrooms. `tabs` order
++    // is root, uitest-room, uitest-room-2, uitest-room-3 (each group contiguous).
++    let root = app.descendants(matching: .any)
++      .matching(NSPredicate(format: "identifier BEGINSWITH %@", "workroom.tab.root|")).firstMatch
++    let roomOne = workroomChip(app, named: "uitest-room")
++    let roomTwo = workroomChip(app, named: "uitest-room-2")
++    let roomThree = workroomChip(app, named: "uitest-room-3")
++    for chip in [root, roomOne, roomTwo, roomThree] {
++      XCTAssertTrue(chip.exists, "every member chip is in the bar")
++    }
++
++    let tolerance: CGFloat = 3
++    XCTAssertEqual(
++      bracketA.frame.minX, root.frame.minX, accuracy: tolerance,
++      "group A's bracket starts at its first member's chip, not inside a neighbour")
++    XCTAssertEqual(
++      bracketA.frame.maxX, roomOne.frame.maxX, accuracy: tolerance,
++      "…and ends at its last member's chip")
++    XCTAssertEqual(
++      bracketB.frame.minX, roomTwo.frame.minX, accuracy: tolerance,
++      "group B's bracket starts at ITS first member — the two brackets don't overlap")
++    XCTAssertEqual(
++      bracketB.frame.maxX, roomThree.frame.maxX, accuracy: tolerance,
++      "…and ends at its last member's chip, short of the trailing controls")
++  }
+ }
+
+
+Investigate per the method in your instructions, then return the findings list.
