@@ -1,0 +1,1 @@
+[Image #1] the release notes have line breaks that break up sentences incorrectly. stop adding those line breaks in release notes. update the last few beta release notes
