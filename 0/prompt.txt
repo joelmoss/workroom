@@ -1,0 +1,1 @@
+[Image #1] screen in the popover does not fill the popover. Clicking a tab while the preview is open just shows a blank detail panel. But clicking tabs before the preview opens works fine.
