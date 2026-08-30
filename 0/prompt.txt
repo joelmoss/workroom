@@ -1,0 +1,1 @@
+align the left and right sidebars with the detail pane.[Image #1] [Image #2] The top and bottom of these should align
