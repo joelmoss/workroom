@@ -1,0 +1,1 @@
+codex shows usage after a restart, but claude still does not. the CWD is also not shown after a restart with claude persisted
