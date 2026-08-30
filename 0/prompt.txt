@@ -1,0 +1,1 @@
+we are now aining for a final v2 release, so need polish and bugs fixed. is there anything we should tackle before a final release?
