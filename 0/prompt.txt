@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>bzgvg99oj</task-id>
+<summary>Monitor event: "full XCUITest suite progress and failures"</summary>
+<event>Test Suite 'TabStripScrollIntoViewUITests' passed at 2026-08-04 14:01:30.633.
+Test Suite 'TerminalAgentUITests' started at 2026-08-04 14:01:30.633.</event>
+</task-notification>
