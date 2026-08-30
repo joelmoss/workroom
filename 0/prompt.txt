@@ -1,0 +1,78 @@
+# App Hanging: App hanging for at least 2000 ms.
+
+**Issue ID:** 7665351268
+**Short ID:** WORKROOM-2Y
+**Project:** workroom
+**Date:** Aug 11, 2026 8:16:31 AM UTC
+
+## Tags
+
+- **app.device:** 4e6f70154006973e07b9c228c3f227bbc0a04c4d
+- **device:** VirtualMac2,1
+- **device.family:** macOS
+- **dist:** 1
+- **environment:** development
+- **interface_type:** exception
+- **level:** error
+- **mechanism:** AppHang
+- **os:** macOS 15.7.7
+- **os.build:** 24G720
+- **os.name:** macOS
+- **os.rooted:** no
+- **release:** com.developwithstyle.workroom.dev@0.1.0+1
+- **user:** id:A576EC0F-C8FA-4AF4-99DA-B49FC4588163
+
+## Exception
+
+### Exception 1
+**Type:** App Hanging
+**Value:** App hanging for at least 2000 ms.
+
+#### Stacktrace
+
+```
+ Publishers.Filter.Inner in unknown file [Line null] (Not in app)
+ _swift_getGenericMetadata in unknown file [Line null] (Not in app)
+ (anonymous namespace)::DecodedMetadataBuilder::createBoundGenericType in unknown file [Line null] (Not in app)
+ swift::Demangle::__runtime::TypeDecoder<T>::decodeMangledType in unknown file [Line null] (Not in app)
+ swift_getTypeByMangledNodeImpl in unknown file [Line null] (Not in app)
+ swift_getTypeByMangledNode in unknown file [Line null] (Not in app)
+ swift_getTypeByMangledNameImpl in unknown file [Line null] (Not in app)
+ swift_getTypeByMangledName in unknown file [Line null] (Not in app)
+ swift_getTypeByMangledNameInContextImpl in unknown file [Line null] (Not in app)
+ Unknown function in unknown file [Line null] (In app)
+ Unknown function in unknown file [Line null] (In app)
+ Unknown function in unknown file [Line null] (In app)
+ Unknown function in unknown file [Line null] (In app)
+ Unknown function in unknown file [Line null] (In app)
+ AppDelegate.applicationDidFinishLaunching in unknown file [Line null] (Not in app)
+ AppDelegate.applicationWillFinishLaunching in unknown file [Line null] (Not in app)
+```
+
+## Thread:  Thread 0 (current)
+
+#### Stacktrace
+
+```
+ Publishers.Filter.Inner in unknown file [Line null] (Not in app)
+ _swift_getGenericMetadata in unknown file [Line null] (Not in app)
+ (anonymous namespace)::DecodedMetadataBuilder::createBoundGenericType in unknown file [Line null] (Not in app)
+ swift::Demangle::__runtime::TypeDecoder<T>::decodeMangledType in unknown file [Line null] (Not in app)
+ swift_getTypeByMangledNodeImpl in unknown file [Line null] (Not in app)
+ swift_getTypeByMangledNode in unknown file [Line null] (Not in app)
+ swift_getTypeByMangledNameImpl in unknown file [Line null] (Not in app)
+ swift_getTypeByMangledName in unknown file [Line null] (Not in app)
+ swift_getTypeByMangledNameInContextImpl in unknown file [Line null] (Not in app)
+ Unknown function in unknown file [Line null] (In app)
+ Unknown function in unknown file [Line null] (In app)
+ Unknown function in unknown file [Line null] (In app)
+ Unknown function in unknown file [Line null] (In app)
+ Unknown function in unknown file [Line null] (In app)
+ AppDelegate.applicationDidFinishLaunching in unknown file [Line null] (Not in app)
+ AppDelegate.applicationWillFinishLaunching in unknown file [Line null] (Not in app)
+```
+
+## Breadcrumbs
+
+- **debug** `started` [info]
+  Breadcrumb Tracking
