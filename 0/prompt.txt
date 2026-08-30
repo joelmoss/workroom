@@ -1,0 +1,51 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/SentryConfig.swift
+  - macapp/WorkroomAppTests/SentryConfigTests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/SentryConfig.swift ===
+@@ -19,6 +19,8 @@ enum SentryConfig {
+     "https://01c27f42380699d6072a6e30abe6e175@o272130.ingest.us.sentry.io/4511524517249024"
+ 
+   static func start() {
++    guard shouldStart() else { return }
++
+     SentrySDK.start { options in
+       options.dsn = ProcessInfo.processInfo.environment["SENTRY_DSN"] ?? dsn
+ 
+@@ -71,6 +73,13 @@ enum SentryConfig {
+     return nightly ? "nightly" : "production"
+   }
+ 
++  /// Whether Sentry should run at all. Never for local dev builds — CI test runs (GitHub Actions
++  /// macOS runners are VMs) and everyday Debug launches were reporting real crash/hang/trace
++  /// telemetry to the shared Sentry project, indistinguishable from a genuine release event except
++  /// for the `environment` tag — that's how VM/CI noise like WORKROOM-2Y ended up looking like a
++  /// user report.
++  static func shouldStart(debug: Bool = isDebugBuild) -> Bool { !debug }
++
+   /// Whether this is a Debug build. A stored fact rather than an `#if` at the use site so
+   /// `defaultEnvironment` stays a pure function of its inputs.
+   static let isDebugBuild: Bool = {
+
+
+=== DIFF: macapp/WorkroomAppTests/SentryConfigTests.swift ===
+@@ -31,4 +31,12 @@ final class SentryConfigTests: XCTestCase {
+     XCTAssertTrue(SentryConfig.isDebugBuild)
+     XCTAssertEqual(SentryConfig.defaultEnvironment(), "development")
+   }
++
++  func testDevBuildNeverStartsSentry() {
++    XCTAssertFalse(SentryConfig.shouldStart(debug: true))
++  }
++
++  func testReleaseChannelsStartSentry() {
++    XCTAssertTrue(SentryConfig.shouldStart(debug: false))
++  }
+ }
+
+
+Investigate per the method in your instructions, then return the findings list.
