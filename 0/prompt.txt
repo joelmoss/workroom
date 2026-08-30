@@ -1,0 +1,114 @@
+<task-notification>
+<task-id>aadc171d203eafa23</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/12c88a6c-11e0-487b-9bf1-6d2ad26081db/tasks/aadc171d203eafa23.output</output-file>
+<status>completed</status>
+<summary>Agent "Survey macapp unit test suite" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result># Survey: Swift Unit Tests in `macapp/WorkroomAppTests` (XCUITest target `WorkroomAppUITests` excluded per instructions)
+
+**Scope covered:** 147 `*Tests.swift` files, 2,258 test methods (2,257 passed / 1 skipped), all under `/Users/joelmoss/dev/workroom/macapp/WorkroomAppTests/`. I pulled a real `xcresult` bundle sitting in `macapp/DerivedData/Logs/Test/` (`Test-WorkroomApp-2026.08.12_14-02-45-+0100.xcresult`) and extracted **measured per-test durations** via `xcrun xcresulttool`, rather than guessing cost from static patterns. That changes the conclusion substantially from what a naive count-of-tests survey would say.
+
+## Headline finding: test count is the wrong lever here
+
+Sum of all 2,258 measured durations = **183.0s**. That total is **not evenly distributed** — it's dominated by a small number of pathological tests/classes, and the ~2,100 pure-logic tests spread across ~110 files (including the three largest files by test count — `VCSWritingTests` at 123 tests, `WorkroomStatusResolverTests` at 91, `RunCommandTests` at 76) are collectively cheap. Cutting those buys almost nothing. The repo-root `Makefile` itself already says this explicitly:
+
+&gt; "the suite is dominated by a few slow integration classes (Markdown WebView renders, real git/jj repos), so spreading classes across worker processes cuts the run ~40% (48s → ~29s)"
+
+That's also why "speeding up parallelism" stalled: **XCTest parallelizes per class, not per test** (confirmed independently by `SharedPrefDefaultsTests`' own doc comment), so wall-clock floor = the slowest single class. Finding #1 below explains exactly why that floor hasn't been movable.
+
+---
+
+## Finding #1 (fix this first — ~33% of total suite time, one line)
+
+**File:** `WorkroomAppTests/WorkroomStatusTests.swift`
+**Test:** `WorkroomStatusTests.testCancelledGitHubCLIProbePublishesNothing()`
+**Measured cost:** **60.085s** — by far the single most expensive test in the entire suite (the xcresult's own "Longest Test Runs" insight flags 3 outlier tests covering 38% of total duration; this one test alone is ~33%).
+
+What it does: spins up a `GatedGHRunner` stub whose `run()` does `try? await Task.sleep(nanoseconds: 60_000_000_000)` (60s) until cancelled, then cancels the wrapping `Task` and awaits `task.value`, asserting the store's `githubCLIStatus` wasn't mutated by the cancelled probe.
+
+**Why it costs the full 60s every single run:** `GitHubAuthCache` is deliberately single-flight (by design, per its own header comment) — multiple callers coalesce onto one shared underlying probe. Cancelling *this test's* wrapper `Task` does not cancel the shared in-flight probe task, so `await task.value` blocks until the shared task actually finishes — i.e., the full hardcoded 60-second sleep, unconditionally, on every run, whether in CI or locally. The test's own comment ("long enough that the test's own deadline fails first if cancellation never propagates") assumed cancellation *would* propagate quickly; it structurally can't, given the single-flight design it's testing against.
+
+**Recommendation — fix, don't cut:** the assertion is legitimate and worth keeping (real regression: `refreshGitHubCLI`'s guard against a cancelled probe stomping a good cached value). Just shrink `GatedGHRunner`'s sleep from 60s to ~1–2s (still far longer than the 2s poll window used to detect probe entry) or stop blocking on `task.value` and instead poll `githubCLIStatus` for a bounded window as the test already does for probe-entry. Either change is a 1-line diff, preserves 100% of the signal, and removes ~60s from every single `make app-test` invocation — bigger than every other finding in this report combined.
+
+---
+
+## Finding #2 (second-highest leverage — shared anti-pattern, ~14s, restructure not cut)
+
+**Files:** `ChangedFileRowInvalidationTests.swift` (3 tests, 6.87s measured), `HistoryRowInvalidationTests.swift` (6 tests, 6.19s), `DiffViewerLazyRenderingTests.swift` (3 tests, 1.32s)
+
+All three define an identical `settle(_ view: NSView, seconds: TimeInterval = 0.6)` helper:
+```swift
+private func settle(_ view: NSView, seconds: TimeInterval = 0.6) {
+  let deadline = Date().addingTimeInterval(seconds)
+  while Date() &lt; deadline {
+    view.layoutSubtreeIfNeeded()
+    RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+  }
+  view.layoutSubtreeIfNeeded()
+}
+```
+This is a **fixed-duration busy-wait, not an early-exit poll** — it always burns the full `seconds` argument regardless of how quickly SwiftUI actually converges. `ChangedFileRowInvalidationTests.testSelectionChangeRebuildsChangedFileRows` calls it 3 times (1.2s + 0.6s + 0.6s = 2.4s guaranteed minimum), which matches its measured 3.095s almost exactly.
+
+**Recommendation — restructure, keep the assertion:** these are legitimate regression nets for real App Hangs (WORKROOM-2B/2T/2S, named in the doc comments) and the assertions themselves (`bodyPasses` counts) are good — this isn't the kind of test to delete. Replace the fixed busy-wait with a poll-until-condition-or-ceiling (check the actual `bodyPasses`/render-settled signal each spin iteration and `return` early), keeping the same `seconds` value only as a safety-net ceiling. Typical cost drops from "always pays 0.6–1.2s" to "pays whatever SwiftUI actually needs," likely cutting this ~14.4s cluster by 70–90% with zero loss of regression coverage. `PaneRenderingTests.swift` and `HistoryCommitCardTests.swift` use the same offscreen-NSWindow-hosting harness pattern (per their own doc cross-references) — worth checking whether they duplicate the same fixed-wait pattern in the same pass.
+
+---
+
+## Finding #3: real git/jj integration classes — legitimate two-tier coverage, but consolidate the fixture cost
+
+These files spawn real `git`/`jj` subprocesses against real throwaway repos (`/bin/sh -c` `Process()` calls), verified via grep counts and measured durations:
+
+| File | Tests | Measured total | `sh()` calls | Notes |
+|---|---|---|---|---|
+| `VCSRemoteIntegrationTests.swift` | 23 | 18.13s | 74 (14× `gitFixture()`, 9× `jjFixture()`) | fetch/push/pull against real bare repos |
+| `VCSProviderConformanceTests.swift` | 12 | 12.33s | 20 | colocated jj+git cross-backend conformance |
+| `WorkroomStatusIntegrationTests.swift` | 32 | 10.87s | 51 | porcelain-v2/jj-template parsing vs. real binaries |
+| `GitCommitDiffTests.swift` | 15 | 8.56s | 18 | raw libgit2 rename/typechange/shallow-boundary reads |
+| `VCSCommitIntegrationTests.swift` | 21 | 6.42s | 30 | `CLIVCSWriter.commit` against real repos |
+| `GitGraphTests.swift` | 11 | 4.67s | 13 | push-state graph walk via raw libgit2 |
+
+Together: **114 tests, ~61s (≈33% of total suite time)**, each test independently builds a fresh git/jj repo from scratch via `gitFixture()`/`jjFixture()` helpers (each ~6–7 real process spawns just to set up).
+
+**These are not low-value duplicates** — each file's header explicitly states the two-tier rationale ("the unit tests pin the parsing; this proves the two halves meet") and several tests exist specifically because a prior *unit*-level fix shipped a real bug the unit test couldn't see (documented per-test, e.g. `testFetchAtTheRootMovesAWorkroomsLastFetchLabel`, `testRenameCommitsBothSides`). This is the disciplined kind of two-tier coverage the task asked me to distinguish from actual duplication — I'm not recommending cuts here.
+
+**Recommendation — consolidate fixture setup, not test count:** within `VCSRemoteIntegrationTests`, several tests build near-identical `gitFixture()`/`jjFixture()` bases and then diverge by one appended git/jj operation (e.g. `testBehindIsCountedAfterTheRemoteMovesOn` and `testDivergedCountsBothDirections` both clone-push-fetch from the same base shape). Where the *assertions* don't depend on isolation from each other (no shared mutable state risk), collapsing sibling scenarios into one test with multiple assertions against one built fixture (as `testCountsAreIdenticalUnderEveryPushDefault` already does, looping 5 `push.default` values against a single fixture) would cut a meaningful fraction of the ~9 `jjFixture()` calls (each ~7 process spawns) without losing any single regression signal. Two specific outlier single tests worth flagging but *not* worth chasing further: `GitCommitDiffTests.testShallowBoundaryCommitListsItsFilesAsAdded` (5.4s — inherent cost of a real `file://` shallow-clone transport negotiation, needed to test that specific libgit2/grafts interaction) and `VCSProviderConformanceTests.testColocatedPushStateMatchesAcrossBackends` (5.8s — colocated jj+git init is expensive by nature). Both are isolated, correctly-scoped, low-priority.
+
+`StatusCommandRunnerTests.swift` (15 tests, 4.4s) and `ShellEnvironmentTests.swift` (36 tests, 3.7s) also spawn real processes, but these are testing this app's own process-lifecycle code (SIGTERM/SIGKILL grace, PATH probing, stdin nulling, cancellation-doesn't-block-the-caller) — this is exactly the kind of thing that *cannot* be tested without a real process, so **no removal recommendation**; the cost is inherent to what's being verified.
+
+---
+
+## Finding #4: genuine framework-behavior / near-duplicate candidates (small runtime, but real "cut" candidates per your criteria)
+
+These are cheap in wall time (sub-10ms each) but match your explicit "testing the framework, not our logic" and "duplicate coverage" criteria, so I'm flagging them as clean, low-risk cuts even though they won't move the runtime needle:
+
+- **`ConfirmOnCloseTerminalTests.swift`** (class `ConfirmOnCloseTerminalTests`, 4 tests) and **`CopyOnSelectTests.swift`** (class `CopyOnSelectTests`, 2 tests) — both assert that a `Defaults.Key` declared with `default: true` returns `true` when the underlying `UserDefaults` key is absent. That's testing the `Defaults` library's own default-value contract, not app logic; the two files are near-duplicates of each other in shape. **Recommend: cut to a single shared test (or delete both) — the `Key`'s declaration is the actual guarantee, and a compiler-checked default doesn't need a runtime regression test per call site.**
+- **`SettingsPaneTests.swift`** (5 tests) and **`ActivitySectionTests.swift`** (8 tests, partial) — both assert "`allCases` is declared in this literal order" (a change-detector comparing a hardcoded list against itself) plus "an unrecognized raw string falls back to the default case," which is `Defaults` + `PreferRawRepresentable`'s behavior, exercised against a private probe key. **Recommend: keep the fallback test (it does guard a real corruption/rename scenario per the doc), cut the bare `allCases`-order assertion** — a reorder is caught by any test that depends on section ordering elsewhere, and if nothing else depends on it, the order isn't actually load-bearing.
+
+## Finding #5: exhaustive-enumeration tests — flagged per your criteria, but honestly near-zero runtime cost
+
+**File:** `SwitcherThemeSweepTests.swift` (5 tests, sweeping all 116 bundled ghostty themes) — this is structurally exactly the "iterate every X" pattern you asked me to flag, and its own doc comment concedes "two fixtures can't answer this" as the justification for going exhaustive. **But measured cost is 0.13s total across all 5 tests** (pure in-memory color-math over static theme data — no I/O, no process spawns). Similarly `GhosttyResourcesTests.testBundledResourceChecksumsMatch` and `ThemeServiceTests.testBundledThemeChecksumsMatch` (golden-checksum-style tests) each cost under 20ms. **Recommendation: do not touch these for runtime reasons — cutting them saves ~0.15s out of 183s.** If the team wants fewer assertions for maintainability/signal-noise reasons independent of speed, `SwitcherThemeSweepTests` could reasonably shrink to the adversarial subset its own doc already names (near-monochrome theme, ANSI-blue-near-background theme, pale-accent light theme) with the full 116-theme sweep moved to an opt-in/manual tier — but this is a maintainability call, not a speed one.
+
+## Finding #6: already-skipped test (flagged per your explicit criterion, zero current cost)
+
+**File:** `AgentDiagnosisEvalTests.swift`, test `testDiagnosisQuality()` — confirmed by the xcresult as the suite's one `Skipped` result. It's SKIPPED by default deliberately (makes real, paid, networked `claude` calls; requires a sentinel file or `WORKROOM_RUN_AGENT_EVAL=1` to opt in) — this is a well-documented, intentional gate, not a stale/forgotten disable. **No action needed**; it costs nothing in `make app-test` today.
+
+---
+
+## The long tail (not deep-read individually, but no red flags found)
+
+The remaining ~2,100 tests across ~130 files (roughly 43s combined, almost all sub-5ms each) are, based on header-comment review of every file plus the cost-signal greps I ran across all 147 files, overwhelmingly pure value-logic tests with explicit "no filesystem/no process/no view" scoping stated in their own doc comments — e.g. `PaneLayoutTests`, `NavigationHistoryTests`, `TabReorderMathTests`, `EdgeRevealReducerTests`, `QuickSwitcherReducerTests`, `IntraLineDiffTests`, `UnifiedDiffTests`. I did not find evidence of trivial passthrough-wrapper tests or tautological/over-mocked assertions at scale in this tier — the codebase's own convention (stated repeatedly: "pure — no AppKit/SwiftUI/filesystem needed") already pushes logic out of views into testable pure types, and the tests generally assert *behavior* (documented bugs/regressions) rather than implementation shape. This tier is not where the runtime problem — or, largely, the value problem — lives.
+
+## Bottom line for the runtime-reduction plan
+
+| Tier | Tests | Measured cost | Action |
+|---|---|---|---|
+| Finding #1 (single test, `WorkroomStatusTests`) | 1 | 60.1s (33%) | **Fix the sleep duration — 1-line change, saves 60s/run** |
+| Finding #2 (fixed-wait NSWindow hosting, 3 files) | 12 | ~14.4s (8%) | Restructure `settle()` to poll-with-early-exit |
+| Finding #3 (real git/jj integration, 6 files) | 114 | ~61s (33%) | Consolidate fixture setup per scenario cluster; keep the tier |
+| Finding #4 (Defaults/allCases duplicates, 4 files) | ~19 | negligible | Clean, safe cuts — low priority for runtime, easy for hygiene |
+| Finding #5 (theme sweep / checksums) | ~9 | negligible | Leave alone for speed; optional shrink for maintainability only |
+| Long tail | ~2,100 | ~43s (24%) | No action — already cheap, no red flags found |
+
+**Do Finding #1 first.** It's a single-line change that removes exactly as much wall-clock time as everything else in this report combined, explains why prior parallelism work didn't help (one class was structurally floored at 60s+), and requires no judgment call about test value at all.</result>
+<usage><subagent_tokens>186533</subagent_tokens><tool_uses>46</tool_uses><duration_ms>691642</duration_ms></usage>
+</task-notification>
