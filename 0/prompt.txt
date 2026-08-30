@@ -1,0 +1,32 @@
+<task-notification>
+<task-id>a84c51284240fe80e</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/13fdff86-20ce-43c1-a678-cb832375936e/tasks/a84c51284240fe80e.output</output-file>
+<status>completed</status>
+<summary>Agent "Investigate release pipeline for CLI assets and macOS arch builds" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Findings
+
+### 1. CLI release archives — blast radius
+
+**Producer:** `.goreleaser.yml:20` names archives `workroom_{{.Version}}_{{.Os}}_{{.Arch}}` (tar.gz; zip for windows via `format_overrides`, lines 21-23); `checksums.txt` also published (`.goreleaser.yml:26`). Built by `.github/workflows/release.yml:29-33` (`goreleaser release --clean`).
+
+**Consumers (must stay in lockstep with the name template):**
+- `install.sh:99-107` — constructs `workroom_&lt;ver&gt;_&lt;os&gt;_&lt;arch&gt;.tar.gz`; `install.sh:112` builds the download URL `github.com/&lt;repo&gt;/releases/download/&lt;tag&gt;/&lt;archive&gt;`.
+- `install.ps1:52,62,64,68` — same pattern for `.zip` on Windows.
+- `internal/updater/updater.go:235` (`BuildArchiveURL`) — same URL pattern; `updater.go:63-64` documents `checksumsAsset` as consumed from goreleaser's checksum asset; `updater.go:162-172` (`assetFor`) matches assets by the `_&lt;os&gt;_&lt;arch&gt;.` fragment against GitHub Release API listings (used by `workroom update`, not just install.sh).
+- `internal/updater/updater_test.go:125,134,257-313` — fixtures assert this exact naming/URL scheme.
+- `.github/workflows/nightly.yml:87-115` — builds version-independent `workroom_nightly_&lt;os&gt;_&lt;arch&gt;` archives + `checksums.txt`, uploaded to the fixed `nightly` release (same contract).
+- Docs: `README.md:1029-1047` is the canonical description (archive table + explicit "must stay in lockstep" warning re: install.sh/updater.go); also `README.md:257,269,275-276,290,559,561,788-789,959,963`.
+
+**Summary:** Removing CLI archives from GitHub Releases breaks `curl | sh` (install.sh/install.ps1), `workroom update` (updater.go's channel resolution + checksum verification), and the nightly install path — all three independently construct/expect this exact filename scheme and the accompanying `checksums.txt`.
+
+### 2. macOS app: universal vs arm64-only
+
+The **pipeline** now enforces true universal builds: `macapp/Scripts/build-helper.sh:28-50` fixed a bug where `ARCHS="arm64 x86_64"` (space-separated) was matched as a single token and silently fell back to arm64-only; `macapp/Scripts/release.sh:148-185` (`check_universal`, added same commit) now runs `lipo -archs` against the app binary, the embedded CLI, and every nested Mach-O + the ghostty symlink, failing the build if either arch slice is missing. This is commit `ff7bbb7f` ("fix(macapp): build the embedded CLI universal, and assert it").
+
+**But the published artifact is not yet fixed:** `ff7bbb7f`'s own message states the last shipped tag, `v2.0.0-beta.23`, has `Workroom.app/Contents/MacOS/Workroom` = universal but `Contents/Resources/workroom` (embedded CLI) = **arm64-only**. `git tag --contains ff7bbb7f` returns no tags — the fix is on `master` but no tagged release (including `v2.0.0-beta.23`, still the newest tag) carries it. So today's `workroom-macos-app_*.dmg` is fat-app/thin-CLI (broken on Intel); only nightly builds from master tip on/after 2026-08-09 are genuinely universal.
+
+No Intel-only release path exists anywhere (`Makefile:62-64,103`, `vcs/scripts/build-apple.sh:4-6`: arm64 is the *dev-only* default, universal is release-only — no separate x86_64-only artifact or precedent found).</result>
+<usage><subagent_tokens>59128</subagent_tokens><tool_uses>33</tool_uses><duration_ms>325278</duration_ms></usage>
+</task-notification>
