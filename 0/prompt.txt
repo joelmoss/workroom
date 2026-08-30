@@ -1,0 +1,78 @@
+<task-notification>
+<task-id>ab1c8be30334df899</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/7aa82ec5-9569-436f-ae7e-697874c3babc/tasks/ab1c8be30334df899.output</output-file>
+<status>completed</status>
+<summary>Agent "Find AppDelegate launch code and Combine filter publishers" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I now have a complete picture. Here is the report.
+
+## 1. AppDelegate.swift / launch methods
+
+The AppDelegate lives inside `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/WorkroomApp.swift` (no separate `AppDelegate.swift` file). There is **no** `applicationWillFinishLaunching` implementation anywhere in `macapp/` (grep found none). Only `applicationDidFinishLaunching` exists, at:
+
+- `WorkroomApp.swift:250-496` — `func applicationDidFinishLaunching(_ notification: Notification)`
+- Class declared at `WorkroomApp.swift:169`: `final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate`
+
+Relevant synchronous work inside it, in order:
+- `WorkroomApp.swift:256` `NSWindow.allowsAutomaticWindowTabbing = false`
+- `WorkroomApp.swift:259` `UNUserNotificationCenter.current().delegate = self`
+- `WorkroomApp.swift:263` `menuBarController = MenuBarController(registry: .shared)` — **eagerly constructs a Combine subscription** (see §2/§3 below)
+- `WorkroomApp.swift:268-269` `SwitcherPanelController.shared.prepare()` / `.attach(to: .shared)` — pre-builds an `NSHostingView`/`NSPanel` (no Combine)
+- `WorkroomApp.swift:275-279` `NotificationCenter.default.addObserver(forName: .willResignActiveNotification, ...)` — plain block-based observer, not Combine
+- `WorkroomApp.swift:281-471` installs an `NSEvent` local key monitor (large switch of shortcut handling, no Combine)
+- `WorkroomApp.swift:480-485` `updateGlobalHotkey()` + `hotkeyObservation = Task { for await _ in Defaults.updates(...) }` — async-sequence based, not Combine
+- `WorkroomApp.swift:489-493` another plain `NotificationCenter.default.addObserver(forName: .showQuickTerminal, ...)`
+- `WorkroomApp.swift:495` `installSigtermHandler()`
+
+Also relevant, run just before the Scene body (i.e., effectively at launch, ahead of `applicationDidFinishLaunching`), inside `WorkroomApp.init()` (`WorkroomApp.swift:17-53`):
+- `WorkroomApp.swift:21` `SentryConfig.start()`
+- `WorkroomApp.swift:33` `setenv("PATH", ...)`
+- `@StateObject private var updater = Updater()` (`WorkroomApp.swift:11`) — constructs a Combine chain in `Updater.init` (see §2)
+- `@StateObject private var whatsNew = WhatsNewService(...)` (`WorkroomApp.swift:15`) — no Combine, pure array filtering only
+
+## 2. Every `.filter(` chained on a Combine publisher in macapp/
+
+**None found.** I grepped exhaustively for `.filter(`, `.filter {` (trailing closure form), and `Publishers.` across all of `macapp/` (excluding `build/`/`DerivedData/`), plus every file that `import Combine`. Every single `.filter` hit in the codebase is a plain `Array`/`Sequence`/`String`/`Set` filter (e.g. `AppStore.swift:695`, `WindowRegistry.swift:107,169,239`, `QuickSwitcher.swift:187`, `WhatsNewService.swift:97,105`, `ProjectStore.swift:184`, `NotificationCenterStore.swift`, `VCSWriting.swift`, `AgentSessionIndex.swift`, `FileTree.swift`, `PickerModel.swift`, `CommitDraft.swift`, `SwitcherRailView.swift:52`, `ThemeService.swift:172`, etc.). None of them follow a `.publisher`, `$property`, `NotificationCenter.default.publisher`, or `.sink`/`.receive` chain — no `Publishers.Filter&lt;...&gt;` specialization exists anywhere in this app's source.
+
+`import Combine` appears in exactly six files:
+`MenuBarController.swift`, `Updater.swift`, `FileFind.swift`, `FileTreeModel.swift`, `AppStore.swift`, `TerminalSearch.swift` — none of them use `.filter` on a publisher.
+
+## 3. Combine subscriptions that DO run at launch time
+
+Two genuine Combine chains are wired up synchronously during launch — both compound-generic operator chains, neither containing `.filter`, but matching the "first-use generic metadata specialization" hazard described:
+
+**a) `MenuBarController.init`** — `WorkroomApp/Core/MenuBarController.swift:49-52`, constructed directly from `AppDelegate.applicationDidFinishLaunching` at `WorkroomApp.swift:263`:
+```swift
+registry.$aggregateUnread
+  .receive(on: RunLoop.main)
+  .sink { [weak self] total in self?.applyCount(total) }
+  .store(in: &amp;cancellables)
+```
+This is `Published&lt;Int&gt;.Publisher` → `Publishers.ReceiveOn&lt;...&gt;` → `.sink`, instantiated for the first time ever at exactly this call site during `applicationDidFinishLaunching`.
+
+**b) `Updater.init`** — `WorkroomApp/Core/Updater.swift:32-33`, constructed via `@StateObject private var updater = Updater()` at `WorkroomApp.swift:11` (runs as part of `WorkroomApp` struct's stored-property init, ahead of/alongside `WorkroomApp.init()`'s body and the Scene, i.e., on the app-launch path):
+```swift
+controller.updater.publisher(for: \.canCheckForUpdates)
+  .assign(to: &amp;$canCheckForUpdates)
+```
+This is an `NSObject.KeyValueObservingPublisher&lt;SPUUpdater, Bool&gt;` → `.assign(to:)` into a `@Published` projected value — another compound generic Combine chain, first instantiated here at launch.
+
+Both are candidates for the "first-use generic metadata specialization" hang pattern the Sentry stack trace describes, even though neither uses `.filter` specifically — the ticket's premise of a `.filter` operator being the exact culprit doesn't match anything actually present in the codebase.
+
+## 4. Prior precedent of restructuring to avoid Swift-runtime/dyld metadata scanning at hot paths
+
+There is a well-documented, closely analogous **prior incident** in this exact codebase — not about Combine, but about SwiftUI's `.toolbar` modifier triggering the same class of dyld/runtime-metadata-scan hang, exactly as referenced in the task:
+
+- `WorkroomApp/Core/WindowBackgroundThemer.swift:49-63` — comment explains that `NavigationSplitView` auto-injects a SwiftUI-owned toolbar sidebar-toggle item, which keeps `AppKitToolbarItem.updateMenuFormRepresentation` alive; that method "bridges an NSAttributedString attributes dict into `swift_dynamicCast` → `_dyld_find_foreign_type_protocol_conformance` (a linear scan of every loaded Mach-O image ... stacking up to the ≥2s macOS-26 AppHangs)." Fix: `window.toolbar?.isVisible = false` set directly via AppKit (not `.toolbar(removing:)`, which is a no-op since SwiftUI still owns/re-injects it).
+- Same fix re-applied/re-asserted in `AppStore.swift:1044-1057` (`attachWindow`) and referenced again in `WorkroomApp.swift:65-70` and `RootView.swift:395`.
+- `WorkroomApp.swift:78-81` also documents the menu-bar item itself being hand-managed via `MenuBarController`/`NSStatusItem` rather than SwiftUI's `MenuBarExtra`, for unrelated behavioral reasons (not performance), but it's part of the same "avoid letting SwiftUI own AppKit surfaces at hot/frequent paths" pattern.
+
+Other prior App Hang incidents tracked in this codebase (same Sentry project, different mechanisms — not Combine/dyld-metadata, but useful pattern context):
+- **WORKROOM-2B** — a ≥2000ms App Hang from over-invalidating SwiftUI rows on every terminal-title/activity-pulse publish; fixed via careful `@Published` dependency scoping (see `HistoryPanel.swift`, `ChangesPanel.swift`, `AppStore.swift:4055`, `FocusedTabSelection.swift`, `SwitcherRailView.swift:9`, `UITestFixture.swift:213`, and `SentryConfig.swift:61` — this is also where the nightly/production Sentry-environment split originated).
+- **WORKROOM-2S** — an AppHang from AttributeGraph deep-comparing a large array (`sbsRows`) on every file switch in `DiffViewer.swift`; fixed by boxing it into a reference type (`DiffViewer.swift:70,457`, `DiffViewerSideBySideRowsTests.swift`).
+- **WORKROOM-2T** — an AppHang from eager `List`/`ScrollView` row materialization on large diffs; fixed by switching to lazy `List` rendering (`DiffViewer.swift:385-396,424,547`, `DiffViewerLazyRenderingTests.swift`).
+
+I found **no existing reference to WORKROOM-2Y** anywhere in the codebase (it hasn't been triaged/fixed yet), and **no existing pattern of deferring Combine subscription setup** specifically (no `DispatchQueue.main.async` wrapping a `.sink`/`.filter` chain, no lazy-Combine-property pattern, no comment mentioning "AppHang" + "Combine"/"metadata"/"demangl" together). The only deferred-setup pattern in the launch path is unrelated to Combine: `WindowBackgroundThemer.swift:15` wraps its `NSWindow` lookup in `DispatchQueue.main.async`, and `WorkroomApp.swift:44-46` defers `ShellEnvironment.refresh()` via `Task.detached`.</result>
+<usage><subagent_tokens>114066</subagent_tokens><tool_uses>20</tool_uses><duration_ms>159272</duration_ms></usage>
+</task-notification>
