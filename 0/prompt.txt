@@ -1,0 +1,1 @@
+are there any issues running dev builds and tests of the workroom mac app in several git or JJ worktrees/workspaces at the same time? I'm guessing UI tests would conflicts?
