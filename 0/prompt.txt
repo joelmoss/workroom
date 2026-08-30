@@ -1,0 +1,491 @@
+<task-notification>
+<task-id>a6d2553c4cac3824c</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/117a8de0-0920-4b33-973d-ebd9f406e777/tasks/a6d2553c4cac3824c.output</output-file>
+<status>completed</status>
+<summary>Agent "Explore Investigate call sites and run-state bookkeeping" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>All the pieces are gathered. Here is the full report.
+
+## 1. `TerminalStatusBar.swift` — Investigate call site
+
+`bannerState` reaches `diagnosisSegment` from a computed property, gated on the pane actually being a terminal:
+
+```swift
+// Views/TerminalStatusBar.swift:38
+private var diagnosis: AgentBannerState? { state == nil ? nil : agentManager.banners[tabID] }
+```
+
+```swift
+// Views/TerminalStatusBar.swift:59
+if let diagnosis { diagnosisSegment(diagnosis) }
+```
+
+Full function (`Views/TerminalStatusBar.swift:297-338`):
+
+```swift
+private func diagnosisSegment(_ bannerState: AgentBannerState) -&gt; some View {
+    let model = AgentBannerViewModel(state: bannerState)
+    let tint = diagnosisTint(model.style)
+    return Button {
+      showingDiagnosis.toggle()
+    } label: {
+      HStack(spacing: 4) {
+        diagnosisIcon(model.style)
+        Text(model.headline).truncationMode(.tail).frame(maxWidth: 220, alignment: .leading)
+      }
+      .foregroundStyle(tint)
+    }
+    .buttonStyle(.plain)
+    .help("Show the agent's diagnosis")
+    .accessibilityLabel("Diagnosis: \(model.headline)")
+    .accessibilityIdentifier("terminal.statusBar.diagnosis")
+    .popover(isPresented: $showingDiagnosis, arrowEdge: .bottom) {
+      TerminalAgentBanner(
+        state: bannerState,
+        onDiagnose: { agentManager.diagnose(tab: tabID, target: target.id) },
+        onInsertFix: { fix in
+          state?.view.sendText(fix)
+          showingDiagnosis = false
+        },
+        onInvestigate: {
+          let cwd = state?.view.lastKnownCwd ?? target.path
+          // Seed the interactive agent with the problem so it can start investigating immediately.
+          let command = AgentPrompt.investigateCommandLine(for: bannerState)
+          _ = sessions.addRunTab(for: target, command: command, cwd: cwd)
+          agentManager.dismiss(tab: tabID)
+          showingDiagnosis = false
+        },
+        onDismiss: {
+          agentManager.dismiss(tab: tabID)
+          showingDiagnosis = false
+        }
+      )
+      .frame(width: 380)
+    }
+  }
+```
+
+- `target`/`tabID` are stored properties of `TerminalStatusBar` (`target: TerminalTarget`, `tabID: TerminalTab.ID`, lines 13-14).
+- `cwd` = `state?.view.lastKnownCwd ?? target.path` (note: this is *not* the same as the file's own `cwd` computed property at line 34, `state.flatMap { $0.cwd ?? $0.view.lastKnownCwd }` — the Investigate closure skips the `state.cwd` observed-state check that the rest of the bar uses).
+- `command` = `AgentPrompt.investigateCommandLine(for: bannerState)` — a real seeded prompt.
+- Calls `sessions.addRunTab(...)` where `sessions: TerminalSessions` is `@ObservedObject` (line 23).
+
+## 2. `TerminalTabStrip.swift` — Investigate call site
+
+Full function (`Views/TerminalTabStrip.swift:428-455`):
+
+```swift
+/// The ✦ agent popover for a tab (inline presentation): the diagnosis + its actions, off the grid.
+@ViewBuilder private func agentPopover(for tab: TerminalTab) -&gt; some View {
+    if let state = agentManager.banners[tab.id] {
+      TerminalAgentBanner(
+        state: state,
+        onDiagnose: { agentManager.diagnose(tab: tab.id, target: target.id) },
+        onInsertFix: { fix in
+          if case .terminal(let s) = tab.content { s.view.sendText(fix) }
+          agentPopoverTab = nil
+        },
+        onInvestigate: {
+          let cwd: String
+          if case .terminal(let s) = tab.content {
+            cwd = s.view.lastKnownCwd ?? target.path
+          } else {
+            cwd = target.path
+          }
+          _ = store.terminals.addRunTab(for: target, command: "claude", cwd: cwd)
+          agentManager.dismiss(tab: tab.id)
+          agentPopoverTab = nil
+        },
+        onDismiss: {
+          agentManager.dismiss(tab: tab.id)
+          agentPopoverTab = nil
+        }
+      )
+      .frame(width: 360)
+    }
+  }
+```
+
+- `target` is a stored property (`Views/TerminalTabStrip.swift:20`, `let target: TerminalTarget`).
+- `cwd` is derived per-tab from `tab.content` matched against `.terminal` — a third, slightly different derivation from the StatusBar's.
+- **`AgentBannerState` IS available right here**, bound as `state` in the enclosing `if let state = agentManager.banners[tab.id]` (line 429) and passed straight into `TerminalAgentBanner(state: state, ...)`. The `onInvestigate` closure simply never uses it — it hardcodes the literal `"claude"` instead of calling `AgentPrompt.investigateCommandLine(for: state)`. This is the single easiest fix in the whole issue.
+- Uses `store.terminals.addRunTab` where `store: AppStore` is `@EnvironmentObject` (line 22) and `sessions`/`terminals` is `@ObservedObject var sessions: TerminalSessions` (line 21) — both views have equal access to `store`, so both could route through `AppStore` bookkeeping.
+
+## 3. `TerminalSessions.swift` — `addRunTab`
+
+Doc comment + signature (`Core/TerminalSessions.swift:945-987`):
+
+```swift
+/// Open the dedicated "run command" terminal (issue #7): a solo tab that launches `command` in
+/// `cwd`, titled "Run" until the program reports its own title, focused like any new tab — through
+/// `setFocused`, so focus observers fire (it is NOT a direct dict write; see the focus-chokepoint
+/// note on `setFocused`). The caller (`AppStore`) owns the run-state and wires `onChildExited`;
+/// this just creates and shows the tab.
+///
+/// Run-tab lifecycle — one `AppStore.RunState` per target; the pane stays open on exit via
+/// `wait_after_command`:
+/// ```
+///   armed                       auto-run queued before the workroom's pane exists; consumed on mount
+///   start (no state / armed) ─▶ spawn surface (command = $SHELL -lic '&lt;cmd&gt;', wait_after_command);
+///                               focus; state = running
+///
+///   running ──────── Run / ⌘R ─────────▶ focus (no respawn)
+///   running ──────── Stop (1st) ───────▶ Ctrl-C; state = running(interrupted)
+///   running ──────── Restart ──────────▶ Ctrl-C; state = restarting
+///   running / running(interrupted) ── child exits ─▶ stopped (pane open)
+///   running(interrupted) ── Stop (2nd) ─▶ closeTab → ghostty_surface_free (SIGHUP, hard kill)
+///   restarting ── child exits ─▶ close + respawn (graceful; frees the port); Stop ─▶ running(interrupted)
+///   stopped ──────── Run / ⌘R / Restart ─▶ close + respawn
+///   any state ────── close tab (⌘W/✕) / reap ─▶ removed (state cleared via onTabsRemoved)
+/// ```
+/// A backgrounded run tab is never the active tab, so it never mounts — and a libghostty surface
+/// spawns its process only on window-mount. We give the off-window `ensureSurfaceCreated` a sane
+/// initial size so the command starts with reasonable COLUMNS/LINES; it re-sizes on first real mount.
+static let backgroundRunInitialSize = CGSize(width: 800, height: 480)
+
+@discardableResult
+func addRunTab(for target: TerminalTarget, command: String, cwd: String, focus: Bool = true)
+  -&gt; TerminalTab
+{
+  let tab = makeRunTab(for: target, command: command, cwd: cwd)
+  insert(tab, for: target)
+  if focus {
+    setFocused(tab.id, for: target.id)
+  } else {
+    tab.surface?.ensureSurfaceCreated(initialSize: Self.backgroundRunInitialSize)
+  }
+  reconcileOcclusion(for: target)
+  return tab
+}
+```
+
+The load-bearing line: **"The caller (`AppStore`) owns the run-state and wires `onChildExited`; this just creates and shows the tab."** `respawnRunTab`'s doc echoes it (`Core/TerminalSessions.swift:995`): "Returns the new tab so the caller wires run-state + `onChildExited`, as `addRunTab` does." Neither Investigate call site is that caller — both call `addRunTab` directly from a View, bypassing `AppStore` entirely.
+
+## 4. `AppStore.swift`
+
+**`startRunCommand`** (`Core/AppStore.swift:1916-1962`):
+
+```swift
+/// Start the project's run command in `target`'s directory, in a dedicated run terminal. No-op
+/// without a configured command or for a missing target. One run terminal per target (a second start
+/// is a no-op, not a duplicate).
+///
+/// Issue #67: the run starts in the BACKGROUND by default — `focus` is false, so it doesn't steal the
+/// foreground tab; a toast surfaces its status. `focus: true` is only for auto-run on a freshly
+/// created workroom where the run would be the sole tab (Arch #5) — there we DO show it.
+func startRunCommand(for target: TerminalTarget, focus: Bool = false) {
+  guard !target.isMissing, let project = project(forTarget: target) else { return }
+  let config = runConfig(forProject: project.path)
+  guard config.hasCommand else { return }
+  if let existing = runStates[target.id]?.tab {
+    // issue #67: a plain start never steals focus — only the auto-run-only-tab case passes focus.
+    if focus { terminals.focus(existing, for: target) }
+    return
+  }
+  let pidPath = makeRunPidPath()
+  let line = runCommandLine(
+    config.command.trimmingCharacters(in: .whitespacesAndNewlines), pidPath: pidPath)
+  let tab = terminals.addRunTab(for: target, command: line, cwd: target.path, focus: focus)
+  runOutcomes[target.id] = nil  // a fresh run clears the prior outcome (issue #67)
+  resetRunToast(for: target.id)  // a new run always gets a fresh toast (clear dismiss + timer)
+  if !focus, tab.surface?.didSpawnFail == true {
+    runOutcomes[target.id] = .failedToStart
+    runStates[target.id] = .stopped(tab: tab.id)
+    scheduleRunToastAutoDismiss(for: target.id)
+    postRunFailureBannerIfBackgrounded(
+      targetID: target.id, tabID: tab.id, title: "Run failed to start",
+      body: config.command.trimmingCharacters(in: .whitespacesAndNewlines))
+    return
+  }
+  runStates[target.id] = .running(tab: tab.id, interrupted: false)
+  runPidFiles[target.id] = pidPath  // after the tab exists, so cleanup can't wipe it
+  lastRunStatus[target.id] = nil
+  captureRunSession(for: target.id, pidPath: pidPath)
+  pollRunStatus(for: target)  // status file drives state from here (issue #7)
+  tab.surface?.onChildExited = { [weak self] code in
+    self?.markRunExited(for: target, exitCode: code)
+  }
+  wireRunClose(tab.id, for: target)
+}
+```
+
+**Key constraint for the plan: `startRunCommand` guards on `config.hasCommand` and short-circuits to the existing tab when `runStates[target.id]?.tab != nil`.** It is written for exactly one run per target, not "run any command." Investigate can't just call `startRunCommand` as-is — it needs either its own analogous bookkeeping path or `RunState`/the run bookkeeping needs to become keyed differently (see below).
+
+**`runStates` + `RunState`** (`Core/AppStore.swift:1310-1342, 1368-1371`):
+
+```swift
+/// The lifecycle of a target's run command (issue #7), one value per target. A single state machine
+/// replaces the former parallel sets/maps — every transition is explicit...
+enum RunState: Equatable {
+  case armed
+  case running(tab: TerminalTab.ID, interrupted: Bool)
+  case restarting(tab: TerminalTab.ID)
+  case stopped(tab: TerminalTab.ID)
+
+  var tab: TerminalTab.ID? {
+    switch self {
+    case .running(let tab, _), .restarting(let tab), .stopped(let tab): return tab
+    case .armed: return nil
+    }
+  }
+  var isRunning: Bool {
+    switch self {
+    case .running, .restarting: return true
+    case .armed, .stopped: return false
+    }
+  }
+}
+...
+/// Run-STATE is owned here (not on `TerminalSessions`) so the toolbar, sidebar, menu, and RootView
+/// — which all observe this store — react to start/stop/exit from one `@Published` source (OV-A).
+/// `TerminalSessions` only creates/focuses the tab and reports its removal via `onTabsRemoved`.
+@Published private(set) var runStates: [TerminalTarget.ID: RunState] = [:]
+```
+
+**`runStates` is keyed by `TerminalTarget.ID`, one `RunState` per target** — not per tab, not per project. This is the central fork the plan must resolve: an Investigate session is conceptually a second, independent "run" in the same target that may already have its own dev-server `RunState` occupying that slot. `RunState` has no room for a second tab per target as written.
+
+**`liveRunView` / `hasLiveRunCommand`** (`Core/AppStore.swift:2246-2259`):
+
+```swift
+/// The target's run surface if a child process is still alive in it, else nil. Used by the
+/// teardown paths to decide whether a Ctrl-C + wait is needed before freeing it.
+private func liveRunView(for targetID: TerminalTarget.ID) -&gt; GhosttySurfaceView? {
+  guard let tabID = runStates[targetID]?.tab,
+    let view = terminals.view(forTab: tabID, inTarget: targetID),
+    view.hasLiveProcess
+  else { return nil }
+  return view
+}
+
+/// Whether any run command still has a live process — gates the quit handler's graceful wait.
+var hasLiveRunCommand: Bool {
+  runStates.keys.contains { liveRunView(for: $0) != nil }
+}
+```
+
+Both derive strictly from `runStates`, so any tab not registered there is invisible to teardown.
+
+**`onChildExited` wiring for run commands** — two sites, both in `AppStore`, both only reachable through the "owning" start paths:
+- `startRunCommand`: `Core/AppStore.swift:1958-1960`
+- `respawnRunCommand` (the in-place restart): `Core/AppStore.swift:2016-2018`
+
+```swift
+tab.surface?.onChildExited = { [weak self] code in
+  self?.markRunExited(for: target, exitCode: code)
+}
+```
+
+Neither Investigate call site wires this. `Core/GhosttySurfaceView.swift:69` declares the property (`var onChildExited: ((UInt32) -&gt; Void)?`), and `:724` fires it — an Investigate tab's `claude` process exiting fires nothing.
+
+## 5. `WindowRegistry.swift` — `runOwner`
+
+Full body (`Core/WindowRegistry.swift:205-212`):
+
+```swift
+// MARK: Run-command ownership
+
+/// The other window already running `target`'s run command, if any. Derived from each window's live
+/// `runStates` (no separate map to drift): a second window's Run focuses this owner instead of
+/// forking a duplicate dev server on the same port (issue #70 / issue #7).
+func runOwner(for target: TerminalTarget.ID, excluding: AppStore) -&gt; AppStore? {
+  allStores.first { $0 !== excluding &amp;&amp; ($0.runStates[target]?.isRunning ?? false) }
+}
+```
+
+Callers:
+- `Core/AppStore.swift:2113` — inside `runOrFocusRunCommand(for:)`, the toolbar Run/⌘R handler: when no run state exists locally, checks whether another window already owns the target's run command and focuses that window instead of starting a duplicate.
+- Documented (not called) in `Core/SessionSnapshot.swift:36` and `Views/TargetDetailToolbar.swift:130` as the mechanism that prevents a second dev server on the same port.
+
+This is single-owner, cross-window dedup logic keyed on `runStates[target].isRunning` — another reason `runStates` can't trivially gain a second "always concurrent" per-target entry for Investigate without touching this too (an Investigate `claude` session should almost certainly NOT be deduped/redirected across windows the way a dev server is).
+
+## 6. `AgentPrompt` / `AgentBannerState`
+
+`AgentPrompt` lives at `Core/AgentPrompt.swift`. Relevant definitions:
+
+```swift
+// Core/AgentPrompt.swift:56-61
+/// A shell command line that opens an interactive `claude` seeded with the failure so the agent can
+/// start investigating immediately (issue #49). Run in the pane's real cwd (unlike the neutral-dir
+/// no-tools diagnosis), so it can inspect the project.
+static func investigateCommandLine(for state: AgentBannerState) -&gt; String {
+  let (failure, diagnosis) = state.failureAndDiagnosis
+  let prompt = investigatePrompt(
+    command: failure.command, exitCode: failure.exitCode, diagnosis: diagnosis)
+  return "claude " + shellSingleQuoted(prompt)
+}
+
+// Core/AgentPrompt.swift:63-83
+/// The natural-language seed prompt for the interactive Investigate session: the failed command,
+/// its exit code, and (when available) the quick diagnosis, then an instruction to dig in. Output
+/// is deliberately omitted — the agent runs in the real cwd and can re-run the command itself.
+static func investigatePrompt(command: String?, exitCode: Int32, diagnosis: AgentDiagnosis?)
+  -&gt; String
+{
+  var lines: [String] = []
+  if let command = nonBlank(command) {
+    lines.append("I ran `\(command)` in this directory and it failed with exit code \(exitCode).")
+  } else {
+    lines.append("A command in this directory failed with exit code \(exitCode).")
+  }
+  if let diagnosis {
+    lines.append("A quick automated check suggested this cause: \(diagnosis.summary)")
+    if let fix = nonBlank(diagnosis.fixCommand) {
+      lines.append("and this unverified fix: \(fix)")
+    }
+  }
+  lines.append("Please investigate the root cause and help me fix it.")
+  return lines.joined(separator: "\n")
+}
+```
+
+`AgentBannerState` is defined in `Core/TerminalAgentManager.swift:29-53`, alongside the `FailedCommand` it wraps:
+
+```swift
+// Core/TerminalAgentManager.swift:8-16
+struct FailedCommand: Equatable, Sendable {
+  var command: String?
+  var cwd: String?
+  var exitCode: Int32
+  var shell: String?
+  var output: String
+  var isRunTab: Bool
+  var isRemote: Bool
+}
+
+// Core/TerminalAgentManager.swift:29-53
+/// What the banner shows for a tab (issue #49). Absent (no entry) means no banner.
+enum AgentBannerState: Equatable, Sendable {
+  case awaitingDiagnose(FailedCommand)
+  case loading(FailedCommand)
+  case ready(FailedCommand, AgentDiagnosis)
+  case failure(FailedCommand, AgentErrorKind)
+  case remoteCaveat(FailedCommand)
+
+  var failureAndDiagnosis: (FailedCommand, AgentDiagnosis?) {
+    switch self {
+    case .awaitingDiagnose(let failure), .loading(let failure), .failure(let failure, _),
+      .remoteCaveat(let failure):
+      return (failure, nil)
+    case .ready(let failure, let diagnosis):
+      return (failure, diagnosis)
+    }
+  }
+}
+```
+
+Note `FailedCommand.cwd` — the banner state already carries a `cwd` captured at failure time (`Core/TerminalAgentManager.swift:6`: "The host builds this from the surface view (command + cwd from shell integration...)"), a fourth possible cwd source neither call site currently reads; both instead re-derive cwd live from the surface/target at Investigate time.
+
+## 7. Other `addRunTab` call sites
+
+Exhaustive (unqualified `addRunTab`, app + tests):
+
+| Site | Kind |
+|---|---|
+| `Core/TerminalSessions.swift:973` | the function definition itself |
+| `Core/AppStore.swift:1935` | **legitimate, non-Investigate** — inside `startRunCommand`, immediately followed by `runStates[...] = ...`, `captureRunSession`, `pollRunStatus`, `onChildExited` wiring, `wireRunClose` (full bookkeeping) |
+| `Views/TerminalStatusBar.swift:327` | **Investigate call site #1** — no bookkeeping after the call |
+| `Views/TerminalTabStrip.swift:444` | **Investigate call site #2** — no bookkeeping after the call |
+| `WorkroomAppTests/WorkroomsViewTests.swift:300` | test helper, calls raw `addRunTab` to set up fixture state directly |
+| `WorkroomAppTests/SessionCaptureTests.swift:122,142` | test helpers, same pattern |
+
+(`respawnRunTab`, the sibling "restart in place" function, is a separate API — not `addRunTab` — called from `AppStore.swift:1998` inside `respawnRunCommand`, also fully wired.)
+
+**Confirmed: exactly two Investigate call sites**, both bypassing the bookkeeping that the one legitimate production caller (`startRunCommand`) performs.
+
+## 8. Quit-time graceful teardown — what "waits for" a run command
+
+Chain from `hasLiveRunCommand`/`liveRunView` up to the app-quit and window-close paths:
+
+**Per-store gate** (`Core/AppStore.swift:2246-2259`, shown above) — `hasLiveRunCommand` is true only if `runStates[targetID]?.tab` exists AND that tab's surface `hasLiveProcess`.
+
+**Cross-window aggregation** (`Core/WindowRegistry.swift:216-234`):
+
+```swift
+/// Any window with a live run command — gates the graceful-stop-on-quit (issue #7 / #70).
+var hasAnyLiveRunCommand: Bool { allStores.contains(where: \.hasLiveRunCommand) }
+
+/// Ctrl-C every window's live run commands and let them exit before the process dies...
+func gracefullyStopAllWindows(timeout: TimeInterval, completion: @escaping () -&gt; Void) {
+  let live = allStores.filter(\.hasLiveRunCommand)
+  guard !live.isEmpty else {
+    completion()
+    return
+  }
+  let group = DispatchGroup()
+  for store in live {
+    group.enter()
+    store.gracefullyStopAllRunCommands(timeout: timeout) { group.leave() }
+  }
+  group.notify(queue: .main) { completion() }
+}
+```
+
+**App-quit call site** (`WorkroomApp.swift:627-646`, `stopRunCommandsThenTerminate`, called from `applicationShouldTerminate` at line 619):
+
+```swift
+private func stopRunCommandsThenTerminate(_ sender: NSApplication) -&gt; NSApplication.TerminateReply {
+  let registry = WindowRegistry.shared
+  registry.isTerminating = true
+  SessionCoordinator.shared.flushAndFreeze()
+  guard registry.hasAnyLiveRunCommand else { return .terminateNow }
+  registry.gracefullyStopAllWindows(timeout: 5) {
+    sender.reply(toApplicationShouldTerminate: true)
+  }
+  return .terminateLater
+}
+```
+
+**SIGTERM path** (`WorkroomApp.swift:507-524`, `installSigtermHandler`) — same `gracefullyStopAllWindows` call, timeout 4s, then `exit(EXIT_SUCCESS)`.
+
+**Per-window close** (`Core/WindowRegistry.swift:241-269`, `WindowCloseGuard.windowShouldClose`):
+
+```swift
+func windowShouldClose(_ sender: NSWindow) -&gt; Bool {
+  MainActor.assumeIsolated {
+    guard let store, !WindowRegistry.shared.isTerminating, store.hasLiveRunCommand else {
+      return true
+    }
+    if Defaults[.confirmOnQuit] {
+      let alert = NSAlert()
+      alert.messageText = "Close this window?"
+      alert.informativeText = "It has a running process. Closing the window will stop it."
+      alert.addButton(withTitle: "Close")
+      alert.addButton(withTitle: "Cancel")
+      guard alert.runModal() == .alertFirstButtonReturn else { return false }
+    }
+    store.gracefullyStopAllRunCommands(timeout: 5) { sender.close() }
+    return false
+  }
+}
+```
+
+**Per-tab close** (`Core/AppStore.swift:2338-2346`, `closingRunTab`, gates ⌘W / tab-close on a run tab):
+
+```swift
+let isRunTab = runStates[targetID]?.tab == tabID
+let live = liveRunView(for: targetID) != nil
+guard isRunTab, live else {
+  proceed()  // not a live run tab → free directly (no supervisor to gracefully stop)
+  return
+}
+gracefullyStopRuns([targetID], then: proceed)
+```
+
+### Consequence chain for an unregistered Investigate tab
+
+Because neither Investigate call site touches `runStates`, an Investigate tab is invisible to every one of the above checks:
+
+`no runStates[target.id] entry for that tab` → `liveRunView` returns nil (guard fails at `runStates[targetID]?.tab`) → `hasLiveRunCommand` is false → `hasAnyLiveRunCommand` is false → **quit**: `stopRunCommandsThenTerminate` sees `!hasAnyLiveRunCommand` and returns `.terminateNow` immediately, no Ctrl-C, no wait — the surface is torn down and the live `claude` process gets a raw SIGHUP; **window close**: `windowShouldClose` sees `!store.hasLiveRunCommand` and returns `true` immediately (no confirm alert, no graceful stop); **⌘W on the tab itself**: `closingRunTab`'s `isRunTab` check is keyed on `runStates[targetID]?.tab == tabID`, which is false (that slot likely still holds the *actual* dev-server run tab, if any, or is empty) — so a live Investigate agent session is freed exactly like an ordinary terminal tab, no different from closing a shell.
+
+Also missing for both Investigate sites, all downstream of the same `runStates`/`onChildExited` gap: no `runOutcomes` entry (no "Failed"/"Exited" outcome tracking), no run toast, no run-state chip in the tab strip/sidebar, no `pollRunStatus`/pidfile capture backstop, and no participation in `WindowRegistry.runOwner` cross-window dedup (arguably correct for Investigate — an agent session isn't a dev server that should be deduped across windows — but the plan should decide this deliberately rather than by accident).
+
+### The core design fork for the plan
+
+`runStates: [TerminalTarget.ID: RunState]` holds **one `RunState` per target** (`Core/AppStore.swift:1371`), and `startRunCommand` explicitly short-circuits when a slot is already occupied (`Core/AppStore.swift:1927-1931`). An Investigate session is a second, independent process in a target that may already have a dev-server `RunState` occupying that one slot. Routing Investigate through `startRunCommand` as-is is not a drop-in — the plan needs to choose one of: (a) a parallel per-tab (not per-target) bookkeeping structure for agent/Investigate run tabs, sharing the teardown/`onChildExited` machinery but not the single-slot `runStates` dict, or (b) widening `RunState` to support multiple concurrent tabs per target. Also decide deliberately whether an Investigate tab should participate in `WindowRegistry.runOwner` cross-window dedup (almost certainly not, unlike a dev server).
+
+### Cheapest immediate win, independent of the above
+
+`Views/TerminalTabStrip.swift:429-444` already binds `state: AgentBannerState` in scope (passed to `TerminalAgentBanner(state: state, ...)`) but its `onInvestigate` hardcodes the literal `"claude"` instead of calling `AgentPrompt.investigateCommandLine(for: state)` as the StatusBar site does at `Views/TerminalStatusBar.swift:326`. Fixing that one line unifies the *command* half of the divergence with zero new plumbing — the *cwd* derivation (three different formulas across the two sites plus the bar's own `cwd` property) and the *bookkeeping bypass* (the harder problem, above) still need the ownership decision.</result>
+<usage><subagent_tokens>83119</subagent_tokens><tool_uses>33</tool_uses><duration_ms>433511</duration_ms></usage>
+</task-notification>
