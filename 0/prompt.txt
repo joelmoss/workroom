@@ -1,0 +1,386 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Views/ActivityBar.swift
+  - macapp/WorkroomApp/Views/InspectorColumn.swift
+  - macapp/WorkroomApp/Views/RootView.swift
+  - macapp/WorkroomApp/Views/SidebarCard.swift
+  - macapp/WorkroomApp/Views/SidebarColumn.swift
+  - macapp/WorkroomApp/Views/TitlebarBars.swift
+  - macapp/WorkroomApp/Views/WorkroomSplitView.swift
+  - macapp/WorkroomApp/Views/WorkroomTabBar.swift
+  - macapp/WorkroomAppUITests/NewWorkroomDialogUITests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Views/ActivityBar.swift ===
+@@ -17,7 +17,11 @@ struct ActivityBar: View {
+   // read from the `ThemeService` singleton, which SwiftUI doesn't observe on its own).
+   @State private var themeTick = 0
+   private let theme = ThemeService.shared
+-  private let width: CGFloat = 44
++  /// The rail's width. Not private: it's the trailing-most column of the window, so the title bar's
++  /// trailing controls centre their last button over this rail's icon column
++  /// (`TrailingTitlebarBar.trailingInset`) — the two are directly above one another and a hand-copied
++  /// number would drift.
++  static let width: CGFloat = 44
+ 
+   var body: some View {
+     VStack(spacing: 2) {
+@@ -41,7 +45,7 @@ struct ActivityBar: View {
+       NotificationsBarButton()
+     }
+     .padding(.vertical, 6)
+-    .frame(width: width)
++    .frame(width: Self.width)
+     .frame(maxHeight: .infinity)
+     .background(theme.tokens.panel)
+     .onReceive(NotificationCenter.default.publisher(for: .themeDidChange)) { _ in themeTick += 1 }
+
+
+=== DIFF: macapp/WorkroomApp/Views/InspectorColumn.swift ===
+@@ -33,7 +33,12 @@ struct InspectorColumn: View {
+       .frame(maxHeight: .infinity)
+       // Tighten the gap to the detail panel: 2pt leading vs the default 8 (the detail panel keeps its
+       // own trailing pad), while the trailing margin stays 8 to match the left sidebar's window inset.
+-      .sidebarCard(topMargin: 0, leadingMargin: 2, vibrant: true)
++      // Top and bottom take the workroom pane card's gutter, so this card's edges land on the same
++      // lines as the detail pane's and the left sidebar's — see `SidebarColumn`.
++      .sidebarCard(
++        topMargin: WorkroomPaneMetrics.gutter, bottomMargin: WorkroomPaneMetrics.gutter,
++        leadingMargin: 2, vibrant: true
++      )
+       // AppKit drag handle over the leading edge (a SwiftUI gesture doesn't get events over the
+       // AppKit inspector). 12pt hit area with a resize cursor.
+       .overlay(alignment: .leading) {
+
+
+=== DIFF: macapp/WorkroomApp/Views/RootView.swift ===
+@@ -69,7 +69,7 @@ struct RootView: View {
+       workroomTabsBar
+       TrailingTitlebarBar()
+     }
+-    .padding(.horizontal, 8)
++    .padding(.horizontal, WorkroomTitlebar.outerInset)
+     .frame(maxWidth: .infinity, maxHeight: .infinity)
+     // No own background — the accessory is transparent so the window's panel bg shows through it AND
+     // behind the traffic lights uniformly (an opaque fill here didn't match the titlebar strip behind
+@@ -95,22 +95,19 @@ struct RootView: View {
+       reduceMotion ? nil : DialogOverlayStyle.revealAnimation, value: store.activePicker != nil)
+   }
+ 
+-  @ViewBuilder private var workroomTabsBar: some View {
+-    let tabs = store.displayedWorkroomTargets()
+-    // Show the bar during a create even before any tab resolves (issue #116) — it hosts the
+-    // provisional "Creating…" chip, so the bar can't be hidden just because `tabs` is still empty.
+-    if !tabs.isEmpty || store.creation != nil {
+-      WorkroomTabBar(
+-        tabs: tabs, selectedID: store.selectedTargetID,
+-        onSelect: { selectWorkroomTab($0) },
+-        chipPaneDrag: $workroomChipDrag,
+-        localize: { workroomChipLocal($0) },
+-        dropTarget: { workroomChipDropTarget(at: $0) }
+-      )
+-      .frame(maxWidth: .infinity)
+-    } else {
+-      Spacer(minLength: 0)
+-    }
++  private var workroomTabsBar: some View {
++    // ALWAYS mounted, even with no tabs: its trailing Open/New buttons are how you get your first
++    // workroom open in a fresh window, so they can't be gated on a tab already existing. (It also
++    // hosts the provisional "Creating…" chip before any tab resolves — issue #116.) With an empty
++    // run the bar is just those two buttons over the draggable title bar.
++    WorkroomTabBar(
++      tabs: store.displayedWorkroomTargets(), selectedID: store.selectedTargetID,
++      onSelect: { selectWorkroomTab($0) },
++      chipPaneDrag: $workroomChipDrag,
++      localize: { workroomChipLocal($0) },
++      dropTarget: { workroomChipDropTarget(at: $0) }
++    )
++    .frame(maxWidth: .infinity)
+   }
+ 
+   /// The two-column `NavigationSplitView` core (sidebar + detail/inspector). The window chrome, modal
+
+
+=== DIFF: macapp/WorkroomApp/Views/SidebarCard.swift ===
+@@ -16,8 +16,8 @@ extension View {
+   // content (a popover-style drop shadow), vs the subtle inset shadow the docked card uses.
+   func sidebarCard(
+     cornerRadius: CGFloat = 10, margin: CGFloat = 8, topMargin: CGFloat? = nil,
+-    leadingMargin: CGFloat? = nil, trailingMargin: CGFloat? = nil, vibrant: Bool = false,
+-    elevated: Bool = false
++    bottomMargin: CGFloat? = nil, leadingMargin: CGFloat? = nil, trailingMargin: CGFloat? = nil,
++    vibrant: Bool = false, elevated: Bool = false
+   )
+     -> some View
+   {
+@@ -51,7 +51,10 @@ extension View {
+       // tightens the gap to the detail panel without pulling its outer (trailing) edge off the window.
+       .padding(.leading, leadingMargin ?? margin)
+       .padding(.trailing, trailingMargin ?? margin)
+-      .padding(.bottom, margin)
++      // `bottomMargin`, like `topMargin`, overrides one edge only: the docked columns match the
++      // workroom pane card's gutter top AND bottom so the three columns' cards share both lines,
++      // while their outer (window-facing) edges keep the wider `margin`.
++      .padding(.bottom, bottomMargin ?? margin)
+       .padding(.top, topMargin ?? margin)
+   }
+ }
+
+
+=== DIFF: macapp/WorkroomApp/Views/SidebarColumn.swift ===
+@@ -37,9 +37,15 @@ struct SidebarColumn: View {
+       .frame(width: width)
+       .frame(maxHeight: .infinity)
+       // Tighten the gap to the detail panel: 2pt trailing vs the default 8 (mirrors the inspector's
+-      // leading 2). `topMargin: 0` sits the card flush below the title bar. `vibrant` matches the
+-      // right inspector's frosted `.sidebar` material so both sidebars read as the same surface.
+-      .sidebarCard(topMargin: 0, trailingMargin: 2, vibrant: true)
++      // leading 2). Top and bottom take the workroom pane card's own gutter, so this card starts and
++      // ends on the SAME lines as the detail pane beside it — they used to be 4pt out at the top (card
++      // flush at 0 against the pane's 4) and 4pt out at the bottom (the default 8 against that 4),
++      // which reads as a misalignment with the two cards side by side. `vibrant` matches the right
++      // inspector's frosted `.sidebar` material so both sidebars read as the same surface.
++      .sidebarCard(
++        topMargin: WorkroomPaneMetrics.gutter, bottomMargin: WorkroomPaneMetrics.gutter,
++        trailingMargin: 2, vibrant: true
++      )
+       // AppKit drag handle over the trailing edge (a SwiftUI gesture doesn't get events over the
+       // List reliably). 12pt hit area with a resize cursor.
+       .overlay(alignment: .trailing) {
+
+
+=== DIFF: macapp/WorkroomApp/Views/TitlebarBars.swift ===
+@@ -13,6 +13,10 @@ enum WorkroomTitlebar {
+   static let height: CGFloat = 28
+   /// Leading inset so the bar's first control clears the traffic-light cluster.
+   static let trafficLightInset: CGFloat = 80
++  /// The accessory row's own outer inset (`RootView.accessoryBarContent`), charged against the window
++  /// edges. Shared because the trailing bar has to subtract it to line its last button up with the
++  /// activity bar below — see `TrailingTitlebarBar.trailingInset`.
++  static let outerInset: CGFloat = 8
+ }
+ 
+ /// A transparent backing view that lets a click-drag on the empty parts of the custom title bar
+@@ -159,6 +163,19 @@ struct TrailingTitlebarBar: View {
+   /// broadcast to every window, and the key-window guard below is what decides which one opens.
+   @State private var showThemePicker = false
+ 
++  /// The row's trailing inset — DERIVED, not chosen: the activity bar (always present, flush to the
++  /// window's trailing edge) is directly below this row, so the last control's well is centred on that
++  /// rail's icon column. Anything else reads as a random gap between the last button and the window
++  /// edge, which is what a hand-set 10pt gave: the button sat ~10pt inboard of the rail's centre line.
++  ///
++  /// = half the rail, less the accessory row's own outer inset and half the well's footprint. `max(0,)`
++  /// so a future narrower rail can only close the gap, never push the button off the row.
++  private static var trailingInset: CGFloat {
++    max(
++      0,
++      ActivityBar.width / 2 - WorkroomTitlebar.outerInset - ToolbarIconButtonStyle.footprint / 2)
++  }
++
+   var body: some View {
+     HStack(spacing: 6) {
+       // A newer version is waiting (Sparkle gentle reminder) — the accent pill leads the trailing
+@@ -207,10 +224,9 @@ struct TrailingTitlebarBar: View {
+       .accessibilityIdentifier("toolbar.quickTerminal")
+     }
+     .buttonStyle(ToolbarIconButtonStyle())
+-    // Trailing gap so the last control isn't flush to the window edge (previously supplied by the
+-    // removed TitlebarControlsBar — the right-sidebar toggle it hosted is redundant with the activity
+-    // bar, whose section icons show/collapse the inspector).
+-    .padding(.trailing, 10)
++    // Trailing gap, sized so the last control's well centres over the activity bar's icon column
++    // directly below it rather than floating in dead space short of the window edge.
++    .padding(.trailing, Self.trailingInset)
+     // Fill the full-height (52pt) accessory host so the HStack centres its buttons — see LeadingTitlebarBar.
+     .frame(maxHeight: .infinity)
+     // The `Theme…` command (⌘⇧K) can't anchor a popover from a menu, so it posts and this bar — which
+
+
+=== DIFF: macapp/WorkroomApp/Views/WorkroomSplitView.swift ===
+@@ -1,6 +1,16 @@
+ import AppKit
+ import SwiftUI
+ 
++/// Geometry the workroom pane cards share with the chrome AROUND them.
++enum WorkroomPaneMetrics {
++  /// The clear gutter on every side of a pane card — between the cards of a split, and between a solo
++  /// card and the window. Also the sidebars' and inspector's top/bottom card margin
++  /// (`SidebarColumn`/`InspectorColumn`), so the three columns' cards start and end on the same lines
++  /// rather than each choosing its own inset; they're side by side, so any difference reads as a
++  /// misalignment.
++  static let gutter: CGFloat = 4
++}
++
+ /// A drag from the workroom tab bar into the split content (content-local point + the dragged tab's id).
+ struct WorkroomPaneDrag: Equatable {
+   let sid: SidebarID
+@@ -246,8 +256,9 @@ private struct WorkroomPaneLeaf: View {
+       color: .black.opacity(highlighted ? 0.18 : 0.10), radius: highlighted ? 6 : 3, y: 2
+     )
+     // A clear gutter on every side — between the cards of a split, and between a solo card and the
+-    // window. The title bar sits at the pane's top, inside this inset.
+-    .padding(EdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4))
++    // window. The title bar sits at the pane's top, inside this inset. Shared with the two sidebar
++    // cards' top/bottom margins so all three columns line up.
++    .padding(WorkroomPaneMetrics.gutter)
+     .accessibilityElement(children: .contain)
+     .accessibilityIdentifier("workroom.pane")
+     // Roots aren't workrooms — say what this pane actually is (the chip makes the same distinction).
+
+
+=== DIFF: macapp/WorkroomApp/Views/WorkroomTabBar.swift ===
+@@ -8,6 +8,10 @@ import SwiftUI
+ /// No per-chip close button: a tab vanishes when its terminals are closed, and closing-as-kill would
+ /// defeat the parallel-monitoring purpose.
+ ///
++/// The bar is mounted whether or not there are any tabs: its trailing controls are how a fresh window
++/// opens its first workroom, so an empty run still shows them (over the otherwise bare, draggable
++/// title bar).
++///
+ /// The trailing controls (open-workroom + "+") are **adaptive** (issue #129), mirroring
+ /// `TerminalTabStrip`: they sit inline hugging the last chip while everything fits, and pin at the
+ /// bar's trailing edge once the chips overflow, so the "+" is never scrolled out of reach. They move as
+@@ -47,10 +51,12 @@ struct WorkroomTabBar: View {
+   /// Whether the hairline before the trailing controls shows. Hidden when the last tab stands apart on
+   /// its own (selected or hovered — its filled pill already separates it), when it's in a split group
+   /// (the `splitWell` bracket frames it, so a divider would double against its rounded edge), and once
+-  /// the controls have pinned (issue #129): the fade and gutter already separate the regions.
++  /// the controls have pinned (issue #129): the fade and gutter already separate the regions. Hidden
++  /// too when the run is empty — the bar is mounted with no tabs at all (a fresh window), and a
++  /// hairline with nothing to its left is a divider between nothing and the buttons.
+   private func showsTrailingDivider(overflowing: Bool, groupOf: [SidebarID: Int]) -> Bool {
+     guard !overflowing else { return false }
+-    guard let last = tabs.last else { return true }
++    guard let last = tabs.last else { return provisionalCreation != nil }
+     return groupOf[last.sid] == nil && last.sid != selectedID && last.sid != hoveredID
+   }
+ 
+@@ -348,57 +354,63 @@ struct WorkroomTabBar: View {
+     }
+   }
+ 
++  /// The glyph box inside each trailing button's hover well. **Fixed**, not the symbol's intrinsic
++  /// size: "chevron.down" is wide and short where "plus" is square, so sizing each well off its own
++  /// glyph gave the two side-by-side buttons visibly different wells and different hit areas (the
++  /// chevron's was several points shorter). Both glyphs fit inside 13pt at `.system(size: 11)`.
++  private static let glyphBox: CGFloat = 13
++
+   /// The "new workroom" (+) button — raises the New Workroom picker (`requestNewWorkroomPicker`, the
+   /// same flag File ▸ New Workroom / ⌘N sets). Styled like the terminal strip's `addTerminalButton`:
+-  /// a hover-washed rounded glyph. Shown only alongside open tabs (the bar itself is hidden when
+-  /// nothing's open), so it's icon-only.
++  /// a hover-washed rounded glyph. Icon-only, and present even with no tabs open — it and ⌘O are the
++  /// mouse route to a first workroom in a fresh window.
+   private var addWorkroomButton: some View {
+-    Button {
+-      store.requestNewWorkroomPicker = true
+-    } label: {
+-      Image(systemName: "plus")
+-        .font(.system(size: 11))
+-        .foregroundStyle(.secondary)
+-        .padding(4)
+-        .background(
+-          RoundedRectangle(cornerRadius: 5)
+-            .fill(ThemeService.shared.tokens.hover.opacity(addHovering ? 1 : 0))
+-        )
+-        // The whole padded glyph (the hover well's area) is clickable/hoverable, not just the "+" —
+-        // the transparent padding wouldn't hit-test on its own.
+-        .contentShape(Rectangle())
+-    }
+-    .buttonStyle(.plain)
+-    .onHover { addHovering = $0 }
+-    .padding(.leading, 2)
+-    .help("New workroom (⌘N)")
+-    .accessibilityLabel("New workroom")
+-    .accessibilityIdentifier("NewWorkroom")
++    glyphButton(
++      "plus", hovering: addHovering, help: "New workroom (⌘N)", label: "New workroom",
++      identifier: "NewWorkroom",
++      onHover: { addHovering = $0 },
++      action: { store.requestNewWorkroomPicker = true })
+   }
+ 
+   /// The "open workroom" button — raises the Open Workroom picker (`requestOpenWorkroomPicker`, the
+   /// same flag File ▸ Open workroom… / ⌘O sets). Sits just left of the "+" and shares its exact
+   /// size/style (a hover-washed rounded glyph).
+   private var openWorkroomButton: some View {
+-    Button {
+-      store.requestOpenWorkroomPicker = true
+-    } label: {
+-      Image(systemName: "chevron.down")
++    glyphButton(
++      "chevron.down", hovering: openHovering, help: "Open workroom (⌘O)", label: "Open workroom",
++      identifier: "OpenWorkroom",
++      onHover: { openHovering = $0 },
++      action: { store.requestOpenWorkroomPicker = true })
++  }
++
++  /// One builder for both trailing buttons, so their well and hit area are identical **by
++  /// construction** rather than by two modifier chains that agree today. The glyph is centred in the
++  /// fixed `glyphBox` before the padding, which is what makes the two wells the same size despite the
++  /// symbols not being.
++  private func glyphButton(
++    _ systemName: String, hovering: Bool, help: String, label: String, identifier: String,
++    onHover: @escaping (Bool) -> Void, action: @escaping () -> Void
++  ) -> some View {
++    Button(action: action) {
++      Image(systemName: systemName)
+         .font(.system(size: 11))
+         .foregroundStyle(.secondary)
++        .frame(width: Self.glyphBox, height: Self.glyphBox)
+         .padding(4)
+         .background(
+           RoundedRectangle(cornerRadius: 5)
+-            .fill(ThemeService.shared.tokens.hover.opacity(openHovering ? 1 : 0))
++            .fill(ThemeService.shared.tokens.hover.opacity(hovering ? 1 : 0))
+         )
++        // The whole padded glyph (the hover well's area) is clickable/hoverable, not just the symbol —
++        // the transparent padding wouldn't hit-test on its own.
+         .contentShape(Rectangle())
+     }
+     .buttonStyle(.plain)
+-    .onHover { openHovering = $0 }
++    .onHover(perform: onHover)
+     .padding(.leading, 2)
+-    .help("Open workroom (⌘O)")
+-    .accessibilityLabel("Open workroom")
+-    .accessibilityIdentifier("OpenWorkroom")
++    .help(help)
++    .accessibilityLabel(label)
++    .accessibilityIdentifier(identifier)
+   }
+ }
+ 
+
+
+=== DIFF: macapp/WorkroomAppUITests/NewWorkroomDialogUITests.swift ===
+@@ -76,6 +76,23 @@ final class NewWorkroomDialogUITests: XCTestCase {
+     app.typeKey(.escape, modifierFlags: [])
+   }
+ 
++  /// The title-bar Open / New Workroom buttons render even with NO tabs in the bar — they're the
++  /// mouse route to a first workroom, so gating them on a tab already existing left a fresh window
++  /// with nothing to click. Launched with the empty fixture, which has no workroom targets and so an
++  /// empty chip run.
++  func testTitleBarWorkroomButtonsRenderWithNoTabs() throws {
++    let app = launchedApp(extraArgs: ["-WorkroomUITestNoProjects", "1"])
++    XCTAssertTrue(
++      app.windows.firstMatch.waitForExistence(timeout: 15),
++      "a window should appear even with no projects")
++    XCTAssertTrue(
++      el(app, "OpenWorkroom").waitForExistence(timeout: 6),
++      "the Open Workroom button should render with an empty tab bar")
++    XCTAssertTrue(
++      el(app, "NewWorkroom").exists,
++      "…and so should the New Workroom button")
++  }
++
+   /// Opening New Workroom shows the picker (filter field + the fixture project row); typing a
+   /// non-matching query hides the row, and clearing the query brings it back.
+   func testDialogOpensListsAndFiltersProjects() throws {
+
+
+Investigate per the method in your instructions, then return the findings list.
