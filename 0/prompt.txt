@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b2m1gjl8l</task-id>
+<tool-use-id>toolu_01R2JuWkkhNjS6V7oTVsMaJd</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/ad9e5754-d4c8-4063-beb8-947970ea5d8f/tasks/b2m1gjl8l.output</output-file>
+<status>completed</status>
+<summary>Background command "Fresh full serial unit test run" completed (exit code 0)</summary>
+</task-notification>
