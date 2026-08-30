@@ -1,0 +1,283 @@
+<task-notification>
+<task-id>a2e64edc6536080b7</task-id>
+<tool-use-id>toolu_01AJAZqx4VxHR4LT96bstZ9z</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/5e64fba2-ede6-4e1c-a183-fa42e54891b4/tasks/a2e64edc6536080b7.output</output-file>
+<status>completed</status>
+<summary>Agent "Explore GhosttySurfaceView occlusion and session model" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result># Report: GhosttySurfaceView occlusion/mount mechanics, layer ownership, tab visibility tracking, and cancellation patterns
+
+Repo paths (all under `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/`):
+- `Core/GhosttySurfaceView.swift` (1844 lines)
+- `Core/TerminalSessions.swift` (1663 lines)
+- `Views/TerminalContainerView.swift` (129 lines) — read for context, not explicitly requested, but directly confirms the "background tab is fully detached" premise
+- `Views/HistoryPanel.swift`, `Views/Avatar.swift`, `Core/WorkroomFileWatcher.swift`, `Core/GitHubAuthCache.swift` — cancellation-pattern precedents
+
+---
+
+## 1. Occlusion mechanism in `GhosttySurfaceView.swift`
+
+State (lines 123-130):
+```swift
+// Occlusion (plan A4): a surface renders only when its pane is active AND its window is visible.
+private var isPaneVisible = true
+private var isWindowVisible = true
+```
+
+**`setVisible(_:)`** (525-529) — called by the host (`TerminalContainerView.mount`, `TerminalSessions.reconcileOcclusion`) when a pane becomes/stops being the active tab:
+```swift
+func setVisible(_ visible: Bool) {
+  guard isPaneVisible != visible else { return }
+  isPaneVisible = visible
+  applyOcclusionState()
+}
+```
+
+**`updateWindowVisibility()`** (531-536) — driven off `NSWindow.didChangeOcclusionStateNotification`:
+```swift
+private func updateWindowVisibility() {
+  let visible = window?.occlusionState.contains(.visible) ?? true
+  guard isWindowVisible != visible else { return }
+  isWindowVisible = visible
+  applyOcclusionState()
+}
+```
+
+**`applyOcclusionState()`** (538-541) — the single write to libghostty:
+```swift
+private func applyOcclusionState() {
+  guard let surface else { return }
+  ghostty_surface_set_occlusion(surface, isPaneVisible &amp;&amp; isWindowVisible)
+}
+```
+
+**No warm-up delay / no async work on the Swift side.** `setVisible` → `applyOcclusionState` → `ghostty_surface_set_occlusion` is a fully synchronous call chain on the calling thread (normally main). There is no `Timer`, `DispatchQueue.asyncAfter`, or `Task` anywhere in this occlusion path. Un-occluding a surface (`setVisible(true)` after having been `false`) takes effect the instant it's called; any warm-up latency for the *first rendered frame* would have to come from inside libghostty's own (opaque, closed-source) Metal render loop, not from Workroom's code — the codebase introduces zero artificial delay here.
+
+**`viewDidMoveToWindow()`** (456-500):
+```swift
+override func viewDidMoveToWindow() {
+  super.viewDidMoveToWindow()
+  if let occlusionObserver {
+    NotificationCenter.default.removeObserver(occlusionObserver)
+    self.occlusionObserver = nil
+  }
+  for observer in keyWindowObservers { NotificationCenter.default.removeObserver(observer) }
+  keyWindowObservers = []
+  guard let window else {
+    // Detached from any window → stop rendering...
+    isWindowVisible = false
+    applyOcclusionState()
+    stopAccessibilityPolling()
+    return
+  }
+  if surface == nil { createSurface() }
+  startAccessibilityPolling()
+  occlusionObserver = NotificationCenter.default.addObserver(
+    forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
+  ) { [weak self] _ in self?.updateWindowVisibility() }
+  ...
+  updateWindowVisibility()
+  updateMetalLayerSize()
+  if wantsFocus, window.firstResponder !== self {
+    window.makeFirstResponder(self)
+  }
+}
+```
+
+**Re-mounting an ALREADY-CREATED surface vs. a first-time mount — this is the key finding for your plan.** Line 472 is the entire gate: `if surface == nil { createSurface() }`. When a background tab's surface is re-homed into a new container/window and `surface` already exists, `createSurface()` is **never called again** — its whole body (lines 235-313: `ghostty_surface_new`, C-string/env-var allocation, `applyColorScheme`, re-adding the scrollbar/go-to-bottom overlay subviews, `adoptFocusIfFirstResponder()`) is skipped entirely. Re-mount only does:
+1. Detach/reattach the occlusion + key-window `NotificationCenter` observers (458-489)
+2. `updateWindowVisibility()` (490) — flips `isWindowVisible`, may call `applyOcclusionState()`
+3. `updateMetalLayerSize()` (491, defined 441-454) — re-pushes `ghostty_surface_set_content_scale`, `ghostty_surface_set_display_id`, `ghostty_surface_set_size` onto the *existing* surface for the new window's scale/screen
+4. Claims first responder **only if `wantsFocus` is true** (497-499) — for a hover preview you'd mount with `wantsFocus == false` (see `TerminalContainerView.isFocusedPane`/`mount`, below) so this never fires.
+
+So a re-mount of an already-created surface is cheap and synchronous: no new PTY/shell, no new C allocation — just observer rewiring + a size/scale/occlusion sync. `createSurface` itself (235-313) is only relevant for the FIRST mount of a tab, gated by `canSpawnSurface` (233: `!isTornDown &amp;&amp; spawnsSurface &amp;&amp; surface == nil`).
+
+**Confirming the "background tab is fully detached" premise** — `Views/TerminalContainerView.swift` (29-95) is the `NSViewRepresentable` SwiftUI instantiates only for tabs currently in `visibleTabIDs(for:)` (see §3). Its `mount(in:)` (72-95):
+```swift
+private func mount(in container: NSView) {
+  view.wantsFocus = isFocusedPane
+  if view.superview === container {
+    view.frame = container.bounds
+    view.setVisible(true)
+    return
+  }
+  // Detach whatever was shown (do NOT tear down — it lives on in the cache).
+  for sub in container.subviews { sub.removeFromSuperview() }
+  ...
+  container.addSubview(view)
+  view.setVisible(true)
+}
+```
+There is **no `dismantleNSView`** (comment at 66-70 explains why: occlusion is driven by the model, not by dismantle). A tab that stops being displayed simply never gets a `TerminalContainerView` instance again, so its `GhosttySurfaceView` sits with `superview == nil` — literally detached from any window, exactly as your plan assumes. Its `viewDidMoveToWindow`'s `guard let window else {...}` branch (464-471) already ran and set `isWindowVisible = false`.
+
+---
+
+## 2. CAMetalLayer / layer ownership
+
+Grepped the whole file (and the whole app) for `CAMetalLayer`, `makeBackingLayer`, `layer(for:`:
+```
+$ grep -rn "CAMetalLayer\|makeBackingLayer\|layer(for:" WorkroomApp/
+(no matches)
+```
+`GhosttySurfaceView` does **not** own or create a `CAMetalLayer` in Swift. Its only layer-related code is:
+```swift
+// init(...), line 199
+wantsLayer = true
+```
+It never overrides `makeBackingLayer()`, never assigns `self.layer = ...`, and never touches `CAMetalLayer` anywhere. The class doc comment (lines 6-7) states the actual mechanism:
+```swift
+/// One terminal surface: an `NSView` that hosts a `ghostty_surface_t` (Metal-rendered by libghostty
+/// given our `nsview`), drives a local PTY, and bridges macOS keyboard/IME/mouse into libghostty.
+```
+The `nsview` handoff happens in `createSurface()` (243-247):
+```swift
+var config = ghostty_surface_config_new()
+config.platform_tag = GHOSTTY_PLATFORM_MACOS
+config.platform = ghostty_platform_u(
+  macos: ghostty_platform_macos_s(nsview: Unmanaged.passUnretained(self).toOpaque()))
+```
+So Workroom sets `wantsLayer = true` (so AppKit provisions a backing `CALayer`) and passes the raw `self` pointer to libghostty; libghostty's macOS embedded backend (inside the prebuilt, closed-source `GhosttyKit.xcframework`) is what installs the real `CAMetalLayer` against that NSView internally — nothing in Workroom's own Swift does it. I confirmed there's no public C entry point for this either (`ghostty.h` under `DerivedData/Build/Products/Debug/include/libghostty/ghostty.h` has zero `layer`/`CAMetalLayer` symbols, only `void* nsview;` at line 449 and unrelated `ghostty_inspector_metal_*` calls at 1211-1213) — the layer install is entirely internal to the engine.
+
+For cross-reference only (not Workroom's code path): the vendored SPM package also ships a separate, unused reference wrapper at `DerivedData/SourcePackages/checkouts/libghostty-spm/Sources/GhosttyTerminal/Platform/AppKit/AppTerminalView.swift`, which explicitly does `wantsLayer = true; let metal = CAMetalLayer(); ...` and assigns it as `self.layer`. Workroom does **not** use `GhosttyTerminal`/`AppTerminalView` — its own `GhosttySurfaceView` talks directly to the `GhosttyKit` C API — but this reference implementation confirms the general mechanism (a real `CAMetalLayer` becomes the view's backing layer) that libghostty's embedded macOS backend performs internally for Workroom's view too.
+
+**Implication for your plan:** once `GhosttySurfaceView` is mounted (added as a subview) into the app's real window and un-occluded, its backing layer *is* a genuine `CAMetalLayer` that is part of that window's normal Core Animation compositing tree — there is no separate offscreen/headless render surface to route around. An `SCContentFilter` built against that real window (`SCShareableContent`/`SCContentFilter(desktopIndependentWindow:)` or an included/excluded-window filter) will see this surface's rendered Metal content exactly as a human would, as long as the view is on-screen, unoccluded (`ghostty_surface_set_occlusion(surface, true)`), and the window itself isn't occluded/minimized.
+
+---
+
+## 3. `TerminalSessions.swift` — tracking on-screen tabs
+
+Relevant published state (344-355):
+```swift
+@Published private var tabsByTarget: [TerminalTarget.ID: [TerminalTab.ID: TerminalTab]] = [:]
+@Published private var orderByTarget: [TerminalTarget.ID: [TerminalTab.ID]] = [:]
+@Published private var splitByTarget: [TerminalTarget.ID: TerminalPaneLayout] = [:]
+@Published private var focusedTabByTarget: [TerminalTarget.ID: TerminalTab.ID] = [:]
+```
+
+**The exact primitive you need — `visibleTabIDs(for:)`** (588-594):
+```swift
+/// The tab ids currently on screen: the split's members when the split is visible, else the focused
+/// solo tab. Drives occlusion.
+func visibleTabIDs(for target: TerminalTarget) -&gt; [TerminalTab.ID] {
+  if isSplitVisible(for: target), let split = splitByTarget[target.id] { return split.tabIDs }
+  if let focused = focusedTab(for: target) { return [focused.id] }
+  return []
+}
+```
+Supported by `isSplitVisible(for:)` (581-586):
+```swift
+func isSplitVisible(for target: TerminalTarget) -&gt; Bool {
+  guard let split = splitByTarget[target.id], let focused = focusedTabByTarget[target.id] else {
+    return false
+  }
+  return split.contains(focused)
+}
+```
+So for an arbitrary hovered `TerminalTab.ID`, the check is simply: `TerminalSessions.visibleTabIDs(for: target).contains(hoveredTabID)`. `true` ⇒ already on screen (splits show multiple; skip re-mounting, the preview can just... watch it, or not preview at all). `false` ⇒ a background tab that needs re-homing for the hover preview.
+
+**`reconcileOcclusion(for:)`** (1332-1339) is the doc-comment-mentioned mechanism you asked about — the single reconciliation pass that keeps `GhosttySurfaceView.setVisible` in sync with `visibleTabIDs`:
+```swift
+/// One reconciliation pass: exactly the on-screen tabs render; every other surface for the target is
+/// paused (its shell keeps running — `setVisible(false)` toggles GPU occlusion, not the PTY). Called
+/// from every state change that can alter what's on screen (focus / split / close / move / reap).
+func reconcileOcclusion(for target: TerminalTarget) {
+  let visible = Set(visibleTabIDs(for: target))
+  for tab in (tabsByTarget[target.id] ?? [:]).values {
+    tab.surface?.setVisible(visible.contains(tab.id))
+  }
+}
+```
+It's called from `restore`, `addTab`, `openContentPreview`/`openContentPersistent`, `splitFocusedPane`, `moveTabIntoSplit`, `extractFromSplit`, `focus`, `closeTab`, `addRunTab`, `respawnRunTab` — i.e., every state transition that can change what's on screen (lines 675, 699, 756, 778, 1078, 1166, 1179, 1188, 980, 1024, 1277).
+
+`displayedTabIDs(for:)` (477-495) is a *different*, broader query — it's the full strip order (every tab, split members normalized into a contiguous run) — **not** what's currently rendered; don't confuse it with `visibleTabIDs`.
+
+---
+
+## 4. Cancel-previous-in-flight generation/task-id patterns already in this codebase
+
+Three flavors exist, any of which map directly onto "cancel a previous hover's mount+stream when the user moves to a different tab quickly":
+
+### (a) SwiftUI `.task(id:)` hover-dwell pattern — the closest direct precedent
+`Views/HistoryPanel.swift:380-391` (a hover-triggered preview reveal, structurally identical to what you're building):
+```swift
+// Dwell gate: reveal only after the pointer rests ~0.5s, and hide the instant it leaves. Flipping
+// `hovering` re-runs this task (SwiftUI cancels the prior one), so a quick pass over the row
+// cancels the pending reveal before it fires — no popover flicker while scanning the list.
+.task(id: hovering) {
+  guard hovering else {
+    showCard = false
+    return
+  }
+  try? await Task.sleep(for: .milliseconds(500))
+  guard !Task.isCancelled else { return }
+  showCard = true
+}
+```
+Shape: `.task(id: &lt;hover-state-or-hovered-id&gt;) { debounce sleep; check Task.isCancelled; then act }`. Changing the `id` (e.g., hovered tab id, or a boolean) makes SwiftUI cancel the previous task and start a new one.
+
+### (b) Manual generation-token guard, because SwiftUI's `.task(id:)` cancellation is NOT reliably delivered
+`Views/Avatar.swift:232-294` — measured empirically (per its own comment) that swapping the `id` at a *reused* view-identity slot does not actually deliver `Task.isCancelled == true`, so it layers a manual `@State` token on top:
+```swift
+/// The `taskKey` of whichever `.task(id:)` invocation most recently started a fetch at this
+/// view-identity slot — a generation token, NOT SwiftUI's own cancellation. Measured...: an in-place
+/// `subject` swap at a stable slot position does not actually cancel the outgoing `.task`'s `Task` —
+/// `Task.isCancelled` reads `false` throughout its remaining lifetime...
+@State private var activeTaskKey: String?
+...
+.task(id: taskKey) {
+  ...
+  let myKey = taskKey
+  activeTaskKey = myKey
+  let loaded = await loader.load(url)
+  guard activeTaskKey == myKey else { return }   // stale invocation — discard its result
+  result = loaded
+  ...
+}
+```
+This is directly relevant if the hover-preview's mount+SCStream pipeline is driven by something other than a plain `.task(id:)` closure (e.g., an owning object whose async work outlives the SwiftUI view's task lifetime) — capture a token at hover-start, compare it before applying each side effect (un-occlude, start capturing frames, re-occlude/detach).
+
+### (c) Plain-class (non-SwiftUI) generation counter for cancelling deferred/scheduled work
+`Core/WorkroomFileWatcher.swift:41,96,124-126` — bumped on `start`/`stop`, captured before scheduling, checked in the deferred closure:
+```swift
+private var generation = 0
+...
+func stop() {
+  ...
+  queue.async { [weak self] in
+    guard let self else { return }
+    self.generation &amp;+= 1
+    ...
+  }
+}
+...
+private func scheduleTrailing() {
+  let gen = generation
+  queue.asyncAfter(deadline: .now() + coalesceWindow) { [weak self] in
+    guard let self, gen == self.generation, self.windowOpen else { return }
+    ...
+  }
+}
+```
+Same shape used with actual `Task` cancellation semantics in `Core/GitHubAuthCache.swift:57,77-95`:
+```swift
+private var generation = 0
+...
+generation += 1
+let gen = generation
+let task = Task { [self] () -&gt; GitHubCLIStatus? in
+  let probe = await resolver.resolveGitHubCLI()
+  return await record(probe, gen: gen)
+}
+inFlight = (task, force)
+...
+private func record(_ probe: Probe, gen: Int) -&gt; GitHubCLIStatus? {
+  let current = gen == generation
+  if current { inFlight = nil }
+  ...
+}
+```
+`Core/VCSToolVersions.swift:221-292` repeats the identical pattern (two independent counters, `gitGeneration`/`jjGeneration`) and its doc comment (182-183) explicitly cross-references `GitHubAuthCache`'s stamp as the shape to copy, noting a generation stamp alone only orders by recency (worth knowing if your hover-preview needs to reason about *which* generation is "latest" vs. just "still current").
+
+**For a hover-preview controller** (likely a plain class/actor owning the mount → un-occlude → SCStream capture → re-occlude → detach pipeline, not a SwiftUI `View` struct), pattern (c) is the most directly transferable: bump a generation int when a new hover starts (or the hovered tab changes), capture it before each async step (window mount, first-frame wait, stream start), and guard every continuation/callback on `gen == self.generation` before touching the surface or `SCStream` — exactly the shape `WorkroomFileWatcher`/`GitHubAuthCache`/`VCSToolVersions` already use for "cancel the previous in-flight thing when a new one starts."</result>
+<usage><subagent_tokens>149191</subagent_tokens><tool_uses>37</tool_uses><duration_ms>473115</duration_ms></usage>
+</task-notification>
