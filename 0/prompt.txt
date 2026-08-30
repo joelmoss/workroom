@@ -1,0 +1,1 @@
+mention that sessions are ended when the terminal is manually closed. remove the horizontal rule between label and description. quiting with claude code open in a terminal, shows an almost empty terminal on restart. resizing the terminal or app makes the TUI appear. Codex works fine
