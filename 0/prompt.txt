@@ -1,0 +1,110 @@
+<task-notification>
+<task-id>a47f39eca436c0248</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/f85778fc-e6c0-427d-bf50-a9cb42e1ee03/tasks/a47f39eca436c0248.output</output-file>
+<status>completed</status>
+<summary>Agent "Find sidebar/layout persistence code" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result># Report: Window/Layout State Persistence in macapp
+
+## Summary
+
+The app already has an extensive, deliberate persistence layer built entirely on the `Defaults` library (no raw `@AppStorage` remains — it was fully migrated, see comments in `DefaultsKeys.swift`). The key finding for this task: **the sidebar's visibility/collapsed state is the one piece of layout state that is explicitly NOT persisted** (session-only, resets to visible every launch), while nearly everything else (widths, inspector open/closed, selection, window frame) is persisted, either via a global `Defaults` key or via the per-window `session.json`.
+
+---
+
+## 1. Main window Scene definition
+
+`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/WorkroomApp.swift`
+- Line 55-82: `struct WorkroomApp: App` → `var body: some Scene` — a value-based `WindowGroup(for: WindowSeed.self)` (line 60-64), one `AppStore` per window.
+- Line 113-160: `struct RootWindow: View` — constructs the per-window `AppStore`, attaches `WindowAccessor` (line 144-149) which calls `store.attachWindow(window)`.
+- No `.windowRestorationBehavior`, no `restorationClass`. Line 1078 in `AppStore.swift` explicitly sets `window.isRestorable = false` — native AppKit/SwiftUI window-state restoration is deliberately opted OUT in favor of the app's own `session.json` mechanism (comment at `AppStore.swift:1068-1077` explains why: `NSQuitAlwaysKeepsWindows` is off by default for most users, so the native mechanism silently does nothing).
+
+## 2. Root NavigationSplitView
+
+`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/RootView.swift`, lines 118-168 (`private var splitView`).
+
+- Line 142: `NavigationSplitView(columnVisibility: .constant(.detailOnly)) { Color.clear.frame(width: 0) } detail: { ... }`
+- **`columnVisibility` is a hardcoded `.constant(.detailOnly)`, never a real binding of any kind (not `@State`, not `@AppStorage`, not `@Default`).** Comments at lines 118-141 explain this is a deliberate hack: the native sidebar column is unused entirely — kept only so the `NSSplitViewController` machinery gives correct toolbar layering/`.onHover` behavior. The *actual* sidebar and inspector are hand-rolled custom columns (`SidebarColumn`, `InspectorColumn`) laid out in a plain `HStack` inside the `detail:` closure (lines 144-164), gated by `store.sidebarVisible` (line 146) and `showInspector` (line 156).
+- This is the only `NavigationSplitView` in the app driving actual app content (`SettingsView.swift` explicitly avoids it — comment at `Views/SettingsView.swift:7`; `SettingsPane.swift:4` also notes a hand-rolled `HStack` instead).
+
+## 3. Sidebar view (project sidebar)
+
+`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/SidebarColumn.swift` (72 lines) — the docked card wrapper.
+`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/ProjectSidebar.swift` (867 lines) — the actual list content.
+`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/EdgeRevealSidebar.swift` — the edge-hover reveal overlay used when collapsed.
+
+Key state:
+- **Visibility**: `AppStore.swift:239` — `@Published var sidebarVisible: Bool = true` — comment (lines 235-239) states explicitly: *"Session-only (resets to shown on launch); the dragged width is persisted separately to `Defaults.sidebarWidth`."* No `didSet` writes it anywhere; grep confirms no read from `Defaults`/session for this flag. **Not persisted.**
+- **Width**: `SidebarColumn.swift:31` reads `store.dockedSidebarWidth ?? CGFloat(Defaults[.sidebarWidth])`; committed on drag-end at `SidebarColumn.swift:62-63` (`store.dockedSidebarWidth = final; Defaults[.sidebarWidth] = Double(final)`). Backed by `Defaults.Keys.sidebarWidth` at `DefaultsKeys.swift:105` (default `270`). **Persisted.**
+- **Selection**: `AppStore.swift:173-176` — `selectedTargetID`'s `didSet` writes `Defaults[.sidebarSelection]` (key at `DefaultsKeys.swift:118`, `"sidebar.selectionTargetID"`), but this is documented (`SessionSnapshot.swift:454-456`) as only the single-slot cold-start fallback — the authoritative per-window selection lives in `WindowSession.selectedTargetID` inside `session.json`. **Persisted (two layers).**
+- **Collapsed projects**: `AppStore.swift:224-226`, key `Defaults.Keys.collapsedProjects` (`DefaultsKeys.swift:132`, `"sidebar.collapsedProjects"`). **Persisted.**
+- **Expanded terminal subtrees**: `AppStore.swift:289-291`, persisted only via the per-window `session.json` (`WindowSession.expandedTargets`, `SessionSnapshot.swift:461`), not `Defaults`.
+
+## 4. Properties/inspector panel
+
+`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/InspectorColumn.swift` (65 lines) — the docked card wrapper.
+`RightInspector` struct lives in `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/ChangesPanel.swift`.
+
+- **Open/closed**: `RootView.swift:21` — `@Default(.showInspector) private var showInspector` (a real `Defaults`-backed property wrapper, unlike `sidebarVisible`). Key at `DefaultsKeys.swift:67`: `Key&lt;Bool&gt;("showNotificationsInspector", default: false)` — the stored key name is a back-compat holdover, documented in the comment. **Persisted.**
+- **Width**: `InspectorColumn.swift:26` reads `store.dockedInspectorWidth ?? CGFloat(Defaults[.inspectorWidth])`; committed on drag-end at lines 54-55. Key at `DefaultsKeys.swift:100`: `Key&lt;Double&gt;("inspector.width", default: 300)`. **Persisted.**
+- **Active section** (Changes/Files/Pull Request/History): `AppStore.swift:475` `@Published var activeInspectorSection: ActivitySection = Defaults[.activeInspectorSection]`, `didSet` at line 479 writes back. Key at `DefaultsKeys.swift:73-74`: `"inspector.activeSection"`. **Persisted.**
+- **Per-section collapse/relative sizes**: `Defaults.Keys.inspectorLayout` (`DefaultsKeys.swift:184-185`, key `"inspector.layout.v2"`), backing struct `InspectorPaneState` (`DefaultsKeys.swift:234-240`). Global across all workrooms/windows by design. **Persisted.**
+
+## 5. Defaults key definitions file
+
+`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/DefaultsKeys.swift` — single source of truth for every `Defaults.Keys` entry. Layout/window-relevant keys, all defined here:
+
+| Key (Swift name) | Stored string | Default | Line |
+|---|---|---|---|
+| `showInspector` | `showNotificationsInspector` | `false` | 67 |
+| `activeInspectorSection` | `inspector.activeSection` | `.changes` | 73-74 |
+| `inspectorWidth` | `inspector.width` | `300` | 100 |
+| `sidebarWidth` | `sidebar.width` | `270` | 105 |
+| `sidebarSelection` | `sidebar.selectionTargetID` | `nil` | 118 |
+| `mainWindowFrame` | `window.mainFrame` | `""` | 128 |
+| `collapsedProjects` | `sidebar.collapsedProjects` | `[]` | 132 |
+| `workroomTabOrder` | `workroomsView.tabOrder` | `[]` | 142 |
+| `inspectorLayout` | `inspector.layout.v2` | `.default` (equal weights) | 184-185 |
+
+Note: there is **no `Defaults` key for sidebar visibility/collapsed-state** or **inspector's dockable-visibility as a separate width-independent concept** beyond `showInspector` above — confirming finding #1 that sidebar open/closed is the gap.
+
+## 6. Window-frame restoration
+
+`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/AppStore.swift`:
+- Lines 993-999 `savedMainWindowFrame()` reads `Defaults[.mainWindowFrame]` (cold-start fallback only).
+- Lines 1001-1029 `frameOnAVisibleScreen` — clamps a restored frame to a currently-connected screen.
+- Lines 1033-1123 `attachWindow(_:)` — the whole restoration flow: sets `window.isRestorable = false` (line 1078, explicitly opting out of native `NSWindow` restoration/`restorationClass`), then at lines 1084-1101 picks a frame in priority order: **per-window `session.json` frame** (`pendingSessionRestore?.frame`) → **new-window-matches-current** (`pendingInitialWindowSize`) → **`Defaults[.mainWindowFrame]` cold-start fallback** → default `1200×780` centered. Lines 1104-1123 register `NSWindow.didResizeNotification`/`didMoveNotification` observers that write both `SessionCoordinator.shared.markDirty()` (per-window, authoritative) and `Defaults[.mainWindowFrame]` (single-slot fallback, only from the "active" window, guarded by `persistsSidebarPrefs` at line 1117).
+- The authoritative per-window frame is `WindowSession.frame` (`String?`, `NSStringFromRect`) defined at `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/SessionSnapshot.swift:451`, part of the `session.json` document written by `SessionStore.swift` (path: `~/Library/Application Support/Workroom/&lt;bundle-id&gt;/session.json`, scoped per build identity — Debug/Nightly/Release don't collide, see `SessionStore.swift:14-27`).
+
+No `frameAutosaveName`/`NSWindow` autosave API is used anywhere (confirmed via grep — zero hits) — frame persistence is entirely hand-rolled through `Defaults` + `session.json`.
+
+## 7. `NavigationSplitView`/`columnVisibility` binding type — direct answer
+
+`columnVisibility` in the one real `NavigationSplitView` (`RootView.swift:142`) is **`.constant(.detailOnly)`** — a hardcoded constant, not backed by `@State`, `@AppStorage`, or `@Default`. It carries no runtime meaning; the native column is empty and unused. Real sidebar/inspector visibility is driven by separate booleans (`store.sidebarVisible` — plain `@Published`, unpersisted; `showInspector` — `@Default`-backed, persisted).
+
+## 8. Relevant comments/documentation of the gap
+
+- `AppStore.swift:235-239`: sidebar visibility comment explicitly states it is *"Session-only (resets to shown on launch)"* — this is a documented, deliberate design choice, not an oversight, but it is the literal gap the task asks about.
+- `AppStore.swift:152-159` `persistsSidebarPrefs`: only the last-active window writes shared `Defaults`-backed sidebar prefs (selection/collapse/tab-order), to avoid multi-window clobbering.
+- `TODOS.md:1491-1512` ("Raise the inspector's 520pt width cap") confirms `InspectorColumn.swift:23` (`maxWidth = 520`) and `SidebarColumn`'s `240-360` bounds as the current column-width design, and references `Defaults.sidebarWidth`/`inspectorWidth` as already shipped.
+- No TODO/FIXME anywhere in the codebase proposes persisting `sidebarVisible` — no known-planned fix for that gap.
+
+## File index for quick reference
+
+| Purpose | File |
+|---|---|
+| Scene/App entry | `macapp/WorkroomApp/WorkroomApp.swift` |
+| Window attach/frame restore | `macapp/WorkroomApp/Core/AppStore.swift` (`attachWindow`, ~L993-1130) |
+| Root split view | `macapp/WorkroomApp/Views/RootView.swift` (`splitView`, L118-168) |
+| Sidebar card + width persistence | `macapp/WorkroomApp/Views/SidebarColumn.swift` |
+| Sidebar content/list | `macapp/WorkroomApp/Views/ProjectSidebar.swift` |
+| Edge-reveal (collapsed sidebar hover) | `macapp/WorkroomApp/Views/EdgeRevealSidebar.swift` |
+| Inspector card + width persistence | `macapp/WorkroomApp/Views/InspectorColumn.swift` |
+| Inspector content | `macapp/WorkroomApp/Views/ChangesPanel.swift` (`RightInspector`) |
+| Right-edge icon rail | `macapp/WorkroomApp/Views/ActivityBar.swift` |
+| All `Defaults.Keys` definitions | `macapp/WorkroomApp/Core/DefaultsKeys.swift` |
+| Per-window session (frame/selection/tabs/splits) | `macapp/WorkroomApp/Core/SessionSnapshot.swift`, `SessionStore.swift`, `SessionCoordinator.swift`, `AppStore+Session.swift` |
+| Menu bindings (Projects/Inspector toggles) | `macapp/WorkroomApp/WorkroomApp.swift` (~L985-999) |</result>
+<usage><subagent_tokens>108424</subagent_tokens><tool_uses>32</tool_uses><duration_ms>189620</duration_ms></usage>
+</task-notification>
