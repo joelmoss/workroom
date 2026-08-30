@@ -1,0 +1,1 @@
+now a hover selected the tab, but the detail pane is empty
