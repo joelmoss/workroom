@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bt136h25h</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/ad9e5754-d4c8-4063-beb8-947970ea5d8f/tasks/bt136h25h.output</output-file>
+<status>completed</status>
+<summary>Background command "Run full unit test suite serially against fixes + updated deps" completed (exit code 0)</summary>
+</task-notification>
