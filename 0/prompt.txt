@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b1qi7e6qz</task-id>
+<tool-use-id>toolu_01KaiRZmnY5627MJiok7njpm</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/ad9e5754-d4c8-4063-beb8-947970ea5d8f/tasks/b1qi7e6qz.output</output-file>
+<status>completed</status>
+<summary>Background command "Run the trimmed TerminalAgentUITests to verify the argv-based fix" completed (exit code 0)</summary>
+</task-notification>
