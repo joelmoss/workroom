@@ -1,0 +1,1 @@
+capture is dead for both. but use something visual for each pane type (diff, terminal, etc). Use different treatment per switcher
