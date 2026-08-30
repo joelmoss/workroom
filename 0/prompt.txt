@@ -1,0 +1,220 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. Primary Request and Intent:
+   The user asked which items from `TODOS.md` should be pulled into scope for an imminent Workroom v2 GA (general availability/final) release, given the stated mandate from here on is "bugs and polish only" — no new features. After an inventory and a scope decision (user chose the "broader cut" including jj-shaped VCS-toolbar bugs, not just the tightest silent-damage set), the user explicitly said **"Don't release anything or create tags yet. This is for dev and nightly right now"** — meaning all work targets `master`/dev and rides the daily nightly build; no release tag is to be cut as part of this task. The user then asked to **"Start an engineering review on this plan"** (invoking `/plan-eng-review`), which included running the standard outside-voice (Codex) cross-model check. After the review's findings were resolved via a sequence of AskUserQuestion decisions (all selecting the "(recommended)" option each time), the user approved the plan via ExitPlanMode ("Ready — exit plan mode now (recommended)"), after which — per the "Auto Mode Active" system directive — I began autonomous implementation of the 10 approved tasks (T1–T10), running full builds/tests/lint after each and marking tasks complete via TaskUpdate only when verified green. No further explicit user chat messages occurred after the ExitPlanMode approval; all subsequent work has been autonomous implementation against the approved plan.
+
+2. Key Technical Concepts:
+   - Workroom: dual-product repo — a Go CLI (`internal/config`, `internal/vcs`, etc.) and a native macOS SwiftUI app (`macapp/WorkroomApp`) that bundles the CLI and also has its own native VCS layer (`VCSWriting.swift`, `VCSToolVersions.swift`, etc.)
+   - jj (Jujutsu) vs git dual-VCS support; `JJSnapshotGate` (actor-based per-project-root write serialization with a `maxChainWait` self-heal ceiling); jj revsets (`trunk()`, `remote_bookmarks()`, `immutable_heads()`, `::@` ancestry operators)
+   - `StatusCommandRunning` protocol / `StatusCommandRunner` (real subprocess runner) as the shell-out seam; `CommandResult` struct with `signaled: Bool` field (distinguishes a killed process's signal-number-as-exitCode from a real exit code)
+   - `GitHubAuthCache` actor as the canonical caching pattern (ContinuousClock freshness lease + generation-stamped in-flight + instance-not-static ownership) that other caches (`VCSToolVersionCache`) are modeled after
+   - `ProjectStore` (shared, `@MainActor`, cross-window state) vs `AppStore` (per-window, proxies to `ProjectStore`)
+   - `RemoteStateModel` (`@MainActor` ObservableObject owning the VCS toolbar's fetch/push/pull/abortRebase state machine) with injectable closures (`makeWriter`, `onDidMutate`, `onBranchResolved`, `describeTarget`, and newly added `canStartWrite`/`writeDidStart`/`writeDidFinish`) so it stays `AppStore`-free and unit-testable
+   - `VCSWriting` protocol / `CLIVCSWriter` struct (the write-side VCS seam, separate from the read-only `VCSProviding`)
+   - `VCSRemoteFailure` / `VCSCommitFailure` enums — deliberately exhaustive (no `default:`) switches across `VCSSyncPresentation.swift` so every new failure case forces a compile error until classified
+   - Swift actor reentrancy hazards: mutating a stored property through an `inout` binding held across an `await` boundary is unsafe — this shaped the T5 rewrite (flat per-tool properties instead of a shared `Slot` struct)
+   - `gofrs/flock` Go library for real OS-level advisory locking (`flock(2)`/`LockFileEx`) replacing a hand-rolled `O_CREATE|O_EXCL` + mtime-staleness scheme
+   - Xcode/SwiftPM build tooling: `xcodegen generate`, `xcodebuild test -only-testing:`, `xcrun swift-format format/lint --strict`, `xcrun xcresulttool get test-results summary` (needed because Xcode 26 hides pass/fail summary in normal build output — a pre-existing memory note)
+   - Sandbox limitations: Go module fetches (`go get`) and Go build cache, plus Xcode DerivedData/build caches, are blocked by the command sandbox and require `dangerouslyDisableSandbox: true`; `rm -rf` is blocked entirely by a destructive-command policy (`dcg`) and cannot be bypassed even for throwaway temp dirs — must ask the user to run it manually (in practice for this session, throwaway temp dirs were simply left in place since they were system temp and harmless, not deleted).
+   - gstack skill framework: `/plan-eng-review` review flow (Step 0 complexity gate, per-issue AskUserQuestion, outside-voice Codex cross-model check, GSTACK REVIEW REPORT format with mandatory trailing "NO UNRESOLVED DECISIONS" sentinel or itemized unresolved-decisions block), `gstack-review-log`, `gstack-decision-log`, `gstack-learnings-log` persistence commands
+   - Empirical verification methodology: using real `git`/`jj` CLI binaries against throwaway repos in `mktemp -d` directories to prove/disprove revset behavior claims before committing to a code fix — this is also the exact pattern the codebase's own `VCSRemoteIntegrationTests.swift` file uses ("REAL git and jj repos... No network... throwaway under NSTemporaryDirectory()")
+
+3. Files and Code Sections:
+
+   - **`/Users/joelmoss/.claude/plans/i-plan-to-a-concurrent-mccarthy.md`** (plan file)
+     - Central planning document, extensively iterated across the Plan Mode phase and the eng-review phase. Final structure: Context → Landing shape → Tier 1/2/3 items with "Fix decision" sub-blocks → "Also worth a look" (CMT-3) → "What already exists" → "NOT in scope" → Test coverage diagram → Failure modes table → Worktree parallelization strategy → Verification → "Outside voice (Codex)" section → Implementation Tasks (T1-T10) → GSTACK REVIEW REPORT (final section, ending in "NO UNRESOLVED DECISIONS").
+     - This is the authoritative task list; all T1-T10 work must trace back to specific items here.
+
+   - **`internal/config/config.go`** (Go CLI)
+     - Rewrote `withLock(fn func() error) error` to use `flock.New(lockPath)` + `TryLockContext` with a 30s `context.WithTimeout` backstop, replacing the old polling/staleness scheme:
+       ```go
+       func (c *Config) withLock(fn func() error) error {
+       	lockPath := c.path + ".lock"
+       	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+       		return fn()
+       	}
+       	fl := flock.New(lockPath)
+       	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+       	defer cancel()
+       	locked, err := fl.TryLockContext(ctx, 10*time.Millisecond)
+       	if err != nil || !locked {
+       		return fn()
+       	}
+       	defer func() { _ = fl.Unlock() }()
+       	return fn()
+       }
+       ```
+     - Added imports: `"context"`, `"github.com/gofrs/flock"`.
+
+   - **`internal/config/lock_test.go`** (new file)
+     - 4 new tests: `TestWithLockSerializesAgainstALiveSlowHolder`, `TestWithLockConcurrentWritersNeverCorruptTheFile`, `TestWithLockReleasedImmediatelyWhenHolderDies` (uses `flock.New` directly to simulate a crashed holder that never calls `Unlock`, only `Close`).
+
+   - **`internal/config/config_extra_test.go`**
+     - Renamed `TestWriteAtomicLeavesNoTempOrLockFiles` → `TestWriteAtomicLeavesNoTempFiles`; removed the assertion that no `.lock` file survives (now expected to persist as a real flock sidecar file).
+
+   - **`go.mod`**
+     - Added `github.com/gofrs/flock v0.13.0` (via `go get`, sandbox-disabled); `golang.org/x/sys` bumped as a transitive dependency.
+
+   - **`macapp/WorkroomApp/Core/ProjectStore.swift`**
+     - Added `@Published var writingProjectRoots: [String: Int] = [:]` and `var vcsToolVersionCache = VCSToolVersionCache()` (replacing the old `static let shared` pattern for per-test isolation).
+
+   - **`macapp/WorkroomApp/Core/AppStore.swift`**
+     - Added proxy properties `writingProjectRoots` and `vcsToolVersionCache`.
+     - In `init`, wired: `self.remoteState.canStartWrite = { [weak self] root in !(self?.isWritingProject(root) ?? false) }`, `self.remoteState.writeDidStart = { [weak self] root in self?.beginWrite(projectRoot: root) }`, `self.remoteState.writeDidFinish = { [weak self] root in self?.endWrite(projectRoot: root) }`.
+     - Updated `refreshVCSToolReport()` to capture `let cache = vcsToolVersionCache` before the `Task` (avoiding `VCSToolVersionCache.shared`).
+
+   - **`macapp/WorkroomApp/Core/AppStore+WorkroomStatus.swift`**
+     - Added `isWritingProject(_:)`, `beginWrite(projectRoot:)`, `endWrite(projectRoot:)` methods.
+     - Updated `performCommit` to guard: `guard !isWritingProject(root) else { return completion(.failed(.locked(nil))) }`, and call `beginWrite`/`endWrite` around the write.
+
+   - **`macapp/WorkroomApp/Core/RemoteStateModel.swift`**
+     - Added `var canStartWrite: (@MainActor (String) -> Bool)?`, `var writeDidStart: (@MainActor (String) -> Void)?`, `var writeDidFinish: (@MainActor (String) -> Void)?`.
+     - In `perform()`, added the check: `if canStartWrite?(target.projectRoot) == false { lastFailure = .locked(nil); ...; return }`, and calls to `writeDidStart?(projectRoot)` before the Task and `self?.writeDidFinish?(projectRoot)` inside it before calling `finish`.
+     - Updated `canPull`: `return !tracking.gone && !tracking.noKnownUpstream`.
+
+   - **`macapp/WorkroomApp/Core/VCSWriting.swift`** (heavily modified across T3, T4, T7, and pending T8/T9)
+     - `abortRebase`: fixed to check `Self.rebaseInProgress(gitDir: Self.worktreeGitDir(at: path))` before faking jj success; on fallthrough, explicitly calls `runner.run("git", Self.gitAbortRebaseArgs(), ...)` (NOT the private `run()` helper, which spawns `self.vcs`) and hardcodes `tool: "git"` for classification.
+     - Added `case launchFailed` to `VCSRemoteFailure` and `VCSCommitFailure` enums; `classify`/`classifyCommit` check `CommandResult.launchFailed` before `commandNotFound`.
+     - Added `case noKnownUpstream` to `VCSRemoteFailure`.
+     - Added `static let jjTrunkIsAncestorRevset = "\(jjTrunkRevset) & ::@"` — **this revset is now known to be WRONG** (see Errors section below); it incorrectly flags the ordinary "fell behind" case as diverged.
+     - Modified the `.ancestor, .none` case in `jjRemoteState` to run the ancestor-check first and only compute `behind` if verified; sets `noKnownUpstream: !trunkIsAncestor` on the resulting `VCSTracking`.
+     - Added `if tracking?.noKnownUpstream == true { return .failed(.noKnownUpstream) }` guard at the start of `pullRebase()`.
+     - `jjQuote`/bookmark-tracking fixes (T8/T9) have NOT yet been started — the file at `VCSWriting.swift:983-1005` (`trackingByName`) and `:1442` (`parsed.bookmarks.first { $0.name == name }`) are still unmodified as of the cutoff.
+
+   - **`macapp/WorkroomApp/Core/VCSModels.swift`**
+     - Added `noKnownUpstream: Bool` field to `VCSTracking` with a custom memberwise-preserving `init` defaulting it to `false`:
+       ```swift
+       struct VCSTracking: Equatable, Sendable {
+         let comparedTo: String
+         let ahead: Int?
+         let behind: Int?
+         let gone: Bool
+         let noKnownUpstream: Bool
+         init(comparedTo: String, ahead: Int?, behind: Int?, gone: Bool, noKnownUpstream: Bool = false) {
+           self.comparedTo = comparedTo
+           self.ahead = ahead
+           self.behind = behind
+           self.gone = gone
+           self.noKnownUpstream = noKnownUpstream
+         }
+       }
+       ```
+
+   - **`macapp/WorkroomApp/Core/VCSSyncPresentation.swift`**
+     - Added `.launchFailed` and `.noKnownUpstream` arms across 5 exhaustive switches: `retryAction`, `readRetryIsWorthwhile`, `describe`, `remedy`, `rawOutput` (Remote variant), plus 3 more for the Commit variant (`describeCommit`, `commitRemedy`, `commitRawOutput`) during T4.
+     - Example added copy: `case .noKnownUpstream: return "This workroom has no known upstream to pull from."` (describe); a longer explanatory string in `remedy`.
+
+   - **`macapp/WorkroomApp/Core/StatusCommandRunner.swift`**
+     - Added `static let launchFailed: Int32 = -1` sentinel (distinct from `commandNotFound: Int32 = 127`), with extensive doc explaining the distinction.
+     - Changed the `catch` block's `CommandResult(...)` construction to use `CommandResult.launchFailed` instead of `CommandResult.commandNotFound`.
+
+   - **`macapp/WorkroomApp/Core/AgentRunner.swift`**
+     - Added `case interrupted` to `AgentRunOutcome` enum; added `if result.signaled { return .interrupted }` in `classify()`, positioned AFTER the `timedOut` check and BEFORE the `commandNotFound` check.
+
+   - **`macapp/WorkroomApp/Core/TerminalAgentManager.swift`**
+     - Added `case .interrupted: resolved = .failure(failure, .other("interrupted"))` to `apply(outcome:)`.
+
+   - **`macapp/WorkroomApp/Core/FileTreeModel.swift`**
+     - Replaced `list(...) async -> [String]?` with `list(...) async -> ListResult`, where `ListResult` is a new enum: `.listing([String])`, `.unavailable`, `.interrupted` (signalled probe, ordinary tool/repo failure remembered separately via `sawSignal` flag inside the git→jj fallthrough loop).
+     - Updated `reload()` to switch over the three cases, leaving `roots`/`state` untouched on `.interrupted`.
+
+   - **`macapp/WorkroomApp/Core/RustJJProvider.swift`**
+     - Changed `private static func run(...)` to `static func run(..., runner: StatusCommandRunning = StatusCommandRunner())` (non-private, injectable, for testability).
+     - Added `if result.signaled { throw VCSError.io("\(exe) was interrupted") }` before the generic exit-code guard.
+
+   - **Test files created/modified in T1-T7:**
+     - `macapp/WorkroomAppTests/AppStoreWritingProjectTests.swift` (new, 6 tests, T2)
+     - `macapp/WorkroomAppTests/RemoteStateModelTests.swift` (extended, T2)
+     - `macapp/WorkroomAppTests/VCSRemoteIntegrationTests.swift` (extended, T3 + T7 — added `testAbortRebaseOnAColocatedRootRunsTheRealGitAbort`, `testDivergedTrunkReportsNoKnownUpstreamNotAWrongCount`, `testOrdinaryDescendantOfTrunkHasKnownUpstream`)
+     - `macapp/WorkroomAppTests/StatusCommandRunnerTests.swift` (T4)
+     - `macapp/WorkroomAppTests/VCSWritingTests.swift` (T4, extended for `.launchFailed`)
+     - `macapp/WorkroomAppTests/VCSToolVersionsTests.swift` (T5, extended with slot-independence and TTL tests)
+     - `macapp/WorkroomAppTests/AgentRunnerTests.swift` (T6)
+     - `macapp/WorkroomAppTests/TerminalAgentManagerTests.swift` (T6)
+     - `macapp/WorkroomAppTests/FileTreeTests.swift` (T6, updated for `ListResult`)
+     - `macapp/WorkroomAppTests/RustJJProviderRunTests.swift` (new, T6)
+
+4. Errors and fixes:
+   - **Sandbox TLS failure on `go get`**: `go get github.com/gofrs/flock@latest` failed with `tls: failed to verify certificate: x509: OSStatus -26276` inside the sandbox (proxy.golang.org not on the network allowlist). Fixed by retrying with `dangerouslyDisableSandbox: true` — consistent with the documented pattern for `gh` CLI network calls.
+   - **Go/Xcode build cache sandbox permission errors**: `go test`, `xcodebuild`, `make app-test`/`make app-lint`/`make cli-lint` repeatedly failed with `operation not permitted` against `~/Library/Caches/go-build` or Xcode DerivedData paths. Fixed by using `dangerouslyDisableSandbox: true` for essentially all build/test/lint invocations throughout the session — this became the standard mode for all subsequent build commands.
+   - **`rm -rf` blocked by destructive-command policy**: attempted to clean up a throwaway jj/git test repo in `$TMPDIR`; blocked by `dcg` policy `core.filesystem:rm-rf-general` with no override available except asking the user. Left the dir in place (harmless, system temp) rather than pursuing further.
+   - **`abortRebase`'s fallthrough spawned the wrong executable**: initial fix for T3 called the private `run(Self.gitAbortRebaseArgs(), in: dir, ...)` helper, which internally spawns `self.vcs` (i.e. "jj" for a colocated root) — so a colocated jj workroom's abort tried to run `jj rebase --abort` with GIT's args, which failed with a jj argument-parsing error. **Fix**: called `runner.run("git", Self.gitAbortRebaseArgs(), in: dir, timeout: refTimeout)` directly, bypassing the vcs-derived executable, and hardcoded `tool: "git"` in the subsequent `classify` call. Caught by running the new integration test and reading the exact error message (`unexpected argument '-c' found... Usage: jj log [OPTIONS]...` — jj's default-command fallback rejecting git's flags).
+   - **jj fixture setup checkout failures**: `git checkout -b other main` failed with "local changes to a.txt would be overwritten" right after `jj describe`, because git's index isn't yet synced with jj's working-copy commit at that point. **Fix**: added `-f` (force) to every `git checkout` call in the new fixture setup steps, with a code comment explaining this is a fixture-ordering artifact, not something `abortRebase` itself needs to worry about.
+   - **T7 REGRESSION discovered via full-suite test run (UNRESOLVED at cutoff)**: after implementing `jjTrunkIsAncestorRevset = "trunk() & ::@"` and wiring it into `jjRemoteState`, the PRE-EXISTING test `testPullRebasesAnUnbookmarkedWorkingCopyOntoTrunk` (which tests the ordinary "workroom fell behind as main advanced" scenario — NOT a divergence) started failing:
+     ```
+     XCTAssertEqual failed: ("nil") is not equal to ("Optional(1)") - an unbookmarked `@` whose base moved must still report behind — got Optional(Workroom.VCSTracking(comparedTo: "origin", ahead: Optional(1), behind: nil, gone: false, noKnownUpstream: true))
+     ```
+     Root cause: `trunk() & ::@` checks whether trunk's CURRENT tip is an ancestor of `@` — but in the ordinary "fell behind" case, trunk's tip has ALREADY moved past wherever `@` branched off, so trunk's current tip is never actually an ancestor of `@` even in the completely normal, expected state. My revset conflates "ordinary fell-behind" with "genuinely diverged onto an unrelated line" — both produce `trunk() & ::@` == empty. **This was NOT yet fixed when the conversation was cut off.** I had begun empirically testing alternative revsets (`@ & ::trunk()`, an "either direction" union, and `(trunk()..@) & ::(immutable_heads())`) against both the ordinary scenario and a constructed feature-branch-with-independently-advancing-trunk scenario, but had not yet found or verified a correct formulation. My last empirical test — running the REAL `jj rebase -b @ -d trunk()` command against the feature-branch scenario — unexpectedly SUCCEEDED (exit 0) rather than hitting the `immutable_heads()` refusal that TODOS.md's own item #7 describes as the real-world failure mode, suggesting either my test repro was flawed or my understanding of when `immutable_heads()` triggers needs revisiting before I can design the correct detection revset.
+
+5. Problem Solving:
+   - Solved: real OS advisory locking eliminates a stale-timeout heuristic entirely, with mixed-version rollout risk explicitly documented as an open decision for whoever eventually cuts a release tag (deferred, not built, per user's "don't release yet" instruction).
+   - Solved: cross-window write-in-flight refusal via a unified `writingProjectRoots` counter checked by write actions themselves (not just read lanes) — closes the write-vs-write race that the original, narrower "mirror isCommitting" plan (identified as insufficient by the outside-voice review) would have missed.
+   - Solved: `VCSToolVersionCache`'s reentrancy bug (a jj-blind probe clobbering a jj-aware cached verdict) closed structurally by splitting into two independent per-tool cache slots, with an explicit design note about why flat properties (not a shared `inout` struct) are required to avoid actor-reentrancy hazards.
+   - Solved: `abortRebase`'s unconditional fake-success for jj repos, verified against a REAL colocated jj+git repo reproducing the exact failure mode (a `git rebase` run in a terminal leaving `rebase-merge` behind), and empirically confirmed no explicit `jj git import` is needed afterward (jj's own status read auto-imports).
+   - Solved: distinct `launchFailed` sentinel (-1) vs `commandNotFound` (127) so a deleted-workroom's VCS action no longer misreports "git isn't on PATH" while the version toast simultaneously says git is fine.
+   - Solved: three `CommandResult.signaled` consumers (AgentRunner, FileTreeModel, RustJJProvider) now correctly distinguish a killed/interrupted process from a real exit code or a genuine "not a repo" state.
+   - **UNSOLVED / IN PROGRESS**: the correct jj revset (or other detection mechanism) for "no known upstream" that (a) does NOT flag the ordinary fell-behind case (the vast majority of real usage), (b) DOES flag genuine divergence (an unbookmarked `@` whose lineage has nothing to do with the current `trunk()`), and (c) ideally also predicts/prevents the real `immutable_heads()` rebase-refusal scenario TODOS.md's item #7 originally described (workroom off a pushed feature branch, trunk advances independently). This requires more empirical jj revset experimentation before the code fix can be corrected and the regression resolved.
+
+6. All user messages:
+   - "ask me again" (after an AskUserQuestion tool-use rejection, re-requesting the same tight-cut-vs-broader-cut question)
+   - Selection: "Broader cut (Tier 1+2+3)" (via AskUserQuestion answer)
+   - (ExitPlanMode rejected by user with instruction): **"Don't release anything or create tags yet. This is for dev and nightly right now"**
+   - (ExitPlanMode rejected again by user with instruction): **"Start an engineering review on this plan"**
+   - Selection: "The GA triage plan file" (scope-gate AskUserQuestion answer for /plan-eng-review)
+   - Selection: "Skip — running /office-hours first... (recommended)" → "Skip — review the plan as-is (recommended)" (office-hours prerequisite offer)
+   - Selection: "Per-tier PRs (recommended)" (Step 0 complexity-check landing-shape question)
+   - Selection: "Mirror the commit pattern (recommended)" (JJSnapshotGate fix-shape question)
+   - Selection: "Reuse worktreeGitDir + rebaseInProgress (recommended)" (abortRebase fix-shape question)
+   - Selection: "60s ok / 10s belowFloor (reuse as-is, recommended)" (VCSToolVersionCache TTL question)
+   - Selection: "OS-level advisory lock via a library (recommended)" (config.go lock mechanism question)
+   - Selection: "Extend the fix: gate writes too (recommended)" (cross-model tension 1, JJSnapshotGate write-vs-write)
+   - Selection: "Refuse outright via a per-project write-in-flight flag (recommended)" (write-vs-write fix-shape follow-up)
+   - Selection: "Split into two independent cache slots (recommended)" (cross-model tension 2, VCSToolVersionCache architecture)
+   - Selection: "Swap to the safe bug-fix version: report 'no upstream,' disable Pull (recommended)" (cross-model tension 3, item #7 scope)
+   - Selection: "Add a compatibility note now, decide the mechanism closer to the tag (recommended)" (cross-model tension 4, config lock rollout)
+   - Selection: "Ready — exit plan mode now (recommended)" (final "next step" question after the eng review completed)
+   - (No further explicit user chat messages after this point — all subsequent work through T1-T7 has been autonomous implementation under the "Auto Mode Active" system directive, which states: "Bias toward working without stopping for clarifying questions... make the reasonable call and keep going; they'll redirect you if needed" and also instructs to run `git status` before any command that could discard uncommitted work, and to double-check file contents before pushing if anything suspicious appears — no such situations arose in this session.)
+
+7. Pending Tasks (from the approved plan's Implementation Tasks list, tracked via TaskCreate/TaskUpdate):
+   - **T7 (IN PROGRESS, currently blocked on an unresolved regression)**: Stop guessing `trunk()` for an unbookmarked `@` off a non-trunk base; report "no known upstream" and disable Pull instead. **Must fix**: the `jjTrunkIsAncestorRevset = "trunk() & ::@"` revset incorrectly flags the ordinary "fell behind" case as diverged, breaking the pre-existing `testPullRebasesAnUnbookmarkedWorkingCopyOntoTrunk` test.
+   - **T8 (not started)**: Add `jjUnquote` (exact inverse of `jjQuote`) and parse jj bookmark names through it before comparing, fixing `VCSWriting.swift:1442`'s `parsed.bookmarks.first { $0.name == name }` bug where jj's pre-quoted template output never matches a raw name.
+   - **T9 (not started)**: Filter `trackingByName` by `primaryRemote` instead of last-write-wins, fixing `VCSWriting.swift:983-1005`'s multi-remote tracking bug.
+   - **T10 (not started)**: Minimal-viable terminal content accessibility (CMT-3) — `accessibilityValue`/`accessibilitySelectedText` + throttled notifications in `GhosttySurfaceView.swift`, with a note to confirm no secret/password content leaks through the exposed value.
+   - After all tasks complete: per the plan's "Landing shape" decision, the work should land as 4 separate PRs grouped by tier (Tier 1: #1+#2 / Tier 2: #3+#4+#5+#6 / Tier 3: #7+#8+#9 / CMT-3 standalone) — though no explicit instruction has yet been given to actually create branches/PRs; this was the plan's stated intent, not yet acted upon.
+
+8. Current Work:
+   Immediately before this summary was requested, I was in the middle of fixing a regression I discovered in T7 ("Report 'no known upstream' instead of guessing trunk() for jj Pull"). After implementing the `jjTrunkIsAncestorRevset = "trunk() & ::@"` check and wiring it into `VCSWriting.swift`'s `jjRemoteState` function, I ran the full `VCSRemoteIntegrationTests` + `VCSWritingTests` + `RemoteStateModelTests` suites together (195 tests) and got:
+   ```
+   Executed 195 tests, with 2 failures (0 unexpected) in 18.748 (18.812) seconds
+   Failing tests:
+   	VCSRemoteIntegrationTests.testPullRebasesAnUnbookmarkedWorkingCopyOntoTrunk()
+   	VCSRemoteIntegrationTests.testPullRebasesAnUnbookmarkedWorkingCopyOntoTrunk()
+   ```
+   Drilling into the specific failure:
+   ```
+   /Users/joelmoss/dev/workroom/macapp/WorkroomAppTests/VCSRemoteIntegrationTests.swift:639: error: ... XCTAssertEqual failed: ("nil") is not equal to ("Optional(1)") - an unbookmarked `@` whose base moved must still report behind — got Optional(Workroom.VCSTracking(comparedTo: "origin", ahead: Optional(1), behind: nil, gone: false, noKnownUpstream: true))
+   /Users/joelmoss/dev/workroom/macapp/WorkroomAppTests/VCSRemoteIntegrationTests.swift:647: error: ... failed - jj pull failed: failed(Workroom.VCSRemoteFailure.noKnownUpstream)
+   ```
+   I identified the root cause: `trunk() & ::@` requires trunk's CURRENT tip to already be an ancestor of `@`, but in the ordinary "workroom fell behind because trunk advanced" scenario (the single most common real-world state), trunk's tip has moved past `@`'s branch point by definition — so this check is always empty/false in that case too, not just in genuine divergence. My revset cannot distinguish "ordinary, expected behind-ness" from "actually diverged onto an unrelated line."
+
+   I then ran a sequence of empirical experiments against real throwaway jj+git repos (via `dangerouslyDisableSandbox: true` Bash calls) to find the correct check:
+   1. Confirmed `trunk() & ::@` = 0 in the ordinary fell-behind scenario (proving it's wrong)
+   2. Tried `@ & ::trunk()` (reverse direction) = also 0 in that scenario
+   3. Tried a union of both directions = still 0
+   4. Confirmed the REAL `jj rebase -b @ -d trunk()` command actually SUCCEEDS in the ordinary scenario (as expected — this must always work)
+   5. Tried a candidate `(trunk()..@) & ::(immutable_heads())` check (testing whether anything between trunk and @ is immutable) = 0 (empty) in the ordinary scenario — this is the desired "safe" answer for that case
+   6. Set up a second scenario (workroom off a genuinely separate, PUSHED `feat` bookmark, with `main`/trunk advancing independently via a new commit) to test whether the same `(trunk()..@) & ::(immutable_heads())` check correctly predicts trouble here — got 0 (empty) again, which appears WRONG since this is exactly the case TODOS.md's item #7 says triggers a real `immutable_heads()` rebase failure
+   7. As a final check, ran the actual `jj rebase -b @ -d 'trunk()'` command against this feature-branch scenario to see if it really fails — it unexpectedly SUCCEEDED (exit 0, "Rebased 2 commits to destination") rather than hitting the immutable-history error I expected based on `VCSRemoteFailure.immutableHistory`'s existing doc comment in the codebase.
+
+   This last result is where the investigation was cut off — the empirical test of the "known failure scenario" didn't actually reproduce a failure, which means either (a) my fixture setup for that scenario doesn't correctly represent the real-world case that triggers `immutable_heads()`, or (b) my understanding of when jj's `immutable_heads()` marks a commit as protected needs revisiting (possibly it requires the commit to be reachable from a REMOTE-TRACKED bookmark specifically, not just any pushed bookmark, or requires a different repo/config state than my quick fixture produced).
+
+9. Optional Next Step:
+   The immediate, explicit next step — directly continuing the unresolved work at the point of cutoff — is to continue researching the correct jj revset/detection mechanism for `noKnownUpstream` that correctly distinguishes the ordinary "fell behind" case (must NOT flag; the pre-existing `testPullRebasesAnUnbookmarkedWorkingCopyOntoTrunk` test asserts this state must report `behind == 1` and allow a successful pull) from genuine divergence (must flag; my new `testDivergedTrunkReportsNoKnownUpstreamNotAWrongCount` test asserts `noKnownUpstream == true` and `behind == nil` for a `main` bookmark moved to a disjoint `root()`-based line). This requires either:
+   - Further empirical jj experimentation to find why the feature-branch-with-independent-trunk scenario didn't reproduce an `immutable_heads()` failure as expected (possibly needing a more realistic fixture — e.g., an actual second developer's clone advancing trunk with a REAL divergent commit, not just an empty commit, or checking whether `immutable_heads()`'s default config requires something my fixture didn't set up), or
+   - Reconsidering whether "detect and predict immutable_heads() failure" is even the right mechanism, versus a simpler check like "does `@`'s branch point (where it left trunk) still exist as an ancestor of the CURRENT trunk" — i.e. checking against `@`'s merge-base with `trunk()` rather than `trunk()`'s current tip directly, since the ordinary case's `@`'s parent (before trunk advanced) legitimately WAS on trunk's line at some point, whereas a truly diverged line's merge-base with trunk is just `root()` or some very early ancestor.
+
+   Once a correct detection mechanism is found and verified empirically against both scenarios, the concrete remaining steps for T7 are: update `jjTrunkIsAncestorRevset` (or replace it with the correct revset/logic) in `VCSWriting.swift`, re-run the full `VCSRemoteIntegrationTests` + `VCSWritingTests` + `RemoteStateModelTests` suites to confirm all 195+ tests pass (including both the pre-existing `testPullRebasesAnUnbookmarkedWorkingCopyOntoTrunk` and the two new T7 tests), then run `make app-format` + `make app-lint` + the full `make app-test` suite to confirm no regressions elsewhere, before marking Task #7 as completed via TaskUpdate and moving on to T8 (jjUnquote) and T9 (trackingByName primaryRemote filtering), both of which are still untouched in `VCSWriting.swift`.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/joelmoss/.claude/projects/-Users-joelmoss-dev-workroom/019a01e7-2eaa-471a-8b14-b704158e837e.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.
