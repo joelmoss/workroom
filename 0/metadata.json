@@ -1,0 +1,97 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "01M19CJ0TMRH5HEAZPWQ8S36F5",
+  "session_id": "77936c99-7226-4f89-9ef0-c70b225ab951",
+  "strategy": "manual-commit",
+  "created_at": "2026-08-30T13:08:21.557694Z",
+  "branch": "master",
+  "checkpoints_count": 4,
+  "save_step_count": 2,
+  "files_touched": [
+    "macapp/WorkroomApp/Core/VCSSyncPresentation.swift",
+    "macapp/WorkroomApp/Core/VCSWriting.swift",
+    "macapp/WorkroomAppTests/VCSSyncPresentationTests.swift",
+    "macapp/WorkroomAppTests/VCSWritingTests.swift"
+  ],
+  "agent": "Claude Code",
+  "model": "claude-sonnet-5",
+  "turn_id": "a96eb2b95888",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 90,
+    "cache_creation_tokens": 150893,
+    "cache_read_tokens": 5334775,
+    "output_tokens": 20308,
+    "api_call_count": 45,
+    "subagent_tokens": {
+      "input_tokens": 66,
+      "cache_creation_tokens": 162446,
+      "cache_read_tokens": 3011220,
+      "output_tokens": 8498,
+      "api_call_count": 33
+    }
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "prompt-skill-claude-code-code-review-2026-08-30T13:01:56.497671Z",
+      "event_type": "prompt_invocation",
+      "skill": {
+        "name": "code-review"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "prompt_slash_command",
+        "confidence": "explicit"
+      },
+      "turn_id": "aaa60f9d9b5c",
+      "timestamp": "2026-08-30T13:01:56.497671Z",
+      "native": {
+        "command": "/code-review"
+      },
+      "collapse": {
+        "target": "user_message",
+        "label": "/code-review",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 4
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-08-30T13:08:21.512531Z",
+    "agent_lines": 41,
+    "agent_removed": 10,
+    "human_added": 0,
+    "human_modified": 0,
+    "human_removed": 0,
+    "total_committed": 41,
+    "total_lines_changed": 51,
+    "agent_percentage": 100,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 46,
+      "agent_lines_removed": 11
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 41,
+      "agent_lines_removed": 10
+    }
+  ]
+}

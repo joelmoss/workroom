@@ -1,0 +1,170 @@
+I used the push functionality in workroom to push changes in this repo to github, but it still says "pushing.." even after a few mins. We need greater visibility - a way to see the push output. It eventually timed out, but with no output or reason
+
+---
+
+<task-notification>
+<task-id>a505e3922a302738c</task-id>
+<tool-use-id>toolu_01KZ1e252KvAbbSS9VZDFmaq</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/77936c99-7226-4f89-9ef0-c70b225ab951/tasks/a505e3922a302738c.output</output-file>
+<status>completed</status>
+<summary>Agent "Find push functionality code" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result># Push Functionality — Investigation Report (workroom macapp)
+
+## 1. UI trigger points
+
+**Two entry points, both funneled through one gate.**
+
+- **Toolbar button** — `macapp/WorkroomApp/Views/VCSToolbar.swift:140` (`VCSSyncSegment`'s `onAct`) calls `perform(p.action)` at `VCSToolbar.swift:194-197`:
+  ```swift
+  private func perform(_ action: VCSRemoteAction?) {
+    guard let action else { return }
+    store.performRemoteAction(action)
+  }
+  ```
+  The doc comment at `VCSToolbar.swift:189-193` explicitly notes the confirmation gate used to live in this view and was moved to the store because the menu bypassed it.
+
+- **Source Control menu** — `macapp/WorkroomApp/WorkroomApp.swift:1355-1357`:
+  ```swift
+  Button("Push") { store?.performRemoteAction(.push) }
+    .keyboardShortcut("p", modifiers: [.command, .shift])
+    .disabled(vcsCanPush != true)
+  ```
+
+- Both land in `AppStore.performRemoteAction` (`macapp/WorkroomApp/Core/AppStore.swift:743-752`), which only interposes a confirmation for `.pull` on a dirty tree, then calls `runRemoteAction` (`AppStore.swift:759-769`), which computes jj's anonymous-push revision and calls `remoteState.perform(.push, ...)` — `RemoteStateModel.perform` (`macapp/WorkroomApp/Core/RemoteStateModel.swift:303-368`).
+
+## 2. Underlying push implementation
+
+No Rust/UniFFI push exists — pushing is CLI shell-out only, in Swift. (The Rust `vcs/crates/wr-vcs-core` crate only computes **push state for badges** — `jj_backend.rs:127-376` — via `PUSH_REMOTE`/`pushed_revset`, not an actual push mutation.)
+
+- Protocol: `VCSWriting.push(...)` — `macapp/WorkroomApp/Core/VCSWriting.swift:235-238`.
+- Implementation: `CLIVCSWriter.push` — `VCSWriting.swift:1585-1617`:
+  ```swift
+  func push(
+    path: String, projectRoot: String, current: VCSRef, remote: String, setUpstream: Bool,
+    anonymousRevision: String
+  ) async -&gt; VCSRemoteActionResult {
+    let dir = Self.opDirectory(.push, path: path, projectRoot: projectRoot)
+    ... // builds jj/git argv
+    guard
+      let result = await gated(
+        projectRoot,
+        { [self] in
+          await run(args, in: dir, timeout: pushTimeout, network: true)
+        })
+    else { return .failed(.other("push was cancelled")) }
+    if let failure = Self.classify(result, action: .push, tool: vcs, gitDir: ...) {
+      return .failed(failure)
+    }
+    return .ok(summary: "Pushed to \(remote)")
+  }
+  ```
+- git argv: `gitPushArgs` — `VCSWriting.swift:491-495` (`push --porcelain [--set-upstream] -- &lt;remote&gt; refs/heads/&lt;b&gt;:refs/heads/&lt;b&gt;`), never `--force`.
+- jj argv: `jjPushBookmarkArgs` (`VCSWriting.swift:855-857`) or, for an unbookmarked `@`, `jjPushChangeArgs` (`VCSWriting.swift:863-865`).
+- Doc block at `VCSWriting.swift:289-293` explains why the CLI is used rather than SwiftGitX or jj-lib directly: SwiftGitX's `push` passes `NULL` for the credentials callback struct (no auth path at all), and jj has no Swift API for pushing.
+- Serialization: wrapped in `gated(projectRoot) { ... }` (`VCSWriting.swift:1415-1419`) → `JJSnapshotGate.run(projectRoot:)` (`macapp/WorkroomApp/Core/JJSnapshotGate.swift:71-92`), a per-project-root actor queue shared with fetch/pull/commit.
+
+## 3. Output/progress capture and reporting back
+
+- The actual process spawn/drain lives in `StatusCommandRunner.run(...)` — `macapp/WorkroomApp/Core/StatusCommandRunner.swift:197-349`. It's not streamed/NDJSON — it's a single buffered `CommandResult` returned after the process exits:
+  - `Process` spawned via `/usr/bin/env`, stdout/stderr each drained concurrently on `DispatchQueue.global()` (`StatusCommandRunner.swift:262-270`) into `StatusRunState` (capped at `maxBytes = 4MB`, `StatusCommandRunner.swift:126, 353-368`) so the child never blocks on a full pipe.
+  - `proc.terminationHandler` (`StatusCommandRunner.swift:287-308`) assembles the final `CommandResult(stdout:stderr:exitCode:timedOut:signaled:)` and resumes a `CheckedContinuation`.
+  - This is routed for push specifically through `runNetwork` (`StatusCommandRunner.swift:190-195`), which additionally forwards SSH/auth env vars and pins `BatchMode=yes` (`networkEnvironment`, `StatusCommandRunner.swift:161-175`).
+- Back in `CLIVCSWriter.push`, the raw `CommandResult` is turned into a typed outcome by `classify(result, action: .push, tool: vcs, ...)` — `VCSWriting.swift:1092-1166` (matches stderr/stdout substrings — auth failure, host-key, rejected push via `--porcelain` flag column at `gitPushRejected`/`VCSWriting.swift:507-509`, needsDescription, locked, etc.) and surfaced as `VCSRemoteActionResult.ok(summary:)` / `.failed(VCSRemoteFailure)`.
+- `RemoteStateModel.finish` (`RemoteStateModel.swift:370-410`) publishes `lastFailure`/`inFlight`/triggers a dialog via `raiseFailureReport` (`RemoteStateModel.swift:415-423`), which sets `failureReport` → rendered by `VCSFailureSheet.swift`. On success it calls `onDidMutate?` to refresh downstream status/history.
+- No progress percentage/streaming exists — the UI only shows a static "Pushing…" state (`activeAction`/`inFlight`) until the single buffered result returns.
+
+## 4. Timeout logic
+
+- Value: `CLIVCSWriter.pushTimeout: TimeInterval = 120` — `VCSWriting.swift:332` (shared struct-level default; fetch is also 120, pull is 300, commit is 600).
+- Enforcement lives entirely inside `StatusCommandRunner.run` (not an outer `withTimeout`, per the doc at `VCSWriting.swift:1409-1414` explaining that's deliberate since a subprocess can genuinely be killed):
+  - `DispatchQueue.global().asyncAfter(deadline: .now() + timeout)` → SIGTERM (`timeoutItem`, `StatusCommandRunner.swift:272-276`).
+  - A hard-kill fallback 2s later: `DispatchQueue.global().asyncAfter(deadline: .now() + timeout + 2)` → `ProcessTree.killTree` (SIGKILL) (`StatusCommandRunner.swift:282-285`).
+  - Result marks `timedOut = true`, `signaled = true`.
+- What happens when it fires (**not silent**): `classify` (`VCSWriting.swift:1102-1105`) turns a timed-out result into `.timedOut(action)` (with a pull-specific upgrade to `.rebaseInProgress` if a rebase was left behind). This propagates to `.failed(.timedOut(.push))` from `CLIVCSWriter.push`, then:
+  - `RemoteStateModel.finish` sets `lastFailure = .timedOut(.push)` (toolbar segment shows this) **and** raises a modal `failureReport` (since push is always `userInitiated: true`) — `RemoteStateModel.swift:389-393` / `raiseFailureReport`.
+  - User-facing copy: `"Push timed out."` — `VCSSyncPresentation.swift:445-446` (`describe(_:)`).
+  - Retry is offered: `retryAction` maps `.timedOut` → `lastAction` (i.e., "Push" again) — `VCSSyncPresentation.swift:392-393`.
+- So: timeout → SIGTERM then SIGKILL the child → typed `.timedOut(.push)` failure → toolbar notice + modal dialog with a retry offer. It does not silently give up.
+
+## 5. Cooperative thread pool vs GCD
+
+Push does **not** run on the Swift cooperative thread pool for its blocking work — it correctly uses GCD, consistent with the pattern documented elsewhere in this codebase (`Timeout.swift:105-117` `runBlocking`, and comments in `GitProvider.swift:177`, `RustJJProvider.swift:21,49,230`, `WorkroomStatusResolver.swift:130,170` warning that blocking libgit2/jj-lib calls must never run on the cooperative pool / `Task.detached`).
+
+- `StatusCommandRunner.run` (`StatusCommandRunner.swift:197-349`) wraps everything in `withCheckedContinuation`, but the actually-blocking pieces are explicitly hopped to `DispatchQueue.global()`:
+  - stdout/stderr drains: `DispatchQueue.global().async { ... }` (`StatusCommandRunner.swift:262-270`).
+  - timeout/kill scheduling: `DispatchQueue.global().asyncAfter(...)` (`StatusCommandRunner.swift:276, 285`).
+  - stdin feed: `DispatchQueue.global().async { ... }` (`StatusCommandRunner.swift:316-326`).
+  - cancellation kill: `ProcessBox.terminate()` hops to `DispatchQueue.global(qos: .userInitiated).async` specifically because `onCancel` "runs synchronously on whichever thread called `cancel()`" and that's often the main thread (`StatusCommandRunner.swift:378-393`).
+- `proc.run()` itself (`StatusCommandRunner.swift:311`) is called inline inside the continuation closure, but that's a `posix_spawn`-based non-blocking call, not a long-running blocking operation, so it's safe to run wherever the continuation body executes.
+- `JJSnapshotGate.run` (`JJSnapshotGate.swift:39-92`) is a plain `actor` using structured `Task`s, not a blocking primitive, so no cooperative-pool concern there either.
+
+Net: the "shell-outs must use GCD not cooperative pool" rule this codebase enforces elsewhere for libgit2/jj-lib blocking calls is already satisfied for push — the actual blocking I/O (pipe reads, timeout waits, process kill) happens on `DispatchQueue.global()`, and `withCheckedContinuation` only suspends the calling Task rather than blocking a cooperative-pool thread.</result>
+<usage><subagent_tokens>125303</subagent_tokens><tool_uses>29</tool_uses><duration_ms>138669</duration_ms></usage>
+</task-notification>
+
+---
+
+<task-notification>
+<task-id>ac12e84b64f51d1ed</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/77936c99-7226-4f89-9ef0-c70b225ab951/tasks/ac12e84b64f51d1ed.output</output-file>
+<status>completed</status>
+<summary>Agent "Inspect failure/classify/UI code for push output" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Confirms: `.running(action)` state renders only a spinner + static "Pushing…" label — no output, no streaming, until the buffered `CommandResult` returns. Enough to answer all 6 questions. Reporting back to parent.
+
+**Push output-visibility bug — root cause found.**
+
+1. `classify` (`VCSWriting.swift:1092-1166`): computes `err = result.stderr + "\n" + result.stdout` at line 1100, but checks `result.timedOut` immediately after (line 1102) and returns bare `.timedOut(action)` (line 1104) **before** `err` is ever attached. `VCSRemoteFailure.timedOut(VCSRemoteAction)` (`VCSWriting.swift:35`) carries no output payload — unlike `.authRequired(String)`, `.rejected(String)`, `.other(String)` etc., which all carry the raw combined stderr+stdout as their associated value.
+
+2. `describe(_:)` (`VCSSyncPresentation.swift:445-446`) for `.timedOut` returns only `"\(action.label) timed out."` — canned, no raw text possible since the case carries none.
+
+3. `VCSFailureSheet.swift` **already has a full "Details" disclosure UI** (`detailsSection`, lines 82-98): collapsed `DisclosureGroup`, monospaced scrollable text, Copy button — built and working today for auth/reject/lock/other failures. But `rawOutput(of:)` (`VCSSyncPresentation.swift:576-588`) explicitly maps `.timedOut` (along with `.toolMissing, .noRemote, .rebaseInProgress, .locked, .launchFailed`) to `nil` — so `dialog.details` is nil and the whole Details section never renders for a timed-out push.
+
+4. `RemoteStateModel.finish`/`raiseFailureReport` (`RemoteStateModel.swift:370-423`) just pass the `VCSRemoteFailure` value through unchanged into `lastFailure`/`failureReport` — no separate raw-output channel; whatever `classify` didn't attach is gone for good by this point.
+
+5. No existing "show live output" pattern for push/fetch/pull/commit anywhere — confirmed via `VCSToolbar.swift`.
+
+6. Confirmed strictly true: while `activeAction == .push`, the toolbar renders only a spinner + static "Pushing…" (`VCSToolbar.swift:91-93, 338`) — `StatusCommandRunner.run` (from the earlier report) buffers stdout/stderr into `StatusRunState` and only resolves the continuation on process exit; nothing is surfaced mid-flight.
+
+**Bottom line:** the raw process output the user wants to see (`result.stderr`/`result.stdout`) is captured all along by `StatusCommandRunner`, and the UI plumbing (`VCSFailureDialog.details` → `VCSFailureSheet`'s Details disclosure) already exists and already works for other failure types. The gap is narrow and specific: `classify` throws the captured output away for the timeout branch instead of attaching it to `.timedOut`, and `rawOutput(of:)` hard-codes `nil` for that case. Fixing this at the `VCSRemoteFailure.timedOut` case (give it a `String` payload like its siblings, populate it in `classify`, feed it through `rawOutput`) fixes every caller (push/fetch/pull) at once, per the root-cause-not-symptom principle — no separate live-streaming mechanism needed to close the user's stated complaint ("no output or reason").</result>
+<usage><subagent_tokens>112180</subagent_tokens><tool_uses>12</tool_uses><duration_ms>59279</duration_ms></usage>
+</task-notification>
+
+---
+
+/code-review
+
+---
+
+<task-notification>
+<task-id>a84eb39f46be7b846</task-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/77936c99-7226-4f89-9ef0-c70b225ab951/tasks/a84eb39f46be7b846.output</output-file>
+<status>completed</status>
+<summary>Agent "/code-review" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Reviewed the full diff (working-tree changes, not yet committed) across `VCSSyncPresentation.swift`, `VCSWriting.swift`, and their two test files: adding a `String` payload to `VCSRemoteFailure.timedOut(VCSRemoteAction, String)` to carry partial command output for the failure dialog's Details section.
+
+Verified thoroughly: the enum change is exhaustively handled everywhere (`retryAction`, `readRetryIsWorthwhile`, `describe`, `remedy`, `rawOutput` all compile and are correct); `rawOutput` trims before emptiness-check so the `stderr + "\n" + stdout` join (which yields `"\n"`, not `""`, on a silent timeout) still correctly reports `nil`; `VCSCommitFailure.timedOut` is a distinct, untouched enum; `StatusCommandRunner` genuinely captures partial stdout/stderr up to a kill via concurrent drain queues, so the new payload is real data, not a lie; no fetch/push passes `--progress`, so realistic payloads are small, not `\r`-laden progress spam; swift-format lint is clean on all four touched files; and I checked whether `VCSRemoteFailure`'s now-richer `Equatable` synthesis broke any equality-based dedup guard (e.g. "don't re-show the same failure") — grepped every consumer (`RemoteStateModel.lastFailure`/`readFailure`/`failureReport`) and found the re-raise logic already uses a monotonic sequence number, not `==` comparison, so this is a non-issue.
+
+No correctness bugs found. Two minor cleanup-tier findings survive:
+
+```json
+[
+  {
+    "file": "macapp/WorkroomAppTests/VCSWritingTests.swift",
+    "line": 722,
+    "summary": "testTimeout and testTimedOutFailureStillReportsTimeoutNotInterruption were weakened from XCTAssertEqual on the whole value to a guard-case that only checks the action, dropping coverage of the exact payload shape.",
+    "failure_scenario": "Both tests pass a CommandResult with empty stdout/stderr, so production classify() returns .timedOut(.push, \"\\n\") (stderr+\"\\n\"+stdout). The old XCTAssertEqual(..., .timedOut(.push)) pinned the whole case; the new guard-case pattern only asserts action == .push and silently accepts any string payload, including a future regression that stuffed the wrong text (e.g. swapped stdout/stderr order) into the case."
+  },
+  {
+    "file": "macapp/WorkroomApp/Core/VCSWriting.swift",
+    "line": 37,
+    "summary": "Doc comment says the payload is \"Empty when the child produced nothing before it was killed,\" but classify() always joins with a newline (stderr + \"\\n\" + stdout), so a silent timeout's stored value is literally \"\\n\", not \"\".",
+    "failure_scenario": "A maintainer who reads the doc and checks `.timedOut(_, let output); output.isEmpty` directly (bypassing VCSSyncPresenter.rawOutput's trim) would get false for a genuinely silent timeout, contradicting the doc's claim — harmless today only because the one real consumer (rawOutput) trims before checking emptiness."
+  }
+]
+```</result>
+<usage><subagent_tokens>112264</subagent_tokens><tool_uses>24</tool_uses><duration_ms>272213</duration_ms></usage>
+</task-notification>

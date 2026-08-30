@@ -1,0 +1,36 @@
+{
+  "cli_version": "0.10.3",
+  "checkpoint_id": "01M19CJ0TMRH5HEAZPWQ8S36F5",
+  "strategy": "manual-commit",
+  "branch": "master",
+  "checkpoints_count": 4,
+  "files_touched": [
+    "macapp/WorkroomApp/Core/VCSSyncPresentation.swift",
+    "macapp/WorkroomApp/Core/VCSWriting.swift",
+    "macapp/WorkroomAppTests/VCSSyncPresentationTests.swift",
+    "macapp/WorkroomAppTests/VCSWritingTests.swift"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 90,
+    "cache_creation_tokens": 150893,
+    "cache_read_tokens": 5334775,
+    "output_tokens": 20308,
+    "api_call_count": 45,
+    "subagent_tokens": {
+      "input_tokens": 66,
+      "cache_creation_tokens": 162446,
+      "cache_read_tokens": 3011220,
+      "output_tokens": 8498,
+      "api_call_count": 33
+    }
+  }
+}
