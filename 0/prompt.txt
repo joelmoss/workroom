@@ -1,0 +1,33 @@
+<task-notification>
+<task-id>a3c48ac90112068ea</task-id>
+<tool-use-id>toolu_016388tUXdQJAHR38DCPRTi6</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/3ee247a6-8416-4d29-bc9b-ce21bb5267ad/tasks/a3c48ac90112068ea.output</output-file>
+<status>completed</status>
+<summary>Agent "Check run status polling dedupe logic" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>**File location &amp; exact deduplication logic:**
+
+`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/AppStore.swift`, lines 1872–1884:
+
+```swift
+private func pollRunStatus(for target: TerminalTarget) {
+  guard runStates[target.id]?.tab != nil, let ctl = runPidFiles[target.id] else { return }
+  let statusPath = Self.supervisorStatusPath(forPidPath: ctl)
+  if let raw = try? String(contentsOfFile: statusPath, encoding: .utf8) {
+    let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !line.isEmpty, lastRunStatus[target.id] != line {  // ← DEDUPE CHECK
+      lastRunStatus[target.id] = line
+      applyRunStatus(line, for: target)  // ← ONLY ON CHANGE
+    }
+  }
+  DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+    self?.pollRunStatus(for: target)
+  }
+}
+```
+
+**Answer:** `applyRunStatus` is **edge-triggered** (line 1877): it only fires when `lastRunStatus[target.id] != line` — the status string has *changed* since the last poll. Poll interval: **0.15 seconds** (line 1882).
+
+**No risk**: If the supervisor continuously writes "running", the condition on line 1877 prevents `applyRunStatus` from being called on every tick. A dismiss-timer-cancel-and-reschedule inside the "running" case will not restart infinitely — it fires once per state *change*, not once per poll.</result>
+<usage><subagent_tokens>26321</subagent_tokens><tool_uses>3</tool_uses><duration_ms>16728</duration_ms></usage>
+</task-notification>
