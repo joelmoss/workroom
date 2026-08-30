@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bpkdcn63y</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/ad9e5754-d4c8-4063-beb8-947970ea5d8f/tasks/bpkdcn63y.output</output-file>
+<status>completed</status>
+<summary>Background command "A/B test: window-size fix only, sidebar forced closed, check if split works" completed (exit code 0)</summary>
+</task-notification>
