@@ -1,0 +1,679 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/AppStore+Session.swift
+  - macapp/WorkroomApp/Core/GhosttySurfaceView.swift
+  - macapp/WorkroomApp/Core/SessionCoordinator.swift
+  - macapp/WorkroomApp/Core/SessionSnapshot.swift
+  - macapp/WorkroomApp/Core/SessionStore.swift
+  - macapp/WorkroomApp/Core/TerminalSessions.swift
+  - macapp/WorkroomAppTests/ScrollbackSidecarTests.swift
+  - macapp/WorkroomAppTests/SessionSaveTests.swift
+  - macapp/WorkroomAppUITests/SessionRestoreUITests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/AppStore+Session.swift ===
+@@ -64,6 +64,23 @@ extension AppStore {
+     }
+   }
+ 
++  /// Write every live pane's scrollback to its sidecar (issue #144). Quit only — reading each
++  /// pane's history is far too heavy for a coalesced save.
++  ///
++  /// The tab key must match what `captureTargetSessions` wrote for the same tab, or the sidecar
++  /// belongs to nothing and is pruned the moment it is written.
++  func captureScrollback(into store: SessionStore) {
++    for targetID in terminals.activeTargetIDs {
++      guard let captured = terminals.sessionCapture(forTargetID: targetID) else { continue }
++      for tab in captured.tabs {
++        // Run tabs are not persisted at all, so their output must not be either.
++        guard tab.surface?.isRunCommandSurface != true else { continue }
++        guard let text = tab.surface?.captureScrollback() else { continue }
++        store.writeScrollback(text, forTabKey: tab.id.uuidString)
++      }
++    }
++  }
++
+   /// Tell the coordinator this window changed. Every dirty source funnels through here so there is
+   /// one place to look when asking "what causes a save?".
+   func markSessionDirty() {
+@@ -105,7 +122,11 @@ extension AppStore {
+       guard let sid = Self.sidebarID(forTargetID: saved.targetID, in: projects),
+         let target = target(for: sid)
+       else { continue }
+-      guard terminals.restore(saved, for: target) > 0 else { continue }
++      let coordinator = projectStore.sessionCoordinator
++      guard
++        terminals.restore(saved, for: target, scrollback: { coordinator.scrollback(forTabKey: $0) })
++          > 0
++      else { continue }
+       restoredTargetIDs.insert(target.id)
+     }
+ 
+
+
+=== DIFF: macapp/WorkroomApp/Core/GhosttySurfaceView.swift ===
+@@ -153,6 +153,15 @@ final class GhosttySurfaceView: NSView {
+   private var progressActive = false
+   private static let progressTimeout: TimeInterval = 30
+ 
++  /// A previous session's text, replayed into this surface once it exists (issue #144). Nil for a
++  /// pane that is not being restored.
++  ///
++  /// Set through `adoptRestoredScrollback` rather than `init` because views are built by the
++  /// `TerminalSessions.makeView` factory, whose signature is shared with every other spawn path.
++  private var restoredScrollback: String?
++  /// One replay per view, ever.
++  private var didReplayScrollback = false
++
+   init(workingDirectory: String, command: String? = nil, spawnsSurface: Bool = true) {
+     self.workingDirectory = workingDirectory
+     self.runCommand = command
+@@ -269,6 +278,11 @@ final class GhosttySurfaceView: NSView {
+     // but libghostty drops them on an unfocused surface, and a click can't recover because
+     // `makeFirstResponder` short-circuits on an already-first-responder view. Re-sync the flag now.
+     adoptFocusIfFirstResponder()
++    // Replay the previous session's text (issue #144) synchronously, in the same main-thread call
++    // that created the surface, so no IO callback can interleave ahead of it. The shell's own first
++    // prompt may still land after the replayed block, which is correct — the divider separates
++    // restored history from live output.
++    replayRestoredScrollback()
+   }
+ 
+   /// Spawn the surface's PTY *without* waiting for window mount (issue #67, background run). Normally
+@@ -789,25 +803,91 @@ final class GhosttySurfaceView: NSView {
+     return TerminalCapture.tidy(raw, maxBytes: maxBytes)
+   }
+ 
+-  /// Read the entire surface (visible screen + scrollback, capped) for a run-tab diagnosis (issue
+-  /// #49, A1). Run commands `exec` over the shell so there are no OSC 133 command marks — the whole
+-  /// surface is the command's output, and long output (a failing test suite) may have scrolled, so
+-  /// we read SURFACE (incl. history), not just the active screen.
+-  func readFullSurface(maxBytes: Int = 65_536) -> String? {
++  /// Read the rendered text for one point tag, or nil when the region is empty or unreadable.
++  ///
++  /// Measured tag semantics on the pinned libghostty (issue #144 spike):
++  /// - `SURFACE` — the **scrollback only**; the current viewport is NOT included, and the call
++  ///   returns false when nothing has scrolled off yet (a fresh pane has no history to read).
++  /// - `VIEWPORT` / `ACTIVE` — what is on screen now.
++  /// - `SCREEN` — scrollback + viewport, but **unusable while a TUI holds the alternate screen**:
++  ///   it then returns the TUI frame and hides the real history.
++  private func readText(tag: ghostty_point_tag_e) -> String? {
+     guard let surface else { return nil }
+     var selection = ghostty_selection_s()
+     selection.top_left = ghostty_point_s(
+-      tag: GHOSTTY_POINT_SURFACE, coord: GHOSTTY_POINT_COORD_TOP_LEFT, x: 0, y: 0)
++      tag: tag, coord: GHOSTTY_POINT_COORD_TOP_LEFT, x: 0, y: 0)
+     selection.bottom_right = ghostty_point_s(
+-      tag: GHOSTTY_POINT_SURFACE, coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT, x: 0, y: 0)
++      tag: tag, coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT, x: 0, y: 0)
+     selection.rectangle = false
+     var text = ghostty_text_s()
+     guard ghostty_surface_read_text(surface, selection, &text) else { return nil }
+     defer { ghostty_surface_free_text(surface, &text) }
+-    guard let raw = Self.extractString(from: text) else { return nil }
++    return Self.extractString(from: text)
++  }
++
++  /// Read the surface's SCROLLBACK (capped) for a run-tab diagnosis (issue #49, A1). Run commands
++  /// `exec` over the shell so there are no OSC 133 command marks — the whole surface is the
++  /// command's output, and long output (a failing test suite) may have scrolled, so we read SURFACE
++  /// (the history) rather than just the active screen.
++  ///
++  /// Returns nil when nothing has scrolled yet; SURFACE is history, and a short command that never
++  /// filled a screen leaves none. That is not a failure — see `readText(tag:)`.
++  func readFullSurface(maxBytes: Int = 65_536) -> String? {
++    guard let raw = readText(tag: GHOSTTY_POINT_SURFACE) else { return nil }
+     return TerminalCapture.tidy(raw, maxBytes: maxBytes)
+   }
+ 
++  // MARK: Session scrollback (issue #144)
++
++  /// The pane's content for a saved session: the scrollback, then what is currently on screen.
++  ///
++  /// **Two reads, deliberately.** `SCREEN` fetches both in one call but is unusable here: while a TUI
++  /// holds the alternate screen it returns the TUI's frame *and hides the primary history*, so
++  /// quitting with vim open would persist a frozen vim screenshot INSTEAD of the real session.
++  /// `SURFACE` is the history and can never return alternate-screen content; `VIEWPORT` adds the
++  /// visible lines `SURFACE` omits.
++  ///
++  /// **The viewport is always read, and that is a deliberate trade.** `SURFACE` is history *only*,
++  /// and a pane has none until output has scrolled off — so gating the viewport on history existing
++  /// would capture nothing at all for a short session, which is most panes most of the time. The
++  /// cost is that quitting with a TUI open captures that one screenful. It replays as inert text
++  /// below the divider, and the pinned libghostty exposes no way to ask whether the alternate screen
++  /// is active (`SURFACE` returning nil means "no history" and "a TUI is up" identically), so there
++  /// is no check to make here — only this choice.
++  func captureScrollback(maxBytes: Int = SessionLimits.maxScrollbackBytes) -> String? {
++    let parts = [readText(tag: GHOSTTY_POINT_SURFACE), readText(tag: GHOSTTY_POINT_VIEWPORT)]
++    let combined = parts.compactMap { $0 }.joined(separator: "\n")
++    guard !combined.isEmpty else { return nil }
++    return TerminalCapture.tidy(combined, maxBytes: maxBytes)
++  }
++
++  /// Replay a previous session's text into this surface, once, followed by a divider marking where
++  /// restored history ends and the live shell begins.
++  ///
++  /// `write_buffer` feeds the terminal parser as if the child had emitted the bytes — verified to
++  /// work on an EXEC (real PTY) surface, with the shell still executing commands afterwards (#144
++  /// spike). The bytes are rendered text, never escape sequences, and control bytes are stripped on
++  /// the way in, so this cannot leave the parser mid-sequence.
++  private func replayRestoredScrollback() {
++    guard !didReplayScrollback, let surface, let restored = restoredScrollback,
++      !restored.isEmpty
++    else { return }
++    didReplayScrollback = true
++    var bytes = Array((restored + Self.scrollbackDivider).utf8)
++    ghostty_surface_write_buffer(surface, &bytes, UInt(bytes.count))
++  }
++
++  /// Plain text, no SGR — it is content like any other replayed byte.
++  static let scrollbackDivider = "\r\n── restored session ──\r\n"
++
++  /// Hand this view a previous session's text to replay. Must be called before the surface is
++  /// created (i.e. before the view enters a window), which is where `TerminalSessions.restore` sets
++  /// it — immediately after the factory returns.
++  func adoptRestoredScrollback(_ text: String?) {
++    guard surface == nil, let text, !text.isEmpty else { return }
++    restoredScrollback = text
++  }
++
+   /// Type literal text into the surface WITHOUT a trailing newline ("Insert fix", issue #49): the
+   /// user reviews and presses Return themselves — we never auto-execute an AI-suggested command.
+   func sendText(_ string: String) {
+
+
+=== DIFF: macapp/WorkroomApp/Core/SessionCoordinator.swift ===
+@@ -32,6 +32,9 @@ final class SessionCoordinator {
+   private let debounce: TimeInterval
+   private let ceiling: TimeInterval
+   private let capture: () -> [WindowSession]
++  /// Writes each live pane's scrollback into the store (issue #144). Separate from `capture` because
++  /// it runs ONLY at quit: reading every pane's history is far too heavy for a coalesced save.
++  private let captureScrollback: (SessionStore) -> Void
+   private let logger = Logger(
+     subsystem: "com.developwithstyle.workroom", category: "session")
+ 
+@@ -53,12 +56,17 @@ final class SessionCoordinator {
+     store: SessionStore = SessionStore(),
+     debounce: TimeInterval = SessionCoordinator.defaultDebounce,
+     ceiling: TimeInterval = SessionCoordinator.defaultCeiling,
+-    capture: (() -> [WindowSession])? = nil
++    capture: (() -> [WindowSession])? = nil,
++    captureScrollback: ((SessionStore) -> Void)? = nil
+   ) {
+     self.store = store
+     self.debounce = debounce
+     self.ceiling = ceiling
+     self.capture = capture ?? { WindowRegistry.shared.captureSessionWindows() }
++    self.captureScrollback =
++      captureScrollback ?? { store in
++        for appStore in WindowRegistry.shared.allStores { appStore.captureScrollback(into: store) }
++      }
+   }
+ 
+   /// Exposed so a caller can tell "no session" from "a session this build must not touch".
+@@ -149,6 +157,11 @@ final class SessionCoordinator {
+       let windows = capture()
+       lastWritten = windows
+       store.writeSynchronously(makeFile(windows))
++      // Scrollback is captured HERE and nowhere else (issue #144): quitting is the one moment worth
++      // reading every pane's history for. Prune afterwards, unconditionally, so a pane that captured
++      // nothing this time loses its old sidecar rather than restoring yesterday's output.
++      captureScrollback(store)
++      store.pruneScrollback(keeping: Self.tabKeys(in: windows))
+     }
+     isFrozen = true
+   }
+@@ -157,6 +170,14 @@ final class SessionCoordinator {
+ 
+   func read() -> SessionStore.ReadOutcome { store.read() }
+ 
++  /// A restored pane's saved text, for replay (issue #144).
++  func scrollback(forTabKey key: String) -> String? { store.readScrollback(forTabKey: key) }
++
++  /// Every tab key in the document, which is exactly the set of sidecars worth keeping.
++  private static func tabKeys(in windows: [WindowSession]) -> Set<String> {
++    Set(windows.flatMap { $0.targets.flatMap { $0.tabs.map(\.key) } })
++  }
++
+   private func makeFile(_ windows: [WindowSession]) -> SessionFile {
+     SessionFile(
+       savedAt: Date(),
+
+
+=== DIFF: macapp/WorkroomApp/Core/SessionSnapshot.swift ===
+@@ -29,8 +29,9 @@ import Foundation
+ ///
+ /// # What is deliberately absent
+ ///
+-/// - **Scrollback, the PTY, and child processes.** libghostty exposes no session-dump API, so a
+-///   restored terminal is a fresh login shell in the remembered directory. Nothing else is possible.
++/// - **The PTY and child processes.** A restored terminal is a fresh login shell in the remembered
++///   directory; the process it was running is gone. (Its *text* does come back — scrollback lives in
++///   sidecar files beside this document, never inside it. See `SessionStore` and issue #144.)
+ /// - **Run tabs.** Restoring one would resurrect a dev server with no `AppStore.RunState` behind it —
+ ///   an untracked process orphaned on its port, the failure `WindowRegistry.runOwner(for:excluding:)`
+ ///   and issue #7 exist to prevent. `Defaults[.runCommands]` already survives, and `RunConfig.autoRun`
+@@ -58,6 +59,12 @@ enum SessionLimits {
+   static let maxFileBytes = 512 * 1024
+   /// Clamps paths, titles, and commit ids individually.
+   static let maxStringLength = 4096
++  /// Per-pane scrollback kept in a sidecar file (issue #144). The value is overwhelmingly at the
++  /// recent end, and a cap keeps the quit path bounded no matter how much a pane logged.
++  static let maxScrollbackBytes = 256 * 1024
++  /// A sidecar larger than this on disk is corrupt by definition — twice the cap, so a legitimate
++  /// file can never trip it.
++  static let maxScrollbackFileBytes = 512 * 1024
+ }
+ 
+ // MARK: - Lossy array decoding
+
+
+=== DIFF: macapp/WorkroomApp/Core/SessionStore.swift ===
+@@ -164,6 +164,87 @@ final class SessionStore {
+     queue.sync { try? self.fileManager.removeItem(at: self.url) }
+   }
+ 
++  // MARK: Scrollback sidecars (issue #144)
++
++  /// One plain-text file per pane, beside `session.json`. Deliberately NOT inside it: that document
++  /// is rewritten on every coalesced save, and a few hundred KB of terminal output per pane has no
++  /// business riding along with the layout.
++  var scrollbackDirectory: URL {
++    url.deletingLastPathComponent().appendingPathComponent("scrollback", isDirectory: true)
++  }
++
++  private func scrollbackURL(forTabKey key: String) -> URL {
++    // The key is a `TabSession.key` UUID string: filesystem-safe and unique within a snapshot, so
++    // no escaping and no collision handling.
++    scrollbackDirectory.appendingPathComponent("\(key).txt")
++  }
++
++  func writeScrollback(_ text: String, forTabKey key: String) {
++    guard !isDisabled, !writesDisabled, !text.isEmpty else { return }
++    do {
++      try fileManager.createDirectory(at: scrollbackDirectory, withIntermediateDirectories: true)
++      try Data(text.utf8).write(to: scrollbackURL(forTabKey: key), options: .atomic)
++    } catch {
++      // Best-effort like everything else here: a pane with no sidecar simply restores empty.
++      logger.error("scrollback write failed: \(error.localizedDescription)")
++    }
++  }
++
++  /// The saved text for a pane, or nil when there is none, it is unreadable, or it fails validation.
++  ///
++  /// A file that fails validation is **deleted**: it would fail identically on every future launch,
++  /// and unlike `session.json` a scrollback sidecar has no diagnostic value worth quarantining.
++  func readScrollback(forTabKey key: String) -> String? {
++    guard !isDisabled else { return nil }
++    let fileURL = scrollbackURL(forTabKey: key)
++    guard fileManager.fileExists(atPath: fileURL.path) else { return nil }
++
++    if let size = try? fileManager.attributesOfItem(atPath: fileURL.path)[.size] as? Int,
++      size > SessionLimits.maxScrollbackFileBytes
++    {
++      logger.notice("scrollback sidecar is \(size) bytes, over the limit — discarding")
++      try? fileManager.removeItem(at: fileURL)
++      return nil
++    }
++    guard let data = try? Data(contentsOf: fileURL) else { return nil }
++    guard let text = String(data: data, encoding: .utf8) else {
++      logger.notice("scrollback sidecar is not valid UTF-8 — discarding")
++      try? fileManager.removeItem(at: fileURL)
++      return nil
++    }
++    let cleaned = Self.strippingControlBytes(text)
++    return cleaned.isEmpty ? nil : cleaned
++  }
++
++  /// Drop sidecars for panes that are no longer in the session.
++  ///
++  /// Runs once after the write pass, unconditionally — including when every write failed. A pane
++  /// whose capture is now empty wrote no sidecar, so its old one is removed here and yesterday's
++  /// output cannot reappear under today's empty pane.
++  func pruneScrollback(keeping keys: Set<String>) {
++    guard !isDisabled else { return }
++    guard
++      let entries = try? fileManager.contentsOfDirectory(
++        at: scrollbackDirectory, includingPropertiesForKeys: nil)
++    else { return }
++    for entry in entries where entry.pathExtension == "txt" {
++      let key = entry.deletingPathExtension().lastPathComponent
++      if !keys.contains(key) { try? fileManager.removeItem(at: entry) }
++    }
++  }
++
++  /// Remove C0 control bytes except newline, carriage return and tab.
++  ///
++  /// The captured text is rendered output, never raw PTY bytes, so it carries no escape sequences to
++  /// begin with. This exists so a hand-edited sidecar cannot inject one and leave the parser
++  /// mid-sequence on replay. CR is kept: the divider is CRLF.
++  nonisolated static func strippingControlBytes(_ text: String) -> String {
++    String(
++      text.unicodeScalars.filter { scalar in
++        scalar == "\n" || scalar == "\r" || scalar == "\t" || scalar.value >= 0x20
++      })
++  }
++
+   private func persist(_ file: SessionFile) {
+     let encoder = JSONEncoder()
+     encoder.dateEncodingStrategy = .iso8601
+
+
+=== DIFF: macapp/WorkroomApp/Core/TerminalSessions.swift ===
+@@ -598,7 +598,10 @@ final class TerminalSessions: ObservableObject {
+   /// remembered directory, which is the half that matters. Nothing spawns here: constructing a
+   /// surface is inert until it enters a window.
+   @discardableResult
+-  func restore(_ session: TargetSession, for target: TerminalTarget) -> Int {
++  func restore(
++    _ session: TargetSession, for target: TerminalTarget,
++    scrollback: (String) -> String? = { _ in nil }
++  ) -> Int {
+     guard (tabsByTarget[target.id] ?? [:]).isEmpty else { return 0 }
+ 
+     var idsByKey: [String: TerminalTab.ID] = [:]
+@@ -614,7 +617,8 @@ final class TerminalSessions: ObservableObject {
+         tab = makeTerminalTab(
+           for: target,
+           cwd: Self.restoredCwd(payload.cwd, fallback: target.path),
+-          title: payload.defaultTitle)
++          title: payload.defaultTitle,
++          restoredScrollback: scrollback(saved.key))
+         restoredTerminals += 1
+       } else if let content = saved.restoredContent {
+         tab = TerminalTab(
+@@ -1474,11 +1478,13 @@ final class TerminalSessions: ObservableObject {
+   }
+ 
+   private func makeTerminalTab(
+-    for target: TerminalTarget, cwd: String, command: String? = nil, title: String? = nil
++    for target: TerminalTarget, cwd: String, command: String? = nil, title: String? = nil,
++    restoredScrollback: String? = nil
+   ) -> TerminalTab {
+     let count = (counts[target.id] ?? 0) + 1
+     counts[target.id] = count
+     let view = makeView(target, cwd, command)
++    view.adoptRestoredScrollback(restoredScrollback)
+     let tab = TerminalTab.terminal(view: view, defaultTitle: title ?? "Terminal \(count)")
+ 
+     let targetID = target.id
+
+
+=== DIFF: macapp/WorkroomAppTests/ScrollbackSidecarTests.swift ===
+@@ -0,0 +1,141 @@
++import XCTest
++
++@testable import Workroom
++
++/// Scrollback sidecars (issue #144): the per-pane text files that sit beside `session.json` and are
++/// replayed into a restored terminal.
++///
++/// Every test injects a temp URL, so none of this touches the real session directory.
++final class ScrollbackSidecarTests: XCTestCase {
++  private var directory: URL!
++  private var store: SessionStore!
++
++  override func setUpWithError() throws {
++    try super.setUpWithError()
++    directory = FileManager.default.temporaryDirectory
++      .appendingPathComponent("scrollback-sidecar-\(UUID().uuidString)", isDirectory: true)
++    store = SessionStore(url: directory.appendingPathComponent("session.json"))
++  }
++
++  override func tearDownWithError() throws {
++    try? FileManager.default.removeItem(at: directory)
++    try super.tearDownWithError()
++  }
++
++  private func sidecar(_ key: String) -> URL {
++    store.scrollbackDirectory.appendingPathComponent("\(key).txt")
++  }
++
++  // MARK: Round trip
++
++  func testWriteThenReadRoundTrips() {
++    store.writeScrollback("hello\nworld", forTabKey: "abc")
++    XCTAssertEqual(store.readScrollback(forTabKey: "abc"), "hello\nworld")
++  }
++
++  func testWriteCreatesTheScrollbackDirectory() {
++    XCTAssertFalse(FileManager.default.fileExists(atPath: store.scrollbackDirectory.path))
++    store.writeScrollback("x", forTabKey: "abc")
++    XCTAssertTrue(FileManager.default.fileExists(atPath: sidecar("abc").path))
++  }
++
++  func testEmptyCaptureWritesNothing() {
++    store.writeScrollback("", forTabKey: "abc")
++    XCTAssertFalse(FileManager.default.fileExists(atPath: sidecar("abc").path))
++    XCTAssertNil(store.readScrollback(forTabKey: "abc"))
++  }
++
++  func testMissingSidecarReadsAsNil() {
++    XCTAssertNil(store.readScrollback(forTabKey: "nope"))
++  }
++
++  // MARK: Validation
++
++  /// Deleted rather than quarantined: it would fail identically on every future launch, and unlike
++  /// `session.json` a scrollback sidecar has no diagnostic value.
++  func testOversizedSidecarIsDiscardedAndDeleted() throws {
++    try FileManager.default.createDirectory(
++      at: store.scrollbackDirectory, withIntermediateDirectories: true)
++    let huge = String(repeating: "x", count: SessionLimits.maxScrollbackFileBytes + 1024)
++    try Data(huge.utf8).write(to: sidecar("big"))
++
++    XCTAssertNil(store.readScrollback(forTabKey: "big"))
++    XCTAssertFalse(FileManager.default.fileExists(atPath: sidecar("big").path))
++  }
++
++  func testNonUTF8SidecarIsDiscardedAndDeleted() throws {
++    try FileManager.default.createDirectory(
++      at: store.scrollbackDirectory, withIntermediateDirectories: true)
++    try Data([0xFF, 0xFE, 0xFF]).write(to: sidecar("junk"))
++
++    XCTAssertNil(store.readScrollback(forTabKey: "junk"))
++    XCTAssertFalse(FileManager.default.fileExists(atPath: sidecar("junk").path))
++  }
++
++  /// Captures are rendered text and carry no escape sequences, so this exists purely so a
++  /// hand-edited sidecar cannot leave the terminal parser mid-sequence on replay.
++  func testControlBytesAreStrippedOnRead() {
++    let hostile = "before\u{1B}[31mafter\u{07}\u{00}end"
++    store.writeScrollback(hostile, forTabKey: "abc")
++    let read = try? XCTUnwrap(store.readScrollback(forTabKey: "abc"))
++    XCTAssertEqual(read, "before[31mafterend")
++  }
++
++  /// CR is kept — the divider itself is CRLF, and stripping it would break the replayed layout.
++  func testNewlineTabAndCarriageReturnSurvive() {
++    XCTAssertEqual(
++      SessionStore.strippingControlBytes("a\nb\tc\rd"), "a\nb\tc\rd")
++  }
++
++  func testSidecarOfOnlyControlBytesReadsAsNil() {
++    store.writeScrollback("\u{01}\u{02}", forTabKey: "abc")
++    XCTAssertNil(store.readScrollback(forTabKey: "abc"))
++  }
++
++  // MARK: Prune
++
++  func testPruneRemovesOnlyUnknownKeys() {
++    store.writeScrollback("keep", forTabKey: "live")
++    store.writeScrollback("drop", forTabKey: "dead")
++
++    store.pruneScrollback(keeping: ["live"])
++
++    XCTAssertEqual(store.readScrollback(forTabKey: "live"), "keep")
++    XCTAssertNil(store.readScrollback(forTabKey: "dead"))
++  }
++
++  /// A pane whose capture is now empty wrote no sidecar this quit, so its old one must go — else
++  /// yesterday's output reappears under today's empty pane.
++  func testPruneWithNoKeysClearsEverything() {
++    store.writeScrollback("stale", forTabKey: "abc")
++    store.pruneScrollback(keeping: [])
++    XCTAssertNil(store.readScrollback(forTabKey: "abc"))
++  }
++
++  func testPruneOnMissingDirectoryIsHarmless() {
++    store.pruneScrollback(keeping: ["anything"])
++  }
++
++  // MARK: Disabled store
++
++  /// Fixture mode without a named session file must not touch the developer's own scrollback.
++  func testDisabledStoreNeitherWritesNorReads() {
++    let disabled = SessionStore(
++      url: directory.appendingPathComponent("session.json"), isDisabled: true)
++    disabled.writeScrollback("nope", forTabKey: "abc")
++    XCTAssertFalse(FileManager.default.fileExists(atPath: sidecar("abc").path))
++    XCTAssertNil(disabled.readScrollback(forTabKey: "abc"))
++  }
++
++  // MARK: Divider
++
++  /// The one marker in a restored pane: it separates dead history from the live shell.
++  func testDividerIsPlainTextWithNoEscapeSequences() {
++    let divider = GhosttySurfaceView.scrollbackDivider
++    XCTAssertTrue(divider.contains("restored session"))
++    XCTAssertFalse(
++      divider.contains("\u{1B}"), "no SGR — the divider is content like any other byte")
++    XCTAssertTrue(divider.hasPrefix("\r\n"))
++    XCTAssertTrue(divider.hasSuffix("\r\n"))
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppTests/SessionSaveTests.swift ===
+@@ -224,6 +224,61 @@ final class SessionSaveTests: XCTestCase {
+     XCTAssertEqual(readWindows()?.first?.targets.first?.tabs.count, 4)
+   }
+ 
++  // MARK: Scrollback capture timing (issue #144)
++
++  /// Reading every pane's history is far too heavy for a coalesced save, so it must happen ONLY at
++  /// quit. A save triggered by ordinary layout churn must not touch scrollback at all.
++  func testScrollbackIsCapturedOnlyAtQuit() {
++    var captureCount = 0
++    let coordinator = SessionCoordinator(
++      store: SessionStore(url: url), debounce: 0.05, ceiling: 0.2,
++      capture: { [weak self] in self?.captured ?? [] },
++      captureScrollback: { _ in captureCount += 1 })
++
++    coordinator.markDirty()
++    pump(0.3)
++    XCTAssertEqual(captureCount, 0, "a coalesced save must not read scrollback")
++
++    captured = [window(tabCount: 2)]
++    coordinator.writeIfChanged()
++    pump(0.2)
++    XCTAssertEqual(captureCount, 0, "nor an explicit write")
++
++    coordinator.flushAndFreeze()
++    XCTAssertEqual(captureCount, 1, "quitting is the one moment worth reading history for")
++  }
++
++  /// Sidecars are pruned against the keys actually written, so a pane that is gone — or one whose
++  /// capture came back empty — cannot leave yesterday's output behind.
++  func testQuitPrunesSidecarsToTheWrittenKeys() {
++    let store = SessionStore(url: url)
++    store.writeScrollback("stale", forTabKey: "t0")
++    store.writeScrollback("gone", forTabKey: "orphan")
++
++    let coordinator = SessionCoordinator(
++      store: store, debounce: 0.05, ceiling: 0.2,
++      capture: { [weak self] in self?.captured ?? [] },
++      captureScrollback: { _ in })
++    captured = [window(tabCount: 1)]  // one tab, key "t0"
++    coordinator.flushAndFreeze()
++
++    XCTAssertEqual(store.readScrollback(forTabKey: "t0"), "stale", "a live pane keeps its sidecar")
++    XCTAssertNil(store.readScrollback(forTabKey: "orphan"), "a pane that is gone loses its sidecar")
++  }
++
++  /// A frozen or suspended coordinator writes no session, so it must not write scrollback either.
++  func testNoScrollbackCaptureWhileSuspended() {
++    var captureCount = 0
++    let coordinator = SessionCoordinator(
++      store: SessionStore(url: url), debounce: 0.05, ceiling: 0.2,
++      capture: { [weak self] in self?.captured ?? [] },
++      captureScrollback: { _ in captureCount += 1 })
++
++    coordinator.suspendSaves()
++    coordinator.flushAndFreeze()
++    XCTAssertEqual(captureCount, 0, "a half-restored session must not overwrite good sidecars")
++  }
++
+   // MARK: Newer schema
+ 
+   /// A session written by a newer build is read-only: this build restores nothing and, critically,
+
+
+=== DIFF: macapp/WorkroomAppUITests/SessionRestoreUITests.swift ===
+@@ -152,6 +152,60 @@ final class SessionRestoreUITests: XCTestCase {
+       "both windows should be reopened from the saved session, without a second ⌘N")
+   }
+ 
++  // MARK: Scrollback (issue #144)
++
++  /// The headline for #144: what you were reading is still there after a relaunch, above a divider.
++  ///
++  /// Asserted through the session directory rather than the terminal's a11y tree — the libghostty
++  /// Metal surface contributes no text to it, which is why every other terminal assertion in this
++  /// suite counts panes and chips instead of reading content.
++  func testScrollbackIsCapturedOnQuitAndReplayed() throws {
++    let app = launchedApp()
++    waitForFirstPane(app)
++
++    let marker = "SCROLLBACK-UITEST-\(UUID().uuidString.prefix(8))"
++    app.typeText("echo \(marker)\n")
++    // Let the command run and the output render before quitting.
++    _ = XCTWaiter().wait(for: [expectation(description: "settle")], timeout: 3)
++    quitAndWaitForSave(app)
++
++    let scrollbackDir = sessionFile.deletingLastPathComponent()
++      .appendingPathComponent("scrollback")
++    let sidecars =
++      (try? FileManager.default.contentsOfDirectory(
++        at: scrollbackDir, includingPropertiesForKeys: nil))
++      ?? []
++    XCTAssertFalse(sidecars.isEmpty, "quitting should have written a scrollback sidecar")
++
++    let captured = sidecars.compactMap { try? String(contentsOf: $0, encoding: .utf8) }
++    XCTAssertTrue(
++      captured.contains { $0.contains(marker) },
++      "the pane's output should be in its sidecar")
++
++    // Relaunching must consume it without crashing, and leave exactly the restored pane.
++    let relaunched = launchedApp()
++    XCTAssertTrue(relaunched.wait(for: .runningForeground, timeout: 10))
++    waitForFirstPane(relaunched)
++    assertCount(panes(relaunched), reaches: 1)
++  }
++
++  /// A corrupt sidecar must cost the history, never the launch.
++  func testCorruptScrollbackSidecarStillLaunches() throws {
++    let app = launchedApp()
++    waitForFirstPane(app)
++    quitAndWaitForSave(app)
++
++    let scrollbackDir = sessionFile.deletingLastPathComponent()
++      .appendingPathComponent("scrollback")
++    try FileManager.default.createDirectory(at: scrollbackDir, withIntermediateDirectories: true)
++    try Data([0xFF, 0xFE, 0xFF]).write(to: scrollbackDir.appendingPathComponent("garbage.txt"))
++
++    let relaunched = launchedApp()
++    XCTAssertTrue(relaunched.wait(for: .runningForeground, timeout: 10))
++    waitForFirstPane(relaunched)
++    assertCount(panes(relaunched), reaches: 1)
++  }
++
+   // MARK: Degradation
+ 
+   /// Corrupt input on the launch path must never cost more than the restore itself.
+
+
+Investigate per the method in your instructions, then return the findings list.
