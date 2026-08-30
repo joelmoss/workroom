@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bw7czd8si</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/ad9e5754-d4c8-4063-beb8-947970ea5d8f/tasks/bw7czd8si.output</output-file>
+<status>completed</status>
+<summary>Background command "Full serial unit test suite as final release gate" completed (exit code 0)</summary>
+</task-notification>
