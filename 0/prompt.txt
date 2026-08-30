@@ -1,0 +1,1 @@
+focus on bugs, tests, stability and performance, as we plan on a final release soon
