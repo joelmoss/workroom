@@ -99,4 +99,26 @@ final class SessionReplayBufferTests: XCTestCase {
     let replayed = String(bytes: buffer.replayBytes, encoding: .utf8)
     XCTAssertEqual(replayed, "\u{1B}[>5u\u{1B}[=5;1u\u{1B}[<u")
   }
+
+  func testReplayStripsDECRQMRequestModeQuery() {
+    var buffer = SessionReplayBuffer(capacity: 256)
+    buffer.append(Array("before".utf8) + [0x1B, 0x5B, 0x3F, 0x32, 0x30, 0x32, 0x36, 0x24, 0x70])  // CSI ?2026$p
+    buffer.append([0x1B, 0x5B, 0x3F, 0x32, 0x30, 0x32, 0x37, 0x24, 0x70])  // CSI ?2027$p
+    buffer.append(Array("after".utf8))
+    XCTAssertEqual(String(bytes: buffer.replayBytes, encoding: .utf8), "beforeafter")
+  }
+
+  func testReplayKeepsSoftTerminalReset() {
+    var buffer = SessionReplayBuffer(capacity: 256)
+    buffer.append([0x1B, 0x5B, 0x21, 0x70])  // CSI !p (DECSTR soft reset) — not a query
+    let replayed = String(bytes: buffer.replayBytes, encoding: .utf8)
+    XCTAssertEqual(replayed, "\u{1B}[!p")
+  }
+
+  func testReplayKeepsRectangularAreaOperation() {
+    var buffer = SessionReplayBuffer(capacity: 256)
+    buffer.append([0x1B, 0x5B] + Array("1;1;2;2$z".utf8))  // CSI 1;1;2;2$z — different $-final, not a query
+    let replayed = String(bytes: buffer.replayBytes, encoding: .utf8)
+    XCTAssertEqual(replayed, "\u{1B}[1;1;2;2$z")
+  }
 }

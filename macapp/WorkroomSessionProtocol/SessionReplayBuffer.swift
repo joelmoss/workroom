@@ -55,7 +55,7 @@ public struct SessionReplayBuffer: Sendable {
 
   /// Replayable bytes, with terminal capability *queries* stripped (color queries and clipboard
   /// reads — OSC 4/10-19/21/52 with a `?` payload — plus CSI device-attributes/status-report
-  /// requests ending in `c`/`n`).
+  /// requests ending in `c`/`n`, and DECRQM request-mode queries ending in `$p`).
   ///
   /// A query is a request for the CURRENT client to answer right now — a shell theme querying the
   /// background color, a program probing cursor position, or (OSC 52) a request for the clipboard,
@@ -365,16 +365,18 @@ public struct SessionReplayBuffer: Sendable {
   }
 
   /// Whether the CSI sequence `bytes[start..<end]` (`start` right after `ESC [`, `end` right after
-  /// the final byte) is a query: device attributes (`…c`) or device/cursor status report (`…n`) —
-  /// pure queries regardless of parameters — or the Kitty keyboard-protocol flags query, which is
-  /// query-only in its exact bare `? u` form (no digits). `= … u` (set), `> … u` (push), and `< u`
-  /// (pop) are the same final byte but are not queries, so `u` needs the parameter check the other
-  /// two finals don't.
+  /// the final byte) is a query: device attributes (`…c`), device/cursor status report (`…n`), or
+  /// DECRQM request-mode (`…$p`, with or without a leading `?` for private modes) — pure queries
+  /// regardless of parameters — or the Kitty keyboard-protocol flags query, which is query-only in
+  /// its exact bare `? u` form (no digits). `= … u` (set), `> … u` (push), and `< u` (pop) are the
+  /// same final byte but are not queries, so `u` needs the parameter check the other finals don't.
+  /// `p` needs the `$` intermediate check so DECSTR soft-reset (`CSI ! p`) isn't mistaken for it.
   private func isStatusQueryCSI(_ bytes: [UInt8], start: Int, end: Int) -> Bool {
     guard end > start else { return false }
     switch bytes[end - 1] {
     case 0x63, 0x6E: return true
     case 0x75: return end - start == 2 && bytes[start] == 0x3F
+    case 0x70: return end - start >= 2 && bytes[end - 2] == 0x24
     default: return false
     }
   }
