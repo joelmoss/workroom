@@ -1,0 +1,1 @@
+add a "Live activity + notifications" item.
