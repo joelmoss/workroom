@@ -1,0 +1,1074 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/AppStore+WorkroomStatus.swift
+  - macapp/WorkroomApp/Core/AppStore.swift
+  - macapp/WorkroomApp/Core/GitHubAuthCache.swift
+  - macapp/WorkroomApp/Core/ProjectStore.swift
+  - macapp/WorkroomApp/Core/UITestFixture.swift
+  - macapp/WorkroomApp/Core/WorkroomStatus.swift
+  - macapp/WorkroomApp/Core/WorkroomStatusResolver.swift
+  - macapp/WorkroomApp/Views/PullRequestPanel.swift
+  - macapp/WorkroomAppTests/GitHubAuthCacheTests.swift
+  - macapp/WorkroomAppTests/PullRequestPanelCopyTests.swift
+  - macapp/WorkroomAppTests/WorkroomStatusResolverTests.swift
+  - macapp/WorkroomAppTests/WorkroomStatusTests.swift
+  - macapp/WorkroomAppUITests/PullRequestWarningUITests.swift
+  - macapp/WorkroomApp/Core/VCSToolVersions.swift
+  - macapp/WorkroomAppTests/VCSToolVersionsTests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/AppStore+WorkroomStatus.swift ===
+@@ -13,7 +13,7 @@ import Foundation
+ extension AppStore {
+   fileprivate static let localStatusTTL: TimeInterval = 15  // git/jj dirty/changed-files
+   fileprivate static let ciStatusTTL: TimeInterval = 300  // gh CI (network)
+-  fileprivate static let ghStatusTTL: TimeInterval = 60  // `gh auth status` availability check
++  // The `gh auth status` TTL lives in `GitHubAuthCache`, which owns that probe's freshness outright.
+   fileprivate static let localConcurrency = 5
+   fileprivate static let ciConcurrency = 2
+   fileprivate static let selectionDebounce: TimeInterval = 0.3  // arrow-key row cycling coalesce
+@@ -98,34 +98,28 @@ extension AppStore {
+     }
+   }
+ 
+-  /// Refresh `githubCLIStatus` if stale (own short TTL), so the warning + probe guards reflect
+-  /// whether `gh` is usable. No-ops in fixture mode (the fixture seeds `.available`).
++  /// Mirror the `gh` verdict onto the observable store so the warning + probe guards reflect whether
++  /// `gh` is usable. Freshness, single-flight and the `force` contract all belong to
++  /// `GitHubAuthCache`; this function only decides whether to paint what it says. No-ops in fixture
++  /// mode (the fixture seeds the status directly).
+   ///
+-  /// **This is the one status mutation that happens INSIDE an awaited function**, so the callers'
+-  /// own `Task.isCancelled` checks (`:86`/`:144`) run too late to protect it — the guard has to live
+-  /// here. It was missing, and that was the false, sticky "GitHub CLI not signed in": a superseded
+-  /// sweep or a workroom switched mid-probe SIGKILLs the `gh` child, `StatusCommandRunner`'s
+-  /// non-throwing continuation still hands back `exitCode: 9` with empty stdout, and the classifier
+-  /// read that as a logout. Publishing it then STAMPED the TTL, so the gate above turned every lane
++  /// **This is the one status mutation that happens INSIDE an awaited function**, so the callers' own
++  /// `Task.isCancelled` checks run too late to protect it — the guard has to live here. It was
++  /// missing, and that was the false, sticky "GitHub CLI not signed in": a superseded sweep or a
++  /// workroom switched mid-probe SIGKILLs the `gh` child, `StatusCommandRunner`'s non-throwing
++  /// continuation still hands back `exitCode: 9` with empty stdout, and the classifier read that as a
++  /// logout. Publishing it also stamped the freshness clock, so the staleness gate turned every lane
+   /// that would have healed the value into an early return for a full minute — the wrong answer
+   /// suppressing its own repair, escapable only via the Refresh button's `force`.
+   ///
+   /// The tempting instinct — "gh's auth state is machine-global, so record it even from a cancelled
+-  /// task" — is wrong: a cancelled probe holds no fact at all, neither a value nor a freshness. Bail
+-  /// on both. Same for `.keepPrior`: leaving the stamp alone is what makes the next lane re-probe
+-  /// instead of trusting a non-answer.
++  /// task" — is wrong: a cancelled probe holds no fact at all. A `nil` here means the same thing (the
++  /// probe told us nothing and there was no prior verdict), so leave the mirror alone in both cases.
+   func refreshGitHubCLI(resolver: WorkroomStatusResolver, force: Bool = false) async {
+     if UITestFixture.isActive { return }
+-    if !force, let at = ghStatusCheckedAt,
+-      Date().timeIntervalSince(at) < Self.ghStatusTTL
+-    {
+-      return
+-    }
+-    let probe = await resolver.resolveGitHubCLI()
++    guard let status = await ghAuthCache.status(force: force, resolver: resolver) else { return }
+     if Task.isCancelled { return }
+-    guard case .verdict(let status) = probe else { return }
+     githubCLIStatus = status
+-    ghStatusCheckedAt = Date()
+   }
+ 
+   /// Freshen just the selected workroom (local + CI, forced), debounced so arrow-key cycling
+@@ -405,6 +399,11 @@ extension AppStore {
+       workroomStatuses[.workroom(project: project.path, name: workroom.name)] =
+         UITestFixture.workroomStatus
+     }
++    // Seed here — not only at load — because this runs again on the manual Refresh button, and
++    // `refreshGitHubCLI` no-ops in fixture mode, so a re-seed is the only thing that can restate the
++    // value. Left alone when the flag is absent, so the optimistic `.available` default stands and
++    // every existing fixture test still sees no warning.
++    if let seeded = UITestFixture.ghStatus { githubCLIStatus = seeded }
+   }
+ 
+   // MARK: - Internals
+
+
+=== DIFF: macapp/WorkroomApp/Core/AppStore.swift ===
+@@ -291,12 +291,10 @@ final class AppStore: ObservableObject {
+     get { projectStore.githubCLIStatus }
+     set { projectStore.githubCLIStatus = newValue }
+   }
+-  /// When `githubCLIStatus` was last probed (its own short TTL, so we don't re-run `gh auth status`
+-  /// on every selection).
+-  var ghStatusCheckedAt: Date? {
+-    get { projectStore.ghStatusCheckedAt }
+-    set { projectStore.ghStatusCheckedAt = newValue }
+-  }
++  /// Owns the `gh auth status` verdict's freshness and single-flight (see `GitHubAuthCache`). The
++  /// timestamp that used to live here is gone: two owners for one truth is how the staleness gate and
++  /// the write drifted apart in the first place.
++  var ghAuthCache: GitHubAuthCache { projectStore.ghAuthCache }
+   /// A PR write action (Phase 2b) is running — disables the PR actions menu so it can't double-fire.
+   @Published var prActionInFlight = false
+ 
+
+
+=== DIFF: macapp/WorkroomApp/Core/GitHubAuthCache.swift ===
+@@ -0,0 +1,114 @@
++import Foundation
++
++/// Owns the `gh auth status` verdict: one probe at a time, one freshness clock, for every window.
++///
++/// Whether you are signed in to `gh` is a fact about the MACHINE, not about a window. But `AppStore`
++/// is per-window (`WorkroomApp.swift` mints one per `WindowSeed`) while the verdict lives on the
++/// shared `ProjectStore`, and the staleness check used to sit *before* the await with the stamp
++/// *after* it — so two windows opening together both read "no stamp yet", both forked `gh`, and the
++/// later write won. This collapses that into one owner.
++///
++/// ```
++///   caller(force: false) ─┐
++///   caller(force: false) ─┼─► fresh within TTL? ──yes──► return the cached verdict
++///   caller(force: false) ─┘            │no
++///                                      ▼
++///                          a probe already in flight? ──yes──► JOIN it (one `gh`, N waiters)
++///                                      │no
++///                                      ▼
++///                        ┌── Task owned by THIS ACTOR, not by the caller
++///                        │   (so a cancelled lane no longer SIGKILLs the gh child mid-answer)
++///                        ▼
++///              .verdict(x) ─► cache x, stamp the clock, hand x to every waiter
++///              .keepPrior  ─► cache untouched and UNSTAMPED, waiters get the prior verdict
++///
++///   caller(force: true) ──► never joins a non-forced flight; starts a fresh probe
++///                           (concurrent forced callers still join each other)
++/// ```
++///
++/// Deliberately an INSTANCE, not the `static let shared` actor that `VCSToolVersionCache` uses for
++/// the same category of fact. `AppStore.init` documents that "tests build an isolated `AppStore()`
++/// (own fresh `ProjectStore`)", and `make app-test` runs classes in PARALLEL — with static state one
++/// test's injected fake runner can serve another test's probe, and a tests-only `reset()` cannot stop
++/// an already-in-flight task from repopulating the cache afterwards. Per-`ProjectStore` ownership
++/// gets that isolation from a guarantee the codebase already makes.
++actor GitHubAuthCache {
++  typealias Probe = WorkroomStatusResolver.GHAuthProbe
++
++  /// How long a settled verdict is trusted.
++  private let ttl: Duration
++  /// How long a `.notAuthenticated` verdict is trusted. Shorter, because it is both the alarming
++  /// answer AND the one every ambiguous probe result falls back to, and it gates the entire PR/CI
++  /// lane. A genuine logout still warns on the FIRST probe; only the caching is shortened.
++  private let negativeTTL: Duration
++
++  /// A MONOTONIC clock, not `Date`. Wall-clock time can step backwards (NTP correction, a manual
++  /// change, waking in another timezone), which with `Date` arithmetic makes the elapsed interval
++  /// negative — i.e. "always fresh" — pinning a verdict for as long as the clock stays behind. The
++  /// local/CI lanes still stamp `Date`s; only this cache needs the guarantee, because it is the one
++  /// whose staleness gate can suppress its own repair.
++  private let clock = ContinuousClock()
++
++  private var cached: (status: GitHubCLIStatus, at: ContinuousClock.Instant)?
++  private var inFlight: (task: Task<GitHubCLIStatus?, Never>, forced: Bool)?
++  /// Generation-stamped like `ShellEnvironment`'s probe state, so a superseded probe can't clear a
++  /// newer flight or overwrite a newer verdict when it finally lands.
++  private var generation = 0
++
++  /// TTLs are injectable so tests can age a verdict in milliseconds instead of sleeping for a minute,
++  /// and so the negative TTL is a one-line tuning change rather than a code change.
++  init(ttl: Duration = .seconds(60), negativeTTL: Duration = .seconds(10)) {
++    self.ttl = ttl
++    self.negativeTTL = negativeTTL
++  }
++
++  /// The current verdict, probing only when stale (or when `force`d).
++  ///
++  /// `nil` means "no verdict to report": the probe told us nothing AND nothing was cached, so the
++  /// caller must leave whatever it is showing alone. It is never a synonym for `.available`.
++  func status(force: Bool = false, resolver: WorkroomStatusResolver) async -> GitHubCLIStatus? {
++    if !force, let cached, isFresh(cached) { return cached.status }
++    // A non-forced caller is happy with any answer in flight. A FORCED one (the manual Refresh
++    // button) must not be handed a result from a probe that started before the user asked — that
++    // would make Refresh silently not refresh — but two forced callers can share one.
++    if let inFlight, !force || inFlight.forced { return await inFlight.task.value }
++
++    generation += 1
++    let gen = generation
++    // Owned by the actor, NOT by the calling task: `withTaskCancellationHandler` in
++    // `StatusCommandRunner` SIGKILLs the child when the awaiting task is cancelled, and a probe that
++    // dies mid-answer is exactly the ambiguity this whole change is about. Cancelling a lane now
++    // abandons the WAIT, while the probe runs to a real verdict for whoever asks next.
++    let task = Task { [self] () -> GitHubCLIStatus? in
++      let probe = await resolver.resolveGitHubCLI()
++      return await record(probe, gen: gen)
++    }
++    inFlight = (task, force)
++    return await task.value
++  }
++
++  /// Fold a finished probe into the cache. `.keepPrior` deliberately does NOT stamp: leaving the
++  /// clock alone is what makes the next lane re-probe instead of trusting a non-answer for a full
++  /// TTL — the mechanism behind the original "sticky for 60 seconds" half of the bug.
++  private func record(_ probe: Probe, gen: Int) -> GitHubCLIStatus? {
++    let current = gen == generation
++    if current { inFlight = nil }
++    switch probe {
++    case .verdict(let status):
++      // A superseded probe's verdict is real but older than the one that replaced it, so it must not
++      // overwrite. Still returned to its own waiters, who asked before it was superseded.
++      if current { cached = (status, clock.now) }
++      return status
++    case .keepPrior:
++      return cached?.status
++    }
++  }
++
++  private func isFresh(_ entry: (status: GitHubCLIStatus, at: ContinuousClock.Instant)) -> Bool {
++    entry.at.duration(to: clock.now) < effectiveTTL(for: entry.status)
++  }
++
++  private func effectiveTTL(for status: GitHubCLIStatus) -> Duration {
++    status == .notAuthenticated ? negativeTTL : ttl
++  }
++}
+
+
+=== DIFF: macapp/WorkroomApp/Core/ProjectStore.swift ===
+@@ -34,9 +34,13 @@ final class ProjectStore: ObservableObject {
+   /// no warning flashes before the first check.
+   @Published var githubCLIStatus: GitHubCLIStatus = .available
+ 
+-  /// When `githubCLIStatus` was last probed (its own short TTL, so we don't re-run `gh auth status`
+-  /// on every selection). Plain (non-`@Published`): it gates a re-probe, nothing renders from it.
+-  var ghStatusCheckedAt: Date?
++  /// Owns the `gh auth status` probe: its freshness clock AND its single-flight, so N windows share
++  /// one `gh` and the staleness check can't interleave with the write the way a bare timestamp on
++  /// this class did. `githubCLIStatus` above is the SwiftUI-observable mirror of what it decided.
++  ///
++  /// A `var` purely so tests can swap in an instance with millisecond TTLs; production never
++  /// reassigns it.
++  var ghAuthCache = GitHubAuthCache()
+ 
+   /// Project paths with an in-flight create/delete (for per-row progress + disabling).
+   @Published var busyProjects: Set<String> = []
+
+
+=== DIFF: macapp/WorkroomApp/Core/UITestFixture.swift ===
+@@ -98,6 +98,23 @@ enum UITestFixture {
+     flag("WorkroomUITestSyncFailure")
+   }
+ 
++  /// The `gh` availability state to seed (`-WorkroomUITestGHStatus notInstalled|notAuthenticated|tooOld`).
++  ///
++  /// Needed because `refreshGitHubCLI` returns immediately in fixture mode — it must, since the
++  /// fixture's paths aren't real repos and a live `gh auth status` would answer about the developer's
++  /// own machine. So nothing could drive the Pull Request panel's warning states, and none of that
++  /// copy had any UI coverage at all. Absent ⇒ leave the optimistic `.available` default, i.e. no
++  /// warning, which is what every existing fixture test expects.
++  static var ghStatus: GitHubCLIStatus? {
++    switch text("WorkroomUITestGHStatus") {
++    case "notInstalled": return .notInstalled
++    case "notAuthenticated": return .notAuthenticated
++    case "tooOld": return .tooOld
++    case "available": return .available
++    default: return nil
++    }
++  }
++
+   /// When set (`-WorkroomUITestSyncReadFailure 1`), the remote READ fails rather than an action — the
+   /// distinct case that used to render "No repository" for a perfectly good repo. Separate from
+   /// `syncFailure` because the two tiers are different: that one retries the action, this one re-reads.
+
+
+=== DIFF: macapp/WorkroomApp/Core/WorkroomStatus.swift ===
+@@ -69,6 +69,11 @@ enum GitHubCLIStatus: Equatable, Sendable {
+   case available
+   case notInstalled  // gh not on PATH (env exit 127)
+   case notAuthenticated  // gh present but `gh auth status` fails (not logged in)
++  /// gh is installed and possibly signed in, but too old to answer us: it rejects `--active` /
++  /// `--json` (both gh ≥ 2.57) outright rather than ignoring them, so no probe can ever succeed.
++  /// Distinct from `notAuthenticated` because `gh auth login` cannot fix it — only an upgrade can,
++  /// and telling such a user they're "not signed in" sends them down the wrong path entirely.
++  case tooOld
+ }
+ 
+ /// Why a status probe couldn't produce a clean/dirty answer. Drives the "unknown" badge.
+
+
+=== DIFF: macapp/WorkroomApp/Core/WorkroomStatusResolver.swift ===
+@@ -475,16 +475,30 @@ struct WorkroomStatusResolver: Sendable {
+     // signal): `exitCode` is a signal number, so the heuristic below would read SIGKILL as a
+     // logout. That was the false, sticky "GitHub CLI not signed in".
+     if r.signaled { return .keepPrior }
++    // A gh too old to understand our flags is a VERSION problem, not a sign-in one, and must be
++    // separated before the fallback below reads it as a logout.
++    if rejectedUnknownFlag(r) { return .verdict(.tooOld) }
+     // Remaining non-zero exits are a fatal gh error with no parseable JSON. Ambiguous, and
+     // deliberately still reported as not-authenticated rather than silently masking a real problem.
+-    //
+-    // NOTE: one identifiable shape lands here today and is WRONG — an old gh (< 2.57) rejects
+-    // `--active`/`--json` outright (measured: exit 1, empty stdout, `unknown flag: --json` on
+-    // stderr), so a perfectly signed-in user reads as permanently logged out. That gets its own
+-    // `.tooOld` verdict and an upgrade message; see the PR2 hardening pass.
+     return .verdict(r.ok ? .available : .notAuthenticated)
+   }
+ 
++  /// Whether gh rejected one of our flags outright, i.e. it predates them.
++  ///
++  /// `gh auth status --active --json hosts` needs gh ≥ 2.57. An older gh does NOT ignore an unknown
++  /// flag, it refuses the whole command: measured `exit 1`, **empty stdout**, and `unknown flag:
++  /// --json` on stderr. Without this that shape fell through to the exit-code heuristic and reported
++  /// a perfectly signed-in user as logged out — permanently, since no probe could ever succeed and
++  /// `gh auth login` would change nothing.
++  ///
++  /// Matched on `unknown flag` **generically** rather than a specific flag name: `--active` and
++  /// `--json` share the 2.57 floor and gh reports whichever it parses first, so pinning one spelling
++  /// would miss the other. Requires a failed result, so a repo whose branch or PR title happens to
++  /// contain the words can't trip it.
++  static func rejectedUnknownFlag(_ r: CommandResult) -> Bool {
++    !r.ok && r.stderr.lowercased().contains("unknown flag")
++  }
++
+   /// Classify `gh auth status --active --json hosts` output, or `nil` if it isn't the expected JSON
+   /// (so the caller can fall back). Shape: `{"hosts":{"github.com":[{"state":"success"|"error",
+   /// "error":"…","active":true,…}]}}`. With `--active` gh emits only each host's active account.
+
+
+=== DIFF: macapp/WorkroomApp/Views/PullRequestPanel.swift ===
+@@ -26,27 +26,80 @@ struct PullRequestPanel: View {
+     .frame(maxWidth: .infinity, alignment: .leading)
+   }
+ 
+-  /// Warning shown when `gh` isn't installed or isn't signed in — the GitHub-backed PR/CI data
+-  /// can't be fetched, so say why and how to fix it rather than silently showing nothing.
++  /// The copy for each unusable-`gh` state, as a pure function so all of it is unit-tested.
++  ///
++  /// Extracted from the view body because it was a chain of `status == .notInstalled` ternaries: with
++  /// only two outcomes that read fine, but every state that wasn't `.notInstalled` printed "not
++  /// signed in" — so `.tooOld` would have inherited a message that is both wrong and unactionable
++  /// (`gh auth login` cannot fix an old gh). A switch makes the compiler demand an answer per state,
++  /// and pulling it out of the `ViewBuilder` means a mis-mapped case fails a test instead of quietly
++  /// rendering plausible nonsense.
++  /// `id` is the a11y-identifier suffix (`pr.ghWarning.<id>`). The rendered `Text`s in this panel
++  /// expose EMPTY accessibility labels — measured: every `staticTexts` element in the inspector tree
++  /// comes back with `label == ""` — so a UI test cannot asserted on the copy itself. The identifier
++  /// is what makes which-state-is-showing observable, and it doubles as the screen-reader handle.
++  static func ghWarningCopy(for status: GitHubCLIStatus)
++    -> (id: String, title: String, body: String, showsInstallLink: Bool)
++  {
++    switch status {
++    case .notInstalled:
++      return (
++        id: "notInstalled",
++        title: "GitHub CLI not found",
++        body: "Install the gh command-line tool to see pull requests and CI status.",
++        showsInstallLink: true
++      )
++    case .tooOld:
++      return (
++        id: "tooOld",
++        title: "GitHub CLI too old",
++        body:
++          "Workroom needs gh 2.57 or newer to read pull requests and CI status. "
++          + "Upgrade it (for example \u{201C}brew upgrade gh\u{201D}) and reopen this panel.",
++        // No install link: gh IS installed, and pointing at the download page buries the one-line
++        // upgrade that actually fixes it.
++        showsInstallLink: false
++      )
++    case .notAuthenticated:
++      return (
++        id: "notAuthenticated",
++        title: "GitHub CLI not signed in",
++        body: "Run \u{201C}gh auth login\u{201D} in a terminal to see pull requests and CI status.",
++        showsInstallLink: false
++      )
++    case .available:
++      // Not rendered (the caller only warns when `!= .available`), but spelled out rather than
++      // defaulted so adding a state can't silently fall into a wrong message.
++      return (id: "available", title: "", body: "", showsInstallLink: false)
++    }
++  }
++
++  /// Warning shown when `gh` can't be used — not installed, too old, or not signed in. The
++  /// GitHub-backed PR/CI data can't be fetched, so say why and how to fix it rather than silently
++  /// showing nothing.
+   private func ghWarning(_ status: GitHubCLIStatus) -> some View {
+-    VStack(alignment: .leading, spacing: 6) {
++    let copy = Self.ghWarningCopy(for: status)
++    return VStack(alignment: .leading, spacing: 6) {
+       HStack(spacing: 6) {
+         Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
+           .accessibilityHidden(true)
+-        Text(status == .notInstalled ? "GitHub CLI not found" : "GitHub CLI not signed in")
++        Text(copy.title)
+           .fontWeight(.medium)
++          // Which warning is showing has to be observable from outside, and the rendered `Text`s in
++          // this tree expose EMPTY accessibility labels — so without an identifier a UI test can see
++          // that *a* warning exists but not which, and "wrong warning for the state" is exactly the
++          // regression worth catching. On the title rather than the enclosing stack: combining the
++          // stack into one a11y element would swallow the install link below it.
++          .accessibilityIdentifier("pr.ghWarning.\(copy.id)")
+         Spacer(minLength: 0)
+       }
+       .font(.callout)
+-      Text(
+-        status == .notInstalled
+-          ? "Install the gh command-line tool to see pull requests and CI status."
+-          : "Run \u{201C}gh auth login\u{201D} in a terminal to see pull requests and CI status."
+-      )
+-      .font(.footnote).foregroundStyle(.secondary)
+-      .fixedSize(horizontal: false, vertical: true)
+-      if status == .notInstalled, let url = URL(string: "https://cli.github.com") {
++      Text(copy.body)
++        .font(.footnote).foregroundStyle(.secondary)
++        .fixedSize(horizontal: false, vertical: true)
++      if copy.showsInstallLink, let url = URL(string: "https://cli.github.com") {
+         Link("Install gh\u{2026}", destination: url).font(.footnote).help("Open cli.github.com")
++          .accessibilityIdentifier("pr.ghWarning.installLink")
+       }
+     }
+     .padding(12)
+
+
+=== DIFF: macapp/WorkroomAppTests/GitHubAuthCacheTests.swift ===
+@@ -0,0 +1,248 @@
++import XCTest
++
++@testable import Workroom
++
++/// `GitHubAuthCache`'s four contracts: single-flight, freshness (including the shorter negative TTL),
++/// the `force` guarantee, and what a `.keepPrior` non-answer does to the cache.
++///
++/// Every test injects millisecond TTLs, so none of them sleep for a minute to age a verdict.
++final class GitHubAuthCacheTests: XCTestCase {
++  // MARK: - Single-flight
++
++  /// The reason this type exists: `AppStore` is per-window but the verdict is machine-global, so
++  /// several windows asking at once must cost ONE `gh auth status`, not one each.
++  func testConcurrentCallersShareOneProbe() async {
++    let runner = CountingGHRunner(
++      stdout: #"{"hosts":{"github.com":[{"state":"success","active":true}]}}"#,
++      delay: .milliseconds(80))
++    let cache = GitHubAuthCache()
++    let resolver = WorkroomStatusResolver(runner: runner)
++
++    let results = await withTaskGroup(of: GitHubCLIStatus?.self) { group in
++      for _ in 0..<5 { group.addTask { await cache.status(resolver: resolver) } }
++      var out: [GitHubCLIStatus?] = []
++      for await r in group { out.append(r) }
++      return out
++    }
++
++    XCTAssertEqual(runner.authCallCount, 1, "each waiter forked its own `gh auth status`")
++    XCTAssertEqual(results.compactMap { $0 }, Array(repeating: .available, count: 5))
++  }
++
++  // MARK: - Freshness
++
++  func testASecondCallInsideTheTTLDoesNotReprobe() async {
++    let runner = CountingGHRunner(stdout: successJSON)
++    let cache = GitHubAuthCache(ttl: .seconds(60))
++    let resolver = WorkroomStatusResolver(runner: runner)
++
++    _ = await cache.status(resolver: resolver)
++    _ = await cache.status(resolver: resolver)
++
++    XCTAssertEqual(runner.authCallCount, 1)
++  }
++
++  func testAStaleVerdictIsReprobed() async {
++    let runner = CountingGHRunner(stdout: successJSON)
++    let cache = GitHubAuthCache(ttl: .milliseconds(20))
++    let resolver = WorkroomStatusResolver(runner: runner)
++
++    _ = await cache.status(resolver: resolver)
++    try? await Task.sleep(nanoseconds: 40_000_000)
++    _ = await cache.status(resolver: resolver)
++
++    XCTAssertEqual(runner.authCallCount, 2)
++  }
++
++  /// `.notAuthenticated` gets the SHORTER lease. It is both the alarming answer and the one every
++  /// ambiguous result falls back to, and it gates the whole PR/CI lane — so it is re-confirmed
++  /// quickly rather than trusted for the full minute.
++  func testNotAuthenticatedIsReconfirmedOnTheShorterNegativeTTL() async {
++    let runner = CountingGHRunner(stdout: #"{"hosts":{}}"#)
++    let cache = GitHubAuthCache(ttl: .seconds(60), negativeTTL: .milliseconds(20))
++    let resolver = WorkroomStatusResolver(runner: runner)
++
++    let first = await cache.status(resolver: resolver)
++    XCTAssertEqual(first, .notAuthenticated)
++    try? await Task.sleep(nanoseconds: 40_000_000)
++    _ = await cache.status(resolver: resolver)
++
++    XCTAssertEqual(runner.authCallCount, 2, "a logout verdict was trusted past its negative TTL")
++  }
++
++  /// The other half of the asymmetry: a good verdict is NOT re-probed on the negative TTL's schedule,
++  /// or the shortened lease would apply to everyone and multiply `gh` calls for no reason.
++  func testAvailableKeepsTheFullTTL() async {
++    let runner = CountingGHRunner(stdout: successJSON)
++    let cache = GitHubAuthCache(ttl: .seconds(60), negativeTTL: .milliseconds(20))
++    let resolver = WorkroomStatusResolver(runner: runner)
++
++    _ = await cache.status(resolver: resolver)
++    try? await Task.sleep(nanoseconds: 40_000_000)
++    _ = await cache.status(resolver: resolver)
++
++    XCTAssertEqual(runner.authCallCount, 1)
++  }
++
++  // MARK: - force
++
++  func testForceBypassesAFreshVerdict() async {
++    let runner = CountingGHRunner(stdout: successJSON)
++    let cache = GitHubAuthCache(ttl: .seconds(60))
++    let resolver = WorkroomStatusResolver(runner: runner)
++
++    _ = await cache.status(resolver: resolver)
++    _ = await cache.status(force: true, resolver: resolver)
++
++    XCTAssertEqual(runner.authCallCount, 2, "the Refresh button reused a cached answer")
++  }
++
++  /// The contract Codex flagged as unspecified. A forced caller must not be handed the result of a
++  /// probe that started BEFORE the user pressed Refresh — otherwise Refresh silently doesn't refresh.
++  func testForceDoesNotJoinAnInFlightNonForcedProbe() async {
++    let runner = CountingGHRunner(stdout: successJSON, delay: .milliseconds(120))
++    let cache = GitHubAuthCache(ttl: .seconds(60))
++    let resolver = WorkroomStatusResolver(runner: runner)
++
++    let background = Task { await cache.status(resolver: resolver) }
++    // Let the non-forced probe get in flight before forcing.
++    try? await Task.sleep(nanoseconds: 30_000_000)
++    _ = await cache.status(force: true, resolver: resolver)
++    _ = await background.value
++
++    XCTAssertEqual(runner.authCallCount, 2, "force joined a probe that predated the request")
++  }
++
++  // MARK: - keepPrior
++
++  /// A non-answer must not become a verdict, and — the sticky half of the original bug — must not
++  /// refresh the freshness clock either, or one blip would suppress its own repair for a full TTL.
++  func testKeepPriorReturnsNilWhenNothingIsCached() async {
++    let runner = CountingGHRunner(signalled: true)
++    let cache = GitHubAuthCache()
++    let resolver = WorkroomStatusResolver(runner: runner)
++
++    let status = await cache.status(resolver: resolver)
++
++    XCTAssertNil(status, "a killed probe produced a verdict out of nothing")
++  }
++
++  func testKeepPriorPreservesThePriorVerdictAndDoesNotStamp() async {
++    let runner = SwitchableGHRunner(stdout: #"{"hosts":{}}"#)
++    let cache = GitHubAuthCache(ttl: .seconds(60), negativeTTL: .milliseconds(20))
++    let resolver = WorkroomStatusResolver(runner: runner)
++
++    let first = await cache.status(resolver: resolver)
++    XCTAssertEqual(first, .notAuthenticated)
++    // Now every probe comes back killed. The prior verdict must survive...
++    runner.becomeSignalled()
++    try? await Task.sleep(nanoseconds: 40_000_000)
++    let afterBlip = await cache.status(resolver: resolver)
++    XCTAssertEqual(afterBlip, .notAuthenticated, "a killed probe erased a true verdict")
++    // ...and must NOT have been re-stamped, so the very next call probes again rather than sitting on
++    // a non-answer until the TTL expires.
++    let callsSoFar = runner.authCallCount
++    _ = await cache.status(resolver: resolver)
++    XCTAssertGreaterThan(
++      runner.authCallCount, callsSoFar, "a non-answer refreshed the freshness clock")
++  }
++
++  // MARK: - Isolation
++
++  /// Two `GitHubAuthCache` instances share nothing. This is the whole reason it is an instance rather
++  /// than the `static let shared` actor `VCSToolVersionCache` uses: `make app-test` runs classes in
++  /// parallel, and static state would let one test's fake runner answer another test's probe.
++  func testTwoInstancesDoNotShareState() async {
++    let runnerA = CountingGHRunner(stdout: successJSON)
++    let runnerB = CountingGHRunner(stdout: #"{"hosts":{}}"#)
++    let cacheA = GitHubAuthCache()
++    let cacheB = GitHubAuthCache()
++
++    let a = await cacheA.status(resolver: WorkroomStatusResolver(runner: runnerA))
++    let b = await cacheB.status(resolver: WorkroomStatusResolver(runner: runnerB))
++
++    XCTAssertEqual(a, .available)
++    XCTAssertEqual(b, .notAuthenticated)
++    XCTAssertEqual(runnerA.authCallCount, 1)
++    XCTAssertEqual(runnerB.authCallCount, 1)
++  }
++
++  private let successJSON = #"{"hosts":{"github.com":[{"state":"success","active":true}]}}"#
++}
++
++/// Counts `gh auth status` invocations so single-flight and TTL behaviour are asserted on the number
++/// of real probes, not just on the returned value.
++private final class CountingGHRunner: StatusCommandRunning, @unchecked Sendable {
++  private let lock = NSLock()
++  private var count = 0
++  private let stdout: String
++  private let delay: Duration?
++  private let signalled: Bool
++
++  init(stdout: String = "", delay: Duration? = nil, signalled: Bool = false) {
++    self.stdout = stdout
++    self.delay = delay
++    self.signalled = signalled
++  }
++
++  var authCallCount: Int {
++    lock.lock()
++    defer { lock.unlock() }
++    return count
++  }
++
++  func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
++    async -> CommandResult
++  {
++    guard executable == "gh", args.contains("auth") else {
++      return CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: false)
++    }
++    lock.lock()
++    count += 1
++    lock.unlock()
++    if let delay { try? await Task.sleep(for: delay) }
++    if signalled {
++      return CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
++    }
++    return CommandResult(stdout: stdout, stderr: "", exitCode: 0, timedOut: false)
++  }
++}
++
++/// Like `CountingGHRunner` but can flip to returning killed results mid-test, so "a good verdict
++/// survives a later blip" is exercised in one cache instance.
++private final class SwitchableGHRunner: StatusCommandRunning, @unchecked Sendable {
++  private let lock = NSLock()
++  private var count = 0
++  private var signalled = false
++  private let stdout: String
++
++  init(stdout: String) { self.stdout = stdout }
++
++  var authCallCount: Int {
++    lock.lock()
++    defer { lock.unlock() }
++    return count
++  }
++
++  func becomeSignalled() {
++    lock.lock()
++    signalled = true
++    lock.unlock()
++  }
++
++  func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
++    async -> CommandResult
++  {
++    guard executable == "gh", args.contains("auth") else {
++      return CommandResult(stdout: "", stderr: "", exitCode: 0, timedOut: false)
++    }
++    lock.lock()
++    count += 1
++    let killed = signalled
++    lock.unlock()
++    if killed {
++      return CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
++    }
++    return CommandResult(stdout: stdout, stderr: "", exitCode: 0, timedOut: false)
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppTests/PullRequestPanelCopyTests.swift ===
+@@ -0,0 +1,67 @@
++import XCTest
++
++@testable import Workroom
++
++/// The Pull Request inspector section's unusable-`gh` warning copy.
++///
++/// This layer had NO coverage at all, which mattered because the copy was a chain of
++/// `status == .notInstalled` ternaries: anything that wasn't `.notInstalled` printed "not signed in".
++/// That is how a version problem would have inherited a sign-in message. The mapping is the part that
++/// regresses silently — a wrong-but-plausible warning still renders perfectly — so it is pinned per
++/// state here rather than left to the view.
++final class PullRequestPanelCopyTests: XCTestCase {
++  func testNotInstalledOffersTheInstallLink() {
++    let copy = PullRequestPanel.ghWarningCopy(for: .notInstalled)
++    XCTAssertEqual(copy.title, "GitHub CLI not found")
++    XCTAssertTrue(copy.body.contains("Install the gh command-line tool"))
++    XCTAssertTrue(copy.showsInstallLink, "the one state where a download link is the fix")
++  }
++
++  func testNotAuthenticatedTellsYouToLogIn() {
++    let copy = PullRequestPanel.ghWarningCopy(for: .notAuthenticated)
++    XCTAssertEqual(copy.title, "GitHub CLI not signed in")
++    XCTAssertTrue(copy.body.contains("gh auth login"))
++    XCTAssertFalse(copy.showsInstallLink, "gh is installed — a download link would misdirect")
++  }
++
++  /// An old gh is installed and may well be signed in, so the message must name the version and
++  /// point at an upgrade. Two things it must NOT do: claim you aren't signed in (sends you to
++  /// `gh auth login`, which changes nothing), or offer the install link (it's already installed).
++  func testTooOldNamesTheVersionAndOffersNoInstallLink() {
++    let copy = PullRequestPanel.ghWarningCopy(for: .tooOld)
++    XCTAssertEqual(copy.title, "GitHub CLI too old")
++    XCTAssertTrue(copy.body.contains("2.57"), "say which version, so the fix is checkable")
++    XCTAssertTrue(copy.body.lowercased().contains("upgrade"))
++    XCTAssertFalse(copy.showsInstallLink)
++    XCTAssertFalse(
++      copy.body.contains("gh auth login"), "an upgrade problem must not be sold as a sign-in one")
++  }
++
++  /// Every state gets DISTINCT copy. A switch that mapped two states to the same message would still
++  /// compile and still render, and this is what catches it.
++  func testEveryWarningStateHasItsOwnTitle() {
++    let titles = [GitHubCLIStatus.notInstalled, .notAuthenticated, .tooOld]
++      .map { PullRequestPanel.ghWarningCopy(for: $0).title }
++    XCTAssertEqual(Set(titles).count, titles.count, "two states share a title: \(titles)")
++    XCTAssertFalse(titles.contains(""), "a warning state rendered an empty title")
++  }
++
++  /// The a11y-identifier suffix must be distinct per state too — it is the ONLY handle a UI test has,
++  /// because the rendered `Text`s expose empty accessibility labels. Two states sharing an id would
++  /// make "wrong warning for the state" invisible to the UI suite.
++  func testEveryWarningStateHasItsOwnAccessibilityID() {
++    let ids = [GitHubCLIStatus.notInstalled, .notAuthenticated, .tooOld, .available]
++      .map { PullRequestPanel.ghWarningCopy(for: $0).id }
++    XCTAssertEqual(Set(ids).count, ids.count, "two states share an a11y id: \(ids)")
++    XCTAssertFalse(ids.contains(""), "a state has no a11y id, so a UI test cannot see it")
++  }
++
++  /// `.available` renders no warning at all (the caller gates on `!= .available`), so its copy is
++  /// deliberately empty rather than a stale leftover that could leak into the UI.
++  func testAvailableHasNoWarningCopy() {
++    let copy = PullRequestPanel.ghWarningCopy(for: .available)
++    XCTAssertTrue(copy.title.isEmpty)
++    XCTAssertTrue(copy.body.isEmpty)
++    XCTAssertFalse(copy.showsInstallLink)
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppTests/WorkroomStatusResolverTests.swift ===
+@@ -736,6 +736,34 @@ final class WorkroomStatusResolverTests: XCTestCase {
+     XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(r), .keepPrior)
+   }
+ 
++  /// A gh older than 2.57 REJECTS `--json`/`--active` rather than ignoring them: measured exit 1,
++  /// empty stdout, `unknown flag: --json` on stderr. That used to fall through to the exit-code
++  /// heuristic and report a signed-in user as permanently logged out, sending them to
++  /// `gh auth login`, which cannot fix a version problem.
++  func testClassifyGitHubCLIUnknownFlagIsTooOld() {
++    let old = CommandResult(
++      stdout: "", stderr: "unknown flag: --json\n\nUsage:  gh auth status [flags]\n", exitCode: 1,
++      timedOut: false)
++    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(old), .verdict(.tooOld))
++  }
++
++  /// `--active` shares the same 2.57 floor and gh reports whichever flag it parses first, so the
++  /// detection must not be pinned to one spelling.
++  func testClassifyGitHubCLIUnknownFlagMatchesEitherFlag() {
++    let active = CommandResult(
++      stdout: "", stderr: "unknown flag: --active", exitCode: 1, timedOut: false)
++    XCTAssertEqual(WorkroomStatusResolver.classifyGitHubCLI(active), .verdict(.tooOld))
++  }
++
++  /// A *successful* probe whose payload happens to contain the words must not be read as a version
++  /// problem — the detector requires a failed result.
++  func testClassifyGitHubCLIUnknownFlagNeedsAFailure() {
++    let branchNamedOddly = ok(
++      #"{"hosts":{"github.com":[{"state":"success","active":true,"login":"unknown flag"}]}}"#)
++    XCTAssertEqual(
++      WorkroomStatusResolver.classifyGitHubCLI(branchNamedOddly), .verdict(.available))
++  }
++
+   /// A signalled `gh pr list`/`gh run list` must not clear a good PR/CI badge either.
+   func testGHPreflightSignalledKeepsPrior() {
+     let killed = CommandResult(
+
+
+=== DIFF: macapp/WorkroomAppTests/WorkroomStatusTests.swift ===
+@@ -867,21 +867,18 @@ final class WorkroomStatusTests: XCTestCase {
+   ///
+   /// A cancelled probe's child is SIGKILLed, and `StatusCommandRunner`'s continuation is
+   /// NON-throwing, so it still resumes with `exitCode: 9` and empty stdout. The classifier read that
+-  /// as `.notAuthenticated`. Publishing it was bad; STAMPING the TTL alongside it was what made the
+-  /// wrong answer stick, because the staleness gate then turned every lane that would have healed it
+-  /// into an early return for a full minute. So both halves must stay untouched — asserting only the
+-  /// status would let a regression that skips the value but keeps the stamp pass.
++  /// as `.notAuthenticated`, and publishing it painted every window's PR panel.
+   ///
+   /// The double deliberately returns a CLEAN, verdict-producing payload rather than the signalled
+-  /// shape (see `GatedGHRunner`), so `Task.isCancelled` is the only thing under test here. Deleting
+-  /// that guard must fail this test; `.keepPrior` is covered separately below.
++  /// shape (see `GatedGHRunner`), so `Task.isCancelled` is the only thing under test here — the
++  /// signalled path is `.keepPrior`'s job and is covered separately. Deleting the guard must fail
++  /// this test (verified by mutation).
+   @MainActor
+-  func testCancelledGitHubCLIProbePublishesNothingAndDoesNotStamp() async {
++  func testCancelledGitHubCLIProbePublishesNothing() async {
+     let store = AppStore()
+     let runner = GatedGHRunner()
+     store.statusResolver = WorkroomStatusResolver(runner: runner)
+     store.githubCLIStatus = .available
+-    store.ghStatusCheckedAt = nil
+ 
+     let resolver = store.statusResolver
+     let task = Task { await store.refreshGitHubCLI(resolver: resolver) }
+@@ -895,29 +892,25 @@ final class WorkroomStatusTests: XCTestCase {
+     await task.value
+ 
+     XCTAssertEqual(store.githubCLIStatus, .available, "a cancelled probe published a verdict")
+-    XCTAssertNil(
+-      store.ghStatusCheckedAt, "a cancelled probe stamped the TTL, suppressing the re-probe")
+   }
+ 
+   /// `.keepPrior` (a killed or crashed child that was never cancelled — jetsam, SIGSEGV, a signal
+-  /// around sleep/wake) keeps the previous verdict AND leaves the stamp alone, so the next lane
+-  /// re-probes rather than trusting a non-answer for the full TTL.
++  /// around sleep/wake) must not erase a correct warning. With nothing cached, the cache reports
++  /// `nil` and the mirror is left exactly as it was.
+   @MainActor
+-  func testKeepPriorGitHubCLIProbeLeavesStatusAndStampUntouched() async {
++  func testKeepPriorGitHubCLIProbeLeavesTheStatusUntouched() async {
+     let store = AppStore()
+     store.statusResolver = WorkroomStatusResolver(
+       runner: StubPRRunner { _, _ in
+         CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
+       })
+     store.githubCLIStatus = .notAuthenticated  // a TRUE warning that must not be erased
+-    store.ghStatusCheckedAt = nil
+ 
+     await store.refreshGitHubCLI(resolver: store.statusResolver)
+ 
+     XCTAssertEqual(
+       store.githubCLIStatus, .notAuthenticated,
+       "an uninformative probe erased a correct warning — the inverse false claim")
+-    XCTAssertNil(store.ghStatusCheckedAt, "a non-answer must not refresh the TTL")
+   }
+ 
+   /// Spin until the in-flight `gh` task settles (the stub returns promptly), with a bound so a hang
+
+
+=== DIFF: macapp/WorkroomAppUITests/PullRequestWarningUITests.swift ===
+@@ -0,0 +1,110 @@
++import XCTest
++
++/// UI tests for the Pull Request section's unusable-`gh` warning.
++///
++/// Until now nothing — unit test or UI test — touched this copy, and it was a chain of
++/// `status == .notInstalled` ternaries, so every state that wasn't "not found" printed "not signed
++/// in". A version problem would have inherited a sign-in message that cannot fix it.
++/// `PullRequestPanelCopyTests` pins the mapping; this pins that the panel actually renders the right
++/// one, through the real gate in `PullRequestPanel.body`.
++///
++/// Driven by the `-WorkroomUITestGHStatus` seam, which had to be added: `refreshGitHubCLI` returns
++/// immediately in fixture mode — it must, or a UI test would ask `gh` about the developer's own
++/// machine — so before this there was no way to reach any warning state from a test.
++///
++/// Asserted on ACCESSIBILITY IDENTIFIERS, not text. Measured: every `staticTexts` element in this
++/// inspector's tree reports `label == ""`, so a label-matching test can see that *some* warning exists
++/// but never which one — useless for the bug in question. `pr.ghWarning.<state>` makes the state
++/// itself observable.
++///
++/// Run with `make app-uitest` on a real GUI login session, or scoped:
++/// `xcodebuild ... -only-testing:WorkroomAppUITests/PullRequestWarningUITests/<method>`.
++final class PullRequestWarningUITests: XCTestCase {
++  override func setUpWithError() throws { continueAfterFailure = false }
++
++  private func launchedApp(ghStatus: String?) -> XCUIApplication {
++    let app = XCUIApplication()
++    app.launchArguments += ["-WorkroomUITestFixture", "1"]
++    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
++    if let ghStatus { app.launchArguments += ["-WorkroomUITestGHStatus", ghStatus] }
++    app.launch()
++    app.activate()
++    return app
++  }
++
++  private func warning(_ app: XCUIApplication, _ state: String) -> XCUIElement {
++    app.descendants(matching: .any).matching(identifier: "pr.ghWarning.\(state)").firstMatch
++  }
++
++  private func prSectionHeader(_ app: XCUIApplication) -> XCUIElement {
++    app.descendants(matching: .any).matching(identifier: "inspector.header.Pull Request").firstMatch
++  }
++
++  /// Bring the Pull Request section into view.
++  ///
++  /// The section is collapsible (`⌥⌘P`, bound to `store.prSectionCollapsed`) and its collapsed state
++  /// PERSISTS across launches through Defaults, so this must not assume either state. Clicking the
++  /// header rather than sending the shortcut: a focused terminal swallows key equivalents, and
++  /// synthetic keystrokes are the least reliable way to drive this app.
++  private func revealPullRequestSection(_ app: XCUIApplication, expecting state: String) {
++    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
++    let header = prSectionHeader(app)
++    XCTAssertTrue(
++      header.waitForExistence(timeout: 10), "the Pull Request inspector section should exist")
++    if !warning(app, state).waitForExistence(timeout: 3), header.isHittable {
++      header.click()
++    }
++  }
++
++  /// An old gh must say so, and must NOT offer the "Install gh…" link — it is already installed, and
++  /// the link buries the one-line upgrade that actually fixes it.
++  func testTooOldRendersAnUpgradeWarningWithoutTheInstallLink() throws {
++    let app = launchedApp(ghStatus: "tooOld")
++    revealPullRequestSection(app, expecting: "tooOld")
++
++    XCTAssertTrue(
++      warning(app, "tooOld").waitForExistence(timeout: 10),
++      "the tooOld state should render its own warning, not the sign-in one")
++    XCTAssertFalse(
++      warning(app, "notAuthenticated").exists, "an old gh was described as a sign-in problem")
++    XCTAssertFalse(
++      warning(app, "installLink").exists, "gh is installed — the install link misdirects")
++  }
++
++  /// The state the reported bug produced falsely. Seeded here it SHOULD appear.
++  func testNotAuthenticatedRendersTheSignInWarning() throws {
++    let app = launchedApp(ghStatus: "notAuthenticated")
++    revealPullRequestSection(app, expecting: "notAuthenticated")
++
++    XCTAssertTrue(
++      warning(app, "notAuthenticated").waitForExistence(timeout: 10),
++      "a genuinely signed-out gh should still warn")
++    XCTAssertFalse(warning(app, "tooOld").exists)
++    XCTAssertFalse(warning(app, "installLink").exists)
++  }
++
++  /// Missing gh is the one state where a download link is the fix.
++  func testNotInstalledRendersTheInstallLink() throws {
++    let app = launchedApp(ghStatus: "notInstalled")
++    revealPullRequestSection(app, expecting: "notInstalled")
++
++    XCTAssertTrue(
++      warning(app, "notInstalled").waitForExistence(timeout: 10), "a missing gh should say so")
++    XCTAssertTrue(
++      warning(app, "installLink").waitForExistence(timeout: 4),
++      "the install link is the fix for a missing gh")
++  }
++
++  /// The default fixture launch (no seam argument) must warn about NOTHING — the optimistic
++  /// `.available` default plus a fixture that never probes should leave the panel quiet. This is the
++  /// reported bug's shape at the UI layer: a warning appearing when nothing is actually wrong.
++  func testNoWarningWhenGHStatusIsNotSeeded() throws {
++    let app = launchedApp(ghStatus: nil)
++    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
++    XCTAssertTrue(prSectionHeader(app).waitForExistence(timeout: 10))
++
++    for state in ["notInstalled", "notAuthenticated", "tooOld"] {
++      XCTAssertFalse(warning(app, state).exists, "warned about \(state) with nothing wrong")
++    }
++  }
++}
+
+
+=== DIFF: macapp/WorkroomApp/Core/VCSToolVersions.swift ===
+@@ -80,6 +80,19 @@ enum VCSToolVersions {
+       }
+     }
+ 
++    /// Whether a tool we actually RAN reported absent from PATH (exit 127).
++    ///
++    /// Used to decide a verdict is too fragile to cache: absence is the one `Status` that can be an
++    /// artefact of WHEN we probed rather than what is installed, because the PATH is still the
++    /// deterministic floor until the interactive-shell probe lands. See `VCSToolVersionCache.report`.
++    ///
++    /// `probedJJ` is load-bearing, not decoration: when it is false `jj` is reported `.notInstalled`
++    /// WITHOUT running anything, so counting that would refuse to cache on every launch with no jj
++    /// project registered — turning a one-shot `git --version` into one per call.
++    func hasMissingTool(probedJJ: Bool) -> Bool {
++      git == .notInstalled || (probedJJ && jj == .notInstalled)
++    }
++
+     /// Whether remote actions are permitted for a project of this VCS (`"git"` / `"jj"`).
+     func allowsRemoteActions(vcs: String) -> Bool {
+       guard Self.isUsable(git) else { return false }
+@@ -195,7 +208,18 @@ actor VCSToolVersionCache {
+     let task = Task { await VCSToolVersions.probe(runner: runner, probeJJ: probeJJ) }
+     inFlight = (task, probeJJ)
+     let report = await task.value
+-    cached = (report, probeJJ)
++    // Never cache a `.notInstalled`. That verdict comes from exit 127, i.e. the tool wasn't on PATH —
++    // and at launch the PATH may still be the deterministic floor, because `ShellEnvironment.path()`
++    // silently returns the floor until the interactive-shell probe lands and nothing joins that probe
++    // (it is fired detached in `WorkroomApp.init`, while `refreshVCSToolReport` runs from
++    // `apply(projects)`). The floor covers Homebrew but NOT a version-manager shim dir, Nix, or
++    // MacPorts, so a jj living in one of those reads as missing — and caching that pinned "jj isn't
++    // installed" for the entire process, since `cached` is only cleared by the tests-only `reset()`.
++    // Re-probing costs one `--version` and by then the enriched PATH has usually landed.
++    //
++    // `.unknown` is safe to cache by contrast: `warnings(hasJJProject:)` ignores it, so it never
++    // becomes a false claim.
++    if !report.hasMissingTool(probedJJ: probeJJ) { cached = (report, probeJJ) }
+     inFlight = nil
+     return report
+   }
+
+
+=== DIFF: macapp/WorkroomAppTests/VCSToolVersionsTests.swift ===
+@@ -226,6 +226,60 @@ final class VCSToolVersionsTests: XCTestCase {
+     XCTAssertTrue(warning?.title.contains("2.41") == true, "must name the requirement")
+     XCTAssertTrue(warning?.detail.contains("2.30.0") == true, "must name what was found")
+   }
++
++  // MARK: - VCSToolVersionCache: never pin an absence
++
++  /// A `.notInstalled` verdict must NOT be cached. It comes from exit 127 — the tool wasn't on PATH —
++  /// and at launch the PATH may still be the deterministic floor, because `ShellEnvironment.path()`
++  /// returns the floor until the detached interactive-shell probe lands and nothing joins that probe.
++  /// The floor covers Homebrew but not a shim dir, Nix or MacPorts, so a jj living in one read as
++  /// missing and the cache pinned "jj isn't installed" for the whole process (`cached` is cleared only
++  /// by the tests-only `reset()`). Re-probing costs one `--version`.
++  func testAbsentToolIsNotCachedSoALaterProbeCanSeeAnEnrichedPath() async {
++    let runner = RecordingVersionRunner(responses: [
++      "git": CommandResult(stdout: "git version 2.55.0", stderr: "", exitCode: 0, timedOut: false)
++      // no "jj" response ⇒ the runner returns 127, i.e. not on PATH
++    ])
++    let cache = VCSToolVersionCache()
++
++    _ = await cache.report(probeJJ: true, runner: runner)
++    _ = await cache.report(probeJJ: true, runner: runner)
++
++    let jjProbes = await runner.executables().filter { $0 == "jj" }.count
++    XCTAssertEqual(jjProbes, 2, "an absent tool was cached, pinning it for the whole session")
++  }
++
++  /// The other direction: a settled verdict IS cached, so this doesn't turn into a probe per call.
++  func testPresentToolsAreStillCached() async {
++    let runner = RecordingVersionRunner(responses: [
++      "git": CommandResult(stdout: "git version 2.55.0", stderr: "", exitCode: 0, timedOut: false),
++      "jj": CommandResult(stdout: "jj 0.43.0", stderr: "", exitCode: 0, timedOut: false),
++    ])
++    let cache = VCSToolVersionCache()
++
++    _ = await cache.report(probeJJ: true, runner: runner)
++    _ = await cache.report(probeJJ: true, runner: runner)
++
++    let probes = await runner.executables().count
++    XCTAssertEqual(probes, 2, "a good report should be cached, not re-probed")
++  }
++
++  /// `probeJJ: false` reports jj `.notInstalled` WITHOUT running it. That is not an absence we
++  /// discovered, so it must not block caching — otherwise every launch with no jj project registered
++  /// re-probes `git --version` on every call.
++  func testSkippedJJDoesNotBlockCaching() async {
++    let runner = RecordingVersionRunner(responses: [
++      "git": CommandResult(stdout: "git version 2.55.0", stderr: "", exitCode: 0, timedOut: false)
++    ])
++    let cache = VCSToolVersionCache()
++
++    _ = await cache.report(probeJJ: false, runner: runner)
++    _ = await cache.report(probeJJ: false, runner: runner)
++
++    let gitProbes = await runner.executables().filter { $0 == "git" }.count
++    XCTAssertEqual(gitProbes, 1, "a skipped jj was mistaken for a discovered absence")
++  }
++
+ }
+ 
+ /// Records which executables were asked for, so a test can assert `jj` was never spawned.
+
+
+Investigate per the method in your instructions, then return the findings list.
