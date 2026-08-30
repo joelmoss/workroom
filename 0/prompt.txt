@@ -1,0 +1,3 @@
+<bash-input>xcodebuild test -project macapp/WorkroomApp.xcodeproj -scheme WorkroomAppUITests \
+  -destination 'platform=macOS' -derivedDataPath macapp/DerivedData \
+  -only-testing:WorkroomAppUITests/GhosttyActionDispatchUITests</bash-input>
