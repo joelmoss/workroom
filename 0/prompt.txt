@@ -1,0 +1,1 @@
+summarise the major changes between the version we previously had, and identify areas where we can improve things, or introduce new features. think about stability, performance and functionality
