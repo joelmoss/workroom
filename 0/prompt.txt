@@ -1,0 +1,521 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/AppStore.swift
+  - macapp/WorkroomApp/Core/TerminalSessions.swift
+  - macapp/WorkroomApp/Core/WindowRegistry.swift
+  - macapp/WorkroomApp/Views/DeleteProjectSheet.swift
+  - macapp/WorkroomApp/Views/PaneTreeView.swift
+  - macapp/WorkroomApp/Views/RootView.swift
+  - macapp/WorkroomApp/Views/TerminalStatusBar.swift
+  - macapp/WorkroomApp/Views/TerminalTabStrip.swift
+  - macapp/WorkroomAppTests/AppStoreDeleteProjectTests.swift
+  - macapp/WorkroomAppTests/RunCommandTests.swift
+  - macapp/WorkroomAppUITests/TerminalAgentUITests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/AppStore.swift ===
+@@ -929,6 +929,9 @@ final class AppStore: ObservableObject {
+         self.clearRunPidFile(for: targetID)  // forget the captured pid (issue #7)
+         self.resetRunToast(for: targetID)  // run gone → drop its toast state (issue #67)
+       }
++      // Same idea for a closed/reaped Investigate tab (issue #146) — a second, independent cleanup
++      // path from `onChildExited`, since that callback isn't guaranteed to fire on every teardown.
++      for id in ids { self.investigateTabs.removeValue(forKey: id) }
+       // Closing the last terminal in a co-displayed split pane leaves an empty pane whose only
+       // affordance is the remove-from-split ✕ — close it for the user by dropping the now-empty
+       // workroom from the split (issue #55). No-op for a solo workroom or a non-member.
+@@ -1370,6 +1373,32 @@ final class AppStore: ObservableObject {
+   /// `TerminalSessions` only creates/focuses the tab and reports its removal via `onTabsRemoved`.
+   @Published private(set) var runStates: [TerminalTarget.ID: RunState] = [:]
+ 
++  /// Live Investigate sessions (issue #49/#146), tab → target. Kept separate from `runStates` (one
++  /// `RunState` per target, modelling a single dev-server-style run): an Investigate session is a
++  /// second, independent process that can coexist with a target's real run command, and must NOT be
++  /// deduped across windows the way `WindowRegistry.runOwner` dedupes a run command. Only feeds
++  /// `hasLiveRunCommand`, so quit/window-close notice a live agent conversation instead of silently
++  /// SIGHUP'ing it. Not `@Published` — its only reader, `hasLiveRunCommand`, is read imperatively by
++  /// AppKit code at close/quit time (never by a SwiftUI view that needs a re-render), unlike
++  /// `runStates`, which the toolbar/sidebar/menu genuinely observe.
++  ///
++  ///        runStates                    investigateTabs
++  ///   [TargetID: RunState]          [TabID: TargetID]
++  ///   one slot per target      many tabs allowed per target
++  ///   (dev-server run)              (interactive claude)
++  ///            │                            │
++  ///            └─────────────┬──────────────┘
++  ///                          ▼
++  ///               hasLiveRunCommand (OR)
++  ///                          │
++  ///              ┌───────────┴────────────┐
++  ///              ▼                        ▼
++  ///   windowShouldClose confirm   stopRunCommandsThenTerminate (⌘Q)
++  ///   alert — now fires for a     — unaffected in practice: only
++  ///   live Investigate session    `runStates` feeds the actual
++  ///                                gracefully-stop loop
++  private(set) var investigateTabs: [TerminalTab.ID: TerminalTarget.ID] = [:]
++
+   /// Per-target end-of-run outcome for the run toast (issue #67). Set on exit / failed start, cleared
+   /// when a fresh run starts for that target. Derived-from, not duplicating, `runStates`.
+   @Published private(set) var runOutcomes: [TerminalTarget.ID: RunOutcome] = [:]
+@@ -1961,6 +1990,27 @@ final class AppStore: ObservableObject {
+     wireRunClose(tab.id, for: target)
+   }
+ 
++  /// Start an interactive Investigate session (issue #49) seeded with the failure captured in
++  /// `bannerState`. `surface` is the pane's live terminal surface (if any), used to derive cwd —
++  /// takes the surface rather than a pre-computed `cwd: String` so both call sites share one cwd
++  /// derivation instead of each re-deriving `?? target.path` themselves (the same drift shape issue
++  /// #146 fixed for the command). The one caller of `addRunTab` for Investigate (issue #146) —
++  /// tracks the tab in `investigateTabs` so it isn't invisible to quit/close teardown.
++  @discardableResult
++  func startInvestigate(
++    bannerState: AgentBannerState, target: TerminalTarget, surface: GhosttySurfaceView?
++  ) -> TerminalTab {
++    let cwd = surface?.lastKnownCwd ?? target.path
++    let command = AgentPrompt.investigateCommandLine(for: bannerState)
++    let tab = terminals.addRunTab(for: target, command: command, cwd: cwd)
++    investigateTabs[tab.id] = target.id
++    let tabID = tab.id
++    tab.surface?.onChildExited = { [weak self] _ in
++      self?.investigateTabs.removeValue(forKey: tabID)
++    }
++    return tab
++  }
++
+   /// The "press any key to close" / wait_after_command close for a run tab MUST go through the graceful
+   /// stop (SIGTERM the supervisor + wait for it to fully exit) BEFORE freeing the surface — a raw
+   /// `closeTab` frees the surface, which PTY-hangs-up (SIGHUP) the supervisor and can orphan a
+@@ -2254,8 +2304,13 @@ final class AppStore: ObservableObject {
+   }
+ 
+   /// Whether any run command still has a live process — gates the quit handler's graceful wait.
++  /// Also true for a live Investigate session (issue #146), even though it has no `RunState` and
++  /// no supervisor to gracefully stop — see `investigateTabs`.
+   var hasLiveRunCommand: Bool {
+     runStates.keys.contains { liveRunView(for: $0) != nil }
++      || investigateTabs.contains { tabID, targetID in
++        terminals.view(forTab: tabID, inTarget: targetID)?.hasLiveProcess ?? false
++      }
+   }
+ 
+   /// Tell each target's SUPERVISOR to quit (SIGTERM — it stops the child gracefully, waits for it,
+
+
+=== DIFF: macapp/WorkroomApp/Core/TerminalSessions.swift ===
+@@ -946,7 +946,11 @@ final class TerminalSessions: ObservableObject {
+   /// `cwd`, titled "Run" until the program reports its own title, focused like any new tab — through
+   /// `setFocused`, so focus observers fire (it is NOT a direct dict write; see the focus-chokepoint
+   /// note on `setFocused`). The caller (`AppStore`) owns the run-state and wires `onChildExited`;
+-  /// this just creates and shows the tab.
++  /// this just creates and shows the tab. Also the mechanism behind an interactive Investigate
++  /// session (issue #49) — `AppStore.startInvestigate` is that caller for Investigate, tracking the
++  /// tab in `investigateTabs` rather than `runStates` (issue #146): a single-slot-per-target dev-server
++  /// run and a freely-multiple interactive agent session are different enough lifecycles to warrant
++  /// separate bookkeeping, not a shared one.
+   ///
+   /// Run-tab lifecycle — one `AppStore.RunState` per target; the pane stays open on exit via
+   /// `wait_after_command`:
+
+
+=== DIFF: macapp/WorkroomApp/Core/WindowRegistry.swift ===
+@@ -211,6 +211,22 @@ final class WindowRegistry: ObservableObject {
+     allStores.first { $0 !== excluding && ($0.runStates[target]?.isRunning ?? false) }
+   }
+ 
++  /// Whether any window has a live Investigate session (issue #146) for any of `targetIDs` — used
++  /// to warn before `deleteWorkroom`/`deleteProject` reap those targets' surfaces. Both delete flows
++  /// stop and reap unconditionally (even `.configOnly`, which keeps files but still tears down live
++  /// terminals), and neither goes through `hasLiveRunCommand`/`gracefullyStopRuns` (which only know
++  /// about `runStates`) — so without this check, deleting silently kills a live agent session with
++  /// no wait or warning, and for `.workrooms`/`.fromDisk` also deletes the directory out from under it.
++  func hasLiveInvestigateSession(for targetIDs: [TerminalTarget.ID]) -> Bool {
++    let ids = Set(targetIDs)
++    return allStores.contains { store in
++      store.investigateTabs.contains { tabID, targetID in
++        ids.contains(targetID)
++          && store.terminals.view(forTab: tabID, inTarget: targetID)?.hasLiveProcess == true
++      }
++    }
++  }
++
+   // MARK: Quit
+ 
+   /// Any window with a live run command — gates the graceful-stop-on-quit (issue #7 / #70).
+
+
+=== DIFF: macapp/WorkroomApp/Views/DeleteProjectSheet.swift ===
+@@ -50,6 +50,14 @@ enum DeleteProjectSheetModel {
+       return "Moves the project to the Bin — restorable from the Trash."
+     }
+   }
++
++  /// Issue #146: every scope (even `.configOnly`, which keeps files on disk) unconditionally reaps
++  /// live terminals across the project's targets before any CLI/disk work — so a live Investigate
++  /// session gets silently killed unless the sheet warns about it up front.
++  static func investigateWarning(hasLiveInvestigateSession: Bool) -> String? {
++    guard hasLiveInvestigateSession else { return nil }
++    return "⚠️ This project has an active Investigate agent session running — deleting will stop it."
++  }
+ }
+ 
+ /// Type-to-confirm sheet for deleting a project (issue #61). Opened from the project row's
+@@ -64,6 +72,11 @@ enum DeleteProjectSheetModel {
+ /// `onDelete(scope)` passes the selected level; the parent owns clearing the pending state.
+ struct DeleteProjectSheet: View {
+   let project: Project
++  /// Whether any window has a live Investigate session somewhere in this project (issue #146) —
++  /// computed by the caller via `WindowRegistry.hasLiveInvestigateSession(for:)`. Defaulted so
++  /// existing previews/tests that don't care about this still construct the sheet with one argument
++  /// fewer.
++  var hasLiveInvestigateSession: Bool = false
+   let onDelete: (_ scope: DeleteProjectScope) -> Void
+   let onCancel: () -> Void
+ 
+@@ -83,6 +96,9 @@ struct DeleteProjectSheet: View {
+   private var effectFooter: String {
+     DeleteProjectSheetModel.effectFooter(scope: scope, workroomCount: count)
+   }
++  private var investigateWarning: String? {
++    DeleteProjectSheetModel.investigateWarning(hasLiveInvestigateSession: hasLiveInvestigateSession)
++  }
+ 
+   var body: some View {
+     // Everything is left-aligned for one consistent edge; only the action buttons keep the
+@@ -108,6 +124,13 @@ struct DeleteProjectSheet: View {
+         }
+       }
+ 
++      if let investigateWarning {
++        Text(investigateWarning)
++          .font(.callout.weight(.semibold))
++          .foregroundStyle(.orange)
++          .accessibilityIdentifier("deleteProject.investigateWarning")
++      }
++
+       if hasWorkrooms {
+         VStack(alignment: .leading, spacing: 8) {
+           Text("This project has \(count) workroom\(plural)")
+
+
+=== DIFF: macapp/WorkroomApp/Views/PaneTreeView.swift ===
+@@ -500,7 +500,7 @@ private struct PaneLeafView: View {
+             TerminalSearchBar(model: s.view.searchModel)
+           }
+         }
+-        TerminalStatusBar(target: target, tabID: tabID, state: s, sessions: sessions)
++        TerminalStatusBar(target: target, tabID: tabID, state: s)
+       }
+       .clipShape(
+         RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius, style: .continuous))
+@@ -563,8 +563,7 @@ private struct PaneLeafView: View {
+   private func contentPanel(_ view: some View, filePath: String?) -> some View {
+     VStack(spacing: 0) {
+       view
+-      TerminalStatusBar(
+-        target: target, tabID: tabID, state: nil, filePath: filePath, sessions: sessions)
++      TerminalStatusBar(target: target, tabID: tabID, state: nil, filePath: filePath)
+     }
+     .clipShape(
+       RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius, style: .continuous))
+
+
+=== DIFF: macapp/WorkroomApp/Views/RootView.swift ===
+@@ -238,9 +238,23 @@ struct RootView: View {
+         }
+         Button("Cancel", role: .cancel) { store.pendingDeletion = nil }
+       } message: {
+-        Text(
+-          "This removes the workroom's directory and runs its teardown script. For Git, the branch is left in place."
+-        )
++        // Issue #146: deleteWorkroom reaps live terminals unconditionally, including a live
++        // Investigate session — which the base copy below never mentions stopping.
++        if let target = store.pendingDeletion,
++          WindowRegistry.shared.hasLiveInvestigateSession(for: [
++            TerminalTarget.workroomID(project: target.project.path, name: target.workroom.name)
++          ])
++        {
++          Text(
++            "This workroom has an active Investigate agent session running — deleting will stop "
++              + "it. This removes the workroom's directory and runs its teardown script. For Git, "
++              + "the branch is left in place."
++          )
++        } else {
++          Text(
++            "This removes the workroom's directory and runs its teardown script. For Git, the branch is left in place."
++          )
++        }
+       }
+       // Tab bar "Close": tear down all of the workroom's terminal tabs (its chip leaves the bar),
+       // leaving the workroom itself in place. Same store-flag → confirmationDialog bridge as delete.
+@@ -267,6 +281,14 @@ struct RootView: View {
+       .sheet(item: $store.pendingProjectDeletion) { pending in
+         DeleteProjectSheet(
+           project: pending.project,
++          // Issue #146: deleteProject reaps live terminals unconditionally (even `.configOnly`,
++          // which keeps files on disk) — warn if any target in this project has a live Investigate
++          // session, since none of the sheet's existing per-scope copy mentions stopping one.
++          hasLiveInvestigateSession: WindowRegistry.shared.hasLiveInvestigateSession(
++            for: [TerminalTarget.rootID(project: pending.project.path)]
++              + pending.project.workrooms.map {
++                TerminalTarget.workroomID(project: pending.project.path, name: $0.name)
++              }),
+           onDelete: { scope in
+             store.pendingProjectDeletion = nil
+             store.deleteProject(pending.project, scope: scope)
+
+
+=== DIFF: macapp/WorkroomApp/Views/TerminalStatusBar.swift ===
+@@ -20,7 +20,6 @@ struct TerminalStatusBar: View {
+   /// header already carries the path). Supplied by `PaneLeafView` from `TabContent.filePath`.
+   /// Defaulted, so the terminal mount doesn't have to say `filePath: nil`.
+   var filePath: String? = nil
+-  @ObservedObject var sessions: TerminalSessions
+   @EnvironmentObject var store: AppStore
+   @EnvironmentObject var agentManager: TerminalAgentManager
+   @EnvironmentObject var resumeCoordinator: AgentResumeCoordinator
+@@ -321,10 +320,7 @@ struct TerminalStatusBar: View {
+           showingDiagnosis = false
+         },
+         onInvestigate: {
+-          let cwd = state?.view.lastKnownCwd ?? target.path
+-          // Seed the interactive agent with the problem so it can start investigating immediately.
+-          let command = AgentPrompt.investigateCommandLine(for: bannerState)
+-          _ = sessions.addRunTab(for: target, command: command, cwd: cwd)
++          _ = store.startInvestigate(bannerState: bannerState, target: target, surface: state?.view)
+           agentManager.dismiss(tab: tabID)
+           showingDiagnosis = false
+         },
+
+
+=== DIFF: macapp/WorkroomApp/Views/TerminalTabStrip.swift ===
+@@ -431,17 +431,11 @@ struct TerminalTabStrip: View {
+         state: state,
+         onDiagnose: { agentManager.diagnose(tab: tab.id, target: target.id) },
+         onInsertFix: { fix in
+-          if case .terminal(let s) = tab.content { s.view.sendText(fix) }
++          tab.surface?.sendText(fix)
+           agentPopoverTab = nil
+         },
+         onInvestigate: {
+-          let cwd: String
+-          if case .terminal(let s) = tab.content {
+-            cwd = s.view.lastKnownCwd ?? target.path
+-          } else {
+-            cwd = target.path
+-          }
+-          _ = store.terminals.addRunTab(for: target, command: "claude", cwd: cwd)
++          _ = store.startInvestigate(bannerState: state, target: target, surface: tab.surface)
+           agentManager.dismiss(tab: tab.id)
+           agentPopoverTab = nil
+         },
+
+
+=== DIFF: macapp/WorkroomAppTests/AppStoreDeleteProjectTests.swift ===
+@@ -235,6 +235,15 @@ final class AppStoreDeleteProjectTests: XCTestCase {
+     XCTAssertFalse(diskNoWR.contains("workroom"))
+   }
+ 
++  // MARK: Investigate warning (issue #146)
++
++  func testInvestigateWarningOnlyWhenLive() {
++    XCTAssertNil(DeleteProjectSheetModel.investigateWarning(hasLiveInvestigateSession: false))
++    XCTAssertEqual(
++      DeleteProjectSheetModel.investigateWarning(hasLiveInvestigateSession: true),
++      "⚠️ This project has an active Investigate agent session running — deleting will stop it.")
++  }
++
+   // MARK: from-disk trash orchestration (issue #108)
+ 
+   /// Records trash requests and fails for any URL in `failURLs`, so the from-disk trash
+
+
+=== DIFF: macapp/WorkroomAppTests/RunCommandTests.swift ===
+@@ -796,6 +796,136 @@ final class RunCommandTests: XCTestCase {
+     waitUntil("a wedged process still proceeds after the timeout (SIGHUP fallback)") { completed }
+   }
+ 
++  // MARK: Investigate (issue #146)
++
++  private func investigateBanner(_ target: TerminalTarget) -> AgentBannerState {
++    .awaitingDiagnose(
++      FailedCommand(
++        command: "npm test", cwd: target.path, exitCode: 1, shell: nil, output: "",
++        isRunTab: false, isRemote: false))
++  }
++
++  func testStartInvestigateBuildsCommandAndTracksTab() {
++    let store = makeStore([project("/a", workrooms: ["main"])])
++    let t = target(store, "/a", "main")
++    let bannerState = investigateBanner(t)
++
++    let tab = store.startInvestigate(bannerState: bannerState, target: t, surface: nil)
++
++    XCTAssertEqual(captured.last, AgentPrompt.investigateCommandLine(for: bannerState))
++    XCTAssertEqual(store.investigateTabs[tab.id], t.id)
++  }
++
++  func testInvestigateLivenessClearsViaChildExitAndViaTabRemoval() {
++    let store = makeStore([project("/a", workrooms: ["main"])])
++    let t = target(store, "/a", "main")
++    let bannerState = investigateBanner(t)
++    XCTAssertFalse(store.hasLiveRunCommand)
++
++    let tab1 = store.startInvestigate(bannerState: bannerState, target: t, surface: nil)
++    let surface1 = try! XCTUnwrap(tab1.surface)
++    surface1.liveProcessOverrideForTesting = true
++    XCTAssertTrue(store.hasLiveRunCommand)
++
++    // Cleanup path 1: the process exits (`onChildExited`) — independent of the tab closing.
++    surface1.handleChildExited(exitCode: 0)
++    XCTAssertNil(store.investigateTabs[tab1.id])
++    XCTAssertFalse(store.hasLiveRunCommand)
++
++    // Cleanup path 2: the tab is closed/reaped (`onTabsRemoved`) — independent of `onChildExited`
++    // ever firing (it isn't guaranteed to, per libghostty exit-reporting flakiness).
++    let tab2 = store.startInvestigate(bannerState: bannerState, target: t, surface: nil)
++    let surface2 = try! XCTUnwrap(tab2.surface)
++    surface2.liveProcessOverrideForTesting = true
++    XCTAssertTrue(store.hasLiveRunCommand)
++
++    store.terminals.closeTab(tab2.id, for: t)
++    XCTAssertNil(store.investigateTabs[tab2.id])
++    XCTAssertFalse(store.hasLiveRunCommand)
++  }
++
++  func testGracefullyStopAllCompletesImmediatelyWithOnlyInvestigateTabLive() {
++    let store = makeStore([project("/a", workrooms: ["main"])])
++    let t = target(store, "/a", "main")
++    let tab = store.startInvestigate(bannerState: investigateBanner(t), target: t, surface: nil)
++    let surface = try! XCTUnwrap(tab.surface)
++    surface.liveProcessOverrideForTesting = true
++    XCTAssertTrue(store.hasLiveRunCommand)
++
++    // `runStates` is empty — an Investigate-only session has no supervisor to SIGTERM, so this must
++    // resolve immediately rather than wait on a `runStates` entry that will never appear (issue #146).
++    var completed = false
++    store.gracefullyStopAllRunCommands(timeout: 2) { completed = true }
++    XCTAssertTrue(completed, "no runStates entries to iterate → completes synchronously")
++  }
++
++  /// `WindowRegistry.hasLiveInvestigateSession` (issue #146) — used to warn before
++  /// deleteWorkroom/deleteProject reap a target's surfaces, since neither goes through
++  /// `hasLiveRunCommand`. Must see a live session registered in ANY window, and must not match an
++  /// unrelated target id.
++  func testHasLiveInvestigateSessionAcrossWindows() {
++    let registry = WindowRegistry()
++    let store = makeStore([project("/a", workrooms: ["main", "other"])])
++    registry.register(window: NSWindow(), store: store)
++    let t = target(store, "/a", "main")
++    let other = target(store, "/a", "other")
++
++    XCTAssertFalse(registry.hasLiveInvestigateSession(for: [t.id]))
++
++    let tab = store.startInvestigate(bannerState: investigateBanner(t), target: t, surface: nil)
++    try! XCTUnwrap(tab.surface).liveProcessOverrideForTesting = true
++
++    XCTAssertTrue(registry.hasLiveInvestigateSession(for: [t.id]))
++    XCTAssertFalse(
++      registry.hasLiveInvestigateSession(for: [other.id]), "must not match an unrelated target id")
++  }
++
++  /// A third teardown path, distinct from `closeTab`/quit: deleting a workroom/project reaps the
++  /// target directly (`reapTargetLocally`), which must also purge `investigateTabs` via the same
++  /// `onTabsRemoved` route — this exercises that specific caller, not just `closeTab`.
++  func testInvestigateTabsClearedWhenTargetReapedWithLiveInvestigateTab() {
++    let store = makeStore([project("/a", workrooms: ["main"])])
++    let t = target(store, "/a", "main")
++    let tab = store.startInvestigate(bannerState: investigateBanner(t), target: t, surface: nil)
++    try! XCTUnwrap(tab.surface).liveProcessOverrideForTesting = true
++    XCTAssertTrue(store.hasLiveRunCommand)
++
++    store.reapTargetLocally(t.id)
++
++    XCTAssertNil(store.investigateTabs[tab.id])
++    XCTAssertFalse(store.hasLiveRunCommand)
++  }
++
++  /// `investigateTabs` allows many tabs per target (unlike the one-slot-per-target `runStates`) —
++  /// a second live Investigate session on the same target must not be shadowed by the first one's
++  /// (possibly already-dead) liveness, and closing just the live one must drop `hasLiveRunCommand`.
++  func testHasLiveRunCommandTrueWithMultipleConcurrentInvestigateTabsOnSameTarget() {
++    let store = makeStore([project("/a", workrooms: ["main"])])
++    let t = target(store, "/a", "main")
++    let bannerState = investigateBanner(t)
++    let tab1 = store.startInvestigate(bannerState: bannerState, target: t, surface: nil)
++    let tab2 = store.startInvestigate(bannerState: bannerState, target: t, surface: nil)
++    try! XCTUnwrap(tab1.surface).liveProcessOverrideForTesting = false
++    try! XCTUnwrap(tab2.surface).liveProcessOverrideForTesting = true
++
++    XCTAssertTrue(
++      store.hasLiveRunCommand, "a second live Investigate tab on the same target must still count")
++
++    store.terminals.closeTab(tab2.id, for: t)
++    XCTAssertFalse(store.hasLiveRunCommand, "closing the only live tab drops liveness")
++  }
++
++  // Note: a direct `WindowCloseGuard.windowShouldClose` test for the "defer, then gracefully stop"
++  // branch was attempted here and dropped — that branch calls `sender.close()` on the passed
++  // `NSWindow`, and a bare `NSWindow()` with no real window-server backing crashes XCTest's
++  // post-test memory checker (SIGSEGV in `objc_release` during
++  // `XCTMemoryChecker._assertInvalidObjectsDeallocatedAfterScope:`), not the app itself. The
++  // underlying logic this branch depends on (`hasLiveRunCommand`, `gracefullyStopAllRunCommands`
++  // resolving immediately with no `runStates` entries) is already covered above; this specific
++  // AppKit-glue path is verified manually (see the plan's Verification section) — matching the
++  // existing precedent in `MultiWindowTests.swift` for a similarly NSWindow-bound case ("isn't
++  // cleanly unit-testable; it's verified live").
++
+   // MARK: Background run, status outcomes, run toast (issue #67)
+ 
+   func testStartRunsInBackgroundWithoutStealingFocus() {
+
+
+=== DIFF: macapp/WorkroomAppUITests/TerminalAgentUITests.swift ===
+@@ -61,6 +61,43 @@ final class TerminalAgentUITests: XCTestCase {
+     XCTAssertTrue(app.buttons["Investigate"].exists)
+   }
+ 
++  /// The exact issue #146 regression: TerminalTabStrip's Investigate previously hardcoded a bare
++  /// `"claude"` invocation with no context, while TerminalStatusBar's already seeded it with the
++  /// diagnosis. Both now route through `AppStore.startInvestigate`, so clicking Investigate from
++  /// EITHER entry point must open a tab whose command carries the canned diagnosis text — not a
++  /// bare `claude` with nothing to go on. Checked via the status-bar popover here (the tab-strip's
++  /// popover is covered by `testFailedTabShowsAgentBadge`'s identical entry point, minus the click).
++  func testClickingInvestigateSeedsTheRealDiagnosisNotABareCommand() {
++    let app = launchedApp(runCommand: "echo 'boom: build failed'; exit 7")
++    startRun(app)
++    revealRunTab(app)
++
++    let diagnosis = app.buttons["terminal.statusBar.diagnosis"]
++    XCTAssertTrue(diagnosis.waitForExistence(timeout: 20))
++    diagnosis.click()
++
++    let investigate = app.buttons["Investigate"]
++    XCTAssertTrue(investigate.waitForExistence(timeout: 5))
++    investigate.click()
++
++    // Investigate opens a new focused tab (titled "Run" until claude reports its own title, same
++    // as any run tab) seeded with the diagnosis — read its live surface content via the
++    // fixture-only accessibility value (`UITestFixture.isActive` → `readText(VIEWPORT)`).
++    let newSurface = app.descendants(matching: .any).matching(identifier: "terminal.surface")
++      .element(boundBy: 0)
++    XCTAssertTrue(newSurface.waitForExistence(timeout: 10), "Investigate opens a new terminal pane")
++
++    let containsDiagnosis = NSPredicate { _, _ in
++      (newSurface.value as? String)?.contains("UITEST diagnosis: port already in use") == true
++    }
++    let expectation = XCTNSPredicateExpectation(predicate: containsDiagnosis, object: nil)
++    let result = XCTWaiter().wait(for: [expectation], timeout: 10)
++    XCTAssertEqual(
++      result, .completed,
++      "the seeded command must carry the diagnosis text, not a bare `claude` invocation — got: "
++        + "\(newSurface.value ?? "<nil>")")
++  }
++
+   /// A failed tab carries a ✦ badge (the per-tab signal), which opens the same diagnosis popover.
+   func testFailedTabShowsAgentBadge() {
+     let app = launchedApp(runCommand: "echo 'boom: build failed'; exit 7")
+
+
+Investigate per the method in your instructions, then return the findings list.
