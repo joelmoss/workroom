@@ -1,0 +1,1 @@
+a bit better, but switching with side-by-side and unified diff is delayed, and scrolling a large CSS file diff is not smooth
