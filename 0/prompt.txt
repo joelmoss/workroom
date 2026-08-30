@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bwfeh7g7z</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/ad9e5754-d4c8-4063-beb8-947970ea5d8f/tasks/bwfeh7g7z.output</output-file>
+<status>completed</status>
+<summary>Background command "Build and run the existing Investigate unit test to confirm compile correctness" completed (exit code 0)</summary>
+</task-notification>
