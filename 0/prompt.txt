@@ -1,0 +1,2 @@
+add divider beneath "open workroom" item in file menu.
+rename "Close terminal" to "Close tab", and add a divider above it
