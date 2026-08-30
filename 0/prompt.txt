@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bfqf3pljc</task-id>
+<tool-use-id>toolu_015hHSYzic74KcFZX14FKpYs</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/117a8de0-0920-4b33-973d-ebd9f406e777/tasks/bfqf3pljc.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch new CI run to completion" completed (exit code 0)</summary>
+</task-notification>
