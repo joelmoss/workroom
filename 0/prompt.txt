@@ -1,0 +1,1 @@
+only the onboarding wizard should open on a fresh start. Only open main window when the wizard is closed, or finished.
