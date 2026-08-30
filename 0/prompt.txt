@@ -1,0 +1,44 @@
+<task-notification>
+<task-id>a7d654c2f88460f46</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/59419fd5-da4b-40e7-b478-47c839dc40f8/tasks/a7d654c2f88460f46.output</output-file>
+<status>completed</status>
+<summary>Agent "Find homepage/website repo for Workroom" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I have enough information now. Here's my report.
+
+## Summary
+
+**The homepage lives inside the main repo, not a sibling repo:** `/Users/joelmoss/dev/workroom/website/`
+
+### 1. Sibling directories under `/Users/joelmoss/dev/`
+I listed all ~40 sibling directories. None are named like a Workroom marketing site (no `workroom-web`, `workroom-site`, `workroom.dev`, etc.). The only other Workroom-related siblings are `workroom-play-git/` and `workroom-play-jj/`, which look like scratch/test playground repos, not a website. `proscenium_site` exists but belongs to an unrelated project (Proscenium). **No standalone marketing/website repo exists on disk.**
+
+### 2. Website code inside the workroom repo
+Found at `/Users/joelmoss/dev/workroom/website/`:
+- `index.html`, `styles.css`, `script.js` — the main marketing page
+- `logo-lab.html` / `logo-lab.css` / `logo-lab.js` — a separate brand/logo playground page
+- `frame-options.html` / `frame-options.css` — another auxiliary page
+- `assets/` — `workroom-app.png` (hero product screenshot), `workroom-mark.svg`, plus `assets/brand/` (full Codaset/Workroom logo lockup SVGs+PNGs) and `assets/fonts/` (Barlow Condensed, Pixelify Sans, Share Tech Mono)
+
+**Tech stack:** Plain static HTML/CSS/JS — no framework (no Next.js, Astro, React, etc.). It's a hand-built single-page site with vanilla JS for interactive bits (the "feature-hold" tab switcher).
+
+Git history shows it was added recently: commit `dbab396b "Add Workroom website and unified branding"` (Aug 5, 2026).
+
+README.md/CLAUDE.md grep for "homepage"/"website"/"landing"/domain turned up nothing meaningful — no hosted URL is referenced anywhere in the repo docs. `PRODUCT.md` only references the `website/assets/workroom-mark.svg` path, not a live URL.
+
+### 3. Deploy config
+No GitHub Pages, Vercel, Netlify, or Cloudflare Pages config exists anywhere in the repo:
+- No `CNAME` file
+- No `vercel.json` / `netlify.toml`
+- `.github/workflows/` only has `ci.yml`, `nightly.yml`, `release.yml`, `appcast-notes.yml` — none reference deploying the `website/` folder or GitHub Pages
+- No `.vercel/` directory
+
+**This site is not currently deployed anywhere** — it exists only as static source files in the repo.
+
+### Demo video placement
+There is **no `&lt;video&gt;` tag, `.mp4`, or YouTube/Vimeo/Loom embed anywhere** in `website/`. The hero section (`&lt;section class="hero" id="top"&gt;`) currently shows a **static screenshot** (`assets/workroom-app.png`) inside a `.product-broadcast` "Product preview" panel with a `&lt;figure&gt;`/`&lt;figcaption&gt;`. That figure is the natural slot where a demo video would go, but it is currently just an `&lt;img&gt;`, not a video placeholder — you'd be adding this fresh, not filling an existing gap.
+
+The page's design brief (embedded as an HTML comment at the top of `index.html`, echoed in `DESIGN.md`) explicitly calls for "framed app proof" in the first viewport, so a video would fit that spot's intent, but no video markup/CSS/JS scaffolding exists yet.</result>
+<usage><subagent_tokens>41918</subagent_tokens><tool_uses>16</tool_uses><duration_ms>76320</duration_ms></usage>
+</task-notification>
