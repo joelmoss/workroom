@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bvbiyc0c0</task-id>
+<tool-use-id>toolu_01FJZp36wQwutZaaX732wWy1</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/ad9e5754-d4c8-4063-beb8-947970ea5d8f/tasks/bvbiyc0c0.output</output-file>
+<status>completed</status>
+<summary>Background command "Retry baseline run against beta.23 with regenerated project" completed (exit code 0)</summary>
+</task-notification>
