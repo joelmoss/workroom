@@ -1,0 +1,39 @@
+<task-notification>
+<task-id>a892594186d81acbc</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/85057c1d-7a50-422d-a310-af45bba739d0/tasks/a892594186d81acbc.output</output-file>
+<status>completed</status>
+<summary>Agent "Adversarial review of full diff" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Now I have enough verified detail. Let me write the final report.
+
+## Findings
+
+**1. `requestRedraw`'s 30ms sleep blocks the ENTIRE daemon — one daemon serves every project/workroom.**
+`macapp/WorkroomSession/SessionPTY.swift:113-123`:
+```swift
+resize(masterDescriptor: masterDescriptor, columns: columns, rows: bumpedRows)
+usleep(30_000)
+resize(masterDescriptor: masterDescriptor, columns: columns, rows: rows)
+```
+`SessionDaemon.run()` (`SessionDaemon.swift:71-98`) is a single-threaded `poll()` loop handling every connection and every PTY for the whole app (`PersistentSessionPaths.swift` scopes the socket only by bundle id — one daemon per Dev/Nightly/Release build, shared across ALL projects/workrooms). `requestRedraw` is called synchronously from `handleAttach`→`attach` (`SessionDaemon.swift:310-314`) inside `handle(descriptors)`, so the `usleep(30_000)` freezes I/O for every other live session too. The comment acknowledges the block is "acceptable since attach is rare, one-shot" — true for a single tab, but the exact scenario this feature exists for is app-relaunch reattaching *many* persisted tabs at once, which serializes N×30ms of total-daemon freeze precisely during the highest-connection-count moment. This is the "combining changes creates a new bug" case the task asked about: the redraw fix alone is fine, but combined with the single-shared-daemon architecture it becomes a global stall proportional to open-tab count. FIXABLE — move the "revert" resize onto a timer-driven callback in the poll loop instead of blocking with `usleep`. Confidence: 9 (read run loop + call chain directly).
+
+**2. The redraw fix is a best-effort race, not a guarantee, and it fails hardest exactly when triggered in bulk.**
+The same 30ms is also the mechanism's *correctness* dependency (per its own doc comment: "gives the child a real chance to be scheduled... without it the two ioctls can land close enough that the child only observes the final unchanged size"). If the target shell/TUI isn't scheduled within 30ms — plausible under the CPU load a mass-reattach-at-launch produces, which is also compounded by finding #1's serialized daemon stalls — the size reverts before the child observes the transient value, and the exact stale-redraw bug this feature fixes can silently recur, intermittently, unlogged. INVESTIGATE (real design weakness, reproduction is load-dependent). Confidence: 7.
+
+**3. `isQuickTerminal` policy flag is wired to a hardcoded `false`, not the real state — currently harmless only because of a separate, undocumented invariant.**
+`TerminalSessions.swift:1613-1620`:
+```swift
+private func assignedSessionID(persisted: UUID?, isRunCommand: Bool) -&gt; UUID? {
+    let policy = TerminalPersistentSessionPolicy.usesPersistentSession(
+      isAvailable: PersistentSessionService.shared.isAvailable,
+      isRunCommand: isRunCommand,
+      isQuickTerminal: false)
+```
+This is the only production call site of the policy, and `isQuickTerminal` is never actually `true` anywhere in the app. It's safe today only because `QuickTerminalController` builds its surface directly (`QuickTerminalController.swift:45-46`, `makeSurface`) without ever routing through `makeTerminalTab`/`assignedSessionID`, so `persistentSessionID` stays nil by construction — not because the policy flag protects it. The policy's quick-terminal exclusion is exercised only in `TerminalPersistentSessionPolicyTests.swift`, never in an integration path, so a future refactor that unifies quick-terminal surface creation with the normal tab path (plausible — they already share `GhosttySurfaceView`) would silently start persisting quick-terminal daemon sessions with no test catching it. FIXABLE — either thread the real flag through, or delete the dead parameter and document the actual guard (separate construction path) explicitly. Confidence: 6.
+
+**Clean areas checked, no findings:** grepped the whole app tree for leftover references to the removed sidecar (`maxScrollbackBytes`, `adoptRestoredScrollback`, `persistScrollback`) and removed Resume feature (`AgentResumeCoordinator`, `AgentSessionIndex`, `resumeCoordinator`, `onFirstUserInput`, `RestoredTerminal`) — all zero hits outside the diff itself; the removals are clean with no orphaned symbols. `reap`/`reapAll` becoming `async` has exactly one production caller (`AppStore.swift:3264`, properly awaited); double-ending a session (`endPersistentSession` then `endSessions(matchingWorkroom:)` in `reap`) is safe since the daemon's `.kill` handler treats an already-gone session as success. Socket trust boundary (`LOCAL_PEERCRED`, 0600/0700 perms, symlink checks on the `/tmp` fallback) is intact and unchanged from the already-reviewed round.
+
+Recommendation: fix-before-merge because of finding #1 — the daemon's single-threaded `usleep(30_000)` in `SessionPTY.requestRedraw` turns "reattach one tab" into "freeze every terminal in every open project," and the worst case (many tabs reattaching on relaunch, the feature's primary use case) is also the most common one.</result>
+<usage><subagent_tokens>109513</subagent_tokens><tool_uses>31</tool_uses><duration_ms>321939</duration_ms></usage>
+</task-notification>
