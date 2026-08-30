@@ -1,0 +1,555 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/QuickSwitcherController.swift
+  - macapp/WorkroomApp/Core/QuickSwitcherReducer.swift
+  - macapp/WorkroomApp/Core/SwitcherMark.swift
+  - macapp/WorkroomApp/Core/SwitcherRailLayout.swift
+  - macapp/WorkroomApp/Core/ThemeTokens.swift
+  - macapp/WorkroomApp/Views/SwitcherRailView.swift
+  - macapp/WorkroomApp/Views/UnreadBadge.swift
+  - macapp/WorkroomAppTests/QuickSwitcherControllerTests.swift
+  - macapp/WorkroomAppTests/QuickSwitcherReducerTests.swift
+  - macapp/WorkroomAppTests/SwitcherRailLayoutTests.swift
+  - macapp/WorkroomAppTests/SwitcherThemeSweepTests.swift
+  - macapp/WorkroomAppTests/ThemeTokensTests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/QuickSwitcherController.swift ===
+@@ -37,6 +37,13 @@ final class QuickSwitcherController {
+   var pointerProvider: () -> NSPoint = { NSEvent.mouseLocation }
+ 
+   /// Speaks a destination on the VoiceOver path. Replaced in tests to assert what was announced.
++  ///
++  /// This is the switcher's **only** announcement, and deliberately so. The rail was originally going to
++  /// narrate every cursor move ("uitest-room-2, 2 of 5") because a panel that can't become key can never
++  /// hold VoiceOver focus — but D16 then removed the rail under VoiceOver entirely, and the KVO watch in
++  /// `installObservers` ends any session VoiceOver joins late. There is therefore no reachable state in
++  /// which a cursor move happens with a screen reader listening, and posting per-step announcements to
++  /// nobody would only queue speech that lands after the commit — the exact failure D16 exists to avoid.
+   var announce: (String) -> Void = { message in
+     NSAccessibility.post(
+       element: NSApp as Any, notification: .announcementRequested,
+@@ -76,6 +83,8 @@ final class QuickSwitcherController {
+   /// The modifier that must stay held. Released ⇒ commit.
+   private var triggerFlags: NSEvent.ModifierFlags = []
+   private var observers: [NSObjectProtocol] = []
++  /// KVO on `NSWorkspace.isVoiceOverEnabled`, live only while a session is (see `installObservers`).
++  private var voiceOverObservation: NSKeyValueObservation?
+   private var pollTimer: Timer?
+   private var revealTimer: Timer?
+   private var ceilingTimer: Timer?
+@@ -277,6 +286,8 @@ final class QuickSwitcherController {
+     pointerAtReveal = nil
+     for observer in observers { NotificationCenter.default.removeObserver(observer) }
+     observers = []
++    voiceOverObservation?.invalidate()
++    voiceOverObservation = nil
+     for timer in [pollTimer, revealTimer, ceilingTimer] { timer?.invalidate() }
+     pollTimer = nil
+     revealTimer = nil
+@@ -302,6 +313,21 @@ final class QuickSwitcherController {
+         DispatchQueue.main.async { MainActor.assumeIsolated { self?.reconcileItems() } }
+       },
+     ]
++    // VoiceOver switched on mid-gesture (⌘F5 is one keystroke, and the rail can be up when it lands).
++    // KVO, not a notification: AppKit ships **no** VoiceOver-status notification — `isVoiceOverEnabled`
++    // is documented "observable through KVO" and that is the only signal there is.
++    voiceOverObservation = NSWorkspace.shared.observe(\.isVoiceOverEnabled, options: [.new]) {
++      [weak self] _, _ in
++      MainActor.assumeIsolated { self?.voiceOverStatusChanged() }
++    }
++  }
++
++  /// VoiceOver's running state changed while a session was live. Reads through the injected
++  /// `voiceOverEnabled` seam rather than the notification's payload, so a test drives this directly
++  /// instead of starting a screen reader.
++  func voiceOverStatusChanged() {
++    guard isLive, voiceOverEnabled() else { return }
++    cancel(.voiceOver)
+   }
+ 
+   /// The production timers. `.common` run-loop mode is load-bearing: the default mode does not run
+
+
+=== DIFF: macapp/WorkroomApp/Core/QuickSwitcherReducer.swift ===
+@@ -45,6 +45,10 @@ struct QuickSwitcherReducer: Equatable {
+     case empty
+     /// The hard ceiling — a stuck modifier must not leave the rail up forever.
+     case timeout
++    /// VoiceOver came on mid-gesture. D16 says there is no rail under VoiceOver at all, so a session
++    /// that started without it cannot continue with it: the panel can never take VoiceOver focus, so it
++    /// would be steering a commit that is invisible to the one user who most needs to hear it.
++    case voiceOver
+   }
+ 
+   enum Event: Equatable {
+
+
+=== DIFF: macapp/WorkroomApp/Core/SwitcherMark.swift ===
+@@ -117,14 +117,13 @@ struct SwitcherMark: Equatable {
+ 
+   /// The monogram's ink: whichever of black/white actually measures better on this tile.
+   ///
+-  /// Deliberately not `ThemeTokens.contrastingForeground`, which switches at luminance 0.6. That is a
+-  /// fine rule for the accent fill it was written for and wrong here: a tile at luminance ~0.54 sits
+-  /// just under the threshold, so it takes WHITE at 1.77:1 when black would have given 11.8:1 — an
+-  /// illegible monogram, measured on a dark-theme fixture. Comparing both ratios has no threshold to
+-  /// get wrong.
++  /// This existed as its own implementation because `ThemeTokens.contrastingForeground` used to switch on
++  /// a brightness threshold (`> 0.6`), which left a tile at 0.54 taking WHITE at 1.77:1 where black gives
++  /// 11.8:1 — an illegible monogram, measured on a dark-theme fixture. That helper now measures both
++  /// candidates, exactly as this did, so this is a name for the rail's use of it rather than a second
++  /// rule. Kept as the call site the rail reads, and as the record of why the threshold went.
+   static func ink(on tile: NSColor) -> NSColor {
+-    ThemeTokens.contrastRatio(.black, tile) >= ThemeTokens.contrastRatio(.white, tile)
+-      ? .black : .white
++    ThemeTokens.contrastingForeground(for: tile)
+   }
+ 
+   /// Rotate hues so that **no two marks on one rail share a colour**.
+
+
+=== DIFF: macapp/WorkroomApp/Core/SwitcherRailLayout.swift ===
+@@ -136,6 +136,14 @@ enum SwitcherRailLayout {
+     let nsDot: NSColor
+     let nsDiffAdd: NSColor
+     let nsDiffRemove: NSColor
++    /// The unread pill, and the count drawn on it. The rail can't use the shared `UnreadBadge`'s own
++    /// colours: those are the raw `accent` with `accentForeground` on top, and `accentForeground` comes
++    /// from `ThemeTokens.contrastingForeground`, which flips ink at luminance 0.6 — the same threshold
++    /// that left a mark's monogram at 1.77:1 on a 0.54-luminance tile. `nsBadgeFill` is deliberately the
++    /// SAME colour as `nsRing`: both are "the accent", and on a pale-accent theme the ring gets corrected
++    /// while a raw-accent badge would not, leaving two elements on one card disagreeing about it.
++    let nsBadgeFill: NSColor
++    let nsBadgeInk: NSColor
+     /// True when a floor could not be met by nudging alone, so the card drops vibrancy for an opaque
+     /// fill. Legibility outranks the material.
+     let needsOpaqueFill: Bool
+@@ -146,6 +154,8 @@ enum SwitcherRailLayout {
+     var dot: Color { Color(nsColor: nsDot) }
+     var diffAdd: Color { Color(nsColor: nsDiffAdd) }
+     var diffRemove: Color { Color(nsColor: nsDiffRemove) }
++    var badgeFill: Color { Color(nsColor: nsBadgeFill) }
++    var badgeInk: Color { Color(nsColor: nsBadgeInk) }
+ 
+     static let textTarget: CGFloat = 4.5
+     static let indicatorTarget: CGFloat = 3.0
+@@ -179,6 +189,10 @@ enum SwitcherRailLayout {
+       nsDot: accent,
+       nsDiffAdd: fix(tokens.nsDiffAddFg, Palette.indicatorTarget),
+       nsDiffRemove: fix(tokens.nsDiffRemoveFg, Palette.indicatorTarget),
++      nsBadgeFill: accent,
++      // Whichever of black/white actually wins on this fill, measured — not chosen by a luminance
++      // threshold. Shared with the mark's monogram, which is where the measurement came from.
++      nsBadgeInk: SwitcherMark.ink(on: accent),
+       // `legible` walks towards the foreground and stops at 100%; if even the pure foreground can't come
+       // close to the text floor against this fill, the fill itself is the problem.
+       needsOpaqueFill: ThemeTokens.contrastRatio(name, base) < Palette.opaqueFillFloor
+
+
+=== DIFF: macapp/WorkroomApp/Core/ThemeTokens.swift ===
+@@ -199,18 +199,52 @@ struct ThemeTokens {
+     splitGroupFill = Color(nsColor: fgColor.withAlphaComponent(0.06))
+     splitGroupFocusedFill = Color(nsColor: accentColor.withAlphaComponent(0.10))
+ 
+-    colorScheme = Self.luminance(of: bgColor) > 0.5 ? .light : .dark
++    // `perceivedBrightness`, not `luminance`: this is "does the background look light", which is the
++    // encoded value. WCAG luminance is not perceptual — mid-grey linearizes to 0.216, so a threshold of
++    // 0.5 against it would classify visibly light backgrounds as dark.
++    colorScheme = Self.perceivedBrightness(of: bgColor) > 0.5 ? .light : .dark
+   }
+ 
+-  /// Relative luminance (sRGB, Rec. 709 coefficients), 0…1.
++  /// WCAG relative luminance, 0…1 — sRGB components **linearized** first, then weighted (Rec. 709).
++  ///
++  /// The linearization is the whole point, and this function did not do it until it was measured against
++  /// the bundled themes. Weighting the gamma-encoded components directly inflates every dark colour
++  /// (`#2E3440` reads 0.20 instead of 0.033), which collapses the ratio between a dark background and
++  /// light text: the rail's 13pt name measured under 4.5:1 for **43 of 56** bundled themes by that
++  /// formula and for **4** by this one, and the switcher's "this theme can't be read, drop the material"
++  /// fallback was firing for 38 themes that are perfectly legible. Every floor in the app is stated in
++  /// WCAG terms, so the metric has to actually be WCAG.
++  ///
++  /// For "is this colour light or dark to look at" use `perceivedBrightness` instead — that question is
++  /// about the encoded value, not about contrast.
+   static func luminance(of color: NSColor) -> CGFloat {
++    guard let srgb = color.usingColorSpace(.sRGB) else { return 0 }
++    func linear(_ component: CGFloat) -> CGFloat {
++      component <= 0.04045 ? component / 12.92 : pow((component + 0.055) / 1.055, 2.4)
++    }
++    return 0.2126 * linear(srgb.redComponent) + 0.7152 * linear(srgb.greenComponent)
++      + 0.0722 * linear(srgb.blueComponent)
++  }
++
++  /// The gamma-encoded, non-linearized weighting — a proxy for *apparent* brightness, not contrast.
++  ///
++  /// Kept as its own function because light/dark classification genuinely wants this: a theme background
++  /// is "light" when it looks light, and WCAG luminance is deliberately not perceptual (mid-grey
++  /// `#808080` is 0.216 linearized, which would read as a dark background). This is exactly the formula
++  /// `luminance` used to be, so `colorScheme` behaves as it always has.
++  static func perceivedBrightness(of color: NSColor) -> CGFloat {
+     guard let srgb = color.usingColorSpace(.sRGB) else { return 0 }
+     return 0.2126 * srgb.redComponent + 0.7152 * srgb.greenComponent + 0.0722 * srgb.blueComponent
+   }
+ 
+-  /// Black on light accents, white on dark ones — for text/icons drawn *on* the accent fill.
++  /// Black or white on a fill — whichever actually measures better against it.
++  ///
++  /// Chosen by measurement rather than by a brightness threshold, which is what this used to do
++  /// (`luminance > 0.6 ? .black : .white`) and which fails in a whole band: a tile at 0.54 apparent
++  /// brightness took white at 1.77:1 where black gives 11.8:1 — a real, illegible monogram, found on a
++  /// dark-theme fixture. Comparing both ratios has no threshold to get wrong.
+   static func contrastingForeground(for color: NSColor) -> NSColor {
+-    luminance(of: color) > 0.6 ? .black : .white
++    contrastRatio(.black, color) >= contrastRatio(.white, color) ? .black : .white
+   }
+ 
+   // MARK: Syntax highlighting
+
+
+=== DIFF: macapp/WorkroomApp/Views/SwitcherRailView.swift ===
+@@ -352,8 +352,12 @@ private struct SwitcherCardView: View {
+       // Badge on the icon's corner, the Dock/⌘Tab idiom — and in a stacked card it costs no width at
+       // all, where in the label row it competed with the name for the same points.
+       if card.badge > 0 {
+-        UnreadBadge(count: card.badge)
++        // The rail's own contrast-corrected pair, not the component's raw accent — see
++        // `Palette.nsBadgeFill`. Its `.help` is redundant with the card's tooltip on purpose: a badge is a
++        // control-sized indicator, and the project rule is that every one of them names itself.
++        UnreadBadge(count: card.badge, fill: palette.badgeFill, ink: palette.badgeInk)
+           .offset(x: 7, y: -6)
++          .help("\(card.badge) unread")
+       } else if card.isRunning {
+         Circle()
+           .fill(palette.dot)
+
+
+=== DIFF: macapp/WorkroomApp/Views/UnreadBadge.swift ===
+@@ -10,6 +10,12 @@ enum UnreadCount {
+ /// a number). Renders nothing when `count` is 0.
+ struct UnreadBadge: View {
+   let count: Int
++  /// Contrast-corrected colours, for a host that has measured its own surface. Defaults to the raw accent
++  /// pair — the switcher rail passes `SwitcherRailLayout.Palette`'s, whose ink is chosen by measurement
++  /// rather than by `contrastingForeground`'s luminance-0.6 switch, and whose fill matches the rail's
++  /// cursor ring so one card can't show two different "accents" (D14).
++  var fill: Color?
++  var ink: Color?
+   private let theme = ThemeService.shared
+ 
+   var body: some View {
+@@ -17,11 +23,11 @@ struct UnreadBadge: View {
+       Text(UnreadCount.label(count))
+         .font(.caption2)
+         .fontWeight(.semibold)
+-        .foregroundStyle(theme.tokens.accentForeground)
++        .foregroundStyle(ink ?? theme.tokens.accentForeground)
+         .monospacedDigit()
+         .padding(.horizontal, 5)
+         .padding(.vertical, 1)
+-        .background(Capsule().fill(theme.tokens.accent))
++        .background(Capsule().fill(fill ?? theme.tokens.accent))
+         .accessibilityLabel("\(count) unread")
+     }
+   }
+
+
+=== DIFF: macapp/WorkroomAppTests/QuickSwitcherControllerTests.swift ===
+@@ -103,6 +103,34 @@ final class QuickSwitcherControllerTests: XCTestCase {
+     XCTAssertTrue(recorder.reveals.isEmpty, "and no rail")
+   }
+ 
++  /// VoiceOver switched on **mid-gesture** (⌘F5 is one keystroke). AppKit ships no VoiceOver-status
++  /// notification — `isVoiceOverEnabled` is KVO-only — so the controller watches it that way and ends the
++  /// session, because D16's answer to "a panel that can't take VoiceOver focus" is to have no panel. It
++  /// must end WITHOUT committing: the user is mid-hold on a rail that just became invisible to them.
++  func testVoiceOverComingOnMidSessionEndsTheRailWithoutCommitting() {
++    let store = makeStore(workrooms: ["fox", "owl"])
++    store.selectedTargetID = .workroom(project: "/p", name: "fox")
++    attach(store)
++    let (controller, recorder) = makeController()
++    var voiceOverRunning = false
++    controller.voiceOverEnabled = { voiceOverRunning }
++    _ = controller.handleTrigger(
++      .workrooms, reverse: false, in: store, registry: registry, recency: recency)
++    controller.revealTimerFired()
++    XCTAssertTrue(controller.isRevealed)
++
++    controller.voiceOverStatusChanged()
++    XCTAssertTrue(controller.isLive, "the status changed to still-off — nothing to do")
++
++    voiceOverRunning = true
++    controller.voiceOverStatusChanged()
++    XCTAssertFalse(controller.isLive, "VoiceOver on ⇒ the session ends")
++    XCTAssertEqual(recorder.ends, 1)
++    XCTAssertEqual(
++      store.selectedTargetID, .workroom(project: "/p", name: "fox"),
++      "cancelled, not committed — the rail was steering a choice the user can no longer see")
++  }
++
+   func testNonVoiceOverDoesOpenASession() {
+     let store = makeStore(workrooms: ["fox", "owl"])
+     store.selectedTargetID = .workroom(project: "/p", name: "fox")
+
+
+=== DIFF: macapp/WorkroomAppTests/QuickSwitcherReducerTests.swift ===
+@@ -185,7 +185,7 @@ final class QuickSwitcherReducerTests: XCTestCase {
+ 
+   func testEveryCancelReasonEndsWithoutCommitting() {
+     for reason in [
+-      QuickSwitcherReducer.Cancel.escape, .deactivated, .empty, .timeout,
++      QuickSwitcherReducer.Cancel.escape, .deactivated, .empty, .timeout, .voiceOver,
+     ] {
+       var r = revealed(count: 5)
+       XCTAssertEqual(r.handle(.cancel(reason)), .end(commit: nil), "\(reason) must not commit")
+
+
+=== DIFF: macapp/WorkroomAppTests/SwitcherRailLayoutTests.swift ===
+@@ -272,19 +272,24 @@ final class SwitcherRailLayoutTests: XCTestCase {
+ 
+   func testAHairsBreadthMissKeepsTheMaterial() {
+     // Going opaque doesn't raise the ratio — it's measured against `nsPanel` either way — so a theme that
+-    // lands at 4.45:1 (99% of the floor) must not lose the whole Liquid Glass surface for it. Measured
+-    // case: the system fallback's mid-grey card, which caps white text at exactly that.
+-    let grey = ThemeTokens(
++    // lands just under 4.5:1 must not lose the whole Liquid Glass surface for it. A mid-tone card with
++    // white text, sized so the ratio lands in the 4.0–4.5 band: the card is `bg` blended 5.5%
++    // toward `fg`, so an encoded 0.44 background yields a 0.47 card at 4.41:1 against white.
++    //
++    // Three of the 56 bundled themes really do live in this band (Everforest Light Med, TokyoNight Day,
++    // iTerm2 Solarized Dark) — see `SwitcherThemeSweepTests`. This fixture is the arithmetic; those are
++    // the product's own evidence that the band is worth having.
++    let midTone = ThemeTokens(
+       preview: ThemePreview(
+-        name: "mid-grey card",
+-        background: NSColor(srgbRed: 0.12, green: 0.12, blue: 0.12, alpha: 1),
++        name: "mid-tone card",
++        background: NSColor(srgbRed: 0.44, green: 0.44, blue: 0.44, alpha: 1),
+         foreground: NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 1),
+-        palette: (0..<8).map { _ in NSColor(srgbRed: 0.55, green: 0.6, blue: 0.75, alpha: 1) }))
+-    let palette = SwitcherRailLayout.palette(for: grey)
+-    let achieved = ThemeTokens.contrastRatio(palette.nsName, grey.nsPanel)
++        palette: (0..<8).map { _ in NSColor(srgbRed: 0.10, green: 0.12, blue: 0.16, alpha: 1) }))
++    let palette = SwitcherRailLayout.palette(for: midTone)
++    let achieved = ThemeTokens.contrastRatio(palette.nsName, midTone.nsPanel)
+     XCTAssertLessThan(
+       achieved, SwitcherRailLayout.Palette.textTarget, "the premise: it misses 4.5:1")
+     XCTAssertGreaterThan(achieved, SwitcherRailLayout.Palette.opaqueFillFloor, "but only just")
+-    XCTAssertFalse(palette.needsOpaqueFill, "a 1% shortfall must not cost the material")
++    XCTAssertFalse(palette.needsOpaqueFill, "a near miss must not cost the material")
+   }
+ }
+
+
+=== DIFF: macapp/WorkroomAppTests/SwitcherThemeSweepTests.swift ===
+@@ -0,0 +1,148 @@
++import AppKit
++import XCTest
++
++@testable import Workroom
++
++/// D14 / T15: every rail role's contrast floor, measured against **every bundled ghostty theme** rather
++/// than a hand-picked pair.
++///
++/// Two fixtures can't answer this. The rail's colours are derived from a *user-supplied* theme — the tile
++/// hues, the accent, the two diff foregrounds and the dimmed subtitle are all computed from whatever
++/// `background`/`foreground`/ANSI palette a theme file happens to carry — and the ways that goes wrong are
++/// specific to real palettes: a near-monochrome theme, a theme whose ANSI blue is nearly its background, a
++/// light theme with a pale accent. The 56 bundled themes ARE the product's input set, so they are what the
++/// floors get asserted against.
++///
++/// The sweep is also what caught the contrast metric itself: `ThemeTokens.luminance` was weighting
++/// gamma-encoded sRGB, so 43 of the 56 themes scored below the body-text floor and 38 of them lost the
++/// Liquid Glass surface to the opaque fallback. A floor that holds for two fixtures says nothing about the
++/// fiftieth theme.
++@MainActor
++final class SwitcherThemeSweepTests: XCTestCase {
++
++  /// Every bundled theme, parsed. Read from the app bundle's own `ghostty/themes` — deliberately NOT
++  /// through `ThemeService.themeDirectories()`, whose first entry is `~/.config/ghostty/themes`: a user
++  /// override there would make this test's result depend on the machine running it.
++  private func bundledThemes() throws -> [ThemePreview] {
++    let root = try XCTUnwrap(
++      Bundle.main.resourceURL?.appendingPathComponent("ghostty/themes"),
++      "the app bundle must carry its themes — the terminal can't start without them")
++    let names = try FileManager.default.contentsOfDirectory(atPath: root.path).sorted()
++    let themes = names.compactMap {
++      ThemeService.parseThemeFile(atPath: root.path + "/" + $0, name: $0)
++    }
++    XCTAssertGreaterThan(
++      themes.count, 40, "the bundled set is ~56 themes; a near-empty sweep is a bug")
++    return themes
++  }
++
++  /// Text roles. The guarantee is *two-tiered* by design (D14): a card keeps its Liquid Glass while its
++  /// text clears `opaqueFillFloor`, and drops to an opaque fill below that. So the invariant asserted here
++  /// is the floor, not the 4.5:1 target — a theme landing in the 4.0–4.5 band deliberately keeps the
++  /// material, because going opaque wouldn't raise the ratio anyway (it's measured against `nsPanel`
++  /// either way; what it buys is certainty, and that isn't worth the whole surface for a near miss).
++  ///
++  /// The counts are asserted too, loosely. They are what makes this a regression net rather than a
++  /// tautology: if a future change pushes half the bundled set into the near-miss band or into the opaque
++  /// fallback, every per-theme assertion above still passes while the rail quietly stops being glass.
++  func testEveryBundledThemeKeepsTheRailsTextLegible() throws {
++    var fellBack: [String] = []
++    var nearMiss: [String] = []
++    let themes = try bundledThemes()
++    for theme in themes {
++      let tokens = ThemeTokens(preview: theme)
++      let palette = SwitcherRailLayout.palette(for: tokens)
++      if palette.needsOpaqueFill {
++        fellBack.append(theme.name)
++        continue
++      }
++      for (role, color) in [("name", palette.nsName), ("subtitle", palette.nsSubtitle)] {
++        XCTAssertGreaterThanOrEqual(
++          ThemeTokens.contrastRatio(color, tokens.nsPanel),
++          SwitcherRailLayout.Palette.opaqueFillFloor - 0.01,
++          "\(theme.name): the \(role) is below the floor that keeps the material on")
++      }
++      if ThemeTokens.contrastRatio(palette.nsName, tokens.nsPanel)
++        < SwitcherRailLayout.Palette.textTarget
++      {
++        nearMiss.append(theme.name)
++      }
++    }
++    // Measured at the time of writing: 1 fallback (iTerm2 Solarized Light, 3.90:1) and 3 in the band
++    // (Everforest Light Med 4.39, TokyoNight Day 4.25, iTerm2 Solarized Dark 4.35).
++    XCTAssertLessThanOrEqual(
++      fellBack.count, 4,
++      "the opaque fallback is the exception, not the rule — fell back: \(fellBack)")
++    XCTAssertLessThanOrEqual(
++      nearMiss.count, 6, "the 4.0–4.5 band should stay a handful — in it: \(nearMiss)")
++  }
++
++  /// Indicator roles: 3:1 for the ring, the running dot and the diff bars.
++  func testEveryBundledThemeKeepsTheRailsIndicatorsVisible() throws {
++    for theme in try bundledThemes() {
++      let tokens = ThemeTokens(preview: theme)
++      let palette = SwitcherRailLayout.palette(for: tokens)
++      for (role, color) in [
++        ("ring", palette.nsRing), ("dot", palette.nsDot), ("diffAdd", palette.nsDiffAdd),
++        ("diffRemove", palette.nsDiffRemove),
++      ] {
++        XCTAssertGreaterThanOrEqual(
++          ThemeTokens.contrastRatio(color, tokens.nsPanel),
++          SwitcherRailLayout.Palette.indicatorTarget - 0.01,
++          "\(theme.name): \(role) is below the indicator floor")
++      }
++    }
++  }
++
++  /// Every mark tile, on every theme: the tile must be visible against the card, and its monogram legible
++  /// on the tile. The second half is what a brightness-threshold ink rule failed — it took white on a
++  /// 0.54-brightness tile at 1.77:1 where black gives 11.8:1 — so `ink` measures both candidates.
++  func testEveryBundledThemeKeepsEveryMonogramLegible() throws {
++    for theme in try bundledThemes() {
++      let tokens = ThemeTokens(preview: theme)
++      for hue in 0..<SwitcherMark.hueCount {
++        let tile = SwitcherMark.tileColor(hue: hue, tokens: tokens)
++        XCTAssertGreaterThanOrEqual(
++          ThemeTokens.contrastRatio(tile, tokens.nsPanel), SwitcherMark.tileContrastFloor - 0.01,
++          "\(theme.name) hue \(hue): the tile itself disappears into the card")
++        XCTAssertGreaterThanOrEqual(
++          ThemeTokens.contrastRatio(SwitcherMark.ink(on: tile), tile),
++          SwitcherRailLayout.Palette.textTarget - 0.01,
++          "\(theme.name) hue \(hue): the monogram is illegible on its own tile")
++      }
++    }
++  }
++
++  /// The badge's own pill: its label against the fill it sits on, and the fill against the card.
++  ///
++  /// This is the role D14 lists last and the one the rail nearly shipped wrong: `UnreadBadge`'s own colours
++  /// are the RAW `accent` with ink on top, and the raw accent is exactly what the ring gets corrected away
++  /// from — so a pale-accent theme drew an invisible pill beside a visible ring. The rail passes its own
++  /// pair instead, which is `nsRing` plus measured ink.
++  func testEveryBundledThemeKeepsTheBadgeReadable() throws {
++    for theme in try bundledThemes() {
++      let tokens = ThemeTokens(preview: theme)
++      let palette = SwitcherRailLayout.palette(for: tokens)
++      XCTAssertGreaterThanOrEqual(
++        ThemeTokens.contrastRatio(palette.nsBadgeInk, palette.nsBadgeFill),
++        SwitcherRailLayout.Palette.textTarget - 0.01,
++        "\(theme.name): the unread count is illegible on its own pill")
++      XCTAssertGreaterThanOrEqual(
++        ThemeTokens.contrastRatio(palette.nsBadgeFill, tokens.nsPanel),
++        SwitcherRailLayout.Palette.indicatorTarget - 0.01,
++        "\(theme.name): the pill disappears into the card")
++    }
++  }
++
++  /// The rail's badge and its cursor ring must be the SAME accent. Flagged as an open judgment call when
++  /// the rail landed: `legible` walked the ring away from a pale accent while the badge kept the raw one,
++  /// so on those themes the two disagreed about what the app's accent is.
++  func testTheBadgeAndTheCursorRingAgreeOnTheAccent() throws {
++    for theme in try bundledThemes() {
++      let palette = SwitcherRailLayout.palette(for: ThemeTokens(preview: theme))
++      XCTAssertEqual(
++        palette.nsBadgeFill, palette.nsRing,
++        "\(theme.name): the badge pill and the cursor ring are both 'the accent'")
++    }
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppTests/ThemeTokensTests.swift ===
+@@ -70,11 +70,53 @@ final class ThemeTokensTests: XCTestCase {
+     XCTAssertEqual(ThemeTokens.contrastingForeground(for: ns("#1c1c1e")), .white)
+   }
+ 
++  /// The band a brightness threshold gets wrong. This used to be `luminance > 0.6 ? .black : .white`, and
++  /// a mid-tone fill sits just under 0.6 *apparent* brightness while black beats white on it several times
++  /// over — the illegible-monogram bug (1.77:1 where black gave 11.8:1). Picking by measurement has no
++  /// threshold to miscalibrate.
++  func testContrastingForegroundPicksByMeasurementNotBrightness() {
++    for hex in ["#8a8a8a", "#7f9f5f", "#a08a4a", "#9a7fbf"] {
++      let fill = ns(hex)
++      let ink = ThemeTokens.contrastingForeground(for: fill)
++      let chosen = ThemeTokens.contrastRatio(ink, fill)
++      let rejected = ThemeTokens.contrastRatio(ink == .black ? .white : .black, fill)
++      XCTAssertGreaterThanOrEqual(chosen, rejected, "\(hex) took the worse of black/white")
++    }
++  }
++
+   func testLuminanceBounds() {
+     XCTAssertEqual(ThemeTokens.luminance(of: ns("#ffffff")), 1.0, accuracy: 0.001)
+     XCTAssertEqual(ThemeTokens.luminance(of: ns("#000000")), 0.0, accuracy: 0.001)
+   }
+ 
++  /// `luminance` is WCAG — sRGB **linearized** before weighting — and `perceivedBrightness` is the
++  /// gamma-encoded weighting it used to be. Mid-grey separates them: 0.5 encoded, 0.216 linear.
++  ///
++  /// Not a pedantic distinction. Weighting encoded components inflates dark colours (`#2e3440` reads 0.20
++  /// against a true 0.033), which collapses dark-background/light-text ratios: the switcher rail's name
++  /// text measured under 4.5:1 for 43 of the 56 bundled themes on the old formula and for 3 on this one,
++  /// and its "this theme is unreadable, drop the material" fallback was firing for 38 legible themes.
++  func testLuminanceIsWCAGWhileBrightnessStaysPerceptual() {
++    XCTAssertEqual(ThemeTokens.luminance(of: ns("#808080")), 0.216, accuracy: 0.005)
++    XCTAssertEqual(ThemeTokens.perceivedBrightness(of: ns("#808080")), 0.502, accuracy: 0.005)
++    // A real theme: Nord's foreground on its background — 9.2:1, legible as anyone can see. The old
++    // formula scored that same pair 3.6:1, which is what had the rail treating Nord as a contrast failure.
++    XCTAssertEqual(ThemeTokens.contrastRatio(ns("#d8dee9"), ns("#2e3440")), 9.25, accuracy: 0.15)
++  }
++
++  /// Light/dark classification must keep reading the *encoded* value, or a visibly light background whose
++  /// linearized luminance is under 0.5 flips to dark and re-themes the whole app.
++  func testColorSchemeStillFollowsApparentBrightness() {
++    for (hex, expected) in [
++      ("#c8c8c8", ColorScheme.light), ("#8f8f8f", .light), ("#4a4a4a", .dark),
++    ] {
++      XCTAssertEqual(
++        ThemeTokens(preview: full(bg: hex, fg: "#101010", accent4: "#1e7fa8")).colorScheme,
++        expected,
++        "\(hex)")
++    }
++  }
++
+   func testTerminalDimIsBackgroundAndFocusedIsForeground() {
+     let t = ThemeTokens(preview: full(bg: "#1c1c1e", fg: "#d8d8dc", accent4: "#3b9ec4"))
+     XCTAssertEqual(
+
+
+Investigate per the method in your instructions, then return the findings list.
