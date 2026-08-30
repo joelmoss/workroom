@@ -1,0 +1,1 @@
+In changes sidebar, and When there are uncommitted changes, show a commit box with a single line text input for the summary, and a text area for the optional description. Add a "Generate commit message" button that will use the preferred AI agent to generate a commit summary and description based on the changes.
