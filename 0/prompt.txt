@@ -1,0 +1,62 @@
+<task-notification>
+<task-id>a826f5cb3bbc5b285</task-id>
+<tool-use-id>toolu_01JoUi8NifLr7H69KFr9fM3z</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/f547a12c-57e0-4635-ae3a-e066a5b44406/tasks/a826f5cb3bbc5b285.output</output-file>
+<status>completed</status>
+<summary>Agent "Claude adversarial review" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result># Security Review: 3 unpushed commits on `master` (session-daemon reattach + agent-usage footer)
+
+## Fixture/test-file disclosure
+
+My exclude pathspec (`':(exclude)*test*'`) is case-sensitive and doesn't match `…Tests.swift` (capital T), so it silently failed to exclude anything — I ended up reading the full diffs of `AgentUsageTests.swift` and `SessionReplayBufferTests.swift`, not just a summary. Disclosing that per the review's instructions rather than papering over it. Content assessment: both are inert OSC/CSI byte-sequence test vectors (e.g. `[0x1B, 0x5D] + "11;?" + [0x07]`) exercising the new query-stripping logic and a reset-description formatting change — no secrets, no adversarial payloads, nothing worth reasoning about as an attack. Stat summary:
+```
+macapp/WorkroomAppTests/AgentUsageTests.swift               |  4 +-
+macapp/WorkroomAppTests/Session/SessionReplayBufferTests.swift | 53 +++++++++
+```
+
+## Area 1 — Session-daemon reattach (title/cwd synthesis + query stripping)
+
+**1. FIXABLE — critical: unsanitized argv0/cwd injected raw into OSC 2/7 escapes, delivered automatically on every reattach.**
+`SessionDaemon.swift` (attach(), ~lines 372–384) builds `"\u{1B}]2;\(name)\u{07}"` and `"\u{1B}]7;kitty-shell-cwd://localhost\(cwd)\u{07}"` from `SessionPTY.executableName`/`workingDirectory` with zero escaping. Either string is fully controlled by whatever process is currently in the pty's foreground (argv0 at exec time; cwd via `PROC_PIDVNODEPATHINFO`). Any embedded control byte (ESC `0x1B`, BEL `0x07`) terminates the OSC early and lets the rest of the string be interpreted as a fresh, arbitrary escape sequence in the reattaching client — with no user action required, since this fires on every reattach. Unlike the OSC 7-from-`$PWD` pattern (which has upstream-ghostty shell-integration precedent doing the same unescaped interpolation, only ever triggered by a user-visible `cd`), the OSC 2-from-argv0 path is new to this diff and fires silently/automatically. In an app whose whole purpose is hosting AI coding agents that can spawn subprocesses from generated/untrusted content, a subprocess with a crafted argv0 is a plausible, low-effort attack surface — and it can itself deliver the payload for finding #2 below.
+Fix: strip/reject bytes `0x00–0x1F`/`0x7F` from `name` and `cwd` before interpolating.
+
+**2. FIXABLE — OSC 52 (clipboard query) is missing from the strip list, and Ghostty auto-answers it with no confirmation.**
+`colorQueryOSCCommands` = `{4,10,11,…,19,21}`. The doc comment enumerates what's *deliberately* excluded (title/pwd/hyperlink/notification/shell-integration) and reasons about each — 52 appears in neither the strip set nor that exclusion list, so this reads as a plain oversight, not a considered decision. Confirmed exploitable: `GhosttyRuntimeAdapter.readClipboard` completes an OSC 52 read with the real pasteboard string and `confirm: false`, and `confirmReadClipboard`'s body is just a comment — "not surfaced to the user in Workroom; nothing to confirm." So a buffered `ESC]52;c;?BEL` (legitimately emitted by some program, or delivered via finding #1's injection) replayed on reattach makes the client silently send the actual system clipboard content back over the pty to whatever's now in the foreground.
+Fix: add `52` to `colorQueryOSCCommands` — safe, since a legitimate OSC 52 *write* payload is base64 (ends in `=`/alphanumeric, never a bare `?`), so `isColorQueryOSC`'s "last byte is `?`" check won't strip writes.
+
+**3. FIXABLE — `executableName` returns `""` instead of nil for a trailing-slash argv0**, e.g. `argv0 == "foo/"`: `lastIndex(of: "/")` is the last character, `index(after:)` is `endIndex`, the slice is empty, and the function returns `""`. `SessionDaemon`'s `if let name { … }` succeeds on the empty string and emits `\u{1B}]2;\u{07}`, blanking the reattached pane's title. Note the asymmetry: the cwd branch is guarded (`if let cwd, !cwd.isEmpty`), the name branch has no equivalent check. One-line fix alongside #1's sanitization.
+
+**4. FIXABLE — clicking to unpin the usage popover while still hovering doesn't close it.** `usageDetailPresented`'s getter is `usageDetailPinned || usageDetailHovering`. Clicking the status-bar segment doesn't move the mouse off it, so `.onHover`'s leave branch never fires and `usageDetailHovering` stays true — the OR keeps the popover open regardless of the pin flip. This is deterministic from the code as written, not a live-testing question.
+Fix: clear `usageDetailHovering` in the button's own action, or otherwise stop OR-ing hover once the pin has been explicitly toggled off.
+Separately, **INVESTIGATE**: whether SwiftUI's own outside-tap dismiss gesture *also* fires on that same click (the anchor sits outside the popover's content view), racing the button's action and potentially producing a close-then-reopen flicker — this half genuinely needs live UI testing since SwiftUI's dismiss-gesture timing here is undocumented/version-dependent.
+
+**5. INVESTIGATE — foreground-process cwd can silently disagree with the pane's own displayed cwd.** When the foreground process is on the *primary* screen (`tail -f`, `ssh`, a build — anything not switching to alt-screen), synthesis fires **and** replay is non-empty (unlike the alt-screen case, where `replayBytes` returns `[]`). The OSC 7 emitted is the foreground child's cwd, which can legitimately differ from what the status bar's own `cwd` property (`state.cwd`/`lastKnownCwd`) has been showing for that pane. Product call on whether foreground-process cwd is the right source of truth here.
+
+**6. INVESTIGATE — nested/idle shell phantom title.** The "exclude the shell" heuristic only compares against `session.processID`, the *outermost* forkpty'd process. An idle nested shell (bash-in-zsh, or any interactive sub-shell) has a different foreground pgid, so it's treated as "a real program" and gets a synthesized title/cwd of "bash" — exactly the phantom-shell-title failure this code says it exists to prevent, one level removed. Reliably detecting "idle at its own REPL" from outside the process is inherently fuzzy, so this needs product/design judgment rather than a mechanical fix.
+
+**7. FIXABLE — replay-content logging is new, sensitive, and unbounded.** `escapedPreview` now writes up to a 2048-byte escaped preview of actual buffered terminal content (which can include secrets — API keys, tokens, command output) to the daemon's stderr log on every attach. Every other `SessionLog.write` call in this codebase logs only operational metadata; this is the first to log PTY content. Compounding: the log (`socketPath + ".log"`) is opened `O_APPEND`, 0600, with no rotation/truncation/cap anywhere in this path, so it accretes indefinitely (~2KB per attach) across every relaunch and reattach for the life of the socket path.
+Fix: log length/hash instead of content, or gate the byte-preview behind a debug/verbose flag; add rotation.
+
+**8. FIXABLE — zero test coverage for all of the new logic.** `SessionPTY.executableName`/`workingDirectory` (manual `KERN_PROCARGS2` buffer parsing/offset arithmetic, sysctl/proc_pidinfo error paths) and the entire `attach()` title/cwd-synthesis branch have no unit or end-to-end tests — confirmed via `SessionDaemonEndToEndTests.swift` and a grep for `executableName`/`foregroundProcessGroup` across `WorkroomAppTests`. Only the query-stripping half (`SessionReplayBufferTests.swift`) got new tests. Finding #3 is exactly the kind of bug a direct unit test on `executableName` would have caught.
+
+**9. INVESTIGATE (low severity, cosmetic) — PID-reuse TOCTOU.** `foregroundProcessGroup` then two separate syscalls (`executableName`, `workingDirectory`) on that pid are not atomic; if the process exits and the pid is recycled in between, name/cwd could reflect an unrelated process. Narrow window in a single-threaded daemon; not worth engineering around, worth knowing.
+
+**10. FIXABLE — popover shows a frozen `now: Date()`.** `AgentUsageDetailView(snapshot:, now: Date())` captures `Date()` once when the popover's content closure is evaluated. Since this feature is explicitly designed to stay open indefinitely once pinned, the "resets in Xh Ym" text and pace marker never advance while pinned, absent some unrelated re-render. Add a periodic refresh (e.g. `TimelineView`) so a long-pinned popover doesn't go stale.
+
+## Area 2 — Agent-usage footer
+
+**11. FIXABLE/INVESTIGATE — one root cause, two lost signals: removed segment-level severity coloring.** The old `quotaTint(snapshot)` (colored the whole segment red at ≥90% used OR &gt;15pt pace deficit, warning at &gt;5pt deficit) is gone, replaced only by inline per-window coloring inside `quotaFull` when `pace.isOver`. Two consequences:
+- `quotaCompact` — the fallback `ViewThatFits` renders on **narrow** panes — has no color coding at all, so users on the narrowest panes (precisely where the fallback triggers) get zero visual warning, ever.
+- The absolute "≥90% used ⇒ red" threshold is dropped entirely; a user on-pace but at 98% used (about to hit a hard cap) now shows no warning color until it's too late.
+Fix: reintroduce a segment-level `foregroundStyle`/threshold check (or extend `quotaCompact` to carry the same coloring `quotaFull` now has).
+
+---
+
+Everything else reviewed (Makefile daemon-kill addition, `resetDescription`'s two-unit cap, `SettingsView` label reorganization, `AgentUsageDetailView`'s pace-marker math, the OSC/CSI query-parsing boundary logic itself) checked out — no defects found there.
+
+Key files: `macapp/WorkroomSession/SessionDaemon.swift`, `macapp/WorkroomSession/SessionPTY.swift`, `macapp/WorkroomSessionProtocol/SessionReplayBuffer.swift`, `macapp/WorkroomApp/Views/TerminalStatusBar.swift`, `macapp/WorkroomApp/Core/GhosttyRuntimeAdapter.swift` (confirms OSC 52 auto-answer).
+
+Recommendation: Block merge because SessionDaemon.attach() interpolates a foreground process's raw argv0/cwd directly into OSC 2/7 escape sequences with no control-byte sanitization, letting any process the pty ever runs inject arbitrary terminal escapes — including, via the also-unstripped OSC 52 query, silent clipboard exfiltration — into every reattaching client with no user action required.</result>
+<usage><subagent_tokens>160419</subagent_tokens><tool_uses>35</tool_uses><duration_ms>772041</duration_ms></usage>
+</task-notification>
