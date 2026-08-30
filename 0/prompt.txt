@@ -1,0 +1,1 @@
+[Image #1] not fixed - this is what I see when I restart the app after quitting it with a running claude TUI. this works fine in Muxy
