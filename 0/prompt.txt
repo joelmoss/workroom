@@ -1,0 +1,133 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   - **Original (issue #124, third bullet, verbatim):** "In changes sidebar, and When there are uncommitted changes, show a commit box with a single line text input for the summary, and a text area for the optional description. Add a 'Generate commit message' button that will use the preferred AI agent to generate a commit summary and description based on the changes."
+   - User invoked `/autoplan` to run the full CEO/Design/Eng review pipeline before implementing.
+   - After review, scope was split into **Change 1 (commit write path + dialog — DONE)** and **Change 2 (Generate commit message — NOT STARTED)**, plus a sibling **wr-vcs-core config fix (DONE)**.
+   - Subsequent explicit requests: "Create ui tests", "run it", "retry UI tests", "commit and do #2", and most recently: "In commit dialog, for JJ repos, replace the triple dot button with a 'Describe' button. And for git repos, replace it with an 'Amend last commit' button".
+
+2. **Key Technical Concepts:**
+   - Workroom macOS app (SwiftUI, macOS 15+), manages git worktrees / jj workspaces with embedded terminals (libghostty)
+   - `VCSWriting` protocol / `CLIVCSWriter` — the VCS **write** seam (separate from read-only `VCSProviding`)
+   - `JJSnapshotGate` — per-project-root serialization actor; `maxChainWait` 30s self-heal
+   - `StatusCommandRunner` / `StatusCommandRunning` — process spawn with timeout, `LC_ALL=C`, `GIT_TERMINAL_PROMPT=0`, null stdin
+   - git pathspec **magic** vs option parsing; `:(literal)`, `--pathspec-from-file=-`, `--pathspec-file-nul`
+   - git porcelain `XY` columns (X = HEAD→index, Y = index→worktree)
+   - `git commit --only` semantics (builds from worktree, preserves other staged paths)
+   - jj-lib 0.43 via UniFFI (`wr-vcs-core`), `StackedConfig`, `ConfigLayer`, `ConfigSource`, `UserSettings`
+   - XCUITest accessibility: `children: .combine` vs `children: .contain`
+   - UITestFixture flags: `-WorkroomUITestFixture`, `-WorkroomUITestGitWorkroom`, `-WorkroomUITestJJProject`, `-WorkroomUITestSyncFailure`, `-WorkroomUITestConflict`
+   - `F_SETNOSIGPIPE` (Darwin per-fd SIGPIPE suppression)
+
+3. **Files and Code Sections:**
+
+   - **`macapp/WorkroomApp/Core/VCSWriting.swift`** (modified) — the write seam. Added:
+     - `VCSCommitMode { commit, amendMessage, describe }`, `VCSCommitRequest { message, files: [ChangedFile], mode }`, `VCSCommitResult { ok(summary:revision:), committedThenFailed(revision:detail:), failed(VCSCommitFailure) }`, `VCSCommitFailure` (toolMissing, timedOut, nothingToCommit, identityMissing, signingFailed, hookRejected, unmergedFiles, sequencerInProgress, locked, unsupportedMode, other)
+     - Arg builders: `gitPathspecPayload(_:) -> Data` (renames send BOTH sides, every entry `:(literal)`-prefixed, NUL-separated, order-preserving dedup), `gitIntentToAddArgs()`, `gitCommitOnlyArgs(message:)`, `gitAmendMessageArgs(message:)` (`--amend --only`), `gitHeadArgs()`, `gitStatusPorcelainArgs()`, `jjCommitArgs(message:)`, `jjDescribeArgs(message:)`, `jjDescriptionArgs()`, `jjOpHeadArgs()`
+     - `stagedContentAtRisk(porcelainZ:selecting:)` — pure parser; at risk when `X != ' ' && X != '?' && Y != ' '`; consumes the second field for `R`/`C` entries
+     - `sequencerState(gitDir:)` — CHERRY_PICK_HEAD/REVERT_HEAD before MERGE_HEAD
+     - `classifyCommit(_:tool:)` with explicit marker sets; `hookRejected` is matched, never a catch-all
+     - `commit(path:projectRoot:request:)` — single `gated {}` acquisition, HEAD before/after for `committedThenFailed`
+     - `commitTimeout: TimeInterval = 600`
+
+   - **`macapp/WorkroomApp/Core/StatusCommandRunner.swift`** (modified) — added `run(_:_:in:timeout:stdin:)` to protocol with a forwarding default; real impl writes to a pipe on a background queue with `fcntl(handle.fileDescriptor, F_SETNOSIGPIPE, 1)`.
+
+   - **`macapp/WorkroomApp/Core/CommitDraft.swift`** (NEW) — `PendingCommit { sid, vcs }` and pure `CommitDraft` enum: `message(summary:body:)`, `split(message:)`, `selected(from:excluding:)` (stores **exclusions**), `commitLabel(selectedCount:vcs:)`, `blockedReason(...)`.
+
+   - **`macapp/WorkroomApp/Views/CommitSheet.swift`** (NEW, most recently modified) — the dialog. Latest change replaced the ellipsis `Menu` with a named button:
+     ```swift
+     @ViewBuilder private var secondaryButton: some View {
+       Button(isJJ ? "Describe" : "Amend last commit") {
+         commit(mode: isJJ ? .describe : .amendMessage)
+       }
+       .disabled(phase == .committing || summary.trimmingCharacters(in: .whitespaces).isEmpty)
+       .help(
+         isJJ
+           ? "Set this change's message and stay on it, instead of starting a new change (jj describe)"
+           : "Replace the last commit's message. Nothing else about that commit changes."
+       )
+       .accessibilityIdentifier(isJJ ? "commit.describe" : "commit.amend")
+     }
+     ```
+     Other key parts: `Phase { editing, confirmingStagedLoss([String]), committing, failed(VCSFailureDialog) }`, `commitChecking(mode:)` guard, `stagedLossNotice(_:)`, `primaryLabel` (becomes "Commit anyway"), `CommitFileRow` (checkbox is its own a11y element; row uses `children: .contain`).
+
+   - **`macapp/WorkroomApp/Core/AppStore.swift`** (modified) — `@Published var pendingCommit: PendingCommit?`, `@Published var committingTargets: Set<SidebarID>`, `pendingCommit != nil` added to `hasModalPresentation`.
+
+   - **`macapp/WorkroomApp/Core/AppStore+WorkroomStatus.swift`** (modified) — `isCommitting(_:)`, `refreshStatus(for:)` (targets captured sid), `performCommit(_:on:completion:)`, `stagedContentAtRisk(on:files:completion:)`; `isCommitting` suppression added to sweep, `scheduleSelectedStatusRefresh`, `handleWorkroomFileChange`; `selectedStatusWorkItem(for:)` made internal.
+
+   - **`macapp/WorkroomApp/Core/VCSSyncPresentation.swift`** (modified) — `commitFailureDialog(_:mode:)`, `describeCommit`, `commitRemedy(for:)`, `commitRawOutput(of:)`, `commitVerb(_:)`.
+
+   - **`macapp/WorkroomApp/Views/ChangesPanel.swift`** (modified) — Changes header gains `InspectorHeaderButton(systemImage: "checkmark.circle")` with id `changes.commitButton`; `canCommitSelectedTarget` / `commitButtonHelp`.
+
+   - **`macapp/WorkroomApp/Views/RootView.swift`** (modified) — `.sheet(item: $store.pendingCommit) { CommitSheet(...) }`.
+
+   - **`macapp/WorkroomApp/Core/UITestFixture.swift`** (modified) — `FixtureVCSWriter.commit(...)` returns `.hookRejected` when `failing`, else `.ok`.
+
+   - **`vcs/crates/wr-vcs-core/src/jj_config.rs`** (NEW) — `ConfigEnv { jj_config, home, xdg_config_home }`, `config_paths(env)` (JJ_CONFIG replaces defaults; else `~/.jjconfig.toml`, `$XDG_CONFIG_HOME`/`~/.config/jj/config.toml`, `conf.d/*.toml` sorted), `user_settings_for(env)`, `user_settings()`; broken layers skipped; deliberately uncached; 8 unit tests.
+
+   - **`vcs/crates/wr-vcs-core/src/jj_backend.rs`** (modified) — all 3 `StackedConfig::with_defaults()` sites → `crate::jj_config::user_settings()?`.
+
+   - **Tests:** `macapp/WorkroomAppTests/VCSWritingTests.swift` (+~295 lines), `VCSCommitIntegrationTests.swift` (NEW, 19 tests), `CommitDraftTests.swift` (NEW, 18 tests), `macapp/WorkroomAppUITests/CommitSheetUITests.swift` (NEW, 10 tests), `vcs/crates/wr-vcs-core/tests/committer_identity.rs` (NEW, own binary).
+
+4. **Errors and fixes:**
+   - **Plan was wrong: `git add` + `git commit` absorbs other staged paths.** Measured; replaced with `git commit --only` (verified leaves unrelated staged path still staged).
+   - **Plan was wrong: `--pathspec-file-nul` does NOT disable glob magic.** Measured `a[b].txt` also committing `ab.txt`; fixed with `:(literal)` prefix.
+   - **`git diff` rejects `--pathspec-from-file`** (`error: invalid option`). Switched the staged guard to unfiltered `git status --porcelain -z` + in-memory filter.
+   - **`testIntentToAddReadsPathsFromStdin`** — bad index assertion (gitHardening comes first). Fixed the assertion.
+   - **`testAmendMessageLeavesTheIndexAlone`** — amended the ROOT commit, which legitimately contains all files. Added a second commit first.
+   - **4 integration failures** — my `status()` helper used `.whitespacesAndNewlines`, stripping porcelain's leading space and destroying the `M ` vs ` M` distinction the tests assert on. Changed to `.newlines`. Also rename assertion: `--name-only` collapses detected renames, so switched to a `nameStatus` `R`-prefix assertion.
+   - **UI test 1: `children: .combine` on the file row swallowed the checkbox** — real a11y bug (VoiceOver had no toggle either). Restructured so the checkbox is its own element and the row uses `.contain`.
+   - **UI test 2: wrong fixture flag** — `-WorkroomUITestGitWorkroom` sets the status SHAPE; `-WorkroomUITestJJProject` sets the project's vcs. Fixed.
+   - **`Timed out while enabling automation mode`** — known wedge from repeated launches, not code. Cleared on the user's retry.
+   - **`body_` lint violation** (AlwaysUseLowerCamelCase) — renamed to `messageBody`.
+   - **`rm -rf` blocked by dcg guard** — switched to `mktemp -d`.
+   - **Flaky `testInspectorSizeWeightsAreGlobalAcrossWorkrooms`** — confirmed pre-existing (shared `Defaults[.inspectorLayout]` under parallel workers); passes in isolation; my diff never touches it.
+
+5. **Problem Solving:**
+   - Reversed my own recommendation twice on evidence: CLI→split→CLI for the commit backend, once jj-lib feasibility proved native would stamp empty committers, drop signatures, and be unable to honour `immutable_heads()`.
+   - Proved the jj config test has teeth by temporarily reverting the fix — it failed with committer `<>`, the bug verbatim.
+   - Investigated the 1708→1707 unit-count drop rather than accepting it: confirmed 1707 distinct names, no duplicates, and every declared test ran (19/19, 18/18, 104/104), so the earlier 1708 was a raw line count including a repeat.
+
+6. **All user messages:**
+   - "In changes sidebar, and When there are uncommitted changes, show a commit box with a single line text input for the summary, and a text area for the optional description. Add a 'Generate commit message' button that will use the preferred AI agent to generate a commit summary and description based on the changes."
+   - (Rejected first ExitPlanMode, then invoked `/autoplan` skill)
+   - (Rejected D1 premise gate asking to clarify)
+   - "we should use native where possible, so split it"
+   - (Rejected D2 asking to clarify)
+   - "'live misattribution bug'?"
+   - (Answered D2: "Fix the snapshot bug now, decide jj commit later")
+   - (Answered gate: "Split: write path first", "Collapsed at rest", "Message-only amend", and asked "If the commit form opens in a dialog, do we need to maintain any commit state?")
+   - (Answered: "Dialog replaces the composer")
+   - "Create ui tests"
+   - "Let me know when run them the first time so I can authenticate it"
+   - "run it"
+   - "No need to ask me again"
+   - "retry UI tests"
+   - "commit and do #2"
+   - "In commit dialog, for JJ repos, replace the triple dot button with a 'Describe' button. And for git repos, replace it with an 'Amend last commit' button"
+
+7. **Pending Tasks:**
+   - **Live QA** against real git and jj repos — nothing has driven the real app yet.
+   - **Change 2 — Generate commit message** (plan §7): resolve `Defaults[.terminalAgentBackend]` (defaults to `"auto"`; `SettingsView.swift:358` reads it for copy under a picker labelled "Diagnose with" — that copy must change in the same PR); neutral cwd (`NSTemporaryDirectory()`); neutralise/nonce the untrusted-data markers; commit-subject sampling must carry `jjReadFlags`; one whole-selection diff in one gate acquisition with the cap binding during collection; per-user + per-project privacy consent joining `hasModalPresentation`.
+   - Remaining in TODOS.md:498: `core.excludesFile` chaining, jj 0.43 repo-level config under `~/.config/jj/repos/<hash>`, and verifying fsmonitor/EOL/exec-bit now take effect.
+
+8. **Current Work:**
+   Completed the most recent request — replacing the commit dialog's ellipsis menu with named per-backend buttons ("Describe" for jj, "Amend last commit" for git) in `macapp/WorkroomApp/Views/CommitSheet.swift`, replacing `secondaryMenu` with `secondaryButton`. Added two UI tests (`testGitOffersAmendAsItsOwnButton`, `testJJOffersDescribeAsItsOwnButton`) asserting the correct button exists per backend and the other does not. All 10 UI tests passed, `make app-lint` clean, unit suite green. Committed as `f46f4be8 feat(macapp): name the commit dialog's second verb instead of hiding it`.
+
+   Immediately before the summary request I was verifying the unit-test count discrepancy (1708 → 1707). The final tool result confirmed no test was lost:
+   ```
+   VCSCommitIntegrationTests: 19 declared, 19 ran
+   CommitDraftTests: 18 declared, 18 ran
+   VCSWritingTests: 104 declared, 104 ran
+   ```
+   plus 1707 distinct passed names with zero duplicates — so the earlier 1708 was a raw line count containing one repeat, not a removed test.
+
+   Three commits on branch `joel/vcs-toolbar`: `921d09c6` (commit feature), `7a687090` (jj config fix), `f46f4be8` (named second verb).
+
+9. **Optional Next Step:**
+   No next step without user direction — the most recent request ("In commit dialog, for JJ repos, replace the triple dot button with a 'Describe' button. And for git repos, replace it with an 'Amend last commit' button") is complete, verified and committed. The only outstanding item is to report the resolved test-count investigation to the user (1707 distinct, 0 failed, nothing lost). The previously-agreed remaining work is **live QA** and **Change 2 (Generate commit message)**, but I should confirm with the user before starting either rather than assuming.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/joelmoss/.claude/projects/-Users-joelmoss-dev-workroom/0c6303fb-e536-4746-b83a-7c0007dc1df0.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.
