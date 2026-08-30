@@ -1,0 +1,1 @@
+pull button is pull and rebase for git, so it should be the same for JJ.
