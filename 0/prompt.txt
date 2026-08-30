@@ -1,0 +1,32 @@
+<task-notification>
+<task-id>ac7ec5acc95c885de</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/aed8926d-2d0e-4e9c-8c02-c5f98d2554f8/tasks/ac7ec5acc95c885de.output</output-file>
+<status>completed</status>
+<summary>Agent "Find local persistence patterns in macapp" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Findings
+
+**1. `applicationSupportDirectory` convention**
+- `WorkroomApp/Core/SessionStore.swift:21-29` — canonical pattern: `&lt;AppSupport&gt;/Workroom/&lt;bundleID&gt;/session.json`. Comment explains the bundle-id scoping is mandatory (Workroom/Workroom Dev/Workroom Nightly must never cross-read each other's files).
+- `WorkroomApp/Core/GhosttyApp.swift:213-217` — simpler case, `&lt;AppSupport&gt;/Workroom/ghostty.conf` (no bundle-id subfolder; a single generated non-JSON config file).
+- `WorkroomApp/Core/Session/PersistentSessionPaths.swift:37-45` — a third layout, `&lt;AppSupport&gt;/&lt;bundleID&gt;/sessions/session.sock` (bundle-id first, no "Workroom" folder). Same bundle-id-scoping principle, different nesting.
+- No single shared "give me my app's writable directory" helper — each caller builds the path inline via `FileManager.default.urls(for: .applicationSupportDirectory, ...)`.
+
+**2. Counter / usage-tracking precedent**
+No file-based "count how many times X happened, keyed by a string" exists anywhere. Closest analogs:
+- `WorkroomApp/Core/WhatsNewService.swift:26-28,78` — a consecutive-failure counter (`maxAutoAttempts`), but persisted through `Defaults`/UserDefaults, i.e. the exact mechanism you want to avoid.
+- `WorkroomApp/Core/AgentUsage.swift` — reads externally-written quota/usage JSON (Claude/Codex rate-limit caches); Workroom never writes its own usage counters.
+
+**3. `~/.config/workroom/` from Swift**
+Not read directly anywhere in Swift. `WorkroomApp/Core/ProjectStore.swift:21` comment confirms it's the CLI's file; the app only reaches it by shelling out to the `workroom` binary and parsing its `--json` stdout (`WorkroomApp/Core/WorkroomCLI.swift:274,289,314-316`, `JSONDecoder`/`Process`). Root `CLAUDE.md` ("Both builds still share the CLI config…") confirms this is deliberate — there is no Core/ config-path helper for `config.json`, and no precedent for the app parsing it itself.
+
+**4. Lightweight JSON read/write helper**
+None exists as a shared utility — no generic `JSONFileStore`. The convention to imitate is `SessionStore`'s hand-rolled pair: read at `SessionStore.swift:111-131` (size cap, `try? Data(contentsOf:)`, `try? decoder.decode`, quarantine-on-corrupt, all failures swallowed+logged) and write at `SessionStore.swift:190-214` (`JSONEncoder` with `.prettyPrinted, .sortedKeys`, `createDirectory` before write since `.atomic` doesn't make dirs, `data.write(to:options:.atomic)`, errors logged not thrown). Each feature reimplements this shape itself.
+
+**5. Debug/diagnostics file**
+None found — no developer-only diagnostics file is written anywhere in the app.
+
+**Bonus, relevant to your feature**: `WorkroomApp/Core/ToolLogoRegistry.swift` is the existing curated-CLI-tool registry (bundled `Resources/tool-logos/registry.json`, loaded read-only via `Bundle.main.url` + `JSONDecoder`, line 85-100) — your counter should key/skip against `ToolLogoRegistry.matchingEntry(forExecutableName:)` so it only tallies genuinely unrecognized commands.</result>
+<usage><subagent_tokens>65452</subagent_tokens><tool_uses>20</tool_uses><duration_ms>99224</duration_ms></usage>
+</task-notification>
