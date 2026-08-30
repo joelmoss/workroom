@@ -1,0 +1,6 @@
+<task-notification>
+<task-id>bzgvg99oj</task-id>
+<summary>Monitor event: "full XCUITest suite progress and failures"</summary>
+<event>Test Suite 'VCSToolbarGitUITests' passed at 2026-08-04 14:04:26.255.
+Test Suite 'VCSToolbarJJUITests' started at 2026-08-04 14:04:26.258.</event>
+</task-notification>
