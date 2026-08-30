@@ -1,0 +1,1 @@
+layout persistance between app restarts should also remeber position and open state of project sidebar and right properties bar
