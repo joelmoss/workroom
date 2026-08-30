@@ -1,0 +1,1 @@
+add a vertical divider between run buttons and open button. hide the divider when no run buttons shown. is there no way to make the open icon bigger?
