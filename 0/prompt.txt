@@ -1,0 +1,1 @@
+run the entire test suite, including UI
