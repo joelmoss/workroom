@@ -1,0 +1,1 @@
+what happens when a VCS actions fails? for example, if git pull fails for any reason
