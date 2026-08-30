@@ -1,0 +1,1 @@
+I have removed .jj dir from the hue, platform and london projects in workroom, but they still show as JJ repos.
