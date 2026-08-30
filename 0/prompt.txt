@@ -1,0 +1,1 @@
+Check /tmp/claude/gate-app-test.log for full unit suite result. If complete and green, immediately kick off full app-uitest run in background (no need to ask permission again, user said "keep going, let me know when done"). If unit suite still running, reschedule a wakeup. If unit suite failed, investigate and report to user.
