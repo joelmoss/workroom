@@ -1,0 +1,1 @@
+the nav dots on welcome screen shift when left and right buttons are added/removed. keep the dots centered so they don't shift
