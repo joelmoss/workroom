@@ -1,0 +1,1 @@
+history nav (going back) is not taking me back to the previous detail pane. Instead it seems to only change the VCS sidebar to the previous
