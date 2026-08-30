@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b5xexeak2</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/7f7988fc-21ff-4ba7-80de-eae292423ae4/tasks/b5xexeak2.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch the release workflow to completion" completed (exit code 0)</summary>
+</task-notification>
