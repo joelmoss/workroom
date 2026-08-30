@@ -1,0 +1,175 @@
+<task-notification>
+<task-id>a2659fdcd28694a3c</task-id>
+<tool-use-id>toolu_01HHmMrh8KG2MkTjydBKzrXr</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/5e64fba2-ede6-4e1c-a183-fa42e54891b4/tasks/a2659fdcd28694a3c.output</output-file>
+<status>completed</status>
+<summary>Agent "Explore tab strip hover and floating overlay patterns" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result># Report: Hover-preview feature research
+
+## 1. `TerminalTabStrip.swift` — chip construction &amp; existing hover/tooltip/identity
+
+File: `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/TerminalTabStrip.swift`
+
+**Chip is built in two layers.** `TerminalTabStrip.chipRun` (lines 122–245) iterates `tabs` in a `ForEach` and wraps each `TerminalTabChip` (a private, purely-presentational view, lines 467–657) with all the interactive modifiers — hover, tap, drag, context menu. The chip view itself takes no live model reference, only value/closure params (`tab: TerminalTab`, `isActive`, `isHovered`, etc.) — comment at line 465: "Purely presentational — the strip wraps it with the hover, tap, and drag gestures, since those drive (and read) the strip's shared drag state."
+
+**Hover already exists**, driven from the strip, not the chip:
+```swift
+// TerminalTabStrip.swift:168-170
+.onHover { inside in
+  if inside { hoveredTab = tab.id } else if hoveredTab == tab.id { hoveredTab = nil }
+}
+```
+`hoveredTab: TerminalTab.ID?` (line 40) is single-selection strip state — only one chip can be "hovered" at a time, and it's used purely for the visual wash (`isHovered` passed to `TerminalTabChip`) and to suppress adjacent dividers (`showsLeadingSeparator`, line 395). There is no hover-driven overlay/preview UI on chips today, and no delay — it's an instant boolean flip, same idiom used everywhere else in the codebase (see §4).
+
+**`.help()` tooltip already present**, on the *chip*, not per-element:
+```swift
+// TerminalTabStrip.swift:648
+.help(tab.filePath ?? tab.title)
+```
+This shows the full untruncated title/path after macOS's standard tooltip delay. A hover-preview feature would compete for the same hover gesture/region as this tooltip (both fire from the same `.onHover`-tracked region — SwiftUI's `.help` installs its own AppKit tracking area).
+
+**Accessibility identifier scheme — note the mismatch with your assumption.** The chip's identifier is `terminal.tab.&lt;title&gt;`, **not** `workroom.tab.*`:
+```swift
+// TerminalTabStrip.swift:649
+.accessibilityIdentifier("terminal.tab.\(tab.title)")
+```
+(`workroom.pane.close` at line 851 is a different, unrelated control — the "remove from split" button in the pane title bar. `WorkroomTabBar.swift` — the sibling *workroom*-level tab bar, not the terminal-tab strip — presumably has its own `workroom.tab.*` scheme; I did not find one in this file.)
+
+**What data the chip has access to:**
+- `tab: TerminalTab` (full value, `TerminalSessions.swift:15`), including:
+  - `tab.surface: GhosttySurfaceView?` (`TerminalSessions.swift:34-37`) — nil for non-terminal (diff/file/changeset) tabs; `GhosttySurfaceView` is `final class GhosttySurfaceView: NSView` (`GhosttySurfaceView.swift:17`), i.e. the actual live Metal-backed AppKit view for that tab's terminal — reachable straight off the chip's own `tab` binding, no lookup needed.
+  - `tab.title`, `tab.filePath` (repo-relative path for diff/file tabs), `tab.isPreview`, `tab.isRunning`, `tab.content` (enum `.terminal/.diff/.file/.changeset`).
+  - Already used elsewhere off the same `tab`: `tab.surface?.sendText(fix)` (`TerminalTabStrip.swift:446`, inside the agent popover), so "reach the live surface from a tab-strip-adjacent view" is an established pattern.
+- **No frame/position data today.** Each chip's *width* is captured via a `PreferenceKey` (`TabWidthKey`, lines 660-667) fed by a `GeometryReader` background (lines 606-610) — used only for the drag-reorder math (`widths: [TerminalTab.ID: CGFloat]`, line 51). There is no per-chip *global frame/anchor* captured anywhere in this file — you'd need to add that (e.g. an `Anchor&lt;CGRect&gt;` preference or a second `GeometryReader` reading `.global`) to position a hover preview under a specific chip.
+
+## 2. Existing floating/anchored overlay UI
+
+Three genuinely different mechanisms exist in this codebase; none of them is a generic "hover preview" but each is a real precedent for a different piece of the puzzle.
+
+### a) `TerminalSearchBar.swift` — pure SwiftUI `.overlay`, no separate window
+File: `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/TerminalSearchBar.swift`, mounted at `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/PaneTreeView.swift:496-502`:
+```swift
+// PaneTreeView.swift:496-502
+// Scrollback find bar (⌘F), pinned top-trailing over the focused pane only — search state
+// is per-surface, and only the focused pane can be searched. Nothing until active.
+.overlay(alignment: .topTrailing) {
+  if focused {
+    TerminalSearchBar(model: s.view.searchModel)
+  }
+}
+```
+- **Mechanism:** a plain SwiftUI `.overlay(alignment:)` directly on `TerminalContainerView` (the `NSViewRepresentable` hosting the terminal surface) — it lives in the same view hierarchy, above the AppKit-hosted surface, not a separate window/panel.
+- **Positioning:** `alignment: .topTrailing` on the overlay + the bar's own `.padding(10)` (`TerminalSearchBar.swift:71`) — no measured frame math, just corner-alignment + fixed inset.
+- **Shown/dismissed:** conditional on `focused` (SwiftUI `if`, so it mounts/unmounts) and `model.isActive` (an `@ObservedObject` model's published flag) — driven by ⌘F, not hover. Dismissed via `model.end()` from an explicit close button or `.onExitCommand` (Esc), `TerminalSearchBar.swift:82`.
+- **Focus interplay is notable and load-bearing** for anything else that wants to sit over a terminal: `TerminalContainerView.applyFocus` (`TerminalContainerView.swift:118-119`) explicitly yields to the search bar (`if view.searchModel.isActive { return }`) so it doesn't steal first-responder back from the field. A hover preview overlay wouldn't need first-responder, but it's the concrete example of "a SwiftUI overlay sitting on top of the Metal surface" already existing and being hit-testable (SwiftUI overlay content over an `NSViewRepresentable` does receive clicks/hover — confirmed by this bar's own buttons working).
+
+### b) `SwitcherRailView.swift` / `SwitcherPanel.swift` — dedicated non-activating `NSPanel`
+Files: `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/SwitcherRailView.swift`, `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/SwitcherPanel.swift`.
+- **Mechanism:** a real second window — the app's first `NSPanel` (comment at `SwitcherPanel.swift:4`):
+```swift
+// SwitcherPanel.swift:10-15
+final class SwitcherPanel: NSPanel {
+  override var canBecomeKey: Bool { false }
+  override var canBecomeMain: Bool { false }
+}
+```
+Built once and reused (`SwitcherPanelController.prepare()`, `SwitcherPanel.swift:43-77`): `styleMask: [.nonactivatingPanel, .borderless]`, `isFloatingPanel = true`, `level = .floating`, `isOpaque = false`, `hasShadow = false` (the rail draws its own shadow in SwiftUI — see `SwitcherRailView.swift:207-240` — because a borderless non-opaque `NSPanel` was measured to cast **no** system shadow at all, comment at `SwitcherRailView.swift:213`), `isReleasedWhenClosed = false`. Content is an `NSHostingView(rootView: SwitcherRailView(model: model))`.
+- **Positioning:** computed per-reveal in `SwitcherPanelController.show(items:cursor:)` (`SwitcherPanel.swift:105-126`) — sized by `SwitcherRailLayout.panelSize(count:visibleFrame:)` and positioned by `SwitcherRailLayout.panelOrigin(size:windowFrame:visibleFrame:)`, i.e. computed against the **key window's frame** and the screen's `visibleFrame`, not a measured SwiftUI anchor.
+- **Shown/dismissed:** `panel.orderFrontRegardless()` / `panel.orderOut(nil)` (`SwitcherPanel.swift:125,129`) — driven by the ⌥Tab/⌃Tab controller (`QuickSwitcherController`), keystroke-driven, not hover. Critically it **never becomes key** (`canBecomeKey/canBecomeMain` overridden false) so the workroom window keeps first responder/key status the whole time it's shown — the comment stresses this is load-bearing for the release-detection gesture.
+- Card-level hover *inside* the rail is the plain instant idiom (`SwitcherRailView.swift:276`): `.onHover { inside in if inside { model.onHover?(index) } }`, routed back through the controller (not straight to state) specifically because of a movement-threshold guard (comment at `SwitcherPanel.swift:92-93`): "Hover goes through the controller, not straight to the model: the D17 movement threshold lives there, so a card hovered because the panel opened under a stationary pointer is discarded." — worth knowing if a hover-preview's reveal shouldn't fire just because the pointer happened to already be over a chip when something else redraws.
+
+### c) `NSPopover` usage (two more precedents, neither in your named files)
+- `MenuBarController.swift:20-45` — a hand-hosted `NSPopover` anchored to the status-bar item's `NSStatusItem.button`, `behavior = .transient` (closes on click-away), shown on click (`handleClick` action), content is `NSHostingController(rootView: MenuBarNotificationsView(...))`.
+- SwiftUI's own `.popover` modifier (anchored to the *attaching view*, not a manually-positioned window) is used twice already, both **click**-triggered, not hover:
+  - `TerminalTabStrip.swift:161-167` — the ✦ agent-diagnosis popover, `.popover(isPresented: Binding(get: { agentPopoverTab == tab.id }, ...))` attached directly to the chip.
+  - `TerminalStatusBar.swift:172-175` — the agent-usage quota detail, `.popover(isPresented: usageDetailPresented, arrowEdge: .bottom) { AgentUsageDetailView(...) }`.
+
+### d) The closest existing analogue to "hover to reveal a small preview": `TerminalStatusBar.swift`'s delayed-hover popover
+This is the single best precedent for your feature — same shape (hover a small chip → after a short delay, show more detail in a floating panel → hide on exit), already shipped:
+```swift
+// TerminalStatusBar.swift:34-42
+@State private var usageDetailHovering = false
+@State private var usageHoverRevealWorkItem: DispatchWorkItem?
+...
+private let usageHoverRevealDelay: TimeInterval = 0.4
+
+// TerminalStatusBar.swift:162-171
+.onHover { hovering in
+  usageHoverRevealWorkItem?.cancel()
+  if hovering {
+    let workItem = DispatchWorkItem { usageDetailHovering = true }
+    usageHoverRevealWorkItem = workItem
+    DispatchQueue.main.asyncAfter(deadline: .now() + usageHoverRevealDelay, execute: workItem)
+  } else {
+    usageDetailHovering = false
+  }
+}
+.popover(isPresented: usageDetailPresented, arrowEdge: .bottom) {
+  AgentUsageDetailView(snapshot: snapshot, now: Date())
+    .frame(width: AgentUsageDetailView.popoverWidth)
+}
+```
+Key details: exit is instant (no symmetric delay on hide — `usageDetailHovering = false` immediately), the delay is only on *reveal* (arm-and-cancel via `DispatchWorkItem`, cancelled on every hover-state change so a quick pass-through never fires it), and it composes with a separate "pinned" boolean (`usageDetailPinned`, set by click) via a combined `Binding` (`usageDetailPresented`, lines 123-132) so click-to-pin and hover-to-peek share one popover without fighting each other. Comment at lines 31-33 states the intent plainly: "Set after a short hover delay ..., so a mouse merely passing over the segment doesn't pop a popover; cleared the instant the mouse leaves."
+
+## 3. `TerminalContainerView.swift` — full file read
+
+File: `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/TerminalContainerView.swift` (129 lines, read in full above).
+
+**Surface-frame/container relationship:**
+- The container is a bare `NSView` created in `makeNSView` (line 40), `wantsLayer = true`, corner-radius/clip applied via `container.layer` (lines 44-46) — not an `NSView` subclass with any custom logic beyond that.
+- The surface (`view: GhosttySurfaceView`) is pinned to the container purely via **frame + autoresizing mask**, deliberately **not** AutoLayout constraints:
+```swift
+// TerminalContainerView.swift:90-93
+view.translatesAutoresizingMaskIntoConstraints = true
+view.frame = container.bounds
+view.autoresizingMask = [.width, .height]
+container.addSubview(view)
+```
+The comment (lines 85-89) explains why: a surface is re-homed between containers (split ⟷ solo) while the old container may still be alive mid-transition, and lingering AutoLayout constraints to a stale container previously left the surface at a broken/zero frame (a blank pane, issue #3). So **the surface's frame always == its current container's bounds**, kept in sync automatically by the autoresizing mask on every container resize — there's no independent sizing of the surface from its container today.
+- On every `updateNSView` (SwiftUI re-render), `mount(in:)` runs again (line 55) but is a no-op frame-wise if the surface is already the container's subview: `if view.superview === container { view.frame = container.bounds; view.setVisible(true); return }` (lines 77-81) — i.e. it re-asserts `view.frame = container.bounds` on every update pass regardless of whether it changed.
+
+**No existing "resize the surface without making it the active tab" path.** There is exactly one sizing mechanism (frame == container.bounds, via autoresizing mask) and it is coupled 1:1 to `mount(in:)`/re-homing into *the* container this `TerminalContainerView` instance owns — there's no API to size a surface against an arbitrary rect while it stays parented elsewhere, and no notion of "preview size" distinct from "real pane size" anywhere in this file. A hover-preview that wants to show a live/near-live rendering of a background tab's surface would need either (a) a second, temporary host (e.g. a scratch `NSView`/container the surface is briefly re-homed into — which the re-homing comment says is exactly the risky path that caused the split↔solo blank-pane bug, issue #3), or (b) a snapshot/bitmap approach that doesn't touch `view.frame`/`superview` at all. This file gives no ready-made third option.
+
+**Occlusion note (adjacent, may matter for a live preview):** `TerminalContainerView` intentionally has **no `dismantleNSView`** (comment lines 66-70) — occlusion (whether a background surface renders at all) is centrally driven by the model (`reconcileOcclusion`, referenced but not defined here) and by AppKit's own window-occlusion, not by this view's mount/dismantle. This matters because a background tab's `GhosttySurfaceView` may already be marked non-visible (`setVisible(false)`) precisely because it's not the mounted/focused surface — relevant if a preview wants to read "the current rendered content" of a tab that the occlusion system has paused.
+
+**Focus (`applyFocus`, lines 111-127):** unrelated to sizing — purely first-responder bookkeeping (claim/resign `NSResponder`), gated by `isFocusedPane` and the search-bar-active guard already covered in §2a. No interaction with frame/bounds.
+
+## 4. Every `.onHover` usage in `WorkroomApp/Views` and `WorkroomApp/Core`
+
+The overwhelming majority (≈45 of ~55 hits) are the same one idiom: a private `@State private var hovering = false` (or a differently-named bool) flipped instantly and unconditionally by `.onHover { hovering = $0 }`, driving a hover-wash background/opacity/shadow with a short `.easeInOut(duration: 0.12–0.15)` animation, with **no delay and no debounce on either edge**. That's the established default for "this control lights up on hover." Below, grouped by whether they're the plain idiom or something more elaborate.
+
+**Plain instant hover-wash idiom** (button/row background toggle, no delay either direction) — one line each:
+- `TerminalTabStrip.swift:168-170` — highlights the hovered tab chip (`hoveredTab` state, drives chip fill + divider suppression).
+- `TerminalTabStrip.swift:269` — "+" new-terminal button hover wash (`addHovering`).
+- `TerminalTabStrip.swift:730` — tab close (✕) button hover wash.
+- `TerminalTabStrip.swift:848` — `CloseWorkroomPaneButton` hover (also required for its own `.help` tooltip tracking area to install, per the comment there).
+- `WorkroomTabBar.swift:151` — sibling workroom-tab chip hover (mirrors `TerminalTabStrip`'s).
+- `WorkroomTabBar.swift:416` — `.onHover(perform: onHover)`, a passed-in closure (button-style component).
+- `WorkroomTabBar.swift:707` — a control's hover wash (`hovered`).
+- `PaneTreeView.swift:451` — the pane body itself tracks hover (`hovering`) for its click-to-activate affordance on non-terminal panes.
+- `PaneTreeView.swift:746` — `SplitDivider`: hover doesn't toggle a bool at all, it pushes/pops an `NSCursor` (`resizeLeftRight`/`resizeUpDown`) for the drag handle.
+- `ChangesetDetailView.swift:306` — file-row hover (`hoveredPath`) for row background.
+- `PullRequestPanel.swift:319, 399` — row/button hover washes.
+- `SettingsView.swift:62` — row hover.
+- `NotificationsList.swift:198, 254` — "+"/action hover washes.
+- `ThemePicker.swift:208` — swatch hover.
+- `ProjectSidebar.swift:256,341,403,516,616,638,705,739,767,796,833,861` — twelve separate hover washes across the sidebar's rows/buttons (project rows, add-project button, theme button, etc.) — all the same instant-toggle idiom.
+- `ActivityBar.swift:112,171` — icon hover washes (file header comment at line 12 notes `.onHover` tracking needs the view to sit in a proper NSSplitViewController-hosted hierarchy, not a raw title-bar accessory, "issue #114").
+- `VCSToolbar.swift:344,465` — toolbar button hovers.
+- `ChangesPanel.swift:422,526,671,717` — row/button hovers.
+- `FilesPanel.swift:160` — row hover.
+- `UpdateAvailableButton.swift:36` — button hover.
+- `WorkroomSplitView.swift:561` — hover wash (comment at line 204 notes `ToolbarIconButtonStyle`'s hover well is itself `.onHover`-based, not a gesture).
+- `NewWorkroomDialog.swift:211`, `OpenWorkroomDialog.swift:247` — dialog row hovers.
+- `ToolbarIconButtonStyle.swift:59` — the shared icon-button `ButtonStyle`'s own hover well (used by most title-bar buttons, per its doc comment at line 8, so those buttons don't each need their own `.onHover`).
+- `HistoryPanel.swift:372,642` — commit-row hovers (doc comment at line 523 flags `.onHover` isn't XCUITest-drivable, so the card exposes other queryable state instead).
+- `TabToolbarButton.swift:38` — shared tab-toolbar icon button hover.
+- `SwitcherRailView.swift:276` — rail card hover, routed through the controller rather than straight to state (movement-threshold guard, see §2b).
+
+**Hover with a genuine delay/debounce (the two idioms most relevant to your feature):**
+- `TerminalStatusBar.swift:162-171` — 0.4s reveal delay via `DispatchWorkItem` + `asyncAfter`, instant hide, cancelled/re-armed on every hover flip. Full detail in §2d above. This is the closest existing idiom to "hover, wait a beat, then show a floating detail view."
+- `EdgeRevealSidebar.swift` (whole file) — a hover-driven **reveal** (instant, on entering the toggle button) with a **debounced hide** (180 ms, `Task.sleep(for: hideDelay)`, cancellable, re-checked for "still idle" before committing — `armHide()`/`commitHideIfStillIdle()`, lines 241-249 and `EdgeRevealReducer.commitHideIfStillIdle()` lines 71-76). This is the established pattern for "don't flicker closed when the cursor briefly leaves while crossing a gap between trigger and content" — directly applicable if a hover-preview needs to survive the cursor moving from the tab chip onto the preview panel itself. The reducer is a pure, timer-free state machine (`EdgeRevealReducer`, lines 29-99) that the view wraps with the actual `Task`/animation — worth copying that separation if you want the hover logic unit-testable.
+- `ToastStack.swift` (`ToastView`, lines 173-293) — a related but inverse pattern: hover **pauses an existing auto-dismiss countdown** rather than triggering a reveal. `.onHover { hovering = $0 }` (line 207) plus `.onChange(of: hovering)` (lines 210-216) cancels/re-arms a 5s `Task` (`armDismiss()`, lines 284-293), with a same-race guard (`if Task.isCancelled || hovering { return }`, line 290) mirroring `EdgeRevealSidebar`'s "still idle" check. Relevant if a hover-preview needs a "stays open a moment after the mouse leaves the chip" behavior similar to a tooltip.</result>
+<usage><subagent_tokens>120166</subagent_tokens><tool_uses>29</tool_uses><duration_ms>204026</duration_ms></usage>
+</task-notification>
