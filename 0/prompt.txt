@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bmtwcjo26</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/ad9e5754-d4c8-4063-beb8-947970ea5d8f/tasks/bmtwcjo26.output</output-file>
+<status>completed</status>
+<summary>Background command "Retry: run same 4 tests against v2.0.0-beta.23 baseline" completed (exit code 0)</summary>
+</task-notification>
