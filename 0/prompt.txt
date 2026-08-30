@@ -1,0 +1,48 @@
+<task-notification>
+<task-id>ae104b0e590aef3b3</task-id>
+<tool-use-id>toolu_01M3LGYoYKDBuwVszpK8NofS</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/85057c1d-7a50-422d-a310-af45bba739d0/tasks/ae104b0e590aef3b3.output</output-file>
+<status>completed</status>
+<summary>Agent "Review daemon/socket/security code" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Findings
+
+**[CRITICAL] (confidence: 7/10)** `SessionDaemon.swift:107-110` — lock file is unlinked *after* the flock is released, not before, opening a window where two later daemons can both believe they hold the exclusive lock, leading one of them to unlink the other's live socket.
+
+```swift
+SessionIO.close(listener)
+unlink(socketPath)
+SessionIO.close(lockDescriptor)
+unlink(socketPath + ".lock")
+```
+
+`acquireLock` (`SessionSocket.swift:91-99`) does `open(path, O_CREAT|O_RDWR)` then `flock(LOCK_EX|LOCK_NB)`. Trace: daemon A shuts down, `close(lockDescriptor)` releases the flock on the lock file's inode while the path still exists. If daemon B starts in that window, `open()` reopens the *same* inode and successfully `flock`s it. A then runs `unlink(socketPath + ".lock")`, removing the directory entry — B's fd still references the now-unnamed inode and B is unaffected, but the inode is no longer reachable by path. A fresh daemon C started afterward calls `open(path, O_CREAT, …)` and gets a *brand-new* inode (nothing exists at that path anymore), flocks it uncontested, and now both B and C believe they are the sole daemon. Each independently `unlink`s and rebinds `socketPath` in `makeListener`, so whichever of B/C runs its own idle-timeout `shutdown()` later will `unlink(socketPath)` again — potentially deleting the *other* daemon's live, in-use socket file out from under active clients, which is exactly the "already running detection silently fails / stale socket" failure mode this daemon exists to avoid. Fix: don't unlink the lock file on clean shutdown (let the next starter's `open`+`flock` on the pre-existing path be the source of truth), or at minimum unlink the lock path before releasing the flock so no unlocked-but-named window exists.
+
+**[INFORMATIONAL] (confidence: 5/10)** `SessionDaemon.swift:76-81` — the idle-exit path accepts a final connection then closes the listener/socket without re-checking for a client whose `connect()` landed in the backlog microseconds earlier.
+
+```swift
+if ready == 0 {
+  guard sessions.isEmpty, connections.isEmpty else { continue }
+  acceptConnections()
+  guard connections.isEmpty else { continue }
+  break
+}
+```
+This is a narrow window, not a data-loss bug by itself — `acceptConnections()` drains everything currently queued — but a `connect()` that completes *after* that call and *before* `shutdown()`'s `unlink(socketPath)`/`close(listener)` a few lines later will get `ECONNREFUSED`/ENOENT. Whether this matters depends on `SessionAttachClient`'s retry behavior, which is outside my assigned files. Not blocking on its own.
+
+**[INFORMATIONAL] (confidence: 6/10)** `SessionDaemon.swift:267` — a second `.attach` frame on an already-attached connection is silently dropped with no response frame.
+
+```swift
+guard connection.attachedSession == nil else { return }
+```
+No `.failure` frame is enqueued, so a client that (incorrectly, or due to a bug) sends a duplicate attach on the same connection gets no feedback and could hang waiting for a reply. Low severity since the intended client only attaches once per connection, but worth an explicit failure frame for robustness.
+
+## Verified clean / not a bug
+
+- **Local IPC trust boundary is sound.** Socket directory is `0700` with a symlink check (`PersistentSessionPaths.swift`, out of scope but load-bearing context), `umask(0o077)` is set around `bind()` so the socket file is `0700` from the instant it's created (`SessionSocket.swift:17-23`), followed by an explicit `chmod(path, 0o600)` (ignoring its return value is harmless — the umask already restricted it). On top of the filesystem gate, `acceptConnections` (`SessionDaemon.swift:160-164`) independently verifies `SessionSocket.peerUserID(descriptor) == getuid()` via `LOCAL_PEERCRED`, rejecting cross-user connections even in a misconfigured-permissions scenario. This is layered correctly.
+- **SIGHUP/SIGPIPE inheritance is handled.** `SessionDaemon.swift:34-35` sets `SIG_IGN` for the daemon process, which does propagate across `fork`/`exec` — but `SessionPTY.swift:48-54` explicitly resets `resetSignals` (including `SIGHUP`, `SIGPIPE`) to `SIG_DFL` in the forked child before `execve`, so persisted shells get normal signal disposition. Verified, not a bug.
+- **Concurrency model.** The daemon is single-threaded, `poll()`-driven; all dictionary/array mutation happens synchronously in the run loop with no cross-thread access, so the classic "unsynchronized shared state" pattern doesn't apply here. Connection close is correctly deferred (`closingDescriptors`) and cleaned from the dict before the fd is released, avoiding stale-mapping windows.
+- **`embed-session-helper.sh` is clean.** Every variable expansion is quoted (`"$SOURCE"`, `"$DEST"`, `--sign "$IDENTITY"`), no `eval`/string-built shell invocation, no injection vector.
+- **Shell/command construction (focus area 3) is not assessable from these six files** — `SessionDaemon.swift`'s `create()` delegates to `SessionShellIntegration.invocation(...)`, which lives in `WorkroomSessionProtocol/SessionShellIntegration.swift`, outside my assigned scope.</result>
+<usage><subagent_tokens>106938</subagent_tokens><tool_uses>13</tool_uses><duration_ms>487132</duration_ms></usage>
+</task-notification>
