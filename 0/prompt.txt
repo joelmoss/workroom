@@ -1,0 +1,150 @@
+<task-notification>
+<task-id>a6e3d049d8bef343b</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/c6f345a8-a9f4-4e42-8d6c-45b908cf14fd/tasks/a6e3d049d8bef343b.output</output-file>
+<status>completed</status>
+<summary>Agent "Map detail pane selection state" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Summary
+
+The detail pane has **no `detailSelection` / `selectedFile` / `selectedCommit` state at all**. There is exactly **ONE** source of truth — the *focused tab* per target — and the VCS sidebar's row highlight is a **derived read** of it. The names in your hypothesis list mostly don't exist; the real vocabulary is `TabContent` / `focusedTabByTarget` / `FocusedTabSelection`.
+
+Also note a terminology mismatch: what you call the "VCS sidebar" is the **right inspector column** in this app (`RightInspector`), not the left `SidebarColumn` (which is projects/workrooms/notifications).
+
+---
+
+## 1. The state that drives detail-pane content
+
+**Owner: `TerminalSessions` (`@MainActor final class ... ObservableObject`)**
+`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/TerminalSessions.swift`
+
+| Line | Property | Type |
+|---|---|---|
+| 177 | `@Published private var tabsByTarget` | `[TerminalTarget.ID: [TerminalTab.ID: TerminalTab]]` |
+| 182 | `@Published private var splitByTarget` | `[TerminalTarget.ID: TerminalPaneLayout]` |
+| 184 | `@Published private var focusedTabByTarget` | `[TerminalTarget.ID: TerminalTab.ID]` |
+
+The discriminator is `TerminalTab.content: TabContent` (`TerminalSessions.swift:16`), a closed 4-case enum at `TerminalSessions.swift:101`:
+
+```swift
+enum TabContent {
+  case terminal(TerminalState)
+  case diff(DiffDescriptor)
+  case file(FileDescriptor)
+  case changeset(ChangesetDescriptor)
+}
+```
+
+Payload types:
+- `DiffDescriptor` — `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/DiffDescriptor.swift:25` (`path`, `change`, `source: DiffSource`, `isPreview`). `DiffSource` is at `DiffDescriptor.swift:14`: `.gitWorktree | .jjWorkingCopy | .jjParent | .commit(String)`.
+- `ChangesetDescriptor` — `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/ChangesetDescriptor.swift:7` (`commitID`, `title`, `isPreview`, `selectedPath`).
+- `FileDescriptor` — search `Core/` for `struct FileDescriptor` (mirrors the above: `path`, `isPreview`).
+- All three conform to `protocol ContentDescriptor` (`TerminalSessions.swift:129`) which is what lets one opener serve all kinds.
+
+**The single switch that picks the viewer** is `PaneLeafView.paneContent`:
+`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/PaneTreeView.swift:478-556`
+
+- `:479` `switch content` (`PaneLeafView.content: TabContent`, declared `PaneTreeView.swift:349`)
+- `:480` `.terminal` → `TerminalContainerView` + `TerminalSearchBar` + `TerminalStatusBar` (`:492`)
+- `:507` `.diff` → `DiffViewer(descriptor:directory:projectRoot:viewModeOverride:)` (`:511`)
+- `:523` `.file` → `PlainFileViewer(descriptor:directory:isFocused:previewOverride:find:)` (`:526`)
+- `:538` `.changeset` → `ChangesetDetailView(descriptor:directory:tabID:target:)` (`:542`)
+
+### Render chain (top → bottom)
+
+```
+RootView.body                            Views/RootView.swift:54
+  └ splitView (hand-rolled HStack)       :119   [SidebarColumn | detail | InspectorColumn | ActivityBar]
+      └ detail                           :497
+          └ detailContent                :587   branches on store.creation / store.selectedTarget
+              └ workroomSplitBody        :648   → WorkroomSplitView(layout: store.visibleWorkroomLayout(for:))
+                  └ WorkroomSplitView    Views/WorkroomSplitView.swift:225 → TargetTerminalDetail(target:surfaceActive:)
+                      └ TargetTerminalDetail  Views/TargetTerminalDetail.swift:28 → WorkroomTerminalsView
+                          └ WorkroomTerminalsView  Views/WorkroomTerminalsView.swift:28
+                                 let active = sessions.activeTab(for: target)   :29
+                                 PaneTreeView(layout: contentLayout(active:))   :40, layout fn at :138
+                              └ PaneTreeView  Views/PaneTreeView.swift:46
+                                     let focusedID = sessions.focusedTab(for: target)?.id   :47
+                                     ForEach(layout.tabIDs) { sessions.tab(tabID, for: target) }  :52-53
+                                  └ PaneLeafView(content: tab.content, ...)     :54-56
+                                        └ paneContent switch                    :478
+```
+
+Key accessors on `TerminalSessions`: `focusedTab(for:)` `:340`, `activeTab(for:)` (alias) `:347`, `isSplitVisible(for:)` `:350`, `tab(_:for:)` `:326`.
+
+There are **two nesting levels** of "detail": the *window* detail picks a workroom (`AppStore.selectedTargetID`), and inside a workroom the pane tree picks a tab. `WorkroomTerminalsView.contentLayout(active:)` (`:138`) resolves solo-vs-split; everything routes through `PaneTreeView` even for a single leaf, deliberately (comment at `WorkroomTerminalsView.swift:36-39` — avoids re-parenting the Metal surface).
+
+---
+
+## 2. How VCS sidebar selection propagates to the detail pane
+
+**Write path (sidebar → detail): the sidebar calls an `AppStore.open*` method; nothing "selects".**
+
+`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/AppStore.swift`
+
+| Line | Method | Delegates to |
+|---|---|---|
+| 3454 | `openDiffPreview(_ file: ChangedFile, source: DiffSource)` | `terminals.openDiffPreview(DiffDescriptor(...isPreview: true), for:)` |
+| 3463 | `openDiffPersistent(_:source:)` | `terminals.openDiffPersistent(...)` |
+| 3472 | `openFilePreview(path:)` | `terminals.openFilePreview(FileDescriptor(...))` |
+| 3479 | `openFilePersistent(path:)` | `terminals.openFilePersistent(...)` |
+| 3487 | `openChangesetPreview(commitID:title:)` | `terminals.openContentPreview(ChangesetDescriptor(...))` + `recordCurrentLocation()` |
+| 3498 | `openChangesetPersistent(commitID:title:)` | `terminals.openContentPersistent(...)` |
+| 3509 | `selectChangesetFile(_:tab:in:)` | `terminals.setChangesetSelectedPath(...)` |
+| 3559 | `openChangedFileInApp(_:)` | `openFilePreview(path:)` |
+
+Sidebar call sites:
+- **Changes panel** — `Views/ChangesPanel.swift:535` `store.openDiffPersistent(file, source: source)` (quick 2nd click), `:538` `store.openDiffPreview(file, source: source)`. `source` comes from the group the row is under: `fileList(status.changedFiles ?? [], source: .gitWorktree)` at `:786` and `fileList(workingCopy.files, source: .jjWorkingCopy)` at `:802`.
+- **History panel** — `Views/HistoryPanel.swift:155-163`, the `open:` closure passed into `HistoryRow`: `store.openChangesetPersistent(...)` / `store.openChangesetPreview(...)`.
+- **Files panel** — `Views/FilesPanel.swift:160/163`.
+
+Inside `TerminalSessions`, the one generic opener is `openContentPreview&lt;D: ContentDescriptor&gt;` (`TerminalSessions.swift:400`) with VS-Code preview semantics documented as invariants A/B/C at `:384-388`:
+1. exact content already open → `focus(existing, for:)` (`:410`)
+2. else retarget the lone preview tab **in place**, same `TerminalTab.ID` (`:414-418`)
+3. else insert a new preview tab + `setFocused` (`:420-423`)
+
+Persist sibling: `openContentPersistent` `:426`. Focus write funnels through the single private `setFocused(_:for:notify:)` at `:815`, which fires `onFocusChange` for nav history.
+
+**Read path (detail → sidebar highlight): `FocusedTabSelection`.**
+`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/FocusedTabSelection.swift`
+
+- `:18` `enum FocusedTabSelection: Equatable { case changeset(commitID:), diff(path:source:), file(path:) }`
+- `:33` `static func current(store: AppStore, sessions: TerminalSessions) -&gt; FocusedTabSelection?` — walks `store.selectedTarget` → `sessions.focusedTab(for:)` → `tab.content`; returns `nil` for `.terminal`.
+- `:51` `var changesetCommitID: String?`
+- `:59` `func selectsChangedFile(path:source:) -&gt; Bool`
+
+Observers:
+- `Views/ChangesPanel.swift:886` — `let selection = FocusedTabSelection.current(store: store, sessions: sessions)` resolved **once per panel body pass** in `fileList(_:source:)` (`:882`), passed down as a plain value to `ChangedFileRow.selection` (`:444`); row highlight at `ChangesPanel.swift:605` `selection?.selectsChangedFile(path:source:)`.
+- `Views/HistoryPanel.swift:99` — `private var selectedCommitID: String? { FocusedTabSelection.current(...)?.changesetCommitID }`, handed to `HistoryRow.selectedCommitID` (`:242`); `isSelected` at `:473`.
+- `FilesPanel` has **no** selection highlight (grep for `isSelected` returns nothing).
+
+This indirection exists specifically to fix an App Hang: the doc comment at `FocusedTabSelection.swift:5-16` explains that rows used to each hold `@EnvironmentObject AppStore` + `@ObservedObject TerminalSessions`, so every terminal title/OSC-progress publish invalidated every row (`WORKROOM-2B`, ≥2000 ms in `HistoryRow.body`). Both row types are now `Equatable` with hand-written `==` (`HistoryPanel.swift:126`, `ChangesPanel.swift:614`) comparing the *derived* `isSelected`, plus a `themeGeneration: Int` tiebreaker because token reads sit inside ternaries and register no Observation dependency when unselected/unhovered.
+
+---
+
+## 3. ONE piece of state or TWO?
+
+**ONE**, for sidebar-row selection vs detail-pane content. There is no `selectedFile`, no `selectedCommit`, no `detailSelection` anywhere in the app. The sidebar row's selected-ness is a pure projection of `TerminalSessions.focusedTabByTarget[target] → tabsByTarget[target][id].content` through `FocusedTabSelection.current`. You cannot desynchronise them, and there is no "sidebar selection" to clear.
+
+Things that *are* separate, independent state (and worth not confusing with the above):
+
+1. **Which sidebar panel is shown** — `AppStore.activeInspectorSection: ActivitySection` (`AppStore.swift:439`, `@Published`, persisted to `Defaults[.activeInspectorSection]` in `didSet`). `ActivitySection` is only `.changes | .files` (`Core/ActivitySection.swift:15-19`); `.changes.subSections == [.changes, .history, .pullRequest]` (`:42-47`). Read by `RightInspector.body` at `Views/ChangesPanel.swift:25`. Pane visibility is a *third*, separate flag: `Defaults[.showInspector]` via `AppStore.inspectorIsVisible` (`AppStore.swift:474`). Reduced by the pure `ActivityBarReducer` (`Core/ActivityBarReducer.swift:15`) with three distinct actions. Collapse flags are yet more separate state: `changesSectionCollapsed` `:321`, `prSectionCollapsed` `:328`, `historySectionCollapsed` `:333`, plus `inspectorSizeWeights: [Double]` `:432`.
+2. **Which workroom the detail pane shows** — `AppStore.selectedTargetID: SidebarID?` (`AppStore.swift:156`, `@Published`, big `didSet`). Orthogonal to which tab is focused within it; the inspector follows `inspectorTargetID` (`:1013`) which is `selectionHasTabs ? selectedTargetID : nil`.
+3. **The file selected *inside* a changeset tab** — `ChangesetDescriptor.selectedPath` (`ChangesetDescriptor.swift:22`), stored **on the tab**, not on the sidebar. `ChangesetDetailView.selectedPath` (`Views/ChangesetDetailView.swift:28`) reads the descriptor and falls back to `changeset.files.first?.path`; the tap routes through `store.selectChangesetFile` (`ChangesetDetailView.swift:311`) → `terminals.setChangesetSelectedPath` (`TerminalSessions.swift:518`), explicitly *not* view-local `@State` (comment at `ChangesetDetailView.swift:11-13`) so back/forward can restore it. Its inner diff is a `DiffViewer` with a synthesized `DiffSource.commit(descriptor.commitID)` (`ChangesetDetailView.swift:358-361`).
+4. **Per-tab view overrides** — `TerminalTab.diffViewModeOverride: DiffViewMode?` (`TerminalSessions.swift:22`) and `markdownPreviewOverride: Bool?` (`:27`), set by the tab toolbar, read at `PaneTreeView.swift:514` / `:528`.
+
+### Back/forward history is the one place that *duplicates* the selection
+
+`Core/NavigationHistory.swift:7` `struct NavLocation { target: SidebarID; tab: TerminalTab.ID; commitID: String?; commitTitle: String?; filePath: String? }`. The `commitID`/`filePath` fields are a **snapshot copy**, needed because a *preview* tab is retargeted in place across commits (same `TerminalTab.ID`), so `(target, tab)` alone is not a stable location. Built by `AppStore.location(target:tab:)` (`AppStore.swift:3671`), recorded by `recordCurrentLocation()` (`:3660`), replayed by `applyLocation(_:recordHistory:)` (`:3721`) which re-opens the recorded commit when the focused tab has drifted (`:3727-3739`). Guarded throughout by `isNavigatingHistory`.
+
+---
+
+## Names that do NOT exist in this codebase
+
+`detailSelection`, `selectedFile`, `selectedCommit`, `ContentView`, `DetailView`, `InspectorView`, `WorkroomDetail`. (`selectedFiles` at `Views/CommitSheet.swift:78` is unrelated — commit-sheet checkboxes. `selectedCommitID` at `HistoryPanel.swift:99/242` is the derived value described above, not stored state.)
+
+## Tests that pin this behaviour
+
+`WorkroomAppTests/SelectionTests.swift`, `FocusedTabSelectionTests.swift`, `TabContentFilePathTests.swift`, `NavigationHistoryTests.swift`, `AppStoreNavigationTests.swift`, `HistoryRowInvalidationTests.swift`, `ChangedFileRowInvalidationTests.swift`, `PaneRenderingTests.swift`, `ActivityBarReducerTests.swift`, `InspectorPanePolicyTests.swift`, `HistoryCommitCardTests.swift`, `ChangedFileOpenTests.swift` — plus UI tests `WorkroomAppUITests/ChangesetDetailUITests.swift`, `HistoryPushStateUITests.swift`, `DiffPaneFocusUITests.swift`.</result>
+<usage><subagent_tokens>109452</subagent_tokens><tool_uses>44</tool_uses><duration_ms>241183</duration_ms></usage>
+</task-notification>
