@@ -1,0 +1,1 @@
+these two button should have the same hover and hit area
