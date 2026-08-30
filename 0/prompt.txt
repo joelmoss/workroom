@@ -1,0 +1,930 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/AppStore+WorkroomStatus.swift
+  - macapp/WorkroomApp/Core/AppStore.swift
+  - macapp/WorkroomApp/Core/CommitDraft.swift
+  - macapp/WorkroomApp/Core/ProjectStore.swift
+  - macapp/WorkroomApp/Core/VCSWriting.swift
+  - macapp/WorkroomApp/Views/ChangesPanel.swift
+  - macapp/WorkroomApp/Views/CommitSheet.swift
+  - macapp/WorkroomAppTests/CommitDraftTests.swift
+  - macapp/WorkroomAppTests/VCSCommitIntegrationTests.swift
+  - macapp/WorkroomAppTests/VCSWritingTests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/AppStore+WorkroomStatus.swift ===
+@@ -67,9 +67,10 @@ extension AppStore {
+       // storm) — even on `force`. Its status is refreshed once, post-setup, by `createWorkroom`.
+       // Covers this window's create AND another window's, since `creatingWorkrooms` is shared.
+       if isCreating(item.sid) { return false }
+-      // Nor one whose commit is in flight — see `isCommitting`. Also honoured on `force`, because a
+-      // manual Refresh during a long hook would race the write just as readily as the timer does.
+-      if isCommitting(item.sid) { return false }
++      // Nor one whose PROJECT has a commit in flight — see `isCommittingProject`. Also honoured on
++      // `force`, because a manual Refresh during a long hook races the write just as readily as the
++      // timer does.
++      if isCommittingProject(item.projectRoot) { return false }
+       guard !force else { return true }
+       guard let checked = workroomStatuses[item.sid]?.lastChecked else { return true }
+       return now.timeIntervalSince(checked) >= localTTL
+@@ -126,7 +127,9 @@ extension AppStore {
+     // suppressed above; this skips the debounced local+CI probe too. Re-armed post-setup by
+     // `createWorkroom` calling this again once `creatingWorkrooms` no longer holds the id.
+     if isCreating(sid) { return }
+-    if isCommitting(sid) { return }
++    // By project root, not by row: a git worktree's index and refs live in the MAIN repo, so probing
++    // workroom B while workroom A of the same project commits contends on the same `index.lock`.
++    if isCommittingProject(item.projectRoot) { return }
+     let resolver = statusResolver
+     selectionStatusTask = Task { [weak self] in
+       try? await Task.sleep(nanoseconds: UInt64(Self.selectionDebounce * 1_000_000_000))
+@@ -234,29 +237,37 @@ extension AppStore {
+     guard let item = selectedStatusWorkItem(for: sid) else {
+       return completion(.failed(.other("That workroom is no longer available.")))
+     }
+-    // Fixture mode answers from `FixtureVCSWriter` rather than spawning git or jj — the fixture paths
+-    // aren't real repos, so a live write would only ever fail. Same construction the seeded
+-    // `RemoteStateModel` uses (`AppStore.swift`'s `makeWriter:`).
+-    if UITestFixture.isActive {
+-      let writer = FixtureVCSWriter()
+-      Task {
+-        completion(
+-          await writer.commit(path: item.path, projectRoot: item.projectRoot, request: request))
+-      }
+-      return
+-    }
++    // Fixture mode swaps the WRITER — `FixtureVCSWriter` rather than spawning git or jj, since the
++    // fixture paths aren't real repos and a live write would only ever fail. Only the writer: taking
++    // an early return here instead skipped the whole store-side lane (the in-flight marks, the
++    // captured-sid refresh), so the one tier that drives this code end to end exercised none of it.
++    // `refreshStatus(for:)` already no-ops under the fixture, so the rest is safe to run.
++    let root = item.projectRoot
+     committingTargets.insert(sid)
++    committingProjectRoots[root, default: 0] += 1
+     Task { [weak self] in
+       let result: VCSCommitResult
+-      do {
+-        let writer = try VCS.writer(for: URL(fileURLWithPath: item.path, isDirectory: true))
+-        result = await writer.commit(
+-          path: item.path, projectRoot: item.projectRoot, request: request)
+-      } catch {
+-        result = .failed(.other("\(error)"))
++      if UITestFixture.isActive {
++        result = await FixtureVCSWriter().commit(
++          path: item.path, projectRoot: root, request: request)
++      } else {
++        do {
++          let writer = try VCS.writer(for: URL(fileURLWithPath: item.path, isDirectory: true))
++          result = await writer.commit(path: item.path, projectRoot: root, request: request)
++        } catch {
++          result = .failed(.other("\(error)"))
++        }
+       }
+       guard let self else { return }
+       self.committingTargets.remove(sid)
++      // Decremented, never cleared: a sibling workroom of the same project can be committing too, and
++      // dropping the key would re-open every read lane against a write still in progress.
++      let remaining = (self.committingProjectRoots[root] ?? 1) - 1
++      if remaining > 0 {
++        self.committingProjectRoots[root] = remaining
++      } else {
++        self.committingProjectRoots.removeValue(forKey: root)
++      }
+       switch result {
+       case .ok, .committedThenFailed:
+         // Refresh by the CAPTURED sid. The Changes list is the load-bearing one for jj:
+@@ -617,6 +628,16 @@ extension AppStore {
+   /// probe landing mid-commit shows a state that never really existed.
+   func isCommitting(_ sid: SidebarID) -> Bool { committingTargets.contains(sid) }
+ 
++  /// Whether ANY workroom of this project has a commit in flight.
++  ///
++  /// The question every read lane has to ask, rather than `isCommitting(sid)`. `JJSnapshotGate`
++  /// serializes on the project root, and its `maxChainWait` self-heal (30s) is far shorter than
++  /// `commitTimeout` (600s) — so a probe queued behind a slow hook stops waiting and runs anyway.
++  /// Suppression is what actually keeps these lanes off a repo mid-write; the gate alone does not.
++  func isCommittingProject(_ projectRoot: String) -> Bool {
++    committingProjectRoots[projectRoot, default: 0] > 0
++  }
++
+   /// Re-probe ONE row's local status, named explicitly.
+   ///
+   /// `scheduleSelectedStatusRefresh` cannot serve a commit: it derives its target from the LIVE
+@@ -662,11 +683,12 @@ extension AppStore {
+     // (updateSelectedWorkroomWatch stops it), but a stray in-flight FSEvents callback can land during
+     // the stop transition — bail so it can't fork a probe against the tree the setup script is writing.
+     if isCreating(sid) { return }
+-    // Same for a commit in flight. This lane is the one that would fire MOST during a git commit: the
+-    // `.jj/` filter below saves jj from self-triggering, but git's own index and ref churn is
+-    // deliberately let through as real signal, so `git add`/`git commit` would each fork a probe
+-    // against a tree mid-write.
+-    if isCommitting(sid) { return }
++    // Same for a commit in flight, keyed by project root — a git worktree's index lives in the main
++    // repo, so a sibling workroom's commit churns the very files this probe reads. This lane is the
++    // one that would fire MOST during a git commit: the `.jj/` filter below saves jj from
++    // self-triggering, but git's own index and ref churn is deliberately let through as real signal,
++    // so `git add`/`git commit` would each fork a probe against a tree mid-write.
++    if isCommittingProject(item.projectRoot) { return }
+     // A jj *local* probe snapshots `@` (writes under `.jj/`), which would itself trip the watcher —
+     // an endless refresh loop. So ignore a burst that touched ONLY jj-internal paths. (git probes are
+     // read-only, and `.git/index` changes from `git add` are real signal, so git events pass through.)
+
+
+=== DIFF: macapp/WorkroomApp/Core/AppStore.swift ===
+@@ -298,9 +298,19 @@ final class AppStore: ObservableObject {
+   @Published var pendingCommit: PendingCommit?
+ 
+   /// Rows with a commit in flight. A `Set` rather than a `Bool` because the app's premise is N
+-  /// parallel workrooms: a single flag would let a commit in one disable the button in another, and
+-  /// `AppStore` is per window so even that would only half-work. Read by `isCommitting`.
+-  @Published var committingTargets: Set<SidebarID> = []
++  /// parallel workrooms: a single flag would let a commit in one disable the button in another.
++  /// Read by `isCommitting`. Lives on the shared `ProjectStore` — see its doc for why per-window
++  /// was wrong.
++  var committingTargets: Set<SidebarID> {
++    get { projectStore.committingTargets }
++    set { projectStore.committingTargets = newValue }
++  }
++
++  /// In-flight commit counts per project root, which is the granularity the status lanes must respect.
++  var committingProjectRoots: [String: Int] {
++    get { projectStore.committingProjectRoots }
++    set { projectStore.committingProjectRoots = newValue }
++  }
+ 
+   // Inspector section collapse (issue #24). Held on the store rather than as `@Default` in the
+   // inspector view: the `.inspector` content doesn't observe `@Default` changes, but it DOES observe
+
+
+=== DIFF: macapp/WorkroomApp/Core/CommitDraft.swift ===
+@@ -82,6 +82,35 @@ enum CommitDraft {
+     vcs: String, summary: String, selectedCount: Int, totalCount: Int, conflicted: Bool,
+     sequencer: String?
+   ) -> String? {
++    if let reason = repoStateBlockedReason(conflicted: conflicted, sequencer: sequencer) {
++      return reason
++    }
++    if totalCount == 0 && vcs != "jj" {
++      return "Nothing has changed in this workroom yet."
++    }
++    if vcs != "jj" && selectedCount == 0 {
++      return "Select at least one file to commit."
++    }
++    return summaryBlockedReason(summary)
++  }
++
++  /// Why the message-only verb — git's Amend, jj's Describe — is unavailable.
++  ///
++  /// The repo-state and summary rules, and deliberately NOT the file-count ones: both verbs rewrite a
++  /// message and take no pathspec, so "select at least one file" is not a precondition for either.
++  /// Sharing the rest is the point. The button used to enforce only its own summary check, which left
++  /// it live over unresolved conflicts that the primary refused and the engine then rejected anyway —
++  /// and it trimmed a different character set, so a summary of one newline blocked Commit while Amend
++  /// would rewrite the last commit's message with it.
++  static func messageOnlyBlockedReason(
++    summary: String, conflicted: Bool, sequencer: String?
++  ) -> String? {
++    repoStateBlockedReason(conflicted: conflicted, sequencer: sequencer)
++      ?? summaryBlockedReason(summary)
++  }
++
++  /// The states of the repo itself that stop any commit verb, shared by both rules above.
++  static func repoStateBlockedReason(conflicted: Bool, sequencer: String?) -> String? {
+     if let sequencer {
+       return "A \(sequencer) is in progress. Finish it in the terminal before committing."
+     }
+@@ -91,15 +120,12 @@ enum CommitDraft {
+     if conflicted {
+       return "Some files still have unresolved conflicts. Resolve them first."
+     }
+-    if totalCount == 0 && vcs != "jj" {
+-      return "Nothing has changed in this workroom yet."
+-    }
+-    if vcs != "jj" && selectedCount == 0 {
+-      return "Select at least one file to commit."
+-    }
+-    if summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+-      return "Write a summary to describe this change."
+-    }
+     return nil
+   }
++
++  /// One trimming rule for every verb, so two buttons can never disagree about what "empty" means.
++  static func summaryBlockedReason(_ summary: String) -> String? {
++    summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
++      ? "Write a summary to describe this change." : nil
++  }
+ }
+
+
+=== DIFF: macapp/WorkroomApp/Core/ProjectStore.swift ===
+@@ -47,6 +47,24 @@ final class ProjectStore: ObservableObject {
+   /// creating one.
+   @Published var creatingWorkrooms: Set<TerminalTarget.ID> = []
+ 
++  /// Sidebar rows with a commit in flight, for the per-row button state.
++  ///
++  /// Shared across windows for the reason `creatingWorkrooms` is: `AppStore` is per WINDOW, but
++  /// `JJSnapshotGate` and the `index.lock` contention it exists to prevent are per PROCESS. Held on
++  /// the window's own store, a second window's 15s sweep, FSEvents lane and Refresh button all saw an
++  /// empty set and kept probing a repo mid-write.
++  @Published var committingTargets: Set<SidebarID> = []
++
++  /// How many commits are in flight against each project root, which is what the read lanes actually
++  /// have to stand clear of.
++  ///
++  /// Keyed by project root, not by row: the gate serializes on the project root, and a git worktree's
++  /// index and refs live in the MAIN repo — so a commit in workroom A contends with a status probe of
++  /// workroom B of the same project, which a per-row check waved straight through. Counted rather than
++  /// a `Set` because the app's premise is N parallel workrooms, so two of one project can legitimately
++  /// commit at once and the first to finish must not clear the other's suppression.
++  @Published var committingProjectRoots: [String: Int] = [:]
++
+   /// Target ids of workrooms with an in-flight optimistic deletion — dropped from the sidebar but
+   /// their teardown (worktree/config removal) not yet finished. `AppStore.apply` filters these out of
+   /// every incoming CLI `list`, so a stale snapshot taken before the teardown persisted can't
+
+
+=== DIFF: macapp/WorkroomApp/Core/VCSWriting.swift ===
+@@ -552,20 +552,51 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+     return out
+   }
+ 
+-  /// Make untracked selections known to git so `--only` can commit them.
++  /// The same payload, from paths that are already just paths.
++  ///
++  /// Used by the intent-to-add step, which must send **only the new side** of a rename. The old side
++  /// no longer exists on disk, and `git add` rejects a pathspec matching nothing — `fatal: pathspec
++  /// ':(literal)old.txt' did not match any files` — which would fail the whole commit at the step
++  /// meant to make it possible. `commit --only` is the opposite: it needs both sides, so the two
++  /// steps deliberately do not share a payload.
++  static func gitPathspecPayload(literalPaths: [String]) -> Data {
++    var seen = Set<String>()
++    var out = Data()
++    for path in literalPaths where !path.isEmpty {
++      guard seen.insert(path).inserted else { continue }
++      out.append(contentsOf: Array(":(literal)\(path)".utf8))
++      out.append(0)
++    }
++    return out
++  }
++
++  /// Make selections git may not know about committable — see `pathsGitMayNotKnow`.
+   ///
+   /// `git commit --only` refuses a path git has never seen — measured: `error: pathspec
+   /// 'untracked.txt' did not match any file(s) known to git`. `--intent-to-add` records an empty
+   /// entry, which is enough for `--only` to then take the file's real contents (verified).
+   ///
+-  /// This is the **only** index mutation the commit path performs, and only for files that were
+-  /// untracked, so a failed commit can leave nothing worse than an intent-to-add marker the user
+-  /// clears with `git reset`. Tracked files are never staged — see `gitCommitOnlyArgs`.
++  /// This is the **only** index mutation the commit path performs, and it is undone by
++  /// `gitUnstageArgs` when the commit that follows it fails. Tracked files are never staged — see
++  /// `gitCommitOnlyArgs`.
+   static func gitIntentToAddArgs() -> [String] {
+     WorkroomStatusResolver.gitHardening
+       + ["add", "--intent-to-add", "--pathspec-from-file=-", "--pathspec-file-nul"]
+   }
+ 
++  /// Undo `gitIntentToAddArgs` for paths that were untracked, after a failed commit.
++  ///
++  /// `--cached` so only the index entry goes and the file itself is untouched — it returns to being
++  /// untracked, exactly as the user left it. `--ignore-unmatch` so a path something else removed in
++  /// the meantime cannot turn cleanup into a second error on top of the one being reported.
++  static func gitUnstageArgs() -> [String] {
++    WorkroomStatusResolver.gitHardening
++      + [
++        "rm", "--cached", "--quiet", "--ignore-unmatch", "--pathspec-from-file=-",
++        "--pathspec-file-nul",
++      ]
++  }
++
+   /// Commit exactly the selection, from the WORKTREE, without touching the index for tracked paths.
+   ///
+   /// `--only` is the whole point and was chosen on measurement: with a pre-staged `other.txt` and a
+@@ -802,14 +833,19 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+   /// exits 0**, so the UI would report a commit that recorded nothing. Since partial selection is not
+   /// offered for jj (it would need `jj split`), the parameter would carry all that risk to buy
+   /// nothing at all.
++  /// The message rides ATTACHED (`--message=…`), never as a detached `-m` value: jj's parser reads a
++  /// detached value that begins with `-` as another flag, so `-m "-fix the parser"` dies with
++  /// `error: unexpected argument '-f' found` where the attached form records it verbatim (measured,
++  /// jj 0.43). git tolerates the detached form, but this side has no `--` to fall back on, so the
++  /// option boundary has to live in the argument itself.
+   static func jjCommitArgs(message: String) -> [String] {
+-    ["commit", "-m", message] + jjWriteFlags
++    ["commit", "--message=\(message)"] + jjWriteFlags
+   }
+ 
+   /// Set `@`'s description and stay on it. Not an amend and not a commit — the third jj verb, which
+-  /// git has no equivalent of.
++  /// git has no equivalent of. Attached `--message=` for the reason `jjCommitArgs` records.
+   static func jjDescribeArgs(message: String) -> [String] {
+-    ["describe", "-m", message] + jjWriteFlags
++    ["describe", "--message=\(message)"] + jjWriteFlags
+   }
+ 
+   /// `@`'s full description, for prefilling the dialog.
+@@ -1066,11 +1102,26 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+     "empty ident name", "no email was given",
+   ]
+ 
++  /// git's phrasings, matched only on the FAILURE path — see `classifyCommit`. jj's exit-zero no-op
++  /// is not in here on purpose; it needs the whole-line check below.
+   static let commitNothingMarkers = [
+     "nothing to commit", "no changes added to commit", "nothing added to commit",
+-    "Nothing changed.",
+   ]
+ 
++  /// jj's no-op marker, as a whole line rather than a substring.
++  ///
++  /// jj echoes the change's description back in its `Working copy (@) now at:` and `Parent commit
++  /// (@-)` lines, so a `contains` here would fire on any commit whose own message happened to carry
++  /// the phrase — reporting a successful write as a no-op.
++  /// Both streams are checked. jj 0.43 writes this (and everything else) to stderr, but the whole-line
++  /// anchor is what makes the match safe, not the choice of stream — so covering stdout too costs
++  /// nothing and survives jj moving it.
++  static func saysNothingChanged(_ result: CommandResult) -> Bool {
++    let lines = (result.stderr + "\n" + result.stdout).split(
++      separator: "\n", omittingEmptySubsequences: false)
++    return lines.contains { $0.trimmingCharacters(in: .whitespaces) == "Nothing changed." }
++  }
++
+   static let commitUnmergedMarkers = [
+     "you have unmerged files", "Committing is not possible because you have unmerged files",
+     "needs merge",
+@@ -1094,13 +1145,24 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+   /// perfectly good commit behind a non-zero exit.
+   static func classifyCommit(_ result: CommandResult, tool: String) -> VCSCommitFailure? {
+     if result.exitCode == CommandResult.commandNotFound { return .toolMissing(tool) }
+-    let err = result.stderr + "\n" + result.stdout
+-    // jj says "Nothing changed." and exits ZERO, so this is checked before the success guard — an
+-    // untouched working copy must not be reported as a commit that happened.
+-    if commitNothingMarkers.contains(where: err.contains) { return .nothingToCommit }
++    // jj says "Nothing changed." and exits ZERO, so its no-op has to be read BEFORE the success
++    // guard — an untouched working copy must not be reported as a commit that happened.
++    //
++    // Scoped to jj, matched on a whole stderr line, and never against stdout. All three matter:
++    // `git commit` echoes the SUBJECT on stdout, so the substring form this replaces classified
++    // `-m "explain the nothing to commit error"` — a commit that succeeded, exit 0 — as a failure,
++    // and `commit()` then upgraded it to `.committedThenFailed` because the ref had legitimately
++    // moved. The dialog told the user their commit had half-worked when it was perfect. jj puts
++    // everything on stderr including its own echo of the description (`Parent commit (@-) … <msg>`),
++    // hence the whole-line anchor rather than `contains`. Measured on git 2.55 / jj 0.43.
++    if tool == "jj", result.ok, saysNothingChanged(result) { return .nothingToCommit }
+     if result.timedOut { return .timedOut }
+     guard !result.ok else { return nil }
+ 
++    // Only now, on a genuine failure, is matching the combined output safe: git's own
++    // "nothing to commit, working tree clean" goes to stdout with a non-zero exit.
++    let err = result.stderr + "\n" + result.stdout
++    if commitNothingMarkers.contains(where: err.contains) { return .nothingToCommit }
+     if commitIdentityMarkers.contains(where: err.contains) { return .identityMissing(err) }
+     if commitSigningMarkers.contains(where: err.contains) { return .signingFailed(err) }
+     if commitUnmergedMarkers.contains(where: err.contains) { return .unmergedFiles(err) }
+@@ -1267,9 +1329,9 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+   /// `+timeout` and `ProcessTree.killTree`s at `+timeout+2`, so the process is genuinely gone and its
+   /// locks genuinely released. Hence the runner's own timeout with no outer `withTimeout` — this looks
+   /// like a violation of that doc and isn't.
+-  private func gated(
+-    _ projectRoot: String, _ body: @Sendable @escaping () async -> CommandResult
+-  ) async -> CommandResult? {
++  private func gated<T: Sendable>(
++    _ projectRoot: String, _ body: @Sendable @escaping () async -> T
++  ) async -> T? {
+     try? await gate.run(projectRoot: projectRoot, body)
+   }
+ 
+@@ -1558,17 +1620,24 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+       return .failed(.sequencerInProgress(sequencer))
+     }
+ 
+-    let before = await currentRevision(path: path)
+-
+     // ONE gate acquisition for the whole operation, not one per command. Two would let the 15s
+     // status sweep, the FSEvents lane and DiffResolver interleave between the intent-to-add and the
+     // commit — contending on `index.lock` and, for jj, snapshotting `@` out from under a write.
++    //
++    // `before` is read INSIDE the gate, not before acquiring it. Outside, anything that moves the ref
++    // while this call waits its turn — a queued status snapshot (which rewrites `@` for jj, so the op
++    // head moves on every one), another window, the user's own terminal during a slow hook — would
++    // make the before/after comparison below read a ref that moved for someone else's reason. A
++    // commit that genuinely failed would then be reported as `.committedThenFailed`, whose copy tells
++    // the user their work is saved and not to commit again. It would not be.
+     let outcome = await gated(
+       projectRoot,
+       { [self] in
+-        await runCommitSequence(request, in: path)
++        let before = await currentRevision(path: path)
++        return CommitAttempt(before: before, result: await runCommitSequence(request, in: path))
+       })
+-    guard let result = outcome else { return .failed(.other("commit was cancelled")) }
++    guard let attempt = outcome else { return .failed(.other("commit was cancelled")) }
++    let (before, result) = (attempt.before, attempt.result)
+ 
+     if let failure = Self.classifyCommit(result, tool: vcs) {
+       // The command failed, but did the ref move anyway? A `post-commit` hook runs AFTER git has
+@@ -1585,10 +1654,16 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+     return .ok(summary: Self.commitSummary(request.mode, vcs: vcs), revision: after)
+   }
+ 
++  /// A commit's ref reading and its outcome, captured together inside one gate acquisition.
++  private struct CommitAttempt: Sendable {
++    let before: String?
++    let result: CommandResult
++  }
++
+   /// The commands, in order, inside the caller's single gate acquisition.
+   ///
+   /// Returns the FIRST failing result, so the caller classifies whichever step broke. The
+-  /// intent-to-add step only runs when the selection actually contains untracked files, so the
++  /// intent-to-add step only runs when the selection actually contains paths git may not know, so the
+   /// common case is one process.
+   private func runCommitSequence(_ request: VCSCommitRequest, in path: String) async
+     -> CommandResult
+@@ -1607,16 +1682,64 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+         timeout: commitTimeout)
+     }
+ 
+-    let untracked = request.files.filter { $0.change == .untracked }
+-    if !untracked.isEmpty {
++    // New sides only — see `gitPathspecPayload(literalPaths:)`.
++    let unknown = Self.pathsGitMayNotKnow(in: request.files)
++    if !unknown.isEmpty {
+       let ita = await runner.run(
+         vcs, Self.gitIntentToAddArgs(), in: path, timeout: refTimeout,
+-        stdin: Self.gitPathspecPayload(untracked))
++        stdin: Self.gitPathspecPayload(literalPaths: unknown))
+       guard ita.ok else { return ita }
+     }
+-    return await runner.run(
++    let result = await runner.run(
+       vcs, Self.gitCommitOnlyArgs(message: request.message), in: path, timeout: commitTimeout,
+       stdin: Self.gitPathspecPayload(request.files))
++
++    // The commit failed, so undo the index entries we just made. Left behind, an intent-to-add marker
++    // is not the harmless residue it looks like: it breaks the user's own `git stash` in the terminal
++    // ("Entry 'x' not uptodate. Cannot merge.") until they find and reverse a change they never made.
++    //
++    // Rolled back for the untracked rows ONLY. Those were definitionally absent from the index, so
++    // `rm --cached` reverses exactly our own step. A rename's new side may already be a real staged
++    // entry (`git mv`), and unstaging that would destroy work the user did themselves — the wrong
++    // trade for tidiness.
++    if !result.ok {
++      let added = Self.pathsAddedToTheIndex(in: request.files)
++      if !added.isEmpty {
++        _ = await runner.run(
++          vcs, Self.gitUnstageArgs(), in: path, timeout: refTimeout,
++          stdin: Self.gitPathspecPayload(literalPaths: added))
++      }
++    }
++    return result
++  }
++
++  /// Selected paths git may have no index entry for, which `--only` therefore cannot commit.
++  ///
++  /// Untracked files are the obvious case. The one that was missing — and that broke every commit
++  /// containing it — is the NEW side of a rename. `GitProvider.workingStatus` runs libgit2
++  /// status with `.renamesWorkingTree`, so a plain `mv old new` (what editors, IDEs and coding agents
++  /// all do; only `git mv` behaves otherwise) arrives as ONE `.renamed` row whose `path` is a file git
++  /// has never seen. `git commit --only` then fails the WHOLE selection with `error: pathspec
++  /// ':(literal)new.txt' did not match any file(s) known to git` — every other ticked file goes
++  /// uncommitted with it, and the failure classifies as `.other` with no remedy to offer.
++  ///
++  /// Including paths git already tracks costs nothing: `--intent-to-add` records no content for them,
++  /// so a modified tracked file stays unstaged (measured). Intent-adding the new side also lets git
++  /// pair the two halves itself, so the commit records a rename (`R100`) rather than an add plus a
++  /// delete.
++  static func pathsGitMayNotKnow(in files: [ChangedFile]) -> [String] {
++    files.filter { $0.change == .untracked || $0.change == .renamed }.map(\.path)
++  }
++
++  /// Of those, the ones the intent-to-add step definitely CREATED an index entry for, so a failed
++  /// commit can put the index back exactly as it found it.
++  ///
++  /// Untracked rows only. Those were definitionally absent from the index, so `rm --cached` reverses
++  /// precisely our own step. A rename's new side may already be a real staged entry (`git mv` stages
++  /// the rename, and intent-to-add is then a no-op on it) — unstaging that would destroy work the user
++  /// did themselves, which is a far worse outcome than a leftover marker.
++  static func pathsAddedToTheIndex(in files: [ChangedFile]) -> [String] {
++    files.filter { $0.change == .untracked }.map(\.path)
+   }
+ 
+   /// Selected paths whose staged content a commit would discard, for the dialog to confirm before it
+
+
+=== DIFF: macapp/WorkroomApp/Views/ChangesPanel.swift ===
+@@ -89,15 +89,17 @@ struct RightInspector: View {
+ 
+   /// Whether the inspector's target has anything a commit could record.
+   ///
+-  /// jj is included even with no file changes: its working copy is itself a commit, so describing an
+-  /// empty change is a real thing to want, and `jjPushRevision` already recognises that state.
++  /// **jj is always available.** Its working copy is itself a commit, so there is no state in which
++  /// both its verbs are meaningless: Describe edits `@`'s message, which is worth doing with no file
++  /// changes at all. The condition this replaces tried to say that and inverted it — it required an
++  /// EMPTY description, so a change the user had already described was the one state that could not
++  /// be opened, which is precisely "I want to fix a typo in my message". `jjPushRevision` already
++  /// treats a described empty change as real.
+   private var canCommitSelectedTarget: Bool {
+     guard let sid = store.inspectorTargetID, sid.isStatusable,
+       let status = store.workroomStatuses[sid], !store.isCommitting(sid)
+     else { return false }
+-    if let workingCopy = status.jjWorkingCopy {
+-      return !workingCopy.files.isEmpty || (workingCopy.description?.isEmpty ?? true)
+-    }
++    if status.jjWorkingCopy != nil { return true }
+     return !(status.isClean || status.isUnknown)
+   }
+ 
+
+
+=== DIFF: macapp/WorkroomApp/Views/CommitSheet.swift ===
+@@ -38,6 +38,16 @@ struct CommitSheet: View {
+     case confirmingStagedLoss([String])
+     case committing
+     case failed(VCSFailureDialog)
++    /// The commit LANDED but a later step failed. Terminal: the only honest action left is to close.
++    /// Distinct from `.failed` because retrying here would record the work a second time, and the
++    /// notice says so — so the buttons that would do it are disabled rather than merely discouraged.
++    case landedThenFailed(VCSFailureDialog)
++  }
++
++  /// The commit is on disk; nothing in this dialog can be pressed again without duplicating it.
++  private var isSpent: Bool {
++    if case .landedThenFailed = phase { return true }
++    return false
+   }
+ 
+   private var isJJ: Bool { pending.vcs == "jj" }
+@@ -61,6 +71,13 @@ struct CommitSheet: View {
+       totalCount: files.count, conflicted: status?.conflicted ?? false, sequencer: nil)
+   }
+ 
++  /// The secondary verb rewrites a message and takes no pathspec, so it answers to the repo-state and
++  /// summary rules but not the file-count ones — see `CommitDraft.messageOnlyBlockedReason`.
++  private var secondaryBlockedReason: String? {
++    CommitDraft.messageOnlyBlockedReason(
++      summary: summary, conflicted: status?.conflicted ?? false, sequencer: nil)
++  }
++
+   var body: some View {
+     VStack(alignment: .leading, spacing: 14) {
+       header
+@@ -68,6 +85,7 @@ struct CommitSheet: View {
+       messageSection
+       if case .confirmingStagedLoss(let paths) = phase { stagedLossNotice(paths) }
+       if case .failed(let dialog) = phase { CommitFailureNotice(dialog: dialog) }
++      if case .landedThenFailed(let dialog) = phase { CommitFailureNotice(dialog: dialog) }
+       Divider()
+       buttons
+     }
+@@ -268,8 +286,13 @@ struct CommitSheet: View {
+         Text("Running hooks…").font(.caption).foregroundStyle(.secondary)
+       }
+       Spacer(minLength: 0)
+-      Button("Cancel") { onDismiss() }
++      // Disabled mid-commit, Escape included. The subprocess cannot be called back — a hook is
++      // already running — so dismissing here would only tear down the `@State` the completion writes
++      // its outcome into. A rejected hook, a signing failure or a left-behind `index.lock` would then
++      // be reported to a view that no longer exists, and the user would be told nothing at all.
++      Button(isSpent ? "Close" : "Cancel") { onDismiss() }
+         .keyboardShortcut(.cancelAction)
++        .disabled(phase == .committing)
+         .accessibilityIdentifier("commit.cancel")
+       secondaryButton
+       Button(primaryLabel) {
+@@ -283,7 +306,7 @@ struct CommitSheet: View {
+       }
+       .keyboardShortcut(.defaultAction)
+       .buttonStyle(.borderedProminent)
+-      .disabled(blockedReason != nil || phase == .committing)
++      .disabled(blockedReason != nil || phase == .committing || isSpent)
+       .help(isJJ ? "Describe this change and start a new one on top" : "Commit the selected files")
+       .accessibilityIdentifier("commit.commit")
+     }
+@@ -303,7 +326,7 @@ struct CommitSheet: View {
+     Button(isJJ ? "Describe" : "Amend last commit") {
+       commit(mode: isJJ ? .describe : .amendMessage)
+     }
+-    .disabled(phase == .committing || summary.trimmingCharacters(in: .whitespaces).isEmpty)
++    .disabled(secondaryBlockedReason != nil || phase == .committing || isSpent)
+     .help(
+       isJJ
+         ? "Set this change’s message and stay on it, instead of starting a new change (jj describe)"
+@@ -340,11 +363,22 @@ struct CommitSheet: View {
+   /// Commit, but check first whether doing so would throw away staged work.
+   ///
+   /// Only for the plain git commit path: amend takes no pathspec, and jj has no index. The check is
+-  /// skipped once confirmed so pressing "Commit anyway" cannot re-raise the same warning.
++  /// skipped once confirmed so pressing "Commit anyway" cannot re-raise the same warning (that path
++  /// calls `commit` directly, never this).
++  ///
++  /// Deliberately NOT conditioned on `phase == .editing`. It was, and that made the guard skip itself
++  /// on exactly the attempt that needs it most: after a rejected hook the phase is `.failed`, so a
++  /// retry fell through to `commit` unchecked — and anything the user staged with `git add -p` while
++  /// fixing the rejection was discarded with no warning, unrecoverable except as a dangling blob.
+   private func commitChecking(mode: VCSCommitMode) {
+-    guard phase == .editing, mode == .commit, !isJJ else { return commit(mode: mode) }
++    guard mode == .commit, !isJJ else { return commit(mode: mode) }
+     let files = selectedFiles
+     store.stagedContentAtRisk(on: pending.sid, files: files) { atRisk in
++      // The sheet can move on while that `git status` runs — the secondary verb stays pressable
++      // during the round-trip. Without this re-check, a late result would stamp
++      // `.confirmingStagedLoss` over a commit already in flight, re-enabling the primary and letting
++      // a second concurrent commit through on the same repo.
++      guard phase != .committing, !isSpent else { return }
+       if atRisk.isEmpty {
+         commit(mode: mode)
+       } else {
+@@ -365,8 +399,10 @@ struct CommitSheet: View {
+         onDismiss()
+       case .committedThenFailed(_, let detail):
+         // The commit LANDED. Closing would be a lie by omission, and offering a retry would create a
+-        // second commit, so the sheet stays up saying exactly that.
+-        phase = .failed(
++        // second commit, so the sheet stays up saying exactly that — and `.landedThenFailed` disables
++        // the buttons that would do it, rather than leaving the advice and the affordance in
++        // contradiction.
++        phase = .landedThenFailed(
+           VCSFailureDialog(
+             title: "Committed, but something afterwards failed",
+             message:
+
+
+=== DIFF: macapp/WorkroomAppTests/CommitDraftTests.swift ===
+@@ -145,4 +145,42 @@ final class CommitDraftTests: XCTestCase {
+         "Some files still have unresolved conflicts. Resolve them first.")
+     }
+   }
++
++  // MARK: - Blocked reasons: the message-only verbs
++
++  /// Amend and Describe rewrite a message and take no pathspec, so the file-count rules are not their
++  /// preconditions — gating them on the primary's reason would block a legitimate reword.
++  func testTheMessageOnlyVerbIgnoresTheFileCountRules() {
++    XCTAssertNil(
++      CommitDraft.messageOnlyBlockedReason(
++        summary: "Reworded", conflicted: false, sequencer: nil),
++      "no file selection is needed to rewrite a message")
++  }
++
++  /// But it answers to the repo's state, which it previously did not: the button stayed live over
++  /// unresolved conflicts that the primary refused and the engine then rejected anyway.
++  func testTheMessageOnlyVerbStillAnswersToRepoState() {
++    XCTAssertEqual(
++      CommitDraft.messageOnlyBlockedReason(summary: "Reworded", conflicted: true, sequencer: nil),
++      "Some files still have unresolved conflicts. Resolve them first.")
++    XCTAssertEqual(
++      CommitDraft.messageOnlyBlockedReason(
++        summary: "Reworded", conflicted: false, sequencer: "rebase"),
++      "A rebase is in progress. Finish it in the terminal before committing.")
++  }
++
++  /// **One trimming rule for both buttons.** The secondary used to trim `.whitespaces` where this
++  /// trims `.whitespacesAndNewlines`, so a summary of a single newline blocked Commit while Amend
++  /// would rewrite the last commit's message with it.
++  func testBothVerbsAgreeOnWhatAnEmptySummaryIs() {
++    for blank in ["", "   ", "\n", " \n\t "] {
++      XCTAssertEqual(
++        CommitDraft.messageOnlyBlockedReason(summary: blank, conflicted: false, sequencer: nil),
++        "Write a summary to describe this change.",
++        "the secondary verb must reject \(blank.debugDescription)")
++      XCTAssertEqual(
++        reason(summary: blank), "Write a summary to describe this change.",
++        "and so must the primary, identically")
++    }
++  }
+ }
+
+
+=== DIFF: macapp/WorkroomAppTests/VCSCommitIntegrationTests.swift ===
+@@ -146,6 +146,70 @@ final class VCSCommitIntegrationTests: XCTestCase {
+     XCTAssertEqual(status(dir), "", "no dangling deletion left behind in the worktree")
+   }
+ 
++  /// **The rename that actually happens.** `git mv` (above) stages the rename, so git already knows
++  /// the new path — which is why that test passed while every real rename failed. A plain `mv` is what
++  /// editors, IDEs and coding agents all do: libgit2 status pairs it into ONE `.renamed` row whose new
++  /// side git has never seen, and `--only` then refused the entire selection with `pathspec … did not
++  /// match any file(s) known to git`, committing nothing at all.
++  ///
++  /// The unrelated `other.txt` is the point of the assertion: the failure was never scoped to the
++  /// rename row, it took down every file ticked alongside it.
++  func testAPlainMoveRenameCommitsInsteadOfFailingTheWholeSelection() async throws {
++    try requireTool("git")
++    let dir = gitRepo(files: [
++      "base.txt": "base\n", "old.txt": "content\n", "other.txt": "other\n",
++    ])
++    sh("mv old.txt new.txt", in: dir)
++    write("other changed\n", to: "other.txt", in: dir)
++
++    let result = await writer("git").commit(
++      path: dir, projectRoot: dir,
++      request: VCSCommitRequest(
++        message: "move it",
++        files: [
++          ChangedFile(path: "new.txt", change: .renamed, oldPath: "old.txt"),
++          modified("other.txt"),
++        ],
++        mode: .commit))
++
++    guard case .ok = result else { return XCTFail("commit failed: \(result)") }
++    let record = nameStatus(dir)
++    XCTAssertTrue(record.contains("new.txt"), "the renamed file must be in the commit: \(record)")
++    XCTAssertTrue(
++      record.contains("other.txt"),
++      "and so must the file ticked beside it — the old failure was not scoped to the rename")
++    XCTAssertEqual(status(dir), "", "nothing left behind: no dangling deletion, no stray untracked")
++  }
++
++  /// A failed commit must not leave the index holding intent-to-add entries the user never made.
++  /// Measured: they break the user's own `git stash` with `Entry 'x' not uptodate. Cannot merge.`
++  /// until they find and reverse a change that was never theirs.
++  func testAFailedCommitLeavesNoIntentToAddResidue() async throws {
++    try requireTool("git")
++    let dir = gitRepo(files: ["base.txt": "base\n"])
++    write("fresh\n", to: "untracked.txt", in: dir)
++    // A `commit-msg` hook that always rejects: the commonest way a commit fails after the
++    // intent-to-add step has already run.
++    let hook = "\(dir)/.git/hooks/commit-msg"
++    write("#!/bin/sh\nexit 1\n", to: ".git/hooks/commit-msg", in: dir)
++    sh("chmod +x \(hook)", in: dir)
++
++    let result = await writer("git").commit(
++      path: dir, projectRoot: dir,
++      request: VCSCommitRequest(
++        message: "will be rejected",
++        files: [ChangedFile(path: "untracked.txt", change: .untracked)], mode: .commit))
++
++    guard case .failed = result else { return XCTFail("the hook should have rejected: \(result)") }
++    XCTAssertEqual(
++      status(dir), "?? untracked.txt",
++      "the file must be untracked again, exactly as the user left it — not staged as ' A'")
++    let stash = sh("git stash 2>&1", in: dir)
++    XCTAssertFalse(
++      stash.out.contains("not uptodate"),
++      "a failed commit must not break the user's own stash: \(stash.out)")
++  }
++
+   /// `--` ends option parsing, not magic parsing. Bare, `a[b].txt` is a glob that also matches
+   /// `ab.txt`; `:(literal)` is what stops it. This is the selection model's whole promise.
+   func testGlobMagicCannotReachAnUnselectedFile() async throws {
+
+
+=== DIFF: macapp/WorkroomAppTests/VCSWritingTests.swift ===
+@@ -1005,6 +1005,43 @@ final class VCSWritingTests: XCTestCase {
+     XCTAssertTrue(args.contains("--pathspec-file-nul"))
+   }
+ 
++  /// **A rename's new side is a path git has never seen.** libgit2 status runs with
++  /// `.renamesWorkingTree`, so a plain `mv` (every editor, every coding agent — only `git mv` differs)
++  /// arrives as ONE `.renamed` row whose `path` is untracked. Intent-adding only `.untracked` rows
++  /// left it out, and `git commit --only` then failed the WHOLE selection with `pathspec … did not
++  /// match any file(s) known to git` — taking every other ticked file down with it.
++  func testIntentToAddCoversRenamedPathsNotJustUntrackedOnes() {
++    let files = [
++      ChangedFile(path: "new.txt", change: .renamed, oldPath: "old.txt"),
++      ChangedFile(path: "fresh.txt", change: .untracked),
++      ChangedFile(path: "edited.txt", change: .modified),
++      ChangedFile(path: "gone.txt", change: .deleted),
++    ]
++    let paths = CLIVCSWriter.pathsGitMayNotKnow(in: files)
++    XCTAssertEqual(
++      Set(paths), ["new.txt", "fresh.txt"],
++      "the rename's new side needs an index entry just as much as an untracked file does")
++    XCTAssertFalse(
++      paths.contains("edited.txt"),
++      "a tracked file must not be staged — that is the absorption bug `--only` exists to avoid")
++    XCTAssertFalse(paths.contains("gone.txt"), "nor a deletion, which git already knows")
++  }
++
++  /// The rollback undoes our own index entries when the commit fails. Left behind, an intent-to-add
++  /// marker breaks the user's own `git stash` ("Entry 'x' not uptodate. Cannot merge.") until they
++  /// reverse a change they never made.
++  func testUnstageArgsRemoveOnlyTheIndexEntryNotTheFile() {
++    let args = CLIVCSWriter.gitUnstageArgs()
++    XCTAssertEqual(Array(args.prefix(2)), WorkroomStatusResolver.gitHardening)
++    XCTAssertTrue(args.contains("rm"))
++    XCTAssertTrue(args.contains("--cached"), "the file itself must survive; only the entry goes")
++    XCTAssertTrue(
++      args.contains("--ignore-unmatch"),
++      "cleanup must not turn into a second error on top of the one being reported")
++    XCTAssertTrue(args.contains("--pathspec-from-file=-"))
++    XCTAssertTrue(args.contains("--pathspec-file-nul"))
++  }
++
+   /// Mutating jj commands must NOT carry `--ignore-working-copy`: the snapshot is what moves on-disk
+   /// edits into `@` before it is rewritten.
+   func testJJCommitAndDescribeUseWriteFlags() {
+@@ -1020,6 +1057,25 @@ final class VCSWritingTests: XCTestCase {
+     XCTAssertEqual(CLIVCSWriter.jjDescribeArgs(message: "m").first, "describe")
+   }
+ 
++  /// The message rides ATTACHED. jj's parser reads a detached `-m` value that begins with `-` as
++  /// another flag — measured on 0.43: `jj describe -m "-fix the parser"` dies with
++  /// `error: unexpected argument '-f' found`, where `--message=-fix the parser` records it verbatim.
++  /// There is no `--` to fall back on here, so the option boundary has to be inside the argument.
++  func testJJMessageIsAttachedSoALeadingDashCannotBeReadAsAFlag() {
++    for args in [
++      CLIVCSWriter.jjCommitArgs(message: "-fix the parser"),
++      CLIVCSWriter.jjDescribeArgs(message: "-fix the parser"),
++    ] {
++      XCTAssertTrue(
++        args.contains("--message=-fix the parser"),
++        "the message must be one attached argument, got: \(args)")
++      XCTAssertFalse(args.contains("-m"), "a detached -m value starting with '-' fails to parse")
++      XCTAssertFalse(
++        args.contains("-fix the parser"),
++        "the message must never appear as a bare argv element")
++    }
++  }
++
+   /// jj takes NO pathspec: its path arguments are a fileset expression language where a space fails
+   /// to parse and a non-matching expression still creates an empty commit at exit 0.
+   func testJJCommitTakesNoPathspec() {
+@@ -1137,6 +1193,79 @@ final class VCSWritingTests: XCTestCase {
+     XCTAssertNil(CLIVCSWriter.classifyCommit(ok, tool: "git"))
+   }
+ 
++  /// **The user's own words must not steer the classifier.** `git commit` echoes the subject on
++  /// stdout, so matching the nothing-to-commit markers against stdout before the success guard read a
++  /// perfectly good commit as a failure — and because the ref had legitimately moved, `commit()`
++  /// upgraded it to `.committedThenFailed`, whose copy tells the user their commit half-worked and
++  /// not to try again. Measured on git 2.55: this is the literal stdout of a successful commit.
++  func testASuccessfulCommitIsNotAFailureBecauseItsMessageSaysNothingToCommit() {
++    for subject in [
++      "docs: explain the nothing to commit error",
++      "fix: stop saying no changes added to commit",
++      "chore: nothing added to commit is not an error",
++    ] {
++      let landed = CommandResult(
++        stdout: "[main ec13fd3] \(subject)\n 1 file changed, 1 insertion(+)\n",
++        stderr: "", exitCode: 0, timedOut: false)
++      XCTAssertNil(
++        CLIVCSWriter.classifyCommit(landed, tool: "git"),
++        "a commit that exited 0 succeeded, whatever its message says: \(subject)")
++    }
++  }
++
++  /// A file whose NAME carries a marker reaches stdout too (`create mode 100644 nothing to commit.txt`).
++  func testACommittedFilenameCannotBeReadAsAFailure() {
++    let landed = CommandResult(
++      stdout: "[main ec13fd3] add it\n create mode 100644 nothing to commit.txt\n",
++      stderr: "", exitCode: 0, timedOut: false)
++    XCTAssertNil(CLIVCSWriter.classifyCommit(landed, tool: "git"))
++  }
++
++  /// git's genuine no-op still classifies: it prints to stdout but exits NON-zero, so the marker
++  /// check on the failure path still sees it.
++  func testGitNothingToCommitStillClassifiesOnAFailedExit() {
++    let empty = CommandResult(
++      stdout: "On branch main\nnothing to commit, working tree clean\n",
++      stderr: "", exitCode: 1, timedOut: false)
++    XCTAssertEqual(CLIVCSWriter.classifyCommit(empty, tool: "git"), .nothingToCommit)
++  }
++
++  /// jj's no-op is the one that must be caught BEFORE the success guard: it exits ZERO. Measured on
++  /// jj 0.43 — everything jj prints goes to stderr, including this.
++  func testJJNothingChangedIsCaughtDespiteExitingZero() {
++    for onStderr in [true, false] {
++      let noop = CommandResult(
++        stdout: onStderr ? "" : "Nothing changed.\n",
++        stderr: onStderr ? "Nothing changed.\n" : "", exitCode: 0, timedOut: false)
++      XCTAssertEqual(
++        CLIVCSWriter.classifyCommit(noop, tool: "jj"), .nothingToCommit,
++        "jj 0.43 uses stderr, but the whole-line anchor is what makes this safe, not the stream")
++    }
++  }
++
++  /// But jj echoes the description back in its own progress lines, so the match is a WHOLE line —
++  /// otherwise describing a change "Nothing changed." would report itself as a no-op.
++  func testJJEchoingTheMessageIsNotAnEmptyCommit() {
++    let landed = CommandResult(
++      stdout: "",
++      stderr: """
++        Working copy  (@) now at: rsuzonno 8d983e9b (empty) (no description set)
++        Parent commit (@-)      : trtwtxzs 5ba5b171 Nothing changed.
++        """,
++      exitCode: 0, timedOut: false)
++    XCTAssertNil(
++      CLIVCSWriter.classifyCommit(landed, tool: "jj"),
++      "jj echoes the description; only a whole line of its own may be read as the marker")
++  }
++
++  /// The exit-zero escape hatch is jj's alone. git never exits 0 on a no-op, so letting git take that
++  /// branch is what created the false positive in the first place.
++  func testTheExitZeroNoOpCheckIsScopedToJJ() {
++    let gitSaysIt = CommandResult(
++      stdout: "", stderr: "Nothing changed.\n", exitCode: 0, timedOut: false)
++    XCTAssertNil(CLIVCSWriter.classifyCommit(gitSaysIt, tool: "git"))
++  }
++
+   // MARK: - Commit: sequencer state
+ 
+   private func gitDirWith(_ entries: [String]) -> URL {
+
+
+Investigate per the method in your instructions, then return the findings list.
