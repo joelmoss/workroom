@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bicij3nzg</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/abe7e228-2303-43dd-ba5f-a29b5159e792/tasks/bicij3nzg.output</output-file>
+<status>completed</status>
+<summary>Background command "Run the unit gate after the auto-fixes" completed (exit code 0)</summary>
+</task-notification>
