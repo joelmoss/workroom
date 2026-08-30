@@ -1,0 +1,77 @@
+<task-notification>
+<task-id>a18c002efc046be82</task-id>
+<tool-use-id>toolu_013FgLGyc57KYhrc8vtraruW</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/9acf16dd-4609-4d61-8dd7-b564e263fb8f/tasks/a18c002efc046be82.output</output-file>
+<status>completed</status>
+<summary>Agent "Size-account skills and commands" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Report: Skill/Command Listing Context-Cost Audit
+
+Method: read only YAML frontmatter (`name:`/`description:`) between the first two `---` lines of each `SKILL.md`; char cost = `len(name)+len(description)`, with `&gt;`/`|` YAML block scalars folded/joined per YAML rules using the literal disk content (not the session's rendered listing text, which was found to diverge from disk in one case — see Anomalies). No files modified.
+
+### Project skills — `/Users/joelmoss/dev/workroom/.claude/skills/`
+- Count: 1 (`building-macapp`). No nested/subdir skills.
+- Chars: 387 (name=15, desc=372)
+- Broken: none
+
+### User skills — `~/.claude/skills/`
+- Top-level dirs with `SKILL.md` (real dirs + symlinks resolved): 69 (70 total dirs; `learned/` is empty, no `SKILL.md` — not a "broken" skill per the task's definition, just an empty leftover dir, excluded from all counts).
+- **Raw total (all 69, incl. 2 known name-duplicates below): 9632 chars.**
+- **Deduped/resident total (66 skills): 9435 chars** — excludes 3 entries that do not surface as distinct items in the live listing:
+  - `gstack/SKILL.md` (name: `gstack`) — byte-identical to `_gstack-command/SKILL.md` (`_gstack-command` is a symlink to it); only `_gstack-command` appears in the listing.
+  - `open-gstack-browser/SKILL.md` (name: `open-gstack-browser`) — byte-identical content to `connect-chrome/SKILL.md` (both symlink into two different files under `gstack/`, both declare `name: open-gstack-browser`); only `connect-chrome` appears in the listing.
+  - `commit/SKILL.md` — has `disable-model-invocation: true`, so its description is excluded from the model-facing listing (only its name is invocable as `/commit`).
+- Broken: none found (all 69 have both `name:` and `description:`).
+- Anomaly: `supacode-cli/SKILL.md` has a normal, complete frontmatter (name+desc, no disable flag) but does **not** appear in this session's live listing. Cause not determined from frontmatter alone.
+- **Not counted (out of scope, explicitly excluded, but relevant to bloat):** `~/.claude/skills/gstack/` contains **612 `SKILL.md` files at any depth** — the gstack package's own source tree, vendoring skill copies for other agent platforms (`.opencode`, `.cursor`, `.factory`, `.kiro`, `.hermes`, `.agents`, `.openclaw`, `.slate`, `.gbrain`, `openclaw/`) plus a `browser-skills/` extra. Only `gstack/SKILL.md` itself (1 file, already counted/excluded above as a duplicate) is reachable by Claude Code's one-level-per-directory skill scan; the other ~611 (including ~52 one-level `gstack/&lt;name&gt;/SKILL.md` copies that duplicate the real top-level dirs like `autoplan/`, `browse/`, `ship/`, etc.) are inert — physically present, zero contribution to the resident listing.
+
+### Plugin skills (per plugin) — of the 16 named plugins, only 6 have a `skills/` directory; 10 have none (checked, confirmed empty: `code-simplifier`, `context7`, `github`, `gopls-lsp`, `jj-worktrees`, `ruby-lsp`, `rust-analyzer-lsp`, `security-guidance`, `swift-lsp`, `warp` — these ship agents/hooks/LSP/MCP only, no skills).
+
+| Plugin | Cache path | Skills found | Chars | Broken |
+|---|---|---|---|---|
+| caveman | `cache/caveman/caveman/0d95a81d35a9/skills/` | 7 | 2481 | none |
+| claude-md-management | `cache/claude-plugins-official/claude-md-management/1.0.0/skills/` | 1 (`claude-md-improver`) | 356 | none |
+| frontend-design | `cache/claude-plugins-official/frontend-design/unknown/skills/` | 1 | 219 | none |
+| claude-code-setup | `cache/claude-plugins-official/claude-code-setup/1.0.0/skills/` | 1 (`claude-automation-recommender`) | 383 | none |
+| playground | `cache/claude-plugins-official/playground/unknown/skills/` | 1 | 278 | none |
+| modern-web-guidance | `cache/googlechrome/modern-web-guidance/0.0.169/skills/` | 2 (`modern-web-guidance`, `chrome-extensions`) | 1815 | none |
+| **Total (6 plugins)** | | **13** | **5532** | **0** |
+
+Anomaly: `claude-code-setup`, `playground`, and both `modern-web-guidance` skills are present on disk with complete, undisabled frontmatter but do **not** appear in this session's live listing. Reason not determined (possible relevance-based filtering by project type, since this is a Go/Swift repo and those 3 plugins are generic/web-flavored — unconfirmed).
+
+Resident-only plugin subtotal (skills that DO appear in the live listing: all 7 caveman + `claude-md-improver` + `frontend-design`): **9 skills, 3056 chars.**
+
+### Commands
+- `/Users/joelmoss/dev/workroom/.claude/commands/` — directory does not exist.
+- `~/.claude/commands/` — directory does not exist.
+- Commands total: 0 skills, 0 chars.
+- Side note (out of requested scope): two of the six plugins above also ship `commands/*.md` (frontmatter = `description:` only, name from filename) that appear in the SAME live listing block under colon notation — e.g. `caveman:caveman-init` (not counted anywhere above, since it has no `SKILL.md`) and `claude-md-management:revise-claude-md`. `caveman/commands/` has 5 `.md`/`.toml` command pairs total; 4 of them (`caveman-commit`, `caveman-review`, `caveman-stats`, `caveman`) share a name with a caveman **skill** — see Anomalies below.
+
+### Broken frontmatter (missing `description:` given a `name:`)
+None found in any of the 83 `SKILL.md` files scanned (1 project + 69 user + 13 plugin).
+
+### Top 5 largest (within enumerated sources — project/user/16-plugin-list only; see caveat)
+1. `modern-web-guidance` (plugin:modern-web-guidance) — 988 (name=19, desc=969)
+2. `use-railway` (user) — 965 (name=11, desc=954)
+3. `agent-browser` (user) — 938 (name=13, desc=925)
+4. `impeccable` (user) — 905 (name=10, desc=895)
+5. `chrome-extensions` (plugin:modern-web-guidance) — 827 (name=17, desc=810)
+
+Caveat: the live listing contains a further ~16-entry tier not covered by any of the 3 requested sources (`dataviz`, `claude-api`, `artifact-design`, `artifact-diagramming`, `artifact-capabilities`, `update-config`, `keybindings-help`, `code-review`, `simplify`, `fewer-permission-prompts`, `loop`, `schedule`, `claude-in-chrome`, `run`, `init`, `security-review`) — these read as bundled with the Claude Code harness itself, not under `.claude/skills/`, `~/.claude/skills/`, or the 16 named plugins, so they were not enumerated or sized. `claude-api` and `dataviz` visually appear to have descriptions longer than #5 above; this top-5 is **not** the true top-5 of the full live listing, only of the 3 sources this audit was scoped to.
+
+### Grand totals
+
+| Basis | Chars | Skill count |
+|---|---|---|
+| Raw disk-scan (every `SKILL.md` found in the 3 scoped sources, incl. known duplicates) | **15551** | 83 |
+| Reconciled/resident (dedup gstack, dedup open-gstack-browser, drop `commit`; plugin subset limited to skills actually shown live) | **12878** | 76 |
+| — Project | 387 | 1 |
+| — User (raw / deduped) | 9632 / 9435 | 69 / 66 |
+| — Plugins (raw / resident-shown) | 5532 / 3056 | 13 / 9 |
+| — Commands | 0 | 0 |
+
+### Anomalies (factual, no recommendations)
+- **caveman skill/command text divergence**: for 4 of caveman's 7 skills (`caveman-commit`, `caveman-review`, `caveman-stats`, `caveman`), a same-named plugin **command** exists with a much shorter `description:`. The live listing shows the short **command** description for these 4 (e.g. `caveman-commit`: command desc = 43 chars, "Generate terse caveman-style commit message"; the sibling skill's own desc = 346 chars). The 3 remaining caveman skills (`cavecrew`, `caveman-compress`, `caveman-help`) have no same-named command and show their full (long) skill description live. The 2481-char caveman plugin total above is computed from the **SKILL.md** frontmatter per the task's literal instruction (Step 2), not from the shorter text actually rendered live for 4 of the 7 — meaning the true live-rendered caveman contribution is smaller than 2481 (closer to 3056's resident-plugin figure, which already substitutes nothing — note this 2481 vs. live-rendered gap is real and unresolved in the totals above; treat 2481 as the on-disk `SKILL.md` figure, not the live-rendered figure, for this one plugin).
+- Session's rendered "available skills" reminder text is not a reliable proxy for on-disk frontmatter in general (confirmed divergent for the 4 caveman entries above); all char counts in this report were computed from disk reads, not from reminder text, except where explicitly noted.</result>
+<usage><subagent_tokens>171228</subagent_tokens><tool_uses>51</tool_uses><duration_ms>909923</duration_ms></usage>
+</task-notification>
