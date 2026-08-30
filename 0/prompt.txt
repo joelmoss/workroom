@@ -1,0 +1,1 @@
+<bash-input>git branch -d libghostty-dispatch-baseline</bash-input>
