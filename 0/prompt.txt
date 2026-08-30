@@ -1,0 +1,1 @@
+bear in mind that mini views only need to be live when visible.
