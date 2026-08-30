@@ -1,0 +1,1 @@
+reduce the empty space to the right of quick terminal button
