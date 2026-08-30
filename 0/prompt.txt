@@ -1,0 +1,1 @@
+when terminal title changes to something really small, its tab changes size. use a minimum tab width to minimise tab width jumping. also a command that is really fast (eg. `ls`) causes a flash of title change. maybe add some throttling or delay
