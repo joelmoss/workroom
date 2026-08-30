@@ -1,0 +1,18 @@
+<task-notification>
+<task-id>a45c08d294ef30989</task-id>
+<tool-use-id>toolu_01SUsDSPye5YyEuwy9tdUEBV</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/6b6da5a6-5d6f-49ea-8b2a-a61c143807d7/tasks/a45c08d294ef30989.output</output-file>
+<status>completed</status>
+<summary>Agent "Check whether status sweep covers unfocused workrooms" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>**Task:** Investigated whether the app's existing background status sweep already reads non-focused workrooms (informing whether the TODO's "expensive per-op check" concern still applies), and where `.staleWorkingCopy` is currently surfaced. No code changed.
+
+**1. The sweep already covers every open workroom regardless of focus.** `AppStore.statusWorkItems()` (`AppStore+WorkroomStatus.swift:31-48`) builds one `StatusWorkItem` per project root AND per workroom unconditionally (`for w in p.workrooms { items.append(...) }` — no focus filter). `refreshWorkroomStatuses()` (line 53) sweeps all of them (minus a 15s TTL / in-flight-create / in-flight-commit filter), triggered "on load, on app focus (via reload), on selection (debounced)" per its own doc comment (line 5) — an app-level/global trigger, not per-workroom visibility.
+
+**2. `resolveJJ` already reaches `.staleWorkingCopy` from that sweep, for any workroom.** `WorkroomStatusResolver.resolveJJ` → `WorkroomStatusResolver.failure(for:)` maps jj's `.staleSnapshot` error to `VCSStatusFailure.staleWorkingCopy` (`WorkroomStatusResolver.swift:118`). Since `resolveLocal` (line 95-104) is called for every item in the sweep, a sibling workroom left stale by a rebase already gets this classification on the very next routine sweep — no new per-op check needed; detection is already "free," riding the existing cadence.
+
+**3. Presentation is currently passive text, no repair action.** `.staleWorkingCopy` renders as a sidebar tooltip ("status unavailable, working copy is out of date," `WorkroomStatus.swift:322`) and a static Changes-panel string: `"Working copy is out of date. Run \`jj workspace update-stale\`."` (`ChangesPanel.swift:915`) — just a switch returning a `String`, no button. This is a DIFFERENT, lighter-weight path than `RemoteStateModel`'s toolbar presenter, which already has real tiering with an offered "Try Again" action for read failures — that tiering isn't reused here.
+
+**Net:** the TODO's "Cons" (needing a cheap detection mechanism) looks stale — the existing periodic sweep already provides free, ambient detection for every workroom regardless of focus. Nothing proactive needs to run right after a rebase. The only real gap is presentation: wiring the already-detected `.staleWorkingCopy` case in the Changes panel to a "Repair" button (`jj workspace update-stale`, a `VCSWriting` op) instead of a copy-paste-into-terminal instruction.</result>
+<usage><subagent_tokens>427921</subagent_tokens><tool_uses>9</tool_uses><duration_ms>86808</duration_ms></usage>
+</task-notification>
