@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b1hre8jxk</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/85057c1d-7a50-422d-a310-af45bba739d0/tasks/b1hre8jxk.output</output-file>
+<status>completed</status>
+<summary>Background command "Clean 6x back-to-back re-verify of the native-mouse-drag fix" completed (exit code 0)</summary>
+</task-notification>
