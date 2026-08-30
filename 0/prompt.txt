@@ -1,0 +1,64 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/WorkroomStatusResolver.swift
+  - macapp/WorkroomAppTests/WorkroomStatusResolverTests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/WorkroomStatusResolver.swift ===
+@@ -767,6 +767,20 @@ struct WorkroomStatusResolver: Sendable {
+     }
+     // Empty stdout (gh wrote nothing): distinguish gh-missing / transient blip / hard absence.
+     if r.timedOut { return .keepPrior }
++    // Killed rather than finished (cancelled lane, jetsam, crash, sleep/wake signal), with nothing
++    // to show for it. `exitCode` is a signal number, so every test below reads a lie: 9/15 is
++    // neither 127 nor a gh error message, and the `.absent` fallback would blank the rows AND stamp
++    // `checksCheckedAt` — which is the loaded marker `PullRequestPanel.checksSummaryGlyph` and
++    // `PRPresentation.isFailing` read to stop falling back to the branch CI aggregate. So a killed
++    // probe would render a FAILING pr as green, and stay that way until the row is selected again
++    // (`resolveChecks` runs only from `scheduleSelectedStatusRefresh`; no sweep refills it).
++    //
++    // Placed AFTER `timedOut` (the timeout SIGTERMs the child, so a timeout also sets `signaled`)
++    // and after the stdout parse above (a child that emitted a COMPLETE payload and was killed
++    // afterwards really did tell us something — don't discard evidence). Same ordering, and the same
++    // reasoning, as `classifyGitHubCLI`; `ghPreflight` — which this classifier deliberately does not
++    // use, because `gh pr checks` overloads its exit code — carries the sibling check.
++    if r.signaled { return .keepPrior }
+     if r.exitCode == CommandResult.commandNotFound { return .absent }  // gh not installed
+     let lowerErr = r.stderr.lowercased()
+     if lowerErr.contains("rate limit") || lowerErr.contains("503") || lowerErr.contains("timeout") {
+
+
+=== DIFF: macapp/WorkroomAppTests/WorkroomStatusResolverTests.swift ===
+@@ -975,6 +975,27 @@ final class WorkroomStatusResolverTests: XCTestCase {
+     XCTAssertEqual(WorkroomStatusResolver.classifyChecks(ok("not json")), .keepPrior)
+   }
+ 
++  /// A KILLED child (SIGKILL/SIGTERM from a cancelled lane, jetsam, a crash, sleep/wake) wrote
++  /// nothing, so its exit code is a signal number and not evidence of anything. Without this the
++  /// `.absent` fallback blanked the rows AND stamped `checksCheckedAt`, which makes the panel treat
++  /// the empty list as authoritative — a failing PR rendered green until the row was re-selected.
++  func testClassifyChecksSignaledKeepsPrior() {
++    let r = CommandResult(stdout: "", stderr: "", exitCode: 9, timedOut: false, signaled: true)
++    XCTAssertEqual(WorkroomStatusResolver.classifyChecks(r), .keepPrior)
++  }
++
++  /// ORDERING LOCK: a killed child that had already written a COMPLETE payload really did report
++  /// the checks, so the parse wins over `signaled`. Guards the placement of the `signaled` branch
++  /// AFTER the stdout parse — moving it earlier would discard a good answer.
++  func testClassifyChecksSignaledWithCompletePayloadStillParses() {
++    let json = #"[{"name":"build","bucket":"fail"}]"#
++    let r = CommandResult(stdout: json, stderr: "", exitCode: 9, timedOut: false, signaled: true)
++    guard case .list(let checks) = WorkroomStatusResolver.classifyChecks(r) else {
++      return XCTFail("expected .list")
++    }
++    XCTAssertEqual(checks.map(\.state), [.failing])
++  }
++
+   // MARK: - resolveChecks (end-to-end via the mock)
+ 
+   /// git: `gh pr checks <number>` runs in the workroom path with the right args.
+
+
+Investigate per the method in your instructions, then return the findings list.
