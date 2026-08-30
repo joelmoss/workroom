@@ -1,0 +1,24 @@
+<task-notification>
+<task-id>a505d55b846f303cd</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/aed8926d-2d0e-4e9c-8c02-c5f98d2554f8/tasks/a505d55b846f303cd.output</output-file>
+<status>completed</status>
+<summary>Agent "Check existing Sentry/telemetry setup in macapp" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I have everything needed. Here's the report.
+
+## Sentry / telemetry infrastructure in `macapp/WorkroomApp/`
+
+**1. Initialization** — `Core/SentryConfig.swift:16-92`. `SentrySDK.start` at line 24, called from `WorkroomApp.swift:23` (first line of app init) and again from the `ghostty` CLI-dispatch path in `main.swift:20`. DSN is a hardcoded public ingest key (`SentryConfig.swift:19`), overridable via `SENTRY_DSN` env var. Options set: `enableCrashHandler = true`, `enableAppHangTracking = true` (line 36-37), `sendDefaultPii = false` (line 41, no IP/user context), `tracesSampleRate = 1.0` (line 45), profiling `sessionSampleRate = 1.0` (line 48-51), `enableMetrics = true` (line 54). `environment` tags dev/nightly/production (line 29-30, `defaultEnvironment` line 69-74). Gated off entirely for Debug builds (`shouldStart`, line 81) — no telemetry from local dev/CI runs.
+
+**2. User-facing opt-in/opt-out toggle** — **none exists.** No `crashReportingEnabled`/`analyticsEnabled`/`telemetry` key anywhere in `Core/DefaultsKeys.swift` (grepped, no hits) and no Settings control in `Views/SettingsView.swift`. Sentry is unconditionally on for every non-Debug build; the user has no way to disable it. (One design note: `sendDefaultPii = false` is a hardcoded privacy default, not a user preference.)
+
+**3. Custom capture beyond automatic crash capture** — yes, two sites: a breadcrumb at `Core/ShellEnvironment.swift:343-345` (`Breadcrumb(level: .warning, category: "shell-env")` on a failed shell-PATH probe — logs only the failure *reason*, never payload/env values, per the comment at line 338), and a manual message capture at `Core/GhosttyApp.swift:142-144` (`SentrySDK.capture(message:)` for libghostty startup failures, since the fail-soft path never reaches the crash handler). No custom tags/`setUser`/`setExtra` anywhere.
+
+**4. Other telemetry/analytics mechanism** — none found. No PostHog/Mixpanel/Amplitude, no custom "phone home" HTTP client. Other network clients are scoped to specific features: `Core/GitHubReleasesClient.swift` (What's-New / release notes fetch from GitHub) and `Views/Avatar.swift` (Gravatar/GitHub avatar images, itself gated by the `loadRemoteAvatars` privacy toggle, `DefaultsKeys.swift:109-114`). A comment in `Core/SecretRedactor.swift:6` references CLI-side "telemetry-off flags" (`--no-session-persistence`) but that's the bundled Go CLI, not this Swift app, and out of the scoped directory.
+
+**5. Settings UI home** — `Views/SettingsView.swift`, panes enumerated in `Core/SettingsPane.swift:17-21` (General, Appearance, Terminal, Agent, About). `SettingsPane.general` (`SettingsView.swift` general section starts ~line 185, toggles like `confirmOnQuit`/`globalHotkey`/`showMenuBarItem`) is the obvious existing home for a new privacy/reporting toggle, following the exact pattern already used for the `loadRemoteAvatars` privacy toggle at `DefaultsKeys.swift:109-114`.
+
+**Bottom line**: Sentry infra (breadcrumb/message capture, environment tagging) is reusable for a "report unrecognized CLI tool" signal, but there's no opt-out plumbing today — building the toggle plus a `Defaults` key plus wiring it to gate the new capture call is new work, not reuse.</result>
+<usage><subagent_tokens>54034</subagent_tokens><tool_uses>11</tool_uses><duration_ms>49054</duration_ms></usage>
+</task-notification>
