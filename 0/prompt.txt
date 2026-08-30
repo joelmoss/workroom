@@ -1,0 +1,1 @@
+the agent usage in terminal footer does not reappear on a persisted claude session after an app restart. same with the cwd
