@@ -1,0 +1,36 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Views/TerminalStatusBar.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Views/TerminalStatusBar.swift ===
+@@ -46,13 +46,21 @@ struct TerminalStatusBar: View {
+       Spacer(minLength: 8)
+       if isRunTab, let run = runStatePresentation { runSegment(run) }
+     }
+-    .font(.caption)
++    // `.callout` (12pt), not `.caption` (10pt): the bar carries a pane's identity (path, branch,
++    // run state), which was too small to read at a glance. Still fits the 24pt bar.
++    .font(.callout)
+     .foregroundStyle(theme.tokens.fgMuted)
+     .lineLimit(1)
+     .padding(.horizontal, 10)
+-    .frame(height: 24)
++    // Fixed, not vertical padding: the bar's height must not vary with its content (an icon, a
++    // `ProgressView`) or a pane would resize as a diagnosis arrives. 28pt gives the 12pt text ~6pt
++    // above and below.
++    .frame(height: 28)
+     .frame(maxWidth: .infinity)
+-    .background(theme.tokens.bg)
++    // `panel` (bg blended 5.5% toward fg), not the raw terminal `bg`: the bar reads as chrome rather
++    // than as more terminal. Opaque and theme-derived, so it lifts by the same amount on a light or a
++    // dark theme — a fixed white/black wash would invert on one of them.
++    .background(theme.tokens.panel)
+     .overlay(alignment: .top) { theme.tokens.border.frame(height: 1) }
+     .accessibilityElement(children: .contain)
+     .accessibilityIdentifier("terminal.statusBar")
+
+
+Investigate per the method in your instructions, then return the findings list.
