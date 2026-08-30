@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bt5nq54n8</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/6b01e43d-2e19-40c4-aa53-5a83170f8717/tasks/bt5nq54n8.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch nightly run to completion" completed (exit code 0)</summary>
+</task-notification>
