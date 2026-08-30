@@ -1,0 +1,296 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. Primary Request and Intent:
+   - Save a memory note (done, early in conversation, unrelated to main task): "all tests (including UI) should be run before any pre or stable release. UI tests cannot be run on Github CI, so they have to run locally here. remember that" — saved as `/Users/joelmoss/.claude/projects/-Users-joelmoss-dev-workroom/memory/full-test-suite-before-release.md` (type: feedback) with an index entry in `MEMORY.md`.
+   - Summarize steps to create a new beta release (informational, done via `curate-release` skill).
+   - **Main task**: "create a new beta release" for the Workroom project (Go CLI `workroom` + macOS app "Workroom"), tag `v2.0.0-beta.24`, following the project's release process (local test gate → tag push → CI builds/signs/notarizes → post-publish note curation).
+   - User approved running the full local gate AND pushing the tag if green (from an early AskUserQuestion), but this was superseded by later explicit instructions.
+   - **Critical mid-task user directive** (verbatim): "no release until all tests pass. first explore why it takes so long, and reduce that time" — this is now the governing constraint: (a) the release is BLOCKED until every test (unit + UI) passes, (b) I must investigate and reduce the ~35-40 minute full UI-suite runtime.
+   - Later: "keep going, let me know when done" — meaning continue working autonomously through the test-fixing/verification cycle and only message the user once there's a complete, final picture (not for every intermediate check-in), though task-notifications and scheduled wakeups are used internally to avoid polling.
+   - No git commit has been requested yet — all fixes are currently uncommitted working-tree changes.
+
+2. Key Technical Concepts:
+   - Workroom architecture: Go CLI (root) + macOS SwiftUI app (`macapp/`), sharing config at `~/.config/workroom/config.json`.
+   - Release process: `.goreleaser.yml` (prerelease auto-detected from tag suffix `-beta.N`), `.github/workflows/release.yml` (goreleaser job → macapp signing/notarization/DMG/appcast job), post-publish GitHub release note curation via `curate-release` skill.
+   - `make` targets: `cli-lint`, `cli-test`, `app-lint` (`xcrun swift-format lint --strict`), `app-test` (unit, parallel by default via `APP_TEST_FLAGS ?= -parallel-testing-enabled YES`, serialize with `APP_TEST_FLAGS=`), `app-uitest` (XCUITest, real GUI, own scheme `WorkroomAppUITests`, NOT gated by `APP_TEST_FLAGS`), `app-test-scripts`, `app-test-supervisor`, `app-vcs`, `app-clean`.
+   - Sandbox restrictions: Go build cache, `xcresulttool`, and various xcodebuild/make invocations require `dangerouslyDisableSandbox: true` to avoid "operation not permitted" errors on `/var/folders/.../T` paths.
+   - `xcresulttool get test-results summary --path <bundle>.xcresult` is the authoritative source for pass/fail (per existing memory `verify-macapp-tests.md`), since `make app-test`'s console summary is unreliable under Xcode 26.
+   - Known pre-existing gotchas (from persistent memory) that applied: `macapp-xcuitest-automation-wedge.md` ("Timed out while enabling automation mode" wedge, needs login-session reset, not a code bug); `macapp-uitest-only-relevant-class.md` (scope UI test runs via direct `xcodebuild -only-testing:`, not `make app-uitest`, when possible); SourceKit "Cannot find type/module X" is single-file-indexer noise, not a real error (per `macapp/CLAUDE.md`'s own documented gotcha).
+   - `UITestFixture.isActive` is the established idiom (used already by `commitHistory`/`remoteState` in `AppStore.init`) for overriding real persisted `Defaults`-backed state during UI tests to keep them hermetic/deterministic.
+   - `Defaults[.sidebarVisible]` (key `"sidebar.visible"`) and `Defaults[.mainWindowFrame]` (key `"window.mainFrame"`) are real, cross-launch-persisted UserDefaults values (bundle id `com.developwithstyle.workroom.dev` for the Debug/Dev build) that were NOT fixture-overridden — root cause of two separate classes of UI test failure.
+   - `@FocusedValue(\.hasTerminal)` (set via `.focusedSceneValue(\.hasTerminal, !tabs.isEmpty && !store.hasModalPresentation)` in `WorkroomTerminalsView.swift:124`) gates whether Split Right/Left/Down/Up menu buttons (and their ⌘D/⇧⌘D key equivalents) are enabled — per existing memory (`macapp-cmd-key-monitor.md`: "disabled menu items drop their key equivalent"), if this FocusedValue is false/nil when the sidebar is open, ⌘D becomes a silent no-op.
+   - `Package.resolved` version drift: `project.yml` uses `from:` (floating, allows updates) for Defaults, Sparkle, Sentry, and `exactVersion:` (pinned) for SwiftGitX, libgit2, GhosttyKit, tree-sitter, SwiftTreeSitter — confirmed the drifted packages were all `from:`-constrained, so keeping the updated `Package.resolved` was correct per user's "update all deps" instruction.
+
+3. Files and Code Sections:
+
+   - **`/Users/joelmoss/.claude/projects/-Users-joelmoss-dev-workroom/memory/full-test-suite-before-release.md`** (created)
+     - New feedback memory: full test suite incl. UI must run before pre/stable release; UI tests can't run on GitHub CI.
+     - Also updated `MEMORY.md` index with a one-line pointer.
+
+   - **`/Users/joelmoss/dev/workroom/TODOS.md`** (modified, currently uncommitted)
+     - Added then REPLACED a P3 entry under "Tests and tooling" documenting the `ChangedFileRowInvalidationTests` flake — final version marked "FIXED (beta.24 gate)":
+     ```markdown
+     ### `ChangedFileRowInvalidationTests` flaked only inside the full serial `app-test` run — FIXED (beta.24 gate)
+
+     **Fixed:** `ChangedFileOpenTests.swift`'s two `.filePathEditor` tests restored the key in `defer` but
+     never drained the run loop, so the restore's `@Default` change notification (delivered async — see
+     `ChangesPanel.swift`'s `filePathEditorID` comment: `@EnvironmentObject`/`@State`/`@Default` invalidate
+     PAST the row's Equatable gate by design) could land inside the very next test class's window. In the
+     2258-test full serial suite that landed inside `ChangedFileRowInvalidationTests`'s tight 0.6s `settle()`
+     and ticked `ChangedFileRow.bodyPasses` — reproduced twice in a row during the beta.24 release gate,
+     clean every time in isolation. Both restores now drain the run loop first
+     (`restoreFilePathEditor(_:)`), closing the leak at its source rather than papering over the symptom.
+     ```
+
+   - **`/Users/joelmoss/dev/workroom/macapp/WorkroomAppTests/ChangedFileOpenTests.swift`** (modified)
+     - Fixed the two `.filePathEditor` tests to drain the run loop after restoring the Default, preventing the async change-notification leak into `ChangedFileRowInvalidationTests`:
+     ```swift
+     func testForFilePathsIsNilWhenUnset() {
+       let original = Defaults[.filePathEditor]
+       defer { restoreFilePathEditor(original) }
+
+       Defaults[.filePathEditor] = ""
+       XCTAssertNil(ExternalEditor.forFilePaths)  // unset → the file's default app, no named editor
+     }
+
+     func testForFilePathsIsNilForAnUninstalledEditor() {
+       let original = Defaults[.filePathEditor]
+       defer { restoreFilePathEditor(original) }
+
+       Defaults[.filePathEditor] = "com.example.nope"
+       XCTAssertNil(ExternalEditor.forFilePaths)  // configured but not installed → no named editor
+     }
+
+     /// Restores `.filePathEditor` and drains the run loop so the change notification lands here, not
+     /// in whichever test class runs next. `@Default` delivers ASYNC (see `ChangesPanel.swift`'s
+     /// `filePathEditorID` and the memory this bit us for before), so a bare restore in `defer` can
+     /// otherwise arrive inside `ChangedFileRowInvalidationTests`'s tight `settle()` window and tick its
+     /// `bodyPasses` counter — a cross-test leak, not a flake in the invalidation gate itself.
+     private func restoreFilePathEditor(_ value: String) {
+       Defaults[.filePathEditor] = value
+       RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+     }
+     ```
+     - VERIFIED: `ChangedFileOpenTests` (9/9) + `ChangedFileRowInvalidationTests` (3/3) pass together in that order, both isolated and as part of the full 2258-test serial suite (twice, clean).
+
+   - **`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/GhosttySurfaceView.swift`** (modified)
+     - Added `accessibilityPlaceholderValue()` override to expose the exact seeded pty command string for fixture-mode UI test assertions, avoiding reliance on real `claude` CLI output (which hits an unavoidable first-run trust prompt):
+     ```swift
+     /// Fixture-only backdoor for the exact string handed to the pty at spawn (e.g. the full
+     /// `claude '<prompt>'` Investigate seeds) — lets a UI test assert on the seeded ARGV directly
+     /// instead of waiting for the spawned process's own rendered output. Moot for a real `claude`
+     /// invocation: it gates on its own first-run trust prompt before rendering anything, so nothing
+     /// about the seed is ever visible on screen to wait for. Reuses `accessibilityContentEnabled`
+     /// rather than a bespoke gate — this is our own seeded INPUT, not terminal output, but one gate to
+     /// reason about beats two.
+     override func accessibilityPlaceholderValue() -> String? {
+       guard accessibilityContentEnabled else { return super.accessibilityPlaceholderValue() }
+       return runCommand
+     }
+     ```
+     - Note: initially wrote return type as `Any?`, hit build error "method does not override any method from its superclass", fixed to `String?` (the actual AppKit override signature).
+     - Placed right after the existing `accessibilitySelectedText()` override, reusing `accessibilityContentEnabled` (the existing `UITestFixture.isActive || NSWorkspace.shared.isVoiceOverEnabled` gate).
+
+   - **`/Users/joelmoss/dev/workroom/macapp/WorkroomAppUITests/TerminalAgentUITests.swift`** (modified)
+     - Rewrote `testClickingInvestigateSeedsTheRealDiagnosisNotABareCommand` to assert on `newSurface.placeholderValue` (the new AX backdoor) instead of waiting for `.value` (rendered terminal text) to contain the diagnosis — since real `claude` never renders anything past its trust prompt in a fresh fixture dir:
+     ```swift
+     /// The exact issue #146 regression: TerminalTabStrip's Investigate previously hardcoded a bare
+     /// `"claude"` invocation with no context, while TerminalStatusBar's already seeded it with the
+     /// diagnosis. Both now route through `AppStore.startInvestigate`, so clicking Investigate from
+     /// EITHER entry point must open a tab whose command carries the canned diagnosis text — not a
+     /// bare `claude` with nothing to go on. Checked via the status-bar popover here (the tab-strip's
+     /// popover is covered by `testFailedTabShowsAgentBadge`'s identical entry point, minus the click).
+     ///
+     /// Asserts on the seeded ARGV (`accessibilityPlaceholderValue`), not the spawned process's
+     /// rendered output: Investigate always shells out to the REAL `claude` binary (the agent stub only
+     /// fakes the earlier diagnosis step), and a fresh fixture workroom is untrusted to `claude` on
+     /// every run — its first-run trust prompt would block forever before anything the seed contains
+     /// ever reaches the screen. `RunCommandTests.testStartInvestigateBuildsCommandAndTracksTab` already
+     /// pins `AppStore.startInvestigate`'s own command construction exactly; this test's job is only to
+     /// confirm THIS click path (the status-bar popover) actually reaches it.
+     func testClickingInvestigateSeedsTheRealDiagnosisNotABareCommand() {
+       let app = launchedApp(runCommand: "echo 'boom: build failed'; exit 7")
+       startRun(app)
+       revealRunTab(app)
+
+       let diagnosis = app.buttons["terminal.statusBar.diagnosis"]
+       XCTAssertTrue(diagnosis.waitForExistence(timeout: 20))
+       diagnosis.click()
+
+       let investigate = app.buttons["Investigate"]
+       XCTAssertTrue(investigate.waitForExistence(timeout: 5))
+       investigate.click()
+
+       // Investigate opens a new focused tab (titled "Run" until claude reports its own title, same
+       // as any run tab) seeded with the diagnosis.
+       let newSurface = app.descendants(matching: .any).matching(identifier: "terminal.surface")
+         .element(boundBy: 0)
+       XCTAssertTrue(newSurface.waitForExistence(timeout: 10), "Investigate opens a new terminal pane")
+
+       let seededCommand = newSurface.placeholderValue ?? "<nil>"
+       XCTAssertTrue(
+         seededCommand.contains("UITEST diagnosis: port already in use"),
+         "the seeded command must carry the diagnosis text, not a bare `claude` invocation — got: "
+           + seededCommand)
+     }
+     ```
+     - VERIFIED: full `TerminalAgentUITests` class (6/6) passes.
+
+   - **`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/AppStore.swift`** (modified, TWO separate fixes)
+     - **Fix 1 (sidebar visibility)**, near line 242:
+     ```swift
+     /// custom `SidebarColumn` *and* the View ▸ Projects checkmark — a bare AppKit `toggleSidebar` has no
+     /// state a menu checkmark can bind to, so it could never show a tick. Persisted to
+     /// `Defaults.sidebarVisible` (mirrors `showInspector`) so closing it survives a relaunch; the dragged
+     /// width is persisted separately to `Defaults.sidebarWidth`. Gated on `persistsSidebarPrefs`, same as
+     /// `collapsedProjects`/`workroomTabOrder`/`sidebarSelection`, so a background window can't clobber the
+     /// active window's choice.
+     ///
+     /// Forced open under `UITestFixture.isActive` — same idiom as `commitHistory`/`remoteState` above.
+     /// The real persisted value is whatever a PRIOR launch (human or automated) last left it as; without
+     /// this override, one sidebar-toggle test (or a developer's own `make app-run` session) leaves every
+     /// later UI test launching with the sidebar closed, silently missing every `sidebar.*` row it looks
+     /// for. Found chasing why several UI tests burned their full wait timeout looking for a sidebar row
+     /// that was never going to appear.
+     @Published var sidebarVisible: Bool = (UITestFixture.isActive ? true : Defaults[.sidebarVisible])
+     {
+       didSet { if persistsSidebarPrefs { Defaults[.sidebarVisible] = sidebarVisible } }
+     }
+     ```
+     - This is the CURRENT state after being temporarily reverted for an A/B test and then restored. Root cause: commit `4c20ac25` (this release, "persist Projects sidebar open/closed state across relaunch") added persistence with no fixture override, so any prior real launch (interactive `make app-run` or an earlier automated UI test) that left the sidebar closed silently broke every later UI test expecting `sidebar.*` rows to exist.
+     - VERIFIED IN ISOLATION: fixed `RunSettingsPromptUITests` (3/3), `ChangesetDetailUITests` (6/6), `HistoryPushStateUITests` (4/4), `HistoryStressUITests` (4/4), `ViewMenuShortcutsUITests`.
+     - **HOWEVER**: this same fix, when run as part of the FULL app-uitest suite, introduced 13 NEW failures (confirmed reproducible in isolation via bisect), all related to `⌘D`-triggered Split Right and other terminal-focus-dependent actions:
+       - `SplitPaneUITests` ×5, `TabActionsUITests` ×3 (mostly "count did not reach 2" — split created no second pane), `SessionRestoreUITests` ×2, `DiffViewerUITests.testSideBySideRendersTwoColumns` ("the old (left) column renders a deletion cell" failed), `TerminalAgentUITests.testEveryPaneHasAStatusBar`, `WorkroomWorkflowUITests.testAppLaunchesWithChrome` ("the Add Project control should always be present in the sidebar" — ironically THIS one might actually need sidebar open, worth re-checking).
+     - A/B test confirmed: with `sidebarVisible` fixture-forced to `false` (temporarily edited to `(false ? true : Defaults[.sidebarVisible])` + real Default manually set to `false`) and the window-size fix still active, `SplitPaneUITests.testSplitRightCreatesTwoPanes` PASSED. This isolates the SIDEBAR fix (not the window-size fix) as the cause of the 13 new failures.
+     - The sidebar-visible fix has been RESTORED to its correct form (shown above) after the A/B test, and the real Dev-build Default restored to `true` via `defaults write com.developwithstyle.workroom.dev "sidebar.visible" -bool true`.
+     - **UNRESOLVED**: why does `sidebarVisible = true` at launch break ⌘D Split Right (and related terminal-focus actions)? Leading hypothesis: opening the sidebar changes initial keyboard/`@FocusedValue(\.hasTerminal)` focus state (set via `.focusedSceneValue(\.hasTerminal, !tabs.isEmpty && !store.hasModalPresentation)` in `WorkroomTerminalsView.swift:124`), so the Split Right menu button's `.disabled(hasTerminal != true)` gate may end up disabled, silently dropping its ⌘D key equivalent (per existing memory `macapp-cmd-key-monitor.md`: "disabled menu items drop their key equivalent"). This was being actively investigated when interrupted.
+
+     - **Fix 2 (window size)**, near lines 1097-1120:
+     ```swift
+     if !didApplyInitialSize {
+       didApplyInitialSize = true
+       // Fixture mode ALWAYS gets the same deterministic size, ahead of session restore and the
+       // `Defaults` fallback below — neither is hermetic (both read real, cross-launch persisted
+       // state), so a UI test's window geometry otherwise depends on whatever a prior interactive
+       // `make app-run` session or an earlier automated run last left behind. Found chasing why
+       // several tab-strip overflow tests never overflowed on a wide monitor: the real
+       // `Defaults[.mainWindowFrame]` this machine had accumulated was 2469pt wide, plenty of room
+       // for tabs these tests need to NOT fit.
+       if UITestFixture.isActive {
+         window.setContentSize(NSSize(width: 1200, height: 780))
+         window.center()
+       } else if let restored = pendingSessionRestore?.frame.map(NSRectFromString),
+         // The saved session owns per-window frames (issue #46) and wins over both the
+         // "match the current window" size and the single-slot `Defaults` key, which can only ever
+         // describe one window and is now just the cold-start fallback.
+         let frame = Self.frameOnAVisibleScreen(restored)
+       {
+         window.setFrame(frame, display: false)
+       } else if let size = pendingInitialWindowSize {
+         window.setFrame(NSRect(origin: window.frame.origin, size: size), display: false)
+       } else if let frame = Self.savedMainWindowFrame().flatMap(Self.frameOnAVisibleScreen) {
+         window.setFrame(frame, display: false)
+       } else {
+         window.setContentSize(NSSize(width: 1200, height: 780))
+         window.center()
+       }
+     }
+     ```
+     - Root cause: real `Defaults[.mainWindowFrame]` on this machine was `{{685, 240}, {2469, 1108}}` (2469pt wide, from actual interactive usage), causing `TabStripOverflowUITests`/`TabStripScrollIntoViewUITests` (which assume ~1200pt window, expect overflow to trigger with 12 tabs/10 workrooms) to never see overflow.
+     - VERIFIED IN ISOLATION: fixed `TabStripOverflowUITests` (9/9) + `TabStripScrollIntoViewUITests` (3/3) = 12/12.
+     - A/B test confirmed this fix (window size 1200×780) alone, with sidebar forced closed, does NOT cause the 13 new SplitPane/TabActions/etc. failures — those are caused by the SIDEBAR fix, not this one. This window-size fix's own correctness (does it independently cause any regression?) has NOT yet been isolated with sidebar-open — the 13 failures were observed with BOTH fixes active together, then the A/B test (sidebar-closed + window-size-active) showed the split test PASSING, implicating sidebar as the sole cause. Window-size fix is currently presumed clean but not exhaustively re-verified alone against the FULL suite.
+
+   - **UI test files edited then FULLY REVERTED (should have NO net diff)**:
+     - `/Users/joelmoss/dev/workroom/macapp/WorkroomAppUITests/ChangesetDetailUITests.swift`
+     - `/Users/joelmoss/dev/workroom/macapp/WorkroomAppUITests/HistoryPushStateUITests.swift`
+     - `/Users/joelmoss/dev/workroom/macapp/WorkroomAppUITests/HistoryStressUITests.swift`
+     - `/Users/joelmoss/dev/workroom/macapp/WorkroomAppUITests/RunSettingsPromptUITests.swift`
+     - All four had their `selectWorkroom`/`launchedApp` helper's NSPredicate changed from `"identifier == %@ AND label == %@"` to `"identifier == %@ AND label BEGINSWITH %@"`, plus added doc comments explaining the (ultimately WRONG, confounded-by-closed-sidebar) theory; all four were reverted back to the original `label ==` predicate with original comments, and all temporary `print("DIAG ...")` diagnostic statements were removed. This reversion was done via Edit tool calls and confirmed via `xcrun swift-format lint --strict` passing clean on all four — but the FINAL verification that these files are byte-identical to their pre-edit state (e.g. via `git diff`) was NOT explicitly re-confirmed after the last edit in this area; should double check `git status`/`git diff` on these 4 files before proceeding, since the last full round of diagnostic-print-add/remove was on `ChangesetDetailUITests.swift` specifically (both a `launchedApp`-level print and a `selectWorkroom`-level print were added and then both removed).
+     - IMPORTANT CAVEAT: after fixing the sidebar bug, a diagnostic re-check showed the label AT THE `selectWorkroom` CALL SITE (as opposed to at launch) actually reads exactly `["Depth Effect", "uitest-room", "Unread notifications", "Start run command"]` — i.e., "uitest-room" alone, unsuffixed, even later in the test's lifecycle. This means the BEGINSWITH theory may have been UNNECESSARY (the exact match `==` works fine once the sidebar is open) — the earlier ~7-10s "Waiting for Button" waste seen in `ChangesetDetailUITests`/`HistoryPushStateUITests`/`HistoryStressUITests` full traces was likely ALSO just a symptom of the sidebar being closed at the time those specific slow-trace samples were captured, not a separate labeling bug. This was not fully re-verified with a fresh full-suite timing comparison; the BEGINSWITH change was correctly left reverted since it wasn't shown to be necessary once sidebar-open was fixed.
+
+   - **`/Users/joelmoss/dev/workroom/macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`** (modified)
+     - Auto-updated by SPM resolution during rebuilds after switching branches/checkouts. User explicitly approved keeping these updates ("update all deps") after I verified the bumped packages (Defaults, Sentry, Sparkle, swift-syntax) are all `from:`-constrained in `project.yml` (not `exactVersion:`-pinned), so this is compliant with the project's own versioning policy.
+
+   - **Read but not modified — key reference files**:
+     - `/Users/joelmoss/dev/workroom/macapp/WorkroomAppUITests/SplitPaneUITests.swift` — read `testSplitRightCreatesTwoPanes` (lines 61-67): sends `⌘D`, expects pane count 2; and `panes()`/`tabs()`/`assertCount()` helpers.
+     - `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/WorkroomApp.swift` — lines 895 (`@FocusedValue(\.hasTerminal) private var hasTerminal`), 1108-1117 (Split Right/Left/Down/Up buttons, all `.disabled(hasTerminal != true)`), 805 (`var hasTerminal: Bool?` — the FocusedValues key struct definition, not fully read).
+     - `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/WorkroomTerminalsView.swift:124` — `.focusedSceneValue(\.hasTerminal, !tabs.isEmpty && !store.hasModalPresentation)`.
+     - `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/AppStore.swift` lines 150-250 (persistsSidebarPrefs, selectedTargetID didSet, sidebarVisible), lines 1007-1135 (savedMainWindowFrame, window sizing logic, frame observers).
+     - `/Users/joelmoss/dev/workroom/macapp/WorkroomAppTests/RunCommandTests.swift` lines 790-950 (Investigate unit tests, `investigateBanner` helper, `captured` spy array via `makeStore`).
+     - `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/AgentPrompt.swift` (full file) — `investigateCommandLine`, `investigatePrompt`, `shellSingleQuoted`, `parse`.
+     - `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/ChangesPanel.swift` lines 430-635 — `ChangedFileRow` struct, `bodyPasses` static counter, Equatable gate (`static func ==`), `@Default(.filePathEditor)`.
+     - `/Users/joelmoss/dev/workroom/macapp/WorkroomAppTests/ChangedFileRowInvalidationTests.swift` (full file) — `testTerminalPulseBurstRebuildsNoChangedFileRows`, `settle()` helper (0.6s run-loop drain).
+
+4. Errors and fixes:
+   - **Go build cache permission errors** ("operation not permitted" on `/var/folders/.../go-build/...`) — fixed by passing `dangerouslyDisableSandbox: true` on `make cli-lint`/`make cli-test`.
+   - **`xcresulttool` "You don't have permission to save the file"** — same sandbox issue, fixed with `dangerouslyDisableSandbox: true`.
+   - **Parallel `app-test` false-positive flakes** (3 tests failing under `-parallel-testing-enabled YES`) — root cause: shared UserDefaults domain race across parallel worker processes (documented in the Makefile itself). Fixed the SYMPTOM at the time by re-running serially (`APP_TEST_FLAGS=`), which passed — but this surfaced a DIFFERENT, real flake (`ChangedFileRowInvalidationTests`), later root-caused and permanently fixed via `restoreFilePathEditor`.
+   - **Stale checked-out `.xcodeproj`/DerivedData when comparing against `v2.0.0-beta.23`** — got "Build input files cannot be found" errors; fixed by running `xcodegen generate` after checkout. Also had to run `make app-vcs` to rebuild the Rust VCS core xcframework when switching between checkouts (`error: stale: the Rust VCS core doesn't match vcs/ — run 'make app-vcs'`).
+   - **Detached-HEAD git mess from A/B-testing against `beta.23`**: ended up with a `TODOS.md` merge conflict from `git stash pop` after checkout, plus an untracked `.claude/skills/curate-release/` directory blocking `git checkout master`. The `Bash` tool's `dcg` (destructive-command-guard) blocked my attempted `git checkout HEAD -- TODOS.md` and `rm -rf`. Per explicit tool-level constraints, I could NOT run these myself — I explained the situation transparently to the user and asked them to run three specific commands themselves (`git checkout HEAD -- TODOS.md`, `rm -rf .claude/skills/curate-release`, `git checkout master`), which they did one at a time via `<bash-input>` messages. I then successfully ran `git checkout master` (needed `dangerouslyDisableSandbox: true` since `.claude/skills/` is itself sandbox-write-denied) and `git stash pop` to restore my real `TODOS.md` edit cleanly.
+   - **Wrong root-cause theory (BEGINSWITH label predicate)**: I initially misdiagnosed the ~10s "Waiting for Button" waste in 4 UI test files as an exact-vs-prefix label-matching bug (`"uitest-room"` vs `"uitest-room, <status>"`). Applying the fix made `RunSettingsPromptUITests` WORSE (0/3 → still 0/3 but different failure reason). Used a diagnostic `print()` of real button identifiers/labels to discover the TRUE root cause: the sidebar itself was closed (no `sidebar.*` elements existed at all), caused by a real persisted `Defaults[.sidebarVisible]=false` left over from prior testing, with no fixture override in `AppStore.swift`. Reverted the wrong BEGINSWITH fix completely, fixed the real bug instead.
+   - **`accessibilityPlaceholderValue()` wrong return type**: first wrote `-> Any?`, got "method does not override any method from its superclass"; corrected to `-> String?` (the actual AppKit/NSAccessibility override signature) and it compiled clean.
+   - **swift-format line-length violation**: `sidebarVisible` initializer line exceeded the project's column limit (100 cols per `.swift-format` config); fixed by running `xcrun swift-format format --in-place` which auto-wrapped the closure opening brace onto its own line.
+   - **Wrong initial time estimate to the user**: I originally estimated the full UI suite would take "~3-4 min" when asking permission to run it; actual measured runtime was 35-40 minutes. I explicitly corrected myself to the user: "I need to flag I gave you a wrong number earlier... my earlier '~3-4 min' estimate when I asked permission was simply wrong. Sorry for the bad number."
+   - **Interrupted background test run** (not a timeout, not user-initiated): a bisect run got marked "killed" after ~32 minutes with no clear external cause; user confirmed they didn't kill it. Left as an open, unresolved anomaly (didn't reproduce on retry).
+   - **13 NEW UI-test failures surfaced by the full-suite run, caused by my OWN sidebar-visibility fix**: discovered via full 2258-unit + full-UI-suite gate run (post window-size-fix), confirmed reproducible in isolation via bisect (all 13/13 reproduced), then isolated to the sidebar fix specifically via a controlled A/B test (sidebar forced closed + window-size fix still active → `SplitPaneUITests.testSplitRightCreatesTwoPanes` PASSED). **This is UNRESOLVED** — the sidebar fix has been restored to its "correct" (intended) state, but the mechanism by which opening the sidebar breaks ⌘D-triggered pane operations has not yet been found or fixed. This directly violates the user's "no release until all tests pass" instruction until resolved.
+
+5. Problem Solving:
+   - **Solved**: `ChangedFileRowInvalidationTests` flake (async `Defaults` change-notification leak across test boundaries) — root-caused and fixed via `restoreFilePathEditor` run-loop drain.
+   - **Solved**: `TerminalAgentUITests.testClickingInvestigateSeedsTheRealDiagnosisNotABareCommand` — real `claude` CLI trust-prompt blocking — fixed via a new fixture-only AX backdoor (`accessibilityPlaceholderValue`) exposing the seeded pty command directly, sidestepping the need to wait for rendered output.
+   - **Solved**: Sidebar-closed-by-default bug (from this release's new sidebar-persistence feature, commit `4c20ac25`) breaking most `sidebar.*`-row-dependent UI tests — fixed via `UITestFixture.isActive` override in `AppStore.swift`'s `sidebarVisible` initializer.
+   - **Solved**: Window-too-wide bug (real persisted `Defaults[.mainWindowFrame]` at 2469pt, pre-existing, not a regression — confirmed identical failure on `v2.0.0-beta.23` baseline) breaking `TabStripOverflowUITests`/`TabStripScrollIntoViewUITests` overflow-trigger assumptions — fixed via the same `UITestFixture.isActive` idiom forcing a deterministic 1200×780 window size.
+   - **Partially investigated, UNRESOLVED**: why does the sidebar-visibility fix (sidebar open at launch) break ⌘D Split Right and 12 other terminal-focus-dependent tests? Leading hypothesis under active investigation when interrupted: initial keyboard focus / `@FocusedValue(\.hasTerminal)` state differs depending on whether the sidebar is open at launch, causing the Split Right menu item (and others gated on `hasTerminal != true`) to be disabled and silently drop its ⌘D key equivalent.
+   - **Investigated but ultimately not needed**: the BEGINSWITH label-predicate theory for the "Waiting for Button" ~10s waste — reverted, likely was a symptom of the (now-fixed) closed-sidebar bug rather than an independent issue; the user's "reduce that time" instruction has NOT yet been comprehensively re-measured against a fully clean, all-tests-passing full-suite run, so the net effect of my fixes on total runtime is not yet confirmed.
+   - **Root-cause discipline honored**: per global CLAUDE.md's bug-fixing instruction ("identify and address the underlying root cause first — not just symptoms"), I explicitly declined a "weaken the assertion" fallback for the sidebar/window bugs (unlike the Investigate test, where the user explicitly chose that path) and instead fixed the actual state-leak sources in `AppStore.swift`.
+
+6. All user messages (verbatim, non-tool-result):
+   - "all tests (including UI) should be run before any pre or stable release. UI tests cannot be run on Github CI, so they have to run locally here. remember that"
+   - "save it now"
+   - "summarise the steps taken to create a new beta release"
+   - "create a new beta release"
+   - (AskUserQuestion responses, effectively user input): "Yes, beta.24 (Recommended)" for version; "Run gate AND push tag if green" for scope.
+   - (AskUserQuestion response): "Investigate the test/fix before continuing (Recommended)" for the ChangedFileRowInvalidationTests flake.
+   - (AskUserQuestion response): "Accept as known flake, proceed to app-uitest (Recommended)" for the same flake, after further investigation.
+   - "<bash-input>git checkout master</bash-input>" with stdout showing the merge-conflict state, plus a plain confirmation follow-up.
+   - "ok, back now" (after resetting login session to clear the XCUITest automation wedge).
+   - "**no release until all tests pass. first explore why it takes so long, and reduce that time**" — the critical governing instruction for the remainder of the task.
+   - (AskUserQuestion response): "Fix the tests' width assumptions" (regarding the TabStrip overflow window-width blocker).
+   - (AskUserQuestion response): "Weaken the assertion instead" (regarding the Investigate UI test's reliance on real `claude` output).
+   - (AskUserQuestion response): "update all deps" (regarding the Package.resolved SPM version drift).
+   - (AskUserQuestion response): "Yes, run both now (Recommended)" (final full unit+UI suite gate run).
+   - "keep going, let me know when done"
+   - Several `<bash-input>` messages during the git-cleanup detour, each just running one of the three commands I asked for and returning stdout/stderr.
+   - "Check /tmp/claude/gate-app-test.log for full unit suite result. If complete and green, immediately kick off full app-uitest run in background (no need to ask permission again, user said "keep going, let me know when done"). If unit suite still running, reschedule a wakeup. If unit suite failed, investigate and report to user." (this was a scheduled-wakeup self-directed prompt I had written, re-delivered by the harness — technically not a fresh user message but the literal text of a ScheduleWakeup `prompt` I authored).
+   - "[Your previous response had no visible output. Please continue and produce a user-visible response.]" (harness-generated, appeared twice).
+   - "[1 prior /loop wakeup found nothing actionable; loop is healthy.]\nCheck /tmp/claude/gate-app-uitest.log for the full app-uitest run result..." (another self-authored wakeup prompt redelivered).
+   - Various `<task-notification>` system messages reporting background command completions (not user messages, but drove the flow).
+   - The final message before this summary request was the CRITICAL-INSTRUCTION system prompt asking me to summarize (not a user content message).
+
+7. Pending Tasks:
+   - **BLOCKING**: Find and fix why the sidebar-visibility fix (`sidebarVisible = true` in fixture mode) causes 13 UI test failures related to ⌘D Split Right and other terminal-focus-dependent actions (`SplitPaneUITests` ×5, `TabActionsUITests` ×3, `SessionRestoreUITests` ×2, `DiffViewerUITests.testSideBySideRendersTwoColumns`, `TerminalAgentUITests.testEveryPaneHasAStatusBar`, `WorkroomWorkflowUITests.testAppLaunchesWithChrome`).
+   - Once that's fixed, re-verify: full serial `app-test` (must stay 2258/2258 clean) AND full `app-uitest` (must reach 0 failures, per "no release until all tests pass").
+   - Re-assess/measure the actual net effect of all fixes on total UI-suite runtime, to satisfy "reduce that time" — no comprehensive before/after timing comparison has been done yet on a fully-passing run.
+   - Confirm the 4 fully-reverted UI test files (`ChangesetDetailUITests.swift`, `HistoryPushStateUITests.swift`, `HistoryStressUITests.swift`, `RunSettingsPromptUITests.swift`) have a clean `git diff` (no net changes) before finalizing.
+   - Once all tests genuinely pass: proceed with the release itself — tag `v2.0.0-beta.24`, push, let CI run (goreleaser + macapp signing/notarization job), then curate GitHub release notes per the `curate-release` skill's style guidance (headline + one-line framing + grouped bullets, replacing goreleaser's raw commit list).
+   - No commit has been made yet — will need to stage/commit the fix files (`TODOS.md`, `Package.resolved`, `AppStore.swift`, `GhosttySurfaceView.swift`, `ChangedFileOpenTests.swift`, `TerminalAgentUITests.swift`, plus whatever new fix resolves the sidebar/focus interaction) before tagging, though the user has not yet explicitly asked for a commit — should confirm before committing per global git-safety rules ("NEVER commit changes unless the user explicitly asks you to").
+
+8. Current Work:
+   Immediately before this summary request, I was investigating the root cause of why enabling `sidebarVisible = true` under `UITestFixture.isActive` (my own fix in `AppStore.swift`) breaks `⌘D`-triggered "Split Right" and 12 other terminal-focus-dependent UI tests. I had just:
+   - Read `WorkroomApp.swift` lines 1105-1117, confirming `Button("Split Right") { store?.splitFocusedRight() }.keyboardShortcut("d", modifiers: .command).disabled(hasTerminal != true)`, gated on `@FocusedValue(\.hasTerminal)`.
+   - Grepped for `hasTerminal` across the codebase and found it's set via `.focusedSceneValue(\.hasTerminal, !tabs.isEmpty && !store.hasModalPresentation)` in `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/WorkroomTerminalsView.swift:124`.
+   - Had NOT yet read the full `hasTerminal` FocusedValueKey definition (line 805 in `WorkroomApp.swift`, only glimpsed via grep) or `WorkroomTerminalsView.swift` in full to understand what conditions the `.focusedSceneValue` modifier is actually attached under (e.g., is it on a view that's only in the view hierarchy/receiving focus when the sidebar is closed? Or does opening the sidebar somehow steal initial first-responder status away from the terminal, e.g. because the sidebar's own row becomes focused/selected first?).
+   - This is exactly where the conversation was interrupted for a compaction summary — no further diagnosis, hypothesis-testing, or fix had been applied for this specific issue yet.
+
+   Also worth noting: the real Dev-build `Defaults` domain currently has `sidebar.visible = true` (restored) and `window.mainFrame` still holds whatever real value was last written by interactive use (not overwritten, since the window-size fix is fixture-gated only) — no permanent state corruption to the developer's real environment.
+
+9. Optional Next Step:
+   The direct next step, continuing the exact investigation interrupted by this summary, is to read `WorkroomTerminalsView.swift` in full (or at least the surrounding context of line 124) and the `hasTerminal` FocusedValueKey definition at `WorkroomApp.swift:805`, to determine precisely why `sidebarVisible = true` at launch prevents `hasTerminal` from being `true` (or prevents the relevant view from being in the focused-responder chain at all) when a UI test sends `⌘D` immediately after `openWorkroom()`/`try openWorkroom(app)` confirms a terminal pane exists on screen.
+
+   This directly continues my own most recent action, which was:
+   > "Now checking the actual `Button(\"Split Right\")` gate." → read `WorkroomApp.swift:1095-1117`, found `.disabled(hasTerminal != true)` → grepped `hasTerminal` → found `.focusedSceneValue(\.hasTerminal, !tabs.isEmpty && !store.hasModalPresentation)` in `WorkroomTerminalsView.swift:124` — and the investigation was cut off immediately after that grep result, before reading the file itself.
+
+   This step is squarely in line with the user's explicit, still-governing instruction: **"no release until all tests pass. first explore why it takes so long, and reduce that time."** The release remains blocked until this regression (which I introduced via my own sidebar-visibility fix) is understood and fixed, and the full unit+UI suite is re-verified as 100% green.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/joelmoss/.claude/projects/-Users-joelmoss-dev-workroom/ad9e5754-d4c8-4063-beb8-947970ea5d8f.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.
