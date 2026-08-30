@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b5plkk5uc</task-id>
+<tool-use-id>toolu_01AnnE9isp2roNYdMwt59cRt</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/117a8de0-0920-4b33-973d-ebd9f406e777/tasks/b5plkk5uc.output</output-file>
+<status>completed</status>
+<summary>Background command "Watch CI run to completion" completed (exit code 0)</summary>
+</task-notification>
