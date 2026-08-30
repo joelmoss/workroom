@@ -1,0 +1,1 @@
+remove the click action on branch button. should be display only. keep the tooltip to show the full branch name
