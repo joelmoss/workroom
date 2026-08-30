@@ -1,0 +1,100 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/AppStore.swift
+  - macapp/WorkroomApp/Core/DefaultsKeys.swift
+  - macapp/WorkroomAppTests/SharedPrefDefaultsTests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/AppStore.swift ===
+@@ -234,9 +234,14 @@ final class AppStore: ObservableObject {
+   }
+   /// Whether the projects sidebar column is visible. The single source of truth for showing the
+   /// custom `SidebarColumn` *and* the View ▸ Projects checkmark — a bare AppKit `toggleSidebar` has no
+-  /// state a menu checkmark can bind to, so it could never show a tick. Session-only (resets to shown
+-  /// on launch); the dragged width is persisted separately to `Defaults.sidebarWidth`.
+-  @Published var sidebarVisible: Bool = true
++  /// state a menu checkmark can bind to, so it could never show a tick. Persisted to
++  /// `Defaults.sidebarVisible` (mirrors `showInspector`) so closing it survives a relaunch; the dragged
++  /// width is persisted separately to `Defaults.sidebarWidth`. Gated on `persistsSidebarPrefs`, same as
++  /// `collapsedProjects`/`workroomTabOrder`/`sidebarSelection`, so a background window can't clobber the
++  /// active window's choice.
++  @Published var sidebarVisible: Bool = Defaults[.sidebarVisible] {
++    didSet { if persistsSidebarPrefs { Defaults[.sidebarVisible] = sidebarVisible } }
++  }
+   /// Whether a collapsed sidebar is *temporarily* on screen via edge-hover reveal (issue #56): the
+   /// left Projects overlay (`previewingLeft`) and the right inspector overlay (`previewingRight`).
+   /// These are observable app state, not view-local, because other surfaces must react: notification
+
+
+=== DIFF: macapp/WorkroomApp/Core/DefaultsKeys.swift ===
+@@ -104,6 +104,10 @@ extension Defaults.Keys {
+   /// fed back on launch — mirrors `inspectorWidth`. Clamped to the column's min/max when applied.
+   static let sidebarWidth = Key<Double>("sidebar.width", default: 270)
+ 
++  /// Whether the Projects sidebar column is shown, mirroring `showInspector`. Persisted so closing
++  /// it survives a relaunch — previously session-only (reset to visible on every launch).
++  static let sidebarVisible = Key<Bool>("sidebar.visible", default: true)
++
+   /// Whether the notifications menu bar item is shown (issue #33). On by default.
+   static let showMenuBarItem = Key<Bool>("showMenuBarItem", default: true)
+ 
+
+
+=== DIFF: macapp/WorkroomAppTests/SharedPrefDefaultsTests.swift ===
+@@ -35,6 +35,7 @@ final class SharedPrefDefaultsTests: XCTestCase {
+   private let visibleKey = "showNotificationsInspector"
+   private let activeSectionKey = "inspector.activeSection"
+   private let diffModeKey = "diffViewMode"
++  private let sidebarVisibleKey = "sidebar.visible"
+ 
+   /// Every raw key this test writes, saved/restored so it never leaks into the real Dev defaults
+   /// (the unit tests run in the app's own UserDefaults domain — cf. `ActivitySectionTests`).
+@@ -46,7 +47,7 @@ final class SharedPrefDefaultsTests: XCTestCase {
+   /// unrelated class happens to be running beside it. The keys that remain are written by this class
+   /// alone (see above), so nothing else can see them mid-flight.
+   private var keys: [String] {
+-    [sectionArgKey, diffModeArgKey, visibleKey, activeSectionKey, diffModeKey]
++    [sectionArgKey, diffModeArgKey, visibleKey, activeSectionKey, diffModeKey, sidebarVisibleKey]
+   }
+   private var saved: [String: Any?] = [:]
+ 
+@@ -79,6 +80,34 @@ final class SharedPrefDefaultsTests: XCTestCase {
+     XCTAssertEqual(Defaults[.activeInspectorSection], .changes)
+   }
+ 
++  /// The sidebar's own shipped default, kept separate from the inspector's above since it's the
++  /// opposite polarity — the projects sidebar starts SHOWN, unlike the inspector.
++  func testTheSidebarShippedDefaultIsShown() {
++    XCTAssertTrue(Defaults[.sidebarVisible], "the projects sidebar starts open")
++  }
++
++  // MARK: sidebar visibility, as the store persists it
++
++  /// A fresh store seeds from whatever was last persisted, not the shipped default — the same
++  /// contract `showInspector`/`activeInspectorSection` already have.
++  ///
++  /// The write-back half (`didSet { if persistsSidebarPrefs { … } }`) has no test here, matching
++  /// `collapsedProjects`/`workroomTabOrder`/`sidebarSelection` — the other properties gated the same
++  /// way — because this suite runs hosted inside the real app (`TEST_HOST`): the app's own launch
++  /// path opens a real window and registers its `AppStore` as `WindowRegistry.lastActiveStore` before
++  /// any test body runs, so a freshly-constructed `AppStore()` here is never the last-active store and
++  /// `persistsSidebarPrefs` is always false for it. Asserting the write would test a should-never-fire
++  /// branch, not the real gate.
++  @MainActor
++  func testAStoreSeedsSidebarVisibilityFromThePersistedSetting() {
++    Defaults[.sidebarVisible] = false
++    XCTAssertFalse(
++      AppStore().sidebarVisible, "a new store must not silently reopen a closed sidebar")
++
++    Defaults[.sidebarVisible] = true
++    XCTAssertTrue(AppStore().sidebarVisible, "and must reopen a persisted-visible sidebar")
++  }
++
+   // MARK: inspector visibility, as the store reads it
+ 
+   /// `AppStore.inspectorIsVisible` gates the live-History triggers — `handleRootBranchChange` and the
+
+
+Investigate per the method in your instructions, then return the findings list.
