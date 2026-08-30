@@ -1,0 +1,98 @@
+<task-notification>
+<task-id>a4f2e44ac68020906</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/c55d64aa-154c-477d-a181-18c86c6e8ed8/tasks/a4f2e44ac68020906.output</output-file>
+<status>completed</status>
+<summary>Agent "Investigate agent-usage/cwd reattach regression" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Investigation Report: Reattach title/cwd synthesis regression
+
+### Summary of method
+Read the current source of every file named in the task, diffed the full commit history of `SessionDaemon.swift`/`TerminalSessions.swift`/`GhosttySurfaceView.swift`/`AgentUsage.swift` since the original fix (`5361fb46`), and — critically — found and read **live evidence on disk**: the daemon's own debug log and the actual running process tree for a currently-persisted Claude session. That evidence points at a different, more concrete culprit than pure static reading would suggest.
+
+---
+
+### Q1 — `AgentTitleRecognition.backend(for:)` (`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/AgentUsage.swift:105-126`)
+
+```swift
+static func backend(for title: String?) -&gt; AgentBackend? {
+    ...
+    switch trimmed.lowercased() {
+    case "claude code": return .claude
+    case "codex": return .codex
+    default: break
+    }
+    guard let first = trimmed.split(whereSeparator: \.isWhitespace).first else { return nil }
+    let token = String(first).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+    let executable = (token as NSString).lastPathComponent
+    switch executable {
+    case "claude": return .claude
+    case "codex": return .codex
+    default: return nil
+    }
+}
+```
+
+This **does** correctly recognize a bare argv0-style string like `"claude"` (case-sensitive `lastPathComponent` match, second switch) — exactly what `SessionDaemon`'s synthesized `\x1B]2;claude\x07` produces. Not the bug, given the name resolves to literally `"claude"`/`"codex"`. It only fails if the resolved name is something else entirely (see Q2).
+
+### Q2 — `SessionPTY.foregroundProcessGroup`/`executableName` (`/Users/joelmoss/dev/workroom/macapp/WorkroomSession/SessionPTY.swift:143-181`)
+
+- `foregroundProcessGroup` returns `nil` whenever `tcgetpgrp` returns `&lt;= 0`.
+- `executableName(processID:)` reads `KERN_PROCARGS2` for the given pid — it looks up **argv0 of the process group's own pid**, assuming pgid == the group leader's own pid (true for a normal simple foreground command). If a wrapper script/shebang were involved (e.g. an npm-shim `#!/usr/bin/env node`), the kernel's shebang exec-substitution replaces argv[0] with the interpreter path before `KERN_PROCARGS2` ever sees it — this is a real theoretical gap in the doc comment's claim ("matches what the shell's own preexec title-report already uses"), but **I could not confirm it's what's happening here** (see below).
+
+**Concrete finding, not theory**: I found an actual daemon debug log (`~/Library/Application Support/com.developwithstyle.workroom.dev/sessions/session.sock.log`) containing real `attach()` events for a Codex TUI session:
+
+```
+attach 195c5079-...: foreground is the login shell (pid=341); skipping title/pwd synthesis
+attach 195c5079-...: replaying 10961 bytes: ...&lt;ESC&gt;]2;codex\x07&lt;ESC&gt;]133;C\x07...&lt;ESC&gt;[?2026h... "OpenAI Codex" TUI paint...
+```
+
+i.e. the gate at `SessionDaemon.swift:376-377` (`if let group = SessionPTY.foregroundProcessGroup(...), group != session.processID`) fell to the **else** branch and skipped synthesis *even while a genuine full-screen program was actively drawn in the replay*. This is the exact reported symptom (both title AND cwd synthesis skipped by one shared gate — see Q3 below for why that explains both being absent together).
+
+However, checking the **live**, currently-running process tree for a real persisted Claude session (Nightly build) shows the mechanism working correctly right now:
+```
+60542 59470 60542 60733 Ss   -zsh        (session.processID = 60542)
+60733 60542 60733 60733 S+   claude      (tpgid = 60733, i.e. tcgetpgrp would return 60733 ≠ 60542)
+```
+So the gate is not *always* broken — it is at least intermittently wrong. The daemon log I found is dated **Aug 14**, a week stale relative to today's session, so it documents a real past occurrence of the bug but I can't pin today's exact repro to it. This needs a fresh reattach with fresh daemon logging to nail down whether it's still misfiring today, or whether it was specific to Codex's process tree.
+
+### Q3 — app-restart path vs. manual reattach path (`GhosttySurfaceView.swift`)
+
+Both converge on the exact same `createSurface()` → `applyPersistentSession()` → spawns `workroom-session attach` (`GhosttySurfaceView.swift:251-329, 403-436`). `reattachPersistentSession()` (`:438-445`) and the app-restart path (`ensureSurfaceCreated` at `:338-350`, driven from `viewDidMoveToWindow` or `TerminalSessions.materializeLivePersistentSessions` at `TerminalSessions.swift:1685-1695`) both just call `createSurface()`. **No divergent second attach call, no different request payload.** I found nothing that resets `session.clientDescriptor` twice or double-attaches on the restart path specifically.
+
+### Q4 — git history for a regression in the reset/gating logic
+
+`git log` on the four files since `5361fb46` ("synthesize title/pwd on reattach"):
+```
+0dfc8344 feat: show a recognized CLI/TUI's real favicon in its terminal tab
+cc759a3b, 78bb9c10, 7907754f, a9e54fe2, 294082d2, 9d1a2b9d — all session-daemon kill/termination fixes, unrelated
+cb45b13d fix: sanitize reattach title/cwd, strip OSC 52 from replay
+```
+- `0dfc8344`'s diff to `TerminalSessions.swift` (`updateTitle`) only **adds** an `|| (s.activeTool == nil &amp;&amp; detectedTool != nil)` OR-clause to the existing guard; it doesn't touch `s.liveTitle != trimmed`. On a fresh reattach `s.liveTitle` starts `nil`, so `s.liveTitle != trimmed` is already `true` and the guard passes regardless — **this commit is not the regression**.
+- `cb45b13d`'s diff only wraps `name`/`cwd` in `sanitizedForEscapeSequence` (strips control bytes) — a no-op for a clean string like `"claude"` or a normal path — **not the regression**.
+- No commit since `5361fb46` touches the `group != session.processID` gate (`SessionDaemon.swift:376-377`) itself.
+
+### Q5 — callback-wiring race
+
+**Disproved by construction.** `onTitleChange`/`onCwdChange` are assigned in `makeTerminalTab` (`TerminalSessions.swift:1609-1614`) immediately after `makeView(...)` returns — for *both* a freshly-created tab (`addTab`) and a restored one (`restore()`, `TerminalSessions.swift:665-711`, which the file's own comment states explicitly: "Nothing spawns here: constructing a surface is inert until it enters a window" at `:662-663`). `createSurface()` (which is the only thing that can ever call `ghostty_surface_new` and thus receive any libghostty action callback) only runs later, from `viewDidMoveToWindow` or an explicit `ensureSurfaceCreated`/`reattachPersistentSession` call — always strictly *after* the tab (and its callbacks) already exist. There is no code path where a `GHOSTTY_ACTION_SET_TITLE`/`GHOSTTY_ACTION_PWD` callback can fire before `onTitleChange`/`onCwdChange` are wired.
+
+Also traced the render side per the advisor's flag: `TerminalStatusBar.swift:51-53,67` gates the footer usage icon directly on `state?.activeAgentBackend` with no additional/independent gate, and `cwd` (`:45`) falls back to `state.view.lastKnownCwd` — but that's fed by the *same* `onCwdChange`/`handlePwd` path, not an independent source. So there's no separate rendering-layer failure mode; if `updateTitle`/`updateCwd` never fire, the footer/cwd genuinely have nothing to show.
+
+---
+
+### Second, independently-confirmed bug: `SessionReplayBuffer`'s alt-screen detection misses synchronized-output TUIs
+
+`SessionReplayBuffer.swift:13-23` only recognizes classic DEC alt-screen codes (`?47h`, `?1047h`, `?1049h`) as "entering the alternate screen," and drops its buffer only on that transition (`:71-72`: `guard !alternateScreenActive else { return [] }`).
+
+The captured daemon log's replay bytes for the Codex session (11.7KB total) contain **zero** occurrences of `1049h`, `1047h`, or `[?47h` anywhere (verified with `grep -c` against the full, untruncated log file), while clearly containing a full-screen TUI repaint (box-drawing "OpenAI Codex" panel) driven instead via `\x1B[?2026h` (synchronized-output mode) and absolute cursor positioning on the **primary** screen. Because the enter-sequence is never matched, `alternateScreenActive` never becomes `true`, so the buffer never drops — and its byte count visibly grows across the three captured reattach events (10961 → 17958 → 19467 bytes), meaning stale primary-screen content (including old OSC 2/OSC 7 from job-start time) keeps accumulating and gets replayed in full on every subsequent reattach, right alongside whatever the daemon does or doesn't synthesize.
+
+This is a genuine, currently-reproducible gap independent of the tcgetpgrp question: any TUI (possibly including newer Claude Code builds) that uses synchronized-output instead of classic alt-screen defeats the "drop while full-screen" replay heuristic that the reattach fix depends on.
+
+---
+
+### Bottom line / what's unconfirmed
+- **Confirmed bugs in current code:** (1) `SessionReplayBuffer`'s alt-screen detection doesn't cover synchronized-output-only TUIs, so its buffer can grow unbounded and replay stale escape sequences; (2) real evidence (stale but genuine) that `SessionDaemon.attach()`'s foreground-pgid gate can fall into "skip synthesis" while a real TUI is running.
+- **Not confirmed:** whether (2) is what's happening *today* for Claude specifically — a live process snapshot of a currently-attached Claude session showed the gate working correctly (`tpgid` correctly pointed at `claude`, not the shell). Reproducing with fresh daemon logging (kill the app, reattach, then immediately read `~/Library/Application Support/&lt;bundle-id&gt;/sessions/session.sock.log` for the `attach ...: foreground pgid=... name=... cwd=...` vs `...skipping title/pwd synthesis` line) would settle which of the two mechanisms is actually failing for the user's repro.
+- **Disproved:** the callback-wiring race (Q5) and the `0dfc8344`/`cb45b13d` regression theories (Q4) — neither touches the failing logic.</result>
+<usage><subagent_tokens>191893</subagent_tokens><tool_uses>62</tool_uses><duration_ms>954844</duration_ms></usage>
+</task-notification>
