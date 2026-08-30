@@ -1,0 +1,350 @@
+<task-notification>
+<task-id>a0fbf9cde41e57b73</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/aed8926d-2d0e-4e9c-8c02-c5f98d2554f8/tasks/a0fbf9cde41e57b73.output</output-file>
+<status>completed</status>
+<summary>Agent "Design first-run onboarding wizard for macapp" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result># Implementation Plan: First-Run Onboarding Wizard (issue #151)
+
+## Corrections to the supplied research (verified by reading the files)
+
+1. **⌘` cycling does NOT include Settings/About today, and onboarding should follow that same exclusion — not be specially added.** `WindowRegistry.isCycleableWindow` (`macapp/WorkroomApp/Core/WindowRegistry.swift:181-184`) requires `store(for: window) != nil || window is QuickTerminalWindow`. Its own doc comment (`WindowRegistry.swift:163-167`) says the cycle is workroom windows *plus the quick terminal*, "deliberately not the Settings / About panels." So leaving the onboarding window unregistered (see below) correctly *excludes* it from ⌘` cycling, matching precedent — this needs zero new code, but it's an exclusion, not an inclusion.
+
+2. **Theming precedent is not `@Environment(ThemeService.self)`.** No view in the app uses that. `WhatsNewSheet.swift:19` and `SettingsView.swift` both do `private let theme = ThemeService.shared` (it's `@MainActor @Observable`, `ThemeService.swift:30-31`) and read `theme.tokens.*`/`ThemeService.shared.tokens.*` directly in `body`. The `ThemeTokens.swift:9` doc comment claiming `@Environment` usage is aspirational/incorrect — nothing reads it that way. The onboarding window should copy the actual pattern.
+
+3. **Theme readiness is a non-issue.** `ThemeService.init()` (`ThemeService.swift:148-151`) computes `tokens` synchronously from `Defaults[.themeFamily]` before any window can render — there's no async gap to guard against. The "first launch before a theme is applied" comment in `ThemeTokens.swift` is about a *missing/invalid theme file* fallback, not a load race.
+
+4. **`AddProjectSheetModel`/`AppStore.addProject` need no refactor to reuse** — `addProject(_ path: String, create: Bool) async` (`AppStore.swift:2983-2999`) already takes plain `String`/`Bool`, and `AddProjectSheetModel` (`Views/AddProjectSheet.swift:16-54`) is already a pure, sheet-independent enum. Confirmed no coupling to fix.
+
+5. **`AppStore.init` does no CLI work** (`AppStore.swift:858-860` doc comment) — relevant to the design decision below about how the wizard calls into the store.
+
+## Key design decision (diverges from the literal research prompt — resolved via advisor review)
+
+The research suggested giving the onboarding window "no `AppStore`" like Settings. That's right for *window registration* (never call `WindowRegistry.shared.register(window:store:)` for it — see §6), but the wizard's Add-Project step still needs to *mutate* the real project list, and `AppStore.addProject` does more than register a path: after `reload()` it sets `selectedProjectID`/`selectedTargetID = .root(project:)` (issue #104 — land the user on the new project instead of "Nothing selected"). Constructing a throwaway `AppStore(projectStore: .shared)` just for the wizard would call that tail on an object nobody's looking at, so the real (launch) window's sidebar would show the new project with nothing selected — a visible regression versus what `AddProjectSheet` already does today.
+
+**Fix:** the wizard drives the *existing, visible* launch-window store: `WindowRegistry.shared.lastActiveStore`. This is an established, documented seam — `AppDelegate.shortcutStore`'s doc comment (`WorkroomApp.swift:216-224`) and `lastActiveStore`'s own doc comment (`WindowRegistry.swift:39-41`, "modal-safe... a quit alert / Settings / About becoming key never changes it") both establish that a foreign/unregistered window becoming key doesn't disturb it, and by construction the launch `RootWindow` is registered (and hence `lastActiveStore` is non-nil) well before the wizard's Add-Project step can be interacted with (registration happens in `WindowAccessor`'s `viewDidMoveToWindow`, ahead of the `.task` that opens the onboarding window).
+
+## 1. New Defaults key — `macapp/WorkroomApp/Core/DefaultsKeys.swift`
+
+Add, alongside `lastSeenVersion` (same "unset = first launch" shape):
+
+```swift
+/// Whether the first-launch onboarding wizard (issue #151) has been completed. False on a fresh
+/// install — following the same "unset/false = first launch" pattern as `lastSeenVersion`. Flips
+/// to true when the wizard reaches its last step, or when a project is added from inside it
+/// (`OnboardingWindow`); the wizard is gated on this AND an empty project list
+/// (`OnboardingGate.shouldShow`), so completing it — or adding a project some other way before ever
+/// opening it — means it never shows again, but closing the window early leaves this false, so it
+/// shows again next launch.
+static let hasCompletedOnboarding = Key&lt;Bool&gt;("onboarding.hasCompleted", default: false)
+```
+
+Deliberately **not** written from inside `AppStore.addProject` itself — that function has an existing test file (`AppStoreAddProjectTests.swift`) and a second caller (`ProjectSidebar`'s plain "Add Project…" fallback) that has nothing to do with onboarding. Since the show-gate already checks `projects.isEmpty`, a project existing is sufficient on its own to suppress onboarding; welding a `Defaults` write into the shared mutation path only buys the rare "user deletes their only project later" case, which nobody asked for. The flag is set only from the onboarding view itself (§5).
+
+## 2. Where the decision is made and the window opened — `macapp/WorkroomApp/WorkroomApp.swift`
+
+**Scene declaration** — add a new single-instance `Window` scene (macOS 13+, fine at this app's macOS 15+ floor), placed after the `WindowGroup(for: WindowSeed.self)` block (only the *first* declared scene auto-opens at launch, so ordering here matters — put it next to `Settings`, not before the `WindowGroup`):
+
+```swift
+Window("Welcome to Workroom", id: OnboardingWindow.sceneID) {
+  OnboardingWindow()
+}
+
+Settings {
+  SettingsView()
+    ...
+}
+```
+
+No `.commands { ... }` on it (Settings has none either — the app-wide `WorkroomCommands` from the `WindowGroup` scene already covers the menu bar) and no `.environmentObject` injections — the view needs none (see §5).
+
+**Launch hook** — in `RootWindow.body`'s existing `.task` (`WorkroomApp.swift:155-174`), right after bootstrap resolves and the existing `guard seed.isLaunch else { return }`:
+
+```swift
+.task {
+  guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
+  await store.bootstrap(restore: seed.restore)
+  guard seed.isLaunch else { return }
+  if OnboardingGate.shouldShow(
+    hasCompleted: Defaults[.hasCompletedOnboarding], projectsEmpty: store.projects.isEmpty
+  ) {
+    openWindow(id: OnboardingWindow.sceneID)
+  }
+  for key in ProjectStore.shared.pendingSessionKeys() {
+    openWindow(value: WindowSeed.restoring(key: key))
+  }
+}
+```
+
+This reuses the `@Environment(\.openWindow) private var openWindow` already declared on `RootWindow` (`WorkroomApp.swift:122`). Gating on `seed.isLaunch` is what stops onboarding from ever considering itself on a ⌘N window (only the launch window's `.task` runs this branch at all — restored siblings return before reaching it, exactly like the What's-New check and the session fan-out already do). `openWindow(id:)` on a `Window` (not `WindowGroup`) scene is idempotent if called twice — no double-open risk from a `.task` re-fire, same reasoning already documented for the sibling-restore loop right below it.
+
+## 3. Scene content, state machine, sizing — new file `macapp/WorkroomApp/Views/OnboardingWindow.swift`
+
+Mirrors the existing "pure model beside its view" pattern (`AddProjectSheetModel` next to `AddProjectSheet` in the same file):
+
+```swift
+import Defaults
+import SwiftUI
+
+/// The wizard's four fixed steps (issue #151): Welcome → Feature tour → Add Project → Done.
+enum OnboardingStep: Int, CaseIterable {
+  case welcome, tour, addProject, done
+}
+
+/// Pure decision logic for whether the wizard should open, extracted so it's unit-testable without
+/// a window (mirrors `AddProjectSheetModel`). Trigger: first launch ever, only while no project is
+/// registered. `override` lets a UI test force either outcome deterministically — see
+/// `UITestFixture.onboardingOverride`; defaults to that real flag in production, injected explicitly
+/// in tests.
+enum OnboardingGate {
+  static func shouldShow(
+    hasCompleted: Bool, projectsEmpty: Bool, override: Bool? = UITestFixture.onboardingOverride
+  ) -&gt; Bool {
+    if let override { return override }
+    return !hasCompleted &amp;&amp; projectsEmpty
+  }
+}
+
+/// One feature-tour highlight card.
+struct OnboardingFeature: Identifiable {
+  let id = UUID()
+  let icon: String
+  let title: String
+  let subtitle: String
+
+  static let all: [OnboardingFeature] = [
+    OnboardingFeature(
+      icon: "square.stack.3d.up",
+      title: "Workrooms, not just worktrees",
+      subtitle: "Spin up isolated copies of a project via Git worktrees or JJ workspaces, so you "
+        + "can work on several changes at once without stashing."),
+    OnboardingFeature(
+      icon: "terminal",
+      title: "A terminal built in",
+      subtitle: "Every project and workroom gets its own embedded terminal — no switching to a "
+        + "separate Terminal app to run a command."),
+    OnboardingFeature(
+      icon: "sidebar.left",
+      title: "One sidebar for everything",
+      subtitle: "Manage every project and its workrooms from a single tree, with VCS status and "
+        + "notifications at a glance."),
+    OnboardingFeature(
+      icon: "play.circle",
+      title: "Your dev server, supervised",
+      subtitle: "Configure a per-project run command Workroom starts, stops, and restarts for "
+        + "you (⌘R), so switching workrooms never leaves an orphaned server."),
+  ]
+}
+
+/// The dedicated first-run onboarding window (issue #151) — a `Window` scene (WorkroomApp.swift),
+/// not a sheet over RootWindow. Deliberately carries NO `WindowAccessor`/`WindowRegistry.register`:
+/// staying unregistered is what makes it fall through the same "no AppStore" paths Settings/About
+/// already use — the ⌘W fallback (AppDelegate's key monitor), the shortcut/switcher no-ops
+/// (`AppDelegate.shortcutStore`/`switcherGate`), the quit/window-count logic (`WindowRegistry
+/// .allStores`), and the ⌘` cycle exclusion (`isCycleableWindow`) all come out right for free.
+struct OnboardingWindow: View {
+  static let sceneID = "onboarding"
+
+  @Environment(\.dismissWindow) private var dismissWindow
+  @State private var step: OnboardingStep = .welcome
+  private let theme = ThemeService.shared
+
+  var body: some View {
+    VStack(spacing: 0) {
+      content.frame(maxWidth: .infinity, maxHeight: .infinity)
+      Divider()
+      footer
+    }
+    .frame(width: 560, height: 480)
+    .background(theme.tokens.panel.ignoresSafeArea())
+    .accessibilityIdentifier("onboarding.window")
+  }
+
+  @ViewBuilder private var content: some View {
+    switch step {
+    case .welcome: OnboardingWelcomeStep()
+    case .tour: OnboardingTourStep()
+    case .addProject:
+      // Reused verbatim (not rebuilt) — same validation, same "Choose…" picker, same copy already
+      // covered by AddProjectSheetModelTests. Its own Cancel button doubles as "skip this step."
+      AddProjectSheet(
+        onAdd: { path, create in Task { await handleAdd(path, create: create) } },
+        onCancel: { step = .done })
+    case .done:
+      OnboardingDoneStep(onFinish: finish)
+    }
+  }
+
+  private var footer: some View {
+    HStack {
+      if step != .welcome, step != .addProject {
+        Button("Back") { step = OnboardingStep(rawValue: step.rawValue - 1) ?? .welcome }
+      }
+      Spacer()
+      stepDots
+      Spacer()
+      if step == .welcome || step == .tour {
+        Button("Next") { step = OnboardingStep(rawValue: step.rawValue + 1) ?? .done }
+          .buttonStyle(.borderedProminent)
+      }
+      // .addProject's own buttons drive its advance; .done's button is inside OnboardingDoneStep.
+    }
+    .padding(16)
+  }
+
+  private var stepDots: some View {
+    HStack(spacing: 6) {
+      ForEach(OnboardingStep.allCases, id: \.self) { s in
+        Circle().fill(s == step ? theme.tokens.accent : theme.tokens.fgDim)
+          .frame(width: 6, height: 6)
+      }
+    }
+  }
+
+  /// §4: routes through the existing launch window's store rather than a throwaway one, so a
+  /// successful add lands the user on the new project's root exactly as it does from the sidebar
+  /// (`AppStore.addProject`'s post-`reload()` selection, issue #104) instead of a silent no-op.
+  private func handleAdd(_ path: String, create: Bool) async {
+    guard let store = WindowRegistry.shared.lastActiveStore else { return }
+    store.errorMessage = nil  // clear any stale error before reading it as this call's outcome
+    await store.addProject(path, create: create)
+    guard store.errorMessage == nil else { return }  // leave the sheet up so the user can retry
+    Defaults[.hasCompletedOnboarding] = true
+    step = .done
+  }
+
+  private func finish() {
+    Defaults[.hasCompletedOnboarding] = true
+    dismissWindow(id: Self.sceneID)
+  }
+}
+
+private struct OnboardingWelcomeStep: View { /* headline + subhead, matches WhatsNewSheet's header spacing/typography */ }
+private struct OnboardingTourStep: View { /* ForEach(OnboardingFeature.all) { ... } cards */ }
+private struct OnboardingDoneStep: View {
+  let onFinish: () -&gt; Void
+  var body: some View {
+    VStack(spacing: 16) {
+      Spacer()
+      Text("You're all set").font(.largeTitle.bold())
+      Text("Open a project from the sidebar whenever you're ready.")
+        .foregroundStyle(.secondary)
+      Spacer()
+      Button("Get Started", action: onFinish)
+        .buttonStyle(.borderedProminent)
+        .keyboardShortcut(.defaultAction)
+    }
+    .padding(32)
+  }
+}
+```
+
+**Sizing/chrome**: fixed `.frame(width: 560, height: 480)` on the root content — same technique `SettingsView.swift:40` (`.frame(width: 621, height: 380)`) and `WhatsNewSheet.swift:30` (`.frame(width: 520, height: 600)`) already use; neither adds `.windowResizability`, so this doesn't either (a plain fixed content frame is the established, sufficient way to get a non-growing window here). `AddProjectSheet`'s own `.frame(width: 460)` nests inside that fixed canvas for its one step — a minor, acceptable visual quirk (centered narrower content on that step only) rather than forking/widening a shared, already-tested view.
+
+**Pager mechanism (§8)**: confirmed no `TabView(.page…)`/carousel component exists anywhere in `macapp/WorkroomApp/` (only unrelated hits in `VCSWriting.swift`). `.page` tab style is iOS-primary and not the right shape for a 4-step linear wizard anyway, so this plan uses a plain `switch step { ... }` content swap plus the 6pt `stepDots` `HStack` above — no new dependency, no TabView.
+
+## 4. Add-Project step reuse
+
+Already covered above: the step embeds `AddProjectSheet` directly (zero duplicated form/validation code, zero new UI, `AddProjectSheetModelTests` coverage carries over unchanged) and its `onAdd` closure calls straight into `AppStore.addProject(_:create:)` on `WindowRegistry.shared.lastActiveStore` — no refactor of either type, per the corrected finding in §0/design-decision above.
+
+## 5. Completion recording — summarized
+
+- **On "Get Started" (Done step)** → `Defaults[.hasCompletedOnboarding] = true`, then `dismissWindow(id: OnboardingWindow.sceneID)`.
+- **On a successful add mid-wizard** → same flag write, inside `handleAdd`, before auto-advancing to `.done` (so the user still sees the Done screen, but the flag is already true — the two writes are simply redundant/idempotent, not conflicting).
+- **On close (⌘W, red button, or just walking away) before either of those** → nothing happens; the flag stays `false`, so `OnboardingGate.shouldShow` fires again next launch. No custom `NSWindowDelegate`/close-guard is needed for this — it's the default behavior of doing nothing, which is exactly right per the user's decision ("still show again if not yet finished").
+- **Existing fallback stays untouched**: `ProjectSidebar.swift:96-110`'s `ContentUnavailableView` + `store.requestAddProject = true` remains the safety net for anyone who closes the wizard early or on a subsequent still-empty launch before the gate re-fires.
+
+## 6. Aux-window integration — confirmed, no special-casing needed
+
+The single load-bearing implementation rule: **`OnboardingWindow` must never appear inside a `WindowAccessor { WindowRegistry.shared.register(window:store:) }` call** (unlike `RootWindow.body`, `WorkroomApp.swift:149-154`). With that omission:
+
+- **⌘W fallback** (`WorkroomApp.swift:314-320`): `WindowRegistry.shared.store(for: keyWindow) == nil` is true for the onboarding window exactly as it is for Settings/About, so the existing local-monitor branch closes it via `keyWindow.performClose(nil)` with zero new code.
+- **Shortcut/switcher no-ops** (`AppDelegate.shortcutStore`/`switcherGate`/`hasModalPicker`, `WorkroomApp.swift:228-264`): all resolve through `registry.store(for: window)`, which is `nil` for an unregistered window, so ⌘1–9/⌘R/⌥Tab/etc. all no-op or pass through exactly as they do for Settings/About today.
+- **Quit/window-counting** (`WindowRegistry.hasAnyLiveRunCommand`, `gracefullyStopAllWindows`, `applicationShouldTerminate`/`applicationShouldHandleReopen`): all iterate `allStores`, which only contains registered windows — the onboarding window never contributes an entry, so it can't produce a spurious run-command or confuse the quit-confirmation logic from commit `9a5d10da`. (There's also no run command possible on this window at all, so this is moot in practice, not just by omission.)
+- **⌘` front-to-back cycling** (`WindowRegistry.isCycleableWindow`, line 181-184): correctly *excludes* the onboarding window, matching the documented Settings/About exclusion — this is the one place the original research had the direction backwards (see §0).
+
+## 7. UI-test fixture plan — `macapp/WorkroomApp/Core/UITestFixture.swift`
+
+Add a new override, read **independent of `isActive`** (like `forceWhatsNew`/`updateAvailableVersion`, `UITestFixture.swift:377-387`) so it also covers the non-fixture bootstrap path:
+
+```swift
+/// Override for whether the onboarding wizard (issue #151) should open, for deterministic UI tests
+/// (`-WorkroomUITestOnboarding show|hide`). Read independent of `isActive` — like `forceWhatsNew` —
+/// because `WorkroomWorkflowUITests.testAppLaunchesWithChrome` runs with `fixture: false` against
+/// the real `~/.config/workroom` and the real Dev `Defaults` domain: on a machine with no config and
+/// `hasCompletedOnboarding` never set, the real gate would otherwise fire during that unrelated
+/// chrome smoke test. nil = no override, defer to the real gate (`OnboardingGate.shouldShow`).
+static var onboardingOverride: Bool? {
+  switch text("WorkroomUITestOnboarding") {
+  case "show": return true
+  case "hide": return false
+  default: return nil
+  }
+}
+```
+
+And in `applyFixtureDefaults(active:)` (`UITestFixture.swift:537-565`), add one pin alongside the existing `sidebarWidth`/`diffViewMode`/`themeFamily` "protect determinism against persisted state" writes:
+
+```swift
+// Pinned "already onboarded" for the same reason as themeFamily/diffViewMode above: the flag
+// PERSISTS in the real Dev Defaults domain, so a fresh machine with zero registered projects would
+// otherwise pop the wizard over e.g. NewWorkroomDialogUITests' `-WorkroomUITestNoProjects 1`
+// scenario. A test that wants onboarding itself passes `-WorkroomUITestOnboarding show`, which
+// OnboardingGate checks first.
+Defaults[.hasCompletedOnboarding] = true
+```
+
+This is a **second regression this plan catches beyond the one the task called out**: `NewWorkroomDialogUITests` already launches fixture mode with `-WorkroomUITestNoProjects 1` to test ⌘N's disabled state (issue #81 D3) — without this pin, a fresh CI runner would pop the onboarding window over that test too, since fixture mode alone doesn't touch `hasCompletedOnboarding`.
+
+Two call-site fixes to close both flake vectors:
+- `macapp/WorkroomAppUITests/WorkroomWorkflowUITests.swift:94` — change `launchedApp(fixture: false)` to `launchedApp(fixture: false, extraArgs: ["-WorkroomUITestOnboarding", "hide"])` in `testAppLaunchesWithChrome`.
+- New `macapp/WorkroomAppUITests/OnboardingUITests.swift` — launches with `-WorkroomUITestFixture 1 -WorkroomUITestNoProjects 1 -WorkroomUITestOnboarding show -ApplePersistenceIgnoreState YES`, asserting the `onboarding.window` identifier appears, walks Next/Next/Cancel(skip)/Get Started, and asserts the window disappears (`waitForDisappearance`, mirroring the helper already in `WorkroomWorkflowUITests.swift:47-51`). A second test drives the Add-Project step's real "Add Project" button and asserts it auto-advances to the Done screen.
+
+This satisfies the "not a bare `-flag 1` arg" requirement: `onboardingOverride` reads a plain string via the existing `text()` helper (safe by construction — the gotcha is specifically about a `Defaults`-typed **Bool** key being shadowed by a string argument value; this override is a brand-new, separately-named string flag consulted by application code directly, never fed through `Defaults`'s typed decoding).
+
+## 8. Feature-tour content and pager — see §3
+
+No existing carousel component; a plain step-switch + 4-dot `HStack` indicator is the minimal correct construct (confirmed via grep — no `TabView(.page` / carousel pattern anywhere in `WorkroomApp/`). Copy for the four highlight cards (§3's `OnboardingFeature.all`) is grounded in the root `CLAUDE.md` positioning: workrooms via Git worktrees/JJ workspaces, the embedded libghostty terminal, the unified project/workroom sidebar, and the per-project run-command supervision (issue #7) — real, shipped features, not placeholder text.
+
+## 9. Visual design direction
+
+Read `theme.tokens.*` off `ThemeService.shared` exactly as `WhatsNewSheet`/`SettingsView` do (§0 correction — not `@Environment`). Concretely: `theme.tokens.panel` for the window background (matches `SettingsView.swift:41`'s `.background(ThemeService.shared.tokens.panel.ignoresSafeArea())`), `.accent`/`.accentSoft` for the step dots and primary buttons' tint, `.fgMuted`/`.fgDim` for secondary copy and inactive dots, `.border` for the footer divider. Typography mirrors `WhatsNewSheet`'s header (`.font(.headline)` title / `.font(.callout).foregroundStyle(.secondary)` subtitle, `Views/AddProjectSheet.swift:88-94`'s exact pairing) so the wizard reads as the same design language as the rest of the app's polished modals, not a bespoke one-off.
+
+## 10. Testing/verification plan
+
+**Unit tests** — new `macapp/WorkroomAppTests/OnboardingGateTests.swift`, mirroring `AddProjectSheetModelTests.swift`'s shape: pure calls to `OnboardingGate.shouldShow(hasCompleted:projectsEmpty:override:)` with explicit injected params (no touching real `Defaults`/`UserDefaults` at all, since `override` is a normal function parameter defaulting to the fixture read, but tests pass it explicitly):
+- `hasCompleted: false, projectsEmpty: true` → `true`.
+- `hasCompleted: true, projectsEmpty: true` → `false`.
+- `hasCompleted: false, projectsEmpty: false` → `false`.
+- `override: true` forces `true` regardless of the other two; `override: false` forces `false`.
+
+No changes needed to `AppStoreAddProjectTests.swift` (per the design decision in §0/§1 — `AppStore.addProject` itself is untouched).
+
+**UI tests** — `macapp/WorkroomAppUITests/OnboardingUITests.swift` (new) plus the one-line `WorkroomWorkflowUITests.swift` fix (§7).
+
+**Manual end-to-end verification** — two isolation layers, per the two relevant memory patterns named in the task:
+```bash
+# 1. Throwaway CLI config (isolates ~/.config/workroom/config.json, which IS $HOME-derived):
+export HOME="$(mktemp -d)"
+
+# 2. Defaults/UserDefaults is NOT scoped by $HOME (cfprefsd resolves the real one) — wipe the Dev
+#    bundle's onboarding key explicitly (or the whole Dev domain for a truly clean run):
+defaults delete com.developwithstyle.workroom.dev onboarding.hasCompleted 2&gt;/dev/null
+
+make app-run
+```
+Verify: wizard opens on top of the (empty) main window; Next/Next walks Welcome → Tour; on the Add-Project step, either add a real project (auto-advances to Done, main window's sidebar now shows it selected) or hit Cancel (advances to Done as a skip); Get Started closes the wizard; relaunching (`make app-run` again, same isolated `$HOME`/domain) does **not** reopen it. Then repeat with the window closed early (⌘W on the wizard before Done) and confirm it *does* reopen on the next launch.
+
+**Build step**: new Swift file `Views/OnboardingWindow.swift` needs `xcodegen generate` (`make app-generate`, or just `make app-build`/`make app-run`, which run it automatically) per the macapp/CLAUDE.md gotcha on adding source files.
+
+### Critical Files for Implementation
+- macapp/WorkroomApp/WorkroomApp.swift
+- macapp/WorkroomApp/Views/OnboardingWindow.swift (new)
+- macapp/WorkroomApp/Core/DefaultsKeys.swift
+- macapp/WorkroomApp/Core/UITestFixture.swift
+- macapp/WorkroomApp/Core/AppStore.swift
+- macapp/WorkroomApp/Core/WindowRegistry.swift
+- macapp/WorkroomApp/Views/AddProjectSheet.swift</result>
+<usage><subagent_tokens>173539</subagent_tokens><tool_uses>46</tool_uses><duration_ms>777486</duration_ms></usage>
+</task-notification>
