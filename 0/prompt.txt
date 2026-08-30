@@ -1,0 +1,1 @@
+plan upgrade to 1.3.2, and summarize functional changes in upstream libs
