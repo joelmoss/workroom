@@ -1,0 +1,1 @@
+with claude open, and after restarting the app, claude is persisted, but usage in the terminal footer is not shown. I have stop restart claude to make it appear
