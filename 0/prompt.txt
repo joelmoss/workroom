@@ -1,0 +1,1 @@
+the jj bookmark still shows in changes sidebar, next to the refs. not needed, as the bookmark is now always shown in bookmark header
