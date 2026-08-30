@@ -1,0 +1,1 @@
+the libghostty pin bump has been mentioned a lot, but never committed to it. summarise its pros and cons. Include benefits that will allow or make future features and improvements possible or easier
