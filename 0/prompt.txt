@@ -1,0 +1,396 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+## 1. Primary Request and Intent
+
+This session covered building and iteratively refining a first-run onboarding wizard for the Workroom macOS app (GitHub issue #151: "New install setup — Need a great looking startup intro and flow for first time usage"), followed by a series of related UI polish requests. In chronological order, the user's explicit requests were:
+
+1. Plan and review the onboarding wizard feature (via plan mode + `/plan-eng-review` skill)
+2. Implement the approved plan
+3. "leave this" (re: Window-menu suppression follow-up) / "tests should never use the real config" — two directives after I reported deviations from the plan
+4. "run it" — launch the app to demo the feature
+5. "only the onboarding wizard should open on a fresh start. Only open main window when the wizard is closed, or finished."
+6. "run all the onboarding tests again" (repeated twice at different points)
+7. "the nav dots on welcome screen shift when left and right buttons are added/removed. keep the dots centered so they don't shift"
+8. "replace the 'sidebar' feature item with a version control item with a title of 'Version Control Built in'"
+9. "add a 'Live activity + notifications' item."
+10. "how does this all work for a branch new user? Can I try it?"
+11. "rerun the UI tests" (multiple times)
+12. "remove the title bar from welcome window"
+13. Mid-turn: "in 'nothing selected' message, show workroom logo in place of generic terminal icon"
+14. Mid-turn: "make it twice as big, and monochrome with no border" (re: the logo)
+15. "the logo on that screen is bad quality" — required root-causing blurriness from upscaling a low-res source
+16. "I've changed the 'nothing selected' text. Show relevant keyboard shortcuts in brackets next to open and create workroom text"
+17. "close right sibar when no workroom is open" [sic] — most recent request, currently being verified
+
+Throughout, the implicit standing intent was: every change must be verified via `make app-generate` → `make app-format` → `make app-build` → `make app-lint` (must stay clean) → relevant unit/UI tests → visual confirmation via screenshot/manual launch before considering it done. The user also cares about correctness at the root-cause level (rejected workarounds twice: once for the config-leak test issue, once implicitly by asking to rerun tests after the launch-behavior change, which surfaced a real regression).
+
+## 2. Key Technical Concepts
+
+- SwiftUI `Scene` composition: `WindowGroup(for:)`, `Window(_:id:)`, `.defaultLaunchBehavior(.presented/.suppressed/.automatic)`, `.windowResizability(.contentSize)`, `.windowStyle(.hiddenTitleBar)`
+- `SceneBuilder` does NOT support `if/else` control flow between `Scene` values (confirmed by trying it — compile error), unlike `ViewBuilder`
+- `Defaults` package (`sindresorhus/Defaults`) for persisted `UserDefaults`-backed keys — shared across all windows in the app, a key architectural constraint
+- `WindowRegistry.shared.lastActiveStore` / `WindowRegistry.shared.register` — per-window `AppStore` coordination; deliberately NOT registering the onboarding window so it inherits Settings/About's aux-window treatment (⌘W fallback, shortcut/switcher no-ops, quit/window-count exclusion, ⌘` cycle exclusion)
+- `UITestFixture` fixture-mode seam: `-WorkroomUITestFixture 1`, `-WorkroomUITestNoProjects 1`, deterministic fake projects, never touches real `~/.config/workroom/config.json` in fixture mode (this is the pattern the onboarding wizard's `addProject` fix needed to follow)
+- `AppStore.bootstrap`/`load` already short-circuit to `loadFixture()` under `UITestFixture.isActive` — `addProject` was the one mutation that didn't follow this rule until fixed
+- XCUITest automation subsystem "wedging" after repeated manual AppleScript/System Events driving — known environmental issue, not a code bug, requires login-session reset to clear
+- `NSWindow.willCloseNotification` observer pattern for one-shot close handling
+- Template image assets (`template-rendering-intent: template` in `Contents.json`) for monochrome, system-tinted icons
+- `Scripts/make-icon.swift` — vector-based icon rendering (`renderMenuBarGlyph` draws `markBlocks` at any requested pixel size), run via `make app-icon`
+- `ContentUnavailableView` with custom `Label { } icon: { }` and `description: { }` closures
+- Go CLI `workroom` binary has no config-path override — a genuine architectural limitation that made test isolation tricky
+- Codesigning breaks when `$HOME` is overridden (cert lookup needs real `~/Library/Keychains`)
+
+## 3. Files and Code Sections
+
+### `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/DefaultsKeys.swift`
+- Added: `static let hasCompletedOnboarding = Key<Bool>("onboarding.hasCompleted", default: false)` with doc comment explaining it flips true on entering `.done` step by any path.
+
+### `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/AppStore.swift`
+- Changed `addProject(_ path: String, create: Bool) async` from returning `Void` to `Result<Void, Error>`, marked `@discardableResult`.
+- Added fixture-mode short-circuit (root-cause fix per user's "tests should never use the real config" directive):
+```swift
+@discardableResult
+func addProject(_ path: String, create: Bool) async -> Result<Void, Error> {
+  // Fixture mode never shells out to the real CLI for anything else (`bootstrap`/`load` both
+  // short-circuit to `loadFixture()`) — this is the one mutation that didn't follow that rule,
+  // which meant a UI test driving the wizard's real Add Project step (issue #151) genuinely
+  // registered a project in the developer's own `~/.config/workroom/config.json` (the CLI has no
+  // config-path override to isolate against instead). Simulate the same success shape locally.
+  if UITestFixture.isActive {
+    let canonical = AddProjectSheetModel.normalize(path)
+    if !projects.contains(where: { $0.path == canonical }) {
+      projects.append(Project(path: canonical, vcs: "git", workrooms: []))
+    }
+    selectedProjectID = canonical
+    selectedTargetID = .root(project: canonical)
+    return .success(())
+  }
+  do {
+    let canonical = try await cli.addProject(path, create: create)
+    await reload()
+    if let match = projects.first(where: { $0.path == canonical }) {
+      selectedProjectID = match.id
+      selectedTargetID = .root(project: match.path)
+    }
+    return .success(())
+  } catch {
+    present(error)
+    return .failure(error)
+  }
+}
+```
+
+### `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/AddProjectSheet.swift`
+- Extracted `AddProjectFields` view (the Picker + TextField + Choose button + footer caption), shared by `AddProjectSheet` and the new onboarding wizard's Add-Project step:
+```swift
+struct AddProjectFields: View {
+  @Binding var mode: AddProjectMode
+  @Binding var path: String
+  @Binding var showChooser: Bool
+  var pathFieldFocused: FocusState<Bool>.Binding
+  var body: some View { /* Picker, TextField, Choose button, fileImporter */ }
+}
+```
+- `AddProjectSheet` now wraps `AddProjectFields` in its own header/footer, behaviorally unchanged.
+
+### `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/OnboardingWindow.swift` (new file)
+- `enum OnboardingStep: Int, CaseIterable { case welcome, tour, addProject, done }`
+- `enum OnboardingGate`:
+```swift
+enum OnboardingGate {
+  static func shouldShow(
+    hasCompleted: Bool, projectsEmpty: Bool, override: Bool? = UITestFixture.onboardingOverride
+  ) -> Bool {
+    if let override { return override }
+    return !hasCompleted && projectsEmpty
+  }
+
+  /// A synchronous, pre-bootstrap approximation of `shouldShow` — `projectsEmpty` isn't known yet at
+  /// the point the launch window decides whether to hide itself (that needs the async project-list
+  /// load), so this is what drives that earlier decision instead.
+  static func mightShow(hasCompleted: Bool, override: Bool? = UITestFixture.onboardingOverride)
+    -> Bool
+  {
+    if let override { return override }
+    return !hasCompleted
+  }
+}
+```
+- `OnboardingFeature` array — currently 5 items: workrooms, terminal, versionControl ("Version Control Built in" / `arrow.triangle.branch`), runCommand, activity ("Live activity + notifications" / `bell.badge`)
+- `OnboardingWindow` struct: `.frame(width: 560, height: 480)`, `.windowStyle` set at the Scene level (see WorkroomApp.swift), form state (`addProjectMode`, `addProjectPath`, `showChooser`, `isAdding`, `addProjectError`) lifted to the parent so the footer can read validity
+- `WindowAccessor` sets `window.isRestorable = false`, `window.setAccessibilityIdentifier("onboarding.window")` (fixes SwiftUI's `.accessibilityIdentifier` not reaching the NSWindow chrome), and a one-shot `NSWindow.willCloseNotification` observer that opens or fronts the main window:
+```swift
+var token: NSObjectProtocol?
+token = NotificationCenter.default.addObserver(
+  forName: NSWindow.willCloseNotification, object: window, queue: .main
+) { [openWindow] _ in
+  MainActor.assumeIsolated {
+    if let hostWindow = WindowRegistry.shared.lastActiveStore?.hostWindow {
+      hostWindow.makeKeyAndOrderFront(nil)
+    } else {
+      openWindow(value: WindowSeed.launch)
+    }
+  }
+  if let token { NotificationCenter.default.removeObserver(token) }
+}
+```
+- `.onChange(of: step)` sets `Defaults[.hasCompletedOnboarding] = true` on entering `.done` (fires regardless of how the window is later closed)
+- `.task` correction logic (bootstraps a throwaway `AppStore` since the main window may be suppressed):
+```swift
+.task {
+  guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
+  guard OnboardingGate.mightShow(hasCompleted: Defaults[.hasCompletedOnboarding]) else { return }
+  let probe = AppStore(projectStore: .shared)
+  await probe.bootstrap(restore: false)
+  if !OnboardingGate.shouldShow(
+    hasCompleted: Defaults[.hasCompletedOnboarding], projectsEmpty: probe.projects.isEmpty
+  ) {
+    openWindow(value: WindowSeed.launch)
+    dismissWindow(id: Self.sceneID)
+  }
+}
+```
+- `footer` uses `.overlay(alignment: .center) { stepDots }` instead of a double-`Spacer()` sandwich, to keep the dots visually centered regardless of asymmetric button groups per step (fix for the "nav dots shift" bug report).
+- `handleAdd()` falls back to a throwaway store when no window is registered yet:
+```swift
+private func handleAdd() async {
+  isAdding = true
+  defer { isAdding = false }
+  // No launch window may exist yet at all now (issue #151: the main `WindowGroup` is
+  // launch-suppressed while onboarding might be needed)... Falling back to a throwaway store
+  // still correctly registers the project (it mutates the same shared `ProjectStore.shared`)...
+  let store = WindowRegistry.shared.lastActiveStore ?? AppStore(projectStore: .shared)
+  let normalized = AddProjectSheetModel.normalize(addProjectPath)
+  switch await store.addProject(normalized, create: addProjectMode == .createNew) {
+  case .success:
+    addProjectError = nil
+    step = .done
+  case .failure(let error):
+    addProjectError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+  }
+}
+```
+- `OnboardingTourStep` wraps the feature-card list in a `ScrollView` (fix for overflow risk after adding the 5th card).
+
+### `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/WorkroomApp.swift`
+- `var body: some Scene` now computes `let onboardingMightShow = OnboardingGate.mightShow(hasCompleted: Defaults[.hasCompletedOnboarding])` once, then applies:
+```swift
+WindowGroup(for: WindowSeed.self) { ... }
+  .commands { WorkroomCommands(updater: updater) }
+  .defaultLaunchBehavior(onboardingMightShow ? .suppressed : .automatic)
+
+Settings { ... }
+
+Window("Welcome to Workroom", id: OnboardingWindow.sceneID) { OnboardingWindow() }
+  .windowResizability(.contentSize)
+  .windowStyle(.hiddenTitleBar)
+  .defaultLaunchBehavior(onboardingMightShow ? .presented : .suppressed)
+```
+- Removed the earlier (broken) `window.orderOut(nil)` hack from `RootWindow`'s `WindowAccessor` and the corresponding `.task` logic that called `openWindow(id: OnboardingWindow.sceneID)` — this whole approach was replaced by `.defaultLaunchBehavior`.
+- Removed the now-unused `RootWindow.shouldOpenOnboarding` static helper (and its tests, see below) since the gating moved to the Scene-level `.defaultLaunchBehavior` + `OnboardingWindow`'s own correction task.
+- `RootWindow`'s `.task` is now back to its original simple form (just `bootstrap` + session-restore fan-out), no onboarding logic left in it.
+
+### `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/UITestFixture.swift`
+- Added `onboardingOverride: Bool?` (reads `-WorkroomUITestOnboarding show|hide`)
+- Added `onboardingRealGate: Bool` (reads `-WorkroomUITestOnboardingRealGate 1`) — stops `applyFixtureDefaults` from pinning `hasCompletedOnboarding = true`
+- Added `onboardingSeed: Bool?` (reads `-WorkroomUITestOnboardingSeed true|false`) — explicit seed value written from inside the app itself (needed because an external `defaults write` from the test process empirically didn't reliably reach the freshly-launched app's own `UserDefaults` read — a cross-process cfprefsd quirk specific to the xcodebuild-test launch path)
+- In `applyFixtureDefaults`:
+```swift
+if let seed = onboardingSeed {
+  Defaults[.hasCompletedOnboarding] = seed
+} else if !onboardingRealGate {
+  Defaults[.hasCompletedOnboarding] = true
+}
+```
+
+### `/Users/joelmoss/dev/workroom/macapp/WorkroomAppTests/OnboardingGateTests.swift` (new file)
+- Tests for `OnboardingGate.shouldShow` (6 tests) and `OnboardingGate.mightShow` (4 tests: true-when-not-completed, false-once-completed, override-forces-true, override-forces-false)
+- Previously had `RootWindowShouldOpenOnboardingTests` class — this was REMOVED when `RootWindow.shouldOpenOnboarding` was deleted during the `.defaultLaunchBehavior` restructure.
+
+### `/Users/joelmoss/dev/workroom/macapp/WorkroomAppTests/AppStoreAddProjectTests.swift`
+- `FakeWorkroomCLI` gained `addProjectError: Error?` property to simulate CLI failures
+- Added `testAddProjectReturnsSuccessOnSuccess` and `testAddProjectReturnsFailureOnCLIError` tests for the new `Result` return contract
+
+### `/Users/joelmoss/dev/workroom/macapp/WorkroomAppUITests/OnboardingUITests.swift` (new file)
+- 4 tests: `testWalkthroughSkippingAddProjectClosesTheWindow`, `testAddingAProjectAdvancesToDone` (renamed from `testAddingARealProjectAdvancesToDone` after the fixture-mode fix meant it no longer touches the real CLI), `testClosingEarlyReopensOnNextLaunch`, `testReachingDoneNeverReopens`
+- All wizard element queries scoped through the `onboarding.window` element (not `app` directly) to avoid ambiguity with the main sidebar's own "Add Project" button
+- `launchedApp(extraArgs:)` includes `addTeardownBlock { app.terminate() }` to prevent cross-test leftover-process cascading failures
+- `launchedFreshRealGateApp()` / `relaunchedRealGateApp()` helpers for the persistence tests
+
+### `/Users/joelmoss/dev/workroom/macapp/WorkroomAppUITests/WorkroomWorkflowUITests.swift`
+- `testAppLaunchesWithChrome` now passes `-WorkroomUITestOnboarding hide` since it runs `fixture: false`
+
+### `/Users/joelmoss/dev/workroom/macapp/Scripts/make-icon.swift`
+- Added a new `AppMark.imageset` generation block (128px/256px), using the SAME `renderMenuBarGlyph` function as `MenuBarIcon` (just called at different pixel sizes) — added after user reported "the logo on that screen is bad quality":
+```swift
+// Same template glyph, rendered at 128pt instead of 18pt — for large in-content uses...
+do {
+    let dir = URL(fileURLWithPath: assetsDir, isDirectory: true)
+        .appendingPathComponent("AppMark.imageset", isDirectory: true)
+    try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let glyphOutputs: [(String, Int)] = [("mark_128.png", 128), ("mark_128@2x.png", 256)]
+    for (name, px) in glyphOutputs {
+        renderMenuBarGlyph(px, to: dir.appendingPathComponent(name))
+    }
+    let glyphContents = """
+        {
+          "images" : [
+            { "idiom" : "universal", "scale" : "1x", "filename" : "mark_128.png" },
+            { "idiom" : "universal", "scale" : "2x", "filename" : "mark_128@2x.png" }
+          ],
+          "info" : { "author" : "xcode", "version" : 1 },
+          "properties" : { "template-rendering-intent" : "template" }
+        }
+        """
+    try! glyphContents.write(to: dir.appendingPathComponent("Contents.json"), atomically: false, encoding: .utf8)
+}
+```
+- Ran `make app-icon` to generate the asset; verified via `git status --short` that only `AppMark.imageset` was new/untracked and every other icon regenerated byte-identical.
+
+### `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/RootView.swift`
+This file went through several iterations:
+1. Initial change: `ContentUnavailableView("Nothing selected", systemImage: "terminal", description:)` → custom `Label`/`icon`/`description` closures using `Image(nsImage: NSApp.applicationIconImage)` at 64x64
+2. After "make it twice as big, and monochrome with no border": switched to `Image("MenuBarIcon")` at 128x128 with `.foregroundStyle(.secondary)`
+3. **User then edited this file themselves** (shown via system-reminder) — changed the Label text from "Nothing selected" to "Work it!" and shortened/changed the description text to "Select a project's root, or open (⌘O) or create (⌘N) a workroom to get started." (this last part with shortcuts was actually MY edit in response to a subsequent request — see below)
+4. After "Show relevant keyboard shortcuts in brackets" request: I found the real shortcuts in `KeyboardShortcutsView.swift` (`ShortcutItem(label: "New Workroom", keys: "⌘N")`, `ShortcutItem(label: "Open workroom…", keys: "⌘O")`) and updated the description text accordingly (shown in point 3 above)
+5. After "the logo on that screen is bad quality": switched from `Image("MenuBarIcon")` to `Image("AppMark")`:
+```swift
+} icon: {
+  // `AppMark`, not `MenuBarIcon`: same monochrome glyph (`Scripts/make-icon.swift`'s
+  // `renderMenuBarGlyph` draws both, just at different pixel sizes) but rendered at 128pt
+  // instead of 18pt — `MenuBarIcon`'s 36px-max source went visibly blurry upscaled this far.
+  Image("AppMark")
+    .resizable()
+    .scaledToFit()
+    .frame(width: 128, height: 128)
+    .foregroundStyle(.secondary)
+}
+```
+6. **Most recent edit** (in response to "close right sibar when no workroom is open"): Modified `splitView` computed property. `showInspector` is a single global `Defaults` key shared across every window (`Core/DefaultsKeys.swift: static let showInspector = Key<Bool>("showNotificationsInspector", default: false)`), used in `AppStore.swift`, `RootView.swift`, `ActivityBar.swift`, `WorkroomApp.swift`. I decided NOT to write to this shared key (would incorrectly affect other windows), instead added a pure view-layer gate:
+```swift
+private var splitView: some View {
+  // [existing large comment block about NavigationSplitView/detail-only choice]
+  // The inspector has nothing to show without a selected target (its panes all render a "Select a
+  // workroom…" placeholder instead), so it's also gated on that — not just the user's `showInspector`
+  // toggle — closing itself whenever nothing's open instead of sitting there empty. A pure view-layer
+  // gate, not a write to `Defaults[.showInspector]`: that key is shared across every window, so
+  // flipping it here would also close the inspector in any OTHER window that still has something
+  // selected. The toggle's own on/off state (View menu, `ActivityBar`) is untouched either way — it
+  // just resumes controlling real visibility again the moment something's selected.
+  let inspectorVisible = showInspector && store.selectedTarget != nil
+  return NavigationSplitView(columnVisibility: .constant(.detailOnly)) {
+    Color.clear.frame(width: 0)
+  } detail: {
+    HStack(spacing: 0) {
+      if store.sidebarVisible {
+        SidebarColumn(...)
+          .transition(.move(edge: .leading))
+      }
+      detail
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+      if inspectorVisible {
+        InspectorColumn()
+          .transition(.move(edge: .trailing))
+      }
+      ActivityBar()
+    }
+    .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.sidebarVisible)
+    .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: inspectorVisible)
+  }
+}
+```
+Hit a compile error on first attempt: "function declares an opaque return type, but has no return statements in its body from which to infer an underlying type" — the `let inspectorVisible = ...` statement before `NavigationSplitView(...)` (previously the property's sole/final expression) meant the property was no longer a single-expression implicit-return body. Fixed by adding explicit `return` before `NavigationSplitView(...)`. Rebuild succeeded after this fix, lint clean.
+
+### Plan file: `/Users/joelmoss/.claude/plans/https-github-com-joelmoss-workroom-issue-prancy-backus.md`
+Contains the full approved plan with Context, Design decisions, Implementation sections, Files touched, Verification, NOT in scope, What already exists, Diagrams, Failure modes, Worktree parallelization strategy, and a `## GSTACK REVIEW REPORT` section. This was written during plan mode and is the source-of-truth design document, though several details in it (Window-menu suppression via conditional Scene, the exact hide/reveal mechanism) were later found unworkable and reworked during implementation — those reworkings were reported to the user, who said "leave this" for the Window-menu item follow-up.
+
+### `/Users/joelmoss/dev/workroom/TODOS.md`
+- Added and later simplified an entry under "P3 — Tests and tooling" about `OnboardingWindow.handleAdd`'s failure branch having no test coverage — the entry was rewritten after the `addProject` fixture-mode fix landed, removing the now-obsolete "leaks into real CLI config" sub-issue and its workaround description, replacing with an updated rationale line: "and `AppStore.addProject`'s fixture-mode branch (added after this was filed, to stop UI tests from touching the real `~/.config/workroom/config.json`) always simulates success, so it can no longer even reach a failure via fixture mode at all; only a real (non-fixture) run or an injectable `WorkroomCLIProtocol` fake could exercise this now."
+
+## 4. Errors and Fixes
+
+1. **SceneBuilder doesn't support if/else between Scene values** — compile error: "closure containing control flow statement cannot be used with result builder 'SceneBuilder'". Fixed by reverting to an unconditional `Window` scene declaration (accepted as a documented limitation per user's "leave this" directive).
+
+2. **`.accessibilityIdentifier` on SwiftUI content doesn't reach the NSWindow chrome** — `XCUIApplication.windows[identifier]` queries the NSWindow's own AX identifier, not the content's. Fixed by calling `window.setAccessibilityIdentifier("onboarding.window")` directly in the `WindowAccessor` callback.
+
+3. **Ambiguous radio-button matcher in UI test** — `app.radioButtons.element(matching: NSPredicate(...))` matched multiple elements. Fixed with a direct exact-string lookup: `window.radioButtons["Create new directory…"]`.
+
+4. **UI test leaked into real `~/.config/workroom/config.json`** — user explicitly corrected: "tests should never use the real config." Root-caused by making `AppStore.addProject` check `UITestFixture.isActive` and simulate success locally, matching the pattern every other mutation already followed. This obsoleted an earlier, more complex workaround (external `defaults` shell-outs, HOME-env isolation attempts) that I had built and then removed.
+
+5. **`orderOut(nil)` in WindowAccessor doesn't reliably hide the main window** — user provided a screenshot proving "main window is still visible" despite the order-out call. SwiftUI's own `WindowGroup` launch machinery re-asserts window visibility after the callback runs. Fixed by switching to the proper `.defaultLaunchBehavior(.suppressed/.presented)` SwiftUI API on both scenes.
+
+6. **Regression from the `.defaultLaunchBehavior` fix**: `handleAdd()`'s `WindowRegistry.shared.lastActiveStore` was `nil` because the main window no longer exists at launch time (it's suppressed). Discovered when user said "rerun the UI tests" and `testAddingAProjectAdvancesToDone` failed with "should auto-advance to Done." Fixed by falling back to a throwaway `AppStore(projectStore: .shared)` when no registered window exists.
+
+7. **XCUITest "Timed out while enabling automation mode"** — recurring wedge from repeated manual AppleScript/System Events driving within the same session. Not a code bug; retried once each time, then stopped looping and either did manual visual verification instead or reported the wedge status to the user rather than continuing to retry.
+
+8. **Compile error: "function declares an opaque return type, but has no return statements"** — introduced a `let` binding before the final expression in `splitView`'s computed property body, breaking Swift's implicit single-expression return inference. Fixed by adding explicit `return` before `NavigationSplitView(...)`.
+
+9. **Blurry upscaled icon** — `MenuBarIcon.imageset` only has 18px/36px PNG sources; scaling to 128px in `RootView` produced visible blur. User reported: "the logo on that screen is bad quality." Root-caused by finding the icon is actually vector-rendered (`renderMenuBarGlyph` in `Scripts/make-icon.swift`, drawing `markBlocks` at any given pixel size) rather than a fixed bitmap — so the fix was to render a proper high-res version (`AppMark.imageset`, 128/256px) using the same function, not to just resize the existing low-res asset.
+
+## 5. Problem Solving
+
+- Solved the "both onboarding and main window open at launch" bug via the correct SwiftUI API (`.defaultLaunchBehavior`) after an initial AppKit-level workaround (`orderOut`) failed under SwiftUI's own window-management timing.
+- Solved the test/production divergence for "no window exists yet" by making `handleAdd()` tolerant of a missing registered window (throwaway store fallback), accepting a minor UX gap (user lands on sidebar instead of directly on the new project's terminal in that specific edge case) as a deliberate tradeoff, documented in code comments.
+- Solved the icon blurriness by tracing back to the actual rendering pipeline rather than just resizing a bitmap — this is a "root cause" fix consistent with the user's earlier "tests should never use real config" directive's spirit (fix the actual cause, not the symptom).
+- Currently solving: verifying the right-sidebar auto-close behavior visually. Screenshot-based verification across a multi-monitor, multi-app-window desktop proved unreliable for precise cropping (guessed pixel offsets via `sips --cropOffset` didn't align with the actual window), so I switched to querying AX attributes (`AXPosition`, `AXSize` of "Window 2": 798,244 and 1450,780) and finally to listing UI elements directly via `osascript ... get every UI element of window "Window 2"`, which returned 5 elements (2 groups, 3 buttons) — not yet parsed/verified when the conversation was cut off for summarization.
+
+## 6. All User Messages (non-tool-result, verbatim where relevant)
+
+1. "run all the onboarding tests again" (early, prior to `.defaultLaunchBehavior` fix)
+2. "1. leave this. 2. tests should never use the real config"
+3. "the nav dots on welcome screen shift when left and right buttons are added/removed. keep the dots centered so they don't shift"
+4. "replace the "sidebar" feature item with a version control item with a title of "Version Control Built in""
+5. "add a "Live activity + notifications" item."
+6. "how does this all work for a branch new user? Can I try it?"
+7. "run it"
+8. Screenshot + "main window is still visible"
+9. "only the onboarding wizard should open on a fresh start. Only open main window when the wizard is closed, or finished."
+10. Screenshot only (no text) after title-bar/icon changes — implicitly reviewing state
+11. "rerun the UI tests" (appears multiple times across the conversation, at different points)
+12. "run all the onboarding tests again"
+13. "remove the title bar from welcome window"
+14. Mid-turn injected message: "in "nothing selected" message, show workroom logo in place of generic terminal icon"
+15. Screenshot only
+16. Mid-turn injected message: "make it twice as big, and monochrome with no border"
+17. Screenshot only
+18. "rerun the UI tests"
+19. (System-reminder showed user's own direct file edit to RootView.swift, changing "Nothing selected" text to "Work it!" and the description)
+20. "I've changed the "nothing selected" text. Show relevant keyboard shortcuts in brackets next to open and create workroom text"
+21. "the logo on that screen is bad quality"
+22. Screenshot only (confirming AppMark fix)
+23. "close right sibar when no workroom is open" [most recent, currently being addressed]
+
+## 7. Pending Tasks
+
+- No explicitly stated pending tasks beyond completing verification of the current "close right sidebar when no workroom is open" change.
+- Implicit/standing task (from established pattern): once code changes are verified via build+lint+tests, visually confirm the behavior works as expected before considering the task done.
+
+## 8. Current Work
+
+Immediately before this summary was requested, I was implementing and verifying the fix for: **"close right sibar when no workroom is open"**.
+
+Implementation completed:
+- Modified `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/RootView.swift`'s `splitView` computed property to add `let inspectorVisible = showInspector && store.selectedTarget != nil` and use `inspectorVisible` (instead of the raw `showInspector` Default) both in the `if inspectorVisible { InspectorColumn() }` render condition and in the `.animation(value: inspectorVisible)` modifier. This was a deliberate view-layer-only gate — I explicitly reasoned that writing to `Defaults[.showInspector]` directly would be wrong since it's a single global key shared across all windows, and toggling it based on one window's selection state would incorrectly affect the inspector visibility in other windows.
+- Hit and fixed a compile error ("function declares an opaque return type, but has no return statements") by adding `return` before `NavigationSplitView(...)` since the new `let` statement broke single-expression implicit return.
+- Ran `make app-generate`, `make app-format`, `make app-build` (succeeded), `make app-lint` (clean).
+- Began visual verification: killed any existing "Workroom Dev" process, relaunched with `-WorkroomUITestFixture 1`, opened a new blank window via File→New Window (which has no selected target, so should trigger the sidebar-closing fix), took a screenshot.
+- The screenshot showed a "Work it!" onboarding-adjacent-looking dark window but I could not clearly confirm from the full screenshot alone whether the right sidebar (inspector column + activity bar) was properly closed/hidden — multiple overlapping app windows across a 3-monitor setup made this hard to read visually.
+- Attempted several imprecise crop approaches (`sips -c` with guessed pixel offsets, tried installing/using PIL which wasn't available) that didn't produce a clean, correctly-aligned crop of "Window 2"'s right edge.
+- Queried `AXPosition`/`AXSize` of "Window 2" precisely via `osascript`: position (798, 244), size (1450, 780). Attempted another `sips --cropOffset` crop using these coordinates, which produced a crop (`window2_right_edge.png`) showing what appeared to be the activity bar rail (palette icon, comment icon, a highlighted branch/diff icon, folder icon, notification bell) still present at the far right edge — but I was not fully confident this crop was correctly aligned to the actual live window given the multi-monitor scaling complexity.
+- Most recently, I ran `osascript -e 'tell application "System Events" to tell process "Workroom Dev" to get every UI element of window "Window 2"'` which returned: "group 1 of window Window 2 ..., group 2 of window Window 2 ..., button 1 of window Window 2 ..., button 2 of window Window 2 ..., button 3 of window Window 2 ..." — this is a shallow/unhelpful listing (doesn't reveal whether InspectorColumn's contents are present) and was the last tool result before the conversation was cut off for compaction.
+
+**The verification of this fix is NOT yet complete.** I have not yet confirmed with certainty (either visually or via a reliable accessibility query) that the right sidebar/inspector actually closes when no workroom is selected, nor have I run the relevant automated tests for this change (no dedicated unit/UI test exists yet for this specific behavior, and given XCUITest's current "wedged" state from repeated manual driving this session, an automated UI test run may fail with the "Timed out while enabling automation mode" error again).
+
+## 9. Optional Next Step
+
+Continue verifying the "close right sidebar when no workroom is open" fix. The most direct next step, consistent exactly with what I was doing when cut off, is to get a reliable confirmation of the inspector column's actual visibility in the blank "Window 2" — either by:
+- Querying more specific AX elements (e.g., checking for the presence/absence of `InspectorColumn`'s known child elements, or comparing window width/layout before and after selecting a workroom) rather than a shallow top-level element listing, since `"get every UI element of window "Window 2""` returned only 5 generic elements (2 groups, 3 buttons) with no way to tell if the inspector pane specifically is showing, or
+- Taking a fresh, carefully-positioned screenshot of just that window (e.g., using `osascript` to move/resize the window to known screen coordinates first, then screenshotting a computed region) to visually confirm the right sidebar's absence, then comparing against a window with a workroom selected (where the inspector should reappear).
+
+After confirming the fix visually, the remaining standing-pattern step (per this session's consistent practice) would be to report the outcome to the user in caveman-style terse prose, noting: what was changed (view-layer gate on `showInspector && store.selectedTarget != nil`, not a write to the shared Default), that it correctly avoids affecting other windows, and the verified before/after states — while being honest if full automated UI-test confirmation wasn't possible due to the current XCUITest wedge.
+
+I should NOT proceed to any new unrequested feature work — the immediate next step is strictly to finish confirming this specific, already-implemented change works as the user asked ("close right sidebar when no workroom is open"), nothing more.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/joelmoss/.claude/projects/-Users-joelmoss-dev-workroom/fe1c527c-f684-4d4f-905a-d6b0628ddb19.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.
