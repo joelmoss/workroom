@@ -1,0 +1,1 @@
+tag clicks are fixed now. but the preview still doesn't fill the popover. [Image #2] additionally, the preview of th left most tab is cut off on the left, by the projects side bar
