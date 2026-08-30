@@ -1,0 +1,89 @@
+<task-notification>
+<task-id>a3eb1fbea657c46d9</task-id>
+<tool-use-id>toolu_01GbAhF8psUtMbe2CvqQaotA</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/f85778fc-e6c0-427d-bf50-a9cb42e1ee03/tasks/a3eb1fbea657c46d9.output</output-file>
+<status>completed</status>
+<summary>Agent "Find inspector/properties panel implementation" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result># The Right-Side Inspector Panel — Detailed Report
+
+## 1. View files implementing the panel
+
+The right inspector is not one file but a small cluster, split between the SwiftUI "card" shell and an AppKit-backed content host:
+
+| File | Role |
+|---|---|
+| `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/InspectorColumn.swift` | The docked column: sizing, drag-resize, the `sidebarCard` chrome. Placed in `RootView`'s detail `HStack`. |
+| `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/ChangesPanel.swift` | `struct RightInspector: View` (line 11) — the actual content: VCS toolbar + the section stack (Changes / History / Files / Pull Request). This is what `InspectorColumn` wraps. |
+| `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/InspectorSplitView.swift` | The raw `NSSplitView` bridge (`InspectorSplitContainerController`, `NSViewControllerRepresentable`) that stacks the section panes with sticky headers + independently-scrolling bodies, plus `SectionHeader`. |
+| `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/InspectorResizeHandle.swift` | An `NSViewRepresentable` drag handle (AppKit `NSView`, not a SwiftUI `DragGesture` — needed because the inspector's content is AppKit-backed and doesn't reliably deliver gesture events). |
+| `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/InspectorPanePolicy.swift` | Pure, headless-testable sizing rules (`InspectorSectionKind` enum, `allocate`/`reallocateOnToggle`) for how the stacked panes divide vertical space. |
+
+There is no plain "Inspector.swift" — the naming is spread across `InspectorColumn` (chrome/width) and `RightInspector` (content, in `ChangesPanel.swift` — a slightly misleading filename since it hosts four sections, not just Changes).
+
+## 2. How visibility is toggled, and where the state lives
+
+**Whole-panel show/hide** — `Defaults[.showInspector]` (a `Defaults` package key, not `@State`/`@Published`):
+- Declared in `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/DefaultsKeys.swift:67`: `static let showInspector = Key&lt;Bool&gt;("showNotificationsInspector", default: false)` (stored key name is legacy — kept for back-compat).
+- Read in `RootView` (`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/RootView.swift:21`) via `@Default(.showInspector) private var showInspector`, and gates `if showInspector { InspectorColumn() }` at line 156-159 inside the detail `HStack`.
+- Toggled from the View menu in `WorkroomCommands` (`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/WorkroomApp.swift:914,999`): `Toggle("Inspector", isOn: $showInspector).keyboardShortcut("b", modifiers: [.command])`. Per-section View-menu items (Changes/History/Pull Request/Files, lines 999-1085) also flip `showInspector` alongside `store.activeInspectorSection` and the per-section collapse flags.
+- Also driven by the trailing **ActivityBar** icon rail (`Views/ActivityBar.swift:15`, same `@Default(.showInspector)`) via `AppStore.apply(_:ActivityBarReducer.Action)` (`AppStore.swift:4436`), which writes `Defaults[.showInspector]` then unconditionally reassigns `activeInspectorSection` so the bar/inspector re-render synchronously (a bare `@Default` write invalidates async).
+
+**Which section is active** — `AppStore.activeInspectorSection: ActivitySection` (`@Published`, `AppStore.swift:475`), seeded from and written back to `Defaults[.activeInspectorSection]`.
+
+**Per-section collapse + relative pane heights** ("global inspector layout", issue #24) — held live on `AppStore` as four `@Published` bools (`changesSectionCollapsed`, `filesSectionCollapsed`, `prSectionCollapsed`, `historySectionCollapsed`, `AppStore.swift:357-383`) plus `@Published var inspectorSizeWeights: [Double]` (line 469). Every `didSet` calls `persistInspectorState()` (line 4411), which writes `Defaults[.inspectorLayout]` (a `Codable` `InspectorPaneState { collapsed: [Bool], weights: [Double] }`, `DefaultsKeys.swift:184-240`). Loaded once via `loadInspectorState()` (`AppStore.swift:4382`), **called from `AppStore.init` at line 990** — this is the closest thing to a "restore-on-launch hook" for inspector state today; it's global (shared across all workrooms/windows), deliberately not reloaded per-selection.
+
+**Important asymmetry**: `showInspector`/`activeInspectorSection`/`inspectorLayout` are simple global `Defaults` keys with no cross-window arbitration. Contrast with the left Projects sidebar's prefs (`collapsedProjects`, `workroomTabOrder`, `sidebarSelection`), which are gated by `private var persistsSidebarPrefs: Bool` (`AppStore.swift:157`, only the last-active window writes). Inspector Defaults writes have **no such gate** — with multiple windows open it's last-writer-wins. Also note `sidebarVisible` itself (`AppStore.swift:239`, `@Published var sidebarVisible: Bool = true`) is session-only/resets-to-shown on launch, while `showInspector` is the one that persists — the two "visible" flags for the two columns follow different rules.
+
+## 3. Native `.inspector(isPresented:)` vs custom column
+
+**Custom column — not the native modifier.** `RootView.swift` documents this explicitly (lines 118-142): a hand-rolled `HStack(sidebar | detail | inspector)` inside a `NavigationSplitView` forced to `.detailOnly`, because the native `.inspector`/`NavigationSplitView` sidebar column drew an unwanted ~30pt inset-card gap under the custom title bar that couldn't be controlled. `InspectorColumn` builds its own `sidebarCard`-styled card (same helper the edge-reveal panel uses) with no native split divider line.
+
+Stale comments worth flagging if you touch this code: `ChangesPanel.swift:5` still says "macOS 14 supports only one `.inspector` per view" as the reason for the 4-section-stack design — no longer literally true since it isn't a `.inspector` at all now, just historical rationale. Similarly `DefaultsKeys.swift:96-98`'s comment on `inspectorWidth` ("`.inspector` resets to its `ideal` width every time it's re-shown... clamped to the `.inspectorColumnWidth` min/max range") describes an older, now-replaced native-inspector implementation; the actual clamp today lives in `InspectorColumn`'s own `minWidth`/`maxWidth` constants (see below), not any `.inspectorColumnWidth` modifier.
+
+Also stale: `AppStore.swift:265-269`'s doc for `dockedInspectorWidth` says it's "read by both the docked card and the right edge-hover reveal" — but `EdgeRevealSidebar.swift:287-290` explicitly says the trailing (inspector) edge-reveal was **dropped** once the always-visible `ActivityBar` took over the right edge; only the leading (Projects) sidebar still has an `EdgeRevealSidebar` today (wired in `RootView.swift:334` via `EdgeRevealSidebars`, which only constructs a `.leading` reveal). There is currently no code path that reads `dockedInspectorWidth` for a trailing reveal.
+
+## 4. Existing width/size state (resizable? persisted?)
+
+Yes — fully resizable and persisted, mirroring the left sidebar's mechanism:
+
+- **Live width**: `AppStore.dockedInspectorWidth: CGFloat?` (`@Published`, `AppStore.swift:270`), `nil` until first set this session, falling back to `Defaults[.inspectorWidth]`.
+- **Local drag state**: `InspectorColumn` holds `@State private var liveWidth: CGFloat?` (line 19) — only non-nil mid-drag, so each mouse-moved tick re-renders just the inspector rather than the whole `AppStore` observer tree; committed to `store.dockedInspectorWidth` + `Defaults[.inspectorWidth]` once on drag-end (lines 51-58).
+- **Bounds**: `minWidth: CGFloat = 260`, `maxWidth: CGFloat = 520` (`InspectorColumn.swift:22-23`) — a comment note that this "matches the former `.inspectorColumnWidth(min:max:)` bounds" (i.e., replaced a native modifier).
+- **Drag mechanics**: `InspectorResizeHandle` (an `NSView` overlay, 12pt hit area, leading edge, `.resizeLeftRight` cursor) reports incremental `dx`; dragging left widens (handle sits on the leading edge of the panel).
+- **Persisted key**: `Defaults[.inspectorWidth] = Key&lt;Double&gt;("inspector.width", default: 300)` (`DefaultsKeys.swift:100`).
+- **Left sidebar's mirror for comparison**: `Defaults[.sidebarWidth]` / `AppStore.dockedSidebarWidth` (not `@Published`) — same pattern, `SidebarColumn.swift`.
+- **Vertical pane sizing within the inspector** (Changes/History/Files/PR stack) is separately governed by `InspectorPanePolicy` + `inspectorSizeWeights`/`inspectorLayout` (see §2) — resizable via native `NSSplitView` divider drags, floors at `expandedMinHeight = 120`, collapsed panes pinned to `headerHeight = 34`.
+
+## 5. Existing app-level persistence conventions
+
+Two distinct, deliberately separate mechanisms exist — a new layout-persistence feature should pick the right one:
+
+### A. `Defaults` package — small, global/preference-shaped state
+Single source of truth: `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/DefaultsKeys.swift`. Convention, stated in the file's own doc comment (lines 19-26):
+- Every persisted value is declared as `extension Defaults.Keys { static let foo = Key&lt;T&gt;("stored.key.string", default: ...) }` — one key owns both the UserDefaults string *and* the default, in exactly one place.
+- Read via `@Default(.foo)` in SwiftUI views (synchronous UI binding) or `Defaults[.foo]` everywhere else (stores, non-view code).
+- Key **strings** are treated as a stored-data contract — never renamed once shipped (breaks upgrade). Schema reshapes (e.g. `inspectorLayout` → `"inspector.layout.v2"`) get a versioned key name instead, with a `reconcileInspectorState`-style discard-to-default when the persisted shape doesn't match the current one.
+- Complex values implement `Defaults.Serializable` (usually via `Codable`), e.g. `RunConfig`, `InspectorPaneState`.
+- Enum-backed keys implement `PreferRawRepresentable` so the raw string persists (e.g. `ThemePreference`, `ActivitySection`, `SettingsPane`, `DiffViewMode`).
+- This is what backs `showInspector`, `inspectorWidth`, `inspectorLayout`, `sidebarWidth`, `activeInspectorSection`, `mainWindowFrame` (single-slot cold-start fallback), etc. — everything global/machine-wide, not per-window.
+
+### B. `SessionCoordinator` + `SessionSnapshot.swift` — rich, per-window session state
+`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/SessionCoordinator.swift` + `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/SessionSnapshot.swift` (schema) + `AppStore+Session.swift` (capture). This is the mechanism for state that is **per-window** and too rich for a single `Defaults` key (issue #46): window frame, selected workroom, open terminal/diff/file/changeset tabs, pane splits, workroom-into-workroom splits, expanded sidebar terminal subtrees. Written to `Application Support/Workroom/&lt;bundle id&gt;/session.json` (hand-written `Codable` mirrors, never the live runtime types — explicit stored-data-contract discipline, with lossy per-element decoding so an unknown future tab kind drops just that one tab rather than the whole document).
+
+Key mechanics relevant to a new feature:
+- `SessionCoordinator.shared.markDirty()` — call this on any state mutation; it coalesces (1s debounce, 5s hard ceiling) and calls `writeIfChanged()`, which rebuilds the *whole* document from every live window (`WindowRegistry.captureSessionWindows()`) and writes only if it actually changed.
+- **Save-on-background**: `WorkroomApp.swift:275-279` — `AppDelegate.applicationDidFinishLaunching` registers an observer on `NSApplication.willResignActiveNotification` that calls `SessionCoordinator.shared.writeIfChanged()`.
+- **Save-on-quit**: `AppDelegate.applicationShouldTerminate` (`WorkroomApp.swift:595-600`) and the SIGTERM handler (`WorkroomApp.swift:499-517`) both call `SessionCoordinator.shared.flushAndFreeze()` (synchronous write, then freezes further writes for the process's life).
+- **Restore-on-launch**: `RootWindow.body.task` (`WorkroomApp.swift:150-158`) calls `store.bootstrap(restore: seed.restore)`; `AppStore.attachWindow` (`AppStore.swift:1033-1040`) calls `claimSessionIfNeeded()` before anything reads window geometry, adopting `pendingSessionRestore` (per-window frame, tabs, splits) — this is the concrete "restore-on-launch hook" pattern for *window-scoped* state, as opposed to `loadInspectorState()` in `AppStore.init` for *global* inspector state.
+- **What's deliberately excluded from `session.json`**: run-command tabs, PTY/process state, live titles — and, notably, **inspector visibility/width/layout is not captured here at all** (confirmed via `AppStore+Session.swift:captureWindowSession`, which only emits `windowKey`/`frame`/`isKey`/`selectedTargetID`/`targets`/`workroomSplits`/`expandedTargets`). Inspector state lives entirely in `Defaults`, i.e. it is explicitly **global**, not per-window — a new "layout persistence" feature needs to decide up front whether new state is global (→ `Defaults`, like the existing inspector state) or per-window (→ extend `WindowSession` in `SessionSnapshot.swift` + `captureWindowSession`/restore in `AppStore+Session.swift`).
+
+### C. Window frame — the closest existing precedent for "drag-to-resize, persist, restore"
+`AppStore.attachWindow` (`AppStore.swift:1033-1125`) is worth studying directly as a template: it reads `Defaults[.mainWindowFrame]` as a cold-start single-slot fallback (`savedMainWindowFrame()`, line 995), but the *authoritative* per-window frame comes from the session file (`pendingSessionRestore?.frame`, line 1089) — clamped onto a still-existing screen via `frameOnAVisibleScreen` (line 1007) so an unplugged external display doesn't strand the window. On resize/move (`NSWindow.didResizeNotification`/`didMoveNotification`, lines 1104-1122) it calls `SessionCoordinator.shared.markDirty()` unconditionally, and *additionally* writes the single-slot `Defaults[.mainWindowFrame]` gated on `persistsSidebarPrefs` (last-active-window-only) purely as the cold-start fallback for a session-less first launch.
+
+## Summary for implementing a new feature
+
+- If the new state is **global** (shared machine-wide setting, like today's inspector open/width/section/collapse layout): add a key to `DefaultsKeys.swift` following the existing pattern (bare key string, `Key&lt;T&gt;(...)`, comment justifying the default), read via `@Default` in views / `Defaults[...]` in stores. No cross-window arbitration exists for the inspector's own keys today (unlike the sidebar prefs) — worth adding `persistsSidebarPrefs`-style gating if targeting multi-window correctness.
+- If the new state is **per-window** (e.g., "was the inspector open in *this* window", not a global default): it needs to be added to `WindowSession` in `SessionSnapshot.swift` (a new field, additive — no `schemaVersion` bump per the file's own versioning rule), captured in `AppStore+Session.swift:captureWindowSession()`, and restored via `claimSessionIfNeeded()`/`attachWindow`; changes must call `SessionCoordinator.shared.markDirty()` (or rely on an existing `didSet` chain that already does) to get coalesced-write + save-on-quit/background/SIGTERM coverage for free.</result>
+<usage><subagent_tokens>163063</subagent_tokens><tool_uses>38</tool_uses><duration_ms>298360</duration_ms></usage>
+</task-notification>
