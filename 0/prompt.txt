@@ -1,0 +1,1 @@
+when split, the focused workroom needs a clearer highlight. The BG colour is not obvious enough, or easy to identify the focused workroom. Try a border highlight, but do not change any sizing
