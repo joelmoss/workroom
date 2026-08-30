@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b0h3lvfp4</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/f130ee2b-f363-404c-81ca-374d62f3e52d/tasks/b0h3lvfp4.output</output-file>
+<status>completed</status>
+<summary>Background command "Wait 5 minutes for the automation subsystem to settle" completed (exit code 0)</summary>
+</task-notification>
