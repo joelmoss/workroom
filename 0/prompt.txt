@@ -1,0 +1,1 @@
+revert the icon sizing. I was looking at the "open in" button, which is much smaller than the others. the buttons and their icons should all be the same size
