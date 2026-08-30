@@ -1,0 +1,1993 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - .github/workflows/nightly.yml
+  - macapp/Scripts/release.sh
+  - macapp/WorkroomApp/Core/FocusedTabSelection.swift
+  - macapp/WorkroomApp/Core/GhosttyApp.swift
+  - macapp/WorkroomApp/Core/HistoryModel.swift
+  - macapp/WorkroomApp/Core/SentryConfig.swift
+  - macapp/WorkroomApp/Core/UITestFixture.swift
+  - macapp/WorkroomApp/Views/Avatar.swift
+  - macapp/WorkroomApp/Views/ChangesPanel.swift
+  - macapp/WorkroomApp/Views/DiffViewer.swift
+  - macapp/WorkroomApp/Views/HistoryPanel.swift
+  - macapp/WorkroomAppTests/AvatarSubjectTests.swift
+  - macapp/WorkroomAppTests/ChangedFileRowInvalidationTests.swift
+  - macapp/WorkroomAppTests/FocusedTabSelectionTests.swift
+  - macapp/WorkroomAppTests/HistoryModelTests.swift
+  - macapp/WorkroomAppTests/HistoryRowInvalidationTests.swift
+  - macapp/WorkroomAppTests/SentryConfigTests.swift
+  - macapp/WorkroomAppUITests/HistoryPushStateUITests.swift
+  - macapp/WorkroomAppUITests/HistoryStressUITests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: .github/workflows/nightly.yml ===
+@@ -140,6 +140,15 @@ jobs:
+       - name: Install XcodeGen + create-dmg + protobuf
+         run: brew install xcodegen create-dmg protobuf
+ 
++      # Separate step, and deliberately non-fatal — unlike the release workflow, which installs
++      # sentry-cli on the same fatal brew line. This job is an unattended cron: a Homebrew/tap hiccup
++      # must cost tonight's SYMBOLS, never tonight's BUILD. `release.sh` already skips the upload when
++      # the CLI is missing, and the warning below surfaces the degraded night on the run summary.
++      - name: Install sentry-cli (optional — dSYM upload)
++        run: |
++          brew install getsentry/tools/sentry-cli \
++            || echo "::warning::sentry-cli unavailable; nightly will ship without symbol upload"
++
+       - name: Add Rust darwin targets (universal VCS core)
+         run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
+ 
+@@ -165,6 +174,13 @@ jobs:
+           NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+           NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
++          # Sentry dSYM upload (optional — release.sh skips when any is empty). Without these the
++          # nightly shipped unsymbolicated every night, which is why the app frames in WORKROOM-2B's
++          # hang report were three unnamed addresses. ORG/PROJECT are slugs, not secrets, but kept as
++          # secrets to match this job's convention (and release.yml's).
++          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
++          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
++          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+           # release.sh derives MARKETING_VERSION = ${VERSION#v} and CURRENT_PROJECT_VERSION = commit
+           # count; the nightly version has no leading v, so it flows through unchanged.
+         run: |
+
+
+=== DIFF: macapp/Scripts/release.sh ===
+@@ -107,16 +107,23 @@ xcodebuild -project "$PROJ" -scheme WorkroomApp -configuration "$CONFIGURATION"
+ # SENTRY_AUTH_TOKEN/SENTRY_ORG/SENTRY_PROJECT are set, else it skips with a note. We do this right
+ # after archiving — symbols are tied to the compiled binary, not to signing/notarization — and a
+ # symbol-upload hiccup must never block shipping an otherwise-good build.
++# Under GitHub Actions every branch below annotates the run summary: `::notice::` when symbols really
++# uploaded, `::warning::` when they didn't. A plain echo into a 2000-line log is what let the nightly
++# ship unsymbolicated for weeks (the app frames in WORKROOM-2B were three unnamed addresses), and a
++# skip-only warning still wouldn't prove the happy path — so both directions are stated.
+ if [ -n "${SENTRY_AUTH_TOKEN:-}" ] && [ -n "${SENTRY_ORG:-}" ] && [ -n "${SENTRY_PROJECT:-}" ]; then
+   if command -v sentry-cli >/dev/null 2>&1; then
+     echo "==> Uploading dSYMs to Sentry ($SENTRY_ORG/$SENTRY_PROJECT)"
+-    sentry-cli debug-files upload --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" "${ARCHIVE}/dSYMs" \
+-      || echo "warning: Sentry dSYM upload failed; continuing release." >&2
++    if sentry-cli debug-files upload --org "$SENTRY_ORG" --project "$SENTRY_PROJECT" "${ARCHIVE}/dSYMs"; then
++      echo "${GITHUB_ACTIONS:+::notice::}Sentry dSYM upload succeeded ($SENTRY_ORG/$SENTRY_PROJECT)."
++    else
++      echo "${GITHUB_ACTIONS:+::warning::}Sentry dSYM upload failed; continuing release." >&2
++    fi
+   else
+-    echo "note: sentry-cli not found; skipping Sentry dSYM upload (brew install getsentry/tools/sentry-cli)." >&2
++    echo "${GITHUB_ACTIONS:+::warning::}sentry-cli not found; skipping Sentry dSYM upload (brew install getsentry/tools/sentry-cli)." >&2
+   fi
+ else
+-  echo "note: SENTRY_AUTH_TOKEN/SENTRY_ORG/SENTRY_PROJECT unset; skipping Sentry dSYM upload." >&2
++  echo "${GITHUB_ACTIONS:+::warning::}SENTRY_AUTH_TOKEN/SENTRY_ORG/SENTRY_PROJECT unset; skipping Sentry dSYM upload." >&2
+ fi
+ 
+ EXPORT_PLIST="${BUILD}/ExportOptions.plist"
+
+
+=== DIFF: macapp/WorkroomApp/Core/FocusedTabSelection.swift ===
+@@ -0,0 +1,69 @@
++import Foundation
++
++/// What the selected workroom's focused content tab is showing, reduced to the identity an inspector
++/// row needs to decide "am I the selected row?".
++///
++/// This exists because that question used to be asked **per row**. `HistoryRow`,
++/// `DivergentSiblingRow` and `ChangesPanel.ChangedFileRow` each held `@EnvironmentObject AppStore` +
++/// `@ObservedObject TerminalSessions` purely to run the `selectedTarget` → `focusedTab(for:)` →
++/// descriptor chain, so every terminal title update and activity pulse — which republish
++/// `TerminalSessions` at the rate an agent writes output — invalidated every row in the pane. That is
++/// the WORKROOM-2B App Hang (≥2000 ms on the main thread, sampled inside `HistoryRow.body`).
++///
++/// Now the *panel* reads it once per body pass and hands each row a plain value, so no row observes
++/// anything. Keeping the chain in one place also means a new `TabContent` case has exactly one site to
++/// teach, instead of three that fail silently by never highlighting.
++/// `Equatable` because the inspector rows now take it as a plain value and are themselves `Equatable`
++/// (the equality gate that keeps a terminal pulse from rebuilding them).
++enum FocusedTabSelection: Equatable {
++
++  /// The focused tab's content identity for the selected workroom, or `nil` when nothing is selected,
++  /// the selection has no tabs, or the focused tab is a terminal (no inspector row corresponds to it).
++  case changeset(commitID: String)
++  case diff(path: String, source: DiffSource)
++  case file(path: String)
++
++  /// Resolve the focused content tab for `store`'s selected workroom.
++  ///
++  /// Deliberately a free function over the two stores rather than a computed property on `AppStore`:
++  /// the tab strip lives in a separate observation tree from the inspector, so the caller must be the
++  /// view that observes `TerminalSessions` (a panel), and making that dependency explicit at the call
++  /// site is the whole point.
++  @MainActor
++  static func current(store: AppStore, sessions: TerminalSessions) -> FocusedTabSelection? {
++    guard let target = store.selectedTarget, let tab = sessions.focusedTab(for: target) else {
++      return nil
++    }
++    switch tab.content {
++    case .changeset(let descriptor):
++      return .changeset(commitID: descriptor.commitID)
++    case .diff(let descriptor):
++      return .diff(path: descriptor.path, source: descriptor.source)
++    case .file(let descriptor):
++      return .file(path: descriptor.path)
++    case .terminal:
++      return nil
++    }
++  }
++
++  /// The focused changeset's commit id, if a changeset tab is focused. What the History rows compare
++  /// their own commit against.
++  var changesetCommitID: String? {
++    if case .changeset(let commitID) = self { return commitID }
++    return nil
++  }
++
++  /// Whether this selection is `path`'s diff from `source`, or `path`'s file tab. The Changes panel's
++  /// rule, unchanged: a file tab has no revision, so it matches on path alone, while a diff keeps
++  /// `source` so the same path under `@` vs `@-` selects the right row.
++  func selectsChangedFile(path: String, source: DiffSource) -> Bool {
++    switch self {
++    case .diff(let selectedPath, let selectedSource):
++      return selectedPath == path && selectedSource == source
++    case .file(let selectedPath):
++      return selectedPath == path
++    case .changeset:
++      return false
++    }
++  }
++}
+
+
+=== DIFF: macapp/WorkroomApp/Core/GhosttyApp.swift ===
+@@ -239,21 +239,6 @@ final class GhosttyApp {
+     try? contents.write(to: themeConfigURL, atomically: true, encoding: .utf8)
+   }
+ 
+-  /// A `#RRGGBB` string for `color` resolved against the light/dark appearance (the system colors
+-  /// flatten to concrete RGB only when the matching appearance is the current drawing appearance).
+-  private static func hexColor(_ color: NSColor, dark: Bool) -> String {
+-    let appearance = NSAppearance(named: dark ? .darkAqua : .aqua) ?? NSApp.effectiveAppearance
+-    var hex = dark ? "#000000" : "#FFFFFF"
+-    appearance.performAsCurrentDrawingAppearance {
+-      if let c = color.usingColorSpace(.sRGB) {
+-        hex = String(
+-          format: "#%02X%02X%02X", Int(round(c.redComponent * 255)),
+-          Int(round(c.greenComponent * 255)), Int(round(c.blueComponent * 255)))
+-      }
+-    }
+-    return hex
+-  }
+-
+   // MARK: Tick pump (A1 — coalesced, main-thread)
+ 
+   /// Called by `wakeup_cb`, possibly off the main thread. Hops to the main actor and coalesces
+
+
+=== DIFF: macapp/WorkroomApp/Core/HistoryModel.swift ===
+@@ -31,6 +31,14 @@ final class HistoryModel: ObservableObject {
+   @Published private(set) var pushScope: VCSPushScope?
+ 
+   private let pageSize: Int
++  /// Ceiling on the loaded window (10 pages). Not layout hygiene — a `LazyVStack` already keeps drawing
++  /// proportional to what's on screen. This bounds the **read**: `load` re-fetches a growing prefix, so
++  /// a window a user grew once is re-walked in full on every `refresh()`, and refresh fires per ref
++  /// write from the VCS-metadata watcher. That is one commit decode (message, author, refs) per row of
++  /// the window, per commit anyone makes. Mirrors the render caps the other panes already have
++  /// (`FileTreeModel.renderCap`, `ChangesPanel.renderCap`), which is also why the pane says so in
++  /// words rather than silently ignoring "Load more".
++  private let maxWindow: Int
+   private let resolve: @Sendable (URL) throws -> VCSProviding
+   /// Trailing debounce in front of every read — see `load`. Matches the selected-workroom status
+   /// probe's own coalesce window (`AppStore.selectionDebounce`); injectable so tests needn't wait.
+@@ -40,14 +48,26 @@ final class HistoryModel: ObservableObject {
+ 
+   init(
+     pageSize: Int = 100,
++    maxWindow: Int = 1000,
+     debounce: TimeInterval = 0.3,
+     resolve: @escaping @Sendable (URL) throws -> VCSProviding = { try VCS.provider(for: $0) }
+   ) {
+     self.pageSize = pageSize
++    self.maxWindow = max(pageSize, maxWindow)
+     self.debounce = debounce
+     self.resolve = resolve
+   }
+ 
++  /// True once the loaded window has hit `maxWindow`, so "Load more" would be a no-op.
++  ///
++  /// Derived from the existing `@Published commits` rather than published separately, and deliberately
++  /// NOT folded into `reachedEnd`: that means "no older commits exist", and a model that conflated the
++  /// two would be lying to every caller that reads it.
++  var atWindowCap: Bool { commits.count >= maxWindow }
++
++  /// The cap itself, so the pane can name the number it is showing rather than hardcode it.
++  var windowCap: Int { maxWindow }
++
+   /// Point the model at a repo (or clear it with `nil`). No-op if already focused there. Loads the
+   /// first page.
+   func focus(_ root: URL?) {
+@@ -66,7 +86,9 @@ final class HistoryModel: ObservableObject {
+   /// Reload the currently-shown range (on pane-appear / app-focus / the refresh button).
+   func refresh() {
+     guard root != nil else { return }
+-    load(limit: max(pageSize, commits.count))
++    // Clamped as well as `loadMore`: belt and braces, so a window grown before the cap existed (or by a
++    // future caller) can't re-inflate itself here on every ref write.
++    load(limit: min(max(pageSize, commits.count), maxWindow))
+   }
+ 
+   /// Ensure fresh data when the History section (re)activates (the panel's `.task`). On a genuine
+@@ -83,10 +105,10 @@ final class HistoryModel: ObservableObject {
+     }
+   }
+ 
+-  /// Grow the page by one `pageSize` (the "Load more" affordance).
++  /// Grow the page by one `pageSize` (the "Load more" affordance), up to `maxWindow`.
+   func loadMore() {
+-    guard root != nil, !reachedEnd, state != .loading else { return }
+-    load(limit: commits.count + pageSize)
++    guard root != nil, !reachedEnd, state != .loading, !atWindowCap else { return }
++    load(limit: min(commits.count + pageSize, maxWindow))
+   }
+ 
+   /// Await the in-flight load — for tests and for a view that wants to sequence after a refresh.
+
+
+=== DIFF: macapp/WorkroomApp/Core/SentryConfig.swift ===
+@@ -24,13 +24,8 @@ enum SentryConfig {
+ 
+       // Tag dev builds so local crashes/traces don't pollute the production environment in Sentry.
+       // `SENTRY_ENVIRONMENT` overrides either default.
+-      #if DEBUG
+-        let defaultEnvironment = "development"
+-      #else
+-        let defaultEnvironment = "production"
+-      #endif
+       options.environment =
+-        ProcessInfo.processInfo.environment["SENTRY_ENVIRONMENT"] ?? defaultEnvironment
++        ProcessInfo.processInfo.environment["SENTRY_ENVIRONMENT"] ?? defaultEnvironment()
+       // releaseName defaults to "<bundle id>@<version>+<build>", which release.sh already drives.
+ 
+       // Error monitoring: crashes + app hangs. Watchdog-termination tracking and the
+@@ -57,4 +52,32 @@ enum SentryConfig {
+       options.enableMetrics = true
+     }
+   }
++
++  /// The Sentry `environment` for this build: `development` for Debug, `nightly` for the side-by-side
++  /// Workroom Nightly product, `production` for the shipping app.
++  ///
++  /// Nightly needs its own environment, not just its own release name. The `Nightly` build config is
++  /// release-type (no `DEBUG`), so nightly events used to arrive tagged `production` — which is how
++  /// WORKROOM-2B, an App Hang from a build that ships from the tip of `master` to a handful of people,
++  /// was indistinguishable from a hang in the released app. Alert rules and saved searches scoped to
++  /// `environment:production` will stop matching nightly events, which is the point.
++  ///
++  /// Both parameters default to the real build facts and exist purely so `SentryConfigTests` never has
++  /// to fake a build configuration (the same seam `UITestFixture` uses).
++  static func defaultEnvironment(
++    nightly: Bool = ReleaseChannel.isNightlyBuild, debug: Bool = isDebugBuild
++  ) -> String {
++    if debug { return "development" }
++    return nightly ? "nightly" : "production"
++  }
++
++  /// Whether this is a Debug build. A stored fact rather than an `#if` at the use site so
++  /// `defaultEnvironment` stays a pure function of its inputs.
++  static let isDebugBuild: Bool = {
++    #if DEBUG
++      return true
++    #else
++      return false
++    #endif
++  }()
+ }
+
+
+=== DIFF: macapp/WorkroomApp/Core/UITestFixture.swift ===
+@@ -159,6 +159,15 @@ enum UITestFixture {
+     flag("WorkroomUITestHugeChangeSet")
+   }
+ 
++  /// When set (`-WorkroomUITestManyCommits <n>`), the fixture's History page reports `n` synthetic
++  /// commits instead of the default five, so a test can prove the pane realizes only the rows on screen
++  /// and stays responsive at scale — the shape of the WORKROOM-2B App Hang. Clamped: 0 disables it
++  /// (the default five-commit page every other History test depends on), and the ceiling keeps a typo'd
++  /// launch argument from generating a million rows.
++  static var manyCommits: Int {
++    min(max(number("WorkroomUITestManyCommits"), 0), 2000)
++  }
++
+   /// The commit the dialog names as what "Amend last commit" would rewrite.
+   ///
+   /// Seeded rather than read, because the fixture's paths are not real repos — a live `git log` there
+@@ -803,10 +812,33 @@ struct FixtureVCSProvider: VCSProviding {
+   /// One origin branch, so the badge tooltips name it rather than counting.
+   static let pushScope = VCSPushScope(refName: "origin/main", count: 1)
+ 
++  /// A large synthetic page for `-WorkroomUITestManyCommits <n>` — newest-first, `root()` last, spread
++  /// over seven author emails so several distinct avatars (and their MD5/Gravatar work) are in play.
++  ///
++  /// Deliberately built only when the flag is set, and deliberately NOT mixed with `commits`: the
++  /// default five-row page is depended on EXACTLY by `HistoryPushStateUITests` (one badge, one
++  /// divergence expander), so it must stay byte-identical when the flag is absent.
++  static func manyCommits(_ count: Int) -> [VCSCommit] {
++    let base: TimeInterval = 1_700_000_000
++    let real = (0..<count).map { (n: Int) -> VCSCommit in
++      let author = VCSAuthor(name: "Author \(n % 7)", email: "author\(n % 7)@example.com")
++      return VCSCommit(
++        commitID: String(format: "stress%034x", n), shortID: String(format: "s%07x", n),
++        changeID: nil, summary: "Stress commit \(n)", body: "", authors: [author],
++        timestamp: Date(timeIntervalSince1970: base - TimeInterval(n * 60)), refs: [],
++        parentIDs: n + 1 < count ? [String(format: "stress%034x", n + 1)] : [rootCommit.commitID],
++        isWorkingCopy: n == 0, pushState: .unknown)
++    }
++    return real + [rootCommit]
++  }
++
+   func log(root: URL, limit: Int) throws -> VCSHistoryPage {
+-    let slice = Array(Self.commits.prefix(limit))
++    let all =
++      UITestFixture.manyCommits > 0
++      ? Self.manyCommits(UITestFixture.manyCommits) : Self.commits
++    let slice = Array(all.prefix(limit))
+     return VCSHistoryPage(
+-      commits: slice, reachedEnd: slice.count >= Self.commits.count, pushScope: Self.pushScope)
++      commits: slice, reachedEnd: slice.count >= all.count, pushScope: Self.pushScope)
+   }
+ 
+   func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
+
+
+=== DIFF: macapp/WorkroomApp/Views/Avatar.swift ===
+@@ -51,11 +51,33 @@ struct AvatarSubject: Hashable {
+   private static func gravatar(email: String, pixelSize: Int) -> URL? {
+     let normalized = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+     guard !normalized.isEmpty else { return nil }
+-    let hash = Insecure.MD5.hash(data: Data(normalized.utf8))
+-      .map { String(format: "%02x", $0) }.joined()
++    let hash = hexString(Insecure.MD5.hash(data: Data(normalized.utf8)))
+     return URL(string: "https://www.gravatar.com/avatar/\(hash)?s=\(pixelSize)&d=404")
+   }
+ 
++  private static let hexDigits: [UInt8] = Array("0123456789abcdef".utf8)
++
++  /// Lowercase hex, without Foundation's format machinery.
++  ///
++  /// This was `.map { String(format: "%02x", $0) }.joined()`, which is 16 full format-string parses
++  /// (`+[NSString _stringWithValidatedFormat:]` → `__CFStringAppendFormatCore`) per author to produce
++  /// 32 characters. That call was the leaf of the WORKROOM-2B App Hang sample, reached from
++  /// `HistoryRow.body` via `AvatarSubject.init` once per author per row per body pass.
++  ///
++  /// Byte-identical to `%02x` by construction: lowercase, zero-padded, exactly two digits per byte,
++  /// no locale involvement — which matters because the digest goes straight into the Gravatar URL, so
++  /// any drift would silently break every avatar. `internal`, not `private`, so
++  /// `AvatarSubjectTests` can pin it against the exact expression it replaced.
++  static func hexString<S: Sequence>(_ bytes: S) -> String where S.Element == UInt8 {
++    var out: [UInt8] = []
++    out.reserveCapacity(32)
++    for byte in bytes {
++      out.append(hexDigits[Int(byte >> 4)])
++      out.append(hexDigits[Int(byte & 0x0F)])
++    }
++    return String(decoding: out, as: UTF8.self)
++  }
++
+   private static func githubAvatar(login: String, pixelSize: Int) -> URL? {
+     guard
+       let encoded = login.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+@@ -89,6 +111,49 @@ struct AvatarSubject: Hashable {
+   }
+ }
+ 
++/// Avatar URLs whose load failed, for this session — so a row scrolling back into view doesn't
++/// re-request an image that isn't there.
++///
++/// Needed because the History list is a `LazyVStack` now: rows are built as they scroll in, and an
++/// author with no Gravatar (requested with `d=404`, so a miss really is a 404) would otherwise cost a
++/// request on every pass through the viewport, plus a visible flicker through `AsyncImage`'s loading
++/// phase before the initials chip settles.
++///
++/// **`AsyncImage` cannot tell us why a load failed** — its `.failure` phase carries an error, not an
++/// HTTP status — so "no avatar" and "wifi dropped" land here identically. That is why the set is
++/// cleared on app activation rather than kept for the whole session: a scroll performed offline
++/// self-heals the next time the user comes back to the app, instead of showing initials until relaunch.
++/// A loader that reads the status code (and can therefore cache only true 404s, and cache images too)
++/// is tracked in TODOS.md.
++@MainActor
++final class AvatarImageFailures: ObservableObject {
++  static let shared = AvatarImageFailures()
++
++  /// Bumped whenever the set is cleared, so views that consulted it re-evaluate and retry.
++  @Published private(set) var generation = 0
++  private var failed: Set<URL> = []
++  private var observer: Any?
++
++  private init() {
++    observer = NotificationCenter.default.addObserver(
++      forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
++    ) { _ in
++      MainActor.assumeIsolated { AvatarImageFailures.shared.clear() }
++    }
++  }
++
++  func contains(_ url: URL) -> Bool { failed.contains(url) }
++
++  func record(_ url: URL) { failed.insert(url) }
++
++  /// Forget every failure so the next render retries. Called on app activation; also the test seam.
++  func clear() {
++    guard !failed.isEmpty else { return }
++    failed.removeAll()
++    generation += 1
++  }
++}
++
+ /// A single circular avatar: the remote image once it loads, the coloured initials chip otherwise
+ /// (nil URL, in-flight, or a 404/empty decode). Decorative — the adjacent name text carries the
+ /// accessibility label, so the avatar is hidden from VoiceOver and only exposes a hover tooltip.
+@@ -99,16 +164,25 @@ struct AvatarView: View {
+   /// Privacy gate: when off, no avatar image is ever requested (the initials chip shows instead), so
+   /// viewing an untrusted repo's history can't beacon the viewer to Gravatar/GitHub. See the key doc.
+   @Default(.loadRemoteAvatars) private var loadRemoteAvatars
++  /// Session record of URLs that failed, so a lazily-rebuilt row doesn't re-request a missing avatar.
++  @ObservedObject private var failures = AvatarImageFailures.shared
+ 
+   var body: some View {
+     Group {
+-      if loadRemoteAvatars, let url = subject.imageURL {
++      // `failures.generation` is read so a clear (app activation) re-evaluates this body and retries.
++      if loadRemoteAvatars, let url = subject.imageURL,
++        failures.generation >= 0, !failures.contains(url)
++      {
+         AsyncImage(url: url, transaction: Transaction(animation: .easeOut(duration: 0.15))) {
+           phase in
+-          if case .success(let image) = phase {
++          switch phase {
++          case .success(let image):
+             image.resizable().scaledToFill()
+-          } else {
+-            initials
++          case .failure:
++            // Remembered so the next realization of this row draws initials without a second request.
++            initials.onAppear { failures.record(url) }
++          default:
++            initials  // still in flight
+           }
+         }
+       } else {
+
+
+=== DIFF: macapp/WorkroomApp/Views/ChangesPanel.swift ===
+@@ -184,16 +184,20 @@ struct RightInspector: View {
+   private func sectionBody(for sub: InspectorSectionKind) -> AnyView {
+     switch sub {
+     case .changes:
+-      return AnyView(ChangesPanel().environmentObject(store).environmentObject(notifications))
++      return AnyView(
++        ChangesPanel(sessions: store.terminals)
++          .environmentObject(store).environmentObject(notifications))
+     case .files:
+       return AnyView(
+         FilesPanel(model: store.fileTree).environmentObject(store).environmentObject(notifications))
+     case .pullRequest:
+       return AnyView(PullRequestPanel().environmentObject(store).environmentObject(notifications))
+     case .history:
++      // `sessions:` is injected, not read from the store inside the panel, because the panel must
++      // OBSERVE it (that is what replaced every row observing it — see `HistoryPanel`'s type doc).
+       return AnyView(
+-        HistoryPanel(model: store.commitHistory).environmentObject(store).environmentObject(
+-          notifications))
++        HistoryPanel(model: store.commitHistory, sessions: store.terminals)
++          .environmentObject(store).environmentObject(notifications))
+     }
+   }
+ 
+@@ -427,18 +431,35 @@ private struct PRNumberBadge: View {
+ /// double-click persists it. `source` is the row's group (git worktree / jj `@` / jj `@-`), so the
+ /// diff resolves against the right revision. The directory yields first when space is tight
+ /// (truncates from the head). The change kind is spelled out in the accessibility label.
+-private struct ChangedFileRow: View {
++///
++/// Deliberately `internal`, not `private` (mirrors `HistoryRow`): `ChangedFileRowInvalidationTests`
++/// reads `bodyPasses` to assert that a terminal pulse rebuilds nothing here either.
++struct ChangedFileRow: View, Equatable {
+   let file: ChangedFile
+   /// Which revision this row's diff comes from — the Changes group it's rendered under.
+   let source: DiffSource
++  /// What the focused content tab is showing, resolved ONCE by the panel. The row used to hold
++  /// `@ObservedObject TerminalSessions` and compute this itself, which meant every terminal
++  /// title/activity publish rebuilt all `renderCap` rows (WORKROOM-2B's defect, one pane over).
++  let selection: FocusedTabSelection?
++  /// `ThemeService.generation`, so a theme change defeats the equality gate below. The row's
++  /// hover/selection tints are read inside ternaries, so an unselected, unhovered row would otherwise
++  /// register no Observation dependency at all — see `HistoryPanel.list` for the full reasoning.
++  let themeGeneration: Int
++  /// Still an `@EnvironmentObject`: the row's click/context-menu actions need the store, and those are
++  /// four call sites, not one value. `AppStore` publishes on status sweeps — seconds apart — not per
++  /// terminal keystroke, so it is not the invalidation source this fix was about.
+   @EnvironmentObject var store: AppStore
+-  /// Observed so the row's selected state tracks which diff tab is focused (the tab strip lives in
+-  /// a separate observation tree from the inspector).
+-  @ObservedObject var sessions: TerminalSessions
+   @State private var hovering = false
+   /// Time of the last click, so a quick second click promotes the preview tab to persisted (eager
+   /// single/double discrimination — the single click never waits).
+   @State private var lastClick: Date?
++
++  #if DEBUG
++    /// Body evaluations across all rows this process — the Changes-panel counterpart of
++    /// `HistoryRow.bodyPasses`, read by `ChangedFileRowInvalidationTests`.
++    static var bodyPasses = 0
++  #endif
+   /// Observed so the hover toolbar / context-menu "Open file in <editor>" label updates live when
+   /// the user changes Settings → "Open file paths in" (issue #93); otherwise it'd be stale until an
+   /// unrelated redraw.
+@@ -446,10 +467,13 @@ private struct ChangedFileRow: View {
+   private let theme = ThemeService.shared
+ 
+   var body: some View {
++    #if DEBUG
++      Self.bodyPasses += 1
++    #endif
+     let (dir, name) = ChangesPanel.splitPath(file.path)
+     // Baseline-aligned, not centered: the path is a smaller face than the filename, so centering
+     // would float it off the name's baseline.
+-    HStack(alignment: .firstTextBaseline, spacing: 6) {
++    return HStack(alignment: .firstTextBaseline, spacing: 6) {
+       Text(letter)
+         .font(.system(.callout, design: .monospaced))
+         .foregroundStyle(color)
+@@ -573,18 +597,22 @@ private struct ChangedFileRow: View {
+     ExternalEditor.forFilePaths?.name ?? "your default app"
+   }
+ 
+-  /// True when the selected target's focused content tab is this row — either its diff (opened by a
+-  /// row click) or its file (opened by the in-app "Open File", issue #117) — so the row that's
+-  /// showing in the pane reads as selected. The file match ignores `source` since a file tab has no
++  /// True when the focused content tab is this row — either its diff (opened by a row click) or its
++  /// file (opened by the in-app "Open File", issue #117) — so the row that's showing in the pane reads
++  /// as selected. The matching rule itself lives in `FocusedTabSelection.selectsChangedFile` now, next
++  /// to the History pane's equivalent: the file match ignores `source` since a file tab has no
+   /// revision; the diff match keeps it so the same path under `@` vs `@-` selects the right row.
+-  private var isSelected: Bool {
+-    guard let target = store.selectedTarget, let tab = sessions.focusedTab(for: target)
+-    else { return false }
+-    switch tab.content {
+-    case .diff(let descriptor): return descriptor.path == file.path && descriptor.source == source
+-    case .file(let descriptor): return descriptor.path == file.path
+-    default: return false
+-    }
++  fileprivate var isSelected: Bool {
++    selection?.selectsChangedFile(path: file.path, source: source) ?? false
++  }
++
++  /// The equality gate behind `.equatable()` in `fileList`: a panel body pass caused by an unrelated
++  /// publish re-creates every row value, and only the ones whose file, group or selected-ness actually
++  /// changed get a body. `@EnvironmentObject`/`@State`/`@Default` still invalidate past this gate, so
++  /// hover, the editor-preference label and store-driven updates are unaffected.
++  static func == (lhs: ChangedFileRow, rhs: ChangedFileRow) -> Bool {
++    lhs.file == rhs.file && lhs.source == rhs.source && lhs.isSelected == rhs.isSelected
++      && lhs.themeGeneration == rhs.themeGeneration
+   }
+ 
+   // Letter / colour / word live in `ChangeBadge` (Core) so the mapping is unit-testable — see its
+@@ -697,6 +725,12 @@ private struct InspectorMenuButtonStyle: ButtonStyle {
+ /// (non-target), missing directory, still-loading, unknown (probe failed), and clean.
+ struct ChangesPanel: View {
+   @EnvironmentObject var store: AppStore
++  /// Observed HERE so the rows don't have to be. `TerminalSessions` republishes per terminal
++  /// title/activity write, and while each `ChangedFileRow` observed it directly, every one of those
++  /// publishes rebuilt all `renderCap` rows — the same defect that produced the WORKROOM-2B App Hang
++  /// in the History pane (see `HistoryPanel`'s invalidation diagram). One panel pass per publish, and
++  /// the rows' `Equatable` gate elides the rest.
++  @ObservedObject var sessions: TerminalSessions
+   private let theme = ThemeService.shared
+   /// Hard cap on rendered rows so a huge change set can't blow up the list (the underlying
+   /// output is already byte-capped by `StatusCommandRunner`).
+@@ -847,9 +881,17 @@ struct ChangesPanel: View {
+   @ViewBuilder
+   private func fileList(_ files: [ChangedFile], source: DiffSource) -> some View {
+     let shown = Array(files.prefix(renderCap))
++    // Resolved once for the whole list, not once per row: this is the read that used to make every row
++    // observe `TerminalSessions`.
++    let selection = FocusedTabSelection.current(store: store, sessions: sessions)
++    // Read here so the panel observes the theme, and passed down so the rows' gate sees a theme change.
++    let themeGeneration = theme.generation
+     VStack(alignment: .leading, spacing: 1) {
+       ForEach(shown) { file in
+-        ChangedFileRow(file: file, source: source, sessions: store.terminals)
++        ChangedFileRow(
++          file: file, source: source, selection: selection, themeGeneration: themeGeneration
++        )
++        .equatable()
+       }
+       if files.count > shown.count {
+         Text("Showing first \(shown.count) of \(files.count)")
+
+
+=== DIFF: macapp/WorkroomApp/Views/DiffViewer.swift ===
+@@ -368,6 +368,13 @@ struct DiffViewer: View {
+     // wrapping rows — leaving a blank band in the middle of a tall diff until you scroll it into
+     // view. `UnifiedDiff.parse`'s 2000-line cap bounds the row count, so laying them all out up
+     // front is affordable and gap-free.
++    //
++    // This is NOT a general rule against lazy stacks, and `HistoryPanel` deliberately uses one: its
++    // rows are single-line `lineLimit(1)`, so their height is known before layout and the estimate a
++    // lazy stack caches is correct. The distinction is soft-wrapping vs fixed-height rows, not
++    // "diffs vs history" — which matters because History's row count is unbounded by anything as
++    // tight as 2000 lines, and building all of it eagerly is what produced a 2-second App Hang
++    // (WORKROOM-2B).
+     ScrollView(.vertical) {
+       VStack(alignment: .leading, spacing: 0) {
+         if let from = diff.renamedFrom {
+
+
+=== DIFF: macapp/WorkroomApp/Views/HistoryPanel.swift ===
+@@ -2,9 +2,32 @@ import SwiftUI
+ 
+ /// The inspector's **History** section body (issue #59): a newest-first commit log for the selected
+ /// workroom, read via `VCSProviding` through the store-owned `HistoryModel`. Lives inside the
+-/// inspector's scroll view, so it renders a flat `VStack` of rows (like `ChangesPanel`/`FilesPanel`)
++/// inspector's scroll view, so it renders a flat stack of rows (like `ChangesPanel`/`FilesPanel`)
+ /// rather than a `List`. Single-click a row opens the commit's `ChangesetDetailView` as a preview
+ /// content tab; a quick double-click persists it (the same gate the Changes panel uses).
++///
++/// **Invalidation — read this before adding a dependency to a row** (WORKROOM-2B, a ≥2000 ms App Hang
++/// sampled inside `HistoryRow.body`):
++///
++/// ```
++/// BEFORE                                     AFTER
++/// TerminalSessions.updateTitle / pulse       TerminalSessions.updateTitle / pulse
++///   │ @Published tabsByTarget/activityPulses   │
++///   ▼                                          ▼
++/// EVERY HistoryRow (@ObservedObject)         HistoryPanel.body — ONE pass
++///   │                                          │ LazyVStack: ForEach builds REALIZED rows only
++///   ▼                                          ▼
++/// N × body: MD5 + 16×String(format:)         HistoryRow == (commit, pushScope,
++///         + URL parse + AsyncImage                          isSelected, themeGeneration)
++///   = 2000 ms                                  │ equal → body SKIPPED
++///                                              ▼
++///                                            selection/theme moved → affected rows rebuild
++/// ```
++///
++/// So: the panel owns the `TerminalSessions` dependency and resolves the focused tab **once**
++/// (`FocusedTabSelection`); rows receive plain values and observe nothing. Measured by
++/// `HistoryRowInvalidationTests` — a pulse burst must rebuild zero rows, and a selection or content
++/// change must still rebuild the affected ones.
+ struct HistoryPanel: View {
+   @EnvironmentObject var store: AppStore
+   /// Injected + `@ObservedObject` (mirrors `FilesPanel`), NOT read via `store.commitHistory`: the
+@@ -13,6 +36,10 @@ struct HistoryPanel: View {
+   /// `store.commitHistory` read only refreshed when some *unrelated* store change happened to publish
+   /// (a status refresh, a reselection, an app refocus) — leaving the loader stuck until then.
+   @ObservedObject var model: HistoryModel
++  /// Observed HERE, deliberately, and nowhere below: this is the one view that needs to know which
++  /// content tab is focused, and `TerminalSessions` republishes per terminal title/activity write. One
++  /// panel body pass per publish is affordable; N row bodies was not (see the diagram above).
++  @ObservedObject var sessions: TerminalSessions
+   private let theme = ThemeService.shared
+ 
+   var body: some View {
+@@ -66,8 +93,19 @@ struct HistoryPanel: View {
+       + "\u{1F}\(store.historySectionShown)"
+   }
+ 
++  /// The commit id of the focused changeset tab, or `nil`. Resolved once per panel body pass and handed
++  /// to the rows as a value — the row-level `isSelected` this replaced is what made every row observe
++  /// `AppStore` + `TerminalSessions` (see the type doc's invalidation diagram).
++  private var selectedCommitID: String? {
++    FocusedTabSelection.current(store: store, sessions: sessions)?.changesetCommitID
++  }
++
+   /// The changeset tab's title for a commit — its summary, or the short id when it has none.
+-  private func title(_ commit: VCSCommit) -> String {
++  ///
++  /// `static` so the `open:` closure below can be written with an explicit `[store]` capture list and
++  /// provably capture nothing per-pass: `HistoryRow`'s hand-written `==` excludes that closure, and the
++  /// exclusion is only sound while the closure is behaviour-constant.
++  private static func title(_ commit: VCSCommit) -> String {
+     commit.summary.isEmpty ? commit.shortID : commit.summary
+   }
+ 
+@@ -76,34 +114,66 @@ struct HistoryPanel: View {
+   /// makes the per-row divergence accordion animate smoothly — a growing row's height change and the
+   /// resulting scroll layout are one SwiftUI transaction, not a fight with an AppKit resize.
+   private var list: some View {
+-    ScrollView {
+-      VStack(alignment: .leading, spacing: 0) {
++    let selected = selectedCommitID
++    // Read HERE so the panel itself has an Observation dependency on the theme, and pass it down so the
++    // rows' equality gate can see a theme change.
++    //
++    // Why this is not belt-and-braces: a row reads `theme.tokens` only inside ternaries
++    // (`isSelected ? accent : …`, `hovering ? rowHover : .clear`), and Swift evaluates just the taken
++    // branch — so an unselected, unhovered row reads NO token and therefore registers no observation.
++    // It used to repaint anyway, by accident: applying a theme also re-themes live terminals, which
++    // republished `TerminalSessions`, which every row observed. Removing that observation (the App Hang
++    // fix) removed the accidental repaint with it, and the unpushed badge's warning tint would have
++    // stayed stale until something else invalidated the row.
++    let themeGeneration = theme.generation
++    return ScrollView {
++      // `LazyVStack`, so a 1000-commit page costs the ~8 rows on screen rather than all of them. Safe
++      // here and NOT in `DiffViewer` (which documents rejecting it at `unifiedBody`): these rows are
++      // single-line `lineLimit(1)` fixed-height, so the height estimate a lazy stack caches is right,
++      // where a soft-wrapping diff row's is not. The divergence accordion still animates smoothly
++      // because SwiftUI owns the scroll (the doc comment above this property explains why), and it only
++      // ever grows a row that is already realized.
++      LazyVStack(alignment: .leading, spacing: 0) {
+         ForEach(model.commits) { commit in
+           if commit.isRoot {
+             // jj's `root()` shares almost nothing with a real commit row — no author, time, refs,
+             // push state, divergence or changeset to open — so it gets its own view rather than a
+             // `HistoryRow` body threaded with suppressions.
+-            HistoryRootRow(commit: commit)
++            HistoryRootRow(commit: commit).equatable()
+           } else {
+             HistoryRow(
+               commit: commit,
+               // Page-level, so an unpushed row's tooltip can name the origin branch it was measured
+               // against instead of saying "origin" generically.
+               pushScope: model.pushScope,
++              // Resolved once above, not per row: rows must not reach the stores for this.
++              selectedCommitID: selected,
++              themeGeneration: themeGeneration,
+               // Open any commit's changeset — the row itself, or one of its divergent siblings.
+               // Preview on a single click, persist on a quick double-click (siblings only ever
+-              // preview).
+-              open: { target, persist in
++              // preview). `[store]` + `Self.title` on purpose: the capture list is what makes this
++              // closure behaviour-constant, which is what lets `HistoryRow.==` exclude it.
++              open: { [store] target, persist in
+                 if persist {
+-                  store.openChangesetPersistent(commitID: target.commitID, title: title(target))
++                  store.openChangesetPersistent(
++                    commitID: target.commitID, title: Self.title(target))
+                 } else {
+-                  store.openChangesetPreview(commitID: target.commitID, title: title(target))
++                  store.openChangesetPreview(commitID: target.commitID, title: Self.title(target))
+                 }
+-              },
+-              sessions: store.terminals)
++              }
++            ).equatable()
+           }
+         }
+-        if !model.reachedEnd {
++        if !model.reachedEnd, model.atWindowCap {
++          // Older history exists but the window is capped, so say so instead of leaving a "Load more"
++          // that does nothing. Same shape as the other panes' cap notices (`FilesPanel`'s "+N more",
++          // `ChangesPanel`'s "Showing first N of M").
++          Text("Showing the newest \(model.windowCap) commits")
++            .font(.footnote).foregroundStyle(.tertiary)
++            .frame(maxWidth: .infinity, alignment: .center)
++            .padding(.vertical, 8)
++            .accessibilityIdentifier("HistoryWindowCapNotice")
++        } else if !model.reachedEnd {
+           Button {
+             model.loadMore()
+           } label: {
+@@ -145,19 +215,38 @@ struct HistoryPanel: View {
+   }
+ }
+ 
++/// The abbreviated relative-time formatter shared by BOTH History row types (the commit row and its
++/// divergent siblings). One instance, not one per struct: `RelativeDateTimeFormatter` is not cheap to
++/// construct, the two configurations were byte-identical, and neither row keeps formatter state.
++private let historyRelativeFormatter: RelativeDateTimeFormatter = {
++  let f = RelativeDateTimeFormatter()
++  f.unitsStyle = .abbreviated
++  return f
++}()
++
+ /// One commit row: first line of the message, then a metadata line (short id · author · relative
+ /// time) with any bookmark/branch refs, and a `@` marker for the jj working copy.
+-private struct HistoryRow: View {
++///
++/// Deliberately `internal`, not `private` (same reason `HistoryCommitCard` below is): the row's
++/// invalidation behaviour is the regression net for the WORKROOM-2B App Hang, and
++/// `HistoryRowInvalidationTests` reads `bodyPasses` to assert it. XCUITest can only see that rows
++/// exist, not how many times they were rebuilt.
++struct HistoryRow: View, Equatable {
+   let commit: VCSCommit
+   /// What this page's push states were compared against, for the unpushed badge's tooltip.
+   let pushScope: VCSPushScope?
++  /// The focused changeset tab's commit id, resolved ONCE by `HistoryPanel` and passed down as a plain
++  /// value. This row observes nothing: it used to hold `@EnvironmentObject AppStore` +
++  /// `@ObservedObject TerminalSessions` just to compute the comparison below, which is what made a
++  /// terminal title/activity pulse rebuild every row in the pane (WORKROOM-2B).
++  let selectedCommitID: String?
++  /// `ThemeService.generation`, so a theme change makes this row's equality gate report "changed".
++  /// Load-bearing: the row's token reads sit inside ternaries, so an unselected, unhovered row reads no
++  /// token and registers no Observation dependency of its own (see `HistoryPanel.list`).
++  let themeGeneration: Int
+   /// Open a commit's changeset detail as a tab — the row's own commit or one of its divergent
+   /// siblings. `persist` false previews (single click), true persists (quick double-click).
+   let open: (_ commit: VCSCommit, _ persist: Bool) -> Void
+-  @EnvironmentObject var store: AppStore
+-  /// Observed so the row's selected state tracks which changeset tab is focused — the tab strip
+-  /// lives in a separate observation tree from the inspector (mirrors `ChangesPanel.ChangedFileRow`).
+-  @ObservedObject var sessions: TerminalSessions
+   @State private var hovering = false
+   /// Whether the rich hover card (mirroring the changeset detail's header) is showing. Revealed on a
+   /// short hover dwell so it doesn't flash while the pointer scans down the list (see the `.task`).
+@@ -168,14 +257,38 @@ private struct HistoryRow: View {
+   @State private var showDivergent = false
+   private let theme = ThemeService.shared
+ 
+-  private static let relative: RelativeDateTimeFormatter = {
+-    let f = RelativeDateTimeFormatter()
+-    f.unitsStyle = .abbreviated
+-    return f
+-  }()
++  /// The equality gate behind `.equatable()` at the use site. Synthesis is impossible (the row stores
++  /// four `@State`s, a `ThemeService` handle and a closure), so this lists what the body actually reads
++  /// from its inputs: the commit, the page's push scope, and whether this row is the selected one.
++  ///
++  /// `open` is EXCLUDED. That is sound only because `HistoryPanel` builds it with an explicit `[store]`
++  /// capture list over a `static` title helper, so two instances differing only in closure identity are
++  /// behaviourally identical. If that closure ever captures per-pass state, this `==` must start
++  /// comparing it — or go away. `@State` and `ThemeService`'s Observation invalidate the body directly,
++  /// past this gate, so hover, the dwell popover, the accordion and theme repaints are unaffected.
++  /// Compares the DERIVED `isSelected`, not the raw `selectedCommitID`: when selection moves from one
++  /// row to another, only the two rows whose own selected-ness changed compare unequal — the rest of
++  /// the realized page stays elided.
++  static func == (lhs: HistoryRow, rhs: HistoryRow) -> Bool {
++    lhs.commit == rhs.commit && lhs.pushScope == rhs.pushScope
++      && lhs.isSelected == rhs.isSelected && lhs.themeGeneration == rhs.themeGeneration
++  }
++
++  #if DEBUG
++    /// How many times ANY row's body has been evaluated this process — the measurement behind the
++    /// WORKROOM-2B regression tests. A terminal title/activity publish must move this by ZERO, and a
++    /// 200-commit page must move it by far less than 200. Debug-only: it exists for
++    /// `HistoryRowInvalidationTests`, not for the shipping app.
++    static var bodyPasses = 0
++  #endif
+ 
+   var body: some View {
+-    VStack(alignment: .leading, spacing: 0) {
++    #if DEBUG
++      Self.bodyPasses += 1
++    #endif
++    // Explicit `return` on purpose: it opts this body out of the `@ViewBuilder` transform so the
++    // debug counter above can be a plain statement. The `VStack` closure is still builder-built.
++    return VStack(alignment: .leading, spacing: 0) {
+       VStack(alignment: .leading, spacing: 3) {
+         // Line one — the commit summary — is the row's combined accessibility leaf (id `HistoryRow`),
+         // so the row reads and selects as a unit behind one queryable identifier.
+@@ -194,6 +307,14 @@ private struct HistoryRow: View {
+         .accessibilityElement(children: .combine)
+         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+         .accessibilityIdentifier("HistoryRow")
++        // The short id leads the spoken label so a UI test can name the COMMIT it means instead of
++        // indexing by position. That distinction became load-bearing when this list went lazy: offscreen
++        // rows leave the accessibility tree, so `element(boundBy: 2)` no longer reliably means "the
++        // third commit" — and a test that quietly indexes a different row than it intends still passes.
++        // An element carries only one identifier (`HistoryRow`, which the tests also count), so identity
++        // rides in the label. VoiceOver gains the id too, which the row never announced before.
++        .accessibilityLabel(
++          "\(commit.shortID), \(commit.summary.isEmpty ? "(no description)" : commit.summary)")
+ 
+         // Line two — author avatars, relative time, then any bookmark/branch refs right of the
+         // timestamp, then the unpushed marker — with the "diverging" disclosure trailing on the SAME
+@@ -207,7 +328,8 @@ private struct HistoryRow: View {
+         // refs out. Each avatar tooltips its own name, the hover card and the changeset detail spell
+         // the names out, and the timestamp carries them as its accessibility label for VoiceOver.
+         HStack(spacing: 6) {
+-          let relative = Self.relative.localizedString(for: commit.timestamp, relativeTo: Date())
++          let relative = historyRelativeFormatter.localizedString(
++            for: commit.timestamp, relativeTo: Date())
+           if !commit.authors.isEmpty {
+             AvatarStack(
+               subjects: commit.authors.map { AvatarSubject(author: $0, pixelSize: 48) }, size: 16)
+@@ -331,26 +453,24 @@ private struct HistoryRow: View {
+     .accessibilityIdentifier("HistoryRowDiverges")
+   }
+ 
+-  /// The expanded list of the change's divergent copies — one `DivergentSiblingRow` each.
++  /// The expanded list of the change's divergent copies — one `DivergentSiblingRow` each. The siblings
++  /// get the same passed-down selection value the parent row did; nothing here reaches a store.
+   private var divergentSiblingsList: some View {
+     VStack(alignment: .leading, spacing: 0) {
+       ForEach(commit.divergentSiblings) { sibling in
+-        DivergentSiblingRow(sibling: sibling, open: open, sessions: sessions)
++        DivergentSiblingRow(
++          sibling: sibling, selectedCommitID: selectedCommitID,
++          themeGeneration: themeGeneration, open: open
++        )
++        .equatable()
+       }
+     }
+     .padding(.top, 1).padding(.bottom, 5)
+   }
+ 
+-  /// True when the selected target's focused content tab is this commit's changeset — so the row
+-  /// showing in the pane reads as selected. The History analogue of `ChangedFileRow.isSelected`.
+-  private var isSelected: Bool {
+-    guard let target = store.selectedTarget, let tab = sessions.focusedTab(for: target)
+-    else { return false }
+-    if case .changeset(let descriptor) = tab.content {
+-      return descriptor.commitID == commit.commitID
+-    }
+-    return false
+-  }
++  /// True when the focused content tab is this commit's changeset — so the row showing in the pane
++  /// reads as selected. Now a comparison against a value the panel resolved, not a store read.
++  fileprivate var isSelected: Bool { selectedCommitID == commit.commitID }
+ }
+ 
+ /// jj's virtual **root commit**, rendered the way `jj log` prints it: `◆ root() 00000000`.
+@@ -363,7 +483,7 @@ private struct HistoryRow: View {
+ ///
+ /// **Inert on purpose**: no hover highlight and no tap. There is no changeset to open (root's diff is
+ /// empty by definition), so the row must not look or behave like it opens one.
+-private struct HistoryRootRow: View {
++private struct HistoryRootRow: View, Equatable {
+   let commit: VCSCommit
+ 
+   var body: some View {
+@@ -482,21 +602,18 @@ struct HistoryCommitCard: View {
+ /// One divergent-copy row inside the expander: jj's `id/N` label + summary + relative time, with the
+ /// SAME hover / selected highlight as a `HistoryRow` — a full-width band (content indented under the
+ /// parent). Selected when its changeset is the focused content tab; a single click opens it.
+-private struct DivergentSiblingRow: View {
++private struct DivergentSiblingRow: View, Equatable {
+   let sibling: VCSCommit
++  /// The focused changeset tab's commit id, passed down from the panel through the parent row — the
++  /// sibling row observed the stores for this until WORKROOM-2B (see `HistoryPanel`'s type doc).
++  let selectedCommitID: String?
++  /// `ThemeService.generation` — same reason as `HistoryRow.themeGeneration`.
++  let themeGeneration: Int
+   /// Opens a commit's changeset detail (preview) — the parent row's `open`, siblings only preview.
+   let open: (_ commit: VCSCommit, _ persist: Bool) -> Void
+-  @EnvironmentObject var store: AppStore
+-  @ObservedObject var sessions: TerminalSessions
+   @State private var hovering = false
+   private let theme = ThemeService.shared
+ 
+-  private static let relative: RelativeDateTimeFormatter = {
+-    let f = RelativeDateTimeFormatter()
+-    f.unitsStyle = .abbreviated
+-    return f
+-  }()
+-
+   var body: some View {
+     HStack(spacing: 6) {
+       Text(sibling.divergentLabel ?? sibling.shortID)
+@@ -508,7 +625,7 @@ private struct DivergentSiblingRow: View {
+         .foregroundStyle(
+           isSelected ? theme.tokens.accent : (sibling.summary.isEmpty ? .secondary : .primary))
+       Spacer(minLength: 4)
+-      Text(Self.relative.localizedString(for: sibling.timestamp, relativeTo: Date()))
++      Text(historyRelativeFormatter.localizedString(for: sibling.timestamp, relativeTo: Date()))
+         .font(.caption2).foregroundStyle(.secondary)
+     }
+     // Content indented under the parent row; the highlight band bleeds full-width (same -12 as the
+@@ -531,12 +648,12 @@ private struct DivergentSiblingRow: View {
+   }
+ 
+   /// Selected when the focused content tab is this sibling's changeset (mirrors `HistoryRow`).
+-  private var isSelected: Bool {
+-    guard let target = store.selectedTarget, let tab = sessions.focusedTab(for: target)
+-    else { return false }
+-    if case .changeset(let descriptor) = tab.content {
+-      return descriptor.commitID == sibling.commitID
+-    }
+-    return false
++  private var isSelected: Bool { selectedCommitID == sibling.commitID }
++
++  /// Same gate and same exclusion rationale as `HistoryRow.==` — `open` is the parent's
++  /// behaviour-constant closure.
++  static func == (lhs: DivergentSiblingRow, rhs: DivergentSiblingRow) -> Bool {
++    lhs.sibling == rhs.sibling && lhs.isSelected == rhs.isSelected
++      && lhs.themeGeneration == rhs.themeGeneration
+   }
+ }
+
+
+=== DIFF: macapp/WorkroomAppTests/AvatarSubjectTests.swift ===
+@@ -1,3 +1,4 @@
++import CryptoKit
+ import XCTest
+ 
+ @testable import Workroom
+@@ -6,6 +7,53 @@ import XCTest
+ /// stable (non-salted) fallback colour. All unit-testable without a view.
+ final class AvatarSubjectTests: XCTestCase {
+ 
++  // MARK: Hex encoding (replaced `String(format: "%02x")` — WORKROOM-2B)
++
++  /// The honest "no behaviour change" proof: compare against the EXACT expression that was removed.
++  /// The digest feeds the Gravatar URL, so a single wrong nibble silently breaks every avatar.
++  func testHexStringMatchesFormatSpecifierForEveryByte() {
++    for value in UInt8.min...UInt8.max {
++      XCTAssertEqual(
++        AvatarSubject.hexString([value]), String(format: "%02x", value),
++        "hex encoding diverged from %02x at byte \(value)")
++    }
++  }
++
++  func testHexStringMatchesFormatSpecifierForSequences() {
++    let bytes: [UInt8] = [0x00, 0x01, 0x0f, 0x10, 0x7f, 0x80, 0xfe, 0xff]
++    XCTAssertEqual(
++      AvatarSubject.hexString(bytes), bytes.map { String(format: "%02x", $0) }.joined())
++    XCTAssertEqual(AvatarSubject.hexString([UInt8]()), "", "empty input encodes to an empty string")
++  }
++
++  /// RFC 1321 anchors, so the digest+encode pair is pinned to published values rather than to itself.
++  func testHexStringOfKnownMD5Digests() {
++    func md5Hex(_ s: String) -> String {
++      AvatarSubject.hexString(Insecure.MD5.hash(data: Data(s.utf8)))
++    }
++    XCTAssertEqual(md5Hex(""), "d41d8cd98f00b204e9800998ecf8427e")
++    XCTAssertEqual(md5Hex("abc"), "900150983cd24fb0d6963f7d28e17f72")
++    XCTAssertEqual(md5Hex("message digest"), "f96b697d7cb7938d525a2f31aaf161d0")
++  }
++
++  /// The end-to-end contract: the produced Gravatar URL must be byte-identical to what the removed
++  /// `String(format: "%02x")` path produced. Independently recomputed here with the OLD expression, so
++  /// the production encoder and this assertion cannot drift together.
++  func testGravatarURLIsUnchangedForKnownEmails() {
++    func legacyMD5Hex(_ email: String) -> String {
++      Insecure.MD5.hash(data: Data(email.utf8)).map { String(format: "%02x", $0) }.joined()
++    }
++    func url(_ email: String) -> String? {
++      AvatarSubject(author: VCSAuthor(name: "x", email: email), pixelSize: 48)
++        .imageURL?.absoluteString
++    }
++    for email in ["joel@example.com", "grace@example.com", "ada@example.com"] {
++      XCTAssertEqual(
++        url(email), "https://www.gravatar.com/avatar/\(legacyMD5Hex(email))?s=48&d=404",
++        "the gravatar URL for \(email) moved")
++    }
++  }
++
+   // MARK: Commit authors → Gravatar
+ 
+   func testAuthorGravatarURLShape() {
+
+
+=== DIFF: macapp/WorkroomAppTests/ChangedFileRowInvalidationTests.swift ===
+@@ -0,0 +1,189 @@
++import AppKit
++import SwiftUI
++import XCTest
++
++@testable import Workroom
++
++/// The Changes panel's half of the WORKROOM-2B fix.
++///
++/// `ChangedFileRow` had the identical defect the History rows did — `@ObservedObject TerminalSessions`
++/// held purely to compute `isSelected` — just bounded at `renderCap` (200) instead of the whole commit
++/// log, which is why it never crossed the 2-second app-hang threshold on its own. Hoisting the lookup
++/// into the panel is NOT sufficient here: the panel then observes `TerminalSessions` itself, and the
++/// file list is an eager `VStack`, so without an equality gate on the row every pulse would still
++/// rebuild all 200 bodies. This suite is what proves the gate is doing that work.
++@MainActor
++final class ChangedFileRowInvalidationTests: XCTestCase {
++  private let projectPath = "/changes-invalidation"
++  private let workroomName = "solo"
++
++  private func makeStore(changedFiles: [ChangedFile]) -> AppStore {
++    let store = AppStore()
++    store.terminals.makeView = { _, cwd, command in
++      GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
++    }
++    store.projects = [
++      Project(
++        path: projectPath, vcs: "git",
++        workrooms: [
++          Workroom(
++            name: workroomName, path: "\(projectPath)/\(workroomName)",
++            vcsName: "workroom/\(workroomName)", warnings: [])
++        ])
++    ]
++    store.inspectorVisibleOverrideForTesting = true
++    store.isolatesInspectorSectionForTesting = true
++    store.isolatesInspectorLayoutForTesting = true
++    store.activeInspectorSection = .changes
++    let target = store.target(for: .workroom(project: projectPath, name: workroomName))!
++    _ = store.terminals.addTab(for: target)
++    store.selectedTargetID = .workroom(project: projectPath, name: workroomName)
++    // `lastChecked` is load-bearing, not decoration: `ChangesPanel.content(for:)` renders "Checking…"
++    // (and therefore NO rows) while it is nil, which would make every assertion here vacuously true.
++    store.workroomStatuses[.workroom(project: projectPath, name: workroomName)] = WorkroomStatus(
++      dirty: true, changedFiles: changedFiles, lastChecked: Date())
++    return store
++  }
++
++  private func files(_ count: Int) -> [ChangedFile] {
++    (0..<count).map { ChangedFile(path: "src/file\($0).swift", change: .modified) }
++  }
++
++  private func host(_ store: AppStore) -> (NSWindow, NSView) {
++    let root = ChangesPanel(sessions: store.terminals)
++      .environmentObject(store)
++      .environmentObject(store.notifications)
++      .frame(width: 320, height: 420)
++    let hosting = NSHostingView(rootView: root)
++    hosting.frame = NSRect(x: 0, y: 0, width: 320, height: 420)
++    let window = NSWindow(
++      contentRect: hosting.frame, styleMask: [.titled], backing: .buffered, defer: false)
++    window.isReleasedWhenClosed = false  // ARC is the sole owner (see PaneRenderingTests.host)
++    window.contentView = hosting
++    window.makeKeyAndOrderFront(nil)
++    return (window, hosting)
++  }
++
++  private func settle(_ view: NSView, seconds: TimeInterval = 0.6) {
++    let deadline = Date().addingTimeInterval(seconds)
++    while Date() < deadline {
++      view.layoutSubtreeIfNeeded()
++      RunLoop.current.run(until: Date().addingTimeInterval(0.02))
++    }
++    view.layoutSubtreeIfNeeded()
++  }
++
++  func testTerminalPulseBurstRebuildsNoChangedFileRows() throws {
++    let store = makeStore(changedFiles: files(60))
++    let (window, view) = host(store)
++    defer {
++      store.terminals.reapAll()
++      window.close()
++    }
++    settle(view)
++    let target = store.target(for: .workroom(project: projectPath, name: workroomName))!
++    guard let tab = store.terminals.focusedTab(for: target) else {
++      return XCTFail("the fixture workroom must have a focused tab")
++    }
++    // Anti-vacuity guard: "0 rebuilds" only means anything if rows rendered in the first place. A
++    // fixture missing `lastChecked` renders "Checking…" and would pass this test having drawn nothing.
++    XCTAssertGreaterThan(
++      ChangedFileRow.bodyPasses, 0, "the fixture must actually render changed-file rows")
++
++    ChangedFileRow.bodyPasses = 0
++    for _ in 0..<25 { store.terminals.pulsePaneActivity(tab.id) }
++    settle(view)
++
++    XCTAssertEqual(
++      ChangedFileRow.bodyPasses, 0,
++      "a terminal activity pulse says nothing about any changed file, so it must rebuild no rows — "
++        + "hoisting the selection lookup alone would not achieve this behind an eager VStack")
++  }
++
++  /// A theme change must repaint the rows — the same gate check the History suite makes.
++  ///
++  /// These rows read their hover/selection tints inside ternaries, so an unselected, unhovered row
++  /// registers no Observation dependency on the theme; before the fix they repainted only because
++  /// applying a theme also republished `TerminalSessions`, which every row observed. The explicit
++  /// `themeGeneration` input is what replaces that accident.
++  func testThemeChangeRebuildsChangedFileRows() throws {
++    let store = makeStore(changedFiles: files(20))
++    let (window, view) = host(store)
++    defer {
++      store.terminals.reapAll()
++      window.close()
++    }
++    // Let the selection's status probe land and then restore the fixture list, as in the selection test
++    // — otherwise the panel is showing its empty state by measurement time and "no rows rebuilt" says
++    // nothing about the theme.
++    settle(view, seconds: 1.2)
++    store.workroomStatuses[.workroom(project: projectPath, name: workroomName)] = WorkroomStatus(
++      dirty: true, changedFiles: files(20), lastChecked: Date())
++    settle(view)
++    XCTAssertGreaterThan(
++      ChangedFileRow.bodyPasses, 0, "the fixture must actually render changed-file rows")
++
++    ChangedFileRow.bodyPasses = 0
++    ThemeService.shared.applyActiveTheme(force: true)
++    settle(view)
++
++    XCTAssertGreaterThan(
++      ChangedFileRow.bodyPasses, 0, "a theme change must repaint the changed-file rows")
++  }
++
++  /// The positive half: a selection change MUST still reach the rows.
++  ///
++  /// Selection is moved by re-focusing an existing tab, not by opening a new one, deliberately. Opening
++  /// a tab changes the target's tab count, which trips a real status refresh — and against this
++  /// fixture's non-existent repo path that probe lands a status with `changedFiles == nil`, so the panel
++  /// renders its empty state and the row count drops to zero. That made an earlier version of this test
++  /// fail for a reason that had nothing to do with the equality gate. Re-focusing publishes
++  /// `focusedTabByTarget` only, so the fixture status stays put and the ONLY thing that changes is which
++  /// row is selected — which is exactly the property under test.
++  func testSelectionChangeRebuildsChangedFileRows() throws {
++    let store = makeStore(changedFiles: files(20))
++    let target = store.target(for: .workroom(project: projectPath, name: workroomName))!
++    let terminalTab = store.terminals.focusedTab(for: target)!
++    // Open the diff BEFORE hosting, so the status settles once and the first render already has a
++    // selected row.
++    store.openDiffPreview(
++      ChangedFile(path: "src/file0.swift", change: .modified), source: .gitWorktree)
++    store.workroomStatuses[.workroom(project: projectPath, name: workroomName)] = WorkroomStatus(
++      dirty: true, changedFiles: files(20), lastChecked: Date())
++
++    let (window, view) = host(store)
++    defer {
++      store.terminals.reapAll()
++      window.close()
++    }
++    // Let the tab-open status probe land and be overwritten BEFORE the measurement window opens. That
++    // probe runs `git status` against a path that doesn't exist, and its result (no `changedFiles`)
++    // makes the panel render its empty state — which is not a fact about the equality gate.
++    settle(view, seconds: 1.2)
++    store.workroomStatuses[.workroom(project: projectPath, name: workroomName)] = WorkroomStatus(
++      dirty: true, changedFiles: files(20), lastChecked: Date())
++    settle(view)
++
++    XCTAssertEqual(
++      FocusedTabSelection.current(store: store, sessions: store.terminals),
++      .diff(path: "src/file0.swift", source: .gitWorktree), "file0's diff must be the focused tab")
++    ChangedFileRow.bodyPasses = 0
++    store.workroomStatuses[.workroom(project: projectPath, name: workroomName)]?.dirty = true
++    settle(view)
++    XCTAssertGreaterThan(
++      ChangedFileRow.bodyPasses, 0,
++      "rows must be on screen when the measurement window opens — otherwise 'the rows rebuilt' and "
++        + "'there were no rows' are indistinguishable")
++
++    ChangedFileRow.bodyPasses = 0
++    // Focusing the terminal tab clears the selection (a terminal selects no inspector row).
++    store.terminals.focus(terminalTab.id, for: target)
++    settle(view)
++
++    XCTAssertNil(FocusedTabSelection.current(store: store, sessions: store.terminals))
++    XCTAssertGreaterThan(
++      ChangedFileRow.bodyPasses, 0,
++      "moving focus off the diff clears file0's selected state, so the affected rows MUST rebuild — "
++        + "the positive half of the equality gate, and what stops it from freezing the highlight")
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppTests/FocusedTabSelectionTests.swift ===
+@@ -0,0 +1,96 @@
++import XCTest
++
++@testable import Workroom
++
++/// `FocusedTabSelection` is the single place that answers "what is the focused content tab showing?",
++/// extracted from three copies of the same guard chain in `HistoryRow`, `DivergentSiblingRow` and
++/// `ChangedFileRow` (each of which held two observed objects to run it — the WORKROOM-2B invalidation
++/// storm). One place means one place to teach when a `TabContent` case is added; these tests pin the
++/// mapping for every case, including the ones that must resolve to "nothing selected".
++@MainActor
++final class FocusedTabSelectionTests: XCTestCase {
++  private let projectPath = "/focused-tab"
++  private let workroomName = "solo"
++
++  private func makeStore() -> AppStore {
++    let store = AppStore()
++    store.terminals.makeView = { _, cwd, command in
++      GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
++    }
++    store.projects = [
++      Project(
++        path: projectPath, vcs: "git",
++        workrooms: [
++          Workroom(
++            name: workroomName, path: "\(projectPath)/\(workroomName)",
++            vcsName: "workroom/\(workroomName)", warnings: [])
++        ])
++    ]
++    return store
++  }
++
++  private func selectWorkroom(_ store: AppStore) -> TerminalTarget {
++    let target = store.target(for: .workroom(project: projectPath, name: workroomName))!
++    _ = store.terminals.addTab(for: target)
++    store.selectedTargetID = .workroom(project: projectPath, name: workroomName)
++    return target
++  }
++
++  private func current(_ store: AppStore) -> FocusedTabSelection? {
++    FocusedTabSelection.current(store: store, sessions: store.terminals)
++  }
++
++  func testNoSelectionResolvesToNil() {
++    let store = makeStore()
++    XCTAssertNil(current(store), "nothing selected ⇒ no row can be the selected row")
++  }
++
++  func testFocusedTerminalTabResolvesToNil() {
++    let store = makeStore()
++    _ = selectWorkroom(store)
++    XCTAssertNil(
++      current(store),
++      "a terminal tab corresponds to no inspector row, so it must not select one (a `default:` that "
++        + "fell through to a path match would highlight arbitrary rows)")
++  }
++
++  func testFocusedChangesetTabResolvesToItsCommit() {
++    let store = makeStore()
++    _ = selectWorkroom(store)
++    store.openChangesetPreview(commitID: "deadbeef", title: "a commit")
++
++    XCTAssertEqual(current(store), .changeset(commitID: "deadbeef"))
++    XCTAssertEqual(current(store)?.changesetCommitID, "deadbeef")
++    XCTAssertFalse(
++      current(store)!.selectsChangedFile(path: "a.txt", source: .gitWorktree),
++      "a changeset tab must not select a Changes-panel file row")
++  }
++
++  func testFocusedDiffTabSelectsThatPathInThatGroupOnly() {
++    let store = makeStore()
++    _ = selectWorkroom(store)
++    store.openDiffPreview(ChangedFile(path: "src/a.swift", change: .modified), source: .gitWorktree)
++
++    let selection = current(store)
++    XCTAssertEqual(selection, .diff(path: "src/a.swift", source: .gitWorktree))
++    XCTAssertTrue(selection!.selectsChangedFile(path: "src/a.swift", source: .gitWorktree))
++    XCTAssertFalse(
++      selection!.selectsChangedFile(path: "src/a.swift", source: .jjWorkingCopy),
++      "a diff keeps its source so the same path under `@` vs `@-` selects the right row")
++    XCTAssertFalse(selection!.selectsChangedFile(path: "src/b.swift", source: .gitWorktree))
++    XCTAssertNil(selection?.changesetCommitID)
++  }
++
++  func testFocusedFileTabSelectsThePathRegardlessOfGroup() {
++    let store = makeStore()
++    _ = selectWorkroom(store)
++    store.openChangedFileInApp(ChangedFile(path: "src/a.swift", change: .modified))
++
++    let selection = current(store)
++    XCTAssertEqual(selection, .file(path: "src/a.swift"))
++    // A file tab has no revision, so it matches on path alone — in BOTH groups.
++    XCTAssertTrue(selection!.selectsChangedFile(path: "src/a.swift", source: .gitWorktree))
++    XCTAssertTrue(selection!.selectsChangedFile(path: "src/a.swift", source: .jjWorkingCopy))
++    XCTAssertFalse(selection!.selectsChangedFile(path: "src/other.swift", source: .gitWorktree))
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppTests/HistoryModelTests.swift ===
+@@ -119,6 +119,65 @@ final class HistoryModelTests: XCTestCase {
+     XCTAssertTrue(m.reachedEnd, "all commits loaded ⇒ reachedEnd")
+   }
+ 
++  // MARK: window cap (bounds the per-refresh read, not the drawing — WORKROOM-2B)
++
++  private func capped(_ provider: some VCSProviding, pageSize: Int, maxWindow: Int) -> HistoryModel
++  {
++    HistoryModel(pageSize: pageSize, maxWindow: maxWindow, resolve: { _ in provider })
++  }
++
++  func testLoadMoreStopsAtWindowCap() async {
++    let m = capped(FakeProvider(all: (1...20).map { commit("\($0)") }), pageSize: 2, maxWindow: 4)
++    m.focus(url)
++    await m.awaitCurrentLoad()
++    XCTAssertFalse(m.atWindowCap)
++
++    m.loadMore()
++    await m.awaitCurrentLoad()
++    XCTAssertEqual(m.commits.count, 4)
++    XCTAssertTrue(m.atWindowCap, "the window is full")
++
++    m.loadMore()
++    await m.awaitCurrentLoad()
++    XCTAssertEqual(m.commits.count, 4, "loadMore at the cap must be a no-op")
++  }
++
++  func testWindowCapDoesNotClaimTheHistoryEnded() async {
++    let m = capped(FakeProvider(all: (1...20).map { commit("\($0)") }), pageSize: 4, maxWindow: 4)
++    m.focus(url)
++    await m.awaitCurrentLoad()
++
++    XCTAssertTrue(m.atWindowCap)
++    XCTAssertFalse(
++      m.reachedEnd,
++      "`reachedEnd` means no OLDER commits exist; conflating it with the cap would make the model lie "
++        + "to every caller (and hide the cap notice the pane shows instead of `Load more`)")
++  }
++
++  func testRefreshDoesNotReinflatePastTheCap() async {
++    let m = capped(FakeProvider(all: (1...20).map { commit("\($0)") }), pageSize: 2, maxWindow: 4)
++    m.focus(url)
++    await m.awaitCurrentLoad()
++    m.loadMore()
++    await m.awaitCurrentLoad()
++    XCTAssertEqual(m.commits.count, 4)
++
++    // Refresh re-reads a growing PREFIX, and it fires per ref write from the metadata watcher — so an
++    // unclamped refresh is the path that would keep re-walking an oversized window forever.
++    m.refresh()
++    await m.awaitCurrentLoad()
++    XCTAssertEqual(m.commits.count, 4)
++  }
++
++  func testWindowCapNeverBelowOnePage() async {
++    // A caller asking for a cap under one page gets one page, not an empty list.
++    let m = capped(FakeProvider(all: (1...20).map { commit("\($0)") }), pageSize: 10, maxWindow: 3)
++    m.focus(url)
++    await m.awaitCurrentLoad()
++    XCTAssertEqual(m.commits.count, 10)
++    XCTAssertEqual(m.windowCap, 10)
++  }
++
+   func testFailurePropagatesToState() async {
+     let m = model(FailProvider(), pageSize: 10)
+     m.focus(url)
+
+
+=== DIFF: macapp/WorkroomAppTests/HistoryRowInvalidationTests.swift ===
+@@ -0,0 +1,304 @@
++import AppKit
++import SwiftUI
++import XCTest
++
++@testable import Workroom
++
++/// The regression net for **WORKROOM-2B** — the ≥2000 ms App Hang whose main-thread sample landed in
++/// `HistoryRow.body` → `AvatarSubject.gravatar` → `String(format:)`.
++///
++/// The format string was only where the single watchdog sample happened to land. The hang was an
++/// invalidation storm: `HistoryRow` observed `AppStore` + `TerminalSessions` purely to answer
++/// "is my commit the focused changeset?", and `TerminalSessions` republishes on every terminal
++/// title update and activity pulse — so while an agent streamed, EVERY row body re-ran, over an
++/// eager `VStack` holding the whole loaded window.
++///
++/// So this suite asserts the two properties the fix is actually about, at the view layer where a
++/// model test cannot see them:
++///
++/// 1. **A terminal pulse rebuilds nothing.** `testTerminalPulseBurstRebuildsNoRows` fails on the
++///    pre-fix code (one rebuild per row per pulse) and is the test that would have caught the hang.
++/// 2. **Selection and content changes still DO rebuild.** The equality gate that gives us (1) can
++///    just as easily freeze a row's contents; `testSelectionChangeRebuildsRows` and
++///    `testCommitContentChangeRebuildsRows` are the positive half, and they are what stops the fix
++///    from trading a hang for stale rows.
++///
++/// Plus the two scale properties: a large page must not build every row
++/// (`testLargePageDoesNotBuildEveryRow`), and building it must not cost main-thread seconds
++/// (`testLargePageRendersUnderTimeCeiling` — a body-pass count proves the mechanism changed, only
++/// wall clock proves the thread stayed free).
++///
++/// Harness: the offscreen-`NSWindow` hosting pattern from `PaneRenderingTests` plus the
++/// inspector-gating store setup from `HistoryLiveRefreshTests.activeHistoryStore` (both pinned per
++/// store, never via the shared inspector prefs — parallel workers share one UserDefaults domain).
++@MainActor
++final class HistoryRowInvalidationTests: XCTestCase {
++
++  // MARK: harness
++
++  /// Serves a fixed page. `@unchecked Sendable` + lock because `HistoryModel` reads it off-main via
++  /// `runBlocking`; the tests serialize on `awaitCurrentLoad`.
++  private final class FixedPageProvider: VCSProviding, @unchecked Sendable {
++    private let lock = NSLock()
++    private var page: VCSHistoryPage
++    init(commits: [VCSCommit]) {
++      page = VCSHistoryPage(commits: commits, reachedEnd: true)
++    }
++    func replace(commits: [VCSCommit]) {
++      lock.withLock { page = VCSHistoryPage(commits: commits, reachedEnd: true) }
++    }
++    func log(root: URL, limit: Int) throws -> VCSHistoryPage {
++      lock.withLock { page }
++    }
++    func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
++      throw VCSError.io("unused")
++    }
++    func fileDiff(root: URL, commitID: String, path: String) async throws -> String {
++      throw VCSError.io("unused")
++    }
++    func workingFileDiff(root: URL, path: String, base: VCSWorkingDiffBase) async throws -> String {
++      throw VCSError.io("unused")
++    }
++    func fileContent(root: URL, rev: String, path: String) async throws -> String? { nil }
++    func currentRef(root: URL) async throws -> VCSRef { .none }
++  }
++
++  private static let projectPath = "/history-invalidation"
++  private static let workroomName = "solo"
++
++  /// `count` commits, two authors each (this repo's own `Co-Authored-By` convention is what made the
++  /// per-row avatar work 32 format calls rather than 16), newest first.
++  private func commits(_ count: Int) -> [VCSCommit] {
++    (0..<count).map { i in
++      VCSCommit(
++        commitID: String(format: "%040x", i), shortID: String(format: "%08x", i), changeID: nil,
++        summary: "commit \(i)", body: "",
++        authors: [
++          VCSAuthor(name: "Grace Hopper", email: "grace\(i % 7)@example.com"),
++          VCSAuthor(name: "Ada Lovelace", email: "ada\(i % 3)@example.com"),
++        ],
++        timestamp: Date(timeIntervalSince1970: TimeInterval(1_700_000_000 - i * 60)),
++        refs: [], parentIDs: [], isWorkingCopy: false)
++    }
++  }
++
++  private func target(in store: AppStore) -> TerminalTarget {
++    store.target(for: .workroom(project: Self.projectPath, name: Self.workroomName))!
++  }
++
++  /// A store whose History pane is genuinely active (inspector visible, Changes pane, History section
++  /// expanded, a selected workroom that has a tab) with `commitHistory` served by `provider`.
++  private func makeStore(_ provider: FixedPageProvider) async -> AppStore {
++    let store = AppStore(commitHistory: HistoryModel(debounce: 0, resolve: { _ in provider }))
++    store.terminals.makeView = { _, cwd, command in
++      GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
++    }
++    store.projects = [
++      Project(
++        path: Self.projectPath, vcs: "git",
++        workrooms: [
++          Workroom(
++            name: Self.workroomName, path: "\(Self.projectPath)/\(Self.workroomName)",
++            vcsName: "workroom/\(Self.workroomName)", warnings: [])
++        ])
++    ]
++    store.inspectorVisibleOverrideForTesting = true
++    store.isolatesInspectorSectionForTesting = true
++    store.isolatesInspectorLayoutForTesting = true
++    store.activeInspectorSection = .changes
++    store.historySectionCollapsed = false
++    _ = store.terminals.addTab(for: target(in: store))
++    store.selectedTargetID = .workroom(project: Self.projectPath, name: Self.workroomName)
++    await store.commitHistory.awaitCurrentLoad()
++    return store
++  }
++
++  /// Host the real History pane offscreen. Height is deliberately small (a realistic inspector
++  /// section, ~8 rows' worth) so "how many rows does it build" is a meaningful question.
++  private func host(_ store: AppStore) -> (NSWindow, NSView) {
++    let root = HistoryPanel(model: store.commitHistory, sessions: store.terminals)
++      .environmentObject(store)
++      .environmentObject(store.notifications)
++      .frame(width: 320, height: 360)
++    let hosting = NSHostingView(rootView: root)
++    hosting.frame = NSRect(x: 0, y: 0, width: 320, height: 360)
++    let window = NSWindow(
++      contentRect: hosting.frame, styleMask: [.titled], backing: .buffered, defer: false)
++    // A programmatic NSWindow defaults `isReleasedWhenClosed` to true, which would over-release on
++    // top of ARC — same reasoning as `PaneRenderingTests.host`.
++    window.isReleasedWhenClosed = false
++    window.contentView = hosting
++    window.makeKeyAndOrderFront(nil)
++    return (window, hosting)
++  }
++
++  /// Pump the runloop so SwiftUI commits pending transactions, then force layout.
++  private func settle(_ view: NSView, seconds: TimeInterval = 0.6) {
++    let deadline = Date().addingTimeInterval(seconds)
++    while Date() < deadline {
++      view.layoutSubtreeIfNeeded()
++      RunLoop.current.run(until: Date().addingTimeInterval(0.02))
++    }
++    view.layoutSubtreeIfNeeded()
++  }
++
++  // MARK: the hang itself
++
++  func testTerminalPulseBurstRebuildsNoRows() async throws {
++    let provider = FixedPageProvider(commits: commits(60))
++    let store = await makeStore(provider)
++    let (window, view) = host(store)
++    defer {
++      store.terminals.reapAll()
++      window.close()
++    }
++    settle(view)
++    guard let tab = store.terminals.focusedTab(for: target(in: store)) else {
++      return XCTFail("the fixture workroom must have a focused tab")
++    }
++    // Anti-vacuity guard: "0 rebuilds" is only meaningful if rows rendered at all. A pane stuck in a
++    // loading/placeholder state would otherwise pass this test having drawn nothing (which is exactly
++    // how the Changes-panel version of this test first passed for the wrong reason).
++    XCTAssertGreaterThan(HistoryRow.bodyPasses, 0, "the fixture must actually render commit rows")
++
++    HistoryRow.bodyPasses = 0
++    for _ in 0..<25 { store.terminals.pulsePaneActivity(tab.id) }
++    settle(view)
++
++    XCTAssertEqual(
++      HistoryRow.bodyPasses, 0,
++      "a terminal activity pulse says nothing about any commit, so it must not rebuild a single "
++        + "History row — this is WORKROOM-2B: 25 pulses × every loaded row of avatar/MD5/format work "
++        + "on the main thread")
++  }
++
++  // The other half of the storm — an agent's OSC title writes — is deliberately NOT a separate test:
++  // `TerminalSessions.updateTitle` is private (it is driven by libghostty callbacks) and it lands on
++  // the same `@Published tabsByTarget` reassignment that `pulsePaneActivity` exercises above. Asserting
++  // it would mean widening production access purely for a duplicate of this test.
++
++  // MARK: the positive half — the equality gate must not freeze the rows
++
++  func testSelectionChangeRebuildsRows() async throws {
++    let provider = FixedPageProvider(commits: commits(20))
++    let store = await makeStore(provider)
++    let (window, view) = host(store)
++    defer {
++      store.terminals.reapAll()
++      window.close()
++    }
++    settle(view)
++
++    HistoryRow.bodyPasses = 0
++    let first = store.commitHistory.commits[0]
++    store.openChangesetPreview(commitID: first.commitID, title: first.summary)
++    settle(view)
++
++    XCTAssertGreaterThan(
++      HistoryRow.bodyPasses, 0,
++      "opening a commit's changeset changes which row reads as selected, so at least the affected "
++        + "rows MUST rebuild — an equality gate that swallowed this would trade the hang for a row "
++        + "whose highlight never moves")
++  }
++
++  func testCommitContentChangeRebuildsRows() async throws {
++    let provider = FixedPageProvider(commits: commits(20))
++    let store = await makeStore(provider)
++    let (window, view) = host(store)
++    defer {
++      store.terminals.reapAll()
++      window.close()
++    }
++    settle(view)
++
++    HistoryRow.bodyPasses = 0
++    // A rewritten page (amend, new commits, a bookmark move) must reach the rows.
++    var rewritten = commits(20)
++    rewritten[0] = VCSCommit(
++      commitID: rewritten[0].commitID, shortID: rewritten[0].shortID, changeID: nil,
++      summary: "AMENDED SUMMARY", body: "", authors: rewritten[0].authors,
++      timestamp: rewritten[0].timestamp, refs: ["main"], parentIDs: [], isWorkingCopy: false)
++    provider.replace(commits: rewritten)
++    store.commitHistory.refresh()
++    await store.commitHistory.awaitCurrentLoad()
++    settle(view)
++
++    XCTAssertGreaterThan(
++      HistoryRow.bodyPasses, 0,
++      "a refreshed page with changed commit content must rebuild rows — this is the assertion that "
++        + "keeps the hand-written `==` honest as fields are added to HistoryRow")
++  }
++
++  /// The equality gate must not swallow a THEME repaint.
++  ///
++  /// This is the one regression `.equatable()` could plausibly cause, and the reasoning that says it
++  /// can't is subtle enough to be worth pinning: rows read `ThemeService.shared.tokens`, and Observation
++  /// registers that dependency per body evaluation against the body attribute itself — so an
++  /// observation-driven invalidation re-runs the body regardless of the row values comparing equal.
++  /// If SwiftUI ever changed that, every History row would keep its old colours after a theme switch
++  /// until something else happened to change a row value.
++  func testThemeChangeRebuildsRows() async throws {
++    let provider = FixedPageProvider(commits: commits(20))
++    let store = await makeStore(provider)
++    let (window, view) = host(store)
++    defer {
++      store.terminals.reapAll()
++      window.close()
++    }
++    settle(view)
++    XCTAssertGreaterThan(HistoryRow.bodyPasses, 0, "the fixture must actually render commit rows")
++
++    HistoryRow.bodyPasses = 0
++    ThemeService.shared.applyActiveTheme(force: true)
++    settle(view)
++
++    XCTAssertGreaterThan(
++      HistoryRow.bodyPasses, 0,
++      "a theme change must repaint the rows even though none of their values changed — Observation "
++        + "invalidates the body past the equality gate")
++  }
++
++  // MARK: scale
++
++  func testLargePageDoesNotBuildEveryRow() async throws {
++    let provider = FixedPageProvider(commits: commits(200))
++    let store = await makeStore(provider)
++    HistoryRow.bodyPasses = 0
++    let (window, view) = host(store)
++    defer {
++      store.terminals.reapAll()
++      window.close()
++    }
++    settle(view)
++
++    XCTAssertGreaterThan(HistoryRow.bodyPasses, 0, "the pane must render some rows")
++    // Deliberately not an exact number: how far past the viewport SwiftUI realizes is its business
++    // and changes between OS releases. "Far fewer than all of them" is the property that matters.
++    XCTAssertLessThan(
++      HistoryRow.bodyPasses, 200,
++      "a 320×360 pane shows ~8 rows, so building all 200 means the list is eager — the amplifier "
++        + "that turned per-row avatar work into a 2-second stall")
++  }
++
++  func testLargePageRendersUnderTimeCeiling() async throws {
++    let provider = FixedPageProvider(commits: commits(200))
++    let store = await makeStore(provider)
++    let started = Date()
++    let (window, view) = host(store)
++    defer {
++      store.terminals.reapAll()
++      window.close()
++    }
++    view.layoutSubtreeIfNeeded()
++    let elapsed = Date().timeIntervalSince(started)
++
++    // A count proves the mechanism changed; only wall clock proves the main thread stayed free. The
++    // ceiling is deliberately generous — 8× under the 2 s app-hang watchdog and far above the
++    // handful of milliseconds this costs once the list is lazy — so a loaded CI machine can't flake
++    // it while a genuine regression (all 200 rows × 2 authors × MD5 + format) still fails it.
++    XCTAssertLessThan(
++      elapsed, 0.25,
++      "first layout of a 200-commit page took \(String(format: "%.3f", elapsed))s on the main thread"
++    )
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppTests/SentryConfigTests.swift ===
+@@ -0,0 +1,34 @@
++import XCTest
++
++@testable import Workroom
++
++/// The Sentry `environment` split (WORKROOM-2B follow-up).
++///
++/// The `Nightly` build config is release-type, so it defines no `DEBUG` and nightly events used to
++/// arrive tagged `production` — a hang from a build that ships nightly from the tip of `master` to a
++/// handful of people looked exactly like a hang in the released app. `defaultEnvironment` takes its
++/// inputs as parameters precisely so this can be asserted without faking a build configuration.
++final class SentryConfigTests: XCTestCase {
++
++  func testNightlyReleaseBuildReportsNightly() {
++    XCTAssertEqual(SentryConfig.defaultEnvironment(nightly: true, debug: false), "nightly")
++  }
++
++  func testShippingReleaseBuildReportsProduction() {
++    XCTAssertEqual(SentryConfig.defaultEnvironment(nightly: false, debug: false), "production")
++  }
++
++  func testDebugWinsOverEveryOtherIdentity() {
++    // A local "Workroom Dev" build must never file events as nightly OR production, whatever the
++    // channel marker says.
++    XCTAssertEqual(SentryConfig.defaultEnvironment(nightly: true, debug: true), "development")
++    XCTAssertEqual(SentryConfig.defaultEnvironment(nightly: false, debug: true), "development")
++  }
++
++  func testThisTestHostIsADebugBuild() {
++    // Sanity check on the defaulted parameter: the test host is built Debug, so the no-argument call
++    // must agree with the explicit one. Catches the seam being wired to the wrong fact.
++    XCTAssertTrue(SentryConfig.isDebugBuild)
++    XCTAssertEqual(SentryConfig.defaultEnvironment(), "development")
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppUITests/HistoryPushStateUITests.swift ===
+@@ -75,6 +75,22 @@ final class HistoryPushStateUITests: XCTestCase {
+       "fixture history rows render")
+   }
+ 
++  /// The row for a specific fixture commit, matched by its short id rather than by position.
++  ///
++  /// Position stopped being a reliable way to name a commit when the History list became a
++  /// `LazyVStack` (WORKROOM-2B): unrealized rows are absent from the accessibility tree, so
++  /// `element(boundBy: 2)` can silently mean a different commit than the test intends — and still pass.
++  /// The short id leads each row's accessibility label for exactly this reason. Scoped to `staticTexts`
++  /// (the combined row leaf) to keep the predicate query off the whole snapshot.
++  private func historyRow(_ app: XCUIApplication, shortID: String) -> XCUIElement {
++    // `descendants(matching: .any)`, not `staticTexts`: SwiftUI's combined row leaf is not reliably a
++    // static text, and an identifier-scoped query stays indexed (fast) even though a label predicate
++    // rides along.
++    els(app, "HistoryRow")
++      .matching(NSPredicate(format: "label BEGINSWITH %@", shortID))
++      .firstMatch
++  }
++
+   /// Exactly one row badges, and it isn't every row: this is the suppression proof. `@` (unpushed),
+   /// pushed and unknown rows must all stay clean.
+   func testExactlyOneRowShowsTheUnpushedBadge() throws {
+@@ -142,8 +158,11 @@ final class HistoryPushStateUITests: XCTestCase {
+     XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+     openHistory(app)
+ 
+-    // Fixture commit 2 is the badged one; open it (row order is newest-first, so index 1).
+-    els(app, "HistoryRow").element(boundBy: 1).click()
++    // Fixture commit 2 is the badged one — named by its short id, not by row position.
++    let badged = historyRow(app, shortID: "fixc0002")
++    XCTAssertTrue(
++      badged.waitForExistence(timeout: 8), "the badged fixture commit's row is on screen")
++    badged.click()
+     XCTAssertTrue(waitExists(el(app, "ChangesetDetail")), "the changeset detail opens")
+     XCTAssertTrue(
+       waitExists(headerSaysNotPushed(app)), "the detail header states the commit isn't pushed")
+@@ -157,7 +176,10 @@ final class HistoryPushStateUITests: XCTestCase {
+     openHistory(app)
+ 
+     // Fixture commit 3 is `.pushed`.
+-    els(app, "HistoryRow").element(boundBy: 2).click()
++    let pushed = historyRow(app, shortID: "fixc0003")
++    XCTAssertTrue(
++      pushed.waitForExistence(timeout: 8), "the pushed fixture commit's row is on screen")
++    pushed.click()
+     XCTAssertTrue(waitExists(el(app, "ChangesetDetail")), "the changeset detail opens")
+     XCTAssertFalse(
+       headerSaysNotPushed(app).exists, "a pushed commit's header carries no unpushed marker")
+
+
+=== DIFF: macapp/WorkroomAppUITests/HistoryStressUITests.swift ===
+@@ -0,0 +1,156 @@
++import XCTest
++
++/// History at scale — the UI-tier half of the WORKROOM-2B App Hang fix.
++///
++/// Launched with `-WorkroomUITestManyCommits 800`, so the fixture serves 800 commits across seven
++/// authors. Two properties matter here, and neither is visible to a unit test:
++///
++/// 1. **The pane realizes only what it draws.** The eager `VStack` this replaced built every loaded row
++///    — 800 rows of MD5 + Gravatar-URL + avatar work per body pass. If the count of realized rows is in
++///    the hundreds, the list went back to being eager.
++/// 2. **The app stays interactive at that size.** A 2-second budget, not the 8 seconds an earlier draft
++///    used: 8 seconds would pass straight through the very hang being fixed.
++///
++/// Plus the lazy-stack failure modes that only exist once a list is lazy: scrolling away and back
++/// (recycled row state), expanding a row mid-list, and selecting a row that started off-screen.
++///
++/// Run per-method: `xcodebuild … -only-testing:WorkroomAppUITests/HistoryStressUITests/<method>`.
++final class HistoryStressUITests: XCTestCase {
++  override func setUpWithError() throws { continueAfterFailure = false }
++
++  private func launchedApp(commits: Int = 800) -> XCUIApplication {
++    let app = XCUIApplication()
++    app.launchArguments += ["-WorkroomUITestFixture", "1"]
++    app.launchArguments += ["-WorkroomUITestManyCommits", String(commits)]
++    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
++    app.launch()
++    app.activate()
++    return app
++  }
++
++  private func el(_ app: XCUIApplication, _ id: String) -> XCUIElement {
++    app.descendants(matching: .any).matching(identifier: id).firstMatch
++  }
++
++  private func els(_ app: XCUIApplication, _ id: String) -> XCUIElementQuery {
++    app.descendants(matching: .any).matching(identifier: id)
++  }
++
++  private func selectWorkroom(_ app: XCUIApplication) {
++    let row = app.buttons.matching(
++      NSPredicate(
++        format: "identifier == %@ AND label == %@", "sidebar.workroom.uitest-room", "uitest-room")
++    ).firstMatch
++    if row.waitForExistence(timeout: 10) { row.click() }
++  }
++
++  /// Same recipe as `HistoryPushStateUITests.openHistory`: prime with Files so the Changes click is
++  /// always a switch, then select the workroom so the selection re-triggers the load.
++  private func openHistory(_ app: XCUIApplication) {
++    XCTAssertTrue(el(app, "activitySection.files").waitForExistence(timeout: 10))
++    el(app, "activitySection.files").click()
++    XCTAssertTrue(el(app, "activitySection.changes").waitForExistence(timeout: 8))
++    el(app, "activitySection.changes").click()
++    XCTAssertTrue(el(app, "inspector.header.History").waitForExistence(timeout: 8))
++
++    selectWorkroom(app)
++
++    if !els(app, "HistoryRow").element(boundBy: 0).waitForExistence(timeout: 8) {
++      let refresh = app.descendants(matching: .any)
++        .matching(NSPredicate(format: "label == %@", "Refresh history")).firstMatch
++      if refresh.exists { refresh.click() }
++    }
++    XCTAssertTrue(
++      els(app, "HistoryRow").element(boundBy: 0).waitForExistence(timeout: 10),
++      "the stress fixture's history rows render")
++  }
++
++  func testLargeHistoryRealizesOnlyTheVisibleRows() throws {
++    let app = launchedApp()
++    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
++    openHistory(app)
++
++    // Anti-vacuity guard: with only the default five-commit fixture, "fewer than 100 realized rows"
++    // would pass while proving nothing. Stress commits carry `s…` short ids (the default fixture's are
++    // `fixc000…`), and each row's accessibility label leads with its short id — so this asserts the
++    // stress page is genuinely in play.
++    //
++    // Note what is NOT used here: "Load more". That button sits BELOW 800 rows, so a lazy list
++    // legitimately hasn't realized it — its absence is evidence FOR laziness, not against the fixture.
++    XCTAssertTrue(
++      els(app, "HistoryRow").matching(NSPredicate(format: "label BEGINSWITH %@", "s000")).firstMatch
++        .waitForExistence(timeout: 8),
++      "the stress fixture's synthetic commits must be what the pane is showing")
++
++    let realized = els(app, "HistoryRow").count
++    XCTAssertGreaterThan(realized, 0, "some rows must be on screen")
++    // No exact number: how far past the viewport SwiftUI realizes is its business and moves between OS
++    // releases. "Nowhere near all 800" is the property that distinguishes lazy from eager.
++    XCTAssertLessThan(
++      realized, 100,
++      "\(realized) of 800 rows are in the accessibility tree — that many realized rows means the list "
++        + "is building the whole window again (the WORKROOM-2B amplifier)")
++  }
++
++  func testLargeHistoryStaysInteractive() throws {
++    let app = launchedApp()
++    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
++    openHistory(app)
++
++    let started = Date()
++    els(app, "HistoryRow").element(boundBy: 0).click()
++    XCTAssertTrue(
++      el(app, "ChangesetDetail").waitForExistence(timeout: 2),
++      "clicking a row on an 800-commit page must open its changeset within 2s — a budget under the "
++        + "2000 ms app-hang threshold, so a stalled main thread fails instead of passing slowly")
++    XCTAssertLessThan(Date().timeIntervalSince(started), 2.0)
++  }
++
++  func testScrollingAwayAndBackKeepsRowsUsable() throws {
++    let app = launchedApp()
++    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
++    openHistory(app)
++    let firstRow = els(app, "HistoryRow").element(boundBy: 0)
++    let scroller = app.scrollViews.firstMatch
++    XCTAssertTrue(scroller.waitForExistence(timeout: 8))
++
++    // Recycled row state is the lazy-stack hazard: rows destroyed on scroll-out must come back live,
++    // not blank or stale.
++    scroller.scroll(byDeltaX: 0, deltaY: -1200)
++    XCTAssertTrue(els(app, "HistoryRow").element(boundBy: 0).waitForExistence(timeout: 8))
++    scroller.scroll(byDeltaX: 0, deltaY: 1200)
++
++    XCTAssertTrue(
++      firstRow.waitForExistence(timeout: 8), "the top rows come back after scrolling back")
++    firstRow.click()
++    XCTAssertTrue(
++      el(app, "ChangesetDetail").waitForExistence(timeout: 4),
++      "a recycled row still opens its changeset")
++  }
++
++  func testRowFurtherDownThePageOpensItsOwnChangeset() throws {
++    let app = launchedApp()
++    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
++    openHistory(app)
++    let scroller = app.scrollViews.firstMatch
++    XCTAssertTrue(scroller.waitForExistence(timeout: 8))
++
++    // A row that started off-screen: scrolling realizes it, and clicking it must select THAT commit —
++    // the case index-based selection can't express once rows come and go.
++    scroller.scroll(byDeltaX: 0, deltaY: -600)
++    let row = els(app, "HistoryRow").element(boundBy: 1)
++    XCTAssertTrue(row.waitForExistence(timeout: 8))
++    let label = row.label
++    row.click()
++
++    XCTAssertTrue(el(app, "ChangesetDetail").waitForExistence(timeout: 4))
++    // The row's label leads with the commit's short id; the detail must be showing that commit.
++    let shortID = String(label.prefix(while: { $0 != "," }))
++    XCTAssertTrue(
++      app.staticTexts.matching(
++        NSPredicate(format: "value CONTAINS %@ OR label CONTAINS %@", shortID, shortID)
++      )
++      .firstMatch.waitForExistence(timeout: 4),
++      "the changeset that opened belongs to the row that was clicked (\(shortID))")
++  }
++}
+
+
+Investigate per the method in your instructions, then return the findings list.
