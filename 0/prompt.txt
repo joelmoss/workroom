@@ -1,0 +1,1 @@
+make it subordinate again. move the run buttons to the left of the open button
