@@ -1,0 +1,32 @@
+<task-notification>
+<task-id>a7a5b2e87ff9a7b22</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/3ee247a6-8416-4d29-bc9b-ce21bb5267ad/tasks/a7a5b2e87ff9a7b22.output</output-file>
+<status>completed</status>
+<summary>Agent "Find run command toast notification code" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Report
+
+**1. Toast view (SwiftUI)** — `macapp/WorkroomApp/Views/ToastStack.swift`
+- `ToastStack` (line 12): container, overlays plain notification toasts and run-status toasts.
+- `ToastView` (line 173): the plain notification toast (issue #31) — **has its own local auto-dismiss timer**: `armDismiss()` (line 286) starts a `Task.sleep(5s)` on `.onAppear`, cancelled/restarted on hover (lines 209-218). This is the "short-lived command… dismisses fine" case in the bug report — actually it's for one-shot *notifications*, not runs.
+- `RunToastView` (line 301): the live run-status toast (issue #67). Comment at line 299: "auto-dismiss live on the store… this view only renders + forwards the two actions" — **no timer inside this view at all**.
+
+**2. Run-command toast state/model** — `macapp/WorkroomApp/Core/AppStore.swift`
+- `RunToastItem` struct (line 1434) and `Status` enum (line 1441), with `isTerminal` (line 1449): `.running`/`.restarting` → `false`; `.exited`/`.failed`/`.failedToStart` → `true`.
+- `runToastItems` computed property (line 1494): derives toasts from `runStates`/`runOutcomes`; visibility rule at lines 1519-1523 hides a *non-terminal* (still-running) toast only when it's the selected/visible workroom — otherwise a running toast just keeps showing.
+- `startRunCommand(for:focus:)` (line 1976) spawns the run via `terminals.addRunTab`, wires `tab.surface?.onChildExited = { markRunExited(...) }` (lines 2011-2013).
+- `applyRunStatus(_:for:)` (line 1899) parses supervisor status lines (`starting/running/stopping/stopped/exited/failed`).
+- `markRunExited` (line 2289).
+
+**3. Auto-dismiss timing mechanism**
+- Not a fixed timer from toast-creation time — it's **gated entirely on reaching a terminal `RunState`**. `scheduleRunToastAutoDismiss(for:)` (line 1559) is only ever called from three terminal-state call sites: `applyRunStatus` on `"stopped"` (line 1912) and `"exited"/"failed"` (line 1926), and `markRunExited` (line 2305), plus the failed-to-start path in `startRunCommand` (line 1997). It is never called while a run is simply `.running`.
+- The linger constant: `private static let runToastLinger: TimeInterval = 6` (line 1466), scheduled via the test-seam closure `scheduleRunToastDismiss` (lines 1469-1474), which defaults to `DispatchQueue.main.asyncAfter(deadline: .now() + delay, ...)`.
+- Confirmed by `RunCommandTests.testRunToastAutoDismissesAfterTerminalState` (`macapp/WorkroomAppTests/RunCommandTests.swift:1170`): `applyRunStatus("exited 0", ...)` is required before the dismiss timer is even scheduled — "the toast lingers right after the run ends," then auto-dismisses once the 6s linger elapses.
+
+**4. Long-running/server vs. short-command distinction**
+There is **no heuristic at all** distinguishing a server/long-running process from a one-shot command — no command-pattern matching, no duration threshold. The code simply reflects actual process lifecycle: `.running` stays `.running` (and its toast, if shown, stays) until the child process genuinely exits (`onChildExited`) or the user stops it. Comments make this explicit design intent (`AppStore.swift:1513-1518`): "Live status (running/restarting) shows ONLY for the SELECTED workroom's backgrounded run... Terminal statuses... ALWAYS show... they linger then auto-dismiss." So for a real server (`npm run dev`, etc.) that never exits, no code path ever calls `scheduleRunToastAutoDismiss`, and the toast is correctly-by-design persistent — which is exactly the reported symptom. For a short one-shot command, `onChildExited`/`applyRunStatus("exited ...")` fires quickly, hits the terminal branch, and the 6s auto-dismiss timer gets scheduled — hence "dismisses fine."
+
+**5. Related commits**: `4ba2ac3d` "run commands in the background with a status toast (#67)" (introduced this model), `a489fb6b` "detect run command success/failure (#79)", `34d9e553` "scope live run toast to the selected workroom (#73)".</result>
+<usage><subagent_tokens>76336</subagent_tokens><tool_uses>21</tool_uses><duration_ms>93820</duration_ms></usage>
+</task-notification>
