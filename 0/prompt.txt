@@ -1,0 +1,409 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/SwitcherPanel.swift
+  - macapp/WorkroomApp/Core/SwitcherRailLayout.swift
+  - macapp/WorkroomApp/Views/RailGlassBackground.swift
+  - macapp/WorkroomApp/Views/SwitcherRailView.swift
+  - macapp/WorkroomAppTests/SwitcherRailLayoutTests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/SwitcherPanel.swift ===
+@@ -79,11 +79,15 @@ final class SwitcherPanelController {
+     let cards = SwitcherCard.cards(for: items)
+     let screen = NSApp.keyWindow?.screen ?? NSScreen.main
+     let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
++    // The cards get the whole viewport to lay out in, but the PANEL is only as wide as they turned out
++    // to be — otherwise the glass runs on past the last card and a rail of four reads as left-aligned
++    // inside a wide slab, even though the slab is perfectly centred.
+     let width = SwitcherRailLayout.viewportWidth(visibleFrame: visible)
+     model.update(cards: cards, cursor: cursor, width: width)
+ 
+     let size = NSSize(
+-      width: width, height: SwitcherRailLayout.cardHeight + SwitcherRailLayout.railPadding * 2)
++      width: SwitcherRailLayout.panelWidth(count: cards.count, visibleFrame: visible),
++      height: SwitcherRailLayout.cardHeight + SwitcherRailLayout.railPadding * 2)
+     let origin = SwitcherRailLayout.panelOrigin(
+       size: size, windowFrame: NSApp.keyWindow?.frame ?? visible, visibleFrame: visible)
+     panel.setFrame(NSRect(origin: origin, size: size), display: false)
+
+
+=== DIFF: macapp/WorkroomApp/Core/SwitcherRailLayout.swift ===
+@@ -10,19 +10,22 @@ enum SwitcherRailLayout {
+   // MARK: Card geometry (D9)
+ 
+   /// The comfortable card width, used while the whole rail fits.
+-  static let maxCardWidth: CGFloat = 200
+-  /// The floor. **180, not 140**: with the well plus padding and the gap, a 140pt card leaves far too
+-  /// little label column — every name becomes a fragment and the badge collides with it, so the densest
+-  /// state would read the worst. At 180 the label keeps a readable name plus the badge, and the row
+-  /// simply starts scrolling sooner.
+-  static let minCardWidth: CGFloat = 180
+-  static let cardHeight: CGFloat = 88
+-  static let cardSpacing: CGFloat = 10
++  ///
++  /// Cards are **stacked** — well above label, the way ⌘Tab and the Dock put an icon above its name —
++  /// rather than well-beside-label. That change alone nearly halved the card: a side-by-side card has to
++  /// pay for the well's width *and* a label column beside it, while a stacked one gives the full card
++  /// width to the label. Roughly twice as many workrooms now fit before the row has to scroll.
++  static let maxCardWidth: CGFloat = 120
++  /// The floor. The label spans the whole card here, so ~96pt of 12pt text survives — comfortably more
++  /// than the side-by-side layout had at 180pt, where a 52pt well and its gap came off the top first.
++  static let minCardWidth: CGFloat = 104
++  static let cardHeight: CGFloat = 104
++  static let cardSpacing: CGFloat = 8
+   /// Inset from the rail's own edge to the first card.
+-  static let railPadding: CGFloat = 14
+-  /// The well. Square, and smaller than the 72×56 the screenshot era needed: a mark or a drawn
+-  /// miniature reads fine at this size, and the 20pt saved goes to the label column.
+-  static let wellSize = CGSize(width: 52, height: 52)
++  static let railPadding: CGFloat = 12
++  /// The well. Small on purpose: at 52pt it dominated a card whose *label* is the thing you read, and a
++  /// mark only has to be recognisable, not large. This is close to a Dock icon's proportion of its label.
++  static let wellSize = CGSize(width: 38, height: 38)
+ 
+   /// Card width for `count` items in `available` points: the comfortable width while everything fits,
+   /// shrinking no further than the floor. Past the floor the row scrolls instead (never a second row).
+@@ -51,11 +54,25 @@ enum SwitcherRailLayout {
+   /// Clearance kept between the rail and the screen edge.
+   static let screenMargin: CGFloat = 24
+ 
+-  /// The rail's width for a given screen: capped, and never wider than the usable frame.
++  /// The widest the rail may be on a given screen: capped, and never wider than the usable frame. This
++  /// is the space available for cards, NOT the panel's width — see `panelWidth`.
+   static func viewportWidth(visibleFrame: CGRect) -> CGFloat {
+     min(maxViewportWidth, max(minCardWidth, visibleFrame.width - screenMargin * 2))
+   }
+ 
++  /// The panel's actual width: **snug around its cards**, not the full viewport.
++  ///
++  /// Sizing the panel to the viewport left the glass extending far past the last card, so a rail of four
++  /// looked left-aligned inside a wide slab even though the slab itself was centred. Fitting the panel to
++  /// its content is what makes the *cards* look centred, which is the thing anyone actually perceives.
++  /// Once the cards overflow, the panel takes the whole viewport and the row scrolls inside it.
++  static func panelWidth(count: Int, visibleFrame: CGRect) -> CGFloat {
++    let viewport = viewportWidth(visibleFrame: visibleFrame)
++    let content = contentWidth(
++      count: count, cardWidth: cardWidth(count: count, available: viewport))
++    return min(content, viewport)
++  }
++
+   /// Where to place a `size` panel for a key window on a screen: centred on the **window**, then
+   /// pushed back inside `visibleFrame` if that overhangs. Centring on the window rather than the
+   /// screen is what keeps the rail where the user is looking with Stage Manager or an off-centre
+
+
+=== DIFF: macapp/WorkroomApp/Views/RailGlassBackground.swift ===
+@@ -0,0 +1,50 @@
++import AppKit
++import SwiftUI
++
++/// The switcher rail's backing material: the system's Liquid Glass, the same surface the macOS ⌘Tab
++/// switcher sits on (issue #132).
++///
++/// Two reasons this is not the app's usual `sidebarCard(vibrant:)` recipe:
++///
++/// 1. **The material has to sample what is behind the *window*.** `VisualEffectView` defaults to
++///    `.withinWindow`, which blends against the host window's own backdrop — deliberately, so the left
++///    and right sidebar cards get an identical tint. But this panel is transparent and floats over other
++///    windows and the desktop, so `.withinWindow` has nothing to sample and the glass reads flat.
++///    `.behindWindow` is what makes it glass.
++/// 2. **⌘Tab's surface is a HUD**, not a sidebar. `.hudWindow` is the material that reads as a floating
++///    overlay rather than a piece of window chrome.
++///
++/// On macOS 26+ this uses the real thing — `NSGlassEffectView`, which is what the system switcher
++/// itself draws — and falls back to the `.hudWindow` vibrancy that approximated it before Liquid Glass
++/// existed, because the app still deploys to macOS 15.
++struct RailGlassBackground: NSViewRepresentable {
++  var cornerRadius: CGFloat = 20
++
++  func makeNSView(context: Context) -> NSView {
++    if #available(macOS 26.0, *) {
++      let glass = NSGlassEffectView()
++      glass.cornerRadius = cornerRadius
++      // `.regular` rather than `.clear`: the rail carries text over arbitrary windows and wallpapers, and
++      // `.clear` leaves too little separation for a 12pt subtitle to survive a busy backdrop.
++      glass.style = .regular
++      return glass
++    }
++    let effect = NSVisualEffectView()
++    effect.material = .hudWindow
++    effect.blendingMode = .behindWindow
++    effect.state = .active  // NOT `.followsWindowActiveState`: this panel is never the key window
++    effect.wantsLayer = true
++    effect.layer?.cornerRadius = cornerRadius
++    effect.layer?.cornerCurve = .continuous
++    effect.layer?.masksToBounds = true
++    return effect
++  }
++
++  func updateNSView(_ view: NSView, context: Context) {
++    if #available(macOS 26.0, *), let glass = view as? NSGlassEffectView {
++      glass.cornerRadius = cornerRadius
++      return
++    }
++    view.layer?.cornerRadius = cornerRadius
++  }
++}
+
+
+=== DIFF: macapp/WorkroomApp/Views/SwitcherRailView.swift ===
+@@ -153,14 +153,28 @@ struct SwitcherRailView: View {
+   var body: some View {
+     row
+       .id(model.themeVersion)  // see `palette` — the only thing that invalidates this view
+-      // The app's own floating-translucent recipe (the inspector reveal uses it). No full-screen dim:
+-      // a 250ms gesture must not flash the whole screen, so separation comes from material + hairline
+-      // + shadow instead.
+-      .sidebarCard(cornerRadius: 16, margin: 0, vibrant: !palette.needsOpaqueFill, elevated: true)
++      // The system's Liquid Glass — the same surface ⌘Tab sits on — rather than the app's
++      // `sidebarCard` recipe, whose `.withinWindow` material has nothing to sample inside a transparent
++      // floating panel. No full-screen dim: a 250ms gesture must not flash the whole screen, so the
++      // separation is the material itself.
++      .background {
++        ZStack {
++          RailGlassBackground(cornerRadius: Self.cornerRadius)
++          // D14's last resort: a theme whose foreground cannot clear the text floor against a
++          // translucent surface gets an opaque one instead. Legibility outranks the material — and
++          // without this the glass would keep washing text that already failed its contrast check.
++          if palette.needsOpaqueFill { theme.tokens.panel }
++        }
++      }
++      .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
+       .accessibilityElement(children: .contain)
+       .accessibilityIdentifier("switcher.rail")
+   }
+ 
++  /// Matches the system switcher's generous curvature; also handed to the glass view, which rounds the
++  /// material itself rather than relying on a clip.
++  static let cornerRadius: CGFloat = 20
++
+   @ViewBuilder private var row: some View {
+     if scrolls {
+       ScrollViewReader { proxy in
+@@ -208,7 +222,11 @@ struct SwitcherRailView: View {
+   }
+ }
+ 
+-/// One card: a fixed thumbnail well, then a label column that absorbs every point of width loss.
++/// One card: the well above its label, the way ⌘Tab and the Dock stack an icon over its name.
++///
++/// Stacked rather than side-by-side because that is what buys horizontal room: a side-by-side card pays
++/// for the well's width *and* a label column beside it, while a stacked card gives the full width to the
++/// label — so the card shrank 200pt → 120pt and roughly twice as many fit before the row scrolls.
+ private struct SwitcherCardView: View {
+   let card: SwitcherCard
+   let isCursor: Bool
+@@ -217,22 +235,22 @@ private struct SwitcherCardView: View {
+   private let theme = ThemeService.shared
+ 
+   var body: some View {
+-    // No trailing `Spacer` here. A `Spacer(minLength: 0)` is a *flexible* child, so SwiftUI splits the
+-    // card's spare width between it and the label column — which truncated "uitest-room-2" at a card
+-    // width that fits it twice over. `maxWidth: .infinity` on the labels claims that space instead.
+-    HStack(spacing: 10) {
++    VStack(spacing: 7) {
+       well
+       labels
+     }
+-    .padding(.horizontal, 10)
++    .padding(.horizontal, 6)
++    .padding(.vertical, 10)
+     .frame(width: width, height: SwitcherRailLayout.cardHeight)
+     .background(
+-      RoundedRectangle(cornerRadius: 10, style: .continuous)
+-        .fill(isCursor ? theme.tokens.accentSoft : theme.tokens.panel)
++      RoundedRectangle(cornerRadius: 12, style: .continuous)
++        .fill(isCursor ? theme.tokens.accentSoft : Color.clear)
+     )
+     .overlay(
+-      RoundedRectangle(cornerRadius: 10, style: .continuous)
+-        .strokeBorder(isCursor ? palette.ring : theme.tokens.border, lineWidth: 1)
++      // Only the cursor is outlined. On glass, giving every card its own border produced a row of
++      // competing boxes and buried the one signal that matters — which card you are about to commit to.
++      RoundedRectangle(cornerRadius: 12, style: .continuous)
++        .strokeBorder(isCursor ? palette.ring : .clear, lineWidth: 1.5)
+     )
+     .contentShape(Rectangle())
+     .help(tooltip)
+@@ -241,43 +259,51 @@ private struct SwitcherCardView: View {
+     .accessibilityIdentifier("switcher.card.\(card.title)")
+   }
+ 
+-  /// The well. Screenshots were tried and removed: at any size that fits a switcher rail, an aspect-fit
+-  /// window capture is a grey smudge, and it is neither stable nor distinctive — it changes every time
+-  /// and every terminal looks like every other terminal. So each switcher draws what actually
+-  /// distinguishes its own items.
+-  @ViewBuilder private var well: some View {
+-    switch card.well {
+-    case .mark(let mark): MarkWell(mark: mark)
+-    case .miniature(let miniature): MiniatureWell(miniature: miniature, palette: palette)
++  /// The well, with its badge and running pip riding on its corners.
++  ///
++  /// Screenshots were tried and removed: at any size that fits a switcher rail an aspect-fit window
++  /// capture is a grey smudge, and it is neither stable nor distinctive — it changes every time and every
++  /// terminal looks like every other terminal. So each switcher draws what distinguishes its own items.
++  private var well: some View {
++    ZStack(alignment: .topTrailing) {
++      switch card.well {
++      case .mark(let mark): MarkWell(mark: mark)
++      case .miniature(let miniature): MiniatureWell(miniature: miniature, palette: palette)
++      }
++      // Badge on the icon's corner, the Dock/⌘Tab idiom — and in a stacked card it costs no width at
++      // all, where in the label row it competed with the name for the same points.
++      if card.badge > 0 {
++        UnreadBadge(count: card.badge)
++          .offset(x: 7, y: -6)
++      } else if card.isRunning {
++        Circle()
++          .fill(palette.dot)
++          .frame(width: 7, height: 7)
++          .overlay(Circle().strokeBorder(theme.tokens.panel, lineWidth: 1.5))
++          .offset(x: 3, y: -3)
++          .help("Running")
++          .accessibilityLabel("running")
++      }
+     }
+   }
+ 
+   private var labels: some View {
+-    VStack(alignment: .leading, spacing: 3) {
+-      HStack(spacing: 5) {
+-        // Middle truncation, never tail: generated workroom names share a prefix and differ at the
+-        // END, which is exactly what tail truncation deletes (D12).
+-        Text(card.title)
+-          .font(.system(size: 13, weight: .semibold))
+-          .foregroundStyle(palette.name)
+-          .lineLimit(1)
+-          .truncationMode(.middle)
+-        // Badge and running dot sit in the LABEL row, not over the thumbnail — which also removes the
+-        // contrast problem of an accent pill over arbitrary screenshot pixels.
+-        if card.badge > 0 { UnreadBadge(count: card.badge) }
+-        if card.isRunning {
+-          Circle().fill(palette.dot).frame(width: 6, height: 6)
+-            .help("Running")
+-            .accessibilityLabel("running")
+-        }
+-      }
++    VStack(spacing: 1) {
++      // Middle truncation, never tail: generated workroom names share a prefix and differ at the END,
++      // which is exactly what tail truncation deletes (D12).
++      Text(card.title)
++        .font(.system(size: 12, weight: .semibold))
++        .foregroundStyle(palette.name)
++        .lineLimit(1)
++        .truncationMode(.middle)
+       Text(card.subtitle)
+-        .font(.system(size: 11))
++        .font(.system(size: 10))
+         .foregroundStyle(palette.subtitle)
+         .lineLimit(1)
+         .truncationMode(.tail)
+     }
+-    .frame(maxWidth: .infinity, alignment: .leading)
++    .multilineTextAlignment(.center)
++    .frame(maxWidth: .infinity)
+   }
+ 
+   private var tooltip: String {
+@@ -319,7 +345,7 @@ private struct MarkWell: View {
+       .frame(width: SwitcherRailLayout.wellSize.width, height: SwitcherRailLayout.wellSize.height)
+       .overlay {
+         Text(mark.monogram)
+-          .font(.system(size: 17, weight: .semibold, design: .rounded))
++          .font(.system(size: 13, weight: .semibold, design: .rounded))
+           .foregroundStyle(Color(nsColor: ThemeTokens.contrastingForeground(for: tile)))
+       }
+   }
+
+
+=== DIFF: macapp/WorkroomAppTests/SwitcherRailLayoutTests.swift ===
+@@ -16,27 +16,65 @@ final class SwitcherRailLayoutTests: XCTestCase {
+   }
+ 
+   func testCardsShrinkTowardsTheFloorAsTheCountGrows() {
+-    let wide = L.cardWidth(count: 5, available: 1100)
+-    let tight = L.cardWidth(count: 6, available: 1100)
++    let wide = L.cardWidth(count: 9, available: 1100)
++    let tight = L.cardWidth(count: 10, available: 1100)
+     XCTAssertLessThan(tight, wide, "more cards ⇒ narrower cards, before any scrolling")
+     XCTAssertLessThanOrEqual(wide, L.maxCardWidth)
+   }
+ 
+   func testCardWidthNeverGoesBelowTheFloor() {
+-    // The whole point of the 180pt floor (Codex #1): at 140 the label column is ~36pt, so every name
+-    // fragments and the badge collides — the densest state would read the worst.
+-    for count in [8, 12, 40, 200] {
++    // The floor exists so the densest state never becomes the least readable one — the original 140pt
++    // side-by-side card left ~36pt of label, which fragmented every name.
++    for count in [12, 20, 40, 200] {
+       XCTAssertEqual(
+         L.cardWidth(count: count, available: 1100), L.minCardWidth,
+         "\(count) cards must shrink to the floor and then scroll, never past it")
+     }
+   }
+ 
+-  func testTheFloorIs180Not140() {
+-    XCTAssertEqual(L.minCardWidth, 180)
+-    // And the floor must leave a usable label column: card − well − padding − gap.
+-    let label = L.minCardWidth - L.wellSize.width - 10 * 2 - 10
+-    XCTAssertGreaterThan(label, 60, "a 13pt name plus a badge needs real width")
++  func testTheFloorLeavesAUsableLabelWidth() {
++    XCTAssertEqual(L.minCardWidth, 104)
++    // Stacked cards give the label the FULL card width (the well is above it, not beside it), so only
++    // the horizontal padding comes off — which is why the card could shrink from 180 to 104 and still
++    // hold MORE label than before.
++    let label = L.minCardWidth - 6 * 2
++    XCTAssertGreaterThan(label, 80, "a 12pt name needs real width")
++    XCTAssertGreaterThan(
++      label, L.maxCardWidth - L.wellSize.width - 30,
++      "the stacked label beats what a side-by-side card of the same width would give it")
++  }
++
++  func testStackingRoughlyDoubledHowManyCardsFit() {
++    // The reason for the layout change: at the old 200pt a 1100pt rail held 5 cards, and it now holds 8.
++    let viewport: CGFloat = 1100
++    let fits = Int((viewport - L.railPadding * 2) / (L.maxCardWidth + L.cardSpacing))
++    XCTAssertGreaterThanOrEqual(fits, 8, "the whole point of stacking was horizontal room")
++  }
++
++  // MARK: Panel width — snug, so the cards read as centred
++
++  func testThePanelIsOnlyAsWideAsItsCards() {
++    let visible = CGRect(x: 0, y: 0, width: 2000, height: 1200)
++    let panel = L.panelWidth(count: 4, visibleFrame: visible)
++    let expected = L.contentWidth(
++      count: 4, cardWidth: L.cardWidth(count: 4, available: L.viewportWidth(visibleFrame: visible)))
++    XCTAssertEqual(
++      panel, expected, "sizing the panel to the viewport made 4 cards look left-aligned")
++    XCTAssertLessThan(panel, L.viewportWidth(visibleFrame: visible))
++  }
++
++  func testThePanelTakesTheWholeViewportOnceCardsOverflow() {
++    let visible = CGRect(x: 0, y: 0, width: 1200, height: 900)
++    let viewport = L.viewportWidth(visibleFrame: visible)
++    XCTAssertEqual(
++      L.panelWidth(count: 40, visibleFrame: visible), viewport,
++      "past the floor the row scrolls inside a full-width panel")
++  }
++
++  func testASingleCardGetsASnugPanel() {
++    let visible = CGRect(x: 0, y: 0, width: 2000, height: 1200)
++    let panel = L.panelWidth(count: 1, visibleFrame: visible)
++    XCTAssertEqual(panel, L.maxCardWidth + L.railPadding * 2)
+   }
+ 
+   func testCardWidthWithNoCards() {
+@@ -51,7 +89,7 @@ final class SwitcherRailLayoutTests: XCTestCase {
+ 
+   func testManyCardsScrollRatherThanWrapping() {
+     XCTAssertTrue(
+-      L.scrolls(count: 12, available: 1100),
++      L.scrolls(count: 40, available: 1100),
+       "past the floor the single row scrolls — never a second row")
+   }
+ 
+
+
+Investigate per the method in your instructions, then return the findings list.
