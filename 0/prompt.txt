@@ -1,0 +1,429 @@
+<bash-stdout></bash-stdout><bash-stderr>Command line invocation:
+    /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild test -project macapp/WorkroomApp.xcodeproj -scheme WorkroomAppUITests -destination platform=macOS -derivedDataPath macapp/DerivedData "-only-testing:WorkroomAppUITests/GhosttyActionDispatchUITests"
+
+Resolve Package Graph
+
+
+Resolved source packages:
+  TreeSitterCSS: https://github.com/tree-sitter/tree-sitter-css @ c0d581e
+  Sparkle: https://github.com/sparkle-project/Sparkle @ 2.9.3
+  SwiftGitX: https://github.com/ibrahimcetin/SwiftGitX @ 0.4.0
+  SwiftTreeSitter: https://github.com/ChimeHQ/SwiftTreeSitter @ 0.25.0
+  TreeSitterBash: https://github.com/tree-sitter/tree-sitter-bash @ a06c2e4
+  Defaults: https://github.com/sindresorhus/Defaults @ 9.0.9
+  TreeSitterSql: https://github.com/DerekStride/tree-sitter-sql @ 851e9cb
+  MSDisplayLink: https://github.com/Lakr233/MSDisplayLink.git @ 2.1.0
+  TreeSitterMarkdown: https://github.com/tree-sitter-grammars/tree-sitter-markdown @ c357072
+  TreeSitterHTML: https://github.com/tree-sitter/tree-sitter-html @ 73a3947
+  WrVcs: /Users/joelmoss/dev/workroom/vcs/swift/WrVcs
+  TreeSitterTypeScript: https://github.com/tree-sitter/tree-sitter-typescript @ 75b3874
+  TreeSitterRuby: https://github.com/tree-sitter/tree-sitter-ruby @ ad907a6
+  TreeSitterTOML: https://github.com/tree-sitter-grammars/tree-sitter-toml @ 64b5683
+  TreeSitter: https://github.com/tree-sitter/tree-sitter @ 0.25.10
+  libgit2: https://github.com/ibrahimcetin/libgit2.git @ 1.9.2
+  TreeSitterSwift: https://github.com/alex-pinkus/tree-sitter-swift @ 31d17fe
+  TreeSitterPython: https://github.com/tree-sitter/tree-sitter-python @ bffb65a
+  Sentry: https://github.com/getsentry/sentry-cocoa @ 9.19.0
+  GhosttyKit: https://github.com/Lakr233/libghostty-spm @ 1.2.3
+  TreeSitterJSON: https://github.com/tree-sitter/tree-sitter-json @ 001c28d
+  TreeSitterYAML: https://github.com/tree-sitter-grammars/tree-sitter-yaml @ b733d3f
+  TreeSitterGo: https://github.com/tree-sitter/tree-sitter-go @ 2346a3a
+  TreeSitterJavaScript: https://github.com/tree-sitter/tree-sitter-javascript @ 3a837b6
+  swift-syntax: https://github.com/swiftlang/swift-syntax @ 603.0.1
+
+--- xcodebuild: WARNING: Using the first of multiple matching destinations:
+{ platform:macOS, arch:arm64, id:00006000-001C592C0ED8801E, name:My Mac }
+{ platform:macOS, arch:x86_64, id:00006000-001C592C0ED8801E, name:My Mac }
+ComputePackagePrebuildTargetDependencyGraph
+
+Prepare packages
+
+CreateBuildRequest
+
+SendProjectDescription
+
+CreateBuildOperation
+
+ComputeTargetDependencyGraph
+note: Building targets in dependency order
+note: Target dependency graph (67 targets)
+    Target 'WorkroomAppUITests' in project 'WorkroomApp'
+        ➜ Explicit dependency on target 'WorkroomApp' in project 'WorkroomApp'
+    Target 'WorkroomApp' in project 'WorkroomApp'
+        ➜ Explicit dependency on target 'Sparkle' in project 'Sparkle'
+        ➜ Explicit dependency on target 'WrVcs' in project 'WrVcs'
+        ➜ Explicit dependency on target 'SwiftGitX' in project 'SwiftGitX'
+        ➜ Explicit dependency on target 'libgit2' in project 'libgit2'
+        ➜ Explicit dependency on target 'GhosttyKit' in project 'GhosttyKit'
+        ➜ Explicit dependency on target 'Sentry' in project 'Sentry'
+        ➜ Explicit dependency on target 'Defaults' in project 'Defaults'
+        ➜ Explicit dependency on target 'SwiftTreeSitter' in project 'SwiftTreeSitter'
+        ➜ Explicit dependency on target 'TreeSitter' in project 'TreeSitter'
+        ➜ Explicit dependency on target 'TreeSitterJSON' in project 'TreeSitterJSON'
+        ➜ Explicit dependency on target 'TreeSitterBash' in project 'TreeSitterBash'
+        ➜ Explicit dependency on target 'TreeSitterSwift' in project 'TreeSitterSwift'
+        ➜ Explicit dependency on target 'TreeSitterGo' in project 'TreeSitterGo'
+        ➜ Explicit dependency on target 'TreeSitterRuby' in project 'TreeSitterRuby'
+        ➜ Explicit dependency on target 'TreeSitterJavaScript' in project 'TreeSitterJavaScript'
+        ➜ Explicit dependency on target 'TreeSitterTypeScript' in project 'TreeSitterTypeScript'
+        ➜ Explicit dependency on target 'TreeSitterPython' in project 'TreeSitterPython'
+        ➜ Explicit dependency on target 'TreeSitterYAML' in project 'TreeSitterYAML'
+        ➜ Explicit dependency on target 'TreeSitterTOML' in project 'TreeSitterTOML'
+        ➜ Explicit dependency on target 'TreeSitterMarkdown' in project 'TreeSitterMarkdown'
+        ➜ Explicit dependency on target 'TreeSitterHTML' in project 'TreeSitterHTML'
+        ➜ Explicit dependency on target 'TreeSitterCSS' in project 'TreeSitterCSS'
+        ➜ Explicit dependency on target 'TreeSitterSql' in project 'TreeSitterSql'
+    Target 'TreeSitterSql' in project 'TreeSitterSql'
+        ➜ Explicit dependency on target 'TreeSitterSql' in project 'TreeSitterSql'
+        ➜ Explicit dependency on target 'TreeSitterSql_TreeSitterSql' in project 'TreeSitterSql'
+    Target 'TreeSitterSql' in project 'TreeSitterSql'
+        ➜ Explicit dependency on target 'TreeSitterSql_TreeSitterSql' in project 'TreeSitterSql'
+    Target 'TreeSitterSql_TreeSitterSql' in project 'TreeSitterSql' (no dependencies)
+    Target 'TreeSitterCSS' in project 'TreeSitterCSS'
+        ➜ Explicit dependency on target 'TreeSitterCSS' in project 'TreeSitterCSS'
+        ➜ Explicit dependency on target 'TreeSitterCSS_TreeSitterCSS' in project 'TreeSitterCSS'
+    Target 'TreeSitterCSS' in project 'TreeSitterCSS'
+        ➜ Explicit dependency on target 'TreeSitterCSS_TreeSitterCSS' in project 'TreeSitterCSS'
+    Target 'TreeSitterCSS_TreeSitterCSS' in project 'TreeSitterCSS' (no dependencies)
+    Target 'TreeSitterHTML' in project 'TreeSitterHTML'
+        ➜ Explicit dependency on target 'TreeSitterHTML' in project 'TreeSitterHTML'
+        ➜ Explicit dependency on target 'TreeSitterHTML_TreeSitterHTML' in project 'TreeSitterHTML'
+    Target 'TreeSitterHTML' in project 'TreeSitterHTML'
+        ➜ Explicit dependency on target 'TreeSitterHTML_TreeSitterHTML' in project 'TreeSitterHTML'
+    Target 'TreeSitterHTML_TreeSitterHTML' in project 'TreeSitterHTML' (no dependencies)
+    Target 'TreeSitterMarkdown' in project 'TreeSitterMarkdown'
+        ➜ Explicit dependency on target 'TreeSitterMarkdown' in project 'TreeSitterMarkdown'
+        ➜ Explicit dependency on target 'TreeSitterMarkdownInline' in project 'TreeSitterMarkdown'
+        ➜ Explicit dependency on target 'TreeSitterMarkdown_TreeSitterMarkdown' in project 'TreeSitterMarkdown'
+        ➜ Explicit dependency on target 'TreeSitterMarkdown_TreeSitterMarkdownInline' in project 'TreeSitterMarkdown'
+    Target 'TreeSitterMarkdownInline' in project 'TreeSitterMarkdown'
+        ➜ Explicit dependency on target 'TreeSitterMarkdown_TreeSitterMarkdownInline' in project 'TreeSitterMarkdown'
+    Target 'TreeSitterMarkdown_TreeSitterMarkdownInline' in project 'TreeSitterMarkdown' (no dependencies)
+    Target 'TreeSitterMarkdown' in project 'TreeSitterMarkdown'
+        ➜ Explicit dependency on target 'TreeSitterMarkdown_TreeSitterMarkdown' in project 'TreeSitterMarkdown'
+    Target 'TreeSitterMarkdown_TreeSitterMarkdown' in project 'TreeSitterMarkdown' (no dependencies)
+    Target 'TreeSitterTOML' in project 'TreeSitterTOML'
+        ➜ Explicit dependency on target 'TreeSitterTOML' in project 'TreeSitterTOML'
+        ➜ Explicit dependency on target 'TreeSitterTOML_TreeSitterTOML' in project 'TreeSitterTOML'
+    Target 'TreeSitterTOML' in project 'TreeSitterTOML'
+        ➜ Explicit dependency on target 'TreeSitterTOML_TreeSitterTOML' in project 'TreeSitterTOML'
+    Target 'TreeSitterTOML_TreeSitterTOML' in project 'TreeSitterTOML' (no dependencies)
+    Target 'TreeSitterYAML' in project 'TreeSitterYAML'
+        ➜ Explicit dependency on target 'TreeSitterYAML' in project 'TreeSitterYAML'
+        ➜ Explicit dependency on target 'TreeSitterYAML_TreeSitterYAML' in project 'TreeSitterYAML'
+    Target 'TreeSitterYAML' in project 'TreeSitterYAML'
+        ➜ Explicit dependency on target 'TreeSitterYAML_TreeSitterYAML' in project 'TreeSitterYAML'
+    Target 'TreeSitterYAML_TreeSitterYAML' in project 'TreeSitterYAML' (no dependencies)
+    Target 'TreeSitterPython' in project 'TreeSitterPython'
+        ➜ Explicit dependency on target 'TreeSitterPython' in project 'TreeSitterPython'
+        ➜ Explicit dependency on target 'TreeSitterPython_TreeSitterPython' in project 'TreeSitterPython'
+    Target 'TreeSitterPython' in project 'TreeSitterPython'
+        ➜ Explicit dependency on target 'TreeSitterPython_TreeSitterPython' in project 'TreeSitterPython'
+    Target 'TreeSitterPython_TreeSitterPython' in project 'TreeSitterPython' (no dependencies)
+    Target 'TreeSitterTypeScript' in project 'TreeSitterTypeScript'
+        ➜ Explicit dependency on target 'TreeSitterTypeScript' in project 'TreeSitterTypeScript'
+        ➜ Explicit dependency on target 'TreeSitterTSX' in project 'TreeSitterTypeScript'
+        ➜ Explicit dependency on target 'TreeSitterTypeScript_TreeSitterTypeScript' in project 'TreeSitterTypeScript'
+        ➜ Explicit dependency on target 'TreeSitterTypeScript_TreeSitterTSX' in project 'TreeSitterTypeScript'
+    Target 'TreeSitterTSX' in project 'TreeSitterTypeScript'
+        ➜ Explicit dependency on target 'TreeSitterTypeScript_TreeSitterTSX' in project 'TreeSitterTypeScript'
+    Target 'TreeSitterTypeScript_TreeSitterTSX' in project 'TreeSitterTypeScript' (no dependencies)
+    Target 'TreeSitterTypeScript' in project 'TreeSitterTypeScript'
+        ➜ Explicit dependency on target 'TreeSitterTypeScript_TreeSitterTypeScript' in project 'TreeSitterTypeScript'
+    Target 'TreeSitterTypeScript_TreeSitterTypeScript' in project 'TreeSitterTypeScript' (no dependencies)
+    Target 'TreeSitterJavaScript' in project 'TreeSitterJavaScript'
+        ➜ Explicit dependency on target 'TreeSitterJavaScript' in project 'TreeSitterJavaScript'
+        ➜ Explicit dependency on target 'TreeSitterJavaScript_TreeSitterJavaScript' in project 'TreeSitterJavaScript'
+    Target 'TreeSitterJavaScript' in project 'TreeSitterJavaScript'
+        ➜ Explicit dependency on target 'TreeSitterJavaScript_TreeSitterJavaScript' in project 'TreeSitterJavaScript'
+    Target 'TreeSitterJavaScript_TreeSitterJavaScript' in project 'TreeSitterJavaScript' (no dependencies)
+    Target 'TreeSitterRuby' in project 'TreeSitterRuby'
+        ➜ Explicit dependency on target 'TreeSitterRuby' in project 'TreeSitterRuby'
+        ➜ Explicit dependency on target 'TreeSitterRuby_TreeSitterRuby' in project 'TreeSitterRuby'
+    Target 'TreeSitterRuby' in project 'TreeSitterRuby'
+        ➜ Explicit dependency on target 'TreeSitterRuby_TreeSitterRuby' in project 'TreeSitterRuby'
+    Target 'TreeSitterRuby_TreeSitterRuby' in project 'TreeSitterRuby' (no dependencies)
+    Target 'TreeSitterGo' in project 'TreeSitterGo'
+        ➜ Explicit dependency on target 'TreeSitterGo' in project 'TreeSitterGo'
+        ➜ Explicit dependency on target 'TreeSitterGo_TreeSitterGo' in project 'TreeSitterGo'
+    Target 'TreeSitterGo' in project 'TreeSitterGo'
+        ➜ Explicit dependency on target 'TreeSitterGo_TreeSitterGo' in project 'TreeSitterGo'
+    Target 'TreeSitterGo_TreeSitterGo' in project 'TreeSitterGo' (no dependencies)
+    Target 'TreeSitterSwift' in project 'TreeSitterSwift'
+        ➜ Explicit dependency on target 'TreeSitterSwift' in project 'TreeSitterSwift'
+        ➜ Explicit dependency on target 'TreeSitterSwift_TreeSitterSwift' in project 'TreeSitterSwift'
+    Target 'TreeSitterSwift' in project 'TreeSitterSwift'
+        ➜ Explicit dependency on target 'TreeSitterSwift_TreeSitterSwift' in project 'TreeSitterSwift'
+    Target 'TreeSitterSwift_TreeSitterSwift' in project 'TreeSitterSwift' (no dependencies)
+    Target 'TreeSitterBash' in project 'TreeSitterBash'
+        ➜ Explicit dependency on target 'TreeSitterBash' in project 'TreeSitterBash'
+        ➜ Explicit dependency on target 'TreeSitterBash_TreeSitterBash' in project 'TreeSitterBash'
+    Target 'TreeSitterBash' in project 'TreeSitterBash'
+        ➜ Explicit dependency on target 'TreeSitterBash_TreeSitterBash' in project 'TreeSitterBash'
+    Target 'TreeSitterBash_TreeSitterBash' in project 'TreeSitterBash' (no dependencies)
+    Target 'TreeSitterJSON' in project 'TreeSitterJSON'
+        ➜ Explicit dependency on target 'TreeSitterJSON' in project 'TreeSitterJSON'
+        ➜ Explicit dependency on target 'TreeSitterJSON_TreeSitterJSON' in project 'TreeSitterJSON'
+    Target 'TreeSitterJSON' in project 'TreeSitterJSON'
+        ➜ Explicit dependency on target 'TreeSitterJSON_TreeSitterJSON' in project 'TreeSitterJSON'
+    Target 'TreeSitterJSON_TreeSitterJSON' in project 'TreeSitterJSON' (no dependencies)
+    Target 'SwiftTreeSitter' in project 'SwiftTreeSitter'
+        ➜ Explicit dependency on target 'SwiftTreeSitter' in project 'SwiftTreeSitter'
+        ➜ Explicit dependency on target 'TreeSitter' in project 'TreeSitter'
+    Target 'SwiftTreeSitter' in project 'SwiftTreeSitter'
+        ➜ Explicit dependency on target 'TreeSitter' in project 'TreeSitter'
+    Target 'TreeSitter' in project 'TreeSitter'
+        ➜ Explicit dependency on target 'TreeSitter' in project 'TreeSitter'
+    Target 'TreeSitter' in project 'TreeSitter' (no dependencies)
+    Target 'Defaults' in project 'Defaults'
+        ➜ Explicit dependency on target 'Defaults' in project 'Defaults'
+        ➜ Explicit dependency on target 'Defaults_Defaults' in project 'Defaults'
+    Target 'Defaults' in project 'Defaults'
+        ➜ Explicit dependency on target 'Defaults_Defaults' in project 'Defaults'
+    Target 'Defaults_Defaults' in project 'Defaults' (no dependencies)
+    Target 'Sentry' in project 'Sentry'
+        ➜ Explicit dependency on target 'SentryCppHelper' in project 'Sentry'
+    Target 'SentryCppHelper' in project 'Sentry' (no dependencies)
+    Target 'GhosttyKit' in project 'GhosttyKit'
+        ➜ Explicit dependency on target 'GhosttyKit' in project 'GhosttyKit'
+    Target 'GhosttyKit' in project 'GhosttyKit' (no dependencies)
+    Target 'SwiftGitX' in project 'SwiftGitX'
+        ➜ Explicit dependency on target 'SwiftGitX' in project 'SwiftGitX'
+        ➜ Explicit dependency on target 'libgit2' in project 'libgit2'
+    Target 'SwiftGitX' in project 'SwiftGitX'
+        ➜ Explicit dependency on target 'libgit2' in project 'libgit2'
+    Target 'libgit2' in project 'libgit2'
+        ➜ Explicit dependency on target 'libgit2' in project 'libgit2'
+    Target 'libgit2' in project 'libgit2' (no dependencies)
+    Target 'WrVcs' in project 'WrVcs'
+        ➜ Explicit dependency on target 'WrVcs' in project 'WrVcs'
+        ➜ Explicit dependency on target 'wr_vcs_uniffiFFI' in project 'WrVcs'
+    Target 'WrVcs' in project 'WrVcs'
+        ➜ Explicit dependency on target 'wr_vcs_uniffiFFI' in project 'WrVcs'
+    Target 'wr_vcs_uniffiFFI' in project 'WrVcs' (no dependencies)
+    Target 'Sparkle' in project 'Sparkle' (no dependencies)
+
+GatherProvisioningInputs
+
+CreateBuildDescription
+
+ClangStatCache /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang-stat-cache /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk /Users/joelmoss/dev/workroom/macapp/DerivedData/SDKStatCaches.noindex/macosx26.5-25F70-e082c4a02f00227109f4ed75e425c832.sdkstatcache
+    cd /Users/joelmoss/dev/workroom/macapp/WorkroomApp.xcodeproj
+    /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang-stat-cache /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk -o /Users/joelmoss/dev/workroom/macapp/DerivedData/SDKStatCaches.noindex/macosx26.5-25F70-e082c4a02f00227109f4ed75e425c832.sdkstatcache
+
+note: Run script build phase 'Build &amp; embed workroom helper' will be run during every build because the option to run the script phase "Based on dependency analysis" is unchecked. (in target 'WorkroomApp' from project 'WorkroomApp')
+note: Run script build phase 'Rust VCS core up to date' will be run during every build because the option to run the script phase "Based on dependency analysis" is unchecked. (in target 'WorkroomApp' from project 'WorkroomApp')
+note: Run script build phase 'swift-format lint' will be run during every build because the option to run the script phase "Based on dependency analysis" is unchecked. (in target 'WorkroomApp' from project 'WorkroomApp')
+PhaseScriptExecution Rust\ VCS\ core\ up\ to\ date /Users/joelmoss/dev/workroom/macapp/DerivedData/Build/Intermediates.noindex/WorkroomApp.build/Debug/WorkroomApp.build/Script-3658622A767F08C982E537B0.sh (in target 'WorkroomApp' from project 'WorkroomApp')
+    cd /Users/joelmoss/dev/workroom/macapp
+    export ACTION\=build
+    export AD_HOC_CODE_SIGNING_ALLOWED\=YES
+    export AGGREGATE_TRACKED_DOMAINS\=YES
+    export ALLOW_BUILD_REQUEST_OVERRIDES\=NO
+    export ALLOW_TARGET_PLATFORM_SPECIALIZATION\=NO
+    export ALTERNATE_GROUP\=staff
+    export ALTERNATE_MODE\=u+w,go-w,a+rX
+    export ALTERNATE_OWNER\=joelmoss
+    export ALTERNATIVE_DISTRIBUTION_WEB\=NO
+    export ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES\=NO
+    export ALWAYS_SEARCH_USER_PATHS\=NO
+    export ALWAYS_USE_SEPARATE_HEADERMAPS\=NO
+    export APPLICATION_EXTENSION_API_ONLY\=NO
+    export APPLY_RULES_IN_COPY_FILES\=NO
+    export APPLY_RULES_IN_COPY_HEADERS\=NO
+    export APP_SHORTCUTS_ENABLE_FLEXIBLE_MATCHING\=YES
+    export ARCHS\=arm64
+    export ARCHS_BASE\=arm64
+    export ARCHS_STANDARD\=arm64\ x86_64
+    export ARCHS_STANDARD_32_64_BIT\=arm64\ x86_64\ i386
+    export ARCHS_STANDARD_32_BIT\=i386
+    export ARCHS_STANDARD_64_BIT\=arm64\ x86_64
+    export ARCHS_STANDARD_INCLUDING_64_BIT\=arm64\ x86_64
+    export ASSETCATALOG_COMPILER_APPICON_NAME\=AppIcon-Dev
+    export AUTOMATICALLY_MERGE_DEPENDENCIES\=NO
+    export AUTOMATION_APPLE_EVENTS\=NO
+    export AVAILABLE_PLATFORMS\=android\ appletvos\ appletvsimulator\ driverkit\ freebsd\ iphoneos\ iphonesimulator\ linux\ macosx\ none\ openbsd\ qnx\ watchos\ watchsimulator\ webassembly\ xros\ xrsimulator
+    export AppIdentifierPrefix\=B898J443L9.
+    export BUILD_ACTIVE_RESOURCES_ONLY\=NO
+    export BUILD_COMPONENTS\=headers\ build
+    export BUILD_DIR\=/Users/joelmoss/dev/workroom/macapp/DerivedData/Build/Products
+    export BUILD_LIBRARY_FOR_DISTRIBUTION\=NO
+    export BUILD_ONLY_KNOWN_LOCALIZATIONS\=NO
+    export BUILD_ROOT\=/Users/joelmoss/dev/workroom/macapp/DerivedData/Build/Products
+    export BUILD_STYLE\=
+    export BUILD_VARIANTS\=normal
+    export BUILT_PRODUCTS_DIR\=/Users/joelmoss/dev/workroom/macapp/DerivedData/Build/Products/Debug
+    export BUNDLE_CONTENTS_FOLDER_PATH\=Contents/
+    export BUNDLE_CONTENTS_FOLDER_PATH_deep\=Contents/
+    export BUNDLE_EXECUTABLE_FOLDER_NAME_deep\=MacOS
+    export BUNDLE_EXECUTABLE_FOLDER_PATH\=Contents/MacOS
+    export BUNDLE_EXTENSIONS_FOLDER_PATH\=Contents/Extensions
+    export BUNDLE_FORMAT\=deep
+    export BUNDLE_FRAMEWORKS_FOLDER_PATH\=Contents/Frameworks
+    export BUNDLE_PLUGINS_FOLDER_PATH\=Contents/PlugIns
+    export BUNDLE_PRIVATE_HEADERS_FOLDER_PATH\=Contents/PrivateHeaders
+    export BUNDLE_PUBLIC_HEADERS_FOLDER_PATH\=Contents/Headers
+    export CACHE_ROOT\=/var/folders/3b/b6pthvr51cg1755k2jxx8www0000gn/C/com.apple.DeveloperTools/26.6-17F113/Xcode
+    export CCHROOT\=/var/folders/3b/b6pthvr51cg1755k2jxx8www0000gn/C/com.apple.DeveloperTools/26.6-17F113/Xcode
+    export CHMOD\=/bin/chmod
+    export CHOWN\=chown
+    export CLANG_ANALYZER_NONNULL\=YES
+    export CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION\=YES_AGGRESSIVE
+    export CLANG_CACHE_FINE_GRAINED_OUTPUTS\=YES
+    export CLANG_CXX_LANGUAGE_STANDARD\=gnu++14
+    export CLANG_CXX_LIBRARY\=libc++
+    export CLANG_ENABLE_EXPLICIT_MODULES\=YES
+    export CLANG_ENABLE_MODULES\=YES
+    export CLANG_ENABLE_OBJC_ARC\=YES
+    export CLANG_ENABLE_OBJC_WEAK\=YES
+    export CLANG_MODULES_BUILD_SESSION_FILE\=/Users/joelmoss/dev/workroom/macapp/DerivedData/ModuleCache.noindex/Session.modulevalidation
+    export CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING\=YES
+    export CLANG_WARN_BOOL_CONVERSION\=YES
+    export CLANG_WARN_COMMA\=YES
+    export CLANG_WARN_CONSTANT_CONVERSION\=YES
+    export CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS\=YES
+    export CLANG_WARN_DIRECT_OBJC_ISA_USAGE\=YES_ERROR
+    export CLANG_WARN_DOCUMENTATION_COMMENTS\=YES
+    export CLANG_WARN_EMPTY_BODY\=YES
+    export CLANG_WARN_ENUM_CONVERSION\=YES
+    export CLANG_WARN_INFINITE_RECURSION\=YES
+    export CLANG_WARN_INT_CONVERSION\=YES
+    export CLANG_WARN_NON_LITERAL_NULL_CONVERSION\=YES
+    export CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF\=YES
+    export CLANG_WARN_OBJC_LITERAL_CONVERSION\=YES
+    export CLANG_WARN_OBJC_ROOT_CLASS\=YES_ERROR
+    export CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER\=YES
+    export CLANG_WARN_RANGE_LOOP_ANALYSIS\=YES
+    export CLANG_WARN_STRICT_PROTOTYPES\=YES
+    export CLANG_WARN_SUSPICIOUS_MOVE\=YES
+    export CLANG_WARN_UNGUARDED_AVAILABILITY\=YES_AGGRESSIVE
+    export CLANG_WARN_UNREACHABLE_CODE\=YES
+    export CLANG_WARN__DUPLICATE_METHOD_MATCH\=YES
+    export CLASS_FILE_DIR\=/Users/joelmoss/dev/workroom/macapp/DerivedData/Build/Intermediates.noindex/WorkroomApp.build/Debug/WorkroomApp.build/JavaClasses
+    export CLEAN_PRECOMPS\=YES
+    export CLONE_HEADERS\=NO
+    export CODESIGNING_FOLDER_PATH\=/Users/joelmoss/dev/workroom/macapp/DerivedData/Build/Products/Debug/Workroom\ Dev.app
+    export CODE_SIGNING_ALLOWED\=YES
+    export CODE_SIGNING_REQUIRED\=YES
+    export CODE_SIGN_IDENTITY\=Apple\ Development
+    export CODE_SIGN_IDENTITY_NO\=Apple\ Development
+    export CODE_SIGN_IDENTITY_YES\=-
+    export CODE_SIGN_INJECT_BASE_ENTITLEMENTS\=YES
+    export CODE_SIGN_STYLE\=Automatic
+    export COLOR_DIAGNOSTICS\=NO
+    export COMBINE_HIDPI_IMAGES\=YES
+    export COMPILATION_CACHE_CAS_PATH\=/Users/joelmoss/dev/workroom/macapp/DerivedData/CompilationCache.noindex
+    export COMPILATION_CACHE_KEEP_CAS_DIRECTORY\=YES
+    export COMPILER_INDEX_STORE_ENABLE\=Default
+    export COMPOSITE_SDK_DIRS\=/Users/joelmoss/dev/workroom/macapp/DerivedData/Build/Intermediates.noindex/CompositeSDKs
+    export COMPRESS_PNG_FILES\=NO
+    export CONFIGURATION\=Debug
+    export CONFIGURATION_BUILD_DIR\=/Users/joelmoss/dev/workroom/macapp/DerivedData/Build/Products/Debug
+    export CONFIGURATION_TEMP_DIR\=/Users/joelmoss/dev/workroom/macapp/DerivedData/Build/Intermediates.noindex/WorkroomApp.build/Debug
+    export CONTENTS_FOLDER_PATH\=Workroom\ Dev.app/Contents
+    export CONTENTS_FOLDER_PATH_SHALLOW_BUNDLE_NO\=Workroom\ Dev.app/Contents
+    export CONTENTS_FOLDER_PATH_SHALLOW_BUNDLE_YES\=Workroom\ Dev.app
+    export COPYING_PRESERVES_HFS_DATA\=NO
+    export COPY_HEADERS_RUN_UNIFDEF\=NO
+    export COPY_PHASE_STRIP\=NO
+    export CP\=/bin/cp
+    export CREATE_INFOPLIST_SECTION_IN_BINARY\=NO
+    export CURRENT_ARCH\=undefined_arch
+    export CURRENT_PROJECT_VERSION\=1
+    export CURRENT_VARIANT\=normal
+    export DEAD_CODE_STRIPPING\=YES
+    export DEBUGGING_SYMBOLS\=YES
+    export DEBUG_INFORMATION_FORMAT\=dwarf
+    export DEBUG_INFORMATION_VERSION\=compiler-default
+    export DEFAULT_COMPILER\=com.apple.compilers.llvm.clang.1_0
+    export DEFAULT_DEXT_INSTALL_PATH\=/System/Library/DriverExtensions
+    export DEFAULT_KEXT_INSTALL_PATH\=/System/Library/Extensions
+    export DEFINES_MODULE\=NO
+    export DEPLOYMENT_LOCATION\=NO
+    export DEPLOYMENT_POSTPROCESSING\=NO
+    export DEPLOYMENT_TARGET_SETTING_NAME\=MACOSX_DEPLOYMENT_TARGET
+    export DEPLOYMENT_TARGET_SUGGESTED_VALUES\=10.13\ 10.14\ 10.15\ 11.0\ 11.1\ 11.2\ 11.3\ 11.4\ 11.5\ 12.0\ 12.2\ 12.3\ 12.4\ 13.0\ 13.1\ 13.2\ 13.3\ 13.4\ 13.5\ 14.0\ 14.1\ 14.2\ 14.3\ 14.4\ 14.5\ 14.6\ 15.0\ 15.1\ 15.2\ 15.3\ 15.4\ 15.5\ 15.6\ 26.0\ 26.1\ 26.2\ 26.3\ 26.4\ 26.5
+    export DERIVED_FILES_DIR\=/Users/joelmoss/dev/workroom/macapp/DerivedData/Build/Intermediates.noindex/WorkroomApp.build/Debug/WorkroomApp.build/DerivedSources
+    export DERIVED_FILE_DIR\=/Users/joelmoss/dev/workroom/macapp/DerivedData/Build/Intermediates.noindex/WorkroomApp.build/Debug/WorkroomApp.build/DerivedSources
+    export DERIVED_SOURCES_DIR\=/Users/joelmoss/dev/workroom/macapp/DerivedData/Build/Intermediates.noindex/WorkroomApp.build/Debug/WorkroomApp.build/DerivedSources
+    export DEVELOPER_APPLICATIONS_DIR\=/Applications/Xcode.app/Contents/Developer/Applications
+    export DEVELOPER_BIN_DIR\=/Applications/Xcode.app/Contents/Developer/usr/bin
+    export DEVELOPER_DIR\=/Applications/Xcode.app/Contents/Developer
+    export DEVELOPER_FRAMEWORKS_DIR\=/Applications/Xcode.app/Contents/Developer/Library/Frameworks
+    export DEVELOPER_FRAMEWORKS_DIR_QUOTED\=/Applications/Xcode.app/Contents/Developer/Library/Frameworks
+    export DEVELOPER_LIBRARY_DIR\=/Applications/Xcode.app/Contents/Developer/Library
+    export DEVELOPER_SDK_DIR\=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs
+    export DEVELOPER_TOOLS_DIR\=/Applications/Xcode.app/Contents/Developer/Tools
+    export DEVELOPER_USR_DIR\=/Applications/Xcode.app/Contents/Developer/usr
+    export DEVELOPMENT_LANGUAGE\=en
+    export DEVELOPMENT_TEAM\=B898J443L9
+    export DIAGNOSE_MISSING_TARGET_DEPENDENCIES\=YES
+    export DIFF\=/usr/bin/diff
+    export DOCUMENTATION_FOLDER_PATH\=Workroom\ Dev.app/Contents/Resources/en.lproj/Documentation
+    export DONT_GENERATE_INFOPLIST_FILE\=NO
+    export DSTROOT\=/tmp/WorkroomApp.dst
+    export DT_TOOLCHAIN_DIR\=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain
+    export DUMP_DEPENDENCIES\=NO
+    export DUMP_DEPENDENCIES_OUTPUT_PATH\=/Users/joelmoss/dev/workroom/macapp/DerivedData/Build/Intermediates.noindex/WorkroomApp.build/Debug/WorkroomApp.build/WorkroomApp-BuildDependencyInfo.json
+    export DWARF_DSYM_FILE_NAME\=Workroom\ Dev.app.dSYM
+    export DWARF_DSYM_FILE_SHOULD_ACCOMPANY_PRODUCT\=NO
+    export DWARF_DSYM_FOLDER_PATH\=/Users/joelmoss/dev/workroom/macapp/DerivedData/Build/Products/Debug
+    export DYNAMIC_LIBRARY_EXTENSION\=dylib
+    export EAGER_COMPILATION_ALLOW_SCRIPTS\=NO
+    export EAGER_LINKING\=NO
+    export EFFECTIVE_SWIFT_VERSION\=5
+    export EMBEDDED_CONTENT_CONTAINS_SWIFT\=NO
+    export EMBEDDED_PROFILE_NAME\=embedded.provisionprofile
+    export EMBED_ASSET_PACKS_IN_PRODUCT_BUNDLE\=NO
+    export EMBED_PACKAGE_RESOURCE_BUNDLE_NAMES\=\ TreeSitterSql_TreeSitterSql\ TreeSitterCSS_TreeSitterCSS\ TreeSitterHTML_TreeSitterHTML\ TreeSitterMarkdown_TreeSitterMarkdown\ TreeSitterMarkdown_TreeSitterMarkdownInline\ TreeSitterTOML_TreeSitterTOML\ TreeSitterYAML_TreeSitterYAML\ TreeSitterPython_TreeSitterPython\ TreeSitterTypeScript_TreeSitterTypeScript\ TreeSitterTypeScript_TreeSitterTSX\ TreeSitterJavaScript_TreeSitterJavaScript\ TreeSitterRuby_TreeSitterRuby\ TreeSitterGo_TreeSitterGo\ TreeSitterSwift_TreeSitterSwift\ TreeSitterBash_TreeSitterBash\ TreeSitterJSON_TreeSitterJSON\ Defaults_Defaults
+    export ENABLE_APP_SANDBOX\=NO
+    export ENABLE_CODE_COVERAGE\=YES
+    export ENABLE_COHORT_ARCHS\=NO
+    export ENABLE_CPLUSPLUS_BOUNDS_SAFE_BUFFERS\=NO
+    export ENABLE_C_BOUNDS_SAFETY\=NO
+    export ENABLE_DEBUG_DYLIB\=YES
+    export ENABLE_DEFAULT_HEADER_SEARCH_PATHS\=YES
+    export ENABLE_DEFAULT_SEARCH_PATHS\=YES
+    export ENABLE_ENHANCED_SECURITY\=NO
+    export ENABLE_HARDENED_RUNTIME\=YES
+    export ENABLE_HEADER_DEPENDENCIES\=YES
+    export ENABLE_INCOMING_NETWORK_CONNECTIONS\=NO
+    export ENABLE_ON_DEMAND_RESOURCES\=NO
+    export ENABLE_OUTGOING_NETWORK_CONNECTIONS\=NO
+    export ENABLE_POINTER_AUTHENTICATION\=NO
+    export ENABLE_PREVIEWS\=NO
+    export ENABLE_RESOURCE_ACCESS_AUDIO_INPUT\=NO
+    export ENABLE_RESOURCE_ACCESS_BLUETOOTH\=NO
+    export ENABLE_RESOURCE_ACCESS_CALENDARS\=NO
+    export ENABLE_RESOURCE_ACCESS_CAMERA\=NO
+    export ENABLE_RESOURCE_ACCESS_CONTACTS\=NO
+    export ENABLE_RESOURCE_ACCESS_LOCATION\=NO
+    export ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY\=NO
+    export ENABLE_RESOURCE_ACCESS_PRINTING\=NO
+    export ENABLE_RESOURCE_ACCESS_USB\=NO
+    export ENABLE_SDK_IMPORTS\=NO
+    export ENABLE_SECURITY_COMPILER_WARNINGS\=NO
+    export ENABLE_STRICT_OBJC_MSGSEND\=YES
+    export ENABLE_TESTABILITY\=YES
+    export ENABLE_TESTING_SEARCH_PATHS\=NO
+    export ENABLE_USER_SCRIPT_SANDBOXING\=NO
+    export ENABLE_XOJIT_PREVIEWS\=YES
+    export ENFORCE_VALID_ARCHS\=YES
+    export ENTITLEMENTS_ALLOWED\=YES
+    export ENTITLEMENTS_DESTINATION\=Signature
+    export ENTITLEMENTS_REQUIRED\=NO
+    export EXCLUDED_INSTALLSRC_SUBDIRECTORY_PATTERNS\=.DS_Store\ .svn\ .git\ .hg\ CVS
+    export EXCLUDED_RECURSIVE_SEARCH_PATH_SUBDIRECTORIES\=\*.nib\ \*.lproj\ \*.framework\ \*.gch\ \*.xcode\*\ \*.xcassets\ \*.icon\ \(\*\)\ .DS_Store\ CVS\ .svn\ .git\ .hg\ \*.pbproj\ \*.pbxproj
+    export EXECUTABLES_FOLDER_PATH\=Workroom\ Dev.app/Contents/Executables
+    export EXECUTABLE_BLANK_INJECTION_DYLIB_PATH\=Workroom\ Dev.app/Contents/MacOS/__preview.dylib
+    export EXECUTABLE_DEBUG_DYLIB_INSTALL_NAME\=@rpath/Workroom\ Dev.debug.dylib
+    export EXECUTABLE_DEBUG_DYLIB_PATH\=Workroom\ Dev.app/Contents/MacOS/Workroom\ Dev.debug.dylib
+    export EXECUTABLE_FOLDER_PATH\=Workroom\ Dev.app/Contents/MacOS
+    export EXECUTABLE_FOLDER_PATH_SHALLOW_BUNDLE_NO\=Workroom\ Dev.app/Contents/MacOS
+    export EXECUTABLE_FOLDER_PATH_SHALLOW_BUNDLE_YES\=Workroom\ Dev.app/Contents
+    export EXECUTABLE_NAME\=Workroom\ Dev
+    export EXECUTABLE_PATH\=Workroom\ Dev.app/Contents/MacOS/Workroom\ Dev
+    export EXPANDED_CODE_SIGN_IDENTITY\=FC254C2C26475350D971CB6B7B5895DA81686CCF
+    export EXPANDED_CODE_SIGN_IDENTITY_NAME\=Apple\ Development:\ Joel\ Moss\ \(K7JL9AWZ26\)
+    export EXTENSIONS_FOLDER_PATH\=Workroom\ Dev.app/Contents/Extensions
+    export FILE_LIST\=/Users/joelmoss/dev/workroom/macapp/DerivedData/Build/Intermediates.noindex/WorkroomApp.build/Debug/WorkroomApp.build/Objects/LinkFileL</bash-stderr>
