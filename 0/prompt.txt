@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>blzlz1hiy</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/85057c1d-7a50-422d-a310-af45bba739d0/tasks/blzlz1hiy.output</output-file>
+<status>completed</status>
+<summary>Background command "Retry Codex structured review with outer sandbox disabled" completed (exit code 0)</summary>
+</task-notification>
