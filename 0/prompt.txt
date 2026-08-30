@@ -1,0 +1,6 @@
+<bash-stdout>remote: 
+remote: Create a pull request for 'joel/quick-switcher-mru' on GitHub by visiting:        
+remote:      https://github.com/joelmoss/workroom/pull/new/joel/quick-switcher-mru        
+remote: 
+To https://github.com/joelmoss/workroom.git
+ * [new branch]        joel/quick-switcher-mru -&gt; joel/quick-switcher-mru</bash-stdout><bash-stderr></bash-stderr>
