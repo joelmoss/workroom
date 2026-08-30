@@ -1,0 +1,465 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/AppStore.swift
+  - macapp/WorkroomApp/Core/VCSSyncPresentation.swift
+  - macapp/WorkroomApp/Core/VCSWriting.swift
+  - macapp/WorkroomApp/Views/VCSToolbar.swift
+  - macapp/WorkroomAppTests/RemoteStateModelTests.swift
+  - macapp/WorkroomAppTests/VCSRemoteIntegrationTests.swift
+  - macapp/WorkroomAppTests/VCSRemoteTriggerTests.swift
+  - macapp/WorkroomAppTests/VCSSyncPresentationTests.swift
+  - macapp/WorkroomAppTests/VCSWritingTests.swift
+  - macapp/WorkroomAppUITests/VCSToolbarUITests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/AppStore.swift ===
+@@ -394,7 +394,13 @@ final class AppStore: ObservableObject {
+   /// in another app while Workroom was backgrounded won't have reached the metadata watcher.
+   func refreshRemoteStateIfActive() {
+     guard inspectorIsVisible, remoteToolbarShown else { return }
+-    remoteState.refresh(force: true)
++    // NOT forced — `force` is what skips the model's 15s TTL, and app activation is the one caller that
++    // has no reason to. `RootView` promises this is "throttled, so rapid alt-tabbing doesn't fork a
++    // git/jj process per project" and it wasn't: every activation paid a full read (4 jj processes for an
++    // unbookmarked `@`), held back only by `load()`'s 300ms debounce. `refreshHistoryIfActive`, the twin
++    // this was modelled on, already calls its model unforced. The metadata watcher is the path that
++    // genuinely needs to override the TTL, and it still does.
++    remoteState.refresh()
+     remoteState.autoFetchIfDue()
+   }
+   /// Relative heights of the inspector panes (issue #24), ordered as `InspectorSectionKind.allCases`.
+@@ -3919,13 +3925,23 @@ final class AppStore: ObservableObject {
+   /// finishes — so a pull in one workroom completing after the user moved to another read the SECOND
+   /// workroom's conflict flag and attributed it to the first one's pull.
+   private func handleRemoteMutation(_ action: VCSRemoteAction, on sid: SidebarID) {
+-    refreshWorkroomStatuses(force: true)
++    // A FETCH refreshes nothing here. It moves remote refs and touches neither our working copy nor our
++    // CI runs, and `rootBranchWatchers` already watches `refs/remotes` and re-reads on its own. This used
++    // to run a forced app-wide sweep for every action including the AUTOMATIC fetch, and `force` is the
++    // one argument that bypasses the CI TTL (`guard !force else { return true }`), so it admitted every
++    // workroom whose local read merely succeeded: one background fetch fanned out into a local probe per
++    // workroom of every project plus a `gh` probe and a GitHub round trip each, two at a time.
++    guard action != .fetch else { return }
++    // One target, debounced, instead of the whole app. The action happened in one workroom.
++    scheduleSelectedStatusRefresh()
+     if historySectionShown { commitHistory.refresh() }
+     guard action == .pull else { return }
+-    // The forced sweep above is async; read the conflict flag once it has landed.
+-    let sweep = statusSweepTask
++    // The refresh above is async; read the conflict flag once it has landed. `noteConflictState` re-checks
++    // `sid`, so if the selection moved (and this therefore refreshed a different workroom) it no-ops
++    // rather than attributing someone else's conflicts to this pull.
++    let refresh = selectionStatusTask
+     Task { [weak self] in
+-      await sweep?.value
++      await refresh?.value
+       guard let self else { return }
+       self.remoteState.noteConflictState(self.workroomStatuses[sid]?.conflicted == true, for: sid)
+     }
+
+
+=== DIFF: macapp/WorkroomApp/Core/VCSSyncPresentation.swift ===
+@@ -53,6 +53,8 @@ struct VCSSyncPresentation: Equatable, Sendable {
+ ///      │no
+ ///   in flight? ──yes──►  [10/11/12] Fetching…/Pushing…/Pulling…      disabled
+ ///      │no
++///   pullConflicted? ──yes──►  [14] "Pulled with conflicts"    disabled, tone: warning
++///      │no
+ ///   target valid? ──no──►  [1] no workroom  ·  [2] no repository     disabled
+ ///      │yes
+ ///   tools ok? ──no──►  [0] "<tool> is too old"                       disabled
+@@ -86,10 +88,37 @@ enum VCSSyncPresenter {
+   ///     (`VCSToolVersions`). Outranks everything except an in-flight action and a failure, because no
+   ///     action can succeed.
+   ///   - pullRebase: whether the repo pulls with rebase — wording only.
++  ///   - pullConflicted: our own pull left conflicts that are still unresolved. Compute it with
++  ///     `pullConflicted(lastPullConflicted:statusConflicted:)` — both halves are load-bearing.
++  ///   - busyElsewhere: an action is running for a DIFFERENT workroom. `RemoteStateModel.inFlight` is a
++  ///     model-wide lock, so `perform` drops the click — but `activity` here is per-target, so without
++  ///     this the segment rendered an enabled button, hover well and all, whose click did nothing at all.
++  ///     Worse through the confirmation path: the dialog appeared, the user confirmed, and the action was
++  ///     silently discarded. A 300s pull in one workroom made every other workroom's button a no-op.
+   static func make(
+     state: VCSRemoteState?, hasTarget: Bool, toolsUsable: Bool = true,
+     activity: VCSSyncActivity = .idle, failure: VCSRemoteFailure? = nil,
+     lastAction: VCSRemoteAction? = nil, pullRebase: Bool = true, pullConflicted: Bool = false,
++    busyElsewhere: Bool = false, now: Date
++  ) -> VCSSyncPresentation {
++    var resolved = resolve(
++      state: state, hasTarget: hasTarget, toolsUsable: toolsUsable, activity: activity,
++      failure: failure, lastAction: lastAction, pullRebase: pullRebase,
++      pullConflicted: pullConflicted, now: now)
++    // Applied AFTER the ladder rather than threaded through every enabled tier: it changes only whether
++    // the thing can be clicked, never what it says. The copy still reports the real state, so the user
++    // isn't told a lie — the button simply isn't live while the engine is busy for someone else.
++    if busyElsewhere, resolved.action != nil {
++      resolved.action = nil
++      resolved.isEnabled = false
++    }
++    return resolved
++  }
++
++  private static func resolve(
++    state: VCSRemoteState?, hasTarget: Bool, toolsUsable: Bool,
++    activity: VCSSyncActivity, failure: VCSRemoteFailure?,
++    lastAction: VCSRemoteAction?, pullRebase: Bool, pullConflicted: Bool,
+     now: Date
+   ) -> VCSSyncPresentation {
+     // [13] A failure outranks everything: it's the only state with something to recover from, and
+@@ -109,7 +138,7 @@ enum VCSSyncPresenter {
+         symbol: "exclamationmark.triangle.fill",
+         action: recovery,
+         isEnabled: recovery != nil,
+-        // The tooltip is where a failure gets room to explain itself — one line fits the 36pt bar, the
++        // The tooltip is where a failure gets room to explain itself — one line fits the bar, the
+         // remedy usually doesn't.
+         tone: .failure, help: explain(failure, now: now),
+         accessibility: "\(lastAction?.label ?? "Action") failed. \(explain(failure, now: now))",
+@@ -167,7 +196,7 @@ enum VCSSyncPresenter {
+     // [0] The tools can't run these commands. Nothing below this line could succeed.
+     guard toolsUsable else {
+       return disabled(
+-        "Update git to use this", symbol: "exclamationmark.triangle", tone: .warning,
++        "Update git or jj to use this", symbol: "exclamationmark.triangle", tone: .warning,
+         help:
+           "Fetch, push and pull need a newer git or jj. See the warning for the required version.")
+     }
+@@ -258,6 +287,10 @@ enum VCSSyncPresenter {
+   /// Which action a failure offers. `.rebaseInProgress` deliberately offers **Abort**, never a retry —
+   /// a retry fails identically until the rebase is cleared. `.toolMissing` offers nothing, because no
+   /// click can fix a missing binary.
++  /// **Exhaustive on purpose — no `default:`.** It used to end `default: return lastAction`, so every
++  /// failure added later silently inherited "offer a retry", which is the exact defect the `[13]` tier
++  /// exists to prevent. Two of the failures below were added precisely because they are permanent, and a
++  /// `default:` would have handed them a doomed button without a compile error.
+   static func retryAction(for failure: VCSRemoteFailure, lastAction: VCSRemoteAction?)
+     -> VCSRemoteAction?
+   {
+@@ -265,12 +298,16 @@ enum VCSSyncPresenter {
+     case .rebaseInProgress: return .abortRebase
+     case .rejected: return .pull  // the fix for a rejection is to pull, never to force
+     case .toolMissing, .noRemote: return nil
++    // Permanent until the user does something outside Workroom: describe the commit, or move off a base
++    // whose history is protected. Retrying either runs the identical command and fails identically.
++    case .needsDescription, .immutableHistory: return nil
++    case .timedOut, .authRequired, .hostKeyUnverified, .dirtyWorkingTree, .other:
++      return lastAction
+     // A LOCATED lock file offers nothing, for `rebaseInProgress`'s reason: the file is sitting there, so
+     // every retry fails identically and the button is a promise that can't be kept. Removing it is the
+     // only fix and Workroom won't do that for you (see `VCSRemoteFailure.locked`), so the recovery is
+     // explained rather than offered. An unlocatable lock was transient contention — retry away.
+     case .locked(let file): return file == nil ? lastAction : nil
+-    default: return lastAction
+     }
+   }
+ 
+@@ -312,6 +349,12 @@ enum VCSSyncPresenter {
+       // is still there sends the user round a loop that cannot terminate.
+       guard let file else { return "The repository was busy. Try again." }
+       return "A leftover \(file.filename) is blocking git."
++    case .needsDescription:
++      // The most reachable failure on the push path: this is every workroom between the first edit and
++      // the first commit message. The remedy is one command, so name it.
++      return "Describe the change before pushing it (jj describe)."
++    case .immutableHistory:
++      return "Pull would rewrite shared history here, so it can’t run."
+     case .other(let message):
+       return message.split(whereSeparator: \.isNewline).first.map(String.init) ?? "Failed."
+     }
+
+
+=== DIFF: macapp/WorkroomApp/Core/VCSWriting.swift ===
+@@ -58,6 +58,20 @@ enum VCSRemoteFailure: Equatable, Sendable {
+   /// lock corrupts the index — so this reports and explains, and the removal stays the user's call.
+   /// That is also what git's own message tells you to do.
+   case locked(VCSLockFile?)
++  /// jj refused to rewrite a commit protected by `immutable_heads()` — reached by Pull, whose
++  /// `jj rebase -b @` moves the whole branch containing `@`, and that branch usually contains a
++  /// remote-tracked commit. Measured on jj 0.43 for a workroom based off a feature branch while trunk
++  /// moved on: `Error: Commit 4c8e754829da is immutable`.
++  ///
++  /// Offers no retry, for `rebaseInProgress`'s reason: the destination doesn't change between clicks, so
++  /// every retry fails identically. The real fix is remembering each workroom's own base instead of
++  /// guessing `trunk()` — filed, not built.
++  case immutableHistory(String)
++  /// jj refuses to push a commit with an empty description, changes or not. This is the state a workroom
++  /// sits in the moment you edit a file and before you write a message, so it is the most reachable
++  /// failure on the push path, not an edge case. Measured: `Error: Won't push commit 050e657d3c36 since
++  /// it has no description`.
++  case needsDescription(String)
+   case other(String)
+ }
+ 
+@@ -675,6 +689,15 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+     {
+       return .rejected(err)
+     }
++    // Both jj-only, and both permanent until the user acts — so they must NOT reach `.other`, whose
++    // recovery is a retry of the same doomed command. jj doesn't localize, so matching its prose is safe
++    // here in a way it wouldn't be for git.
++    if err.contains("since it has no description") || err.contains("has no description") {
++      return .needsDescription(err)
++    }
++    if err.contains("is immutable") || err.contains("immutable commits") {
++      return .immutableHistory(err)
++    }
+     if err.contains("Failed to take lock for Git import/export")
+       || (err.contains(".lock")
+         && (err.contains("could not be obtained") || err.contains("File exists")
+
+
+=== DIFF: macapp/WorkroomApp/Views/VCSToolbar.swift ===
+@@ -38,7 +38,7 @@ enum VCSToolbarMetrics {
+ 
+   static let titleFont = Font.system(size: 11, weight: .semibold)
+   static let captionFont = Font.system(size: 10)
+-  /// The single-line states. A lone 10pt dim line in a 36pt bar reads as a rendering bug, so the solo
++  /// The single-line states. A lone 10pt dim line in the bar reads as a rendering bug, so the solo
+   /// subtitle is a step up in both size and contrast.
+   static let soloFont = Font.system(size: 11)
+ 
+@@ -92,7 +92,10 @@ struct VCSToolbar: View {
+       // model-wide lock, so rendering it directly showed "Pushing…" on a workroom that wasn't pushing.
+       activity: model.activeAction.map { .running($0) } ?? .idle,
+       failure: model.lastFailure, lastAction: model.lastAction,
+-      pullConflicted: pullConflicted, now: now)
++      pullConflicted: pullConflicted,
++      // An action is running, but not for THIS workroom. `perform` would drop the click, so the segment
++      // must not look clickable — see `make`'s `busyElsewhere`.
++      busyElsewhere: model.inFlight != nil && model.activeAction == nil, now: now)
+   }
+ 
+   /// Whether our own pull left conflicts that are still unresolved.
+@@ -263,7 +266,7 @@ private struct VCSBranchSegment: View {
+ ///
+ /// Line order is inverted relative to segment 1 — bold title over dim subtitle — which is what the
+ /// reference design specifies. The consequence is that the two segments' bold lines do **not** share a
+-/// baseline: both blocks are 26pt and vertically centred, so a caption-first block sits low and a
++/// baseline: both blocks are the same height and vertically centred, so a caption-first block sits low and a
+ /// title-first block sits high. The full-height divider between them is what makes that read as two
+ /// groups rather than a misalignment. Called out because it looks like a bug and isn't.
+ private struct VCSSyncSegment: View {
+@@ -334,7 +337,7 @@ private struct VCSSyncSegment: View {
+   @ViewBuilder private var content: some View {
+     if presentation.isSingleLine {
+       HStack(spacing: VCSToolbarMetrics.glyphSpacing) {
+-        // Centred and a step up in size/contrast: a lone dim 10pt line in a 36pt bar reads as broken.
++        // Centred and a step up in size/contrast: a lone dim 10pt line in the bar reads as broken.
+         Text(presentation.subtitle)
+           .font(VCSToolbarMetrics.soloFont)
+           .foregroundStyle(presentation.tone == .normal ? theme.fgMuted : toneColor)
+
+
+=== DIFF: macapp/WorkroomAppTests/RemoteStateModelTests.swift ===
+@@ -16,6 +16,16 @@ final class RemoteStateModelTests: XCTestCase {
+   private let otherTarget = RemoteStateModel.Target(
+     sid: .workroom(project: "/p", name: "other"), path: "/p/other", vcs: "git", projectRoot: "/p")
+ 
++  /// Reset in setUp as well as tearDown. `Defaults[.vcsLastFetch]` is a PERSISTED dictionary in the
++  /// standard suite keyed by project ROOT PATH, and `VCSRemoteTriggerTests` drives real `.fetch`/`.pull`
++  /// completions for the same `/p` root, so `recordOwnFetch` there writes a stamp this class's
++  /// never-fetched preconditions read. `-parallel-testing` workers are separate processes sharing one
++  /// defaults domain, so tearDown alone leaves a window where the other class's stamp is already written.
++  override func setUp() {
++    super.setUp()
++    Defaults.reset(.vcsLastFetch)
++  }
++
+   override func tearDown() {
+     super.tearDown()
+     Defaults.reset(.vcsLastFetch)
+
+
+=== DIFF: macapp/WorkroomAppTests/VCSRemoteIntegrationTests.swift ===
+@@ -105,11 +105,20 @@ final class VCSRemoteIntegrationTests: XCTestCase {
+     return (root, project, branch)
+   }
+ 
++  private struct Unresolved: Error {}
++
++  /// **Fails, never skips.** This helper is the funnel every assertion in the file goes through, and it
++  /// used to `throw XCTSkip` when the resolution wasn't `.state`. A regression that made every repo
++  /// resolve `.failed`/`.keepPrior`/`.absent` — a broken arg builder, an over-eager `classify` rule, an
++  /// unparseable jj template — would then have reported ~20 tests as SKIPPED and left the gate green.
++  /// `requireTool` already `XCTFail`s, so skipping here also disagreed with the file's own policy.
+   private func state(_ w: CLIVCSWriter, path: String, projectRoot: String) async throws
+     -> VCSRemoteState
+   {
+-    guard case .state(let s) = await w.remoteState(path: path, projectRoot: projectRoot) else {
+-      throw XCTSkip("expected a resolved state")
++    let resolution = await w.remoteState(path: path, projectRoot: projectRoot)
++    guard case .state(let s) = resolution else {
++      XCTFail("expected a resolved state, got \(resolution)")
++      throw Unresolved()
+     }
+     return s
+   }
+
+
+=== DIFF: macapp/WorkroomAppTests/VCSRemoteTriggerTests.swift ===
+@@ -1,3 +1,4 @@
++import Defaults
+ import XCTest
+ 
+ @testable import Workroom
+@@ -19,6 +20,20 @@ import XCTest
+ @MainActor
+ final class VCSRemoteTriggerTests: XCTestCase {
+ 
++  /// This class drives real action completions for project root `/p`, and a successful `.fetch`/`.pull`
++  /// makes `recordOwnFetch` write `Defaults[.vcsLastFetch]["/p"]` — a PERSISTED dictionary in the standard
++  /// suite. `RemoteStateModelTests` asserts never-fetched preconditions against the same `/p`, so leaving
++  /// the stamp behind defeats them from another `-parallel-testing` worker. Reset both sides.
++  override func setUp() {
++    super.setUp()
++    Defaults.reset(.vcsLastFetch)
++  }
++
++  override func tearDown() {
++    super.tearDown()
++    Defaults.reset(.vcsLastFetch)
++  }
++
+   private func makeStore(visible: Bool, section: ActivitySection) -> (AppStore, CountingWriter) {
+     let writer = CountingWriter()
+     let model = RemoteStateModel(makeWriter: { _ in writer }, debounce: 0, ttl: 0)
+
+
+=== DIFF: macapp/WorkroomAppTests/VCSSyncPresentationTests.swift ===
+@@ -210,7 +210,7 @@ final class VCSSyncPresentationTests: XCTestCase {
+       p.subtitle.contains("Try again"), "the one thing it must never say for a located lock")
+   }
+ 
+-  /// The subtitle is one line in a 36pt bar, so the actual remedy lives in the tooltip — and it has to be
++  /// The subtitle is one line in the bar, so the actual remedy lives in the tooltip — and it has to be
+   /// complete, because Workroom deliberately won't remove the file itself.
+   func testTheTooltipCarriesThePathAgeAndRemedy() {
+     let p = VCSSyncPresenter.make(
+@@ -246,6 +246,61 @@ final class VCSSyncPresentationTests: XCTestCase {
+     XCTAssertEqual(p.title, "Pushing…")
+   }
+ 
++  // MARK: - permanent failures must not offer a retry
++
++  /// Two failures added because they are PERMANENT until the user acts outside Workroom. Both used to
++  /// fall through `retryAction`'s `default: return lastAction` and render a button that ran the identical
++  /// doomed command — the same defect the located-lock case exists to prevent.
++  func testPermanentFailuresOfferNoRetry() {
++    // jj refuses to push a commit with an empty description, changes or not — the state every workroom is
++    // in between the first edit and the first message. Measured: `Won't push commit … since it has no
++    // description`.
++    let undescribed = VCSSyncPresenter.make(
++      state: state(ahead: 1), hasTarget: true, failure: .needsDescription("no description"),
++      lastAction: .push, now: now)
++    XCTAssertNil(undescribed.action, "retrying the same push fails identically")
++    XCTAssertFalse(undescribed.isEnabled)
++    XCTAssertTrue(undescribed.subtitle.contains("Describe"), "got \(undescribed.subtitle)")
++
++    // jj refuses to rewrite commits `immutable_heads()` protects, which `rebase -b @` hits whenever the
++    // branch containing `@` holds a remote-tracked commit. Measured: `Commit … is immutable`.
++    let immutable = VCSSyncPresenter.make(
++      state: state(behind: 2), hasTarget: true, failure: .immutableHistory("is immutable"),
++      lastAction: .pull, now: now)
++    XCTAssertNil(immutable.action)
++    XCTAssertFalse(immutable.isEnabled)
++    XCTAssertTrue(immutable.titleVariants.isEmpty, "no title means no button to click")
++  }
++
++  /// The recovery button must name the action it PERFORMS. It took its title from `lastAction` while its
++  /// action came from `recovery`, so a rejected push rendered "Push" and ran a Pull.
++  func testTheRecoveryButtonNamesWhatItDoes() {
++    let p = VCSSyncPresenter.make(
++      state: state(ahead: 2), hasTarget: true, failure: .rejected("! [rejected]"),
++      lastAction: .push, now: now)
++    XCTAssertEqual(p.action, .pull)
++    XCTAssertEqual(
++      p.title, "Pull", "the button said \"Push\" and performed a Pull; got \(p.title ?? "nil")")
++  }
++
++  // MARK: - an action running for another workroom
++
++  /// `inFlight` is a model-wide lock but `activity` is per-target, so another workroom's action left this
++  /// segment rendering an enabled button whose click `perform` silently dropped — and via the
++  /// confirmation path, a dialog the user answered for nothing.
++  func testAnActionElsewhereDisablesTheSegmentWithoutChangingItsCopy() {
++    let idle = VCSSyncPresenter.make(state: state(ahead: 3), hasTarget: true, now: now)
++    let busy = VCSSyncPresenter.make(
++      state: state(ahead: 3), hasTarget: true, busyElsewhere: true, now: now)
++
++    XCTAssertEqual(idle.action, .push)
++    XCTAssertNil(busy.action, "a click here would be dropped, so it must not be offered")
++    XCTAssertFalse(busy.isEnabled)
++    XCTAssertEqual(
++      busy.titleVariants, idle.titleVariants, "the copy must still report the real state")
++    XCTAssertEqual(busy.badge, idle.badge, "and so must the count")
++  }
++
+   // MARK: - [14] a pull that landed conflicts
+ 
+   /// jj's rebase commits conflicts and exits 0, so a conflicted pull is a SUCCESS the segment still has
+
+
+=== DIFF: macapp/WorkroomAppTests/VCSWritingTests.swift ===
+@@ -154,6 +154,32 @@ final class VCSWritingTests: XCTestCase {
+       "the flag is one character followed by a TAB — a bare ! is prose")
+   }
+ 
++  /// Two jj refusals that are permanent until the user acts. Both landed in `.other`, whose recovery is a
++  /// retry of the same doomed command, so both needed their own case. jj doesn't localize, which is what
++  /// makes matching its prose acceptable here.
++  func testJJPermanentRefusalsAreClassified() {
++    let undescribed = CommandResult(
++      stdout: "",
++      stderr: "Error: Won't push commit 050e657d3c36 since it has no description",
++      exitCode: 1, timedOut: false)
++    guard case .needsDescription = CLIVCSWriter.classify(undescribed, action: .push, tool: "jj")
++    else {
++      return XCTFail("an undescribed commit must not reach .other — it can never be pushed")
++    }
++
++    let immutable = CommandResult(
++      stdout: "",
++      stderr: """
++        Error: Commit 4c8e754829da is immutable
++        Hint: Could not modify commit: nlsnswmz 4c8e7548 feat@origin | feat1
++        """,
++      exitCode: 1, timedOut: false)
++    guard case .immutableHistory = CLIVCSWriter.classify(immutable, action: .pull, tool: "jj")
++    else {
++      return XCTFail("an immutable-commit refusal must not reach .other — the retry is doomed")
++    }
++  }
++
+   /// The point of the flag column: classification must survive a translated stderr. This is the exact
+   /// pairing Homebrew git 2.55 produces under `fr_FR.UTF-8` — no English anywhere in the message.
+   func testARejectedPushClassifiesWithNoEnglishInTheMessage() {
+
+
+=== DIFF: macapp/WorkroomAppUITests/VCSToolbarUITests.swift ===
+@@ -127,12 +127,16 @@ class VCSToolbarUITestsBase: XCTestCase {
+ 
+   /// Branch and remote state belong to the Changes section; the Files tree has no use for them, and
+   /// showing the bar there would jump the layout on every activity-bar click.
++  /// The flag is `-WorkroomUITestInspectorSection`. It was `-WorkroomUITestSection`, which the fixture
++  /// never reads, so the app always launched on Changes and the whole test rested on an un-awaited
++  /// `if toolbar(app).exists { typeKey ⌥⌘F }`: sampled before the bar rendered, the keystroke was skipped
++  /// and the negative assertion passed against a toolbar that was about to appear. The Files case was
++  /// never exercised. The precondition is now asserted rather than assumed.
+   func testToolbarIsHiddenOnTheFilesSection() {
+-    let app = launchedApp(syncState: "ahead", extraArguments: ["-WorkroomUITestSection", "files"])
+-    // If the fixture doesn't support pinning the section, fall back to the View-menu toggle (⌥⌘F).
+-    if toolbar(app).exists {
+-      app.typeKey("f", modifierFlags: [.command, .option])
+-    }
++    let app = launchedApp(extraArguments: ["-WorkroomUITestInspectorSection", "files"])
++    XCTAssertTrue(
++      element(app, id: "inspector.header.Files").waitForExistence(timeout: 10),
++      "the Files pane must be up before absence of the toolbar means anything")
+     XCTAssertTrue(
+       waitExists(toolbar(app), false), "the toolbar must not render for the Files section")
+   }
+
+
+Investigate per the method in your instructions, then return the findings list.
