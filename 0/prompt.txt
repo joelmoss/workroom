@@ -1,0 +1,1 @@
+<bash-input>cd ~/.claude/skills/gstack && git reset --hard origin/main && ./setup</bash-input>
