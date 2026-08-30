@@ -1,0 +1,232 @@
+<task-notification>
+<task-id>a714f7c15f84cecfa</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/5e64fba2-ede6-4e1c-a183-fa42e54891b4/tasks/a714f7c15f84cecfa.output</output-file>
+<status>completed</status>
+<summary>Agent "Design hover-preview implementation plan" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result># Terminal Tab Hover Preview — Implementation Plan
+
+I read every file cited in the brief directly (line numbers below are verified against the current tree, not assumed) and ran the requested six sections through that evidence. Before the six sections: **one architectural problem blocks the plan as described**, and it changes what's worth building. I'm surfacing it in full rather than quietly patching around it, per the instruction to flag conflicts between my own evidence and where the design was heading.
+
+---
+
+## 0. Critical finding — read this before the six sections
+
+### 0.1 The bug: "copy `TerminalContainerView.mount(in:)`" reflows the pane
+
+`TerminalContainerView.mount` (`macapp/WorkroomApp/Views/TerminalContainerView.swift:72-95`) does this on re-home:
+
+```
+view.frame = container.bounds                       // line 91
+view.autoresizingMask = [.width, .height]            // line 92
+```
+
+`view` is the `GhosttySurfaceView`. Setting its frame fires `viewDidMoveToWindow` (`Core/GhosttySurfaceView.swift:456-500`), which unconditionally calls `updateMetalLayerSize()` (line 491). That function (lines 441-454) does:
+
+```swift
+if let backingSize = backingPixelSize() {                 // convertToBacking(bounds) — line 433-439
+  ghostty_surface_set_size(surface, backingSize.width, backingSize.height)
+}
+```
+
+`bounds` here is the **surface view's own frame** — whatever `container.bounds` was just set to. If the preview host container is sized to the small thumbnail footprint (e.g. 200×120), this pushes a small `ghostty_surface_set_size`, libghostty recomputes cols/rows, and the running program gets a real resize (`SIGWINCH`/reflow) — the exact outcome `QA-libghostty.md:18-19` documents as the app's normal, working resize behavior, and exactly what this feature must never trigger.
+
+**The fix is a rule, not a redesign:** whatever code re-parents the surface for a preview must never write `view.frame`, `view.bounds`, or `autoresizingMask` on the `GhosttySurfaceView`. The surface keeps whatever size it already has (its last on-screen pane size, or the 800×480 default from `ensureSurfaceCreated`, `GhosttySurfaceView.swift:322-334`, for a tab that was never mounted). The thumbnail's *small* footprint has to come from something downstream of the surface, never from the surface's own geometry.
+
+### 0.2 The deeper problem this forces onto the SCStream plan: where does the real-size surface actually sit?
+
+Given 0.1, an `SCStream` capture of "the small preview box" doesn't work directly — the surface inside it must stay at its real (often much larger) size to avoid a resize call, which means the *capturable region* has to be the surface's full real bounds, and `SCStreamConfiguration.width/height` (small) does the shrinking at the frame-delivery level, exactly as the brief's own note says ("scales output independently of the source's real point size").
+
+That in turn means the thing SCStream captures — a window (`SCContentFilter(desktopIndependentWindow:)`) — must itself be real-size, on an actual screen, and **not occluded by opaque siblings**, or `NSWindow.occlusionState` drops `.visible` → `GhosttySurfaceView.updateWindowVisibility()` (lines 531-536) → `applyOcclusionState()` → `ghostty_surface_set_occlusion(surface, false)` → nothing renders, nothing to capture. `SwitcherPanel.swift:53-57`'s own comment is exactly this mechanism from the other side ("`NSWindow.occlusionState` counts only OPAQUE coverage").
+
+So the SCStream path needs a **dedicated, real-size, genuinely on-screen, unoccluded floating window per active hover** to host the surface in, separate from the small visible thumbnail badge under the chip. That's workable (place it off in a corner of the same screen, `.floating` level, ordered frontmost so nothing covers it) but it is real, fragile plumbing: multi-display placement, Stage Manager/Spaces, a notification banner transiently covering the corner, screen-locked/no-display edge cases — any of which can flip `occlusionState` and silently freeze the preview mid-hover, for reasons that have nothing to do with this feature's own code.
+
+### 0.3 A materially simpler alternative worth a half-day spike first
+
+A small host `NSView` with:
+- `layer?.masksToBounds = true`
+- `layer?.sublayerTransform = CATransform3DMakeScale(scale, scale, 1)` where `scale = thumbnailSize / surface.frame.size` (computed from the surface's *current, untouched* frame — never resized)
+- the real `GhosttySurfaceView` added as its subview **without touching `.frame`/`.autoresizingMask`**
+
+composites the surface's live `CAMetalLayer` output, scaled down, directly on screen — real pixels, zero re-encode, zero added latency, and critically: **it needs no separate real-size on-screen window**. The host itself can be small and live right where the thumbnail should appear (under the chip, in the *same* window as everything else), because the scaling is a compositing transform on an ancestor layer, not a capture of separately-hosted real estate. This deletes: the `ScreenCaptureKit` dependency, the `project.yml` framework link, the whole video pipeline (`AVSampleBufferDisplayLayer`, first-frame-wait state), and — most importantly — the entire "where does the unoccluded real-size window live" problem in §0.2.
+
+Unknowns that make this a spike, not a given: whether `sublayerTransform` on an ancestor correctly composites a `CAMetalLayer` installed by libghostty's closed-source backend (anchor-point/coordinate-origin math is the fiddly part — `GhosttySurfaceView` has no `isFlipped` override, confirmed by grep, so it's standard bottom-left-origin AppKit, which affects the transform+position math); and whether libghostty keeps its render loop running when the view's on-screen visible area is small (it should, since occlusion is our own explicit `ghostty_surface_set_occlusion` call, not visibility-derived, but worth confirming empirically rather than assumed).
+
+### 0.4 Recommendation
+
+Spike §0.3 first (a throwaway branch, a few hours: one hovered chip, one hardcoded transform, confirm it renders live and scaled with no resize event). If it works, it should be the v1 architecture — it satisfies "pixel-identical, genuinely live, geometry never touched" more directly than a capture-and-redisplay pipeline, and removes real operational risk. If it fails (Metal backend doesn't tolerate the transform, or the composited output is visually wrong), fall back to the SCStream plan below with the "dedicated parking window" made explicit as its own tracked risk.
+
+The six sections below build out the plan **as asked, for the SCStream/`AVSampleBufferDisplayLayer` architecture**, corrected for §0.1, with the §0.2 parking-window problem named as an explicit open risk rather than glossed over — and each stage notes where §0.3 would simplify or delete it outright, so whichever fork is chosen the plan doesn't need to be re-derived from scratch.
+
+---
+
+## 1. New types/files
+
+| File | Role |
+|---|---|
+| `Core/TerminalHoverPreviewController.swift` (new) | `@MainActor final class`, `ObservableObject`. Owns the generation counter and the state-machine `enum Phase` (§2). Published `phase`/current preview image so SwiftUI can render. One instance per `TerminalTabStrip` (see below) — hover is inherently single-target, so no need for a window-wide singleton. |
+| `Core/TerminalPreviewCaptureHost.swift` (new, SCStream path only) | Owns the dedicated capture window (§0.2), the surface re-home (frame untouched, per §0.1), `SCStream`/`SCStreamConfiguration` setup and teardown, and delivers `CMSampleBuffer`s to the controller. **If §0.3's spike succeeds, this file doesn't exist** — replaced by a much smaller `Core/TerminalPreviewTransformHost.swift` (the `sublayerTransform` host, no window, no SCStream). |
+| `Views/TerminalHoverPreviewOverlay.swift` (new) | The floating SwiftUI preview box: border, corner radius (reuse `TerminalPanelMetrics.cornerRadius`), a caption row with the tab's title, and an `NSViewRepresentable` wrapping either the `AVSampleBufferDisplayLayer`-backed view or the transform host. Positioned via the anchor preference below. |
+| `Views/TerminalTabStrip.swift` (edit) | Add a `TabChipAnchorKey: PreferenceKey` (`[TerminalTab.ID: Anchor&lt;CGRect&gt;]`), set via `.anchorPreference` on each `TerminalTabChip` (same idiom as the existing `TabWidthKey`, lines 660-667, but capturing geometry instead of width). Wire the dwell-timer start/cancel into the existing `.onHover` at lines 168-170. |
+| `Views/WorkroomTerminalsView.swift` (edit) | Consume `TabChipAnchorKey` via `.overlayPreferenceValue` at this level (not inside the strip itself, which sits in a `safeAreaInset` and may clip an overlay bleeding below it) so the preview box can float over the pane content beneath the strip, unclipped. Hosts the `@StateObject` controller and `TerminalHoverPreviewOverlay`. |
+| `Core/GhosttySurfaceView.swift` (edit — small, required) | Add `var hasSurface: Bool { surface != nil }` next to the `private(set) var surface` declaration (line 23). `surface` is `private(set)`, so nothing outside the file can currently test "does this tab have a live surface" without this. |
+| `Core/TerminalSessions.swift` (edit) | Add `@Published private(set) var previewingTabID: TerminalTab.ID?` (or per-target) and fold it into `reconcileOcclusion` (§4). |
+| `project.yml` (edit, SCStream path only) | Add `- sdk: ScreenCaptureKit.framework` (and confirm `AVFoundation`/`CoreMedia` — likely already reachable via the umbrella SDK, verify at spike time) beside the existing `sdk:` list (`macapp/project.yml:241-245`). Then `make app-generate`. **Not needed if §0.3 wins.** |
+
+---
+
+## 2. State machine for one hover session
+
+```
+idle
+  │  onHover(tab) fires, draggingID == nil, tab.surface?.hasSurface == true
+  ▼
+armed(tab, gen)                     — DispatchWorkItem scheduled +0.4s (mirrors
+  │                                    TerminalStatusBar.swift:162-171's dwell shape)
+  │  hover ends OR draggingID becomes non-nil OR hoveredTab changes → cancel, gen++, → idle
+  ▼
+resolving(tab, gen)                 — dwell elapsed, gen captured
+  │
+  ├─ sessions.visibleTabIDs(for: target).contains(tab.id) → already on screen
+  │      → idle (v1 cut: no preview for an already-visible pane — see §5, §4)
+  │
+  └─ not visible → needsMount
+       ▼
+mounting(tab, gen)                  — re-home surface into capture host, WITHOUT
+  │                                   touching .frame/.autoresizingMask (§0.1);
+  │                                   sessions.previewingTabID = tab.id (§4)
+  │  guard gen == controller.generation before every step from here on
+  ▼
+unoccluding(tab, gen)                — surface.setVisible(true); synchronous, no
+  │                                    artificial delay (GhosttySurfaceView.swift:525-529)
+  ▼
+streaming(tab, gen)                  — SCStream started against the capture host's
+  │                                    dedicated window (§0.2); AVSampleBufferDisplayLayer
+  │                                    armed and waiting
+  ▼
+firstFrame(tab, gen)                  — first CMSampleBuffer delivered → show the
+  │                                    overlay (fade in); log time-since-dwell here (§5)
+  ▼
+visible(tab, gen)                     — preview box on screen, live frames enqueuing
+  │
+  │  hover ends (mouse leaves chip, or leaves the whole strip)
+  ▼
+tearingDown(tab, gen)                 — stop SCStream; surface.setVisible(false);
+  │                                    detach from capture host/window;
+  │                                    sessions.previewingTabID = nil (only if it was
+  │                                    still == tab.id — see §4 race note); gen++
+  ▼
+idle
+```
+
+Generation guards: every async continuation (dwell fire, mount completion, stream-start completion, first-frame callback) checks `gen == controller.generation` before touching the surface, mirroring `Avatar.swift:232-294`'s measured finding that `.task(id:)` cancellation doesn't reliably land — this state machine is **not** a `.task(id:)` closure at all; it's a plain class (`WorkroomFileWatcher.swift:41,96,124-126` / `GitHubAuthCache.swift:57,77-95` shape) driven by `DispatchWorkItem`/callbacks, exactly per the brief's own instruction.
+
+Guards added beyond what the brief listed, each grounded in the code just read:
+- **`hasSurface` gate before arming** (§1) — without it, hovering a tab whose surface was never created would call into `viewDidMoveToWindow` → `createSurface()` (line 472) the moment it's mounted, spawning a PTY because of a hover. Must not happen.
+- **`draggingID == nil` gate at arm time**, not just at render time — `.onHover` (`TerminalTabStrip.swift:168-170`) fires during a drag; only the chip's *styling* currently guards on `draggingID == nil` (line 130), the hover state write itself doesn't.
+- **Re-check the tab still exists** in `sessions.tabs(for: target)` at every generation-guarded step — `tearDown()` (`GhosttySurfaceView.swift:345-367`) can fire mid-hover (tab closed while previewing); the generation check alone doesn't cover "the tab itself is gone," only "a newer hover superseded this one."
+- **`.help(tab.filePath ?? tab.title)` (line 648) interaction**: decided — suppress it specifically on chips where `hasSurface == true` (terminal tabs with a spawned surface), since the preview now carries the "what is this tab" answer live; leave `.help` as-is on chips with no preview (content tabs, or a terminal whose surface hasn't spawned yet) so those still get *something* on hover.
+
+---
+
+## 3. Where hover/anchor state lives, and how the preview is hosted
+
+**Hover/dwell state**: on the `TerminalHoverPreviewController`, one instance per `TerminalTabStrip` (`@StateObject`), not a window-wide singleton. Justification: the strip already owns single-selection hover state locally (`@State private var hoveredTab`, line 40) — a preview is a strict refinement of the same interaction, has the same "only one active at a time" property, and scoping it to the strip means it's created/torn down with the strip's own lifecycle (no cross-target leakage between workroom-split members, each of which gets its own `WorkroomTerminalsView`/`TerminalTabStrip` per `TargetTerminalDetail.swift:28`).
+
+**Anchor**: a new `TabChipAnchorKey` preference (§1), same idiom as `TabWidthKey` (`TerminalTabStrip.swift:660-667`) but capturing `Anchor&lt;CGRect&gt;` via `.anchorPreference` instead of a measured `CGFloat`. This is genuinely new plumbing — no `Anchor&lt;CGRect&gt;` preference exists anywhere in the codebase today (grepped, confirmed empty) — worth calling out as unproven-but-standard SwiftUI, not a copy of an existing pattern.
+
+**Hosting recommendation: a SwiftUI overlay in the strip's own window, not a `.popover` and not an `NSPanel`.** Three data points drove this:
+- `TerminalStatusBar`'s dwell (lines 162-171) is the right *timing* shape to copy, but its *hosting* (`.popover`, lines 172-175) is wrong here — a popover is a separate window with its own possibly-different `backingScaleFactor`, which reintroduces exactly the re-home/rescale hazard §0.1 exists to avoid, and popovers dismiss on all sorts of incidental focus changes that a hover preview shouldn't be sensitive to.
+- `SwitcherPanel`'s non-activating `NSPanel` (`Core/SwitcherPanel.swift:10-15, 43-77`) is the right shape for something that must float above the app without stealing key window — but it's overkill here, and (per §0.2) a *separate window* for the visible thumbnail reintroduces the same-window/same-scale requirement from §0.1 unnecessarily. The preview badge itself doesn't need to be a separate window merely to float above the tab strip — SwiftUI overlays already do that within one window.
+- `TerminalSearchBar` over the Metal surface (`PaneTreeView.swift:496-502`) is the precedent that a plain `.overlay(alignment:)` sitting on top of an AppKit-hosted terminal works fine in this codebase, hit-testing and all.
+
+So: `WorkroomTerminalsView` reads `TabChipAnchorKey` via `.overlayPreferenceValue`, and when the controller's phase is `.visible`, renders `TerminalHoverPreviewOverlay` positioned from the hovered chip's anchor, converted into this view's local coordinate space — a sibling overlay in the *same* `NSWindow` as the real pane content, which is exactly the constraint §0.1/§0.2 need.
+
+If §0.3's transform spike succeeds, this section is unchanged except that the `NSViewRepresentable` inside `TerminalHoverPreviewOverlay` wraps the transform host instead of an `AVSampleBufferDisplayLayer` view — the anchor/positioning/hosting-window story is identical either way.
+
+---
+
+## 4. Resolution of the `reconcileOcclusion` race
+
+**Chosen approach: give `reconcileOcclusion` the authority, not a second writer.**
+
+```swift
+// TerminalSessions.swift, reconcileOcclusion (currently lines 1332-1339)
+func reconcileOcclusion(for target: TerminalTarget) {
+  let visible = Set(visibleTabIDs(for: target)).union(previewingTabID.map { [$0] } ?? [])
+  for tab in (tabsByTarget[target.id] ?? [:]).values {
+    tab.surface?.setVisible(visible.contains(tab.id))
+  }
+}
+```
+
+with `previewingTabID` a small piece of state on `TerminalSessions`, set by the hover controller when it un-occludes a tab and cleared when the hover ends.
+
+**Why this over the other two options named in the brief:**
+- *Re-assert visibility after every reconcile pass* (a hook/notification) creates a **second writer** racing `reconcileOcclusion` across its 12+ call sites (`TerminalSessions.swift:675,699,756,778,980,1024,1078,1166,1179,1188,1277`). `TerminalContainerView.swift:66-70`'s own comment documents exactly this failure shape from a past bug (split↔solo re-home racing a stray `setVisible(false)`) — introducing a second, independent path that can also call `setVisible` on the same surface is reintroducing that class of bug on purpose.
+- *Accept-and-document as a harmless race* undersells the actual failure: `reconcileOcclusion` calling `setVisible(false)` on the previewed tab doesn't cost "a dropped frame or two" — `applyOcclusionState()` (`GhosttySurfaceView.swift:538-541`) calls `ghostty_surface_set_occlusion(surface, false)`, which pauses libghostty's render loop for that surface. The preview freezes or blanks for the **entire remainder of the hover**, since nothing re-asserts visibility until the hover ends and the controller's own teardown runs. That's a visible, reproducible defect on any state change during a hover (focus switch, split, tab close elsewhere) — not an edge case worth shipping around.
+
+The one-line union keeps `reconcileOcclusion` the single, sole authority on every surface's occlusion, which is the invariant the codebase has been protecting since issue #3.
+
+---
+
+## 5. Stated v1 cut
+
+**Deferred, explicitly, out of v1:**
+- **Preview for an already-visible tab.** If `sessions.visibleTabIDs(for: target).contains(tab.id)`, show no preview at all (state machine goes straight `resolving → idle`). Beyond simplicity, this is close to *mandatory* for the mount path: re-parenting a surface that's currently mounted in its real pane container would detach it from that container mid-use, and `TerminalContainerView.swift:66-70`'s own comment names this exact failure mode (a blank pane on a split↔solo transition, issue #3) as a real bug this app has already shipped and fixed once. Don't reopen it for a preview feature.
+- **Multi-hover queueing.** One `TerminalHoverPreviewController` instance already makes this structurally impossible within one strip; across split members, two simultaneous previews (mouse can only be in one place) shouldn't arise, but no cross-strip coordination is built for it in v1.
+- **Crop-math / one shared stream across many chips.** Per the brief's own note, `SnapshotSupport.swift`'s crop-math (git history `8a1d2547`, reverted `455d28e8`) stays reverted. One dedicated capture per active hover, sized to that hover's own host — no sharing.
+- **Non-terminal tab types** (`.diff`, `.file`, `.changeset`). `TerminalTab.surface` (`TerminalSessions.swift:34-37`) is `nil` for these by construction — no preview, `.help` stays as today's behavior.
+- **Measuring/optimizing cold-mount-to-first-frame latency beyond logging it.** Log the dwell-elapsed → first-frame interval (a single `os_log` timestamp pair) at `firstFrame` in the state machine; don't build a latency budget or a loading-spinner state around it until real numbers exist.
+- **The SCStream permission/architecture path entirely**, if the §0.3 spike succeeds — the whole `ScreenCaptureKit`/`AVSampleBufferDisplayLayer` pipeline, its framework link, and the dedicated-window "parking" problem (§0.2) would be deleted, not deferred.
+
+**v1 must do:**
+- Terminal tabs only, with a live surface (`hasSurface == true`).
+- One dwell timer, one generation-guarded state machine, single-writer occlusion via `reconcileOcclusion` (§4).
+- Correct-by-construction geometry preservation (§0.1): the surface's frame is never written by any part of this feature.
+- Visible teardown on hover-end that's synchronous and reliable enough that closing the tab or switching targets mid-hover never leaves a stray un-occluded background surface running.
+
+---
+
+## 6. Verification plan
+
+**The one check that actually tests the hard constraint** (do this first, before anything about visual correctness):
+
+1. In a **backgrounded** (non-focused) tab, run:
+   ```
+   trap 'echo RESIZED &gt;&gt; /tmp/wr-resize.log' WINCH; stty size; sleep 999
+   ```
+2. Switch focus away from that tab so it backgrounds (occlusion off, per `reconcileOcclusion`).
+3. Hover its chip repeatedly — long enough to pass the dwell, long enough to see the preview, then move away — several times in a row, including hovering while another unrelated state change fires (open a new tab, close a different one, switch the split) to specifically probe the §4 race.
+4. Check `/tmp/wr-resize.log`: **any `RESIZED` line is a hard failure** — geometry was touched, the whole feature's premise is broken, stop and fix before anything else. Confirm `stty size` reports the same value before and after the entire test.
+
+**Then, functional QA against a real `Workroom Dev` build** (`make app-run`), extending the shape of `macapp/QA-libghostty.md`'s existing lifecycle/perf sections (§J "Surface budget", §K "Lifecycle" are the closest precedent — this feature is exactly the kind of occlusion/lifecycle interaction that checklist already probes):
+
+- Hover a background tab's chip → after ~0.4s, a small live preview appears positioned under the chip; typing in that tab's *real* shell (if reachable, e.g. via a second window) shows up in the preview in near-real-time.
+- Move the mouse off the chip → preview disappears promptly; the tab's shell (checked via `ps`/its own marker) is still running, unaffected.
+- Hover, wait for the preview, then **immediately switch focus/close a different tab/split the workroom** while still hovering → per §4, the preview must **not** freeze/blank; confirm the surface's occlusion truly followed `previewingTabID` through the reconcile pass (add a temporary log line at `applyOcclusionState` for this manual pass, remove after).
+- Hover a tab whose surface was **never mounted** (freshly opened, never made active) → confirm via `ps`/marker technique (`QA-libghostty.md`'s "Orphan check", §N) that **no new shell process spawns** just from hovering.
+- Drag a chip mid-reorder → confirm no preview pops during the drag.
+- Hover a `.diff`/`.file`/`.changeset` tab chip → confirm the existing `.help` tooltip still works and no preview UI appears at all.
+- Close the hovered tab mid-preview (e.g. via `⌘W` on another window, or the close button on a different chip triggering a reap) → confirm no crash, no stale preview left on screen, generation guard correctly no-ops.
+- Repeat the whole pass with **50+ background tabs open** (mirrors `QA-libghostty.md` §J's existing surface-budget check) to make sure a preview mount/teardown cycle doesn't leave any surface's occlusion state wrong afterward.
+- If the SCStream path was built: specifically watch for a **stuck preview** (frozen frame) after backgrounding the whole app (⌘-Tab away) and back — this is exactly the `NSWindow.occlusionState`/dedicated-window hazard from §0.2, and the most likely real-world failure mode to actually show up.
+
+What would indicate the risks named above are real, not theoretical:
+- Any `RESIZED` line in step 4 → §0.1 wasn't actually fixed in the implementation (frame got touched somewhere in the mount path).
+- A preview that freezes specifically when *other* tab/split state changes during the hover → §4's race wasn't actually closed (check for a second `setVisible` writer that snuck in).
+- A preview that never appears/renders when the app or window was recently backgrounded → §0.2's occlusion hazard, if the SCStream architecture was used.
+
+---
+
+### Critical Files for Implementation
+
+- `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/TerminalTabStrip.swift`
+- `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/TerminalContainerView.swift`
+- `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/GhosttySurfaceView.swift`
+- `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/TerminalSessions.swift`
+- `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/WorkroomTerminalsView.swift`
+- `/Users/joelmoss/dev/workroom/macapp/project.yml` (only if the SCStream fork is chosen over the §0.3 transform spike)</result>
+<usage><subagent_tokens>150521</subagent_tokens><tool_uses>33</tool_uses><duration_ms>1686500</duration_ms></usage>
+</task-notification>
