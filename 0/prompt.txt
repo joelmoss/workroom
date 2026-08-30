@@ -1,0 +1,177 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. Primary Request and Intent:
+
+   Continuation of GitHub issue **#132** in `joelmoss/workroom`: a macOS ⌘Tab-style quick switcher for the Workroom macOS app — **⌥Tab** for open workrooms across all windows, **⌃Tab** for the current workroom's detail panes. Tap flips to most-recent; press-and-hold (250 ms) reveals a screen-centred rail of cards; arrows/hover/click walk it; release commits.
+
+   This segment covered four explicit user requests, in order:
+   - Report the outcome of the previously-completed Phase 8 work (Liquid Glass rail, centring, smaller icons, stacked cards).
+   - **"add a drop shadow on the whole rail"**
+   - **"softer border"** (sent mid-turn, while the shadow work was in flight)
+   - **"looks good, but the rail BG is not opaque or liquid glass. its solid"**
+   - **`/review`** — run the gstack pre-landing review skill on the branch diff.
+
+   Standing constraints that must keep applying: **QA must run in fixture mode under a throwaway `$HOME` and never mutate the real `~/.config/workroom`**; **never use `mcp__claude-in-chrome__*` tools — use the `/browse` skill**; **commit or push only when the user asks**; **never disable lint rules (e.g. `rubocop:disable`, `eslint-disable`) without asking first**; `make app-*` targets require `dangerouslyDisableSandbox`; `gh`, `codex` and `mktemp /tmp/...` all fail inside the command sandbox (retry with the sandbox disabled or use `$TMPDIR`); `rm -rf` is blocked by the dcg guard and must not be retried; fix root causes before workarounds; always run the project linters before committing.
+
+2. Key Technical Concepts:
+   - SwiftUI + AppKit macOS app; Swift module `Workroom`, target `WorkroomApp`, deployment target macOS 15.0, SDK MacOSX26.5. Formatting/lint via `xcrun swift-format` (`make app-format` / `make app-lint`).
+   - `NSGlassEffectView` (macOS 26, Liquid Glass) with `cornerRadius`/`style`; `NSGlassEffectContainerView`. Fallback `NSVisualEffectView` `.hudWindow` + `.behindWindow` + `.state = .active`.
+   - **A borderless non-opaque `NSPanel` casts no system shadow** (measured). A drawn shadow is clipped at the window bounds, so the window must be padded; SwiftUI `.clipShape` clips a view's `.background`, so a shadow must be a *second* `.background` applied after the clip; a CALayer `shadowPath` on an `NSViewRepresentable` does not render inside `NSHostingView`, but a SwiftUI shape's `.shadow` does.
+   - **An opaque layer anywhere beneath a glass view annihilates the material** (interior sd and backdrop correlation both fall to exactly 0). Remedy: `destinationOut` mask punching the caster's own footprint out, with the mask rect expanded by the halo.
+   - `NSPanel` with `[.nonactivatingPanel, .borderless]`, `canBecomeKey == false` (load-bearing — the AppDelegate monitor resolves its store from the key window), `isOpaque == false` (load-bearing — `occlusionState` counts only opaque coverage).
+   - `NSEvent.addLocalMonitorForEvents(matching: .keyDown)` running inside `NSApp.sendEvent` ahead of menu key-equivalent dispatch; `NSEvent.modifierFlags` as a global hardware snapshot; `Timer` on `RunLoop.main` in `.common` mode.
+   - Pure-reducer pattern (view/controller owns timers; reducer returns `Effect`).
+   - WCAG contrast: 4.5:1 body text, 3:1 large text/indicators; `ThemeTokens.legible(_:on:towards:target:)` walks toward the foreground; `ThemeTokens.contrastingForeground` switches ink at luminance 0.6 (the source of a real bug).
+   - Never round-trip SwiftUI `Color` → `NSColor(_:)` (crashes in `Color._apply` during layout).
+   - QA plumbing: `open -n --env HOME=…` propagates HOME (a plain `HOME=… open` does not); with two same-bundle Dev instances, target by PID via accessibility (`AXUIElementSetAttributeValue(kAXFrontmostAttribute)`), not System Events `set frontmost` or `lsappinfo setfront`.
+   - Verification by pixel-diffing two screenshots and computing luminance mean / sd / correlation, rather than eyeballing.
+
+3. Files and Code Sections:
+
+   **`macapp/WorkroomApp/Core/SwitcherRailLayout.swift`** — added the halo geometry:
+   ```swift
+   /// Deliberately equal to `screenMargin`: the halo then *is* the screen clearance, so a full-width rail
+   /// plus its shadow lands exactly inside `visibleFrame` and `panelOrigin`'s clamp never has to fire.
+   static let shadowMargin: CGFloat = 24
+   static var railHeight: CGFloat { cardHeight + railPadding * 2 }
+
+   static func panelSize(count: Int, visibleFrame: CGRect) -> CGSize {
+     let rail = panelWidth(count: count, visibleFrame: visibleFrame)
+     let cap = max(minCardWidth, visibleFrame.width - screenMargin * 2)
+     return CGSize(width: min(rail + shadowMargin * 2, cap), height: railHeight + shadowMargin * 2)
+   }
+   ```
+   Also added `Palette.opaqueFillFloor: CGFloat = 4.0` and changed `needsOpaqueFill` to key on it (was `textTarget` 4.5, which threw away the whole glass surface for a 4.45:1 card — a 1% shortfall).
+
+   **`macapp/WorkroomApp/Core/SwitcherPanel.swift`** — `hasShadow` stays false with the measurement documented; new click-through halo; `show()` uses `panelSize` and feeds the model the actual slab width; `attach` wires the new seam:
+   ```swift
+   final class HaloContentView: NSView {
+     override func hitTest(_ point: NSPoint) -> NSView? {
+       let local = superview.map { convert(point, from: $0) } ?? point
+       let rail = bounds.insetBy(dx: SwitcherRailLayout.shadowMargin, dy: SwitcherRailLayout.shadowMargin)
+       return rail.contains(local) ? super.hitTest(point) : nil
+     }
+   }
+   // …
+   controller.onItemsChanged = { [weak self] items, cursor in self?.show(items: items, cursor: cursor) }
+   ```
+
+   **`macapp/WorkroomApp/Views/SwitcherRailView.swift`** — body order is load-bearing; the shadow caster punches its own shape out:
+   ```swift
+   .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
+   .background { shadowCaster }
+   .padding(SwitcherRailLayout.shadowMargin)
+   // …
+   private var shadowCaster: some View {
+     let shape = RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+     return shape
+       .fill(Color.black)
+       .shadow(color: .black.opacity(0.32), radius: 14, y: 5)
+       .compositingGroup()
+       .mask {
+         Rectangle()
+           .padding(-SwitcherRailLayout.shadowMargin)
+           .overlay { shape.blendMode(.destinationOut) }
+           .compositingGroup()
+       }
+   }
+   ```
+   Also: `SwitcherCardView.cursorRadius = 14` with a 1pt ring (the "softer border"); `SwitcherCard.title` became `var` and `tile: NSColor?` was added; `cards(for:)` now resolves tile colours once and applies `WorkroomLabel.railTitles`; card id includes the window token; `MarkWell` takes the pre-resolved tile and uses `SwitcherMark.ink(on:)`; a `.onChange(of: model.themeVersion)` re-scrolls to the cursor.
+
+   **`macapp/WorkroomApp/Views/RailGlassBackground.swift`** — reverted to material-only after the layer-shadow attempt failed (the `ShadowHost`/`RailShadow` types were added then removed).
+
+   **`macapp/WorkroomApp/Core/SwitcherMark.swift`** — two fixes:
+   ```swift
+   // tileColor: both brightness directions, then a saturation ladder as a fallback axis
+   let ladder: [CGFloat] = dark ? [0.55, 0.46, 0.38, 0.34] : [0.62, 0.52, 0.42, 0.34]
+   // …first candidate clearing tileContrastFloor, else the best available
+
+   /// Deliberately not `ThemeTokens.contrastingForeground`, which switches at luminance 0.6…
+   static func ink(on tile: NSColor) -> NSColor {
+     ThemeTokens.contrastRatio(.black, tile) >= ThemeTokens.contrastRatio(.white, tile) ? .black : .white
+   }
+   ```
+
+   **`macapp/WorkroomApp/Core/QuickSwitcherReducer.swift`** — `.itemsChanged` now carries a caller-remapped cursor:
+   ```swift
+   case itemsChanged(count: Int, cursor: Int)
+   // …
+   count = newCount
+   let clamped = min(max(newCursor, 0), newCount - 1)
+   guard clamped != cursor else { return .none }
+   ```
+
+   **`macapp/WorkroomApp/Core/QuickSwitcherController.swift`** — the big correctness batch: new `onItemsChanged` seam; `pollInterval = 0.03`; `paneTargetID` frozen at open with `frozenPaneTarget(in:)`; VoiceOver path cancels a live session and speaks `QuickSwitcher.stepDescribing`'s destination; live-session guard `if kind == reducer.kind, store === originStore` else cancel-and-reopen; `handleArrow(reverse:flags:)` requiring `isRevealed` and no extra modifiers; and the identity-based reconcile:
+   ```swift
+   func reconcileItems() {
+     guard isLive else { return }
+     let tracked = items.indices.contains(reducer.cursor) ? items[reducer.cursor] : nil
+     let survivors = items.filter(isAlive)
+     guard survivors.count != items.count else { return }
+     items = survivors
+     let remapped = tracked.flatMap { item in items.firstIndex { Self.sameItem($0, item) } }
+     apply(reducer.handle(.itemsChanged(count: items.count, cursor: remapped ?? reducer.cursor)))
+     if reducer.isRevealed { onItemsChanged?(items, reducer.cursor) }
+   }
+   ```
+
+   **`macapp/WorkroomApp/Core/QuickSwitcher.swift`** — `stepDescribing` returning `(switched: Bool, spoken: String?)` (with `step` delegating to it, so no test churn); modal re-check plus recency suppression in `commit`; `commit(pane:in:target:)`:
+   ```swift
+   guard !target.hasModalPresentation else { return false }
+   // …
+   SwitcherRecency.shared.suppressingRecord { target.hostWindow?.makeKeyAndOrderFront(nil) }
+   target.openExisting(slot.sid)
+   ```
+
+   **`macapp/WorkroomApp/Core/SwitcherRecency.swift`** — `WindowToken.key` (UUID string, for view identity); `isSuppressed` + `suppressingRecord(_:)`; both record methods gated on it; the destructive `retain` call removed from `workroomOrder` with the reasoning documented.
+
+   **`macapp/WorkroomApp/Core/AppStore.swift`** — `wrapped(index:by:count:)` moved out of the middle of `cycleWorkroomTab`'s doc comment (it had orphaned that function's docs).
+
+   **`macapp/WorkroomApp/WorkroomApp.swift`** — `isARepeat` moved inside `case .act`; Escape/arrows gated on the same `switcherGate` and on flags via `handleArrow(reverse:flags:)`.
+
+   **Tests changed/added**: `SwitcherPanelTests` (`testTheRailDrawsItsOwnShadowRatherThanTheWindow`, `testTheHaloDoesNotEatClicksMeantForTheWindowBelow`); `SwitcherRailLayoutTests` (halo geometry, narrow-screen halo, explicit `healthyTokens(dark:)` fixtures, `testAHairsBreadthMissKeepsTheMaterial`); `SwitcherMarkTests` (`fixtureTokens(dark:)` replacing ambient tokens, both themes); `QuickSwitcherReducerTests` (6 `itemsChanged` sites + remap/clamp tests); `QuickSwitcherControllerTests` (`onItemsChanged` recorder wiring, pending-phase arrows, extra-modifier arrows, pane-trigger-doesn't-steal, identity-preserving reconcile, no-op reconcile); `SwitcherRecencyTests` (suppression, non-pruning order).
+
+4. Errors and fixes:
+   - **`panel.hasShadow = true` produced nothing.** Diagnosed by pixel-diffing with a standalone probe: zero darkening at every distance, with glass content and with a solid opaque `CALayer` fill. Set back to `false` and documented; the test I had added asserting `hasShadow` was replaced with one asserting the opposite plus the reason.
+   - **First `colorAt` sampling returned a constant 0.1569 everywhere** on the full 7680×3240 PNG. Fixed by cropping with `sips` first and sampling within the crop.
+   - **Layer shadow with `shadowPath` on the representable didn't render**; and before that, the shadow mounted in the same `.background` as the glass was clipped away by `.clipShape`. Fixed by a SwiftUI shape shadow in a second `.background` after the clip.
+   - **User reported the rail was solid.** My own shadow caster (opaque `tokens.panel` behind the glass) was the cause — measured sd 0.0000 / corr 0.000. Fixed with the `destinationOut` hole.
+   - **QA instance read the real config**: `HOME=… open -n` doesn't propagate HOME. Fixed with `open -n --env HOME=…`. Separately, System Events reported the wrong process's windows and `set frontmost`/`lsappinfo setfront` couldn't target one of two same-bundle Dev apps; fixed with an accessibility-based `raise.swift`. I told the user two stray ⌥Tab keystrokes may have hit their live Dev app.
+   - **Mark/layout contrast tests failed on untouched code** because they read the ambient theme via `ThemeTokens(preview: nil)` and the machine's theme had changed. Two real bugs behind it: `tileColor` walked brightness one way chosen from the theme's *background* while measuring against its *panel* (fixed: both directions + saturation ladder), and `needsOpaqueFill` keyed on 4.5 so a 4.45:1 card lost the glass (fixed: `opaqueFillFloor = 4.0`). Tests pinned to explicit fixtures.
+   - **Pinning the mark tests exposed a monogram at 1.77:1** — `contrastingForeground`'s 0.6 threshold picks white for a 0.54-luminance tile where black gives 11.8:1. Fixed with `SwitcherMark.ink(on:)`; the global helper deliberately left alone.
+   - **Codex timed out at 5 minutes** (both sandboxed — "Operation not permitted" — and with the sandbox disabled). Non-blocking per the skill; reported honestly, Claude-only coverage.
+   - **My own test mistakes during the review fixes**: expected `.moveCursor(1)` when the cursor was already 1 (correct answer `.none`) — stepped the cursor first; the reconcile test killed the very item the cursor tracked — left the cursor at index 1 and killed index 0's window instead; the recorder didn't wire `onItemsChanged`; `TerminalTarget` has no `kind:` argument.
+
+5. Problem Solving:
+   Established by measurement rather than reasoning that (a) borderless non-opaque panels cast no system shadow, (b) SwiftUI clips backgrounds, (c) an opaque layer under glass destroys the material outright, and (d) glass compresses backdrop variation ~3.5× so it always looks flat over a uniform surface. Diagnosed that three "contrast test failures on untouched code" were one root cause (ambient-theme-dependent tests) hiding two real product bugs. In the review, separated 17 adversarial findings into what verified (the reported set) versus what didn't, and grouped them into four decision bundles for the user.
+
+6. All user messages:
+   - "add a drop shadow on the whole rail"
+   - "softer border"
+   - "looks good, but the rail BG is not opaque or liquid glass. its solid"
+   - `/review` (skill invocation with the full gstack review SKILL.md as its payload)
+   - AskUserQuestion answers: all four options in the commit-safety bundle (rail/items desync, modal re-check, freeze pane target, live-session kind/window); all three routing options (arrow ⌘ guard, isARepeat, Escape/arrow window gate); "Both" for MRU (phantom raise record + destructive retain); all four rail options (duplicate ids + dead railTitles, tileColor in body, theme scroll reset, VoiceOver wrong destination).
+   - (Also a `/compact` local command, which is not a substantive request.)
+
+7. Pending Tasks:
+   - **T14** — Go-menu items ("Last-used Workroom" / "Last-used Pane") for discoverability (D11). Confirmed NOT DONE in the plan audit; only the Keyboard Shortcuts catalogue rows exist.
+   - **T15** — rail accessibility: `.announcementRequested` per cursor move (currently only on the VoiceOver tap path), a `voiceOverStatusDidChangeNotification` observer (absent), contrast floors verified on the lightest/darkest bundled themes, `.help()` on every badge/dot.
+   - Review findings deliberately not fixed (reported, no user decision requested): the 10 s ceiling cancels silently (product call); ⌃-click on the pane rail may not deliver (needs a real mouse per this repo's prior learning); `QuickSwitcherTests` mutate `SwitcherRecency.shared` with no reset (intentional coverage of the production hooks, low flake risk); no XCUITest file uses the `switcherRevealsImmediately` fixture seam; no tests for `SwitcherCard.vcsTail`/`cards(for:)` or the `WindowRegistry.didBecomeKey` hook.
+   - Plan file (`~/.claude/plans/https-github-com-joelmoss-workroom-issue-partitioned-crescent.md`) is stale: T11/T12 entries and the rail spec still describe the screenshot-era design.
+   - Nothing pushed; no PR opened.
+
+8. Current Work:
+   Immediately before this summary I completed the `/review` workflow end to end. All 13 user-selected fixes were implemented across `QuickSwitcherReducer.swift`, `QuickSwitcherController.swift`, `QuickSwitcher.swift`, `SwitcherRecency.swift`, `SwitcherRailView.swift`, `SwitcherMark.swift`, `SwitcherPanel.swift`, `AppStore.swift` and `WorkroomApp.swift`, with matching tests. Final state: **179/179 tests passing** across the switcher, routing and theme suites; `make app-lint` clean; both rails verified on screen in fixture mode (⌥Tab: four cards, distinct hues UR/R2/R3/R4, badge 7, cursor ring on R2, shadow visible; ⌃Tab: three chevron miniatures, cursor on Terminal 2). Committed as `d22ea68f` on branch `joel/quick-switcher-mru`, on top of `cabcac94` and `669a0cd7`. Review result, a learning (`ambient-theme-tests-hide-contrast-bugs`) and telemetry were logged; the fixture app was killed. Commit history:
+   ```
+   d22ea68f fix(macapp): quick-switcher review fixes — wrong-destination commits, key routing, MRU (issue #132)
+   cabcac94 fix(macapp): the rail's shadow caster was killing the glass (issue #132)
+   669a0cd7 feat(macapp): drop shadow on the switcher rail, softer cursor ring (issue #132)
+   a53d0d22 feat(macapp): Liquid Glass rail, stacked cards, snug panel (issue #132)
+   ```
+
+9. Optional Next Step:
+   Report the review outcome to the user — the work is done and committed but not yet summarised for them. The report should cover: the four commit-safety fixes, the three routing fixes, the two MRU fixes, the four rail fixes, the legibility bug the pinned fixtures exposed (`1.77:1` monogram → `SwitcherMark.ink`), that Codex timed out so cross-model coverage is Claude-only, and the items left unfixed by design (the 10 s silent ceiling as a product call; ⌃-click delivery needing a real mouse; T14 and T15 still open from the plan). No new implementation should start without the user's direction, since the reviewed scope is complete.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/joelmoss/.claude/projects/-Users-joelmoss-dev-workroom/aeed7d2d-72fa-42aa-8880-04883ab4ceb4.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.
