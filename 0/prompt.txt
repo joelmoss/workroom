@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b23v36wk8</task-id>
+<tool-use-id>toolu_018mbLf9b2iMWHAM8bSiBMt5</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/63f6f04e-9491-4528-9983-70076912bbe4/tasks/b23v36wk8.output</output-file>
+<status>failed</status>
+<summary>Background command "Poll GitHub status, rerun failed jobs on recovery" failed with exit code 3</summary>
+</task-notification>
