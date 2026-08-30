@@ -1,0 +1,39 @@
+<task-notification>
+<task-id>a78c530f4dc792cda</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/f547a12c-57e0-4635-ae3a-e066a5b44406/tasks/a78c530f4dc792cda.output</output-file>
+<status>completed</status>
+<summary>Agent "Find footer usage display and reattach code" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Investigation results
+
+**Bug confirmed and root-caused.** This is a read-only investigation; no code was changed.
+
+### The chain of evidence
+
+**1. Footer view** — `macapp/WorkroomApp/Views/TerminalStatusBar.swift`
+- Line 42-44: `activeAgent` is read from `state?.activeAgentBackend`.
+- Line 58: `if let activeAgent { agentUsageSegment(activeAgent) }` — the entire quota segment is hidden whenever `activeAgentBackend` is `nil`.
+- Lines 114-150 (`agentUsageSegment`): once shown, it reads `agentUsage.snapshot(for: backend)` — this part is fine (see #2).
+
+**2. The quota *data* source is not one-shot** — `macapp/WorkroomApp/Core/AgentUsage.swift`
+- `AgentUsageMonitor` (lines 291-400) is a global, app-wide FSEvents watcher over `~/Library/Application Support/Workroom/Agent Usage/claude-rate-limits.json`, continuously rewritten by Claude's own `statusLine` hook on effectively every render (wrapper script in `ClaudeUsageBridge.swift:183-209`). `init` calls `refresh()`/`installWatches()` immediately at launch (lines 318-321), so the numbers are already fresh when the app restarts. **This is not the bug.**
+
+**3. The bug is in per-pane "is an agent active here" detection**, which is what gates whether that (already-fresh) segment renders at all:
+- `TerminalState.activeAgentBackend` (`TerminalSessions.swift:314`, doc at 311-313) is set **only** inside `updateTitle(...)` (`TerminalSessions.swift:1351-1369`), reached **only** via the `onTitleChange` closure (`TerminalSessions.swift:1553-1555`) wired to `GhosttySurfaceView.handleTitleChange(_:)` (`GhosttySurfaceView.swift:779-782`), which the libghostty runtime calls **only** on `GHOSTTY_ACTION_SET_TITLE` (OSC 0/2) — a genuine terminal escape-sequence *event*, never a poll.
+- `updateTitle` does immediately query the live, accurate `GhosttySurfaceView.foregroundAgentBackend` (real `ghostty_surface_foreground_pid` lookup, `GhosttySurfaceView.swift:36-43`) — but only when it's *invoked*.
+- On restore/reattach (`TerminalSessions.swift:631-677 restore()` → `makeTerminalTab`; `GhosttySurfaceView.reattachPersistentSession()` at `GhosttySurfaceView.swift:422-429`; fresh creation in `createSurface()` at `GhosttySurfaceView.swift:235-313`), a brand-new `TerminalState`/`GhosttySurfaceView` is built with `activeAgentBackend == nil`, and **nothing seeds it from `foregroundAgentBackend`** — the code just waits for the next title event.
+
+**4. Why no title event ever arrives on reattach** — this is the actual root cause, and it's sharper than "OSC fires once at startup":
+- `macapp/WorkroomSession/SessionDaemon.swift:331-374 attach()` replays only a bounded tail of raw PTY bytes via `enqueueReplay` (`:376-385`) from `SessionReplayBuffer.replayBytes` (`WorkroomSessionProtocol/SessionReplayBuffer.swift:52-69`).
+- `SessionReplayBuffer` **discards its entire buffer** (`removeAll()`, lines 106 &amp; 120) the moment the pty enters the terminal alternate screen, and `replayBytes` **always returns `[]`** while `alternateScreenActive` (line 53, doc lines 1-5: *"Drops contents while the alternate screen is active (full-screen programs get SIGWINCH instead)."*). Claude Code, as a full-screen interactive TUI, lives in the alternate screen for essentially its whole run — so its original OSC 0/2 title-setting sequence is never in what gets replayed to a reattaching client.
+- Reattach instead relies solely on `SessionPTY.requestRedraw`'s SIGWINCH row-bump trick (`SessionPTY.swift:98-121`, invoked from `SessionDaemon.swift:356-373`) — explicitly built (commit `67cb53ed`) to force Claude to *repaint its current screen content* because "a bare SIGWINCH... silently ignores it" (comment at `SessionPTY.swift:100-105`, "observed with Claude Code"). That fix solves stale visible content; it does **not** cause Claude to re-emit its window title, since title-setting is tied to Claude's own internal state transitions/spinner frames, not to resize/repaint.
+
+**5. Net effect:** after an app-restart reattach, `TerminalState.activeAgentBackend` stays `nil` forever (no title event, no seeding), so `TerminalStatusBar`'s quota segment never renders — until the user kills Claude and starts a genuinely new process, whose *live* (non-replayed) startup output includes a fresh OSC 0/2 title-set that finally reaches `updateTitle` and populates `activeAgentBackend`.
+
+No existing test covers this: `grep` for `activeAgentBackend`/`reattach` in `WorkroomAppTests` shows only one unrelated helper reference (`TerminalSessionsTests.swift:887`) — confirming this reattach path is untested.
+
+### Fix direction
+On surface (re)creation/attach (`GhosttySurfaceView.createSurface()` / `reattachPersistentSession()`, or right after `TerminalSessions.restore()`), synchronously query the already-available `foregroundAgentBackend` (PID-based, no OSC dependency) and seed `TerminalState.activeAgentBackend` immediately instead of waiting exclusively for the next title event — or add a lightweight poll of `foregroundAgentBackend` (e.g. alongside the existing accessibility/occlusion polling) so a persisted pane's agent identity converges even if no title event ever arrives.</result>
+<usage><subagent_tokens>128494</subagent_tokens><tool_uses>34</tool_uses><duration_ms>448473</duration_ms></usage>
+</task-notification>
