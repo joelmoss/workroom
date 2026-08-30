@@ -1,0 +1,131 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/GhosttyApp.swift
+  - macapp/WorkroomApp/Core/GhosttySurfaceView.swift
+  - macapp/WorkroomApp/Core/TerminalSearch.swift
+  - macapp/WorkroomAppTests/GhosttyAppTests.swift
+  - macapp/WorkroomAppTests/GhosttySurfaceViewTests.swift
+  - macapp/WorkroomAppUITests/RunStatusUITests.swift
+  - macapp/project.yml
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/GhosttyApp.swift ===
+@@ -225,7 +225,7 @@ final class GhosttyApp {
+   private func writeThemeConfig(dark: Bool) {
+     // The terminal's colours come from the active theme family's variant for this appearance
+     // (issue #36). libghostty resolves `theme = "<name>"` from $GHOSTTY_RESOURCES_DIR/themes (and
+-    // ~/.config/ghostty/themes, which wins) — verified on GhosttyKit 1.2.3 for new and live
++    // ~/.config/ghostty/themes, which wins) — verified on the pinned GhosttyKit for new and live
+     // surfaces. The name is already sanitised by ThemeService (safe to quote into the conf). The
+     // padded region inherits the theme background, so the terminal still blends into the panel.
+     let theme = ThemeService.activeThemeName(isDark: dark)
+
+
+=== DIFF: macapp/WorkroomApp/Core/GhosttySurfaceView.swift ===
+@@ -772,7 +772,7 @@ final class GhosttySurfaceView: NSView {
+   /// inline agent. Call this **synchronously** when a command finishes (we are on the main thread in
+   /// the runtime callback, before the next prompt renders), so the captured region is the
+   /// just-finished command's, not a later one. Returns `nil` when nothing meaningful is on screen.
+-  /// The exact command-start boundary isn't exposed by libghostty 1.2.3; reading the active screen
++  /// The exact command-start boundary isn't exposed by the pinned libghostty; reading the active screen
+   /// captures recent output (errors live at the end), and the host trims/caps via `TerminalCapture`.
+   func readCommandRegion(maxBytes: Int = 16_384) -> String? {
+     guard let surface else { return nil }
+@@ -900,7 +900,7 @@ final class GhosttySurfaceView: NSView {
+       // Derive text from `event.characters`, dropping AppKit sentinels (see `filterSpecialCharacters`):
+       // function keys / arrows resolve to "" here and fall through to the keycode-only branch, which
+       // libghostty encodes correctly. DEL (U+7F, the Backspace key) is intentionally KEPT and sent as
+-      // text — libghostty 1.2.3's *keycode* encoding for backspace is broken (it emits a space for the
++      // text — the pinned libghostty's *keycode* encoding for backspace is broken (it emits a space for the
+       // backspace keycode), but forwarding the literal 0x7f byte as text delivers the correct erase.
+       // (Confirmed by raw-PTY byte probing; matches Muxy's filter. Revisit if we move off 1.2.3.)
+       let text = Self.filterSpecialCharacters(event.characters ?? "")
+
+
+=== DIFF: macapp/WorkroomApp/Core/TerminalSearch.swift ===
+@@ -2,7 +2,7 @@ import Combine
+ import Foundation
+ 
+ /// Scrollback **find** (search) for the embedded terminals. Workroom adds no search engine of its
+-/// own — libghostty (the bundled engine is upstream Ghostty 1.3.x, which shipped scrollback search)
++/// own — libghostty (the bundled engine; see `macapp/project.yml` for which build) shipped it and
+ /// owns the matching, viewport highlighting, and match tracking. This file is the host side: the
+ /// thin chrome (a find bar) plus the two engine-free seams that carry data across the C boundary.
+ ///
+@@ -61,7 +61,7 @@ enum TerminalSearchAction: Equatable {
+   /// counts up as Find Next walks down the screen.
+   ///
+   /// **Wrap is synthesized host-side:** libghostty's `navigate_search` does NOT wrap — the bundled
+-  /// Ghostty (1.3.1) stops dead at the ends ("we don't wrap or reset the match currently"). At an end
++  /// engine stops dead at the ends ("we don't wrap or reset the match currently"). At an end
+   /// we step the other way across the remaining (total-1) matches to reach the opposite end. The
+   /// engine's search thread drains the whole burst in one mailbox pass and notifies only the *net*
+   /// selection once, so it collapses into a single selection + render — no flicker. With no current
+
+
+=== DIFF: macapp/WorkroomAppTests/GhosttyAppTests.swift ===
+@@ -10,7 +10,7 @@ final class GhosttyAppTests: XCTestCase {
+   func testEngineInitializes() {
+     XCTAssertTrue(
+       GhosttyApp.shared.isReady,
+-      "libghostty failed to initialize — check bundled ghostty resources and the 1.2.3 C API")
++      "libghostty failed to initialize — check bundled ghostty resources and the pinned C API")
+   }
+ }
+ 
+
+
+=== DIFF: macapp/WorkroomAppTests/GhosttySurfaceViewTests.swift ===
+@@ -34,7 +34,7 @@ final class TerminalKeyTextFilterTests: XCTestCase {
+   }
+ 
+   func testDelIsKept() {
+-    // The backspace fix: DEL (0x7F) must be forwarded as text (libghostty 1.2.3 mis-encodes the
++    // The backspace fix: DEL (0x7F) must be forwarded as text (the pinned libghostty mis-encodes the
+     // backspace *keycode*, so we send the byte instead).
+     XCTAssertEqual(filter("\u{007F}"), "\u{007F}")
+   }
+
+
+=== DIFF: macapp/WorkroomAppUITests/RunStatusUITests.swift ===
+@@ -4,7 +4,7 @@ import XCTest
+ /// `RunCommandTests`, these drive a REAL run command in the fixture workroom (a temp dir), so the
+ /// integration seams the unit tests bypass get end-to-end coverage:
+ ///   1. a real non-zero exit → the failed run icon (the wrapper records the code; libghostty's own
+-///      child-exit code is unreliable in GhosttyKit 1.2.3, so this proves the recorded-code path).
++///      child-exit code is unreliable in the pinned GhosttyKit, so this proves the recorded-code path).
+ ///   2. in-pane ⌃C → `onInterrupt` → NOT a failure (the `keyDown`/NSEvent wiring the unit tests skip).
+ ///
+ /// The fixture run command is overridden per-test via `-WorkroomUITestRunCommand`. The run-status
+
+
+=== DIFF: macapp/project.yml ===
+@@ -49,8 +49,21 @@ packages:
+     # Prebuilt GhosttyKit.xcframework (the libghostty C API as a static archive) distributed
+     # as a Swift package. We link the `GhosttyKit` product (raw C API) and roll our own
+     # terminal surface view — NOT the higher-level `GhosttyTerminal` wrapper. The embedding
+-    # API is not yet stable, so pin EXACT. Pre-GA we move
+-    # to a self-built xcframework from a Ghostty fork for full pin/patch control (see plan CMT-2).
++    # API is not yet stable, so pin EXACT.
++    #
++    # THIS IS THE SINGLE SOURCE OF TRUTH FOR THE TERMINAL ENGINE VERSION. Do not restate it in
++    # docs or code comments — point here instead. Two numbers, and they are NOT the same number:
++    #
++    #   package version : 1.2.3          (Lakr233/libghostty-spm's OWN version — the pin below)
++    #   ghostty engine  : v1.3.1         (what that package is built from; sha 332b2aef)
++    #
++    # The package versions itself independently of ghostty: package 1.3.1 is NOT ghostty v1.3.1.
++    # Reading the package version as a ghostty version once put a false premise into TODOS.md and
++    # made a P1 out of it. To check what a package release actually contains, read its release body
++    # ("Ghostty commit: …") and the repo's hand-maintained `Ghostty.ref` — never the tag alone.
++    #
++    # Bumping this is NOT a one-line change: see "Bump the libghostty pin" in TODOS.md for the
++    # patch-swap risk, the resources that must be regenerated with it, and the bake gate.
+     url: https://github.com/Lakr233/libghostty-spm
+     exactVersion: 1.2.3
+   Sentry:
+
+
+Investigate per the method in your instructions, then return the findings list.
