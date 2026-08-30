@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bo6v357sy</task-id>
+<tool-use-id>toolu_01BssN1Pg9ELPqKBFnpThgn6</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/85057c1d-7a50-422d-a310-af45bba739d0/tasks/bo6v357sy.output</output-file>
+<status>completed</status>
+<summary>Background command "Confirm no dangling AvatarImageFailures references and rerun avatar regression suite" completed (exit code 0)</summary>
+</task-notification>
