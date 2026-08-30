@@ -1,0 +1,264 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. Primary Request and Intent:
+   - User initially asked "next TODO?" — I surveyed `TODOS.md` in the Workroom repo (`/Users/joelmoss/dev/workroom`) and presented ranked candidates.
+   - User redirected: "focus on bugs, tests, stability and performance, as we plan on a final release soon" — I re-surveyed TODOS.md filtering for bugs/tests/stability/perf items and presented a ranked list of 9 candidates plus 2 already-stale doc entries.
+   - User then said: **"continue with these all in turn, and in separate commits to master"** — this became the governing instruction for the entire session: work through every identified item, committing each as its own separate git commit to the `master` branch, running the project's linters (`swift-format`) before each commit per global CLAUDE.md rules, and following root-cause-first bug fixing per CLAUDE.md.
+   - Subsequent user turns were simple continuations: "continue" (after item #4 status update), "continue" (after item #8 status update), "yes" (to continue into item #10), "yes" (to continue into item #11).
+   - At one point mid-build-retry, the user sent "retry\nretry" after a transient "model overloaded" tool error, which I honored by retrying the Bash build command until it succeeded.
+   - The final message is a CRITICAL system-style instruction demanding a plain-text summary with no tool calls — this is the trigger for the current response, not a new work request.
+   - No explicit security constraints or forbidden operations were stated by the user beyond what's already binding via the global/project CLAUDE.md (e.g., "never disable lint rules without asking," "ask before destructive git ops," "root-cause fixes over workarounds," "ask before driving the machine" for UI/browser automation — all from memory/CLAUDE.md, reaffirmed via an AskUserQuestion that the user answered "Yes, run them (Recommended)" for UI test runs on items #3 and #9).
+
+2. Key Technical Concepts:
+   - Swift/SwiftUI `@ObservedObject`/`@EnvironmentObject` invalidation storms (the "WORKROOM-2B" App Hang pattern): an eager `VStack` + per-row observation of a publishing object causes every row to rebuild on ANY publish, even unrelated ones. Established fix pattern (from `HistoryRow`/`ChangedFileRow`): strip observation from the row, pass plain values + closures, add `Equatable` conformance + `.equatable()` at the call site, switch `VStack`→`LazyVStack` only when rows are fixed-height.
+   - `#if DEBUG bodyPasses` counters as the standard measurement/regression mechanism for these invalidation bugs, read by dedicated `*InvalidationTests.swift` files using an offscreen `NSHostingView`/`NSWindow` harness and a shared `settle(_:until:)` XCTestCase extension (`WorkroomAppTests/Support/Settle.swift`).
+   - `withTaskCancellationHandler` for propagating caller-side Task cancellation into a continuation-based race (mirrors `JJSnapshotGate.run`'s existing pattern).
+   - Dependency injection seams for testability: `StatusCommandRunning` protocol (existing), new `GitStatusReading`/`JJStatusReading` protocols (added this session) since `workingStatus` isn't on the shared `VCSProviding` protocol.
+   - `URLProtocol` stubbing for testing network code without real requests (used for `AvatarImageLoaderTests`).
+   - XCUITest gotchas: `app.sheets.buttons[...]` vs unscoped `app.buttons[...]` (confirmation dialogs render as a `Sheet` not matched by plain `app.buttons`), `isHittable` waits needed after sheet-presentation animations, native mouse `click(forDuration:thenDragTo:withVelocity:thenHoldForDuration:)` (macOS-native, `XCUICoordinateMouseEvents`) vs touch-oriented `press(forDuration:thenDragTo:...)` for drag gestures — the former measurably reduced a known flake.
+   - `make app-test-scripts` dependency-free shell-script test tier (`build-helper_test.sh`, `channel-helper_test.sh`, new `test-invariants_test.sh`) — no toolchain needed, used to pin Makefile/CI invariants without coupling to the expensive XCTest bundle.
+   - `xcresulttool` for reading `.xcresult` bundles when `make app-test`'s parallel output hides pass/fail summaries.
+   - Tombstoning pattern (`deletingWorkrooms` Set) for filtering stale/racing reload snapshots — `AppStore.applyingDeletionTombstones` — previously only applied in the real-CLI `apply()` path, not `loadFixture()`.
+   - Ghostty native theme resolution: `theme = "<name>"` config directive resolved by libghostty from `$GHOSTTY_RESOURCES_DIR/themes` (and `~/.config/ghostty/themes`, which wins). Current Workroom approach rewrites `ghostty.conf` + calls `ghostty_config_load_file`/`ghostty_app_update_config`/`updateConfig` on every surface on every appearance change (item #11, not yet started).
+   - `ThemeService`'s "chokepoint" pattern: `applyActiveTheme(force:)` is described as "THE single apply path" that every trigger (picker selection, appearance change, first run) must route through.
+   - Memory system: saved `/Users/joelmoss/.claude/projects/-Users-joelmoss-dev-workroom/memory/macapp-full-parallel-suite-flake.md` documenting that `make app-test`'s full ~2270-test parallel run intermittently fails 1-3 unrelated tests per run (a different random subset each time, confirmed via 3 consecutive runs with zero overlap and clean isolated reruns) — CPU-contention noise, not a regression signal.
+
+3. Files and Code Sections:
+
+   - **`TODOS.md`** (repo root) — updated repeatedly throughout the session to mark items SHIPPED/FIXED/done as work landed. Final state: items covering arm64-CLI (SHIPPED), WORKROOM-2T (CLOSED), git-diff-staged-bug (FIXED), concurrency-cap-test (PARTIALLY FIXED — runLocalSweep half done, runCISweep half still open), WindowDragUITests-flake (IMPROVED, still flaky, still skipped), Makefile/CI-meta-test (FIXED), withTimeout-cancellation (FIXED/done), deferred-UI-workflow-tests (FIXED via unit test not XCUITest for the delete half), FilesPanel-eager-render (FIXED), avatar-loader (FIXED) were all updated. Item #11's two entries (native theme syntax at line ~1812, theme-picker invalidation storm at line ~1838) were being read but NOT yet edited when interrupted.
+
+   - **`macapp/WorkroomApp/Views/WorkroomTabBar.swift`** and **`macapp/WorkroomApp/Views/TerminalTabStrip.swift`** — fixed `commitDrag` in both to read `value.translation` from the gesture's own `onEnded` callback instead of the stale `dragTranslation` @State (which is only ever written from `onChanged` and can lag). `WorkroomTabBar.commitDrag` signature changed to `commitDrag(translation: CGFloat)`; call site passes `clampReorder(value.translation.width, draggedIndex: index)`. `TerminalTabStrip`'s equivalent `dropTargetIndex` helper gained an explicit `translation:` parameter.
+
+   - **`macapp/WorkroomAppUITests/WindowDragUITests.swift`** — added `chipsByXSettled(_:timeout:)` polling helper (polls `chipsByX` until two consecutive reads agree, guarding against the strip's 0.2s reorder-settle animation). Changed the drag gesture in `testDraggingWorkroomTabReordersTwoChips` from `start.press(forDuration:thenDragTo:withVelocity:thenHoldForDuration:)` to `start.click(forDuration:thenDragTo:withVelocity:thenHoldForDuration:)` (native mouse events). Measured ~90% pass rate across ~30 back-to-back reruns (up from ~20%), still not deterministic — the `Makefile:67` `APP_UITEST_FLAGS` skip entry for this test was deliberately left in place.
+
+   - **`macapp/WorkroomApp/Core/GitProvider.swift`** — fixed `workingFileDiff` to detect when a status entry carries BOTH `.index` and `.workingTree` deltas (staged + further modified) and route to new `combinedWorkingDiff(_:indexDelta:workingTreeDelta:root:)` static helper, which diffs the file's HEAD blob (nil if new-since-HEAD) against current on-disk content via `repo.patch(from:to:)`, mirroring the existing `.conflicted` case's HEAD→worktree technique.
+
+   - **`macapp/WorkroomAppTests/VCSProviderConformanceTests.swift`** — added `testWorkingFileDiffCombinesStagedAndFurtherModifiedEdits` covering both staged-modify+further-edit and staged-add+further-edit cases.
+
+   - **`macapp/WorkroomApp/Core/WorkroomStatusResolver.swift`** — added two new protocols:
+     ```swift
+     protocol GitStatusReading: Sendable {
+       func workingStatus(root: URL) throws -> GitWorkingStatus
+     }
+     extension GitProvider: GitStatusReading {}
+
+     protocol JJStatusReading: Sendable {
+       func workingStatus(root: URL) throws -> WorkroomStatus
+     }
+     extension RustJJProvider: JJStatusReading {}
+     ```
+     `WorkroomStatusResolver` struct gained `var gitStatus: GitStatusReading` and `var jjStatus: JJStatusReading` properties, injected via `init(..., gitStatus: GitStatusReading = GitProvider(), jjStatus: JJStatusReading = RustJJProvider())`. `resolveGit`/`resolveJJ` updated to call through these instead of constructing `GitProvider()`/`RustJJProvider()` directly.
+
+   - **`macapp/WorkroomAppTests/WorkroomStatusConcurrencyTests.swift`** (new file) — `InFlightCounter` class tracking peak concurrent calls; `CountingGitStatus: GitStatusReading` double with a 0.02s sleep; `MissingToolRunner: StatusCommandRunning` returning exit 127 for every tool (keeps the CI stage from firing). `testLocalSweepNeverExceedsItsConcurrencyCap` drives a real `AppStore` with 8 throwaway git projects, asserts `counter.peak <= 5` (matching `AppStore.localConcurrency`) and `counter.peak > 1` (proves real overlap, not vacuous pass).
+
+   - **`macapp/Scripts/test-invariants_test.sh`** (new file, executable) — dependency-free shell script pinning: (1) the literal `APP_UITEST_FLAGS` skip-list string from `Makefile`, (2) that `ci.yml`/`release.yml`/`nightly.yml` each contain a word-bounded `make app-test` invocation. Overridable via `TEST_INVARIANTS_MAKEFILE`/`TEST_INVARIANTS_WORKFLOWS_DIR` env vars for mutation testing (proven to fail against a dropped skip-entry and an emptied workflow dir).
+
+   - **`Makefile`** (repo root) — added `sh macapp/Scripts/test-invariants_test.sh` line to the `app-test-scripts` target.
+
+   - **`macapp/WorkroomApp/Core/Timeout.swift`** — rewrote `withTimeout` to wrap its continuation in `withTaskCancellationHandler`:
+     ```swift
+     func withTimeout<T: Sendable>(
+       seconds: TimeInterval, _ operation: @escaping @Sendable () async throws -> T
+     ) async throws -> T {
+       let cancelBox = TimeoutCancelBox()
+       return try await withTaskCancellationHandler {
+         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<T, Error>) in
+           let gate = TimeoutGate(cont)
+           let op = Task {
+             do { gate.settle(.success(try await operation())) } catch { gate.settle(.failure(error)) }
+           }
+           cancelBox.attach {
+             gate.settle(.failure(VCSCancellationError()))
+             op.cancel()
+           }
+           Task {
+             try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+             gate.settle(.failure(VCSTimeoutError()))
+             op.cancel()
+           }
+         }
+       } onCancel: {
+         cancelBox.fire()
+       }
+     }
+     ```
+     Added `struct VCSCancellationError: Error {}` and `private final class TimeoutCancelBox: @unchecked Sendable` (handles `onCancel` firing before/during/after the continuation attaches, via an `NSLock`-guarded `action` closure + `firedEarly` flag).
+
+   - **`macapp/WorkroomApp/Core/WorkroomStatusResolver.swift`** — both `catch is VCSTimeoutError {` sites changed to `catch is VCSTimeoutError, is VCSCancellationError {`.
+
+   - **`macapp/WorkroomAppTests/TimeoutTests.swift`** (new file) — 6 tests: success passthrough, error propagation, deadline-elapses-first, caller-cancellation-mid-race settles immediately (<1s vs a 5s deadline/operation), already-cancelled-before-start, and a 200-iteration cancellation-races-completion stress test guarding against double-resume crashes.
+
+   - **`macapp/WorkroomAppUITests/WorkroomWorkflowUITests.swift`** — removed the "Still to add: ..." doc comment (both items now addressed). Added `workroomChips(_:)` helper and `testLiveNotificationBadgeAppearsAndClickNavigatesToTheRightTerminal` (uses `-WorkroomUITestTwoTabs` fixture, types `sleep 1; printf '\e]9;Live OSC Ping\a'` into a background workroom, switches focus away before the OSC fires since `handleActivity`'s `selected + cursor → SEEN: suppress` rule would otherwise drop it, then clicks the bell popover row to confirm navigation + dismissal). The originally-planned second test (`testDeletingAWorkroomWithdrawsItsNotifications` as an XCUITest) was written, iteratively debugged (hit `app.buttons["Delete"]` ambiguity → fixed to `app.sheets.buttons["Delete"]`; hit isHittable timing → added an `XCTNSPredicateExpectation` wait; then discovered fixture-mode teardown ALWAYS fails since fixture workrooms aren't registered with the real CLI, making "withdrawn" unobservable as a stable state) — ultimately DELETED and replaced with a code comment pointing to the unit-test version instead.
+
+   - **`macapp/WorkroomApp/Core/AppStore.swift`** — real bug found+fixed in `loadFixture()`:
+     ```swift
+     private func loadFixture() {
+       let fixtures = applyingDeletionTombstones(UITestFixture.projects())
+       projects = fixtures
+       ...
+     ```
+     (previously `let fixtures = UITestFixture.projects()` with no tombstone filtering — a file-watcher-triggered reload mid-teardown could resurrect a just-deleted fixture workroom and its notifications).
+
+   - **`macapp/WorkroomAppTests/AppStoreDeleteRaceTests.swift`** — added `testDeletingAWorkroomWithdrawsItsNotifications` using the file's existing `DeleteRaceFakeCLI` (with `allowDelete = true` for a succeeding teardown), seeding two workrooms' notifications via `store.notifications.seedForTesting(...)` and asserting `deleteWorkroom` withdraws only the deleted workroom's notifications, leaving the sibling's untouched.
+
+   - **`macapp/WorkroomApp/Views/FilesPanel.swift`** — added `#if DEBUG static var bodyPasses = 0` counter (measurement phase), then rewrote `FileTreeRowView` from an `@EnvironmentObject var store: AppStore` + `@ObservedObject var model: FileTreeModel` view into a pure `View, Equatable` struct:
+     ```swift
+     struct FileTreeRowView: View, Equatable {
+       let row: FileTreeRow
+       let isExpanded: Bool
+       let onToggle: () -> Void
+       let onOpenPreview: () -> Void
+       let onOpenPersistent: () -> Void
+       let onOpenInEditor: () -> Void
+       ...
+       static func == (lhs: FileTreeRowView, rhs: FileTreeRowView) -> Bool {
+         lhs.row == rhs.row && lhs.isExpanded == rhs.isExpanded
+       }
+     ```
+     `FilesPanel.fileList` changed from `VStack` to `LazyVStack`, now builds each row with hoisted closures and `.equatable()`:
+     ```swift
+     ForEach(capped, id: \.node.path) { row in
+       FileTreeRowView(
+         row: row, isExpanded: model.expanded.contains(row.node.path),
+         onToggle: { model.toggle(row.node) },
+         onOpenPreview: { store.openFilePreview(path: row.node.path) },
+         onOpenPersistent: { store.openFilePersistent(path: row.node.path) },
+         onOpenInEditor: { store.openFileInEditor(path: row.node.path) }
+       )
+       .equatable()
+     }
+     ```
+
+   - **`macapp/WorkroomAppTests/FilesPanelInvalidationTests.swift`** (new file) — measurement/regression harness mirroring `HistoryRowInvalidationTests`. Key methods: `FixedGitListRunner` (fake `StatusCommandRunning`), `awaitLoaded(_:)` (real `Task.sleep` poll since `settle`'s `RunLoop` pump doesn't advance `FileTreeModel.reload`'s unstructured Task), `activatedModel(fileCount:)`, `makeStore()` (calls `store.refreshSelectionHasTabs()` explicitly since no real window/focus event drives it in this bare harness), `host(_:_:)`. Final 4 tests: `testUnrelatedAppStorePublishRebuildsNoRows` (0 rebuilds, was 200 pre-fix), `testTogglingADirectoryRebuildsThatRow` (positive-half gate check), `testLargeTreeDoesNotBuildEveryRow`, `testLargeTreeRendersUnderTimeCeiling` (<0.25s for 4000-file renderCap).
+
+   - **`macapp/WorkroomApp/Views/Avatar.swift`** — deleted `AvatarImageFailures` class entirely; replaced with new `AvatarImageLoader` `@MainActor final class`:
+     ```swift
+     final class AvatarImageLoader {
+       static let shared = AvatarImageLoader()
+       enum LoadResult: Equatable { case image(NSImage); case notFound }
+       private let session: URLSession
+       private let capacity: Int
+       private var cache: [URL: LoadResult] = [:]
+       private var cacheOrder: [URL] = []
+       private var inFlight: [URL: Task<LoadResult?, Never>] = [:]
+       init(session: URLSession = .shared, capacity: Int = 256) { ... }
+       func load(_ url: URL) async -> LoadResult? { ... }  // dedups in-flight, checks cache
+       private func fetch(_ url: URL) async -> LoadResult? { ... }  // real HTTP status check
+       private func store(_ result: LoadResult, for url: URL) { ... }  // LRU eviction
+       func clearForTesting() { ... }
+     }
+     ```
+     `AvatarView` rewritten to drive it via `.task(id: taskKey)` where `taskKey` combines the image URL + `loadRemoteAvatars` privacy-gate bool; replaced the `AsyncImage`-based body with a `@State private var result: AvatarImageLoader.LoadResult?` and a plain `Image(nsImage:)` render path. `AvatarView` gained `var loader = AvatarImageLoader.shared` for test injection.
+
+   - **`macapp/WorkroomAppTests/AvatarImageLoaderTests.swift`** (new file) — 7 tests behind a custom `StubURLProtocol`/`StubRegistry` (thread-safe canned HTTP responses): success-caches-image, genuine-404-cached-as-notFound, transient-network-error-never-cached-and-retries, non-200-status-transient, undecodable-body-transient, concurrent-loads-share-one-request, LRU-eviction-past-capacity.
+
+4. Errors and fixes:
+   - **XCUITest confirmation-dialog button ambiguity**: `app.buttons["Delete"]` matched multiple elements (a TouchBar button AND the real sheet button). Fixed by scoping to `app.sheets.buttons["Delete"]`.
+   - **XCUITest sheet not-yet-hittable race**: clicking the Delete confirmation immediately after it appeared sometimes no-op'd. Fixed with an `XCTNSPredicateExpectation` waiting for `isHittable == true` before clicking.
+   - **Fixture-mode teardown always fails**: discovered mid-debugging that `deleteWorkroom`'s CLI teardown call deterministically fails in XCUITest fixture mode (fixture workrooms aren't registered with the real CLI) — and a failed teardown legitimately RESTORES the workroom+notifications per existing `testFailedTeardownRestoresWorkroom` unit test. This meant there was no stable "withdrawn" state to assert via XCUITest. Resolved by abandoning the XCUITest approach for that specific test and writing a fast, deterministic unit test instead (`AppStoreDeleteRaceTests.testDeletingAWorkroomWithdrawsItsNotifications`), using the existing `DeleteRaceFakeCLI` with `allowDelete = true`.
+   - **`settle()` not advancing `FileTreeModel.reload`'s unstructured Task**: the shared `Settle.swift` helper pumps `RunLoop.current`, which is fine for AppKit/SwiftUI layout callbacks but never gives Swift Concurrency's cooperative-pool `Task`s inside `FileTreeModel.reload` a turn in the plain-XCTest hosting context (no real app run loop driving it). Diagnosed via temporary `print("DEBUG ...")` statements showing `model.state` stuck at `.loading` forever. Fixed by writing a real `Task.sleep`-based polling helper `awaitLoaded(_:)`, mirroring `AppStoreDeleteRaceTests.waitUntil` — then removed all debug prints.
+   - **`store.inspectorTargetID` nil in bare test harness**: `FilesPanel`'s placeholder gate depends on `store.selectionHasTabs`, which is normally flipped by `refreshSelectionHasTabs()` on a real focus/window event that never fires in the offscreen-hosting harness. Fixed by calling `store.refreshSelectionHasTabs()` explicitly in the test's `makeStore()` helper.
+   - **`dcg` (destructive-command guard) blocking `rm -rf`**: multiple attempts to write mutation-test fixtures via a `mktemp -d` + `trap 'rm -rf "$WORK"' EXIT` pattern were blocked. Fixed each time by using the pre-provisioned scratchpad directory (`/private/tmp/claude-501/.../scratchpad`) instead, which is allowlisted for writes without triggering the rm-rf guard on cleanup (no trap needed there since it's session-scoped).
+   - **macOS "Timed out while enabling automation mode" wedge**: hit during back-to-back XCUITest runs. This matches a known documented memory (`macapp-xcuitest-automation-wedge.md`) — an environmental wedge, not a code issue. Confirmed via running an untouched test (`testDraggingEmptyTitlebarMovesWindow`), which passed clean, proving the automation subsystem had recovered; subsequent runs then succeeded.
+   - **Full `make app-test` parallel suite showing rotating flaky failures**: 3 consecutive full-suite runs each failed 1-3 different tests with zero overlap between runs (6 distinct tests total across 3 runs: `AppStoreCreateWorkroomTests.testWorktreeProbedOnceCreatingClears`, `RunCommandTests.testRequestCloseWaitsForLiveRunCommand`, `AppStoreCreateWorkroomTests.testCreationTargetAppearsAsTab`, `SessionSaveTests.testAFailedWriteIsNotRememberedAsWritten`, `RunCommandTests.testSecondStopWaitsForLiveProcessThenCloses`, `AppStoreDeleteRaceTests.testDeleteBlockedWhileCreating`). Confirmed as CPU-contention noise (not a regression) by re-running two of the failing tests in isolation via `-only-testing`, where they passed 4/4. Documented this finding as a new memory file so future sessions don't chase it per-commit.
+   - **Model temporarily unavailable/overloaded** during a Bash tool call for the FilesPanel build — the harness returned an error saying the classifier couldn't determine safety. The user responded with "retry\nretry" and I retried the identical build command 3 times until it succeeded.
+   - **`FilesPanel.swift`/`Avatar.swift` SourceKit false-positive diagnostics** ("Cannot find type 'AppStore'/'FileTreeModel'/'ThemeService'/'Defaults' in scope") appeared repeatedly after edits — these are expected artifacts of editing files outside a full Xcode build context (the linter/SourceKit index doesn't see the whole project); resolved definitively each time by running the actual `xcodebuild ... build` command, which succeeded (`** BUILD SUCCEEDED **`), confirming these were non-issues.
+   - **Interactive `git add -p` splitting for TODOS.md**: needed to separate the avatar-loader TODO entry from the FilesPanel TODO entry so each could be committed alongside its own code changes. First attempt with a short `y/n` sequence didn't line up with the actual number of sub-hunks generated; fixed by using `git reset TODOS.md` to cleanly unstage, then re-running `git add -p` with a corrected `s\ny\ny\ny\nn\nn\nn\n` sequence (split into 6 sub-hunks, stage first 3).
+
+5. Problem Solving:
+   - Systematically worked through 10 of 11 planned TODO items, each verified via targeted or full XCUITest/XCTest runs before committing, with `swift-format lint --strict` run on every touched file before each commit (per global CLAUDE.md rule: "Always run the project's linters on every file you've touched before committing").
+   - Consistently found REAL bugs by writing measurement/regression tests FIRST (per the TODOs' own "measure before changing anything" instructions) rather than assuming a fix was needed — this paid off twice: FilesPanel's actual WORKROOM-2B mechanism was confirmed (not just theorized), and the fixture-mode loadFixture tombstone bug was discovered as a side effect of writing item #9's test.
+   - One item (#6, jj sibling-workspace staleness) was explicitly NOT implemented — I identified via reading TODOS.md's own text that the real fix requires a VCS *write* action, which the project's own TODOS.md explicitly says must go through a separate, not-yet-built Phase-2 write-actions effort with its own confirmation/undo story ("every VCS write belongs to the Phase-2 write-actions chunk... not to a status probe"). I flagged this to the user as a blocker rather than building an unreviewed write action right before a release, and the user did not push back or ask me to proceed anyway.
+   - Ongoing: item #11 (ghostty native theme syntax + theme-picker invalidation storm) was in the pure investigation/reading phase — no code changes yet — when the conversation was interrupted for this summary.
+
+6. All user messages:
+   - "next TODO?"
+   - "continue with these all in turn, and in separate commits to master"
+   - "continue" (sent after I reported item #4 done, item #5 in progress — general continuation signal)
+   - "continue" (sent after I reported item #8/#9's completion status)
+   - "yes" (in response to my question about continuing into item #10 vs pausing)
+   - "yes" (in response to my question about continuing into item #11 vs pausing given time already spent)
+   - "retry\nretry" (sent as two lines in one message, after a "model overloaded" tool error during a Bash build call)
+   - The final message: a CRITICAL system-style instruction demanding I respond with plain TEXT ONLY (no tool calls) and produce a structured `<analysis>`/`<summary>` compaction of the conversation — this is the trigger for the current response.
+   - Note: Several messages in the conversation appear as "AskUserQuestion" tool results reporting the user selected "Yes, run them (Recommended)" for UI-test-run permission (covering items #3 and #9) — this was a genuine user answer to a tool-mediated question, not a fabricated turn.
+
+7. Pending Tasks:
+   - **Item #11** (in_progress in the task list): "Adopt ghostty native theme=dark:X,light:Y syntax + fix theme-picker invalidation storm" — TODOS.md describes two sub-parts:
+     (a) Replace the rewrite-the-conf-on-every-appearance-change path (`GhosttyApp.writeThemeConfig` + `reloadConfig` + `TerminalSessions.applyThemeToAll`) with libghostty's native `theme = dark:<X>,light:<Y>` syntax, which lets the engine pick the variant itself without a config rewrite + reload on every light/dark flip. Must first verify the pinned GhosttyKit version accepts the two-variant form for both new AND live surfaces before committing (project.yml pins the exact version).
+     (b) Profile and fix the theme picker's (`ThemePicker.swift`, `FamilyRow`) invalidation storm — `FamilyRow` observes `ThemeService.shared` and reads `theme.tokens`, so every ↑/↓ arrow press (which calls `applyFamily` → replaces `tokens`) invalidates every instantiated row in the picker list. The 2026-08-06 preview-cache change removed disk I/O but not the re-render. Remedy is the same known pattern (pass values down, `Equatable` + `.equatable()`) — but TODOS.md notes "measure first — the cache may already have made it imperceptible" and flags this as the LOWEST priority of the batch (P2 for the theme-syntax half, P3 for the invalidation-storm half), explicitly noted by me to the user as the item most likely to be deferred if a release cuts mid-batch.
+   - Item #6 (jj sibling-workspace staleness) remains unresolved/blocked — flagged, not built, pending either a future Phase-2 VCS-write-actions effort or explicit user direction to proceed anyway.
+   - The `runCISweep` concurrency-cap test (the smaller remaining half of item #7, noted in TODOS.md as still open) is NOT queued as an active task but was documented as a known small gap.
+
+8. Current Work:
+   Immediately before this summary request, I was in the pure-investigation phase of item #11. I had just read:
+   - `TODOS.md` lines 1812–1880 (the two relevant entries: "Use ghostty's native `theme = dark:<X>,light:<Y>` syntax" at P2, and "Profile and fix the theme picker's invalidation storm" at P3, plus the adjacent "Ship the remaining vetted theme families" P3 entry which is NOT part of my task list).
+   - `macapp/WorkroomApp/Core/GhosttyApp.swift` lines 180–279, specifically:
+     ```swift
+     func reloadConfig(force: Bool = false) {
+       guard let app else { return }
+       let dark = Self.isCurrentAppearanceDark()
+       guard force || dark != lastConfiguredDark else { return }
+       lastConfiguredDark = dark
+       writeThemeConfig(dark: dark)
+       guard let newConfig = loadConfig() else { return }
+       ghostty_app_update_config(app, newConfig)
+       let old = config
+       config = newConfig
+       if let old { ghostty_config_free(old) }
+     }
+
+     private func writeThemeConfig(dark: Bool) {
+       let theme = ThemeService.activeThemeName(isDark: dark)
+       let contents = """
+         # Generated by Workroom — active theme for the current appearance. Do not edit.
+         theme = "\(theme)"
+         window-padding-x = 8
+         window-padding-y = 8
+         window-padding-balance = true
+         """
+       try? contents.write(to: themeConfigURL, atomically: true, encoding: .utf8)
+     }
+     ```
+   - `macapp/WorkroomApp/Core/TerminalSessions.swift` lines 1300–1344, specifically `applyThemeToAll(force:)`:
+     ```swift
+     func applyThemeToAll(force: Bool = false) {
+       let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+       GhosttyApp.shared.reloadConfig(force: force)
+       GhosttyApp.shared.setColorScheme(dark: isDark)
+       let config = GhosttyApp.shared.config
+       for tabs in tabsByTarget.values {
+         for tab in tabs.values {
+           guard let surface = tab.surface else { continue }
+           if let config { surface.updateConfig(config) }
+           surface.applyColorScheme(isDark: isDark)
+         }
+       }
+     }
+     ```
+   - Also grepped for the appearance-change trigger site, finding `TerminalSessions.swift:441-446` registers an `AppleInterfaceThemeChangedNotification` observer that calls `Task { @MainActor in ThemeService.shared.applyActiveTheme() }`.
+   - `macapp/WorkroomApp/Core/ThemeService.swift` lines 1–219, specifically the `ThemeFamily`/`ThemePreview` structs, the `families` static array (58 curated families, "Workroom" pinned first then A→Z), `activeThemeName(isDark:)`, `sanitizedThemeName(_:)`, and the "chokepoint" doc + implementation of `applyActiveTheme(force:)` and `applyFamily(_:)`:
+     ```swift
+     func applyActiveTheme(force: Bool = true) {
+       validateSelection()
+       let isDark = Self.isCurrentAppearanceDark()
+       tokens = ThemeTokens(preview: Self.themePreview(named: Self.activeThemeName(isDark: isDark)))
+       generation &+= 1
+       for sessions in terminalSinks.allObjects { sessions.applyThemeToAll(force: force) }
+       NotificationCenter.default.post(name: .themeDidChange, object: nil)
+     }
+
+     func applyFamily(_ name: String) {
+       Defaults[.themeFamily] = name
+       applyActiveTheme()
+     }
+     ```
+   No edits had been made yet for item #11 — this was still pure reconnaissance to understand the current architecture (the rewrite-conf-on-every-flip path, and the `FamilyRow`/picker invalidation mechanism) before deciding how to implement the fix, when the conversation was interrupted by the mandatory summary-only instruction.
+
+9. Optional Next Step:
+   The immediately-preceding, still-open task is item #11 from the task list: "Adopt ghostty native theme=dark:X,light:Y syntax + fix theme-picker invalidation storm," which the user most recently confirmed continuing into via "yes" after I asked: *"Remaining: #10 (FilesPanel/avatar perf — TODO explicitly says 'measure before changing'; no Instruments profiling done yet) and #11 (native theme syntax + invalidation storm — refactor of a working subsystem, lowest-priority-to-land-first if a release cuts mid-batch). Continue into #10, or pause here...?"* followed later by *"Remaining: #11 (native theme syntax + invalidation storm) — lowest priority, refactor of a working subsystem, no user-visible feature. Continue?"* to which the user replied "yes".
+
+   The direct next step (once tool use resumes) is to continue the item #11 investigation exactly where it left off: verify whether the pinned GhosttyKit version (exact pin in `project.yml`, referenced by `macapp/CLAUDE.md`'s "the pin is EXACT — don't float it" warning) actually accepts the `theme = dark:<X>,light:<Y>` two-variant syntax for both newly-created AND already-live surfaces, per this TODO's own explicit instruction: *"verify the pinned GhosttyKit accepts the two-variant form for new AND live surfaces before committing... Then `writeThemeConfig` emits both names once and `applyThemeToAll` stops needing `force: true` on appearance changes."* Then separately measure the `ThemePicker`/`FamilyRow` re-render cost before applying the same `Equatable`+closures fix pattern used for FilesPanel/History/Changes, per that entry's explicit "measure first — the cache may already have made it imperceptible" caveat. Given this item's two sub-parts are independently scoped and separately prioritized (P2 vs P3) in TODOS.md, and per the established pattern of this session, each should likely land as its own separate commit to `master`, consistent with the user's original governing instruction: *"continue with these all in turn, and in separate commits to master."*
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/joelmoss/.claude/projects/-Users-joelmoss-dev-workroom/85057c1d-7a50-422d-a310-af45bba739d0.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.
