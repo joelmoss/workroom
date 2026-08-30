@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b68quvoks</task-id>
+<tool-use-id>toolu_01W7ftJouNSp8wETKgSevuCo</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/3550f850-2eb1-41c3-8866-543c08bb8bcb/tasks/b68quvoks.output</output-file>
+<status>completed</status>
+<summary>Background command "Run full XCUITest suite in background" completed (exit code 0)</summary>
+</task-notification>
