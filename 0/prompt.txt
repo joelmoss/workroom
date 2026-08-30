@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bmnliai53</task-id>
+<tool-use-id>toolu_01GaGCDgrojknZiq1EGoYPrx</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/7f7988fc-21ff-4ba7-80de-eae292423ae4/tasks/bmnliai53.output</output-file>
+<status>completed</status>
+<summary>Background command "Run the full XCUITest suite with no skips (pre-release mode)" completed (exit code 0)</summary>
+</task-notification>
