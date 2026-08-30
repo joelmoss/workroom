@@ -1,0 +1,1 @@
+we have more space in header now, so make the button icons bigger. also fade them out when workroom is not focused - like the terminal toolbar buttons do.
