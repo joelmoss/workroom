@@ -1,0 +1,1 @@
+left/right keys don't work in terminal switcher, but they do work in workroom switcher
