@@ -1,0 +1,1 @@
+the workroom switcher is showing the same workroom twice, and a workroom root that is not even open
