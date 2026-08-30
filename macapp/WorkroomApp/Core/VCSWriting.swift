@@ -32,7 +32,12 @@ enum VCSRemoteFailure: Equatable, Sendable {
   /// act and the runner trying to launch. Distinct from `toolMissing`: that means the TOOL wasn't
   /// found on PATH, which is a completely different, unrelated fact from "this folder is gone."
   case launchFailed
-  case timedOut(VCSRemoteAction)
+  /// The command's own combined stderr/stdout up to the kill, for the dialog's Details section —
+  /// often the one clue to WHY it hung (a stalled host-key prompt, a slow TLS handshake) that a bare
+  /// "timed out" throws away. Always at least the "\n" join separator, even when the child produced
+  /// nothing before it was killed — `rawOutput(of:)` trims before checking, so that case still shows
+  /// no Details section.
+  case timedOut(VCSRemoteAction, String)
   /// Credentials were needed and none were available.
   case authRequired(String)
   /// The host's key isn't in `known_hosts`. `BatchMode=yes` turns what would be an interactive
@@ -1101,7 +1106,7 @@ struct CLIVCSWriter: VCSWriting, Sendable {
     // A timed-out pull may have left a rebase behind; that reads better than "timed out".
     if result.timedOut {
       if action == .pull, rebaseInProgress(gitDir: gitDir) { return .rebaseInProgress }
-      return .timedOut(action)
+      return .timedOut(action, err)
     }
     guard !result.ok else { return nil }
     if err.contains("Host key verification failed") || err.contains("REMOTE HOST IDENTIFICATION") {

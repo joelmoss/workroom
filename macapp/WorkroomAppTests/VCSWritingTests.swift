@@ -722,7 +722,22 @@ final class VCSWritingTests: XCTestCase {
 
   func testTimeout() {
     let r = CommandResult(stdout: "", stderr: "", exitCode: 1, timedOut: true)
-    XCTAssertEqual(CLIVCSWriter.classify(r, action: .push, tool: "git"), .timedOut(.push))
+    // "\n" not "": classify joins stderr + "\n" + stdout unconditionally, so a silent timeout's
+    // payload is the separator, not empty — VCSSyncPresenter.rawOutput trims it away before display.
+    XCTAssertEqual(
+      CLIVCSWriter.classify(r, action: .push, tool: "git"), .timedOut(.push, "\n"))
+  }
+
+  /// A timeout still carries whatever the child printed before it was killed — often the one clue
+  /// to why it hung (a stalled prompt, a slow handshake) that "timed out" alone throws away.
+  func testTimeoutCarriesPartialOutput() {
+    let r = CommandResult(
+      stdout: "Enumerating objects: 12, done.", stderr: "", exitCode: 1, timedOut: true)
+    guard case .timedOut(_, let output) = CLIVCSWriter.classify(r, action: .push, tool: "git")
+    else {
+      return XCTFail("expected .timedOut")
+    }
+    XCTAssertTrue(output.contains("Enumerating objects"), "got \(output)")
   }
 
   func testAuthFailures() {
@@ -1007,7 +1022,7 @@ final class VCSWritingTests: XCTestCase {
     let timedOut = CommandResult(
       stdout: "", stderr: "", exitCode: 15, timedOut: true, signaled: true)
     XCTAssertEqual(
-      CLIVCSWriter.classify(timedOut, action: .fetch, tool: "git"), .timedOut(.fetch))
+      CLIVCSWriter.classify(timedOut, action: .fetch, tool: "git"), .timedOut(.fetch, "\n"))
   }
 
   // MARK: - Routing

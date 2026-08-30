@@ -442,7 +442,7 @@ enum VCSSyncPresenter {
       return "\(tool) isn’t on Workroom’s PATH."
     case .launchFailed:
       return "This workroom’s folder is no longer there."
-    case .timedOut(let action):
+    case .timedOut(let action, _):
       return "\(action.label) timed out."
     case .authRequired:
       // The #1 expected failure. The runner sets GIT_TERMINAL_PROMPT=0 and ssh BatchMode, so this
@@ -515,7 +515,7 @@ enum VCSSyncPresenter {
         launch, so a terminal that can find \(tool) is not proof that the app can — relaunch Workroom \
         after changing your shell profile.
         """
-    case .timedOut(let action):
+    case .timedOut(let action, _):
       return """
         \(action.label) was stopped at its time limit. Check the network or VPN and try again — a first \
         fetch of a large repository can legitimately need longer than the limit allows.
@@ -576,11 +576,11 @@ enum VCSSyncPresenter {
   static func rawOutput(of failure: VCSRemoteFailure) -> String? {
     let raw: String?
     switch failure {
-    case .authRequired(let m), .hostKeyUnverified(let m), .rejected(let m),
+    case .timedOut(_, let m), .authRequired(let m), .hostKeyUnverified(let m), .rejected(let m),
       .dirtyWorkingTree(let m),
       .immutableHistory(let m), .needsDescription(let m), .other(let m):
       raw = m
-    case .toolMissing, .timedOut, .noRemote, .rebaseInProgress, .locked, .launchFailed:
+    case .toolMissing, .noRemote, .rebaseInProgress, .locked, .launchFailed:
       raw = nil
     }
     let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -209,7 +209,7 @@ final class VCSSyncPresentationTests: XCTestCase {
   /// The other half: the transient ones DO offer the re-read.
   func testATransientReadFailureOffersTheReRead() {
     for failure: VCSRemoteFailure in [
-      .locked(nil), .timedOut(.fetch), .other("boom"), .authRequired("nope"),
+      .locked(nil), .timedOut(.fetch, ""), .other("boom"), .authRequired("nope"),
     ] {
       let p = VCSSyncPresenter.make(state: nil, hasTarget: true, readFailure: failure, now: now)
       XCTAssertTrue(p.retriesRead, "\(failure) may well succeed on the next read")
@@ -429,10 +429,21 @@ final class VCSSyncPresentationTests: XCTestCase {
   /// Failures Workroom raises itself ran no command, so there is nothing to put under Details.
   func testFailuresWithNoToolOutputHaveNoDetails() {
     XCTAssertNil(VCSSyncPresenter.rawOutput(of: .noRemote))
-    XCTAssertNil(VCSSyncPresenter.rawOutput(of: .timedOut(.fetch)))
     XCTAssertNil(VCSSyncPresenter.rawOutput(of: .rebaseInProgress))
     XCTAssertNil(
       VCSSyncPresenter.rawOutput(of: .authRequired("   ")), "whitespace is not evidence")
+  }
+
+  /// Unlike the failures above, a timeout DID run a real command — it was only killed at its time
+  /// limit — so whatever it printed before the kill belongs under Details. An empty capture (the
+  /// child hung before writing anything) still has nothing to show.
+  func testTimedOutSurfacesWhateverTheCommandPrintedBeforeTheKill() {
+    XCTAssertNil(VCSSyncPresenter.rawOutput(of: .timedOut(.push, "")))
+    XCTAssertNil(
+      VCSSyncPresenter.rawOutput(of: .timedOut(.push, "   ")), "whitespace is not evidence")
+    XCTAssertEqual(
+      VCSSyncPresenter.rawOutput(of: .timedOut(.push, "Enumerating objects: 12, done.")),
+      "Enumerating objects: 12, done.")
   }
 
   /// The dialog's default button comes from the same `retryAction` the bar uses, so the two can't
