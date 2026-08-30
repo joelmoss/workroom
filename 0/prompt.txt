@@ -1,0 +1,1 @@
+tests take a very long time, and we've already looked into speeding that up without success. so instead review and identify tests that are superfluous, unnecessary, or test something not provided by this app
