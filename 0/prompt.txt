@@ -1,0 +1,1 @@
+In commit dialog, for JJ repos, replace the triple dot button with a "Describe" button. And for git repos, replace it with an "Amend last commit" button
