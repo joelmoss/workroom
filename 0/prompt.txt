@@ -1,0 +1,47 @@
+<task-notification>
+<task-id>aee1e6af190f0af04</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/6b6da5a6-5d6f-49ea-8b2a-a61c143807d7/tasks/aee1e6af190f0af04.output</output-file>
+<status>completed</status>
+<summary>Agent "Extract open bug TODOs by priority" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>P1 — before GA
+
+(none open)
+
+P2 — perf, correctness, and the next VCS phase
+
+- `workroom-session` daemon — items 5-6 remain: `setsid()`-spawned children can fork descendants that escape `killAll`/teardown's `killpg` [TODOS.md:170]
+- VCS toolbar findings — item (2) remains: jj Pull may guess `trunk()` as the base for an unbookmarked `@`, misreporting ahead/behind and risking a bad rebase target for a workroom off a feature branch (original repro no longer reproduces; needs a fresh one, but the underlying "derives base instead of remembering it" design gap is real) [TODOS.md:857]
+
+P3 — VCS engine, diffs, and status
+
+- Gate git VCS reads, not just writes — `resolveGit` bypasses `JJSnapshotGate`, so a fetch writing `packed-refs` can race the status sweep into a `packed-refs.lock could not be obtained` failure [TODOS.md:943]
+- jj sibling-workspace staleness after a rebase — a jj rebase in one workroom silently leaves a sibling workspace stale, surfacing as an unexplained error in the wrong workroom [TODOS.md:970]
+- `XDG_CONFIG_HOME` never reaches the `gh` auth probe — a user with a custom `XDG_CONFIG_HOME` gets a permanent false "GitHub CLI not signed in" [TODOS.md:1071]
+- `ShellEnvironment` exposes no probe-readiness signal — callers can't tell whether the PATH probe landed, so early readers (e.g. version checks) can see the floor-only PATH and misreport a tool as missing [TODOS.md:1133]
+- Deterministic tab lookup for content panes — `.first{}` over an unordered Dictionary makes which duplicate-content tab gets focused nondeterministic [TODOS.md:1277]
+- The jj snapshot ignores parts of the user's real jj/git config — fsmonitor, EOL conversion, exec-bit policy, and a custom `core.excludesFile` aren't honored/chained by the auto-snapshot path (identity/signing half already fixed) [TODOS.md:1390]
+
+P3 — Terminal, panes, and focus
+
+- Workroom split: deferred follow-ups — the queued first-responder stale-state recheck remains: an async focus enqueue re-checks only "not this view," not a fresh condition, leaving a residual (largely defused) cross-target focus race [TODOS.md:1581]
+- Two split paths still bypass the pane floor — `insertWorkroomSplit` and content-pane splits skip the 300×120pt floor, producing sub-200pt panes [TODOS.md:1608]
+
+P3 — Inspector, window layout, and theming
+
+- Back/forward doesn't reinstate the inspector section — ⌘[/⌘] can leave the Files section showing while the detail pane shows a diff, so no row highlights [TODOS.md:1782]
+
+P3 — Notifications and run commands
+
+- OSC 99 desktop notifications — libghostty doesn't parse OSC 99, a regression against the app's prior (SwiftTerm-based) behavior; blocked upstream until ghostty 1.4.0 [TODOS.md:2071]
+
+P3 — Tests and tooling
+
+- `WindowDragUITests.testDraggingWorkroomTabReordersTwoChips` — tab-reorder drag commit can read a stale, under-shot translation; partially fixed, still ~1-in-10 flaky and deliberately left skipped [TODOS.md:2239]
+
+P3 — CLI
+
+- Harden `vcs.Detect` to validate a real repo — a bogus/empty `.git` registers as a project and only fails later at workroom creation instead of at registration [TODOS.md:2485]</result>
+<usage><subagent_tokens>409813</subagent_tokens><tool_uses>10</tool_uses><duration_ms>152897</duration_ms></usage>
+</task-notification>
