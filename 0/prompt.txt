@@ -1,0 +1,4 @@
+<bash-stdout>Already on 'master'
+M	TODOS.md
+M	macapp/WorkroomAppTests/ChangedFileOpenTests.swift
+Your branch is up to date with 'origin/master'.</bash-stdout><bash-stderr></bash-stderr>
