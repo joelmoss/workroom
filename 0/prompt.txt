@@ -1,0 +1,274 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/AppStore.swift
+  - macapp/WorkroomApp/Core/WorkroomLabel.swift
+  - macapp/WorkroomApp/Views/WorkroomSplitView.swift
+  - macapp/WorkroomApp/Views/WorkroomTabBar.swift
+  - macapp/WorkroomAppTests/WorkroomLabelFormatTests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/AppStore.swift ===
+@@ -4009,6 +4009,26 @@ final class AppStore: ObservableObject {
+     Self.notificationSource(forTargetID: id, in: projects)
+   }
+ 
++  /// The display label parts for a sidebar item — the one resolver behind the workroom tab chip's
++  /// tooltip, the split pane title bar's, and the quick-switcher rail (issue #132). Formatting lives
++  /// on `WorkroomLabel`; this only *resolves*: the project's directory name, the workroom's
++  /// label-aware `displayName` (issue #41), and — for a root only — its branch, left nil while the
++  /// ref is unresolved so `RootPresentation`'s `"root"` placeholder can't pose as a branch name.
++  func label(for sid: SidebarID) -> WorkroomLabel {
++    let project = Self.projectPath(of: sid).map { ($0 as NSString).lastPathComponent } ?? ""
++    switch sid {
++    case .workroom(let path, let name):
++      return WorkroomLabel(
++        project: project, workroom: displayName(forWorkroom: name, inProject: path))
++    case .root(let path):
++      let ref = rootRefs[path] ?? .unresolved
++      let branch = ref.kind == .none ? nil : RootPresentation.make(ref).label
++      return WorkroomLabel(project: project, branch: branch)
++    case .project:
++      return WorkroomLabel(project: project)
++    }
++  }
++
+   /// Human-readable origin of a notification: the project name, or "project / workroom" for a
+   /// workroom terminal, using the workroom's `displayName` so a set label shows here too (issue #41).
+   /// Returns "" when the target isn't in `projects` (deleted) — callers fall back to the snapshot
+@@ -4022,7 +4042,7 @@ final class AppStore: ObservableObject {
+     for p in projects {
+       if TerminalTarget.rootID(project: p.path) == id { return p.displayName }
+       for w in p.workrooms where TerminalTarget.workroomID(project: p.path, name: w.name) == id {
+-        return "\(p.displayName) / \(w.displayName)"
++        return WorkroomLabel(project: p.displayName, workroom: w.displayName).full
+       }
+     }
+     return ""
+
+
+=== DIFF: macapp/WorkroomApp/Core/WorkroomLabel.swift ===
+@@ -0,0 +1,54 @@
++import Foundation
++
++/// The parts of a sidebar item's display label, resolved once and formatted per surface.
++///
++/// Four surfaces used to format this string themselves — the workroom tab chip's tooltip, the split
++/// pane title bar's tooltip, the notification origin line, and (issue #132) the quick-switcher rail —
++/// and two of them had already drifted apart on the separator (`"p/fox"` vs `"p / fox"`). The parts
++/// are resolved by `AppStore.label(for:)`; everything about *rendering* them lives here, pure and
++/// unit-testable.
++///
++/// `branch` is deliberately separate from the title: a root's branch is its *state*, not its
++/// identity, so it belongs in a subtitle. `RootPresentation.make` returns `"root"` as a placeholder
++/// for an unresolved ref, which must never be mistaken for a real branch name — the resolver keeps
++/// that case nil.
++struct WorkroomLabel: Equatable {
++  /// The owning project's directory name (`Project.displayName`). Empty only if the sid resolves no
++  /// project — a mid-reload race, not a real state.
++  let project: String
++  /// This item's own label-aware workroom name; nil for a project root.
++  let workroom: String?
++  /// A root's resolved branch/bookmark; nil for a workroom, and nil while the ref is unresolved.
++  let branch: String?
++
++  init(project: String, workroom: String? = nil, branch: String? = nil) {
++    self.project = project
++    self.workroom = workroom
++    self.branch = branch
++  }
++
++  /// The separator between project and workroom. One value, so no surface can drift again.
++  static let separator = " / "
++
++  /// The full, untruncated title — `"project / workroom"`, or just the project for a root. What a
++  /// tooltip shows, and the widest form a rail card can render.
++  var full: String {
++    workroom.map { "\(project)\(Self.separator)\($0)" } ?? project
++  }
++
++  /// The one segment that *distinguishes* this item from its peers. Generated workroom names share a
++  /// project prefix and differ at the end, so when the prefix carries no information this is what
++  /// survives. A root's distinguishing segment is its project — never its branch, which is state.
++  var distinguishing: String { workroom ?? project }
++
++  /// Titles for a whole rail (issue #132, D12): drop the project prefix when *every* item shares it,
++  /// because a prefix repeated on all N cards costs width and distinguishes nothing. With two or more
++  /// projects on the rail the prefix is load-bearing, so every card keeps its full title.
++  ///
++  /// Index-aligned with `labels`. Callers must still render with `.truncationMode(.middle)`: tail
++  /// truncation eats the end of a generated name, which is exactly where two names differ.
++  static func railTitles(_ labels: [WorkroomLabel]) -> [String] {
++    let projects = Set(labels.map(\.project))
++    return projects.count <= 1 ? labels.map(\.distinguishing) : labels.map(\.full)
++  }
++}
+
+
+=== DIFF: macapp/WorkroomApp/Views/WorkroomSplitView.swift ===
+@@ -434,8 +434,11 @@ private struct WorkroomPaneTitleBar: View {
+     )
+   }
+ 
++  /// The tooltip's title, formatted by `WorkroomLabel` — the same one the tab chip and a
++  /// notification's origin line use. Built from the parts already passed in rather than resolved from
++  /// a `SidebarID`, so this presentation view keeps its store/sid independence.
+   private var fullTitle: String {
+-    workroomName.map { "\(projectLabel) / \($0)" } ?? projectLabel
++    WorkroomLabel(project: projectLabel, workroom: workroomName).full
+   }
+ }
+ 
+
+
+=== DIFF: macapp/WorkroomApp/Views/WorkroomTabBar.swift ===
+@@ -454,11 +454,12 @@ private struct WorkroomTabChip: View {
+     return RootPresentation.make(store.rootRefs[project] ?? .unresolved).label
+   }
+ 
+-  /// The full, untruncated rendered title — `primaryLabel`, plus `/` + `workroomName` for a workroom —
+-  /// exactly what the (possibly capped) title HStack shows. Feeds the tooltip so a tail-truncated chip
+-  /// still reveals its whole name on hover, mirroring `TerminalTabChip.help(tab.title)`.
++  /// The full, untruncated rendered title — what the (possibly capped) title HStack shows. Feeds the
++  /// tooltip so a tail-truncated chip still reveals its whole name on hover, mirroring
++  /// `TerminalTabChip.help(tab.title)`. Formatted by `WorkroomLabel` so this can't drift from the
++  /// split title bar's tooltip or a notification's origin line again — which it had, on the separator.
+   private var fullTitle: String {
+-    workroomName.map { "\(primaryLabel)/\($0)" } ?? primaryLabel
++    WorkroomLabel(project: primaryLabel, workroom: workroomName).full
+   }
+ 
+   private var hasActivity: Bool { notifications.count(target: target.id) > 0 }
+
+
+=== DIFF: macapp/WorkroomAppTests/WorkroomLabelFormatTests.swift ===
+@@ -0,0 +1,125 @@
++import XCTest
++
++@testable import Workroom
++
++/// `WorkroomLabel` (issue #132, T7): the one formatter behind the workroom tab chip's tooltip, the
++/// split pane title bar's, a notification's origin line, and the quick-switcher rail. Four surfaces
++/// used to build this string themselves and two had already drifted on the separator, so these tests
++/// pin the shared format, the root/branch distinction, and the rail's prefix-dropping rule (D12).
++@MainActor
++final class WorkroomLabelFormatTests: XCTestCase {
++
++  private func makeStore(_ projects: [Project]) -> AppStore {
++    let store = AppStore()
++    store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
++    store.projects = projects
++    return store
++  }
++
++  private func project(_ path: String, workrooms: [String]) -> Project {
++    Project(
++      path: path, vcs: "git",
++      workrooms: workrooms.map {
++        Workroom(name: $0, path: "\(path)/\($0)", vcsName: "workroom/\($0)", warnings: [])
++      })
++  }
++
++  // MARK: Formatting
++
++  func testFullTitleFormat() {
++    XCTAssertEqual(
++      WorkroomLabel(project: "platform", workroom: "fix-auth").full, "platform / fix-auth")
++    XCTAssertEqual(
++      WorkroomLabel(project: "platform").full, "platform", "a root shows only the project")
++    XCTAssertEqual(
++      WorkroomLabel(project: "platform", branch: "main").full, "platform",
++      "a branch is state, never part of the title")
++  }
++
++  func testFullTitleMatchesNotificationSourceFormat() {
++    var fox = Workroom(name: "fox", path: "/p/fox", vcsName: "workroom/fox", warnings: [])
++    fox.label = "Auth"
++    let projects = [Project(path: "/p", vcs: "git", workrooms: [fox])]
++    // The regression this extraction exists to prevent: the chip's tooltip and the notification
++    // origin line must be one format. Before T7 the chip rendered "p/Auth" and this rendered "p / Auth".
++    XCTAssertEqual(
++      AppStore.notificationSource(
++        forTargetID: TerminalTarget.workroomID(project: "/p", name: "fox"), in: projects),
++      WorkroomLabel(project: "p", workroom: "Auth").full)
++  }
++
++  func testDistinguishingSegment() {
++    XCTAssertEqual(
++      WorkroomLabel(project: "platform", workroom: "fix-auth").distinguishing, "fix-auth")
++    XCTAssertEqual(
++      WorkroomLabel(project: "platform", branch: "main").distinguishing, "platform",
++      "a root is distinguished by its project, NOT its branch")
++  }
++
++  // MARK: Rail titles (D12)
++
++  func testRailTitlesDropASharedProjectPrefix() {
++    let labels = [
++      WorkroomLabel(project: "workroom", workroom: "partitioned-crescent"),
++      WorkroomLabel(project: "workroom", workroom: "partitioned-cascade"),
++      WorkroomLabel(project: "workroom"),
++    ]
++    XCTAssertEqual(
++      WorkroomLabel.railTitles(labels),
++      ["partitioned-crescent", "partitioned-cascade", "workroom"],
++      "one project on the rail ⇒ the prefix distinguishes nothing and costs width")
++  }
++
++  func testRailTitlesKeepTheProjectWhenItDisambiguates() {
++    let labels = [
++      WorkroomLabel(project: "workroom", workroom: "fox"),
++      WorkroomLabel(project: "platform", workroom: "fox"),
++    ]
++    XCTAssertEqual(
++      WorkroomLabel.railTitles(labels), ["workroom / fox", "platform / fox"],
++      "two same-named workrooms across projects must not both read \"fox\"")
++  }
++
++  func testRailTitlesEdgeCases() {
++    XCTAssertEqual(WorkroomLabel.railTitles([]), [])
++    XCTAssertEqual(
++      WorkroomLabel.railTitles([WorkroomLabel(project: "p", workroom: "fox")]), ["fox"],
++      "a single card needs no prefix")
++    XCTAssertEqual(
++      WorkroomLabel.railTitles([
++        WorkroomLabel(project: "p", workroom: "fox"), WorkroomLabel(project: "p"),
++      ]).count, 2, "index-aligned with the input")
++  }
++
++  // MARK: Resolution — AppStore.label(for:)
++
++  func testLabelResolvesWorkroomDisplayName() {
++    let store = makeStore([project("/Users/me/platform", workrooms: ["fox"])])
++    let sid = SidebarID.workroom(project: "/Users/me/platform", name: "fox")
++    XCTAssertEqual(store.label(for: sid), WorkroomLabel(project: "platform", workroom: "fox"))
++    // A relabel (issue #41) must show through — the resolver reads displayName, not the sid's name.
++    store.setWorkroomLabel(store.projects[0].workrooms[0], in: store.projects[0], to: "Auth")
++    XCTAssertEqual(store.label(for: sid).workroom, "Auth")
++    XCTAssertEqual(store.label(for: sid).full, "platform / Auth")
++  }
++
++  func testLabelForRootCarriesBranchButNotInTheTitle() {
++    let store = makeStore([project("/Users/me/platform", workrooms: [])])
++    let sid = SidebarID.root(project: "/Users/me/platform")
++    // Unresolved: RootPresentation.make renders "root" as a PLACEHOLDER — it must not pose as a branch.
++    XCTAssertNil(store.label(for: sid).branch, "an unresolved ref has no branch")
++    XCTAssertEqual(store.label(for: sid).full, "platform")
++    store.rootRefs["/Users/me/platform"] = RootRef(branch: "main", kind: .branch)
++    XCTAssertEqual(store.label(for: sid).branch, "main")
++    XCTAssertNil(store.label(for: sid).workroom)
++    XCTAssertEqual(store.label(for: sid).full, "platform", "branch stays out of the title")
++  }
++
++  func testLabelForUnknownProjectDegradesToEmptyProject() {
++    let store = makeStore([])
++    XCTAssertEqual(
++      store.label(for: .workroom(project: "/gone", name: "fox")),
++      WorkroomLabel(project: "gone", workroom: "fox"),
++      "the path's last component is used even when the project isn't loaded (mid-reload race)")
++  }
++}
+
+
+Investigate per the method in your instructions, then return the findings list.
