@@ -1,0 +1,1 @@
+<bash-stdout>Deleted branch libghostty-dispatch-baseline (was 3e01ce3c).</bash-stdout><bash-stderr></bash-stderr>
