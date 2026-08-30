@@ -1,0 +1,1 @@
+after closing last pane in the only open workroom, that workroom stays open. instead, the default "no workroom selected" screen should appear, and the right side bar closed
