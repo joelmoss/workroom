@@ -1,0 +1,36 @@
+<task-notification>
+<task-id>a0981be3d2fa1c1f1</task-id>
+<tool-use-id>toolu_01SiHupPXo2WDtN3kBeP5wRP</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/aed8926d-2d0e-4e9c-8c02-c5f98d2554f8/tasks/a0981be3d2fa1c1f1.output</output-file>
+<status>completed</status>
+<summary>Agent "Find app quit dialog and persistent session code" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Perfect! Now I have all the details. Let me compile the findings:
+
+```
+Defs:
+- macapp/WorkroomApp/Core/DefaultsKeys.swift:48 — `backgroundSessions` — persistent terminal setting
+- macapp/WorkroomApp/WorkroomApp.swift:632 — `applicationShouldTerminate` — quit dialog &amp; behavior
+
+Quit Dialog:
+- macapp/WorkroomApp/WorkroomApp.swift:642 — messageText "Quit Workroom?"
+- macapp/WorkroomApp/WorkroomApp.swift:643-646 — informativeText conditional on backgroundSessions
+  - ON (true): "Quitting leaves background terminals running. You can reattach them when you reopen Workroom."
+  - OFF (false): "Quitting closes all terminals and stops any running processes."
+
+Persistent Session Behavior:
+- macapp/WorkroomApp/WorkroomApp.swift:686 — `shouldStopPersistentSessions = !Defaults[.backgroundSessions]`
+- macapp/WorkroomApp/WorkroomApp.swift:688-693 — calls `PersistentSessionService.shared.endAllSessions()` only when setting is OFF
+- Also in SIGTERM handler at line 538-543: same pattern
+
+Settings Toggle:
+- macapp/WorkroomApp/Views/SettingsView.swift:348 — "Persist sessions" toggle reads/writes backgroundSessions
+```
+
+**Summary:**
+
+The quit dialog is in `applicationShouldTerminate` (WorkroomApp.swift:632–660). It shows different messages based on the `backgroundSessions` setting (defined at DefaultsKeys.swift:48, default: ON). When ON, the alert says terminals will persist; when OFF, it says they'll close. 
+
+When quitting with the setting OFF, `stopRunCommandsThenTerminate` (line 668–711) calls `PersistentSessionService.shared.endAllSessions()` at line 691 to actually kill the sessions. When ON, this code is skipped and sessions keep running. The toggle is in Settings (SettingsView.swift:348) labeled "Persist sessions."</result>
+<usage><subagent_tokens>57076</subagent_tokens><tool_uses>8</tool_uses><duration_ms>41136</duration_ms></usage>
+</task-notification>
