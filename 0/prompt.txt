@@ -1,0 +1,3714 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/AppStore+Session.swift
+  - macapp/WorkroomApp/Core/AppStore.swift
+  - macapp/WorkroomApp/Core/DefaultsKeys.swift
+  - macapp/WorkroomApp/Core/ProjectStore.swift
+  - macapp/WorkroomApp/Core/SessionCoordinator.swift
+  - macapp/WorkroomApp/Core/SessionSnapshot.swift
+  - macapp/WorkroomApp/Core/SessionStore.swift
+  - macapp/WorkroomApp/Core/TerminalSessions.swift
+  - macapp/WorkroomApp/Core/UITestFixture.swift
+  - macapp/WorkroomApp/Core/WindowRegistry.swift
+  - macapp/WorkroomApp/WorkroomApp.swift
+  - macapp/WorkroomAppTests/AppStoreSessionRestoreTests.swift
+  - macapp/WorkroomAppTests/SessionCaptureTests.swift
+  - macapp/WorkroomAppTests/SessionRestoreTests.swift
+  - macapp/WorkroomAppTests/SessionSaveTests.swift
+  - macapp/WorkroomAppTests/SessionSnapshotCodecTests.swift
+  - macapp/WorkroomAppTests/SessionStoreTests.swift
+  - macapp/WorkroomAppUITests/SessionRestoreUITests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/AppStore+Session.swift ===
+@@ -0,0 +1,120 @@
++import AppKit
++import Foundation
++
++/// What one window contributes to the saved session (issue #46). `SessionCoordinator` decides when
++/// this runs; `SessionStore` owns the file.
++///
++/// Capture reads only through existing public queries plus the one new
++/// `TerminalSessions.sessionCapture(forTargetID:)`, so the four pane dictionaries stay
++/// `@Published private` where they belong.
++extension AppStore {
++  /// This window's whole restorable state, right now.
++  ///
++  /// Runs on the main actor and must stay cheap: it is called on every coalesced save, and (via the
++  /// ceiling) at a steady cadence while terminals are busy. It walks a few dozen small values and
++  /// allocates no views — the expensive part, encoding, happens off the main actor in `SessionStore`.
++  func captureWindowSession() -> WindowSession {
++    WindowSession(
++      windowKey: sessionKey.uuidString,
++      frame: hostWindow.map { NSStringFromRect($0.frame) },
++      isKey: hostWindow?.isKeyWindow ?? false,
++      selectedTargetID: Self.targetIDString(for: selectedTargetID),
++      targets: captureTargetSessions(),
++      workroomSplits: captureWorkroomSplits(),
++      expandedTargets: expandedTerminalTargets.isEmpty
++        ? nil : expandedTerminalTargets.sorted())
++  }
++
++  /// Every target that currently owns panes, in a stable order so an unchanged layout produces an
++  /// unchanged document — which is what lets the coordinator's equality gate drop the write.
++  private func captureTargetSessions() -> [TargetSession] {
++    terminals.activeTargetIDs.sorted().compactMap { targetID in
++      guard let captured = terminals.sessionCapture(forTargetID: targetID) else { return nil }
++
++      // Tabs the bridge refuses (today: run tabs) drop out here, and the split leaf that pointed at
++      // one collapses with them — `LayoutNode.capture` applies the same rule `PaneLayout.removingLeaf`
++      // does, so a split can never be left addressing a pane that was not written.
++      var keysByTabID: [TerminalTab.ID: String] = [:]
++      var tabs: [TabSession] = []
++      for tab in captured.tabs {
++        let key = tab.id.uuidString
++        guard let session = TabSession(key: key, tab: tab) else { continue }
++        keysByTabID[tab.id] = key
++        tabs.append(session)
++      }
++      guard !tabs.isEmpty else { return nil }
++
++      let split = captured.split.flatMap { layout in
++        LayoutNode<String>.capture(layout) { keysByTabID[$0] }
++      }
++      return TargetSession(
++        targetID: targetID, tabs: tabs, split: split,
++        focusedKey: captured.focused.flatMap { keysByTabID[$0] },
++        terminalCounter: captured.counter)
++    }
++  }
++
++  /// The workroom-into-workroom split groups, with `SidebarID` leaves reduced to the same target-id
++  /// strings `Defaults[.sidebarSelection]` and `workroomTabOrder` already persist — so no new id
++  /// format ships, and `AppStore.sidebarID(forTargetID:in:)` resolves them back (dropping any that
++  /// no longer exist).
++  private func captureWorkroomSplits() -> [LayoutNode<String>] {
++    workroomSplits.compactMap { layout in
++      LayoutNode<String>.capture(layout) { Self.targetIDString(for: $0) }
++    }
++  }
++
++  /// Tell the coordinator this window changed. Every dirty source funnels through here so there is
++  /// one place to look when asking "what causes a save?".
++  func markSessionDirty() {
++    SessionCoordinator.shared.markDirty()
++  }
++
++  // MARK: Restore
++
++  /// Adopt this window's saved session, once. Called from `attachWindow` — see the comment there for
++  /// why not from the view initialiser.
++  func claimSessionIfNeeded() {
++    guard !didClaimSession else { return }
++    didClaimSession = true
++    guard let claimed = projectStore.claimSession(isLaunchWindow: isRestoreWindow) else { return }
++    pendingSessionRestore = claimed
++    // Keep the window's identity stable across launches: it now owns this session's slot.
++    if let key = UUID(uuidString: claimed.windowKey) { sessionKey = key }
++    // The session owns selection; `Defaults[.sidebarSelection]` (already loaded into
++    // `pendingRestoreSelection`) stays as the cold-start fallback for a launch with no session file.
++    // Feeding the session's value through the SAME field means `apply` needs no second branch.
++    if let selected = claimed.selectedTargetID { pendingRestoreSelection = selected }
++  }
++
++  /// Rehydrate the claimed session at the end of `apply(_:)`. One-shot: `apply` runs twice per
++  /// bootstrap (`load("none")` then `load("fast")`), and reloads come through it too.
++  func restorePersistedSessionIfPending(in projects: [Project]) {
++    guard let session = pendingSessionRestore else { return }
++    pendingSessionRestore = nil
++    defer { projectStore.finishSessionRestore() }
++
++    var restoredTargetIDs: Set<TerminalTarget.ID> = []
++    for saved in session.targets {
++      // A target that no longer resolves — its workroom was deleted between launches — is dropped
++      // whole, the same self-heal `validatedSelection` and `pruneWorkroomSplitToLiveLeaves` apply.
++      guard let sid = Self.sidebarID(forTargetID: saved.targetID, in: projects),
++        let target = target(for: sid)
++      else { continue }
++      guard terminals.restore(saved, for: target) > 0 else { continue }
++      restoredTargetIDs.insert(target.id)
++    }
++
++    // The workroom-into-workroom split groups (issue #23). A leaf whose workroom is gone collapses,
++    // and a group left with fewer than two leaves dissolves — `materialize` enforces that, so a
++    // one-workroom "group" can never reach the live model.
++    workroomSplits = session.workroomSplits.compactMap { saved in
++      saved.materialize { Self.sidebarID(forTargetID: $0, in: projects) }
++    }
++    // Sidebar terminal-subtree expansion (issue #30). Only for targets that actually came back —
++    // an expand flag pointing at nothing would render an empty disclosure.
++    expandedTerminalTargets = Set(session.expandedTargets ?? []).intersection(restoredTargetIDs)
++
++    refreshSelectionHasTabs()
++  }
++}
+
+
+=== DIFF: macapp/WorkroomApp/Core/AppStore.swift ===
+@@ -90,6 +90,12 @@ final class AppStore: ObservableObject {
+   /// so views/menus observing this store still re-render when the shared data changes.
+   let projectStore: ProjectStore
+   private var projectStoreObservation: AnyCancellable?
++  /// Marks the saved session dirty on any pane change (issue #46). Hooking the publisher rather than
++  /// the ~12 structural mutators in `TerminalSessions` is deliberate: a thirteenth mutation cannot be
++  /// forgotten. It fires far more often than the session changes (every live title, every activity
++  /// pulse), which the coordinator answers with coalescing plus an equality gate — the excluded
++  /// fields make that chatter produce an identical document, so it costs a comparison, not a write.
++  private var sessionObservation: AnyCancellable?
+ 
+   /// Seam over the bundled `workroom` CLI (issue #103). Production uses
+   /// `WorkroomCLI.shared`; tests inject a fake to drive mutations without a real
+@@ -116,6 +122,12 @@ final class AppStore: ObservableObject {
+   /// by the quick switcher's recency (and its snapshot cache) so a closed window's entries can't
+   /// alias onto a fresh one.
+   let windowToken = WindowToken()
++  /// This window's identity in the saved session (issue #46) — the key its `WindowSession` is stored
++  /// under, and the only cross-*launch* window identity the app has. `WindowSeed.launch` mints a fresh
++  /// UUID on every access and `windowToken` is per-process, so neither survives a relaunch. Defaults
++  /// to the seed's id; a window that adopts a saved session takes that session's key instead, so the
++  /// same window keeps the same slot across launches.
++  var sessionKey = UUID()
+   /// Retains the close-guard delegate proxy (the window holds its delegate weakly) for this window's
+   /// lifetime (issue #70, A3).
+   private var closeGuard: WindowCloseGuard?
+@@ -163,6 +175,9 @@ final class AppStore: ObservableObject {
+       if persistsSidebarPrefs {
+         Defaults[.sidebarSelection] = Self.targetIDString(for: selectedTargetID)
+       }
++      // The saved session records selection PER WINDOW (issue #46); the Defaults key above is the
++      // single-slot cold-start fallback for a launch with no usable session file.
++      markSessionDirty()
+       // Promote this workroom in the quick switcher's most-recently-used order (issue #132).
+       // UNCONDITIONAL, unlike the history record below: `applyLocation` raises `isNavigatingHistory`
+       // for its whole body and the switcher commits through it, so a gated write would never record
+@@ -259,16 +274,21 @@ final class AppStore: ObservableObject {
+   /// coexist** — grouping two solo workrooms leaves the other groups alone — and they're disjoint (a
+   /// workroom is in at most one) with ≥2 leaves each (a lone leaf is "no split", mirroring the
+   /// terminal-split invariant). At most one group is *visible*: the one holding the selection.
+-  /// Session-only (not persisted, like the terminal split). All edits go through the helpers in
++  /// Persisted with the rest of the session (issue #46) as target-id strings; a group whose leaves no
++  /// longer resolve dissolves on restore. All edits go through the helpers in
+   /// `AppStore+WorkroomSplit.swift`; stale leaves resolve away in `resolvedSplitLeaves(of:)`, so it's
+   /// self-healing. See that file for the transforms.
+-  @Published var workroomSplits: [PaneLayout<SidebarID>] = []
++  @Published var workroomSplits: [PaneLayout<SidebarID>] = [] {
++    didSet { markSessionDirty() }
++  }
+   /// Terminal targets whose terminal subtree is *expanded* in the sidebar (issue #30). Inverse
+   /// polarity to `collapsedProjects`: terminals are collapsed by default, so the set holds only the
+-  /// expanded ones (empty = all collapsed). Session-only and deliberately NOT persisted — the
+-  /// terminals themselves don't survive a relaunch (`TerminalSessions` is in-memory), so a restored
+-  /// expand flag would point at nothing. Pruned below 2 tabs by the `onTabsRemoved` hook in `init`.
+-  @Published var expandedTerminalTargets: Set<TerminalTarget.ID> = []
++  /// expanded ones (empty = all collapsed). Persisted with the session (issue #46) — restored only for
++  /// targets whose panes actually came back, since an expand flag pointing at nothing would render an
++  /// empty disclosure. Pruned below 2 tabs by the `onTabsRemoved` hook in `init`.
++  @Published var expandedTerminalTargets: Set<TerminalTarget.ID> = [] {
++    didSet { markSessionDirty() }
++  }
+   /// Per-project resolved root branch/bookmark labels, hydrated asynchronously after each
+   /// load (see `resolveBranches`). Absent ⇒ the root row shows a dim "root" until resolved.
+   var rootRefs: [Project.ID: RootRef] {
+@@ -783,7 +803,16 @@ final class AppStore: ObservableObject {
+   private var lastLoadAt: Date = .distantPast
+   /// The selection persisted from a previous launch (issue #14), applied once on the first
+   /// successful load (see `apply`). Consumed there so a later refresh can't resurrect it.
+-  private var pendingRestoreSelection: TerminalTarget.ID?
++  ///
++  /// Seeded from `Defaults[.sidebarSelection]`, and overwritten by a claimed session's own selection
++  /// (issue #46) — the session owns selection per window; the Defaults key is the single-slot
++  /// cold-start fallback. Internal rather than private so `AppStore+Session` can do that.
++  var pendingRestoreSelection: TerminalTarget.ID?
++  /// This window's claimed saved session (issue #46), consumed at the end of `apply`.
++  var pendingSessionRestore: WindowSession?
++  /// One-shot guard: `WindowAccessor` can resolve the same window more than once, and a claim must
++  /// never be taken twice.
++  var didClaimSession = false
+   /// UI-test fixture mode only: whether this window auto-selects the fixture workroom. True for the
+   /// launch window, false for a ⌘N window so it stays blank — the fixture analogue of clearing
+   /// `pendingRestoreSelection` on the real path (issue #70).
+@@ -824,6 +853,11 @@ final class AppStore: ObservableObject {
+     projectStoreObservation = store.objectWillChange.sink { [weak self] _ in
+       self?.objectWillChange.send()
+     }
++    // Any pane change marks the saved session dirty (issue #46). `objectWillChange` fires BEFORE the
++    // mutation, so the coordinator must always schedule a capture — never take one inline here.
++    sessionObservation = terminals.objectWillChange.sink { [weak self] _ in
++      self?.markSessionDirty()
++    }
+     // Wired post-init (the `workroomFileWatcher` idiom) so `RemoteStateModel` needs no `AppStore` to be
+     // unit-tested. `onBranchResolved` makes this model the single writer of the shared branch cache
+     // every branch-showing surface reads through `branchName(for:)`.
+@@ -934,10 +968,46 @@ final class AppStore: ObservableObject {
+     return (frame.width > 200 && frame.height > 200) ? frame : nil
+   }
+ 
++  /// A restored frame, moved onto a screen that still exists.
++  ///
++  /// Restoring a raw frame is not safe (issue #46): unplug the external display a window was on, or
++  /// change the resolution, and the window reopens somewhere the user cannot reach it — with no way
++  /// back except deleting the saved state. Anything that still overlaps a visible screen is left
++  /// exactly as it was; anything that doesn't is shrunk to fit and re-centred on the primary screen.
++  static func frameOnAVisibleScreen(_ frame: NSRect) -> NSRect? {
++    frameOnAVisibleScreen(frame, screens: NSScreen.screens.map(\.visibleFrame))
++  }
++
++  /// The pure core, taking the screens as data so it is unit-testable without a display.
++  nonisolated static func frameOnAVisibleScreen(_ frame: NSRect, screens: [NSRect]) -> NSRect? {
++    guard frame.width > 200, frame.height > 200 else { return nil }
++    guard let primary = screens.first else { return nil }
++    // "Reachable" means a real overlap, not a shared edge — a window one pixel onto a screen is not
++    // something a user can grab.
++    let minimumVisible: CGFloat = 60
++    let isReachable = screens.contains { screen in
++      let overlap = screen.intersection(frame)
++      return !overlap.isNull && overlap.width >= minimumVisible && overlap.height >= minimumVisible
++    }
++    if isReachable { return frame }
++
++    let size = NSSize(
++      width: min(frame.width, primary.width), height: min(frame.height, primary.height))
++    return NSRect(
++      x: primary.midX - size.width / 2, y: primary.midY - size.height / 2,
++      width: size.width, height: size.height)
++  }
++
+   /// Bind this store to its host `NSWindow` once the view tree resolves it (issue #70). Idempotent —
+   /// `WindowAccessor` may resolve the same window more than once.
+   func attachWindow(_ window: NSWindow) {
+     hostWindow = window
++    // Adopt this window's saved panes (issue #46) BEFORE anything below reads them. Here rather than
++    // in `RootWindow.init` on purpose: SwiftUI can construct a view speculatively or repeatedly, and a
++    // discarded init would consume a session no real window ever shows. `attachWindow` runs from
++    // `WindowAccessor` in `viewDidMoveToWindow` — a real window exists, and it is still pre-display,
++    // which is what the restored frame needs.
++    claimSessionIfNeeded()
+     // Keep the title out of the title bar (issue #70). The title we give the window (selected
+     // project/workroom, via `navigationTitle` → `windowTitle`) exists only to name it in the Window
+     // menu + Mission Control — never to show in the bar. But a non-empty `navigationTitle` re-asserts
+@@ -965,9 +1035,16 @@ final class AppStore: ObservableObject {
+         }
+       }
+     }
+-    // Launch with a single window (issue #70): SwiftUI would otherwise persist + restore every window
+-    // that was open at quit. We restore the one window's size ourselves (below), so opt out of
+-    // AppKit's per-window state restoration; extra windows are deliberately not reopened.
++    // Opt out of AppKit/SwiftUI window state restoration (issue #70), and KEEP it opted out now that
++    // the app restores sessions itself (issue #46) — otherwise an OS-restored window and an
++    // app-restored one would both appear.
++    //
++    // The built-in is real and would even solve cross-launch window identity for free (a value-based
++    // `WindowGroup` brings each `WindowSeed` back with its original id — which is why `WindowSeed` is
++    // `Codable`). It is declined because it is gated on a system preference that ships OFF: "Close
++    // windows when quitting an application" is checked by default, so `NSQuitAlwaysKeepsWindows` is
++    // unset on a default install and the built-in silently does nothing for most users. Panels and
++    // frames are restored from `session.json` instead, which behaves the same for everyone.
+     window.isRestorable = false
+     // Set the window's size before it's shown (issue #70): `WindowAccessor` resolves it in
+     // `viewDidMoveToWindow`, which fires during window setup (pre-display), so SwiftUI's value-based
+@@ -976,9 +1053,16 @@ final class AppStore: ObservableObject {
+     // was current when it opened; the launch window restores its last frame, else a sensible default.
+     if !didApplyInitialSize {
+       didApplyInitialSize = true
+-      if let size = pendingInitialWindowSize {
++      // The saved session owns per-window frames (issue #46) and wins over both the
++      // "match the current window" size and the single-slot `Defaults` key, which can only ever
++      // describe one window and is now just the cold-start fallback.
++      if let restored = pendingSessionRestore?.frame.map(NSRectFromString),
++        let frame = Self.frameOnAVisibleScreen(restored)
++      {
++        window.setFrame(frame, display: false)
++      } else if let size = pendingInitialWindowSize {
+         window.setFrame(NSRect(origin: window.frame.origin, size: size), display: false)
+-      } else if let frame = Self.savedMainWindowFrame() {
++      } else if let frame = Self.savedMainWindowFrame().flatMap(Self.frameOnAVisibleScreen) {
+         window.setFrame(frame, display: false)
+       } else {
+         window.setContentSize(NSSize(width: 1200, height: 780))
+@@ -991,9 +1075,18 @@ final class AppStore: ObservableObject {
+       for name in [NSWindow.didResizeNotification, NSWindow.didMoveNotification] {
+         let token = NotificationCenter.default.addObserver(
+           forName: name, object: window, queue: .main
+-        ) { [weak window] _ in
++        ) { [weak self, weak window] _ in
+           guard let window else { return }
+-          MainActor.assumeIsolated { Defaults[.mainWindowFrame] = NSStringFromRect(window.frame) }
++          MainActor.assumeIsolated {
++            // Per-window frames live in the saved session (issue #46); a drag fires this
++            // continuously, which the coordinator's coalescing absorbs.
++            SessionCoordinator.shared.markDirty()
++            // The `Defaults` key holds ONE frame, so only the active window writes it — three windows
++            // were previously racing to be the last mover. It is now the cold-start fallback for a
++            // first launch with no session file, not the authority.
++            guard self?.persistsSidebarPrefs == true else { return }
++            Defaults[.mainWindowFrame] = NSStringFromRect(window.frame)
++          }
+         }
+         frameObservers.append(token)
+       }
+@@ -2369,6 +2462,10 @@ final class AppStore: ObservableObject {
+   private func loadFixture() {
+     let fixtures = UITestFixture.projects()
+     projects = fixtures
++    // Fixture mode never reaches `apply`, so restore has to be released here or saves would stay
++    // suspended for the whole run (issue #46). Fixture projects live in a temp directory that a real
++    // saved session can't address anyway.
++    restorePersistedSessionIfPending(in: fixtures)
+     // Seed a deterministic run command (issue #7) so the run-command UI is exercisable in fixture
+     // mode (the lifecycle XCUITest + the manual verify-first probe). The path is a temp dir, so real
+     // projects' Defaults are untouched. Prints a marker (proves the command parsed + launched) then
+@@ -2536,6 +2633,12 @@ final class AppStore: ObservableObject {
+     }
+     // Keep the live root-branch watchers in sync with the project set (start new, drop departed).
+     updateRootBranchWatches()
++    // Rehydrate this window's panes (issue #46). LAST, and race-free by construction rather than by
++    // timing: a pane only mounts once `selectedTargetID` is non-nil AND SwiftUI has rendered, neither
++    // of which can happen inside this synchronous main-actor body. By the time
++    // `WorkroomTerminalsView`'s `.task` runs `ensureInitialTerminal`, `tabCount != 0`, so its existing
++    // guard makes it a no-op and no stray "Terminal 1" appears beside the restored panes.
++    restorePersistedSessionIfPending(in: fresh)
+   }
+ 
+   /// Removes workrooms currently tombstoned in `deletingWorkrooms` from an incoming CLI project list,
+
+
+=== DIFF: macapp/WorkroomApp/Core/DefaultsKeys.swift ===
+@@ -128,8 +128,8 @@ extension Defaults.Keys {
+   static let runCommands = Key<[String: RunConfig]>("runCommands", default: [:])
+ 
+   /// Remembered order of the workroom tab bar, as `TerminalTarget.ID` strings (issue #23, same
+-  /// encoding as `sidebarSelection`). Terminals don't survive relaunch, so this is just an ordering
+-  /// hint applied to whatever is currently active — stale ids resolve away harmlessly.
++  /// encoding as `sidebarSelection`). Terminals now DO survive a relaunch (issue #46), but this stays
++  /// an ordering hint applied to whatever is currently active — stale ids resolve away harmlessly.
+   static let workroomTabOrder = Key<[String]>("workroomsView.tabOrder", default: [])
+ 
+   /// Trigger modifiers for the two quick switchers (issue #132): ⌥Tab steps open workrooms across
+
+
+=== DIFF: macapp/WorkroomApp/Core/ProjectStore.swift ===
+@@ -85,4 +85,51 @@ final class ProjectStore: ObservableObject {
+     defer { pendingInitialRestore = false }
+     return pendingInitialRestore
+   }
++
++  // MARK: Saved session (issue #46)
++
++  /// Windows from the saved session that no window has adopted yet. Loaded once, lazily, by the first
++  /// claim — which is also the moment saves are suspended, so a restoring window cannot overwrite the
++  /// file before the rest of it has been claimed.
++  private var unclaimedSessionWindows: [WindowSession] = []
++  private var didLoadSession = false
++  /// Injectable so tests drive a temp session file instead of the developer's real one.
++  var sessionCoordinator: SessionCoordinator = .shared
++  /// True between loading the session and finishing the restore, so the suspend/resume is balanced
++  /// exactly once however many windows take part.
++  private var isRestoringSession = false
++
++  /// Adopt a saved window for this store, or nil when there is nothing to adopt.
++  ///
++  /// Loading is lazy so the read happens at the first claim rather than at app init — the claim is
++  /// made from `AppStore.attachWindow`, when a real `NSWindow` exists but before it is shown, which is
++  /// both early enough for the frame and late enough that a speculative SwiftUI view init cannot
++  /// consume a session no window ever uses.
++  func claimSession(isLaunchWindow: Bool) -> WindowSession? {
++    loadSessionIfNeeded()
++    // Only the launch window restores today; every ⌘N window opens blank, matching
++    // `consumeInitialRestore`. Per-window claiming by key is the multi-window follow-up.
++    guard isLaunchWindow, !unclaimedSessionWindows.isEmpty else { return nil }
++    return unclaimedSessionWindows.removeFirst()
++  }
++
++  /// Every claimed window has finished restoring — resume saving.
++  func finishSessionRestore() {
++    guard isRestoringSession else { return }
++    isRestoringSession = false
++    unclaimedSessionWindows.removeAll()
++    sessionCoordinator.resumeSaves()
++  }
++
++  private func loadSessionIfNeeded() {
++    guard !didLoadSession else { return }
++    didLoadSession = true
++    guard case .restored(let file, _) = sessionCoordinator.read() else { return }
++    unclaimedSessionWindows = file.windows
++    isRestoringSession = true
++    // Suspended until `finishSessionRestore`. Without this the first window's restore marks the
++    // session dirty, and that write would rebuild the document from the windows that exist SO FAR —
++    // overwriting the file and discarding the ones still to be claimed.
++    sessionCoordinator.suspendSaves()
++  }
+ }
+
+
+=== DIFF: macapp/WorkroomApp/Core/SessionCoordinator.swift ===
+@@ -0,0 +1,176 @@
++import AppKit
++import Foundation
++import OSLog
++
++/// Decides *when* the saved session is written (issue #46). `SessionStore` owns the file;
++/// `AppStore+Session` owns what one window contributes; this owns coalescing, the restore gate, and
++/// the quit freeze.
++///
++/// There is exactly one writer, and it rebuilds the whole document from every live window. That
++/// replaces `AppStore.persistsSidebarPrefs` arbitration *for the session only*: that gate exists
++/// because a single `Defaults` key cannot hold N windows — this file can. `persistsSidebarPrefs`
++/// still governs the Defaults keys it always did.
++@MainActor
++final class SessionCoordinator {
++  static let shared = SessionCoordinator(store: .forCurrentEnvironment())
++
++  /// Coalescing window. Long enough that a burst of layout edits costs one write.
++  static let defaultDebounce: TimeInterval = 1
++  /// **The ceiling is not an optimisation — it is what makes saving work at all.**
++  ///
++  /// The dirty sources publish faster than 1 Hz whenever a terminal is doing anything:
++  /// `TerminalSessions.pulsePaneActivity` bumps a `@Published` dict per activity report, and every
++  /// live-title/cwd/progress update reassigns `tabsByTarget` (`TerminalTab` is a value type). A plain
++  /// cancel-and-replace debounce therefore has its deadline pushed out forever while output streams,
++  /// and **never fires** — so splitting a pane beside a running dev server would never be saved.
++  ///
++  /// Recording when the session FIRST went dirty and forcing a write once this much time has passed
++  /// bounds the loss regardless of how chatty the terminals are.
++  static let defaultCeiling: TimeInterval = 5
++
++  private let store: SessionStore
++  private let debounce: TimeInterval
++  private let ceiling: TimeInterval
++  private let capture: () -> [WindowSession]
++  private let logger = Logger(
++    subsystem: "com.developwithstyle.workroom", category: "session")
++
++  private var pending: DispatchWorkItem?
++  /// When the current dirty streak began — the ceiling is measured from here, not from the last edit.
++  private var dirtySince: Date?
++  /// The last document written, compared with `==` rather than a hash: Swift seeds `hashValue` per
++  /// process, and a collision would silently suppress a write the user needs.
++  private var lastWritten: [WindowSession]?
++  /// Depth rather than a flag so nested suspensions (several windows restoring) cannot resume early.
++  private var suspensions = 0
++  private var dirtyWhileSuspended = false
++  /// Set once the app is genuinely terminating. Windows close one by one during a quit, and the
++  /// document is rebuilt from the LIVE windows — without this, the last window closing would
++  /// overwrite a good session with an empty one after the flush already wrote it.
++  private var isFrozen = false
++
++  init(
++    store: SessionStore = SessionStore(),
++    debounce: TimeInterval = SessionCoordinator.defaultDebounce,
++    ceiling: TimeInterval = SessionCoordinator.defaultCeiling,
++    capture: (() -> [WindowSession])? = nil
++  ) {
++    self.store = store
++    self.debounce = debounce
++    self.ceiling = ceiling
++    self.capture = capture ?? { WindowRegistry.shared.captureSessionWindows() }
++  }
++
++  /// Exposed so a caller can tell "no session" from "a session this build must not touch".
++  var writesDisabled: Bool { store.writesDisabled }
++
++  // MARK: Restore gate
++
++  /// True while a restore is in flight, so nothing writes a half-restored document.
++  var isSuspended: Bool { suspensions > 0 }
++
++  /// Stop writing until the matching `resumeSaves()`.
++  ///
++  /// **This is the gate that stops the launch window deleting the others.** Restoring window 1
++  /// mutates `TerminalSessions` and `AppStore`, which marks the session dirty. If that write landed
++  /// before the sibling windows had opened and registered, the document would be rebuilt from the one
++  /// live window and overwrite the file — silently discarding windows 2 and 3 on the very launch that
++  /// was meant to bring them back.
++  func suspendSaves() {
++    suspensions += 1
++    pending?.cancel()
++    pending = nil
++  }
++
++  func resumeSaves() {
++    guard suspensions > 0 else { return }
++    suspensions -= 1
++    guard suspensions == 0, dirtyWhileSuspended else { return }
++    dirtyWhileSuspended = false
++    markDirty()
++  }
++
++  // MARK: Dirty tracking
++
++  /// The session changed. Safe to call at any rate — this is called from publishers that fire many
++  /// times a second.
++  func markDirty() {
++    guard !isFrozen, !store.writesDisabled else { return }
++    guard !isSuspended else {
++      dirtyWhileSuspended = true
++      return
++    }
++
++    let now = Date()
++    let start = dirtySince ?? now
++    dirtySince = start
++
++    // Past the ceiling, write now rather than pushing the deadline out again.
++    if now.timeIntervalSince(start) >= ceiling {
++      writeIfChanged()
++      return
++    }
++
++    pending?.cancel()
++    let work = DispatchWorkItem { [weak self] in
++      MainActor.assumeIsolated { self?.writeIfChanged() }
++    }
++    pending = work
++    DispatchQueue.main.asyncAfter(deadline: .now() + debounce, execute: work)
++  }
++
++  /// Capture and persist immediately if anything actually changed. Also the ceiling's landing point.
++  func writeIfChanged() {
++    pending?.cancel()
++    pending = nil
++    dirtySince = nil
++    guard !isFrozen, !store.writesDisabled, !isSuspended else { return }
++
++    let windows = capture()
++    guard windows != lastWritten else { return }
++    lastWritten = windows
++    store.write(makeFile(windows))
++  }
++
++  // MARK: Quit
++
++  /// Capture and write **synchronously**, then stop writing for the rest of the process.
++  ///
++  /// Called past the quit confirmation — never above it. A cancelled ⌘Q must leave saving fully
++  /// working, so this cannot run anywhere a user can still say "no".
++  func flushAndFreeze() {
++    guard !isFrozen else { return }
++    pending?.cancel()
++    pending = nil
++    dirtySince = nil
++    // Suspended means a restore never finished; the live windows are not the user's session, so
++    // writing them now would replace a good file with a partial one.
++    if !store.writesDisabled && !isSuspended {
++      let windows = capture()
++      lastWritten = windows
++      store.writeSynchronously(makeFile(windows))
++    }
++    isFrozen = true
++  }
++
++  // MARK: Read
++
++  func read() -> SessionStore.ReadOutcome { store.read() }
++
++  private func makeFile(_ windows: [WindowSession]) -> SessionFile {
++    SessionFile(
++      savedAt: Date(),
++      appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
++      windows: windows)
++  }
++}
++
++extension WindowRegistry {
++  /// Every live window's contribution to the saved session, in a stable order so an unchanged layout
++  /// produces an unchanged document (and therefore no write).
++  func captureSessionWindows() -> [WindowSession] {
++    allStores
++      .sorted { $0.windowNumber < $1.windowNumber }
++      .map { $0.captureWindowSession() }
++  }
++}
+
+
+=== DIFF: macapp/WorkroomApp/Core/SessionSnapshot.swift ===
+@@ -0,0 +1,686 @@
++import Foundation
++
++/// The on-disk shape of a saved session — the open panels, split layouts, and windows restored on
++/// the next launch (issue #46). Written by `SessionStore` to
++/// `Application Support/Workroom/<bundle id>/session.json`.
++///
++/// **Every type here is a hand-written mirror.** No runtime type (`PaneLayout`, `TerminalTab`,
++/// `SidebarID`, the content descriptors) gains `Codable`, so the file format is never hostage to an
++/// internal field rename — the same stored-data-contract rule `RunConfig` carries in
++/// `DefaultsKeys.swift`. The field names below ARE the contract; renaming one silently invalidates
++/// every user's saved session.
++///
++/// # Versioning rule — read before bumping `schemaVersion`
++///
++/// **Additive changes NEVER bump `schemaVersion`.** Adding a tab kind, or adding an optional field,
++/// is additive. Only a breaking reshape bumps.
++///
++/// This is what makes the lossy decoding below load-bearing rather than decorative: a Nightly build
++/// writes a fifth tab kind, the user rolls back to stable, and stable drops that one tab while
++/// restoring everything else. Bump the version for an additive kind and the whole file is discarded
++/// before the lossy path ever runs — deleting every user's session for no reason.
++///
++/// The same split the app already draws between versioning a key (`inspector.layout.v2`) and
++/// reconciling a shape (`AppStore.reconcileInspectorState`): version to discard, reconcile to keep.
++///
++/// A **newer** `schemaVersion` is read-only: restore nothing AND write nothing for that run, or an
++/// older build silently destroys a newer one's session on its next save. Three build identities ship
++/// side by side (Workroom, Workroom Dev, Workroom Nightly), so that rollback is a real path.
++///
++/// # What is deliberately absent
++///
++/// - **Scrollback, the PTY, and child processes.** libghostty exposes no session-dump API, so a
++///   restored terminal is a fresh login shell in the remembered directory. Nothing else is possible.
++/// - **Run tabs.** Restoring one would resurrect a dev server with no `AppStore.RunState` behind it —
++///   an untracked process orphaned on its port, the failure `WindowRegistry.runOwner(for:excluding:)`
++///   and issue #7 exist to prevent. `Defaults[.runCommands]` already survives, and `RunConfig.autoRun`
++///   is the deliberate opt-in.
++/// - **`liveTitle` / `progressActive` / activity pulses.** Display state about a process that no
++///   longer exists. Excluding them is also what keeps the save digest stable: a terminal animating
++///   its title produces a byte-identical snapshot, so it costs a comparison and no disk write.
++/// - **Navigation history.** Its entries key on tab ids, which restore re-mints by design.
++
++// MARK: - Limits
++
++/// Bounds on what a session file may ask the app to allocate at launch. These are a real ceiling,
++/// not decoration: restore materialises every target's tab models eagerly (the sidebar's terminal
++/// subtree renders from them), so a hostile or corrupt file could otherwise allocate tens of
++/// thousands of views before the first frame. Anything dropped is logged — silent truncation reads
++/// as full coverage.
++enum SessionLimits {
++  static let maxWindows = 8
++  static let maxTargetsPerWindow = 20
++  static let maxTabsPerTarget = 20
++  /// Split trees are user-built by repeated ⌘D; a dozen levels is far past any real layout, and the
++  /// cap is what stops a hand-edited file recursing `materialize` into the stack.
++  static let maxSplitDepth = 12
++  /// Refused before decoding — array caps bound element *counts*, not the size of one giant string.
++  static let maxFileBytes = 512 * 1024
++  /// Clamps paths, titles, and commit ids individually.
++  static let maxStringLength = 4096
++}
++
++// MARK: - Lossy array decoding
++
++/// An array that drops the elements it cannot decode instead of failing the whole document.
++///
++/// This is the single most valuable primitive in the schema: it turns "a newer build wrote a tab kind
++/// this build has never heard of" from *your entire session is gone* into *one tab is missing*. It
++/// only pays because additive changes do not bump `schemaVersion` (see the file header) — otherwise
++/// the envelope check discards the file before any element is examined.
++@propertyWrapper
++struct Lossy<Element: Codable & Sendable>: Codable, Sendable {
++  var wrappedValue: [Element]
++
++  init(wrappedValue: [Element]) { self.wrappedValue = wrappedValue }
++
++  /// Consumes exactly one element of any shape. Decoding a *failed* element does not advance an
++  /// `UnkeyedDecodingContainer`, so a permissive type has to consume it or the loop never progresses.
++  private struct AnyElement: Decodable {
++    init(from decoder: Decoder) throws { _ = decoder }
++  }
++
++  init(from decoder: Decoder) throws {
++    var container = try decoder.unkeyedContainer()
++    var decoded: [Element] = []
++    while !container.isAtEnd {
++      let indexBefore = container.currentIndex
++      do {
++        decoded.append(try container.decode(Element.self))
++      } catch {
++        _ = try? container.decode(AnyElement.self)
++      }
++      // Belt and braces: if neither the decode nor the skip advanced the cursor, stop rather than
++      // spin forever on a container shape we did not anticipate.
++      if container.currentIndex == indexBefore { break }
++    }
++    wrappedValue = decoded
++  }
++
++  func encode(to encoder: Encoder) throws {
++    var container = encoder.unkeyedContainer()
++    for element in wrappedValue { try container.encode(element) }
++  }
++}
++
++extension Lossy: Equatable where Element: Equatable {}
++extension Lossy: Hashable where Element: Hashable {}
++
++extension KeyedDecodingContainer {
++  /// Makes an absent lossy array decode to empty rather than throwing, so a field added in a later
++  /// version is readable by a build that predates it.
++  func decode<T>(_ type: Lossy<T>.Type, forKey key: Key) throws -> Lossy<T> {
++    try decodeIfPresent(type, forKey: key) ?? Lossy(wrappedValue: [])
++  }
++}
++
++// MARK: - Layout tree
++
++/// The Codable mirror of `PaneLayout`, generic over its leaf address (a tab key, or a target-id
++/// string for the workroom split). Hand-written with an explicit `kind` discriminator so the on-disk
++/// format is a contract THIS file owns, not whatever Swift synthesises for an indirect enum with
++/// associated values.
++///
++/// `PaneLayout`'s per-split `UUID` is deliberately NOT persisted: it addresses a divider during a
++/// drag and nothing refers to it across a launch. `materialize` mints a fresh one.
++indirect enum LayoutNode<Leaf: Codable & Hashable & Sendable>: Codable, Hashable, Sendable {
++  case leaf(Leaf)
++  case split(orientation: String, ratio: Double, first: LayoutNode, second: LayoutNode)
++
++  static var horizontal: String { "horizontal" }
++  static var vertical: String { "vertical" }
++
++  private enum CodingKeys: String, CodingKey {
++    case kind, leaf, orientation, ratio, first, second
++  }
++  private enum Kind: String, Codable {
++    case leaf, split
++  }
++
++  init(from decoder: Decoder) throws {
++    let container = try decoder.container(keyedBy: CodingKeys.self)
++    switch try container.decode(Kind.self, forKey: .kind) {
++    case .leaf:
++      self = .leaf(try container.decode(Leaf.self, forKey: .leaf))
++    case .split:
++      self = .split(
++        orientation: try container.decode(String.self, forKey: .orientation),
++        ratio: try container.decode(Double.self, forKey: .ratio),
++        first: try container.decode(LayoutNode.self, forKey: .first),
++        second: try container.decode(LayoutNode.self, forKey: .second))
++    }
++  }
++
++  func encode(to encoder: Encoder) throws {
++    var container = encoder.container(keyedBy: CodingKeys.self)
++    switch self {
++    case .leaf(let leaf):
++      try container.encode(Kind.leaf, forKey: .kind)
++      try container.encode(leaf, forKey: .leaf)
++    case .split(let orientation, let ratio, let first, let second):
++      try container.encode(Kind.split, forKey: .kind)
++      try container.encode(orientation, forKey: .orientation)
++      try container.encode(ratio, forKey: .ratio)
++      try container.encode(first, forKey: .first)
++      try container.encode(second, forKey: .second)
++    }
++  }
++
++  /// Every leaf address in reading order — the counterpart of `PaneLayout.tabIDs`, used to validate
++  /// a decoded tree against the tabs that actually survived.
++  var leaves: [Leaf] {
++    switch self {
++    case .leaf(let leaf): return [leaf]
++    case .split(_, _, let first, let second): return first.leaves + second.leaves
++    }
++  }
++
++  /// Depth of the deepest split, so a hand-edited tree can be rejected before `materialize` walks it.
++  var depth: Int {
++    switch self {
++    case .leaf: return 1
++    case .split(_, _, let first, let second): return 1 + max(first.depth, second.depth)
++    }
++  }
++}
++
++extension LayoutNode {
++  /// Runtime tree → snapshot tree. `address` maps a runtime leaf to its persisted key; a leaf that
++  /// maps to nil is dropped and its parent collapses to the surviving sibling — the same collapse
++  /// rule as `PaneLayout.removingLeaf`.
++  ///
++  /// Returns nil when fewer than two leaves survive, mirroring `materialize`: a lone leaf is not a
++  /// split, and writing one would put a shape in the file that the live model cannot hold. Excluding
++  /// a run tab from a two-pane split is exactly this case.
++  static func capture<L: Hashable>(
++    _ layout: PaneLayout<L>, address: (L) -> Leaf?
++  ) -> LayoutNode? {
++    guard let tree = captureNode(layout, address: address) else { return nil }
++    guard case .split = tree else { return nil }
++    return tree
++  }
++
++  private static func captureNode<L: Hashable>(
++    _ layout: PaneLayout<L>, address: (L) -> Leaf?
++  ) -> LayoutNode? {
++    switch layout {
++    case .leaf(let id):
++      return address(id).map { .leaf($0) }
++    case .split(_, let orientation, let ratio, let first, let second):
++      let capturedFirst = captureNode(first, address: address)
++      let capturedSecond = captureNode(second, address: address)
++      switch (capturedFirst, capturedSecond) {
++      case (let first?, let second?):
++        return .split(
++          orientation: orientation == .horizontal ? horizontal : vertical,
++          ratio: Double(ratio), first: first, second: second)
++      // A split with one surviving child is not a split — it IS that child (`PaneLayout`'s
++      // "a lone leaf is not a split" invariant, enforced at the boundary rather than left to callers).
++      case (let only?, nil), (nil, let only?):
++        return only
++      case (nil, nil):
++        return nil
++      }
++    }
++  }
++
++  /// Snapshot tree → runtime tree. `resolve` maps a persisted key to a live leaf; unresolvable leaves
++  /// collapse into their sibling. Returns nil when fewer than two leaves survive, so a caller can
++  /// never be handed a one-leaf "split".
++  func materialize<L: Hashable>(_ resolve: (Leaf) -> L?) -> PaneLayout<L>? {
++    guard let tree = materializeNode(resolve, depth: 0) else { return nil }
++    guard case .split = tree else { return nil }
++    return tree
++  }
++
++  private func materializeNode<L: Hashable>(
++    _ resolve: (Leaf) -> L?, depth: Int
++  ) -> PaneLayout<L>? {
++    guard depth < SessionLimits.maxSplitDepth else { return nil }
++    switch self {
++    case .leaf(let key):
++      return resolve(key).map { .leaf($0) }
++    case .split(let orientation, let ratio, let first, let second):
++      guard let resolvedOrientation = Self.orientation(from: orientation) else { return nil }
++      let resolvedFirst = first.materializeNode(resolve, depth: depth + 1)
++      let resolvedSecond = second.materializeNode(resolve, depth: depth + 1)
++      switch (resolvedFirst, resolvedSecond) {
++      case (let first?, let second?):
++        return .split(
++          id: UUID(), orientation: resolvedOrientation,
++          ratio: PaneRatio.sanitize(CGFloat(ratio)), first: first, second: second)
++      case (let only?, nil), (nil, let only?):
++        return only
++      case (nil, nil):
++        return nil
++      }
++    }
++  }
++
++  /// An unrecognised orientation rejects the split (its tabs survive as solo panes) rather than
++  /// guessing a layout the user never chose.
++  private static func orientation(from raw: String) -> SplitOrientation? {
++    switch raw {
++    case horizontal: return .horizontal
++    case vertical: return .vertical
++    default: return nil
++    }
++  }
++}
++
++// MARK: - Tab payloads
++
++/// A restored terminal: a fresh login shell in the remembered directory, titled as it was.
++struct TerminalPayload: Codable, Hashable, Sendable {
++  /// The stable "Terminal N" title, never the live OSC title — that describes a dead process.
++  var defaultTitle: String
++  /// The LAST REPORTED working directory, which is the whole value of restoring a terminal (not the
++  /// directory the tab was originally opened at). Falls back to the target path when it no longer
++  /// exists, since libghostty cannot spawn into a missing directory.
++  var cwd: String?
++}
++
++/// `DiffSource` on disk. Split into a kind plus an optional commit id so a new case is an additive
++/// change (unknown kind ⇒ that one tab drops) rather than a reshape.
++struct DiffSourcePayload: Codable, Hashable, Sendable {
++  var kind: String
++  var commit: String?
++
++  static let gitWorktree = "gitWorktree"
++  static let jjWorkingCopy = "jjWorkingCopy"
++  static let jjParent = "jjParent"
++  static let commitKind = "commit"
++
++  /// Exhaustive on purpose — a fifth `DiffSource` case must be a compile error here, not a tab that
++  /// silently stops persisting.
++  init(_ source: DiffSource) {
++    switch source {
++    case .gitWorktree: self.init(kind: Self.gitWorktree, commit: nil)
++    case .jjWorkingCopy: self.init(kind: Self.jjWorkingCopy, commit: nil)
++    case .jjParent: self.init(kind: Self.jjParent, commit: nil)
++    case .commit(let id): self.init(kind: Self.commitKind, commit: id)
++    }
++  }
++
++  init(kind: String, commit: String?) {
++    self.kind = kind
++    self.commit = commit
++  }
++
++  var source: DiffSource? {
++    switch kind {
++    case Self.gitWorktree: return .gitWorktree
++    case Self.jjWorkingCopy: return .jjWorkingCopy
++    case Self.jjParent: return .jjParent
++    case Self.commitKind: return commit.map { .commit($0) }
++    default: return nil
++    }
++  }
++}
++
++struct DiffPayload: Codable, Hashable, Sendable {
++  var path: String
++  /// `ChangedFile.Change.rawValue`. Re-resolved by the status sweep after restore
++  /// (`AppStore.refreshOpenDiffChangeKinds`), so a stale value self-heals.
++  var change: String
++  var source: DiffSourcePayload
++  var isPreview: Bool
++  /// `DiffViewMode.rawValue` — the per-tab unified/side-by-side override, nil to follow the global.
++  var viewMode: String?
++}
++
++struct FilePayload: Codable, Hashable, Sendable {
++  var path: String
++  var isPreview: Bool
++  /// The per-tab Markdown source/preview override, nil for the default (rendered).
++  var markdownPreview: Bool?
++}
++
++struct ChangesetPayload: Codable, Hashable, Sendable {
++  var commitID: String
++  var title: String
++  var isPreview: Bool
++  /// The selected file within the commit.
++  var selectedPath: String?
++}
++
++/// One pane. Flat with optional payloads rather than an enum-with-associated-values on purpose: an
++/// unknown `kind`, or a kind missing its required payload, drops THAT tab and keeps its siblings,
++/// where a synthesised enum decoder would throw and take the whole target with it.
++struct TabSession: Codable, Hashable, Sendable {
++  /// Unique within its `TargetSession`, and the address the split tree and `focusedKey` point at.
++  ///
++  /// This is a join key valid only inside one snapshot — **never a cross-launch identity**. Restore
++  /// mints fresh `TerminalTab.ID`s, because a tab id is unique across *windows* at runtime and
++  /// notification routing (`WindowRegistry.ownerOf(tabID:)`) depends on that.
++  ///
++  /// Tabs are keyed rather than index-addressed because lossy decoding drops elements: with indices,
++  /// dropping tab 2 of 5 would silently re-point every later split leaf at the wrong pane. Do not
++  /// "simplify" this back to indices.
++  var key: String
++  var kind: String
++  var terminal: TerminalPayload?
++  var diff: DiffPayload?
++  var file: FilePayload?
++  var changeset: ChangesetPayload?
++
++  static let terminalKind = "terminal"
++  static let diffKind = "diff"
++  static let fileKind = "file"
++  static let changesetKind = "changeset"
++
++  /// Whether this tab carries the payload its kind requires. An unknown kind, or a `.diff` with no
++  /// diff payload, is dropped at materialise.
++  var isWellFormed: Bool {
++    switch kind {
++    case Self.terminalKind: return terminal != nil
++    case Self.diffKind: return diff != nil
++    case Self.fileKind: return file != nil
++    case Self.changesetKind: return changeset != nil
++    default: return false
++    }
++  }
++}
++
++// MARK: - Target, window, file
++
++/// One terminal target's panes: its tabs in strip order, its split, and what was focused.
++struct TargetSession: Codable, Hashable, Sendable {
++  /// `TerminalTarget.ID` — "wr|<project>|<name>" or "root|<project>". The same encoding
++  /// `Defaults[.sidebarSelection]` and `workroomTabOrder` already use, resolved back through
++  /// `AppStore.sidebarID(forTargetID:in:)`, which drops ids that no longer exist.
++  var targetID: String
++  /// Strip order. The array IS the order — no second field to fall out of sync with it.
++  @Lossy var tabs: [TabSession]
++  /// Leaves are `TabSession.key`. Nil when the target has no split.
++  var split: LayoutNode<String>?
++  var focusedKey: String?
++  /// `TerminalSessions.counts` — so the next ⌘T after restoring "Terminal 3" is "Terminal 4".
++  var terminalCounter: Int?
++
++  init(
++    targetID: String, tabs: [TabSession], split: LayoutNode<String>? = nil,
++    focusedKey: String? = nil, terminalCounter: Int? = nil
++  ) {
++    self.targetID = targetID
++    self.tabs = tabs
++    self.split = split
++    self.focusedKey = focusedKey
++    self.terminalCounter = terminalCounter
++  }
++}
++
++/// One window's whole restorable state.
++struct WindowSession: Codable, Hashable, Sendable {
++  /// Cross-launch window identity — the `WindowSeed.id` a window claims and then keeps. Windows have
++  /// no such identity natively: `WindowSeed.launch` mints a fresh UUID on every access.
++  var windowKey: String
++  /// `NSStringFromRect`. Authoritative over `Defaults[.mainWindowFrame]`, which only ever held one
++  /// window's frame and is now the cold-start fallback. Clamped to a visible screen on restore.
++  var frame: String?
++  /// Whether this was the key window, so the user lands where they left off.
++  var isKey: Bool
++  /// `TerminalTarget.ID` of the selected workroom. Authoritative over `Defaults[.sidebarSelection]`,
++  /// which is the single-slot cold-start fallback for a first launch with no session.
++  var selectedTargetID: String?
++  @Lossy var targets: [TargetSession]
++  /// `AppStore.workroomSplits` — leaves are `TerminalTarget.ID` strings. Several disjoint groups can
++  /// coexist; each needs two or more live leaves to survive.
++  @Lossy var workroomSplits: [LayoutNode<String>]
++  /// `AppStore.expandedTerminalTargets` — which sidebar terminal subtrees are open.
++  var expandedTargets: [String]?
++
++  init(
++    windowKey: String, frame: String? = nil, isKey: Bool = false,
++    selectedTargetID: String? = nil, targets: [TargetSession] = [],
++    workroomSplits: [LayoutNode<String>] = [], expandedTargets: [String]? = nil
++  ) {
++    self.windowKey = windowKey
++    self.frame = frame
++    self.isKey = isKey
++    self.selectedTargetID = selectedTargetID
++    self.targets = targets
++    self.workroomSplits = workroomSplits
++    self.expandedTargets = expandedTargets
++  }
++}
++
++/// The document `session.json` holds.
++struct SessionFile: Codable, Sendable {
++  static let currentSchemaVersion = 1
++
++  var schemaVersion: Int
++  var savedAt: Date
++  /// Diagnostics only — never branched on. Read it in a bug report, not in code.
++  var appVersion: String?
++  @Lossy var windows: [WindowSession]
++
++  init(
++    schemaVersion: Int = SessionFile.currentSchemaVersion, savedAt: Date,
++    appVersion: String? = nil, windows: [WindowSession]
++  ) {
++    self.schemaVersion = schemaVersion
++    self.savedAt = savedAt
++    self.appVersion = appVersion
++    self.windows = windows
++  }
++
++  /// How a decoded file relates to what this build can do.
++  enum Compatibility: Equatable {
++    /// Readable and writable.
++    case current
++    /// Written by a newer build: restore nothing AND write nothing, or this build's next save
++    /// destroys a session it could not understand.
++    case newer
++    /// Written by an older schema with no migration — discard.
++    case unreadable
++  }
++
++  var compatibility: Compatibility {
++    if schemaVersion == Self.currentSchemaVersion { return .current }
++    return schemaVersion > Self.currentSchemaVersion ? .newer : .unreadable
++  }
++}
++
++// MARK: - Structural validation
++
++/// What `sanitized()` threw away, so the caller can log it. Caps and validation that drop work
++/// silently read as full coverage — this is what stops that.
++struct SessionSanitizeReport: Equatable {
++  var droppedWindows = 0
++  var droppedTargets = 0
++  var droppedTabs = 0
++  var droppedSplits = 0
++
++  var isEmpty: Bool {
++    droppedWindows == 0 && droppedTargets == 0 && droppedTabs == 0 && droppedSplits == 0
++  }
++
++  var summary: String {
++    "windows: \(droppedWindows), targets: \(droppedTargets), tabs: \(droppedTabs), "
++      + "splits: \(droppedSplits)"
++  }
++}
++
++extension SessionFile {
++  /// Enforce every structural invariant restore depends on, and report what that cost.
++  ///
++  /// Array caps bound element *counts*; they do nothing about a hostile or corrupt *shape*. The real
++  /// hazard is duplicate keys: restore builds dictionaries from `windowKey` / `targetID` / tab `key`,
++  /// so a duplicate would silently redirect a split leaf or the focus to the wrong pane — a
++  /// wrong-content bug with no crash to point at. First occurrence wins; the rest are dropped.
++  ///
++  /// Pure and `nonisolated`, so it is unit-testable without an `AppStore`, a window, or a file —
++  /// the shape `AppStore.reconcileInspectorState` established.
++  func sanitized() -> (file: SessionFile, report: SessionSanitizeReport) {
++    var report = SessionSanitizeReport()
++    var seenWindowKeys = Set<String>()
++    var windows: [WindowSession] = []
++
++    for window in self.windows {
++      guard windows.count < SessionLimits.maxWindows else {
++        report.droppedWindows += 1
++        continue
++      }
++      guard seenWindowKeys.insert(window.windowKey).inserted else {
++        report.droppedWindows += 1
++        continue
++      }
++      windows.append(window.sanitized(into: &report))
++    }
++
++    var sanitized = self
++    sanitized.windows = windows
++    return (sanitized, report)
++  }
++}
++
++extension WindowSession {
++  fileprivate func sanitized(into report: inout SessionSanitizeReport) -> WindowSession {
++    var seenTargetIDs = Set<String>()
++    var targets: [TargetSession] = []
++
++    for target in self.targets {
++      guard targets.count < SessionLimits.maxTargetsPerWindow else {
++        report.droppedTargets += 1
++        continue
++      }
++      guard seenTargetIDs.insert(target.targetID).inserted else {
++        report.droppedTargets += 1
++        continue
++      }
++      guard let sanitized = target.sanitized(into: &report) else {
++        report.droppedTargets += 1
++        continue
++      }
++      targets.append(sanitized)
++    }
++
++    // A workroom-split group needs two or more distinct leaves to be a group at all, and a tree
++    // deeper than the cap is rejected whole rather than walked.
++    var splits: [LayoutNode<String>] = []
++    for split in workroomSplits {
++      let leaves = split.leaves
++      guard split.depth <= SessionLimits.maxSplitDepth, leaves.count >= 2,
++        Set(leaves).count == leaves.count
++      else {
++        report.droppedSplits += 1
++        continue
++      }
++      splits.append(split)
++    }
++
++    var window = self
++    window.targets = targets
++    window.workroomSplits = splits
++    window.frame = frame.map { String($0.prefix(SessionLimits.maxStringLength)) }
++    window.selectedTargetID = selectedTargetID.map {
++      String($0.prefix(SessionLimits.maxStringLength))
++    }
++    window.expandedTargets = expandedTargets.map { expanded in
++      Array(Set(expanded)).sorted().map { String($0.prefix(SessionLimits.maxStringLength)) }
++    }
++    return window
++  }
++}
++
++extension TargetSession {
++  /// Nil when nothing usable survives — never an empty target, which would make
++  /// `TerminalSessions.ensureTab`'s "has this target been seeded?" check lie.
++  fileprivate func sanitized(into report: inout SessionSanitizeReport) -> TargetSession? {
++    var seenKeys = Set<String>()
++    var tabs: [TabSession] = []
++    var sawPreview = false
++
++    for tab in self.tabs {
++      guard tabs.count < SessionLimits.maxTabsPerTarget else {
++        report.droppedTabs += 1
++        continue
++      }
++      guard tab.isWellFormed, seenKeys.insert(tab.key).inserted else {
++        report.droppedTabs += 1
++        continue
++      }
++      var tab = tab.clamped()
++      // At most one preview tab per target (`TerminalSessions.previewTabID`). A hand-edited file
++      // with two would give the target two italic chips and an ambiguous retarget slot; keep the
++      // first and persist the rest.
++      if tab.isPreview {
++        if sawPreview {
++          tab.clearPreview()
++        } else {
++          sawPreview = true
++        }
++      }
++      tabs.append(tab)
++    }
++
++    guard !tabs.isEmpty else { return nil }
++
++    let liveKeys = Set(tabs.map(\.key))
++    var split = self.split
++    if let candidate = split {
++      let leaves = candidate.leaves
++      let resolvable = leaves.filter { liveKeys.contains($0) }
++      if candidate.depth > SessionLimits.maxSplitDepth || Set(leaves).count != leaves.count
++        || resolvable.count < 2
++      {
++        // The split does not survive, but its tabs do — they simply render as solo panes.
++        report.droppedSplits += 1
++        split = nil
++      }
++    }
++
++    var target = self
++    target.tabs = tabs
++    target.split = split
++    target.focusedKey = focusedKey.flatMap { liveKeys.contains($0) ? $0 : nil }
++    target.targetID = String(targetID.prefix(SessionLimits.maxStringLength))
++    return target
++  }
++}
++
++extension TabSession {
++  /// A preview flag is not identity, so clearing it keeps the tab rather than dropping it.
++  fileprivate var isPreview: Bool {
++    diff?.isPreview ?? file?.isPreview ?? changeset?.isPreview ?? false
++  }
++
++  fileprivate mutating func clearPreview() {
++    diff?.isPreview = false
++    file?.isPreview = false
++    changeset?.isPreview = false
++  }
++
++  /// Clamp every free-form string. One giant path in an otherwise sane file is exactly what the
++  /// element caps cannot catch.
++  fileprivate func clamped() -> TabSession {
++    func clamp(_ value: String) -> String { String(value.prefix(SessionLimits.maxStringLength)) }
++    func clamp(_ value: String?) -> String? { value.map(clamp) }
++
++    var tab = self
++    tab.key = clamp(key)
++    tab.kind = clamp(kind)
++    if var terminal = tab.terminal {
++      terminal.defaultTitle = clamp(terminal.defaultTitle)
++      terminal.cwd = clamp(terminal.cwd)
++      tab.terminal = terminal
++    }
++    if var diff = tab.diff {
++      diff.path = clamp(diff.path)
++      diff.source.commit = clamp(diff.source.commit)
++      tab.diff = diff
++    }
++    if var file = tab.file {
++      file.path = clamp(file.path)
++      tab.file = file
++    }
++    if var changeset = tab.changeset {
++      changeset.commitID = clamp(changeset.commitID)
++      changeset.title = clamp(changeset.title)
++      changeset.selectedPath = clamp(changeset.selectedPath)
++      tab.changeset = changeset
++    }
++    return tab
++  }
++}
+
+
+=== DIFF: macapp/WorkroomApp/Core/SessionStore.swift ===
+@@ -0,0 +1,203 @@
++import Foundation
++import OSLog
++
++/// Reads and writes the saved session (issue #46) — the file behind `SessionSnapshot`.
++///
++/// **Every operation is best-effort.** The app must behave identically with the file absent, empty,
++/// unreadable, or corrupt: a session that fails to load is a launch with no restore, never an error
++/// the user sees. Failures log and are swallowed.
++///
++/// The URL is injectable so unit tests point at a temp directory — which also keeps the whole
++/// feature clear of `Defaults`, and therefore clear of the single-writer rule parallel test workers
++/// impose on a shared UserDefaults domain (`SharedPrefDefaultsTests`).
++final class SessionStore {
++  /// Where the file lives, **scoped by bundle id**.
++  ///
++  /// The scoping is mandatory, not tidiness: `GhosttyApp` already writes into
++  /// `Application Support/Workroom/` from all three identities (Workroom, Workroom Dev, Workroom
++  /// Nightly), so an unscoped path would let a Dev run's fixture temp-dir workrooms be restored into
++  /// the release build. UserDefaults gets that separation free from the bundle id; a file has to buy
++  /// it back.
++  static func defaultURL(
++    bundleID: String? = Bundle.main.bundleIdentifier,
++    fileManager: FileManager = .default
++  ) -> URL {
++    let root = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
++      .appendingPathComponent("Workroom", isDirectory: true)
++      .appendingPathComponent(bundleID ?? "com.developwithstyle.workroom", isDirectory: true)
++    return root.appendingPathComponent("session.json")
++  }
++
++  /// The store production and the UI tests should use.
++  ///
++  /// In fixture mode this is a **no-op unless a test names a file**. The path is bundle-id scoped, so
++  /// a fixture launch would otherwise write over the developer's own `Workroom Dev` session — and the
++  /// fixture's temp-directory workrooms would then be restored into a real launch.
++  static func forCurrentEnvironment() -> SessionStore {
++    guard UITestFixture.isActive else { return SessionStore() }
++    guard let path = UITestFixture.sessionFilePath else {
++      return SessionStore(url: SessionStore.defaultURL(), isDisabled: true)
++    }
++    return SessionStore(url: URL(fileURLWithPath: path))
++  }
++
++  let url: URL
++  /// A disabled store reads nothing and writes nothing — fixture mode without a named session file.
++  private let isDisabled: Bool
++  /// Where an undecodable file is moved once, so a bug report has something to attach instead of the
++  /// evidence being deleted.
++  var quarantineURL: URL {
++    url.deletingLastPathComponent().appendingPathComponent("session.corrupt.json")
++  }
++
++  /// True once a file written by a NEWER schema has been read. Every write is then refused for the
++  /// rest of the run — otherwise this build silently destroys a session it could not understand, and
++  /// three build identities ship side by side, so that rollback is a real path rather than a
++  /// hypothetical one.
++  private(set) var writesDisabled = false
++
++  private let fileManager: FileManager
++  private let logger = Logger(
++    subsystem: "com.developwithstyle.workroom", category: "session")
++  /// Encoding and the write happen here so neither runs on the main actor; only the capture does.
++  private let queue = DispatchQueue(
++    label: "com.developwithstyle.workroom.session", qos: .utility)
++
++  init(
++    url: URL = SessionStore.defaultURL(), fileManager: FileManager = .default,
++    isDisabled: Bool = false
++  ) {
++    self.url = url
++    self.fileManager = fileManager
++    self.isDisabled = isDisabled
++  }
++
++  // MARK: Read
++
++  enum ReadOutcome: Equatable {
++    /// Nothing usable — a fresh install, an unreadable file, or one this build cannot decode. The
++    /// caller falls back to its cold-start path.
++    case none
++    case restored(SessionFile, SessionSanitizeReport)
++    /// Written by a newer build: restore nothing, and `writesDisabled` is now true.
++    case newerSchema
++
++    static func == (lhs: ReadOutcome, rhs: ReadOutcome) -> Bool {
++      switch (lhs, rhs) {
++      case (.none, .none), (.newerSchema, .newerSchema): return true
++      case (.restored(let lf, let lr), .restored(let rf, let rr)):
++        return lf.windows == rf.windows && lf.schemaVersion == rf.schemaVersion && lr == rr
++      default: return false
++      }
++    }
++  }
++
++  func read() -> ReadOutcome {
++    guard !isDisabled, fileManager.fileExists(atPath: url.path) else { return .none }
++
++    // Refused BEFORE decoding: the element caps in `SessionLimits` bound how many things a file
++    // describes, not how many bytes one of them spends.
++    if let size = try? fileManager.attributesOfItem(atPath: url.path)[.size] as? Int,
++      size > SessionLimits.maxFileBytes
++    {
++      logger.error("session file is \(size) bytes, over the limit — quarantining")
++      quarantine()
++      return .none
++    }
++
++    guard let data = try? Data(contentsOf: url) else {
++      logger.error("session file unreadable")
++      return .none
++    }
++    guard !data.isEmpty else { return .none }
++
++    let decoder = JSONDecoder()
++    decoder.dateDecodingStrategy = .iso8601
++    guard let file = try? decoder.decode(SessionFile.self, from: data) else {
++      logger.error("session file could not be decoded — quarantining")
++      quarantine()
++      return .none
++    }
++
++    switch file.compatibility {
++    case .newer:
++      let message =
++        "session file schema \(file.schemaVersion) is newer than "
++        + "\(SessionFile.currentSchemaVersion) — not restoring, writes disabled for this run"
++      logger.notice("\(message, privacy: .public)")
++      writesDisabled = true
++      return .newerSchema
++    case .unreadable:
++      logger.notice("session file schema \(file.schemaVersion) has no migration — discarding")
++      return .none
++    case .current:
++      break
++    }
++
++    let (sanitized, report) = file.sanitized()
++    if !report.isEmpty {
++      logger.notice("session file dropped entries — \(report.summary, privacy: .public)")
++    }
++    // A file whose windows all dropped is not a session. Saying so lets the caller take its
++    // cold-start fallback instead of launching emptier than deleting the file would have.
++    guard !sanitized.windows.isEmpty else { return .none }
++    return .restored(sanitized, report)
++  }
++
++  // MARK: Write
++
++  /// Persist off the main actor. Coalescing is the caller's job (see `AppStore+Session`).
++  func write(_ file: SessionFile) {
++    guard !isDisabled, !writesDisabled else { return }
++    queue.async { [weak self] in self?.persist(file) }
++  }
++
++  /// Persist before returning — the quit path, where the process may not survive long enough for an
++  /// async write to land.
++  func writeSynchronously(_ file: SessionFile) {
++    guard !isDisabled, !writesDisabled else { return }
++    queue.sync { self.persist(file) }
++  }
++
++  func clear() {
++    guard !isDisabled else { return }
++    queue.sync { try? self.fileManager.removeItem(at: self.url) }
++  }
++
++  private func persist(_ file: SessionFile) {
++    let encoder = JSONEncoder()
++    encoder.dateEncodingStrategy = .iso8601
++    // Readable and diff-stable on purpose: "delete this file and relaunch" is a support instruction
++    // a user can follow, and the file is something a bug report can usefully attach.
++    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
++
++    guard let data = try? encoder.encode(file) else {
++      logger.error("session snapshot could not be encoded")
++      return
++    }
++    do {
++      // `Data.write(.atomic)` does NOT create intermediate directories, and the bundle-id
++      // subdirectory does not exist on a first run — without this every write fails silently.
++      try fileManager.createDirectory(
++        at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
++      // Atomic: a reader sees the complete old document or the complete new one, never a partial
++      // write from a process that died mid-save.
++      try data.write(to: url, options: .atomic)
++    } catch {
++      logger.error("session snapshot could not be written: \(error.localizedDescription)")
++    }
++  }
++
++  /// Move a file this build cannot read aside — once. A prior quarantine is replaced rather than
++  /// accumulating; the newest failure is the useful one.
++  private func quarantine() {
++    try? fileManager.removeItem(at: quarantineURL)
++    do {
++      try fileManager.moveItem(at: url, to: quarantineURL)
++    } catch {
++      // If it cannot even be moved, delete it — leaving it in place would fail the same way on
++      // every launch forever.
++      try? fileManager.removeItem(at: url)
++    }
++  }
++}
+
+
+=== DIFF: macapp/WorkroomApp/Core/TerminalSessions.swift ===
+@@ -195,6 +195,90 @@ extension FocusedTabSelection {
+   }
+ }
+ 
++// MARK: - Saved-session bridge (issue #46)
++//
++// Deliberately in the SAME block as the navigation-history bridge above, for the reason that block's
++// comment already gives: a fifth `TabContent` kind must be a compile error in ONE place. A second
++// projection living in `SessionSnapshot.swift` would compile fine while silently never persisting
++// the new kind. The switch below is exhaustive on purpose — no `default` arm.
++//
++// The on-disk types stay separate from the runtime ones (no descriptor gains `Codable`) so the file
++// format is never hostage to an internal field rename — see `SessionSnapshot.swift`.
++
++extension TabSession {
++  /// A tab as it will be written to disk, or `nil` when it must not be persisted.
++  ///
++  /// Run tabs return nil: restoring one would resurrect a dev server with no `AppStore.RunState`
++  /// behind it, orphaned on its port. They are identified by the surface carrying a command
++  /// (`isRunCommandSurface`) rather than by `AppStore.runStates`, so a tab whose run bookkeeping has
++  /// already moved on still cannot leak into the file.
++  init?(key: String, tab: TerminalTab) {
++    switch tab.content {
++    case .terminal(let state):
++      guard state.view.isRunCommandSurface == false else { return nil }
++      self.init(
++        key: key, kind: Self.terminalKind,
++        // The LAST REPORTED cwd, which is the whole value of restoring a terminal. `state.cwd` is
++        // the shell's latest report mirrored into observable state; `lastKnownCwd` is the surface's
++        // own copy and covers a tab whose mirror never updated.
++        terminal: TerminalPayload(
++          defaultTitle: state.defaultTitle, cwd: state.cwd ?? state.view.lastKnownCwd))
++    case .diff(let descriptor):
++      self.init(
++        key: key, kind: Self.diffKind,
++        diff: DiffPayload(
++          path: descriptor.path, change: descriptor.change.rawValue,
++          source: DiffSourcePayload(descriptor.source), isPreview: descriptor.isPreview,
++          viewMode: tab.diffViewModeOverride?.rawValue))
++    case .file(let descriptor):
++      self.init(
++        key: key, kind: Self.fileKind,
++        file: FilePayload(
++          path: descriptor.path, isPreview: descriptor.isPreview,
++          markdownPreview: tab.markdownPreviewOverride))
++    case .changeset(let descriptor):
++      self.init(
++        key: key, kind: Self.changesetKind,
++        changeset: ChangesetPayload(
++          commitID: descriptor.commitID, title: descriptor.title,
++          isPreview: descriptor.isPreview, selectedPath: descriptor.selectedPath))
++    }
++  }
++
++  /// The non-terminal content this tab describes, or nil for a terminal (which needs a surface, so
++  /// only `TerminalSessions` can build it) and for anything unrecognised.
++  ///
++  /// Deliberately lenient where the capture direction above is exhaustive: an unknown kind is a tab
++  /// written by a NEWER build, and dropping it is the whole point of the lossy schema.
++  var restoredContent: TabContent? {
++    switch kind {
++    case Self.diffKind:
++      guard let payload = diff, let source = payload.source.source,
++        let change = ChangedFile.Change(rawValue: payload.change)
++      else { return nil }
++      return .diff(
++        DiffDescriptor(
++          path: payload.path, change: change, source: source, isPreview: payload.isPreview))
++    case Self.fileKind:
++      guard let payload = file else { return nil }
++      return .file(FileDescriptor(path: payload.path, isPreview: payload.isPreview))
++    case Self.changesetKind:
++      guard let payload = changeset else { return nil }
++      return .changeset(
++        ChangesetDescriptor(
++          commitID: payload.commitID, title: payload.title, isPreview: payload.isPreview,
++          selectedPath: payload.selectedPath))
++    default:
++      return nil
++    }
++  }
++
++  /// The per-tab diff layout override, if this tab had one.
++  var restoredDiffViewMode: DiffViewMode? { diff?.viewMode.flatMap(DiffViewMode.init(rawValue:)) }
++  /// The per-tab Markdown source/preview override, if this tab had one.
++  var restoredMarkdownPreview: Bool? { file?.markdownPreview }
++}
++
+ /// A non-terminal content-tab payload the preview/persist openers drive uniformly (issue #59). Diffs,
+ /// files, and changesets differ only in how they wrap into a `TabContent` case and what makes two of
+ /// them the *same* tab (the dedup / retarget identity) — extracting this collapses the otherwise
+@@ -238,8 +322,10 @@ struct TerminalState {
+ /// Split model (issue #3) is **single-layout**: per target there is at most ONE `PaneLayout` split (a
+ /// tree of ≥2 tab ids) plus solo tabs. The content area shows the split when the focused tab belongs to
+ /// it, otherwise the focused solo tab. The shared tab strip lists every tab; the split's members render
+-/// as a contiguous bracketed run, ordered by the split tree (`displayedTabIDs`). Cross-relaunch disk
+-/// persistence is intentionally out of scope.
++/// as a contiguous bracketed run, ordered by the split tree (`displayedTabIDs`). The whole layout —
++/// tabs, order, split, focus — is captured to disk and rehydrated by `restore(_:for:)` (issue #46);
++/// what does NOT survive is a terminal's process, so a restored one is a fresh shell in the
++/// remembered directory.
+ ///
+ /// ```
+ ///   STRIP:  A  [ B │ C ]  D        focused == C, C ∈ split  →  CONTENT renders the split.
+@@ -366,8 +452,14 @@ final class TerminalSessions: ObservableObject {
+   /// order as a contiguous block at the earliest member's slot. So the bracket is always one run and
+   /// strip order always matches pane order (rearranging panes IS strip reorder).
+   func displayedTabIDs(for target: TerminalTarget) -> [TerminalTab.ID] {
+-    let order = orderByTarget[target.id] ?? []
+-    guard let split = splitByTarget[target.id] else { return order }
++    displayedTabIDs(forTargetID: target.id)
++  }
++
++  /// The id-addressed core of `displayedTabIDs(for:)`. Session capture (issue #46) walks
++  /// `activeTargetIDs` and has no `TerminalTarget` value in hand, and only the id was ever used.
++  func displayedTabIDs(forTargetID targetID: TerminalTarget.ID) -> [TerminalTab.ID] {
++    let order = orderByTarget[targetID] ?? []
++    guard let split = splitByTarget[targetID] else { return order }
+     let members = split.tabIDs
+     let memberSet = Set(members)
+     guard let anchor = order.firstIndex(where: { memberSet.contains($0) }) else { return order }
+@@ -379,6 +471,33 @@ final class TerminalSessions: ObservableObject {
+     return result
+   }
+ 
++  // MARK: Session capture (issue #46)
++
++  /// Everything one target contributes to a saved session, addressed by id.
++  ///
++  /// One accessor rather than four because the four dictionaries behind it are `@Published private`
++  /// and should stay that way — capture reads through the public queries, and this is the single
++  /// exception it needs (`counts`, which nothing else exposes).
++  struct SessionCapture {
++    /// Tabs in DISPLAYED order. Safe to persist as the strip order: display normalisation is a fixed
++    /// point, so feeding it back in reproduces the same layout.
++    let tabs: [TerminalTab]
++    let split: TerminalPaneLayout?
++    let focused: TerminalTab.ID?
++    /// The "Terminal N" counter, so the next ⌘T after a restore continues the numbering.
++    let counter: Int
++  }
++
++  func sessionCapture(forTargetID targetID: TerminalTarget.ID) -> SessionCapture? {
++    let dict = tabsByTarget[targetID] ?? [:]
++    guard !dict.isEmpty else { return nil }
++    let ordered = displayedTabIDs(forTargetID: targetID).compactMap { dict[$0] }
++    guard !ordered.isEmpty else { return nil }
++    return SessionCapture(
++      tabs: ordered, split: splitByTarget[targetID], focused: focusedTabByTarget[targetID],
++      counter: counts[targetID] ?? ordered.count)
++  }
++
+   func tabs(for target: TerminalTarget) -> [TerminalTab] {
+     let dict = tabsByTarget[target.id] ?? [:]
+     return displayedTabIDs(for: target).compactMap { dict[$0] }
+@@ -459,6 +578,86 @@ final class TerminalSessions: ObservableObject {
+     if orderByTarget[target.id] == nil { addTab(for: target) }
+   }
+ 
++  // MARK: Session restore (issue #46)
++
++  /// Re-materialise a target's panes from a saved session.
++  ///
++  /// The only path that sets the four per-target dictionaries wholesale, so it lives here beside the
++  /// mutation primitives rather than in `AppStore`. Three deliberate properties:
++  ///
++  /// - **Tabs get FRESH ids.** A `TerminalTab.ID` is unique across *windows* at runtime and OS
++  ///   notification clicks are routed by it (`WindowRegistry.ownerOf(tabID:)`), so reviving persisted
++  ///   ids would put a duplicate-id hazard one bug away for no benefit. The persisted keys are a join
++  ///   key valid only within one snapshot; order, split and focus are rewired through them here.
++  /// - **Focus is set with `notify: false`** (the escape `reap` uses): a restore is not a navigation,
++  ///   and firing `onFocusChange` would seed back/forward with a place the user never went.
++  /// - **No-op when the target already has tabs**, so a restore can never race or duplicate a live
++  ///   session.
++  ///
++  /// Terminals come back as fresh login shells — libghostty has no session dump — but in their
++  /// remembered directory, which is the half that matters. Nothing spawns here: constructing a
++  /// surface is inert until it enters a window.
++  @discardableResult
++  func restore(_ session: TargetSession, for target: TerminalTarget) -> Int {
++    guard (tabsByTarget[target.id] ?? [:]).isEmpty else { return 0 }
++
++    var idsByKey: [String: TerminalTab.ID] = [:]
++    var order: [TerminalTab.ID] = []
++    var tabs: [TerminalTab.ID: TerminalTab] = [:]
++    var restoredTerminals = 0
++
++    for saved in session.tabs {
++      let tab: TerminalTab
++      if saved.kind == TabSession.terminalKind, let payload = saved.terminal {
++        // `command:` is deliberately never passed: run tabs are not persisted, and this makes even a
++        // hand-edited file unable to start a process on launch.
++        tab = makeTerminalTab(
++          for: target,
++          cwd: Self.restoredCwd(payload.cwd, fallback: target.path),
++          title: payload.defaultTitle)
++        restoredTerminals += 1
++      } else if let content = saved.restoredContent {
++        tab = TerminalTab(
++          content: content, diffViewModeOverride: saved.restoredDiffViewMode,
++          markdownPreviewOverride: saved.restoredMarkdownPreview)
++      } else {
++        continue
++      }
++      idsByKey[saved.key] = tab.id
++      order.append(tab.id)
++      tabs[tab.id] = tab
++    }
++
++    guard !order.isEmpty else { return 0 }
++
++    tabsByTarget[target.id] = tabs
++    orderByTarget[target.id] = order
++    splitByTarget[target.id] = session.split.flatMap { saved in
++      saved.materialize { idsByKey[$0] }
++    }
++    setFocused(
++      session.focusedKey.flatMap { idsByKey[$0] } ?? order.first, for: target.id, notify: false)
++    // `makeTerminalTab` bumps the counter per terminal it builds, so take whichever is higher: the
++    // saved value keeps "Terminal 7" from becoming "Terminal 3" again after closes.
++    counts[target.id] = max(session.terminalCounter ?? 0, counts[target.id] ?? 0)
++    reconcileOcclusion(for: target)
++    return order.count
++  }
++
++  /// The directory a restored terminal should open in: the remembered one while it is still a live
++  /// directory, else the target's own path. libghostty cannot spawn into a directory that no longer
++  /// exists, so an unchecked value would turn a deleted folder into a dead pane.
++  ///
++  /// Pure and `nonisolated` so it is unit-testable without a session, a target, or a surface.
++  nonisolated static func restoredCwd(_ cwd: String?, fallback: String) -> String {
++    guard let cwd, !cwd.isEmpty else { return fallback }
++    var isDirectory: ObjCBool = false
++    guard FileManager.default.fileExists(atPath: cwd, isDirectory: &isDirectory),
++      isDirectory.boolValue
++    else { return fallback }
++    return cwd
++  }
++
+   /// Open a new solo terminal at the end of the strip and focus it (⌘T). Does not touch the split.
+   @discardableResult
+   func addTab(for target: TerminalTarget) -> TerminalTab {
+
+
+=== DIFF: macapp/WorkroomApp/Core/UITestFixture.swift ===
+@@ -59,6 +59,18 @@ enum UITestFixture {
+     flag(defaultsKey)
+   }
+ 
++  /// Where a session-restore UI test wants its `session.json` (`-WorkroomUITestSessionFile <path>`).
++  ///
++  /// **In fixture mode the session store is a no-op unless this is set** (see
++  /// `SessionStore.forCurrentEnvironment`). That default-off posture is not optional: the app's
++  /// session file is scoped by bundle id, so without it the 30-odd existing UI tests would each write
++  /// over the DEVELOPER's own `Workroom Dev` session — and the fixture's temp-directory workrooms
++  /// would then be restored into a real launch.
++  static var sessionFilePath: String? {
++    guard isActive else { return nil }
++    return text("WorkroomUITestSessionFile")
++  }
++
+   /// When set (`-WorkroomUITestNoProjects 1`), the fixture loads an EMPTY project list — the
+   /// fresh-install / nothing-configured state. Used by `NewWorkroomDialogUITests` to assert File ▸
+   /// New Workroom is disabled when there's nothing to pick (issue #81 D3).
+
+
+=== DIFF: macapp/WorkroomApp/Core/WindowRegistry.swift ===
+@@ -55,6 +55,9 @@ final class WindowRegistry: ObservableObject {
+           let store = self.store(for: window)
+         else { return }
+         self.lastActiveStore = store
++        // Which window was key is part of the saved session — it decides where the user lands after
++        // a restore (issue #46).
++        SessionCoordinator.shared.markDirty()
+         // Bringing a window forward makes its selection the most recent one (issue #132). Without
+         // this, ⌘` to another window leaves the switcher's MRU head pointing at the window you left,
+         // so the next ⌥Tab tap flips somewhere you didn't come from.
+@@ -77,6 +80,9 @@ final class WindowRegistry: ObservableObject {
+     assignWindowNumberIfNeeded(store)
+     if lastActiveStore == nil { lastActiveStore = store }
+     recomputeBadge()
++    // The saved session is rebuilt from the live windows (issue #46), and the window layer publishes
++    // through none of the store's own publishers — so opening a window has to say so itself.
++    SessionCoordinator.shared.markDirty()
+   }
+ 
+   /// Give a newly registered window the smallest unused positive number, so the untitled-window
+@@ -93,6 +99,9 @@ final class WindowRegistry: ObservableObject {
+   func unregister(window: NSWindow) {
+     entries.removeAll { $0.window === window || $0.window == nil }
+     recomputeBadge()
++    // Without this a closed window is never noticed, and comes back on the next launch. The quit
++    // freeze is what stops the same signal erasing the session as windows close during termination.
++    SessionCoordinator.shared.markDirty()
+   }
+ 
+   private func prune() {
+
+
+=== DIFF: macapp/WorkroomApp/WorkroomApp.swift ===
+@@ -157,6 +157,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
+   /// Catches SIGTERM so a signalled quit stops run commands gracefully (issue #7). Retained so the
+   /// `DispatchSource` stays alive for the process's lifetime.
+   private var sigtermSource: DispatchSourceSignal?
++  /// Retains the background-save observer (issue #46) for the app's lifetime.
++  private var resignActiveObserver: Any?
+ 
+   deinit { hotkeyObservation?.cancel() }
+ 
+@@ -235,6 +237,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
+     SwitcherPanelController.shared.prepare()
+     SwitcherPanelController.shared.attach(to: .shared)
+ 
++    // Save the session whenever the app goes to the background (issue #46). Belt and braces on top
++    // of the coalesced writes: ⌘-tabbing away is the most common moment a user leaves a layout they
++    // would hate to lose, and it costs nothing when nothing changed (the coordinator compares the
++    // captured document with the last one written).
++    resignActiveObserver = NotificationCenter.default.addObserver(
++      forName: NSApplication.willResignActiveNotification, object: nil, queue: .main
++    ) { _ in
++      MainActor.assumeIsolated { SessionCoordinator.shared.writeIfChanged() }
++    }
++
+     monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+       let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
+       // ⌘W closes the quick terminal (issue #39) when its window is key. The menu's "Close Terminal"
+@@ -468,6 +480,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
+       // The source fires on the main queue, so we're main-actor-isolated in practice (same pattern
+       // as the NSEvent monitor above) — assert it so we can touch the store synchronously.
+       MainActor.assumeIsolated {
++        // SIGTERM is the path `XCUIApplication.terminate()`, `make app-run` and `pkill` take —
++        // `applicationShouldTerminate` never runs for a signal, so the session flush has to happen
++        // here too or none of those exits save anything (issue #46).
++        SessionCoordinator.shared.flushAndFreeze()
+         WindowRegistry.shared.gracefullyStopAllWindows(timeout: 4) {
+           exit(EXIT_SUCCESS)
+         }
+@@ -546,8 +562,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
+   /// this on the main thread. Closing a window doesn't quit the app, so this fires only on a quit.
+   @MainActor
+   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+-    // UI-test fixture quits cleanly (no modal, no waiting) so XCUITest teardown never blocks.
+-    if UITestFixture.isActive { return .terminateNow }
++    // UI-test fixture quits cleanly (no modal, no waiting) so XCUITest teardown never blocks. The
++    // session still flushes here: this branch IS terminating, and a UI test that relaunches to check
++    // what was restored must not race the coalescing timer (issue #46).
++    if UITestFixture.isActive {
++      SessionCoordinator.shared.flushAndFreeze()
++      return .terminateNow
++    }
+     if Defaults[.confirmOnQuit] {
+       let alert = NSAlert()
+       alert.messageText = "Quit Workroom?"
+@@ -578,6 +599,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
+     let registry = WindowRegistry.shared
+     // Mark the app as terminating so a window's own close handler doesn't also prompt/stop (#70).
+     registry.isTerminating = true
++    // Write the session and stop writing (issue #46). Deliberately HERE and not at the top of
++    // `applicationShouldTerminate`: that method can still return `.terminateCancel` at the confirm
++    // dialog, and freezing above that guard would silently kill session saving for the rest of the
++    // app's life after one cancelled ⌘Q. This point is past the guard and still before any window
++    // closes — which is exactly what the freeze protects, since the document is rebuilt from the
++    // live windows.
++    SessionCoordinator.shared.flushAndFreeze()
+     guard registry.hasAnyLiveRunCommand else { return .terminateNow }
+     // Stop every window's run commands, not just the focused one's.
+     registry.gracefullyStopAllWindows(timeout: 5) {
+
+
+=== DIFF: macapp/WorkroomAppTests/AppStoreSessionRestoreTests.swift ===
+@@ -0,0 +1,325 @@
++import AppKit
++import XCTest
++
++@testable import Workroom
++
++/// Store-level restore behaviour (issue #46): claiming, one-shot application, self-healing against a
++/// changed project list, and the `ensureInitialTerminal` race.
++///
++/// Every test injects a coordinator over a temp file, so none of this reads or writes the developer's
++/// real session, and none of it touches a shared `Defaults` key.
++@MainActor
++final class AppStoreSessionRestoreTests: XCTestCase {
++  private var directory: URL!
++  private var url: URL!
++
++  override func setUpWithError() throws {
++    try super.setUpWithError()
++    directory = FileManager.default.temporaryDirectory
++      .appendingPathComponent("session-store-restore-\(UUID().uuidString)", isDirectory: true)
++    url = directory.appendingPathComponent("session.json")
++  }
++
++  override func tearDownWithError() throws {
++    try? FileManager.default.removeItem(at: directory)
++    try super.tearDownWithError()
++  }
++
++  private func project(_ path: String, workrooms: [String] = []) -> Project {
++    Project(
++      path: path, vcs: "jj",
++      workrooms: workrooms.map {
++        Workroom(name: $0, path: "\(path)/\($0)", vcsName: "jj", warnings: [])
++      })
++  }
++
++  private func terminal(_ key: String, title: String) -> TabSession {
++    TabSession(
++      key: key, kind: TabSession.terminalKind,
++      terminal: TerminalPayload(defaultTitle: title, cwd: nil))
++  }
++
++  private func windowSession(targetID: String, titles: [String]) -> WindowSession {
++    WindowSession(
++      windowKey: UUID().uuidString, isKey: true, selectedTargetID: targetID,
++      targets: [
++        TargetSession(
++          targetID: targetID,
++          tabs: titles.enumerated().map { terminal("t\($0.offset)", title: $0.element) },
++          terminalCounter: titles.count)
++      ])
++  }
++
++  private func makeStore(
++    projects: [Project], session: WindowSession?, isLaunchWindow: Bool = true
++  ) -> AppStore {
++    let projectStore = ProjectStore()
++    projectStore.sessionCoordinator = SessionCoordinator(
++      store: SessionStore(url: url), debounce: 0.05, ceiling: 0.2, capture: { [] })
++    if let session {
++      SessionStore(url: url).writeSynchronously(
++        SessionFile(savedAt: Date(timeIntervalSince1970: 0), windows: [session]))
++    }
++    projectStore.projects = projects
++    let store = AppStore(projectStore: projectStore)
++    store.isRestoreWindow = isLaunchWindow
++    store.terminals.makeView = { _, cwd, command in
++      GhosttySurfaceView(workingDirectory: cwd, command: command)
++    }
++    return store
++  }
++
++  // MARK: Claiming
++
++  func testLaunchWindowClaimsTheSavedSessionOnce() {
++    let projects = [project("/p", workrooms: ["calm-otter"])]
++    let store = makeStore(
++      projects: projects,
++      session: windowSession(targetID: "wr|/p|calm-otter", titles: ["Terminal 1"]))
++
++    store.claimSessionIfNeeded()
++    XCTAssertNotNil(store.pendingSessionRestore)
++    XCTAssertEqual(store.pendingRestoreSelection, "wr|/p|calm-otter", "the session owns selection")
++
++    // Idempotent: `WindowAccessor` can resolve the same window more than once.
++    let claimed = store.pendingSessionRestore
++    store.claimSessionIfNeeded()
++    XCTAssertEqual(store.pendingSessionRestore?.windowKey, claimed?.windowKey)
++  }
++
++  /// Every ⌘N window opens blank, matching how the persisted selection already behaves.
++  func testNonLaunchWindowClaimsNothing() {
++    let projects = [project("/p", workrooms: ["calm-otter"])]
++    let store = makeStore(
++      projects: projects,
++      session: windowSession(targetID: "wr|/p|calm-otter", titles: ["Terminal 1"]),
++      isLaunchWindow: false)
++
++    store.claimSessionIfNeeded()
++    XCTAssertNil(store.pendingSessionRestore)
++  }
++
++  func testWindowKeyIsAdoptedSoTheSlotIsStableAcrossLaunches() throws {
++    let projects = [project("/p", workrooms: ["calm-otter"])]
++    let saved = windowSession(targetID: "wr|/p|calm-otter", titles: ["Terminal 1"])
++    let store = makeStore(projects: projects, session: saved)
++
++    store.claimSessionIfNeeded()
++    XCTAssertEqual(store.sessionKey.uuidString, saved.windowKey)
++  }
++
++  // MARK: Applying
++
++  func testRestoresPanesForResolvableTargets() throws {
++    let projects = [project("/p", workrooms: ["calm-otter"])]
++    let store = makeStore(
++      projects: projects,
++      session: windowSession(
++        targetID: "wr|/p|calm-otter", titles: ["Terminal 1", "Terminal 2"]))
++
++    store.claimSessionIfNeeded()
++    store.restorePersistedSessionIfPending(in: projects)
++
++    let target = try XCTUnwrap(
++      store.target(for: .workroom(project: "/p", name: "calm-otter")))
++    XCTAssertEqual(store.terminals.tabs(for: target).map(\.title), ["Terminal 1", "Terminal 2"])
++  }
++
++  /// `apply` runs twice per bootstrap and again on every reload — restoring more than once would
++  /// duplicate panes.
++  func testRestoreIsOneShot() throws {
++    let projects = [project("/p", workrooms: ["calm-otter"])]
++    let store = makeStore(
++      projects: projects,
++      session: windowSession(targetID: "wr|/p|calm-otter", titles: ["Terminal 1"]))
++
++    store.claimSessionIfNeeded()
++    store.restorePersistedSessionIfPending(in: projects)
++    store.restorePersistedSessionIfPending(in: projects)
++
++    let target = try XCTUnwrap(
++      store.target(for: .workroom(project: "/p", name: "calm-otter")))
++    XCTAssertEqual(store.terminals.tabs(for: target).count, 1)
++    XCTAssertNil(store.pendingSessionRestore)
++  }
++
++  /// A workroom deleted between launches drops out, exactly as `validatedSelection` and
++  /// `pruneWorkroomSplitToLiveLeaves` already self-heal.
++  func testEntryForADeletedWorkroomIsDropped() {
++    let projects = [project("/p", workrooms: ["still-here"])]
++    let store = makeStore(
++      projects: projects,
++      session: windowSession(targetID: "wr|/p|since-deleted", titles: ["Terminal 1"]))
++
++    store.claimSessionIfNeeded()
++    store.restorePersistedSessionIfPending(in: projects)
++    XCTAssertTrue(store.terminals.activeTargetIDs.isEmpty)
++  }
++
++  // MARK: The ensureInitialTerminal race
++
++  /// **CRITICAL REGRESSION.**
++  ///
++  /// `WorkroomTerminalsView`'s `.task` calls `ensureInitialTerminal`, which adds a shell when the
++  /// target has no tabs. Restoring at the END of `apply` — before any pane can mount — is what makes
++  /// that a no-op instead of a stray "Terminal 1" beside the restored panes.
++  func testEnsureInitialTerminalAddsNothingAfterRestore() throws {
++    let projects = [project("/p", workrooms: ["calm-otter"])]
++    let store = makeStore(
++      projects: projects,
++      session: windowSession(
++        targetID: "wr|/p|calm-otter", titles: ["Terminal 1", "Terminal 2"]))
++
++    store.claimSessionIfNeeded()
++    store.restorePersistedSessionIfPending(in: projects)
++
++    let target = try XCTUnwrap(
++      store.target(for: .workroom(project: "/p", name: "calm-otter")))
++    store.ensureInitialTerminal(for: target)
++
++    XCTAssertEqual(
++      store.terminals.tabs(for: target).map(\.title), ["Terminal 1", "Terminal 2"],
++      "no stray terminal may appear beside the restored panes")
++  }
++
++  /// With no saved session the old behaviour is untouched: the target opens exactly one shell.
++  func testEnsureInitialTerminalStillOpensAShellWithoutASession() throws {
++    let projects = [project("/p", workrooms: ["calm-otter"])]
++    let store = makeStore(projects: projects, session: nil)
++
++    store.claimSessionIfNeeded()
++    store.restorePersistedSessionIfPending(in: projects)
++
++    let target = try XCTUnwrap(
++      store.target(for: .workroom(project: "/p", name: "calm-otter")))
++    store.ensureInitialTerminal(for: target)
++    XCTAssertEqual(store.terminals.tabs(for: target).count, 1)
++  }
++
++  // MARK: Save gate
++
++  /// Saves stay suspended for the whole restore and resume once it finishes — the gate that stops a
++  /// half-restored document being written over a full one.
++  func testSavesAreSuspendedAcrossTheRestoreAndResumeAfterIt() {
++    let projects = [project("/p", workrooms: ["calm-otter"])]
++    let store = makeStore(
++      projects: projects,
++      session: windowSession(targetID: "wr|/p|calm-otter", titles: ["Terminal 1"]))
++    let coordinator = store.projectStore.sessionCoordinator
++
++    store.claimSessionIfNeeded()
++    XCTAssertTrue(coordinator.isSuspended, "loading the session suspends saving")
++
++    store.restorePersistedSessionIfPending(in: projects)
++    XCTAssertFalse(coordinator.isSuspended, "finishing the restore resumes it")
++  }
++
++  /// Nothing to restore must still leave saving enabled — otherwise a fresh install never saves.
++  func testNoSessionLeavesSavingEnabled() {
++    let store = makeStore(projects: [project("/p")], session: nil)
++    store.claimSessionIfNeeded()
++    XCTAssertFalse(store.projectStore.sessionCoordinator.isSuspended)
++  }
++
++  // MARK: Workroom splits + sidebar expansion
++
++  func testWorkroomSplitAndExpansionAreRestored() throws {
++    let projects = [project("/p", workrooms: ["one", "two"])]
++    var session = WindowSession(
++      windowKey: UUID().uuidString, isKey: true, selectedTargetID: "wr|/p|one",
++      targets: [
++        TargetSession(targetID: "wr|/p|one", tabs: [terminal("a", title: "Terminal 1")]),
++        TargetSession(targetID: "wr|/p|two", tabs: [terminal("b", title: "Terminal 1")]),
++      ],
++      workroomSplits: [
++        .split(
++          orientation: LayoutNode<String>.horizontal, ratio: 0.5,
++          first: .leaf("wr|/p|one"), second: .leaf("wr|/p|two"))
++      ],
++      expandedTargets: ["wr|/p|one"])
++    session.isKey = true
++
++    let store = makeStore(projects: projects, session: session)
++    store.claimSessionIfNeeded()
++    store.restorePersistedSessionIfPending(in: projects)
++
++    XCTAssertEqual(store.workroomSplits.count, 1)
++    XCTAssertEqual(
++      store.workroomSplits.first?.tabIDs,
++      [.workroom(project: "/p", name: "one"), .workroom(project: "/p", name: "two")])
++    XCTAssertEqual(store.expandedTerminalTargets, ["wr|/p|one"])
++  }
++
++  /// A group whose second workroom was deleted is not a group any more.
++  func testWorkroomSplitDissolvesWhenALeafIsGone() {
++    let projects = [project("/p", workrooms: ["one"])]
++    let session = WindowSession(
++      windowKey: UUID().uuidString, isKey: true,
++      targets: [TargetSession(targetID: "wr|/p|one", tabs: [terminal("a", title: "Terminal 1")])],
++      workroomSplits: [
++        .split(
++          orientation: LayoutNode<String>.horizontal, ratio: 0.5,
++          first: .leaf("wr|/p|one"), second: .leaf("wr|/p|since-deleted"))
++      ],
++      expandedTargets: ["wr|/p|since-deleted"])
++
++    let store = makeStore(projects: projects, session: session)
++    store.claimSessionIfNeeded()
++    store.restorePersistedSessionIfPending(in: projects)
++
++    XCTAssertTrue(store.workroomSplits.isEmpty)
++    XCTAssertTrue(
++      store.expandedTerminalTargets.isEmpty,
++      "an expand flag pointing at nothing would render an empty disclosure")
++  }
++
++  // MARK: Frame clamping
++
++  /// Unplug the display a window was on and a raw restored frame reopens it out of reach.
++  func testFrameOffEveryScreenIsRecentredOnThePrimary() throws {
++    let primary = NSRect(x: 0, y: 0, width: 1440, height: 900)
++    let offscreen = NSRect(x: 4000, y: 2200, width: 1200, height: 780)
++
++    let clamped = try XCTUnwrap(
++      AppStore.frameOnAVisibleScreen(offscreen, screens: [primary]))
++    XCTAssertTrue(primary.intersects(clamped))
++    XCTAssertEqual(clamped.width, 1200)
++    XCTAssertEqual(clamped.height, 780)
++    XCTAssertEqual(clamped.midX, primary.midX, accuracy: 0.5)
++  }
++
++  func testFrameStillOnAScreenIsLeftExactlyAsItWas() throws {
++    let primary = NSRect(x: 0, y: 0, width: 1440, height: 900)
++    let secondary = NSRect(x: 1440, y: 0, width: 1920, height: 1080)
++    let onSecondary = NSRect(x: 1600, y: 100, width: 1200, height: 780)
++
++    XCTAssertEqual(
++      AppStore.frameOnAVisibleScreen(onSecondary, screens: [primary, secondary]), onSecondary)
++  }
++
++  /// A window barely overlapping a screen edge is not reachable in practice.
++  func testBarelyOverlappingFrameIsRecentred() throws {
++    let primary = NSRect(x: 0, y: 0, width: 1440, height: 900)
++    let slither = NSRect(x: 1430, y: 880, width: 1200, height: 780)
++
++    let clamped = try XCTUnwrap(AppStore.frameOnAVisibleScreen(slither, screens: [primary]))
++    XCTAssertNotEqual(clamped, slither)
++    XCTAssertEqual(clamped.midX, primary.midX, accuracy: 0.5)
++  }
++
++  func testDegenerateFrameIsRejected() {
++    let primary = NSRect(x: 0, y: 0, width: 1440, height: 900)
++    XCTAssertNil(
++      AppStore.frameOnAVisibleScreen(NSRect(x: 0, y: 0, width: 10, height: 10), screens: [primary]))
++  }
++
++  /// A frame bigger than the only screen is shrunk to fit rather than restored oversized.
++  func testOversizedFrameIsShrunkToThePrimaryScreen() throws {
++    let primary = NSRect(x: 0, y: 0, width: 1440, height: 900)
++    let huge = NSRect(x: 9000, y: 9000, width: 5000, height: 4000)
++
++    let clamped = try XCTUnwrap(AppStore.frameOnAVisibleScreen(huge, screens: [primary]))
++    XCTAssertEqual(clamped.width, primary.width)
++    XCTAssertEqual(clamped.height, primary.height)
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppTests/SessionCaptureTests.swift ===
+@@ -0,0 +1,149 @@
++import XCTest
++
++@testable import Workroom
++
++/// What a target contributes to a saved session (issue #46).
++///
++/// Uses the same factory seam as `TerminalSessionsTests`: a `GhosttySurfaceView` only creates its PTY
++/// when it enters a window, so constructing one here spawns nothing.
++@MainActor
++final class SessionCaptureTests: XCTestCase {
++  private let target = TerminalTarget(
++    id: "wr|/p|foo", title: "foo", path: "/tmp", isMissing: false)
++
++  private func makeSessions() -> TerminalSessions {
++    let sessions = TerminalSessions()
++    sessions.makeView = { _, cwd, command in
++      GhosttySurfaceView(workingDirectory: cwd, command: command)
++    }
++    return sessions
++  }
++
++  /// Mirrors what `AppStore.captureWindowSession` does, without needing a window or a store.
++  private func capture(_ sessions: TerminalSessions) -> TargetSession? {
++    guard let captured = sessions.sessionCapture(forTargetID: target.id) else { return nil }
++    var keys: [TerminalTab.ID: String] = [:]
++    var tabs: [TabSession] = []
++    for tab in captured.tabs {
++      let key = tab.id.uuidString
++      guard let session = TabSession(key: key, tab: tab) else { continue }
++      keys[tab.id] = key
++      tabs.append(session)
++    }
++    guard !tabs.isEmpty else { return nil }
++    return TargetSession(
++      targetID: target.id, tabs: tabs,
++      split: captured.split.flatMap { LayoutNode<String>.capture($0) { keys[$0] } },
++      focusedKey: captured.focused.flatMap { keys[$0] },
++      terminalCounter: captured.counter)
++  }
++
++  // MARK: Shape
++
++  func testCapturesTabsInStripOrderWithTheCounter() throws {
++    let sessions = makeSessions()
++    sessions.addTab(for: target)
++    sessions.addTab(for: target)
++    sessions.addTab(for: target)
++
++    let captured = try XCTUnwrap(capture(sessions))
++    XCTAssertEqual(captured.tabs.count, 3)
++    XCTAssertEqual(captured.tabs.map(\.kind), Array(repeating: TabSession.terminalKind, count: 3))
++    XCTAssertEqual(
++      captured.tabs.compactMap { $0.terminal?.defaultTitle },
++      ["Terminal 1", "Terminal 2", "Terminal 3"])
++    XCTAssertEqual(captured.terminalCounter, 3, "so the next ⌘T is Terminal 4, not Terminal 1")
++    XCTAssertEqual(captured.tabs.map(\.key), sessions.tabs(for: target).map(\.id.uuidString))
++  }
++
++  func testCapturedSplitAddressesTheCapturedTabs() throws {
++    let sessions = makeSessions()
++    sessions.addTab(for: target)
++    sessions.splitFocusedPane(for: target, orientation: .horizontal)
++
++    let captured = try XCTUnwrap(capture(sessions))
++    let split = try XCTUnwrap(captured.split)
++    let keys = Set(captured.tabs.map(\.key))
++    XCTAssertEqual(split.leaves.count, 2)
++    XCTAssertTrue(
++      split.leaves.allSatisfy { keys.contains($0) },
++      "every split leaf must address a tab that was actually written")
++    XCTAssertEqual(captured.focusedKey.map { keys.contains($0) }, true)
++  }
++
++  func testCapturesContentTabsWithTheirOverrides() throws {
++    let sessions = makeSessions()
++    let diff = sessions.openContentPersistent(
++      DiffDescriptor(
++        path: "a/b.swift", change: .modified, source: .commit("abc123"), isPreview: false),
++      for: target)
++    sessions.setDiffViewMode(.sideBySide, forTab: diff, in: target)
++    let file = sessions.openContentPersistent(
++      FileDescriptor(path: "README.md", isPreview: false), for: target)
++    sessions.setMarkdownPreview(false, forTab: file, in: target)
++    _ = sessions.openContentPersistent(
++      ChangesetDescriptor(commitID: "def456", title: "Fix it", isPreview: false), for: target)
++
++    let captured = try XCTUnwrap(capture(sessions))
++    let diffPayload = try XCTUnwrap(captured.tabs.compactMap(\.diff).first)
++    XCTAssertEqual(diffPayload.path, "a/b.swift")
++    XCTAssertEqual(diffPayload.change, ChangedFile.Change.modified.rawValue)
++    XCTAssertEqual(diffPayload.source.source, .commit("abc123"))
++    XCTAssertEqual(diffPayload.viewMode, DiffViewMode.sideBySide.rawValue)
++
++    let filePayload = try XCTUnwrap(captured.tabs.compactMap(\.file).first)
++    XCTAssertEqual(filePayload.path, "README.md")
++    XCTAssertEqual(filePayload.markdownPreview, false)
++
++    let changeset = try XCTUnwrap(captured.tabs.compactMap(\.changeset).first)
++    XCTAssertEqual(changeset.commitID, "def456")
++    XCTAssertEqual(changeset.title, "Fix it")
++  }
++
++  func testCapturesThePreviewFlag() throws {
++    let sessions = makeSessions()
++    _ = sessions.openContentPreview(
++      FileDescriptor(path: "preview.txt", isPreview: true), for: target)
++
++    let captured = try XCTUnwrap(capture(sessions))
++    XCTAssertEqual(captured.tabs.compactMap(\.file).first?.isPreview, true)
++  }
++
++  // MARK: Run tabs
++
++  /// A restored run tab would resurrect a dev server with no `RunState` behind it — an untracked
++  /// process orphaned on its port. It must never reach the file.
++  ///
++  /// `splitTab` spawns a fresh shell beside the anchor, so this leaves three tabs — a plain terminal,
++  /// the run tab, and the new pane — of which exactly one is unpersistable.
++  func testRunTabIsExcludedAndItsSplitLeafCollapses() throws {
++    let sessions = makeSessions()
++    sessions.addTab(for: target)
++    let runTab = sessions.addRunTab(
++      for: target, command: "npm run dev", cwd: target.path, focus: false)
++    sessions.splitTab(runTab.id, on: .right, for: target)
++    XCTAssertEqual(sessions.tabs(for: target).count, 3)
++    XCTAssertEqual(sessions.split(for: target)?.tabIDs.count, 2, "the run tab is in the split")
++
++    let captured = try XCTUnwrap(capture(sessions))
++    XCTAssertEqual(captured.tabs.count, 2, "the run tab is not persisted")
++    XCTAssertFalse(
++      captured.tabs.contains { $0.terminal?.defaultTitle == "Run" },
++      "no run tab reaches the file")
++    XCTAssertNil(
++      captured.split,
++      "the split had two leaves and one was the run tab — a lone leaf is not a split")
++  }
++
++  /// A target whose only tab was a run tab contributes nothing rather than an empty entry — an empty
++  /// entry would make `ensureTab`'s "has this target been seeded?" check lie on restore.
++  func testTargetWithOnlyARunTabIsDropped() {
++    let sessions = makeSessions()
++    _ = sessions.addRunTab(for: target, command: "npm run dev", cwd: target.path, focus: false)
++    XCTAssertNil(capture(sessions))
++  }
++
++  func testNoTabsCapturesNothing() {
++    XCTAssertNil(capture(makeSessions()))
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppTests/SessionRestoreTests.swift ===
+@@ -0,0 +1,261 @@
++import XCTest
++
++@testable import Workroom
++
++/// Rehydrating a target's panes from a saved session (issue #46).
++///
++/// Same factory seam as `TerminalSessionsTests`: constructing a `GhosttySurfaceView` is inert until it
++/// enters a window, so nothing here spawns a shell.
++@MainActor
++final class SessionRestoreTests: XCTestCase {
++  private let target = TerminalTarget(
++    id: "wr|/p|foo", title: "foo", path: "/tmp", isMissing: false)
++
++  private func makeSessions() -> TerminalSessions {
++    let sessions = TerminalSessions()
++    sessions.makeView = { _, cwd, command in
++      GhosttySurfaceView(workingDirectory: cwd, command: command)
++    }
++    return sessions
++  }
++
++  private func terminal(_ key: String, title: String, cwd: String? = nil) -> TabSession {
++    TabSession(
++      key: key, kind: TabSession.terminalKind,
++      terminal: TerminalPayload(defaultTitle: title, cwd: cwd))
++  }
++
++  private func split(_ first: String, _ second: String) -> LayoutNode<String> {
++    .split(
++      orientation: LayoutNode<String>.vertical, ratio: 0.35, first: .leaf(first),
++      second: .leaf(second))
++  }
++
++  // MARK: Shape
++
++  func testRestoresTabsInOrderWithTitles() {
++    let sessions = makeSessions()
++    let restored = sessions.restore(
++      TargetSession(
++        targetID: target.id,
++        tabs: [
++          terminal("a", title: "Terminal 1"), terminal("b", title: "Terminal 2"),
++          terminal("c", title: "Terminal 3"),
++        ], terminalCounter: 3),
++      for: target)
++
++    XCTAssertEqual(restored, 3)
++    XCTAssertEqual(
++      sessions.tabs(for: target).map(\.title), ["Terminal 1", "Terminal 2", "Terminal 3"])
++  }
++
++  func testRestoresSplitAndFocusThroughTheKeyRemap() throws {
++    let sessions = makeSessions()
++    sessions.restore(
++      TargetSession(
++        targetID: target.id,
++        tabs: [terminal("a", title: "Terminal 1"), terminal("b", title: "Terminal 2")],
++        split: split("a", "b"), focusedKey: "b"),
++      for: target)
++
++    let tabs = sessions.tabs(for: target)
++    let live = try XCTUnwrap(sessions.split(for: target))
++    XCTAssertEqual(live.tabIDs, tabs.map(\.id), "the split addresses the freshly minted ids")
++    guard case .split(_, let orientation, let ratio, _, _) = live else {
++      return XCTFail("expected a split")
++    }
++    XCTAssertEqual(orientation, .vertical)
++    XCTAssertEqual(ratio, 0.35, accuracy: 0.0001)
++    XCTAssertEqual(sessions.focusedTab(for: target)?.title, "Terminal 2")
++  }
++
++  /// Persisted keys are a join key inside one snapshot, never an identity: a tab id is unique across
++  /// windows at runtime and OS-notification routing depends on that.
++  func testRestoredTabsGetFreshUniqueIDs() {
++    let sessions = makeSessions()
++    sessions.restore(
++      TargetSession(
++        targetID: target.id,
++        tabs: [terminal("a", title: "Terminal 1"), terminal("b", title: "Terminal 2")]),
++      for: target)
++
++    let ids = sessions.tabs(for: target).map(\.id)
++    XCTAssertEqual(Set(ids).count, 2)
++    XCTAssertFalse(ids.map(\.uuidString).contains("a"))
++  }
++
++  func testRestoresContentTabsWithOverrides() throws {
++    let sessions = makeSessions()
++    sessions.restore(
++      TargetSession(
++        targetID: target.id,
++        tabs: [
++          TabSession(
++            key: "d", kind: TabSession.diffKind,
++            diff: DiffPayload(
++              path: "a/b.swift", change: ChangedFile.Change.modified.rawValue,
++              source: DiffSourcePayload(.commit("abc")), isPreview: false,
++              viewMode: DiffViewMode.sideBySide.rawValue)),
++          TabSession(
++            key: "f", kind: TabSession.fileKind,
++            file: FilePayload(path: "README.md", isPreview: true, markdownPreview: false)),
++          TabSession(
++            key: "c", kind: TabSession.changesetKind,
++            changeset: ChangesetPayload(
++              commitID: "def", title: "Fix it", isPreview: false, selectedPath: "a/b.swift")),
++        ]),
++      for: target)
++
++    let tabs = sessions.tabs(for: target)
++    XCTAssertEqual(tabs.count, 3)
++    guard case .diff(let diff) = tabs[0].content else { return XCTFail("expected a diff tab") }
++    XCTAssertEqual(diff.path, "a/b.swift")
++    XCTAssertEqual(diff.source, .commit("abc"))
++    XCTAssertEqual(tabs[0].diffViewModeOverride, .sideBySide)
++
++    guard case .file(let file) = tabs[1].content else { return XCTFail("expected a file tab") }
++    XCTAssertTrue(file.isPreview)
++    XCTAssertEqual(tabs[1].markdownPreviewOverride, false)
++
++    guard case .changeset(let changeset) = tabs[2].content else {
++      return XCTFail("expected a changeset tab")
++    }
++    XCTAssertEqual(changeset.commitID, "def")
++    XCTAssertEqual(changeset.selectedPath, "a/b.swift")
++  }
++
++  /// An unknown kind is what a NEWER build writes; it costs that tab, not the target.
++  func testUnknownTabKindIsSkippedAndSiblingsRestore() {
++    let sessions = makeSessions()
++    let restored = sessions.restore(
++      TargetSession(
++        targetID: target.id,
++        tabs: [
++          terminal("a", title: "Terminal 1"), TabSession(key: "x", kind: "hologram"),
++          terminal("b", title: "Terminal 2"),
++        ]),
++      for: target)
++    XCTAssertEqual(restored, 2)
++    XCTAssertEqual(sessions.tabs(for: target).map(\.title), ["Terminal 1", "Terminal 2"])
++  }
++
++  // MARK: Counter, cwd, focus
++
++  /// Without the counter, the next ⌘T after restoring "Terminal 3" would be "Terminal 1" again.
++  func testCounterContinuesAfterRestore() {
++    let sessions = makeSessions()
++    sessions.restore(
++      TargetSession(
++        targetID: target.id, tabs: [terminal("a", title: "Terminal 7")], terminalCounter: 7),
++      for: target)
++    let added = sessions.addTab(for: target)
++    XCTAssertEqual(added.title, "Terminal 8")
++  }
++
++  /// libghostty cannot spawn into a directory that no longer exists, so a dead cwd must fall back.
++  func testRestoredCwdFallsBackWhenTheDirectoryIsGone() {
++    XCTAssertEqual(
++      TerminalSessions.restoredCwd("/definitely/not/a/real/directory", fallback: "/tmp"), "/tmp")
++    XCTAssertEqual(TerminalSessions.restoredCwd(nil, fallback: "/tmp"), "/tmp")
++    XCTAssertEqual(TerminalSessions.restoredCwd("", fallback: "/tmp"), "/tmp")
++    XCTAssertEqual(TerminalSessions.restoredCwd("/tmp", fallback: "/var"), "/tmp")
++    // A file is not a directory.
++    XCTAssertEqual(TerminalSessions.restoredCwd("/etc/hosts", fallback: "/tmp"), "/tmp")
++  }
++
++  /// A restore is not a navigation — seeding back/forward with it would record a place the user never
++  /// went.
++  func testRestoreDoesNotFireTheFocusSeam() {
++    let sessions = makeSessions()
++    var fired = 0
++    sessions.onFocusChange = { _, _ in fired += 1 }
++    sessions.restore(
++      TargetSession(
++        targetID: target.id,
++        tabs: [terminal("a", title: "Terminal 1"), terminal("b", title: "Terminal 2")],
++        focusedKey: "b"),
++      for: target)
++    XCTAssertEqual(fired, 0)
++    XCTAssertEqual(sessions.focusedTab(for: target)?.title, "Terminal 2")
++  }
++
++  // MARK: Guards
++
++  /// A restore must never race or duplicate a live session.
++  func testRestoreIsANoOpWhenTheTargetAlreadyHasTabs() {
++    let sessions = makeSessions()
++    sessions.addTab(for: target)
++    let restored = sessions.restore(
++      TargetSession(targetID: target.id, tabs: [terminal("a", title: "Terminal 99")]),
++      for: target)
++    XCTAssertEqual(restored, 0)
++    XCTAssertEqual(sessions.tabs(for: target).map(\.title), ["Terminal 1"])
++  }
++
++  func testEmptySessionRestoresNothing() {
++    let sessions = makeSessions()
++    XCTAssertEqual(
++      sessions.restore(TargetSession(targetID: target.id, tabs: []), for: target), 0)
++    XCTAssertTrue(sessions.tabs(for: target).isEmpty)
++  }
++
++  /// Restoring builds tab models only. A surface creates its PTY when it enters a window, so a
++  /// restored session costs views, not shells — which is what makes eager restore affordable.
++  func testRestoreSpawnsNoSurfaces() {
++    let sessions = makeSessions()
++    sessions.restore(
++      TargetSession(
++        targetID: target.id,
++        tabs: [terminal("a", title: "Terminal 1"), terminal("b", title: "Terminal 2")]),
++      for: target)
++    for tab in sessions.tabs(for: target) {
++      XCTAssertTrue(
++        tab.surface?.canSpawnSurface == true, "no restored terminal may have spawned yet")
++    }
++  }
++
++  // MARK: Round trip
++
++  /// Capture → restore → capture must be a fixed point, or a layout would drift a little on every
++  /// relaunch.
++  func testCaptureRestoreCaptureIsStable() throws {
++    let first = makeSessions()
++    first.addTab(for: target)
++    first.splitFocusedPane(for: target, orientation: .vertical)
++    first.addTab(for: target)
++
++    let captured = try XCTUnwrap(capture(first))
++    let second = makeSessions()
++    second.restore(captured, for: target)
++    let recaptured = try XCTUnwrap(capture(second))
++
++    XCTAssertEqual(captured.tabs.map(\.kind), recaptured.tabs.map(\.kind))
++    XCTAssertEqual(
++      captured.tabs.compactMap { $0.terminal?.defaultTitle },
++      recaptured.tabs.compactMap { $0.terminal?.defaultTitle })
++    XCTAssertEqual(captured.split?.leaves.count, recaptured.split?.leaves.count)
++    XCTAssertEqual(captured.terminalCounter, recaptured.terminalCounter)
++    // Keys are re-minted, so compare the POSITION of the focused tab rather than its key.
++    XCTAssertEqual(
++      captured.tabs.firstIndex { $0.key == captured.focusedKey },
++      recaptured.tabs.firstIndex { $0.key == recaptured.focusedKey })
++  }
++
++  private func capture(_ sessions: TerminalSessions) -> TargetSession? {
++    guard let captured = sessions.sessionCapture(forTargetID: target.id) else { return nil }
++    var keys: [TerminalTab.ID: String] = [:]
++    var tabs: [TabSession] = []
++    for tab in captured.tabs {
++      let key = tab.id.uuidString
++      guard let session = TabSession(key: key, tab: tab) else { continue }
++      keys[tab.id] = key
++      tabs.append(session)
++    }
++    guard !tabs.isEmpty else { return nil }
++    return TargetSession(
++      targetID: target.id, tabs: tabs,
++      split: captured.split.flatMap { LayoutNode<String>.capture($0) { keys[$0] } },
++      focusedKey: captured.focused.flatMap { keys[$0] },
++      terminalCounter: captured.counter)
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppTests/SessionSaveTests.swift ===
+@@ -0,0 +1,249 @@
++import XCTest
++
++@testable import Workroom
++
++/// When the saved session is written (issue #46) — coalescing, the ceiling, the restore gate, and the
++/// quit freeze.
++///
++/// The coordinator takes an injected store URL and an injected capture closure, so none of this needs
++/// a window, an `AppStore`, or any shared `Defaults` key.
++@MainActor
++final class SessionSaveTests: XCTestCase {
++  private var directory: URL!
++  private var url: URL!
++  /// What the injected capture returns. Mutate it to simulate the session changing.
++  private var captured: [WindowSession] = []
++
++  override func setUpWithError() throws {
++    try super.setUpWithError()
++    directory = FileManager.default.temporaryDirectory
++      .appendingPathComponent("session-save-tests-\(UUID().uuidString)", isDirectory: true)
++    url = directory.appendingPathComponent("session.json")
++    captured = [window(tabCount: 1)]
++  }
++
++  override func tearDownWithError() throws {
++    try? FileManager.default.removeItem(at: directory)
++    try super.tearDownWithError()
++  }
++
++  private func window(tabCount: Int, key: String = "W1") -> WindowSession {
++    WindowSession(
++      windowKey: key, isKey: true,
++      targets: [
++        TargetSession(
++          targetID: "wr|/p|foo",
++          tabs: (0..<tabCount).map {
++            TabSession(
++              key: "t\($0)", kind: TabSession.terminalKind,
++              terminal: TerminalPayload(defaultTitle: "Terminal \($0)", cwd: nil))
++          })
++      ])
++  }
++
++  private func makeCoordinator(
++    debounce: TimeInterval = 0.05, ceiling: TimeInterval = 0.2
++  ) -> SessionCoordinator {
++    SessionCoordinator(
++      store: SessionStore(url: url), debounce: debounce, ceiling: ceiling,
++      capture: { [weak self] in self?.captured ?? [] })
++  }
++
++  private func readWindows() -> [WindowSession]? {
++    guard case .restored(let file, _) = SessionStore(url: url).read() else { return nil }
++    return file.windows
++  }
++
++  /// Spin the main run loop so scheduled work items fire, without blocking the main actor.
++  private func pump(_ seconds: TimeInterval) {
++    let deadline = Date().addingTimeInterval(seconds)
++    while Date() < deadline {
++      RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
++    }
++  }
++
++  // MARK: Coalescing
++
++  func testDebouncedWriteLands() {
++    let coordinator = makeCoordinator()
++    coordinator.markDirty()
++    XCTAssertNil(readWindows(), "nothing is written before the debounce elapses")
++
++    pump(0.3)
++    XCTAssertEqual(readWindows()?.count, 1)
++  }
++
++  /// **CRITICAL REGRESSION (eng review 1A).**
++  ///
++  /// The dirty sources fire faster than the debounce whenever a terminal produces output —
++  /// `pulsePaneActivity` bumps a `@Published` dict per activity report, and every live-title update
++  /// reassigns `tabsByTarget`. A plain cancel-and-replace debounce has its deadline pushed out
++  /// forever and NEVER writes, so splitting a pane beside a running dev server would never be saved.
++  /// The ceiling is what bounds that.
++  func testSustainedChatterStillWritesWithinTheCeiling() {
++    let coordinator = makeCoordinator(debounce: 0.2, ceiling: 0.4)
++    let deadline = Date().addingTimeInterval(0.9)
++    // Mark dirty faster than the debounce for longer than the ceiling — the starvation scenario.
++    while Date() < deadline {
++      coordinator.markDirty()
++      RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
++    }
++    XCTAssertNotNil(
++      readWindows(),
++      "a debounce with no ceiling would starve here and never write the layout")
++  }
++
++  /// Title and activity churn produce an identical document, so it costs a comparison, not a write.
++  func testUnchangedSessionIsNotRewritten() throws {
++    let coordinator = makeCoordinator()
++    coordinator.writeIfChanged()
++    // `write` hands off to the store's serial queue — only the quit path writes synchronously.
++    pump(0.2)
++    let firstWrite = try XCTUnwrap(try? Data(contentsOf: url))
++
++    // A later capture that is byte-identical must not touch the file — checked via the timestamp,
++    // since `savedAt` would otherwise differ on every write.
++    let before =
++      try FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate]
++      as? Date
++    pump(0.05)
++    coordinator.writeIfChanged()
++    let after =
++      try FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate]
++      as? Date
++    XCTAssertEqual(before, after, "an unchanged session must not be rewritten")
++    XCTAssertEqual(try Data(contentsOf: url), firstWrite)
++  }
++
++  func testChangedSessionIsWritten() {
++    let coordinator = makeCoordinator()
++    coordinator.writeIfChanged()
++    pump(0.2)
++    XCTAssertEqual(readWindows()?.first?.targets.first?.tabs.count, 1)
++
++    captured = [window(tabCount: 3)]
++    coordinator.writeIfChanged()
++    pump(0.2)
++    XCTAssertEqual(readWindows()?.first?.targets.first?.tabs.count, 3)
++  }
++
++  // MARK: Restore gate
++
++  /// **CRITICAL REGRESSION (outside voice, finding 1).**
++  ///
++  /// Restoring the launch window marks the session dirty. If that write landed before the sibling
++  /// windows had opened and registered, the document would be rebuilt from the ONE live window and
++  /// overwrite the file — silently deleting windows 2 and 3 on the very launch meant to restore them.
++  func testSavesAreSuspendedWhileRestoring() {
++    // A full session is on disk, as if written at the last quit.
++    SessionStore(url: url).writeSynchronously(
++      SessionFile(
++        savedAt: Date(timeIntervalSince1970: 0),
++        windows: [window(tabCount: 2, key: "W1"), window(tabCount: 2, key: "W2")]))
++
++    let coordinator = makeCoordinator()
++    coordinator.suspendSaves()
++    // Only the first window exists so far — exactly the mid-restore state.
++    captured = [window(tabCount: 2, key: "W1")]
++    coordinator.markDirty()
++    pump(0.3)
++
++    XCTAssertEqual(
++      readWindows()?.map(\.windowKey), ["W1", "W2"],
++      "a save during restore must not truncate the windows that have not opened yet")
++
++    // Once every window is back, the pending change writes.
++    captured = [window(tabCount: 2, key: "W1"), window(tabCount: 2, key: "W2")]
++    coordinator.resumeSaves()
++    pump(0.3)
++    XCTAssertEqual(readWindows()?.map(\.windowKey), ["W1", "W2"])
++  }
++
++  /// Nested suspensions (several windows restoring) must not resume early.
++  func testNestedSuspensionsResumeOnlyWhenBalanced() {
++    let coordinator = makeCoordinator()
++    coordinator.suspendSaves()
++    coordinator.suspendSaves()
++    coordinator.markDirty()
++    coordinator.resumeSaves()
++    pump(0.2)
++    XCTAssertNil(readWindows(), "still suspended by the outer claim")
++
++    coordinator.resumeSaves()
++    pump(0.3)
++    XCTAssertNotNil(readWindows())
++  }
++
++  /// A flush while a restore is still in flight would replace a good file with a partial one.
++  func testFlushWhileSuspendedWritesNothing() {
++    SessionStore(url: url).writeSynchronously(
++      SessionFile(
++        savedAt: Date(timeIntervalSince1970: 0),
++        windows: [window(tabCount: 2, key: "W1"), window(tabCount: 2, key: "W2")]))
++
++    let coordinator = makeCoordinator()
++    coordinator.suspendSaves()
++    captured = [window(tabCount: 1, key: "W1")]
++    coordinator.flushAndFreeze()
++
++    XCTAssertEqual(readWindows()?.map(\.windowKey), ["W1", "W2"])
++  }
++
++  // MARK: Quit
++
++  func testFlushWritesSynchronouslyAndThenFreezes() {
++    let coordinator = makeCoordinator()
++    captured = [window(tabCount: 2)]
++    coordinator.flushAndFreeze()
++    // No pumping: the quit path may not survive long enough for an async write.
++    XCTAssertEqual(readWindows()?.first?.targets.first?.tabs.count, 2)
++
++    // Windows close one by one during a quit, and the document is rebuilt from the LIVE windows —
++    // without the freeze, the last window closing would overwrite what the flush just wrote.
++    captured = []
++    coordinator.markDirty()
++    coordinator.writeIfChanged()
++    pump(0.3)
++    XCTAssertEqual(
++      readWindows()?.first?.targets.first?.tabs.count, 2,
++      "a frozen coordinator must not let window teardown erase the session")
++  }
++
++  /// The freeze is reached only past `applicationShouldTerminate`'s cancel guard, so a coordinator
++  /// that was never told to quit keeps saving. (The placement itself is the fix for the cancelled-⌘Q
++  /// bug; this pins the mechanism it relies on.)
++  func testCoordinatorThatWasNeverFlushedKeepsSaving() {
++    let coordinator = makeCoordinator()
++    coordinator.writeIfChanged()
++    pump(0.2)
++    XCTAssertEqual(readWindows()?.first?.targets.first?.tabs.count, 1)
++
++    captured = [window(tabCount: 4)]
++    coordinator.markDirty()
++    pump(0.3)
++    XCTAssertEqual(readWindows()?.first?.targets.first?.tabs.count, 4)
++  }
++
++  // MARK: Newer schema
++
++  /// A session written by a newer build is read-only: this build restores nothing and, critically,
++  /// never overwrites it.
++  func testNewerSchemaOnDiskStopsAllWrites() throws {
++    SessionStore(url: url).writeSynchronously(
++      SessionFile(
++        schemaVersion: SessionFile.currentSchemaVersion + 1,
++        savedAt: Date(timeIntervalSince1970: 0), windows: [window(tabCount: 9, key: "FUTURE")]))
++    let before = try Data(contentsOf: url)
++
++    let coordinator = makeCoordinator()
++    XCTAssertEqual(coordinator.read(), .newerSchema)
++    XCTAssertTrue(coordinator.writesDisabled)
++
++    captured = [window(tabCount: 1)]
++    coordinator.markDirty()
++    coordinator.writeIfChanged()
++    coordinator.flushAndFreeze()
++    pump(0.3)
++    XCTAssertEqual(try Data(contentsOf: url), before)
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppTests/SessionSnapshotCodecTests.swift ===
+@@ -0,0 +1,454 @@
++import XCTest
++
++@testable import Workroom
++
++/// Pure codec + structural-validation tests for the saved-session schema (issue #46).
++///
++/// The golden-JSON tests are deliberate: the field names in `SessionSnapshot.swift` are a stored-data
++/// contract, so a rename has to fail loudly here rather than silently invalidate every user's saved
++/// session. No `Defaults`, no files, no `AppStore` — this whole class is pure values.
++final class SessionSnapshotCodecTests: XCTestCase {
++  private func decode(_ json: String) throws -> SessionFile {
++    let decoder = JSONDecoder()
++    decoder.dateDecodingStrategy = .iso8601
++    return try decoder.decode(SessionFile.self, from: Data(json.utf8))
++  }
++
++  private func encode(_ file: SessionFile) throws -> String {
++    let encoder = JSONEncoder()
++    encoder.dateEncodingStrategy = .iso8601
++    encoder.outputFormatting = [.sortedKeys]
++    return String(decoding: try encoder.encode(file), as: UTF8.self)
++  }
++
++  /// A v1 document with all four tab kinds and a nested split.
++  private let golden = """
++    {
++      "schemaVersion": 1,
++      "savedAt": "2026-08-08T10:00:00Z",
++      "appVersion": "2.0.0",
++      "windows": [
++        {
++          "windowKey": "W1",
++          "frame": "{{0, 0}, {1200, 780}}",
++          "isKey": true,
++          "selectedTargetID": "wr|/p|calm-otter",
++          "expandedTargets": ["wr|/p|calm-otter"],
++          "workroomSplits": [
++            {
++              "kind": "split", "orientation": "horizontal", "ratio": 0.5,
++              "first": {"kind": "leaf", "leaf": "wr|/p|calm-otter"},
++              "second": {"kind": "leaf", "leaf": "wr|/p|bold-heron"}
++            }
++          ],
++          "targets": [
++            {
++              "targetID": "wr|/p|calm-otter",
++              "focusedKey": "t2",
++              "terminalCounter": 3,
++              "split": {
++                "kind": "split", "orientation": "vertical", "ratio": 0.6,
++                "first": {"kind": "leaf", "leaf": "t1"},
++                "second": {
++                  "kind": "split", "orientation": "horizontal", "ratio": 0.4,
++                  "first": {"kind": "leaf", "leaf": "t2"},
++                  "second": {"kind": "leaf", "leaf": "t3"}
++                }
++              },
++              "tabs": [
++                {
++                  "key": "t1", "kind": "terminal",
++                  "terminal": {"defaultTitle": "Terminal 1", "cwd": "/p/calm-otter/src"}
++                },
++                {
++                  "key": "t2", "kind": "diff",
++                  "diff": {
++                    "path": "a/b.swift", "change": "modified", "isPreview": false,
++                    "viewMode": "sideBySide",
++                    "source": {"kind": "commit", "commit": "abc123"}
++                  }
++                },
++                {
++                  "key": "t3", "kind": "file",
++                  "file": {"path": "README.md", "isPreview": true, "markdownPreview": false}
++                },
++                {
++                  "key": "t4", "kind": "changeset",
++                  "changeset": {
++                    "commitID": "def456", "title": "Fix the thing", "isPreview": false,
++                    "selectedPath": "a/b.swift"
++                  }
++                }
++              ]
++            }
++          ]
++        }
++      ]
++    }
++    """
++
++  // MARK: Golden document
++
++  func testGoldenDocumentDecodes() throws {
++    let file = try decode(golden)
++    XCTAssertEqual(file.schemaVersion, 1)
++    XCTAssertEqual(file.compatibility, .current)
++    XCTAssertEqual(file.windows.count, 1)
++
++    let window = try XCTUnwrap(file.windows.first)
++    XCTAssertEqual(window.windowKey, "W1")
++    XCTAssertTrue(window.isKey)
++    XCTAssertEqual(window.selectedTargetID, "wr|/p|calm-otter")
++    XCTAssertEqual(window.expandedTargets, ["wr|/p|calm-otter"])
++    XCTAssertEqual(window.workroomSplits.count, 1)
++    XCTAssertEqual(
++      window.workroomSplits.first?.leaves, ["wr|/p|calm-otter", "wr|/p|bold-heron"])
++
++    let target = try XCTUnwrap(window.targets.first)
++    XCTAssertEqual(target.tabs.map(\.key), ["t1", "t2", "t3", "t4"])
++    XCTAssertEqual(target.tabs.map(\.kind), ["terminal", "diff", "file", "changeset"])
++    XCTAssertEqual(target.focusedKey, "t2")
++    XCTAssertEqual(target.terminalCounter, 3)
++    XCTAssertEqual(target.split?.leaves, ["t1", "t2", "t3"])
++    XCTAssertEqual(target.tabs[0].terminal?.cwd, "/p/calm-otter/src")
++    XCTAssertEqual(target.tabs[1].diff?.source.source, .commit("abc123"))
++    XCTAssertEqual(target.tabs[1].diff?.viewMode, "sideBySide")
++    XCTAssertEqual(target.tabs[2].file?.markdownPreview, false)
++    XCTAssertEqual(target.tabs[3].changeset?.selectedPath, "a/b.swift")
++  }
++
++  /// Re-encoding a decoded document must reproduce it. A key rename breaks this immediately.
++  func testGoldenRoundTripIsStable() throws {
++    let once = try encode(try decode(golden))
++    let twice = try encode(try decode(once))
++    XCTAssertEqual(once, twice)
++    XCTAssertTrue(once.contains("\"windowKey\":\"W1\""))
++    XCTAssertTrue(once.contains("\"terminalCounter\":3"))
++  }
++
++  // MARK: Lossy decoding
++
++  /// The headline `@Lossy` guarantee: an unknown tab kind — what a NEWER build writes, since additive
++  /// changes never bump `schemaVersion` — costs that one tab, not the session.
++  func testUnknownTabKindDropsOnlyThatTab() throws {
++    let json = """
++      {
++        "schemaVersion": 1, "savedAt": "2026-08-08T10:00:00Z",
++        "windows": [{
++          "windowKey": "W1", "isKey": true, "workroomSplits": [],
++          "targets": [{
++            "targetID": "root|/p",
++            "tabs": [
++              {"key": "t1", "kind": "terminal", "terminal": {"defaultTitle": "Terminal 1"}},
++              {"key": "t2", "kind": "hologram", "hologram": {"whatever": true}},
++              {"key": "t3", "kind": "file", "file": {"path": "x.txt", "isPreview": false}}
++            ]
++          }]
++        }]
++      }
++      """
++    let (sanitized, report) = try decode(json).sanitized()
++    let target = try XCTUnwrap(sanitized.windows.first?.targets.first)
++    XCTAssertEqual(target.tabs.map(\.key), ["t1", "t3"])
++    XCTAssertEqual(report.droppedTabs, 1)
++  }
++
++  /// A structurally broken element is skipped without taking its siblings with it.
++  func testMalformedElementDropsOnlyItself() throws {
++    let json = """
++      {
++        "schemaVersion": 1, "savedAt": "2026-08-08T10:00:00Z",
++        "windows": [
++          {"windowKey": "W1", "isKey": false, "targets": [], "workroomSplits": []},
++          {"nope": 1},
++          {"windowKey": "W2", "isKey": true, "targets": [], "workroomSplits": []}
++        ]
++      }
++      """
++    let file = try decode(json)
++    XCTAssertEqual(file.windows.map(\.windowKey), ["W1", "W2"])
++  }
++
++  /// A tab whose kind requires a payload it does not carry is not restorable.
++  func testTabMissingItsPayloadIsDropped() throws {
++    let json = """
++      {
++        "schemaVersion": 1, "savedAt": "2026-08-08T10:00:00Z",
++        "windows": [{
++          "windowKey": "W1", "isKey": true, "workroomSplits": [],
++          "targets": [{
++            "targetID": "root|/p",
++            "tabs": [
++              {"key": "t1", "kind": "diff"},
++              {"key": "t2", "kind": "terminal", "terminal": {"defaultTitle": "Terminal 1"}}
++            ]
++          }]
++        }]
++      }
++      """
++    let (sanitized, report) = try decode(json).sanitized()
++    XCTAssertEqual(sanitized.windows.first?.targets.first?.tabs.map(\.key), ["t2"])
++    XCTAssertEqual(report.droppedTabs, 1)
++  }
++
++  // MARK: Versioning
++
++  func testNewerSchemaIsReadOnly() throws {
++    let file = try decode(
++      golden.replacingOccurrences(of: "\"schemaVersion\": 1", with: "\"schemaVersion\": 999"))
++    XCTAssertEqual(file.compatibility, .newer)
++  }
++
++  func testOlderSchemaWithoutMigrationIsUnreadable() throws {
++    let file = try decode(
++      golden.replacingOccurrences(of: "\"schemaVersion\": 1", with: "\"schemaVersion\": 0"))
++    XCTAssertEqual(file.compatibility, .unreadable)
++  }
++
++  func testAbsentAndGarbageDocumentsFailToDecode() {
++    XCTAssertThrowsError(try decode("{}"))
++    XCTAssertThrowsError(try decode("not json at all"))
++  }
++
++  // MARK: LayoutNode
++
++  private func node(_ leaf: String) -> LayoutNode<String> { .leaf(leaf) }
++
++  private func split(
++    _ first: LayoutNode<String>, _ second: LayoutNode<String>, ratio: Double = 0.5
++  ) -> LayoutNode<String> {
++    .split(orientation: LayoutNode<String>.horizontal, ratio: ratio, first: first, second: second)
++  }
++
++  func testMaterializeCollapsesAnUnresolvableLeaf() {
++    let tree = split(node("a"), split(node("b"), node("c")))
++    let live = tree.materialize { $0 == "b" ? nil : $0 }
++    XCTAssertEqual(live?.tabIDs, ["a", "c"])
++  }
++
++  /// Fewer than two survivors is not a split — the caller must never be handed a one-leaf tree.
++  func testMaterializeReturnsNilBelowTwoSurvivors() {
++    let tree = split(node("a"), node("b"))
++    XCTAssertNil(tree.materialize { $0 == "a" ? $0 : nil })
++    XCTAssertNil(tree.materialize { _ -> String? in nil })
++  }
++
++  func testMaterializeRejectsUnknownOrientation() {
++    let tree = LayoutNode<String>.split(
++      orientation: "diagonal", ratio: 0.5, first: node("a"), second: node("b"))
++    XCTAssertNil(tree.materialize { $0 })
++  }
++
++  /// A hand-edited 0 or 1 would model a fully collapsed pane; `PaneRatio.sanitize` is what stops it.
++  func testMaterializeSanitizesRatio() throws {
++    let collapsed = split(node("a"), node("b"), ratio: 0)
++    let live = try XCTUnwrap(collapsed.materialize { $0 })
++    guard case .split(_, _, let ratio, _, _) = live else {
++      return XCTFail("expected a split")
++    }
++    XCTAssertGreaterThan(ratio, 0)
++    XCTAssertLessThan(ratio, 1)
++  }
++
++  func testCaptureDropsUnaddressableLeafAndCollapses() {
++    let runtime = PaneLayout.split(
++      id: UUID(), orientation: .vertical, ratio: 0.5,
++      first: .leaf("a"),
++      second: .split(
++        id: UUID(), orientation: .horizontal, ratio: 0.5, first: .leaf("b"), second: .leaf("c")))
++    let captured = LayoutNode<String>.capture(runtime) { $0 == "b" ? nil : $0 }
++    XCTAssertEqual(captured?.leaves, ["a", "c"])
++    XCTAssertNil(LayoutNode<String>.capture(runtime) { _ -> String? in nil })
++  }
++
++  func testCaptureRoundTripsThroughMaterialize() throws {
++    let runtime = PaneLayout.split(
++      id: UUID(), orientation: .vertical, ratio: 0.25,
++      first: .leaf("a"), second: .leaf("b"))
++    let captured = try XCTUnwrap(LayoutNode<String>.capture(runtime) { $0 })
++    let live = try XCTUnwrap(captured.materialize { $0 })
++    XCTAssertEqual(live.tabIDs, ["a", "b"])
++    guard case .split(_, let orientation, let ratio, _, _) = live else {
++      return XCTFail("expected a split")
++    }
++    XCTAssertEqual(orientation, .vertical)
++    XCTAssertEqual(ratio, 0.25, accuracy: 0.0001)
++  }
++
++  // MARK: Structural validation
++
++  /// Duplicate keys are the dangerous corruption: restore builds dictionaries from them, so a
++  /// duplicate would silently point a split leaf or the focus at the wrong pane.
++  func testDuplicateKeysAreDropped() {
++    let tab = TabSession(
++      key: "t1", kind: TabSession.terminalKind,
++      terminal: TerminalPayload(defaultTitle: "Terminal 1", cwd: nil))
++    var second = tab
++    second.terminal?.defaultTitle = "Impostor"
++    let window = WindowSession(
++      windowKey: "W1",
++      targets: [
++        TargetSession(targetID: "root|/p", tabs: [tab, second]),
++        TargetSession(targetID: "root|/p", tabs: [tab]),
++      ])
++    let file = SessionFile(savedAt: Date(timeIntervalSince1970: 0), windows: [window, window])
++
++    let (sanitized, report) = file.sanitized()
++    XCTAssertEqual(sanitized.windows.count, 1)
++    XCTAssertEqual(report.droppedWindows, 1)
++    XCTAssertEqual(sanitized.windows[0].targets.count, 1)
++    XCTAssertEqual(report.droppedTargets, 1)
++    XCTAssertEqual(sanitized.windows[0].targets[0].tabs.count, 1)
++    XCTAssertEqual(sanitized.windows[0].targets[0].tabs[0].terminal?.defaultTitle, "Terminal 1")
++    XCTAssertEqual(report.droppedTabs, 1)
++  }
++
++  func testCapsAreEnforcedAndReported() {
++    let tabs = (0..<(SessionLimits.maxTabsPerTarget + 5)).map {
++      TabSession(
++        key: "t\($0)", kind: TabSession.terminalKind,
++        terminal: TerminalPayload(defaultTitle: "Terminal \($0)", cwd: nil))
++    }
++    let targets = (0..<(SessionLimits.maxTargetsPerWindow + 3)).map {
++      TargetSession(targetID: "wr|/p|w\($0)", tabs: tabs)
++    }
++    let windows = (0..<(SessionLimits.maxWindows + 2)).map {
++      WindowSession(windowKey: "W\($0)", targets: targets)
++    }
++    let (sanitized, report) = SessionFile(
++      savedAt: Date(timeIntervalSince1970: 0), windows: windows
++    ).sanitized()
++
++    XCTAssertEqual(sanitized.windows.count, SessionLimits.maxWindows)
++    XCTAssertEqual(report.droppedWindows, 2)
++    XCTAssertEqual(sanitized.windows[0].targets.count, SessionLimits.maxTargetsPerWindow)
++    XCTAssertEqual(sanitized.windows[0].targets[0].tabs.count, SessionLimits.maxTabsPerTarget)
++    XCTAssertGreaterThan(report.droppedTargets, 0)
++    XCTAssertGreaterThan(report.droppedTabs, 0)
++  }
++
++  func testOverlongStringsAreClamped() {
++    let long = String(repeating: "x", count: SessionLimits.maxStringLength + 500)
++    let file = SessionFile(
++      savedAt: Date(timeIntervalSince1970: 0),
++      windows: [
++        WindowSession(
++          windowKey: "W1",
++          targets: [
++            TargetSession(
++              targetID: "root|/p",
++              tabs: [
++                TabSession(
++                  key: "t1", kind: TabSession.fileKind,
++                  file: FilePayload(path: long, isPreview: false, markdownPreview: nil))
++              ])
++          ])
++      ])
++    let (sanitized, _) = file.sanitized()
++    let path = sanitized.windows[0].targets[0].tabs[0].file?.path
++    XCTAssertEqual(path?.count, SessionLimits.maxStringLength)
++  }
++
++  func testDeepSplitTreeIsRejectedButItsTabsSurvive() {
++    var tree = LayoutNode<String>.leaf("t0")
++    for index in 1...(SessionLimits.maxSplitDepth + 2) {
++      tree = split(tree, node("t\(index)"))
++    }
++    let tabs = (0...(SessionLimits.maxSplitDepth + 2)).map {
++      TabSession(
++        key: "t\($0)", kind: TabSession.terminalKind,
++        terminal: TerminalPayload(defaultTitle: "Terminal \($0)", cwd: nil))
++    }
++    let file = SessionFile(
++      savedAt: Date(timeIntervalSince1970: 0),
++      windows: [
++        WindowSession(
++          windowKey: "W1",
++          targets: [TargetSession(targetID: "root|/p", tabs: tabs, split: tree)])
++      ])
++    let (sanitized, report) = file.sanitized()
++    XCTAssertNil(sanitized.windows[0].targets[0].split)
++    XCTAssertFalse(sanitized.windows[0].targets[0].tabs.isEmpty)
++    XCTAssertEqual(report.droppedSplits, 1)
++  }
++
++  func testSplitLeafPointingAtADroppedTabCollapses() {
++    let tabs = [
++      TabSession(
++        key: "t1", kind: TabSession.terminalKind,
++        terminal: TerminalPayload(defaultTitle: "Terminal 1", cwd: nil)),
++      TabSession(key: "t2", kind: "unknown-kind"),
++    ]
++    let file = SessionFile(
++      savedAt: Date(timeIntervalSince1970: 0),
++      windows: [
++        WindowSession(
++          windowKey: "W1",
++          targets: [
++            TargetSession(
++              targetID: "root|/p", tabs: tabs, split: split(node("t1"), node("t2")),
++              focusedKey: "t2")
++          ])
++      ])
++    let (sanitized, _) = file.sanitized()
++    let target = sanitized.windows[0].targets[0]
++    XCTAssertEqual(target.tabs.map(\.key), ["t1"])
++    XCTAssertNil(target.split, "a split with one live leaf is not a split")
++    XCTAssertNil(target.focusedKey, "focus on a dropped tab must not survive")
++  }
++
++  func testTargetWithNoSurvivingTabsIsDropped() {
++    let file = SessionFile(
++      savedAt: Date(timeIntervalSince1970: 0),
++      windows: [
++        WindowSession(
++          windowKey: "W1",
++          targets: [
++            TargetSession(targetID: "root|/p", tabs: [TabSession(key: "t1", kind: "unknown")])
++          ])
++      ])
++    let (sanitized, report) = file.sanitized()
++    XCTAssertTrue(sanitized.windows[0].targets.isEmpty)
++    XCTAssertEqual(report.droppedTargets, 1)
++  }
++
++  /// One preview tab per target is an invariant of the live model; a second is demoted, not dropped.
++  func testSecondPreviewTabIsPersistedRatherThanDropped() {
++    let file = SessionFile(
++      savedAt: Date(timeIntervalSince1970: 0),
++      windows: [
++        WindowSession(
++          windowKey: "W1",
++          targets: [
++            TargetSession(
++              targetID: "root|/p",
++              tabs: [
++                TabSession(
++                  key: "t1", kind: TabSession.fileKind,
++                  file: FilePayload(path: "a.txt", isPreview: true, markdownPreview: nil)),
++                TabSession(
++                  key: "t2", kind: TabSession.fileKind,
++                  file: FilePayload(path: "b.txt", isPreview: true, markdownPreview: nil)),
++              ])
++          ])
++      ])
++    let (sanitized, _) = file.sanitized()
++    let tabs = sanitized.windows[0].targets[0].tabs
++    XCTAssertEqual(tabs.count, 2)
++    XCTAssertEqual(tabs[0].file?.isPreview, true)
++    XCTAssertEqual(tabs[1].file?.isPreview, false)
++  }
++
++  // MARK: DiffSource mapping
++
++  func testDiffSourceRoundTripsEveryCase() {
++    let sources: [DiffSource] = [.gitWorktree, .jjWorkingCopy, .jjParent, .commit("abc123")]
++    for source in sources {
++      XCTAssertEqual(DiffSourcePayload(source).source, source)
++    }
++    XCTAssertNil(DiffSourcePayload(kind: "telepathy", commit: nil).source)
++    XCTAssertNil(
++      DiffSourcePayload(kind: DiffSourcePayload.commitKind, commit: nil).source,
++      "a commit source with no commit id addresses nothing")
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppTests/SessionStoreTests.swift ===
+@@ -0,0 +1,199 @@
++import XCTest
++
++@testable import Workroom
++
++/// File-level tests for the saved-session store (issue #46).
++///
++/// Every test injects a temp URL, so none of this touches the real session file, the developer's own
++/// Dev-bundle state, or any shared `Defaults` key — which is also what keeps it clear of the
++/// single-writer rule parallel test workers impose on the UserDefaults domain.
++final class SessionStoreTests: XCTestCase {
++  private var directory: URL!
++  private var url: URL!
++
++  override func setUpWithError() throws {
++    try super.setUpWithError()
++    directory = FileManager.default.temporaryDirectory
++      .appendingPathComponent("session-store-tests-\(UUID().uuidString)", isDirectory: true)
++    // Deliberately NOT created here — the store has to create its own parent directory.
++    url = directory.appendingPathComponent("nested").appendingPathComponent("session.json")
++  }
++
++  override func tearDownWithError() throws {
++    try? FileManager.default.removeItem(at: directory)
++    try super.tearDownWithError()
++  }
++
++  private func makeFile(windowKey: String = "W1", schemaVersion: Int? = nil) -> SessionFile {
++    let window = WindowSession(
++      windowKey: windowKey, frame: "{{0, 0}, {1200, 780}}", isKey: true,
++      selectedTargetID: "wr|/p|calm-otter",
++      targets: [
++        TargetSession(
++          targetID: "wr|/p|calm-otter",
++          tabs: [
++            TabSession(
++              key: "t1", kind: TabSession.terminalKind,
++              terminal: TerminalPayload(defaultTitle: "Terminal 1", cwd: "/p/calm-otter"))
++          ],
++          terminalCounter: 1)
++      ])
++    return SessionFile(
++      schemaVersion: schemaVersion ?? SessionFile.currentSchemaVersion,
++      savedAt: Date(timeIntervalSince1970: 1_000_000), appVersion: "2.0.0", windows: [window])
++  }
++
++  // MARK: Round trip
++
++  func testWriteThenReadRoundTrips() throws {
++    let store = SessionStore(url: url)
++    store.writeSynchronously(makeFile())
++
++    guard case .restored(let file, let report) = SessionStore(url: url).read() else {
++      return XCTFail("expected a restored session")
++    }
++    XCTAssertTrue(report.isEmpty)
++    XCTAssertEqual(file.windows.count, 1)
++    XCTAssertEqual(file.windows[0].windowKey, "W1")
++    XCTAssertEqual(file.windows[0].selectedTargetID, "wr|/p|calm-otter")
++    XCTAssertEqual(file.windows[0].targets[0].tabs[0].terminal?.cwd, "/p/calm-otter")
++    XCTAssertEqual(file.windows[0].targets[0].terminalCounter, 1)
++  }
++
++  /// `Data.write(.atomic)` does not create intermediate directories, and the bundle-id subdirectory
++  /// never exists on a first run — without an explicit create, every write fails silently.
++  func testWriteCreatesTheParentDirectory() throws {
++    XCTAssertFalse(FileManager.default.fileExists(atPath: url.deletingLastPathComponent().path))
++    SessionStore(url: url).writeSynchronously(makeFile())
++    XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
++  }
++
++  func testWriteSynchronouslyCompletesBeforeReturning() throws {
++    SessionStore(url: url).writeSynchronously(makeFile())
++    // No waiting, no polling: the file must already be on disk. This is what the quit path needs,
++    // where the process may not survive long enough for an async write to land.
++    XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
++    XCTAssertFalse(try Data(contentsOf: url).isEmpty)
++  }
++
++  /// An atomic replace is all-or-nothing: a second write never leaves a half-written document.
++  func testOverwriteLeavesNoPartialFile() throws {
++    let store = SessionStore(url: url)
++    store.writeSynchronously(makeFile(windowKey: "W1"))
++    store.writeSynchronously(makeFile(windowKey: "W2"))
++
++    guard case .restored(let file, _) = SessionStore(url: url).read() else {
++      return XCTFail("expected a restored session")
++    }
++    XCTAssertEqual(file.windows.map(\.windowKey), ["W2"])
++  }
++
++  func testClearRemovesTheFile() {
++    let store = SessionStore(url: url)
++    store.writeSynchronously(makeFile())
++    store.clear()
++    XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
++    XCTAssertEqual(SessionStore(url: url).read(), .none)
++  }
++
++  // MARK: Degradation
++
++  func testMissingFileReadsAsNone() {
++    XCTAssertEqual(SessionStore(url: url).read(), .none)
++  }
++
++  func testEmptyFileReadsAsNone() throws {
++    try FileManager.default.createDirectory(
++      at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
++    try Data().write(to: url)
++    XCTAssertEqual(SessionStore(url: url).read(), .none)
++  }
++
++  /// Corrupt input must not crash the launch, and the evidence is moved aside rather than deleted so
++  /// a bug report has something to attach.
++  func testCorruptFileIsQuarantinedOnce() throws {
++    try FileManager.default.createDirectory(
++      at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
++    try Data("this is not json".utf8).write(to: url)
++
++    let store = SessionStore(url: url)
++    XCTAssertEqual(store.read(), .none)
++    XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
++    XCTAssertTrue(FileManager.default.fileExists(atPath: store.quarantineURL.path))
++
++    // A second corrupt file replaces the quarantine rather than accumulating copies.
++    try Data("still not json".utf8).write(to: url)
++    XCTAssertEqual(store.read(), .none)
++    XCTAssertEqual(
++      String(decoding: try Data(contentsOf: store.quarantineURL), as: UTF8.self),
++      "still not json")
++  }
++
++  func testOversizedFileIsRefusedBeforeDecoding() throws {
++    try FileManager.default.createDirectory(
++      at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
++    let padding = String(repeating: "x", count: SessionLimits.maxFileBytes + 1024)
++    try Data("{\"pad\":\"\(padding)\"}".utf8).write(to: url)
++
++    let store = SessionStore(url: url)
++    XCTAssertEqual(store.read(), .none)
++    XCTAssertTrue(FileManager.default.fileExists(atPath: store.quarantineURL.path))
++  }
++
++  /// A valid envelope whose windows all dropped is not a usable session — saying so is what lets the
++  /// caller take its cold-start fallback instead of launching emptier than deleting the file would.
++  func testFileWithNoSurvivingWindowsReadsAsNone() throws {
++    let file = SessionFile(
++      savedAt: Date(timeIntervalSince1970: 0),
++      windows: [
++        WindowSession(
++          windowKey: "W1",
++          targets: [TargetSession(targetID: "root|/p", tabs: [TabSession(key: "t", kind: "??")])])
++      ])
++    // The window survives sanitisation (an empty window is legal); an all-empty FILE does not.
++    SessionStore(url: url).writeSynchronously(
++      SessionFile(savedAt: Date(timeIntervalSince1970: 0), windows: []))
++    XCTAssertEqual(SessionStore(url: url).read(), .none)
++
++    SessionStore(url: url).writeSynchronously(file)
++    guard case .restored(let restored, let report) = SessionStore(url: url).read() else {
++      return XCTFail("a window with no targets is still a window")
++    }
++    XCTAssertTrue(restored.windows[0].targets.isEmpty)
++    XCTAssertEqual(report.droppedTargets, 1)
++  }
++
++  // MARK: Newer schema is read-only
++
++  /// Three build identities ship side by side, so a rollback is a real path: an older build must not
++  /// overwrite a session written by a newer one.
++  func testNewerSchemaDisablesWrites() throws {
++    SessionStore(url: url).writeSynchronously(
++      makeFile(windowKey: "FUTURE", schemaVersion: SessionFile.currentSchemaVersion + 1))
++    let before = try Data(contentsOf: url)
++
++    let store = SessionStore(url: url)
++    XCTAssertEqual(store.read(), .newerSchema)
++    XCTAssertTrue(store.writesDisabled)
++
++    store.writeSynchronously(makeFile(windowKey: "OLD"))
++    store.write(makeFile(windowKey: "OLD"))
++    XCTAssertEqual(try Data(contentsOf: url), before, "the newer session must be left intact")
++  }
++
++  // MARK: Path scoping
++
++  /// Without bundle-id scoping, a Dev run's fixture temp-dir workrooms would be restored into the
++  /// release build — both already share `Application Support/Workroom/`.
++  func testDefaultURLIsScopedByBundleID() {
++    let dev = SessionStore.defaultURL(bundleID: "com.developwithstyle.workroom.dev")
++    let release = SessionStore.defaultURL(bundleID: "com.developwithstyle.workroom")
++    XCTAssertNotEqual(dev, release)
++    XCTAssertEqual(dev.lastPathComponent, "session.json")
++    XCTAssertEqual(
++      dev.deletingLastPathComponent().lastPathComponent, "com.developwithstyle.workroom.dev")
++    XCTAssertEqual(
++      dev.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent, "Workroom")
++    XCTAssertTrue(release.path.contains("Application Support"))
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppUITests/SessionRestoreUITests.swift ===
+@@ -0,0 +1,156 @@
++import XCTest
++
++/// End-to-end session restore (issue #46): quit, relaunch, and assert the panes came back.
++///
++/// This is the layer that proves the whole chain — the save actually reaching disk on quit, and the
++/// restore landing before `ensureInitialTerminal` can add a stray terminal. No unit test can cover
++/// that ordering, because the race is between a write on the quit path and a SwiftUI view `.task`.
++///
++/// Each test drives its own session file via `-WorkroomUITestSessionFile`. **In fixture mode the
++/// session store is a no-op unless that path is given** — without it, every one of the other UI tests
++/// would write over the developer's own `Workroom Dev` session, and the fixture's temp-directory
++/// workrooms would then be restored into a real launch.
++///
++/// Run on a GUI login session: `make app-uitest`, or scoped via `xcodebuild -only-testing`.
++final class SessionRestoreUITests: XCTestCase {
++  private var sessionFile: URL!
++
++  override func setUpWithError() throws {
++    continueAfterFailure = false
++    sessionFile = FileManager.default.temporaryDirectory
++      .appendingPathComponent("workroom-uitest-session-\(UUID().uuidString)", isDirectory: true)
++      .appendingPathComponent("session.json")
++  }
++
++  override func tearDownWithError() throws {
++    try? FileManager.default.removeItem(at: sessionFile.deletingLastPathComponent())
++  }
++
++  private func launchedApp(withSessionFile: Bool = true) -> XCUIApplication {
++    let app = XCUIApplication()
++    app.launchArguments += ["-WorkroomUITestFixture", "1"]
++    if withSessionFile {
++      app.launchArguments += ["-WorkroomUITestSessionFile", sessionFile.path]
++    }
++    // Ignore AppKit's own persisted window state, so what comes back is ours and only ours.
++    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
++    app.launch()
++    return app
++  }
++
++  private func panes(_ app: XCUIApplication) -> XCUIElementQuery {
++    app.descendants(matching: .any).matching(identifier: "terminal.pane")
++  }
++
++  private func tabs(_ app: XCUIApplication) -> XCUIElementQuery {
++    app.staticTexts.matching(NSPredicate(format: "identifier BEGINSWITH %@", "terminal.tab."))
++  }
++
++  private func assertCount(_ q: XCUIElementQuery, reaches n: Int, timeout: TimeInterval = 8) {
++    let exp = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == %d", n), object: q)
++    XCTAssertEqual(
++      XCTWaiter().wait(for: [exp], timeout: timeout), .completed,
++      "count did not reach \(n) within \(timeout)s")
++  }
++
++  private func waitForFirstPane(_ app: XCUIApplication) {
++    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
++    XCTAssertTrue(
++      panes(app).firstMatch.waitForExistence(timeout: 10),
++      "the fixture workroom should render a terminal pane on launch")
++  }
++
++  /// Quit, then wait for the session file rather than for `terminate()`'s timing.
++  ///
++  /// `XCUIApplication.terminate()` signals the app and force-kills it if it lingers, so asserting on
++  /// the artefact is what makes this deterministic — the alternative is trusting that the SIGTERM
++  /// handler finished, which is exactly the sort of assumption that produces a flaky suite.
++  private func quitAndWaitForSave(_ app: XCUIApplication) {
++    app.terminate()
++    let exists = NSPredicate { [sessionFile] _, _ in
++      guard let sessionFile,
++        let size = try? FileManager.default.attributesOfItem(atPath: sessionFile.path)[.size]
++          as? Int
++      else { return false }
++      return size > 0
++    }
++    let exp = XCTNSPredicateExpectation(predicate: exists, object: nil)
++    XCTAssertEqual(
++      XCTWaiter().wait(for: [exp], timeout: 10), .completed,
++      "quitting should have written the session to \(sessionFile.path)")
++  }
++
++  // MARK: Restore
++
++  /// The headline: a split survives a relaunch with no ⌘D.
++  func testSplitSurvivesRelaunch() throws {
++    let app = launchedApp()
++    waitForFirstPane(app)
++    assertCount(panes(app), reaches: 1)
++
++    app.typeKey("d", modifierFlags: .command)
++    assertCount(panes(app), reaches: 2)
++    quitAndWaitForSave(app)
++
++    let relaunched = launchedApp()
++    XCTAssertTrue(relaunched.wait(for: .runningForeground, timeout: 10))
++    assertCount(panes(relaunched), reaches: 2)
++  }
++
++  /// The stray-terminal regression: the restored strip must hold exactly what was saved, with nothing
++  /// added by `ensureInitialTerminal` racing the restore.
++  func testTabCountSurvivesRelaunchWithNoStrayTerminal() throws {
++    let app = launchedApp()
++    waitForFirstPane(app)
++    assertCount(tabs(app), reaches: 1)
++
++    app.typeKey("t", modifierFlags: .command)
++    app.typeKey("t", modifierFlags: .command)
++    assertCount(tabs(app), reaches: 3)
++    quitAndWaitForSave(app)
++
++    let relaunched = launchedApp()
++    XCTAssertTrue(relaunched.wait(for: .runningForeground, timeout: 10))
++    assertCount(tabs(relaunched), reaches: 3)
++  }
++
++  // MARK: Degradation
++
++  /// Corrupt input on the launch path must never cost more than the restore itself.
++  func testCorruptSessionFileStillLaunchesCleanly() throws {
++    try FileManager.default.createDirectory(
++      at: sessionFile.deletingLastPathComponent(), withIntermediateDirectories: true)
++    try Data("this is not json".utf8).write(to: sessionFile)
++
++    let app = launchedApp()
++    waitForFirstPane(app)
++    assertCount(panes(app), reaches: 1)
++    XCTAssertTrue(
++      FileManager.default.fileExists(
++        atPath: sessionFile.deletingLastPathComponent()
++          .appendingPathComponent("session.corrupt.json").path),
++      "the unreadable file should be quarantined, not silently deleted")
++  }
++
++  /// The fresh-install path is unchanged: one workroom, one terminal.
++  func testNoSessionFileOpensExactlyOneTerminal() throws {
++    let app = launchedApp()
++    waitForFirstPane(app)
++    assertCount(panes(app), reaches: 1)
++    assertCount(tabs(app), reaches: 1)
++  }
++
++  /// Proves the fixture seam isolates every other UI test: with no session path, the app writes
++  /// nothing at all — so the 30-odd existing tests cannot touch the developer's own session.
++  func testWithoutASessionPathNothingIsWritten() throws {
++    let app = launchedApp(withSessionFile: false)
++    waitForFirstPane(app)
++    app.typeKey("d", modifierFlags: .command)
++    assertCount(panes(app), reaches: 2)
++    app.terminate()
++
++    XCTAssertFalse(
++      FileManager.default.fileExists(atPath: sessionFile.path),
++      "fixture mode must not write a session unless a test asked for one")
++  }
++}
+
+
+Investigate per the method in your instructions, then return the findings list.
