@@ -1,0 +1,1 @@
+the theme picker fades the app into the background and cannot be moved, shich means I am unable to preview the theme change as I cycle through the themes
