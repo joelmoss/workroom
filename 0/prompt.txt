@@ -1,0 +1,1 @@
+1. The tab is re-ordered when dragging, but before it does, the dragged tab flicks back. so it seems the tab does flick back, but they are renamed
