@@ -1,0 +1,76 @@
+<task-notification>
+<task-id>ae8601887c708c1e6</task-id>
+<tool-use-id>toolu_016ousKfKuNcaPoBowryAvCS</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/57566db5-3bda-4573-8893-9268aa73d220/tasks/ae8601887c708c1e6.output</output-file>
+<status>completed</status>
+<summary>Agent "Find workroom panel spacing code" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I now have everything needed. This is research-only, so no edits were made.
+
+## Report: spacing/padding/dividers around workroom terminal panes (macapp)
+
+### Core mechanism 1 — gap between side-by-side Ghostty terminal panes *within one workroom* (a split created by dragging a tab)
+
+`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/PaneTreeView.swift`
+- **Line 437**: `.padding(2)` — applied to every `PaneLeafView` (terminal or diff/file/changeset pane), solo or split. This is the padding that turns the invisible divider gap into a visible gutter on each pane's edge. Comment: *"A uniform 2pt pad on EVERY pane (solo or split) — split panes need it as the inter-pane gutter."*
+- **Lines 232–271** (`PaneTreeLayout.plan`): computes the actual divider rect between two child panes using `let div = dividerThickness` (line 239), then builds `firstRect` / `dividerRect` / `secondRect` around it (lines 243–253). This is the geometric gap-maker for a split.
+- **Line 191**: `static var dividerHitThickness: CGFloat { dividerThickness + 4 }` (= 8pt) — NOT a visual gap, but a drag hit-zone. **Coupled to line 437's `.padding(2)`**: the comment at lines 185–191 says the hit zone is deliberately capped at `dividerThickness + 2pt pane padding on each side` so it stays inside the transparent gutter and never overhangs the live terminal surface (would steal mouse input — text selection, OSC8 links, right-click menu, TUI mouse reporting). Shrinking `.padding(2)` or `dividerThickness` without shrinking this in lock-step reopens that hazard (issue #83).
+
+`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/TerminalSessions.swift`
+- **Line 455**: `static let dividerThickness: CGFloat = 4` — the actual visible/hit gap width between two Ghostty panes. Feeds `PaneTreeLayout.lengths`, `clampRatio`, `dividerHitThickness`, and the split-fit guard (~line 1551, `canSplit`).
+- **Line 448**: `static let minPaneWidth: CGFloat = 300` — not spacing, but a floor a gutter change interacts with (fit-guard math subtracts `dividerThickness` from available width).
+- **Line 451**: `static let minPaneHeight: CGFloat = 120` — same, for stacked splits.
+
+**Net visible gap between two same-workroom terminal panes today: `2 + 4 + 2 = 8pt`** (leaf padding + divider rect + leaf padding).
+
+### Core mechanism 2 — gap between whole workroom cards *side by side* (a workroom-into-workroom split)
+
+`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/WorkroomSplitView.swift`
+- **Line 11**: `static let gutter: CGFloat = 4` (`WorkroomPaneMetrics.gutter`) — "the clear gutter on every side of a pane card — between the cards of a split, and between a solo card and the window." **Shared** with `SidebarColumn.swift:46` and `InspectorColumn.swift:39` (both pass it as `topMargin`/`bottomMargin`) so all three columns' cards line up — reducing this constant also moves the sidebar/inspector card margins, not just workroom panes.
+- **Line 261**: `.padding(WorkroomPaneMetrics.gutter)` — applied per `WorkroomPaneLeaf` (the actual per-card padding).
+- **Line 61**: `static let outerGutter: CGFloat = 6` — the gutter holding the pane cards off the left/right sidebars/window edge.
+- **Line 110**: `.padding(.horizontal, Self.outerGutter)` — applied outside the `GeometryReader`, i.e. around the whole split content area.
+- **Coupling**: `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/RootView.swift:581` — `detailContentFrame.insetBy(dx: WorkroomSplitView.outerGutter, dy: 0)` reads the same static for chip-drop hit-testing. It stays in sync automatically (same constant), but any hand-rolled replacement value would desync drop-hit-testing from the drawn pane rects (the exact bug the comment at lines 573–579 describes).
+
+**Net visible gap between two workroom cards today: `4 + 4 = 8pt`** (gutter padding on each adjoining card).
+
+### Wrapping/outer padding around the whole pane area (applies once per workroom, not "between" panes, but is padding "around" them)
+
+`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/WorkroomTerminalsView.swift`
+- **Line 67**: `.padding(.horizontal, 2)`
+- **Line 68**: `.padding(.bottom, 2)`
+- **Line 69**: `.padding(.top, 0)`
+Comment: "A thin 2pt frame inside the workroom's card, so the card's lighter fill reads as a border rather than a margin." Applies to the `Group` wrapping `PaneTreeView`/empty-state, i.e. outside the pane tree, inside the workroom card.
+
+### Corner radius (not spacing, but visually interacts with shrunk gutters — adjacent 8pt-radius corners can leave visible notches at near-zero gutter)
+
+`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/TerminalContainerView.swift`
+- **Line 8**: `static let cornerRadius: CGFloat = 8` (`TerminalPanelMetrics.cornerRadius`) — shared by the pane border overlay, dim scrim, diff/file/changeset clip, and the surface's own layer clip (`PaneTreeView.swift:396,412,506,569`).
+
+### Chrome that sits directly above/below the panes inside the same card (not inter-pane gutters, but part of the "around panes" whitespace budget — flagged for the caller to decide in/out of scope)
+
+`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/TerminalTabStrip.swift`
+- Line 51: `tabSpacing: CGFloat = 4`
+- Line 54: `stripTrailingInset: CGFloat = 4`
+- Line 58: `leadingInset: CGFloat = 4`
+- Line 79: `HStack(spacing: TabStripMetrics.gutter)` → `TabStripMetrics.gutter = 8` (defined `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/TabReorderMath.swift:141`)
+- Lines 106/109: `.padding(.top, 0)`, `.padding(.bottom, 0)`
+- Line 110: `.padding(.trailing, Self.stripTrailingInset)`
+
+`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/TerminalStatusBar.swift`
+- Line 91: `.padding(.horizontal, 10)`
+- Line 95: `.frame(height: 28)`
+
+### Decorative padding *inside* a single pane (not between panes — listed only because "exhaustive" was requested)
+
+- `WorkroomSplitView.swift:437` — title bar `HStack(spacing: 6)`
+- `WorkroomSplitView.swift:500–501` — title bar `.padding(.leading, 10)` / `.padding(.trailing, 4)`
+- `PaneTreeView.swift:106–117` — drag-ghost bubble padding (`.padding(.horizontal, 10)`, `.padding(.vertical, 6)`)
+- `PaneTreeView.swift:591–598` — split-pane grip-handle chip padding (`.padding(.horizontal, 9)`, `.padding(.vertical, 3)`, `.padding(.top, 5)`)
+
+### Arithmetic to sanity-check before editing
+- Same-workroom terminal splits: visible gap = `2×PaneLeafView.padding(2) + TerminalSessions.dividerThickness(4)` = 8pt.
+- Cross-workroom splits: visible gap = `2×WorkroomPaneMetrics.gutter(4)` = 8pt.
+- Hit-zone constraint: `PaneTreeLayout.dividerHitThickness` must stay `≤ dividerThickness + 2×PaneLeafView.padding` or the resize drag band overhangs the live terminal surface and eats mouse input (issue #83's regression).</result>
+<usage><subagent_tokens>116139</subagent_tokens><tool_uses>18</tool_uses><duration_ms>212924</duration_ms></usage>
+</task-notification>
