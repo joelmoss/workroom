@@ -1,0 +1,2916 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/AppStore+WorkroomStatus.swift
+  - macapp/WorkroomApp/Core/AppStore.swift
+  - macapp/WorkroomApp/Core/CommitDraft.swift
+  - macapp/WorkroomApp/Core/StatusCommandRunner.swift
+  - macapp/WorkroomApp/Core/UITestFixture.swift
+  - macapp/WorkroomApp/Core/VCSSyncPresentation.swift
+  - macapp/WorkroomApp/Core/VCSWriting.swift
+  - macapp/WorkroomApp/Views/ChangesPanel.swift
+  - macapp/WorkroomApp/Views/CommitSheet.swift
+  - macapp/WorkroomApp/Views/RootView.swift
+  - macapp/WorkroomAppTests/CommitDraftTests.swift
+  - macapp/WorkroomAppTests/RemoteStateModelTests.swift
+  - macapp/WorkroomAppTests/VCSCommitIntegrationTests.swift
+  - macapp/WorkroomAppTests/VCSRemoteTriggerTests.swift
+  - macapp/WorkroomAppTests/VCSWritingTests.swift
+  - macapp/WorkroomAppUITests/CommitSheetUITests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/AppStore+WorkroomStatus.swift ===
+@@ -67,6 +67,9 @@ extension AppStore {
+       // storm) — even on `force`. Its status is refreshed once, post-setup, by `createWorkroom`.
+       // Covers this window's create AND another window's, since `creatingWorkrooms` is shared.
+       if isCreating(item.sid) { return false }
++      // Nor one whose commit is in flight — see `isCommitting`. Also honoured on `force`, because a
++      // manual Refresh during a long hook would race the write just as readily as the timer does.
++      if isCommitting(item.sid) { return false }
+       guard !force else { return true }
+       guard let checked = workroomStatuses[item.sid]?.lastChecked else { return true }
+       return now.timeIntervalSince(checked) >= localTTL
+@@ -123,6 +126,7 @@ extension AppStore {
+     // suppressed above; this skips the debounced local+CI probe too. Re-armed post-setup by
+     // `createWorkroom` calling this again once `creatingWorkrooms` no longer holds the id.
+     if isCreating(sid) { return }
++    if isCommitting(sid) { return }
+     let resolver = statusResolver
+     selectionStatusTask = Task { [weak self] in
+       try? await Task.sleep(nanoseconds: UInt64(Self.selectionDebounce * 1_000_000_000))
+@@ -214,6 +218,82 @@ extension AppStore {
+     }
+   }
+ 
++  /// Record a commit for `sid` and refresh what it changed.
++  ///
++  /// Unlike `performPRAction`, there is **no optimistic update**. A PR action flips a badge whose
++  /// authority is remote and slow; a commit rewrites local state the panel reads directly, and
++  /// pretending it succeeded would mean showing a clean file list for a commit a hook is still able
++  /// to reject. The sheet shows progress instead, and the list changes only once it really has.
++  ///
++  /// `sid` is captured by the caller, never re-derived: `selectedTargetID` can move while a hook
++  /// runs, and every refresh below must land on the row that actually changed.
++  func performCommit(
++    _ request: VCSCommitRequest, on sid: SidebarID,
++    completion: @escaping (VCSCommitResult) -> Void
++  ) {
++    guard let item = selectedStatusWorkItem(for: sid) else {
++      return completion(.failed(.other("That workroom is no longer available.")))
++    }
++    // Fixture mode answers from `FixtureVCSWriter` rather than spawning git or jj — the fixture paths
++    // aren't real repos, so a live write would only ever fail. Same construction the seeded
++    // `RemoteStateModel` uses (`AppStore.swift`'s `makeWriter:`).
++    if UITestFixture.isActive {
++      let writer = FixtureVCSWriter()
++      Task {
++        completion(
++          await writer.commit(path: item.path, projectRoot: item.projectRoot, request: request))
++      }
++      return
++    }
++    committingTargets.insert(sid)
++    Task { [weak self] in
++      let result: VCSCommitResult
++      do {
++        let writer = try VCS.writer(for: URL(fileURLWithPath: item.path, isDirectory: true))
++        result = await writer.commit(
++          path: item.path, projectRoot: item.projectRoot, request: request)
++      } catch {
++        result = .failed(.other("\(error)"))
++      }
++      guard let self else { return }
++      self.committingTargets.remove(sid)
++      switch result {
++      case .ok, .committedThenFailed:
++        // Refresh by the CAPTURED sid. The Changes list is the load-bearing one for jj:
++        // `handleWorkroomFileChange` deliberately drops bursts that touched only `.jj/`, so a jj
++        // commit never self-refreshes from the watcher.
++        self.refreshStatus(for: sid)
++        // History gained a commit, and the ahead count and Push button both moved. Only refresh the
++        // models that are still pointed at the row we committed — otherwise switching workrooms
++        // mid-commit would repoint them at the wrong repo's log.
++        if self.inspectorTargetID == sid {
++          self.commitHistory.refresh()
++          self.remoteState.refresh()
++        }
++      case .failed:
++        break
++      }
++      completion(result)
++    }
++  }
++
++  /// Ask which selected paths hold staged content a commit would discard, before committing.
++  ///
++  /// Read-only and ungated: it runs one `git status`, which takes no lock. Returns empty on any
++  /// failure so a guard that cannot answer never blocks the commit — the guard exists to inform, and
++  /// a broken guard must not become a broken commit.
++  func stagedContentAtRisk(
++    on sid: SidebarID, files: [ChangedFile], completion: @escaping ([String]) -> Void
++  ) {
++    guard !UITestFixture.isActive, let item = selectedStatusWorkItem(for: sid), item.vcs != "jj"
++    else { return completion([]) }
++    Task {
++      guard let writer = try? VCS.writer(for: URL(fileURLWithPath: item.path, isDirectory: true))
++      else { return completion([]) }
++      completion(await writer.stagedContentAtRisk(path: item.path, files: files))
++    }
++  }
++
+   /// Optimistically reflect a PR action in the in-memory status (no `gh`): the badge/state flip
+   /// immediately on click, before the command returns. The real path restores the prior PR if `gh`
+   /// fails and re-probes on success; fixture mode keeps this as the final result.
+@@ -309,7 +389,9 @@ extension AppStore {
+     selectedStatusWorkItem(for: sid) != nil
+   }
+ 
+-  private func selectedStatusWorkItem(for sid: SidebarID) -> StatusWorkItem? {
++  /// `internal` rather than `private`: the commit sheet needs a row's path and vcs to open against it
++  /// and to read `@`'s description for the prefill.
++  func selectedStatusWorkItem(for sid: SidebarID) -> StatusWorkItem? {
+     switch sid {
+     case .root(let path):
+       guard let p = projects.first(where: { $0.id == path }) else { return nil }
+@@ -521,6 +603,37 @@ extension AppStore {
+     return creatingWorkrooms.contains(TerminalTarget.workroomID(project: project, name: name))
+   }
+ 
++  /// Whether a commit is running for this row. Suppresses the same three lanes `isCreating` does, for
++  /// a closely-related reason.
++  ///
++  /// Necessary because `JJSnapshotGate` is not sufficient on its own here: its `maxChainWait` is 30s
++  /// and a commit's timeout is far longer (a `pre-commit` hook that runs a test suite is ordinary), so
++  /// a queued status probe would hit the gate's documented self-heal and run **concurrently with the
++  /// commit** — snapshotting `@` mid-write for jj, contending on `index.lock` for git. Suppressing the
++  /// lanes is the fix; raising the ceiling would only make every other lane wait longer.
++  ///
++  /// It also stops the panel rendering a half-staged tree: `git commit` moves the index and refs as it
++  /// goes, and `GitProvider.workingStatus` collapses index and worktree deltas into one row, so a
++  /// probe landing mid-commit shows a state that never really existed.
++  func isCommitting(_ sid: SidebarID) -> Bool { committingTargets.contains(sid) }
++
++  /// Re-probe ONE row's local status, named explicitly.
++  ///
++  /// `scheduleSelectedStatusRefresh` cannot serve a commit: it derives its target from the LIVE
++  /// `selectedTargetID`, so switching workrooms while a commit is in flight would commit A and
++  /// refresh B — leaving the row that actually changed stale and re-probing one that didn't. Every
++  /// post-commit refresh therefore names the sid it captured when the sheet opened.
++  func refreshStatus(for sid: SidebarID) {
++    guard !UITestFixture.isActive, let item = selectedStatusWorkItem(for: sid) else { return }
++    let resolver = statusResolver
++    Task { [weak self] in
++      let fresh = await resolver.resolveLocal(
++        path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
++      guard let self, self.targetExists(sid) else { return }
++      self.mergeLocalStatus(fresh, into: sid)
++    }
++  }
++
+   /// Point the filesystem watcher at the selected workroom's directory, or stop it when nothing
+   /// statusable is selected — or when the selection's create is still in flight (don't watch a tree a
+   /// setup script is actively writing). No-ops in fixture mode (the seeded status must stay
+@@ -549,6 +662,11 @@ extension AppStore {
+     // (updateSelectedWorkroomWatch stops it), but a stray in-flight FSEvents callback can land during
+     // the stop transition — bail so it can't fork a probe against the tree the setup script is writing.
+     if isCreating(sid) { return }
++    // Same for a commit in flight. This lane is the one that would fire MOST during a git commit: the
++    // `.jj/` filter below saves jj from self-triggering, but git's own index and ref churn is
++    // deliberately let through as real signal, so `git add`/`git commit` would each fork a probe
++    // against a tree mid-write.
++    if isCommitting(sid) { return }
+     // A jj *local* probe snapshots `@` (writes under `.jj/`), which would itself trip the watcher —
+     // an endless refresh loop. So ignore a burst that touched ONLY jj-internal paths. (git probes are
+     // read-only, and `.git/index` changes from `git add` are real signal, so git events pass through.)
+
+
+=== DIFF: macapp/WorkroomApp/Core/AppStore.swift ===
+@@ -289,6 +289,19 @@ final class AppStore: ObservableObject {
+   /// A PR write action (Phase 2b) is running — disables the PR actions menu so it can't double-fire.
+   @Published var prActionInFlight = false
+ 
++  /// The commit sheet's target, or nil when it's closed. Presented from the Changes section header.
++  ///
++  /// The sheet owns its own draft and selection for its lifetime, which is most of why it is a sheet:
++  /// a per-workroom draft store on the AppStore would need pruning on workroom delete, would inherit
++  /// a recycled workroom name's old message, and — since `AppStore` is per WINDOW — would let two
++  /// windows on the same workroom fight over one `Defaults` dictionary with last-writer-wins.
++  @Published var pendingCommit: PendingCommit?
++
++  /// Rows with a commit in flight. A `Set` rather than a `Bool` because the app's premise is N
++  /// parallel workrooms: a single flag would let a commit in one disable the button in another, and
++  /// `AppStore` is per window so even that would only half-work. Read by `isCommitting`.
++  @Published var committingTargets: Set<SidebarID> = []
++
+   // Inspector section collapse (issue #24). Held on the store rather than as `@Default` in the
+   // inspector view: the `.inspector` content doesn't observe `@Default` changes, but it DOES observe
+   // this `@EnvironmentObject`. These are the *live* state for the currently selected workroom;
+@@ -568,6 +581,9 @@ final class AppStore: ObservableObject {
+       // Included so the Source Control shortcuts are inert while the confirmation is up — otherwise
+       // ⌥⇧⌘P could queue a second pull behind the dialog asking about the first.
+       || pendingRemoteConfirm != nil
++      // Same for the commit sheet: without this, ⌥⇧⌘P could fire a push behind an open commit
++      // dialog, and the terminal-scoped shortcuts would still reach a surface the user can't see.
++      || pendingCommit != nil
+   }
+ 
+   let terminals = TerminalSessions()
+
+
+=== DIFF: macapp/WorkroomApp/Core/CommitDraft.swift ===
+@@ -0,0 +1,105 @@
++import Foundation
++
++/// The commit sheet's target, carried the way `PendingVCSAction` carries a confirmation's.
++///
++/// `.sheet(item:)` keys on `id`, so the sheet's `@State` — the draft and the selection — is rebuilt
++/// per target and can never leak from one workroom into another.
++struct PendingCommit: Identifiable, Equatable, Sendable {
++  let sid: SidebarID
++  /// `"git"` or `"jj"`. Decides whether per-file selection is offered at all and which second verb
++  /// the menu carries.
++  let vcs: String
++  var id: String { "\(vcs)-\(sid.hashValue)" }
++}
++
++/// The commit sheet's pure logic: what the message is, what is selected, and what the button says.
++///
++/// Separated from the view for the reason `ChangeBadge` and `VCSSyncPresenter` are: these are
++/// many-case decisions that drift silently, and none of them is reachable from a test through
++/// SwiftUI. The view holds state and renders; every rule below is decided here.
++enum CommitDraft {
++
++  /// Compose the message git or jj will record.
++  ///
++  /// Summary and body are joined by a BLANK line, which is the convention every tool downstream
++  /// relies on to split a subject from its body. Both halves are trimmed, and an empty body yields a
++  /// subject-only message with no trailing newlines for `--cleanup` to strip.
++  static func message(summary: String, body: String) -> String {
++    let subject = summary.trimmingCharacters(in: .whitespacesAndNewlines)
++    let detail = body.trimmingCharacters(in: .whitespacesAndNewlines)
++    return detail.isEmpty ? subject : "\(subject)\n\n\(detail)"
++  }
++
++  /// Split a stored message back into the two fields, for prefilling from jj's `@` description.
++  ///
++  /// The first line is the summary and everything after the first blank line is the body. Used
++  /// against the FULL description — `JJCommitChanges.description` carries only the first line, so
++  /// prefilling from that and describing again would silently discard the body.
++  static func split(message: String) -> (summary: String, body: String) {
++    let normalized = message.replacingOccurrences(of: "\r\n", with: "\n")
++    var lines = normalized.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
++    guard !lines.isEmpty else { return ("", "") }
++    let summary = lines.removeFirst().trimmingCharacters(in: .whitespaces)
++    let body = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
++    return (summary, body)
++  }
++
++  /// The files a commit would record, given what the user has EXCLUDED.
++  ///
++  /// Deselections are stored, never selections, and this is the reason. Coding agents run in this
++  /// app's own embedded terminals and write files continuously, so the change set moves underneath
++  /// an open dialog. With a set of *selected* paths there are only two possible behaviours when a new
++  /// path appears — include it silently (committing a file nobody reviewed, which is the exact defect
++  /// per-file selection exists to prevent) or reset the selection (throwing away the user's
++  /// deliberate exclusions). Storing exclusions makes a new file arrive checked, which is the honest
++  /// default, and makes an exclusion survive every refresh.
++  ///
++  /// A path that vanishes from the change set drops out on its own, so the excluded set never needs
++  /// pruning.
++  static func selected(from files: [ChangedFile], excluding excluded: Set<String>) -> [ChangedFile]
++  {
++    files.filter { !excluded.contains($0.path) }
++  }
++
++  /// The primary button's label. Names the count so what is about to be recorded is never implicit —
++  /// once the list scrolls, "Commit" alone is an unverifiable claim.
++  static func commitLabel(selectedCount: Int, vcs: String) -> String {
++    // jj commits the whole change and offers no per-file selection, so a count would imply a choice
++    // that isn't on offer.
++    guard vcs != "jj" else { return "Commit" }
++    switch selectedCount {
++    case 1: return "Commit 1 file"
++    default: return "Commit \(selectedCount) files"
++    }
++  }
++
++  /// Why Commit is unavailable, as a sentence, or nil when it is available.
++  ///
++  /// Returned as text rather than a Bool because these must render as a persistent inline line: four
++  /// different blocked states explained only by a tooltip would be invisible to anyone who doesn't
++  /// hover a control that already looks dead, and unavailable to VoiceOver entirely.
++  static func blockedReason(
++    vcs: String, summary: String, selectedCount: Int, totalCount: Int, conflicted: Bool,
++    sequencer: String?
++  ) -> String? {
++    if let sequencer {
++      return "A \(sequencer) is in progress. Finish it in the terminal before committing."
++    }
++    // git refuses to commit unmerged paths outright. jj records conflicts inside commits and would
++    // happily accept this, but "Commit" reading as "done" over unresolved conflicts is a UX decision,
++    // not a capability one — so both backends say the same thing.
++    if conflicted {
++      return "Some files still have unresolved conflicts. Resolve them first."
++    }
++    if totalCount == 0 && vcs != "jj" {
++      return "Nothing has changed in this workroom yet."
++    }
++    if vcs != "jj" && selectedCount == 0 {
++      return "Select at least one file to commit."
++    }
++    if summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
++      return "Write a summary to describe this change."
++    }
++    return nil
++  }
++}
+
+
+=== DIFF: macapp/WorkroomApp/Core/StatusCommandRunner.swift ===
+@@ -25,6 +25,24 @@ protocol StatusCommandRunning: Sendable {
+   func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
+     async -> CommandResult
+ 
++  /// Like `run`, but feeds `stdin` to the child on its standard input.
++  ///
++  /// Exists for the commit path, where passing data as **argv is either unsafe or impossible**:
++  /// - `git add --pathspec-from-file=- --pathspec-file-nul` takes the selected paths NUL-separated
++  ///   on stdin. That is the only form git treats pathspecs as **literal** — after a bare `--` they
++  ///   are still glob magic, so selecting `a[b].txt` also stages `ab.txt` (measured), and a file
++  ///   named `*` stages the whole tree. It also sidesteps `E2BIG`, which a few thousand long paths
++  ///   in `proc.arguments` would hit at spawn, before git can emit anything classifiable.
++  /// - `git commit --file=-` takes the message on stdin, so no length or encoding question arises.
++  ///
++  /// A per-call **environment** override is deliberately NOT added yet: its only planned consumer is
++  /// `GIT_INDEX_FILE` for temp-index commits, which is deferred, and an unused parameter is surface
++  /// nobody can test.
++  func run(
++    _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
++    stdin: Data?
++  ) async -> CommandResult
++
+   /// Like `run`, but for a command that will touch the **network** and therefore may want to
+   /// authenticate — `git fetch/push/pull`, `jj git fetch/push`.
+   ///
+@@ -47,6 +65,16 @@ extension StatusCommandRunning {
+   ) async -> CommandResult {
+     await run(executable, args, in: directory, timeout: timeout)
+   }
++
++  /// Same reasoning as `runNetwork`: a double that records argv doesn't care about the payload, so
++  /// it stays a two-line stub. A double that DOES need to assert on stdin (the commit tests) can
++  /// override this one method. Only `StatusCommandRunner` writes a real pipe.
++  func run(
++    _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
++    stdin: Data?
++  ) async -> CommandResult {
++    await run(executable, args, in: directory, timeout: timeout)
++  }
+ }
+ 
+ /// Default `StatusCommandRunning`: spawns via `/usr/bin/env` (augmented PATH finds Homebrew
+@@ -114,19 +142,26 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
+   func run(_ executable: String, _ args: [String], in directory: String, timeout: TimeInterval)
+     async -> CommandResult
+   {
+-    await run(executable, args, in: directory, timeout: timeout, network: false)
++    await run(executable, args, in: directory, timeout: timeout, network: false, stdin: nil)
++  }
++
++  func run(
++    _ executable: String, _ args: [String], in directory: String, timeout: TimeInterval,
++    stdin: Data?
++  ) async -> CommandResult {
++    await run(executable, args, in: directory, timeout: timeout, network: false, stdin: stdin)
+   }
+ 
+   func runNetwork(
+     _ executable: String, _ args: [String], in directory: String,
+     timeout: TimeInterval
+   ) async -> CommandResult {
+-    await run(executable, args, in: directory, timeout: timeout, network: true)
++    await run(executable, args, in: directory, timeout: timeout, network: true, stdin: nil)
+   }
+ 
+   private func run(
+     _ executable: String, _ args: [String], in directory: String,
+-    timeout: TimeInterval, network: Bool
++    timeout: TimeInterval, network: Bool, stdin: Data?
+   ) async -> CommandResult {
+     let proc = Process()
+     proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+@@ -169,7 +204,11 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
+     // tty that the same binary won't have when launched from Finder. Pinning it makes the two launch
+     // contexts behave identically and turns any prompt into an immediate EOF. `ShellEnvironment.probe`
+     // already does this for the same reason.
+-    proc.standardInput = FileHandle.nullDevice
++    //
++    // A caller-supplied payload replaces the null device with a pipe we write and then close, so the
++    // child still sees a clean EOF and can never wait on a human.
++    let inPipe: Pipe? = stdin == nil ? nil : Pipe()
++    proc.standardInput = inPipe ?? FileHandle.nullDevice
+ 
+     // `proc` is shared with the @Sendable cancellation handler; box it so the non-Sendable Process
+     // can cross that boundary (mirrors the @unchecked Sendable helpers below).
+@@ -230,11 +269,27 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
+ 
+         do {
+           try proc.run()
++          // Feed stdin AFTER the child exists, on a background queue, and close to signal EOF.
++          // Off the calling thread because a payload larger than the 64K pipe buffer blocks until
++          // the child drains it, and `git` does not start reading until it has parsed its argv.
++          if let inPipe, let payload = stdin {
++            DispatchQueue.global().async {
++              let handle = inPipe.fileHandleForWriting
++              // Darwin's per-descriptor SIGPIPE suppression. Without it, a child that exits before
++              // reading (git rejecting its argv, a hook killing it) makes our `write(2)` raise
++              // SIGPIPE, whose default disposition TERMINATES the app — a crash reachable from an
++              // ordinary failed commit. With it the write just returns EPIPE, which `try?` drops.
++              _ = fcntl(handle.fileDescriptor, F_SETNOSIGPIPE, 1)
++              if !payload.isEmpty { try? handle.write(contentsOf: payload) }
++              try? handle.close()
++            }
++          }
+         } catch {
+           // Launch failed (e.g. cwd vanished). Close the write ends so the drain readers hit
+           // EOF instead of blocking forever, then resolve as command-not-found.
+           timeoutItem.cancel()
+           killItem.cancel()
++          try? inPipe?.fileHandleForWriting.close()
+           try? outPipe.fileHandleForWriting.close()
+           try? errPipe.fileHandleForWriting.close()
+           gate.resume(
+
+
+=== DIFF: macapp/WorkroomApp/Core/UITestFixture.swift ===
+@@ -886,6 +886,19 @@ actor FixtureVCSWriter: VCSWriting {
+     await record(.abortRebase)
+   }
+ 
++  /// Answers the commit without running git or jj, so the sheet's own seam — selection → button
++  /// count → request, and the in-flight and failure states — is exercisable hermetically. The write's
++  /// real semantics are covered against throwaway repos in `VCSCommitIntegrationTests`, which is the
++  /// only tier that can see them.
++  func commit(path: String, projectRoot: String, request: VCSCommitRequest) async
++    -> VCSCommitResult
++  {
++    if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
++    return failing
++      ? .failed(.hookRejected("fixture: pre-commit hook declined\nlint: 2 problems"))
++      : .ok(summary: CLIVCSWriter.commitSummary(request.mode, vcs: "git"), revision: "fixture01")
++  }
++
+   private func record(_ action: VCSRemoteAction) async -> VCSRemoteActionResult {
+     if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+     return failing
+
+
+=== DIFF: macapp/WorkroomApp/Core/VCSSyncPresentation.swift ===
+@@ -512,6 +512,128 @@ enum VCSSyncPresenter {
+       """
+   }
+ 
++  // MARK: Commit failures
++
++  /// The dialog form of a commit failure, reusing `VCSFailureDialog` so the commit sheet and the
++  /// toolbar's failure sheet say things the same way.
++  ///
++  /// `recovery` is always nil: every `VCSRemoteAction` is a *remote* verb, and none of them fixes a
++  /// commit. The commit sheet offers its own recovery (edit and press Commit again, or hand off to
++  /// the terminal), which is the same reasoning `retryAction` applies to `.locked` — never offer a
++  /// button that would fail identically.
++  static func commitFailureDialog(_ failure: VCSCommitFailure, mode: VCSCommitMode)
++    -> VCSFailureDialog
++  {
++    VCSFailureDialog(
++      title: "\(commitVerb(mode)) failed",
++      message: [describeCommit(failure), commitRemedy(for: failure)].compactMap { $0 }
++        .joined(separator: "\n\n"),
++      details: commitRawOutput(of: failure),
++      recovery: nil,
++      lockPath: {
++        guard case .locked(let file) = failure else { return nil }
++        return file?.path
++      }())
++  }
++
++  static func commitVerb(_ mode: VCSCommitMode) -> String {
++    switch mode {
++    case .commit: return "Commit"
++    case .amendMessage: return "Amend"
++    case .describe: return "Set message"
++    }
++  }
++
++  /// One actionable line per failure. Same contract as `describe`: the baffling ones get written
++  /// copy, the self-explanatory ones carry the tool's own words.
++  static func describeCommit(_ failure: VCSCommitFailure) -> String {
++    switch failure {
++    case .toolMissing(let tool): return "\(tool) isn’t on Workroom’s PATH."
++    case .timedOut: return "The commit was stopped at its time limit."
++    case .nothingToCommit: return "Nothing to commit."
++    case .identityMissing: return "git doesn’t know who you are yet."
++    case .signingFailed: return "Signing the commit failed."
++    case .hookRejected: return "A commit hook rejected this commit."
++    case .unmergedFiles: return "Some files still have unresolved conflicts."
++    case .sequencerInProgress(let what): return "A \(what) is in progress in this workroom."
++    case .locked(let file):
++      guard let file else { return "The repository was busy. Try again." }
++      return "A leftover \(file.filename) is blocking git."
++    case .unsupportedMode: return "That action isn’t available for this repository."
++    case .other(let message):
++      return message.split(whereSeparator: \.isNewline).first.map(String.init) ?? "Commit failed."
++    }
++  }
++
++  /// How to fix it. Nil where the tool's own output already says it better.
++  static func commitRemedy(for failure: VCSCommitFailure) -> String? {
++    switch failure {
++    case .toolMissing(let tool):
++      return """
++        Install \(tool), or add it to your PATH. Workroom takes its PATH from your login shell at \
++        launch, so a terminal that can find \(tool) is not proof that the app can — relaunch \
++        Workroom after changing your shell profile.
++        """
++    case .timedOut:
++      return """
++        A pre-commit hook that runs a linter or a test suite can legitimately take this long. Run \
++        the commit in the terminal to watch it, or shorten the hook.
++        """
++    case .nothingToCommit:
++      return "Select at least one file with changes, then commit again."
++    case .identityMissing:
++      return """
++        Set your name and email, then commit again:
++
++        git config --global user.name "Your Name"
++        git config --global user.email "you@example.com"
++        """
++    case .signingFailed:
++      return """
++        Workroom runs git without a terminal, so gpg can never prompt you for a passphrase — it \
++        fails immediately instead of hanging. Unlock your key in the agent first, or run this \
++        commit in the terminal.
++        """
++    case .hookRejected:
++      return """
++        The hook’s own output is below. Fix what it reports and commit again, or run the commit in \
++        the terminal to work through it interactively.
++        """
++    case .unmergedFiles:
++      return "Resolve the conflicts first — the Changes list marks each conflicted file."
++    case .sequencerInProgress(let what):
++      return """
++        Finish or abort the \(what) in the terminal first. Committing part of a \(what) from here \
++        would leave the repository half-way through it.
++        """
++    case .locked(let file):
++      guard let file else { return nil }
++      return """
++        A git command that was force-stopped leaves this behind:
++
++        \(file.path)
++
++        If no git command is running for this repository, deleting the file is safe.
++        """
++    case .unsupportedMode, .other:
++      return nil
++    }
++  }
++
++  /// The tool's own output, for the Details section. Nil for failures Workroom raises itself.
++  static func commitRawOutput(of failure: VCSCommitFailure) -> String? {
++    let raw: String?
++    switch failure {
++    case .identityMissing(let m), .signingFailed(let m), .hookRejected(let m),
++      .unmergedFiles(let m), .other(let m):
++      raw = m
++    case .toolMissing, .timedOut, .nothingToCommit, .sequencerInProgress, .locked, .unsupportedMode:
++      raw = nil
++    }
++    let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines)
++    return trimmed?.isEmpty == false ? trimmed : nil
++  }
++
+   // MARK: Vocabulary
+ 
+   /// What this backend calls the thing the working copy is on: jj says **bookmark**, git says **branch**.
+
+
+=== DIFF: macapp/WorkroomApp/Core/VCSWriting.swift ===
+@@ -137,6 +137,66 @@ enum VCSRemoteActionResult: Equatable, Sendable {
+   case failed(VCSRemoteFailure)
+ }
+ 
++// MARK: - Commit
++
++/// Which commit verb to run. Deliberately NOT folded into `VCSRemoteAction`: that enum feeds
++/// `VCSRemoteFailure.timedOut`, `PendingVCSAction` and the toolbar's labels, none of which mean
++/// anything for a purely local write.
++///
++/// The cases are backend-scoped and the writer rejects a mismatch with `.unsupportedMode` rather
++/// than silently issuing the wrong command:
++/// - `.commit` — both backends.
++/// - `.amendMessage` — git only. jj's analogue is `.describe`, which is not the same operation.
++/// - `.describe` — jj only. Sets `@`'s description and stays on it.
++enum VCSCommitMode: String, Equatable, Sendable {
++  case commit, amendMessage, describe
++}
++
++/// One commit, fully specified. `files` carries `ChangedFile` rather than `String` because a rename
++/// needs BOTH sides of the pathspec — see `gitPathspecPayload`.
++struct VCSCommitRequest: Equatable, Sendable {
++  let message: String
++  /// The user's selection. Empty for jj, which has no index and commits the whole change.
++  let files: [ChangedFile]
++  let mode: VCSCommitMode
++}
++
++enum VCSCommitResult: Equatable, Sendable {
++  case ok(summary: String, revision: String?)
++  /// The ref MOVED but the command still reported failure — a `post-commit` hook that fails or hangs
++  /// past the timeout is the reachable case. Distinct from `.failed` because the recovery is
++  /// opposite: retrying would create a SECOND commit.
++  case committedThenFailed(revision: String, detail: String)
++  case failed(VCSCommitFailure)
++}
++
++/// Why a commit failed. Separate from `VCSRemoteFailure` for the reason that enum documents about
++/// `VCSError`: its `.timedOut` carries a `VCSRemoteAction`, and commit is not a remote action, so
++/// reusing it would force a meaningless value.
++enum VCSCommitFailure: Equatable, Sendable {
++  case toolMissing(String)
++  case timedOut
++  /// Nothing staged/changed for the selection. jj reports this as an ordinary success ("Nothing
++  /// changed."), so the writer maps it rather than surfacing a phantom commit.
++  case nothingToCommit
++  /// `user.name`/`user.email` unset — git cannot build a signature.
++  case identityMissing(String)
++  /// gpg/ssh signing refused. With stdin on `/dev/null` this fails FAST rather than hanging, so it
++  /// is a classifiable outcome and not a timeout — see `commitSigningMarkers`.
++  case signingFailed(String)
++  /// A `pre-commit`/`commit-msg` hook rejected it. **Matched, never a catch-all** — a catch-all
++  /// mislabels signing failures, config errors and index corruption, sending users to the wrong fix.
++  case hookRejected(String)
++  case unmergedFiles(String)
++  /// A merge, cherry-pick, revert, rebase or bisect is parked in this worktree. Path-limited commits
++  /// are invalid during several of these, and finishing the sequencer is the user's call.
++  case sequencerInProgress(String)
++  case locked(VCSLockFile?)
++  /// The verb doesn't exist for this backend (`.amendMessage` on jj, `.describe` on git).
++  case unsupportedMode
++  case other(String)
++}
++
+ /// The seam for VCS operations that **write** — remote state reads plus fetch/push/pull.
+ ///
+ /// Separate from `VCSProviding` on purpose. That protocol's doc calls it "the single seam the app
+@@ -168,6 +228,26 @@ protocol VCSWriting: Sendable {
+   /// Recover a workroom left mid-rebase. git only; a no-op for jj, whose rebase is atomic and
+   /// `jj undo`-able.
+   func abortRebase(path: String, projectRoot: String) async -> VCSRemoteActionResult
++
++  /// Record a commit. **Local**, unlike everything above it, so it takes no `remote` and never runs
++  /// through `runNetwork` — but it lands here rather than on `VCSProviding` for the reason this
++  /// protocol's own doc gives: writes belong behind the gate, and a read seam that could commit is
++  /// exactly what that separation prevents.
++  ///
++  /// Always runs in the **workroom**, both backends. `opDirectory` records the measured bug where a
++  /// jj write at the project root operated on the ROOT workspace's `@` and reported success; a
++  /// commit at the root would publish the wrong workspace's work in the same way.
++  func commit(path: String, projectRoot: String, request: VCSCommitRequest) async -> VCSCommitResult
++
++  /// Selected paths whose STAGED content a commit would silently discard, so the caller can confirm
++  /// first. Empty when there is nothing at risk. See `CLIVCSWriter.stagedContentAtRisk`.
++  func stagedContentAtRisk(path: String, files: [ChangedFile]) async -> [String]
++}
++
++extension VCSWriting {
++  /// Test doubles and the fixture have no index to put anything at risk — same reasoning as
++  /// `runNetwork`'s default, so they stay short.
++  func stagedContentAtRisk(path: String, files: [ChangedFile]) async -> [String] { [] }
+ }
+ 
+ extension VCS {
+@@ -238,6 +318,14 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+   /// Generous because SIGKILLing a rebase is the one genuinely unsafe timeout here — it can leave
+   /// `rebase-merge` behind. `classify` probes for that and reports `.rebaseInProgress`.
+   var pullTimeout: TimeInterval = 300
++  /// Deliberately generous, and deliberately NOT tuned down. A `pre-commit` hook that runs a linter
++  /// or a test suite routinely takes minutes, and `StatusCommandRunner` escalates to `killTree` two
++  /// seconds after SIGTERM — SIGKILL is uncatchable, so git's own cleanup never runs and an
++  /// `index.lock` is left behind. Workroom deliberately never deletes that file (see
++  /// `VCSRemoteFailure.locked`), so a too-short limit here would wedge every later commit *and*
++  /// every status probe until the user removed it by hand. Killing a commit is categorically more
++  /// dangerous than killing a fetch.
++  var commitTimeout: TimeInterval = 600
+ 
+   // MARK: - Placement
+ 
+@@ -425,6 +513,140 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+     WorkroomStatusResolver.gitHardening + ["rebase", "--abort"]
+   }
+ 
++  // MARK: - git commit argument builders
++
++  /// The NUL-separated pathspec payload for `--pathspec-from-file=-`, written to the child's stdin.
++  ///
++  /// Three things here are load-bearing, and all three were **measured** on git 2.x rather than
++  /// reasoned about:
++  ///
++  /// 1. **A rename contributes BOTH sides.** `ChangedFile` carries `oldPath`, and the status layer
++  ///    pairs renames (`.renamesIndex`/`.renamesWorkingTree`), so one row means two paths. Sending
++  ///    only `path`: `mv old new` then committing `new` recorded an **add** and left `D old`
++  ///    dangling in the worktree — staged, if the rename came from `git mv`. The user ticked one row
++  ///    labelled `old → new` and got half a rename plus a mess.
++  ///
++  /// 2. **Every entry is `:(literal)`-prefixed.** `--` ends OPTION parsing, not MAGIC parsing, and
++  ///    `--pathspec-file-nul` does NOT disable globbing either — its "taken literally" refers to the
++  ///    absence of C-quoting in the file format, not to pathspec magic. Measured with `ab.txt` and
++  ///    `a[b].txt` both modified: sending `a[b].txt` committed BOTH. A file named `*` would commit
++  ///    the whole tree. `:(literal)` is what actually turns it off (verified: commits only the
++  ///    bracketed file), and it still parses under `--pathspec-file-nul`.
++  ///
++  /// 3. **NUL separation, so no path needs escaping** — newlines and quotes in filenames pass
++  ///    through unharmed, and thousands of long paths cannot blow the `E2BIG` argv ceiling at spawn,
++  ///    where git would never get to emit anything classifiable.
++  ///
++  /// Order-preserving dedup: a rename whose `oldPath` is also its own `path` (or two rows naming the
++  /// same file) must not send a duplicate.
++  static func gitPathspecPayload(_ files: [ChangedFile]) -> Data {
++    var seen = Set<String>()
++    var out = Data()
++    for file in files {
++      for path in [file.path, file.oldPath].compactMap({ $0 }) where !path.isEmpty {
++        guard seen.insert(path).inserted else { continue }
++        out.append(contentsOf: Array(":(literal)\(path)".utf8))
++        out.append(0)
++      }
++    }
++    return out
++  }
++
++  /// Make untracked selections known to git so `--only` can commit them.
++  ///
++  /// `git commit --only` refuses a path git has never seen — measured: `error: pathspec
++  /// 'untracked.txt' did not match any file(s) known to git`. `--intent-to-add` records an empty
++  /// entry, which is enough for `--only` to then take the file's real contents (verified).
++  ///
++  /// This is the **only** index mutation the commit path performs, and only for files that were
++  /// untracked, so a failed commit can leave nothing worse than an intent-to-add marker the user
++  /// clears with `git reset`. Tracked files are never staged — see `gitCommitOnlyArgs`.
++  static func gitIntentToAddArgs() -> [String] {
++    WorkroomStatusResolver.gitHardening
++      + ["add", "--intent-to-add", "--pathspec-from-file=-", "--pathspec-file-nul"]
++  }
++
++  /// Commit exactly the selection, from the WORKTREE, without touching the index for tracked paths.
++  ///
++  /// `--only` is the whole point and was chosen on measurement: with a pre-staged `other.txt` and a
++  /// selection of `tracked.txt`, this committed only `tracked.txt` and left `other.txt` **still
++  /// staged** (`M ` in porcelain). A `git add <selection>` + bare `git commit` would have swept that
++  /// staged file into the user's commit, which is the "absorbs a partially-staged index" bug the
++  /// selection model exists to prevent — reintroduced by the fix.
++  ///
++  /// The message goes in **argv**, not stdin, because stdin is already carrying the pathspec and a
++  /// process has one of them. `-m` accepts embedded newlines fine, so a summary + body is one
++  /// argument. Note `--cleanup` still applies: git strips trailing whitespace and collapses runs of
++  /// blank lines, so what is recorded can differ slightly from what was typed.
++  static func gitCommitOnlyArgs(message: String) -> [String] {
++    WorkroomStatusResolver.gitHardening
++      + ["commit", "--only", "--pathspec-from-file=-", "--pathspec-file-nul", "-m", message]
++  }
++
++  /// Reword the last commit and change **nothing else**.
++  ///
++  /// `--only` with no pathspec is what makes that true. Measured without it: `git add sneaky.txt &&
++  /// git commit --amend -m "…"` absorbed `sneaky.txt` into the amended commit. In a dialog whose
++  /// entire premise is that you choose what gets recorded, an Amend that silently commits whatever
++  /// happens to be staged is the same defect wearing a different verb.
++  static func gitAmendMessageArgs(message: String) -> [String] {
++    WorkroomStatusResolver.gitHardening + ["commit", "--amend", "--only", "-m", message]
++  }
++
++  /// Porcelain status for the staged-content guard.
++  ///
++  /// `-z` because a filename can contain a newline, and without it git also C-quotes non-ASCII names
++  /// — both would desync the parse. Deliberately takes NO pathspec: `git diff`/`git status` do not
++  /// accept `--pathspec-from-file` (measured: `error: invalid option`), and passing thousands of
++  /// paths as argv is the `E2BIG` problem the commit path avoids. One unfiltered read plus an
++  /// in-memory filter is cheaper and cannot fail on an odd name.
++  static func gitStatusPorcelainArgs() -> [String] {
++    WorkroomStatusResolver.gitHardening + ["status", "--porcelain", "-z"]
++  }
++
++  /// Which of `paths` hold staged content that committing would DISCARD.
++  ///
++  /// `git commit --only` builds the commit from the **worktree**, so for a selected path whose index
++  /// differs from both HEAD and the worktree, the staged intermediate is bypassed and then lost.
++  /// That is precisely what someone who ran `git add -p` has: a half-staged file they are still
++  /// editing. Measured — the staged hunk vanished with a clean `git status` afterwards and no warning.
++  ///
++  /// Porcelain's two columns already encode it, so no extra command is needed:
++  /// `X` is HEAD→index and `Y` is index→worktree, giving `MM f.txt` (at risk), `M  h.txt` (staged and
++  /// identical to disk — safe) and ` M g.txt` (never staged — safe). `?` is untracked, which has no
++  /// staged state to lose.
++  ///
++  /// Pure, so the whole rule is testable without a repo.
++  static func stagedContentAtRisk(porcelainZ: String, selecting paths: Set<String>) -> [String] {
++    var atRisk: [String] = []
++    var fields = porcelainZ.split(separator: "\0", omittingEmptySubsequences: true).map(String.init)
++    var index = 0
++    while index < fields.count {
++      let entry = fields[index]
++      index += 1
++      guard entry.count > 3 else { continue }
++      let chars = Array(entry)
++      let x = chars[0]
++      let y = chars[1]
++      let path = String(chars[3...])
++      // A rename or copy spends a SECOND field on its old path. Consuming it keeps the walk aligned;
++      // without this every entry after the first rename would be read as a status code.
++      if x == "R" || x == "C" { index += 1 }
++      guard paths.contains(path) else { continue }
++      // Staged content exists (X is neither unmodified nor untracked) AND the worktree has moved on
++      // from it (Y is not unmodified) ⇒ `--only` will take the worktree copy and drop the staged one.
++      if x != " " && x != "?" && y != " " { atRisk.append(path) }
++    }
++    return atRisk
++  }
++
++  /// `HEAD`'s commit id, or nil when there isn't one (an unborn branch, i.e. a repo with no commits).
++  /// Used to tell "the commit didn't happen" from "the commit happened and something after it
++  /// failed" — see `VCSCommitResult.committedThenFailed`.
++  static func gitHeadArgs() -> [String] {
++    WorkroomStatusResolver.gitHardening + ["rev-parse", "--verify", "HEAD"]
++  }
++
+   // MARK: - jj argument builders
+ 
+   /// Read-only jj flags. `--ignore-working-copy` is REQUIRED on reads: without it every toolbar poll
+@@ -571,6 +793,42 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+     ["rebase", "-b", "@", "-d", destination] + jjWriteFlags
+   }
+ 
++  /// Describe `@` and start a new empty change on top of it — jj's analogue of a git commit.
++  ///
++  /// **No pathspec, deliberately.** jj has no index: it commits the whole change. Its path arguments
++  /// are a *fileset expression language*, not a list, and interpolating a plain path into one is the
++  /// bug `jjQuote` already documents for revsets — measured on jj 0.43, `jj commit -- 'a (copy).txt'`
++  /// fails to parse outright, and a fileset that matches nothing **still creates an empty commit and
++  /// exits 0**, so the UI would report a commit that recorded nothing. Since partial selection is not
++  /// offered for jj (it would need `jj split`), the parameter would carry all that risk to buy
++  /// nothing at all.
++  static func jjCommitArgs(message: String) -> [String] {
++    ["commit", "-m", message] + jjWriteFlags
++  }
++
++  /// Set `@`'s description and stay on it. Not an amend and not a commit — the third jj verb, which
++  /// git has no equivalent of.
++  static func jjDescribeArgs(message: String) -> [String] {
++    ["describe", "-m", message] + jjWriteFlags
++  }
++
++  /// `@`'s full description, for prefilling the dialog.
++  ///
++  /// Read-only, so it carries `jjReadFlags`: without `--ignore-working-copy` this would snapshot the
++  /// working copy and take its lock, ungated, just to populate a text field.
++  ///
++  /// The FULL description, not `JJCommitChanges.description`, which is only the first line — filling
++  /// the summary from that and then running Describe would silently discard the message body.
++  static func jjDescriptionArgs() -> [String] {
++    ["log", "-r", "@", "--no-graph"] + jjReadFlags + ["-T", "description"]
++  }
++
++  /// The jj operation id at the head of the op log, for the same before/after comparison
++  /// `gitHeadArgs` serves.
++  static func jjOpHeadArgs() -> [String] {
++    ["op", "log", "--no-graph"] + jjReadFlags + ["--limit", "1", "-T", "self.id().short()"]
++  }
++
+   /// Which revision an anonymous push should send.
+   ///
+   /// `@` when it carries work, otherwise its parent. jj refuses to push a commit with an empty
+@@ -791,6 +1049,78 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+     return .other(trimmed.isEmpty ? "\(tool) exited \(result.exitCode)" : trimmed)
+   }
+ 
++  /// Signing failures. With `standardInput` on `/dev/null` gpg cannot reach a TTY pinentry, so it
++  /// fails FAST with these rather than hanging — which is why the plan carries no signing preflight:
++  /// predicting whether pinentry needs a terminal is undecidable (it depends on `gpg-agent.conf`,
++  /// the agent's cache state and whether a smartcard is present), and this is decidable.
++  static let commitSigningMarkers = [
++    "gpg failed to sign the data", "failed to write commit object",
++    "Inappropriate ioctl for device", "error: unable to sign the commit",
++    "user.signingkey", "secret key not available",
++  ]
++
++  /// Missing `user.name`/`user.email`. git's own message tells the user exactly what to run, so the
++  /// value is carried through rather than replaced.
++  static let commitIdentityMarkers = [
++    "Please tell me who you are", "unable to auto-detect email address",
++    "empty ident name", "no email was given",
++  ]
++
++  static let commitNothingMarkers = [
++    "nothing to commit", "no changes added to commit", "nothing added to commit",
++    "Nothing changed.",
++  ]
++
++  static let commitUnmergedMarkers = [
++    "you have unmerged files", "Committing is not possible because you have unmerged files",
++    "needs merge",
++  ]
++
++  /// Hook rejection. **An explicit marker set, never the `else` branch.** A catch-all here would
++  /// relabel signing failures, bad config, index corruption and message-policy errors as "a hook
++  /// rejected this", which is worse than saying nothing: it sends the user to edit a hook that was
++  /// never involved. Anything unmatched stays `.other`, carrying git's own words.
++  static let commitHookMarkers = [
++    "hook declined", "pre-commit hook", "commit-msg hook", "prepare-commit-msg hook",
++    "hook exited with", "hook returned",
++  ]
++
++  /// Map a failed commit to a typed failure. `nil` means success.
++  ///
++  /// `movedRef` says the ref changed even though the command reported failure — the caller turns
++  /// that into `.committedThenFailed` rather than a failure, because retrying would make a SECOND
++  /// commit. The reachable case is a `post-commit` hook: git has already written the commit and
++  /// moved `HEAD` by the time it runs, so a hook that fails or runs past the timeout leaves a
++  /// perfectly good commit behind a non-zero exit.
++  static func classifyCommit(_ result: CommandResult, tool: String) -> VCSCommitFailure? {
++    if result.exitCode == CommandResult.commandNotFound { return .toolMissing(tool) }
++    let err = result.stderr + "\n" + result.stdout
++    // jj says "Nothing changed." and exits ZERO, so this is checked before the success guard — an
++    // untouched working copy must not be reported as a commit that happened.
++    if commitNothingMarkers.contains(where: err.contains) { return .nothingToCommit }
++    if result.timedOut { return .timedOut }
++    guard !result.ok else { return nil }
++
++    if commitIdentityMarkers.contains(where: err.contains) { return .identityMissing(err) }
++    if commitSigningMarkers.contains(where: err.contains) { return .signingFailed(err) }
++    if commitUnmergedMarkers.contains(where: err.contains) { return .unmergedFiles(err) }
++    // Before the hook check: git phrases this one as a plain fatal, and it is a state the user must
++    // finish rather than a hook they must fix.
++    if err.contains("cannot do a partial commit during a") || err.contains("is in progress") {
++      return .sequencerInProgress(err)
++    }
++    if commitHookMarkers.contains(where: err.contains) { return .hookRejected(err) }
++    if err.contains("Failed to take lock") || err.contains("index.lock")
++      || (err.contains(".lock")
++        && (err.contains("could not be obtained") || err.contains("File exists")
++          || err.contains("Unable to create")))
++    {
++      return .locked(lockFile(in: err))
++    }
++    let trimmed = err.trimmingCharacters(in: .whitespacesAndNewlines)
++    return .other(trimmed.isEmpty ? "\(tool) exited \(result.exitCode)" : trimmed)
++  }
++
+   /// Whether a rebase is parked in this worktree. Both directory names are checked: `rebase-merge` for
+   /// an interactive/merge rebase, `rebase-apply` for the am-based one.
+   static func rebaseInProgress(gitDir: URL?) -> Bool {
+@@ -800,6 +1130,33 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+       || fm.fileExists(atPath: gitDir.appendingPathComponent("rebase-apply").path)
+   }
+ 
++  /// Which multi-step git operation is parked in this worktree, named for the user, or nil if none.
++  ///
++  /// Checking for *conflicts* is not enough, and the difference is a real trap: resolving the
++  /// conflicts in a terminal clears the conflict markers but leaves `MERGE_HEAD` sitting there, so a
++  /// conflict-only guard re-enables Commit into a guaranteed `fatal: cannot do a partial commit
++  /// during a merge`. The sequencer file is the durable fact; the conflict is not.
++  ///
++  /// Ordered by specificity: a cherry-pick and a revert both also leave `MERGE_HEAD` behind, so they
++  /// are tested first or every one of them would report "merge".
++  static func sequencerState(gitDir: URL?) -> String? {
++    guard let gitDir else { return nil }
++    let fm = FileManager.default
++    let markers: [(String, String)] = [
++      ("CHERRY_PICK_HEAD", "cherry-pick"),
++      ("REVERT_HEAD", "revert"),
++      ("rebase-merge", "rebase"),
++      ("rebase-apply", "rebase"),
++      ("BISECT_LOG", "bisect"),
++      ("MERGE_HEAD", "merge"),
++    ]
++    for (file, label) in markers
++    where fm.fileExists(atPath: gitDir.appendingPathComponent(file).path) {
++      return label
++    }
++    return nil
++  }
++
+   /// The lock file a failure is complaining about, or nil if we can't point at one.
+   ///
+   /// The path is taken from git's OWN message rather than guessed: git names the exact file it couldn't
+@@ -1188,4 +1545,138 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+     }
+     return .ok(summary: "Rebase aborted")
+   }
++
++  // MARK: - Commit
++
++  func commit(path: String, projectRoot: String, request: VCSCommitRequest) async -> VCSCommitResult
++  {
++    guard Self.supports(mode: request.mode, vcs: vcs) else { return .failed(.unsupportedMode) }
++    let gitDir = Self.worktreeGitDir(at: path)
++    // A parked merge/cherry-pick/rebase/bisect makes a path-limited commit outright invalid, and
++    // finishing it is the user's call. Checked before the ref snapshot so nothing is spawned at all.
++    if vcs != "jj", let sequencer = Self.sequencerState(gitDir: gitDir) {
++      return .failed(.sequencerInProgress(sequencer))
++    }
++
++    let before = await currentRevision(path: path)
++
++    // ONE gate acquisition for the whole operation, not one per command. Two would let the 15s
++    // status sweep, the FSEvents lane and DiffResolver interleave between the intent-to-add and the
++    // commit — contending on `index.lock` and, for jj, snapshotting `@` out from under a write.
++    let outcome = await gated(
++      projectRoot,
++      { [self] in
++        await runCommitSequence(request, in: path)
++      })
++    guard let result = outcome else { return .failed(.other("commit was cancelled")) }
++
++    if let failure = Self.classifyCommit(result, tool: vcs) {
++      // The command failed, but did the ref move anyway? A `post-commit` hook runs AFTER git has
++      // written the commit and moved HEAD, so a hook that fails — or that we killed at the timeout —
++      // leaves a real commit behind a non-zero exit. Reporting that as a plain failure invites a
++      // retry, and the retry would commit a second time.
++      let after = await currentRevision(path: path)
++      if let after, after != before {
++        return .committedThenFailed(revision: after, detail: Self.commitFailureDetail(failure))
++      }
++      return .failed(failure)
++    }
++    let after = await currentRevision(path: path)
++    return .ok(summary: Self.commitSummary(request.mode, vcs: vcs), revision: after)
++  }
++
++  /// The commands, in order, inside the caller's single gate acquisition.
++  ///
++  /// Returns the FIRST failing result, so the caller classifies whichever step broke. The
++  /// intent-to-add step only runs when the selection actually contains untracked files, so the
++  /// common case is one process.
++  private func runCommitSequence(_ request: VCSCommitRequest, in path: String) async
++    -> CommandResult
++  {
++    if vcs == "jj" {
++      let args =
++        request.mode == .describe
++        ? Self.jjDescribeArgs(message: request.message)
++        : Self.jjCommitArgs(message: request.message)
++      return await run(args, in: path, timeout: commitTimeout)
++    }
++
++    if request.mode == .amendMessage {
++      return await run(
++        Self.gitAmendMessageArgs(message: request.message), in: path,
++        timeout: commitTimeout)
++    }
++
++    let untracked = request.files.filter { $0.change == .untracked }
++    if !untracked.isEmpty {
++      let ita = await runner.run(
++        vcs, Self.gitIntentToAddArgs(), in: path, timeout: refTimeout,
++        stdin: Self.gitPathspecPayload(untracked))
++      guard ita.ok else { return ita }
++    }
++    return await runner.run(
++      vcs, Self.gitCommitOnlyArgs(message: request.message), in: path, timeout: commitTimeout,
++      stdin: Self.gitPathspecPayload(request.files))
++  }
++
++  /// Selected paths whose staged content a commit would discard, for the dialog to confirm before it
++  /// happens. Empty for jj, which has no index, and for a mode that takes no pathspec.
++  ///
++  /// A pre-flight rather than a refusal: a partially-staged file is a legitimate thing to commit from
++  /// — the user just has to know that the version on disk is the one that lands. Silence is the only
++  /// unacceptable option, because the loss leaves no trace (`git status` is clean afterwards).
++  func stagedContentAtRisk(path: String, files: [ChangedFile]) async -> [String] {
++    guard vcs != "jj", !files.isEmpty else { return [] }
++    let result = await run(Self.gitStatusPorcelainArgs(), in: path, timeout: refTimeout)
++    guard result.ok else { return [] }
++    return Self.stagedContentAtRisk(
++      porcelainZ: result.stdout, selecting: Set(files.map(\.path)))
++  }
++
++  /// The current ref, for the before/after comparison. Ungated and cheap: git's `rev-parse` touches
++  /// nothing, and the jj form carries `jjReadFlags` so it cannot snapshot.
++  ///
++  /// Nil for an unborn branch (a repo with no commits), which is a legitimate state to commit from —
++  /// `nil != "abc123"` then reads correctly as "the ref moved".
++  private func currentRevision(path: String) async -> String? {
++    let args = vcs == "jj" ? Self.jjOpHeadArgs() : Self.gitHeadArgs()
++    let result = await run(args, in: path, timeout: refTimeout)
++    guard result.ok else { return nil }
++    let value = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
++    return value.isEmpty ? nil : value
++  }
++
++  /// Which verbs each backend has. `.amendMessage` is git's and `.describe` is jj's; neither has a
++  /// counterpart on the other side, so a mismatch is a programming error the writer reports rather
++  /// than silently running the nearest command.
++  static func supports(mode: VCSCommitMode, vcs: String) -> Bool {
++    switch mode {
++    case .commit: return true
++    case .amendMessage: return vcs != "jj"
++    case .describe: return vcs == "jj"
++    }
++  }
++
++  static func commitSummary(_ mode: VCSCommitMode, vcs: String) -> String {
++    switch mode {
++    case .commit: return "Committed"
++    case .amendMessage: return "Amended the last commit"
++    case .describe: return "Set the change message"
++    }
++  }
++
++  /// The stderr a `committedThenFailed` carries, so the dialog can show what went wrong *after* the
++  /// commit landed.
++  static func commitFailureDetail(_ failure: VCSCommitFailure) -> String {
++    switch failure {
++    case .toolMissing(let m), .identityMissing(let m), .signingFailed(let m), .hookRejected(let m),
++      .unmergedFiles(let m), .sequencerInProgress(let m), .other(let m):
++      return m
++    case .timedOut: return "The command was stopped at its time limit."
++    case .nothingToCommit: return "Nothing to commit."
++    case .locked(let file):
++      return file.map { "Blocked by \($0.filename)." } ?? "The repository was busy."
++    case .unsupportedMode: return "That action isn’t available for this repository."
++    }
++  }
+ }
+
+
+=== DIFF: macapp/WorkroomApp/Views/ChangesPanel.swift ===
+@@ -87,6 +87,24 @@ struct RightInspector: View {
+     }
+   }
+ 
++  /// Whether the inspector's target has anything a commit could record.
++  ///
++  /// jj is included even with no file changes: its working copy is itself a commit, so describing an
++  /// empty change is a real thing to want, and `jjPushRevision` already recognises that state.
++  private var canCommitSelectedTarget: Bool {
++    guard let sid = store.inspectorTargetID, sid.isStatusable,
++      let status = store.workroomStatuses[sid], !store.isCommitting(sid)
++    else { return false }
++    if let workingCopy = status.jjWorkingCopy {
++      return !workingCopy.files.isEmpty || (workingCopy.description?.isEmpty ?? true)
++    }
++    return !(status.isClean || status.isUnknown)
++  }
++
++  private var commitButtonHelp: String {
++    canCommitSelectedTarget ? "Commit changes…" : "Nothing to commit"
++  }
++
+   /// The live collapse value for a sub-section. A solo pane (Files, which stacks only itself) never
+   /// collapses, so it reports expanded and its header shows no chevron.
+   private func collapsedValue(for sub: InspectorSectionKind) -> Bool {
+@@ -108,8 +126,20 @@ struct RightInspector: View {
+           title: "Changes", collapsed: $store.changesSectionCollapsed,
+           indicator: changesIndicator, indicatorLabel: changesIndicatorLabel, shortcut: "⌥⌘C"
+         ) {
+-          InspectorHeaderButton(systemImage: "arrow.clockwise", help: "Refresh workroom status") {
+-            store.refreshWorkroomStatuses(force: true)
++          HStack(spacing: 0) {
++            InspectorHeaderButton(
++              systemImage: "checkmark.circle", help: commitButtonHelp,
++              disabled: !canCommitSelectedTarget
++            ) {
++              guard let sid = store.inspectorTargetID,
++                let item = store.selectedStatusWorkItem(for: sid)
++              else { return }
++              store.pendingCommit = PendingCommit(sid: sid, vcs: item.vcs)
++            }
++            .accessibilityIdentifier("changes.commitButton")
++            InspectorHeaderButton(systemImage: "arrow.clockwise", help: "Refresh workroom status") {
++              store.refreshWorkroomStatuses(force: true)
++            }
+           }
+         }
+         .environmentObject(store).environmentObject(notifications))
+
+
+=== DIFF: macapp/WorkroomApp/Views/CommitSheet.swift ===
+@@ -0,0 +1,497 @@
++import SwiftUI
++
++/// Record a commit: what will be included, the message, and the failure when there is one.
++///
++/// **Why a dialog rather than a box in the Changes pane.** Measured against the pane it would have
++/// lived in: the composer is ~152pt and `InspectorPanePolicy.expandedMinHeight` leaves 86pt of body,
++/// so at the pane's own drag floor the Commit button was below the fold. At a default third of a
++/// 900pt window it left two file rows for git and one for jj — for a list whose entire job is letting
++/// you decide whether committing is safe. Pinning it would also have meant switching Changes to fill
++/// hosting, which disables the documented compress-and-scroll valve (`InspectorSplitView`), so a
++/// short window would clip the button rather than scroll to it.
++///
++/// The dialog also deletes state rather than managing it: the draft and the selection live here for
++/// the sheet's lifetime, so there is no per-workroom draft store to prune on delete, no recycled
++/// workroom name inheriting last week's message, and no two windows racing one `Defaults` dictionary
++/// (`AppStore` is per window).
++///
++/// The cost, accepted: this covers the diff you were reading.
++struct CommitSheet: View {
++  let pending: PendingCommit
++  let onDismiss: () -> Void
++
++  @EnvironmentObject var store: AppStore
++  private let theme = ThemeService.shared
++
++  @State private var summary = ""
++  @State private var messageBody = ""
++  /// EXCLUSIONS, not selections — see `CommitDraft.selected(from:excluding:)`. A file written while
++  /// this sheet is open arrives checked; a file the user unticked stays unticked.
++  @State private var excluded: Set<String> = []
++  @State private var phase: Phase = .editing
++  @State private var prefilled = false
++  @FocusState private var summaryFocused: Bool
++
++  private enum Phase: Equatable {
++    case editing
++    /// Selected paths whose staged content this commit would discard, awaiting confirmation.
++    case confirmingStagedLoss([String])
++    case committing
++    case failed(VCSFailureDialog)
++  }
++
++  private var isJJ: Bool { pending.vcs == "jj" }
++  private var status: WorkroomStatus? { store.workroomStatuses[pending.sid] }
++
++  /// Every changed file, from whichever shape this backend reports.
++  private var files: [ChangedFile] {
++    guard let status else { return [] }
++    if let workingCopy = status.jjWorkingCopy { return workingCopy.files }
++    return status.changedFiles ?? []
++  }
++
++  private var selectedFiles: [ChangedFile] {
++    // jj commits the whole change, so the exclusion set is never applied to it.
++    isJJ ? files : CommitDraft.selected(from: files, excluding: excluded)
++  }
++
++  private var blockedReason: String? {
++    CommitDraft.blockedReason(
++      vcs: pending.vcs, summary: summary, selectedCount: selectedFiles.count,
++      totalCount: files.count, conflicted: status?.conflicted ?? false, sequencer: nil)
++  }
++
++  var body: some View {
++    VStack(alignment: .leading, spacing: 14) {
++      header
++      fileSection
++      messageSection
++      if case .confirmingStagedLoss(let paths) = phase { stagedLossNotice(paths) }
++      if case .failed(let dialog) = phase { CommitFailureNotice(dialog: dialog) }
++      Divider()
++      buttons
++    }
++    .padding(20)
++    .frame(width: 520)
++    .onAppear(perform: prefill)
++    // `children: .contain` is load-bearing: an identifier on a plain container makes SwiftUI treat it
++    // as ONE element and swallow everything inside, which XCUITest then cannot reach. Same lesson
++    // `VCSFailureSheet` records.
++    .accessibilityElement(children: .contain)
++    .accessibilityIdentifier("commit.sheet")
++  }
++
++  private var header: some View {
++    HStack(alignment: .firstTextBaseline, spacing: 8) {
++      Text(isJJ ? "Describe this change" : "Commit changes")
++        .font(.headline)
++        .accessibilityIdentifier("commit.title")
++      Spacer(minLength: 0)
++      if !files.isEmpty {
++        Text(countCaption)
++          .font(.caption)
++          .foregroundStyle(.secondary)
++          .accessibilityIdentifier("commit.count")
++      }
++    }
++  }
++
++  /// The primary button's label, which becomes an explicit confirmation while the staged-work
++  /// warning is up so it can never read as an ordinary Commit.
++  private var primaryLabel: String {
++    if case .confirmingStagedLoss = phase { return "Commit anyway" }
++    return CommitDraft.commitLabel(selectedCount: selectedFiles.count, vcs: pending.vcs)
++  }
++
++  private var countCaption: String {
++    isJJ
++      ? "\(files.count) file\(files.count == 1 ? "" : "s") in this change"
++      : "\(selectedFiles.count) of \(files.count) file\(files.count == 1 ? "" : "s")"
++  }
++
++  // MARK: Files
++
++  @ViewBuilder private var fileSection: some View {
++    if files.isEmpty {
++      // jj can legitimately describe an empty change, so this is a note rather than a blocker there.
++      Text(
++        isJJ
++          ? "This change has no file changes yet. You can still give it a message."
++          : "Nothing has changed in this workroom yet."
++      )
++      .font(.callout).foregroundStyle(.secondary)
++      .frame(maxWidth: .infinity, alignment: .leading)
++    } else {
++      VStack(alignment: .leading, spacing: 6) {
++        if !isJJ { selectAllRow }
++        ScrollView {
++          VStack(alignment: .leading, spacing: 2) {
++            ForEach(files) { file in
++              CommitFileRow(
++                file: file, showsCheckbox: !isJJ,
++                isIncluded: !excluded.contains(file.path),
++                toggle: { toggle(file) },
++                only: { excluded = Set(files.map(\.path)).subtracting([file.path]) })
++            }
++          }
++          .padding(.vertical, 2)
++        }
++        .frame(maxHeight: 200)
++        .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary.opacity(0.4)))
++        if isJJ {
++          Text("jj commits the whole change. Splitting isn’t supported yet.")
++            .font(.caption).foregroundStyle(.tertiary)
++        }
++      }
++    }
++  }
++
++  /// The staged-work warning: what committing is about to throw away, named, before it happens.
++  ///
++  /// `git commit --only` builds from the worktree, so for a file you staged with `git add -p` and
++  /// then kept editing, the staged version is bypassed and gone — measured, with a clean
++  /// `git status` afterwards and no other trace. This is not a refusal (committing from a partly
++  /// staged file is legitimate), it is the difference between an informed choice and a silent loss.
++  private func stagedLossNotice(_ paths: [String]) -> some View {
++    VStack(alignment: .leading, spacing: 6) {
++      HStack(alignment: .top, spacing: 8) {
++        Image(systemName: "exclamationmark.triangle.fill")
++          .foregroundStyle(.orange).accessibilityHidden(true)
++        VStack(alignment: .leading, spacing: 4) {
++          Text(
++            paths.count == 1
++              ? "1 file has staged changes that differ from the file on disk"
++              : "\(paths.count) files have staged changes that differ from the files on disk"
++          )
++          .font(.subheadline.weight(.semibold))
++          Text(
++            "Committing records what is on disk, so the version you staged will be replaced. "
++              + "Stage and commit it from the terminal instead if you meant to keep it."
++          )
++          .font(.caption).foregroundStyle(.secondary)
++          .fixedSize(horizontal: false, vertical: true)
++          Text(paths.prefix(5).joined(separator: ", ") + (paths.count > 5 ? ", …" : ""))
++            .font(.system(.caption2, design: .monospaced))
++            .foregroundStyle(.secondary)
++            .textSelection(.enabled)
++            .fixedSize(horizontal: false, vertical: true)
++        }
++      }
++    }
++    .frame(maxWidth: .infinity, alignment: .leading)
++    .padding(10)
++    .background(RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.08)))
++    .accessibilityElement(children: .contain)
++    .accessibilityIdentifier("commit.stagedLoss")
++  }
++
++  /// The bulk affordance. Without it, "commit only this file" — an extremely common intent — costs
++  /// one click per unwanted file.
++  private var selectAllRow: some View {
++    let allIncluded = excluded.isEmpty
++    return Button {
++      excluded = allIncluded ? Set(files.map(\.path)) : []
++    } label: {
++      HStack(spacing: 6) {
++        Image(
++          systemName: allIncluded
++            ? "checkmark.square.fill" : (selectedFiles.isEmpty ? "square" : "minus.square.fill")
++        )
++        .font(.callout)
++        .foregroundStyle(allIncluded || !selectedFiles.isEmpty ? Color.accentColor : .secondary)
++        .frame(width: 14)
++        Text(allIncluded ? "Deselect all" : "Select all").font(.caption)
++        Spacer(minLength: 0)
++      }
++      .contentShape(Rectangle())
++    }
++    .buttonStyle(.plain)
++    .help("Include or exclude every changed file")
++    .accessibilityIdentifier("commit.selectAll")
++  }
++
++  private func toggle(_ file: ChangedFile) {
++    if excluded.contains(file.path) {
++      excluded.remove(file.path)
++    } else {
++      excluded.insert(file.path)
++    }
++  }
++
++  // MARK: Message
++
++  private var messageSection: some View {
++    VStack(alignment: .leading, spacing: 8) {
++      TextField("Summary", text: $summary)
++        .textFieldStyle(.roundedBorder)
++        .focused($summaryFocused)
++        .accessibilityIdentifier("commit.summary")
++        .onSubmit { if blockedReason == nil { commitChecking(mode: .commit) } }
++      ZStack(alignment: .topLeading) {
++        // SwiftUI's TextEditor has no placeholder, so it is drawn behind. `allowsHitTesting(false)`
++        // keeps the click through to the editor.
++        if messageBody.isEmpty {
++          Text("Description (optional)")
++            .font(.body)
++            .foregroundStyle(.tertiary)
++            .padding(.horizontal, 5)
++            .padding(.vertical, 8)
++            .allowsHitTesting(false)
++        }
++        TextEditor(text: $messageBody)
++          .font(.body)
++          .scrollContentBackground(.hidden)
++          .frame(minHeight: 80, maxHeight: 140)
++          .padding(2)
++          .accessibilityIdentifier("commit.description")
++      }
++      .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary.opacity(0.4)))
++      .overlay(RoundedRectangle(cornerRadius: 6).stroke(theme.tokens.border, lineWidth: 1))
++    }
++  }
++
++  // MARK: Buttons
++
++  private var buttons: some View {
++    HStack(spacing: 8) {
++      // A persistent line, never a tooltip: nobody hovers a button that looks dead, and a tooltip is
++      // unreachable by keyboard and invisible to VoiceOver.
++      if let blockedReason, phase == .editing {
++        Text(blockedReason)
++          .font(.caption)
++          .foregroundStyle(.secondary)
++          .fixedSize(horizontal: false, vertical: true)
++          .accessibilityIdentifier("commit.blocked")
++      }
++      if phase == .committing {
++        ProgressView().controlSize(.small)
++        Text("Running hooks…").font(.caption).foregroundStyle(.secondary)
++      }
++      Spacer(minLength: 0)
++      Button("Cancel") { onDismiss() }
++        .keyboardShortcut(.cancelAction)
++        .accessibilityIdentifier("commit.cancel")
++      secondaryMenu
++      Button(primaryLabel) {
++        // Once the warning is on screen the same button confirms it — the guard has already told the
++        // user what it is about to replace, so a second warning would just be a speed bump.
++        if case .confirmingStagedLoss = phase {
++          commit(mode: .commit)
++        } else {
++          commitChecking(mode: .commit)
++        }
++      }
++      .keyboardShortcut(.defaultAction)
++      .buttonStyle(.borderedProminent)
++      .disabled(blockedReason != nil || phase == .committing)
++      .help(isJJ ? "Describe this change and start a new one on top" : "Commit the selected files")
++      .accessibilityIdentifier("commit.commit")
++    }
++  }
++
++  /// The backend's second verb. Labelled by OUTCOME, with the command named only in the help text —
++  /// the product goal is that you don't need to know jj's vocabulary to use this.
++  @ViewBuilder private var secondaryMenu: some View {
++    Menu {
++      if isJJ {
++        Button("Set Message Only") { commit(mode: .describe) }
++          .help("Name the current change and stay on it (jj describe)")
++      } else {
++        Button("Amend Last Commit") { commit(mode: .amendMessage) }
++          .help("Replace the last commit’s message. Nothing else about it changes.")
++      }
++    } label: {
++      Image(systemName: "ellipsis")
++    }
++    .menuStyle(.button)
++    .menuIndicator(.hidden)
++    .fixedSize()
++    .disabled(phase == .committing || summary.trimmingCharacters(in: .whitespaces).isEmpty)
++    .help("Other ways to record this message")
++    .accessibilityIdentifier("commit.moreActions")
++  }
++
++  // MARK: Actions
++
++  /// Prefill from jj's `@` description, once. git has nothing to prefill from.
++  ///
++  /// Reads the FULL description rather than `JJCommitChanges.description`, which is only its first
++  /// line — prefilling the summary from that and then pressing Set Message Only would silently
++  /// discard the body the user wrote earlier.
++  private func prefill() {
++    summaryFocused = true
++    guard isJJ, !prefilled else { return }
++    prefilled = true
++    guard let item = store.selectedStatusWorkItem(for: pending.sid) else { return }
++    Task {
++      let result = await StatusCommandRunner().run(
++        "jj", CLIVCSWriter.jjDescriptionArgs(), in: item.path, timeout: 5)
++      guard result.ok else { return }
++      let existing = CommitDraft.split(message: result.stdout)
++      // Never clobber something typed while the read was in flight.
++      if summary.isEmpty && messageBody.isEmpty {
++        summary = existing.summary
++        messageBody = existing.body
++      }
++    }
++  }
++
++  /// Commit, but check first whether doing so would throw away staged work.
++  ///
++  /// Only for the plain git commit path: amend takes no pathspec, and jj has no index. The check is
++  /// skipped once confirmed so pressing "Commit anyway" cannot re-raise the same warning.
++  private func commitChecking(mode: VCSCommitMode) {
++    guard phase == .editing, mode == .commit, !isJJ else { return commit(mode: mode) }
++    let files = selectedFiles
++    store.stagedContentAtRisk(on: pending.sid, files: files) { atRisk in
++      if atRisk.isEmpty {
++        commit(mode: mode)
++      } else {
++        phase = .confirmingStagedLoss(atRisk)
++      }
++    }
++  }
++
++  private func commit(mode: VCSCommitMode) {
++    guard phase != .committing else { return }
++    phase = .committing
++    let request = VCSCommitRequest(
++      message: CommitDraft.message(summary: summary, body: messageBody),
++      files: mode == .amendMessage ? [] : selectedFiles, mode: mode)
++    store.performCommit(request, on: pending.sid) { result in
++      switch result {
++      case .ok:
++        onDismiss()
++      case .committedThenFailed(_, let detail):
++        // The commit LANDED. Closing would be a lie by omission, and offering a retry would create a
++        // second commit, so the sheet stays up saying exactly that.
++        phase = .failed(
++          VCSFailureDialog(
++            title: "Committed, but something afterwards failed",
++            message:
++              "The commit was recorded. A step that runs after it — usually a post-commit hook — "
++              + "then failed. Do not commit again; the change is already saved.",
++            details: detail, recovery: nil, lockPath: nil))
++      case .failed(let failure):
++        phase = .failed(VCSSyncPresenter.commitFailureDialog(failure, mode: mode))
++      }
++    }
++  }
++}
++
++/// One changed file, with its inclusion checkbox.
++///
++/// The checkbox is an SF Symbol in a 14pt slot rather than a `Toggle` on purpose: the row aligns on
++/// `.firstTextBaseline` so the directory text sits on the filename's baseline, and a `Toggle` has no
++/// text baseline to align to — it would sit visibly high against the change letter beside it. Same
++/// glyph size and same slot width as that letter, so both share a baseline by construction.
++private struct CommitFileRow: View {
++  let file: ChangedFile
++  let showsCheckbox: Bool
++  let isIncluded: Bool
++  let toggle: () -> Void
++  let only: () -> Void
++  private let theme = ThemeService.shared
++
++  var body: some View {
++    HStack(alignment: .firstTextBaseline, spacing: 6) {
++      if showsCheckbox {
++        Button(action: toggle) {
++          Image(systemName: isIncluded ? "checkmark.square.fill" : "square")
++            .font(.callout)
++            .foregroundStyle(isIncluded ? Color.accentColor : .secondary)
++            .frame(width: 14)
++        }
++        .buttonStyle(.plain)
++        .help(isIncluded ? "Exclude this file from the commit" : "Include this file in the commit")
++        .accessibilityLabel("\(file.path), \(isIncluded ? "included" : "excluded")")
++        .accessibilityIdentifier("commit.file.check.\(file.path)")
++      }
++      // Combined SEPARATELY from the checkbox, not across the whole row. An
++      // `.accessibilityElement(children: .combine)` on the row collapses everything inside it into one
++      // element, which takes the checkbox with it — the control then isn't individually clickable and
++      // XCUITest cannot toggle it. Caught by `CommitSheetUITests`; same family as the
++      // `children: .contain` note on `VCSFailureSheet`.
++      HStack(alignment: .firstTextBaseline, spacing: 6) {
++        Text(ChangeBadge.letter(file.change))
++          .font(.system(.caption, design: .monospaced))
++          .foregroundStyle(ChangeBadge.color(file.change, theme.tokens))
++          .frame(width: 14)
++        let parts = ChangesPanel.splitPath(file.path)
++        Text(parts.name).font(.callout).lineLimit(1).truncationMode(.middle)
++        if !parts.dir.isEmpty {
++          Text(parts.dir)
++            .font(.caption2).foregroundStyle(.tertiary)
++            .lineLimit(1).truncationMode(.head)
++        }
++        Spacer(minLength: 0)
++      }
++      .accessibilityElement(children: .combine)
++      .accessibilityLabel("\(ChangeBadge.word(file.change)) \(file.path)")
++    }
++    .padding(.horizontal, 8)
++    .padding(.vertical, 2)
++    // Excluded rows dim their CONTENT rather than taking a background: the accent background already
++    // means "this row's diff is the focused tab" in the Changes panel, and two selection meanings
++    // sharing one visual is how a user learns to distrust both.
++    .opacity(showsCheckbox && !isIncluded ? 0.45 : 1)
++    .contentShape(Rectangle())
++    // `.contain`, never `.combine`: the row holds two things a user acts on separately — the
++    // checkbox and the file — and combining them would merge the checkbox into the row, leaving no
++    // individually clickable control. The label halves live on the two children instead.
++    .accessibilityElement(children: .contain)
++    .contextMenu {
++      if showsCheckbox {
++        Button("Commit Only This File", action: only)
++        Button(isIncluded ? "Exclude This File" : "Include This File", action: toggle)
++      }
++    }
++  }
++}
++
++/// A commit failure, inline. Same content as `VCSFailureSheet` — a sheet cannot present another
++/// sheet over itself, and the draft has to stay on screen because it survives the failure.
++private struct CommitFailureNotice: View {
++  let dialog: VCSFailureDialog
++  @State private var showDetails = false
++
++  var body: some View {
++    VStack(alignment: .leading, spacing: 8) {
++      HStack(alignment: .top, spacing: 8) {
++        Image(systemName: "exclamationmark.triangle.fill")
++          .foregroundStyle(.orange)
++          .accessibilityHidden(true)
++        VStack(alignment: .leading, spacing: 4) {
++          Text(dialog.title).font(.subheadline.weight(.semibold))
++          Text(dialog.message)
++            .font(.caption).foregroundStyle(.secondary)
++            .textSelection(.enabled)
++            .fixedSize(horizontal: false, vertical: true)
++        }
++      }
++      // The hook's own output is the most useful text in the whole taxonomy — 40 lines of eslint
++      // naming file and line — so it gets a scroll pane and selectable text, not a truncated line.
++      if let details = dialog.details {
++        DisclosureGroup(isExpanded: $showDetails) {
++          ScrollView {
++            Text(details)
++              .font(.system(.caption2, design: .monospaced))
++              .textSelection(.enabled)
++              .frame(maxWidth: .infinity, alignment: .leading)
++              .padding(6)
++          }
++          .frame(maxHeight: 120)
++          .background(RoundedRectangle(cornerRadius: 5).fill(.quaternary.opacity(0.5)))
++        } label: {
++          Text("Output").font(.caption.weight(.semibold))
++        }
++        .accessibilityIdentifier("commit.failure.detailsToggle")
++      }
++    }
++    .frame(maxWidth: .infinity, alignment: .leading)
++    .padding(10)
++    .background(RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.08)))
++    .accessibilityElement(children: .contain)
++    .accessibilityIdentifier("commit.failure")
++  }
++}
+
+
+=== DIFF: macapp/WorkroomApp/Views/RootView.swift ===
+@@ -297,6 +297,14 @@ struct RootView: View {
+         ProjectSettingsSheet(project: pending.project, showsRunWarning: pending.showsRunWarning)
+           .environmentObject(store)
+       }
++      // The commit dialog. Presented on the ROOT for `VCSFailureSheet`'s reason: it can be opened
++      // from the Changes header, and a dialog that only survives while a particular pane happens to
++      // be open is worse than no dialog. `pendingCommit` is already counted by
++      // `hasModalPresentation`, so Source Control shortcuts are inert behind it.
++      .sheet(item: $store.pendingCommit) { pending in
++        CommitSheet(pending: pending, onDismiss: { store.pendingCommit = nil })
++          .environmentObject(store)
++      }
+   }
+ 
+   /// The edge-reveal sidebars and the foreground toast overlay — the layers drawn over the split.
+
+
+=== DIFF: macapp/WorkroomAppTests/CommitDraftTests.swift ===
+@@ -0,0 +1,148 @@
++import XCTest
++
++@testable import Workroom
++
++/// The commit sheet's pure rules. None of these is reachable through SwiftUI, which is why they live
++/// in `CommitDraft` rather than in the view — the same reason `VCSSyncPresenter` exists.
++final class CommitDraftTests: XCTestCase {
++
++  // MARK: - Message composition
++
++  func testSummaryOnlyMessageHasNoTrailingBlankLines() {
++    XCTAssertEqual(CommitDraft.message(summary: "Fix the toolbar", body: ""), "Fix the toolbar")
++    XCTAssertEqual(CommitDraft.message(summary: "  Fix it  ", body: "   "), "Fix it")
++  }
++
++  /// The blank line between subject and body is the convention every downstream tool splits on.
++  func testSummaryAndBodyAreSeparatedByABlankLine() {
++    XCTAssertEqual(
++      CommitDraft.message(summary: "Subject", body: "Body line one.\nBody line two."),
++      "Subject\n\nBody line one.\nBody line two.")
++  }
++
++  func testWhitespaceIsTrimmedFromBothHalves() {
++    XCTAssertEqual(
++      CommitDraft.message(summary: "\n Subject \n", body: "\n\n Body \n\n"), "Subject\n\nBody")
++  }
++
++  // MARK: - Splitting a stored message back into the fields
++
++  /// The jj prefill round-trip. Reading only the first line — which is all
++  /// `JJCommitChanges.description` carries — and then describing again would silently discard the
++  /// body, which is why the sheet reads the FULL description and splits it here.
++  func testSplitRecoversSummaryAndBody() {
++    let parts = CommitDraft.split(message: "Subject line\n\nBody one.\nBody two.")
++    XCTAssertEqual(parts.summary, "Subject line")
++    XCTAssertEqual(parts.body, "Body one.\nBody two.")
++  }
++
++  func testSplitOfASingleLineHasNoBody() {
++    let parts = CommitDraft.split(message: "Just a subject\n")
++    XCTAssertEqual(parts.summary, "Just a subject")
++    XCTAssertEqual(parts.body, "")
++  }
++
++  func testSplitOfAnEmptyMessageIsEmpty() {
++    let parts = CommitDraft.split(message: "")
++    XCTAssertEqual(parts.summary, "")
++    XCTAssertEqual(parts.body, "")
++  }
++
++  /// Round-trips, so describing an existing change and re-opening the sheet cannot drift.
++  func testMessageAndSplitRoundTrip() {
++    let composed = CommitDraft.message(summary: "Subject", body: "Body one.\n\nBody two.")
++    let parts = CommitDraft.split(message: composed)
++    XCTAssertEqual(parts.summary, "Subject")
++    XCTAssertEqual(parts.body, "Body one.\n\nBody two.")
++  }
++
++  // MARK: - Selection
++
++  private func file(_ path: String) -> ChangedFile {
++    ChangedFile(path: path, change: .modified, oldPath: nil)
++  }
++
++  func testNothingExcludedSelectsEverything() {
++    let files = [file("a"), file("b")]
++    XCTAssertEqual(CommitDraft.selected(from: files, excluding: []).map(\.path), ["a", "b"])
++  }
++
++  /// **The core of the selection model.** Exclusions are stored, not selections, so a file written
++  /// while the dialog is open — by a coding agent in this app's own terminal, continuously — arrives
++  /// CHECKED rather than resetting the user's deliberate choices or being committed unseen.
++  func testANewlyAppearedFileArrivesIncluded() {
++    let before = [file("a"), file("b")]
++    let excluded: Set<String> = ["b"]
++    XCTAssertEqual(CommitDraft.selected(from: before, excluding: excluded).map(\.path), ["a"])
++
++    let after = [file("a"), file("b"), file("c")]
++    XCTAssertEqual(
++      CommitDraft.selected(from: after, excluding: excluded).map(\.path), ["a", "c"],
++      "the new file is included, and b stays excluded — no reset, no silent inclusion")
++  }
++
++  /// A path that leaves the change set drops out on its own, so the excluded set never needs pruning.
++  func testAVanishedFileNeedsNoPruning() {
++    let files = [file("a")]
++    XCTAssertEqual(CommitDraft.selected(from: files, excluding: ["b", "c"]).map(\.path), ["a"])
++  }
++
++  // MARK: - Button label
++
++  func testCommitLabelNamesTheCount() {
++    XCTAssertEqual(CommitDraft.commitLabel(selectedCount: 1, vcs: "git"), "Commit 1 file")
++    XCTAssertEqual(CommitDraft.commitLabel(selectedCount: 12, vcs: "git"), "Commit 12 files")
++  }
++
++  /// jj offers no per-file selection, so a count would imply a choice that isn't on offer.
++  func testCommitLabelOmitsTheCountForJJ() {
++    XCTAssertEqual(CommitDraft.commitLabel(selectedCount: 12, vcs: "jj"), "Commit")
++  }
++
++  // MARK: - Blocked reasons
++
++  private func reason(
++    vcs: String = "git", summary: String = "Subject", selected: Int = 1, total: Int = 1,
++    conflicted: Bool = false, sequencer: String? = nil
++  ) -> String? {
++    CommitDraft.blockedReason(
++      vcs: vcs, summary: summary, selectedCount: selected, totalCount: total,
++      conflicted: conflicted, sequencer: sequencer)
++  }
++
++  func testNothingBlocksAValidCommit() {
++    XCTAssertNil(reason())
++  }
++
++  func testAnEmptySummaryBlocks() {
++    XCTAssertEqual(reason(summary: "   "), "Write a summary to describe this change.")
++  }
++
++  func testZeroSelectedFilesBlocksForGit() {
++    XCTAssertEqual(reason(selected: 0, total: 4), "Select at least one file to commit.")
++  }
++
++  /// jj commits the whole change, so a zero count is meaningless there — and an empty jj change is
++  /// still describable, which is why the box is offered at all.
++  func testZeroFilesDoesNotBlockJJ() {
++    XCTAssertNil(reason(vcs: "jj", selected: 0, total: 0))
++  }
++
++  /// A parked sequencer outranks everything: several of those states make a path-limited commit
++  /// outright invalid, and finishing one is the user's call, not ours.
++  func testSequencerOutranksEveryOtherReason() {
++    XCTAssertEqual(
++      reason(summary: "", selected: 0, total: 0, conflicted: true, sequencer: "merge"),
++      "A merge is in progress. Finish it in the terminal before committing.")
++  }
++
++  /// git refuses unmerged paths outright. jj would accept them, but "Commit" reading as "done" over
++  /// unresolved conflicts is a UX decision rather than a capability one, so both say the same thing.
++  func testConflictsBlockBothBackends() {
++    for vcs in ["git", "jj"] {
++      XCTAssertEqual(
++        reason(vcs: vcs, conflicted: true),
++        "Some files still have unresolved conflicts. Resolve them first.")
++    }
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppTests/RemoteStateModelTests.swift ===
+@@ -649,6 +649,12 @@ private actor StubWriter: VCSWriting {
+     return await settle()
+   }
+ 
++  func commit(path: String, projectRoot: String, request: VCSCommitRequest) async
++    -> VCSCommitResult
++  {
++    .ok(summary: "committed", revision: nil)
++  }
++
+   private func settle() async -> VCSRemoteActionResult {
+     if actionDelay > 0 {
+       try? await Task.sleep(nanoseconds: UInt64(actionDelay * 1_000_000_000))
+
+
+=== DIFF: macapp/WorkroomAppTests/VCSCommitIntegrationTests.swift ===
+@@ -0,0 +1,486 @@
++import XCTest
++
++@testable import Workroom
++
++/// `CLIVCSWriter.commit` against REAL git and jj repos through the REAL `StatusCommandRunner`.
++///
++/// **This tier exists because the unit tests cannot see any of it.** Argument builders can only prove
++/// what we *send*; every bug below was about what git and jj then *did*, and each one shipped in the
++/// plan before being measured:
++///
++/// - a renamed row recorded an add plus an orphaned deletion (`testRenameCommitsBothSides`)
++/// - a bracketed filename committed its innocent neighbour (`testGlobMagicCannotReachAnUnselectedFile`)
++/// - `--only` alone could not commit a new file at all (`testUntrackedFileCommits`)
++/// - committing a path DISCARDED content staged for it (`testCommitDoesNotAbsorbAnotherPathsStagedContent`)
++///
++/// Every repo is a throwaway under `NSTemporaryDirectory()`, removed in `tearDown`, and git is isolated
++/// from the developer's own config — these never touch a real repository. The UI tier can't stand in:
++/// it short-circuits the write under `UITestFixture.isActive` by design.
++final class VCSCommitIntegrationTests: XCTestCase {
++  private var dirs: [String] = []
++
++  override func tearDown() {
++    for d in dirs { try? FileManager.default.removeItem(atPath: d) }
++    dirs = []
++    super.tearDown()
++  }
++
++  // MARK: helpers
++
++  private struct MissingTool: Error { let name: String }
++
++  private func requireTool(_ name: String) throws {
++    if sh("command -v \(name)", in: NSTemporaryDirectory()).exit != 0 {
++      XCTFail("`\(name)` is required for integration tests (brew install \(name))")
++      throw MissingTool(name: name)
++    }
++  }
++
++  private func tempDir() -> String {
++    let d = NSTemporaryDirectory() + "wr-commit-\(UUID().uuidString)"
++    try? FileManager.default.createDirectory(atPath: d, withIntermediateDirectories: true)
++    dirs.append(d)
++    return d
++  }
++
++  @discardableResult
++  private func sh(_ cmd: String, in dir: String) -> (out: String, exit: Int32) {
++    let p = Process()
++    p.executableURL = URL(fileURLWithPath: "/bin/sh")
++    p.arguments = ["-c", cmd]
++    p.currentDirectoryURL = URL(fileURLWithPath: dir)
++    var env = ProcessInfo.processInfo.environment
++    // Isolate from the developer's own git config, including any commit.gpgsign or hooksPath that
++    // would otherwise make these tests depend on the machine they run on.
++    env["GIT_CONFIG_GLOBAL"] = "/dev/null"
++    env["GIT_CONFIG_SYSTEM"] = "/dev/null"
++    env["GIT_AUTHOR_NAME"] = "T"
++    env["GIT_AUTHOR_EMAIL"] = "t@e.com"
++    env["GIT_COMMITTER_NAME"] = "T"
++    env["GIT_COMMITTER_EMAIL"] = "t@e.com"
++    env["PATH"] = ShellEnvironment.path()
++    p.environment = env
++    let pipe = Pipe()
++    p.standardOutput = pipe
++    p.standardError = pipe
++    try? p.run()
++    let data = pipe.fileHandleForReading.readDataToEndOfFile()
++    p.waitUntilExit()
++    return (String(data: data, encoding: .utf8) ?? "", p.terminationStatus)
++  }
++
++  private func writer(_ vcs: String) -> CLIVCSWriter {
++    CLIVCSWriter(
++      vcs: vcs, runner: StatusCommandRunner(), makeProvider: { try VCS.provider(for: $0) },
++      gate: JJSnapshotGate(maxChainWait: 5))
++  }
++
++  /// A git repo with one commit and the named files tracked.
++  private func gitRepo(files: [String: String] = ["base.txt": "base\n"]) -> String {
++    let dir = tempDir()
++    sh("git init -q . && git config user.email t@e.com && git config user.name T", in: dir)
++    for (name, contents) in files { write(contents, to: name, in: dir) }
++    sh("git add -A && git commit -qm base", in: dir)
++    return dir
++  }
++
++  private func write(_ contents: String, to name: String, in dir: String) {
++    let url = URL(fileURLWithPath: dir).appendingPathComponent(name)
++    try? FileManager.default.createDirectory(
++      at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
++    try? contents.write(to: url, atomically: true, encoding: .utf8)
++  }
++
++  /// Porcelain status, trimming ONLY newlines.
++  ///
++  /// Trimming whitespace here would be a silent bug in the tests themselves: porcelain's two-column
++  /// `XY` prefix puts the index status in column 1 and the worktree status in column 2, so `M ` means
++  /// staged and ` M` means worktree-only — and several of these tests exist precisely to tell those
++  /// apart. `.whitespacesAndNewlines` collapses them into the same string.
++  private func status(_ dir: String) -> String {
++    sh("git status --porcelain", in: dir).out.trimmingCharacters(in: .newlines)
++  }
++
++  /// The files touched by HEAD, one per line, so an assertion can name exactly what landed.
++  ///
++  /// `--name-only` collapses a detected rename to the NEW path alone; use `nameStatus` when the
++  /// rename itself is the thing under test.
++  private func committedFiles(_ dir: String) -> [String] {
++    sh("git show --name-only --format= HEAD", in: dir).out
++      .split(whereSeparator: \.isNewline).map(String.init).filter { !$0.isEmpty }.sorted()
++  }
++
++  /// `R100\told.txt\tnew.txt`-style records, for asserting on the change KIND rather than the names.
++  private func nameStatus(_ dir: String) -> String {
++    sh("git show --name-status --format= HEAD", in: dir).out
++      .trimmingCharacters(in: .whitespacesAndNewlines)
++  }
++
++  private func modified(_ path: String) -> ChangedFile {
++    ChangedFile(path: path, change: .modified, oldPath: nil)
++  }
++
++  // MARK: - The measured bugs
++
++  /// A rename is one row and two paths. Sending only the new one records an **add** and leaves the
++  /// deletion behind in the worktree — the user ticked `old → new` and got half a rename.
++  func testRenameCommitsBothSides() async throws {
++    try requireTool("git")
++    let dir = gitRepo(files: ["base.txt": "base\n", "old.txt": "content\n"])
++    sh("git mv old.txt new.txt", in: dir)
++
++    let result = await writer("git").commit(
++      path: dir, projectRoot: dir,
++      request: VCSCommitRequest(
++        message: "move it",
++        files: [ChangedFile(path: "new.txt", change: .renamed, oldPath: "old.txt")],
++        mode: .commit))
++
++    guard case .ok = result else { return XCTFail("commit failed: \(result)") }
++    // Asserted as a RENAME record, not as two filenames: git's rename detection collapses
++    // `--name-only` to the new path alone, so a passing "both names appear" check is impossible here
++    // and its absence proves nothing. `R` is the fact that matters.
++    let record = nameStatus(dir)
++    XCTAssertTrue(record.hasPrefix("R"), "recorded as a rename, not an add: \(record)")
++    XCTAssertTrue(record.contains("old.txt") && record.contains("new.txt"), record)
++    XCTAssertEqual(status(dir), "", "no dangling deletion left behind in the worktree")
++  }
++
++  /// `--` ends option parsing, not magic parsing. Bare, `a[b].txt` is a glob that also matches
++  /// `ab.txt`; `:(literal)` is what stops it. This is the selection model's whole promise.
++  func testGlobMagicCannotReachAnUnselectedFile() async throws {
++    try requireTool("git")
++    let dir = gitRepo(files: ["ab.txt": "neighbour\n", "a[b].txt": "selected\n"])
++    write("neighbour changed\n", to: "ab.txt", in: dir)
++    write("selected changed\n", to: "a[b].txt", in: dir)
++
++    let result = await writer("git").commit(
++      path: dir, projectRoot: dir,
++      request: VCSCommitRequest(message: "bracket", files: [modified("a[b].txt")], mode: .commit))
++
++    guard case .ok = result else { return XCTFail("commit failed: \(result)") }
++    XCTAssertEqual(committedFiles(dir), ["a[b].txt"], "the neighbour must NOT be swept in")
++    XCTAssertEqual(status(dir), " M ab.txt", "ab.txt is still uncommitted, as the user chose")
++  }
++
++  /// `git commit --only` refuses a path git has never seen, so the intent-to-add step is mandatory
++  /// rather than an alternative. This is the single most common commit there is.
++  func testUntrackedFileCommits() async throws {
++    try requireTool("git")
++    let dir = gitRepo()
++    write("brand new\n", to: "fresh.txt", in: dir)
++
++    let result = await writer("git").commit(
++      path: dir, projectRoot: dir,
++      request: VCSCommitRequest(
++        message: "add fresh",
++        files: [ChangedFile(path: "fresh.txt", change: .untracked, oldPath: nil)], mode: .commit))
++
++    guard case .ok = result else { return XCTFail("commit failed: \(result)") }
++    XCTAssertEqual(committedFiles(dir), ["fresh.txt"])
++    XCTAssertEqual(status(dir), "")
++  }
++
++  /// The reason `--only` was chosen over `git add` + `git commit`: a file the user staged in the
++  /// terminal must survive a commit of a DIFFERENT file, still staged, untouched.
++  func testCommitDoesNotAbsorbAnotherPathsStagedContent() async throws {
++    try requireTool("git")
++    let dir = gitRepo(files: ["base.txt": "base\n", "other.txt": "other\n"])
++    write("other staged\n", to: "other.txt", in: dir)
++    sh("git add other.txt", in: dir)
++    write("base changed\n", to: "base.txt", in: dir)
++
++    let result = await writer("git").commit(
++      path: dir, projectRoot: dir,
++      request: VCSCommitRequest(message: "only base", files: [modified("base.txt")], mode: .commit))
++
++    guard case .ok = result else { return XCTFail("commit failed: \(result)") }
++    XCTAssertEqual(committedFiles(dir), ["base.txt"], "the staged file must not ride along")
++    XCTAssertEqual(
++      status(dir), "M  other.txt", "and it is STILL STAGED, exactly as the user left it")
++  }
++
++  /// A deleted file stages and commits through the same path entry — no `-A` hedge needed.
++  func testDeletionCommits() async throws {
++    try requireTool("git")
++    let dir = gitRepo(files: ["base.txt": "base\n", "gone.txt": "bye\n"])
++    try? FileManager.default.removeItem(atPath: dir + "/gone.txt")
++
++    let result = await writer("git").commit(
++      path: dir, projectRoot: dir,
++      request: VCSCommitRequest(
++        message: "remove it",
++        files: [ChangedFile(path: "gone.txt", change: .deleted, oldPath: nil)], mode: .commit))
++
++    guard case .ok = result else { return XCTFail("commit failed: \(result)") }
++    XCTAssertEqual(committedFiles(dir), ["gone.txt"])
++    XCTAssertEqual(status(dir), "")
++  }
++
++  /// A filename with a space is ordinary, not an edge case, and NUL separation is what makes it work
++  /// without any escaping.
++  func testPathWithSpacesAndUnicodeCommits() async throws {
++    try requireTool("git")
++    let dir = gitRepo()
++    write("x\n", to: "My Notes café.md", in: dir)
++
++    let result = await writer("git").commit(
++      path: dir, projectRoot: dir,
++      request: VCSCommitRequest(
++        message: "notes",
++        files: [ChangedFile(path: "My Notes café.md", change: .untracked, oldPath: nil)],
++        mode: .commit))
++
++    guard case .ok = result else { return XCTFail("commit failed: \(result)") }
++    XCTAssertEqual(status(dir), "", "the file committed and nothing is left dirty")
++  }
++
++  // MARK: - The staged-content guard
++
++  /// End-to-end proof of the loss the guard exists to warn about, and that the guard sees it.
++  ///
++  /// `git add -p` leaves a file whose index copy is a real intermediate state. `--only` builds the
++  /// commit from the WORKTREE, so that intermediate is bypassed and then unrecoverable — `git status`
++  /// is clean afterwards and nothing records that it existed.
++  func testGuardDetectsAPartlyStagedFile() async throws {
++    try requireTool("git")
++    let dir = gitRepo(files: ["f.txt": "l1\nl2\nl3\n", "g.txt": "other\n"])
++    // The `git add -p` shape: stage an intermediate, then keep editing.
++    write("l1\nSTAGED\nl3\n", to: "f.txt", in: dir)
++    sh("git add f.txt", in: dir)
++    write("l1\nSTAGED\nl3\nWORKTREE\n", to: "f.txt", in: dir)
++    // A worktree-only change, which is NOT at risk — nothing was staged for it.
++    write("other changed\n", to: "g.txt", in: dir)
++
++    let atRisk = await writer("git").stagedContentAtRisk(
++      path: dir, files: [modified("f.txt"), modified("g.txt")])
++    XCTAssertEqual(atRisk, ["f.txt"], "only the partly-staged file is at risk")
++  }
++
++  /// And the loss itself, so the warning's claim is not merely asserted in a comment.
++  func testCommittingAPartlyStagedFileTakesTheWorktreeCopy() async throws {
++    try requireTool("git")
++    let dir = gitRepo(files: ["f.txt": "l1\nl2\nl3\n"])
++    write("l1\nSTAGED\nl3\n", to: "f.txt", in: dir)
++    sh("git add f.txt", in: dir)
++    write("l1\nSTAGED\nl3\nWORKTREE\n", to: "f.txt", in: dir)
++
++    let result = await writer("git").commit(
++      path: dir, projectRoot: dir,
++      request: VCSCommitRequest(message: "partial", files: [modified("f.txt")], mode: .commit))
++
++    guard case .ok = result else { return XCTFail("commit failed: \(result)") }
++    let recorded = sh("git show HEAD:f.txt", in: dir).out
++    XCTAssertTrue(
++      recorded.contains("WORKTREE"),
++      "the worktree copy is what lands — which is exactly why the guard warns first")
++    XCTAssertEqual(status(dir), "", "and the staged intermediate is gone without a trace")
++  }
++
++  /// A fully-staged file whose worktree copy matches has nothing to lose, so it must not warn — a
++  /// guard that cries wolf on the ordinary `git add .` workflow would be trained away immediately.
++  func testGuardIgnoresAFullyStagedFile() async throws {
++    try requireTool("git")
++    let dir = gitRepo(files: ["f.txt": "one\n"])
++    write("two\n", to: "f.txt", in: dir)
++    sh("git add f.txt", in: dir)
++
++    let atRisk = await writer("git").stagedContentAtRisk(path: dir, files: [modified("f.txt")])
++    XCTAssertTrue(atRisk.isEmpty, "staged and identical to disk — nothing is discarded")
++  }
++
++  // MARK: - Message, amend, and the empty case
++
++  /// The summary and body arrive as one `-m` argument with an embedded blank line.
++  func testMultiLineMessageRoundTrips() async throws {
++    try requireTool("git")
++    let dir = gitRepo()
++    write("changed\n", to: "base.txt", in: dir)
++
++    let result = await writer("git").commit(
++      path: dir, projectRoot: dir,
++      request: VCSCommitRequest(
++        message: "Summary line\n\nBody paragraph explaining why.", files: [modified("base.txt")],
++        mode: .commit))
++
++    guard case .ok = result else { return XCTFail("commit failed: \(result)") }
++    let recorded = sh("git log -1 --format=%B", in: dir).out
++    XCTAssertTrue(recorded.hasPrefix("Summary line\n\nBody paragraph explaining why."))
++  }
++
++  /// Amend rewords and takes nothing else — the staged file stays staged.
++  ///
++  /// The second commit is not incidental: amending the ROOT commit would legitimately report every
++  /// file in the repo as "touched", which looks exactly like absorption and isn't. Measured both
++  /// ways before settling on this shape.
++  func testAmendMessageLeavesTheIndexAlone() async throws {
++    try requireTool("git")
++    let dir = gitRepo(files: ["base.txt": "base\n", "other.txt": "other\n"])
++    write("second\n", to: "second.txt", in: dir)
++    sh("git add second.txt && git commit -qm 'second commit'", in: dir)
++    write("staged\n", to: "other.txt", in: dir)
++    sh("git add other.txt", in: dir)
++
++    let result = await writer("git").commit(
++      path: dir, projectRoot: dir,
++      request: VCSCommitRequest(message: "reworded", files: [], mode: .amendMessage))
++
++    guard case .ok = result else { return XCTFail("amend failed: \(result)") }
++    XCTAssertEqual(
++      sh("git log -1 --format=%s", in: dir).out.trimmingCharacters(in: .whitespacesAndNewlines),
++      "reworded")
++    XCTAssertEqual(committedFiles(dir), ["second.txt"], "other.txt was NOT absorbed")
++    XCTAssertEqual(status(dir), "M  other.txt", "and it is still staged")
++  }
++
++  func testNothingToCommitIsTyped() async throws {
++    try requireTool("git")
++    let dir = gitRepo()
++    let result = await writer("git").commit(
++      path: dir, projectRoot: dir,
++      request: VCSCommitRequest(message: "nothing", files: [modified("base.txt")], mode: .commit))
++    XCTAssertEqual(result, .failed(.nothingToCommit))
++  }
++
++  /// A repo with no commits at all is a legitimate state to commit from.
++  func testUnbornHeadCommits() async throws {
++    try requireTool("git")
++    let dir = tempDir()
++    sh("git init -q . && git config user.email t@e.com && git config user.name T", in: dir)
++    write("first\n", to: "first.txt", in: dir)
++
++    let result = await writer("git").commit(
++      path: dir, projectRoot: dir,
++      request: VCSCommitRequest(
++        message: "first commit",
++        files: [ChangedFile(path: "first.txt", change: .untracked, oldPath: nil)], mode: .commit))
++
++    guard case .ok = result else { return XCTFail("commit failed: \(result)") }
++    XCTAssertEqual(committedFiles(dir), ["first.txt"])
++  }
++
++  // MARK: - Hooks and parked operations
++
++  /// The hook's own output is the most valuable text in the whole taxonomy, so it must survive
++  /// classification rather than being flattened to "failed".
++  func testRejectingHookIsClassifiedAndKeepsItsOutput() async throws {
++    try requireTool("git")
++    let dir = gitRepo()
++    let hook = dir + "/.git/hooks/pre-commit"
++    write(
++      "#!/bin/sh\necho 'lint: 2 problems found' >&2\nexit 1\n", to: ".git/hooks/pre-commit", in: dir
++    )
++    sh("chmod +x '\(hook)'", in: dir)
++    write("changed\n", to: "base.txt", in: dir)
++
++    let result = await writer("git").commit(
++      path: dir, projectRoot: dir,
++      request: VCSCommitRequest(message: "blocked", files: [modified("base.txt")], mode: .commit))
++
++    guard case .failed(let failure) = result else { return XCTFail("expected failure: \(result)") }
++    // git's own wording varies by version, so accept either the matched hook case or `.other` —
++    // what must NOT happen is losing the hook's output, which is the thing the user needs.
++    let detail = CLIVCSWriter.commitFailureDetail(failure)
++    XCTAssertTrue(detail.contains("lint: 2 problems found"), "hook output survived: \(detail)")
++    XCTAssertEqual(status(dir), " M base.txt", "nothing was committed and the index is untouched")
++  }
++
++  /// Resolving the conflicts clears the markers but leaves `MERGE_HEAD`, and a path-limited commit is
++  /// still invalid — the guard has to read the sequencer file, not the conflict.
++  func testCommitIsRefusedWhileAMergeIsParked() async throws {
++    try requireTool("git")
++    let dir = gitRepo()
++    FileManager.default.createFile(atPath: dir + "/.git/MERGE_HEAD", contents: Data("abc\n".utf8))
++    write("changed\n", to: "base.txt", in: dir)
++
++    let result = await writer("git").commit(
++      path: dir, projectRoot: dir,
++      request: VCSCommitRequest(message: "mid-merge", files: [modified("base.txt")], mode: .commit))
++
++    XCTAssertEqual(result, .failed(.sequencerInProgress("merge")))
++    XCTAssertEqual(status(dir), " M base.txt", "nothing was spawned, nothing changed")
++  }
++
++  // MARK: - jj
++
++  private func jjRepo() -> String {
++    let dir = tempDir()
++    sh("jj git init . >/dev/null 2>&1", in: dir)
++    sh("jj config set --repo user.name T >/dev/null 2>&1", in: dir)
++    sh("jj config set --repo user.email t@e.com >/dev/null 2>&1", in: dir)
++    return dir
++  }
++
++  /// `jj commit` describes `@` and starts a new empty change on top, so afterwards the working copy
++  /// is clean and the message is on the parent.
++  func testJJCommitDescribesAndStartsANewChange() async throws {
++    try requireTool("jj")
++    let dir = jjRepo()
++    write("hello\n", to: "a.txt", in: dir)
++
++    let result = await writer("jj").commit(
++      path: dir, projectRoot: dir,
++      request: VCSCommitRequest(message: "jj summary", files: [], mode: .commit))
++
++    guard case .ok = result else { return XCTFail("jj commit failed: \(result)") }
++    let parent = sh(
++      "jj log --ignore-working-copy --no-graph -r @- -T 'description.first_line()'", in: dir
++    ).out
++    XCTAssertTrue(parent.contains("jj summary"), "the message landed on the parent, got: \(parent)")
++  }
++
++  /// Describe sets the message and STAYS on the change — the distinction the menu item's help text
++  /// has to teach, so it had better be true.
++  func testJJDescribeStaysOnTheSameChange() async throws {
++    try requireTool("jj")
++    let dir = jjRepo()
++    write("hello\n", to: "a.txt", in: dir)
++    let before = sh("jj log --ignore-working-copy --no-graph -r @ -T 'change_id'", in: dir).out
++
++    let result = await writer("jj").commit(
++      path: dir, projectRoot: dir,
++      request: VCSCommitRequest(message: "described", files: [], mode: .describe))
++
++    guard case .ok = result else { return XCTFail("jj describe failed: \(result)") }
++    let after = sh("jj log --ignore-working-copy --no-graph -r @ -T 'change_id'", in: dir).out
++    XCTAssertEqual(before, after, "@ is the same change")
++    let message = sh(
++      "jj log --ignore-working-copy --no-graph -r @ -T 'description.first_line()'", in: dir
++    ).out
++    XCTAssertTrue(message.contains("described"))
++  }
++
++  /// A multi-line jj description round-trips whole, which is what the prefill read depends on —
++  /// `JJCommitChanges.description` is only the first line, so prefilling from that and describing
++  /// again would silently discard the body.
++  func testJJDescriptionReadReturnsTheWholeBody() async throws {
++    try requireTool("jj")
++    let dir = jjRepo()
++    write("hello\n", to: "a.txt", in: dir)
++    _ = await writer("jj").commit(
++      path: dir, projectRoot: dir,
++      request: VCSCommitRequest(message: "Summary\n\nBody line one.", files: [], mode: .describe))
++
++    let full = sh(
++      "jj log --ignore-working-copy --no-graph -r @ -T description", in: dir
++    ).out
++    XCTAssertTrue(full.contains("Summary"))
++    XCTAssertTrue(full.contains("Body line one."), "the body survived, got: \(full)")
++  }
++
++  /// The verbs are backend-scoped and a mismatch is reported, never silently run as the nearest
++  /// available command.
++  func testUnsupportedModeIsRejectedPerBackend() async throws {
++    try requireTool("git")
++    let dir = gitRepo()
++    let describeOnGit = await writer("git").commit(
++      path: dir, projectRoot: dir,
++      request: VCSCommitRequest(message: "m", files: [], mode: .describe))
++    XCTAssertEqual(describeOnGit, .failed(.unsupportedMode))
++
++    let amendOnJJ = await writer("jj").commit(
++      path: dir, projectRoot: dir,
++      request: VCSCommitRequest(message: "m", files: [], mode: .amendMessage))
++    XCTAssertEqual(amendOnJJ, .failed(.unsupportedMode))
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppTests/VCSRemoteTriggerTests.swift ===
+@@ -349,4 +349,10 @@ private actor CountingWriter: VCSWriting {
+   func abortRebase(path: String, projectRoot: String) async -> VCSRemoteActionResult {
+     .ok(summary: "")
+   }
++
++  func commit(path: String, projectRoot: String, request: VCSCommitRequest) async
++    -> VCSCommitResult
++  {
++    .ok(summary: "", revision: nil)
++  }
+ }
+
+
+=== DIFF: macapp/WorkroomAppTests/VCSWritingTests.swift ===
+@@ -917,4 +917,299 @@ final class VCSWritingTests: XCTestCase {
+       }
+     }
+   }
++
++  // MARK: - Commit: the pathspec payload
++
++  private func payloadEntries(_ files: [ChangedFile]) -> [String] {
++    let data = CLIVCSWriter.gitPathspecPayload(files)
++    return data.split(separator: 0).map { String(decoding: $0, as: UTF8.self) }
++  }
++
++  /// A rename is ONE row and TWO paths. Measured on git: sending only the new path recorded an **add**
++  /// and left `D old.txt` dangling in the worktree — staged, if the rename came from `git mv`. The user
++  /// ticked a row reading `old → new` and got half a rename.
++  func testRenameSendsBothSidesOfThePathspec() {
++    let files = [ChangedFile(path: "new.txt", change: .renamed, oldPath: "old.txt")]
++    XCTAssertEqual(payloadEntries(files), [":(literal)new.txt", ":(literal)old.txt"])
++  }
++
++  /// **`--` ends option parsing, not MAGIC parsing**, and `--pathspec-file-nul` does not disable
++  /// globbing either. Measured with `ab.txt` and `a[b].txt` both modified: sending the bracketed name
++  /// bare committed BOTH files. A file named `*` would commit the whole tree. This is the same
++  /// "commits files nobody reviewed" defect the selection model exists to prevent, so the prefix is
++  /// not cosmetic.
++  func testEveryPathIsLiteralPrefixedSoGlobMagicCannotFire() {
++    let files = [
++      ChangedFile(path: "a[b].txt", change: .modified, oldPath: nil),
++      ChangedFile(path: "*", change: .modified, oldPath: nil),
++      ChangedFile(path: ":weird", change: .modified, oldPath: nil),
++    ]
++    XCTAssertEqual(
++      payloadEntries(files), [":(literal)a[b].txt", ":(literal)*", ":(literal):weird"])
++  }
++
++  /// NUL separation is what lets a filename contain a newline or a quote without any escaping.
++  func testPayloadIsNULSeparatedSoOddFilenamesNeedNoEscaping() {
++    let files = [ChangedFile(path: "we ird\nname\".txt", change: .modified, oldPath: nil)]
++    XCTAssertEqual(payloadEntries(files), [":(literal)we ird\nname\".txt"])
++    XCTAssertEqual(CLIVCSWriter.gitPathspecPayload(files).last, 0, "every entry is NUL-terminated")
++  }
++
++  /// Two rows naming the same file, or a rename whose oldPath equals its path, must not send a
++  /// duplicate — order-preserving so the argv stays readable in a log.
++  func testPayloadDedupesPreservingOrder() {
++    let files = [
++      ChangedFile(path: "b.txt", change: .modified, oldPath: nil),
++      ChangedFile(path: "a.txt", change: .renamed, oldPath: "b.txt"),
++      ChangedFile(path: "a.txt", change: .modified, oldPath: nil),
++    ]
++    XCTAssertEqual(payloadEntries(files), [":(literal)b.txt", ":(literal)a.txt"])
++  }
++
++  func testEmptySelectionProducesAnEmptyPayload() {
++    XCTAssertTrue(CLIVCSWriter.gitPathspecPayload([]).isEmpty)
++  }
++
++  // MARK: - Commit: argument builders
++
++  /// `--only` is the whole design. Measured: with `other.txt` pre-staged and `tracked.txt` selected,
++  /// this committed only `tracked.txt` and left `other.txt` STILL STAGED. A `git add <selection>` +
++  /// bare `git commit` would have swept the user's staged file into the commit.
++  func testGitCommitIsOnlyScopedAndReadsPathsFromStdin() {
++    let args = CLIVCSWriter.gitCommitOnlyArgs(message: "hello")
++    XCTAssertTrue(args.contains("--only"), "must never commit the whole index")
++    XCTAssertTrue(args.contains("--pathspec-from-file=-"))
++    XCTAssertTrue(args.contains("--pathspec-file-nul"))
++    XCTAssertEqual(args.last, "hello", "message is the trailing -m value, since stdin holds paths")
++  }
++
++  /// Measured without `--only`: `git add sneaky.txt && git commit --amend -m "…"` absorbed
++  /// `sneaky.txt`. In a dialog whose premise is choosing what gets recorded, that is the same defect
++  /// wearing a different verb.
++  func testAmendIsMessageOnlyAndCannotAbsorbTheIndex() {
++    let args = CLIVCSWriter.gitAmendMessageArgs(message: "reworded")
++    XCTAssertTrue(args.contains("--amend"))
++    XCTAssertTrue(args.contains("--only"), "without --only, amend absorbs whatever is staged")
++    XCTAssertFalse(args.contains("--pathspec-from-file=-"), "message-only takes no paths")
++  }
++
++  /// `git commit --only` refuses a path git has never seen (`did not match any file(s) known to
++  /// git`), so untracked selections need an intent-to-add first. This is the only index mutation the
++  /// commit path makes.
++  func testIntentToAddReadsPathsFromStdin() {
++    let args = CLIVCSWriter.gitIntentToAddArgs()
++    // `gitHardening` comes first, so the subcommand is not at index 0.
++    XCTAssertEqual(args.first(where: { !$0.hasPrefix("-") && $0 != "core.fsmonitor=" }), "add")
++    XCTAssertTrue(args.contains("--intent-to-add"))
++    XCTAssertTrue(args.contains("--pathspec-from-file=-"))
++    XCTAssertTrue(args.contains("--pathspec-file-nul"))
++  }
++
++  /// Mutating jj commands must NOT carry `--ignore-working-copy`: the snapshot is what moves on-disk
++  /// edits into `@` before it is rewritten.
++  func testJJCommitAndDescribeUseWriteFlags() {
++    for args in [
++      CLIVCSWriter.jjCommitArgs(message: "m"), CLIVCSWriter.jjDescribeArgs(message: "m"),
++    ] {
++      XCTAssertFalse(
++        args.contains("--ignore-working-copy"),
++        "a jj write must snapshot, or the user's edits are not in the commit")
++      XCTAssertTrue(args.contains("--color"))
++    }
++    XCTAssertEqual(CLIVCSWriter.jjCommitArgs(message: "m").first, "commit")
++    XCTAssertEqual(CLIVCSWriter.jjDescribeArgs(message: "m").first, "describe")
++  }
++
++  /// jj takes NO pathspec: its path arguments are a fileset expression language where a space fails
++  /// to parse and a non-matching expression still creates an empty commit at exit 0.
++  func testJJCommitTakesNoPathspec() {
++    let args = CLIVCSWriter.jjCommitArgs(message: "m")
++    XCTAssertFalse(args.contains("--"), "no operand boundary, because there are no operands")
++    XCTAssertFalse(args.contains("--pathspec-from-file=-"))
++  }
++
++  /// The prefill read must not take the working-copy lock just to populate a text field.
++  func testJJDescriptionReadIsIgnoreWorkingCopy() {
++    let args = CLIVCSWriter.jjDescriptionArgs()
++    XCTAssertTrue(args.contains("--ignore-working-copy"))
++    XCTAssertTrue(args.contains("description"), "the FULL description, not just its first line")
++  }
++
++  func testOpHeadReadIsIgnoreWorkingCopy() {
++    XCTAssertTrue(CLIVCSWriter.jjOpHeadArgs().contains("--ignore-working-copy"))
++  }
++
++  // MARK: - Commit: mode support
++
++  /// Two of the six combinations are illegal, and they fail as a typed result rather than by
++  /// silently running the nearest command.
++  func testModeSupportMatrix() {
++    XCTAssertTrue(CLIVCSWriter.supports(mode: .commit, vcs: "git"))
++    XCTAssertTrue(CLIVCSWriter.supports(mode: .commit, vcs: "jj"))
++    XCTAssertTrue(CLIVCSWriter.supports(mode: .amendMessage, vcs: "git"))
++    XCTAssertFalse(CLIVCSWriter.supports(mode: .amendMessage, vcs: "jj"), "jj has no amend")
++    XCTAssertTrue(CLIVCSWriter.supports(mode: .describe, vcs: "jj"))
++    XCTAssertFalse(CLIVCSWriter.supports(mode: .describe, vcs: "git"), "git has no describe")
++  }
++
++  // MARK: - Commit: classification
++
++  private func commitResult(_ stderr: String, exit: Int32 = 1, timedOut: Bool = false)
++    -> CommandResult
++  {
++    CommandResult(stdout: "", stderr: stderr, exitCode: exit, timedOut: timedOut)
++  }
++
++  func testClassifyCommitIdentity() {
++    let f = CLIVCSWriter.classifyCommit(
++      commitResult("*** Please tell me who you are.\n\nfatal: unable to auto-detect email address"),
++      tool: "git")
++    guard case .identityMissing = f else { return XCTFail("got \(String(describing: f))") }
++  }
++
++  /// Signing must classify rather than fall through to `.other` — with stdin on `/dev/null` gpg
++  /// cannot reach a TTY pinentry, so this is the shape it fails in, and it fails fast.
++  func testClassifyCommitSigning() {
++    for text in [
++      "error: gpg failed to sign the data", "gpg: signing failed: Inappropriate ioctl for device",
++    ] {
++      let f = CLIVCSWriter.classifyCommit(commitResult(text), tool: "git")
++      guard case .signingFailed = f else {
++        return XCTFail("\(text) → \(String(describing: f))")
++      }
++    }
++  }
++
++  func testClassifyCommitHookRejection() {
++    let f = CLIVCSWriter.classifyCommit(
++      commitResult("eslint found 2 problems\npre-commit hook exited with code 1"), tool: "git")
++    guard case .hookRejected = f else { return XCTFail("got \(String(describing: f))") }
++  }
++
++  /// **The catch-all is the bug.** A signing failure, a config error and index corruption must not be
++  /// relabelled as a hook rejection — that sends the user to edit a hook that was never involved.
++  func testUnmatchedFailuresStayOtherRatherThanBecomingHookRejections() {
++    let f = CLIVCSWriter.classifyCommit(
++      commitResult("fatal: unable to write new index file"), tool: "git")
++    guard case .other(let message) = f else { return XCTFail("got \(String(describing: f))") }
++    XCTAssertTrue(message.contains("unable to write new index file"), "git's own words survive")
++  }
++
++  /// jj reports an untouched working copy as SUCCESS (exit 0, "Nothing changed."). Without this the
++  /// UI would report a commit that recorded nothing.
++  func testJJNothingChangedIsAFailureNotASilentSuccess() {
++    let result = CommandResult(
++      stdout: "Nothing changed.\n", stderr: "", exitCode: 0, timedOut: false)
++    XCTAssertEqual(CLIVCSWriter.classifyCommit(result, tool: "jj"), .nothingToCommit)
++  }
++
++  func testClassifyCommitNothingToCommitForGit() {
++    let result = CommandResult(
++      stdout: "nothing to commit, working tree clean", stderr: "", exitCode: 1, timedOut: false)
++    XCTAssertEqual(CLIVCSWriter.classifyCommit(result, tool: "git"), .nothingToCommit)
++  }
++
++  func testClassifyCommitUnmergedFiles() {
++    let f = CLIVCSWriter.classifyCommit(
++      commitResult("error: Committing is not possible because you have unmerged files."),
++      tool: "git")
++    guard case .unmergedFiles = f else { return XCTFail("got \(String(describing: f))") }
++  }
++
++  /// A merge that the user has already resolved still refuses a path-limited commit, and the message
++  /// is a plain fatal rather than anything hook-shaped.
++  func testClassifyCommitPartialCommitDuringMerge() {
++    let f = CLIVCSWriter.classifyCommit(
++      commitResult("fatal: cannot do a partial commit during a merge."), tool: "git")
++    guard case .sequencerInProgress = f else { return XCTFail("got \(String(describing: f))") }
++  }
++
++  func testClassifyCommitToolMissingAndTimeout() {
++    XCTAssertEqual(
++      CLIVCSWriter.classifyCommit(commitResult("", exit: 127), tool: "git"), .toolMissing("git"))
++    XCTAssertEqual(
++      CLIVCSWriter.classifyCommit(commitResult("", exit: 15, timedOut: true), tool: "git"),
++      .timedOut)
++  }
++
++  func testClassifyCommitSuccessIsNil() {
++    let ok = CommandResult(stdout: "[main abc] m", stderr: "", exitCode: 0, timedOut: false)
++    XCTAssertNil(CLIVCSWriter.classifyCommit(ok, tool: "git"))
++  }
++
++  // MARK: - Commit: sequencer state
++
++  private func gitDirWith(_ entries: [String]) -> URL {
++    let dir = tempDir()
++    for entry in entries {
++      FileManager.default.createFile(atPath: dir.appendingPathComponent(entry).path, contents: nil)
++    }
++    return dir
++  }
++
++  /// Checking for *conflicts* is not enough: resolving them in a terminal clears the markers and
++  /// leaves `MERGE_HEAD`, so a conflict-only guard would re-enable Commit into a guaranteed failure.
++  func testSequencerStateDetectsEachParkedOperation() {
++    XCTAssertEqual(CLIVCSWriter.sequencerState(gitDir: gitDirWith(["MERGE_HEAD"])), "merge")
++    XCTAssertEqual(CLIVCSWriter.sequencerState(gitDir: gitDirWith(["REVERT_HEAD"])), "revert")
++    XCTAssertEqual(CLIVCSWriter.sequencerState(gitDir: gitDirWith(["BISECT_LOG"])), "bisect")
++    XCTAssertNil(CLIVCSWriter.sequencerState(gitDir: gitDirWith([])))
++    XCTAssertNil(CLIVCSWriter.sequencerState(gitDir: nil))
++  }
++
++  /// A cherry-pick and a revert BOTH also leave `MERGE_HEAD` behind, so the specific marker has to
++  /// win or every one of them would report "merge" and send the user to finish the wrong thing.
++  func testCherryPickIsNamedAheadOfTheMergeHeadItAlsoLeaves() {
++    XCTAssertEqual(
++      CLIVCSWriter.sequencerState(gitDir: gitDirWith(["CHERRY_PICK_HEAD", "MERGE_HEAD"])),
++      "cherry-pick")
++  }
++
++  // MARK: - Commit: the staged-content guard
++
++  /// Porcelain's two columns are the whole rule: `X` is HEAD→index, `Y` is index→worktree.
++  ///
++  /// `MM` is the `git add -p` shape — staged something, then kept editing — and it is the only one at
++  /// risk, because `--only` commits the worktree copy and drops the staged one. `M ` is staged and
++  /// identical to disk (nothing to lose) and ` M` was never staged at all.
++  func testOnlyPartlyStagedFilesAreAtRisk() {
++    let porcelain = "MM f.txt\0 M g.txt\0M  h.txt\0?? new.txt\0"
++    XCTAssertEqual(
++      CLIVCSWriter.stagedContentAtRisk(
++        porcelainZ: porcelain, selecting: ["f.txt", "g.txt", "h.txt", "new.txt"]),
++      ["f.txt"])
++  }
++
++  /// Only the user's SELECTION can be at risk — a partly-staged file they didn't tick is untouched by
++  /// the commit, so warning about it would be noise.
++  func testUnselectedFilesAreNeverReported() {
++    let porcelain = "MM f.txt\0MM other.txt\0"
++    XCTAssertEqual(
++      CLIVCSWriter.stagedContentAtRisk(porcelainZ: porcelain, selecting: ["f.txt"]), ["f.txt"])
++  }
++
++  /// A rename spends a SECOND NUL field on its old path. Without consuming it, every entry after the
++  /// first rename would be read as a status code and the whole walk would desync — reporting
++  /// nonsense paths, or missing a genuinely at-risk file.
++  func testRenameEntriesDoNotDesyncTheWalk() {
++    // `R  new.txt\0old.txt\0` then a genuinely at-risk file.
++    let porcelain = "R  new.txt\0old.txt\0MM risky.txt\0"
++    XCTAssertEqual(
++      CLIVCSWriter.stagedContentAtRisk(
++        porcelainZ: porcelain, selecting: ["new.txt", "old.txt", "risky.txt"]),
++      ["risky.txt"])
++  }
++
++  func testNothingStagedMeansNothingAtRisk() {
++    XCTAssertTrue(
++      CLIVCSWriter.stagedContentAtRisk(porcelainZ: " M a.txt\0?? b.txt\0", selecting: ["a.txt"])
++        .isEmpty)
++  }
++
++  /// Filenames can contain spaces; `-z` is what makes that safe to parse.
++  func testPathsWithSpacesParse() {
++    XCTAssertEqual(
++      CLIVCSWriter.stagedContentAtRisk(
++        porcelainZ: "MM My Notes.md\0", selecting: ["My Notes.md"]), ["My Notes.md"])
++  }
+ }
+
+
+=== DIFF: macapp/WorkroomAppUITests/CommitSheetUITests.swift ===
+@@ -0,0 +1,218 @@
++import XCTest
++
++/// The commit dialog's seam: the Changes header button opens it, the selection drives the button's
++/// count, jj is offered no per-file selection at all, and a rejected commit keeps the hook's output.
++///
++/// **What only this tier can see.** `VCSCommitIntegrationTests` proves what git and jj actually do,
++/// but it drives `CLIVCSWriter` directly and never renders anything. Everything below is about the
++/// path between a click and a `VCSCommitRequest` — which button is live, what the label claims, which
++/// controls exist per backend, and whether a failure survives to the screen. `FixtureVCSWriter`
++/// answers the write, so no real repo is touched.
++///
++/// Run with `make app-uitest` on a real GUI login session — XCUITest can't drive a headless run, so
++/// these live in a separate scheme, excluded from `make app-test`.
++final class CommitSheetUITests: XCTestCase {
++  override func setUpWithError() throws { continueAfterFailure = false }
++
++  private func launchedApp(extraArguments: [String] = []) -> XCUIApplication {
++    let app = XCUIApplication()
++    app.launchArguments += ["-WorkroomUITestFixture", "1"]
++    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
++    app.launchArguments += extraArguments
++    app.launch()
++    app.activate()
++    return app
++  }
++
++  private func element(_ app: XCUIApplication, id: String) -> XCUIElement {
++    app.descendants(matching: .any).matching(identifier: id).firstMatch
++  }
++
++  /// A clickable control, scoped to `.button`.
++  ///
++  /// Not `descendants(matching: .any)`: that resolves to whichever element carries the identifier
++  /// first, which can be a container rather than the control — clicking it then lands on the
++  /// container's centre and silently does nothing, which is exactly how the checkbox failure
++  /// presented (the count never moved and no assertion pointed at the cause).
++  private func button(_ app: XCUIApplication, id: String) -> XCUIElement {
++    app.buttons.matching(identifier: id).firstMatch
++  }
++
++  /// Open the dialog from the Changes section header and wait for it.
++  @discardableResult
++  private func openSheet(_ app: XCUIApplication) -> XCUIElement {
++    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
++    XCTAssertTrue(
++      element(app, id: "inspector.header.Changes").waitForExistence(timeout: 10),
++      "the Changes section should exist")
++    let open = button(app, id: "changes.commitButton")
++    XCTAssertTrue(open.waitForExistence(timeout: 10), "the Changes header should offer Commit")
++    open.click()
++    let sheet = element(app, id: "commit.sheet")
++    XCTAssertTrue(sheet.waitForExistence(timeout: 10), "the commit dialog should open")
++    return sheet
++  }
++
++  private func typeSummary(_ app: XCUIApplication, _ text: String) {
++    let field = element(app, id: "commit.summary")
++    XCTAssertTrue(field.waitForExistence(timeout: 5), "the summary field should exist")
++    field.click()
++    field.typeText(text)
++  }
++
++  // MARK: - git
++
++  /// The whole point of the dialog: it names what it is about to record, per file, before you commit.
++  func testGitSheetListsFilesWithCheckboxes() throws {
++    let app = launchedApp(extraArguments: ["-WorkroomUITestGitWorkroom", "1"])
++    openSheet(app)
++
++    XCTAssertTrue(
++      button(app, id: "commit.file.check.Gemfile").waitForExistence(timeout: 5),
++      "a git file row should carry an inclusion checkbox")
++    XCTAssertTrue(
++      button(app, id: "commit.selectAll").exists, "and a bulk select-all affordance")
++  }
++
++  /// A blocked state must be readable, not hidden in a tooltip nobody hovers on a dead-looking
++  /// button — so the reason renders as its own element and Commit is genuinely disabled.
++  func testCommitIsBlockedUntilThereIsASummary() throws {
++    let app = launchedApp(extraArguments: ["-WorkroomUITestGitWorkroom", "1"])
++    openSheet(app)
++
++    let blocked = element(app, id: "commit.blocked")
++    XCTAssertTrue(blocked.waitForExistence(timeout: 5), "the reason should be stated on screen")
++    XCTAssertTrue(
++      (blocked.label + blocked.value.debugDescription).contains("summary"),
++      "and should name the missing summary, got: \(blocked.label)")
++
++    let commit = button(app, id: "commit.commit")
++    XCTAssertTrue(commit.exists)
++    XCTAssertFalse(commit.isEnabled, "Commit stays disabled with no summary")
++
++    typeSummary(app, "Add session login")
++    let enabled = NSPredicate(format: "isEnabled == true")
++    XCTAssertEqual(
++      XCTWaiter().wait(
++        for: [XCTNSPredicateExpectation(predicate: enabled, object: commit)], timeout: 5),
++      .completed, "typing a summary should enable Commit")
++  }
++
++  /// The count is the honest claim about what will be recorded, so it has to track the checkboxes —
++  /// once the list scrolls, the label is the only thing the user can verify against.
++  func testDeselectingAFileChangesTheCommitCount() throws {
++    let app = launchedApp(extraArguments: ["-WorkroomUITestGitWorkroom", "1"])
++    openSheet(app)
++    typeSummary(app, "Add session login")
++
++    let commit = button(app, id: "commit.commit")
++    XCTAssertTrue(commit.waitForExistence(timeout: 5))
++    let before = commit.label
++    XCTAssertTrue(before.contains("file"), "the label should name a count, got: \(before)")
++
++    button(app, id: "commit.file.check.Gemfile").click()
++
++    let changed = NSPredicate(format: "label != %@", before)
++    XCTAssertEqual(
++      XCTWaiter().wait(
++        for: [XCTNSPredicateExpectation(predicate: changed, object: commit)], timeout: 5),
++      .completed, "excluding a file should change the count, still read: \(commit.label)")
++  }
++
++  /// Select-all is what makes "commit only this file" cheap; without it that intent costs one click
++  /// per unwanted file.
++  func testSelectAllTogglesEveryFile() throws {
++    let app = launchedApp(extraArguments: ["-WorkroomUITestGitWorkroom", "1"])
++    openSheet(app)
++    typeSummary(app, "Add session login")
++
++    let commit = button(app, id: "commit.commit")
++    XCTAssertTrue(commit.waitForExistence(timeout: 5))
++    button(app, id: "commit.selectAll").click()
++
++    // Everything excluded ⇒ nothing to commit, which is a blocked state with its own message.
++    let blocked = element(app, id: "commit.blocked")
++    XCTAssertTrue(
++      blocked.waitForExistence(timeout: 5), "deselecting everything should block the commit")
++    XCTAssertFalse(commit.isEnabled, "and Commit should not be live with nothing selected")
++  }
++
++  // MARK: - jj
++
++  /// jj has no index and commits the whole change, so rendering checkboxes whose only effect would be
++  /// to disable the button is a designed dead end.
++  func testJJSheetOffersNoPerFileSelection() throws {
++    // `-WorkroomUITestJJProject` is the flag that matters: the fixture's PROJECT declares `vcs: "git"`
++    // by default and only this makes it jj. `-WorkroomUITestGitWorkroom` changes the status SHAPE
++    // (whether `jjWorkingCopy` is populated), not the backend the sheet resolves — so without this the
++    // sheet correctly rendered git checkboxes and the test was asserting against the wrong backend.
++    let app = launchedApp(extraArguments: ["-WorkroomUITestJJProject", "1"])
++    openSheet(app)
++
++    XCTAssertTrue(
++      element(app, id: "commit.summary").waitForExistence(timeout: 5), "the sheet should render")
++    XCTAssertFalse(
++      button(app, id: "commit.file.check.Gemfile").exists,
++      "jj must not offer per-file checkboxes")
++    XCTAssertFalse(
++      button(app, id: "commit.selectAll").exists, "nor a select-all for a selection it can't make")
++  }
++
++  // MARK: - Failure
++
++  /// The defining moment. A hook's output is the most useful text in the whole taxonomy, so a
++  /// rejected commit must keep the dialog open, keep the draft, and still carry the output.
++  func testARejectedCommitKeepsTheSheetAndTheHookOutput() throws {
++    let app = launchedApp(
++      extraArguments: ["-WorkroomUITestGitWorkroom", "1", "-WorkroomUITestSyncFailure", "1"])
++    openSheet(app)
++    typeSummary(app, "Add session login")
++
++    button(app, id: "commit.commit").click()
++
++    // The fixture writer delays deliberately so the in-flight state is observable rather than
++    // instantaneous, hence the generous timeout.
++    XCTAssertTrue(
++      element(app, id: "commit.failure").waitForExistence(timeout: 20),
++      "a rejected commit should report itself in the dialog")
++    XCTAssertTrue(
++      element(app, id: "commit.sheet").exists, "and the dialog must stay open, draft intact")
++    XCTAssertTrue(
++      element(app, id: "commit.summary").exists, "the typed summary is not thrown away")
++    XCTAssertTrue(
++      element(app, id: "commit.failure.detailsToggle").exists,
++      "the hook's own output must be reachable, not flattened to one line")
++  }
++
++  // MARK: - Success and dismissal
++
++  /// A successful commit closes the dialog — the Changes list becoming clean is the confirmation.
++  func testASuccessfulCommitClosesTheSheet() throws {
++    let app = launchedApp(extraArguments: ["-WorkroomUITestGitWorkroom", "1"])
++    openSheet(app)
++    typeSummary(app, "Add session login")
++
++    button(app, id: "commit.commit").click()
++
++    let sheet = element(app, id: "commit.sheet")
++    let gone = NSPredicate(format: "exists == false")
++    XCTAssertEqual(
++      XCTWaiter().wait(
++        for: [XCTNSPredicateExpectation(predicate: gone, object: sheet)], timeout: 20),
++      .completed, "the dialog should close once the commit lands")
++  }
++
++  func testCancelClosesTheSheetWithoutCommitting() throws {
++    let app = launchedApp(extraArguments: ["-WorkroomUITestGitWorkroom", "1"])
++    openSheet(app)
++
++    button(app, id: "commit.cancel").click()
++
++    let sheet = element(app, id: "commit.sheet")
++    let gone = NSPredicate(format: "exists == false")
++    XCTAssertEqual(
++      XCTWaiter().wait(
++        for: [XCTNSPredicateExpectation(predicate: gone, object: sheet)], timeout: 5),
++      .completed, "Cancel should dismiss the dialog")
++  }
++}
+
+
+Investigate per the method in your instructions, then return the findings list.
