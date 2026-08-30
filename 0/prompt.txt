@@ -1,0 +1,91 @@
+<task-notification>
+<task-id>ad79a9b6a7f50c921</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/aed8926d-2d0e-4e9c-8c02-c5f98d2554f8/tasks/ad79a9b6a7f50c921.output</output-file>
+<status>completed</status>
+<summary>Agent "Find existing first-run/onboarding code in macapp" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I have thorough coverage across all six requested areas. Here is the research report.
+
+## 1. First-run / onboarding flags — none exist today
+
+`macapp/WorkroomApp/Core/DefaultsKeys.swift` (the single `Defaults.Keys` extension, lines 27-225) has no `isFirstRun`/`hasCompletedOnboarding`/`hasSeenWelcome` key of any kind. The closest analog is:
+
+- `Defaults.Keys.lastSeenVersion` (`DefaultsKeys.swift:186-189`, `Key&lt;String?&gt;("app.lastSeenVersion", default: nil)`) — drives the "What's New" dialog.
+- `WhatsNewService.checkOnLaunch()` (`macapp/WorkroomApp/Core/WhatsNewService.swift:40-63`) explicitly treats `nil` as "fresh install / first launch after this feature shipped: record, no backfill" and **deliberately suppresses** the dialog on a brand-new install (line 47-49: `Defaults[.lastSeenVersion] = currentStr; return nil`). This is the one place in the codebase that already distinguishes "never launched before" from "upgraded," and it's the natural sibling for a new `hasCompletedOnboarding`/`onboardingSeenVersion` key — issue #151 will need to add its own key rather than overload this one (their semantics differ: this one is "don't show release notes on day one," an onboarding flag is "do show something on day one").
+
+There is a **documented gotcha directly relevant to any new Defaults flag**: `macapp/WorkroomApp/Core/UITestFixture.swift:490-527` — a plain launch-argument (e.g. `-hasSeenOnboarding 1`) arrives in the **argument domain**, which outranks the app's persisted domain and is read as a **string**, not a bool. A typed `Defaults[...]` read does `as? Bool` and silently falls back to the key's default, which then **also shadows every later write** for the rest of that process's life. Any test/dev harness for an onboarding flag must mirror the `UITestFixture` pattern (a UserDefaults `bool(forKey:)` coercion, or a fixture-namespaced arg mirrored into `Defaults` before first read) rather than relying on a bare launch arg.
+
+## 2. Empty-project-list state — already exists
+
+`macapp/WorkroomApp/Views/ProjectSidebar.swift:96-110`:
+
+```swift
+if store.projects.isEmpty {
+  ContentUnavailableView {
+    Label("No projects yet", systemImage: "folder.badge.plus")
+  } description: {
+    Text("Add a Git or Jujutsu project folder to start managing its workrooms.")
+  } actions: {
+    Button("Add Project…") { store.requestAddProject = true }
+      .buttonStyle(.borderedProminent)
+  }
+} else {
+  tree
+}
+```
+
+Standard SwiftUI `ContentUnavailableView`, gated on `store.projects.isEmpty` (also read at `AppStore.swift:2584` in `bootstrap()` to decide whether a fresh window needs to hit the CLI, and at `RootView.swift:441` to disable "New Workroom" (⌘N) via `hasProjects`). This is currently the *entire* first-run visual — no separate "welcome" surface exists; a brand-new install today just shows this sidebar empty state plus a blank detail pane. Any onboarding work either extends this view or replaces/precedes it with a dedicated flow.
+
+## 3. Add-project flow (CLI + app)
+
+**Go CLI** — `cmd/add_project.go`:
+- `addProjectCmd` (lines 32-60): hidden, `--json`-only command `add-project [PATH]`, with a `--create` flag (`addProjectCreate`, registered at line 210-211).
+- `runAddProjectExisting` (67-86): PATH must already be a detected Git/JJ repo.
+- `runAddProjectCreate` (109-188): full decision tree in the doc comment (109-108) — creates+`git init`s an empty/non-existent directory, rejects a non-empty non-repo directory (`ErrUnsupportedVCS`), rolls back the created directory on any later failure (154-158).
+
+**macOS app**:
+- `Views/AddProjectSheet.swift` — the "New Project" dialog (issue #103). `AddProjectMode` (existing vs createNew, lines 7-11), `AddProjectSheetModel` (pure, unit-tested path normalization/validation/footer text, 16-54), and the sheet UI itself (64-147) with a `Picker("Source")` between "From existing path…" and "Create new directory…" (98-99), a path `TextField` + `Choose…` folder-picker (`fileImporter`, 139-145).
+- `Core/AppStore.swift:2983-2999` — `addProject(_:create:)` calls `cli.addProject`, reloads, then **selects the new project and opens a terminal on its root** rather than leaving it on the "nothing selected" state (comment references issue #104 at line 2990).
+- Wiring: `AppStore.swift:592` (`@Published var requestAddProject = false`) is the trigger both the sidebar's empty-state button and a menu command set; `RootView.swift:27, 197-200` owns the actual `@State private var showAddProject` sheet presentation via `.onChange(of: store.requestAddProject)`.
+- Tests: `WorkroomAppTests/AddProjectSheetModelTests.swift`, `WorkroomAppTests/AppStoreAddProjectTests.swift`.
+
+This flow is already a strong candidate to be the "primary action" inside a first-run welcome screen (reuse `AddProjectSheet`/`store.requestAddProject` rather than building a parallel picker).
+
+## 4. Auxiliary window / Scene patterns
+
+`macapp/WorkroomApp/WorkroomApp.swift:57-88` — the entire `Scene` body:
+- `WindowGroup(for: WindowSeed.self)` (62-68) — value-based per-window scene (issue #70), one fresh `AppStore` per window, `RootWindow(seed:)`.
+- `Settings { SettingsView() ... }` (77-82) — the **only** other Scene. There is **no separate About window/Scene** — About is a *pane inside Settings* (`SettingsPane.about`, `Core/SettingsPane.swift:21,32,43`), rendered by `Views/SettingsView.swift:202+` ("About + updates (issue #91)").
+- No `MenuBarExtra` Scene either — the menu-bar item is hand-rolled AppKit (`MenuBarController`, comment at `WorkroomApp.swift:84-87`) specifically because `MenuBarExtra` gives no hook to intercept a click with nothing pending.
+
+Gotchas for a **new auxiliary window** (documented across `AppDelegate`/`WindowRegistry`):
+- `WorkroomApp.swift:220,238`: "Settings, About, Sparkle's updater or the quick terminal" are all windows with **no `AppStore`** — every `shortcutStore`/`switcherGate` lookup treats them as unregistered, so app-wide shortcuts just no-op there rather than needing an allowlist.
+- `WorkroomApp.swift:310-320`: ⌘W on an auxiliary window (Settings, About) has no menu-bound "Close Terminal" to fall back on, so a local key-monitor branch explicitly calls `keyWindow.performClose(nil)` for any window with `WindowRegistry.shared.store(for:) == nil`.
+- `Core/WindowRegistry.swift:71`: "Settings/About/quick terminal closing here is a no-op" — the registry only tracks workroom windows; an onboarding window would need the same non-registration treatment (or explicit registration if it should influence `lastActiveStore`/quit behavior).
+- `WindowRegistry.swift:165`: cycling logic (⌘`) works "front-to-back z-order" across Settings/About panels too.
+
+**Implication for #151**: a dedicated onboarding window is architecturally closest to `Settings` (a small `Scene` with no `AppStore`) — but the existing precedent (`WhatsNewSheet`, see §5 below) is to present it as a **sheet on the launch `RootWindow`** rather than mint a new `Scene`, which sidesteps all the aux-window shortcut/registry carve-outs above.
+
+## 5. App entry point / launch hook point
+
+- `macapp/WorkroomApp/main.swift` — real entry point (no `@main`); dispatches to Ghostty's CLI action handler when invoked as `ghostty`, otherwise calls `WorkroomApp.main()`.
+- `WorkroomApp.swift:9-55` (`struct WorkroomApp: App`, `init()`) — Sentry start, PATH `setenv`, `ShellEnvironment.refresh()` detached task, `UITestFixture.applyFixtureDefaults()`. Runs before any window exists.
+- `WorkroomApp.swift:185-266`, `AppDelegate.applicationDidFinishLaunching` — window tabbing disabled, notification delegate wired, `MenuBarController` created, `SwitcherPanelController` prepared, `resignActiveObserver` installed. This is the AppKit-level launch hook, but it fires before any `AppStore`/window exists, so it's not where a *first-run UI* would be shown — only where a first-run *side effect* (e.g., seeding something) would go.
+- **The actual pattern to copy for showing UI on first run is `RootView.rootLifecycle`** (`Views/RootView.swift:347-378`): a `.task { guard store.isRestoreWindow else { return }; ... }` gated on `AppStore.isRestoreWindow` (`AppStore.swift:142`), feeding a `@State private var whatsNewContent: WhatsNewSheetContent?` and `.sheet(item:)`. This guarantees the check/dialog fires exactly once (only on the launch/restore window, never on a `⌘N` sibling). An onboarding sheet would plug into this exact same `.task`/`.sheet(item:)` slot, gated on the new "has completed onboarding" Default instead of `whatsNew.checkOnLaunch()`.
+
+## 6. Theme / design-token system
+
+`macapp/WorkroomApp/Core/`:
+- `Theme.swift` (67 lines) — theme model basics.
+- `ThemeService.swift` (387 lines) — resolves the active theme family/variant from `Defaults[.theme]` / `Defaults[.themeFamily]` (`DefaultsKeys.swift:30,35`), applies it app-wide, exposed via `@Environment(ThemeService.self)`.
+- `ThemeTokens.swift` (331 lines) — the actual design-token struct (`ThemeTokens`, lines 16+): `bg/fg/panel/fgMuted/fgDim/surface/border/hover/tabActive/accent/accentSoft/warning/failure/conflict/diffAdd·RemoveFg/syntaxByCategory` etc., all derived once per theme change (comment at line 4-15 notes the fallback path: "first launch before a theme is applied … degrades to the pre-theming native look rather than crashing" — i.e., the token system already anticipates a pre-theme-resolution moment, which is exactly the state a first-run window would render in before any project/theme context exists).
+- `Views/ThemePicker.swift` — the UI for picking a theme family, useful reference for how theme-aware chrome is composed in this app.
+
+**Any onboarding screen should read `ThemeTokens` via `@Environment(ThemeService.self).tokens` (as every other view does) rather than hardcoding colors** — consistent with `WhatsNewSheet.swift` and `SettingsView.swift`, both of which are the closest existing "polished modal content" precedents to model a welcome screen's visual language on.
+
+---
+
+**Summary for planning #151**: nothing bespoke exists yet — no `isFirstRun` flag, no welcome window, no onboarding Scene. But three strong, reusable seams already exist: (a) the `ProjectSidebar` empty state (`ContentUnavailableView` + `store.requestAddProject`) as the fallback/anchor once onboarding dismisses, (b) `AddProjectSheet` as the ready-made "get your first project in" step, and (c) the `WhatsNewService`/`RootView.rootLifecycle` `.task` + `.sheet(item:)` pattern (gated on `store.isRestoreWindow`) as the exact wiring template for presenting a first-run experience exactly once, on the correct window, styled through `ThemeTokens`.</result>
+<usage><subagent_tokens>99014</subagent_tokens><tool_uses>66</tool_uses><duration_ms>285207</duration_ms></usage>
+</task-notification>
