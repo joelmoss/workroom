@@ -1,0 +1,363 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/UITestFixture.swift
+  - macapp/WorkroomApp/Views/DiffViewer.swift
+  - macapp/WorkroomAppTests/DiffViewerLazyRenderingTests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/UITestFixture.swift ===
+@@ -753,6 +753,7 @@ enum UITestFixture {
+     let name = (descriptor.path as NSString).lastPathComponent
+     if name == "binary.bin" { return .binary }
+     if name == "clean.txt" { return .empty }
++    if name == "huge.css" { return hugeDiff() }
+     let tag = sourceTag(descriptor.source)
+     if SyntaxLanguage.grammar(forPath: descriptor.path) == .ruby {
+       return .diff(UnifiedDiff.parse(rubyDiffText(tag: tag, path: descriptor.path)))
+@@ -770,6 +771,29 @@ enum UITestFixture {
+     return .diff(UnifiedDiff.parse(raw))
+   }
+ 
++  /// A large synthetic diff for the WORKROOM-2T hang-regression test (`DiffViewerLazyRenderingTests`):
++  /// many separate hunks (not one giant hunk, to exercise the `ForEach`-in-`ForEach`-in-`List` nesting
++  /// the real diff has) of long, no-whitespace-to-wrap-on lines — the minified-CSS shape that actually
++  /// reproduced the App Hang. Defaults to exactly `UnifiedDiff.parse`'s 2000-line cap. Reached only via
++  /// the `huge.css` magic path, so no other fixture path is affected.
++  static func hugeDiff(hunkCount: Int = 20, linesPerHunk: Int = 100) -> DiffResult {
++    var text = ""
++    var newStart = 1
++    for h in 0..<hunkCount {
++      text += "@@ -0,0 +\(newStart),\(linesPerHunk) @@\n"
++      for l in 0..<linesPerHunk {
++        let n = h * linesPerHunk + l
++        let hex = String(format: "%06x", n % 0xFF_FFFF)
++        text +=
++          "+.class-\(n){color:#\(hex);font-family:\"Barlow Condensed\",sans-serif;"
++          + "src:url(/fonts/barlow-condensed-700.woff2) format(\"woff2\");"
++          + "padding:0;margin:0;display:block;position:relative;z-index:1}\n"
++      }
++      newStart += linesPerHunk
++    }
++    return .diff(UnifiedDiff.parse(text))
++  }
++
+   /// Canned new-side file content for highlighting in fixture mode (mirrors `DiffResolver
+   /// .fileContent`). Ruby files return a snippet whose lines match the Ruby diff above; everything
+   /// else returns `nil` so it renders plain.
+
+
+=== DIFF: macapp/WorkroomApp/Views/DiffViewer.swift ===
+@@ -10,8 +10,11 @@ import SwiftUI
+ /// Fetch is on-appear via `.task(id:)` keyed on the descriptor's file + revision, so switching to a
+ /// diff tab (or retargeting the preview to a new file) re-runs `DiffResolver` for the current state —
+ /// the diff is always fresh, and SwiftUI cancels an in-flight fetch when the view goes away. Lines
+-/// render in an eager `VStack` (see
+-/// `unifiedBody`), so a large diff lays out gap-free; `UnifiedDiff.parse`'s line cap bounds it.
++/// render in a `List` (see `unifiedBody`/`sideBySideBody`, WORKROOM-2T): a near-cap (2000-line) diff
++/// used to render in one eager `VStack`, which put every line's accessibility element in the tree
++/// SwiftUI's focus-responder walk traverses on every layout pass — the App Hang. `List` is
++/// `NSTableView`-backed, so it virtualizes both rendering AND accessibility for offscreen rows, unlike
++/// a hand-rolled `LazyVStack` (which was the fallback plan, made unnecessary once `List` proved out).
+ struct DiffViewer: View {
+   let descriptor: DiffDescriptor
+   /// The workroom directory the VCS runs in (resolves the repo-relative path / picks the worktree).
+@@ -379,60 +382,69 @@ struct DiffViewer: View {
+   }
+ 
+   private func unifiedBody(_ diff: UnifiedDiff) -> some View {
+-    // Vertical-only scroll, eager `VStack` (not `LazyVStack`): the rows soft-wrap via
+-    // `fixedSize(vertical:)`, and a lazy stack caches a bad height estimate for not-yet-materialised
+-    // wrapping rows — leaving a blank band in the middle of a tall diff until you scroll it into
+-    // view. `UnifiedDiff.parse`'s 2000-line cap bounds the row count, so laying them all out up
+-    // front is affordable and gap-free.
+-    //
+-    // This is NOT a general rule against lazy stacks, and `HistoryPanel` deliberately uses one: its
+-    // rows are single-line `lineLimit(1)`, so their height is known before layout and the estimate a
+-    // lazy stack caches is correct. The distinction is soft-wrapping vs fixed-height rows, not
+-    // "diffs vs history" — which matters because History's row count is unbounded by anything as
+-    // tight as 2000 lines, and building all of it eagerly is what produced a 2-second App Hang
+-    // (WORKROOM-2B).
+-    ScrollView(.vertical) {
+-      VStack(alignment: .leading, spacing: 0) {
+-        if let from = diff.renamedFrom {
+-          headerNote("Renamed from \(from)")
+-        }
+-        ForEach(Array(diff.hunks.enumerated()), id: \.offset) { _, hunk in
+-          hunkHeader(hunk.header)
+-          ForEach(Array(hunk.lines.enumerated()), id: \.offset) { _, line in
+-            lineRow(line)
+-          }
+-        }
+-        if diff.truncated {
+-          headerNote("Diff truncated — file too large to show in full.")
++    // `List`, not `ScrollView { VStack {...} }` (WORKROOM-2T): a near-cap (2000-line) diff used to lay
++    // every line out eagerly, on the reasoning that soft-wrapping rows (`.fixedSize(vertical:)`) can't
++    // report their height to a `LazyVStack` before being materialized, and an inaccurate estimate left
++    // a visible blank band mid-scroll. That reasoning was correct as far as it went, but it missed the
++    // actual cost: 2000 eager rows means 2000 accessibility elements in the tree SwiftUI's
++    // accessibility focus-responder walk traverses on every layout pass — the App Hang.
++    // `List` sidesteps both problems at once: it's `NSTableView`-backed, so it virtualizes rendering
++    // AND accessibility together for offscreen rows (no manual height pre-measurement needed, and no
++    // per-row `AppKitPlatformViewHost` node for a row that was never realized). `HistoryPanel`'s
++    // `LazyVStack` is fine for its OWN rows (single-line, fixed-height, so a lazy stack's height
++    // estimate is exact) but couldn't have carried the same fix here without the pre-measurement work
++    // `List` makes unnecessary — see TODOS.md/WORKROOM-2T for the full investigation, including why
++    // `List` was avoided elsewhere in this codebase (macOS list chrome fighting custom row styling) and
++    // why that concern didn't hold up here once actually tried (`.listStyle(.plain)` +
++    // `.listRowInsets`/`.listRowSeparator(.hidden)` + `.environment(\.defaultMinListRowHeight, 0)`).
++    List {
++      if let from = diff.renamedFrom {
++        headerNote("Renamed from \(from)")
++          .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
++      }
++      ForEach(Array(diff.hunks.enumerated()), id: \.offset) { _, hunk in
++        hunkHeader(hunk.header)
++          .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
++        ForEach(Array(hunk.lines.enumerated()), id: \.offset) { _, line in
++          lineRow(line)
++            .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
+         }
+       }
+-      .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+-      .padding(.vertical, 4)
++      if diff.truncated {
++        headerNote("Diff truncated — file too large to show in full.")
++          .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
++      }
+     }
++    .listStyle(.plain)
++    .environment(\.defaultMinListRowHeight, 0)
++    .scrollContentBackground(.hidden)
+   }
+ 
+-  /// Side-by-side body (issue #66): same scroll/eager-`VStack` shell as `unifiedBody` (the soft-wrap
+-  /// reasoning there still holds), but each hunk's rows come from the memoized `sbsRows` and render
+-  /// as a left(old) | divider | right(new) `HStack`.
++  /// Side-by-side body (issue #66): same `List` shell as `unifiedBody` (see its comment for why `List`,
++  /// WORKROOM-2T), but each hunk's rows come from the memoized `sbsRows` and render as a
++  /// left(old) | divider | right(new) `HStack`.
+   private func sideBySideBody(_ diff: UnifiedDiff) -> some View {
+-    ScrollView(.vertical) {
+-      VStack(alignment: .leading, spacing: 0) {
+-        if let from = diff.renamedFrom {
+-          headerNote("Renamed from \(from)")
+-        }
+-        ForEach(Array(diff.hunks.enumerated()), id: \.offset) { index, hunk in
+-          hunkHeader(hunk.header)
+-          ForEach(Array(rows(forHunk: index).enumerated()), id: \.offset) { _, row in
+-            sideBySideRow(row)
+-          }
+-        }
+-        if diff.truncated {
+-          headerNote("Diff truncated — file too large to show in full.")
++    List {
++      if let from = diff.renamedFrom {
++        headerNote("Renamed from \(from)")
++          .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
++      }
++      ForEach(Array(diff.hunks.enumerated()), id: \.offset) { index, hunk in
++        hunkHeader(hunk.header)
++          .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
++        ForEach(Array(rows(forHunk: index).enumerated()), id: \.offset) { _, row in
++          sideBySideRow(row)
++            .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
+         }
+       }
+-      .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+-      .padding(.vertical, 4)
++      if diff.truncated {
++        headerNote("Diff truncated — file too large to show in full.")
++          .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
++      }
+     }
++    .listStyle(.plain)
++    .environment(\.defaultMinListRowHeight, 0)
++    .scrollContentBackground(.hidden)
+   }
+ 
+   /// The memoized side-by-side rows for a hunk index (empty if out of range — should not happen, as
+@@ -453,13 +465,23 @@ struct DiffViewer: View {
+     return rows[index]
+   }
+ 
++  #if DEBUG
++    /// How many times `sideBySideRow`'s body has been evaluated this process — the measurement behind
++    /// the WORKROOM-2T hang-regression test (does `List` actually realize only visible rows for a
++    /// near-2000-line diff, mirroring `HistoryRow.bodyPasses`/`ChangedFileRow.bodyPasses`).
++    static var sideBySideRowBodyPasses = 0
++  #endif
++
+   private func sideBySideRow(_ row: UnifiedDiff.SideBySideRow) -> some View {
++    #if DEBUG
++      Self.sideBySideRowBodyPasses += 1
++    #endif
+     // `.top` so each side's gutter aligns to the first visual line when the taller side wraps. The
+     // add/remove/absent fills are painted as a full-height background *layer* (two equal halves), not
+     // per-cell: a bare cell background collapses to the gutter line under `.top` alignment, so a
+     // short side opposite a multi-line wrapped side would only tint its first line. The background
+     // matches the row's height (the taller side), so both halves always span the full row.
+-    HStack(alignment: .top, spacing: 0) {
++    return HStack(alignment: .top, spacing: 0) {
+       sideCell(row.left, side: .left)
+       Divider()
+       sideCell(row.right, side: .right)
+@@ -520,9 +542,20 @@ struct DiffViewer: View {
+   /// Width of the two-column gutter strip: two `unifiedGutterNumber` cells (32 + 6 + 6 each).
+   private static let gutterWidth: CGFloat = 88
+ 
++  #if DEBUG
++    /// How many times `lineRow`'s body has been evaluated this process — the measurement behind the
++    /// WORKROOM-2T hang-regression test, mirroring `HistoryRow.bodyPasses`/`ChangedFileRow.bodyPasses`.
++    /// A near-2000-line diff must move this by far less than the line count once `List` realizes only
++    /// visible rows — the property that WOULD have caught the eager-`VStack` App Hang.
++    static var lineRowBodyPasses = 0
++  #endif
++
+   private func lineRow(_ line: UnifiedDiff.Line) -> some View {
++    #if DEBUG
++      Self.lineRowBodyPasses += 1
++    #endif
+     // `.top` so the gutter + marker align to the first visual line when a long line wraps.
+-    HStack(alignment: .top, spacing: 0) {
++    return HStack(alignment: .top, spacing: 0) {
+       unifiedGutter(old: line.oldLine, new: line.newLine)
+       Text(marker(line.kind))
+         .font(.system(.callout, design: .monospaced))
+
+
+=== DIFF: macapp/WorkroomAppTests/DiffViewerLazyRenderingTests.swift ===
+@@ -0,0 +1,129 @@
++import AppKit
++import SwiftUI
++import XCTest
++
++@testable import Workroom
++
++/// The regression net for **WORKROOM-2T** — the ≥2000 ms App Hang whose sampled stack landed inside
++/// SwiftUI's accessibility focus-responder walk (`ResponderNode.visitFocusResponders`), reached from
++/// `DiffViewer.unifiedBody`/`sideBySideBody` rendering every line of a near-2000-line diff eagerly. The
++/// fix replaced the eager `ScrollView { VStack {...} }` with `List`, which is `NSTableView`-backed and
++/// virtualizes both rendering and accessibility together for offscreen rows — see the doc comments on
++/// `unifiedBody`/`sideBySideBody` for the full mechanism.
++///
++/// This suite asserts the property that would have caught the regression: a near-cap diff must realize
++/// far fewer rows than its line count, and doing so must cost main-thread milliseconds, not seconds
++/// (mirrors `HistoryRowInvalidationTests`'s `testLargePageDoesNotBuildEveryRow`/
++/// `testLargePageRendersUnderTimeCeiling` — a body-pass count proves the mechanism changed, only wall
++/// clock proves the thread stayed free).
++///
++/// Harness: the offscreen-`NSWindow` hosting pattern from `PaneRenderingTests`/`HistoryRowInvalidationTests`.
++/// The huge diff itself comes from `UITestFixture.hugeDiff()` via the `huge.css` magic path — reached
++/// by forcing `UITestFixture.isActive` on for the duration of this suite (a plain unit-test process
++/// doesn't set the `-WorkroomUITestFixture` launch argument the way `WorkroomAppUITests` does, so the
++/// flag is set directly on `UserDefaults.standard` and reset in `tearDown`).
++@MainActor
++final class DiffViewerLazyRenderingTests: XCTestCase {
++
++  private static let hunkCount = 20
++  private static let linesPerHunk = 100
++  private static var lineCount: Int { hunkCount * linesPerHunk }
++
++  override func setUp() {
++    super.setUp()
++    UserDefaults.standard.set(true, forKey: UITestFixture.defaultsKey)
++  }
++
++  override func tearDown() {
++    UserDefaults.standard.removeObject(forKey: UITestFixture.defaultsKey)
++    super.tearDown()
++  }
++
++  private func hugeDescriptor() -> DiffDescriptor {
++    DiffDescriptor(path: "huge.css", change: .modified, source: .gitWorktree, isPreview: false)
++  }
++
++  /// Host the real `DiffViewer` offscreen. Width ≥ `DiffViewer.sideBySideMinWidth` isn't required here
++  /// (unified is the default layout without a `viewModeOverride`); height is a realistic tab content
++  /// area, not the whole screen, so "how many rows does it build" is a meaningful question.
++  private func host(_ descriptor: DiffDescriptor) -> (NSWindow, NSView) {
++    let root = DiffViewer(
++      descriptor: descriptor, directory: "/diff-lazy-rendering", projectRoot: nil
++    )
++    .frame(width: 700, height: 500)
++    let hosting = NSHostingView(rootView: root)
++    hosting.frame = NSRect(x: 0, y: 0, width: 700, height: 500)
++    let window = NSWindow(
++      contentRect: hosting.frame, styleMask: [.titled], backing: .buffered, defer: false)
++    // A programmatic NSWindow defaults `isReleasedWhenClosed` to true, which would over-release on top
++    // of ARC — same reasoning as `PaneRenderingTests.host`/`HistoryRowInvalidationTests.host`.
++    window.isReleasedWhenClosed = false
++    window.contentView = hosting
++    window.makeKeyAndOrderFront(nil)
++    return (window, hosting)
++  }
++
++  /// Pump the runloop so SwiftUI commits pending transactions (including the `.task(id: fetchKey)`
++  /// load) and force layout.
++  private func settle(_ view: NSView, seconds: TimeInterval = 0.6) {
++    let deadline = Date().addingTimeInterval(seconds)
++    while Date() < deadline {
++      view.layoutSubtreeIfNeeded()
++      RunLoop.current.run(until: Date().addingTimeInterval(0.02))
++    }
++    view.layoutSubtreeIfNeeded()
++  }
++
++  func testHugeDiffDoesNotBuildEveryLine() throws {
++    DiffViewer.lineRowBodyPasses = 0
++    let (window, view) = host(hugeDescriptor())
++    defer { window.close() }
++    settle(view)
++
++    // Anti-vacuity guard: "far fewer than all of them" is only meaningful if lines rendered at all —
++    // a pane stuck on its loader would otherwise pass this test having drawn nothing.
++    XCTAssertGreaterThan(
++      DiffViewer.lineRowBodyPasses, 0, "the fixture must actually render diff lines")
++    // Deliberately not an exact number: how far past the viewport `List` realizes is its own business
++    // and can shift between OS releases. "Far fewer than all of them" is the property that matters —
++    // the eager `VStack` this replaced would have built exactly `lineCount`.
++    XCTAssertLessThan(
++      DiffViewer.lineRowBodyPasses, Self.lineCount,
++      "a 700×500 pane shows a small fraction of \(Self.lineCount) lines, so building all of them means "
++        + "the list is eager again — the WORKROOM-2T regression this test exists to catch")
++  }
++
++  func testHugeDiffRendersUnderTimeCeiling() throws {
++    DiffViewer.lineRowBodyPasses = 0
++    let started = Date()
++    let (window, view) = host(hugeDescriptor())
++    defer { window.close() }
++    settle(view)
++    let elapsed = Date().timeIntervalSince(started)
++
++    // A count proves the mechanism changed; only wall clock proves the main thread stayed free. The
++    // ceiling is generous — comfortably under the 2s app-hang watchdog and far above what a lazy list
++    // costs — so a loaded CI machine can't flake it while a genuine regression (2000 accessibility
++    // elements materializing eagerly, WORKROOM-2T's actual shape) still fails it.
++    XCTAssertLessThan(
++      elapsed, 1.0,
++      "loading + first layout of a \(Self.lineCount)-line diff took "
++        + "\(String(format: "%.3f", elapsed))s on the main thread")
++  }
++
++  /// Multi-hunk shape check: `unifiedBody` nests `ForEach(hunk.lines)` inside `ForEach(hunks)` inside
++  /// one `List` — this pins that the nesting doesn't silently defeat virtualization (a single giant
++  /// hunk could theoretically behave differently from many separate ones, which is the real diff's
++  /// actual shape). `UITestFixture.hugeDiff()` always builds `hunkCount` separate hunks.
++  func testHugeDiffKeepsMultipleHunks() {
++    guard
++      case .diff(let diff) = UITestFixture.hugeDiff(
++        hunkCount: Self.hunkCount, linesPerHunk: Self.linesPerHunk)
++    else {
++      return XCTFail("hugeDiff() must produce a parsed diff")
++    }
++    XCTAssertEqual(diff.hunks.count, Self.hunkCount)
++    XCTAssertEqual(
++      diff.hunks.map(\.lines.count), Array(repeating: Self.linesPerHunk, count: Self.hunkCount))
++  }
++}
+
+
+Investigate per the method in your instructions, then return the findings list.
