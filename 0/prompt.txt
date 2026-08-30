@@ -1,0 +1,1 @@
+do we have ghostty shell integration in use? https://ghostty.org/docs/features/shell-integration
