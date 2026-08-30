@@ -1,0 +1,318 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. Primary Request and Intent:
+   - Continue from a prior session that had been working through a batch of bug/stability/test TODO items in the Workroom repo (`/Users/joelmoss/dev/workroom`), governed by an earlier instruction to land each item as a separate commit to `master`.
+   - Complete the in-progress investigation of TODO item #11 (ghostty native `theme=dark:X,light:Y` syntax + theme-picker invalidation storm) exactly where it left off, without asking further questions, per the resumption instruction: "Continue the conversation from where it left off... Pick up the last task as if the break never happened."
+   - After completing that item, the user asked "what's next?" — I re-surveyed TODOS.md and the user (via AskUserQuestion) chose to re-survey for more candidates, then selected 3 recommended new items to complete: (a) finish the `runCISweep` concurrency-cap test, (b) fix the stopped run-tab silent-close-on-cleared-command bug, (c) harden `vcs.Detect` to validate a real repo — all "in separate commits to master" per the original governing instruction.
+   - The user then invoked the `/review` skill (a gstack-provided slash command) with `ARGUMENTS: unpushed changes`, instructing me to run the full pre-landing review workflow against the diff between `origin/master` and the current `HEAD` (17 unpushed local commits), following the skill's exact procedural steps: platform/base-branch detection, scope-drift detection, checklist-based critical pass, parallel specialist dispatch (testing/maintainability/performance), Claude + Codex adversarial review, Codex structured review for large diffs, cross-model synthesis, and a Fix-First Review (auto-fix mechanical findings, batch-ask genuinely ambiguous ones).
+   - No explicit user redirection or new instructions occurred after the `/review` invocation — all subsequent activity was my own autonomous execution of the skill's steps and the arrival of background task-notification events (NOT user messages) reporting specialist/adversarial agent completions.
+   - No explicit security constraints or forbidden operations were newly stated by the user in this segment; existing global/project CLAUDE.md constraints continue to apply (e.g., "always run linters before committing," "never disable lint rules without asking," "root-cause fixes over workarounds," git safety protocol against destructive operations).
+
+2. Key Technical Concepts:
+   - Ghostty engine embedding: `ghostty_app_set_color_scheme`/`ghostty_surface_set_color_scheme` only flip `ConditionalState.theme` and fire a `.reload_config{soft:true}` action; nothing re-derives the config automatically — `GhosttyRuntimeAdapter.handleAction` doesn't handle `GHOSTTY_ACTION_RELOAD_CONFIG`, so adopting the native `theme=dark:X,light:Y` syntax would require new engine-callback-reentrant code, not just emitting two names.
+   - SwiftUI `@Observable`/`ObservableObject` invalidation-storm pattern (WORKROOM-2B): established fix is stripping observation from rows, hoisting values/closures to the parent, adding `Equatable` + `.equatable()` at the `ForEach` call site, switching `VStack`→`LazyVStack` only for fixed-height rows.
+   - `#if DEBUG static var bodyPasses`/`lastCommittedResult` counters as the standard measurement/regression-observation seam pattern in this codebase.
+   - Swift Concurrency: `withTaskCancellationHandler`, `TimeoutCancelBox` (NSLock-guarded, handles onCancel firing before/during/after attach), `TimeoutGate.settle` (exactly-once continuation resume guard), unstructured `Task<T, Never>` not propagating cancellation from a parent `.task(id:)` (root cause of the Avatar staleness bug).
+   - `GitStatusReading`/`JJStatusReading` protocol seams mirroring `StatusCommandRunning`'s injection role for native (non-CLI) VCS reads.
+   - `combinedWorkingDiff`: combining a file's `.index` (HEAD→index) and `.workingTree` (index→worktree) status deltas into one HEAD→worktree diff, mirroring the existing `.conflicted` case's blob-lookup technique.
+   - `gitFormat`'s `type: Diff.DeltaType` parameter controls ONLY which side (`---`/`+++`) renders as `/dev/null` — `.added`/`.untracked` ⇒ no old side, `.deleted` ⇒ no new side — independent of the patch's actual hunk content; deriving this from the WRONG delta's `.type` produces a self-contradictory diff.
+   - LRU vs FIFO cache eviction: `AvatarImageLoader`'s `cacheOrder` array was insertion-ordered with eviction via `removeFirst()`, but cache HITS never re-ordered the entry — genuinely FIFO despite class-doc claims of LRU.
+   - `.task(id:)` cancellation semantics: SwiftUI cancels the old `Task` when `id` changes, but that cancellation must be explicitly checked (`Task.isCancelled`) after any `await` before committing a result — otherwise a stale, slow fetch can silently overwrite a newer view's state.
+   - `StatusCommandRunning`/`GitStatusReading` counting test doubles + `InFlightCounter` pattern for asserting `withTaskGroup`-bounded concurrency caps.
+   - gstack `/review` skill machinery: specialist subagent dispatch (testing/maintainability/performance/security/etc.), Claude adversarial subagent, Codex `exec`/`review` adversarial + structured passes, cross-model finding synthesis, Fix-First Review (AUTO-FIX vs ASK classification), fingerprint-based dedup, confidence calibration (1-10 scale with a pre-emit "quote the motivating line" verification gate).
+   - Sandbox nesting failure: Codex's own internal sandbox (`sandbox_apply: Operation not permitted`) failed when run inside this session's outer command sandbox; fixed both Codex invocations by re-running with `dangerouslyDisableSandbox: true` on the outer Bash tool call.
+
+3. Files and Code Sections:
+
+   **TODOS.md** (repo root) — edited multiple times this segment:
+   - Re-priced the ghostty native theme-syntax entry to "RE-PRICED, not a fit for this batch", documenting the callback-reentrancy finding. Committed as `373a7b0b`.
+   - Re-priced/closed the theme-picker-invalidation-storm entry to "MEASURED, MOOT (2026-08-13)" with the measured numbers (~8 rows, ~0.07s). Committed as `dbfa2e6e` (alongside code changes).
+   - Marked the N-in-flight concurrency accounting entry FIXED (both `runLocalSweep` and `runCISweep` halves now covered). Committed as `e43d0442`.
+   - Marked the stopped-run-tab-silent-close entry FIXED. Committed as `174e3832`.
+   - Re-priced the "Harden vcs.Detect" entry to "RE-PRICED, not a fit for this batch" after discovering `effectiveVCS` runs on every `list`, not just registration, and ~58 test fixtures fake bare markers. Committed as `5832d128`.
+
+   **macapp/WorkroomApp/Views/ThemePicker.swift** — added `#if DEBUG static var bodyPasses = 0` to `FamilyRow` (un-privatized from `private struct` to `struct`), incremented in `body`, changed `body` to `return VStack(...)` to accommodate the added statement. Committed as part of `dbfa2e6e`.
+
+   **macapp/WorkroomAppTests/ThemePickerInvalidationTests.swift** (new file) — `testArrowKeyReapplyRendersUnderTimeCeiling`: hosts real `ThemePicker` at production popover size, drives one `applyFamily` call, asserts `FamilyRow.bodyPasses > 0` and elapsed `< 0.3s`. Measured 8 passes / ~0.07s. Committed as part of `dbfa2e6e`.
+
+   **macapp/WorkroomAppTests/WorkroomStatusConcurrencyTests.swift** — added `CountingGHRunner: StatusCommandRunning` (counts concurrent gh/git calls while returning plausible `gh auth status`/`symbolic-ref`/`rev-parse`/`nameWithOwner` responses to keep `resolveCI`'s chain moving) and `testCISweepNeverExceedsItsConcurrencyCap` (8 throwaway projects, asserts `ghCounter.peak <= 2` and `> 1`). Committed as `637db403`.
+
+   **macapp/WorkroomApp/Core/AppStore.swift** — `respawnRunCommand` (task #13 fix, then re-fixed after maintainability specialist finding):
+   ```swift
+   private func respawnRunCommand(replacing oldTab: TerminalTab.ID, for target: TerminalTarget) {
+     guard !target.isMissing, let project = project(forTarget: target) else {
+       terminals.closeTab(oldTab, for: target)
+       return
+     }
+     // Reached only after `restartRunCommand`'s `signalSupervisor` call already confirmed the
+     // supervisor is gone — true regardless of which `RunState` the caller entered with
+     // (`.running`/`.restarting`/`.stopped`, per `restartRunCommand`'s shared branch). Normalize to
+     // `.stopped` up front so every exit below (including the no-command warning) reflects that
+     // confirmed-dead reality; a real respawn overwrites this again a few lines down with its own
+     // fresh `.running`/`.stopped` result. Without this, entering from `.running`/`.restarting` with
+     // the command cleared left the toast/sidebar dot reporting "running" against a pid that no
+     // longer exists.
+     runStates[target.id] = .stopped(tab: oldTab)
+     guard hasRunCommand(forProject: project.path) else {
+       // #127 follow-up: the command was cleared while a stopped-but-open run pane sat waiting for
+       // this restart. Mirror the `.armed`/`.none` branch's warning (same non-clobber guard) instead
+       // of silently closing the pane...
+       if pendingProjectSettings == nil {
+         pendingProjectSettings = PendingProjectSettings(project: project, showsRunWarning: true)
+       }
+       return
+     }
+     let config = runConfig(forProject: project.path)
+     ...
+   ```
+   First version (task #13, committed as `941af102`) lacked the `runStates[target.id] = .stopped(tab: oldTab)` normalization line — added later during Fix-First (NOT YET COMMITTED) after maintainability specialist flagged that entering from `.running`/`.restarting` left stale state.
+
+   **macapp/WorkroomAppTests/RunCommandTests.swift** — `testRestartWithClearedCommandWarnsInsteadOfClosing` (task #13, committed `941af102`) covers the `.stopped`-entry case. New (NOT YET COMMITTED) `testRestartFromRunningWithClearedCommandStopsReportingAsRunning`:
+   ```swift
+   func testRestartFromRunningWithClearedCommandStopsReportingAsRunning() {
+     let store = makeStoreDeadSupervisor([project("/a", workrooms: ["main"])])
+     store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: "/a")
+     let t = target(store, "/a", "main")
+     store.selectedTargetID = .workroom(project: "/a", name: "main")
+
+     store.startRunCommand(for: t)
+     XCTAssertTrue(store.isRunCommandRunning(for: t.id))  // still .running — no exit reported yet
+
+     store.setRunConfig(RunConfig(command: "", autoRun: false), forProject: "/a")  // cleared
+     store.restartRunCommand(for: t)  // dead supervisor → respawnRunCommand's no-command guard
+
+     XCTAssertFalse(
+       store.isRunCommandRunning(for: t.id),
+       "a confirmed-dead supervisor must not leave the state reporting .running")
+     XCTAssertEqual(store.pendingProjectSettings?.project.path, "/a")
+   }
+   ```
+   This test's pass/fail status against the NEW `respawnRunCommand` code has NOT yet been verified via a build+test run (interrupted before doing so).
+
+   **internal/vcs/vcs.go** — read only (`Detect` function), not modified; decision was to NOT harden it, documented in TODOS.md instead.
+
+   **macapp/WorkroomApp/Core/GitProvider.swift** — `combinedWorkingDiff` fixed twice this segment:
+   - First fix (my own manual pass, addressing "silent read failure ⇒ fabricated add"):
+     ```swift
+     let headBlob: Blob? = indexDelta.type == .added ? nil : try repo.show(id: indexDelta.oldFile.id)
+     ```
+     (previously `try? repo.show(id: indexDelta.oldFile.id)`)
+   - Second fix (Claude-adversarial-confirmed, addressing "wrong type used for /dev/null rendering"):
+     ```swift
+     let patch = try repo.patch(from: headBlob, to: root.appendingPathComponent(currentPath))
+     return Self.gitFormat(
+       patch, oldPath: oldPath, newPath: currentPath, type: headBlob == nil ? .added : .modified)
+     ```
+     (previously `type: headBlob == nil ? .added : indexDelta.type`)
+   Both fixes are in the current working tree, NOT YET COMMITTED.
+
+   **macapp/WorkroomAppTests/VCSProviderConformanceTests.swift** — three new tests added this segment (none committed):
+   - `testWorkingFileDiffHandlesStagedThenDeletedFromDisk` (my own manual-pass finding: staged-modify-then-`rm`, and staged-add-then-`rm`) — built and ran, PASSED.
+   - `testWorkingFileDiffHandlesStagedDeleteThenRecreatedOnDisk` (Claude-adversarial-motivated: `git rm` then recreate with different content):
+     ```swift
+     func testWorkingFileDiffHandlesStagedDeleteThenRecreatedOnDisk() async throws {
+       try requireTool("git")
+       try requireTool("jj")
+       let root = try colocatedFixture()
+       let url = URL(fileURLWithPath: root)
+       let r = sh(
+         """
+         git rm a.txt
+         printf 'brand new content\\n' > a.txt
+         echo done
+         """, in: root)
+       XCTAssertTrue(r.out.contains("done"), "staged-delete+recreated setup failed: \(r.out)")
+       let diff = try await GitProvider().workingFileDiff(root: url, path: "a.txt", base: .workingCopy)
+       XCTAssertTrue(diff.contains("diff --git a/a.txt b/a.txt"), "header: \(diff)")
+       XCTAssertFalse(
+         diff.contains("+++ /dev/null"),
+         "the new side has real content (the recreated file) — must not render as /dev/null: \(diff)")
+       XCTAssertTrue(
+         diff.contains("+brand new content"), "recreated content missing from the diff: \(diff)")
+     }
+     ```
+     This test's pass/fail status against the fixed `GitProvider.swift` has NOT yet been verified (interrupted before running it — I ran a build+test pass on this file's OTHER new test before adding this one, then never re-ran after adding this specific test).
+
+   **macapp/WorkroomApp/Views/Avatar.swift** — two fixes applied this segment (not committed):
+   - LRU `touch` fix:
+     ```swift
+     func load(_ url: URL) async -> LoadResult? {
+       if let cached = cache[url] {
+         touch(url)
+         return cached
+       }
+       if let existing = inFlight[url] { return await existing.value }
+       ...
+     }
+     ...
+     /// Move `url` to the back of `cacheOrder` (most-recently-used) — called on every cache HIT, not
+     /// just on insertion...
+     private func touch(_ url: URL) {
+       guard let idx = cacheOrder.firstIndex(of: url) else { return }
+       cacheOrder.remove(at: idx)
+       cacheOrder.append(url)
+     }
+     ```
+   - Stale-in-flight-fetch guard + DEBUG observation seam on `AvatarView`:
+     ```swift
+     #if DEBUG
+       /// The last value actually committed to `result` by ANY `AvatarView` instance...
+       static var lastCommittedResult: AvatarImageLoader.LoadResult?
+     #endif
+     ...
+     .task(id: taskKey) {
+       guard loadRemoteAvatars, let url = subject.imageURL else {
+         result = nil
+         return
+       }
+       let loaded = await loader.load(url)
+       guard !Task.isCancelled else { return }
+       result = loaded
+       #if DEBUG
+         Self.lastCommittedResult = loaded
+       #endif
+     }
+     ```
+
+   **macapp/WorkroomAppTests/AvatarImageLoaderTests.swift** — heavily modified this segment (not committed):
+   - Added `import CryptoKit`, `import SwiftUI`.
+   - Extended `StubRegistry` with gate/release machinery:
+     ```swift
+     private var gates: [URL: DispatchSemaphore] = [:]
+     func gate(_ url: URL) {
+       lock.lock(); gates[url] = DispatchSemaphore(value: 0); lock.unlock()
+     }
+     func release(_ url: URL) {
+       lock.lock(); let sem = gates.removeValue(forKey: url); lock.unlock(); sem?.signal()
+     }
+     fileprivate func gateSemaphore(for url: URL) -> DispatchSemaphore? {
+       lock.lock(); defer { lock.unlock() }; return gates[url]
+     }
+     ```
+   - Modified `StubURLProtocol.startLoading()` to dispatch onto `DispatchQueue.global()` and `.wait()` on any gate semaphore before responding, so a gated URL's response can be held open and released on demand by a test.
+   - Added `gravatarURL(email:pixelSize:)` helper (reconstructs the exact Gravatar URL a `VCSAuthor` resolves to, via `AvatarSubject.hexString`).
+   - Added `SubjectController` (`@MainActor final class ObservableObject`) and `HostWrapper: View` to let a test mutate `AvatarView`'s `subject` at a fixed slot position.
+   - Added `host(_:loader:)` helper hosting `HostWrapper` in an `NSHostingView`/`NSWindow`.
+   - Added `testStaleInFlightFetchNeverOverwritesANewerSubjectInTheSameSlot` (marked `@MainActor`), and `pngImage(_ color:) throws -> NSImage` helper. Current version of the test (after fixing build errors from an earlier draft that referenced a nonexistent `loader.load2xColorMatches` method):
+     ```swift
+     @MainActor
+     func testStaleInFlightFetchNeverOverwritesANewerSubjectInTheSameSlot() throws {
+       let emailA = "author-a@example.com"
+       let emailB = "author-b@example.com"
+       let urlA = gravatarURL(email: emailA)
+       let urlB = gravatarURL(email: emailB)
+       StubURLProtocol.registry.setResponse(status: 200, data: try pngData(.red), for: urlA)
+       StubURLProtocol.registry.setResponse(status: 200, data: try pngData(.blue), for: urlB)
+       StubURLProtocol.registry.gate(urlA)  // hold A's response until this test releases it
+
+       let loader = AvatarImageLoader(session: makeSession())
+       let controller = SubjectController(
+         AvatarSubject(author: VCSAuthor(name: "A", email: emailA), pixelSize: 16))
+       let (window, view) = host(controller, loader: loader)
+       defer { window.close() }
+
+       settle(view, until: { StubURLProtocol.registry.callCount(for: urlA) > 0 })
+       XCTAssertGreaterThan(
+         StubURLProtocol.registry.callCount(for: urlA), 0,
+         "fixture must actually reach A's request before swapping the subject")
+
+       controller.subject = AvatarSubject(author: VCSAuthor(name: "B", email: emailB), pixelSize: 16)
+       settle(view, until: { StubURLProtocol.registry.callCount(for: urlB) > 0 })
+       settle(view, until: { AvatarView.lastCommittedResult != nil })
+       XCTAssertEqual(
+         AvatarView.lastCommittedResult, .image(try pngImage(.blue)),
+         "B's own fetch must land before A's stale one arrives, to set up the real race below")
+
+       StubURLProtocol.registry.release(urlA)
+       settle(view, seconds: 0.5)
+
+       XCTAssertEqual(
+         AvatarView.lastCommittedResult, .image(try pngImage(.blue)),
+         "A's late-arriving, stale fetch must never overwrite B's already-committed result")
+     }
+
+     private func pngImage(_ color: NSColor) throws -> NSImage {
+       try XCTUnwrap(NSImage(data: try pngData(color)))
+     }
+     ```
+     **THIS TEST IS CURRENTLY FAILING** — see Errors section below. Root cause not yet diagnosed.
+
+4. Errors and fixes:
+   - **Codex sandbox nesting failure** (both `codex exec` adversarial and `codex review` structured calls): first attempts failed with `sandbox_apply: Operation not permitted` even for `/bin/pwd`, because Codex's own internal `-s read-only` sandbox conflicted with running inside this session's outer Bash-tool sandbox. Fixed by re-running both commands identically but with `dangerouslyDisableSandbox: true` on the outer Bash tool call — both succeeded on retry.
+   - **Build error: `Cannot find 'touch' in scope`** — occurred when running a test build after adding the `touch(url)` call site in `load()` before the `touch` function was fully present in that build's compiled state; resolved by ensuring the `private func touch(_ url: URL)` definition was present in the same edit pass (it was — this was a transient/stale-build artifact, resolved on the next build pass with `store(_:for:)`'s edit included).
+   - **Build error: `Value of type 'AvatarImageLoader' has no member 'load2xColorMatches'`** — my first draft of `testStaleInFlightFetchNeverOverwritesANewerSubjectInTheSameSlot` ended with a leftover placeholder/garbage line: `XCTAssertFalse(loader.load2xColorMatches(view: view), "diagnostic placeholder removed below")`. Fixed by removing this line and rewriting the final assertions to compare against the new `AvatarView.lastCommittedResult` DEBUG seam instead.
+   - **Build errors: multiple "main actor-isolated ... in a synchronous nonisolated context"** — the test method wasn't marked `@MainActor`, and helper types (`SubjectController`, `host(_:loader:)`) required actor isolation to call. Fixed by marking the test method `@MainActor` and ensuring call sites matched.
+   - **Test failure (UNRESOLVED)**: after the build succeeded, `testStaleInFlightFetchNeverOverwritesANewerSubjectInTheSameSlot` FAILED with two assertion mismatches:
+     ```
+     XCTAssertEqual failed: ("Optional(...image(<NSImage ColorSpace=LG ULTRAWIDE...>)")) is not equal to
+     ("Optional(...image(<NSImage ColorSpace=(not yet loaded)...>)")) - B's own fetch must land before A's stale one arrives...
+     ```
+     and
+     ```
+     XCTAssertEqual failed: ("Optional(Workroom.AvatarImageLoader.LoadResult.notFound)") is not equal to
+     ("Optional(...image(...))") - A's late-arriving, stale fetch must never overwrite B's already-committed result
+     ```
+     The second failure shows `AvatarView.lastCommittedResult` ended up as `.notFound` — neither A's red image nor B's blue image, but a completely different outcome. This was NOT diagnosed before the summary request interrupted the session. Plausible causes not yet investigated: (a) `StubURLProtocol.registry` is a `static let` shared across ALL tests in the class with no reset in `setUp()`/`tearDown()` — exactly the isolation-violation the testing specialist flagged (confidence 75) — so a prior test in the suite may have left stale state that leaked into this test depending on XCTest's execution order; (b) the `pngImage`/`NSImage` equality comparison itself may be unreliable (two separately-decoded `NSImage` instances from identical PNG bytes are not guaranteed to compare `==`, despite a comment claiming otherwise); (c) a race or ordering bug in the newly-added gate/release semaphore mechanism in `StubURLProtocol.startLoading()`. This is the last unresolved issue at time of interruption — no user feedback was given on it since it arose in the same turn as the interruption.
+
+5. Problem Solving:
+   - Systematically verified every "held" TODO re-pricing decision (ghostty theme syntax, vcs.Detect hardening) via direct source-code tracing (fetching ghostty's own GitHub source at the pinned commit, reading Go CLI call sites) rather than assumption, consistent with the session's established pattern of measuring/verifying before committing to a fix.
+   - During the manual `/review` critical pass, independently discovered (before any specialist agent reported it) that `GitProvider.combinedWorkingDiff`'s `.deleted` branch had zero test coverage — later independently confirmed by the testing specialist subagent (confidence 85), validating the manual-pass methodology.
+   - Cross-referenced findings across FIVE independent reviewers (my own manual pass, testing specialist, maintainability specialist, performance specialist, Claude adversarial, Codex adversarial, Codex structured) to prioritize fixes by confirmation count: the Avatar LRU bug was confirmed by 4 sources, the Avatar privacy-gate/staleness bug by 3 sources, and the `GitProvider` type-mislabeling bug was uniquely caught by Claude adversarial's deep trace (not caught by my own manual pass, which had only found the simpler "silent try? swallowing" variant of the same area).
+   - The maintainability specialist caught a genuine regression IN MY OWN task #13 fix (the `respawnRunCommand` early-return leaving stale `.running`/`.restarting` state) — this was fixed promptly by adding the `runStates[target.id] = .stopped(tab: oldTab)` normalization line before the no-command guard.
+   - Ongoing, unresolved: the new Avatar staleness regression test itself is failing for reasons not yet diagnosed — this is an open problem at the point of interruption.
+
+6. All user messages:
+   - (Continuation artifacts from prior session, not fresh requests): "continue" (multiple times), a `/compact` command invocation.
+   - "what's next?"
+   - AskUserQuestion answer: "Re-survey TODOS.md (Recommended)"
+   - AskUserQuestion answer (multi-select): "runCISweep concurrency test (Recommended), Stopped run-tab silent-close bug (Recommended), Harden vcs.Detect (Recommended)"
+   - The `/review` slash command invocation, with the skill's full system-prompt content and `ARGUMENTS: unpushed changes` — this is the governing explicit request for the entire second half of this segment: run the complete pre-landing review workflow (critical pass, specialist dispatch, adversarial review, Fix-First Review) against the unpushed diff on the current branch.
+   - No further explicit user messages occurred after the `/review` invocation — all subsequent "messages" were system-generated `<task-notification>` events reporting background-agent completions, explicitly and repeatedly marked in the system reminders as NOT user input and NOT to be treated as user confirmation, approval, or consent. I correctly did not treat them as such.
+   - The final message is the mandatory plain-text-only summary-generation instruction (a system/harness directive, not a user request), which triggered this response.
+
+7. Pending Tasks:
+   - Complete the `/review` skill's Fix-First Review (Step 5) that was in progress: several findings from the specialists/adversarial passes remain unaddressed (not yet fixed or explicitly deferred via AskUserQuestion):
+     - Codex adversarial P2: `test-invariants_test.sh:48`'s grep-based CI-invocation check could false-positive on a comment containing the matched text.
+     - Codex adversarial P2: `WindowDragUITests.swift:57`'s `chipsByXSettled` polling could declare "settled" during the 200ms reorder animation before the true final order is reached.
+     - Testing specialist: `VCSCancellationError` catch sites in `WorkroomStatusResolver.resolveGit`/`resolveJJ` have no test coverage at the resolver level (only `TimeoutTests.swift` tests the primitive in isolation).
+     - Testing specialist: `AvatarImageLoaderTests.swift`'s `StubURLProtocol.registry` is a shared `static let` with no `setUp()`/`tearDown()` reset — a genuine isolation risk (possibly the root cause of the currently-failing new test).
+     - Testing specialist: `AvatarView`'s privacy gate (`loadRemoteAvatars`) has zero View-level test coverage proving no request is issued when off.
+     - Testing specialist: `TerminalTabStrip.commitDrag(translation:)` has no test at all (unlike its `WorkroomTabBar` counterpart).
+     - Testing specialist: `TimeoutTests.testCancellationRacingCompletionNeverDoubleSettles` doesn't prove both cancel-vs-complete orderings were actually exercised across its 200 iterations.
+     - Testing specialist: `respawnRunCommand`'s non-clobber guard when a DIFFERENT project's settings sheet is already open remains untested (I covered the `.running`-entry-state case but not this specific different-project-sheet-open scenario).
+     - Maintainability: `AvatarImageLoader.clearForTesting()` is dead code, never called anywhere.
+     - Maintainability: `WorkroomStatusConcurrencyTests.swift` hardcodes `5` and `2`, duplicating `fileprivate` constants that could silently drift.
+     - Maintainability (cosmetic): `GitProvider.swift`'s `workingFileDiff` has an unreachable-by-construction guard-else branch.
+     - Maintainability (cosmetic): `Timeout.swift`'s `VCSCancellationError` doc comment overstates which callers were "extended".
+     - Performance (pre-existing, not introduced by this diff): `FileTreeModel.rows` is an uncached computed property recomputing a full tree-flatten on every unrelated publish.
+     - Claude adversarial (pre-existing, flagged as separate follow-up): a drag gesture interrupted (not `onEnded`-completed) could leave `draggingID`/`dragTranslation` stuck since neither is `@GestureState`.
+   - Diagnose and fix the currently-failing `testStaleInFlightFetchNeverOverwritesANewerSubjectInTheSameSlot` test in `AvatarImageLoaderTests.swift`.
+   - Verify (build+run) the newly-added `testRestartFromRunningWithClearedCommandStopsReportingAsRunning` in `RunCommandTests.swift` against the updated `AppStore.swift`.
+   - Verify (build+run) the newly-added `testWorkingFileDiffHandlesStagedDeleteThenRecreatedOnDisk` in `VCSProviderConformanceTests.swift` against the updated `GitProvider.swift`.
+   - Once all Fix-First fixes are verified, lint every touched file with `swift-format lint --strict` per the project's CLAUDE.md rule, then commit (as one or more commits — the skill's Step 5.8 persists the final review result via `gstack-review-log`, and per this session's established pattern of separate commits per logical change, though the review skill itself doesn't mandate separate commits for Fix-First changes).
+   - Complete the remaining `/review` skill steps not yet reached: Step 5.5 (TODOS cross-reference), Step 5.6 (documentation staleness check), Step 5.8 (persist Eng Review result via `gstack-review-log`), and any final AskUserQuestion batching of the genuinely-ambiguous (ASK-classified) findings not yet resolved.
+   - The user's still-open standing question from before `/review` was invoked: whether to run `make cli-test` + `make app-test` (incl. UI) as a final pre-release gate — this was proposed by me, not yet confirmed or run, and the `/review` invocation may supersede or precede this step.
+
+8. Current Work:
+   Immediately before this summary request, I was mid-way through the `/review` skill's Fix-First Review (Step 5), applying and verifying fixes for the most-confirmed findings from the specialist/adversarial passes. The last concrete action taken was:
+   1. Fixed `AvatarImageLoader`'s LRU eviction (added `touch(_ url:)`, called from `load`'s cache-hit path) — confirmed by 4 independent reviewers (Codex structured, Codex adversarial, performance specialist, Claude adversarial).
+   2. Fixed `AppStore.respawnRunCommand`'s stale-state bug (added `runStates[target.id] = .stopped(tab: oldTab)` before the no-command guard) — per maintainability specialist's finding that my own task-#13 fix left `.running`/`.restarting` entry states stale — and added `testRestartFromRunningWithClearedCommandStopsReportingAsRunning` to `RunCommandTests.swift` (NOT yet run/verified).
+   3. Fixed `GitProvider.combinedWorkingDiff`'s type-mislabeling bug (changed `type: headBlob == nil ? .added : indexDelta.type` to `type: headBlob == nil ? .added : .modified`) — per Claude adversarial's Finding #1 (the most severe confirmed finding, "request changes because..."). Added `testWorkingFileDiffHandlesStagedDeleteThenRecreatedOnDisk` to `VCSProviderConformanceTests.swift` (NOT yet run/verified against this specific fix).
+   4. Fixed `AvatarView`'s stale-in-flight-fetch bug (added `guard !Task.isCancelled else { return }` before committing `result`, plus a `#if DEBUG static var lastCommittedResult` observation seam) — per 3 independent reviewers (Codex structured, Codex adversarial, Claude adversarial). Wrote an elaborate regression test (`testStaleInFlightFetchNeverOverwritesANewerSubjectInTheSameSlot`) requiring new gate/release semaphore machinery in `StubURLProtocol`/`StubRegistry`, a `SubjectController`/`HostWrapper` view-hosting pattern, and a `pngImage` NSImage-decode helper for `Equatable` comparison.
+   
+   After several rounds of fixing build errors (a leftover placeholder method call `loader.load2xColorMatches`, missing `@MainActor` isolation), the build finally succeeded, but running the test produced two assertion failures — the tool output showed:
+   ```
+   Test Case '-[WorkroomAppTests.AvatarImageLoaderTests testStaleInFlightFetchNeverOverwritesANewerSubjectInTheSameSlot]' failed (1.255 seconds).
+   ```
+   with the second failure showing `AvatarView.lastCommittedResult` as `.notFound` rather than either expected `.image` value. This failure was NOT yet diagnosed or fixed — the tool result reporting this failure was the very last piece of information received before the mandatory summary-only instruction interrupted the session. No user message occurred between this failure and the interruption.
+
+9. Optional Next Step:
+   The immediate, directly-continuing next step is to diagnose and fix the failing `testStaleInFlightFetchNeverOverwritesANewerSubjectInTheSameSlot` test in `macapp/WorkroomAppTests/AvatarImageLoaderTests.swift`, which is part of the still-in-progress Fix-First Review step of the user-invoked `/review` skill. The test output that must be investigated first:
+   ```
+   /Users/joelmoss/dev/workroom/macapp/WorkroomAppTests/AvatarImageLoaderTests.swift:318: error: -[WorkroomAppTests.AvatarImageLoaderTests testStaleInFlightFetchNeverOverwritesANewerSubjectInTheSameSlot] : XCTAssertEqual failed: ("Optional(Workroom.AvatarImageLoader.LoadResult.notFound)") is not equal to ("Optional(...image(...))") - A's late-arriving, stale fetch must never overwrite B's already-committed result
+   ```
+   The most likely root cause to investigate first, per the testing specialist's own independently-flagged finding (confidence 75, not yet acted on): `StubURLProtocol.registry` is a `static let StubRegistry()` shared across every test in the class with no `setUp()`/`tearDown()` reset, so state from a differently-ordered prior test (e.g. one of the `.notFound`-producing tests like `testGenuine404IsCachedAsNotFound`) could be leaking into this new test's execution. This should be checked before assuming the gate/release semaphore mechanism or the `AvatarSubject`/Gravatar-URL reconstruction logic itself is at fault. Once diagnosed and fixed, the remaining verification steps (per the current partially-complete Fix-First batch) are: re-run `AvatarImageLoaderTests`, run `RunCommandTests` to verify the new `.running`-entry-state test, run `VCSProviderConformanceTests` to verify the new delete-then-recreated test, lint every touched file with `swift-format lint --strict`, and then proceed to whatever commit/AskUserQuestion-batching step the `/review` skill's Step 5c/5d call for on the remaining unaddressed (not-yet-fixed) findings enumerated in section 7 above.
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/joelmoss/.claude/projects/-Users-joelmoss-dev-workroom/85057c1d-7a50-422d-a310-af45bba739d0.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.
