@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b33douvot</task-id>
+<tool-use-id>toolu_01GytU8YVtyBLmA2Ji2ZHjLM</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/63f6f04e-9491-4528-9983-70076912bbe4/tasks/b33douvot.output</output-file>
+<status>failed</status>
+<summary>Background command "Poll GitHub status, rerun failed jobs on recovery" failed with exit code 3</summary>
+</task-notification>
