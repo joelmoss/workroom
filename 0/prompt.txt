@@ -1,0 +1,123 @@
+<task-notification>
+<task-id>a8054b00005a64975</task-id>
+<tool-use-id>toolu_012SRamyo1Ca8rtsG4Bw5VrW</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/5e64fba2-ede6-4e1c-a183-fa42e54891b4/tasks/a8054b00005a64975.output</output-file>
+<status>completed</status>
+<summary>Agent "Categorize ghostty engine changelog" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result># Ghostty Engine Digest: 332b2aef (1.2.3–1.2.9 pin) → 35e1a016 (1.3.0–1.3.2 pin)
+
+1175 commits reviewed. Below is the curated signal for a macOS-only embedder of libghostty's terminal-surface (GhosttyKit/apprt-embedded) API.
+
+## 1. Crash / stability / memory-safety fixes
+
+- `6236d385` — grab-bag "Misc runtime safety fixes" PR (#13275), several small guards bundled.
+- `d3f4476d` — PageList hardening for capacity edge cases (#13244): guards `RefCountedSet` lookups against zero-capacity sets, fixes `increaseCapacity` growth from zero-capacity dimensions, documents the pool-reuse zeroing invariant.
+- `bc6ca3ff` — bitmap allocator chunk-region sizing bug fixed (#13240).
+- `39b3c477` — page ownership now tracked explicitly on PageList nodes, closing a dangling-reference class of bug (#13241).
+- `ad692f1e` — free-listed page memory is now actually returned to the OS instead of retained forever (#13245).
+- `ea37f467` — integer overflow in `selectPrev()` when there are no active search matches; panic-regression test added alongside (#12936).
+- `5a1edfb2` — wrap-count guard when a resize pushes the cursor into scrollback, preventing corrupted wrap state (#12935).
+- `4782e59e` — cursor subtraction in `resizeCols` now saturates instead of wrapping/underflowing on shrink (#12907).
+- `6246c288` — **use-after-free in `Surface.setSelection`**: existing pins weren't freed before replacement; regression test added (`Screen.select` frees existing pins) (#12894).
+- `c22df09d` — UTF-8 grapheme-length overflow in libghostty fixed (#13145).
+- `83027407` — memory leak on invalid Kitty image command payloads fixed.
+- `0509f00a`/`0069e28c` — APC parser now caps input at a `max_bytes` limit to prevent unbounded-allocation DoS from crafted APC strings, limit exposed via libghostty (#12349).
+- `53e400ad` — CLI `readEntries` leak + double-free fixed (#12811, low direct relevance but same allocator pattern used elsewhere).
+- `c5946f4f` — libghostty tracked grid refs weren't detached on free — a dangling-reference risk for any embedder holding grid refs across a surface free (#12795).
+- `7b49d1f1` — `PageList.reset` wasn't resetting page serial minimums, could desync scrollback bookkeeping after reset.
+- `60f767dd` — surface left-click pin handling now guarded by screen-generation counters (stale-pin protection).
+- `65744ffe`/`5fa37f2b` — **`PageList.scroll` used the wrong integer type for remaining-row count** — broke/could crash on long scrollback histories (#13048).
+- `1c14b961` — memory not zeroed in wasm/freestanding runtime-safety builds, fixed (#11955).
+- `cca4c788` — `page_serial_min` not updated when erasing a page — could crash search (#11965).
+- `e9ca0f8c` — renderer state mutex now acquired **before** calling `processLinks` — was an unlocked-access race (#12463).
+- `6057f8d2` — OSC parser's trailing-state capture was wrong and got redone — could mis-parse chained OSC sequences (#11873).
+- `249aee70` — buffer overflow fixed in the swift-vt-xcframework example (example code, not shipped, but the same overflow class could exist in real embedder-facing accessors).
+
+## 2. Terminal core / VTE / PTY behavior fixes
+
+- `0aaedf43` — cursor origin-offset arithmetic now saturates instead of wrapping.
+- `0ff4e41b` — pin wrapping fixed at row boundaries (affects scrollback pin stability underlying search/selection anchors).
+- `5bc6588e` — empty search needles now ignored.
+- `a23d90c8` — search cached results reset after resize — fixes stale hits surviving a resize (#13274).
+- `7f073c4c` — APC string bytes now dispatched in bulk slices rather than per-byte (#13270).
+- `e7a3a1fc` — termio stops bridging pty reads while the parser is idle (#13237).
+- `15a2edcb` → **reverted** by `b14d9238` — "bound POSIX read-ahead on non-Darwin" was tried then reverted same cycle; don't chase this pattern, it didn't stick.
+- `160c3c69` — scroll-region optimizations with minor correctness fixes mixed in (#13231).
+- `551bf0af` — viewport pin during resize-reflow fixed; reflow could previously leave the viewport pinned to the wrong row (#12300).
+- `563b085a` — zero-width grapheme attachment fixed for codepoints landing exactly at a pending-wrap boundary (#12581).
+- `24d664f0` — variation selectors now apply to the preceding codepoint correctly, fixing emoji-presentation width bugs (#12596).
+- `a03b52e1` — cursor position now preserved correctly across reflow (#12598).
+- `04fa71e2` — search wrap-around behavior corrected (#11449).
+- `2bbbca36` — bash emits OSC 133;P (not ;A) under ble.sh — semantic-prompt marker fix relevant if Workroom parses OSC 133 for prompt boundaries (#11644).
+- `3a65bd5c` — zsh secondary prompts now use OSC 133;P;k=s (#11596) — semantic-prompt protocol detail.
+- `3dc69981` — bash `PROMPT_COMMAND` ending in a newline now handled correctly (#11621).
+- IME/composition, frontend-side but same underlying key/focus contract Workroom's own `GhosttySurfaceView` implements — worth a regression pass given Workroom's own IME/focus history in memory: `91f66da2` (route IME preedit commits through key events, #13222), `f0bb6ed9` (avoid replaying keys that commit preedit, #12547), `4dcb09ad` (suppress control-char input while composing, #12518), `df4f9815` (Korean IME + arrow keys, #12447).
+- Surface reparenting/focus during drag-between-windows-or-tabs — again frontend-side (ghostty.app's own Swift), but the same class of bug Workroom has hit before per its own focus-responder memory notes: `3e3705b9` (focus/render state after dragging to another window/tab, #12338), `366c3483` (first responder after dragging a non-focused surface).
+
+## 3. Rendering / performance
+
+- `7e02af87` — **Scrollback page compression: 70–90% memory savings** on offscreen scrollback pages (LZ4-based, debounced/idle compression, transparent decompression for search) (#13264). Big multi-week effort; representative sub-commits: `c62c1598` (standalone LZ4 codec), `ebc3ffd2` (compressed page representation), `421fe8da` (integrate into PageList), `0d015b2f` (preserve compressed pages during search), `9a4bd212` (optimize LZ4 decode + differential tests), `25e62456` (avoid the renderer starving compression), `172f15da` (exposed through libghostty-vt).
+- `11b9a6ef` — renderer hands off the state mutex instead of holding it, avoiding frame starvation under load (#13265).
+- `7cb44fea` — renderer skips allocating when there are no active hyperlinks on screen (#13258).
+- `98a7c0f6` — render-state update path: **~2.7x–11x reduction in lock hold time** (#13227).
+- `634957c8` — VT throughput **+1.2x–3.4x** from real-world-dataset tuning: bulk style-ref release, bulk style-only cell fills, inline CSI-entry handling, inline ASCII decode in the SIMD ESC scan (#13226).
+- `2da015cd` — further VT processing **+1.5x–6x** throughput: skip style-map update when SGR is a no-op, bulk CSI parameter parsing, direct CSI-final dispatch, batched codepoint-run row fills (#13220).
+- `0535770e` — termio pipelines pty reads to overlap parsing with draining: **+25–55% IO throughput** (#13209).
+- `14d9e600` — renderer skips `updateFrame` entirely when the surface isn't visible (occluded/minimized panes stop costing frames).
+- `dac341ca`/`cabbdee3` — cursor height now respects `adjust-cursor-height` (a regression from an earlier metrics change was caught and fixed) (#13225).
+- `8fcead00` — new glyf (TrueType outline) decoder/rasterizer added to the font subsystem (#12893), feeds the new Glyph Protocol (see §4/§6).
+
+## 4. Protocol / feature additions relevant to an embedder
+
+- `c19ce03b` — **`Se` terminfo entry changed again**: cursor reset now restores the **configured default** cursor style (not a hardcoded escape) (#12487). This refines the `\E[2 q`→`\E[0 q` change you already know about — worth re-verifying Workroom's terminfo/cursor-reset assumption against this, since the reset target is now dynamic based on the new default-cursor-style option (`42fcd58d`, below).
+- `42fcd58d`/`66950a4a`/`2444e4d5` — libghostty-vt: new C options to configure the terminal's default cursor style and blink independent of the `Se` reset value (#12900).
+- `3ff6d08f`/`14c82988` — lib-vt now reports OSC and Kitty color queries (query round-trip support) (#13239).
+- `4a7cabc4`/`f00e9069` — lib-vt color-scheme report encoder added (dark/light query response) (#13192).
+- `98df7efc` — unicode grapheme-width API added to lib-vt (#13186).
+- `8ef91934` — unicode codepoint-width API added to lib-vt (#13178).
+- `cca51729` — scroll-to-row viewport-scrolling API added to lib-vt (#13179).
+- `68875090`/`91c87e2c` — **new Kitty drag-and-drop protocol parsed via OSC 72** — the kind of new sequence flagged in scope (#13029).
+- `4812fcdc` — Kitty graphics protocol: generation stamps added, "transmit time" removed — a placement-identity/caching contract change for any kitty-image consumer (#13173).
+- `842badca` — selection-gesture state exposed to the Zig side of lib-vt (#13156).
+- `2ba5e6b9` — `pwd_changed` callback added for OSC 7/9/1337 in lib-vt — directly relevant to cwd tracking (#12956).
+- `69095e29` — mouse-tracking `click_events=2` mode support added (#12953).
+- `179fe571`/`f146db55` — **Glyph Protocol Glossary**: a brand-new APC-based glyph registration/query/clear protocol implemented and hooked into terminal state (#12930, #12937). Entirely new protocol surface, worth tracking if a future embedding wants custom glyph rendering; guarded input validation added alongside (`e45f002d`, `f0d81f15`).
+- `52368cbc` — new `selection_changed` notification emitted by core (#12902).
+- `fab87779` — DECBKM backarrow key mode (mode 67) implemented (#12226).
+- `b18705c4`/`21eb30d9` — terminal modes + DECRPM (report-mode) encoding exposed via the C API (#11579/#11578).
+- `e90dbc9d` — focus-reporting (DECSET 1004) encoding exposed to C and Zig APIs (#11577) — relevant given Workroom's own focus-reporting memory note (ghostty_app_set_focus dependency).
+- `0f2eaed6` — mouse-encoding Zig+C API added (#11553).
+- `b613ffcf` — hyperlink matching now respects semantic-prompt boundaries, preventing links from incorrectly spanning prompt/output boundaries (#12435).
+
+## 5. libghostty embedding-API changes (apprt/embedded — the surface Workroom actually bundles)
+
+- `f16d3548` — **`ghostty_surface_free_text` parameter mismatch fixed** (#12025). This is the exact leak the task already knows is fixed on this pin — confirmed shortsha for the record.
+- `f90180f9` — every core `Surface` now carries a 64-bit unique ID (#12027) — a new stable identity primitive, useful if Workroom ever needs to correlate surfaces across callbacks/notifications.
+- `ad5e9679` — render-state default foreground color changed to white when otherwise unset (#11736) — check this against any fallback-color handling Workroom has.
+- `0066dfa9` — core gained a function to read foreground-process info (pid/tty) directly from a `Surface` (#11639); currently consumed by ghostty.app's own AppleScript/App-Intents layer, but the underlying Surface method may be reachable for an embedder wanting process info without shelling out.
+
+**Architecture note:** the large majority of "libghostty:"/"vt:" API work in this window (selection APIs, grid-ref/cell inspection, render-state C API, kitty-graphics inspection) actually landed in a **new, separate library — `libghostty-vt`** — not in the classic apprt/embedded surface (`ghostty_surface_*`, `ghostty_app_*`) Workroom bundles today. It has its own xcframework/cmake/pkg-config packaging. None of it is part of GhosttyKit yet. See §6.
+
+## 6. Notable new features (including libghostty-vt, GTK-only, config-only)
+
+- **libghostty-vt**: an entirely new embeddable C library covering *only* VT/terminal state (no PTY, no rendering, no app runtime), built up over hundreds of commits this cycle. Distinct from GhosttyKit. Highlights, in case Workroom ever wants a lighter "inspect terminal state" dependency (e.g. a headless diff/preview feature) or eventually migrates parts of its selection/rendering-inspection code onto it:
+  - Lifecycle: `952fbce0` (initial C API), `302e68fd`/`18fdc153`/`8b9afe35`/`fe6e7fbc`/`aa3e6e23` (new/free/vt_write/scroll_viewport/resize/reset).
+  - Effects/callback system for query + side-effect handling: `69104fb1`, `d5bd331c` (device_attributes, enquiry, xtversion, size_report, title_changed, color_scheme, write_pty, bell effects).
+  - Grid/cell inspection: `d2a29de9`, `df8813bf` (GhosttyGridRef replacing an earlier per-cell API), `5c8b9f3f` (GhosttyCell/GhosttyRow), `f168b3c0` (ghostty_terminal_get).
+  - Render-state API (cursor, colors, dirty rows, cell iteration): `00ffc22e` plus ~15 follow-ups.
+  - Selection API (word/line/output/all helpers, ordering, adjustment, containment, per-cell selection state, SelectionGesture): `5f086947`, `6d089a54`, `b869a6e5`.
+  - Kitty graphics inspection (placement iterator, z-layer filtering, viewport-relative rects, image lookup): `800cc64f`, `fdb6e3d2`.
+  - title/pwd exposed in the C API: `82f7527b` — directly mirrors Workroom's own OSC7/pwd-tracking work.
+  - `total_rows`/`scrollback_rows` getter: `f452087e`.
+  - WASM support (struct-layout metadata, growable function table) — relevant only if a web-based surface is ever considered.
+- GTK-only: quick-terminal-screen for Wayland (#11117), blur-region rework across Wayland/X11 (KDE blur → ext-background-effect-v1), dbus/portal-based URL opening. Zero macOS relevance, shows feature-parity direction only.
+- CLI (Ghostty's own, not embedder-facing): new `+ssh-cache` rework, `+explain-config`/`+edit-config` pager support, new `+ssh`-wrapping action.
+- Shell integration: bash/zsh/fish/nushell/elvish all switched their SSH-wrapping to the new `+ssh` action — if Workroom bundles ghostty's shell-integration scripts verbatim, this is a behavior change worth a smoke test.
+- Windows: extensive MSVC/DLL/CRT/CMake build work (DllMain stubs, ubsan disabling, CRT init in DLL mode) — not applicable to macOS.
+
+## 7. Everything else / low relevance
+
+Roughly 350–450 of the 1175 commits are pure noise for a macOS libghostty embedder: ~127 automated "Update VOUCHED list" contributor-trust-bot commits, ~75 Windows/MSVC/DLL-only build commits, ~45 GTK-only commits, ~22 Nix/zon2nix/flake build-system commits, ~16 CMake-only commits (overlapping the above), ~11 i18n/translation-doc commits, ~8 iTerm2-colorscheme bundle updates, plus scattered Android/WASM build-only plumbing and Ghostty's own macOS-app-frontend chrome (tabs, command palette, menu shortcuts, window restoration, About dialog) that lives in ghostty.app's Swift code, not the libghostty engine Workroom embeds.</result>
+<usage><subagent_tokens>104802</subagent_tokens><tool_uses>4</tool_uses><duration_ms>346282</duration_ms></usage>
+</task-notification>
