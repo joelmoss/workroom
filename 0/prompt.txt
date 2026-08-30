@@ -1,0 +1,173 @@
+<task-notification>
+<task-id>a69ea277aa34b9b74</task-id>
+<tool-use-id>toolu_01GbcVS6UPo1Jn3i9miQNSFo</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/12c88a6c-11e0-487b-9bf1-6d2ad26081db/tasks/a69ea277aa34b9b74.output</output-file>
+<status>completed</status>
+<summary>Agent "Survey macapp XCUITest suite" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result># XCUITest Suite Survey — `macapp/WorkroomAppUITests/`
+
+**Scope:** 37 source files, 38 executed `XCTestCase` classes (36 concrete files + `VCSToolbarUITestsBase`, an abstract base with zero runs of its own, executed twice via its two concrete subclasses `VCSToolbarGitUITests`/`VCSToolbarJJUITests`), **215 individual test-method executions**, **~227 real app-process launches** (215 base, +7 from `AgentResumeUITests` doing 2 launches per test, +6 from `SessionRestoreUITests`' quit/relaunch pairs, −1 for `DiffHighlightUITests.testRubyDiffIsHighlighted`, which `XCTSkip`s before ever calling `launchedApp()`). Every test method calls its own `launchedApp()` helper — there is no shared/reused app instance across test methods anywhere in the suite, so the launch count above is close to the true CPU/wall-time cost driver.
+
+One infra note up front so it isn't relitigated: **parallelizing this suite is not a safe lever.** `WorkroomApp/Core/UITestFixture.swift` documents that `-parallel-testing` workers are separate processes sharing one on-disk `UserDefaults` domain, so one worker's test can silently corrupt another's read mid-run ("a class holding the key true for the length of a test body silently early-returns another class's history refresh, in a worker whose diff has nothing to do with any of this"). The path to a faster suite is fewer/cheaper launches, not more concurrent ones.
+
+---
+
+## Ranked cut/consolidation list (ranked by launches-saved × confidence)
+
+### 1. `VCSToolbarUITests.swift` — de-duplicate the git/jj backend parameterization (≈18 launches saved, high confidence)
+`/Users/joelmoss/dev/workroom/macapp/WorkroomAppUITests/VCSToolbarUITests.swift`
+
+`VCSToolbarUITestsBase` declares 20 tests once; `VCSToolbarGitUITests` and `VCSToolbarJJUITests` each run all 20 → **40 launches for 20 unique test bodies.** Only two of the 20 (`testBranchSegmentShowsTheCurrentRefAndItsBackendNoun`, `testCaptionAlwaysRendersAndTheSegmentIsNotAControl`) assert anything that actually differs between backends (the "Branch" vs "Bookmark" noun). The other 18 — every sync-state test, the push/pull/fetch seam tests, the failure-dialog tests — exercise the same SwiftUI view against the same backend-agnostic `FixtureVCSWriter`/seeded `VCSRemoteState`; nothing in their assertions is backend-shaped.
+
+There's a second, independent reason to cut, stated in the file's own header: **"The jj suite needs a real `jj` ≥ 0.43 on PATH… on a machine with jj missing or too old the sync segment correctly disables itself and the state tests fail."** So 20 of the 40 launches are also coupled to an external tool-version dependency that has nothing to do with the behavior most of them test. `/Users/joelmoss/dev/workroom/macapp/WorkroomAppTests/VCSSyncPresentationTests.swift` exists and, per the file header's own claim, already covers "the variant ordering and the backend vocabulary" at unit level.
+
+**Recommendation:** keep only the two noun-sensitive tests parameterized (4 launches); move the other 18 to a single git-only class. **Net: 40 → 22 launches**, and 18 tests stop depending on a jj install.
+
+### 2. `AgentResumeUITests.swift` + `SessionRestoreUITests.swift` — scope out of routine runs, don't delete (≈29 of ~227 total launches, i.e. ~13% of the whole suite from 2 files)
+`/Users/joelmoss/dev/workroom/macapp/WorkroomAppUITests/AgentResumeUITests.swift` (7 tests, **14 launches** — every test does a quit+relaunch cycle)
+`/Users/joelmoss/dev/workroom/macapp/WorkroomAppUITests/SessionRestoreUITests.swift` (9 tests, **15 launches** — 6 tests quit+relaunch, 3 launch once)
+
+These are the two most expensive files per-test in the suite (each real launch here pays for a fresh shell boot, at least one real quit, and a second fresh boot). Both files' own doc comments already say "Run on a GUI login session: `make app-uitest`, or scoped via `xcodebuild -only-testing`" — i.e., the repo already tells you to scope these rather than run them in the default sweep. That's the existing guidance to lean on, not a new one to invent.
+
+**Do not cut** `AgentResumeUITests.testWithNoSeededRootDiscoveryIsANoOp` or `SessionRestoreUITests.testWithoutASessionPathNothingIsWritten` despite looking like weak "nothing happened" assertions — they are the suite's **isolation tripwires**. `UITestFixture.swift` states outright that without default-off `agentSessionRoot`, "the existing UI tests would read the DEVELOPER's real `~/.claude`," and without default-off `sessionFilePath`, "the 30-odd existing UI tests would each write over the DEVELOPER's own `Workroom Dev` session." Losing these removes the guard that keeps every *other* test in the suite hermetic — keep, with this reasoning attached.
+
+The 7 `AgentResumeUITests` tests are individually not reducible either: the claude-only and codex-only tests each prove *exclusivity* (that seeding one agent's history does NOT also offer the other's button), which the both-agents test can't show on its own.
+
+**One concrete, safe merge within `SessionRestoreUITests`:** `testSplitSurvivesRelaunch` and `testTabCountSurvivesRelaunchWithNoStrayTerminal` both just do "mutate state → quit → relaunch → assert a count." Build a split **and** extra tabs before the one quit, assert both pane-count and tab-count after the one relaunch. **Saves 1 full 2-launch cycle.**
+
+**Recommendation:** exclude both files from the routine/full sweep via `-only-testing` exclusion (or a separate "slow" scheme), run them on a slower cadence (pre-release / nightly), keep all tests as-is otherwise.
+
+### 3. Trivially-subsumed single-assertion tests (4 launches saved, high confidence — each is one full launch to prove something another test in the same file already exercises as a side effect)
+
+- `NewWindowUITests.testNewWindowMenuItemPresent` — `/Users/joelmoss/dev/workroom/macapp/WorkroomAppUITests/NewWindowUITests.swift` — asserts the menu item exists; `testNewWindowOpensBlankSecondWindow` in the same file *clicks* that exact item, which necessarily proves it exists too. Cut the standalone existence test.
+- `NewWorkroomDialogUITests.testNewWorkroomMenuItemPresentAndEnabled` — `/Users/joelmoss/dev/workroom/macapp/WorkroomAppUITests/NewWorkroomDialogUITests.swift` — same shape; `testDialogOpensListsAndFiltersProjects` clicks the same item and gets the dialog open. Cut.
+- `SettingsSidebarUITests.testAboutPaneHasUpdateControlsAndLinks` — `/Users/joelmoss/dev/workroom/macapp/WorkroomAppUITests/SettingsSidebarUITests.swift` — `testClickingEachSidebarRowSwitchesTheDetailPane` already clicks into the About pane and asserts `about.checkForUpdates`. Fold this test's four remaining id checks (`about.version`, `about.repo`, `about.releaseNotes`, `settings.control.releaseChannel`) into that existing About-pane visit instead of a second full launch.
+- `WorkroomsViewUITests.testActiveWorkroomShowsATab` — `/Users/joelmoss/dev/workroom/macapp/WorkroomAppUITests/WorkroomsViewUITests.swift` — the file's *only* test, asserting a `workroom.tab.*` element exists on launch. This exact precondition is already required (and therefore proven) by `WindowDragUITests` and every `TabStripOverflowUITests`/`TabStripScrollIntoViewUITests` test, which all wait on a workroom chip before doing anything else. **Cutting this removes the entire file/class** (1 launch, 0 unique signal).
+
+### 4. `TabStripOverflowUITests.testChromeGlyphButtonsAreHittableWhenInline` + `…WhenPinned` — fold into `testChromeGlyphButtonsClaimTheirWholeWell` (2 launches saved, high confidence)
+`/Users/joelmoss/dev/workroom/macapp/WorkroomAppUITests/TabStripOverflowUITests.swift`
+
+Both tests exist to re-disprove a finding that `TODOS.md` (line ~2604) already closed: *"Chrome glyph buttons' `isHittable == false`" — closed as an environmental XCUITest artefact, not an a11y defect; nothing in the app was wrong.* Line ~2617 explains why: `isHittable` is accessibility hit-testing, which can't distinguish a genuinely broken control from a covering window/backgrounded state — so it is structurally the wrong check to keep asserting. The app-specific half of what these tests intend to protect (real on-screen frame, inside the window, not collapsed to a point) is already independently covered by `testChromeGlyphButtonsClaimTheirWholeWell` and the geometry tests (`testAddTabButtonStaysVisibleWhenTabsOverflow`, `testPinnedAddButtonKeepsGutterFromToolbar`, `testWorkroomBarControlsStayVisibleWhenChipsOverflow`). This is squarely the "asserting framework/OS-level behavior" pattern the task called out.
+
+### 5. `WindowDragUITests.testDraggingWorkroomTabReordersTwoChips` — documented flake, isolate rather than run in the default batch
+`/Users/joelmoss/dev/workroom/macapp/WorkroomAppUITests/WindowDragUITests.swift`
+
+`TODOS.md` ("`WindowDragUITests.testDraggingWorkroomTabReordersTwoChips` is a known gesture-timing flake") records a reproduced pass-then-fail on two **identical back-to-back reruns of the identical binary** during the beta.24 release gate — a coin-flip test, by the project's own record. It also costs real wall time on top of that: the drag is deliberately synthesized `withVelocity: .slow, thenHoldForDuration: 0.5`. Not a pure cut candidate (it's the only test proving the reorder gesture works at all), but it should not be in the routine/full-suite path where its ~50% flake rate costs a rerun or a false red. Recommend a dedicated retry wrapper or isolating it to a "known-flaky" scheme rather than deleting.
+
+### 6. `DiffHighlightUITests.testRubyDiffIsHighlighted` — dead code, delete (0 runtime cost, but inflates the count)
+`/Users/joelmoss/dev/workroom/macapp/WorkroomAppUITests/DiffHighlightUITests.swift`
+
+Immediately throws `XCTSkip` before calling `launchedApp()` — it never launches the app and costs no wall time, so it isn't a *speed* fix, but it is a "test" that runs nothing and never will (SwiftUI's async `@State` highlight write has no observable a11y-changed notification for XCUITest, per the method's own doc). Real coverage already lives in `DiffHighlightMapperTests.testFixtureRubyDiffPipelineProducesHighlightedLines` (unit, per the same doc). Delete the method rather than leave a permanent skip in the UI target.
+
+### 7. Lower-priority consolidation opportunities (medium confidence, smaller individual savings)
+
+- **`ViewMenuShortcutsUITests.swift`** (`/Users/joelmoss/dev/workroom/macapp/WorkroomAppUITests/ViewMenuShortcutsUITests.swift`) — 8 tests, each a full launch to flip one shortcut. Four are literal `…WithTerminalFocused`/`…WithoutTerminalFocused` pairs testing the same shortcut (Projects ⌃⌘S, OS-standard ⌥⌘S, secondary ⌥⌘B). Nothing stops testing both focus states inside one launched instance (click a terminal, test, then click off it and test again) — could cut this file's launches from 8 to ~4.
+- **`SplitPaneUITests.testTwoSplitGroupsBothPersistAcrossSelection`** + **`testEachSplitGroupBracketFramesItsOwnChips`** (`/Users/joelmoss/dev/workroom/macapp/WorkroomAppUITests/SplitPaneUITests.swift`) — both launch the identical expensive 3-workroom/2-split-group fixture. Combine into one test asserting bracket geometry and cross-group persistence together. Saves 1 launch.
+- **`StatusBarCwdUITests.swift`**'s two tests (`/Users/joelmoss/dev/workroom/macapp/WorkroomAppUITests/StatusBarCwdUITests.swift`) both wait up to 20s for a real OSC-7 cwd report before doing anything — combine into one launch (open menu, assert both items, click Copy, assert pasteboard). Saves 1 launch (and ~20s of shared wait).
+- **`NewWorkroomDialogUITests.waitForFileMenuItemEnabled`** (same file as above) busy-loops opening/reading/Escaping the File menu with **no sleep between iterations**, for up to 8s, to observe `@FocusedValue` republication timing. Not removable — it's testing a real async race — but it's a real wall-time/thrash cost signal (repeated menu-open/close animations) worth a small floor delay rather than a tight spin.
+
+### 8. Keep, but exclude from full/CI-batch runs — `HistoryStressUITests.testLargeHistoryStaysInteractive`
+`/Users/joelmoss/dev/workroom/macapp/WorkroomAppUITests/HistoryStressUITests.swift`
+
+Asserts a hard **2.0-second** wall-clock budget for opening a changeset from an 800-row synthetic page — deliberately tight ("a budget under the 2000ms app-hang threshold, so a stalled main thread fails instead of passing slowly"). That's exactly the shape the task calls out: a timing assertion that is more likely to trip from contention (CPU shared with 200+ other launches in a serial batch run) than from a real regression. The file's own doc comment already says "Run per-method: `xcodebuild … -only-testing:…/HistoryStressUITests/&lt;method&gt;`" — an explicit, pre-existing instruction to scope it rather than fold it into the full sweep. Keep it as a standalone perf regression check for the WORKROOM-2B hang fix; don't run it in the default batch.
+
+---
+
+## Exhaustive per-file inventory (all 37 files)
+
+Each entry: test names — what's exercised — cost signal.
+
+**`ActivityBarDirtyDotUITests.swift`** (1 test, 1 launch) — `testChangesIconShowsDirtyForDirtyWorkroom`: dirty workroom → Changes icon's a11y *value* says "has changes," no peer icon inherits it. Cheap, unique signal, keep.
+
+**`ActivityBarUITests.swift`** (3, 3) — icon-click swaps Changes/Files pane content; clicking the active icon collapses it; History collapses in place inside the Changes stack. Distinct, cheap. Keep.
+
+**`AgentResumeUITests.swift`** (7 tests, 14 launches) — see ranked item #2. Real quit/relaunch + filesystem-seeded Claude/Codex session discovery + a real typed-and-submitted `claude --resume` in a live PTY. Highest per-test cost in the suite. Scope out of routine runs; keep all tests.
+
+**`ChangesPanelUITests.swift`** (6, 6) — jj working-copy flat header/file-list rendering; bookmark renders once (toolbar) not twice (header); conflicted-file badge (positive+negative control); sidebar aggregate conflict dot on collapse; in-app "Open File" renders real seeded content. All distinct, moderate cost. Keep.
+
+**`ChangesetDetailUITests.swift`** (6, 6) — History row → changeset detail tab; double-click persists vs. single-click previews; History empties when tabs close; divergence disclosure reveals siblings; renamed-file "old → new" row; root() row renders inert. Distinct, no unit-test substitute (real click-through + real accessibility tree combining). Keep.
+
+**`CommitSheetUITests.swift`** (13, 13) — commit dialog seam: file checkboxes (git) vs. none (jj); blocked-until-summary; count tracks deselection; select-all; per-backend second verb (Amend vs Describe); render-cap vs. real commit count; amend-target naming; rejected-commit keeps sheet+hook output; success closes sheet; cancel discards. Largest "legit" file by test count but low internal overlap — each test is a distinct button/state seam. `testASuccessfulCommitClosesTheSheet`/`testCancelClosesTheSheetWithoutCommitting` are the cheapest pair here and could in principle share a launch, but they test opposite outcomes of the same click, so keep separate.
+
+**`DiffHighlightUITests.swift`** (3, 2 launches — 1 is dead) — Ruby diff highlight test is a permanent `XCTSkip` (see #6, delete); deletion lines never highlighted; unknown-language diffs render plain. Keep the two real tests.
+
+**`DiffPaneFocusUITests.swift`** (1, 1) — regression: clicking a terminal pane focuses it even when a diff pane was focused (AppKit responder-chain bug, not reachable from a unit test). Keep, unique.
+
+**`DiffViewerUITests.swift`** (7, 7) — jj `@` vs git worktree diff source; single-click preview retargets in place; row selection follows focus; double-click persists and coexists with a later preview; side-by-side two-column rendering; per-tab diff-mode toggle overrides the global default. Each proves a distinct interaction; legitimate XCUITest territory (real click-through + tab-state). Keep.
+
+**`GhosttyActionDispatchUITests.swift`** (2, 2) — `SET_TITLE`/`PROGRESS_REPORT` libghostty action dispatch via a real PTY + real shell integration/OSC. Explicitly NOT unit-testable per its own doc (only observable side effect for an engine-internal enum). Cost: `sleep 6`/two `sleep 5`s inside the driven shell commands (~6–10s of intentional wait per test) — justified, this is exactly the "only a real terminal proves this" case. Keep.
+
+**`GhosttyCLIUITests.swift`** (1, 1) — `GHOSTTY_BIN_DIR` / `ghostty` symlink / `+ssh-cache` dispatch, all through a real shell. Already model-citizen behavior: its own doc says "Three questions, one app launch… they share all of its setup" — a good example of consolidation already done right. Keep as-is; nothing to cut.
+
+**`HistoryPushStateUITests.swift`** (4, 4) — exactly-one-badge suppression proof across `@`/pushed/unknown/divergent-sibling rows; changeset header states/omits the unpushed marker. Precise count-based assertions, not reproducible from a unit test (rendering + suppression rules together). Keep.
+
+**`HistoryStressUITests.swift`** (4, 4) — see item #8 for `testLargeHistoryStaysInteractive`. The other three (realizes-only-visible-rows, scroll-away-and-back, off-screen row opens its own changeset) are the WORKROOM-2B lazy-list regression proof and have no substitute. File already self-documents "run per-method." Keep all four, exclude from full-batch runs.
+
+**`InspectorAnimationUITests.swift`** (1, 1) — collapsing a section moves the next header up/back via real accessibility-geometry frames. Cheap, unique (geometry can't be asserted headlessly). Keep.
+
+**`MarkdownPreviewUITests.swift`** (4, 4) — loader shown while WKWebView boots; loader disappears on render; whole-file rendering past a raw `&lt;title&gt;` mention (real truncation regression); raw `&lt;title&gt;` renders as visible text not markup. All distinct WKWebView-rendering assertions no unit test can see. Keep.
+
+**`NavigationHistoryContentUITests.swift`** (1, 1) — `⌘[`/`⌘]` return the PANE (not just the sidebar) to a previous diff — the specific bug was about pane content, so a store-level test couldn't have caught it. Keep.
+
+**`NewWindowUITests.swift`** (3, 3) — menu item present (cut, see #3); new window opens blank; new window matches existing window's size. Cost signal: `Thread.sleep(1.5)` and `Thread.sleep(1.0)` fixed sleeps rather than polled waits — works, but is dead wall time and a minor flake risk if window-settle timing ever grows past 1.5s. Consider converting to a polled wait.
+
+**`NewWorkroomDialogUITests.swift`** (10, 10) — menu item present+enabled (cut, see #3); disabled-with-no-projects; title-bar buttons render with no tabs; dialog lists/filters projects; five "shortcut inert while dialog is up, then works after" tests (⌘T, ⌘1, text-editing keys, typing routes to dialog not terminal, title-bar Open button inert); shortcut doesn't reach a non-key workroom window. The five "inert-then-works" tests are legitimately distinct regressions (different shortcuts/routes, per issue #128-adjacent work) but share near-identical shape; moderate consolidation opportunity, lower priority than the item-4 cuts above. `waitForFileMenuItemEnabled`'s no-sleep busy loop (item #7) lives here.
+
+**`PullRequestWarningUITests.swift`** (4, 4) — `gh` unusable-state copy: too-old / not-authenticated / not-installed(+install link) / no-warning-when-not-seeded. Each is a distinct branch of what used to be a broken ternary chain (bug motivated). File already self-documents `-only-testing` scoping. Keep.
+
+**`RunSettingsPromptUITests.swift`** (3, 3) — ⌘R with no run command opens Project Settings with a warning; same via the header Run button click; plain "Project Settings…" context-menu entry shows no warning banner. Each covers a genuinely different entry point into the same sheet (issue #127). Keep; low individual cost.
+
+**`RunStatusUITests.swift`** (3, 3) — real non-zero exit → failed icon; clean exit → no failed icon; in-pane ⌃C → stop, not failure. All three drive a REAL run command via a real PTY (`sleep 1; exit 7`, etc.) — the exact "libghostty child-exit code is unreliable" seam a unit test can't reach. Keep.
+
+**`SessionRestoreUITests.swws`** — see ranked item #2 (14/15... actually 15 launches across 9 tests). Also worth flagging: `testCorruptScrollbackSidecarStillLaunches` and `testCorruptSessionFileStillLaunchesCleanly` are narrow one-off degradation checks (a specific corrupt-file class each) — legitimate but classic "regression test for a narrow bug"; each is already about as cheap as this file gets (1–2 launches), so not worth cutting, just noting the pattern.
+
+**`SettingsSidebarUITests.swift`** (3, 3 → 2 after fold, see #3) — sidebar row click swaps detail pane (General→Appearance→Terminal→Agent→About sweep, catching the same async-`@State`-vs-`@Default` bug class the file's doc calls out); About pane controls (fold into the sweep, item #3); ⌘W closes Settings via the non-workroom-window key-monitor path. Keep the sweep + ⌘W test.
+
+**`SplitPaneUITests.swift`** (12, 12 → 11 after merge, see item #7) — split-right/nested-split pane counts; close-split-pane-leaves-survivor regression; tab-per-terminal invariant; right-click-close doesn't crash (use-after-free regression); split-titlebar context menu on workroom vs root member; remove-from-split collapse; delete-targets-non-focused-member; label round-trip; two-split-groups-persist-across-selection; per-group bracket geometry (merge candidate with the previous one). Broad, mostly non-overlapping coverage of issue #3/#112/#139 splitting mechanics — no unit-test substitute for on-screen pane counts or split-group bracket geometry. Keep almost all; only the last two share enough fixture setup to merge.
+
+**`StatusBarCwdUITests.swift`** (2, 2 → 1 after merge, see item #7) — cwd click opens Copy/Reveal menu; Copy writes the full absolute path (not the abbreviated label) to the pasteboard. Both wait on a real OSC-7 report; mergeable.
+
+**`TabActionsUITests.swift`** (12, 12) — per-tab-type toolbar contents (terminal vs diff); split-right/down from toolbar; close-all; diff tab/panel context menu parity; remove-from-split visibility rules (solo vs split); File-menu bulk close. Its own `openDiffPreview` helper documents a real, previously-observed flake ("that combination is what this flaked on when run in a batch" — a swallowed-first-click regression it now retries around) shared by 8 of these 12 tests. Not a cut candidate (each toolbar/menu-item assertion is distinct and app-specific), but flag the shared helper as the file's flake-risk concentration point.
+
+**`TabStripOverflowUITests.swift`** (9, 9 → 7 after fold, see item #4) — "+" stays visible/gutter-correct when overflowing, stays inline when it fits; pinned "+" still adds a tab; two hittable-glyph tests to fold; workroom-bar controls stay visible+adjacent when overflowing; long workroom name caps its chip width. Real geometry assertions (issue #129), no unit-test substitute; the two hittable tests are the one exception (re-proving a closed non-bug).
+
+**`TabStripScrollIntoViewUITests.swift`** (3, 3) — cycling to an off-screen last tab scrolls it into view; the initially-focused (but off-screen) tab is visible on first appearance; selecting an off-screen workroom scrolls it into view. Distinct scroll-mechanics regressions (issue #129 follow-up), deliberately establishes the "not visible yet" precondition before asserting the fix — good test hygiene, not a cut candidate. Shares fixture idioms (`overflowTabs`/`overflowWorkrooms`) with `TabStripOverflowUITests` but tests a different mechanism (scroll-to vs. pin/overflow chrome).
+
+**`TerminalAccessibilityUITests.swift`** (1, 1) — CMT-3's safety precondition: a `read -s` password prompt renders NO typed characters in the surface's accessibility value, verified against a real PTY. Security-relevant, no substitute. Keep.
+
+**`TerminalAgentUITests.swift`** (6, 6) — real failing-run → stubbed-agent diagnosis in the status bar; Investigate seeds the real diagnosis (not a bare command) from either entry point; failed-tab badge opens the same popover; dismiss clears both status-bar and badge; diff pane has a status bar; every pane (incl. split members) has its own status bar. The last two (`testDiffPaneHasStatusBar`, `testEveryPaneHasAStatusBar`) don't need the failing-run/agent-stub machinery at all (they use `runCommand: "true"`) — they're really "status bar presence" tests riding in the wrong file, but each is still only one launch and asserts something distinct, so not worth cutting, just noting the mislabeling.
+
+**`ThemePickerUITests.swift`** (6, 6) — already a model of restraint: tests exactly ONE representative newly-bundled family ("Night Owl") rather than sweeping all 58, explicitly deferring the exhaustive per-theme color check to a unit test (`SwitcherThemeSweepTests`, "asserted 116 times over"). Covers findable-by-search→applies→reaches-generated-conf; popover-not-sheet dismiss-on-click-away; ⌘⇧K opens+closes; Esc closes; a keyboard-raised dialog closes it; both swatches of a family resolve (not the grey fallback). File explicitly says "Scope it when iterating; the full UI suite is slow" — again, pre-existing scoping guidance in-repo. Nothing here needs cutting; hold up as the pattern other files should follow.
+
+**`VCSToolbarUITests.swift`** (20 declared / 40 executed) — see ranked item #1, the single biggest opportunity in the suite.
+
+**`ViewMenuShortcutsUITests.swift`** (8, 8) — see item #7. Issue #128 (shortcuts swallowed by a focused TUI) + the ⌥⌘S/⌥⌘B sidebar-toggle aliasing fix, each tested with/without terminal focus. Real app-specific behavior (not OS-generic), moderate consolidation opportunity by merging the with/without pairs into single launches.
+
+**`WindowDragUITests.swift`** (3, 3) — see item #5 for the flaky one. The other two (dragging empty titlebar moves the window; dragging a chip does NOT move the window) are the stable, load-bearing halves of the same regression and should stay.
+
+**`WorkroomPaneHeaderUITests.swift`** (7, 7) — solo pane has a title bar with no remove-from-split control; Run button lives in the pane not the window titlebar; solo Run button actually fires (the gesture-mask regression guard — existence/hittable alone can't catch a masked-dead button); Open-in menu opens; context menu still opens; solo drag doesn't create a split; every split member gets its own Run button. Each pins a distinct gesture-mask/scoping regression from issue #139; no substitute. Keep.
+
+**`WorkroomWorkflowUITests.swift`** (6, 6) — sidebar expand/collapse commits without a mouse move (a real `@Default`-vs-`@Published` timing regression); real (non-fixture) bootstrap renders chrome; add/close terminal tabs; run-command lifecycle (Run→Stop/Restart via a real surface); notification bell popover + backlog walk; sidebar notification strip + "+N" popover. Broad "workflow smoke" coverage with little internal overlap. Keep.
+
+**`WorkroomsViewUITests.swift`** (1, 1) — see item #3: cut, fully subsumed elsewhere.
+
+---
+
+## Summary of concrete savings if every ranked-list item above is taken
+
+| Action | Launches before | Launches after | Saved |
+|---|---|---|---|
+| VCSToolbar backend de-dup | 40 | 22 | 18 |
+| Trivial subsumed-test cuts (4 files) | 4 | 0 | 4 |
+| TabStripOverflow hittable-test fold | 2 | 0 | 2 |
+| SplitPane bracket/persistence merge | 2 | 1 | 1 |
+| StatusBarCwd merge | 2 | 1 | 1 |
+| SessionRestore split+tabs merge | 2 | 1 | 1 |
+| ViewMenuShortcuts focus-pair merges (optional, medium confidence) | 8 | 4 | 4 |
+| **Total (excluding the optional ViewMenuShortcuts merge)** | | | **~27 launches** |
+| **Total (including it)** | | | **~31 launches** |
+
+That's roughly **12–14% of the full suite's ~227 launches** removable with no loss of unique product-behavior coverage, on top of scoping `AgentResumeUITests` (14 launches) and `SessionRestoreUITests` (15 launches) — already carrying in-repo `-only-testing` guidance — out of the routine/full-suite run path.</result>
+<usage><subagent_tokens>265201</subagent_tokens><tool_uses>60</tool_uses><duration_ms>562250</duration_ms></usage>
+</task-notification>
