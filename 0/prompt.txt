@@ -1,0 +1,69 @@
+<task-notification>
+<task-id>a129b282395d933e1</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/85057c1d-7a50-422d-a310-af45bba739d0/tasks/a129b282395d933e1.output</output-file>
+<status>completed</status>
+<summary>Agent "Review app-side session integration code" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Findings from reviewing the diff (`git show b28e9134`) plus the full current content of `GhosttySurfaceView.swift`, `TerminalSessions.swift`, `TerminalSessionsStore.swift`, `DetachedSessionsButton.swift`, `SettingsView.swift`, and `TerminalPersistentSessionPolicy.swift`.
+
+**[CRITICAL] (confidence: 8/10) SettingsView.swift:372-376 — turning off "Background sessions" kills currently-attached (visible, in-use) terminals with zero pane-level warning**
+```swift
+Button("Stop Sessions", role: .destructive) {
+  Task {
+    guard !Defaults[.backgroundSessions] else { return }
+    await PersistentSessionService.shared.endAllSessions()
+  }
+}
+```
+`endAllSessions()` maps to `client.killAll()` — it does not distinguish attached vs. detached sessions, and `TerminalSettingsPane` never touches `AppStore`/`TerminalSessions` to reconcile open tabs afterward. A terminal tab the user is actively looking at right now, with `state.sessionID` pointing at a live daemon session, gets its backing process killed. Because ordinary (non-run) tabs wire neither `onChildExited` nor `onCloseRequested` (by design, per the existing doc comment in `GhosttySurfaceView.swift`), the pane just goes inert — no error, no "session ended" message — reproducing exactly the "spinner forever"/dead-terminal bug class called out in project history. The alert copy ("Terminals that are still running in the background will be stopped") also actively undersells this: a foreground, focused terminal is not "in the background."
+Fix: before `endAllSessions()`, have this toggle route through `TerminalSessions` (or an app-level coordinator) to detach live-attached surfaces to fresh local shells first, or restrict the kill to sessions with no live attachment.
+
+**[CRITICAL] (confidence: 7/10) TerminalSessionsStore.swift:6-16 — one global singleton stomped by every workroom's status bar, no per-target keying**
+```swift
+final class TerminalSessionsStore: ObservableObject {
+  static let shared = TerminalSessionsStore()
+  @Published private(set) var detached: [SessionDescriptor] = []
+  func refresh(workroomID: String, ownedSessionIDs: Set&lt;UUID&gt;) async {
+    let sessions = await PersistentSessionService.shared.liveSessions()
+    detached = sessions.filter { ... }
+  }
+}
+```
+`DetachedSessionsButton` (`Views/DetachedSessionsButton.swift:29`) instantiates one of these per `TerminalStatusBar`, i.e. one per open target, all bound to the same `TerminalSessionsStore.shared.detached` array via `@ObservedObject`. With two targets visible at once (split panes, or the same/different workroom open in two windows), each button's own `.task(id: target.id) { await refresh() }` overwrites the single shared `detached` array with results scoped to *its own* `workroomID` — so whichever target refreshed last determines what every visible `DetachedSessionsButton` renders, until its own task re-fires. This is a genuine "two sources of truth can disagree" bug: the button can show workroom B's detached sessions in workroom A's status bar.
+Fix: key `detached` by `workroomID` (e.g. `[String: [SessionDescriptor]]`) instead of a single flat array.
+
+**[CRITICAL] (confidence: 6/10) GhosttySurfaceView.swift:397-418 — attach failure is completely silent, falls back to a fresh shell with no indication the persisted session wasn't reattached**
+```swift
+private func applyPersistentSession(...) -&gt; Bool {
+    guard let persistentSessionID, PersistentSessionService.shared.isAvailable,
+      let attach = PersistentSessionService.shared.attachCommand(),
+      let attachPointer = strdup(attach)
+    else { return false }
+    ...
+}
+```
+Every failure path (helper unavailable, binary missing, `strdup` OOM) is swallowed and silently falls through to `!startedPersistent` → plain login shell (`GhosttySurfaceView.swift:271`). The user sees an ordinary-looking new terminal with no hint that the daemon session (and whatever was running in it) is still alive but now orphaned/unreachable from this pane.
+Fix: surface at least a one-time diagnostic (log + optional UI badge) when a tab that expected a persistent session fell back to a fresh shell.
+
+**[INFORMATIONAL] (confidence: 6/10) TerminalSessions.swift:1630-1638 / AppStore+Session.swift:19 — no cross-window ownership check on relaunch reattach**
+```swift
+func materializeLivePersistentSessions(_ liveIDs: Set&lt;UUID&gt;) {
+  for tabs in tabsByTarget.values {
+    for tab in tabs.values {
+      guard case .terminal(let state) = tab.content, let sessionID = state.sessionID,
+        liveIDs.contains(sessionID) else { continue }
+      state.view.skipRestoredScrollback = true
+      state.view.ensureSurfaceCreated(initialSize: CGSize(width: 800, height: 480))
+    }
+  }
+}
+```
+This is called once per `AppStore`/window (`Task { await PersistentSessionRecovery.recover(in: terminals) }`), with no check against sibling windows' `TerminalSessions`. The app supports the same workroom target open in multiple windows (`AppStore.affectedStores`), so if two windows both restore a tab pointing at the same persisted `sessionID`, both independently force-attach — a double client-attach the daemon side (out of scope here) must defend against; nothing in these files does.
+
+**[INFORMATIONAL] (confidence: 4/10) TerminalSessions.swift:1647 — `isQuickTerminal: false` is hardcoded/dead**
+Currently harmless only because `QuickTerminalController` builds its `GhosttySurfaceView` directly and never sets `persistentSessionID`, bypassing this policy entirely — but the parameter is never actually driven by real quick-terminal detection, so `TerminalPersistentSessionPolicy`'s exclusion for Quick Terminal is unexercised/untested in production and would silently do nothing if a future refactor routed Quick Terminal through `TerminalSessions`.
+
+The run-command and UI-test-fixture exclusions in `TerminalPersistentSessionPolicy.swift` were verified correct (non-inverted, double-gated for fixtures via both `Defaults[.backgroundSessions]=false` and `UITestFixture.isActive`).</result>
+<usage><subagent_tokens>133315</subagent_tokens><tool_uses>17</tool_uses><duration_ms>321873</duration_ms></usage>
+</task-notification>
