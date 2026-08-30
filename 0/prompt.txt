@@ -1,0 +1,725 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/AppStore.swift
+  - macapp/WorkroomApp/Core/ThemePanel.swift
+  - macapp/WorkroomApp/Core/ThemeService.swift
+  - macapp/WorkroomApp/Views/KeyboardShortcutsView.swift
+  - macapp/WorkroomApp/Views/RootView.swift
+  - macapp/WorkroomApp/Views/ThemePicker.swift
+  - macapp/WorkroomApp/Views/TitlebarBars.swift
+  - macapp/WorkroomApp/WorkroomApp.swift
+  - macapp/WorkroomAppTests/SwitcherThemeSweepTests.swift
+  - macapp/WorkroomAppTests/ThemePanelTests.swift
+  - macapp/WorkroomAppTests/ThemeServiceTests.swift
+  - macapp/WorkroomAppUITests/ThemePickerUITests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/AppStore.swift ===
+@@ -575,8 +575,9 @@ final class AppStore: ObservableObject {
+   /// Drives the immediate full-pane setup dialog AND the provisional "Creating…" tab chip — both
+   /// appear before the CLI has even reported the (generated) name. Per-window, like selection.
+   @Published var creation: WorkroomCreation?
+-  /// Mirrors whether one of RootView's *view-local* sheets is up (Add Project, Theme Picker, Keyboard
+-  /// Shortcuts, What's New). Those four are `@State` in RootView rather than store-level like the
++  /// Mirrors whether one of RootView's *view-local* sheets is up (Add Project, Keyboard Shortcuts,
++  /// What's New — the theme dropdown is a transient popover, not modal, and deliberately NOT counted:
++  /// it closes itself when one of these comes up). Those are `@State` in RootView rather than the
+   /// `pending*` ones, so `hasModalPresentation` can't see them directly; RootView keeps this in sync
+   /// with a single `onChange`. Deliberately a mirror rather than re-homing the four flags onto the
+   /// store: re-homing a local sheet flag to a store-level published item needs a clobber guard to stop
+
+
+=== DIFF: macapp/WorkroomApp/Core/ThemePanel.swift ===
+@@ -1,184 +0,0 @@
+-import AppKit
+-import SwiftUI
+-
+-/// The theme picker's window (issue #36) — a floating, movable utility panel.
+-///
+-/// **Why this isn't the `.sheet` it used to be.** Choosing a theme is a live-preview gesture: ↑/↓
+-/// apply families as you move through them, so the app *behind* the picker is the preview. A sheet
+-/// defeated that twice over, both measured on the real build:
+-///
+-/// - **It faded the app.** A sheet is document-modal, so AppKit disables and inactive-renders the
+-///   window it's attached to. Side-by-side captures of the same window: traffic lights greyed out,
+-///   the sidebar's VCS dot badges went from orange to a dull brown, and the detail placeholder
+-///   washed out. You were judging a theme against colours the app never shows while you use it.
+-/// - **It couldn't be moved.** A sheet is anchored under its window's title bar, so it sat on top of
+-///   the content whose colours you were trying to see, with nothing to drag.
+-///
+-/// An `NSPanel` fixes both: `NSPanel` refuses to become the *main* window, so the workroom window
+-/// keeps `isMainWindow` and goes on drawing active while this panel holds the keyboard, and a titled
+-/// panel drags anywhere on screen — including clear of the window entirely.
+-///
+-/// `SwitcherPanel` is the app's other panel and the mirror image of this one: it must *never* take
+-/// key focus (the ⌥Tab gesture depends on the workroom window keeping it), whereas this one must,
+-/// because the search field and the live-apply ↑/↓ keys are the whole interaction.
+-final class ThemePanel: NSPanel {
+-  /// Esc closes, matching the sheet this replaces. `NSWindow` routes `cancelOperation` to a close for
+-  /// sheets and modal panels only, so a floating panel has to opt in.
+-  override func cancelOperation(_ sender: Any?) { performClose(sender) }
+-}
+-
+-/// Owns the one theme panel. App-level rather than per-window: a theme is an app-wide preference
+-/// (`Defaults[.themeFamily]`), so a second picker on a second window could only ever disagree with
+-/// the first.
+-@MainActor
+-final class ThemePanelController {
+-  static let shared = ThemePanelController()
+-
+-  /// Content size — the frame `ThemePicker` gives itself. Same width as the sheet this replaces; the
+-  /// height is the sheet's minus the in-view title row that the panel's real title bar takes over.
+-  static let contentSize = CGSize(width: 300, height: 420)
+-
+-  /// Inset from the anchor window's top-trailing corner for a first-ever open. After that the panel
+-  /// remembers wherever the user dragged it (`frameAutosaveName`), which is the point of a panel —
+-  /// so the default only has to be somewhere sane, and the trailing edge keeps the sidebar and the
+-  /// focused terminal (the two surfaces a theme is judged on) unobstructed.
+-  private static let defaultInset: CGFloat = 24
+-
+-  static let frameAutosaveName = "workroom.theme.panel"
+-
+-  /// Where AppKit persists `frameAutosaveName`. Exposed so `ThemePanelTests` can put the developer's
+-  /// own saved position back: a unit test that opens the panel writes this key into the app host's
+-  /// domain (`UserDefaults`, so no `$HOME` isolates it), which would otherwise mean running the suite
+-  /// silently moves where your picker opens.
+-  static var frameAutosaveDefaultsKey: String { "NSWindow Frame \(frameAutosaveName)" }
+-
+-  private var panel: ThemePanel?
+-  private var commandObserver: NSObjectProtocol?
+-  private var themeObserver: NSObjectProtocol?
+-
+-  deinit {
+-    // Only `shared` lives for the process, but tests make their own instances — an un-removed block
+-    // observer is retained by the notification centre for the process's lifetime.
+-    if let commandObserver { NotificationCenter.default.removeObserver(commandObserver) }
+-    if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) }
+-  }
+-
+-  /// Start observing the `Theme…` (⌘⇧K) command. Called once at launch.
+-  ///
+-  /// App-level, not per-`RootView`: presenting the sheet was guarded on `hostWindow?.isKeyWindow` (a
+-  /// broadcast notification would otherwise pop a sheet in every window), and once this panel is key
+-  /// no window passes that guard — so a window-scoped observer could never close or re-raise it.
+-  func attach() {
+-    guard commandObserver == nil else { return }
+-    commandObserver = NotificationCenter.default.addObserver(
+-      forName: .showThemePicker, object: nil, queue: .main
+-    ) { _ in
+-      MainActor.assumeIsolated { ThemePanelController.shared.toggle() }
+-    }
+-  }
+-
+-  /// ⌘⇧K opens, and pressing it again closes — the panel is non-modal and floats above the window, so
+-  /// the shortcut that summoned it has to be able to get rid of it too.
+-  func toggle() {
+-    if let panel, panel.isVisible {
+-      panel.performClose(nil)
+-      return
+-    }
+-    show()
+-  }
+-
+-  /// Whether this controller's panel is on screen. Tests read it instead of counting
+-  /// `NSApp.windows`, which is process-wide and so racy under the parallel test runner.
+-  var isPanelVisible: Bool { panel?.isVisible ?? false }
+-
+-  func show() {
+-    let panel = panel ?? makePanel()
+-    self.panel = panel
+-    if !panel.isVisible { positionIfNeeded(panel) }
+-    panel.makeKeyAndOrderFront(nil)
+-  }
+-
+-  /// Build the panel, ordered out. Not private: `ThemePanelTests` asserts the **production**
+-  /// configuration through this, rather than re-declaring a panel in the test and checking the
+-  /// properties it just set itself.
+-  func makePanel() -> ThemePanel {
+-    let panel = ThemePanel(
+-      contentRect: NSRect(origin: .zero, size: Self.contentSize),
+-      // No `.resizable`: the content is a fixed-width list, and the picker frames itself.
+-      styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false)
+-    panel.title = "Theme"
+-    // Floats above the workroom window, so clicking a row (which hands key focus back) can't bury the
+-    // panel behind the window whose colours it is changing.
+-    panel.isFloatingPanel = true
+-    // Usable over a full-screen workroom window; without this the panel simply never shows there.
+-    panel.collectionBehavior.insert(.fullScreenAuxiliary)
+-    panel.isReleasedWhenClosed = false
+-    // The Window menu lists workroom windows; a palette reachable by ⌘⇧K doesn't belong in it.
+-    panel.isExcludedFromWindowsMenu = true
+-    panel.setAccessibilityIdentifier("theme.panel")
+-    // Same panel colour the title bar and chrome take (`WindowBackgroundThemer`), re-applied on a
+-    // theme change — which, for this window, is every arrow key.
+-    applyTheme(to: panel)
+-    themeObserver = NotificationCenter.default.addObserver(
+-      forName: .themeDidChange, object: nil, queue: .main
+-    ) { [weak self, weak panel] _ in
+-      MainActor.assumeIsolated {
+-        guard let self, let panel else { return }
+-        self.applyTheme(to: panel)
+-      }
+-    }
+-
+-    let host = NSHostingView(rootView: ThemePicker(onDone: { [weak panel] in panel?.close() }))
+-    host.autoresizingMask = [.width, .height]
+-    panel.contentView = host
+-    return panel
+-  }
+-
+-  private func applyTheme(to panel: NSPanel) {
+-    panel.backgroundColor = ThemeService.shared.tokens.nsPanel
+-  }
+-
+-  /// Restore the user's own placement, else park the panel at the anchor window's top-trailing corner.
+-  ///
+-  /// `setFrameUsingName` is checked rather than trusted: a frame saved on a monitor that is no longer
+-  /// attached restores off-screen, and a panel the user cannot see is a panel they cannot close.
+-  private func positionIfNeeded(_ panel: ThemePanel) {
+-    // Both the save and the restore are skipped under the UI-test fixture: the frame lands in
+-    // `UserDefaults`, which `cfprefsd` resolves against the real home whatever `$HOME` a test run sets.
+-    // So a test that drags the panel would move where it opens for the developer, permanently — and a
+-    // developer who had dragged theirs would hand the test a different starting position.
+-    if !UITestFixture.isActive {
+-      panel.setFrameAutosaveName(Self.frameAutosaveName)
+-      let screens = NSScreen.screens.map(\.visibleFrame)
+-      if panel.setFrameUsingName(Self.frameAutosaveName),
+-        Self.isOnScreen(panel.frame, screens: screens)
+-      {
+-        return
+-      }
+-    }
+-    let size = panel.frame.size
+-    let origin = Self.defaultOrigin(
+-      size: size, anchor: NSApp.mainWindow?.frame, visible: NSScreen.main?.visibleFrame)
+-    panel.setFrame(NSRect(origin: origin, size: size), display: false)
+-  }
+-
+-  /// Whether `frame` overlaps a visible area of some attached screen.
+-  static func isOnScreen(_ frame: NSRect, screens: [NSRect]) -> Bool {
+-    screens.contains { $0.intersects(frame) }
+-  }
+-
+-  /// Top-trailing corner of the window a theme would be judged against — the main window (never this
+-  /// panel, which cannot become main), falling back to the screen when no window is open.
+-  static func defaultOrigin(size: CGSize, anchor: NSRect?, visible: NSRect?) -> CGPoint {
+-    let bounds = anchor ?? visible ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+-    var origin = CGPoint(
+-      x: bounds.maxX - size.width - defaultInset, y: bounds.maxY - size.height - defaultInset)
+-    // Clamp into the screen: a workroom window can sit partly off the right edge, and the panel
+-    // would inherit that.
+-    if let visible {
+-      origin.x = min(max(origin.x, visible.minX), max(visible.maxX - size.width, visible.minX))
+-      origin.y = min(max(origin.y, visible.minY), max(visible.maxY - size.height, visible.minY))
+-    }
+-    return origin
+-  }
+-}
+
+
+=== DIFF: macapp/WorkroomApp/Core/ThemeService.swift ===
+@@ -338,7 +338,7 @@ extension Notification.Name {
+   /// sites that read `ThemeService.shared.tokens` outside a SwiftUI body can refresh.
+   static let themeDidChange = Notification.Name("workroom.themeDidChange")
+ 
+-  /// Posted by the `Theme…` (⌘⇧K) command; `ThemePanelController` raises (or closes) its floating
+-  /// panel. Observed app-level, not per-window — see `ThemePanel` for why the picker is a panel.
++  /// Posted by the `Theme…` (⌘⇧K) command; `TrailingTitlebarBar` toggles the dropdown anchored to its
++  /// theme button (a menu command can't anchor a popover itself).
+   static let showThemePicker = Notification.Name("workroom.showThemePicker")
+ }
+
+
+=== DIFF: macapp/WorkroomApp/Views/KeyboardShortcutsView.swift ===
+@@ -4,7 +4,7 @@ import SwiftUI
+ /// Reference sheet listing every available keyboard shortcut, grouped by area (raised by the
+ /// "Keyboard Shortcuts…" command via the `.showKeyboardShortcuts` notification — a menu command can't
+ /// anchor a sheet, so `RootView` observes it and presents this). A sheet is right *here*, unlike the
+-/// Theme… picker (`ThemePanel`): this is something you read, not something you preview against.
++/// Theme… dropdown: this is something you read, not something you preview the app against.
+ ///
+ /// The catalog below is **hand-maintained**: SwiftUI exposes no API to enumerate menu shortcuts, so
+ /// any change to `WorkroomCommands` (`WorkroomApp.swift`) or the `AppDelegate` key monitor (⌘1–9,
+@@ -177,7 +177,7 @@ extension KeyboardShortcutsView {
+ 
+ /// Posted by the "Keyboard Shortcuts…" command; `RootView` presents this view as a sheet (a menu
+ /// command can't anchor one — the same notification hop `.showThemePicker` uses, though that one is
+-/// received app-level by `ThemePanelController` rather than per-window).
++/// received by the trailing toolbar bar, which owns the button its dropdown hangs off).
+ extension Notification.Name {
+   static let showKeyboardShortcuts = Notification.Name("workroom.showKeyboardShortcuts")
+ }
+
+
+=== DIFF: macapp/WorkroomApp/Views/RootView.swift ===
+@@ -336,8 +336,8 @@ struct RootView: View {
+       }
+       .onDisappear { ThemeService.shared.unregisterTerminals(store.terminals) }
+       .onChange(of: theme) { _ in applyAppearance() }
+-      // The theme picker is deliberately NOT here: it's `ThemePanelController`'s floating panel, owned
+-      // app-level. It was a sheet, and a sheet is the wrong shape for a live preview — see ThemePanel.
++      // The theme picker is deliberately NOT here: it's a dropdown anchored to a toolbar button
++      // (`TrailingTitlebarBar`), because a sheet is the wrong shape for a live preview.
+       .onReceive(NotificationCenter.default.publisher(for: .showKeyboardShortcuts)) { _ in
+         guard store.hostWindow?.isKeyWindow ?? false else { return }
+         showKeyboardShortcuts = true
+
+
+=== DIFF: macapp/WorkroomApp/Views/ThemePicker.swift ===
+@@ -3,23 +3,22 @@ import SwiftUI
+ 
+ /// Theme chooser (issue #36). A searchable list of **families**, each row a dual (light + dark)
+ /// swatch — pick one and its variant follows the appearance. ↑/↓ apply families live; the selected
+-/// one is scrolled into view on open. Two hosts: the Settings popover, and `ThemePanel` (⌘⇧K).
++/// one is scrolled into view on open. Both hosts are popovers: the toolbar's theme dropdown
++/// (`TrailingTitlebarBar`, ⌘⇧K) and the Settings row's swatch button.
+ struct ThemePicker: View {
++  /// The size this picker frames itself to; both popovers size themselves from the rendered frame.
++  static let contentSize = CGSize(width: 300, height: 420)
++
+   private let theme = ThemeService.shared
+   @Environment(\.dismiss) private var dismiss
+   @Default(.themeFamily) private var familyName
+ 
+-  /// How to close, for a host SwiftUI's `dismiss` can't reach — `ThemePanel` is an `NSPanel` around an
+-  /// `NSHostingView`, so ⏎ has to be routed back to it explicitly. nil in the Settings popover, where
+-  /// `dismiss` works.
+-  var onDone: (() -> Void)?
+-
+   @State private var query = ""
+   /// Index into `filteredFamilies` of the keyboard-highlighted row (↑/↓ move it, ⏎ applies).
+   @State private var highlighted = 0
+-  /// Focus on the search field, claimed explicitly on appear. A sheet handed SwiftUI the first text
+-  /// field for free; an `NSHostingView` in a panel does not, and without focus here nothing works —
+-  /// not typing, and not ↑/↓, which reach `.onKeyPress` only through the focused SwiftUI tree.
++  /// Focus on the search field, claimed explicitly on appear rather than left to the host. Without
++  /// focus in this tree nothing works — not typing, and not ↑/↓, which reach `.onKeyPress` only
++  /// through the focused SwiftUI view.
+   @FocusState private var searchFocused: Bool
+ 
+   private var filteredFamilies: [ThemeFamily] {
+@@ -40,15 +39,6 @@ struct ThemePicker: View {
+     .onTapGesture { theme.applyFamily(family.name) }
+   }
+ 
+-  /// Close whichever host is showing this picker.
+-  private func close() {
+-    if let onDone {
+-      onDone()
+-    } else {
+-      dismiss()
+-    }
+-  }
+-
+   /// Move the highlight by `delta` (clamped) and apply that family live — ↑/↓ change the theme
+   /// immediately, no ⏎ needed.
+   private func moveHighlight(_ delta: Int) {
+@@ -96,9 +86,7 @@ struct ThemePicker: View {
+         }
+       }
+     }
+-    // Fills the host: the panel is sized to `ThemePanelController.contentSize`, the Settings popover
+-    // sizes itself from this. One frame for both, so the panel can't disagree with its content.
+-    .frame(width: 300, height: 420)
++    .frame(width: Self.contentSize.width, height: Self.contentSize.height)
+     // ↑/↓ move through the list and apply the family live; ⏎ dismisses. The search field keeps
+     // text focus; single-line fields don't consume the arrow keys, so they bubble here.
+     .onKeyPress(.upArrow) {
+@@ -110,12 +98,16 @@ struct ThemePicker: View {
+       return .handled
+     }
+     .onKeyPress(.return) {
+-      close()
++      dismiss()
+       return .handled
+     }
++    // Esc closes too, explicitly rather than trusting the host: a popover's own cancel handling depends
++    // on its behaviour mode, which SwiftUI doesn't expose, and the Settings popover has no other way out
++    // besides clicking away.
++    .onExitCommand { dismiss() }
+     .onChange(of: query) { _, _ in highlighted = 0 }
+-    // A `Task` hop, not `onAppear`: focus set before the view is in a window is dropped, and in the
+-    // panel that means a picker you can't type into.
++    // A `Task` hop, not `onAppear`: focus set before the view is in a window is dropped, which leaves a
++    // picker you can't type into.
+     .task { searchFocused = true }
+   }
+ 
+
+
+=== DIFF: macapp/WorkroomApp/Views/TitlebarBars.swift ===
+@@ -151,6 +151,13 @@ struct LeadingTitlebarBar: View {
+ /// are reachable too. With no update pending this collapses to just the quick terminal.
+ struct TrailingTitlebarBar: View {
+   @EnvironmentObject var updater: Updater
++  @EnvironmentObject var store: AppStore
++
++  /// The theme dropdown (issue #36), anchored to its own toolbar button.
++  ///
++  /// Window-local `@State`, like the sheets `RootView` owns: the `Theme…` command's notification is
++  /// broadcast to every window, and the key-window guard below is what decides which one opens.
++  @State private var showThemePicker = false
+ 
+   var body: some View {
+     HStack(spacing: 6) {
+@@ -164,6 +171,26 @@ struct TrailingTitlebarBar: View {
+         TitlebarDivider()
+       }
+ 
++      // Theme (⌘⇧K) — a dropdown anchored here rather than a sheet or a window of its own, because
++      // picking a theme is a live-preview gesture: ↑/↓ apply families as you move through them, so the
++      // app behind the dropdown IS the preview. A sheet made that impossible twice over (measured on
++      // the real build): its modality had AppKit render the whole window inactive — traffic lights
++      // greyed, the sidebar's VCS dot badges orange → dull brown — and being anchored under the title
++      // bar it sat on top of the content whose colours you were choosing, with nothing to drag.
++      //
++      // A popover is transient, so it needs no dismiss affordance and no modal bookkeeping: clicking
++      // anywhere else closes it, and anything that raises a dialog closes it too (below). It is
++      // therefore deliberately absent from `AppStore.hasModalPresentation`.
++      Button {
++        showThemePicker.toggle()
++      } label: {
++        Image(systemName: "paintpalette")
++      }
++      .help("Theme (⌘⇧K)")
++      .accessibilityLabel("Theme")
++      .accessibilityIdentifier("toolbar.theme")
++      .popover(isPresented: $showThemePicker, arrowEdge: .bottom) { ThemePicker() }
++
+       // Quick Terminal (⌥§) — a ~/ shell in its own window. Always present, and since issue #139 moved
+       // the selected target's run/open-in actions into the workroom pane title bars, the only control
+       // left at the window's trailing edge besides the update pill.
+@@ -186,5 +213,21 @@ struct TrailingTitlebarBar: View {
+     .padding(.trailing, 10)
+     // Fill the full-height (52pt) accessory host so the HStack centres its buttons — see LeadingTitlebarBar.
+     .frame(maxHeight: .infinity)
++    // The `Theme…` command (⌘⇧K) can't anchor a popover from a menu, so it posts and this bar — which
++    // owns the anchor — presents. Guarded on the key window because the post reaches every window's
++    // accessory; toggling means the shortcut closes the dropdown as well as opening it.
++    .onReceive(NotificationCenter.default.publisher(for: .showThemePicker)) { _ in
++      guard store.hostWindow?.isKeyWindow ?? false else { return }
++      showThemePicker.toggle()
++    }
++    // "Anything else closes it." A popover dismisses itself on a click outside, but a *keyboard* command
++    // never sends that click — so the two things a command can do to this window close it explicitly: put
++    // a dialog or sheet up (a dropdown hanging over a modal is confusing and unreachable past), and move
++    // the selection (⌘1–9, ⌥⌘digit, the switchers), which is the action a stale dropdown would most
++    // obviously be sitting on top of.
++    .onChange(of: store.hasModalPresentation) { _, blocked in
++      if blocked { showThemePicker = false }
++    }
++    .onChange(of: store.selectedTargetID) { _, _ in showThemePicker = false }
+   }
+ }
+
+
+=== DIFF: macapp/WorkroomApp/WorkroomApp.swift ===
+@@ -235,10 +235,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
+     SwitcherPanelController.shared.prepare()
+     SwitcherPanelController.shared.attach(to: .shared)
+ 
+-    // Observe the `Theme…` (⌘⇧K) command app-level, since its panel is app-level (issue #36). Not
+-    // pre-created, unlike the rail above: nothing here is on a 250 ms reveal budget.
+-    ThemePanelController.shared.attach()
+-
+     monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+       let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
+       // ⌘W closes the quick terminal (issue #39) when its window is key. The menu's "Close Terminal"
+@@ -1031,15 +1027,11 @@ struct WorkroomCommands: Commands {
+       .disabled(modalBlocked)
+ 
+       // Theme chooser (issue #36). A menu command can't anchor a popover, so it posts a notification
+-      // `ThemePanelController` observes to raise (or close) its floating panel.
+-      //
+-      // Not gated on `modalBlocked`, unlike its neighbours: the panel is non-modal and app-level, so
+-      // it doesn't act on the window behind a dialog — and a disabled item drops its key equivalent,
+-      // which would make ⌘⇧K dead while the panel itself is key (no window is, then, so the focused
+-      // scene value can be anything).
++      // that `TrailingTitlebarBar` — which owns the toolbar button the dropdown hangs off — observes.
+       Divider()
+       Button("Theme…") { NotificationCenter.default.post(name: .showThemePicker, object: nil) }
+         .keyboardShortcut("k", modifiers: [.command, .shift])
++        .disabled(modalBlocked)
+ 
+       // Quick dark/light toggle (issue #57): flip the *currently visible* appearance. From System
+       // it resolves the live OS appearance first, so it always inverts what's on screen and lands on
+
+
+=== DIFF: macapp/WorkroomAppTests/SwitcherThemeSweepTests.swift ===
+@@ -14,7 +14,7 @@ import XCTest
+ /// floors get asserted against.
+ ///
+ /// The sweep is also what caught the contrast metric itself: `ThemeTokens.luminance` was weighting
+-/// gamma-encoded sRGB, so 43 of the 56 themes scored below the body-text floor and 38 of them lost the
++/// gamma-encoded sRGB, so 43 of the then-56 themes scored below the body-text floor and 38 of them lost the
+ /// Liquid Glass surface to the opaque fallback. A floor that holds for two fixtures says nothing about the
+ /// fiftieth theme.
+ @MainActor
+
+
+=== DIFF: macapp/WorkroomAppTests/ThemePanelTests.swift ===
+@@ -1,148 +0,0 @@
+-import AppKit
+-import XCTest
+-
+-@testable import Workroom
+-
+-/// `ThemePanel` (issue #36): the window-level invariants that make a *live* theme preview possible.
+-///
+-/// The picker used to be a `.sheet`, and that broke previewing in two ways a colour test can't see —
+-/// the sheet's modality made AppKit inactive-render the window behind it (measured: traffic lights
+-/// greyed, VCS dot badges orange → dull brown), and a sheet is anchored, so it covered the very
+-/// content whose colours were being chosen. Both symptoms are properties of the *window*, so this is
+-/// where they're pinned. Assertions run against the panel `ThemePanelController` actually builds.
+-@MainActor
+-final class ThemePanelTests: XCTestCase {
+-
+-  /// Showing the panel makes AppKit persist its frame, and the app host's `UserDefaults` is the
+-  /// developer's own Debug-app domain — no `$HOME` isolates it. So put back whatever was there.
+-  private var savedFrame: Any?
+-
+-  override func setUp() {
+-    savedFrame = UserDefaults.standard.object(
+-      forKey: ThemePanelController.frameAutosaveDefaultsKey)
+-  }
+-
+-  override func tearDown() {
+-    let key = ThemePanelController.frameAutosaveDefaultsKey
+-    if let savedFrame {
+-      UserDefaults.standard.set(savedFrame, forKey: key)
+-    } else {
+-      UserDefaults.standard.removeObject(forKey: key)
+-    }
+-  }
+-
+-  private func makePanel() -> ThemePanel { ThemePanelController().makePanel() }
+-
+-  func testThePanelCannotBecomeMainSoTheWorkroomWindowKeepsDrawingActive() {
+-    // THE fix. `NSPanel` refuses main, so `NSApp.mainWindow` stays the workroom window while this
+-    // panel holds the keyboard — which is what stops the app fading out behind the picker. Pinned
+-    // because "make it a plain NSWindow" or "go back to a sheet" both look harmless and both
+-    // reintroduce the bug.
+-    XCTAssertFalse(makePanel().canBecomeMain, "a main-capable window here would fade the app again")
+-  }
+-
+-  func testThePanelTakesKeyFocusSoTheSearchFieldAndArrowsWork() {
+-    // The mirror image of `SwitcherPanel`, which must never be key. Here the search field and the
+-    // live-applying ↑/↓ are the entire interaction, so key focus is mandatory.
+-    let panel = makePanel()
+-    XCTAssertTrue(panel.canBecomeKey)
+-    XCTAssertFalse(
+-      panel.becomesKeyOnlyIfNeeded, "it must take key on open, not wait for a text-field click")
+-  }
+-
+-  func testThePanelIsMovable() {
+-    // The second half of the report: a sheet has nothing to drag. A title bar does.
+-    let panel = makePanel()
+-    XCTAssertTrue(panel.isMovable)
+-    XCTAssertTrue(panel.styleMask.contains(.titled), "the title bar is the drag handle")
+-    XCTAssertTrue(panel.styleMask.contains(.closable))
+-  }
+-
+-  func testThePanelFloatsAboveTheWindowItRecolours() {
+-    // Clicking a row hands key focus back to the workroom window; without floating, the panel would
+-    // drop behind the window whose colours it is changing.
+-    let panel = makePanel()
+-    XCTAssertTrue(panel.isFloatingPanel)
+-    XCTAssertTrue(
+-      panel.collectionBehavior.contains(.fullScreenAuxiliary),
+-      "a panel that can't show over a full-screen window is a picker half the users never see")
+-  }
+-
+-  func testEscapeClosesThePanel() {
+-    // `NSWindow` routes `cancelOperation` to a close for sheets and modal panels only, so a floating
+-    // panel has to opt in — and Esc is what the sheet answered to.
+-    let panel = makePanel()
+-    panel.orderFront(nil)
+-    XCTAssertTrue(panel.isVisible)
+-    panel.cancelOperation(nil)
+-    XCTAssertFalse(panel.isVisible, "Esc must dismiss the picker")
+-  }
+-
+-  func testThePanelIsNotReleasedOnCloseSoItKeepsItsPlace() {
+-    // Closing and reopening must land where the user dragged it, which needs the same instance back.
+-    XCTAssertFalse(makePanel().isReleasedWhenClosed)
+-    XCTAssertTrue(makePanel().isExcludedFromWindowsMenu)
+-  }
+-
+-  func testTheContentSizeMatchesWhatThePickerFramesItselfTo() {
+-    // `ThemePicker` gives itself a fixed 300×420; a panel sized to anything else would either clip the
+-    // list or leave a strip of bare window colour under it.
+-    XCTAssertEqual(ThemePanelController.contentSize, CGSize(width: 300, height: 420))
+-    XCTAssertEqual(makePanel().contentView?.frame.size, ThemePanelController.contentSize)
+-  }
+-
+-  // MARK: Placement
+-
+-  func testTheDefaultPlacementSitsInsideTheAnchorWindowsTopTrailingCorner() {
+-    let anchor = NSRect(x: 100, y: 100, width: 1200, height: 800)
+-    let screen = NSRect(x: 0, y: 0, width: 1600, height: 1000)
+-    let size = ThemePanelController.contentSize
+-    let origin = ThemePanelController.defaultOrigin(size: size, anchor: anchor, visible: screen)
+-    XCTAssertLessThan(origin.x + size.width, anchor.maxX, "inset from the trailing edge")
+-    XCTAssertGreaterThan(origin.x, anchor.midX, "trailing half, clear of the sidebar")
+-    XCTAssertLessThan(origin.y + size.height, anchor.maxY, "inset from the top")
+-  }
+-
+-  func testAWindowHangingOffTheScreenEdgeDoesNotDragThePanelOffWithIt() {
+-    // A workroom window can sit partly off the right edge; the panel is placed relative to it, so
+-    // without the clamp it would open where it can't be seen.
+-    let anchor = NSRect(x: 1400, y: 100, width: 1200, height: 800)
+-    let screen = NSRect(x: 0, y: 0, width: 1600, height: 1000)
+-    let size = ThemePanelController.contentSize
+-    let origin = ThemePanelController.defaultOrigin(size: size, anchor: anchor, visible: screen)
+-    XCTAssertLessThanOrEqual(origin.x + size.width, screen.maxX)
+-    XCTAssertGreaterThanOrEqual(origin.x, screen.minX)
+-  }
+-
+-  func testPlacementFallsBackToTheScreenWithNoWindowOpen() {
+-    let screen = NSRect(x: 0, y: 0, width: 1600, height: 1000)
+-    let size = ThemePanelController.contentSize
+-    let origin = ThemePanelController.defaultOrigin(size: size, anchor: nil, visible: screen)
+-    XCTAssertTrue(
+-      ThemePanelController.isOnScreen(NSRect(origin: origin, size: size), screens: [screen]))
+-  }
+-
+-  func testASavedFrameOnADetachedDisplayIsRejected() {
+-    // `frameAutosaveName` restores wherever the panel last was — including a monitor that has since
+-    // been unplugged. A panel the user cannot see is a panel they cannot close.
+-    let screen = NSRect(x: 0, y: 0, width: 1600, height: 1000)
+-    XCTAssertFalse(
+-      ThemePanelController.isOnScreen(
+-        NSRect(x: 2400, y: 1200, width: 300, height: 420), screens: [screen]))
+-    XCTAssertTrue(
+-      ThemePanelController.isOnScreen(
+-        NSRect(x: 1200, y: 500, width: 300, height: 420), screens: [screen]))
+-  }
+-
+-  // MARK: The ⌘⇧K command
+-
+-  func testTheCommandTogglesRatherThanStacking() {
+-    // ⌘⇧K has to be able to get rid of a non-modal panel, and repeated presses must not leave a pile
+-    // of panels behind.
+-    let controller = ThemePanelController()
+-    controller.toggle()
+-    XCTAssertTrue(controller.isPanelVisible)
+-    controller.toggle()
+-    XCTAssertFalse(controller.isPanelVisible, "the second press closes the one the first opened")
+-  }
+-}
+
+
+=== DIFF: macapp/WorkroomAppTests/ThemeServiceTests.swift ===
+@@ -298,10 +298,16 @@ final class ThemeServiceTests: XCTestCase {
+ 
+   func testResetPreviewCacheForTestingClearsIt() throws {
+     let name = try XCTUnwrap(ThemeService.families.first?.dark)
+-    XCTAssertNotNil(ThemeService.themePreview(named: name))
++    // Reset FIRST: the cache is a process-lifetime static, so without this the test silently inherits
++    // whatever an earlier case in the same process left warm and proves nothing about a cold start.
+     ThemeService.resetPreviewCacheForTesting()
+-    // Still resolvable after a reset — the cache is an optimisation, never the source of truth.
+-    XCTAssertNotNil(ThemeService.themePreview(named: name))
++    let cold = try XCTUnwrap(ThemeService.themePreview(named: name))
++    ThemeService.resetPreviewCacheForTesting()
++    // Same colours after a reset — the cache is an optimisation, never the source of truth, so a
++    // repopulated entry must be indistinguishable from the one it replaced.
++    let repopulated = try XCTUnwrap(ThemeService.themePreview(named: name))
++    XCTAssertEqual(repopulated.background, cold.background)
++    XCTAssertEqual(repopulated.palette, cold.palette)
+   }
+ 
+   // MARK: dark/light quick toggle (issue #57)
+
+
+=== DIFF: macapp/WorkroomAppUITests/ThemePickerUITests.swift ===
+@@ -17,9 +17,9 @@ import XCTest
+ /// engine exposes no error surface for an unresolvable `theme =`, so a bad file is indistinguishable
+ /// from a good one at this level. `themes/CHECKSUMS` is what pins the bytes instead.
+ ///
+-/// The picker is a floating `NSPanel` (`ThemePanel`), not a sheet — so it is a *window* here, which is
+-/// what lets the movability test below drag it. Its frame autosave is disabled under the fixture, so a
+-/// dragging test can't relocate the developer's own panel.
++/// The picker is a transient popover anchored to a toolbar button (`TrailingTitlebarBar`), not a sheet
++/// and not a window — so it is queried through the app's descendants, and `app.sheets` staying empty is
++/// part of what the dropdown test asserts.
+ ///
+ /// The starting family comes from `-WorkroomUITestThemeFamily`, mirrored into `Defaults` by
+ /// `UITestFixture.applyFixtureDefaults`. That is app-side on purpose: `Defaults` is not isolated by a
+@@ -122,32 +122,52 @@ final class ThemePickerUITests: XCTestCase {
+         + "or '\(lightVariantFile)' (light appearance) for the '\(family)' family")
+   }
+ 
+-  /// The picker is its own window and it can be dragged — the half of the bug report a unit test can
+-  /// only approach through `NSPanel` properties (`ThemePanelTests`). It used to be a sheet: attached
+-  /// under the workroom window's title bar, with nothing to drag, sitting on top of the content whose
+-  /// colours you were choosing.
++  /// The dropdown hangs off its own toolbar button, and clicking away closes it — the shape that makes
++  /// a live preview possible at all. It used to be a `.sheet`, which was document-modal: AppKit rendered
++  /// the whole window inactive behind it (traffic lights greyed, the sidebar's VCS dot badges orange →
++  /// dull brown), and being anchored under the title bar it covered the content whose colours you were
++  /// choosing.
+   ///
+-  /// The other half of the report — that the sheet's modality made the app behind it render inactive —
+-  /// is not asserted here: XCUITest exposes no window key/main state and no pixels. It's pinned as
+-  /// `canBecomeMain == false` in `ThemePanelTests`, which is the property that causes it.
+-  func testThePickerIsAMovableWindowOfItsOwn() throws {
++  /// What this can and cannot see: XCUITest exposes no window key/main state and no pixels, so the
++  /// *inactive rendering* itself isn't assertable here. What is assertable — and is what rules it out —
++  /// is that the picker is a transient popover rather than a sheet: `app.sheets` stays empty, and a
++  /// click elsewhere dismisses it, which no modal presentation does.
++  func testTheDropdownHangsOffTheToolbarAndClosesOnAClickAway() throws {
+     let app = launchedApp()
+-    openPicker(app)
+ 
+-    let panel = app.windows["Theme"]
++    let button = app.descendants(matching: .any)
++      .matching(identifier: "toolbar.theme").firstMatch
+     XCTAssertTrue(
+-      panel.waitForExistence(timeout: 5),
+-      "the picker is no longer a window of its own — a sheet would not be listed here")
++      button.waitForExistence(timeout: 5), "no theme button in the window's trailing toolbar")
++
++    // Click the centre coordinate rather than the element: the button lives in a window-level titlebar
++    // accessory hosting tree, and an identifier query there can resolve to a container whose centre is
++    // not over the glyph.
++    button.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+ 
+-    let before = panel.frame
+-    // Drag by the title bar, well clear of the close button.
+-    let titleBar = panel.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.02))
+-    titleBar.press(
+-      forDuration: 0.2, thenDragTo: titleBar.withOffset(CGVector(dx: -120, dy: 90)))
++    // The presentation KIND is the assertion, not any particular row: a popover registers in
++    // `app.popovers`, a sheet in `app.sheets`. That distinction IS the fix — a sheet is modal, which is
++    // what had AppKit render the window inactive behind the picker.
++    let popover = app.popovers.firstMatch
++    XCTAssertTrue(
++      popover.waitForExistence(timeout: 5),
++      "the button did not open the theme dropdown — button frame \(button.frame), hittable "
++        + "\(button.isHittable), sheets \(app.sheets.count)")
++    XCTAssertEqual(app.sheets.count, 0, "the picker came up as a sheet, not a dropdown")
++
++    // Content really rendered, not just an empty popover. `Workroom` is the family the fixture starts on
++    // and the list scrolls the selected family into view, so that row is materialised. The family used by
++    // the other cases is row 33 of 58, and a `LazyVStack` never builds it until the search filters it in
++    // — which is exactly what failed an earlier version of this test against working code.
++    XCTAssertTrue(
++      row(app, "Workroom").waitForExistence(timeout: 3), "the dropdown rendered no rows")
+ 
++    // Click well away from the popover: a transient popover dismisses, a modal presentation does not.
++    app.windows.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.75)).click()
+     XCTAssertTrue(
+-      panel.frame.origin != before.origin,
+-      "the picker did not move — an anchored presentation is exactly the reported bug")
++      popover.waitForNonExistence(timeout: 5),
++      "the dropdown survived a click elsewhere — it is not transient, so any other action leaves it "
++        + "hanging over the app")
+   }
+ 
+   /// Both of a new family's swatches render a **resolved** theme. A variant whose file doesn't resolve
+
+
+Investigate per the method in your instructions, then return the findings list.
