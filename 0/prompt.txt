@@ -1,0 +1,1 @@
+not true. resizing the terminal shows the TUI. so it is reattached. we shold also remove the "resume claude" feature from terminal footer
