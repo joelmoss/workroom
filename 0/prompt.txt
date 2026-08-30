@@ -1,0 +1,1234 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/AppStore+Session.swift
+  - macapp/WorkroomApp/Core/AppStore.swift
+  - macapp/WorkroomApp/Core/DefaultsKeys.swift
+  - macapp/WorkroomApp/Core/GhosttySurfaceView.swift
+  - macapp/WorkroomApp/Core/ProjectStore.swift
+  - macapp/WorkroomApp/Core/SessionCoordinator.swift
+  - macapp/WorkroomApp/Core/SessionSnapshot.swift
+  - macapp/WorkroomApp/Core/SessionStore.swift
+  - macapp/WorkroomApp/Core/TerminalSessions.swift
+  - macapp/WorkroomApp/Core/WindowRegistry.swift
+  - macapp/WorkroomApp/Views/SettingsView.swift
+  - macapp/WorkroomAppTests/AppStoreSessionRestoreTests.swift
+  - macapp/WorkroomAppTests/ScrollbackSidecarTests.swift
+  - macapp/WorkroomAppTests/SessionCaptureTests.swift
+  - macapp/WorkroomAppTests/SessionClaimTests.swift
+  - macapp/WorkroomAppTests/SessionRestoreTests.swift
+  - macapp/WorkroomAppTests/SessionSaveTests.swift
+  - macapp/WorkroomAppTests/SessionSnapshotCodecTests.swift
+  - macapp/WorkroomAppUITests/SessionRestoreUITests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/AppStore+Session.swift ===
+@@ -1,5 +1,7 @@
+ import AppKit
++import Defaults
+ import Foundation
++import OSLog
+ 
+ /// What one window contributes to the saved session (issue #46). `SessionCoordinator` decides when
+ /// this runs; `SessionStore` owns the file.
+@@ -25,10 +27,26 @@ extension AppStore {
+         ? nil : expandedTerminalTargets.sorted())
+   }
+ 
++  private static let sessionLogger = Logger(
++    subsystem: "com.developwithstyle.workroom", category: "session")
++
+   /// Every target that currently owns panes, in a stable order so an unchanged layout produces an
+   /// unchanged document — which is what lets the coordinator's equality gate drop the write.
++  ///
++  /// **The caps are enforced here, not only on read.** `SessionFile.sanitized()` drops anything over
++  /// them at restore, so a capture that ignored them would let the app author a file it then
++  /// truncates on every single launch — the user losing the same targets forever, silently. Applying
++  /// the same limit at both ends means what is written is exactly what comes back, and the drop is
++  /// logged the one time it happens rather than being invisible.
+   private func captureTargetSessions() -> [TargetSession] {
+-    terminals.activeTargetIDs.sorted().compactMap { targetID in
++    let active = terminals.activeTargetIDs.sorted()
++    if active.count > SessionLimits.maxTargetsPerWindow {
++      let message =
++        "session capture is over the target cap — persisting "
++        + "\(SessionLimits.maxTargetsPerWindow) of \(active.count)"
++      Self.sessionLogger.notice("\(message, privacy: .public)")
++    }
++    return active.prefix(SessionLimits.maxTargetsPerWindow).compactMap { targetID in
+       guard let captured = terminals.sessionCapture(forTargetID: targetID) else { return nil }
+ 
+       // Tabs the bridge refuses (today: run tabs) drop out here, and the split leaf that pointed at
+@@ -37,6 +55,7 @@ extension AppStore {
+       var keysByTabID: [TerminalTab.ID: String] = [:]
+       var tabs: [TabSession] = []
+       for tab in captured.tabs {
++        guard tabs.count < SessionLimits.maxTabsPerTarget else { break }
+         let key = tab.id.uuidString
+         guard let session = TabSession(key: key, tab: tab) else { continue }
+         keysByTabID[tab.id] = key
+@@ -69,16 +88,38 @@ extension AppStore {
+   ///
+   /// The tab key must match what `captureTargetSessions` wrote for the same tab, or the sidecar
+   /// belongs to nothing and is pruned the moment it is written.
+-  func captureScrollback(into store: SessionStore) {
++  ///
++  /// **Bounded by a wall-clock budget**, because this runs synchronously on the main thread inside
++  /// `applicationShouldTerminate` — and on the SIGTERM path it runs *before* run commands are stopped.
++  /// Per-pane cost is bounded in `GhosttySurfaceView.captureScrollback`; this bounds the total, so a
++  /// window full of busy panes cannot turn a quit into a spinning beachball. A pane past the deadline
++  /// restores with no text (tab keys are re-minted every launch, so there is no older sidecar for it
++  /// to fall back on) — losing one pane's history beats hanging the quit for every pane.
++  /// `isEnabled` is a parameter rather than a bare `Defaults` read so a test can drive the opt-out
++  /// without mutating a shared preference domain (the single-writer constraint parallel test workers
++  /// impose — see `SharedPrefDefaultsTests`).
++  func captureScrollback(
++    into store: SessionStore, isEnabled: Bool = Defaults[.persistScrollback],
++    deadline: Date = Date() + 1.5
++  ) {
++    guard isEnabled else { return }
++    var skipped = 0
+     for targetID in terminals.activeTargetIDs {
+       guard let captured = terminals.sessionCapture(forTargetID: targetID) else { continue }
+       for tab in captured.tabs {
+         // Run tabs are not persisted at all, so their output must not be either.
+         guard tab.surface?.isRunCommandSurface != true else { continue }
++        guard Date() < deadline else {
++          skipped += 1
++          continue
++        }
+         guard let text = tab.surface?.captureScrollback() else { continue }
+         store.writeScrollback(text, forTabKey: tab.id.uuidString)
+       }
+     }
++    if skipped > 0 {
++      Self.sessionLogger.notice("scrollback capture ran out of budget — \(skipped) panes skipped")
++    }
+   }
+ 
+   /// Tell the coordinator this window changed. Every dirty source funnels through here so there is
+@@ -105,7 +146,12 @@ extension AppStore {
+     // The session owns selection; `Defaults[.sidebarSelection]` (already loaded into
+     // `pendingRestoreSelection`) stays as the cold-start fallback for a launch with no session file.
+     // Feeding the session's value through the SAME field means `apply` needs no second branch.
+-    if let selected = claimed.selectedTargetID { pendingRestoreSelection = selected }
++    //
++    // Assigned UNCONDITIONALLY, nil included: a saved window that had nothing selected must come back
++    // with nothing selected. Overwriting only on non-nil would let the single-slot Defaults key —
++    // last written by whichever OTHER window was active — decide this window's selection, which is
++    // exactly the per-window authority the session file exists to provide.
++    pendingRestoreSelection = claimed.selectedTargetID
+   }
+ 
+   /// Rehydrate the claimed session at the end of `apply(_:)`. One-shot: `apply` runs twice per
+@@ -115,6 +161,12 @@ extension AppStore {
+     pendingSessionRestore = nil
+     defer { projectStore.finishSessionRestore() }
+ 
++    // Resolved once, not per tab: with the preference off, restore hands every pane a closure that
++    // returns nothing, so nothing is read and nothing is replayed. The layout still comes back.
++    let coordinator = projectStore.sessionCoordinator
++    let readScrollback: (String) -> String? =
++      Defaults[.persistScrollback] ? { coordinator.scrollback(forTabKey: $0) } : { _ in nil }
++
+     var restoredTargetIDs: Set<TerminalTarget.ID> = []
+     for saved in session.targets {
+       // A target that no longer resolves — its workroom was deleted between launches — is dropped
+@@ -122,11 +174,7 @@ extension AppStore {
+       guard let sid = Self.sidebarID(forTargetID: saved.targetID, in: projects),
+         let target = target(for: sid)
+       else { continue }
+-      let coordinator = projectStore.sessionCoordinator
+-      guard
+-        terminals.restore(saved, for: target, scrollback: { coordinator.scrollback(forTabKey: $0) })
+-          > 0
+-      else { continue }
++      guard terminals.restore(saved, for: target, scrollback: readScrollback) > 0 else { continue }
+       restoredTargetIDs.insert(target.id)
+     }
+ 
+
+
+=== DIFF: macapp/WorkroomApp/Core/AppStore.swift ===
+@@ -2403,14 +2403,20 @@ final class AppStore: ObservableObject {
+     // Exactly one window (the launch window) reapplies the saved selection; every other (incl. ⌘N)
+     // window starts blank (issue #70).
+     let shouldRestore = restore && projectStore.consumeInitialRestore()
++    // A window reopened from the saved session (issue #46) restores its OWN selection, which
++    // `claimSessionIfNeeded` has already put in `pendingRestoreSelection` from `attachWindow`.
++    // `consumeInitialRestore` is app-wide and one-shot, so the launch window consumes it and every
++    // sibling arrives here with `shouldRestore == false` — without this, the clear below would wipe
++    // what the claim just set and every restored sibling would come back with nothing selected.
++    let restoresOwnSession = pendingSessionRestore != nil
+     if UITestFixture.isActive {
+-      fixtureAutoSelect = shouldRestore
++      fixtureAutoSelect = shouldRestore || restoresOwnSession
+       loadFixture()
+       return
+     }
+-    // Drop the saved selection unless this is the one launch window allowed to restore it, so a new
+-    // window opens with nothing selected (no workroom, no terminal).
+-    if !shouldRestore {
++    // Drop the saved selection unless this window is entitled to one, so a ⌘N window opens with
++    // nothing selected (no workroom, no terminal).
++    if !shouldRestore && !restoresOwnSession {
+       pendingRestoreSelection = nil
+     }
+     if projectStore.projects.isEmpty {
+
+
+=== DIFF: macapp/WorkroomApp/Core/DefaultsKeys.swift ===
+@@ -43,6 +43,15 @@ extension Defaults.Keys {
+   /// Confirm before closing a terminal (closing kills its shell and any running process, no undo).
+   static let confirmOnCloseTerminal = Key<Bool>("confirmOnCloseTerminal", default: true)
+ 
++  /// Whether a restored pane gets its previous text back (issue #144).
++  ///
++  /// Opt-OUT rather than opt-in: the feature is the point of the issue. But a sidecar is verbatim
++  /// terminal output written to disk in plain text, and terminals hold tokens, `env` dumps and
++  /// connection strings — which also means Time Machine and any folder sync pick them up. That is a
++  /// judgement only the user can make, so it is a switch rather than a decision baked into the build.
++  /// Off disables capture AND replay; the session layout (panes, splits, windows) still persists.
++  static let persistScrollback = Key<Bool>("persistScrollback", default: true)
++
+   /// Whether the global ⌘§ show/hide hotkey is registered (issue #13).
+   static let globalHotkey = Key<Bool>("globalHotkeyEnabled", default: true)
+ 
+
+
+=== DIFF: macapp/WorkroomApp/Core/GhosttySurfaceView.swift ===
+@@ -153,12 +153,18 @@ final class GhosttySurfaceView: NSView {
+   private var progressActive = false
+   private static let progressTimeout: TimeInterval = 30
+ 
+-  /// A previous session's text, replayed into this surface once it exists (issue #144). Nil for a
+-  /// pane that is not being restored.
++  /// How to fetch this pane's previous text, replayed once the surface exists (issue #144). Nil for a
++  /// pane that is not being restored, and cleared the moment it has been used.
++  ///
++  /// A **closure, not the text**, and that is the point: restore materialises every target's tabs
++  /// eagerly (the sidebar's terminal subtree renders from them), so reading each sidecar up front
++  /// would do hundreds of file reads on the launch path and then hold every one of them — up to
++  /// 256KB per pane — in memory for the process's lifetime, including for panes that never mount.
++  /// Deferring to `createSurface` means only a pane you actually look at pays, and it pays once.
+   ///
+   /// Set through `adoptRestoredScrollback` rather than `init` because views are built by the
+   /// `TerminalSessions.makeView` factory, whose signature is shared with every other spawn path.
+-  private var restoredScrollback: String?
++  private var restoredScrollback: (() -> String?)?
+   /// One replay per view, ever.
+   private var didReplayScrollback = false
+   /// Whether this pane has ever had more rows than fit on screen (issue #144), set from the
+@@ -866,10 +872,40 @@ final class GhosttySurfaceView: NSView {
+   ///
+   /// The gap is a pane that launches a TUI before producing any output — indistinguishable from a
+   /// short session, so its frame is captured. A real alt-screen query would close it; see TODOS.md.
++  /// Rows of history worth asking libghostty for at quit.
++  ///
++  /// `read_text` has no length parameter — it materialises the WHOLE history as one string, and only
++  /// then does `TerminalCapture.tidy` keep the last `maxScrollbackBytes` of it. The app sets no
++  /// `scrollback-limit`, so that history is bounded only by ghostty's own default (megabytes per
++  /// surface), and this runs serially for every pane inside `applicationShouldTerminate`. A pane that
++  /// logged all day would turn a quit into a multi-second hang for output that is discarded anyway.
++  ///
++  /// 10,000 rows sits above what `maxScrollbackBytes` can hold at a typical row width, so a pane whose
++  /// history would have survived the byte cap is not skipped by this one. Past it, the viewport alone
++  /// is captured — what you were actually looking at, which is the part worth keeping. Against
++  /// ghostty's byte-based default (~130,000 rows at 80 columns) that is still an order-of-magnitude
++  /// bound on the read.
++  static let maxCaptureRows: UInt64 = 10_000
++
++  /// Pure form of the row guard, so the bound is unit-testable without a live surface.
++  ///
++  /// Absent metrics read as "worth trying": a surface that has never reported geometry has nothing to
++  /// read anyway, and the guard is about panes that report a LOT, not panes that report nothing.
++  nonisolated static func shouldReadHistory(totalRows: UInt64?) -> Bool {
++    (totalRows ?? 0) <= maxCaptureRows
++  }
++
+   func captureScrollback(maxBytes: Int = SessionLimits.maxScrollbackBytes) -> String? {
+-    let history = readText(tag: GHOSTTY_POINT_SURFACE)
+-    let isAlternateScreen = Self.shouldSkipViewport(
+-      hasHistoryNow: history != nil, everHadScrollback: everHadScrollback)
++    let historyIsWorthReading = Self.shouldReadHistory(totalRows: scrollbarMetrics?.total)
++    let history = historyIsWorthReading ? readText(tag: GHOSTTY_POINT_SURFACE) : nil
++    // The alternate-screen inference only holds when the `SURFACE` read actually ran: `history == nil`
++    // because we CHOSE not to read it says nothing about a TUI, and treating it as one would skip the
++    // viewport too and capture nothing at all — the exact panes with the most worth keeping. (An alt
++    // screen has no scrollback of its own, so a TUI never trips the row guard and detection is intact.)
++    let isAlternateScreen =
++      historyIsWorthReading
++      && Self.shouldSkipViewport(
++        hasHistoryNow: history != nil, everHadScrollback: everHadScrollback)
+     // The viewport is otherwise always read: `SURFACE` is history ONLY, so gating it on history
+     // existing would capture nothing at all for a short session — most panes, most of the time.
+     let visible = isAlternateScreen ? nil : readText(tag: GHOSTTY_POINT_VIEWPORT)
+@@ -891,10 +927,12 @@ final class GhosttySurfaceView: NSView {
+   /// spike). The bytes are rendered text, never escape sequences, and control bytes are stripped on
+   /// the way in, so this cannot leave the parser mid-sequence.
+   private func replayRestoredScrollback() {
+-    guard !didReplayScrollback, let surface, let restored = restoredScrollback,
+-      !restored.isEmpty
+-    else { return }
++    guard !didReplayScrollback, let surface, let provider = restoredScrollback else { return }
+     didReplayScrollback = true
++    // Released as soon as it has run: the text is now the terminal's own scrollback, and keeping a
++    // second copy on the view would double the memory cost of every restored pane for no purpose.
++    restoredScrollback = nil
++    guard let restored = provider(), !restored.isEmpty else { return }
+     var bytes = Array(Self.replayPayload(for: restored).utf8)
+     ghostty_surface_write_buffer(surface, &bytes, UInt(bytes.count))
+   }
+@@ -918,12 +956,15 @@ final class GhosttySurfaceView: NSView {
+   /// Plain text, no SGR — it is content like any other replayed byte.
+   static let scrollbackDivider = "\r\n── restored session ──\r\n"
+ 
+-  /// Hand this view a previous session's text to replay. Must be called before the surface is
+-  /// created (i.e. before the view enters a window), which is where `TerminalSessions.restore` sets
+-  /// it — immediately after the factory returns.
+-  func adoptRestoredScrollback(_ text: String?) {
+-    guard surface == nil, let text, !text.isEmpty else { return }
+-    restoredScrollback = text
++  /// Hand this view a way to fetch a previous session's text to replay. Must be called before the
++  /// surface is created (i.e. before the view enters a window), which is where
++  /// `TerminalSessions.restore` sets it — immediately after the factory returns.
++  ///
++  /// The closure is called at most once, when the surface is created, and released straight after —
++  /// so a restored pane that is never opened costs a closure, not a copy of its history.
++  func adoptRestoredScrollback(_ provider: (() -> String?)?) {
++    guard surface == nil, let provider else { return }
++    restoredScrollback = provider
+   }
+ 
+   /// Type literal text into the surface WITHOUT a trailing newline ("Insert fix", issue #49): the
+
+
+=== DIFF: macapp/WorkroomApp/Core/ProjectStore.swift ===
+@@ -175,12 +175,26 @@ final class ProjectStore: ObservableObject {
+   }
+ 
+   /// Bring the window that was key at the last quit back to the front, then resume saving.
+-  private func endSessionRestore() {
++  ///
++  /// `timedOut` is the watchdog calling, and it changes the ending: see below.
++  private func endSessionRestore(timedOut: Bool = false) {
+     guard isRestoringSession else { return }
++    // **A restore that never finished must not resume saving.** `AppStore.load` swallows a CLI
++    // failure and returns WITHOUT calling `apply`, so `restorePersistedSessionIfPending` never runs
++    // and this window's restore stays outstanding forever. Resuming here would then rebuild the
++    // document from a window holding nothing and overwrite the file — one `workroom list` timing out
++    // on a cold machine would silently destroy the user's whole saved session, ~16 seconds into a
++    // launch that was supposed to bring it back. Freezing keeps the file intact for the next launch.
++    let incomplete = outstandingRestores > 0 || !unclaimedSessionWindows.isEmpty
+     isRestoringSession = false
+     unclaimedSessionWindows.removeAll()
+     dispatchedSessionKeys.removeAll()
+     claimedSessions.removeAll()
++    keyWindowSessionKey = timedOut && incomplete ? nil : keyWindowSessionKey
++    if timedOut && incomplete {
++      sessionCoordinator.freezeWithoutWriting()
++      return
++    }
+     if let keyWindowSessionKey,
+       let store = WindowRegistry.shared.allStores.first(where: {
+         $0.sessionKey == keyWindowSessionKey
+@@ -206,11 +220,13 @@ final class ProjectStore: ObservableObject {
+     // closed mid-restore) would otherwise leave saving suspended for the whole run — the app would
+     // silently stop persisting anything. Restoring is a launch-time operation measured in
+     // milliseconds, so anything still outstanding this much later is not coming.
+-    DispatchQueue.main.asyncAfter(deadline: .now() + Self.sessionRestoreTimeout) { [weak self] in
+-      MainActor.assumeIsolated { self?.endSessionRestore() }
++    DispatchQueue.main.asyncAfter(deadline: .now() + sessionRestoreTimeout) { [weak self] in
++      MainActor.assumeIsolated { self?.endSessionRestore(timedOut: true) }
+     }
+   }
+ 
+-  /// How long to wait for every dispatched window before giving up and resuming saves.
+-  static let sessionRestoreTimeout: TimeInterval = 15
++  /// How long to wait for every dispatched window before giving up. Instance-level so a test can
++  /// shorten it and exercise the real watchdog rather than a stand-in for it.
++  var sessionRestoreTimeout: TimeInterval = ProjectStore.defaultSessionRestoreTimeout
++  static let defaultSessionRestoreTimeout: TimeInterval = 15
+ }
+
+
+=== DIFF: macapp/WorkroomApp/Core/SessionCoordinator.swift ===
+@@ -44,13 +44,16 @@ final class SessionCoordinator {
+   /// The last document written, compared with `==` rather than a hash: Swift seeds `hashValue` per
+   /// process, and a collision would silently suppress a write the user needs.
+   private var lastWritten: [WindowSession]?
++  /// What the last **successful** write persisted, or nil when nothing has landed yet. Exposed so a
++  /// test can assert that a failed write is not latched as written.
++  var lastWrittenWindows: [WindowSession]? { lastWritten }
+   /// Depth rather than a flag so nested suspensions (several windows restoring) cannot resume early.
+   private var suspensions = 0
+   private var dirtyWhileSuspended = false
+   /// Set once the app is genuinely terminating. Windows close one by one during a quit, and the
+   /// document is rebuilt from the LIVE windows — without this, the last window closing would
+   /// overwrite a good session with an empty one after the flush already wrote it.
+-  private var isFrozen = false
++  private(set) var isFrozen = false
+ 
+   init(
+     store: SessionStore = SessionStore(),
+@@ -113,18 +116,19 @@ final class SessionCoordinator {
+     let start = dirtySince ?? now
+     dirtySince = start
+ 
+-    // Past the ceiling, write now rather than pushing the deadline out again.
+-    if now.timeIntervalSince(start) >= ceiling {
+-      writeIfChanged()
+-      return
+-    }
+-
++    // Past the ceiling, write on the next turn rather than pushing the deadline out again.
++    //
++    // Scheduled at zero delay rather than called inline, because the loudest dirty source is
++    // `terminals.objectWillChange`, which fires BEFORE the mutation lands: capturing inline would
++    // snapshot the state the change was about to replace. Zero delay keeps the ceiling's guarantee
++    // (this run loop turn) while letting the mutation complete first.
+     pending?.cancel()
+     let work = DispatchWorkItem { [weak self] in
+       MainActor.assumeIsolated { self?.writeIfChanged() }
+     }
+     pending = work
+-    DispatchQueue.main.asyncAfter(deadline: .now() + debounce, execute: work)
++    let delay = now.timeIntervalSince(start) >= ceiling ? 0 : debounce
++    DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+   }
+ 
+   /// Capture and persist immediately if anything actually changed. Also the ceiling's landing point.
+@@ -137,7 +141,14 @@ final class SessionCoordinator {
+     let windows = capture()
+     guard windows != lastWritten else { return }
+     lastWritten = windows
+-    store.write(makeFile(windows))
++    // `lastWritten` is the gate that drops an unchanged save, so a write that FAILED must not be
++    // remembered as written: after a disk-full or permissions blip, every later attempt at the same
++    // state would be suppressed and the user's layout would silently stop being saved until they
++    // changed something else. Clearing it on failure makes the next dirty mark retry.
++    store.write(makeFile(windows)) { [weak self] didWrite in
++      guard let self, !didWrite, self.lastWritten == windows else { return }
++      self.lastWritten = nil
++    }
+   }
+ 
+   // MARK: Quit
+@@ -166,6 +177,24 @@ final class SessionCoordinator {
+     isFrozen = true
+   }
+ 
++  /// Stop writing for the rest of the run **without** writing anything.
++  ///
++  /// The abandoned-restore path. If a window claimed a saved session and never restored it — a `list`
++  /// that threw, a scene SwiftUI declined to create — then the live windows are NOT the user's
++  /// session, and resuming saves would rebuild the document from those empty windows and overwrite a
++  /// perfectly good file. Freezing instead preserves it, so the next launch can still restore.
++  ///
++  /// This costs the current run's layout changes, which is the right trade: the file on disk is real
++  /// work the user did, and what would replace it is the wreckage of a failed launch.
++  func freezeWithoutWriting() {
++    guard !isFrozen else { return }
++    pending?.cancel()
++    pending = nil
++    dirtySince = nil
++    isFrozen = true
++    logger.notice("session restore did not complete — writes frozen to preserve the saved session")
++  }
++
+   // MARK: Read
+ 
+   func read() -> SessionStore.ReadOutcome { store.read() }
+
+
+=== DIFF: macapp/WorkroomApp/Core/SessionSnapshot.swift ===
+@@ -50,13 +50,28 @@ import Foundation
+ /// as full coverage.
+ enum SessionLimits {
+   static let maxWindows = 8
+-  static let maxTargetsPerWindow = 20
++  /// Workroom's whole point is managing many workrooms, so this has to sit above real usage rather
++  /// than above a guess: 20 was tight enough that a heavy user would silently lose targets on every
++  /// relaunch. **Enforced at capture as well as at read** (`AppStore.captureWindowSession`), so the
++  /// app can never author a file it will later truncate.
++  static let maxTargetsPerWindow = 40
+   static let maxTabsPerTarget = 20
+   /// Split trees are user-built by repeated ⌘D; a dozen levels is far past any real layout, and the
+   /// cap is what stops a hand-edited file recursing `materialize` into the stack.
+   static let maxSplitDepth = 12
++  /// Nesting depth refused **during decoding**, before a tree is built at all.
++  ///
++  /// `maxSplitDepth` is checked by `sanitized()`, which runs only once a `LayoutNode` already exists —
++  /// far too late, because `init(from:)` recurses per level as it decodes. A deeply nested file would
++  /// overflow the stack, and a crash (unlike a thrown error) is never quarantined, so the app would
++  /// crash on every launch with no way out. Throwing here drops one element through `@Lossy` instead.
++  /// Well above `maxSplitDepth` plus the outer document's own coding path, so no real file trips it.
++  static let maxDecodeDepth = 64
+   /// Refused before decoding — array caps bound element *counts*, not the size of one giant string.
+-  static let maxFileBytes = 512 * 1024
++  ///
++  /// Generous rather than tight: this is a quarantine trigger, and a false positive costs the user
++  /// their whole session. The element caps above are what actually bound the work.
++  static let maxFileBytes = 4 * 1024 * 1024
+   /// Clamps paths, titles, and commit ids individually.
+   static let maxStringLength = 4096
+   /// Per-pane scrollback kept in a sidecar file (issue #144). The value is overwhelmingly at the
+@@ -145,6 +160,15 @@ indirect enum LayoutNode<Leaf: Codable & Hashable & Sendable>: Codable, Hashable
+   }
+ 
+   init(from decoder: Decoder) throws {
++    // Refused BEFORE recursing. `sanitized()`'s `maxSplitDepth` check cannot help here — it inspects
++    // a tree that decoding has already built, and building it is the stack hazard. Each nesting level
++    // adds a `first`/`second` key to the coding path, so the path length is the live depth.
++    guard decoder.codingPath.count <= SessionLimits.maxDecodeDepth else {
++      throw DecodingError.dataCorrupted(
++        DecodingError.Context(
++          codingPath: decoder.codingPath,
++          debugDescription: "split tree nested deeper than \(SessionLimits.maxDecodeDepth)"))
++    }
+     let container = try decoder.container(keyedBy: CodingKeys.self)
+     switch try container.decode(Kind.self, forKey: .kind) {
+     case .leaf:
+@@ -604,11 +628,14 @@ extension TargetSession {
+         report.droppedTabs += 1
+         continue
+       }
++      // Clamped BEFORE the uniqueness check, not after: two keys that differ only past
++      // `maxStringLength` collapse to the same clamped key, and a duplicate key silently re-points a
++      // split leaf or the focus at the wrong pane. Checking first would wave both through.
++      var tab = tab.clamped()
+       guard tab.isWellFormed, seenKeys.insert(tab.key).inserted else {
+         report.droppedTabs += 1
+         continue
+       }
+-      var tab = tab.clamped()
+       // At most one preview tab per target (`TerminalSessions.previewTabID`). A hand-edited file
+       // with two would give the target two italic chips and an ambiguous retarget slot; keep the
+       // first and persist the rest.
+
+
+=== DIFF: macapp/WorkroomApp/Core/SessionStore.swift ===
+@@ -34,6 +34,15 @@ final class SessionStore {
+   /// a fixture launch would otherwise write over the developer's own `Workroom Dev` session — and the
+   /// fixture's temp-directory workrooms would then be restored into a real launch.
+   static func forCurrentEnvironment() -> SessionStore {
++    // Unit tests inject their own store, but `AppStore.markSessionDirty` reaches the SHARED
++    // coordinator — so without this a `make app-test` run writes the developer's own `Workroom Dev`
++    // session file and scrollback sidecars as a side effect of exercising tab mutations. Same
++    // isolation the app already applies at `WorkroomApp.swift:42` and `AppStore.swift:750`.
++    if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil,
++      UITestFixture.sessionFilePath == nil
++    {
++      return SessionStore(url: SessionStore.defaultURL(), isDisabled: true)
++    }
+     guard UITestFixture.isActive else { return SessionStore() }
+     guard let path = UITestFixture.sessionFilePath else {
+       return SessionStore(url: SessionStore.defaultURL(), isDisabled: true)
+@@ -147,16 +156,30 @@ final class SessionStore {
+   // MARK: Write
+ 
+   /// Persist off the main actor. Coalescing is the caller's job (see `AppStore+Session`).
+-  func write(_ file: SessionFile) {
+-    guard !isDisabled, !writesDisabled else { return }
+-    queue.async { [weak self] in self?.persist(file) }
++  ///
++  /// `completion` reports on the main actor whether the bytes actually reached disk. The caller needs
++  /// it: it gates a write on "did this change since last time?", and treating a failed write as
++  /// written would suppress every retry of the same state until something else changed.
++  func write(_ file: SessionFile, completion: (@MainActor (Bool) -> Void)? = nil) {
++    guard !isDisabled, !writesDisabled else {
++      if let completion {
++        DispatchQueue.main.async { MainActor.assumeIsolated { completion(false) } }
++      }
++      return
++    }
++    queue.async { [weak self] in
++      let ok = self?.persist(file) ?? false
++      guard let completion else { return }
++      DispatchQueue.main.async { MainActor.assumeIsolated { completion(ok) } }
++    }
+   }
+ 
+   /// Persist before returning — the quit path, where the process may not survive long enough for an
+   /// async write to land.
+-  func writeSynchronously(_ file: SessionFile) {
+-    guard !isDisabled, !writesDisabled else { return }
+-    queue.sync { self.persist(file) }
++  @discardableResult
++  func writeSynchronously(_ file: SessionFile) -> Bool {
++    guard !isDisabled, !writesDisabled else { return false }
++    return queue.sync { self.persist(file) }
+   }
+ 
+   func clear() {
+@@ -173,17 +196,42 @@ final class SessionStore {
+     url.deletingLastPathComponent().appendingPathComponent("scrollback", isDirectory: true)
+   }
+ 
+-  private func scrollbackURL(forTabKey key: String) -> URL {
+-    // The key is a `TabSession.key` UUID string: filesystem-safe and unique within a snapshot, so
+-    // no escaping and no collision handling.
+-    scrollbackDirectory.appendingPathComponent("\(key).txt")
++  /// Rejects a key that could address anything outside the scrollback directory.
++  ///
++  /// The keys this app writes are `TabSession.key` UUID strings, which are filesystem-safe by
++  /// construction — but `session.json` is a plain file a user (or anything running as them) can edit,
++  /// and `URL.appendingPathComponent` does **not** normalise: a key of `../../../x` yields a path
++  /// that escapes on access (measured). Since `readScrollback` *deletes* a file that fails
++  /// validation, an unchecked key is an arbitrary-file-delete primitive at launch.
++  ///
++  /// A separator check rather than a strict UUID match, so the rule bites the actual hazard without
++  /// making the key format part of the on-disk contract.
++  nonisolated static func isSafeScrollbackKey(_ key: String) -> Bool {
++    guard !key.isEmpty, key.count <= 128, !key.hasPrefix(".") else { return false }
++    return !key.contains("/") && !key.contains(":") && !key.contains("\0")
++  }
++
++  private func scrollbackURL(forTabKey key: String) -> URL? {
++    guard Self.isSafeScrollbackKey(key) else {
++      logger.error("refusing an unsafe scrollback key")
++      return nil
++    }
++    return scrollbackDirectory.appendingPathComponent("\(key).txt")
+   }
+ 
+   func writeScrollback(_ text: String, forTabKey key: String) {
+     guard !isDisabled, !writesDisabled, !text.isEmpty else { return }
++    guard let fileURL = scrollbackURL(forTabKey: key) else { return }
+     do {
+-      try fileManager.createDirectory(at: scrollbackDirectory, withIntermediateDirectories: true)
+-      try Data(text.utf8).write(to: scrollbackURL(forTabKey: key), options: .atomic)
++      // Owner-only, on the directory as well as the file: a sidecar is verbatim terminal output, so
++      // it can hold whatever the user's shell printed — tokens, `env` dumps, connection strings. The
++      // default 0644 would leave that readable by every other account on the machine.
++      try fileManager.createDirectory(
++        at: scrollbackDirectory, withIntermediateDirectories: true,
++        attributes: [.posixPermissions: 0o700])
++      try Data(text.utf8).write(to: fileURL, options: .atomic)
++      // `.atomic` writes a temp file and renames, so the mode has to be set after the rename.
++      try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+     } catch {
+       // Best-effort like everything else here: a pane with no sidecar simply restores empty.
+       logger.error("scrollback write failed: \(error.localizedDescription)")
+@@ -195,8 +243,7 @@ final class SessionStore {
+   /// A file that fails validation is **deleted**: it would fail identically on every future launch,
+   /// and unlike `session.json` a scrollback sidecar has no diagnostic value worth quarantining.
+   func readScrollback(forTabKey key: String) -> String? {
+-    guard !isDisabled else { return nil }
+-    let fileURL = scrollbackURL(forTabKey: key)
++    guard !isDisabled, let fileURL = scrollbackURL(forTabKey: key) else { return nil }
+     guard fileManager.fileExists(atPath: fileURL.path) else { return nil }
+ 
+     if let size = try? fileManager.attributesOfItem(atPath: fileURL.path)[.size] as? Int,
+@@ -245,7 +292,8 @@ final class SessionStore {
+       })
+   }
+ 
+-  private func persist(_ file: SessionFile) {
++  @discardableResult
++  private func persist(_ file: SessionFile) -> Bool {
+     let encoder = JSONEncoder()
+     encoder.dateEncodingStrategy = .iso8601
+     // Readable and diff-stable on purpose: "delete this file and relaunch" is a support instruction
+@@ -254,7 +302,7 @@ final class SessionStore {
+ 
+     guard let data = try? encoder.encode(file) else {
+       logger.error("session snapshot could not be encoded")
+-      return
++      return false
+     }
+     do {
+       // `Data.write(.atomic)` does NOT create intermediate directories, and the bundle-id
+@@ -264,8 +312,10 @@ final class SessionStore {
+       // Atomic: a reader sees the complete old document or the complete new one, never a partial
+       // write from a process that died mid-save.
+       try data.write(to: url, options: .atomic)
++      return true
+     } catch {
+       logger.error("session snapshot could not be written: \(error.localizedDescription)")
++      return false
+     }
+   }
+ 
+
+
+=== DIFF: macapp/WorkroomApp/Core/TerminalSessions.swift ===
+@@ -600,7 +600,7 @@ final class TerminalSessions: ObservableObject {
+   @discardableResult
+   func restore(
+     _ session: TargetSession, for target: TerminalTarget,
+-    scrollback: (String) -> String? = { _ in nil }
++    scrollback: @escaping (String) -> String? = { _ in nil }
+   ) -> Int {
+     guard (tabsByTarget[target.id] ?? [:]).isEmpty else { return 0 }
+ 
+@@ -614,11 +614,15 @@ final class TerminalSessions: ObservableObject {
+       if saved.kind == TabSession.terminalKind, let payload = saved.terminal {
+         // `command:` is deliberately never passed: run tabs are not persisted, and this makes even a
+         // hand-edited file unable to start a process on launch.
++        // The sidecar is fetched by the SURFACE when it is created, not here: restore materialises
++        // every target's tabs eagerly, so reading now would put one file read per restored pane on
++        // the launch path and hold every result in memory for the whole run.
++        let key = saved.key
+         tab = makeTerminalTab(
+           for: target,
+           cwd: Self.restoredCwd(payload.cwd, fallback: target.path),
+           title: payload.defaultTitle,
+-          restoredScrollback: scrollback(saved.key))
++          restoredScrollback: { scrollback(key) })
+         restoredTerminals += 1
+       } else if let content = saved.restoredContent {
+         tab = TerminalTab(
+@@ -1479,7 +1483,7 @@ final class TerminalSessions: ObservableObject {
+ 
+   private func makeTerminalTab(
+     for target: TerminalTarget, cwd: String, command: String? = nil, title: String? = nil,
+-    restoredScrollback: String? = nil
++    restoredScrollback: (() -> String?)? = nil
+   ) -> TerminalTab {
+     let count = (counts[target.id] ?? 0) + 1
+     counts[target.id] = count
+
+
+=== DIFF: macapp/WorkroomApp/Core/WindowRegistry.swift ===
+@@ -64,6 +64,20 @@ final class WindowRegistry: ObservableObject {
+         SwitcherRecency.shared.recordWorkroom(store: store, sid: store.selectedTargetID)
+       }
+     }
++    // Drop a window as it closes (issue #46). `unregister` previously had NO caller: entries were
++    // only ever cleared by `prune()` noticing the weak reference had died, which happens whenever the
++    // next unrelated lookup runs — so a closed window scheduled no save, and the session file kept
++    // describing it until something else happened to mark the session dirty. Filtered to registered
++    // workroom windows, so Settings/About/quick terminal closing here is a no-op.
++    NotificationCenter.default.addObserver(
++      forName: NSWindow.willCloseNotification, object: nil, queue: .main
++    ) { [weak self] note in
++      MainActor.assumeIsolated {
++        guard let self, let window = note.object as? NSWindow, self.store(for: window) != nil
++        else { return }
++        self.unregister(window: window)
++      }
++    }
+   }
+ 
+   // MARK: Registration
+
+
+=== DIFF: macapp/WorkroomApp/Views/SettingsView.swift ===
+@@ -179,6 +179,7 @@ private struct GeneralSettingsPane: View {
+   @Default(.confirmOnQuit) private var confirmOnQuit
+   @Default(.globalHotkey) private var globalHotkey
+   @Default(.showMenuBarItem) private var showMenuBarItem
++  @Default(.persistScrollback) private var persistScrollback
+ 
+   var body: some View {
+     Form {
+@@ -188,6 +189,14 @@ private struct GeneralSettingsPane: View {
+         )
+         .accessibilityIdentifier("settings.control.confirmQuit")
+ 
++      Toggle("Restore terminal output on relaunch", isOn: $persistScrollback)
++        .help(
++          "Save each terminal's visible output and scrollback so it comes back after a relaunch. "
++            + "Stored as plain text in Application Support, so turn this off if your terminals show "
++            + "secrets. Panes, splits and windows are restored either way."
++        )
++        .accessibilityIdentifier("settings.control.persistScrollback")
++
+       Toggle("Global show/hide hotkey (⌘§)", isOn: $globalHotkey)
+         .help("Register the system-wide ⌘§ shortcut to show or hide Workroom.")
+ 
+
+
+=== DIFF: macapp/WorkroomAppTests/AppStoreSessionRestoreTests.swift ===
+@@ -101,6 +101,64 @@ final class AppStoreSessionRestoreTests: XCTestCase {
+     XCTAssertNil(store.pendingSessionRestore)
+   }
+ 
++  /// **CRITICAL REGRESSION.** A restored sibling window keeps the selection its own session recorded.
++  ///
++  /// `bootstrap` gates on `consumeInitialRestore()`, which is app-wide and one-shot: the launch window
++  /// consumes it, so every sibling reaches the clear with `shouldRestore == false`. Clearing there
++  /// wiped what `claimSessionIfNeeded` had just written from the window's own session — so window 2
++  /// came back with its panes restored into `TerminalSessions` but nothing selected, i.e. visibly
++  /// empty. Only the window COUNT was asserted end to end, so nothing caught it.
++  func testRestoredSiblingKeepsItsOwnSelectionThroughBootstrap() async throws {
++    let projects = [project("/p", workrooms: ["calm-otter"])]
++    let saved = windowSession(targetID: "wr|/p|calm-otter", titles: ["Terminal 1"])
++    let store = makeStore(projects: projects, session: saved, isLaunchWindow: false)
++    // A sibling is opened FOR a key: it claims, but it is not the launch window.
++    store.claimsSavedSession = true
++    store.sessionKey = try XCTUnwrap(UUID(uuidString: saved.windowKey))
++    // The launch window has already taken the app-wide one-shot.
++    XCTAssertTrue(store.projectStore.consumeInitialRestore())
++
++    store.claimSessionIfNeeded()
++    XCTAssertEqual(store.pendingRestoreSelection, "wr|/p|calm-otter")
++
++    await store.bootstrap(restore: true)
++
++    XCTAssertEqual(
++      AppStore.targetIDString(for: store.selectedTargetID), "wr|/p|calm-otter",
++      "a sibling restored from the session must not open blank")
++  }
++
++  /// A ⌘N window still opens blank — the fix above must not hand it the saved selection.
++  func testCommandNWindowStillOpensBlank() async {
++    let projects = [project("/p", workrooms: ["calm-otter"])]
++    let store = makeStore(
++      projects: projects,
++      session: windowSession(targetID: "wr|/p|calm-otter", titles: ["Terminal 1"]),
++      isLaunchWindow: false)
++    XCTAssertTrue(store.projectStore.consumeInitialRestore())
++
++    store.claimSessionIfNeeded()
++    await store.bootstrap(restore: false)
++
++    XCTAssertNil(store.selectedTargetID, "a ⌘N window opens with nothing selected")
++  }
++
++  /// A saved window that had NOTHING selected must come back with nothing selected — the single-slot
++  /// `Defaults` key, last written by whichever other window was active, must not decide for it.
++  func testASessionWithNoSelectionOverridesTheDefaultsFallback() {
++    let projects = [project("/p", workrooms: ["calm-otter"])]
++    var saved = windowSession(targetID: "wr|/p|calm-otter", titles: ["Terminal 1"])
++    saved.selectedTargetID = nil
++    let store = makeStore(projects: projects, session: saved)
++    // As `AppStore.init` seeds it from `Defaults[.sidebarSelection]`.
++    store.pendingRestoreSelection = "wr|/p|calm-otter"
++
++    store.claimSessionIfNeeded()
++
++    XCTAssertNil(
++      store.pendingRestoreSelection, "the session owns selection, including when it recorded none")
++  }
++
+   func testWindowKeyIsAdoptedSoTheSlotIsStableAcrossLaunches() throws {
+     let projects = [project("/p", workrooms: ["calm-otter"])]
+     let saved = windowSession(targetID: "wr|/p|calm-otter", titles: ["Terminal 1"])
+
+
+=== DIFF: macapp/WorkroomAppTests/ScrollbackSidecarTests.swift ===
+@@ -92,6 +92,55 @@ final class ScrollbackSidecarTests: XCTestCase {
+     XCTAssertNil(store.readScrollback(forTabKey: "abc"))
+   }
+ 
++  // MARK: Key safety
++
++  /// **SECURITY REGRESSION.** `session.json` is a plain file the user (or anything running as them)
++  /// can edit, and `URL.appendingPathComponent` does NOT normalise — measured: a key of `../../../x`
++  /// yields a path that escapes on access. Since `readScrollback` DELETES a file that fails
++  /// validation, an unchecked key was an arbitrary-file-delete primitive that fires at launch.
++  func testKeysThatCouldEscapeTheDirectoryAreRefused() {
++    for hostile in [
++      "../../../evil", "a/b", "/etc/hosts", ".hidden", "", String(repeating: "x", count: 200),
++    ] {
++      XCTAssertFalse(
++        SessionStore.isSafeScrollbackKey(hostile), "\"\(hostile)\" must not address a file")
++    }
++  }
++
++  func testOrdinaryTabKeysAreAccepted() {
++    XCTAssertTrue(SessionStore.isSafeScrollbackKey(UUID().uuidString))
++    XCTAssertTrue(SessionStore.isSafeScrollbackKey("t0"))
++  }
++
++  func testAnUnsafeKeyNeitherReadsNorWrites() throws {
++    let outside = directory.appendingPathComponent("outside.txt")
++    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
++    try Data("do not touch".utf8).write(to: outside)
++
++    store.writeScrollback("nope", forTabKey: "../outside")
++    XCTAssertNil(store.readScrollback(forTabKey: "../outside"))
++    XCTAssertEqual(
++      try String(contentsOf: outside, encoding: .utf8), "do not touch",
++      "a file outside the scrollback directory must be untouched")
++  }
++
++  // MARK: Permissions
++
++  /// A sidecar is verbatim terminal output — whatever the shell printed, including anything secret.
++  /// The default 0644 would leave that readable by every other account on the machine.
++  func testSidecarsAreOwnerOnly() throws {
++    store.writeScrollback("secret", forTabKey: "abc")
++
++    let filePerms =
++      try FileManager.default.attributesOfItem(atPath: sidecar("abc").path)[.posixPermissions]
++      as? NSNumber
++    XCTAssertEqual(filePerms?.int16Value, 0o600)
++    let dirPerms =
++      try FileManager.default.attributesOfItem(atPath: store.scrollbackDirectory.path)[
++        .posixPermissions] as? NSNumber
++    XCTAssertEqual(dirPerms?.int16Value, 0o700)
++  }
++
+   // MARK: Prune
+ 
+   func testPruneRemovesOnlyUnknownKeys() {
+@@ -116,6 +165,29 @@ final class ScrollbackSidecarTests: XCTestCase {
+     store.pruneScrollback(keeping: ["anything"])
+   }
+ 
++  // MARK: The opt-out
++
++  /// A sidecar is verbatim terminal output written to disk in plain text, and terminals hold tokens,
++  /// `env` dumps and connection strings — which Time Machine and any folder sync then pick up. The
++  /// switch exists so that is the user's call; turning it off must cost the TEXT and nothing else.
++  @MainActor
++  func testTurningScrollbackOffLeavesTheLayoutAlone() {
++    let store = AppStore(projectStore: ProjectStore())
++    store.terminals.makeView = { _, cwd, command in
++      GhosttySurfaceView(workingDirectory: cwd, command: command)
++    }
++    let target = TerminalTarget(id: "wr|/p|foo", title: "foo", path: "/tmp", isMissing: false)
++    store.terminals.addTab(for: target)
++
++    store.captureScrollback(into: self.store, isEnabled: false)
++    XCTAssertFalse(
++      FileManager.default.fileExists(atPath: self.store.scrollbackDirectory.path),
++      "with the preference off nothing is written at all")
++    XCTAssertEqual(
++      store.captureWindowSession().targets.first?.tabs.count, 1,
++      "the pane itself still persists — only its text is opted out")
++  }
++
+   // MARK: Disabled store
+ 
+   /// Fixture mode without a named session file must not touch the developer's own scrollback.
+@@ -152,6 +224,33 @@ final class ScrollbackSidecarTests: XCTestCase {
+       GhosttySurfaceView.shouldSkipViewport(hasHistoryNow: true, everHadScrollback: false))
+   }
+ 
++  // MARK: Quit-time read bound
++
++  /// `read_text` has no length parameter — it materialises the WHOLE history, and only then does
++  /// `tidy` keep the last 256KB. With no `scrollback-limit` in the generated ghostty config that is
++  /// bounded by the engine's own default (megabytes per surface), and it runs serially for every pane
++  /// inside `applicationShouldTerminate`. A pane that logged all day would hang the quit for output
++  /// that gets discarded anyway.
++  func testHistoryIsReadOnlyWhileItCouldStillFitTheCap() {
++    XCTAssertTrue(GhosttySurfaceView.shouldReadHistory(totalRows: 0))
++    XCTAssertTrue(GhosttySurfaceView.shouldReadHistory(totalRows: nil), "no geometry yet")
++    XCTAssertTrue(
++      GhosttySurfaceView.shouldReadHistory(totalRows: GhosttySurfaceView.maxCaptureRows))
++    XCTAssertFalse(
++      GhosttySurfaceView.shouldReadHistory(totalRows: GhosttySurfaceView.maxCaptureRows + 1))
++    XCTAssertFalse(GhosttySurfaceView.shouldReadHistory(totalRows: 10_000_000))
++  }
++
++  /// The row guard must sit ABOVE what the byte cap keeps, or it would throw away history that would
++  /// have survived anyway — the guard exists to bound work, not to shrink the capture. Measured
++  /// against a typical rendered row; this assertion is what caught the bound being set too low.
++  func testTheRowBoundIsAboveWhatTheByteCapKeeps() {
++    let typicalRenderedRow = 32
++    XCTAssertGreaterThan(
++      Int(GhosttySurfaceView.maxCaptureRows) * typicalRenderedRow,
++      SessionLimits.maxScrollbackBytes)
++  }
++
+   // MARK: Replay payload
+ 
+   /// **REGRESSION.** `read_text` returns lines separated by bare `\n`, and a terminal treats LF as
+
+
+=== DIFF: macapp/WorkroomAppTests/SessionCaptureTests.swift ===
+@@ -143,6 +143,26 @@ final class SessionCaptureTests: XCTestCase {
+     XCTAssertNil(capture(sessions))
+   }
+ 
++  /// **REGRESSION.** The caps have to bind at CAPTURE, not only at read. `sanitized()` drops anything
++  /// over them on restore, so a capture that ignored them would let the app author a file it then
++  /// truncates on every single launch — the user losing the same panes forever, silently.
++  func testCaptureStopsAtTheTabCapSoTheFileIsNeverTruncatedOnRead() {
++    let store = AppStore(projectStore: ProjectStore())
++    store.terminals.makeView = { _, cwd, command in
++      GhosttySurfaceView(workingDirectory: cwd, command: command)
++    }
++    for _ in 0..<(SessionLimits.maxTabsPerTarget + 4) { store.terminals.addTab(for: target) }
++
++    let captured = store.captureWindowSession()
++    let tabs = captured.targets.first?.tabs.count ?? 0
++    XCTAssertEqual(tabs, SessionLimits.maxTabsPerTarget)
++
++    // What was written must survive a round trip with nothing dropped.
++    let (sanitized, report) = SessionFile(savedAt: Date(), windows: [captured]).sanitized()
++    XCTAssertEqual(sanitized.windows.first?.targets.first?.tabs.count, tabs)
++    XCTAssertEqual(report.droppedTabs, 0)
++  }
++
+   func testNoTabsCapturesNothing() {
+     XCTAssertNil(capture(makeSessions()))
+   }
+
+
+=== DIFF: macapp/WorkroomAppTests/SessionClaimTests.swift ===
+@@ -42,17 +42,32 @@ final class SessionClaimTests: XCTestCase {
+   }
+ 
+   /// A store whose session file holds `windows`, with saving driven by an injected coordinator.
+-  private func makeProjectStore(windows: [WindowSession]) -> ProjectStore {
++  private func makeProjectStore(
++    windows: [WindowSession], capture: @escaping () -> [WindowSession] = { [] }
++  ) -> ProjectStore {
+     if !windows.isEmpty {
+       SessionStore(url: url).writeSynchronously(
+         SessionFile(savedAt: Date(timeIntervalSince1970: 0), windows: windows))
+     }
+     let store = ProjectStore()
+     store.sessionCoordinator = SessionCoordinator(
+-      store: SessionStore(url: url), debounce: 0.05, ceiling: 0.2, capture: { [] })
++      store: SessionStore(url: url), debounce: 0.05, ceiling: 0.2, capture: capture)
+     return store
+   }
+ 
++  /// Spin the main run loop so scheduled work items fire, without blocking the main actor.
++  private func pump(_ seconds: TimeInterval) {
++    let deadline = Date().addingTimeInterval(seconds)
++    while Date() < deadline {
++      RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
++    }
++  }
++
++  private func savedWindows() -> [WindowSession]? {
++    guard case .restored(let file, _) = SessionStore(url: url).read() else { return nil }
++    return file.windows
++  }
++
+   // MARK: The matrix
+ 
+   /// The launch window's seed id is freshly minted every launch, so it cannot match anything on disk
+@@ -207,6 +222,53 @@ final class SessionClaimTests: XCTestCase {
+   }
+ 
+   /// A sibling is opened keyed on the session it will claim, so the two cannot drift apart.
++  // MARK: The abandoned restore
++
++  /// **CRITICAL REGRESSION.** A restore that never completes must FREEZE saving, not resume it.
++  ///
++  /// `AppStore.load` swallows a CLI failure and returns without calling `apply`, so
++  /// `restorePersistedSessionIfPending` never runs and the claim stays outstanding forever. The
++  /// watchdog exists so saving can't wedge — but resuming here rebuilds the document from a window
++  /// holding nothing and overwrites the file. One `workroom list` timing out on a cold machine would
++  /// silently destroy the user's entire saved session seconds into the launch meant to restore it.
++  func testWatchdogPreservesTheFileWhenARestoreNeverFinished() throws {
++    let key = UUID()
++    // What the live (unrestored) window would contribute — the wreckage that must NOT be written.
++    let store = makeProjectStore(
++      windows: [window(key: key, isKey: true, selected: "wr|/p|foo")],
++      capture: { [WindowSession(windowKey: UUID().uuidString)] })
++    store.sessionRestoreTimeout = 0.1
++
++    XCTAssertNotNil(store.claimSession(for: key, isLaunchWindow: true))
++    XCTAssertTrue(store.sessionCoordinator.isSuspended)
++    // The window registers and moves, marking dirty — but its restore never lands.
++    store.sessionCoordinator.markDirty()
++
++    pump(0.6)
++
++    XCTAssertTrue(
++      store.sessionCoordinator.isFrozen,
++      "an abandoned restore must stop writing, not resume it")
++    XCTAssertEqual(
++      savedWindows()?.first?.targets.first?.tabs.count, 1,
++      "the saved session must survive a launch that failed to restore it")
++  }
++
++  /// The watchdog firing AFTER a clean restore is a no-op — it must not freeze a healthy session.
++  func testWatchdogAfterACompletedRestoreLeavesSavingEnabled() {
++    let key = UUID()
++    let store = makeProjectStore(windows: [window(key: key)])
++    store.sessionRestoreTimeout = 0.1
++
++    _ = store.claimSession(for: key, isLaunchWindow: true)
++    store.finishSessionRestore()
++    XCTAssertFalse(store.sessionCoordinator.isSuspended)
++
++    pump(0.4)
++    XCTAssertFalse(
++      store.sessionCoordinator.isFrozen, "a completed restore must leave saving working")
++  }
++
+   func testRestoringSeedCarriesTheSessionKey() {
+     let key = UUID()
+     XCTAssertEqual(WindowSeed.restoring(key: key).id, key)
+
+
+=== DIFF: macapp/WorkroomAppTests/SessionRestoreTests.swift ===
+@@ -31,6 +31,31 @@ final class SessionRestoreTests: XCTestCase {
+       second: .leaf(second))
+   }
+ 
++  // MARK: Scrollback is fetched lazily (issue #144)
++
++  /// **REGRESSION.** Restore materialises EVERY target's tabs eagerly — the sidebar's terminal
++  /// subtree renders from them — so reading each pane's sidecar here would put one file read per
++  /// restored pane on the launch path and then hold every result (up to 256KB each) in memory for the
++  /// whole run, including for panes that are never opened. The surface asks for its own text when it
++  /// is created instead.
++  func testSidecarsAreNotReadUntilAPaneIsActuallyCreated() {
++    let sessions = makeSessions()
++    var reads: [String] = []
++    let session = TargetSession(
++      targetID: target.id,
++      tabs: [terminal("t0", title: "Terminal 1"), terminal("t1", title: "Terminal 2")])
++
++    let count = sessions.restore(
++      session, for: target,
++      scrollback: { key in
++        reads.append(key)
++        return "history for \(key)"
++      })
++
++    XCTAssertEqual(count, 2)
++    XCTAssertTrue(reads.isEmpty, "restoring a pane must not read its sidecar")
++  }
++
+   // MARK: Shape
+ 
+   func testRestoresTabsInOrderWithTitles() {
+
+
+=== DIFF: macapp/WorkroomAppTests/SessionSaveTests.swift ===
+@@ -127,6 +127,29 @@ final class SessionSaveTests: XCTestCase {
+     XCTAssertEqual(readWindows()?.first?.targets.first?.tabs.count, 3)
+   }
+ 
++  /// **REGRESSION.** `lastWritten` is the gate that drops an unchanged save, so a write that FAILED
++  /// must not be remembered as written — otherwise, after a disk-full or permissions blip, every later
++  /// attempt at the same state is suppressed and the layout silently stops being saved until the user
++  /// happens to change something else.
++  func testAFailedWriteIsNotRememberedAsWritten() throws {
++    // A file where the parent directory must be: `createDirectory` fails, so `persist` fails.
++    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
++    let blocked = directory.appendingPathComponent("blocked")
++    try Data("not a directory".utf8).write(to: blocked)
++    let coordinator = SessionCoordinator(
++      store: SessionStore(url: blocked.appendingPathComponent("session.json")),
++      debounce: 0.05, ceiling: 0.2, capture: { [weak self] in self?.captured ?? [] })
++
++    coordinator.writeIfChanged()
++    pump(0.3)
++    XCTAssertNil(coordinator.lastWrittenWindows, "a failed write must be retried, not latched")
++
++    // The same unchanged state must therefore still attempt a write rather than be dropped.
++    coordinator.writeIfChanged()
++    pump(0.3)
++    XCTAssertNil(coordinator.lastWrittenWindows)
++  }
++
+   // MARK: Restore gate
+ 
+   /// **CRITICAL REGRESSION (outside voice, finding 1).**
+
+
+=== DIFF: macapp/WorkroomAppTests/SessionSnapshotCodecTests.swift ===
+@@ -303,6 +303,58 @@ final class SessionSnapshotCodecTests: XCTestCase {
+     XCTAssertEqual(report.droppedTabs, 1)
+   }
+ 
++  /// **REGRESSION.** Two keys that differ only past `maxStringLength` collapse to the same key once
++  /// clamped, and a duplicate key silently re-points a split leaf or the focus at the wrong pane.
++  /// Checking uniqueness before clamping waved both through.
++  func testKeysThatCollideOnlyAfterClampingAreStillDeduped() {
++    let prefix = String(repeating: "k", count: SessionLimits.maxStringLength)
++    let first = TabSession(
++      key: prefix + "-one", kind: TabSession.terminalKind,
++      terminal: TerminalPayload(defaultTitle: "Terminal 1", cwd: nil))
++    var second = first
++    second.key = prefix + "-two"
++    second.terminal?.defaultTitle = "Impostor"
++
++    let file = SessionFile(
++      savedAt: Date(timeIntervalSince1970: 0),
++      windows: [
++        WindowSession(
++          windowKey: "W1", targets: [TargetSession(targetID: "root|/p", tabs: [first, second])])
++      ])
++
++    let (sanitized, report) = file.sanitized()
++    XCTAssertEqual(sanitized.windows[0].targets[0].tabs.count, 1)
++    XCTAssertEqual(report.droppedTabs, 1)
++  }
++
++  /// **REGRESSION.** `maxSplitDepth` is checked by `sanitized()`, which only runs once a tree EXISTS —
++  /// but building it is the hazard: `LayoutNode.init(from:)` recurses per level while decoding. A deep
++  /// file overflowed the stack, and a crash (unlike a thrown error) is never quarantined, so the app
++  /// would have crashed on every launch with no way out.
++  func testADeeplyNestedTreeThrowsDuringDecodingRatherThanRecursing() throws {
++    var json = #"{"kind":"leaf","leaf":"t0"}"#
++    for _ in 0..<(SessionLimits.maxDecodeDepth + 40) {
++      json =
++        #"{"kind":"split","orientation":"vertical","ratio":0.5,"first":"# + json
++        + #","second":{"kind":"leaf","leaf":"x"}}"#
++    }
++    XCTAssertThrowsError(
++      try JSONDecoder().decode(LayoutNode<String>.self, from: Data(json.utf8)),
++      "a tree deeper than the decode cap must throw, not recurse")
++  }
++
++  /// The depth guard must not fire on a tree a user could actually build with ⌘D.
++  func testARealisticSplitTreeStillDecodes() throws {
++    var json = #"{"kind":"leaf","leaf":"t0"}"#
++    for _ in 0..<(SessionLimits.maxSplitDepth - 1) {
++      json =
++        #"{"kind":"split","orientation":"vertical","ratio":0.5,"first":"# + json
++        + #","second":{"kind":"leaf","leaf":"x"}}"#
++    }
++    let decoded = try JSONDecoder().decode(LayoutNode<String>.self, from: Data(json.utf8))
++    XCTAssertEqual(decoded.depth, SessionLimits.maxSplitDepth)
++  }
++
+   func testCapsAreEnforcedAndReported() {
+     let tabs = (0..<(SessionLimits.maxTabsPerTarget + 5)).map {
+       TabSession(
+
+
+=== DIFF: macapp/WorkroomAppUITests/SessionRestoreUITests.swift ===
+@@ -152,6 +152,43 @@ final class SessionRestoreUITests: XCTestCase {
+       "both windows should be reopened from the saved session, without a second ⌘N")
+   }
+ 
++  /// **CRITICAL REGRESSION.** A restored sibling window comes back with its panes VISIBLE.
++  ///
++  /// `testEveryWindowSurvivesRelaunch` asserts only the window count, and that is exactly how this
++  /// shipped broken: `bootstrap` gates on an app-wide one-shot the launch window consumes, so every
++  /// sibling cleared the selection its own session had just supplied. The panes were restored into
++  /// `TerminalSessions` and then rendered by nothing — window 2 came back empty.
++  ///
++  /// The second window is made by duplicating what the app itself wrote, rather than by driving the
++  /// sidebar: it needs a window with a real selection, and the app's own ids are the only ones
++  /// guaranteed to resolve.
++  func testARestoredSiblingWindowShowsItsPanes() throws {
++    let app = launchedApp()
++    waitForFirstPane(app)
++    assertCount(panes(app), reaches: 1)
++    quitAndWaitForSave(app)
++
++    // Duplicate window 0 under a fresh key, so the next launch has two windows to restore.
++    let data = try Data(contentsOf: sessionFile)
++    var document = try XCTUnwrap(
++      JSONSerialization.jsonObject(with: data) as? [String: Any])
++    var windows = try XCTUnwrap(document["windows"] as? [[String: Any]])
++    var sibling = try XCTUnwrap(windows.first)
++    XCTAssertNotNil(
++      sibling["selectedTargetID"], "the saved window must carry a selection to restore")
++    sibling["windowKey"] = UUID().uuidString
++    sibling["isKey"] = false
++    windows.append(sibling)
++    document["windows"] = windows
++    try JSONSerialization.data(withJSONObject: document).write(to: sessionFile)
++
++    let relaunched = launchedApp()
++    XCTAssertTrue(relaunched.wait(for: .runningForeground, timeout: 10))
++    XCTAssertTrue(waitForWindowCount(relaunched, 2), "both saved windows should reopen")
++    // Two panes across two windows: the sibling must RENDER its restored pane, not open blank.
++    assertCount(panes(relaunched), reaches: 2)
++  }
++
+   // MARK: Scrollback (issue #144)
+ 
+   /// The headline for #144: what you were reading is still there after a relaunch, above a divider.
+
+
+Investigate per the method in your instructions, then return the findings list.
