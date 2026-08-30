@@ -1,0 +1,2 @@
+<bash-stdout>To https://github.com/joelmoss/workroom.git
+   17bc2388..e6795964  master -&gt; master</bash-stdout><bash-stderr></bash-stderr>
