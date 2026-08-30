@@ -1,0 +1,347 @@
+<task-notification>
+<task-id>a0b5987ea5d2a53be</task-id>
+<tool-use-id>toolu_01DvuPmvmaDuAW7dV4y5jgz1</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/7aa82ec5-9569-436f-ae7e-697874c3babc/tasks/a0b5987ea5d2a53be.output</output-file>
+<status>completed</status>
+<summary>Agent "Find SentryConfig and release channel detection code" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Summary of Findings
+
+### 1. Full contents of `SentryConfig.swift`
+
+**Path:** `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/SentryConfig.swift`
+
+```
+ 1  import Foundation
+ 2  import Sentry
+ 3
+ 4  /// Sentry SDK setup, kept out of `WorkroomApp.init()` so the app entry point stays readable.
+ 5  ///
+ 6  /// macOS-trimmed option set: Workroom is macOS-only, so the iOS-only features in Sentry's
+ 7  /// quick-start are deliberately left off — Session Replay, watchdog-termination tracking, and
+ 8  /// screenshot/view-hierarchy attachment aren't supported on macOS. What remains is the coverage
+ 9  /// that's valid here: crash reporting, app-hang detection, tracing, profiling, and metrics.
+10  ///
+11  /// The DSN is a *public* client key (safe to embed — it only permits sending events, not reading
+12  /// them), so it ships in the binary; `SENTRY_DSN` overrides it for local experiments. Structured
+13  /// logs (`enableLogs`) are off: it wouldn't pick up the app's existing `os.Logger` calls anyway —
+14  /// surfacing those would need explicit `SentrySDK.capture(...)` at the call sites (the `GhosttyApp`
+15  /// terminal-startup failures being the prime candidates).
+16  enum SentryConfig {
+17    /// Public ingest DSN. Overridable via `SENTRY_DSN` to point local runs at a different project.
+18    private static let dsn =
+19      "https://01c27f42380699d6072a6e30abe6e175@o272130.ingest.us.sentry.io/4511524517249024"
+20
+21    static func start() {
+22      SentrySDK.start { options in
+23        options.dsn = ProcessInfo.processInfo.environment["SENTRY_DSN"] ?? dsn
+24
+25        // Tag dev builds so local crashes/traces don't pollute the production environment in Sentry.
+26        // `SENTRY_ENVIRONMENT` overrides either default.
+27        options.environment =
+28          ProcessInfo.processInfo.environment["SENTRY_ENVIRONMENT"] ?? defaultEnvironment()
+29        // releaseName defaults to "&lt;bundle id&gt;@&lt;version&gt;+&lt;build&gt;", which release.sh already drives.
+30
+31        // Error monitoring: crashes + app hangs. Watchdog-termination tracking and the
+32        // non-fully-blocking app-hang report (`enableReportNonFullyBlockingAppHangs`) are both
+33        // iOS/tvOS/visionOS-only — unavailable on macOS — so they're left out entirely.
+34        options.enableCrashHandler = true
+35        options.enableAppHangTracking = true
+36
+37        // Don't attach PII (IP address / user context). The SDK default, restated for intent: a local
+38        // dev tool gains little from it, and it keeps user-identifying data out of events.
+39        options.sendDefaultPii = false
+40
+41        // Tracing — auto-instruments app launch, network, and SwiftUI. A desktop app sees low
+42        // transaction volume, so full sampling is affordable; lower this if that ever changes.
+43        options.tracesSampleRate = 1.0
+44
+45        // Profiling (macOS-supported). `.trace` lifecycle ties profiles to sampled transactions.
+46        options.configureProfiling = {
+47          $0.sessionSampleRate = 1.0
+48          $0.lifecycle = .trace
+49        }
+50
+51        // Metrics are on by default in SDK 9.12+; explicit for intent.
+52        options.enableMetrics = true
+53      }
+54    }
+55
+56    /// The Sentry `environment` for this build: `development` for Debug, `nightly` for the side-by-side
+57    /// Workroom Nightly product, `production` for the shipping app.
+58    ///
+59    /// Nightly needs its own environment, not just its own release name. The `Nightly` build config is
+60    /// release-type (no `DEBUG`), so nightly events used to arrive tagged `production` — which is how
+61    /// WORKROOM-2B, an App Hang from a build that ships from the tip of `master` to a handful of people,
+62    /// was indistinguishable from a hang in the released app. Alert rules and saved searches scoped to
+63    /// `environment:production` will stop matching nightly events, which is the point.
+64    ///
+65    /// Both parameters default to the real build facts and exist purely so `SentryConfigTests` never has
+66    /// to fake a build configuration (the same seam `UITestFixture` uses).
+67    static func defaultEnvironment(
+68      nightly: Bool = ReleaseChannel.isNightlyBuild, debug: Bool = isDebugBuild
+69    ) -&gt; String {
+70      if debug { return "development" }
+71      return nightly ? "nightly" : "production"
+72    }
+73
+74    /// Whether this is a Debug build. A stored fact rather than an `#if` at the use site so
+75    /// `defaultEnvironment` stays a pure function of its inputs.
+76    static let isDebugBuild: Bool = {
+77      #if DEBUG
+78        return true
+79      #else
+80        return false
+81      #endif
+82    }()
+83  }
+```
+
+Note: `SentrySDK.start` itself (line 21-53) is **unconditional** — it always runs, for every build type, including local Debug builds. Only the `environment` *tag* varies by build; the SDK is always started, crash handler always installed, app-hang tracking always on, tracing/profiling always on at 100% sampling — for Debug builds too.
+
+### 2. How `environment` is decided
+
+Exact logic (`SentryConfig.swift` lines 66-72):
+
+```swift
+static func defaultEnvironment(
+  nightly: Bool = ReleaseChannel.isNightlyBuild, debug: Bool = isDebugBuild
+) -&gt; String {
+  if debug { return "development" }
+  return nightly ? "nightly" : "production"
+}
+```
+
+- Priority order: `debug` wins over everything → `"development"`.
+- Else `nightly` (from `ReleaseChannel.isNightlyBuild`) → `"nightly"`.
+- Else → `"production"` (this covers BOTH the main Release build subscribed to `stable` and the same build subscribed to `pre` at runtime — there is no separate `"pre"` environment string).
+- `debug` is backed by `isDebugBuild` (lines 76-82), a `#if DEBUG` compiler-flag check, stored once as a static constant.
+- `SENTRY_ENVIRONMENT` env var overrides the computed value entirely (line 27-28); `SENTRY_DSN` env var overrides the DSN (line 23) but does not affect whether Sentry starts.
+- Not based on bundle identifier directly — bundle id differs per build config (`com.developwithstyle.workroom` / `.dev` / `.nightly`) but `SentryConfig` doesn't read it; it goes through `ReleaseChannel.current`/`isNightlyBuild` (Info.plist marker) and `isDebugBuild` (`#if DEBUG`).
+
+### 3. `ReleaseChannel.swift` — full contents
+
+**Path:** `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/ReleaseChannel.swift`
+
+```swift
+ 1  import Defaults
+ 2  import Foundation
+ 3
+ 4  /// A release channel the user can subscribe to for Sparkle auto-updates (issue #91). Mirrors the Go
+ 5  /// CLI's `internal/channel` package; the canonical classification + floor rules live there and in
+ 6  /// `Scripts/channel-helper.sh` — keep all three in lockstep.
+ 7  ///
+ 8  /// Floor / nested model: a channel receives its own builds plus every channel below it, newest
+ 9  /// wins. Stable users never see prereleases.
+10  ///
+11  ///   stable  → GA only
+12  ///   pre     → betas / release candidates + stable
+13  ///   nightly → per-day builds from main + everything below
+14  ///
+15  /// The app never classifies tags itself — Sparkle matches each appcast item's `&lt;sparkle:channel&gt;`
+16  /// against `allowedSparkleChannels`. So this type only carries the subscription → allowed-channels
+17  /// mapping plus display strings.
+18  ///
+19  /// Stored as the bare raw string ("stable"/"pre"/"nightly") via `PreferRawRepresentable`, matching
+20  /// the `DiffViewMode`/`PRMergeMethod` convention. The raw values are BOTH a stored-data contract and
+21  /// the Sparkle `&lt;sparkle:channel&gt;` names the appcast uses — keep them byte-for-byte stable.
+22  enum ReleaseChannel: String, CaseIterable, Sendable, Defaults.Serializable,
+23    Defaults.PreferRawRepresentable
+24  {
+25    case stable
+26    case pre
+27    case nightly
+28
+29    /// The Sparkle channels this subscription may receive updates from, EXCLUDING the default
+30    /// (untagged) channel that Sparkle always allows. Stable builds ship untagged, so `.stable`
+31    /// returns the empty set; the floor for `.pre`/`.nightly` adds the tagged channels below them.
+32    /// Feed straight to `SPUUpdaterDelegate.allowedChannels(for:)`.
+33    var allowedSparkleChannels: Set&lt;String&gt; {
+34      switch self {
+35      case .stable: return []
+36      case .pre: return [ReleaseChannel.pre.rawValue]
+37      case .nightly: return [ReleaseChannel.pre.rawValue, ReleaseChannel.nightly.rawValue]
+38      }
+39    }
+40
+41    /// The Settings picker's option label.
+42    var label: String {
+43      switch self {
+44      case .stable: return "Stable"
+45      case .pre: return "Pre-release"
+46      case .nightly: return "Nightly"
+47      }
+48    }
+49
+50    /// Channels the main app's Settings picker offers. Nightly is a separate side-by-side product
+51    /// (its own app identity / DMG), never a runtime picker option — so it's excluded here.
+52    static let pickerCases: [ReleaseChannel] = [.stable, .pre]
+53
+54    /// This build's baked channel identity, from the Info.plist `WorkroomReleaseChannel` marker (set
+55    /// per build configuration in project.yml): `.nightly` for the Workroom Nightly build; nil for
+56    /// the main app (Release) and Dev/tests, whose marker is empty and whose channel is the runtime
+57    /// `Defaults[.releaseChannel]` preference.
+58    static var current: ReleaseChannel? {
+59      guard
+60        let raw = Bundle.main.object(forInfoDictionaryKey: "WorkroomReleaseChannel") as? String,
+61        !raw.isEmpty
+62      else { return nil }
+63      return ReleaseChannel(rawValue: raw)
+64    }
+65
+66    /// Whether this is the pinned nightly build (channel fixed, no runtime picker).
+67    static var isNightlyBuild: Bool { current == .nightly }
+68  }
+```
+
+**Key finding for your gating design:** The `ReleaseChannel` enum has **exactly three cases: `stable`, `pre`, `nightly`. There is no `dev`/`debug` case at all** — this matches the Go `internal/channel/channel.go` (`Stable`/`Pre`/`Nightly` consts only) and `Scripts/channel-helper.sh` (only classifies into `stable`/`pre`/`nightly`). All three mirror implementations agree: the dev/debug distinction is **not part of the channel model** — it's an entirely separate, orthogonal mechanism.
+
+Detection mechanism: `ReleaseChannel.current` reads the Info.plist key `WorkroomReleaseChannel` (baked at build time from `project.yml`'s `WORKROOM_RELEASE_CHANNEL` build setting):
+- Base/`Release` config: `WORKROOM_RELEASE_CHANNEL: ""` → `current == nil` → channel is picked at runtime via `Defaults[.releaseChannel]` (stable/pre).
+- `Debug` config: inherits the base `WORKROOM_RELEASE_CHANNEL: ""` (not overridden — see `project.yml` lines 291-302) → marker is empty → `ReleaseChannel.current == nil` and `isNightlyBuild == false`, **exactly the same as the Release build's marker**. Debug builds are indistinguishable from Release by this marker alone.
+- `Nightly` config: `WORKROOM_RELEASE_CHANNEL: nightly` (project.yml line 322) → marker is `"nightly"` → `current == .nightly`, `isNightlyBuild == true`. Nightly is release-type (optimized, Developer-ID signed, no `DEBUG` flag) per `project.yml` line 22-24 (`Nightly: release`).
+
+So a Debug ("Workroom Dev") build is currently only distinguishable from a real build via the `#if DEBUG` compiler condition (`SentryConfig.isDebugBuild`), NOT via `ReleaseChannel` — the Info.plist marker gives no dev signal.
+
+### 4. Other `SentrySDK`/`SentryConfig` references in `macapp/`
+
+(Searched `WorkroomApp/`, `WorkroomAppTests/`, `WorkroomAppUITests/`, `Scripts/`, `Tests/` — excluding `DerivedData`/build artifacts.)
+
+- `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/ShellEnvironment.swift:345` — `SentrySDK.addBreadcrumb(crumb)` (a breadcrumb added regardless of build type; runs unconditionally wherever `ShellEnvironment` executes).
+- `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/GhosttyApp.swift:144` — `SentrySDK.capture(message: message) { scope in scope.setLevel(level) }` (manual event capture for terminal-startup failures).
+- `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/WorkroomApp.swift:20-21` — the call site (see #6 below).
+- `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/main.swift:20` — comment referencing `SentryConfig.start()` (not called from `main.swift` itself; it's called inside `WorkroomApp.init()`, which only runs down the GUI path, not the `ghostty` CLI-symlink path — see #6).
+- `/Users/joelmoss/dev/workroom/macapp/WorkroomAppTests/SentryConfigTests.swift` — unit tests, full contents:
+
+```swift
+ 1  import XCTest
+ 2
+ 3  @testable import Workroom
+ 4
+ 5  /// The Sentry `environment` split (WORKROOM-2B follow-up).
+ 6  ///
+ 7  /// The `Nightly` build config is release-type, so it defines no `DEBUG` and nightly events used to
+ 8  /// arrive tagged `production` — a hang from a build that ships nightly from the tip of `master` to a
+ 9  /// handful of people looked exactly like a hang in the released app. `defaultEnvironment` takes its
+10  /// inputs as parameters precisely so this can be asserted without faking a build configuration.
+11  final class SentryConfigTests: XCTestCase {
+12
+13    func testNightlyReleaseBuildReportsNightly() {
+14      XCTAssertEqual(SentryConfig.defaultEnvironment(nightly: true, debug: false), "nightly")
+15    }
+16
+17    func testShippingReleaseBuildReportsProduction() {
+18      XCTAssertEqual(SentryConfig.defaultEnvironment(nightly: false, debug: false), "production")
+19    }
+20
+21    func testDebugWinsOverEveryOtherIdentity() {
+22      // A local "Workroom Dev" build must never file events as nightly OR production, whatever the
+23      // channel marker says.
+24      XCTAssertEqual(SentryConfig.defaultEnvironment(nightly: true, debug: true), "development")
+25      XCTAssertEqual(SentryConfig.defaultEnvironment(nightly: false, debug: true), "development")
+26    }
+27
+28    func testThisTestHostIsADebugBuild() {
+29      // Sanity check on the defaulted parameter: the test host is built Debug, so the no-argument call
+30      // must agree with the explicit one. Catches the seam being wired to the wrong fact.
+31      XCTAssertTrue(SentryConfig.isDebugBuild)
+32      XCTAssertEqual(SentryConfig.defaultEnvironment(), "development")
+33    }
+34  }
+```
+
+There is no other Sentry scope/tag/session-tracking setup anywhere else (no `SentrySDK.configureScope`, no session tracking calls found). The two extra call sites (breadcrumb in `ShellEnvironment.swift`, capture in `GhosttyApp.swift`) both call bare `SentrySDK.*` static methods with **no build-type guard** — they rely entirely on whatever `SentrySDK.start()` did/didn't do at launch. If Sentry startup is gated off for dev builds, these two call sites become no-ops automatically (Sentry's SDK safely no-ops `addBreadcrumb`/`capture` when not started) — but worth confirming that assumption when you design the gate.
+
+### 5. Existing `#if DEBUG` pattern
+
+Found in `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/`:
+
+- `Core/SentryConfig.swift:77` — `isDebugBuild` computed constant (already discussed).
+- `Core/Updater.swift:40-50` — the closest existing precedent for gating a whole subsystem's *behavior* (not startup) by `#if DEBUG`, in `Updater.init()`:
+
+```swift
+40    #if DEBUG
+41      // The "Workroom Dev" build shares the release appcast feed but carries a dev version, so a
+42      // scheduled check would offer to "update" it to the release DMG and replace the running dev
+43      // build. Force scheduled checks off for Debug (the manual "Check for Updates…" menu item still
+44      // works if you explicitly want it). Release is unaffected.
+45      controller.updater.automaticallyChecksForUpdates = false
+46    #else
+47      // Surface a previously-found update promptly on launch instead of waiting for the next
+48      // scheduled check (the pill would otherwise stay empty until then). Silent unless one is found.
+49      controller.updater.checkForUpdatesInBackground()
+50    #endif
+```
+
+- `Core/UITestFixture.swift:35`, `Core/GhosttyRuntimeAdapter.swift:147/152`, `Views/HistoryPanel.swift:277/286`, `Views/DiffViewer.swift:468/476/545/554`, `Views/ChangesPanel.swift:458/470` — other `#if DEBUG` usages, all UI/dev-tooling related, not Sentry-adjacent.
+
+`macapp/CLAUDE.md`'s "Gotchas" section explicitly documents the `Updater.swift` `#if DEBUG` gate and the ⌘§-hotkey `#if DEBUG` gate in `WorkroomApp.swift` as the established pattern for "Debug builds run side by side... deliberately doesn't register ⌘§ and doesn't run Sparkle scheduled checks (`#if DEBUG` in `WorkroomApp.swift` / `Updater.swift`)" — i.e. this repo already has a documented convention of using `#if DEBUG` to disable release-only subsystems for the local Dev build, which is a direct precedent for gating `SentryConfig.start()` itself.
+
+### 6. Call site: `WorkroomApp.swift` lines 1-60
+
+**Path:** `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/WorkroomApp.swift`
+
+```swift
+ 1  import AppKit
+ 2  import Defaults
+ 3  import SwiftUI
+ 4  import UserNotifications
+ 5
+ 6  // No `@main`: the entry point is `main.swift`, which dispatches Ghostty's `+action` CLI when this
+ 7  // binary is invoked through the `Contents/MacOS/ghostty` symlink, and calls `WorkroomApp.main()`
+ 8  // otherwise. Everything below runs on the app path only.
+ 9  struct WorkroomApp: App {
+10    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+11    @StateObject private var updater = Updater()
+12    /// Fetches release notes for the "What's New" dialog (shown automatically on the first launch
+13    /// after an update). One instance shared across windows; presentation is owned window-side,
+14    /// gated to the launch/restore window.
+15    @StateObject private var whatsNew = WhatsNewService(fetcher: GitHubReleasesClient())
+16
+17    init() {
+18      // Start Sentry first, before anything else can crash — the crash handler must be
+19      // installed as early as possible. Runs on the main thread (App.init does), as the SDK
+20      // requires. macOS-trimmed option set: see SentryConfig.start().
+21      SentryConfig.start()
+22
+23      // Ensure the in-process environment (inherited by the bundled `workroom`
+24      // binary and the terminals) can find git/jj, which a Finder-launched .app's
+25      // minimal PATH excludes. This is the PATH floor — `/etc/paths` + `/etc/paths.d`
+26      // + well-known tool dirs — so it is already correct, just not yet enriched.
+27      //
+28      // The ONLY `setenv` for PATH in the app's lifetime, and it runs here because
+29      // `init` is single-threaded: `setenv` can reallocate `environ`, and the status
+30      // sweep reads `ProcessInfo.processInfo.environment` from background threads
+31      // constantly. A later write would be a use-after-free race. Everything that
+32      // needs the enriched value reads `ShellEnvironment.path()` / `.environment()`.
+33      setenv("PATH", ShellEnvironment.path(), 1)
+34
+35      // Enrich it in the background: one `$SHELL -ilc` for what only an interactive
+36      // login shell knows (`.zshrc`-exported PATH entries, version-manager shims).
+37      // Detached so launch never waits on someone's dotfiles; the floor above holds
+38      // until it lands, and holds permanently if the probe fails.
+39      //
+40      // Not under XCTest: the test bundle is hosted by this app, so this would spawn
+41      // a real login shell that lands at an arbitrary point and overwrites the cache
+42      // mid-test — `ShellEnvironmentTests` drives the probe against stub shells and
+43      // needs the cache to hold only what it put there.
+44      if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+45        Task.detached(priority: .utility) { await ShellEnvironment.refresh() }
+46      }
+47
+48      // UI-test fixture mode only: park the pref-driven UI state (inspector open on the requested
+49      // section, diff viewer in the requested layout) in a known state before the first `AppStore`
+50      // seeds `activeInspectorSection` from `Defaults`. Inert in production — a real user never passes
+51      // the flag. See `UITestFixture.applyFixtureDefaults`.
+52      UITestFixture.applyFixtureDefaults()
+53    }
+54
+55    var body: some Scene {
+56      ...
+```
+
+`SentryConfig.start()` is called unconditionally at line 21, first thing in `WorkroomApp.init()`, with no `#if DEBUG` or any other conditional around it — it fires for the `Debug` ("Workroom Dev"), `Release`, and `Nightly` build configs alike, and for the `WorkroomAppUITests`/`WorkroomAppTests` host process too (since tests run inside the Debug app host per `macapp/CLAUDE.md`'s `TEST_HOST` note). The only thing that changes per build is the `environment` string computed inside `SentryConfig.start()` itself (item #2 above) — the SDK startup itself is never skipped today.
+
+Also relevant: `main.swift` (lines 30-55) shows `WorkroomApp.init()` — and therefore `SentryConfig.start()` — is skipped entirely when the binary is invoked through the `ghostty` CLI symlink path (`invokedAsGhosttyCLI == true`), per the comment at `main.swift:31` ("CLI path: no Sentry..."). That's the one existing precedent in this codebase for conditionally skipping `SentryConfig.start()` based on invocation context, though it's unrelated to Debug-vs-Release.</result>
+<usage><subagent_tokens>87033</subagent_tokens><tool_uses>18</tool_uses><duration_ms>159010</duration_ms></usage>
+</task-notification>
