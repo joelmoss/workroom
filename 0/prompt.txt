@@ -1,0 +1,228 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/GhosttySurfaceView.swift
+  - macapp/WorkroomApp/Core/ScrollbackSpike.swift
+  - macapp/WorkroomApp/Core/UITestFixture.swift
+  - macapp/WorkroomAppUITests/ScrollbackSpikeUITests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/GhosttySurfaceView.swift ===
+@@ -269,8 +269,36 @@ final class GhosttySurfaceView: NSView {
+     // but libghostty drops them on an unfocused surface, and a click can't recover because
+     // `makeFirstResponder` short-circuits on an already-first-responder view. Re-sync the flag now.
+     adoptFocusIfFirstResponder()
++
++    #if DEBUG
++      // THROWAWAY spike for issue #144 — delete with the branch.
++      ScrollbackSpike.note(
++        "createSurface reached; scrollbackSpike=\(UITestFixture.scrollbackSpike) "
++          + "fixtureActive=\(UITestFixture.isActive) started=\(Self.spikeStarted)")
++      if UITestFixture.scrollbackSpike, !Self.spikeStarted {
++        Self.spikeStarted = true
++        ScrollbackSpike.run(on: self)
++      }
++    #endif
+   }
+ 
++  #if DEBUG
++    /// THROWAWAY (issue #144 spike): only the first surface runs the probe.
++    private static var spikeStarted = false
++
++    /// THROWAWAY (issue #144 spike): push bytes into the terminal as if the child emitted them.
++    func spikeWriteBuffer(_ string: String) {
++      guard let surface else { return }
++      var bytes = Array(string.utf8)
++      ghostty_surface_write_buffer(surface, &bytes, UInt(bytes.count))
++    }
++
++    /// THROWAWAY (issue #144 spike): type a command and submit it.
++    func spikeSendLine(_ command: String) {
++      sendText(command + "\n")
++    }
++  #endif
++
+   /// Spawn the surface's PTY *without* waiting for window mount (issue #67, background run). Normally
+   /// `createSurface` fires from `viewDidMoveToWindow`, so a run tab that's started in the background and
+   /// never made active would never mount — and its command would never start (the toast would claim
+
+
+=== DIFF: macapp/WorkroomApp/Core/ScrollbackSpike.swift ===
+@@ -0,0 +1,123 @@
++import Foundation
++import GhosttyKit
++
++/// THROWAWAY spike for issue #144. Not shipped — delete with the branch.
++///
++/// Answers the two questions that gate the scrollback-replay design:
++///
++/// 1. Does `ghostty_surface_write_buffer` land bytes in an **EXEC** (real PTY) surface's screen,
++///    rendered, without disturbing the live shell? The patch that added it targets the
++///    HOST_MANAGED IO backend; our surfaces are EXEC, so this is unproven.
++/// 2. What does `readFullSurface()` return while an alternate-screen TUI is running? If the
++///    alternate screen is excluded, TUI suppression is automatic and needs no code.
++///
++/// Writes its findings to files under the temp directory so the run needs no UI driving.
++enum ScrollbackSpike {
++  static let marker = "SPIKE-REPLAY-MARKER-7F3A"
++  static let primaryMarker = "SPIKE-PRIMARY-LINE-B21C"
++  static let altMarker = "SPIKE-ALTSCREEN-D904"
++
++  /// Application Support, not the temp dir: the session store already proves the app can write
++  /// there, and a sandbox container would redirect NSTemporaryDirectory somewhere hard to find.
++  static var outputDirectory: URL {
++    FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
++      .appendingPathComponent("Workroom", isDirectory: true)
++      .appendingPathComponent("scrollback-spike", isDirectory: true)
++  }
++
++  private static func write(_ name: String, _ contents: String) {
++    let dir = outputDirectory
++    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
++    try? contents.write(
++      to: dir.appendingPathComponent(name), atomically: true, encoding: .utf8)
++  }
++
++  /// Drive the whole sequence off one surface. Times are generous — this is a one-shot probe, not a
++  /// test that has to be fast.
++  static func run(on view: GhosttySurfaceView) {
++    // Q1: replay bytes into an EXEC surface immediately after creation.
++    let replay = "\(marker)\r\n── restored session ──\r\n"
++    view.spikeWriteBuffer(replay)
++    write("00-attempted.txt", "wrote \(replay.utf8.count) bytes via write_buffer\n")
++
++    // Q1 readback: did those bytes reach the screen, and is the shell still alive?
++    schedule(2) {
++      let text = view.readFullSurface() ?? "<nil>"
++      write(
++        "01-after-replay.txt",
++        """
++        containsMarker=\(text.contains(marker))
++        length=\(text.count)
++        ---
++        \(text)
++        """)
++      // Produce known PRIMARY-screen content, proving the shell still works after the injection.
++      view.spikeSendLine("printf '\(primaryMarker)\\n'")
++    }
++
++    // Q2: enter the alternate screen and read while it is active.
++    schedule(5) {
++      let text = view.readFullSurface() ?? "<nil>"
++      write(
++        "02-after-primary.txt",
++        """
++        containsMarker=\(text.contains(marker))
++        containsPrimary=\(text.contains(primaryMarker))
++        ---
++        \(text)
++        """)
++      view.spikeSendLine(
++        "tput smcup; echo \(altMarker); sleep 12; tput rmcup")
++    }
++
++    schedule(9) {
++      let text = view.readFullSurface() ?? "<nil>"
++      write(
++        "03-during-altscreen.txt",
++        """
++        containsAlt=\(text.contains(altMarker))
++        containsPrimary=\(text.contains(primaryMarker))
++        containsMarker=\(text.contains(marker))
++        ---
++        \(text)
++        """)
++    }
++
++    schedule(24) {
++      let text = view.readFullSurface() ?? "<nil>"
++      write(
++        "04-after-altscreen-exit.txt",
++        """
++        containsAlt=\(text.contains(altMarker))
++        containsPrimary=\(text.contains(primaryMarker))
++        containsMarker=\(text.contains(marker))
++        ---
++        \(text)
++        """)
++      write("99-done.txt", "spike complete\n")
++    }
++  }
++
++  private static func schedule(_ seconds: TimeInterval, _ body: @escaping () -> Void) {
++    DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
++      MainActor.assumeIsolated(body)
++    }
++  }
++}
++
++extension ScrollbackSpike {
++  /// Unconditional breadcrumb so a silent run can be told apart from a flag that never read true.
++  static func note(_ message: String) {
++    let dir = outputDirectory
++    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
++    let url = dir.appendingPathComponent("_trace.txt")
++    let line = "\(Date()): \(message)\n"
++    if let handle = try? FileHandle(forWritingTo: url) {
++      handle.seekToEndOfFile()
++      handle.write(Data(line.utf8))
++      try? handle.close()
++    } else {
++      try? line.write(to: url, atomically: true, encoding: .utf8)
++    }
++  }
++}
+
+
+=== DIFF: macapp/WorkroomApp/Core/UITestFixture.swift ===
+@@ -59,6 +59,9 @@ enum UITestFixture {
+     flag(defaultsKey)
+   }
+ 
++  /// THROWAWAY (issue #144 spike): run the scrollback write_buffer probe. Delete with the branch.
++  static var scrollbackSpike: Bool { flag("WorkroomUITestScrollbackSpike") }
++
+   /// Where a session-restore UI test wants its `session.json` (`-WorkroomUITestSessionFile <path>`).
+   ///
+   /// **In fixture mode the session store is a no-op unless this is set** (see
+
+
+=== DIFF: macapp/WorkroomAppUITests/ScrollbackSpikeUITests.swift ===
+@@ -0,0 +1,33 @@
++import XCTest
++
++/// THROWAWAY harness for the issue #144 spike. Delete with the branch.
++///
++/// The spike itself lives in the app (`ScrollbackSpike`). This exists only because XCUITest is the
++/// one launch path on this machine that reliably gives the Dev app a window — a plain `open` leaves
++/// it windowless, so `createSurface` never runs and the probe never fires.
++final class ScrollbackSpikeUITests: XCTestCase {
++  func testRunScrollbackSpike() throws {
++    let app = XCUIApplication()
++    app.launchArguments += [
++      "-WorkroomUITestFixture", "1",
++      "-WorkroomUITestScrollbackSpike", "1",
++      "-ApplePersistenceIgnoreState", "YES",
++    ]
++    app.launch()
++    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
++
++    let panes = app.descendants(matching: .any).matching(identifier: "terminal.pane")
++    XCTAssertTrue(panes.firstMatch.waitForExistence(timeout: 15), "need a live pane to probe")
++
++    // The probe writes to Application Support and finishes with 99-done.txt at ~24s.
++    let done = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
++      .appendingPathComponent("Workroom/scrollback-spike/99-done.txt")
++    let deadline = Date().addingTimeInterval(45)
++    while Date() < deadline, !FileManager.default.fileExists(atPath: done.path) {
++      _ = XCTWaiter().wait(for: [expectation(description: "tick")], timeout: 1)
++    }
++    XCTAssertTrue(
++      FileManager.default.fileExists(atPath: done.path),
++      "spike did not complete; check Application Support/Workroom/scrollback-spike/_trace.txt")
++  }
++}
+
+
+Investigate per the method in your instructions, then return the findings list.
