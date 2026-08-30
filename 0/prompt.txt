@@ -1,0 +1,153 @@
+This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+
+Summary:
+1. **Primary Request and Intent:**
+
+   The user opened with GitHub issue **#46 "Persist sessions"** (persist open panels — terminals, diffs — and layouts between app restarts) for the Workroom macOS app. Intent evolved through the session:
+   - Plan the feature (plan mode), then run `/plan-eng-review` on the plan.
+   - Confirmed product decisions: **JSON file in Application Support** (not a `Defaults` key), **reopen every window** that was open at quit, **always-on with no settings toggle**, and (during review) **ship as two PRs**.
+   - "go" → implement. "commit and continue" → commit PR1, build PR2 (multi-window). "retry ui tests" → run/fix UI tests.
+   - Then: "and what about persisting content and scrollback of terminals, including Agents and TUI's?" → user chose **"Spec it properly first"**, producing issues **#144** (scrollback replay) and **#145** (agent resume).
+   - "Run spike" → prove `ghostty_surface_write_buffer` works. "settle all open issues first" → answer every open spike question. "yes" → fold results into #144 and implement it.
+   - After a screenshot of staircased output: fix it. After "restoring lines from a TUI session is useless if not actually taken back to the TUI": suppress TUI capture.
+   - "measure it" → measure `mouse_captured` per tool. "go with #1 now, make a note of #2" → ship inference-based detection, record the libghostty patch as a TODO.
+   - Final unanswered question: **"so #2 would actually take me back into the TUI?"**
+
+2. **Key Technical Concepts:**
+   - macOS SwiftUI app (`macapp/`), Swift module named `Workroom`, XcodeGen (`project.yml`), swift-format strict lint gate.
+   - libghostty via `libghostty-spm` 1.2.3 (ghostty engine v1.3.1), **prebuilt xcframework binaryTarget** pinned by URL+checksum; `Patches/ghostty/*` applied only by the package's own pipeline (`Script/build-ghostty.sh`, requires Zig — **not installed**).
+   - Ghostty C API: `ghostty_surface_read_text` with point tags `ACTIVE`/`VIEWPORT`/`SCREEN`/`SURFACE`; `ghostty_surface_write_buffer` (libghostty-spm patch `0002-host-managed-io.patch` → `io.processOutput`); `ghostty_surface_key`; `ghostty_surface_mouse_captured`; `GHOSTTY_ACTION_SCROLLBAR`; **EXEC vs HOST_MANAGED io backends** (app uses EXEC default).
+   - Session persistence architecture: `SessionSnapshot` (hand-written Codable mirrors, `@Lossy` arrays, `LayoutNode<Leaf>`, `SessionLimits`), `SessionStore` (bundle-id-scoped atomic file + scrollback sidecars), `SessionCoordinator` (debounce + max-delay ceiling, restore suspend gate, quit freeze), `AppStore+Session` (per-window capture/restore).
+   - Tab identity re-minting; `PaneLayout` collapse semantics; `persistsSidebarPrefs` arbitration; `UITestFixture` seam.
+   - Agent session stores: Claude `~/.claude/projects/<cwd-slug>/<uuid>.jsonl` (cwd-keyed); Codex `~/.codex/sessions/<y>/<m>/<d>/rollout-*.jsonl` with `session_meta.cwd`. `claude --resume` / `codex resume` = pickers; `--continue`/`--last` = traps with two agents in one workroom.
+
+3. **Files and Code Sections:**
+
+   - **`macapp/WorkroomApp/Core/SessionSnapshot.swift`** (new) — schema. `SessionLimits` (8 windows / 20 targets / 20 tabs / depth 12 / 512KB file / 4096 string / **256KB scrollback / 512KB scrollback file**), `@Lossy`, `LayoutNode<Leaf>` with `capture`/`materialize`, `SessionFile`/`WindowSession`/`TargetSession`/`TabSession`, `sanitized()`. Versioning rule documented: additive changes never bump `schemaVersion`; newer schema is read-only.
+
+   - **`macapp/WorkroomApp/Core/SessionStore.swift`** (new) — atomic bundle-id-scoped store plus scrollback sidecars:
+     ```swift
+     var scrollbackDirectory: URL {
+       url.deletingLastPathComponent().appendingPathComponent("scrollback", isDirectory: true)
+     }
+     func writeScrollback(_ text: String, forTabKey key: String)
+     func readScrollback(forTabKey key: String) -> String?   // size + UTF-8 validation, deletes bad files
+     func pruneScrollback(keeping keys: Set<String>)
+     nonisolated static func strippingControlBytes(_ text: String) -> String  // keeps \n \r \t
+     ```
+
+   - **`macapp/WorkroomApp/Core/SessionCoordinator.swift`** (new) — `markDirty()` with debounce (1s) + **ceiling (5s)**, `writeIfChanged()` (equality gate on `[WindowSession]`), `flushAndFreeze()` (sync write + scrollback capture + prune, then freeze), `suspendSaves()`/`resumeSaves()`, injectable `capture` and `captureScrollback` closures, `scrollback(forTabKey:)`.
+
+   - **`macapp/WorkroomApp/Core/AppStore+Session.swift`** (new) — `captureWindowSession()`, `captureTargetSessions()`, `captureWorkroomSplits()`, `captureScrollback(into:)` (skips run tabs), `claimSessionIfNeeded()`, `restorePersistedSessionIfPending(in:)`.
+
+   - **`macapp/WorkroomApp/Core/GhosttySurfaceView.swift`** — most recent and most important edits:
+     ```swift
+     private func readText(tag: ghostty_point_tag_e) -> String?   // documents measured tag semantics
+     func readFullSurface(maxBytes: Int = 65_536) -> String?      // now routes through readText(SURFACE)
+
+     private var everHadScrollback = false   // set in updateScrollbar when total > len
+
+     func captureScrollback(maxBytes: Int = SessionLimits.maxScrollbackBytes) -> String? {
+       let history = readText(tag: GHOSTTY_POINT_SURFACE)
+       let isAlternateScreen = Self.shouldSkipViewport(
+         hasHistoryNow: history != nil, everHadScrollback: everHadScrollback)
+       let visible = isAlternateScreen ? nil : readText(tag: GHOSTTY_POINT_VIEWPORT)
+       let combined = [history, visible].compactMap { $0 }.joined(separator: "\n")
+       guard !combined.isEmpty else { return nil }
+       return TerminalCapture.tidy(combined, maxBytes: maxBytes)
+     }
+
+     nonisolated static func shouldSkipViewport(hasHistoryNow: Bool, everHadScrollback: Bool) -> Bool {
+       !hasHistoryNow && everHadScrollback
+     }
+
+     nonisolated static func replayPayload(for text: String) -> String {
+       let normalised = text.replacingOccurrences(of: "\r\n", with: "\n")
+         .replacingOccurrences(of: "\n", with: "\r\n")
+       return normalised + scrollbackDivider
+     }
+     static let scrollbackDivider = "\r\n── restored session ──\r\n"
+     func adoptRestoredScrollback(_ text: String?)   // set before surface creation
+     ```
+     `replayRestoredScrollback()` called synchronously at the end of `createSurface()`, guarded by `didReplayScrollback`.
+
+   - **`macapp/WorkroomApp/Core/TerminalSessions.swift`** — `displayedTabIDs(forTargetID:)`, `sessionCapture(forTargetID:)`, `TabSession(key:tab:)` + `restoredContent` bridge co-located with the `NavPayload` bridge, `restore(_:for:scrollback:)`, `restoredCwd(_:fallback:)`, `makeTerminalTab(..., restoredScrollback:)`.
+
+   - **`macapp/WorkroomApp/Core/ProjectStore.swift`** — `claimSession(for:isLaunchWindow:)`, `pendingSessionKeys()`, `finishSessionRestore()` (requires `outstandingRestores == 0 && dispatchedSessionKeys.isEmpty && unclaimedSessionWindows.isEmpty`), `endSessionRestore()`, 15s watchdog, injectable `sessionCoordinator`.
+
+   - **`macapp/WorkroomApp/WorkroomApp.swift`** — `WindowSeed { id, restore, isLaunch }` + `.launch` / `.restoring(key:)`; `RootWindow` sets `isRestoreWindow = seed.isLaunch`, `sessionKey`, `claimsSavedSession`; sibling fan-out via `@Environment(\.openWindow)`; flush hooks in `stopRunCommandsThenTerminate` (past the cancel guard), SIGTERM handler, fixture early-return, `willResignActive`.
+
+   - **`macapp/WorkroomApp/Core/AppStore.swift`** — `sessionKey`, `pendingSessionRestore`, `didClaimSession`, `claimsSavedSession`, `pendingRestoreSelection` (private→internal), claim in `attachWindow`, restore at END of `apply(_:)`, frame precedence + `frameOnAVisibleScreen(_:screens:)`, gated `Defaults[.mainWindowFrame]` writes, updated `isRestorable = false` rationale.
+
+   - **Tests**: `SessionSnapshotCodecTests`, `SessionStoreTests`, `SessionCaptureTests`, `SessionSaveTests`, `SessionRestoreTests`, `AppStoreSessionRestoreTests`, `SessionClaimTests`, `ScrollbackSidecarTests` (17), `WorkroomAppUITests/SessionRestoreUITests` (8).
+
+   - **`TODOS.md`** — struck the superseded split-persistence entry; added "Cross-launch navigation history" and "**Expose the alternate screen from libghostty (macapp) — issue #144 follow-up**" (with verified ghostty source references and the "upstream exposes nothing, a pin bump alone won't deliver it" warning).
+
+4. **Errors and fixes:**
+   - **`clamped()` overlapping access** compile error → rewrote with local `clamp` helpers.
+   - **`LayoutNode.capture` could emit a bare leaf as a "split"** (found via run-tab test) → enforced split invariant with private `captureNode` + top-level `guard case .split`.
+   - **Test bugs I made**: expected 1 tab where `splitTab` spawns a new pane (3 tabs, minus run tab = 2); reads before async writes landed → added `pump()`.
+   - **Multi-window restore only restored one window** (caught by `testEveryWindowSurvivesRelaunch`) → `finishSessionRestore` ended the restore before `pendingSessionKeys()` was called, clearing unclaimed windows; fixed by also requiring `unclaimedSessionWindows.isEmpty` + regression test. Also my test typed ⌘N which is **New Workroom** (#81) — New Window is menu-only.
+   - **Automation wedge** ("Timed out while enabling automation mode") repeatedly; my own launch hammering triggered it. Cleared with time. Updated the memory file with a third datapoint.
+   - **Windowless `open`-launched Dev app** → worked around via `defaults write` fixture keys + `make app-run`, then deleted the keys.
+   - **False conclusion I had to retract twice**: (a) claimed `GHOSTTY_POINT_SURFACE` was broken and `readFullSurface`/#49 had a live bug — wrong, it returns false only when there's no scrollback; (b) claimed alt-screen content IS captured — that reading was a false positive from a marker inside an unexecuted typed command line.
+   - **`sendText("…\r")` types but does not submit** → needed `ghostty_surface_key` keycode 36.
+   - **Staircased restored output** (user screenshot after `ls -la`) → bare LF moves down without returning to column 0; fixed with `replayPayload(for:)` CRLF normalization + regression test.
+   - **Gating viewport on history existing captured nothing for short sessions** (caught by UI test) → user chose "always capture the viewport"; later refined to skip only when a TUI is detected.
+   - **`mouse_captured` measured useless** — false for plain shell, `less`, `man`, `vim` AND `claude`; my prediction that agents set mouse reporting was wrong.
+   - **Guards blocked destructive commands** (`rm -rf` under home, `find -delete`); I complied without working around them.
+
+   **Explicit user corrections/feedback**: user misread Issue 9 and asked me to re-ask it; user challenged "is #3 guaranteed?" (I had overstated 10/10); user said restoring TUI lines is useless without returning to the TUI; user asked me to measure rather than accept my predicted table.
+
+5. **Problem Solving:**
+   Delivered #46 across two PRs with three data-loss bugs closed before shipping (starving debounce, freeze-on-cancelled-quit, restore-time overwrite of unclaimed windows). Spiked libghostty to settle replay feasibility and tag semantics with control-verified measurements. Implemented #144 scrollback with sidecar files, CRLF replay, and inference-based TUI suppression. Recorded the proper libghostty patch as a TODO with verified feasibility (ghostty `Terminal.zig` `screens.active_key == .alternate` ~line 1331; `Surface.zig` `mouseCaptured()` as the pattern; upstream C API exposes nothing).
+
+6. **All user messages:**
+   - "https://github.com/joelmoss/workroom/issues/46"
+   - "/plan-eng-review" (skill invocation interrupting ExitPlanMode)
+   - "I misread that last question. ask me again"
+   - "go"
+   - "commit and continue"
+   - "retry ui tests"
+   - "and what about persisting content and scrollback of terminals, including Agents and TUI's?"
+   - "1. Let's start with unstyled output."
+   - "What if a workroom has two agents running in two terminals?"
+   - "Keep the 256k cap and show divider"
+   - "Go" (mid-turn)
+   - "Run spike"
+   - "retry"
+   - "settle all open issues first"
+   - "yes"
+   - [Screenshot] "after running `ls -la`, and restarting the app, I get this were all the lines are all misaligned."
+   - "restoring lines from a TUI session is useless if not actually taken back to the TUI" (mid-turn)
+   - "is #3 guaranteed?"
+   - "what will the user actually see for and 2?"
+   - "measure it"
+   - "go with #1 now, make a note of #2"
+   - "can we try #2 to see how it behaves?"
+   - "what is the expected behaviour once this is done?"
+   - "so #2 would actually take me back into the TUI?" (current, unanswered)
+
+7. **Pending Tasks:**
+   - **Answer the current question** (see Current Work).
+   - Decide whether to attempt the libghostty patch (#2) — options given: time-boxed build spike (~1h, Zig install + ghostty build), write the patch without building, or leave it.
+   - Optional offered test: ⌘T → `claude` → quit → relaunch on today's build, to check whether the TUI-as-first-command gap actually bites.
+   - Possibly re-rate the TODOS entry priority from P3 (I flagged it likely wrong).
+   - Nothing pushed; branches unmerged; `spike/scrollback-write-buffer` still to be deleted.
+
+8. **Current Work:**
+   Immediately before this summary, I had answered "what is the expected behaviour once this is done?" with a table showing that the libghostty alt-screen patch changes exactly one row — a **fresh pane where a TUI was the first thing run**: today it restores a frozen TUI frame; after the patch it restores an empty pane. I also flagged that my P3 rating in TODOS is probably wrong, because `everHadScrollback` only sets once a pane exceeds one screen of output, so ⌘T → `claude` (likely the user's common shape) is *not* protected by the inference.
+
+   The user then asked: **"so #2 would actually take me back into the TUI?"** — not yet answered. The correct answer is **no**. #2 only improves *detection* so the TUI frame is not captured; it never relaunches or reattaches the TUI. The result is an empty pane, not a live TUI. Relaunching a TUI would be separate work — the nearest scoped analogue is **#145** (agent resume, which offers a Resume button running `claude --resume` / `codex resume` pickers, spawning nothing until clicked); a generalized "relaunch whatever TUI was running" feature does not exist and would need pane→process detection, which the pinned libghostty cannot provide (no child pid, no pty fd).
+
+   Latest committed state (nothing pushed):
+   - `feat/session-persistence-46`: `84b6ba99` (PR1), `d2885d30` (PR2), `cdf2172f` (fan-out fix)
+   - `feat/scrollback-restore-144`: `b685b688` (scrollback), `634e5b35` (CRLF + TUI skip)
+   - `spike/scrollback-write-buffer`: `402f3101`, `434fcd63` (throwaway)
+   - Green: **2131 unit tests + 8 XCUITests, 0 failures**; build and strict lint clean.
+
+9. **Optional Next Step:**
+   Answer the user's question directly: **no**, #2 does not take you back into the TUI — it only stops the dead frame being captured, leaving an empty pane. Then surface the real implication, since the user's earlier statement ("restoring lines from a TUI session is useless if not actually taken back to the TUI") suggests they may want *relaunch*, not suppression: ask whether they want a "relaunch what was running" capability scoped as new work (noting #145 already does this for agents via their own resume pickers, and that generalized TUI relaunch is blocked by the absence of pane→process detection on the pinned libghostty — no child pid, no pty fd, verified earlier this session).
+
+If you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: /Users/joelmoss/.claude/projects/-Users-joelmoss-dev-workroom/8e4ea859-2ebe-4c51-88d9-de38f342937a.jsonl
+Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with "I'll continue" or similar. Pick up the last task as if the break never happened.
