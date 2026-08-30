@@ -1,0 +1,1045 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/AppStore.swift
+  - macapp/WorkroomApp/Core/DefaultsKeys.swift
+  - macapp/WorkroomApp/Core/QuickSwitcher.swift
+  - macapp/WorkroomApp/Core/SwitcherRecency.swift
+  - macapp/WorkroomApp/Core/WindowRegistry.swift
+  - macapp/WorkroomApp/Views/KeyboardShortcutsView.swift
+  - macapp/WorkroomApp/WorkroomApp.swift
+  - macapp/WorkroomAppTests/AppShortcutReservationTests.swift
+  - macapp/WorkroomAppTests/QuickSwitcherTests.swift
+  - macapp/WorkroomAppTests/SwitcherRecencyTests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/AppStore.swift ===
+@@ -111,6 +111,11 @@ final class AppStore: ObservableObject {
+   /// Backs the `windowTitle` fallback for a window with nothing selected ("Window 1", "Window 2", …).
+   /// `@Published` so the title updates the moment the registry assigns it. 0 until registered.
+   @Published var windowNumber = 0
++  /// This window's *identity* for cross-window bookkeeping (issue #132) — minted here and never
++  /// reused, unlike `windowNumber`, which is a display number reclaimed by the next new window. Used
++  /// by the quick switcher's recency (and its snapshot cache) so a closed window's entries can't
++  /// alias onto a fresh one.
++  let windowToken = WindowToken()
+   /// Retains the close-guard delegate proxy (the window holds its delegate weakly) for this window's
+   /// lifetime (issue #70, A3).
+   private var closeGuard: WindowCloseGuard?
+@@ -158,6 +163,12 @@ final class AppStore: ObservableObject {
+       if persistsSidebarPrefs {
+         Defaults[.sidebarSelection] = Self.targetIDString(for: selectedTargetID)
+       }
++      // Promote this workroom in the quick switcher's most-recently-used order (issue #132).
++      // UNCONDITIONAL, unlike the history record below: `applyLocation` raises `isNavigatingHistory`
++      // for its whole body and the switcher commits through it, so a gated write would never record
++      // where the switcher just took you — ⌥Tab would flip to the same place forever. Recency means
++      // "where did the user end up", which is equally true of a ⌘[ replay.
++      SwitcherRecency.shared.recordWorkroom(store: self, sid: selectedTargetID)
+       // Record the new location for back/forward (issue #26), unless we're replaying history.
+       if !isNavigatingHistory { recordCurrentLocation() }
+       // Freshen the newly-selected workroom's status (incl. CI) — debounced so arrow-key
+@@ -825,8 +836,12 @@ final class AppStore: ObservableObject {
+       self?.handleActivity(targetID: targetID, tabID: tabID, activity: activity)
+     }
+     // Record each focused-tab change for back/forward history (issue #26), unless we're replaying.
+-    terminals.onFocusChange = { [weak self] _, _ in
++    terminals.onFocusChange = { [weak self] _, tabID in
+       guard let self else { return }
++      // Quick-switcher recency (issue #132) — recorded before the history guard below, for the same
++      // reason as the `selectedTargetID` didSet: the switcher's own commit runs under
++      // `isNavigatingHistory`.
++      SwitcherRecency.shared.recordPane(tabID)
+       // The in-file find is tied to the focused file pane (the model is shared across panes). Any
+       // focused-tab change ends that session: close it so ⌘G can't step a hidden find from a
+       // terminal/diff pane, and the bar doesn't reappear pre-filled on the next file (review).
+@@ -842,6 +857,7 @@ final class AppStore: ObservableObject {
+     // back later — the subtree is meant to be re-opened deliberately.
+     terminals.onTabsRemoved = { [weak self] targetID, ids in
+       guard let self else { return }
++      SwitcherRecency.shared.forgetPanes(ids)  // drop closed panes from the ⌃Tab order (issue #132)
+       self.history.prune(removing: Set(ids))
+       if self.terminals.tabCount(forTargetID: targetID) < 2 {
+         self.expandedTerminalTargets.remove(targetID)
+@@ -1143,6 +1159,15 @@ final class AppStore: ObservableObject {
+   /// Returns whether it switched, so the AppDelegate monitor
+   /// consumes the key in the monitor only when there's a tab to move to (it's a no-op otherwise —
+   /// the key is reserved in `isAppShortcut` either way, so it never reaches the terminal).
++  /// Step `index` by `delta` around a list of `count` items, wrapping at both ends. The one wrap rule
++  /// for every cycling shortcut — the workroom bar (⇧⌥⌘←/→), the terminal strip (⌥⌘←/→) and the quick
++  /// switcher's MRU step (issue #132) all read it, so an off-by-one can only ever exist in one place.
++  /// Returns `index` unchanged when `count <= 0`; `delta` may be any sign or magnitude.
++  nonisolated static func wrapped(index: Int, by delta: Int, count: Int) -> Int {
++    guard count > 0 else { return index }
++    return ((index + delta) % count + count) % count
++  }
++
+   @discardableResult
+   func cycleWorkroomTab(forward: Bool) -> Bool {
+     // Step the on-screen order (`displayedWorkroomTargets`, == ordered with no split): a split pulls its
+@@ -1153,7 +1178,7 @@ final class AppStore: ObservableObject {
+     let next: Int
+     if let current = tabs.firstIndex(where: { $0.sid == selectedTargetID }) {
+       guard tabs.count > 1 else { return false }
+-      next = (current + (forward ? 1 : -1) + tabs.count) % tabs.count
++      next = Self.wrapped(index: current, by: forward ? 1 : -1, count: tabs.count)
+     } else {
+       // No current tab: forward (→) enters at the rightmost, back (←) at the leftmost.
+       next = forward ? tabs.count - 1 : 0
+@@ -3441,7 +3466,7 @@ final class AppStore: ObservableObject {
+       terminals.activeTab(for: target).flatMap { active in
+         tabs.firstIndex(where: { $0.id == active.id })
+       } ?? 0
+-    let next = (current + (forward ? 1 : -1) + tabs.count) % tabs.count
++    let next = Self.wrapped(index: current, by: forward ? 1 : -1, count: tabs.count)
+     terminals.select(tabs[next].id, for: target)
+     return true
+   }
+
+
+=== DIFF: macapp/WorkroomApp/Core/DefaultsKeys.swift ===
+@@ -132,6 +132,16 @@ extension Defaults.Keys {
+   /// hint applied to whatever is currently active — stale ids resolve away harmlessly.
+   static let workroomTabOrder = Key<[String]>("workroomsView.tabOrder", default: [])
+ 
++  /// Trigger modifiers for the two quick switchers (issue #132): ⌥Tab steps open workrooms across
++  /// every window, ⌃Tab steps the current workroom's panes. Retunable because a global hotkey grabber
++  /// beats our local key monitor and cannot be detected — AltTab, HyperSwitch and Contexts all take
++  /// ⌥Tab by default via a CGEvent tap, so for those users the default is unreachable and a different
++  /// modifier is the only fix. No Settings UI yet; `SwitcherModifier` owns the offered set.
++  static let switcherWorkroomModifier = Key<SwitcherModifier>(
++    "switcher.workroomModifier", default: .option)
++  static let switcherPaneModifier = Key<SwitcherModifier>(
++    "switcher.paneModifier", default: .control)
++
+   /// When Workroom itself last fetched a project, keyed by the project's absolute path (fetch always
+   /// runs at the project root, so this is per-project, never per-workroom). Path-keyed map for the
+   /// same reason as `runCommands`.
+
+
+=== DIFF: macapp/WorkroomApp/Core/QuickSwitcher.swift ===
+@@ -0,0 +1,186 @@
++import AppKit
++import Defaults
++
++/// Which of the two quick switchers a keystroke opened (issue #132).
++enum QuickSwitcherKind: Equatable {
++  /// ⌥Tab — open workrooms, across every window.
++  case workrooms
++  /// ⌃Tab — the key window's current workroom's panes.
++  case panes
++}
++
++/// What the key monitor should do with a quick-switcher keystroke aimed at a particular window
++/// (issue #132) — see `AppDelegate.switcherGate(for:in:)`, which decides it.
++enum SwitcherGate {
++  /// Not one of our windows: the key belongs to whatever is focused there.
++  case passThrough
++  /// One of ours, but with a modal up: eat the key rather than retarget a live dialog's subject.
++  case swallow
++  /// Go ahead on this store.
++  case act(AppStore)
++}
++
++/// The modifier a quick switcher is triggered with. Stored as a preference because a global hotkey
++/// grabber wins over our local key monitor and there is no way to detect or beat one: AltTab,
++/// HyperSwitch and Contexts all bind ⌥Tab by default via a CGEvent tap, which is upstream of
++/// `NSApp.sendEvent`, so for those users the keystroke never reaches Workroom at all. Retuning the
++/// modifier is the only possible remedy (issue #132). ⌘ combinations that the OS owns (⌘Tab, ⇧⌘Tab)
++/// are deliberately not offered.
++enum SwitcherModifier: String, CaseIterable, Defaults.Serializable {
++  case option
++  case control
++  case commandOption
++  case commandControl
++
++  var flags: NSEvent.ModifierFlags {
++    switch self {
++    case .option: [.option]
++    case .control: [.control]
++    case .commandOption: [.command, .option]
++    case .commandControl: [.command, .control]
++    }
++  }
++
++  /// Menu-style glyphs, for the keyboard-shortcuts sheet.
++  var display: String {
++    switch self {
++    case .option: "⌥"
++    case .control: "⌃"
++    case .commandOption: "⌥⌘"
++    case .commandControl: "⌃⌘"
++    }
++  }
++}
++
++/// The keystroke → switcher decision, as a pure function of what an `NSEvent` contributes plus the
++/// two configured modifiers (issue #132).
++///
++/// Deliberately **not** added to `GhosttySurfaceView.isAppShortcut`. That list is a static allowlist,
++/// and whether Tab belongs to the app depends on runtime state — a workroom with one pane has nothing
++/// to switch to, so ⌃Tab must reach the TUI. The codebase already resolved this same fork the same
++/// way: ⌃⌘arrows is deliberately unreserved so it passes through at a split's edge. The `AppDelegate`
++/// monitor runs inside `NSApp.sendEvent` *before* key-equivalent dispatch, so when the switcher does
++/// act the surface never sees the key regardless.
++enum QuickSwitcherKey {
++  /// Tab. Matched by keyCode, not characters, so it is layout-stable (and ⇧Tab still reads as Tab).
++  static let tabKeyCode: UInt16 = 48
++
++  /// The switcher this keystroke triggers, and whether ⇧ makes it step backwards. `nil` for anything
++  /// that isn't Tab with exactly one configured trigger modifier (⇧ aside).
++  nonisolated static func classify(
++    keyCode: UInt16, flags: NSEvent.ModifierFlags,
++    workroomModifier: SwitcherModifier = Defaults[.switcherWorkroomModifier],
++    paneModifier: SwitcherModifier = Defaults[.switcherPaneModifier]
++  ) -> (kind: QuickSwitcherKind, reverse: Bool)? {
++    guard keyCode == tabKeyCode else { return nil }
++    let relevant = flags.intersection([.command, .shift, .option, .control])
++    let reverse = relevant.contains(.shift)
++    let base = relevant.subtracting(.shift)
++    guard !base.isEmpty else { return nil }  // bare Tab belongs to the terminal (shell completion)
++    // Workrooms win a tie, so a user who sets both modifiers the same still gets a working ⌥Tab
++    // rather than an unreachable pane switcher.
++    if base == workroomModifier.flags { return (.workrooms, reverse) }
++    if base == paneModifier.flags { return (.panes, reverse) }
++    return nil
++  }
++}
++
++/// The quick switcher itself (issue #132), stage 1: every press commits immediately, ordered by
++/// most-recent use rather than position.
++///
++/// ```
++///   ⌥Tab      items (MRU):  [ current  prev  older … ]  → commit items[1]
++///   ⇧⌥Tab                                               → commit items[count - 1]
++/// ```
++///
++/// Stage 2 adds the held-modifier rail on top of the same item collection, and moves the commit to
++/// modifier release.
++@MainActor
++enum QuickSwitcher {
++  /// Act on a switcher keystroke. Returns whether it actually switched — the key monitor consumes the
++  /// event only then, so ⌃Tab still reaches a TUI in a workroom that has nothing to switch to.
++  @discardableResult
++  static func step(
++    _ kind: QuickSwitcherKind, reverse: Bool, in store: AppStore,
++    registry: WindowRegistry = .shared, recency: SwitcherRecency = .shared
++  ) -> Bool {
++    switch kind {
++    case .workrooms:
++      stepWorkrooms(reverse: reverse, in: store, registry: registry, recency: recency)
++    case .panes: stepPanes(reverse: reverse, in: store, recency: recency)
++    }
++  }
++
++  // MARK: Workrooms (⌥Tab, every window)
++
++  /// Every window's open workrooms, MRU-ordered. Windows with a sheet/dialog up are excluded: raising
++  /// one and moving its selection would leave its own modal describing a workroom the app is no longer
++  /// pointed at — for the commit sheet, that is a wrong-target VCS write.
++  static func workroomSlots(
++    registry: WindowRegistry = .shared, recency: SwitcherRecency = .shared
++  ) -> [WorkroomSlot] {
++    let slots = registry.allStores
++      .filter { !$0.hasModalPresentation }
++      .flatMap { store in
++        store.displayedWorkroomTargets().map {
++          WorkroomSlot(store: store, sid: $0.sid, target: $0.target)
++        }
++      }
++    return recency.workroomOrder(slots)
++  }
++
++  private static func stepWorkrooms(
++    reverse: Bool, in store: AppStore, registry: WindowRegistry, recency: SwitcherRecency
++  ) -> Bool {
++    let slots = workroomSlots(registry: registry, recency: recency)
++    guard slots.count > 1 else { return false }
++    let current = store.selectedTargetID.flatMap { sid in
++      slots.firstIndex { $0.store === store && $0.sid == sid }
++    }
++    let next = destination(from: current, count: slots.count, reverse: reverse)
++    let slot = slots[next]
++    guard let target = slot.store, target !== store || slot.sid != store.selectedTargetID else {
++      return false  // already here: no raise, no selection write, no history entry
++    }
++    if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
++    // Raise first, then select: `AppStore.persistsSidebarPrefs` keys on being `lastActiveStore`, so
++    // the registry's didBecomeKey observer must have run before the selection write.
++    target.hostWindow?.makeKeyAndOrderFront(nil)
++    target.openExisting(slot.sid)
++    return true
++  }
++
++  // MARK: Panes (⌃Tab, the current workroom)
++
++  /// The selected workroom's panes in MRU order, or `[]` when nothing is selected.
++  static func paneTabs(in store: AppStore, recency: SwitcherRecency = .shared) -> [TerminalTab] {
++    guard let target = store.selectedTarget, !target.isMissing else { return [] }
++    return recency.paneOrder(store.terminals.tabs(for: target))
++  }
++
++  private static func stepPanes(
++    reverse: Bool, in store: AppStore, recency: SwitcherRecency
++  ) -> Bool {
++    guard let target = store.selectedTarget, !target.isMissing else { return false }
++    let tabs = paneTabs(in: store, recency: recency)
++    guard tabs.count > 1 else { return false }
++    let activeID = store.terminals.activeTab(for: target)?.id
++    let current = activeID.flatMap { id in tabs.firstIndex { $0.id == id } }
++    let next = destination(from: current, count: tabs.count, reverse: reverse)
++    guard tabs[next].id != activeID else { return false }
++    // `select`, not `focus`: it also promotes the owning workroom in a split and takes keyboard focus.
++    store.terminals.select(tabs[next].id, for: target)
++    return true
++  }
++
++  // MARK: Stepping
++
++  /// The item a single press lands on. From the head of an MRU list, forward is "the one before this"
++  /// and backward is the least-recently-used — so a tap flips to where you just were, and tapping
++  /// again flips back (the commit re-orders MRU). When the current place isn't in the list at all (a
++  /// root with no terminals, a window with a modal), enter at the most recent / least recent end.
++  nonisolated static func destination(from current: Int?, count: Int, reverse: Bool) -> Int {
++    guard let current else { return reverse ? count - 1 : 0 }
++    return AppStore.wrapped(index: current, by: reverse ? -1 : 1, count: count)
++  }
++}
+
+
+=== DIFF: macapp/WorkroomApp/Core/SwitcherRecency.swift ===
+@@ -0,0 +1,145 @@
++import Foundation
++
++/// A window's identity for the quick switcher (issue #132), stable for that window's whole life and
++/// **never reused**.
++///
++/// Deliberately not `AppStore.windowNumber`: that is a *display* number, assigned as the smallest
++/// unused positive integer and reclaimed the moment a window closes
++/// (`WindowRegistry.assignWindowNumberIfNeeded`), so a closed window's number aliases onto the next
++/// new window. And deliberately not `ObjectIdentifier(store)`, which is the store's address — a new
++/// `AppStore` allocated where a freed one lived compares equal. Both would let a dead window's
++/// recency (and, in stage 2, its cached thumbnails) surface in a fresh window. A UUID minted with the
++/// store cannot.
++struct WindowToken: Hashable {
++  private let raw: UUID
++  init() { raw = UUID() }
++}
++
++/// A workroom *as opened in one window* — the unit ⌥Tab switches between.
++///
++/// The window is part of the identity because `TerminalSessions` is per-window: the same workroom can
++/// be open in two windows with different tabs, and they are two different places to switch to.
++struct WorkroomSlotID: Hashable {
++  let window: WindowToken
++  let sid: SidebarID
++}
++
++/// One entry of the ⌥Tab rail: a workroom, the window it lives in, and its resolved target.
++struct WorkroomSlot {
++  weak var store: AppStore?
++  let sid: SidebarID
++  let target: TerminalTarget
++
++  var id: WorkroomSlotID? { store.map { WorkroomSlotID(window: $0.windowToken, sid: sid) } }
++}
++
++/// A most-recently-used order over ids, and the ordering rule the switcher rail is built from.
++///
++/// ```
++///   ids (most recent first):  [ C  A  B ]
++///   touch(A)               →  [ A  C  B ]
++///   ordered([A, B, C, D])  →  [ A  C  B  D ]   ← D never touched, so it keeps its given position
++/// ```
++///
++/// Pure value type (no AppKit/SwiftUI, no store access) so every rule above is directly unit-testable,
++/// mirroring `NavigationHistory` / `RootPresentation`. It never resolves liveness itself: the caller
++/// passes the currently-live items to `ordered`, and ids it has never heard of simply sort last in the
++/// order they arrived — so a workroom you have not visited this session still appears on the rail.
++struct RecencyList<ID: Hashable>: Equatable {
++  /// Most-recent first.
++  private(set) var ids: [ID] = []
++
++  /// Upper bound on retained ids; the oldest fall off the back. Generous — a runaway backstop for a
++  /// long session, not a tuning knob (recency is in-memory and session-scoped).
++  static var maxEntries: Int { 200 }
++
++  /// Promote `id` to most-recent, inserting it when new. Called from the selection/focus write-points,
++  /// so it must stay O(count) with a tiny constant — no allocation beyond the array move.
++  mutating func touch(_ id: ID) {
++    if let existing = ids.firstIndex(of: id) {
++      if existing == 0 { return }
++      ids.remove(at: existing)
++    }
++    ids.insert(id, at: 0)
++    if ids.count > Self.maxEntries { ids.removeLast(ids.count - Self.maxEntries) }
++  }
++
++  /// Forget one id (its pane/workroom is gone).
++  mutating func forget(_ id: ID) { ids.removeAll { $0 == id } }
++
++  /// Drop every id that is no longer live, preserving the order of the survivors. Cheap housekeeping
++  /// called at session open; correctness does not depend on it, because `ordered` only ever emits ids
++  /// belonging to the items it was handed.
++  mutating func retain(_ live: Set<ID>) { ids.removeAll { !live.contains($0) } }
++
++  /// **The rail order.** Items whose id is known sort by recency (most recent first); items never
++  /// touched follow, in the order given. Stable and total — every input item appears exactly once.
++  func ordered<T>(_ items: [T], id: (T) -> ID) -> [T] {
++    guard !ids.isEmpty else { return items }
++    var rank: [ID: Int] = [:]
++    rank.reserveCapacity(ids.count)
++    for (i, existing) in ids.enumerated() { rank[existing] = i }
++    return items.enumerated()
++      .sorted { lhs, rhs in
++        let l = rank[id(lhs.element)] ?? Int.max
++        let r = rank[id(rhs.element)] ?? Int.max
++        if l != r { return l < r }
++        return lhs.offset < rhs.offset  // untouched items keep their incoming order
++      }
++      .map(\.element)
++  }
++}
++
++/// App-global most-recently-used order for the quick switcher (issue #132): one list for workrooms
++/// (across every window), one for panes.
++///
++/// Standalone rather than folded into `WindowRegistry`, whose charter is key routing / last-active /
++/// aggregation / run ownership / quit — recency is none of those, and keeping it here keeps
++/// `RecencyList` a trivially testable value type.
++///
++/// **Recording is unconditional.** Both write-points sit *above* `AppStore`'s `isNavigatingHistory`
++/// guard, because `applyLocation` raises that flag for its whole body and the switcher's own commit
++/// goes through it — a gated write would never record where the switcher just took you, and ⌥Tab
++/// would ping-pong between two places forever. Recency answers "where did the user actually end up",
++/// which is true for a switcher commit, a ⌘[ back-nav and a sidebar click alike; history suppression
++/// is a different question (avoid phantom *history* entries).
++@MainActor
++final class SwitcherRecency {
++  static let shared = SwitcherRecency()
++
++  private(set) var workrooms = RecencyList<WorkroomSlotID>()
++  /// Panes key on `TerminalTab.ID` alone — a UUID, unique across every window.
++  private(set) var panes = RecencyList<TerminalTab.ID>()
++
++  /// Test seam: a fresh instance, so a test never mutates the singleton's order.
++  init() {}
++
++  func recordWorkroom(store: AppStore, sid: SidebarID?) {
++    guard let sid else { return }
++    workrooms.touch(WorkroomSlotID(window: store.windowToken, sid: sid))
++  }
++
++  func recordPane(_ id: TerminalTab.ID?) {
++    guard let id else { return }
++    panes.touch(id)
++  }
++
++  func forgetPanes(_ ids: [TerminalTab.ID]) {
++    for id in ids { panes.forget(id) }
++  }
++
++  /// MRU-order the rail's workroom slots, pruning recency down to what is live while here. A slot
++  /// whose store has gone away has no identity and drops out.
++  func workroomOrder(_ slots: [WorkroomSlot]) -> [WorkroomSlot] {
++    let identified = slots.compactMap { slot -> (slot: WorkroomSlot, id: WorkroomSlotID)? in
++      slot.id.map { (slot, $0) }
++    }
++    workrooms.retain(Set(identified.map(\.id)))
++    return workrooms.ordered(identified) { $0.id }.map(\.slot)
++  }
++
++  /// MRU-order one workroom's panes.
++  func paneOrder(_ tabs: [TerminalTab]) -> [TerminalTab] {
++    panes.ordered(tabs) { $0.id }
++  }
++}
+
+
+=== DIFF: macapp/WorkroomApp/Core/WindowRegistry.swift ===
+@@ -55,6 +55,10 @@ final class WindowRegistry: ObservableObject {
+           let store = self.store(for: window)
+         else { return }
+         self.lastActiveStore = store
++        // Bringing a window forward makes its selection the most recent one (issue #132). Without
++        // this, ⌘` to another window leaves the switcher's MRU head pointing at the window you left,
++        // so the next ⌥Tab tap flips somewhere you didn't come from.
++        SwitcherRecency.shared.recordWorkroom(store: store, sid: store.selectedTargetID)
+       }
+     }
+   }
+
+
+=== DIFF: macapp/WorkroomApp/Views/KeyboardShortcutsView.swift ===
+@@ -1,3 +1,4 @@
++import Defaults
+ import SwiftUI
+ 
+ /// Reference sheet listing every available keyboard shortcut, grouped by area (raised by the
+@@ -100,6 +101,14 @@ extension KeyboardShortcutsView {
+         ShortcutItem(label: "Previous terminal tab", keys: "⌥⌘←"),
+         ShortcutItem(label: "Next workroom tab", keys: "⇧⌥⌘→"),
+         ShortcutItem(label: "Previous workroom tab", keys: "⇧⌥⌘←"),
++        // Recency order, not position — a tap flips to the workroom/pane you were last in (issue
++        // #132). Rendered from the stored trigger modifiers, which are retunable because a global
++        // hotkey grabber (AltTab and friends bind ⌥Tab) beats the app's key monitor.
++        ShortcutItem(
++          label: "Last-used workroom",
++          keys: "\(Defaults[.switcherWorkroomModifier].display)⇥"),
++        ShortcutItem(
++          label: "Last-used pane", keys: "\(Defaults[.switcherPaneModifier].display)⇥"),
+       ]),
+     ShortcutGroup(
+       title: "Splits & Panes",
+
+
+=== DIFF: macapp/WorkroomApp/WorkroomApp.swift ===
+@@ -128,9 +128,13 @@ struct RootWindow: View {
+   }
+ }
+ 
+-/// Installs a local key monitor for ⌘1…⌘9 to focus the workroom's Nth terminal tab.
+-/// Handled here (rather than as menu items) so the shortcuts work without cluttering the
+-/// menu, and the monitor sees the keys before the focused terminal does.
++/// Installs the app's local key monitor: the shortcuts that are handled *here* rather than as menu
++/// items, because they'd clutter the menu (⌘1–9 / ⌥⌘1–9 tab focus), because they have no menu home
++/// (⌘` window cycling, ⌃⌘arrows pane focus, ⌥Tab / ⌃Tab quick switching), or because the monitor must
++/// beat a competing menu item (⌘W in the quick terminal). A local monitor runs inside
++/// `NSApp.sendEvent`, ahead of both menu key-equivalent dispatch and the focused terminal surface, so
++/// it is also the only place a shortcut can be claimed *conditionally* — see the ⌥Tab / ⌃Tab branch,
++/// which passes the key back to the terminal when there is nothing to switch to.
+ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+   private var monitor: Any?
+   /// The global ⌘§ show/hide shortcut while enabled, else nil (issue #13). Registered/torn down by
+@@ -179,6 +183,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
+     return store
+   }
+ 
++  /// What a quick-switcher keystroke (⌥Tab / ⌃Tab, issue #132) should do for `window`.
++  ///
++  /// Three outcomes, because this shortcut is the first one whose consumption is *conditional*:
++  /// - `.passThrough` — not one of our windows (Settings, About, the quick terminal). The key belongs
++  ///   to whatever is focused there, so ⌃Tab still reaches a TUI in the quick terminal.
++  /// - `.swallow` — one of ours with a modal up. Raising a window and moving its selection under its
++  ///   own sheet would leave that sheet acting on a workroom the user never chose (for the commit
++  ///   sheet, a wrong-target VCS write). Gated on the FULL `hasModalPresentation` predicate, not
++  ///   `activePicker` — hence resolving through the registry rather than `shortcutStore`, which nils
++  ///   out a picker window and a foreign window alike, two cases that must differ here.
++  /// - `.act(store)` — go ahead; whether the event is consumed then depends on whether the switcher
++  ///   actually switched (nothing to switch to ⇒ the terminal keeps the key).
++  ///
++  /// `registry` is injectable for the same reason as `shortcutStore`'s: so tests don't register windows
++  /// on the shared singleton.
++  @MainActor static func switcherGate(
++    for window: NSWindow?, in registry: WindowRegistry = .shared
++  ) -> SwitcherGate {
++    guard let store = registry.store(for: window) else { return .passThrough }
++    return store.hasModalPresentation ? .swallow : .act(store)
++  }
++
+   /// Whether `window` is one of ours *and* has a command-palette dialog open — the case where a
+   /// shortcut must be actively swallowed rather than merely no-op'd, because the branch doesn't
+   /// consult a store at all (⌘` window cycling).
+@@ -245,6 +271,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
+         MainActor.assumeIsolated { WindowRegistry.shared.cycleWindows(forward: forward) }
+         return nil
+       }
++      // ⌥Tab / ⌃Tab: the quick switchers (issue #132) — ⌥Tab steps open workrooms across every
++      // window by most-recent use, ⌃Tab steps the current workroom's panes. Caught here for the same
++      // reason as ⌘1–9, and *only* here: Tab is deliberately NOT in `isAppShortcut`, because whether
++      // the app owns it depends on runtime state (a workroom with one pane has nothing to switch to,
++      // so ⌃Tab must still reach a TUI). Both trigger modifiers are preferences — a global hotkey
++      // grabber like AltTab beats this monitor and can't be detected.
++      if let hit = QuickSwitcherKey.classify(keyCode: event.keyCode, flags: flags) {
++        // Autorepeat would spin the switcher (~15 steps/sec); macOS's own ⌘Tab ignores repeats too.
++        if event.isARepeat { return nil }
++        return MainActor.assumeIsolated {
++          switch Self.switcherGate(for: window) {
++          case .passThrough: return event
++          case .swallow: return nil
++          case .act(let store):
++            // Consumed only when it switched, so ⌃Tab still reaches a TUI in a single-pane workroom —
++            // the same rule as the ⌥⌘digit / ⌥⌘arrow branches below.
++            return QuickSwitcher.step(hit.kind, reverse: hit.reverse, in: store) ? nil : event
++          }
++        }
++      }
+       // ⌘1–9: focus the Nth tab (caught here so it fires before the terminal swallows the digit).
+       if flags == .command, let chars = event.charactersIgnoringModifiers,
+         let digit = Int(chars), (1...9).contains(digit)
+
+
+=== DIFF: macapp/WorkroomAppTests/AppShortcutReservationTests.swift ===
+@@ -89,6 +89,26 @@ final class AppShortcutReservationTests: XCTestCase {
+     }
+   }
+ 
++  /// Tab (keyCode 48) is **deliberately never reserved**, for either quick switcher (issue #132).
++  ///
++  /// Adding it here was considered and rejected: this classifier is static, but whether the app owns
++  /// ⌃Tab depends on runtime state — a workroom with one pane has nothing to switch to, so the key must
++  /// reach the TUI. The `AppDelegate` monitor decides instead (it runs inside `NSApp.sendEvent`, ahead
++  /// of key-equivalent dispatch, so a switch that *does* happen never leaks the key to the surface).
++  /// Same reasoning as ⌃⌘arrows above. Pinned so a future "defence in depth" edit can't silently take
++  /// `<C-Tab>` away from every single-pane TUI.
++  func testTabIsNeverReservedForAnyModifierCombination() {
++    let combos: [NSEvent.ModifierFlags] = [
++      [], [.shift], [.option], [.option, .shift], [.control], [.control, .shift],
++      [.command], [.command, .shift], [.command, .option], [.command, .control],
++    ]
++    for flags in combos {
++      XCTAssertFalse(
++        reserved("\t", flags, keyCode: 48),
++        "Tab must stay the terminal's; the quick switcher is monitor-only (issue #132)")
++    }
++  }
++
+   // MARK: Things that must NOT be reserved
+ 
+   /// The allowlist is deliberately minimal — anything not a Workroom menu command belongs to the
+
+
+=== DIFF: macapp/WorkroomAppTests/QuickSwitcherTests.swift ===
+@@ -0,0 +1,300 @@
++import AppKit
++import XCTest
++
++@testable import Workroom
++
++/// The quick switcher (issue #132): the pure keystroke classifier, the step arithmetic, the item
++/// collection across windows, and the tap-commit behaviour.
++@MainActor
++final class QuickSwitcherTests: XCTestCase {
++
++  private func project(_ path: String, workrooms: [String]) -> Project {
++    Project(
++      path: path, vcs: "jj",
++      workrooms: workrooms.map {
++        Workroom(name: $0, path: "\(path)/\($0)", vcsName: "jj", warnings: [])
++      })
++  }
++
++  /// A store with live terminals in each of `workrooms` — `displayedWorkroomTargets` only lists targets
++  /// that actually have tabs, so a switcher test needs them.
++  private func makeStore(
++    _ shared: ProjectStore, project path: String, workrooms: [String]
++  ) -> AppStore {
++    let store = AppStore(projectStore: shared)
++    store.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
++    for name in workrooms {
++      let sid = SidebarID.workroom(project: path, name: name)
++      guard let target = store.target(for: sid) else { continue }
++      store.terminals.addTab(for: target)
++    }
++    return store
++  }
++
++  // MARK: classify
++
++  func testClassifyMapsTheTwoDefaultTriggers() {
++    XCTAssertEqual(
++      QuickSwitcherKey.classify(keyCode: 48, flags: [.option])?.kind, .workrooms, "⌥Tab")
++    XCTAssertEqual(QuickSwitcherKey.classify(keyCode: 48, flags: [.control])?.kind, .panes, "⌃Tab")
++    XCTAssertEqual(
++      QuickSwitcherKey.classify(keyCode: 48, flags: [.option, .shift])?.reverse, true, "⇧⌥Tab")
++    XCTAssertEqual(
++      QuickSwitcherKey.classify(keyCode: 48, flags: [.control, .shift])?.reverse, true, "⇧⌃Tab")
++  }
++
++  /// Bare Tab must reach the terminal (shell completion), and ⌘Tab belongs to the OS app switcher.
++  func testClassifyRejectsBareTabAndCommandCombinations() {
++    XCTAssertNil(QuickSwitcherKey.classify(keyCode: 48, flags: []), "bare Tab is the terminal's")
++    XCTAssertNil(QuickSwitcherKey.classify(keyCode: 48, flags: [.shift]), "⇧Tab likewise")
++    XCTAssertNil(QuickSwitcherKey.classify(keyCode: 48, flags: [.command]), "⌘Tab is the OS")
++    XCTAssertNil(QuickSwitcherKey.classify(keyCode: 48, flags: [.command, .shift]))
++    XCTAssertNil(
++      QuickSwitcherKey.classify(keyCode: 48, flags: [.option, .control]),
++      "a combination matching neither configured modifier isn't ours")
++  }
++
++  func testClassifyRejectsOtherKeys() {
++    for code: UInt16 in [0, 36, 50, 53, 123, 124] {
++      XCTAssertNil(QuickSwitcherKey.classify(keyCode: code, flags: [.option]), "keyCode \(code)")
++    }
++  }
++
++  /// The trigger is a preference because a global-hotkey grabber (AltTab et al.) beats a local monitor.
++  func testClassifyHonoursConfiguredModifiers() {
++    let hit = QuickSwitcherKey.classify(
++      keyCode: 48, flags: [.command, .option],
++      workroomModifier: .commandOption, paneModifier: .commandControl)
++    XCTAssertEqual(hit?.kind, .workrooms)
++    XCTAssertNil(
++      QuickSwitcherKey.classify(
++        keyCode: 48, flags: [.option], workroomModifier: .commandOption,
++        paneModifier: .commandControl),
++      "the default ⌥Tab stops matching once retuned")
++    XCTAssertEqual(
++      QuickSwitcherKey.classify(
++        keyCode: 48, flags: [.command, .control], workroomModifier: .commandOption,
++        paneModifier: .commandControl)?.kind, .panes)
++  }
++
++  /// Both modifiers set the same is user error; ⌥Tab keeps working rather than becoming ambiguous.
++  func testClassifyPrefersWorkroomsOnATie() {
++    XCTAssertEqual(
++      QuickSwitcherKey.classify(
++        keyCode: 48, flags: [.option], workroomModifier: .option, paneModifier: .option)?.kind,
++      .workrooms)
++  }
++
++  // MARK: step arithmetic
++
++  func testWrappedStepsAndWraps() {
++    XCTAssertEqual(AppStore.wrapped(index: 0, by: 1, count: 3), 1)
++    XCTAssertEqual(AppStore.wrapped(index: 2, by: 1, count: 3), 0, "wraps forward")
++    XCTAssertEqual(AppStore.wrapped(index: 0, by: -1, count: 3), 2, "wraps backward")
++    XCTAssertEqual(AppStore.wrapped(index: 0, by: 1, count: 1), 0, "a single item stays put")
++    XCTAssertEqual(AppStore.wrapped(index: 5, by: 1, count: 0), 5, "no items ⇒ unchanged, no crash")
++    XCTAssertEqual(AppStore.wrapped(index: 1, by: -4, count: 3), 0, "any magnitude, either sign")
++  }
++
++  /// From the head of an MRU list, a forward tap lands on "the one before this".
++  func testDestinationFromMRUHead() {
++    XCTAssertEqual(QuickSwitcher.destination(from: 0, count: 4, reverse: false), 1)
++    XCTAssertEqual(
++      QuickSwitcher.destination(from: 0, count: 4, reverse: true), 3, "⇧ = least recent")
++    XCTAssertEqual(
++      QuickSwitcher.destination(from: nil, count: 4, reverse: false), 0,
++      "not in the list (a root with no terminals) ⇒ enter at the most recent")
++    XCTAssertEqual(QuickSwitcher.destination(from: nil, count: 4, reverse: true), 3)
++  }
++
++  // MARK: item collection
++
++  func testWorkroomSlotsSpanEveryWindowInMRUOrder() {
++    let shared = ProjectStore()
++    shared.projects = [project("/p", workrooms: ["w1", "w2"])]
++    let a = makeStore(shared, project: "/p", workrooms: ["w1"])
++    let b = makeStore(shared, project: "/p", workrooms: ["w2"])
++    let registry = WindowRegistry()
++    registry.register(window: NSWindow(), store: a)
++    registry.register(window: NSWindow(), store: b)
++
++    let recency = SwitcherRecency()
++    recency.recordWorkroom(store: b, sid: .workroom(project: "/p", name: "w2"))
++
++    let slots = QuickSwitcher.workroomSlots(registry: registry, recency: recency)
++    XCTAssertEqual(slots.count, 2, "both windows contribute")
++    XCTAssertTrue(slots.first?.store === b, "the most recently used slot leads")
++  }
++
++  /// A window with a sheet up is not a switchable destination: raising it and moving its selection would
++  /// leave its own dialog (e.g. the commit sheet) acting on a workroom the user never chose.
++  func testWorkroomSlotsExcludeWindowsWithAModalUp() {
++    let shared = ProjectStore()
++    shared.projects = [project("/p", workrooms: ["w1", "w2"])]
++    let a = makeStore(shared, project: "/p", workrooms: ["w1"])
++    let b = makeStore(shared, project: "/p", workrooms: ["w2"])
++    b.activePicker = .open
++    let registry = WindowRegistry()
++    registry.register(window: NSWindow(), store: a)
++    registry.register(window: NSWindow(), store: b)
++
++    let slots = QuickSwitcher.workroomSlots(registry: registry, recency: SwitcherRecency())
++    XCTAssertEqual(slots.count, 1)
++    XCTAssertTrue(slots.first?.store === a)
++    XCTAssertTrue(
++      b.hasModalPresentation, "…and the exclusion is driven by the full modal predicate")
++  }
++
++  // MARK: monitor gating
++
++  /// The three-way gate the key monitor routes through. A fresh `WindowRegistry()` throughout, never
++  /// `.shared` — registering on the singleton leaks window registrations into later tests (the reason
++  /// both this and `shortcutStore` take an injectable registry).
++  func testGatePassesTheKeyThroughForAWindowThatIsNotOurs() {
++    let registry = WindowRegistry()
++    guard case .passThrough = AppDelegate.switcherGate(for: NSWindow(), in: registry) else {
++      return XCTFail("an unregistered window (Settings, About, the quick terminal) keeps its key")
++    }
++    guard case .passThrough = AppDelegate.switcherGate(for: nil, in: registry) else {
++      return XCTFail("no window at all ⇒ nothing to switch in")
++    }
++  }
++
++  func testGateSwallowsWhileAnyModalIsUp() {
++    let registry = WindowRegistry()
++    let store = AppStore(projectStore: ProjectStore())
++    let window = NSWindow()
++    registry.register(window: window, store: store)
++
++    guard case .act = AppDelegate.switcherGate(for: window, in: registry) else {
++      return XCTFail("a plain workroom window is switchable")
++    }
++
++    // Not `activePicker` — the *full* predicate, so a commit sheet counts too.
++    store.pendingCommit = PendingCommit(sid: .workroom(project: "/p", name: "w"), vcs: "git")
++    guard case .swallow = AppDelegate.switcherGate(for: window, in: registry) else {
++      return XCTFail("⌥Tab must not retarget the selection under a live commit sheet")
++    }
++  }
++
++  // MARK: pane stepping (the ⌃Tab commit path)
++
++  func testPaneStepFlipsToThePreviouslyUsedPaneAndBack() {
++    let shared = ProjectStore()
++    shared.projects = [project("/p", workrooms: ["w"])]
++    let store = makeStore(shared, project: "/p", workrooms: [])
++    let sid = SidebarID.workroom(project: "/p", name: "w")
++    guard let target = store.target(for: sid) else { return XCTFail("no target") }
++    store.selectedTargetID = sid
++    let first = store.terminals.addTab(for: target).id
++    let second = store.terminals.addTab(for: target).id
++    let third = store.terminals.addTab(for: target).id
++    XCTAssertEqual(store.terminals.activeTab(for: target)?.id, third, "the newest tab is focused")
++
++    let recency = SwitcherRecency()
++    for id in [first, second, third] { recency.recordPane(id) }  // third is most recent
++
++    XCTAssertTrue(QuickSwitcher.step(.panes, reverse: false, in: store, recency: recency))
++    XCTAssertEqual(
++      store.terminals.activeTab(for: target)?.id, second, "a tap lands on the previously used pane")
++
++    // The commit re-orders MRU through `onFocusChange`, so the next tap comes back — the ⌘Tab feel.
++    XCTAssertEqual(
++      SwitcherRecency.shared.panes.ids.first, second, "the real hook recorded the commit")
++    recency.recordPane(second)
++    XCTAssertTrue(QuickSwitcher.step(.panes, reverse: false, in: store, recency: recency))
++    XCTAssertEqual(store.terminals.activeTab(for: target)?.id, third)
++  }
++
++  func testPaneStepReverseGoesToTheLeastRecentlyUsed() {
++    let shared = ProjectStore()
++    shared.projects = [project("/p", workrooms: ["w"])]
++    let store = makeStore(shared, project: "/p", workrooms: [])
++    let sid = SidebarID.workroom(project: "/p", name: "w")
++    guard let target = store.target(for: sid) else { return XCTFail("no target") }
++    store.selectedTargetID = sid
++    let first = store.terminals.addTab(for: target).id
++    let second = store.terminals.addTab(for: target).id
++    let third = store.terminals.addTab(for: target).id
++
++    let recency = SwitcherRecency()
++    for id in [first, second, third] { recency.recordPane(id) }
++
++    XCTAssertTrue(QuickSwitcher.step(.panes, reverse: true, in: store, recency: recency))
++    XCTAssertEqual(store.terminals.activeTab(for: target)?.id, first)
++    XCTAssertNotEqual(second, third)  // silence unused-warning noise while keeping the ids named
++  }
++
++  /// Nothing to switch to ⇒ `step` returns false, which is what makes the monitor pass ⌃Tab through to
++  /// a TUI in a single-pane workroom instead of swallowing it.
++  func testPaneStepDoesNothingWithFewerThanTwoPanes() {
++    let shared = ProjectStore()
++    shared.projects = [project("/p", workrooms: ["w"])]
++    let store = makeStore(shared, project: "/p", workrooms: [])
++    let sid = SidebarID.workroom(project: "/p", name: "w")
++    guard let target = store.target(for: sid) else { return XCTFail("no target") }
++    store.selectedTargetID = sid
++
++    XCTAssertFalse(
++      QuickSwitcher.step(.panes, reverse: false, in: store, recency: SwitcherRecency()),
++      "no panes at all")
++
++    store.terminals.addTab(for: target)
++    XCTAssertFalse(
++      QuickSwitcher.step(.panes, reverse: false, in: store, recency: SwitcherRecency()),
++      "one pane: nowhere to go, so the key stays the terminal's")
++  }
++
++  func testWorkroomStepDoesNothingWithFewerThanTwoSlots() {
++    let shared = ProjectStore()
++    shared.projects = [project("/p", workrooms: ["w"])]
++    let store = makeStore(shared, project: "/p", workrooms: ["w"])
++    let registry = WindowRegistry()
++    registry.register(window: NSWindow(), store: store)
++
++    XCTAssertFalse(
++      QuickSwitcher.step(
++        .workrooms, reverse: false, in: store, registry: registry, recency: SwitcherRecency()))
++  }
++
++  // MARK: recency recording (the hooks)
++
++  /// **The regression this feature turns on.** `applyLocation` raises `isNavigatingHistory` for its
++  /// whole body, and the switcher commits through it — so recency must be recorded ABOVE that guard or
++  /// ⌥Tab flips to the same place forever.
++  func testRecencyIsRecordedEvenWhileHistoryIsSuppressed() {
++    let shared = ProjectStore()
++    shared.projects = [project("/p", workrooms: ["w1", "w2"])]
++    let store = makeStore(shared, project: "/p", workrooms: ["w1", "w2"])
++    let sid2 = SidebarID.workroom(project: "/p", name: "w2")
++    guard let target2 = store.target(for: sid2),
++      let tab = store.terminals.tabs(for: target2).first
++    else { return XCTFail("no target/tab") }
++
++    let before = SwitcherRecency.shared.workrooms.ids.first
++    // Routes through `applyLocation(recordHistory:)` — i.e. under `isNavigatingHistory`.
++    store.revealTerminal(tab.id, at: sid2)
++
++    XCTAssertEqual(
++      SwitcherRecency.shared.workrooms.ids.first,
++      WorkroomSlotID(window: store.windowToken, sid: sid2),
++      "a history-suppressed navigation still updates the switcher's order")
++    XCTAssertNotEqual(SwitcherRecency.shared.workrooms.ids.first, before)
++    XCTAssertEqual(
++      SwitcherRecency.shared.panes.ids.first, tab.id, "and the focused pane is recorded too")
++  }
++
++  func testClosingPanesPrunesRecency() {
++    let shared = ProjectStore()
++    shared.projects = [project("/p", workrooms: ["w"])]
++    let store = makeStore(shared, project: "/p", workrooms: [])
++    let sid = SidebarID.workroom(project: "/p", name: "w")
++    guard let target = store.target(for: sid) else { return XCTFail("no target") }
++    let tab = store.terminals.addTab(for: target).id
++    XCTAssertEqual(SwitcherRecency.shared.panes.ids.first, tab, "adding focuses it, so it records")
++
++    store.terminals.closeTab(tab, for: target)
++    XCTAssertFalse(
++      SwitcherRecency.shared.panes.ids.contains(tab), "a closed pane leaves the ⌃Tab order")
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppTests/SwitcherRecencyTests.swift ===
+@@ -0,0 +1,134 @@
++import AppKit
++import XCTest
++
++@testable import Workroom
++
++/// The quick switcher's most-recently-used order (issue #132) — `RecencyList`'s rules, and the
++/// `SwitcherRecency` ordering built on them.
++///
++/// The ordering rule is the whole feature: ⌥Tab's promise is "flip to where I just was", so a bug here
++/// is indistinguishable from the shortcut being broken. All of it is a pure value type, so every rule
++/// is asserted headlessly (no window, no terminal surface).
++@MainActor
++final class SwitcherRecencyTests: XCTestCase {
++
++  // MARK: RecencyList
++
++  func testTouchMovesToFrontAndInsertsNew() {
++    var list = RecencyList<String>()
++    list.touch("a")
++    list.touch("b")
++    XCTAssertEqual(list.ids, ["b", "a"], "most recent first")
++
++    list.touch("a")
++    XCTAssertEqual(list.ids, ["a", "b"], "re-touching promotes rather than duplicating")
++
++    list.touch("a")
++    XCTAssertEqual(list.ids, ["a", "b"], "touching the head is a no-op")
++  }
++
++  func testForgetAndRetain() {
++    var list = RecencyList<String>()
++    for id in ["a", "b", "c"] { list.touch(id) }
++    XCTAssertEqual(list.ids, ["c", "b", "a"])
++
++    list.forget("b")
++    XCTAssertEqual(list.ids, ["c", "a"])
++
++    list.retain(["a"])
++    XCTAssertEqual(list.ids, ["a"], "retain drops everything not live")
++
++    list.retain([])
++    XCTAssertTrue(list.ids.isEmpty)
++  }
++
++  func testTouchIsCapped() {
++    var list = RecencyList<Int>()
++    for i in 0...(RecencyList<Int>.maxEntries + 10) { list.touch(i) }
++    XCTAssertEqual(
++      list.ids.count, RecencyList<Int>.maxEntries, "a long session can't grow unbounded")
++    XCTAssertEqual(list.ids.first, RecencyList<Int>.maxEntries + 10, "the newest survives")
++  }
++
++  /// The rail order: known ids by recency, never-touched ids after them **in their given order** — so a
++  /// workroom you haven't visited this session still appears, at the end, rather than vanishing.
++  func testOrderedPutsTouchedFirstAndKeepsUntouchedOrder() {
++    var list = RecencyList<String>()
++    list.touch("c")
++    list.touch("a")
++
++    XCTAssertEqual(
++      list.ordered(["a", "b", "c", "d"], id: { $0 }), ["a", "c", "b", "d"],
++      "a then c by recency; b then d keep their incoming order")
++  }
++
++  func testOrderedIsIdentityWhenNothingTouched() {
++    let list = RecencyList<String>()
++    XCTAssertEqual(list.ordered(["b", "a", "c"], id: { $0 }), ["b", "a", "c"])
++  }
++
++  func testOrderedEmitsEveryItemExactlyOnce() {
++    var list = RecencyList<String>()
++    list.touch("z")  // an id that isn't in the items at all
++    list.touch("b")
++    let out = list.ordered(["a", "b", "c"], id: { $0 })
++    XCTAssertEqual(out.sorted(), ["a", "b", "c"], "total and duplicate-free")
++    XCTAssertEqual(out.first, "b", "…and still recency-led")
++  }
++
++  // MARK: Window identity
++
++  /// `WindowToken` must never repeat, which is the whole reason it exists: `AppStore.windowNumber` is
++  /// reclaimed by the next new window, and `ObjectIdentifier` is an address a fresh store can reuse.
++  func testWindowTokensAreUnique() {
++    let tokens = (0..<50).map { _ in WindowToken() }
++    XCTAssertEqual(Set(tokens).count, 50)
++
++    let a = AppStore()
++    let b = AppStore()
++    XCTAssertNotEqual(a.windowToken, b.windowToken, "each store gets its own")
++    XCTAssertEqual(a.windowToken, a.windowToken, "and it is stable for that store")
++  }
++
++  /// The same workroom open in two windows is two switchable places, because `TerminalSessions` is
++  /// per-window and each may be showing a different tab.
++  func testSameWorkroomInTwoWindowsIsTwoSlots() {
++    let a = AppStore()
++    let b = AppStore()
++    let sid = SidebarID.workroom(project: "/p", name: "w")
++
++    let recency = SwitcherRecency()
++    recency.recordWorkroom(store: a, sid: sid)
++    recency.recordWorkroom(store: b, sid: sid)
++
++    XCTAssertEqual(
++      recency.workrooms.ids.count, 2, "keyed by (window, workroom), not workroom alone")
++    XCTAssertEqual(
++      recency.workrooms.ids.first, WorkroomSlotID(window: b.windowToken, sid: sid),
++      "the most recently recorded window leads")
++  }
++
++  func testRecordWorkroomIgnoresNoSelection() {
++    let recency = SwitcherRecency()
++    recency.recordWorkroom(store: AppStore(), sid: nil)
++    XCTAssertTrue(recency.workrooms.ids.isEmpty)
++  }
++
++  // MARK: Pane recency
++
++  func testPaneRecordingAndPruning() {
++    let recency = SwitcherRecency()
++    let one = UUID()
++    let two = UUID()
++
++    recency.recordPane(one)
++    recency.recordPane(two)
++    XCTAssertEqual(recency.panes.ids, [two, one])
++
++    recency.recordPane(nil)
++    XCTAssertEqual(recency.panes.ids, [two, one], "a nil focus change records nothing")
++
++    recency.forgetPanes([two])
++    XCTAssertEqual(recency.panes.ids, [one], "a closed pane leaves the order")
++  }
++}
+
+
+Investigate per the method in your instructions, then return the findings list.
