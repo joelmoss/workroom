@@ -1,0 +1,284 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Views/TerminalStatusBar.swift
+  - macapp/WorkroomAppUITests/StatusBarCwdUITests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Views/TerminalStatusBar.swift ===
+@@ -24,6 +24,8 @@ struct TerminalStatusBar: View {
+   @EnvironmentObject var store: AppStore
+   @EnvironmentObject var agentManager: TerminalAgentManager
+   @State private var showingDiagnosis = false
++  /// The AppKit view the cwd menu pops out of — see `MenuAnchor`.
++  @State private var cwdMenuAnchor: NSView?
+ 
+   private let theme = ThemeService.shared
+ 
+@@ -46,15 +48,16 @@ struct TerminalStatusBar: View {
+       Spacer(minLength: 8)
+       if isRunTab, let run = runStatePresentation { runSegment(run) }
+     }
+-    // `.callout` (12pt), not `.caption` (10pt): the bar carries a pane's identity (path, branch,
+-    // run state), which was too small to read at a glance. Still fits the 24pt bar.
+-    .font(.callout)
++    // `.subheadline` (11pt) — the middle of the two sizes this bar has worn. `.caption` (10pt) was
++    // too small to read at a glance for what the bar carries (a pane's identity: path, branch, run
++    // state); `.callout` (12pt) read as content rather than chrome.
++    .font(.subheadline)
+     .foregroundStyle(theme.tokens.fgMuted)
+     .lineLimit(1)
+     .padding(.horizontal, 10)
+     // Fixed, not vertical padding: the bar's height must not vary with its content (an icon, a
+-    // `ProgressView`) or a pane would resize as a diagnosis arrives. 28pt gives the 12pt text ~6pt
+-    // above and below.
++    // `ProgressView`) or a pane would resize as a diagnosis arrives. Held at 28pt across the font
++    // change so panes don't reflow — the 11pt text just sits in a little more air.
+     .frame(height: 28)
+     .frame(maxWidth: .infinity)
+     // `panel` (bg blended 5.5% toward fg), not the raw terminal `bg`: the bar reads as chrome rather
+@@ -111,16 +114,67 @@ struct TerminalStatusBar: View {
+     }
+   }
+ 
++  /// The pane's cwd, and the two things you want from a path you can see: copy it, or reveal it
++  /// (issue #143). Clicking drops the menu; the segment carries a hover well so it reads as clickable
++  /// (the path and branch segments, which do nothing, deliberately don't).
++  ///
++  /// A plain `Button` popping an `NSMenu` by hand, NOT a SwiftUI `Menu`. A `Menu`'s dropped list
++  /// inherits its TRIGGER's width, and this trigger is a whole filesystem path — so two short items
++  /// rendered in a menu as wide as the pane. An `NSMenu` we pop ourselves sizes to its own items.
++  /// (`.menuStyle(.borderlessButton)` wouldn't have helped either: it's AppKit-backed, never reports
++  /// hover, so the well would be impossible.) The label stays squeezable — no `.fixedSize()` — so
++  /// `.middle` truncation still fires in a narrow split pane.
++  ///
++  /// The items are a menu rather than a selectable label because `.textSelection(.enabled)` swallows
++  /// real mouseDown, which would kill the click this segment now exists to answer.
+   @ViewBuilder private var cwdSegment: some View {
+     if let cwd {
+-      Label {
+-        Text(Self.abbreviate(cwd)).truncationMode(.middle)
+-      } icon: {
+-        Image(systemName: "folder")
++      Button {
++        popCwdMenu(cwd)
++      } label: {
++        Label {
++          Text(Self.abbreviate(cwd)).truncationMode(.middle)
++        } icon: {
++          Image(systemName: "folder")
++        }
++        .labelStyle(.titleAndIcon)
++        // Explicit, not inherited: a `Button`'s label doesn't pick up the bar's ambient
++        // `foregroundStyle`, so without this the segment reads brighter than its neighbours.
++        .foregroundStyle(theme.tokens.fgMuted)
+       }
+-      .labelStyle(.titleAndIcon)
++      .buttonStyle(StatusBarSegmentButtonStyle())
++      .background(MenuAnchor(view: $cwdMenuAnchor))
+       .help(cwd)
+       .accessibilityLabel("Working directory \(cwd)")
++      .accessibilityIdentifier("terminal.statusBar.cwd")
++    }
++  }
++
++  private func popCwdMenu(_ cwd: String) {
++    let menu = NSMenu()
++    menu.addItem(
++      ClosureMenuItem(title: "Copy to Clipboard") {
++        NSPasteboard.general.clearContents()
++        NSPasteboard.general.setString(cwd, forType: .string)
++      })
++    // `activateFileViewerSelecting`, matching the wording and the File menu's own "Reveal in Finder"
++    // (which reveals the selected target's directory the same way): the directory comes up selected in
++    // its parent. `NSWorkspace.open` would open the folder's own window instead — a different verb
++    // than the one this item promises.
++    menu.addItem(
++      ClosureMenuItem(title: "Reveal in Finder") {
++        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: cwd)])
++      })
++    // At the cursor, like a context menu — but popped out of a real view rather than the tempting
++    // `at: NSEvent.mouseLocation, in: nil` (screen coordinates, no anchor needed). That form does
++    // nothing at all when the click is synthesized: `StatusBarCwdUITests` clicked the segment and no
++    // menu ever appeared. Anchored to a view it opens either way, so the cursor's screen point is
++    // converted into the anchor's own coordinates instead.
++    if let anchor = cwdMenuAnchor, let window = anchor.window {
++      let inWindow = window.convertPoint(fromScreen: NSEvent.mouseLocation)
++      menu.popUp(positioning: nil, at: anchor.convert(inWindow, from: nil), in: anchor)
++    } else {
++      menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+     }
+   }
+ 
+@@ -251,3 +305,79 @@ struct TerminalStatusBar: View {
+     }
+   }
+ }
++
++/// An invisible AppKit view, laid out behind the cwd segment and handed back through a binding, so
++/// `NSMenu.popUp(positioning:at:in:)` has a view to pop out of (issue #143) — the view-less,
++/// screen-coordinate form of that call silently does nothing for a synthesized click.
++///
++/// `hitTest` returns nil so the anchor can never take the click that pops the menu, or the hover that
++/// fills the well, from the `Button` in front of it.
++private struct MenuAnchor: NSViewRepresentable {
++  final class AnchorView: NSView {
++    override func hitTest(_ point: NSPoint) -> NSView? { nil }
++  }
++
++  @Binding var view: NSView?
++
++  func makeNSView(context: Context) -> AnchorView {
++    let anchor = AnchorView()
++    // Async: assigning to `@State` during `makeNSView` mutates state mid-update.
++    DispatchQueue.main.async { view = anchor }
++    return anchor
++  }
++
++  func updateNSView(_ nsView: AnchorView, context: Context) {}
++}
++
++/// `NSMenuItem` takes an ObjC target/action, and both cwd actions are closures.
++private final class ClosureMenuItem: NSMenuItem {
++  private let handler: () -> Void
++
++  init(title: String, handler: @escaping () -> Void) {
++    self.handler = handler
++    super.init(title: title, action: #selector(fire), keyEquivalent: "")
++    target = self
++  }
++
++  @available(*, unavailable)
++  required init(coder: NSCoder) { fatalError("ClosureMenuItem is built in code, never unarchived") }
++
++  @objc private func fire() { handler() }
++}
++
++/// Hover well for the status bar's one clickable segment, the cwd (issue #143).
++///
++/// The well is a **negatively inset background**, not padding around the label. The cwd shares the
++/// bar's leading slot with the file path (a terminal has no path, a content pane has no cwd), so
++/// padding it would put the `folder` glyph 5pt right of where a file pane's `doc` glyph lands — the
++/// same bar would shift its leading edge depending on which pane you looked at. Negative insets bleed
++/// the fill outside the label's bounds and leave the layout, and that alignment, untouched.
++///
++/// Opacity is animated, never the view tree: an implicit tree animation interpolates a glyph's 1pt
++/// pixel re-round into a visible slide (see `ToolbarIconButtonStyle`).
++private struct StatusBarSegmentButtonStyle: ButtonStyle {
++  func makeBody(configuration: Configuration) -> some View {
++    HoverWell(configuration: configuration)
++  }
++
++  private struct HoverWell: View {
++    let configuration: ButtonStyle.Configuration
++    @State private var hovering = false
++    @Environment(\.accessibilityReduceMotion) private var reduceMotion
++
++    var body: some View {
++      configuration.label
++        .background(
++          RoundedRectangle(cornerRadius: 4)
++            .fill(
++              ThemeService.shared.tokens.hover
++                .opacity(hovering || configuration.isPressed ? 1 : 0)
++            )
++            .padding(EdgeInsets(top: -3, leading: -5, bottom: -3, trailing: -5))
++            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovering)
++        )
++        .contentShape(Rectangle())
++        .onHover { hovering = $0 }
++    }
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppUITests/StatusBarCwdUITests.swift ===
+@@ -0,0 +1,84 @@
++import AppKit
++import XCTest
++
++/// XCUITest for the status bar's cwd actions (issue #143): clicking the cwd segment drops a menu with
++/// Copy to Clipboard + Reveal in Finder.
++///
++/// The cwd is only there once the live surface has reported one (OSC 7 via the bundled
++/// shell-integration), so every lookup here waits rather than asserting on the first frame.
++///
++/// Two things this can't cover, both known XCUITest limits: `.onHover` isn't drivable, so the hover
++/// well is verified by eye; and "Reveal in Finder" is asserted as an offered item, never clicked — the
++/// click would activate Finder over the test run.
++final class StatusBarCwdUITests: XCTestCase {
++  override func setUp() {
++    super.setUp()
++    continueAfterFailure = false
++  }
++
++  private func launchedApp() -> XCUIApplication {
++    let app = XCUIApplication()
++    app.launchArguments += ["-WorkroomUITestFixture", "1"]
++    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
++    app.launch()
++    XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
++    return app
++  }
++
++  /// Type-agnostic on purpose: the segment is a `Button` today and resolves under `.buttons`, but it
++  /// has already been a SwiftUI `Menu` (which doesn't — see `openIn.menu` in
++  /// `WorkroomPaneHeaderUITests`), and this test cares about the identifier, not the element type.
++  private func cwdSegment(_ app: XCUIApplication) -> XCUIElement {
++    app.descendants(matching: .any).matching(identifier: "terminal.statusBar.cwd").firstMatch
++  }
++
++  /// The accessibility label is `Working directory <absolute path>` — the path the menu acts on.
++  private func cwdPath(from element: XCUIElement) -> String {
++    let prefix = "Working directory "
++    XCTAssertTrue(element.label.hasPrefix(prefix), "unexpected cwd label: \(element.label)")
++    return String(element.label.dropFirst(prefix.count))
++  }
++
++  /// Clicking the cwd opens the menu with both actions.
++  func testClickingCwdOpensActionsMenu() {
++    let app = launchedApp()
++    let cwd = cwdSegment(app)
++    XCTAssertTrue(
++      cwd.waitForExistence(timeout: 20), "a terminal pane's status bar shows its working directory")
++
++    cwd.click()
++    XCTAssertTrue(
++      app.menuItems["Copy to Clipboard"].waitForExistence(timeout: 5),
++      "the cwd menu offers Copy to Clipboard")
++    XCTAssertTrue(app.menuItems["Reveal in Finder"].exists, "the cwd menu offers Reveal in Finder")
++    app.typeKey(.escape, modifierFlags: [])
++  }
++
++  /// Copy puts the FULL absolute path on the pasteboard — not the `~`-abbreviated, middle-truncated
++  /// string the label draws.
++  func testCopyToClipboardCopiesTheAbsolutePath() {
++    let app = launchedApp()
++    let cwd = cwdSegment(app)
++    XCTAssertTrue(cwd.waitForExistence(timeout: 20))
++    let path = cwdPath(from: cwd)
++    XCTAssertTrue(path.hasPrefix("/"), "the label carries the absolute path, got \(path)")
++
++    // Sentinel, so a stale pasteboard can't pass this by accident.
++    NSPasteboard.general.clearContents()
++    NSPasteboard.general.setString("UITEST-sentinel", forType: .string)
++
++    cwd.click()
++    let copy = app.menuItems["Copy to Clipboard"]
++    XCTAssertTrue(copy.waitForExistence(timeout: 5))
++    copy.click()
++
++    var copied = NSPasteboard.general.string(forType: .string)
++    // The click returns before the menu action has run through the app's main loop.
++    let deadline = Date().addingTimeInterval(5)
++    while copied != path, Date() < deadline {
++      usleep(100_000)
++      copied = NSPasteboard.general.string(forType: .string)
++    }
++    XCTAssertEqual(copied, path, "Copy to Clipboard writes the pane's cwd")
++  }
++}
+
+
+Investigate per the method in your instructions, then return the findings list.
