@@ -1,0 +1,1 @@
+If the workroom is not focused, why would we need to react to it? Just react to it. Only when we need to or when it's focused.
