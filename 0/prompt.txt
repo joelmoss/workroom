@@ -1,0 +1,54 @@
+<task-notification>
+<task-id>a027a4e1c814b0008</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/c55d64aa-154c-477d-a181-18c86c6e8ed8/tasks/a027a4e1c814b0008.output</output-file>
+<status>completed</status>
+<summary>Agent "Find agent-footer and cwd restore code paths" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Summary
+
+This is a well-documented codebase with extensive doc comments explaining exactly this mechanism. Here's the full picture, file:line by file:line.
+
+### (a) Footer "agent usage" state — definition and population
+
+**State lives in two places:**
+
+1. **Per-pane "which agent is running" state** — `TerminalState.activeAgentBackend: AgentBackend?` and `.activeTool: RecognizedTool?`, `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/TerminalSessions.swift:322-325`. Part of the `TerminalState` struct (`TerminalSessions.swift:309-335`), one per tab, held in `@Published private var tabsByTarget` (`TerminalSessions.swift:355`).
+
+2. **The quota/usage numbers themselves** (5h/weekly %, reset countdowns) — `AgentUsageMonitor` (`@MainActor final class`, `ObservableObject`), `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/AgentUsage.swift:293-402`. `@Published private(set) var snapshots: [AgentBackend: AgentQuotaSnapshot]` (line 295), populated by reading local files directly off disk: `~/.codex/sessions/*.jsonl` and a Claude rate-limits cache file (`ClaudeUsageBridge.swift`), via `refresh()` (`AgentUsage.swift:336-365`), triggered by `DispatchSourceFileSystemObject` file-watches (`rebuildWatches`, lines 369-394) and debounced.
+
+**How `activeAgentBackend` gets set during normal operation** — entirely from live OSC/escape-sequence + foreground-PID detection, never anything else:
+
+- `GhosttySurfaceView.foregroundAgentBackend` (`GhosttySurfaceView.swift:36-43`) calls `ghostty_surface_foreground_pid(surface)` → `AgentProcessRecognition.backend(forPID:)` (`AgentUsage.swift:139-144`, via `proc_name`).
+- `GhosttySurfaceView.onTitleChange` fires on OSC 0/2 title reports; wired at `TerminalSessions.swift:1609-1611` to `updateTitle` (`TerminalSessions.swift:1385-1424`), which combines the live foreground-PID check with a title-string fallback (`AgentTitleRecognition.backend(for:)`, `AgentUsage.swift:101-127`) and latches it into `TerminalState.activeAgentBackend` via `mutateTerminalState` (line 1419-1423). It's cleared on `handleCommandFinished` (OSC 133 D), `TerminalSessions.swift:1451-1464`.
+- The footer view reads it at `TerminalStatusBar.swift:51-53` (`activeAgent`) and, once non-nil, kicks `agentUsage.refresh()` via `.task(id: activeAgent)` at `TerminalStatusBar.swift:88-90` — so the quota numbers are a side effect of the agent icon appearing, always freshly read from disk, never cached/restored state.
+
+### (b) cwd state — definition and population
+
+- `TerminalState.cwd: String?` — `TerminalSessions.swift:326-329` (observable, footer-facing).
+- `GhosttySurfaceView.lastKnownCwd: String?` — `GhosttySurfaceView.swift:135-137` (surface-local, used for ⌘-click file resolution).
+- Both are set from exactly one signal, `GHOSTTY_ACTION_PWD` (OSC 7 via shell integration): `GhosttySurfaceView.handlePwd(_:)`, `GhosttySurfaceView.swift:763-768`, which sets `lastKnownCwd` and fires `onCwdChange`. That's wired at `TerminalSessions.swift:1612-1614` to `updateCwd` (`TerminalSessions.swift:1428-1433`), which sets `TerminalState.cwd`.
+- Footer reads it at `TerminalStatusBar.swift:45`: `state.flatMap { $0.cwd ?? $0.view.lastKnownCwd }`.
+
+### (c)/(d) Reattach flow, and exactly what it restores vs. leaves to live parsing
+
+**App-relaunch path:** `PersistentSessionRecovery.recover` (`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/Session/PersistentSessionRecovery.swift:4-13`) → `TerminalSessions.materializeLivePersistentSessions` (`TerminalSessions.swift:1685-1695`) → `GhosttySurfaceView.ensureSurfaceCreated` → `createSurface()` (`GhosttySurfaceView.swift:251-329`) → `applyPersistentSession` (`GhosttySurfaceView.swift:403-436`) spawns `workroom-session attach &lt;sessionID&gt;` as the pane's child command instead of a login shell. (Manual reattach via the "detached sessions" picker goes through `TerminalSessionAttachment.attachToActivePane`, `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/Session/TerminalSessionAttachment.swift:9-26`, which calls `reattachPersistentSession()`, `GhosttySurfaceView.swift:438-441`.)
+
+**What's restored from the on-disk snapshot itself (`restore(_:for:)`, `TerminalSessions.swift:664-711`):** only the *spawn* directory (`Self.restoredCwd(payload.cwd, fallback: target.path)`, line 679, via `restoredCwd`, lines 718-725) and the `sessionID` — used purely to decide where a **fresh** shell would start if the daemon session is gone. `TerminalState` itself is constructed via `TerminalTab.terminal(view:defaultTitle:)` (`TerminalSessions.swift:87-89`), whose default-member-init leaves `cwd`, `activeAgentBackend`, `activeTool`, `progressActive` all `nil`. `TerminalPayload` on disk (`SessionSnapshot.swift:302-310`) carries `cwd`/`sessionID`/`defaultTitle` only — no agent/tool/progress fields exist to restore. **There is no explicit snapshot/restore call that sets footer state directly.**
+
+**What actually repopulates the footer on reattach — this is the key finding:** the daemon-side `attach` handler synthesizes fake live escape sequences and feeds them through the *same* live-parsing pipeline used during normal operation, rather than the app calling any restore API:
+
+- `SessionDaemon.attach(session:request:connection:)`, `/Users/joelmoss/dev/workroom/macapp/WorkroomSession/SessionDaemon.swift:343-426`. Before replaying the scrollback buffer, it reads the PTY's **current** foreground process group (`SessionPTY.foregroundProcessGroup`, `SessionPTY.swift:143-146`, via `tcgetpgrp`), resolves its argv0 basename (`SessionPTY.executableName`, `SessionPTY.swift:154-181` — deliberately argv0 via `KERN_PROCARGS2`, not `proc_name`, because Claude Code renames its own title) and its cwd (`SessionPTY.workingDirectory`, `SessionPTY.swift:184-192`), and — only if that foreground group differs from the idle shell's own pgid (line 376-377) — enqueues two synthetic frames *before* the replay:
+  - `\u{1B}]2;&lt;name&gt;\u{07}` (OSC 2 title) — `SessionDaemon.swift:390-393`
+  - `\u{1B}]7;kitty-shell-cwd://localhost&lt;cwd&gt;\u{07}` (OSC 7 pwd) — `SessionDaemon.swift:394-401`
+- Comment at `SessionDaemon.swift:368-375` explains why: title/pwd are normally one-shot escapes from the shell's preexec/prompt hooks, and `SessionReplayBuffer` drops its whole buffer the instant the alternate screen activates (`SessionReplayBuffer.swift:47-148`), so a long-running full-screen program's original OSC 2/7 never survives in the replay buffer and the foreground program itself never re-emits them on its own.
+- `enqueueReplay` (`SessionDaemon.swift:454-...`) then sends `session.replay.replayBytes`, which deliberately preserves OSC 0/2 (title), 7 (pwd), 8, 9, 133 in the buffer — `SessionReplayBuffer.swift:323-335` explicitly excludes those from the query-stripping logic ("Title (0/2), pwd (7)... are deliberately excluded: those are always sets").
+- These synthesized + replayed bytes arrive at the app process as ordinary PTY output from the `workroom-session attach` child (via `SessionAttachClient.swift`), get parsed by libghostty exactly like live output, and drive `handleTitleChange`/`handlePwd` → `onTitleChange`/`onCwdChange` → `updateTitle`/`updateCwd` (`TerminalSessions.swift:1385-1433`) — the identical code path as normal operation.
+
+**Why this needed a fix at all, and what it doesn't fix:** `updateTitle`'s live foreground-PID recognition (`s.view.foregroundAgentBackend` / `foregroundExecutableName`, `GhosttySurfaceView.swift:36-59`) queries `ghostty_surface_foreground_pid(surface)` — the foreground pid of the **locally spawned `workroom-session attach` client's own pty**, not the daemon's remote pty, so it can never see the real agent process on a reattached pane. `updateTitle` (`TerminalSessions.swift:1396-1401`) already falls back to title-string recognition (`AgentTitleRecognition.backend(for:)`) and `ToolLogoRegistry.tool(forTitle:)` when the PID-based lookup misses — which is exactly the fallback path the daemon's synthesized OSC 2 title feeds into, making the whole thing work.
+
+**What is NOT restored on reattach:** OSC 9;4 progress (`GhosttySurfaceView.handleProgressReport`/`onProgressReport`, `GhosttySurfaceView.swift:770-786`; `TerminalState.progressActive`, `TerminalSessions.swift:330-334`) has **no daemon-side synthesis** — no `9;4` frame is ever enqueued in `SessionDaemon.swift`. So a pane that was "busy" (spinner/underline) before disconnect comes back showing idle/no-spinner until the foreground program emits a fresh OSC 9;4 — `isRunning` (`TerminalSessions.swift:73-76`) truly is live-parsing-only with no reattach path.
+
+**Net answer to your question 4:** reattach is not a raw-scrollback-only replay, but it's also not a genuine "footer state snapshot/restore" — it's a clever hybrid: the daemon fabricates one-shot OSC 2/OSC 7 escapes from a fresh `tcgetpgrp`/argv0/cwd read and injects them ahead of the real replay buffer, so the *existing* live-parsing callbacks (`handleTitleChange`/`handlePwd` → `updateTitle`/`updateCwd`) repopulate `activeAgentBackend`/`activeTool`/`cwd` without any new restore API. Anything not covered by that synthesis (busy/progress state) stays nil until the next real signal arrives.</result>
+<usage><subagent_tokens>114415</subagent_tokens><tool_uses>36</tool_uses><duration_ms>266015</duration_ms></usage>
+</task-notification>
