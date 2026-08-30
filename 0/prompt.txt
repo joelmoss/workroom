@@ -1,0 +1,1 @@
+menu should not be as wide os the CWD itself
