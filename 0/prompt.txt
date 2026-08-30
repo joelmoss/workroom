@@ -1,0 +1,1 @@
+always show the run button - even of there is no run command set. In that scenario, open the project settings dialog in the same way that it would if I called the run keyboard shortcut
