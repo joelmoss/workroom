@@ -1,0 +1,470 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/AppStore+Session.swift
+  - macapp/WorkroomApp/Core/AppStore.swift
+  - macapp/WorkroomApp/Core/ProjectStore.swift
+  - macapp/WorkroomApp/WorkroomApp.swift
+  - macapp/WorkroomAppTests/AppStoreSessionRestoreTests.swift
+  - macapp/WorkroomAppTests/SessionClaimTests.swift
+  - macapp/WorkroomAppUITests/SessionRestoreUITests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/AppStore+Session.swift ===
+@@ -77,7 +77,11 @@ extension AppStore {
+   func claimSessionIfNeeded() {
+     guard !didClaimSession else { return }
+     didClaimSession = true
+-    guard let claimed = projectStore.claimSession(isLaunchWindow: isRestoreWindow) else { return }
++    // Every ⌘N window opens blank, matching how the persisted selection already behaves.
++    guard claimsSavedSession else { return }
++    guard
++      let claimed = projectStore.claimSession(for: sessionKey, isLaunchWindow: isRestoreWindow)
++    else { return }
+     pendingSessionRestore = claimed
+     // Keep the window's identity stable across launches: it now owns this session's slot.
+     if let key = UUID(uuidString: claimed.windowKey) { sessionKey = key }
+
+
+=== DIFF: macapp/WorkroomApp/Core/AppStore.swift ===
+@@ -813,6 +813,9 @@ final class AppStore: ObservableObject {
+   /// One-shot guard: `WindowAccessor` can resolve the same window more than once, and a claim must
+   /// never be taken twice.
+   var didClaimSession = false
++  /// Whether this window may adopt a saved session (issue #46) — the launch window and each sibling
++  /// reopened from the session, but never a ⌘N window, which always starts blank.
++  var claimsSavedSession = false
+   /// UI-test fixture mode only: whether this window auto-selects the fixture workroom. True for the
+   /// launch window, false for a ⌘N window so it stays blank — the fixture analogue of clearing
+   /// `pendingRestoreSelection` on the real path (issue #70).
+
+
+=== DIFF: macapp/WorkroomApp/Core/ProjectStore.swift ===
+@@ -99,25 +99,88 @@ final class ProjectStore: ObservableObject {
+   /// exactly once however many windows take part.
+   private var isRestoringSession = false
+ 
++  /// Sessions already handed to a window, by the key that window now owns. Makes claiming idempotent:
++  /// `WindowAccessor` can resolve the same window more than once, and a repeat claim must return the
++  /// same session rather than consume a second one.
++  private var claimedSessions: [UUID: WindowSession] = [:]
++  /// Keys handed to `openWindow` whose window has not claimed yet. Dispatched once so a `.task`
++  /// re-fire cannot open a second copy of the same window.
++  private var dispatchedSessionKeys: Set<UUID> = []
++  /// How many windows have claimed a session and not yet finished restoring it. Saving resumes when
++  /// this reaches zero AND nothing is still awaiting a window.
++  private var outstandingRestores = 0
++  /// The key of the window that was key at the last quit, so focus lands where the user left it once
++  /// every window is back.
++  private var keyWindowSessionKey: UUID?
++
+   /// Adopt a saved window for this store, or nil when there is nothing to adopt.
+   ///
+   /// Loading is lazy so the read happens at the first claim rather than at app init — the claim is
+   /// made from `AppStore.attachWindow`, when a real `NSWindow` exists but before it is shown, which is
+   /// both early enough for the frame and late enough that a speculative SwiftUI view init cannot
+   /// consume a session no window ever uses.
+-  func claimSession(isLaunchWindow: Bool) -> WindowSession? {
++  ///
++  /// The launch window adopts the first unclaimed session (its own seed id is freshly minted, so it
++  /// cannot match anything on disk) and takes that session's key as its own. A sibling was opened FOR
++  /// a specific key and claims exactly that one — never another window's.
++  func claimSession(for key: UUID, isLaunchWindow: Bool) -> WindowSession? {
++    loadSessionIfNeeded()
++    if let already = claimedSessions[key] { return already }
++
++    let claimed: WindowSession?
++    if isLaunchWindow {
++      claimed = unclaimedSessionWindows.isEmpty ? nil : unclaimedSessionWindows.removeFirst()
++    } else if let index = unclaimedSessionWindows.firstIndex(
++      where: { $0.windowKey == key.uuidString })
++    {
++      claimed = unclaimedSessionWindows.remove(at: index)
++    } else {
++      claimed = nil
++    }
++
++    guard let claimed else { return nil }
++    let ownedKey = UUID(uuidString: claimed.windowKey) ?? key
++    claimedSessions[ownedKey] = claimed
++    dispatchedSessionKeys.remove(ownedKey)
++    outstandingRestores += 1
++    if claimed.isKey { keyWindowSessionKey = ownedKey }
++    return claimed
++  }
++
++  /// Keys of saved windows nobody has claimed yet, marked as dispatched so they are handed out once.
++  /// The launch window opens one window per key.
++  func pendingSessionKeys() -> [UUID] {
+     loadSessionIfNeeded()
+-    // Only the launch window restores today; every ⌘N window opens blank, matching
+-    // `consumeInitialRestore`. Per-window claiming by key is the multi-window follow-up.
+-    guard isLaunchWindow, !unclaimedSessionWindows.isEmpty else { return nil }
+-    return unclaimedSessionWindows.removeFirst()
++    let keys = unclaimedSessionWindows.compactMap { UUID(uuidString: $0.windowKey) }
++      .filter { !dispatchedSessionKeys.contains($0) }
++    dispatchedSessionKeys.formUnion(keys)
++    return keys
+   }
+ 
+-  /// Every claimed window has finished restoring — resume saving.
++  /// One window finished restoring. Saving resumes only once every window has, so a half-restored
++  /// document is never written over a full one.
+   func finishSessionRestore() {
++    guard isRestoringSession else { return }
++    outstandingRestores = max(0, outstandingRestores - 1)
++    guard outstandingRestores == 0, dispatchedSessionKeys.isEmpty else { return }
++    endSessionRestore()
++  }
++
++  /// Bring the window that was key at the last quit back to the front, then resume saving.
++  private func endSessionRestore() {
+     guard isRestoringSession else { return }
+     isRestoringSession = false
+     unclaimedSessionWindows.removeAll()
++    dispatchedSessionKeys.removeAll()
++    claimedSessions.removeAll()
++    if let keyWindowSessionKey,
++      let store = WindowRegistry.shared.allStores.first(where: {
++        $0.sessionKey == keyWindowSessionKey
++      })
++    {
++      store.hostWindow?.makeKeyAndOrderFront(nil)
++    }
++    keyWindowSessionKey = nil
+     sessionCoordinator.resumeSaves()
+   }
+ 
+@@ -131,5 +194,15 @@ final class ProjectStore: ObservableObject {
+     // session dirty, and that write would rebuild the document from the windows that exist SO FAR —
+     // overwriting the file and discarding the ones still to be claimed.
+     sessionCoordinator.suspendSaves()
++    // Watchdog: a dispatched window that never opens (a scene SwiftUI declines to create, a window
++    // closed mid-restore) would otherwise leave saving suspended for the whole run — the app would
++    // silently stop persisting anything. Restoring is a launch-time operation measured in
++    // milliseconds, so anything still outstanding this much later is not coming.
++    DispatchQueue.main.asyncAfter(deadline: .now() + Self.sessionRestoreTimeout) { [weak self] in
++      MainActor.assumeIsolated { self?.endSessionRestore() }
++    }
+   }
++
++  /// How long to wait for every dispatched window before giving up and resuming saves.
++  static let sessionRestoreTimeout: TimeInterval = 15
+ }
+
+
+=== DIFF: macapp/WorkroomApp/WorkroomApp.swift ===
+@@ -85,9 +85,23 @@ struct WorkroomApp: App {
+ /// persisted selection; every ⌘N window carries a fresh `restore == false` seed and opens blank.
+ struct WindowSeed: Codable, Hashable {
+   let id: UUID
++  /// Whether this window may adopt a saved session — true for the launch window and for each sibling
++  /// it reopens (issue #46), false for every ⌘N window, which always starts blank.
+   let restore: Bool
+-  /// The launch window: a fresh id allowed to restore the saved selection.
+-  static var launch: WindowSeed { WindowSeed(id: UUID(), restore: true) }
++  /// Whether this is THE launch window, as opposed to a sibling reopened from the saved session.
++  ///
++  /// Separate from `restore` because the two answer different questions and both siblings and the
++  /// launch window restore. Only the launch window runs the What's-New auto-check and fans the
++  /// siblings out — without this distinction every restored window would pop that dialog.
++  var isLaunch = false
++
++  /// The launch window: a fresh id allowed to restore the saved session.
++  static var launch: WindowSeed { WindowSeed(id: UUID(), restore: true, isLaunch: true) }
++
++  /// A window reopened from the saved session, keyed on the session it will claim.
++  static func restoring(key: UUID) -> WindowSeed {
++    WindowSeed(id: key, restore: true, isLaunch: false)
++  }
+ }
+ 
+ /// One window's root. The value-based `WindowGroup` gives each window its own `RootWindow`, so the
+@@ -97,6 +111,7 @@ struct WindowSeed: Codable, Hashable {
+ struct RootWindow: View {
+   let seed: WindowSeed
+   @StateObject private var store: AppStore
++  @Environment(\.openWindow) private var openWindow
+ 
+   init(seed: WindowSeed) {
+     self.seed = seed
+@@ -104,9 +119,14 @@ struct RootWindow: View {
+     // Capture the current window's size ONCE, at this window's creation, so the new window can be
+     // sized to match it before it's shown (issue #70). nil for the launch window.
+     store.pendingInitialWindowSize = WindowRegistry.shared.preferredNewWindowSize
+-    // Only the launch window runs the What's-New auto-check (see RootView), so restored ⌘N windows
+-    // don't each pop the dialog.
+-    store.isRestoreWindow = seed.restore
++    // Only the launch window runs the What's-New auto-check (see RootView). Sibling windows reopened
++    // from the saved session also carry `restore: true`, so gating on that would pop the dialog once
++    // per restored window (issue #46).
++    store.isRestoreWindow = seed.isLaunch
++    // Which saved window this one adopts. The launch window takes the first unclaimed session; a
++    // sibling was opened FOR a specific key and claims exactly that one.
++    store.sessionKey = seed.id
++    store.claimsSavedSession = seed.restore
+     _store = StateObject(wrappedValue: store)
+   }
+ 
+@@ -124,7 +144,15 @@ struct RootWindow: View {
+           store.attachWindow(window)
+         }
+       )
+-      .task { await store.bootstrap(restore: seed.restore) }
++      .task {
++        await store.bootstrap(restore: seed.restore)
++        // Reopen the windows that were open at the last quit (issue #46). Only the launch window
++        // fans out, and each key is handed out once, so a `.task` re-fire cannot double-open.
++        guard seed.isLaunch else { return }
++        for key in ProjectStore.shared.pendingSessionKeys() {
++          openWindow(value: WindowSeed.restoring(key: key))
++        }
++      }
+   }
+ }
+ 
+
+
+=== DIFF: macapp/WorkroomAppTests/AppStoreSessionRestoreTests.swift ===
+@@ -63,6 +63,8 @@ final class AppStoreSessionRestoreTests: XCTestCase {
+     projectStore.projects = projects
+     let store = AppStore(projectStore: projectStore)
+     store.isRestoreWindow = isLaunchWindow
++    // A ⌘N window carries neither flag; the launch window and any restored sibling carry the claim.
++    store.claimsSavedSession = isLaunchWindow
+     store.terminals.makeView = { _, cwd, command in
+       GhosttySurfaceView(workingDirectory: cwd, command: command)
+     }
+
+
+=== DIFF: macapp/WorkroomAppTests/SessionClaimTests.swift ===
+@@ -0,0 +1,189 @@
++import AppKit
++import XCTest
++
++@testable import Workroom
++
++/// Which window adopts which saved session (issue #46, multi-window restore).
++///
++/// This is the part of the feature with no visible symptom when it goes subtly wrong: a window
++/// silently adopts the wrong session's panels, two windows race for one, or a key is handed out twice
++/// and the same window opens again. The claim logic is pure and main-actor, so the whole matrix is
++/// cheap unit tests — which is exactly why it should be covered here rather than left to an
++/// end-to-end test that can only see the happy path.
++@MainActor
++final class SessionClaimTests: XCTestCase {
++  private var directory: URL!
++  private var url: URL!
++
++  override func setUpWithError() throws {
++    try super.setUpWithError()
++    directory = FileManager.default.temporaryDirectory
++      .appendingPathComponent("session-claim-\(UUID().uuidString)", isDirectory: true)
++    url = directory.appendingPathComponent("session.json")
++  }
++
++  override func tearDownWithError() throws {
++    try? FileManager.default.removeItem(at: directory)
++    try super.tearDownWithError()
++  }
++
++  private func window(key: UUID, isKey: Bool = false, selected: String? = nil) -> WindowSession {
++    WindowSession(
++      windowKey: key.uuidString, isKey: isKey, selectedTargetID: selected,
++      targets: [
++        TargetSession(
++          targetID: selected ?? "wr|/p|foo",
++          tabs: [
++            TabSession(
++              key: "t0", kind: TabSession.terminalKind,
++              terminal: TerminalPayload(defaultTitle: "Terminal 1", cwd: nil))
++          ])
++      ])
++  }
++
++  /// A store whose session file holds `windows`, with saving driven by an injected coordinator.
++  private func makeProjectStore(windows: [WindowSession]) -> ProjectStore {
++    if !windows.isEmpty {
++      SessionStore(url: url).writeSynchronously(
++        SessionFile(savedAt: Date(timeIntervalSince1970: 0), windows: windows))
++    }
++    let store = ProjectStore()
++    store.sessionCoordinator = SessionCoordinator(
++      store: SessionStore(url: url), debounce: 0.05, ceiling: 0.2, capture: { [] })
++    return store
++  }
++
++  // MARK: The matrix
++
++  /// The launch window's seed id is freshly minted every launch, so it cannot match anything on disk
++  /// — it adopts the first saved window and takes that window's key as its own.
++  func testLaunchWindowAdoptsTheFirstSavedWindow() throws {
++    let first = UUID()
++    let second = UUID()
++    let store = makeProjectStore(windows: [window(key: first), window(key: second)])
++
++    let claimed = try XCTUnwrap(store.claimSession(for: UUID(), isLaunchWindow: true))
++    XCTAssertEqual(claimed.windowKey, first.uuidString)
++  }
++
++  /// A sibling was opened FOR a key and must claim exactly that one — never another window's panels.
++  func testSiblingClaimsItsOwnKey() throws {
++    let first = UUID()
++    let second = UUID()
++    let store = makeProjectStore(windows: [window(key: first), window(key: second)])
++
++    _ = store.claimSession(for: UUID(), isLaunchWindow: true)
++    let claimed = try XCTUnwrap(store.claimSession(for: second, isLaunchWindow: false))
++    XCTAssertEqual(claimed.windowKey, second.uuidString)
++  }
++
++  func testSiblingWithAnUnknownKeyClaimsNothing() {
++    let store = makeProjectStore(windows: [window(key: UUID())])
++    XCTAssertNil(store.claimSession(for: UUID(), isLaunchWindow: false))
++  }
++
++  /// `WindowAccessor` can resolve the same window more than once, and a repeat claim must return the
++  /// SAME session rather than consume a second one.
++  func testRepeatClaimIsIdempotent() throws {
++    let first = UUID()
++    let second = UUID()
++    let store = makeProjectStore(windows: [window(key: first), window(key: second)])
++
++    let once = try XCTUnwrap(store.claimSession(for: UUID(), isLaunchWindow: true))
++    let twice = try XCTUnwrap(store.claimSession(for: first, isLaunchWindow: true))
++    XCTAssertEqual(once.windowKey, twice.windowKey)
++    // The second window is still up for grabs — the repeat claim consumed nothing.
++    XCTAssertEqual(store.pendingSessionKeys(), [second])
++  }
++
++  /// A `.task` re-fire must not open a second copy of the same window.
++  func testPendingKeysAreHandedOutOnlyOnce() {
++    let first = UUID()
++    let second = UUID()
++    let third = UUID()
++    let store = makeProjectStore(
++      windows: [window(key: first), window(key: second), window(key: third)])
++
++    _ = store.claimSession(for: UUID(), isLaunchWindow: true)
++    XCTAssertEqual(Set(store.pendingSessionKeys()), [second, third])
++    XCTAssertTrue(store.pendingSessionKeys().isEmpty, "a second call hands out nothing")
++  }
++
++  func testNoSessionMeansNothingToClaimOrDispatch() {
++    let store = makeProjectStore(windows: [])
++    XCTAssertNil(store.claimSession(for: UUID(), isLaunchWindow: true))
++    XCTAssertTrue(store.pendingSessionKeys().isEmpty)
++    XCTAssertFalse(store.sessionCoordinator.isSuspended)
++  }
++
++  // MARK: The save gate across several windows
++
++  /// Saving stays suspended until EVERY window has finished — the whole point of the gate. Resuming
++  /// after the first would let it write a document rebuilt from the windows that exist so far.
++  func testSavingResumesOnlyWhenEveryWindowHasFinished() {
++    let first = UUID()
++    let second = UUID()
++    let store = makeProjectStore(windows: [window(key: first), window(key: second)])
++    let coordinator = store.sessionCoordinator
++
++    _ = store.claimSession(for: UUID(), isLaunchWindow: true)
++    XCTAssertTrue(coordinator.isSuspended)
++    _ = store.pendingSessionKeys()
++    _ = store.claimSession(for: second, isLaunchWindow: false)
++
++    store.finishSessionRestore()
++    XCTAssertTrue(coordinator.isSuspended, "one window is still restoring")
++
++    store.finishSessionRestore()
++    XCTAssertFalse(coordinator.isSuspended)
++  }
++
++  /// A dispatched window that never opens must not leave saving suspended for the rest of the run —
++  /// the app would silently stop persisting anything.
++  func testSavingStaysSuspendedWhileAWindowIsStillAwaited() {
++    let first = UUID()
++    let second = UUID()
++    let store = makeProjectStore(windows: [window(key: first), window(key: second)])
++
++    _ = store.claimSession(for: UUID(), isLaunchWindow: true)
++    _ = store.pendingSessionKeys()
++
++    // The launch window finishes, but window two was dispatched and has not claimed.
++    store.finishSessionRestore()
++    XCTAssertTrue(
++      store.sessionCoordinator.isSuspended,
++      "still awaiting a dispatched window — the watchdog is what releases this")
++  }
++
++  /// Every window claimed, so nothing is awaited and saving resumes immediately.
++  func testSingleWindowSessionResumesAfterItsOwnRestore() {
++    let store = makeProjectStore(windows: [window(key: UUID())])
++    _ = store.claimSession(for: UUID(), isLaunchWindow: true)
++    XCTAssertTrue(store.pendingSessionKeys().isEmpty)
++    store.finishSessionRestore()
++    XCTAssertFalse(store.sessionCoordinator.isSuspended)
++  }
++
++  // MARK: What's New
++
++  /// Sibling windows carry `restore: true` so they can claim, so gating the What's-New auto-check on
++  /// that would pop the dialog once per restored window. `isLaunch` is what separates them.
++  func testOnlyTheLaunchSeedIsMarkedAsTheLaunchWindow() {
++    XCTAssertTrue(WindowSeed.launch.isLaunch)
++    XCTAssertTrue(WindowSeed.launch.restore)
++
++    let sibling = WindowSeed.restoring(key: UUID())
++    XCTAssertFalse(sibling.isLaunch, "a restored sibling must not run the What's-New check")
++    XCTAssertTrue(sibling.restore, "but it must still be allowed to claim its session")
++
++    let newWindow = WindowSeed(id: UUID(), restore: false)
++    XCTAssertFalse(newWindow.isLaunch)
++    XCTAssertFalse(newWindow.restore, "⌘N always opens blank")
++  }
++
++  /// A sibling is opened keyed on the session it will claim, so the two cannot drift apart.
++  func testRestoringSeedCarriesTheSessionKey() {
++    let key = UUID()
++    XCTAssertEqual(WindowSeed.restoring(key: key).id, key)
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppUITests/SessionRestoreUITests.swift ===
+@@ -114,6 +114,32 @@ final class SessionRestoreUITests: XCTestCase {
+     assertCount(tabs(relaunched), reaches: 3)
+   }
+ 
++  // MARK: Multi-window
++
++  /// Every window that was open at quit comes back. This is the one assertion that covers the whole
++  /// multi-window chain end to end — claiming by key, the sibling fan-out, and the save gate that
++  /// stops the launch window overwriting the file before its siblings exist.
++  func testEveryWindowSurvivesRelaunch() throws {
++    let app = launchedApp()
++    waitForFirstPane(app)
++    XCTAssertEqual(app.windows.count, 1)
++
++    app.typeKey("n", modifierFlags: .command)
++    let twoWindows = XCTNSPredicateExpectation(
++      predicate: NSPredicate(format: "count == 2"), object: app.windows)
++    XCTAssertEqual(
++      XCTWaiter().wait(for: [twoWindows], timeout: 8), .completed, "⌘N should open a second window")
++    quitAndWaitForSave(app)
++
++    let relaunched = launchedApp()
++    XCTAssertTrue(relaunched.wait(for: .runningForeground, timeout: 10))
++    let bothBack = XCTNSPredicateExpectation(
++      predicate: NSPredicate(format: "count == 2"), object: relaunched.windows)
++    XCTAssertEqual(
++      XCTWaiter().wait(for: [bothBack], timeout: 12), .completed,
++      "both windows should be reopened from the saved session")
++  }
++
+   // MARK: Degradation
+ 
+   /// Corrupt input on the launch path must never cost more than the restore itself.
+
+
+Investigate per the method in your instructions, then return the findings list.
