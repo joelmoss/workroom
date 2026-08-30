@@ -1,0 +1,1 @@
+in terminal footer, only open agent usage on click - not hover
