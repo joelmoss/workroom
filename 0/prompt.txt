@@ -1,0 +1,1 @@
+<bash-input>rm -rf .claude/skills/curate-release</bash-input>
