@@ -1,0 +1,1 @@
+in the footer (not popover) put pace percentages in parenthesis. [Image #3] the pace marker should be clear, especially when in deficit. a bit like this [Image #4]. in footer, when in deficit, only highlight deficit  number
