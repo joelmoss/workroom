@@ -1,0 +1,109 @@
+<task-notification>
+<task-id>a7e1900da8ce6b06c</task-id>
+<tool-use-id>toolu_015nUrHh6RoyWTousFQuj9gQ</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/6b6da5a6-5d6f-49ea-8b2a-a61c143807d7/tasks/a7e1900da8ce6b06c.output</output-file>
+<status>completed</status>
+<summary>Agent "Scope stale-workspace repair button wiring" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>Now I have all the pieces. Here is the report.
+
+## 1. `VCSWriting` protocol and `CLIVCSWriter` template
+
+`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/VCSWriting.swift:227-260` — the full protocol:
+
+```swift
+protocol VCSWriting: Sendable {
+  func remoteState(path: String, projectRoot: String) async -&gt; VCSRemoteResolution
+  func fetch(path: String, projectRoot: String, remote: String) async -&gt; VCSRemoteActionResult
+  func push(path: String, projectRoot: String, current: VCSRef, remote: String, setUpstream: Bool,
+    anonymousRevision: String) async -&gt; VCSRemoteActionResult
+  func pullRebase(path: String, projectRoot: String, current: VCSRef, remote: String,
+    tracking: VCSTracking?) async -&gt; VCSRemoteActionResult
+  func abortRebase(path: String, projectRoot: String) async -&gt; VCSRemoteActionResult
+  func commit(path: String, projectRoot: String, request: VCSCommitRequest) async -&gt; VCSCommitResult
+  func stagedContentAtRisk(path: String, files: [ChangedFile]) async -&gt; [String]
+}
+```
+
+Simplest template, `abortRebase` (VCSWriting.swift:1679-1708) — single-command op, no network:
+
+```swift
+func abortRebase(path: String, projectRoot: String) async -&gt; VCSRemoteActionResult {
+  if vcs == "jj", !Self.rebaseInProgress(gitDir: Self.worktreeGitDir(at: path)) {
+    return .ok(summary: "Nothing to abort")
+  }
+  let dir = Self.opDirectory(.abortRebase, path: path, projectRoot: projectRoot)
+  guard let result = await gated(projectRoot, { [self] in
+      await runner.run("git", Self.gitAbortRebaseArgs(), in: dir, timeout: refTimeout)
+    })
+  else { return .failed(.other("abort was cancelled")) }
+  if let failure = Self.classify(result, action: .abortRebase, tool: "git") { return .failed(failure) }
+  return .ok(summary: "Rebase aborted")
+}
+```
+
+**No `updateStale`/`workspace update-stale` op exists.** `TODOS.md:1431-1447` ("Offer to repair a stale jj working copy from the app") explicitly scopes this as unbuilt: "Deliberately not done with the read work: recovering a working copy is a **write**... jj-lib exposes `Workspace::recover`/`RecoverWorkspaceError` for it." A companion entry (`TODOS.md:944-967`) adds: "The repair is itself a write, so it belongs on `VCSWriting`." Note this hints the intended repair path may be jj-lib's native `Workspace::recover` via the `WrVcs` Rust bridge rather than shelling `jj workspace update-stale` — worth deciding before choosing CLI vs. native.
+
+## 2. Current `ChangesPanel.swift:915` and neighboring cases
+
+`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/ChangesPanel.swift:909-917`:
+
+```swift
+private func failureText(_ f: VCSStatusFailure) -&gt; String {
+  switch f {
+  case .missingPath: return "Directory not found."
+  case .notRepository: return "Not a repository."
+  case .timeout: return "Status unavailable (timed out)."
+  case .busy: return "Repository is busy — another VCS command is running."
+  case .staleWorkingCopy: return "Working copy is out of date. Run `jj workspace update-stale`."
+  }
+}
+```
+
+Its only call site is `gitContent` (ChangesPanel.swift:778-789): `inspectorMessage(failureText(failure))` — a bare `Text` via `inspectorMessage(_:)`. **No case here has a repair button; all five failures render as plain text.** There is no neighboring wired button/dismiss/refresh pattern to copy from within this switch — you'd be adding the first one.
+
+## 3. `RemoteStateModel`'s retry pattern — reusable, but a separate model/path
+
+`RemoteStateModel.swift:161-166`: `retryRead()` is the toolbar's "Try Again" — re-issues the **read**, not a repair action:
+```swift
+func retryRead() {
+  guard target != nil else { return }
+  load(skipDebounce: true)
+}
+```
+This model backs `VCSToolbar` (branch/ahead-behind/fetch-push-pull), keyed on `RemoteStateModel.Target` and reached via `AppStore.remoteTarget()`/`performRemoteAction`/`runRemoteAction` (AppStore.swift:742-768). It is **entirely separate** from `ChangesPanel`'s stale-copy rendering: that panel reads `store.workroomStatuses[sid]?.failure` (a `VCSStatusFailure` from `WorkroomStatusResolver`), not `RemoteStateModel.readFailure`/`lastFailure` (a `VCSRemoteFailure`). They're different enums, different resolvers, different models. `RemoteStateModel.perform` (RemoteStateModel.swift:303-368) is the write-dispatch pattern to mirror for a repair button — it constructs a writer per-call:
+```swift
+let root = URL(fileURLWithPath: target.path, isDirectory: true)
+let writer = try makeWriter(root)
+switch action {
+  ...
+  case .abortRebase:
+    result = await writer.abortRebase(path: target.path, projectRoot: target.projectRoot)
+}
+```
+but `.staleWorkingCopy` isn't one of its `VCSRemoteAction` cases (`fetch/push/pull/abortRebase`), so reusing this model directly would require adding a new action case there — or, more simply, ChangesPanel's button can call `VCS.writer(for:)` directly and trigger `store`'s existing status refresh, bypassing `RemoteStateModel` altogether (see §5).
+
+## 4. Test template for a `VCSWriting` op
+
+`/Users/joelmoss/dev/workroom/macapp/WorkroomAppTests/VCSWritingTests.swift` is the file (class `VCSWritingTests`). It tests the **static, pure surface** only — no process spawning. Best templates for a new `updateStaleWorkspace` op:
+- Placement: `testEveryActionExceptFetchRunsInTheWorkroom` (lines 31-37) — pattern for testing `opDirectory` if you extend it.
+- Arg builder: `testJJRebaseMovesTheBranchNotJustTheWorkingCopy` (lines 250-254) — asserts exact argv shape, e.g. you'd add `CLIVCSWriter.jjUpdateStaleArgs()` and assert `["workspace", "update-stale"] + jjWriteFlags`.
+- Classification: `testJJPermanentRefusalsAreClassified` (lines 160-181) — builds a `CommandResult` with jj stderr and asserts `CLIVCSWriter.classify(...)` returns the right failure case.
+
+## 5. `VCS.writer(for:)` requirements
+
+`VCSWriting.swift:271-284`:
+```swift
+static func writer(for root: URL, runner: StatusCommandRunning = StatusCommandRunner(),
+  makeProvider: @escaping @Sendable (URL) throws -&gt; VCSProviding = { try VCS.provider(for: $0) },
+  gate: JJSnapshotGate = .shared) throws -&gt; VCSWriting
+```
+It needs only a `URL` (the **project root**, per `repoKind(at:)` routing) — everything else defaults. From a SwiftUI button in `ChangesPanel`, the pattern used everywhere else (`RemoteStateModel.load`/`perform`) is:
+```swift
+let root = URL(fileURLWithPath: target.projectRoot, isDirectory: true)
+let writer = try VCS.writer(for: root)
+let result = await writer.updateStaleWorkspace(path: target.path, projectRoot: target.projectRoot)
+```
+Both `path` (the workroom) and `projectRoot` are needed at the call site (per the `opDirectory` doc, VCSWriting.swift:345-373) even though only `projectRoot` builds the writer — `store.target(for: sid)` / `store.remoteTarget()` (AppStore.swift:455-475) is the existing accessor pattern for resolving both from a `SidebarID`. After success you'd call `store`'s existing status-refresh path (`AppStore+WorkroomStatus.swift`) to redraw the panel out of the failure state — mirroring `RemoteStateModel.perform`'s `onDidMutate` callback pattern rather than dismissing a sheet (there's no dialog here — it's inline in the panel).</result>
+<usage><subagent_tokens>112404</subagent_tokens><tool_uses>24</tool_uses><duration_ms>106131</duration_ms></usage>
+</task-notification>
