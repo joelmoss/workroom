@@ -1,0 +1,1 @@
+add vertical dividers between items in terminal footer
