@@ -1,0 +1,116 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/GhosttySurfaceView.swift
+  - macapp/WorkroomAppUITests/AgentResumeUITests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/GhosttySurfaceView.swift ===
+@@ -985,12 +985,38 @@ final class GhosttySurfaceView: NSView {
+   /// Callers must confirm the pane is pristine first (`AgentResumeCoordinator.paneReceivedInput`),
+   /// since appending to a half-typed line would run something else entirely.
+   ///
+-  /// The submit byte is `\r`, the same thing Return puts on the wire. If a libghostty version ever
+-  /// filters control bytes out of the text path this is where it would show up — as a command typed
+-  /// but not run — and the fix is to send Return through `ghostty_surface_key` instead.
++  /// **Return goes through the KEY path, not the text path — measured, not assumed.** Appending
++  /// `"\r"` to `ghostty_surface_text` does not submit: the engine drops the control byte, and
++  /// `AgentResumeUITests` caught it with the command sitting on the prompt, typed and never run:
++  ///
++  /// ```
++  ///   ❯ claude --resume
++  /// ```
++  ///
++  /// `ghostty_surface_text` is the *text input* path (it also backs `NSTextInputClient.insertText`),
++  /// so a control byte there is not a keystroke. Return has to arrive as one.
+   func sendCommandLine(_ commandLine: String) {
+     guard surface != nil, !commandLine.isEmpty else { return }
+-    sendText(commandLine + "\r")
++    sendText(commandLine)
++    sendReturn()
++  }
++
++  /// Press Return, exactly as `keyDown` would forward it.
++  ///
++  /// `keycode` is the **native macOS virtual keycode** — libghostty does the mapping — so this is
++  /// `kVK_Return`, not `GHOSTTY_KEY_ENTER`. Only the press is sent, matching `keyDown`, which never
++  /// forwards a release either.
++  private func sendReturn() {
++    guard let surface else { return }
++    var keyEvent = ghostty_input_key_s()
++    keyEvent.action = GHOSTTY_ACTION_PRESS
++    keyEvent.keycode = 0x24  // kVK_Return
++    keyEvent.mods = GHOSTTY_MODS_NONE
++    keyEvent.consumed_mods = GHOSTTY_MODS_NONE
++    keyEvent.composing = false
++    keyEvent.text = nil
++    keyEvent.unshifted_codepoint = 0x0D
++    _ = ghostty_surface_key(surface, keyEvent)
+   }
+ 
+   /// **Fixture-only.** Expose the visible screen text to the accessibility tree so an XCUITest can
+
+
+=== DIFF: macapp/WorkroomAppUITests/AgentResumeUITests.swift ===
+@@ -62,8 +62,10 @@ final class AgentResumeUITests: XCTestCase {
+   private func paneCwd(_ app: XCUIApplication) -> String {
+     let segment = app.descendants(matching: .any)
+       .matching(identifier: "terminal.statusBar.cwd").firstMatch
++    // Generous: the cwd only appears once the shell has reported it via OSC 7, and the FIRST launch
++    // of a run pays for the app's cold start on top of that.
+     XCTAssertTrue(
+-      segment.waitForExistence(timeout: 25),
++      segment.waitForExistence(timeout: 60),
+       "the pane's status bar should report a cwd once the shell reports one")
+     let prefix = "Working directory "
+     XCTAssertTrue(segment.label.hasPrefix(prefix), "unexpected cwd label: \(segment.label)")
+@@ -210,18 +212,34 @@ final class AgentResumeUITests: XCTestCase {
+       .firstMatch
+     XCTAssertTrue(surface.waitForExistence(timeout: 10))
+ 
+-    let submitted = NSPredicate { element, _ in
+-      guard let text = (element as? XCUIElement)?.value as? String,
+-        let range = text.range(of: "claude --resume")
+-      else { return false }
+-      // Something after the command line means Return was delivered. Without it the command is the
+-      // last thing on the screen, sitting on an unsubmitted input line.
+-      return text[range.upperBound...].contains("\n")
++    // Submitted means the shell moved PAST the line the command was typed on — so there is
++    // non-whitespace content after it, whether that is the agent's own UI or a `command not found`
++    // from a machine with no `claude` installed. Typed-but-not-submitted is the case that leaves the
++    // command sitting alone at the end of the prompt line.
++    //
++    // Polled by hand rather than through `XCTNSPredicateExpectation`: that re-evaluates against a
++    // cached element snapshot and never observed the surface's value changing here, which cost a
++    // debugging round trip on a test whose subject was already working.
++    var screen = ""
++    let deadline = Date().addingTimeInterval(30)
++    var submitted = false
++    while Date() < deadline, !submitted {
++      screen = (surface.value as? String) ?? ""
++      if let range = screen.range(of: "claude --resume") {
++        submitted = !screen[range.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
++          .isEmpty
++      }
++      if !submitted { usleep(250_000) }
+     }
+-    XCTAssertEqual(
+-      XCTWaiter().wait(
+-        for: [XCTNSPredicateExpectation(predicate: submitted, object: surface)], timeout: 20),
+-      .completed, "the resume command should have been typed AND submitted")
++
++    XCTAssertTrue(
++      submitted,
++      """
++      the command should have been typed AND submitted, but nothing followed it on screen — \
++      libghostty drops `\\r` from the TEXT path, so Return must go through `ghostty_surface_key`. \
++      Screen was:
++      \(screen)
++      """)
+ 
+     // Spent: `consume` removes the offer before returning the command, so a second click cannot
+     // start a second (billed) agent session.
+
+
+Investigate per the method in your instructions, then return the findings list.
