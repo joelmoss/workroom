@@ -1,0 +1,52 @@
+<task-notification>
+<task-id>a9e05bfec2c8f6b26</task-id>
+<tool-use-id>toolu_01NGNoKQRbL2VhQVF84LoRsd</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/85057c1d-7a50-422d-a310-af45bba739d0/tasks/a9e05bfec2c8f6b26.output</output-file>
+<status>completed</status>
+<summary>Agent "Review wire protocol layer code" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Review: macapp/WorkroomSessionProtocol (commit b28e9134)
+
+Read all 8 files in full. Traced the framing, ring buffer, and message decode paths by hand (bounds checks, `reserveCapacity` guards, ring-buffer wraparound math, alt-screen state machine) against concrete byte sequences. Also followed the call sites in `macapp/WorkroomSession/` to see how these types are actually driven, since a bug in an isolated protocol type is only real if a caller can trigger it.
+
+**Finding 1**
+
+`[CRITICAL] (confidence: 7/10)` `macapp/WorkroomSessionProtocol/SessionFrame.swift:32-38` — attach requests carrying the caller's full process environment are encoded with no cap against the wire's own 1MB frame limit, so an oversized environment produces a confusing daemon-unreachable error instead of a clear "payload too large."
+
+```swift
+public func encoded() -&gt; [UInt8] {
+    var writer = SessionByteWriter()
+    writer.writeUInt8(kind.rawValue)
+    writer.writeUInt32(UInt32(payload.count))
+    writer.writeRaw(payload)
+    return writer.bytes
+  }
+```
+
+versus the receiver's hard cap:
+
+```swift
+guard length &lt;= SessionFrame.maximumPayloadSize else {
+      failed = true
+      throw SessionProtocolError.frameTooLarge(length)
+    }
+```
+
+Traced end to end: `SessionAttachClient.makeRequest` (`macapp/WorkroomSession/SessionAttachClient.swift:219-230`) builds `SessionAttachRequest.environment` from `SessionProcessEnvironment.current()` — the *entire* OS `environ` of the `workroom-session attach` process, which `GhosttySurfaceView.applyPersistentSession` (`macapp/WorkroomApp/Core/GhosttySurfaceView.swift:397-418`) launches with the full interactive-shell-enriched environment (per `macapp/CLAUDE.md`'s `ShellEnvironment` probe: `.zshrc` exports, tool shims, exported bash functions, etc.). `SessionAttachClient.attach()` (line 92) calls `connection.enqueue(SessionFrame(kind: .attach, payload: makeRequest(configuration).encoded()))` with no size check anywhere in `SessionConnection.enqueue` either.
+
+If the encoded payload exceeds `SessionFrame.maximumPayloadSize` (1&lt;&lt;20), the daemon's decoder throws `frameTooLarge`, and `SessionDaemon.swift:190-198` catches it, logs `"dropping connection with a malformed frame"` to its own (invisible, detached) stderr, and closes the connection *before ever replying*. Back on the client, `SessionAttachClient.receive()` sees EOF with nothing decoded, returns `.retry` (`transportOutcome(isAttached: false)`), and `run()` retries the *same* oversized request `handshakeAttempts` (3) times before giving up with `report("could not reach the session daemon")` — a message that misattributes the failure to the daemon being down rather than the payload being too large. Net effect for the user: that terminal silently never persists across quit, with a misleading diagnostic and no indication of the real cause (an oversized shell environment).
+
+Real-world likelihood of actually clearing 1MB is the soft part of this — typical environments are KBs, but exported bash functions (`asdf`, `direnv`, `nvm` hooks) or a bloated `PATH`/`MANPATH` can genuinely bulk up `environ`; this isn't purely theoretical, and either way the encode/decode contract has zero symmetry (decode enforces the cap, encode doesn't), which is the actual defect independent of exact trigger frequency.
+
+Fix: validate/clamp in `SessionFrame.init`/`encoded()` (or at `SessionAttachClient.makeRequest`) so an oversized attach payload fails loudly and specifically at the source, rather than silently degrading into three doomed retries with a wrong error message.
+
+**Everything else checked and ruled out** (no report, per the confidence floor):
+- `SessionFrame`/`SessionByteReader`: header math, big-endian encode/decode symmetry, `requireRemaining` bounds, and the `readEntries`/`SessionDescriptor.decodeList` pre-`reserveCapacity` bound checks are all correct and prevent OOM/DoS from a peer-supplied count or length.
+- `SessionReplayBuffer`: true fixed-capacity ring buffer (not unbounded); manually traced `appendForReplay` against the alt-screen enter/leave test case byte-by-byte — eviction, tail-carry, and `removeAll()` semantics are correct and match the (tested) documented behavior of dropping scrollback during full-screen programs.
+- `SessionMessages.swift`: no force-unwraps; all decode paths propagate `SessionProtocolError` on truncation; Swift's guaranteed left-to-right argument evaluation makes the multi-`try` initializer calls safe.
+- `SessionIdentifier`: backed by `UUID()` (122-bit random), `Hashable`/`Equatable` over the full 16 bytes — no truncation/collision path. Noting an unverified assumption carried from the threat model: this only matters if the Unix socket isn't otherwise filesystem-permission-scoped; that's outside these 8 files (`PersistentSessionPaths.swift`) and I did not check it.
+- `SessionWindowSizePolicy`/`SessionShellIntegration`: verified callers (`SessionDaemon.swift`, `SessionAttachClient.swift`) always gate on `isUsable` before trusting `attachSize`'s `(0,0)` sentinel; the bash `--posix` branch is correct (matches Ghostty's actual `$ENV`-sourcing mechanism for non-login interactive bash), not backwards as it first appears.
+
+No force-unwraps, `try!`, or unchecked subscripts found anywhere in the 8 files (`grep` came back empty).</result>
+<usage><subagent_tokens>119676</subagent_tokens><tool_uses>30</tool_uses><duration_ms>605525</duration_ms></usage>
+</task-notification>
