@@ -1,0 +1,34 @@
+<task-notification>
+<task-id>ac573e6ddd86bc862</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/9fbed976-fffa-441d-b5b7-af5788f240e9/tasks/ac573e6ddd86bc862.output</output-file>
+<status>completed</status>
+<summary>Agent "Summarize upstream ghostty core changes" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Summary
+
+Compared `include/ghostty.h` (the C ABI header) byte-for-byte between the two pins by fetching both revisions directly from GitHub, then traced the surrounding commits/PRs via GitHub's commit search and `list_commits` on `src/apprt/embedded.zig` and `src/Surface.zig` for the window 2026-03-13 → 2026-07-10 (the new pin's actual commit date — note it's a dependabot bump, so the vendored source is from 2026-07-10, not the 2026-07-27 wrapper-release date). No `v1.3.2`/`v1.4.0` tag exists yet; `35e1a016` is untagged, so there's no ready-made changelog — this is a direct header diff + targeted commit search.
+
+**BREAKING CHANGES (C ABI)**
+- `ghostty_app_key_is_binding()` was **removed**. Keybinding checks moved to config level as `ghostty_config_key_is_binding(ghostty_config_t, ghostty_input_key_s)`. (commit `7c91cef2` / PR #12415, 2026-04-24). Code calling the old function fails to link. `ghostty_surface_key_is_binding` (surface-level) is unchanged.
+- `translated` field **removed** from the `ghostty_input_trigger_u` union (only `physical`/`unicode`/`catch_all` remain). (commit `9717530` / PR #12490, 2026-04-27). Any Swift code reading `.translated` fails to compile.
+
+**Other functional changes worth knowing**
+- `GHOSTTY_API` visibility macro added to every exported symbol (dllexport/visibility control) — no behavior change on macOS static linking.
+- New `ghostty_surface_foreground_pid()` / `ghostty_surface_tty_name()` expose the surface's foreground PID and slave PTY name — useful for process-to-terminal mapping. (PR #11639, 2026-03-20)
+- New payload-less `GHOSTTY_ACTION_SELECTION_CHANGED` fires whenever the terminal selection changes; read it via the existing selection API instead of polling — useful for accessibility/copy-button state. (commit `c4e1ab88`, 2026-06-02)
+- New `GHOSTTY_IPC_ACTION_TOGGLE_QUICK_TERMINAL` IPC enum value. (commit `81af6576`, 2026-05-12)
+- **Bug fix**: `ghostty_surface_free_text` never actually freed memory — the header declared `(surface_t, text_s*)` but the Zig impl only took `*Text`, so the surface pointer was misread as the text pointer. Now fixed; directly affects anyone using `ghostty_surface_read_text`/`read_selection` + `free_text`. (commit `4803d58b`, fixes #12020, 2026-03-31)
+- **Crash fix**: `mouseButtonCallback` called `processLinks` without the renderer mutex, racing the I/O thread's scrollback pruning → use-after-free segfault while selecting text. (PR #12463, 2026-04-25)
+- Internal selection/mouse-gesture code was rewritten (`SelectionGesture`) — same public surface, but drag/click-threshold edge cases may differ subtly. (May 2026)
+- OSC 133 `click_events=2`: shell-integration-aware programs can request click coordinates relative to the prompt row. (PR #12953, 2026-06-08)
+- Scrollback storage reworked for page compression — transparent to callers, perf within 2%. (commit `421fe8da`, 2026-07-09)
+
+**Checked, no changes found in this window**
+- DECSET 1004 focus reporting — last touched 2024-08, untouched here.
+- `ghostty_surface_read_text`/`read_selection`/`ghostty_text_s`/`ghostty_selection_s` struct layouts — unchanged (only cosmetic `GHOSTTY_API` prefix).
+- OSC 9;4 progress-report API expansion (PR #13483, "Expose additional events: desktop and progress") — merged 2026-07-27, **three weeks after** the new pin's commit date (2026-07-10), so it is **not** included in this upgrade.
+
+Working files: `/private/tmp/claude-501/-Users-joelmoss-dev-workroom/9fbed976-fffa-441d-b5b7-af5788f240e9/scratchpad/ghostty/{old_ghostty.h,new_ghostty.h}` (full header diff, 334 lines).</result>
+<usage><subagent_tokens>122527</subagent_tokens><tool_uses>26</tool_uses><duration_ms>279915</duration_ms></usage>
+</task-notification>
