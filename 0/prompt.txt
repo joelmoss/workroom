@@ -1,0 +1,41 @@
+<task-notification>
+<task-id>ae2f9bd462c51dfaf</task-id>
+<tool-use-id>toolu_01Kqygq7eNPZZydsnrY3YVnn</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/57566db5-3bda-4573-8893-9268aa73d220/tasks/ae2f9bd462c51dfaf.output</output-file>
+<status>completed</status>
+<summary>Agent "Find window-bottom spacing source in macapp" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Findings
+
+**The task's framing undercounts the chain by one layer.** There are three padding sites between the window's bottom edge and the terminal status bar in the default (single workroom, single terminal, no splits) case — not two. `WorkroomTerminalsView` always routes even a solo terminal through `PaneTreeView` (its own comment: "a solo terminal is just a single-leaf layout"), and `PaneLeafView` pads *every* pane, solo included, with its own comment: "A uniform pad on EVERY pane (solo or split) ... a solo pane keeps the same pad."
+
+### Full vertical chain (window bottom → status bar), file:line
+
+| # | Site | Old → New | Role |
+|---|------|-----------|------|
+| — | `RootView.swift` `splitView`/`detail` (533-559), `rootWindowChrome` (393-419) | none | No bottom padding/safeAreaInset anywhere on this path (checked; only unrelated ones are `ProjectSidebar.swift:116` inside the sidebar and `ActivityBar.swift:90` in the separate activity-bar column) |
+| — | `WorkroomSplitView.swift:110` `.padding(.horizontal, Self.outerGutter)` | 6→3 | Horizontal-only, contributes **nothing** to the bottom margin |
+| 1 | `WorkroomSplitView.swift:261` `.padding(WorkroomPaneMetrics.gutter)` on `WorkroomPaneLeaf` | **4→2** | Uniform 4-side pad, outermost boundary of the card. Shared with `SidebarColumn.swift:46` / `InspectorColumn.swift:39` `topMargin`/`bottomMargin` — that's a documented cross-column alignment invariant (see `SidebarColumn.swift:41-44`: sidebar/pane/inspector must "start and end on the SAME lines"). Also the inter-pane split gutter. |
+| 2 | `WorkroomTerminalsView.swift:68` `.padding(.bottom, 1)` | **2→1** | Card-internal only — inset between the terminal/status-bar content and the card's own fill/border. No inter-pane role, invisible outside the card. |
+| 3 | `PaneTreeView.swift:437` `.padding(1)` on `PaneLeafView` | **2→1** | Applied to every pane incl. solo. Also the terminal-*split* inter-pane gutter (paired with `dividerThickness`, `TerminalSessions.swift:452`, 4→2). |
+| — | `TerminalStatusBar.swift:91,95` `.padding(.horizontal, 10)` / `.frame(height: 28)` | unchanged | Last element; contributes nothing below it |
+
+**Total: 4+2+2 = 8pt → 2+1+1 = 4pt.** All three of the edits made so far contributed — the change is a uniform halving of every spacing constant in the file set (`gutter`, `outerGutter`, the two `WorkroomTerminalsView` paddings, `PaneLeafView`'s pad, and `dividerThickness`), and three of those five values happen to stack on the bottom-of-window axis.
+
+### Why `gutter` can't just be reverted for the pane alone
+
+`WorkroomPaneMetrics.gutter` is deliberately one shared constant across `WorkroomSplitView.swift:261`, `SidebarColumn.swift:46`, and `InspectorColumn.swift:39` specifically so the three side-by-side columns' top/bottom edges line up — `SidebarColumn.swift:41-44` documents a real, previously-fixed misalignment bug from exactly this kind of drift. The current uncommitted diff doesn't break that invariant (it shrank the one shared constant, so all three columns moved together, still aligned) — but it means the pane's bottom margin can't be nudged back up without either reverting `gutter` everywhere (undoing the inter-pane/split-gutter tightening too) or adding the extra margin in a place that also touches Sidebar/Inspector.
+
+`WorkroomTerminalsView.swift:68` and `PaneTreeView.swift:437`, by contrast, are dual-purpose only at their own nesting level (terminal-split gutter for #437; nothing for #68) — #68 has zero inter-pane role and is freely revertible with no side effects.
+
+## Recommendation
+
+Don't revert any of the three values — that would re-widen the inter-pane/terminal-split gutters the edits were made for. Instead, add a new window-edge-only bottom margin **outside** `WorkroomSplitView`'s `GeometryReader`, mirroring how `outerGutter` already isolates its horizontal margin from the interior layout:
+
+- `WorkroomSplitView.swift:110`: change `.padding(.horizontal, Self.outerGutter)` to also add `.padding(.bottom, WorkroomPaneMetrics.windowBottomMargin)` (new constant, value `4`). Padding applied outside the `GeometryReader` only shrinks the space `PaneTreeLayout.plan` lays leaves out in — it insets the *outer* boundary of the whole layout (solo or split) without touching the interior divider gaps that come from each leaf's own `gutter`/`.padding(1)`. So this restores the bottom margin without re-widening any inter-pane gutter.
+- Mirror the same constant into `SidebarColumn.swift:46` and `InspectorColumn.swift:39`: `bottomMargin: WorkroomPaneMetrics.gutter + WorkroomPaneMetrics.windowBottomMargin`. Without this mirror, the pane card's bottom edge would sit higher than the sidebar/inspector's (still just `gutter`), reintroducing the exact misalignment `SidebarColumn.swift:41-44` describes fixing.
+- With `windowBottomMargin = 4`: total = `gutter(2) + WorkroomTerminalsView pad(1) + PaneLeafView pad(1) + 4 = 8`, matching the original.
+
+This is bottom-only by design, per what was actually reported — `gutter` shrank the *top* margin (under the title bar) identically, but that wasn't flagged, so leave it alone. Applying this fix will make each pane card's own top/bottom margins asymmetric (2pt top vs 8pt-equivalent bottom) and same for Sidebar/Inspector top vs bottom — a new asymmetry that didn't exist before, worth flagging to the user/reviewer even though it's out of this task's scope to resolve.</result>
+<usage><subagent_tokens>140038</subagent_tokens><tool_uses>22</tool_uses><duration_ms>493748</duration_ms></usage>
+</task-notification>
