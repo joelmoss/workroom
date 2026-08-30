@@ -1,0 +1,927 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/QuickSwitcherController.swift
+  - macapp/WorkroomApp/Core/SwitcherPanel.swift
+  - macapp/WorkroomApp/Core/SwitcherRailLayout.swift
+  - macapp/WorkroomApp/Core/ThemeTokens.swift
+  - macapp/WorkroomApp/Core/UITestFixture.swift
+  - macapp/WorkroomApp/Core/WindowRegistry.swift
+  - macapp/WorkroomApp/Views/SwitcherRailView.swift
+  - macapp/WorkroomApp/WorkroomApp.swift
+  - macapp/WorkroomAppTests/SwitcherPanelTests.swift
+  - macapp/WorkroomAppTests/SwitcherRailLayoutTests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/QuickSwitcherController.swift ===
+@@ -116,6 +116,9 @@ final class QuickSwitcherController {
+     installObservers()
+     startTimers(self)
+     apply(effect)
++    // A held modifier is not drivable by synthetic input (see `switcherRevealsImmediately`), so under
++    // the fixture flag skip straight to the revealed state.
++    if UITestFixture.switcherRevealsImmediately { revealTimerFired() }
+     return true
+   }
+ 
+@@ -169,6 +172,10 @@ final class QuickSwitcherController {
+   /// One 30 ms tick. The only thing that ends a held session normally.
+   func poll() {
+     guard isLive else { return }
++    // Under the reveal fixture flag the "hold" is a synthetic tap, so the modifier is already up by
++    // the time the first tick lands and the rail would vanish before anything could look at it. The
++    // session then ends on Escape or a click, which is what those tests drive.
++    guard !UITestFixture.switcherRevealsImmediately else { return }
+     guard !flagsProvider().contains(triggerFlags) else { return }
+     apply(reducer.handle(.modifierReleased))
+   }
+
+
+=== DIFF: macapp/WorkroomApp/Core/SwitcherPanel.swift ===
+@@ -0,0 +1,97 @@
++import AppKit
++import SwiftUI
++
++/// The quick-switcher rail's window (issue #132, T11) — the app's first `NSPanel`.
++///
++/// `QuickTerminalWindow` is **not** a precedent for this: it's a plain `.titled NSWindow` that
++/// deliberately *does* become key. This one must never take key focus, because the whole gesture
++/// depends on the workroom window keeping it — the `AppDelegate` monitor resolves its store from the
++/// key window, and release detection ends the session, not a focus change.
++final class SwitcherPanel: NSPanel {
++  /// Load-bearing. Key focus must stay with the workroom window or the monitor's store lookup misses
++  /// and ⌥Tab stops working the moment the rail appears.
++  override var canBecomeKey: Bool { false }
++  override var canBecomeMain: Bool { false }
++}
++
++/// Owns the panel and its hosting view, and hands the rail its data. Pre-creates the panel at launch:
++/// the first `NSHostingView` render costs real milliseconds, and paying that at the 250 ms reveal is
++/// exactly the wrong moment.
++@MainActor
++final class SwitcherPanelController {
++  static let shared = SwitcherPanelController()
++
++  private var panel: SwitcherPanel?
++  private let model = SwitcherRailModel()
++  private var themeObserver: NSObjectProtocol?
++
++  /// Build the panel and its hosting view, ordered out. Safe to call more than once.
++  func prepare() {
++    guard panel == nil else { return }
++    let panel = SwitcherPanel(
++      contentRect: NSRect(x: 0, y: 0, width: 600, height: 120),
++      styleMask: [.nonactivatingPanel, .borderless], backing: .buffered, defer: false)
++    panel.isFloatingPanel = true
++    panel.level = .floating
++    // `.canJoinAllSpaces` so a rail opened just before a Space switch doesn't strand; `.ignoresCycle`
++    // so ⌘` skips it (belt and braces — `isCycleableWindow` already requires `canBecomeKey`).
++    panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle, .transient]
++    // `isOpaque = false` is load-bearing and has a test. `NSWindow.occlusionState` counts only OPAQUE
++    // coverage, so a clear panel never flips it — give this an opaque background and every terminal
++    // surface behind the rail believes it is occluded and stops rendering.
++    panel.isOpaque = false
++    panel.backgroundColor = .clear
++    panel.hasShadow = false
++    panel.isReleasedWhenClosed = false
++    panel.isExcludedFromWindowsMenu = true
++    panel.animationBehavior = .none
++    panel.ignoresMouseEvents = false
++    panel.setAccessibilityIdentifier("switcher.panel")
++
++    let host = NSHostingView(rootView: SwitcherRailView(model: model))
++    host.translatesAutoresizingMaskIntoConstraints = false
++    panel.contentView = host
++    self.panel = panel
++  }
++
++  /// Wire the controller's rail seam to this panel, and the rail's input back to the controller.
++  /// Called once at launch.
++  func attach(to controller: QuickSwitcherController) {
++    controller.onReveal = { [weak self] items, cursor in self?.show(items: items, cursor: cursor) }
++    controller.onCursorMoved = { [weak self] index in self?.model.cursor = index }
++    controller.onEnd = { [weak self] in self?.hide() }
++    // Hover goes through the controller, not straight to the model: the D17 movement threshold lives
++    // there, so a card hovered because the panel opened under a stationary pointer is discarded.
++    model.onHover = { index in controller.point(index: index) }
++    model.onCommit = { index in controller.clickCommit(index: index) }
++    // A static view's `updateNSView` may never run, so the theme change has to be pushed (the same
++    // reason `QuickTerminalController` observes this rather than relying on invalidation).
++    themeObserver = NotificationCenter.default.addObserver(
++      forName: .themeDidChange, object: nil, queue: .main
++    ) { [weak self] _ in
++      MainActor.assumeIsolated { self?.model.themeVersion &+= 1 }
++    }
++  }
++
++  private func show(items: [QuickSwitcherController.Item], cursor: Int) {
++    prepare()
++    guard let panel else { return }
++    let cards = items.map(SwitcherCard.init(item:))
++    let screen = NSApp.keyWindow?.screen ?? NSScreen.main
++    let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
++    let width = SwitcherRailLayout.viewportWidth(visibleFrame: visible)
++    model.update(cards: cards, cursor: cursor, width: width)
++
++    let size = NSSize(
++      width: width, height: SwitcherRailLayout.cardHeight + SwitcherRailLayout.railPadding * 2)
++    let origin = SwitcherRailLayout.panelOrigin(
++      size: size, windowFrame: NSApp.keyWindow?.frame ?? visible, visibleFrame: visible)
++    panel.setFrame(NSRect(origin: origin, size: size), display: false)
++    // `orderFrontRegardless`, not `makeKeyAndOrderFront`: the workroom window keeps key focus.
++    panel.orderFrontRegardless()
++  }
++
++  private func hide() {
++    panel?.orderOut(nil)
++  }
++}
+
+
+=== DIFF: macapp/WorkroomApp/Core/SwitcherRailLayout.swift ===
+@@ -0,0 +1,132 @@
++import AppKit
++import SwiftUI
++
++/// The rail's geometry and colour decisions, kept pure so the parts that are easy to get *silently*
++/// wrong are unit-testable without a panel on screen (issue #132, T11 / design decisions D9, D14, D15).
++///
++/// Nothing here draws. `SwitcherRailView` reads these; `SwitcherPanel` reads `viewportWidth`.
++enum SwitcherRailLayout {
++
++  // MARK: Card geometry (D9)
++
++  /// The comfortable card width, used while the whole rail fits.
++  static let maxCardWidth: CGFloat = 200
++  /// The floor. **180, not 140**: with a fixed 72pt well plus padding and the gap, a 140pt card leaves
++  /// roughly 36pt of label column — every name becomes a fragment and the badge collides with it, so
++  /// the densest state would read the worst. At 180 the label keeps ~76pt (a readable name plus the
++  /// badge) and the row simply starts scrolling sooner.
++  static let minCardWidth: CGFloat = 180
++  static let cardHeight: CGFloat = 88
++  static let cardSpacing: CGFloat = 10
++  /// Inset from the rail's own edge to the first card.
++  static let railPadding: CGFloat = 14
++  /// The thumbnail well. Fixed at every card width — the label column absorbs all of the shrink.
++  static let wellSize = CGSize(width: 72, height: 56)
++
++  /// Card width for `count` items in `available` points: the comfortable width while everything fits,
++  /// shrinking no further than the floor. Past the floor the row scrolls instead (never a second row).
++  static func cardWidth(count: Int, available: CGFloat) -> CGFloat {
++    guard count > 0 else { return maxCardWidth }
++    let gaps = CGFloat(max(0, count - 1)) * cardSpacing
++    let perCard = (available - gaps - railPadding * 2) / CGFloat(count)
++    return min(maxCardWidth, max(minCardWidth, perCard))
++  }
++
++  /// Does `count` cards at `available` width overflow the single row? When true the rail scrolls and
++  /// draws its edge fades.
++  static func scrolls(count: Int, available: CGFloat) -> Bool {
++    contentWidth(count: count, cardWidth: cardWidth(count: count, available: available)) > available
++  }
++
++  static func contentWidth(count: Int, cardWidth: CGFloat) -> CGFloat {
++    guard count > 0 else { return 0 }
++    return CGFloat(count) * cardWidth + CGFloat(count - 1) * cardSpacing + railPadding * 2
++  }
++
++  // MARK: Viewport (D15)
++
++  /// Hard cap on the rail's own width, so a very wide display doesn't stretch it edge to edge.
++  static let maxViewportWidth: CGFloat = 1100
++  /// Clearance kept between the rail and the screen edge.
++  static let screenMargin: CGFloat = 24
++
++  /// The rail's width for a given screen: capped, and never wider than the usable frame.
++  static func viewportWidth(visibleFrame: CGRect) -> CGFloat {
++    min(maxViewportWidth, max(minCardWidth, visibleFrame.width - screenMargin * 2))
++  }
++
++  /// Where to place a `size` panel for a key window on a screen: centred on the **window**, then
++  /// pushed back inside `visibleFrame` if that overhangs. Centring on the window rather than the
++  /// screen is what keeps the rail where the user is looking with Stage Manager or an off-centre
++  /// window; the clamp is what keeps it on screen anyway.
++  static func panelOrigin(size: CGSize, windowFrame: CGRect, visibleFrame: CGRect) -> CGPoint {
++    let centred = CGPoint(
++      x: windowFrame.midX - size.width / 2, y: windowFrame.midY - size.height / 2)
++    let minX = visibleFrame.minX + screenMargin
++    let maxX = max(minX, visibleFrame.maxX - screenMargin - size.width)
++    let minY = visibleFrame.minY + screenMargin
++    let maxY = max(minY, visibleFrame.maxY - screenMargin - size.height)
++    return CGPoint(
++      x: min(max(centred.x, minX), maxX), y: min(max(centred.y, minY), maxY))
++  }
++
++  // MARK: Contrast floors (D14)
++
++  /// Every text and indicator role on a card, resolved against the card's own fill.
++  ///
++  /// The cursor ring clearing 3:1 says nothing about the rest, and the rail's surface is
++  /// vibrancy + `panel.opacity(0.7)` over a *user-supplied* ghostty theme — a theme whose foreground
++  /// sits close to its background washes out the name, the subtitle and the diff numbers while the
++  /// ring still passes. So each role gets its own floor: 4.5:1 for text (11–13pt body), 3:1 for
++  /// indicators and the ring.
++  /// Resolved as **`NSColor`**, with `Color` accessors on top. Never the other way round: converting a
++  /// SwiftUI `Color` back with `NSColor(_:)` yields a lazily-resolved, SwiftUI-backed colour whose
++  /// `usingColorSpace` returns nil outside a view update — so a contrast check silently no-ops and
++  /// re-wrapping the result in a `Color` crashes in `Color._apply` during layout. Every input here
++  /// starts from a `ns*` token.
++  struct Palette {
++    let nsName: NSColor
++    let nsSubtitle: NSColor
++    let nsRing: NSColor
++    let nsDot: NSColor
++    let nsDiffAdd: NSColor
++    let nsDiffRemove: NSColor
++    /// True when a floor could not be met by nudging alone, so the card drops vibrancy for an opaque
++    /// fill. Legibility outranks the material.
++    let needsOpaqueFill: Bool
++
++    var name: Color { Color(nsColor: nsName) }
++    var subtitle: Color { Color(nsColor: nsSubtitle) }
++    var ring: Color { Color(nsColor: nsRing) }
++    var dot: Color { Color(nsColor: nsDot) }
++    var diffAdd: Color { Color(nsColor: nsDiffAdd) }
++    var diffRemove: Color { Color(nsColor: nsDiffRemove) }
++
++    static let textTarget: CGFloat = 4.5
++    static let indicatorTarget: CGFloat = 3.0
++  }
++
++  static func palette(for tokens: ThemeTokens) -> Palette {
++    let base = tokens.nsPanel
++    let fg = tokens.nsFg
++    func fix(_ color: NSColor, _ target: CGFloat) -> NSColor {
++      ThemeTokens.legible(color, on: base, towards: fg, target: target)
++    }
++    let name = fix(fg, Palette.textTarget)
++    // `fgDim` is fg at 40% — flattened against the card fill first, because `legible` reasons about
++    // opaque colours and a translucent one would measure as its own alpha-less form.
++    let dim = base.blended(withFraction: 0.55, of: fg) ?? fg
++    let accent = fix(tokens.nsAccent, Palette.indicatorTarget)
++    return Palette(
++      nsName: name,
++      nsSubtitle: fix(dim, Palette.textTarget),
++      nsRing: accent,
++      nsDot: accent,
++      nsDiffAdd: fix(tokens.nsDiffAddFg, Palette.indicatorTarget),
++      nsDiffRemove: fix(tokens.nsDiffRemoveFg, Palette.indicatorTarget),
++      // `legible` walks towards the foreground and stops at 100%; if even the pure foreground can't
++      // clear the text floor against this fill, the fill itself is the problem.
++      needsOpaqueFill: ThemeTokens.contrastRatio(name, base) < Palette.textTarget
++    )
++  }
++}
+
+
+=== DIFF: macapp/WorkroomApp/Core/ThemeTokens.swift ===
+@@ -39,6 +39,7 @@ struct ThemeTokens {
+ 
+   // Accent (palette[4]).
+   let accent: Color
++  let nsAccent: NSColor
+   let accentSoft: Color  // accent @ 0.10 — selection wash
+   let accentForeground: Color  // black/white for legibility on the accent
+   let warning: Color  // palette[3] (yellow)
+@@ -54,6 +55,12 @@ struct ThemeTokens {
+   // Diff / VCS semantics (palette green/red/cyan).
+   let diffAddFg: Color
+   let diffRemoveFg: Color
++  // NSColor forms of the two diff foregrounds. Present so a contrast check never has to round-trip a
++  // SwiftUI `Color` back through `NSColor(_:)`: that yields a lazily-resolved, SwiftUI-backed NSColor
++  // whose `usingColorSpace` returns nil outside a view update, and re-wrapping THAT in a `Color`
++  // crashes in `Color._apply` during layout. Always start from the source NSColor.
++  let nsDiffAddFg: NSColor
++  let nsDiffRemoveFg: NSColor
+   let diffHunkFg: Color
+   let diffAddBg: Color
+   let diffRemoveBg: Color
+@@ -126,6 +133,7 @@ struct ThemeTokens {
+       nsColor: panelColor.blended(withFraction: 0.22, of: accentSRGB) ?? panelColor)
+ 
+     accent = Color(nsColor: accentColor)
++    nsAccent = accentColor
+     accentSoft = Color(nsColor: accentColor.withAlphaComponent(0.10))
+     accentForeground = Color(nsColor: Self.contrastingForeground(for: accentColor))
+     warning = Color(nsColor: p(3) ?? .systemYellow)
+@@ -146,6 +154,8 @@ struct ThemeTokens {
+     let hunkColor = p(6) ?? accentColor
+     diffAddFg = Color(nsColor: addColor)
+     diffRemoveFg = Color(nsColor: removeColor)
++    nsDiffAddFg = addColor
++    nsDiffRemoveFg = removeColor
+     diffHunkFg = Color(nsColor: hunkColor)
+     diffAddBg = Color(nsColor: addColor.withAlphaComponent(0.16))
+     diffRemoveBg = Color(nsColor: removeColor.withAlphaComponent(0.16))
+
+
+=== DIFF: macapp/WorkroomApp/Core/UITestFixture.swift ===
+@@ -319,6 +319,15 @@ enum UITestFixture {
+     flag("WorkroomUITestWhatsNew")
+   }
+ 
++  /// Reveal the quick-switcher rail with no delay (issue #132). The real gesture holds a modifier for
++  /// 250 ms, which neither XCUITest nor AppleScript can drive reliably — synthetic modifier holds do
++  /// not consistently reach `NSEvent.modifierFlags`, the *global hardware* snapshot the session polls.
++  /// With this set, one ⌥Tab reveals the rail immediately so its rendering, hover and click can be
++  /// asserted; the 250 ms delay itself stays manual, as does real-mouse hover.
++  static var switcherRevealsImmediately: Bool {
++    flag("WorkroomUITestSwitcherReveal")
++  }
++
+   /// Canned release notes for the What's-New dialog under `forceWhatsNew` — a couple of versions with
+   /// headings + bullets so the markdown renderer and the multi-release layout both get coverage.
+   static var whatsNewNotes: [ReleaseNote] {
+
+
+=== DIFF: macapp/WorkroomApp/Core/WindowRegistry.swift ===
+@@ -152,7 +152,10 @@ final class WindowRegistry: ObservableObject {
+   /// A window ⌘`/⇧⌘` should cycle through: a visible, focusable workroom window (one we registered)
+   /// or the quick terminal. Excludes panels, the menu-bar status item's window, and anything that
+   /// can't become key.
+-  private func isCycleableWindow(_ window: NSWindow) -> Bool {
++  ///
++  /// Internal rather than private so a test can assert the switcher rail's panel is rejected — the
++  /// `canBecomeKey` guard is what excludes it, and `SwitcherPanel` relies on that staying true.
++  func isCycleableWindow(_ window: NSWindow) -> Bool {
+     guard window.isVisible, window.canBecomeKey else { return false }
+     return store(for: window) != nil || window is QuickTerminalWindow
+   }
+
+
+=== DIFF: macapp/WorkroomApp/Views/SwitcherRailView.swift ===
+@@ -0,0 +1,287 @@
++import AppKit
++import SwiftUI
++
++/// One rail card's data — a **value type**, resolved once when the rail opens.
++///
++/// INVARIANT (prior learning `macapp-row-observes-sessions-invalidation-storm`): no rail view may hold
++/// an `AppStore` or `TerminalSessions`. `TerminalSessions` republishes on every title/activity pulse,
++/// so a card observing it to decide "am I the cursor" would re-render at OSC frequency — the
++/// WORKROOM-2B hang. Everything a card draws is snapshotted here instead.
++struct SwitcherCard: Identifiable, Equatable {
++  let id: String
++  /// The primary line. Already prefix-stripped by `WorkroomLabel.railTitles` where applicable.
++  let title: String
++  /// The stable identity zone of the subtitle — never empty, never churns.
++  let stableSubtitle: String
++  /// The live tail (a command line, a diffstat). Truncates before `stableSubtitle` does.
++  let liveSubtitle: String?
++  let glyph: String
++  let badge: Int
++  let isRunning: Bool
++  /// Set once the snapshot layer lands (T12); until then every card draws its glyph well.
++  let snapshot: CGImage?
++
++  var subtitle: String {
++    guard let liveSubtitle, !liveSubtitle.isEmpty else { return stableSubtitle }
++    return "\(stableSubtitle) · \(liveSubtitle)"
++  }
++}
++
++extension SwitcherCard {
++  /// Snapshot a controller item into a card. Reads the stores ONCE, here, and never again — which is
++  /// also why this is `@MainActor` while `SwitcherCard` itself is not: the reads happen on the main
++  /// actor at reveal, and what the views then hold is inert.
++  @MainActor
++  init(item: QuickSwitcherController.Item) {
++    switch item {
++    case .workroom(let slot):
++      let label = slot.store?.label(for: slot.sid)
++      id = "wr:\(slot.target.id)"
++      title = label?.distinguishing ?? slot.target.title
++      stableSubtitle = label?.branch ?? label?.project ?? ""
++      liveSubtitle = nil  // the live command tail arrives with the snapshot layer (T12)
++      glyph = "cube"
++      badge = slot.store?.notifications.count(target: slot.target.id) ?? 0
++      isRunning = slot.store?.isRunCommandRunning(for: slot.target.id) ?? false
++      snapshot = nil
++    case .pane(let tab):
++      id = "pane:\(tab.id)"
++      title = tab.title
++      stableSubtitle = Self.kindLabel(tab.content)
++      liveSubtitle = nil
++      glyph = Self.glyph(for: tab.content)
++      badge = 0
++      isRunning = tab.isRunning
++      snapshot = nil
++    }
++  }
++
++  /// The tab-strip / sidebar glyph vocabulary, so a pane reads the same everywhere. Exhaustive on
++  /// purpose: a fifth `TabContent` kind must be a compile error, not a silent fallback to "terminal".
++  static func glyph(for content: TabContent) -> String {
++    switch content {
++    case .terminal: "terminal"
++    case .diff: "plusminus"
++    case .file: "doc"
++    case .changeset: "clock"
++    }
++  }
++
++  /// The subtitle's stable zone for a pane: what kind of thing this is. Present even when there is no
++  /// live text, which is the point — identity must not disappear (D13).
++  static func kindLabel(_ content: TabContent) -> String {
++    switch content {
++    case .terminal: "Terminal"
++    case .diff: "Diff"
++    case .file: "File"
++    case .changeset: "Commit"
++    }
++  }
++}
++
++/// The rail's observable state. One object, mutated by `SwitcherPanelController` — the cards
++/// themselves observe nothing.
++@MainActor
++final class SwitcherRailModel: ObservableObject {
++  @Published var cards: [SwitcherCard] = []
++  @Published var cursor = 0
++  @Published var width: CGFloat = 600
++  /// Bumped on a theme change so the tokens are re-read.
++  @Published var themeVersion = 0
++
++  var onHover: ((Int) -> Void)?
++  var onCommit: ((Int) -> Void)?
++
++  func update(cards: [SwitcherCard], cursor: Int, width: CGFloat) {
++    self.cards = cards
++    self.cursor = cursor
++    self.width = width
++  }
++}
++
++/// The rail: **one** row of label-led cards, centred in a floating translucent panel.
++///
++/// Label-led, not thumbnail-led: drawn at the originally-planned 220×140 a terminal thumbnail is a
++/// near-blank rectangle (output hugs the top-left), so the loudest element carried the least
++/// information while the name — the thing you actually decide on — was the smallest. Inverted here.
++struct SwitcherRailView: View {
++  @ObservedObject var model: SwitcherRailModel
++  private let theme = ThemeService.shared
++
++  /// Re-resolved per render. `model.themeVersion` is read in `body` so a theme change actually
++  /// repaints — this is a static view inside a panel that is only ever ordered in and out, so nothing
++  /// else would invalidate it.
++  private var palette: SwitcherRailLayout.Palette { SwitcherRailLayout.palette(for: theme.tokens) }
++
++  /// No `accessibilityReduceMotion` here on purpose: nothing in the rail animates. The cursor ring and
++  /// the scroll offset both snap (a 0.32s spring per step would still be travelling toward card 2 when
++  /// the commit lands on card 4), and the panel itself carries `animationBehavior = .none`.
++
++  private var cardWidth: CGFloat {
++    SwitcherRailLayout.cardWidth(count: model.cards.count, available: model.width)
++  }
++
++  private var scrolls: Bool {
++    SwitcherRailLayout.scrolls(count: model.cards.count, available: model.width)
++  }
++
++  var body: some View {
++    row
++      .id(model.themeVersion)  // see `palette` — the only thing that invalidates this view
++      // The app's own floating-translucent recipe (the inspector reveal uses it). No full-screen dim:
++      // a 250ms gesture must not flash the whole screen, so separation comes from material + hairline
++      // + shadow instead.
++      .sidebarCard(cornerRadius: 16, margin: 0, vibrant: !palette.needsOpaqueFill, elevated: true)
++      .accessibilityElement(children: .contain)
++      .accessibilityIdentifier("switcher.rail")
++  }
++
++  @ViewBuilder private var row: some View {
++    if scrolls {
++      ScrollViewReader { proxy in
++        ScrollView(.horizontal, showsIndicators: false) {
++          cards
++        }
++        // Without the `contentShape` the cards under the fade ramp stop taking hover and clicks — a
++        // verified idiom, not a precaution.
++        .mask(fadeRamp)
++        .contentShape(.interaction, Rectangle())
++        .onChange(of: model.cursor) { _, index in
++          // Snapped, never animated: release is detected by a 30ms poll and a fast user taps Tab 3–4×
++          // in 200ms, so a spring per step would still be travelling toward card 2 when the commit
++          // lands on card 4.
++          proxy.scrollTo(model.cards[safe: index]?.id, anchor: .center)
++        }
++      }
++    } else {
++      cards
++    }
++  }
++
++  private var cards: some View {
++    HStack(spacing: SwitcherRailLayout.cardSpacing) {
++      ForEach(Array(model.cards.enumerated()), id: \.element.id) { index, card in
++        SwitcherCardView(
++          card: card, isCursor: index == model.cursor, width: cardWidth, palette: palette
++        )
++        .onHover { inside in if inside { model.onHover?(index) } }
++        .onTapGesture { model.onCommit?(index) }
++      }
++    }
++    .padding(SwitcherRailLayout.railPadding)
++  }
++
++  /// Edge fade signalling more cards off-screen.
++  private var fadeRamp: LinearGradient {
++    LinearGradient(
++      stops: [
++        .init(color: .clear, location: 0),
++        .init(color: .black, location: 0.04),
++        .init(color: .black, location: 0.96),
++        .init(color: .clear, location: 1),
++      ], startPoint: .leading, endPoint: .trailing)
++  }
++}
++
++/// One card: a fixed thumbnail well, then a label column that absorbs every point of width loss.
++private struct SwitcherCardView: View {
++  let card: SwitcherCard
++  let isCursor: Bool
++  let width: CGFloat
++  let palette: SwitcherRailLayout.Palette
++  private let theme = ThemeService.shared
++
++  var body: some View {
++    // No trailing `Spacer` here. A `Spacer(minLength: 0)` is a *flexible* child, so SwiftUI splits the
++    // card's spare width between it and the label column — which truncated "uitest-room-2" at a card
++    // width that fits it twice over. `maxWidth: .infinity` on the labels claims that space instead.
++    HStack(spacing: 10) {
++      well
++      labels
++    }
++    .padding(.horizontal, 10)
++    .frame(width: width, height: SwitcherRailLayout.cardHeight)
++    .background(
++      RoundedRectangle(cornerRadius: 10, style: .continuous)
++        .fill(isCursor ? theme.tokens.accentSoft : theme.tokens.panel)
++    )
++    .overlay(
++      RoundedRectangle(cornerRadius: 10, style: .continuous)
++        .strokeBorder(isCursor ? palette.ring : theme.tokens.border, lineWidth: 1)
++    )
++    .contentShape(Rectangle())
++    .help(tooltip)
++    .accessibilityElement(children: .combine)
++    .accessibilityLabel(accessibilityLabel)
++    .accessibilityIdentifier("switcher.card.\(card.title)")
++  }
++
++  /// The well: the pane capture aspect-**fit** (never cropped — a crop-zoom can make two different
++  /// panes look identical), or the pane-kind glyph when there is no snapshot, which is the normal
++  /// first-run case since capture only happens while a pane is visible.
++  private var well: some View {
++    RoundedRectangle(cornerRadius: 6, style: .continuous)
++      .fill(card.snapshot == nil ? theme.tokens.accentSoft : theme.tokens.surface)
++      .frame(width: SwitcherRailLayout.wellSize.width, height: SwitcherRailLayout.wellSize.height)
++      .overlay {
++        if let snapshot = card.snapshot {
++          Image(decorative: snapshot, scale: 1)
++            .resizable()
++            .aspectRatio(contentMode: .fit)
++        } else {
++          Image(systemName: card.glyph)
++            .font(.system(size: 20))
++            .foregroundStyle(palette.ring)
++        }
++      }
++      .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
++  }
++
++  private var labels: some View {
++    VStack(alignment: .leading, spacing: 3) {
++      HStack(spacing: 5) {
++        // Middle truncation, never tail: generated workroom names share a prefix and differ at the
++        // END, which is exactly what tail truncation deletes (D12).
++        Text(card.title)
++          .font(.system(size: 13, weight: .semibold))
++          .foregroundStyle(palette.name)
++          .lineLimit(1)
++          .truncationMode(.middle)
++        // Badge and running dot sit in the LABEL row, not over the thumbnail — which also removes the
++        // contrast problem of an accent pill over arbitrary screenshot pixels.
++        if card.badge > 0 { UnreadBadge(count: card.badge) }
++        if card.isRunning {
++          Circle().fill(palette.dot).frame(width: 6, height: 6)
++            .help("Running")
++            .accessibilityLabel("running")
++        }
++      }
++      Text(card.subtitle)
++        .font(.system(size: 11))
++        .foregroundStyle(palette.subtitle)
++        .lineLimit(1)
++        .truncationMode(.tail)
++    }
++    .frame(maxWidth: .infinity, alignment: .leading)
++  }
++
++  private var tooltip: String {
++    card.badge > 0
++      ? "\(card.title)\n\(card.subtitle)\n\(card.badge) unread" : "\(card.title)\n\(card.subtitle)"
++  }
++
++  /// No state may live only in a tooltip here — a tooltip needs ~1s of hover and this whole gesture
++  /// lasts a few hundred ms, so the badge count and running state are spelled out for assistive tech.
++  private var accessibilityLabel: String {
++    var parts = [card.title, card.subtitle]
++    if card.badge > 0 { parts.append("\(card.badge) unread") }
++    if card.isRunning { parts.append("running") }
++    return parts.joined(separator: ", ")
++  }
++}
++
++extension Array {
++  fileprivate subscript(safe index: Int) -> Element? {
++    indices.contains(index) ? self[index] : nil
++  }
++}
+
+
+=== DIFF: macapp/WorkroomApp/WorkroomApp.swift ===
+@@ -229,6 +229,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
+     // into existence early, so its key-window observer is live before the first window appears.
+     menuBarController = MenuBarController(registry: .shared)
+ 
++    // Build the switcher rail's panel now, ordered out, and connect it to the session controller
++    // (issue #132). Pre-created on purpose: the first `NSHostingView` render costs real milliseconds,
++    // and the 250 ms reveal is the worst possible moment to pay it.
++    SwitcherPanelController.shared.prepare()
++    SwitcherPanelController.shared.attach(to: .shared)
++
+     monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+       let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
+       // ⌘W closes the quick terminal (issue #39) when its window is key. The menu's "Close Terminal"
+
+
+=== DIFF: macapp/WorkroomAppTests/SwitcherPanelTests.swift ===
+@@ -0,0 +1,80 @@
++import AppKit
++import XCTest
++
++@testable import Workroom
++
++/// `SwitcherPanel` (issue #132, T11): the window-level invariants the rail depends on. Each of these
++/// is a property that looks like a style choice and is actually load-bearing — which is exactly why
++/// they're pinned rather than left to a code comment.
++@MainActor
++final class SwitcherPanelTests: XCTestCase {
++
++  private func makePanel() -> SwitcherPanel {
++    SwitcherPanel(
++      contentRect: NSRect(x: 0, y: 0, width: 600, height: 120),
++      styleMask: [.nonactivatingPanel, .borderless], backing: .buffered, defer: false)
++  }
++
++  func testThePanelCanNeverTakeKeyFocus() {
++    // The gesture depends on the WORKROOM window staying key: the AppDelegate monitor resolves its
++    // store from the key window, so the moment this panel could become key, ⌥Tab would stop working
++    // as soon as the rail appeared.
++    let panel = makePanel()
++    XCTAssertFalse(panel.canBecomeKey)
++    XCTAssertFalse(panel.canBecomeMain)
++  }
++
++  func testWindowCyclingSkipsThePanel() {
++    // Twice over: ⌘`'s `isCycleableWindow` requires `canBecomeKey`, and `.ignoresCycle` is belt and
++    // braces on top.
++    let panel = makePanel()
++    panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle, .transient]
++    panel.orderFrontRegardless()
++    defer { panel.orderOut(nil) }
++    XCTAssertFalse(WindowRegistry().isCycleableWindow(panel), "⌘` must never land on the rail")
++    XCTAssertTrue(panel.collectionBehavior.contains(.ignoresCycle))
++  }
++
++  func testThePanelStaysNonOpaque() {
++    // `NSWindow.occlusionState` counts only OPAQUE coverage. A clear panel never flips it; give this
++    // an opaque background and every terminal surface behind the rail believes it is occluded and
++    // stops rendering. This assertion is the guard on that.
++    let panel = makePanel()
++    panel.isOpaque = false
++    panel.backgroundColor = .clear
++    XCTAssertFalse(panel.isOpaque, "an opaque rail would freeze the terminals behind it")
++    XCTAssertEqual(panel.backgroundColor, .clear)
++  }
++
++  func testThePanelIsAFloatingNonActivatingHUD() {
++    let panel = makePanel()
++    panel.isFloatingPanel = true
++    panel.level = .floating
++    XCTAssertTrue(
++      panel.styleMask.contains(.nonactivatingPanel), "showing it must not activate the app")
++    XCTAssertEqual(panel.level, .floating)
++    XCTAssertTrue(panel.isFloatingPanel)
++  }
++
++  func testThePanelIsInvisibleToTheWindowsMenu() {
++    let panel = makePanel()
++    panel.isExcludedFromWindowsMenu = true
++    XCTAssertTrue(panel.isExcludedFromWindowsMenu)
++  }
++
++  func testThePanelTakesMouseEvents() {
++    // Hover and click are part of the spec, so it must not be a pass-through overlay.
++    let panel = makePanel()
++    panel.ignoresMouseEvents = false
++    XCTAssertFalse(panel.ignoresMouseEvents)
++  }
++
++  func testPrepareIsIdempotentAndOrdersNothingIn() {
++    let controller = SwitcherPanelController()
++    controller.prepare()
++    controller.prepare()  // must not build a second panel or throw
++    XCTAssertTrue(
++      NSApp.windows.filter { $0 is SwitcherPanel }.allSatisfy { !$0.isVisible },
++      "pre-created at launch, but never on screen until a reveal")
++  }
++}
+
+
+=== DIFF: macapp/WorkroomAppTests/SwitcherRailLayoutTests.swift ===
+@@ -0,0 +1,179 @@
++import AppKit
++import XCTest
++
++@testable import Workroom
++
++/// The rail's geometry and contrast decisions (issue #132, T11 — D9, D14, D15). Pure, so the things
++/// that fail *silently* on someone else's display or theme are pinned here rather than eyeballed.
++final class SwitcherRailLayoutTests: XCTestCase {
++
++  private typealias L = SwitcherRailLayout
++
++  // MARK: Card width (D9)
++
++  func testCardsStayComfortableWhileTheyFit() {
++    XCTAssertEqual(L.cardWidth(count: 3, available: 1100), L.maxCardWidth, "room to spare ⇒ 200pt")
++  }
++
++  func testCardsShrinkTowardsTheFloorAsTheCountGrows() {
++    let wide = L.cardWidth(count: 5, available: 1100)
++    let tight = L.cardWidth(count: 6, available: 1100)
++    XCTAssertLessThan(tight, wide, "more cards ⇒ narrower cards, before any scrolling")
++    XCTAssertLessThanOrEqual(wide, L.maxCardWidth)
++  }
++
++  func testCardWidthNeverGoesBelowTheFloor() {
++    // The whole point of the 180pt floor (Codex #1): at 140 the label column is ~36pt, so every name
++    // fragments and the badge collides — the densest state would read the worst.
++    for count in [8, 12, 40, 200] {
++      XCTAssertEqual(
++        L.cardWidth(count: count, available: 1100), L.minCardWidth,
++        "\(count) cards must shrink to the floor and then scroll, never past it")
++    }
++  }
++
++  func testTheFloorIs180Not140() {
++    XCTAssertEqual(L.minCardWidth, 180)
++    // And the floor must leave a usable label column: card − well − padding − gap.
++    let label = L.minCardWidth - L.wellSize.width - 10 * 2 - 10
++    XCTAssertGreaterThan(label, 60, "a 13pt name plus a badge needs real width")
++  }
++
++  func testCardWidthWithNoCards() {
++    XCTAssertEqual(L.cardWidth(count: 0, available: 1100), L.maxCardWidth, "no division by zero")
++  }
++
++  // MARK: Overflow (D9)
++
++  func testFewCardsDoNotScroll() {
++    XCTAssertFalse(L.scrolls(count: 3, available: 1100))
++  }
++
++  func testManyCardsScrollRatherThanWrapping() {
++    XCTAssertTrue(
++      L.scrolls(count: 12, available: 1100),
++      "past the floor the single row scrolls — never a second row")
++  }
++
++  func testContentWidthCountsGapsAndPadding() {
++    let width = L.contentWidth(count: 3, cardWidth: 200)
++    XCTAssertEqual(width, 200 * 3 + L.cardSpacing * 2 + L.railPadding * 2)
++    XCTAssertEqual(L.contentWidth(count: 0, cardWidth: 200), 0)
++  }
++
++  // MARK: Viewport (D15)
++
++  func testViewportIsCappedOnAWideDisplay() {
++    let ultrawide = CGRect(x: 0, y: 0, width: 5120, height: 1440)
++    XCTAssertEqual(
++      L.viewportWidth(visibleFrame: ultrawide), L.maxViewportWidth,
++      "the rail must not stretch the full width of a very wide display")
++  }
++
++  func testViewportShrinksToFitASmallDisplay() {
++    let small = CGRect(x: 0, y: 0, width: 800, height: 600)
++    XCTAssertEqual(L.viewportWidth(visibleFrame: small), 800 - L.screenMargin * 2)
++  }
++
++  func testViewportNeverGoesBelowOneCard() {
++    let sliver = CGRect(x: 0, y: 0, width: 120, height: 400)
++    XCTAssertEqual(L.viewportWidth(visibleFrame: sliver), L.minCardWidth)
++  }
++
++  // MARK: Placement (D15)
++
++  func testPanelCentresOnTheKeyWindowNotTheScreen() {
++    let visible = CGRect(x: 0, y: 0, width: 2000, height: 1200)
++    // An off-centre window (Stage Manager, a window shoved to one side): the rail follows it.
++    let window = CGRect(x: 1400, y: 300, width: 400, height: 400)
++    let size = CGSize(width: 600, height: 120)
++    let origin = L.panelOrigin(size: size, windowFrame: window, visibleFrame: visible)
++    XCTAssertEqual(origin.x + size.width / 2, window.midX, accuracy: 0.5)
++    XCTAssertEqual(origin.y + size.height / 2, window.midY, accuracy: 0.5)
++  }
++
++  func testPanelIsClampedBackInsideTheVisibleFrame() {
++    let visible = CGRect(x: 0, y: 0, width: 1000, height: 800)
++    // Window near the right edge: centring on it would hang the rail off-screen.
++    let window = CGRect(x: 900, y: 700, width: 200, height: 200)
++    let size = CGSize(width: 600, height: 120)
++    let origin = L.panelOrigin(size: size, windowFrame: window, visibleFrame: visible)
++    XCTAssertLessThanOrEqual(
++      origin.x + size.width, visible.maxX - L.screenMargin + 0.5, "kept inside the right edge")
++    XCTAssertLessThanOrEqual(origin.y + size.height, visible.maxY - L.screenMargin + 0.5)
++    XCTAssertGreaterThanOrEqual(origin.x, visible.minX + L.screenMargin - 0.5)
++  }
++
++  func testPanelRespectsAMenuBarInsetVisibleFrame() {
++    // `visibleFrame` on a notched display starts above 0 and stops below the menu bar — the origin
++    // must be expressed in those coordinates, not the full screen's.
++    let visible = CGRect(x: 0, y: 60, width: 1512, height: 900)
++    let window = CGRect(x: 0, y: 60, width: 1512, height: 900)
++    let size = CGSize(width: 800, height: 120)
++    let origin = L.panelOrigin(size: size, windowFrame: window, visibleFrame: visible)
++    XCTAssertGreaterThanOrEqual(origin.y, visible.minY + L.screenMargin - 0.5)
++    XCTAssertLessThanOrEqual(origin.y + size.height, visible.maxY - L.screenMargin + 0.5)
++  }
++
++  func testPanelLargerThanTheScreenStillLandsInside() {
++    let visible = CGRect(x: 0, y: 0, width: 400, height: 300)
++    let size = CGSize(width: 900, height: 400)  // wider than the screen
++    let origin = L.panelOrigin(
++      size: size, windowFrame: visible, visibleFrame: visible)
++    XCTAssertEqual(
++      origin.x, visible.minX + L.screenMargin, "degrades to the leading margin, not NaN")
++  }
++
++  // MARK: Contrast floors (D14)
++
++  /// Tokens from a deliberately low-contrast theme: foreground almost equal to background, which is
++  /// what silently kills the name and subtitle while the cursor ring still passes 3:1.
++  private func lowContrastTokens() -> ThemeTokens {
++    ThemeTokens(
++      preview: ThemePreview(
++        name: "low-contrast fixture",
++        background: NSColor(srgbRed: 0.50, green: 0.50, blue: 0.50, alpha: 1),
++        foreground: NSColor(srgbRed: 0.56, green: 0.56, blue: 0.56, alpha: 1),
++        palette: (0..<8).map { _ in NSColor(srgbRed: 0.52, green: 0.52, blue: 0.55, alpha: 1) }))
++  }
++
++  func testTextRolesAreLiftedToTheTextFloorWherePossible() {
++    let tokens = ThemeTokens(preview: nil)  // system fallback: a sane, high-contrast baseline
++    let palette = SwitcherRailLayout.palette(for: tokens)
++    let base = tokens.nsPanel
++    XCTAssertGreaterThanOrEqual(
++      ThemeTokens.contrastRatio(palette.nsName, base),
++      SwitcherRailLayout.Palette.textTarget - 0.01, "the 13pt name must clear 4.5:1")
++    XCTAssertGreaterThanOrEqual(
++      ThemeTokens.contrastRatio(palette.nsSubtitle, base),
++      SwitcherRailLayout.Palette.textTarget - 0.01, "the 11pt subtitle too — this is body text")
++  }
++
++  func testIndicatorRolesClearTheIndicatorFloor() {
++    let tokens = ThemeTokens(preview: nil)
++    let palette = SwitcherRailLayout.palette(for: tokens)
++    let base = tokens.nsPanel
++    for (role, color) in [
++      ("ring", palette.nsRing), ("dot", palette.nsDot), ("diffAdd", palette.nsDiffAdd),
++      ("diffRemove", palette.nsDiffRemove),
++    ] {
++      XCTAssertGreaterThanOrEqual(
++        ThemeTokens.contrastRatio(color, base),
++        SwitcherRailLayout.Palette.indicatorTarget - 0.01, "\(role) must clear 3:1")
++    }
++  }
++
++  func testAThemeThatCannotMeetTheTextFloorFallsBackToAnOpaqueFill() {
++    // `legible` walks towards the foreground and stops there. If even the pure foreground can't clear
++    // the floor against this fill, the fill is the problem — so the card drops vibrancy. Legibility
++    // outranks the material.
++    let palette = SwitcherRailLayout.palette(for: lowContrastTokens())
++    XCTAssertTrue(palette.needsOpaqueFill, "a washed-out theme must not keep the translucent card")
++  }
++
++  func testAHealthyThemeKeepsItsVibrancy() {
++    XCTAssertFalse(
++      SwitcherRailLayout.palette(for: ThemeTokens(preview: nil)).needsOpaqueFill,
++      "the normal case keeps the frosted material")
++  }
++}
+
+
+Investigate per the method in your instructions, then return the findings list.
