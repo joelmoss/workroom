@@ -1,0 +1,38 @@
+<task-notification>
+<task-id>abcff14d767e80d65</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/e65a5734-7c74-4e33-8a25-7a9021faff10/tasks/abcff14d767e80d65.output</output-file>
+<status>completed</status>
+<summary>Agent "Find last-pane-close handling in macapp" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>```
+Defs:
+- /Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/RootView.swift:649 — `detailContent` — placeholder "Work it!" when no workroom selected
+- /Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/RootView.swift:149 — `inspectorVisible` — gates InspectorColumn on showInspector &amp;&amp; selectedTarget
+- /Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/AppStore.swift:966 — `onTabsRemoved` hook — fires on pane close, triggers workroom selection cascade
+- /Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/AppStore.swift:210 — `autoCloseEmptiedSplitMember` — removes workroom from split when all panes close
+- /Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/AppStore.swift:226 — `selectFallbackWorkroomAfterEmpty` — jumps to rightmost tab when selected empties
+- /Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/AppStore.swift:1225 — `refreshSelectionHasTabs` — recomputes if selected target has open tabs
+- /Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/AppStore.swift:1220 — `inspectorTargetID` — nil gates inspector to show placeholder
+- /Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/ChangesPanel.swift:742 — `ChangesPanel.body` — shows "Select a workroom" when inspectorTargetID nil
+- /Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/AppStore+WorkroomSplit.swift:192 — `removeWorkroomSplitMember` — detaches workroom from split group
+- /Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/AppStore+WorkroomSplit.swift:242 — `selectFallbackWorkroom` — selects rightmost displayed workroom tab
+- /Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/DefaultsKeys.swift:62 — `showInspector` — Defaults key for inspector visibility toggle
+
+Refs:
+- /Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/RootView.swift:21 — `showInspector` — @Default read in RootView
+- /Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/RootView.swift:170 — InspectorColumn — conditionally rendered on inspectorVisible
+- /Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/RootView.swift:715 — `onClose` — WorkroomSplitView calls removeWorkroomSplitMember
+- /Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/AppStore.swift:988 — autoCloseEmptiedSplitMember call — from onTabsRemoved hook
+- /Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/AppStore.swift:994 — selectFallbackWorkroomAfterEmpty call — from onTabsRemoved hook
+- /Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/AppStore.swift:997 — refreshSelectionHasTabs call — from onTabsRemoved hook
+- /Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/AppStore.swift:3251 — removeWorkroomSplitMember call — on terminal removed
+- /Users/joelmoss/dev/workroom/macapp/WorkroomAppTests/EmptiedWorkroomSelectionTests.swift:1 — test coverage — for empty workroom selection fallback
+
+Tests:
+- /Users/joelmoss/dev/workroom/macapp/WorkroomAppTests/EmptiedWorkroomSelectionTests.swift — testClosingLastPanelInSelectedWorkroomSelectsRightmostTab
+
+11 defs, 11 refs, 1 test file.
+```</result>
+<usage><subagent_tokens>66952</subagent_tokens><tool_uses>28</tool_uses><duration_ms>88885</duration_ms></usage>
+</task-notification>
