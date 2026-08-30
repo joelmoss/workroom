@@ -1,0 +1,1 @@
+close right sibar when no workroom is open
