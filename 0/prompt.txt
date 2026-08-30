@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bwelkypvh</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/ad9e5754-d4c8-4063-beb8-947970ea5d8f/tasks/bwelkypvh.output</output-file>
+<status>killed</status>
+<summary>Background command "Run the complete UI test suite, all classes" was stopped</summary>
+</task-notification>
