@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bkjgmaojd</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/7f7988fc-21ff-4ba7-80de-eae292423ae4/tasks/bkjgmaojd.output</output-file>
+<status>completed</status>
+<summary>Background command "Find SessionFrameTests file from repo root" completed (exit code 0)</summary>
+</task-notification>
