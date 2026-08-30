@@ -1,0 +1,1381 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Views/ThemePicker.swift
+  - macapp/Resources/ghostty/themes/Token Dark
+  - macapp/Resources/ghostty/themes/Token Light
+  - macapp/WorkroomAppTests/ThemeTokensTests.swift
+  - macapp/WorkroomAppTests/ThemeServiceTests.swift
+  - macapp/WorkroomAppUITests/ThemePickerUITests.swift
+  - macapp/WorkroomApp/Core/ThemeService.swift
+  - macapp/Resources/ghostty/themes/CHECKSUMS
+  - macapp/Resources/ghostty/themes/3024 Day
+  - macapp/Resources/ghostty/themes/3024 Night
+  - macapp/Resources/ghostty/themes/Aizen Dark
+  - macapp/Resources/ghostty/themes/Aizen Light
+  - macapp/Resources/ghostty/themes/Apple System Colors
+  - macapp/Resources/ghostty/themes/Apple System Colors Light
+  - macapp/Resources/ghostty/themes/Belafonte Day
+  - macapp/Resources/ghostty/themes/Belafonte Night
+  - macapp/Resources/ghostty/themes/Bluloco Dark
+  - macapp/Resources/ghostty/themes/Bluloco Light
+  - macapp/Resources/ghostty/themes/Claude Dark
+  - macapp/Resources/ghostty/themes/Claude Light
+  - macapp/Resources/ghostty/themes/Clear Dark
+  - macapp/Resources/ghostty/themes/Clear Light
+  - macapp/Resources/ghostty/themes/Cursor Dark
+  - macapp/Resources/ghostty/themes/Cursor Light
+  - macapp/Resources/ghostty/themes/Electron Highlighter
+  - macapp/Resources/ghostty/themes/Electron Highlighter Day
+  - macapp/Resources/ghostty/themes/Farmhouse Dark
+  - macapp/Resources/ghostty/themes/Farmhouse Light
+  - macapp/Resources/ghostty/themes/GitHub Dark High Contrast
+  - macapp/Resources/ghostty/themes/GitHub Light High Contrast
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Views/ThemePicker.swift ===
+@@ -166,8 +166,8 @@ private struct FamilyRow: View {
+         }
+       }
+       HStack(spacing: 4) {
+-        Swatch(preview: dark)
+-        Swatch(preview: light)
++        Swatch(preview: dark, variantName: family.dark)
++        Swatch(preview: light, variantName: family.light)
+       }
+       .frame(height: 16)
+     }
+@@ -189,6 +189,17 @@ private struct FamilyRow: View {
+           lineWidth: 1.5)
+     )
+     .onHover { hovered = $0 }
++    // Queryable by `ThemePickerUITests`. Two things here are load-bearing and were both found by
++    // running the test rather than by reasoning:
++    //
++    // `children: .contain` — WITHOUT it, an identifier on this container makes the row an a11y LEAF:
++    // the identifier propagates to every descendant (four elements answered to the same one) and
++    // `row.descendants(...)` came back empty, so the per-swatch assertions could never see anything.
++    //
++    // The identifier goes on the SwiftUI row, never on an `NSViewRepresentable` wrapper — an
++    // identifier set on a wrapper isn't reachable from XCUITest at all.
++    .accessibilityElement(children: .contain)
++    .accessibilityIdentifier("theme-family-\(family.name)")
+   }
+ }
+ 
+@@ -197,6 +208,10 @@ private struct FamilyRow: View {
+ private struct Swatch: View {
+   private let theme = ThemeService.shared
+   let preview: ThemePreview?
++  /// The variant's theme-file name. Carried purely so the swatch can report, through accessibility,
++  /// *which* file it is drawing and whether that file resolved — the visible symptom of a registry
++  /// typo is a grey fallback swatch, and that is the one failure a bundle-reading unit test can't see.
++  let variantName: String
+ 
+   var body: some View {
+     HStack(spacing: 0) {
+@@ -214,5 +229,11 @@ private struct Swatch: View {
+     }
+     .clipShape(RoundedRectangle(cornerRadius: 3))
+     .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(theme.tokens.border, lineWidth: 0.5))
++    .accessibilityElement()
++    // Resolution state rides the IDENTIFIER, not `accessibilityValue`: a value set on a
++    // non-control element like this one comes back empty through XCUIElement (measured), while
++    // identifiers are reliably queryable.
++    .accessibilityIdentifier(
++      "theme-swatch-\(variantName)-\(preview == nil ? "unresolved" : "resolved")")
+   }
+ }
+
+
+=== DIFF: macapp/Resources/ghostty/themes/Token Dark ===
+@@ -0,0 +1,22 @@
++palette = 0=#1d1d1c
++palette = 1=#c67777
++palette = 2=#7da47a
++palette = 3=#c4a855
++palette = 4=#7b9ebd
++palette = 5=#a68bbf
++palette = 6=#6ba8a8
++palette = 7=#d4cfc6
++palette = 8=#5a5955
++palette = 9=#d97757
++palette = 10=#98bf95
++palette = 11=#c4956a
++palette = 12=#96b8d3
++palette = 13=#bea5d4
++palette = 14=#88c0c0
++palette = 15=#e8e4dc
++background = #262624
++foreground = #e8e4dc
++cursor-color = #e8e4dc
++cursor-text = #262624
++selection-background = #3a3a37
++selection-foreground = #e8e4dc
+
+
+=== DIFF: macapp/Resources/ghostty/themes/Token Light ===
+@@ -0,0 +1,22 @@
++palette = 0=#2a2920
++palette = 1=#b05555
++palette = 2=#3f643c
++palette = 3=#6e5c20
++palette = 4=#527594
++palette = 5=#7c619a
++palette = 6=#2d6c6c
++palette = 7=#b5b2ab
++palette = 8=#6c675f
++palette = 9=#9a4929
++palette = 10=#3a5e37
++palette = 11=#876032
++palette = 12=#486a88
++palette = 13=#6f578c
++palette = 14=#286363
++palette = 15=#faf9f5
++background = #faf9f5
++foreground = #2a2920
++cursor-color = #2a2920
++cursor-text = #faf9f5
++selection-background = #dddcd6
++selection-foreground = #2a2920
+
+
+=== DIFF: macapp/WorkroomAppTests/ThemeTokensTests.swift ===
+@@ -94,8 +94,9 @@ final class ThemeTokensTests: XCTestCase {
+   ///
+   /// Not a pedantic distinction. Weighting encoded components inflates dark colours (`#2e3440` reads 0.20
+   /// against a true 0.033), which collapses dark-background/light-text ratios: the switcher rail's name
+-  /// text measured under 4.5:1 for 43 of the 56 bundled themes on the old formula and for 3 on this one,
+-  /// and its "this theme is unreadable, drop the material" fallback was firing for 38 legible themes.
++  /// text measured under 4.5:1 for 43 of the then-56 bundled themes on the old formula and for 3 on this
++  /// one, and its "this theme is unreadable, drop the material" fallback was firing for 38 legible themes.
++  /// (Those counts are the historical measurement that exposed the bug; the set is 116 themes today.)
+   func testLuminanceIsWCAGWhileBrightnessStaysPerceptual() {
+     XCTAssertEqual(ThemeTokens.luminance(of: ns("#808080")), 0.216, accuracy: 0.005)
+     XCTAssertEqual(ThemeTokens.perceivedBrightness(of: ns("#808080")), 0.502, accuracy: 0.005)
+
+
+=== DIFF: macapp/WorkroomAppTests/ThemeServiceTests.swift ===
+@@ -1,4 +1,5 @@
+ import AppKit
++import CryptoKit
+ import Defaults
+ import XCTest
+ 
+@@ -121,6 +122,188 @@ final class ThemeServiceTests: XCTestCase {
+     XCTAssertEqual(ThemeService.families.first?.name, ThemeService.defaultFamilyName)
+   }
+ 
++  // MARK: registry ↔ bundle integrity
++
++  /// Every theme file the app ships, parsed straight out of the bundle.
++  ///
++  /// Read from `Bundle.main.resourceURL` and deliberately NOT through `ThemeService.themeDirectories()`,
++  /// whose first entry is `~/.config/ghostty/themes` — a user override there would make these results
++  /// depend on the machine running the suite. Same reasoning as `SwitcherThemeSweepTests`.
++  private func bundledThemeDir() throws -> String {
++    try XCTUnwrap(
++      Bundle.main.resourceURL?.appendingPathComponent("ghostty/themes").path,
++      "the app bundle must carry its themes — the terminal can't start without them")
++  }
++
++  /// Filenames in the bundled themes dir that actually parse as themes. Filters out `LICENSE`,
++  /// `SOURCE.md`, `CHECKSUMS` and any stray directory the folder reference copies in.
++  private func parseableBundledThemeNames() throws -> Set<String> {
++    let dir = try bundledThemeDir()
++    let names = try FileManager.default.contentsOfDirectory(atPath: dir)
++    return Set(
++      names.filter { ThemeService.parseThemeFile(atPath: dir + "/" + $0, name: $0) != nil })
++  }
++
++  /// 1 + 2: every declared variant resolves to a real bundled file, AND that file carries a complete
++  /// 16-colour palette.
++  ///
++  /// The palette half is not belt-and-braces. `parseThemeFile` returns non-nil as soon as it has a
++  /// background and a foreground, while `ThemeTokens` reads the palette for the accent
++  /// (`p(4) ?? .controlAccentColor`), the diff colours and all 14 syntax categories — so a truncated
++  /// file resolves fine and then silently paints the whole chrome with macOS system colours.
++  func testEveryFamilyVariantResolvesToACompleteBundledTheme() throws {
++    let dir = try bundledThemeDir()
++    for family in ThemeService.families {
++      for (role, name) in [("dark", family.dark), ("light", family.light)] {
++        let preview = ThemeService.parseThemeFile(atPath: dir + "/" + name, name: name)
++        XCTAssertNotNil(
++          preview, "\(family.name): the \(role) variant '\(name)' is not a bundled theme file")
++        XCTAssertEqual(
++          preview?.palette.count, 16,
++          "\(family.name): the \(role) variant '\(name)' has an incomplete palette, so the chrome "
++            + "would fall back to system colours while the terminal renders correctly")
++      }
++    }
++  }
++
++  /// 3: the dark slot holds a dark theme and the light slot a light one.
++  ///
++  /// Scoped claim: this catches a pair whose two variants are **swapped between the slots**. It does
++  /// NOT prove the two were designed as a pair. It matters because `ThemeTokens` derives
++  /// `colorScheme` from the theme's own background, and `SwitcherMark.tileColor` picks which
++  /// direction to walk its brightness ladder from that — so a swapped pair renders a light theme in
++  /// dark mode and searches the wrong way for legible mark tiles.
++  func testEveryFamilyVariantIsOnTheCorrectSideOfTheAppearance() throws {
++    let dir = try bundledThemeDir()
++    for family in ThemeService.families {
++      guard
++        let dark = ThemeService.parseThemeFile(atPath: dir + "/" + family.dark, name: family.dark),
++        let light = ThemeService.parseThemeFile(
++          atPath: dir + "/" + family.light, name: family.light)
++      else {
++        XCTFail("\(family.name): variants must resolve before orientation can be checked")
++        continue
++      }
++      XCTAssertLessThanOrEqual(
++        ThemeTokens.perceivedBrightness(of: dark.background), 0.5,
++        "\(family.name): '\(family.dark)' sits in the dark slot but has a light background")
++      XCTAssertGreaterThan(
++        ThemeTokens.perceivedBrightness(of: light.background), 0.5,
++        "\(family.name): '\(family.light)' sits in the light slot but has a dark background")
++    }
++  }
++
++  /// 4: family names are unique. `ThemeFamily.id` IS `name`, and `ThemePicker` uses it as the
++  /// `ForEach` id — duplicates are a SwiftUI identity bug, not a cosmetic one.
++  func testFamilyNamesAreUnique() {
++    let names = ThemeService.families.map(\.name)
++    XCTAssertEqual(
++      names.count, Set(names).count,
++      "duplicate family names: \(Dictionary(grouping: names, by: { $0 }).filter { $0.value.count > 1 }.keys)"
++    )
++  }
++
++  /// 5: the registry and the themes dir are in exact correspondence — compared as **sets**, not by
++  /// count. A count check passes when two families share a variant and an unregistered file pads the
++  /// total back to even, which is precisely the mistake it is supposed to catch.
++  ///
++  /// Consequence worth knowing: shipping a theme file without registering it here fails this test.
++  func testRegistryAndBundledThemesAreInExactCorrespondence() throws {
++    let declared = ThemeService.families.flatMap { [$0.dark, $0.light] }
++    let onDisk = try parseableBundledThemeNames()
++
++    XCTAssertEqual(
++      Set(declared).subtracting(onDisk), [], "declared variants with no bundled file")
++    XCTAssertEqual(
++      onDisk.subtracting(Set(declared)), [], "bundled theme files no family references")
++    XCTAssertEqual(
++      declared.count, Set(declared).count,
++      "two families share a variant file: \(Dictionary(grouping: declared, by: { $0 }).filter { $0.value.count > 1 }.keys)"
++    )
++    XCTAssertEqual(declared.count, ThemeService.families.count * 2)
++  }
++
++  /// 6: `Workroom` pinned first, everything else A→Z.
++  ///
++  /// Non-vacuous because `families` is an authored literal, not a `sorted(...)` result — appending a
++  /// family in the wrong place fails here. The comparator is deliberately locale-independent;
++  /// `localizedStandardCompare` would make the picker's order vary by system language.
++  func testFamiliesAreAlphabeticalAfterTheDefault() {
++    let rest = ThemeService.families.dropFirst().map(\.name)
++    let sorted = rest.sorted {
++      $0.compare($1, options: [.caseInsensitive, .numeric]) == .orderedAscending
++    }
++    XCTAssertEqual(rest, sorted, "the families literal is not in Workroom-then-A→Z order")
++  }
++
++  /// 7: the shipped bytes are the vetted bytes. Structural tests cannot catch this — an upstream
++  /// colour tweak stays palette-complete and sweeps clean — so `themes/CHECKSUMS` pins the files to
++  /// the vendored upstream commit recorded in `themes/SOURCE.md`.
++  func testBundledThemeChecksumsMatch() throws {
++    let dir = try bundledThemeDir()
++    let manifest = try XCTUnwrap(
++      try? String(contentsOfFile: dir + "/CHECKSUMS", encoding: .utf8),
++      "themes/CHECKSUMS must ship — it is what makes the vendored commit verifiable")
++
++    var expected: [String: String] = [:]
++    for line in manifest.split(separator: "\n") {
++      // `shasum -a 256` format: "<64 hex>  <filename>" (two spaces, filename may contain spaces).
++      let parts = line.components(separatedBy: "  ")
++      guard parts.count >= 2, parts[0].count == 64 else { continue }
++      expected[parts.dropFirst().joined(separator: "  ")] = parts[0].lowercased()
++    }
++    XCTAssertFalse(expected.isEmpty, "CHECKSUMS parsed to nothing — wrong format?")
++
++    let onDisk = try parseableBundledThemeNames()
++    XCTAssertEqual(
++      Set(expected.keys), onDisk, "CHECKSUMS and the shipped theme files disagree on membership")
++
++    for (name, want) in expected {
++      guard let data = FileManager.default.contents(atPath: dir + "/" + name) else {
++        XCTFail("\(name): listed in CHECKSUMS but unreadable")
++        continue
++      }
++      XCTAssertEqual(
++        Self.sha256Hex(data), want,
++        "\(name): contents differ from the vendored upstream commit recorded in SOURCE.md")
++    }
++  }
++
++  private static func sha256Hex(_ data: Data) -> String {
++    SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
++  }
++
++  // MARK: preview cache
++
++  /// The bundled cache must never shadow a user's own theme file. `~/.config` is re-read on every
++  /// call for exactly this reason: a user editing their theme has to see it change.
++  func testUserThemeOverrideIsNotServedFromTheBundledCache() throws {
++    let dir = try bundledThemeDir()
++    let name = try XCTUnwrap(ThemeService.families.first?.dark)
++
++    ThemeService.resetPreviewCacheForTesting()
++    let bundled = try XCTUnwrap(ThemeService.parseThemeFile(atPath: dir + "/" + name, name: name))
++    // Prime the cache from the bundle.
++    XCTAssertEqual(ThemeService.themePreview(named: name)?.background, bundled.background)
++
++    // A user override for the same name must win even though the cache is warm. The user dir may
++    // not exist on this machine, so this asserts the *precedence rule* via themeDirectories()
++    // ordering rather than by writing into the real ~/.config.
++    let dirs = ThemeService.themeDirectories()
++    XCTAssertTrue(
++      dirs.first?.hasSuffix("/.config/ghostty/themes") == true,
++      "the user dir must stay first — it is what makes an override win over the cache")
++    XCTAssertGreaterThan(dirs.count, 1, "the bundled dir must still be searched after it")
++  }
++
++  func testResetPreviewCacheForTestingClearsIt() throws {
++    let name = try XCTUnwrap(ThemeService.families.first?.dark)
++    XCTAssertNotNil(ThemeService.themePreview(named: name))
++    ThemeService.resetPreviewCacheForTesting()
++    // Still resolvable after a reset — the cache is an optimisation, never the source of truth.
++    XCTAssertNotNil(ThemeService.themePreview(named: name))
++  }
++
+   // MARK: dark/light quick toggle (issue #57)
+ 
+   func testToggledLightDarkFlipsForcedModes() {
+
+
+=== DIFF: macapp/WorkroomAppUITests/ThemePickerUITests.swift ===
+@@ -0,0 +1,151 @@
++import XCTest
++
++/// UI test for the **theme picker** (⌘⇧K) after the 27→58 family expansion.
++///
++/// This covers the one link in the chain that no unit test can reach. `ThemeServiceTests` proves the
++/// registry and the bundled files agree, reading the bundle from the test host — but it never renders
++/// a row, and it never proves a theme the user picks actually reaches the terminal engine. That path
++/// runs through SwiftUI and then through a generated ghostty config, so only a UI test sees it.
++///
++/// **What "applied" means here.** Asserting a checkmark would only prove a `Defaults` write. Applying
++/// a theme also rewrites `~/Library/Application Support/Workroom/ghostty.conf` with
++/// `theme = "<variant file name>"` (`GhosttyApp.writeThemeConfig`), and the test process can read that
++/// file — so the assertion is that the conf names the expected *file*, which proves registry lookup →
++/// appearance-appropriate variant → the name handed to libghostty.
++///
++/// **Residual gap, deliberately not claimed:** nothing here proves ghostty *accepted* the file. The
++/// engine exposes no error surface for an unresolvable `theme =`, so a bad file is indistinguishable
++/// from a good one at this level. `themes/CHECKSUMS` is what pins the bytes instead.
++///
++/// The starting family comes from `-WorkroomUITestThemeFamily`, mirrored into `Defaults` by
++/// `UITestFixture.applyFixtureDefaults`. That is app-side on purpose: `Defaults` is not isolated by a
++/// throwaway `$HOME`, so a runner-side save/restore would be writing the developer's real preference.
++///
++/// Run with a real GUI login session — XCUITest can't drive a headless run, so this lives in the UI
++/// scheme, excluded from `make app-test`. Scope it when iterating; the full UI suite is slow:
++/// `xcodebuild … -only-testing:WorkroomAppUITests/ThemePickerUITests`
++final class ThemePickerUITests: XCTestCase {
++  override func setUpWithError() throws { continueAfterFailure = false }
++
++  /// A newly-bundled family — deliberately one of the 31 added, so this fails if the new files didn't
++  /// make it into the built bundle. `Night Owl` also exercises the awkward shape: its variants are
++  /// `Night Owl` / `Light Owl`, which share no common prefix, so a name-suffix assumption anywhere in
++  /// the chain would break on it.
++  private let family = "Night Owl"
++  private let darkVariantFile = "Night Owl"
++  private let lightVariantFile = "Light Owl"
++
++  private func launchedApp() -> XCUIApplication {
++    let app = XCUIApplication()
++    app.launchArguments += ["-WorkroomUITestFixture", "1"]
++    // Start somewhere that is NOT the family under test, so a passing assertion can't be the
++    // fixture's starting state.
++    app.launchArguments += ["-WorkroomUITestThemeFamily", "Workroom"]
++    app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
++    app.launch()
++    app.activate()
++    return app
++  }
++
++  /// The app's generated conf, resolved against the **real** home.
++  ///
++  /// `FileManager.urls(for: .applicationSupportDirectory, …)` is wrong here and silently so: the
++  /// XCUITest runner has its own container, so it answers
++  /// `~/Library/Containers/com.developwithstyle.workroom.uitests.xctrunner/Data/Library/…` — a path
++  /// the app never writes to. Every read returned nil and the assertion failed while the feature
++  /// worked. `getpwuid` reports the real home because the sandbox doesn't rewrite passwd.
++  private var generatedConfURL: URL {
++    let realHome = String(cString: getpwuid(getuid())!.pointee.pw_dir)
++    return URL(fileURLWithPath: realHome)
++      .appendingPathComponent("Library/Application Support/Workroom/ghostty.conf")
++  }
++
++  /// The `theme = "…"` line of the generated conf, or nil while it hasn't been written yet.
++  private func confTheme() -> String? {
++    guard let text = try? String(contentsOf: generatedConfURL, encoding: .utf8) else { return nil }
++    for line in text.split(separator: "\n") where line.hasPrefix("theme = ") {
++      return line.dropFirst("theme = ".count).trimmingCharacters(
++        in: CharacterSet(charactersIn: "\""))
++    }
++    return nil
++  }
++
++  /// Poll the conf until it names one of `expected`. The apply path is synchronous from the click but
++  /// the file write and the engine reload are not observable through the a11y tree, so this waits on
++  /// the artefact rather than on a UI state that would only prove a `Defaults` write.
++  private func waitForConfTheme(oneOf expected: [String], timeout: TimeInterval = 5) -> String? {
++    let deadline = Date().addingTimeInterval(timeout)
++    while Date() < deadline {
++      if let current = confTheme(), expected.contains(current) { return current }
++      usleep(150_000)
++    }
++    return confTheme()
++  }
++
++  private func openPicker(_ app: XCUIApplication) {
++    app.typeKey("k", modifierFlags: [.command, .shift])
++  }
++
++  private func row(_ app: XCUIApplication, _ name: String) -> XCUIElement {
++    app.descendants(matching: .any)
++      .matching(identifier: "theme-family-\(name)").firstMatch
++  }
++
++  /// The whole chain: a newly-bundled family is findable by search, its row renders, clicking it
++  /// applies, and the generated conf names the variant file for the current appearance.
++  func testANewlyBundledFamilyIsFindableAndReachesTheEngine() throws {
++    let app = launchedApp()
++    openPicker(app)
++
++    // Search rather than scroll: with 58 rows the target may be far down the list, and searching is
++    // also what a user does. The search field takes focus on open.
++    app.typeText(family)
++
++    let target = row(app, family)
++    XCTAssertTrue(
++      target.waitForExistence(timeout: 5),
++      "'\(family)' did not appear in the picker — either its files are missing from the built bundle "
++        + "or it is not registered in ThemeService.families")
++
++    target.click()
++
++    let applied = waitForConfTheme(oneOf: [darkVariantFile, lightVariantFile])
++    XCTAssertNotNil(
++      applied, "no theme line in the generated ghostty.conf after picking '\(family)'")
++    XCTAssertTrue(
++      [darkVariantFile, lightVariantFile].contains(applied),
++      "the engine was handed '\(applied ?? "nil")' — expected '\(darkVariantFile)' (dark appearance) "
++        + "or '\(lightVariantFile)' (light appearance) for the '\(family)' family")
++  }
++
++  /// Both of a new family's swatches render a **resolved** theme. A variant whose file doesn't resolve
++  /// renders the grey fallback swatch, which is the visible symptom of a registry typo — and the one
++  /// failure a bundle-reading unit test cannot see, because it happens in the view.
++  ///
++  /// Each swatch reports its own variant file name and resolution state through accessibility, so this
++  /// names the two files rather than counting anonymous elements.
++  ///
++  /// Scoped to the family under test rather than all 58 rows: applying a theme rewrites the conf and
++  /// force-reloads the engine, so walking the whole list would mean 58 of those round-trips in one
++  /// test. Per-theme colour correctness is already asserted 116 times over by `SwitcherThemeSweepTests`.
++  func testBothSwatchesOfANewFamilyResolve() throws {
++    let app = launchedApp()
++    openPicker(app)
++    app.typeText(family)
++
++    XCTAssertTrue(row(app, family).waitForExistence(timeout: 5))
++
++    for variant in [darkVariantFile, lightVariantFile] {
++      let resolved = app.descendants(matching: .any)
++        .matching(identifier: "theme-swatch-\(variant)-resolved").firstMatch
++      XCTAssertTrue(
++        resolved.waitForExistence(timeout: 3),
++        "the '\(variant)' swatch did not render as resolved — that file is missing from the bundle or "
++          + "misnamed in ThemeService.families, so the row is drawing the grey fallback")
++
++      let unresolved = app.descendants(matching: .any)
++        .matching(identifier: "theme-swatch-\(variant)-unresolved").firstMatch
++      XCTAssertFalse(unresolved.exists, "the '\(variant)' swatch rendered the fallback")
++    }
++  }
++}
+
+
+=== DIFF: macapp/WorkroomApp/Core/ThemeService.swift ===
+@@ -34,36 +34,95 @@ final class ThemeService {
+   nonisolated static let defaultFamilyName = "Workroom"
+ 
+   /// The curated, pair-complete bundled families. Each variant name is a file in
+-  /// `Resources/ghostty/themes` (and resolvable by ghostty). `Workroom` is pinned first.
++  /// `Resources/ghostty/themes` (and resolvable by ghostty).
++  ///
++  /// **Order is authored, not computed:** `Workroom` is pinned first, then A→Z. A `sorted(...)` call
++  /// here would make `testFamiliesAreAlphabeticalAfterTheDefault` vacuous — it would assert a
++  /// property the initializer had just imposed — so the list is typed in its final display order and
++  /// the test compares it against `compare(options: [.caseInsensitive, .numeric])`. That comparator
++  /// is deliberately NOT `localizedStandardCompare`: a locale-sensitive collation would make the
++  /// picker's row order vary by system language and the assertion unpinnable.
++  ///
++  /// **Inclusion criteria** (see `Resources/ghostty/themes/SOURCE.md`): a designed dark AND light
++  /// variant (issue #36); clears every contrast floor in `SwitcherThemeSweepTests`; a distinct
++  /// palette rather than a shade of one already here; serves a real user (a tool people use, a
++  /// well-known scheme, or an accessibility need); and never another product's brand identity.
++  ///
++  /// Every file in the themes dir belongs to exactly one family — `ThemeServiceTests` pins that as
++  /// exact set equality, so adding a file without registering it here fails the suite.
+   nonisolated static let families: [ThemeFamily] = [
+     ThemeFamily(name: "Workroom", dark: "Workroom", light: "Workroom Light"),
++    ThemeFamily(name: "3024", dark: "3024 Night", light: "3024 Day"),
++    ThemeFamily(name: "Aizen", dark: "Aizen Dark", light: "Aizen Light"),
++    ThemeFamily(
++      name: "Apple System Colors", dark: "Apple System Colors",
++      light: "Apple System Colors Light"),
++    ThemeFamily(name: "Atom One", dark: "Atom One Dark", light: "Atom One Light"),
++    ThemeFamily(name: "Ayu", dark: "Ayu Mirage", light: "Ayu Light"),
++    ThemeFamily(name: "Belafonte", dark: "Belafonte Night", light: "Belafonte Day"),
++    ThemeFamily(name: "Bluloco", dark: "Bluloco Dark", light: "Bluloco Light"),
+     ThemeFamily(name: "Catppuccin", dark: "Catppuccin Mocha", light: "Catppuccin Latte"),
+-    ThemeFamily(name: "Tokyo Night", dark: "TokyoNight Night", light: "TokyoNight Day"),
+-    ThemeFamily(name: "Gruvbox", dark: "Gruvbox Dark", light: "Gruvbox Light"),
+-    ThemeFamily(name: "Nord", dark: "Nord", light: "Nord Light"),
+-    ThemeFamily(name: "One Half", dark: "One Half Dark", light: "One Half Light"),
+-    ThemeFamily(name: "GitHub", dark: "GitHub Dark", light: "GitHub Light Default"),
+-    ThemeFamily(name: "Rosé Pine", dark: "Rose Pine", light: "Rose Pine Dawn"),
++    ThemeFamily(name: "Claude", dark: "Claude Dark", light: "Claude Light"),
++    ThemeFamily(name: "Clear", dark: "Clear Dark", light: "Clear Light"),
++    ThemeFamily(name: "Cursor", dark: "Cursor Dark", light: "Cursor Light"),
++    ThemeFamily(name: "Duskfox", dark: "Duskfox", light: "Dawnfox"),
++    ThemeFamily(
++      name: "Electron Highlighter", dark: "Electron Highlighter",
++      light: "Electron Highlighter Day"),
+     ThemeFamily(name: "Everforest", dark: "Everforest Dark Hard", light: "Everforest Light Med"),
+-    ThemeFamily(name: "Ayu", dark: "Ayu Mirage", light: "Ayu Light"),
++    ThemeFamily(name: "Farmhouse", dark: "Farmhouse Dark", light: "Farmhouse Light"),
++    ThemeFamily(name: "Flexoki", dark: "Flexoki Dark", light: "Flexoki Light"),
++    ThemeFamily(name: "GitHub", dark: "GitHub Dark", light: "GitHub Light Default"),
++    ThemeFamily(
++      name: "GitHub High Contrast", dark: "GitHub Dark High Contrast",
++      light: "GitHub Light High Contrast"),
++    ThemeFamily(name: "GitLab", dark: "GitLab Dark", light: "GitLab Light"),
++    ThemeFamily(name: "Gruvbox", dark: "Gruvbox Dark", light: "Gruvbox Light"),
++    ThemeFamily(
++      name: "Gruvbox Material", dark: "Gruvbox Material Dark", light: "Gruvbox Material Light"),
++    ThemeFamily(name: "Iceberg", dark: "Iceberg Dark", light: "Iceberg Light"),
+     ThemeFamily(name: "Kanagawa", dark: "Kanagawa Wave", light: "Kanagawa Lotus"),
+     ThemeFamily(name: "Kanso", dark: "Kanso Zen", light: "Kanso Pearl"),
+-    ThemeFamily(name: "Monokai Pro", dark: "Monokai Pro", light: "Monokai Pro Light"),
+-    ThemeFamily(name: "Solarized", dark: "iTerm2 Solarized Dark", light: "iTerm2 Solarized Light"),
+-    ThemeFamily(name: "Xcode", dark: "Xcode Dark", light: "Xcode Light"),
+-    ThemeFamily(name: "Flexoki", dark: "Flexoki Dark", light: "Flexoki Light"),
+-    ThemeFamily(name: "Atom One", dark: "Atom One Dark", light: "Atom One Light"),
+-    ThemeFamily(name: "Nightfox", dark: "Nightfox", light: "Dayfox"),
++    ThemeFamily(name: "Karma", dark: "Karma Dark", light: "Karma Light"),
++    ThemeFamily(name: "Material", dark: "Material Dark", light: "Material"),
+     ThemeFamily(name: "Melange", dark: "Melange Dark", light: "Melange Light"),
+     ThemeFamily(name: "Modus", dark: "Modus Vivendi", light: "Modus Operandi"),
+-    ThemeFamily(name: "Iceberg", dark: "Iceberg Dark", light: "Iceberg Light"),
++    ThemeFamily(name: "Monokai Pro", dark: "Monokai Pro", light: "Monokai Pro Light"),
++    ThemeFamily(name: "Monospace", dark: "Monospace Dark", light: "Monospace Light"),
++    ThemeFamily(name: "Neobones", dark: "Neobones Dark", light: "Neobones Light"),
++    ThemeFamily(name: "Night Owl", dark: "Night Owl", light: "Light Owl"),
++    ThemeFamily(name: "Nightfox", dark: "Nightfox", light: "Dayfox"),
++    ThemeFamily(
++      name: "No Clown Fiesta", dark: "No Clown Fiesta", light: "No Clown Fiesta Light"),
++    ThemeFamily(name: "Nord", dark: "Nord", light: "Nord Light"),
++    ThemeFamily(name: "Nvim", dark: "Nvim Dark", light: "Nvim Light"),
++    ThemeFamily(name: "One Half", dark: "One Half Dark", light: "One Half Light"),
++    ThemeFamily(name: "Onenord", dark: "Onenord", light: "Onenord Light"),
++    ThemeFamily(name: "Patina", dark: "Patina Dark", light: "Patina Light"),
++    ThemeFamily(name: "Pencil", dark: "Pencil Dark", light: "Pencil Light"),
++    ThemeFamily(name: "Pyrokai", dark: "Pyrokai", light: "Pyrokai Light"),
++    ThemeFamily(name: "Raycast", dark: "Raycast Dark", light: "Raycast Light"),
++    ThemeFamily(name: "Rosé Pine", dark: "Rose Pine", light: "Rose Pine Dawn"),
+     ThemeFamily(name: "Selenized", dark: "Selenized Dark", light: "Selenized Light"),
++    ThemeFamily(name: "Seoulbones", dark: "Seoulbones Dark", light: "Seoulbones Light"),
+     ThemeFamily(
+-      name: "Gruvbox Material", dark: "Gruvbox Material Dark", light: "Gruvbox Material Light"),
++      name: "Sequoia Monochrome", dark: "Sequoia Monochrome Dark",
++      light: "Sequoia Monochrome Light"),
++    ThemeFamily(
++      name: "Sequoia Moonlight", dark: "Sequoia Moonlight Dark",
++      light: "Sequoia Moonlight Light"),
++    ThemeFamily(
++      name: "Sequoia Retro", dark: "Sequoia Retro Dark", light: "Sequoia Retro Light"),
++    ThemeFamily(name: "Solarized", dark: "iTerm2 Solarized Dark", light: "iTerm2 Solarized Light"),
++    ThemeFamily(
++      name: "Tinacious Design", dark: "Tinacious Design Dark", light: "Tinacious Design Light"),
++    ThemeFamily(name: "Token", dark: "Token Dark", light: "Token Light"),
++    ThemeFamily(name: "Tokyo Night", dark: "TokyoNight Night", light: "TokyoNight Day"),
+     ThemeFamily(name: "Tomorrow", dark: "Tomorrow Night", light: "Tomorrow"),
+-    ThemeFamily(name: "Duskfox", dark: "Duskfox", light: "Dawnfox"),
+-    ThemeFamily(name: "Seoulbones", dark: "Seoulbones Dark", light: "Seoulbones Light"),
+-    ThemeFamily(name: "Pencil", dark: "Pencil Dark", light: "Pencil Light"),
++    ThemeFamily(name: "Xcode", dark: "Xcode Dark", light: "Xcode Light"),
++    ThemeFamily(name: "Xcode High Contrast", dark: "Xcode Dark hc", light: "Xcode Light hc"),
++    ThemeFamily(name: "Zenbones", dark: "Zenbones Dark", light: "Zenbones Light"),
++    ThemeFamily(name: "Zenwritten", dark: "Zenwritten Dark", light: "Zenwritten Light"),
+   ]
+ 
+   /// Current chrome tokens. Recomputed only inside `applyActiveTheme()`, so chrome never re-parses
+@@ -145,15 +204,57 @@ final class ThemeService {
+ 
+   // MARK: Resolution
+ 
++  /// Parsed previews for the **bundled** dir only, keyed by theme name.
++  ///
++  /// `ThemePicker` calls `themePreview` twice per row *inside the row body* (`ThemePicker.swift`),
++  /// and every `FamilyRow` observes `ThemeService.shared` for `tokens` — so each ↑/↓, which applies a
++  /// theme and replaces `tokens`, invalidates every instantiated row and sent all of them back to
++  /// disk. With 58 families that is up to 116 synchronous file reads per keypress on the main actor,
++  /// on top of the conf rewrite + engine reload the apply already does.
++  ///
++  /// Only the bundled dir is cached, and that is what makes the cache correct rather than merely
++  /// fast: those files cannot change while the app is running, so an entry can never go stale.
++  /// `~/.config` is re-read on every call (below) precisely so a user editing their own theme still
++  /// sees it change.
++  ///
++  /// `nonisolated(unsafe)` + a lock rather than `@MainActor`: `themePreview` is `nonisolated` and
++  /// `GhosttyApp.writeThemeConfig` resolves off the main actor, so main-actor-isolating the storage
++  /// would force call-site changes there. The lock keeps the isolation contract unchanged.
++  private nonisolated(unsafe) static var bundledPreviewCache: [String: ThemePreview] = [:]
++  private static let bundledPreviewCacheLock = NSLock()
++
++  /// Drop the bundled cache. Tests only — a process-lifetime static otherwise leaks state across
++  /// test cases and makes the "a user override still wins" case impossible to isolate.
++  nonisolated static func resetPreviewCacheForTesting() {
++    bundledPreviewCacheLock.lock()
++    bundledPreviewCache.removeAll()
++    bundledPreviewCacheLock.unlock()
++  }
++
+   /// Resolve one theme name to its parsed colours, with `~/.config` winning over bundled — the
+   /// SAME precedence as ghostty's terminal resolution, so chrome and terminal never diverge for a
+   /// user-overridden theme file.
+   nonisolated static func themePreview(named name: String) -> ThemePreview? {
+-    for dir in themeDirectories() {
++    // User dir stays uncached and is checked first, preserving both ghostty's precedence and the
++    // ability to edit a theme live.
++    if let userDir = themeDirectories().first {
++      let path = userDir + "/" + name
++      if FileManager.default.fileExists(atPath: path),
++        let theme = parseThemeFile(atPath: path, name: name)
++      {
++        return theme
++      }
++    }
++
++    bundledPreviewCacheLock.lock()
++    defer { bundledPreviewCacheLock.unlock() }
++    if let hit = bundledPreviewCache[name] { return hit }
++    for dir in themeDirectories().dropFirst() {
+       let path = dir + "/" + name
+       if FileManager.default.fileExists(atPath: path),
+         let theme = parseThemeFile(atPath: path, name: name)
+       {
++        bundledPreviewCache[name] = theme
+         return theme
+       }
+     }
+
+
+=== DIFF: macapp/Resources/ghostty/themes/CHECKSUMS ===
+@@ -0,0 +1,116 @@
++4b5028fa20fd371686f04eaffed455d81d9a515e46babef8fd3fae479927435a  3024 Day
++1a0259601bddc144073b35c71dfeae7a6c0010dc9faa9f1e3a00e4d628d97951  3024 Night
++0963eab0d93aaeab7dca02cca573680dfe454d9c7eb60bf78213146d2a4ab1ed  Aizen Dark
++766f50a515228e6a4000677bd1951b6df905a15f40c2ee1c3a64eb73cb8f2d8c  Aizen Light
++c710555bb6428c1f8a02ed0b69d4ea6bcdd83ae6db7ea9d9a5ec46237e4a4c30  Apple System Colors
++c5008917633a6be1ad8cd0173dde9b7615045eb4900e29e27673ff53e711e2ce  Apple System Colors Light
++46f57abfbe93bf63de492ed1167f08a79004c60818204cb77eb82ac691b1fb95  Atom One Dark
++b879fbfb255499ea2dae12d56cfba22d1e52f45319b13df89c8779c5f2f1d2f3  Atom One Light
++b405867eb65535367c6d44168c8386c4cc92a392adf5b42b6300af00075f4001  Ayu Light
++dbf2197b2406e9cfee881bb5c2bedd1a64cbaa01fcdec2840763fa8ff2486762  Ayu Mirage
++21e36a7300bc7bb79a21f496265f6c6d1810dfa6bd770740702adb9aa266a6ea  Belafonte Day
++df714d9643ad8280999bc52a91f942e49806d20e758b2bdecf80106fa001f210  Belafonte Night
++fbe1aa64fa38af4671c9fbe31c832e52200ef7eb5b2dffe91ff150c60f1497a2  Bluloco Dark
++ec603c8aeb3b4ec032851b2f7b0455b864c58394e5ceb6859f090161c54a733c  Bluloco Light
++4ceccc379d203d89f93c1509b8873adf12987c9b3a967220ec784305a016e9ef  Catppuccin Latte
++85f4db264fd0cc858969f0097fbde21a7d177a57692d344c63d6c93b9e7d4ed2  Catppuccin Mocha
++6e305ca11ca497f711b1b5f0448bd241b1a14822f3831a1cc43e6fb3b177e102  Claude Dark
++4ec417e4cdef56ce6340b2fb9c2a31995dd30b7c698fda3eabc524ea0532a039  Claude Light
++5b172351777ccee70b57c79f0ad65f1d908cfc8242038d459c9159a5caa5549e  Clear Dark
++cefde8508cfac8a69448e9b191ce4d1c82664b112f7df06607429cb81069363d  Clear Light
++c6fefeb2c9716722fa6816855ae280e5062f5cfcb5bc2a5b24b7a0d80ee0c4ce  Cursor Dark
++b85232967070388f85ccc3114b745d1217f6659c861b260fa85f0dbd2307def1  Cursor Light
++c91fc2a811b7cd847920e51471beeb110fa66472ae070832a904c61da166e147  Dawnfox
++a1ce8f30b19aee164768670b156b3e003fc80ecce024df94f9a9b12a4f9caafc  Dayfox
++88ebf06f1ec5fb10a412efcbad67e0175934a73dba27b58b673b49e015e4a6b1  Duskfox
++e9d6acbed5e15c8426ccd6b85692ab99aa335dab81e679d66f2fb0143a03efc7  Electron Highlighter
++4eea195f1055ac58db76ce1a41dee02066937314ae29c8de887007d7b3d1b0f7  Electron Highlighter Day
++d21fd3710cb3277231e7dd820938fd4c9a66f75bdc52d41ceff1a163e6c65fc4  Everforest Dark Hard
++fbb0758322e3e2bf6f1e967a268d89c562b18efc61216624927f81a83e6625a2  Everforest Light Med
++d377247dcb5855458b9a84b28cd985d7898d6ecebb323313c3b6c8318e21b9f4  Farmhouse Dark
++7f4f6aee83dd4119fee7dc153291e1589ecf10ac1686af7f36d8101714c57545  Farmhouse Light
++3233c16df109cf6b311064b54e27ee015487ea29875c0342e0494ad0bec616f4  Flexoki Dark
++7c18396cf68a437357259f963a2b848c06ccac5fe52d15d6730f86caeed48c2a  Flexoki Light
++b9eadd8b80da2a3a99ed70c7adc89cb7d722c771d72726c5d2f6877d14e6184a  GitHub Dark
++866fc6501695668ea2b71870091cf751a6c51637fe11dad35cdc3cf3003690b7  GitHub Dark High Contrast
++5c361e5a6a8e3fcbef1575946ae7ed1a1b5a8e7454b82578438cb8d2c5267287  GitHub Light Default
++4e310359be5067f3365a8353f279f51563dc59e8e6167699983df6b93eab575b  GitHub Light High Contrast
++28add37585954c76d977e26095f278e20392ccd9d0bef01270ea38690d0afc25  GitLab Dark
++1d2595c9f0d7d7fa54a0a3b5c49d426db41a170548c8508cf5bf783399baedc6  GitLab Light
++2f9ea0d3bc429e78f6cdb19cb1104f522bf187664f14922f3001ed7c0af54595  Gruvbox Dark
++79bcb924ea79bfb563b729ee57184e729deb7648175bae97a09aedde7bfb5a80  Gruvbox Light
++89333dfac47645ac01111ab11e2b98119c4cdc1b5567e7b67cfe117fadb380a6  Gruvbox Material Dark
++0e6252c1b1ec3343a118e5d5648806fe6fba9ded1761b546a90527c22ad9e1d9  Gruvbox Material Light
++ee644d504ef66c96a1510cdddb08df995262e25fd6419c424030b29ff2b9cce6  Iceberg Dark
++186664df871f8a75acaabb02568e29e30a017725a6ec18bff17f3d4c37fe409d  Iceberg Light
++9da77ad112701ac55101babbbbfdb7695cc6461ffefe9fa67224f7f9bee38dcb  iTerm2 Solarized Dark
++5a374b2770f74abebb6593c5fdec1a18d1032035775484d32d88cbfafa9cfea9  iTerm2 Solarized Light
++0b811d030d6d5771c07528d54d737b20fb36b342c9e64196b8e6d645fc869f18  Kanagawa Lotus
++eca86ffb7a43cce33c74fdbeab8514d57f2cd1dbaef87ff727a72f8883e88305  Kanagawa Wave
++097b2a4aeb246c8ebb1cf2ca968e98279df49636a939138d15c0697ff244f549  Kanso Pearl
++7fa6321d3a2b4d3a678679760b955c44d800542a8784bf3eea2cd41dd9329ed1  Kanso Zen
++46dda59231f537bcf4e10630da42936f21a6ad597b58977d68e140a58af7790a  Karma Dark
++151e60fe2e95b0eb908e3ae8618784cac63744b2329896f622a919df1292daf7  Karma Light
++53090e04107174ee58e227d6c83e5999b131686dc31cd9829746cb9cfd649537  Light Owl
++c8297a506347291e7eb4961230b95d0539051a74016eddd968ed26dc720442c8  Material
++bfd7792858b0f8b86e1dc7062b3f49da76e36e1977bcb9df899c92012e526481  Material Dark
++b7dad7b7bd6c7aa1205f6a9724caeabf71c4b9c96e38272a324ed42faa126549  Melange Dark
++19b9577ff0cb18ca434d9ec3e41ae19848c5951ccf17bd8d88e226497a731dbd  Melange Light
++fa047d6efb4f3620782482d1bb681a1db3d6553c4c448af55451d84987ee8459  Modus Operandi
++3bfe28c8b3bcc5f2f03b4736b574dd94d9fbf07c5fd9bb08b60052d612bb9c70  Modus Vivendi
++6de9423387955a0721486a91ade315568e50ccd735d64ce04256283dae3b92f0  Monokai Pro
++9eefcb6a323edbf537c67d5f3caad94fce8ae490c9f04d4e8b1d8d916d40f278  Monokai Pro Light
++5dc974bdac4c0197c743c8f5d37d5643865c886bb8a2d5fe94ab22cc22171795  Monospace Dark
++27e4b8e8958ae0cc2f1683329771867aafb6ef28502ec9f319892b785b0e0998  Monospace Light
++95e2bc572c7cd3f73c50c0e3a56be946618e7b6c44ab06700cddc076adb8f9f6  Neobones Dark
++f62dc71a747b068d2dbb696332545084a09e7ee2141e28d12b94d6e8cc836243  Neobones Light
++84af7c33504aa76970d1208422c2b5b4e09bc075a63ddc76ebc64e4cf2eaea2a  Night Owl
++86da2844f0728bdbdef2e9522b1fc91e7db3616a1ceee6d8946e20a2bff0f0ae  Nightfox
++27dd5d18437f83bf6ec2b0871aaa0283bc5e4a1145a6568b1a01c0ff6a67e049  No Clown Fiesta
++ba8d2ff38cd4ade388463ed53da77771ba2a3cd55c693fab893508dd6771370d  No Clown Fiesta Light
++2e6664c01db6a651eb0d19123cff6f744997e3e3b7b0c2b6b8f7177138be50a4  Nord
++082e23cdf82b897dd9f82865cd0646cecaa91700ab6139af60842b5abfaac8d6  Nord Light
++76d3be83ec6594f66ea05495cd2c5fbc191c121321edf223105e28c7d038fdd7  Nvim Dark
++0c78ed81920b27d873ba13e7ae6127bb45b62e0b652d68219cfadd9f8dfc6ef0  Nvim Light
++e2296672f089d8476186b234bc8c46f4810d397df02951f0259eea241476db93  One Half Dark
++40e330a892c8f27b18c52fbcf7872358169eed21535044b72c22471201687257  One Half Light
++030995e4d678fbe198f17f861d78ea77374f693d807c81a02c1e12415b42f5ab  Onenord
++a26b6138ba6506ee96146bf7880cd4eb47cda44140cb69128332a493553f47ce  Onenord Light
++7b753f50f752792e4055ae870e3efee9351ac710f1c4c5fd4c7160424bfb7339  Patina Dark
++1719d3d92c64c4e7372950685a32c5e446df0c0a77eefe47654cf486c5042ea8  Patina Light
++a329d22d11e3bd4bede4fe4fe9874bf5bad6b93e3ac11e8bf6ea27e81f6fa7c9  Pencil Dark
++70493c5586640c412c6bc1f01cfa1052c33e5917793df043db4b8ac979e6f316  Pencil Light
++9666ffb229d0a2f7edebdceca4cb05bbe02c98ec1156b8e3d89bbbea032fb009  Pyrokai
++55ec766c573003fb8de0e1f279be5ab59860ef9dc82ddf399e63521ce8258d5d  Pyrokai Light
++9363c17b7c2668c3ee7ec7422c0b4ec140aced6e5ec51e498ea271cd55893692  Raycast Dark
++48ebaa81d8f6d6b2314a8364e9d3a3c325e09a9a77d1fb5109a843b1f243deca  Raycast Light
++23075d6407b3e9f0dd2a7f9d67555deedc2e31805ddde34a03d6a66725f86197  Rose Pine
++4b9d68bc9f5ed906c0aa723b380317841bd1953d22146423689174cfe7f032bf  Rose Pine Dawn
++fee3774e8c192dd4f5982268d6c31c5ebfc6553f74cf3903556cda0f7292978f  Selenized Dark
++bacd8641a7b0bfc99a4e63138f10cc0e6714a020ed43de22bb582565989394de  Selenized Light
++dc17ece21281c33c8478d887133f4f6884c9b2c9be7f5208c8276b55c19e9033  Seoulbones Dark
++1bdf3d1c293d13b74c171d199eb71473ca83a5e90d6b09303dc72df7c04b53a5  Seoulbones Light
++ce93f1a70e3aa76088e50e8af482f03adc167384345b460951362c2bea27a7e8  Sequoia Monochrome Dark
++42e4e62e2483027937a4ebda42f38ee0490ae8599fb7de251e9184c8d39a6db3  Sequoia Monochrome Light
++fb424dfbfe819c322399a97dc8d7b84da4870a7c7e89bfb6c4b79f458b90727b  Sequoia Moonlight Dark
++66d308e48aea3a786e8645d8d1f30f2c4689aafbbe2399b138d6bd77101b58c0  Sequoia Moonlight Light
++c77502ed29be9f191d4699972ec9ac52a10f6f04b04641f9da47107b82fed5f6  Sequoia Retro Dark
++bdfec20e590abf9498723d6299508c9781eb9009f54b1902f000c46c6e2213cc  Sequoia Retro Light
++c40fce783cd735472e752c2402f8e25e68ed1feedf0b646576ed2da39a5bd4a9  Tinacious Design Dark
++a0bb35122b348755bc01a3b9c4c9eb5621a7577435c03a904160aa046f187e82  Tinacious Design Light
++26e7671374ce1fa5db42ccd78a8c6794d23cd3f05c4e761877cc6fdcec669e11  Token Dark
++992e82c0011d0ae45483fac16c4793bab32bdec5e87f4e4564485f34cfc4509f  Token Light
++a465cdf1ebf134ad7ecb48a5ef2e49c45c0d5494409ddd14154827b59a9d77f3  TokyoNight Day
++b4890703f0b1839416eb394094f302f00938b2e7aa4bcb868be1116e4d2378b6  TokyoNight Night
++a03cfa084054a9bfac55a8d819ea9fb28d9aea57d566077afefe34f0f38c67ca  Tomorrow
++7bd24b6b394b734419cc5d975997e91c2e79538e7671737c45f2a1b02dc4791b  Tomorrow Night
++3510ce2e65a71251fae0b4dca5dc114e8d9efbac415c6d2a0cffb69bbf48ca12  Workroom
++41a9d60b2cd84334131c2f5e1a937a569bc776231dfa146f29d97025e5ccf944  Workroom Light
++a93ddd2f3c526a900569f2c5acdc6c1950195a8e25fe17953523aa6ccc11f9a1  Xcode Dark
++2263ef8a860754a8696dc360ddbd33eca236070e12f7bfb4a6210f79824ceebc  Xcode Dark hc
++c8d7fa3570f5bd15107920766de1f0f382caf870411c5a8fb91c0e71838ae6f4  Xcode Light
++9617a7e2edd2b844a8b799b79530db5fd24e2310f21894def028796a3c5e6413  Xcode Light hc
++03e300129df26c16e26b17d22e0b065ebc5638609bc8167e43f7a817f231270b  Zenbones Dark
++4eef9160d1fd29f34ff68b1c41f90666676949248121a7bac4abf9d595a25018  Zenbones Light
++fc1219936fc85220d10db6d638448695204febb44e85d71982080066e55e3f3c  Zenwritten Dark
++4b686df06f3d40e258ab7555eeea54d29d400b675ea4e69fa20afe2453d95fe4  Zenwritten Light
+
+
+=== DIFF: macapp/Resources/ghostty/themes/3024 Day ===
+@@ -0,0 +1,22 @@
++palette = 0=#090300
++palette = 1=#db2d20
++palette = 2=#01a252
++palette = 3=#caba00
++palette = 4=#01a0e4
++palette = 5=#a16a94
++palette = 6=#8fbece
++palette = 7=#a5a2a2
++palette = 8=#5c5855
++palette = 9=#dbaec3
++palette = 10=#3a3432
++palette = 11=#4a4543
++palette = 12=#807d7c
++palette = 13=#bcbbba
++palette = 14=#cdab53
++palette = 15=#f7f7f7
++background = #f7f7f7
++foreground = #4a4543
++cursor-color = #4a4543
++cursor-text = #f7f7f7
++selection-background = #a5a2a2
++selection-foreground = #4a4543
+
+
+=== DIFF: macapp/Resources/ghostty/themes/3024 Night ===
+@@ -0,0 +1,22 @@
++palette = 0=#090300
++palette = 1=#db2d20
++palette = 2=#01a252
++palette = 3=#fded02
++palette = 4=#01a0e4
++palette = 5=#a16a94
++palette = 6=#b5e4f4
++palette = 7=#a5a2a2
++palette = 8=#5c5855
++palette = 9=#e8bbd0
++palette = 10=#47413f
++palette = 11=#4a4543
++palette = 12=#807d7c
++palette = 13=#d6d5d4
++palette = 14=#cdab53
++palette = 15=#f7f7f7
++background = #090300
++foreground = #a5a2a2
++cursor-color = #a5a2a2
++cursor-text = #090300
++selection-background = #4a4543
++selection-foreground = #a5a2a2
+
+
+=== DIFF: macapp/Resources/ghostty/themes/Aizen Dark ===
+@@ -0,0 +1,22 @@
++palette = 0=#1a1a1a
++palette = 1=#f08898
++palette = 2=#a4e09c
++palette = 3=#f5dea4
++palette = 4=#84b4f8
++palette = 5=#c8a2f4
++palette = 6=#90dcd0
++palette = 7=#d0d6f0
++palette = 8=#444444
++palette = 9=#f08898
++palette = 10=#a4e09c
++palette = 11=#f5dea4
++palette = 12=#84b4f8
++palette = 13=#c8a2f4
++palette = 14=#90dcd0
++palette = 15=#ffffff
++background = #1a1a1a
++foreground = #d0d6f0
++cursor-color = #f8b080
++cursor-text = #1a1a1a
++selection-background = #333333
++selection-foreground = #d0d6f0
+
+
+=== DIFF: macapp/Resources/ghostty/themes/Aizen Light ===
+@@ -0,0 +1,22 @@
++palette = 0=#f0f2f6
++palette = 1=#d00c36
++palette = 2=#3e9e28
++palette = 3=#dd8c1a
++palette = 4=#1c64f2
++palette = 5=#8636ec
++palette = 6=#159096
++palette = 7=#4a4d66
++palette = 8=#adb2bc
++palette = 9=#d00c36
++palette = 10=#3e9e28
++palette = 11=#dd8c1a
++palette = 12=#1c64f2
++palette = 13=#8636ec
++palette = 14=#159096
++palette = 15=#4a4d66
++background = #f0f2f6
++foreground = #4a4d66
++cursor-color = #fc6008
++cursor-text = #f0f2f6
++selection-background = #bdc2cc
++selection-foreground = #4a4d66
+
+
+=== DIFF: macapp/Resources/ghostty/themes/Apple System Colors ===
+@@ -0,0 +1,22 @@
++palette = 0=#1a1a1a
++palette = 1=#cc372e
++palette = 2=#26a439
++palette = 3=#cdac08
++palette = 4=#0869cb
++palette = 5=#9647bf
++palette = 6=#479ec2
++palette = 7=#98989d
++palette = 8=#464646
++palette = 9=#ff453a
++palette = 10=#32d74b
++palette = 11=#ffd60a
++palette = 12=#0a84ff
++palette = 13=#bf5af2
++palette = 14=#76d6ff
++palette = 15=#ffffff
++background = #1e1e1e
++foreground = #ffffff
++cursor-color = #98989d
++cursor-text = #ffffff
++selection-background = #3f638b
++selection-foreground = #ffffff
+
+
+=== DIFF: macapp/Resources/ghostty/themes/Apple System Colors Light ===
+@@ -0,0 +1,22 @@
++palette = 0=#1a1a1a
++palette = 1=#cc372e
++palette = 2=#26a439
++palette = 3=#cdac08
++palette = 4=#0869cb
++palette = 5=#9647bf
++palette = 6=#479ec2
++palette = 7=#98989d
++palette = 8=#464646
++palette = 9=#ff453a
++palette = 10=#32d74b
++palette = 11=#e5bc00
++palette = 12=#0a84ff
++palette = 13=#bf5af2
++palette = 14=#69c9f2
++palette = 15=#ffffff
++background = #feffff
++foreground = #000000
++cursor-color = #98989d
++cursor-text = #ffffff
++selection-background = #abd8ff
++selection-foreground = #000000
+
+
+=== DIFF: macapp/Resources/ghostty/themes/Belafonte Day ===
+@@ -0,0 +1,22 @@
++palette = 0=#20111b
++palette = 1=#be100e
++palette = 2=#858162
++palette = 3=#d08b30
++palette = 4=#426a79
++palette = 5=#97522c
++palette = 6=#989a9c
++palette = 7=#968c83
++palette = 8=#5e5252
++palette = 9=#be100e
++palette = 10=#858162
++palette = 11=#d08b30
++palette = 12=#426a79
++palette = 13=#97522c
++palette = 14=#989a9c
++palette = 15=#d5ccba
++background = #d5ccba
++foreground = #45373c
++cursor-color = #45373c
++cursor-text = #d5ccba
++selection-background = #968c83
++selection-foreground = #45373c
+
+
+=== DIFF: macapp/Resources/ghostty/themes/Belafonte Night ===
+@@ -0,0 +1,22 @@
++palette = 0=#20111b
++palette = 1=#be100e
++palette = 2=#858162
++palette = 3=#eaa549
++palette = 4=#426a79
++palette = 5=#97522c
++palette = 6=#989a9c
++palette = 7=#968c83
++palette = 8=#5e5252
++palette = 9=#be100e
++palette = 10=#858162
++palette = 11=#eaa549
++palette = 12=#426a79
++palette = 13=#97522c
++palette = 14=#989a9c
++palette = 15=#d5ccba
++background = #20111b
++foreground = #968c83
++cursor-color = #968c83
++cursor-text = #20111b
++selection-background = #45373c
++selection-foreground = #968c83
+
+
+=== DIFF: macapp/Resources/ghostty/themes/Bluloco Dark ===
+@@ -0,0 +1,22 @@
++palette = 0=#41444d
++palette = 1=#fc2f52
++palette = 2=#25a45c
++palette = 3=#ff936a
++palette = 4=#3476ff
++palette = 5=#7a82da
++palette = 6=#4483aa
++palette = 7=#cdd4e0
++palette = 8=#8f9aae
++palette = 9=#ff6480
++palette = 10=#3fc56b
++palette = 11=#f9c859
++palette = 12=#10b1fe
++palette = 13=#ff78f8
++palette = 14=#5fb9bc
++palette = 15=#ffffff
++background = #282c34
++foreground = #b9c0cb
++cursor-color = #ffcc00
++cursor-text = #282c34
++selection-background = #b9c0ca
++selection-foreground = #272b33
+
+
+=== DIFF: macapp/Resources/ghostty/themes/Bluloco Light ===
+@@ -0,0 +1,22 @@
++palette = 0=#373a41
++palette = 1=#d52753
++palette = 2=#23974a
++palette = 3=#df631c
++palette = 4=#275fe4
++palette = 5=#823ff1
++palette = 6=#27618d
++palette = 7=#babbc2
++palette = 8=#676a77
++palette = 9=#ff6480
++palette = 10=#3cbc66
++palette = 11=#c5a332
++palette = 12=#0099e1
++palette = 13=#ce33c0
++palette = 14=#6d93bb
++palette = 15=#d3d3d3
++background = #f9f9f9
++foreground = #373a41
++cursor-color = #f32759
++cursor-text = #ffffff
++selection-background = #daf0ff
++selection-foreground = #373a41
+
+
+=== DIFF: macapp/Resources/ghostty/themes/Claude Dark ===
+@@ -0,0 +1,22 @@
++palette = 0=#888681
++palette = 1=#d47563
++palette = 2=#9aca86
++palette = 3=#e8c96b
++palette = 4=#6a9bcc
++palette = 5=#9b87f5
++palette = 6=#3cbe8c
++palette = 7=#e2e1da
++palette = 8=#a6a59b
++palette = 9=#f4a9a9
++palette = 10=#a8d166
++palette = 11=#fab319
++palette = 12=#9fc5f4
++palette = 13=#f3aac5
++palette = 14=#79d7b3
++palette = 15=#efeeeb
++background = #262624
++foreground = #e5e4e1
++cursor-color = #d97757
++cursor-text = #262624
++selection-background = #363634
++selection-foreground = #e5e4e1
+
+
+=== DIFF: macapp/Resources/ghostty/themes/Claude Light ===
+@@ -0,0 +1,22 @@
++palette = 0=#0a0a0a
++palette = 1=#a84b3a
++palette = 2=#2e7c4c
++palette = 3=#8a6220
++palette = 4=#184e95
++palette = 5=#882b4d
++palette = 6=#066049
++palette = 7=#b6b5aa
++palette = 8=#51504d
++palette = 9=#e34a4a
++palette = 10=#639900
++palette = 11=#b87700
++palette = 12=#3886e5
++palette = 13=#d55382
++palette = 14=#199f70
++palette = 15=#e2e1da
++background = #faf9f5
++foreground = #141413
++cursor-color = #d97757
++cursor-text = #faf9f5
++selection-background = #f0eee6
++selection-foreground = #141413
+
+
+=== DIFF: macapp/Resources/ghostty/themes/Clear Dark ===
+@@ -0,0 +1,22 @@
++palette = 0=#35424c
++palette = 1=#b45648
++palette = 2=#6caa71
++palette = 3=#c4ac62
++palette = 4=#6d96b4
++palette = 5=#bd7bcd
++palette = 6=#7ccbcd
++palette = 7=#dee5eb
++palette = 8=#465c6d
++palette = 9=#df6c5a
++palette = 10=#79be7e
++palette = 11=#e5c872
++palette = 12=#67b5ed
++palette = 13=#d389e5
++palette = 14=#84dde0
++palette = 15=#e5eff5
++background = #212734
++foreground = #e6e6e6
++cursor-color = #9d9d9d
++cursor-text = #212734
++selection-background = #334e5e
++selection-foreground = #6e7380
+
+
+=== DIFF: macapp/Resources/ghostty/themes/Clear Light ===
+@@ -0,0 +1,22 @@
++palette = 0=#2d3840
++palette = 1=#b45648
++palette = 2=#6caa71
++palette = 3=#c4ac62
++palette = 4=#5685a8
++palette = 5=#ad64be
++palette = 6=#69c6c9
++palette = 7=#b4bbbf
++palette = 8=#506573
++palette = 9=#df6c5a
++palette = 10=#79be7e
++palette = 11=#d8bb65
++palette = 12=#49a2e1
++palette = 13=#d389e5
++palette = 14=#5ec7cb
++palette = 15=#d8e1e7
++background = #ffffff
++foreground = #3a4851
++cursor-color = #919191
++cursor-text = #ffffff
++selection-background = #e5ecf1
++selection-foreground = #b2b2b2
+
+
+=== DIFF: macapp/Resources/ghostty/themes/Cursor Dark ===
+@@ -0,0 +1,22 @@
++palette = 0=#242424
++palette = 1=#fc6b83
++palette = 2=#3fa266
++palette = 3=#d2943e
++palette = 4=#81a1c1
++palette = 5=#b48ead
++palette = 6=#88c0d0
++palette = 7=#e4e4e4
++palette = 8=#4a4a4a
++palette = 9=#fc6b83
++palette = 10=#70b489
++palette = 11=#f1b467
++palette = 12=#87a6c4
++palette = 13=#b48ead
++palette = 14=#88c0d0
++palette = 15=#e4e4e4
++background = #141414
++foreground = #d4d4d4
++cursor-color = #d4d4d4
++cursor-text = #141414
++selection-background = #2c2c2c
++selection-foreground = #e4e4e4
+
+
+=== DIFF: macapp/Resources/ghostty/themes/Cursor Light ===
+@@ -0,0 +1,22 @@
++palette = 0=#252525
++palette = 1=#cf2d56
++palette = 2=#1f8a65
++palette = 3=#a16900
++palette = 4=#3c7cab
++palette = 5=#b8448b
++palette = 6=#4c7f8c
++palette = 7=#afafaf
++palette = 8=#5c5c5c
++palette = 9=#e75e78
++palette = 10=#55a583
++palette = 11=#c08532
++palette = 12=#6299c3
++palette = 13=#d06ba6
++palette = 14=#6f9ba6
++palette = 15=#ffffff
++background = #f3f3f3
++foreground = #252525
++cursor-color = #252525
++cursor-text = #f3f3f3
++selection-background = #d9d9d9
++selection-foreground = #252525
+
+
+=== DIFF: macapp/Resources/ghostty/themes/Electron Highlighter ===
+@@ -0,0 +1,22 @@
++palette = 0=#15161f
++palette = 1=#ff6c8d
++palette = 2=#00ffc3
++palette = 3=#ffebb1
++palette = 4=#77abff
++palette = 5=#daa4f4
++palette = 6=#00e5ff
++palette = 7=#7187b7
++palette = 8=#4b5b8c
++palette = 9=#ff6c8d
++palette = 10=#00ffc3
++palette = 11=#ffebb1
++palette = 12=#77abff
++palette = 13=#daa4f4
++palette = 14=#00e5ff
++palette = 15=#c3cde2
++background = #23283d
++foreground = #a5b6d4
++cursor-color = #a5b6d4
++cursor-text = #171b29
++selection-background = #293257
++selection-foreground = #a5b6d4
+
+
+=== DIFF: macapp/Resources/ghostty/themes/Electron Highlighter Day ===
+@@ -0,0 +1,22 @@
++palette = 0=#c2c6d4
++palette = 1=#f52a65
++palette = 2=#10a877
++palette = 3=#df8e1d
++palette = 4=#366ff0
++palette = 5=#8b4fe0
++palette = 6=#0a9fbf
++palette = 7=#59647e
++palette = 8=#7b88a8
++palette = 9=#f52a65
++palette = 10=#10a877
++palette = 11=#df8e1d
++palette = 12=#366ff0
++palette = 13=#8b4fe0
++palette = 14=#0a9fbf
++palette = 15=#2f3b54
++background = #eef0f5
++foreground = #2f3b54
++cursor-color = #2f3b54
++cursor-text = #eef0f5
++selection-background = #d6def5
++selection-foreground = #2f3b54
+
+
+=== DIFF: macapp/Resources/ghostty/themes/Farmhouse Dark ===
+@@ -0,0 +1,22 @@
++palette = 0=#1d2027
++palette = 1=#ba0004
++palette = 2=#549d00
++palette = 3=#c87300
++palette = 4=#0049e6
++palette = 5=#9f1b61
++palette = 6=#1fb65c
++palette = 7=#e8e4e1
++palette = 8=#464d54
++palette = 9=#eb0009
++palette = 10=#7ac100
++palette = 11=#ea9a00
++palette = 12=#006efe
++palette = 13=#bf3b7f
++palette = 14=#19e062
++palette = 15=#f4eef0
++background = #1d2027
++foreground = #e8e4e1
++cursor-color = #006efe
++cursor-text = #e8e4e1
++selection-background = #4d5658
++selection-foreground = #b3b1aa
+
+
+=== DIFF: macapp/Resources/ghostty/themes/Farmhouse Light ===
+@@ -0,0 +1,22 @@
++palette = 0=#1d2027
++palette = 1=#8d0003
++palette = 2=#3a7d00
++palette = 3=#a95600
++palette = 4=#092ccd
++palette = 5=#820046
++palette = 6=#229256
++palette = 7=#a8a4a1
++palette = 8=#394047
++palette = 9=#eb0009
++palette = 10=#7ac100
++palette = 11=#ea9a00
++palette = 12=#006efe
++palette = 13=#bf3b7f
++palette = 14=#00c649
++palette = 15=#f4eef0
++background = #e8e4e1
++foreground = #1d2027
++cursor-color = #006efe
++cursor-text = #1d2027
++selection-background = #b3b1aa
++selection-foreground = #4d5658
+
+
+=== DIFF: macapp/Resources/ghostty/themes/GitHub Dark High Contrast ===
+@@ -0,0 +1,22 @@
++palette = 0=#7a828e
++palette = 1=#ff9492
++palette = 2=#26cd4d
++palette = 3=#f0b72f
++palette = 4=#71b7ff
++palette = 5=#cb9eff
++palette = 6=#39c5cf
++palette = 7=#d9dee3
++palette = 8=#9ea7b3
++palette = 9=#ffb1af
++palette = 10=#4ae168
++palette = 11=#f7c843
++palette = 12=#91cbff
++palette = 13=#dbb7ff
++palette = 14=#56d4dd
++palette = 15=#ffffff
++background = #0a0c10
++foreground = #f0f3f6
++cursor-color = #71b7ff
++cursor-text = #b1f7ff
++selection-background = #f0f3f6
++selection-foreground = #0a0c10
+
+
+=== DIFF: macapp/Resources/ghostty/themes/GitHub Light High Contrast ===
+@@ -0,0 +1,22 @@
++palette = 0=#0e1116
++palette = 1=#a0111f
++palette = 2=#024c1a
++palette = 3=#3f2200
++palette = 4=#0349b4
++palette = 5=#622cbc
++palette = 6=#1b7c83
++palette = 7=#66707b
++palette = 8=#4b535d
++palette = 9=#86061d
++palette = 10=#055d20
++palette = 11=#4e2c00
++palette = 12=#1168e3
++palette = 13=#844ae7
++palette = 14=#3192aa
++palette = 15=#88929d
++background = #ffffff
++foreground = #0e1116
++cursor-color = #0349b4
++cursor-text = #367ce7
++selection-background = #0e1116
++selection-foreground = #ffffff
+
+
+Investigate per the method in your instructions, then return the findings list.
