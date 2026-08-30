@@ -1,0 +1,75 @@
+<task-notification>
+<task-id>a1b0f2e58f34171b4</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/6b6da5a6-5d6f-49ea-8b2a-a61c143807d7/tasks/a1b0f2e58f34171b4.output</output-file>
+<status>completed</status>
+<summary>Agent "Find VCS branch listing/switching APIs" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>I now have a complete picture of the VCS layer. Here is my research report.
+
+## Summary
+
+There is no branch listing/switching API today, and — importantly — **branch switching was tried and deliberately removed** from the app for reasons documented in the code. I found a clear architectural directive that a "branch switcher" should probably not switch a workroom's branch in place, but instead create a new workroom for the target branch. Details below, with file:line references.
+
+### 1. LIST all local branches/bookmarks — does not exist as a public API
+
+- `VCSProviding` (`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/VCSProviding.swift:16-53`) has no `listBranches`/`listBookmarks` method. It only exposes `log`, `changeset`, `fileDiff`, `workingFileDiff`, `fileContent`, `commitParentFileContent`, `workingBaseFileContent`, `currentRef`.
+- **jj side**, the closest existing thing is a *private* helper inside `CLIVCSWriter` (the write-side CLI shim), used only to compute ahead/behind counts for the toolbar, not exposed for a picker:
+  - `CLIVCSWriter.jjBookmarkListArgs()` — `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/VCSWriting.swift:712-727` — builds `jj bookmark list --all-remotes` args with a template emitting name/remote/target/present/conflict/tracked/ahead/behind.
+  - `CLIVCSWriter.parseJJBookmarks(_:primaryRemote:)` — `VCSWriting.swift:1027-1066` — parses that into `[JJBookmark]` (`struct JJBookmark { let name: String; let tracking: VCSTracking? }`, `VCSWriting.swift:1009-1012`).
+  - Called only from `private func jjRemoteState(...)` — `VCSWriting.swift:1474-1478` — i.e. it lists bookmarks purely to compute sync/tracking state for the current bookmark, not to enumerate options for switching.
+  - In the Rust core, `bookmark_map(repo: &amp;ReadonlyRepo)` (`/Users/joelmoss/dev/workroom/vcs/crates/wr-vcs-core/src/jj_backend.rs:111-120`) builds `commit_id -&gt; [bookmark names]` from `repo.view().local_bookmarks()`, but it's used only to decorate History rows (`current_ref`'s ancestor walk), and is **not exposed through UniFFI** — `wr-vcs-uniffi/src/lib.rs` only exports `probe_repo`, `log_page`, `changeset`, `current_ref`, `working_status` (all read-only; grep at `/Users/joelmoss/dev/workroom/vcs/crates/wr-vcs-uniffi/src/lib.rs:309-350`).
+- **git side**, `GitProvider.decorations(in:)` (`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/GitProvider.swift:379-391`) calls SwiftGitX's `repo.branch.list(.local)` to build `commit -&gt; [branch names]` purely for History-row decoration — again not exposed as a "list branches" API.
+
+So: bookmark/branch enumeration logic exists in two forms (jj CLI template + parser; git SwiftGitX `branch.list`), but both are private, single-purpose, and read-only-adjacent (used for decoration/tracking, not user-facing pickers).
+
+### 2. SWITCH/CHECKOUT to a different branch — does not exist, and was explicitly removed
+
+No `checkout`/`switch`/`edit`-onto-bookmark function exists anywhere in `VCSProviding` or `VCSWriting`. This is not an oversight — it's documented as an intentional removal:
+
+- `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Views/VCSToolbar.swift:200-207`:
+  &gt; "Segment 1: the current branch. **Display only — not a control.** Not a dropdown, and not a button either. Workrooms **are** branches — a workroom's identity is its directory name, with no branch field anywhere in the config — so switching a workroom's branch would make its name permanently wrong, and the jj equivalent (`jj new &lt;bookmark&gt;`) was reproduced removing a file from the working copy and orphaning the workroom's commit."
+- `/Users/joelmoss/dev/workroom/TODOS.md:929-959` (`### "New workroom from branch…" (macapp) — the successor to branch switching`):
+  - git: `internal/vcs/git.go` creates a workroom via `git worktree add -b`; there's no `branch` field in `internal/config`, so re-pointing a workroom's branch leaves its directory name permanently wrong with nothing to reconcile.
+  - jj: `jj new &lt;bookmark&gt;` on the bookmark the toolbar displays was **measured** to remove a file from the working copy and leave the workroom's commit as a nameless dangling head, with no visible change in the UI.
+  - The recommended successor feature is explicitly **"Pick a local or remote branch and create a workroom for it"** — not switching in place. Suggested starting points: `Views/OpenWorkroomDialog.swift` (searchable, project-grouped picker to model the UI on), the Go CLI's `create` (already accepts a branch), and `CLIVCSWriter.gitRemoteRefsArgs` (`VCSWriting.swift:426-430`) for cheaply enumerating remote refs.
+
+**This is the single most important finding for your feature** — if your "branch switcher" means switching an existing workroom's checked-out branch in place, the codebase has already tried that twice (git and jj) and pulled it back out for correctness reasons. The documented, sanctioned direction is "new workroom from branch," which sidesteps the identity/dangling-head problems.
+
+### 3. Closest existing patterns to model a new implementation on
+
+If you still need something switch-like (or the "new workroom from branch" successor), the best models are:
+
+- **Current-ref lookup** (read-only precedent for both backends):
+  - `VCSProviding.currentRef(root:)` — `VCSProviding.swift:52` — `func currentRef(root: URL) async throws -&gt; VCSRef`.
+  - `GitProvider.currentRef` — `GitProvider.swift:78-99` (via SwiftGitX `repo.branch.current`).
+  - `RustJJProvider.currentRef` — `RustJJProvider.swift:48-59` (via `WrVcs.currentRef`, itself `jj_backend::current_ref` at `vcs/crates/wr-vcs-core/src/jj_backend.rs:416-441`).
+  - `BranchResolver.resolve(path:vcs:)` — `/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/BranchResolver.swift:30-45` — the per-call-timeout wrapper pattern used to surface it in the sidebar; a branch-switcher UI's "what's currently checked out" read should follow this same shape (timeout-wrapped, best-effort, never blocks other rows).
+
+- **CLI shell-out write pattern** (this is the pattern any new mutating branch op should follow — `VCSWriting`/`CLIVCSWriter`, not `VCSProviding`):
+  - `VCSWriting` protocol — `VCSWriting.swift:227-260` — the seam for writes (fetch/push/pull/commit), explicitly separated from `VCSProviding` because writes must go through the snapshot/lock gate.
+  - `CLIVCSWriter` — `VCSWriting.swift:318-344` — shells real `git`/`jj` binaries (not SwiftGitX, not jj-lib) for every write, with a documented rationale (`VCSWriting.swift:289-293`): SwiftGitX 0.4.0 has no credential path for fetch/push and no pull at all; jj-lib has no Swift API for writes at all.
+  - Argument-builder pattern to copy: `jjRebaseArgs(onto:)` (`VCSWriting.swift:869-871`, using `jjWriteFlags` not `jjReadFlags`), `jjCommitArgs(message:)` (`VCSWriting.swift:887-889`), `gitPullArgs`/`gitPushArgs` (`VCSWriting.swift:522-525`, `491-495`) — each is a **pure static arg-builder**, unit-tested without spawning a process, then invoked via `run(...)`/`runNetwork` inside an instance method gated by `JJSnapshotGate`. A "switch to bookmark" op (jj: `jj new &lt;bookmark&gt;` or `jj edit &lt;bookmark&gt;`; git: `git switch &lt;branch&gt;`) would add a new `jjSwitchArgs(bookmark:)`/`gitSwitchArgs(branch:)` pure builder plus a `VCSWriting` protocol method, gated the same way `commit`/`pullRebase` are.
+  - Placement logic to reuse: `CLIVCSWriter.opDirectory(_:path:projectRoot:)` (`VCSWriting.swift:368-373`) — a branch-switch write, like push/pull/commit, must run in the **workroom** directory, not the project root, for the same reason documented there (a jj write at the root can operate on the ROOT workspace's `@`, not the workroom's).
+
+### 4. git (SwiftGitX) vs jj (jj-lib UniFFI vs CLI) structure, and write-op gotchas
+
+**Structure**, per `/Users/joelmoss/dev/workroom/macapp/CLAUDE.md` ("VCS core" section) and the code itself:
+- **git**: `GitProvider` (`GitProvider.swift`) is pure Swift over SwiftGitX (libgit2), used for ALL reads (`log`, `changeset`, `currentRef`, `fileDiff`, `workingStatus`, etc.) — no subprocess. Three narrow reads reach past SwiftGitX directly into raw libgit2 C API (`GitGraph`, `GitCommitDiff`, `GitDiffStats`) for capabilities SwiftGitX lacks (commit-range revwalk, rename detection, diffstat) — see `macapp/CLAUDE.md`'s "VCS core" section for the full rationale.
+- **jj**: reads (`log`, `changeset`, `currentRef`, `workingStatus`) go through `RustJJProvider` → `WrVcs.*` (UniFFI) → `wr-vcs-core::jj_backend` (native jj-lib, no subprocess) — see `macapp/CLAUDE.md`: *"the jj CLI parsers are gone — log/changeset/currentRef/workingStatus are all native jj-lib."* But `RustJJProvider.fileDiff`/`workingFileDiff`/`fileContent` (`RustJJProvider.swift:97-217`) still shell out to the real `jj` CLI, because jj-lib exposes no git-format diff writer and no ergonomic file-content read — "the plan's sanctioned CLI fallback for ops jj-lib doesn't expose ergonomically" (`RustJJProvider.swift:130-133`).
+- **All writes, both backends**, go through `CLIVCSWriter` shelling the real `git`/`jj` binaries (`VCSWriting.swift:318-344`) — there is **no jj-lib write path at all** in this codebase currently, and no SwiftGitX write path either (both explicitly ruled out per the doc at `VCSWriting.swift:289-293`).
+
+**Write-op gotchas that would matter for a branch switch (a write)**:
+- **jj-lib's one existing mutating READ already documents the exact hazard a switch would hit.** `macapp/CLAUDE.md`: *"The one mutating read: `RustJJProvider.workingStatus`. jj's working copy is itself a commit, so on-disk edits don't exist to jj-lib until snapshotted — a working-copy status read therefore must snapshot `@` first: it takes the working-copy lock and rewrites `@`."* A branch switch (`jj new &lt;bookmark&gt;`/`jj edit &lt;bookmark&gt;`) is a much bigger mutation of the same kind — it rewrites `@` and moves the working-copy pointer — so it needs the same lock discipline, but as a full write, not a read-triggered side-effect.
+- **`JJSnapshotGate`** (`/Users/joelmoss/dev/workroom/macapp/WorkroomApp/Core/JJSnapshotGate.swift:1-93`) serializes writes **per project root**, and per its own doc is applied to **git writes too** (`VCSWriting.swift:325-328`: *"Serializes writes per project root. Applied to git as well as jj: a project's workrooms are `git worktree add` worktrees sharing one `.git`, so a lock lost mid-`pull --rebase` can leave a workroom wedged in a rebase."*) — a new branch-switch write must go through this gate, same as `commit`/`pullRebase`/`abortRebase` do (`VCSWriting.swift:1567-1712` shows the pattern of gate-wrapped write methods).
+- **Read flags vs write flags matter and are easy to get backwards**: `jjReadFlags = ["--ignore-working-copy", ...]` vs `jjWriteFlags = ["--color", "never", "--no-pager"]` (no `--ignore-working-copy`) — `VCSWriting.swift:698-703`. Every read in this file deliberately avoids snapshotting; a switch/checkout write must use `jjWriteFlags` (no `--ignore-working-copy`) so the snapshot actually happens and preserves uncommitted edits into the old `@` before rewriting the working copy.
+- **Directly measured jj bug**: `jj new &lt;bookmark&gt;` run on a workroom's own bookmarked `@` **removed a file from the working copy and orphaned the workroom's commit as a nameless dangling head**, with no UI signal (`VCSToolbar.swift:203-205`, `TODOS.md:936-939`). Any new jj switch implementation needs to investigate/fix or work around this before shipping, not just copy `jj new` blindly.
+- **Placement bug precedent**: a jj write run at the project root instead of the workroom operated on the wrong workspace's `@` and still reported success (`VCSWriting.swift:355-366`, the `opDirectory` doc) — the same class of bug is highly reachable for a switch operation if it isn't carefully scoped to the workroom directory.
+
+### 5. Go CLI (repo root) — no branch list/switch logic exists
+
+- The root `CLAUDE.md` clarifies the "one engine" framing precisely: the Go CLI and the macOS app share the **Go CLI as the workroom-management engine** (create/list/delete workrooms via `--json`), but the app's **VCS read/write engine** (`vcs/` Rust + SwiftGitX) is explicitly **"app-only and separate from this Go CLI"** (`CLAUDE.md:19-21`). So don't expect (and I didn't find) branch-switch logic shared between the two — they're different engines for different jobs.
+- `/Users/joelmoss/dev/workroom/internal/vcs/git.go` and `jj.go` only implement `WorkroomExists`, `Create` (`git worktree add -b` / jj equivalent), `Delete`, `ListWorkrooms` — i.e. workroom/worktree/workspace-level operations, not branch-level list/checkout. No `checkout`/`switch`/`bookmark` logic anywhere in `cmd/` or `internal/`.
+- The one relevant CLI fact: `workroom create` already accepts a branch argument (referenced in `TODOS.md:954`), which is exactly the primitive the documented "New workroom from branch…" successor feature would reuse — again pointing away from in-place switching and toward creating a new workroom.</result>
+<usage><subagent_tokens>118044</subagent_tokens><tool_uses>31</tool_uses><duration_ms>197527</duration_ms></usage>
+</task-notification>
