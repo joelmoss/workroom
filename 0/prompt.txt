@@ -1,0 +1,495 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/SwitcherMark.swift
+  - macapp/WorkroomApp/Core/SwitcherPanel.swift
+  - macapp/WorkroomApp/Core/SwitcherRailLayout.swift
+  - macapp/WorkroomApp/Views/RailGlassBackground.swift
+  - macapp/WorkroomApp/Views/SwitcherRailView.swift
+  - macapp/WorkroomAppTests/SwitcherPanelTests.swift
+  - macapp/WorkroomAppTests/SwitcherRailLayoutTests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/SwitcherMark.swift ===
+@@ -73,23 +73,43 @@ struct SwitcherMark: Equatable {
+     let hueAngle = (anchor + CGFloat(index % hueCount) / CGFloat(hueCount)).truncatingRemainder(
+       dividingBy: 1)
+     let dark = tokens.colorScheme == .dark
+-    let saturation: CGFloat = dark ? 0.55 : 0.62
+-    // Step brightness until the tile clears its floor against the card, rather than trusting one
+-    // constant: a mid-brightness colour of ANY hue sits near 2:1 against a near-white panel, which is
+-    // exactly what measured wrong. Hue and saturation are held fixed, so the tile darkens (or lightens
+-    // on a dark theme) without drifting toward grey.
+-    var brightness: CGFloat = dark ? 0.72 : 0.62
+-    let step: CGFloat = dark ? 0.03 : -0.03
+-    var candidate = NSColor(hue: hueAngle, saturation: saturation, brightness: brightness, alpha: 1)
+-    var steps = 0
+-    while ThemeTokens.contrastRatio(candidate, tokens.nsPanel) < Self.tileContrastFloor,
+-      brightness > 0.12, brightness < 0.98, steps < 40
+-    {
+-      brightness += step
+-      steps += 1
+-      candidate = NSColor(hue: hueAngle, saturation: saturation, brightness: brightness, alpha: 1)
++    func ratio(_ color: NSColor) -> CGFloat { ThemeTokens.contrastRatio(color, tokens.nsPanel) }
++    // Search brightness first, then give saturation ground — hue is identity and never moves.
++    //
++    // Two things this gets right that a single fixed walk did not, both measured rather than reasoned:
++    //
++    // 1. **Both directions.** The preferred one comes from `colorScheme`, which is derived from the
++    //    theme's *background*, while the tile is measured against its *panel*. On a theme where those sit
++    //    on opposite sides of mid-grey, a one-way walk moved the tile TOWARD the panel and nothing ever
++    //    cleared 3:1.
++    // 2. **Saturation is a fallback axis.** A mid-tone card caps how much contrast a saturated colour can
++    //    reach at all: against this app's grey card (luminance 0.186) the *best* a 0.62-saturated hue can
++    //    do is 2.71:1 at full brightness, because a saturated colour can't get light enough. Desaturating
++    //    buys the luminance that brightness alone cannot — a pale blue clears the floor where a vivid one
++    //    can't — and it stays visibly a hue, which a walk toward the foreground (`legible`) would not.
++    let ladder: [CGFloat] = dark ? [0.55, 0.46, 0.38, 0.34] : [0.62, 0.52, 0.42, 0.34]
++    var best: NSColor?
++    for saturation in ladder {
++      func tile(_ brightness: CGFloat) -> NSColor {
++        NSColor(hue: hueAngle, saturation: saturation, brightness: brightness, alpha: 1)
++      }
++      let start: CGFloat = dark ? 0.72 : 0.62
++      let lighter = Array(stride(from: start, through: 0.98, by: 0.03)).map(tile)
++      let darker = Array(stride(from: start, through: 0.10, by: -0.03)).map(tile)
++      let ordered = dark ? lighter + darker : darker + lighter
++      if let clears = ordered.first(where: { ratio($0) >= Self.tileContrastFloor }) {
++        return clears
++      }
++      if let rung = ordered.max(by: { ratio($0) < ratio($1) }),
++        ratio(rung) > ratio(best ?? rung) || best == nil
++      {
++        best = rung
++      }
+     }
+-    return candidate
++    // Nothing in the ladder clears the floor against this card — take the best available rather than
++    // whatever the last walk happened to stop on. `SwitcherRailLayout.Palette.needsOpaqueFill` is the
++    // wider guard for a theme this hostile.
++    return best ?? NSColor(hue: hueAngle, saturation: ladder[0], brightness: 0.62, alpha: 1)
+   }
+ 
+   /// The tile's contrast floor against the card. 3:1 — the tile is a large solid shape, not text.
+
+
+=== DIFF: macapp/WorkroomApp/Core/SwitcherPanel.swift ===
+@@ -14,6 +14,20 @@ final class SwitcherPanel: NSPanel {
+   override var canBecomeMain: Bool { false }
+ }
+ 
++/// The panel's content view: the rail plus the empty `shadowMargin` halo its drop shadow lands in.
++///
++/// The halo must not eat clicks. The panel is bigger than the rail it shows, and a plain `NSView`
++/// hit-tests its whole bounds — so without this a click in the transparent border would be swallowed by
++/// the rail's window instead of reaching the window underneath.
++final class HaloContentView: NSView {
++  override func hitTest(_ point: NSPoint) -> NSView? {
++    let local = superview.map { convert(point, from: $0) } ?? point
++    let rail = bounds.insetBy(
++      dx: SwitcherRailLayout.shadowMargin, dy: SwitcherRailLayout.shadowMargin)
++    return rail.contains(local) ? super.hitTest(point) : nil
++  }
++}
++
+ /// Owns the panel and its hosting view, and hands the rail its data. Pre-creates the panel at launch:
+ /// the first `NSHostingView` render costs real milliseconds, and paying that at the 250 ms reveal is
+ /// exactly the wrong moment.
+@@ -41,6 +55,12 @@ final class SwitcherPanelController {
+     // surface behind the rail believes it is occluded and stops rendering.
+     panel.isOpaque = false
+     panel.backgroundColor = .clear
++    // Stays FALSE, and the rail draws its own shadow instead (`RailGlassBackground.ShadowHost`). Not a
++    // style preference — measured: a borderless non-opaque panel casts no system shadow at all. With
++    // `hasShadow = true` plus `invalidateShadow()`, a pixel diff of the same screen with and without the
++    // panel showed zero darkening at 6/14/26/44pt out on every side, with glass content and with a solid
++    // opaque fill alike. Turning this on would buy nothing except a square shadow around the shadow
++    // halo if it ever started working.
+     panel.hasShadow = false
+     panel.isReleasedWhenClosed = false
+     panel.isExcludedFromWindowsMenu = true
+@@ -48,9 +68,11 @@ final class SwitcherPanelController {
+     panel.ignoresMouseEvents = false
+     panel.setAccessibilityIdentifier("switcher.panel")
+ 
++    let content = HaloContentView()
+     let host = NSHostingView(rootView: SwitcherRailView(model: model))
+-    host.translatesAutoresizingMaskIntoConstraints = false
+-    panel.contentView = host
++    host.autoresizingMask = [.width, .height]
++    content.addSubview(host)
++    panel.contentView = content
+     self.panel = panel
+   }
+ 
+@@ -79,15 +101,16 @@ final class SwitcherPanelController {
+     let cards = SwitcherCard.cards(for: items)
+     let screen = NSApp.keyWindow?.screen ?? NSScreen.main
+     let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+-    // The cards get the whole viewport to lay out in, but the PANEL is only as wide as they turned out
++    // The window is the rail slab plus its shadow halo; the SLAB is only as wide as the cards turned out
+     // to be — otherwise the glass runs on past the last card and a rail of four reads as left-aligned
+     // inside a wide slab, even though the slab is perfectly centred.
+-    let width = SwitcherRailLayout.viewportWidth(visibleFrame: visible)
+-    model.update(cards: cards, cursor: cursor, width: width)
++    let size = SwitcherRailLayout.panelSize(count: cards.count, visibleFrame: visible)
++    // The cards lay out in the slab they actually get, not the viewport they were sized against: on a
++    // narrow display the halo comes out of the slab, and cards measured against the wider viewport would
++    // overflow it.
++    model.update(
++      cards: cards, cursor: cursor, width: size.width - SwitcherRailLayout.shadowMargin * 2)
+ 
+-    let size = NSSize(
+-      width: SwitcherRailLayout.panelWidth(count: cards.count, visibleFrame: visible),
+-      height: SwitcherRailLayout.cardHeight + SwitcherRailLayout.railPadding * 2)
+     let origin = SwitcherRailLayout.panelOrigin(
+       size: size, windowFrame: NSApp.keyWindow?.frame ?? visible, visibleFrame: visible)
+     panel.setFrame(NSRect(origin: origin, size: size), display: false)
+
+
+=== DIFF: macapp/WorkroomApp/Core/SwitcherRailLayout.swift ===
+@@ -54,6 +54,22 @@ enum SwitcherRailLayout {
+   /// Clearance kept between the rail and the screen edge.
+   static let screenMargin: CGFloat = 24
+ 
++  /// Empty room kept between the rail and the WINDOW's edge, for the rail's drop shadow to land in.
++  ///
++  /// The shadow is drawn in-content rather than by the window, because a borderless non-opaque panel
++  /// casts no system shadow at all — measured, not assumed: with `hasShadow = true` and
++  /// `invalidateShadow()`, a pixel diff of the same screen with and without the panel found **zero**
++  /// darkening at 6/14/26/44pt out on every side, with glass content *and* with a solid opaque fill. A
++  /// drawn shadow, though, is clipped at the window's edge, so the window has to be this much bigger
++  /// than the rail on all four sides.
++  ///
++  /// Deliberately equal to `screenMargin`: the halo then *is* the screen clearance, so a full-width rail
++  /// plus its shadow lands exactly inside `visibleFrame` and `panelOrigin`'s clamp never has to fire.
++  static let shadowMargin: CGFloat = 24
++
++  /// The rail slab's height — one row of cards plus its inset.
++  static var railHeight: CGFloat { cardHeight + railPadding * 2 }
++
+   /// The widest the rail may be on a given screen: capped, and never wider than the usable frame. This
+   /// is the space available for cards, NOT the panel's width — see `panelWidth`.
+   static func viewportWidth(visibleFrame: CGRect) -> CGFloat {
+@@ -73,6 +89,16 @@ enum SwitcherRailLayout {
+     return min(content, viewport)
+   }
+ 
++  /// The **window's** size: the rail slab plus its shadow halo on every side. `panelWidth` is the slab;
++  /// this is the window that carries it. Capped so the halo can never push the slab off the screen —
++  /// on a narrow display the rail gives the halo its points rather than the reverse.
++  static func panelSize(count: Int, visibleFrame: CGRect) -> CGSize {
++    let rail = panelWidth(count: count, visibleFrame: visibleFrame)
++    let cap = max(minCardWidth, visibleFrame.width - screenMargin * 2)
++    return CGSize(
++      width: min(rail + shadowMargin * 2, cap), height: railHeight + shadowMargin * 2)
++  }
++
+   /// Where to place a `size` panel for a key window on a screen: centred on the **window**, then
+   /// pushed back inside `visibleFrame` if that overhangs. Centring on the window rather than the
+   /// screen is what keeps the rail where the user is looking with Stage Manager or an off-centre
+@@ -123,6 +149,16 @@ enum SwitcherRailLayout {
+ 
+     static let textTarget: CGFloat = 4.5
+     static let indicatorTarget: CGFloat = 3.0
++
++    /// When to abandon the material, which is **lower** than `textTarget` on purpose.
++    ///
++    /// Dropping vibrancy doesn't raise the contrast ratio — it's computed against `nsPanel` either way.
++    /// What it buys is *certainty*: an opaque card makes the measured background the real one instead of
++    /// whatever the glass happened to sample. That's worth having when text is genuinely hard to read,
++    /// and not worth the whole Liquid Glass surface when a theme misses the floor by a hair. Measured
++    /// case: a mid-grey card caps white text at 4.45:1 — 99% of the floor, no perceptible difference —
++    /// and keying the fallback on `textTarget` turned the glass off for it.
++    static let opaqueFillFloor: CGFloat = 4.0
+   }
+ 
+   static func palette(for tokens: ThemeTokens) -> Palette {
+@@ -143,9 +179,9 @@ enum SwitcherRailLayout {
+       nsDot: accent,
+       nsDiffAdd: fix(tokens.nsDiffAddFg, Palette.indicatorTarget),
+       nsDiffRemove: fix(tokens.nsDiffRemoveFg, Palette.indicatorTarget),
+-      // `legible` walks towards the foreground and stops at 100%; if even the pure foreground can't
+-      // clear the text floor against this fill, the fill itself is the problem.
+-      needsOpaqueFill: ThemeTokens.contrastRatio(name, base) < Palette.textTarget
++      // `legible` walks towards the foreground and stops at 100%; if even the pure foreground can't come
++      // close to the text floor against this fill, the fill itself is the problem.
++      needsOpaqueFill: ThemeTokens.contrastRatio(name, base) < Palette.opaqueFillFloor
+     )
+   }
+ }
+
+
+=== DIFF: macapp/WorkroomApp/Views/RailGlassBackground.swift ===
+@@ -21,18 +21,32 @@ struct RailGlassBackground: NSViewRepresentable {
+   var cornerRadius: CGFloat = 20
+ 
+   func makeNSView(context: Context) -> NSView {
++    material()
++  }
++
++  func updateNSView(_ view: NSView, context: Context) {
++    if #available(macOS 26.0, *), let glass = view as? NSGlassEffectView {
++      glass.cornerRadius = cornerRadius
++      return
++    }
++    view.layer?.cornerRadius = cornerRadius
++  }
++
++  private func material() -> NSView {
+     if #available(macOS 26.0, *) {
+       let glass = NSGlassEffectView()
+       glass.cornerRadius = cornerRadius
+       // `.regular` rather than `.clear`: the rail carries text over arbitrary windows and wallpapers, and
+       // `.clear` leaves too little separation for a 12pt subtitle to survive a busy backdrop.
+       glass.style = .regular
++      glass.autoresizingMask = [.width, .height]
+       return glass
+     }
+     let effect = NSVisualEffectView()
+     effect.material = .hudWindow
+     effect.blendingMode = .behindWindow
+     effect.state = .active  // NOT `.followsWindowActiveState`: this panel is never the key window
++    effect.autoresizingMask = [.width, .height]
+     effect.wantsLayer = true
+     effect.layer?.cornerRadius = cornerRadius
+     effect.layer?.cornerCurve = .continuous
+@@ -40,11 +54,4 @@ struct RailGlassBackground: NSViewRepresentable {
+     return effect
+   }
+ 
+-  func updateNSView(_ view: NSView, context: Context) {
+-    if #available(macOS 26.0, *), let glass = view as? NSGlassEffectView {
+-      glass.cornerRadius = cornerRadius
+-      return
+-    }
+-    view.layer?.cornerRadius = cornerRadius
+-  }
+ }
+
+
+=== DIFF: macapp/WorkroomApp/Views/SwitcherRailView.swift ===
+@@ -167,6 +167,24 @@ struct SwitcherRailView: View {
+         }
+       }
+       .clipShape(RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous))
++      // The drop shadow, cast by a plain shape BEHIND the glass and mounted AFTER the clip.
++      //
++      // Three things had to be true here, each found by looking at the screen rather than reasoning:
++      // the window cannot cast it (a borderless non-opaque panel produces no system shadow at all —
++      // measured, zero darkening at any distance, with glass content and with a solid fill); a clip
++      // applies to a view's background, so a shadow mounted alongside the glass was clipped away
++      // entirely; and a layer shadow on the representable didn't render either. A SwiftUI shape's shadow
++      // does. The fill is the theme's own card colour, so on the chance the glass lets any of it through
++      // it reads as the rail's surface rather than a dark slab.
++      .background {
++        RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
++          .fill(theme.tokens.panel)
++          .shadow(color: .black.opacity(0.30), radius: 14, y: 5)
++      }
++      // The halo the rail's drop shadow lands in. The window is `shadowMargin` bigger than the slab on
++      // every side for exactly this — a drawn shadow is clipped at the window's edge, and the window
++      // itself casts none (see `SwitcherRailLayout.shadowMargin`).
++      .padding(SwitcherRailLayout.shadowMargin)
+       .accessibilityElement(children: .contain)
+       .accessibilityIdentifier("switcher.rail")
+   }
+@@ -234,6 +252,10 @@ private struct SwitcherCardView: View {
+   let palette: SwitcherRailLayout.Palette
+   private let theme = ThemeService.shared
+ 
++  /// The cursor fill and ring share it, and it sits inside the rail's own 20pt so the two curves nest
++  /// rather than fight.
++  static let cursorRadius: CGFloat = 14
++
+   var body: some View {
+     VStack(spacing: 7) {
+       well
+@@ -243,14 +265,19 @@ private struct SwitcherCardView: View {
+     .padding(.vertical, 10)
+     .frame(width: width, height: SwitcherRailLayout.cardHeight)
+     .background(
+-      RoundedRectangle(cornerRadius: 12, style: .continuous)
++      RoundedRectangle(cornerRadius: Self.cursorRadius, style: .continuous)
+         .fill(isCursor ? theme.tokens.accentSoft : Color.clear)
+     )
+     .overlay(
+       // Only the cursor is outlined. On glass, giving every card its own border produced a row of
+       // competing boxes and buried the one signal that matters — which card you are about to commit to.
+-      RoundedRectangle(cornerRadius: 12, style: .continuous)
+-        .strokeBorder(isCursor ? palette.ring : .clear, lineWidth: 1.5)
++      //
++      // A hairline at a generous radius, not a 1.5pt box: the ring's job is to say *which* card, and the
++      // `accentSoft` fill already says that. Thinning and rounding it softens the edge without touching
++      // its colour, which is what D14's 3:1 floor is measured on — dropping the stroke's opacity instead
++      // would look identical and quietly fail that floor.
++      RoundedRectangle(cornerRadius: Self.cursorRadius, style: .continuous)
++        .strokeBorder(isCursor ? palette.ring : .clear, lineWidth: 1)
+     )
+     .contentShape(Rectangle())
+     .help(tooltip)
+
+
+=== DIFF: macapp/WorkroomAppTests/SwitcherPanelTests.swift ===
+@@ -46,6 +46,31 @@ final class SwitcherPanelTests: XCTestCase {
+     XCTAssertEqual(panel.backgroundColor, .clear)
+   }
+ 
++  func testTheRailDrawsItsOwnShadowRatherThanTheWindow() {
++    // Measured, not assumed: a borderless non-opaque panel casts NO system shadow — `hasShadow = true`
++    // plus `invalidateShadow()` darkened nothing at 6/14/26/44pt out on any side, with glass content and
++    // with a solid opaque fill alike. So the rail draws the shadow itself and the window stays shadowless.
++    let panel = makePanel()
++    panel.hasShadow = false
++    XCTAssertFalse(
++      panel.hasShadow, "a window shadow here would only duplicate the drawn one, squarely")
++  }
++
++  func testTheHaloDoesNotEatClicksMeantForTheWindowBelow() {
++    // The window is bigger than the rail by `shadowMargin` on every side so the drawn shadow has room.
++    // That border is empty, and a plain NSView would hit-test it — swallowing clicks that should reach
++    // whatever is underneath.
++    let content = HaloContentView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
++    let inner = NSView(frame: content.bounds)
++    inner.autoresizingMask = [.width, .height]
++    content.addSubview(inner)
++    let margin = SwitcherRailLayout.shadowMargin
++    XCTAssertNil(
++      content.hitTest(NSPoint(x: margin / 2, y: 100)), "the shadow halo must be click-through")
++    XCTAssertNotNil(
++      content.hitTest(NSPoint(x: 200, y: 100)), "the rail itself still takes hover and clicks")
++  }
++
+   func testThePanelIsAFloatingNonActivatingHUD() {
+     let panel = makePanel()
+     panel.isFloatingPanel = true
+
+
+=== DIFF: macapp/WorkroomAppTests/SwitcherRailLayoutTests.swift ===
+@@ -81,6 +81,27 @@ final class SwitcherRailLayoutTests: XCTestCase {
+     XCTAssertEqual(L.cardWidth(count: 0, available: 1100), L.maxCardWidth, "no division by zero")
+   }
+ 
++  // MARK: The shadow halo
++
++  func testTheWindowIsTheSlabPlusAShadowHalo() {
++    let visible = CGRect(x: 0, y: 0, width: 2000, height: 1200)
++    let size = L.panelSize(count: 4, visibleFrame: visible)
++    XCTAssertEqual(
++      size.width, L.panelWidth(count: 4, visibleFrame: visible) + L.shadowMargin * 2,
++      "a drawn shadow is clipped at the window edge, so the window is bigger than the rail")
++    XCTAssertEqual(size.height, L.railHeight + L.shadowMargin * 2)
++  }
++
++  func testOnANarrowScreenTheHaloComesOutOfTheRailNotTheScreenMargin() {
++    // Otherwise the window would overhang `visibleFrame` and `panelOrigin`'s clamp would shove the rail
++    // off centre — the one thing the centring work was for.
++    let narrow = CGRect(x: 0, y: 0, width: 900, height: 700)
++    let size = L.panelSize(count: 40, visibleFrame: narrow)
++    XCTAssertLessThanOrEqual(size.width, narrow.width - L.screenMargin * 2)
++    let origin = L.panelOrigin(size: size, windowFrame: narrow, visibleFrame: narrow)
++    XCTAssertEqual(origin.x + size.width / 2, narrow.midX, accuracy: 0.5, "still centred")
++  }
++
+   // MARK: Overflow (D9)
+ 
+   func testFewCardsDoNotScroll() {
+@@ -175,20 +196,52 @@ final class SwitcherRailLayoutTests: XCTestCase {
+         palette: (0..<8).map { _ in NSColor(srgbRed: 0.52, green: 0.52, blue: 0.55, alpha: 1) }))
+   }
+ 
++  /// A theme with real headroom, at either end. Explicit rather than `ThemeTokens(preview: nil)`: the
++  /// system fallback follows the machine's own appearance preference, so a floor asserted against it
++  /// passes or fails depending on who runs it — which is exactly what happened (the fallback's card moved
++  /// to mid-grey, where even pure white text caps at 4.45:1, and these tests started failing on a
++  /// codebase nobody had touched).
++  private func healthyTokens(dark: Bool) -> ThemeTokens {
++    let ansi: [NSColor] = [
++      NSColor(srgbRed: 0.16, green: 0.16, blue: 0.18, alpha: 1),
++      NSColor(srgbRed: 0.78, green: 0.25, blue: 0.28, alpha: 1),
++      NSColor(srgbRed: 0.25, green: 0.62, blue: 0.35, alpha: 1),
++      NSColor(srgbRed: 0.80, green: 0.64, blue: 0.24, alpha: 1),
++      NSColor(srgbRed: 0.24, green: 0.48, blue: 0.82, alpha: 1),
++      NSColor(srgbRed: 0.60, green: 0.34, blue: 0.75, alpha: 1),
++      NSColor(srgbRed: 0.22, green: 0.62, blue: 0.66, alpha: 1),
++      NSColor(srgbRed: 0.86, green: 0.86, blue: 0.88, alpha: 1),
++    ]
++    return ThemeTokens(
++      preview: ThemePreview(
++        name: dark ? "dark fixture" : "light fixture",
++        background: dark
++          ? NSColor(srgbRed: 0.07, green: 0.07, blue: 0.09, alpha: 1)
++          : NSColor(srgbRed: 0.98, green: 0.98, blue: 0.98, alpha: 1),
++        foreground: dark
++          ? NSColor(srgbRed: 0.94, green: 0.94, blue: 0.95, alpha: 1)
++          : NSColor(srgbRed: 0.11, green: 0.11, blue: 0.13, alpha: 1),
++        palette: ansi))
++  }
++
+   func testTextRolesAreLiftedToTheTextFloorWherePossible() {
+-    let tokens = ThemeTokens(preview: nil)  // system fallback: a sane, high-contrast baseline
+-    let palette = SwitcherRailLayout.palette(for: tokens)
+-    let base = tokens.nsPanel
+-    XCTAssertGreaterThanOrEqual(
+-      ThemeTokens.contrastRatio(palette.nsName, base),
+-      SwitcherRailLayout.Palette.textTarget - 0.01, "the 13pt name must clear 4.5:1")
+-    XCTAssertGreaterThanOrEqual(
+-      ThemeTokens.contrastRatio(palette.nsSubtitle, base),
+-      SwitcherRailLayout.Palette.textTarget - 0.01, "the 11pt subtitle too — this is body text")
++    for dark in [true, false] {
++      let tokens = healthyTokens(dark: dark)
++      let palette = SwitcherRailLayout.palette(for: tokens)
++      let base = tokens.nsPanel
++      XCTAssertGreaterThanOrEqual(
++        ThemeTokens.contrastRatio(palette.nsName, base),
++        SwitcherRailLayout.Palette.textTarget - 0.01,
++        "the 13pt name must clear 4.5:1 (dark: \(dark))")
++      XCTAssertGreaterThanOrEqual(
++        ThemeTokens.contrastRatio(palette.nsSubtitle, base),
++        SwitcherRailLayout.Palette.textTarget - 0.01,
++        "the 11pt subtitle too — this is body text (dark: \(dark))")
++    }
+   }
+ 
+   func testIndicatorRolesClearTheIndicatorFloor() {
+-    let tokens = ThemeTokens(preview: nil)
++    let tokens = healthyTokens(dark: true)
+     let palette = SwitcherRailLayout.palette(for: tokens)
+     let base = tokens.nsPanel
+     for (role, color) in [
+@@ -210,8 +263,28 @@ final class SwitcherRailLayoutTests: XCTestCase {
+   }
+ 
+   func testAHealthyThemeKeepsItsVibrancy() {
+-    XCTAssertFalse(
+-      SwitcherRailLayout.palette(for: ThemeTokens(preview: nil)).needsOpaqueFill,
+-      "the normal case keeps the frosted material")
++    for dark in [true, false] {
++      XCTAssertFalse(
++        SwitcherRailLayout.palette(for: healthyTokens(dark: dark)).needsOpaqueFill,
++        "the normal case keeps the frosted material (dark: \(dark))")
++    }
++  }
++
++  func testAHairsBreadthMissKeepsTheMaterial() {
++    // Going opaque doesn't raise the ratio — it's measured against `nsPanel` either way — so a theme that
++    // lands at 4.45:1 (99% of the floor) must not lose the whole Liquid Glass surface for it. Measured
++    // case: the system fallback's mid-grey card, which caps white text at exactly that.
++    let grey = ThemeTokens(
++      preview: ThemePreview(
++        name: "mid-grey card",
++        background: NSColor(srgbRed: 0.12, green: 0.12, blue: 0.12, alpha: 1),
++        foreground: NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 1),
++        palette: (0..<8).map { _ in NSColor(srgbRed: 0.55, green: 0.6, blue: 0.75, alpha: 1) }))
++    let palette = SwitcherRailLayout.palette(for: grey)
++    let achieved = ThemeTokens.contrastRatio(palette.nsName, grey.nsPanel)
++    XCTAssertLessThan(
++      achieved, SwitcherRailLayout.Palette.textTarget, "the premise: it misses 4.5:1")
++    XCTAssertGreaterThan(achieved, SwitcherRailLayout.Palette.opaqueFillFloor, "but only just")
++    XCTAssertFalse(palette.needsOpaqueFill, "a 1% shortfall must not cost the material")
+   }
+ }
+
+
+Investigate per the method in your instructions, then return the findings list.
