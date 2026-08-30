@@ -1,0 +1,404 @@
+<task-notification>
+<task-id>ad147ba46772df412</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/aed8926d-2d0e-4e9c-8c02-c5f98d2554f8/tasks/ad147ba46772df412.output</output-file>
+<status>completed</status>
+<summary>Agent "Design plan for issue #141 favicon feature" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result># Implementation Plan: Favicons for Terminal Tabs (Issue #141)
+
+## Architecture summary
+
+A new data-driven registry (`ToolLogoRegistry`) sits alongside — not inside — the existing `AgentBackend` enum. It's populated from a bundled JSON file that is the **single source of truth** shared by a new bash fetch script and the Swift app, so the "what to fetch" list and the "what to match" list can never drift apart. Detection reuses the exact latch/clear lifecycle already proven for `activeAgentBackend` (`TerminalSessions.swift`), and fixes a real correctness bug (`proc_name` vs `argv0`) in a shared low-level helper so both the existing inline-diagnosis feature and the new favicon feature resolve PIDs correctly. Rendering is one new block in `TerminalTabChip`'s existing content-glyph slot, gated by "does this tab have a recognized tool with an actually-bundled logo" — never a fallback glyph.
+
+## New files
+
+**1. `macapp/Resources/tool-logos/registry.json`** — curated registry data (see list below). Bundled as a folder resource, same pattern as `Resources/markdown`/`Resources/ghostty`.
+
+**2. `macapp/WorkroomApp/Core/ToolLogoRegistry.swift`**
+```swift
+import AppKit
+
+/// One curated entry (issue #141): identifies a CLI/TUI by its exec'd basename (or, for tools that
+/// rewrite their own title, a literal provider title) and names the bundled `ToolLogo-&lt;id&gt;` imageset
+/// carrying its real brand favicon. Loaded from Resources/tool-logos/registry.json — the SAME file
+/// Scripts/fetch-tool-logos.sh reads to know what to fetch, so the fetch list and the match list
+/// can't drift apart.
+struct ToolLogoEntry: Codable, Equatable {
+  let id: String
+  let displayName: String
+  let executables: [String]
+  let titles: [String]?       // provider-owned literal titles (e.g. "claude code"); rare
+  let faviconSource: String   // consumed only by the fetch script; decoded here too, unused at runtime
+}
+
+/// Latched onto a running terminal tab (mirrors `AgentBackend`, but data-driven and not limited to
+/// two cases). Deliberately smaller than `ToolLogoEntry` — a tab only needs to remember the match.
+struct RecognizedTool: Equatable {
+  let id: String
+  let displayName: String
+}
+
+enum ToolLogoRegistry {
+  static let entries: [ToolLogoEntry] = loadEntries()
+
+  private static let byExecutable: [String: ToolLogoEntry] = {
+    var map: [String: ToolLogoEntry] = [:]
+    for entry in entries { for exe in entry.executables { map[exe] = entry } }
+    return map
+  }()
+
+  private static let byTitle: [String: ToolLogoEntry] = {
+    var map: [String: ToolLogoEntry] = [:]
+    for entry in entries { for t in entry.titles ?? [] { map[t.lowercased()] = entry } }
+    return map
+  }()
+
+  /// Pure data match — works even before `fetch-tool-logos.sh` has produced an imageset for the id,
+  /// so it's directly unit-testable against registry.json content alone.
+  ///
+  /// Case-sensitive on purpose, mirroring `AgentTitleRecognition.backend(for:)`
+  /// (AgentUsage.swift:105-126): a command title is the real, lower-case executable name, so
+  /// comparing case-sensitively rejects prose like "Go to definition" matching the `go` entry.
+  /// DO NOT `.lowercased()` this side — that regression multiplies with ~30 registry entries.
+  static func matchingEntry(forTitle title: String?) -&gt; ToolLogoEntry? {
+    guard let title else { return nil }
+    let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    if let literal = byTitle[trimmed.lowercased()] { return literal }
+    guard let first = trimmed.split(whereSeparator: \.isWhitespace).first else { return nil }
+    let token = String(first).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+    return byExecutable[(token as NSString).lastPathComponent]
+  }
+
+  static func matchingEntry(forExecutableName name: String?) -&gt; ToolLogoEntry? {
+    guard let name else { return nil }
+    return byExecutable[(name as NSString).lastPathComponent]
+  }
+
+  /// The gate production call sites actually use: nil unless the id's real logo made it into
+  /// Assets.xcassets. A registry.json entry can exist before the fetch script has been run for it
+  /// (or a fetch failed for one tool) — this must never surface a broken/blank image.
+  static func tool(forTitle title: String?) -&gt; RecognizedTool? {
+    matchingEntry(forTitle: title).flatMap(recognizedIfBundled)
+  }
+  static func tool(forExecutableName name: String?) -&gt; RecognizedTool? {
+    matchingEntry(forExecutableName: name).flatMap(recognizedIfBundled)
+  }
+
+  static func assetName(for id: String) -&gt; String { "ToolLogo-\(id)" }
+
+  private static func recognizedIfBundled(_ entry: ToolLogoEntry) -&gt; RecognizedTool? {
+    guard NSImage(named: assetName(for: entry.id)) != nil else { return nil }
+    return RecognizedTool(id: entry.id, displayName: entry.displayName)
+  }
+
+  private static func loadEntries() -&gt; [ToolLogoEntry] {
+    guard
+      let url = Bundle.main.url(
+        forResource: "registry", withExtension: "json", subdirectory: "tool-logos"),
+      let data = try? Data(contentsOf: url),
+      let decoded = try? JSONDecoder().decode([ToolLogoEntry].self, from: data)
+    else { return [] }
+    return decoded
+  }
+}
+```
+
+**3. `macapp/WorkroomSessionProtocol/ProcessArgv0.swift`** — the correctness-bug fix, extracted verbatim from `SessionPTY.swift:154-181`:
+```swift
+import Darwin
+
+/// The basename of `argv[0]` as a process was originally exec'd (e.g. `claude`, `vim`), or nil if it
+/// can't be resolved. Deliberately NOT `proc_name`/`p_comm`: some CLIs (Claude Code among them,
+/// observed in the wild) rename their own process title after launch — `p_comm` then reads as their
+/// version string ("2.1.232"), not the command a user typed. `KERN_PROCARGS2` returns the ORIGINAL
+/// exec-time argv snapshot, unaffected by any later self-renaming.
+///
+/// Shared by both PID-resolution paths in the app (issue #141): the session daemon's reattach-time
+/// foreground detection (`SessionDaemon.swift`, historically the only caller) and the live-pane path
+/// (`GhosttySurfaceView`'s `foregroundAgentBackend`/`foregroundTool`) — which previously used the
+/// buggy `proc_name` and is fixed by switching to this shared implementation.
+public enum ProcessArgv0 {
+  public static func executableName(processID: pid_t) -&gt; String? {
+    guard processID &gt; 0 else { return nil }
+    var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, processID]
+    var size = 0
+    guard sysctl(&amp;mib, 3, nil, &amp;size, nil, 0) == 0, size &gt; 4 else { return nil }
+    var buffer = [UInt8](repeating: 0, count: size)
+    guard sysctl(&amp;mib, 3, &amp;buffer, &amp;size, nil, 0) == 0, size &gt; 4 else { return nil }
+    let argc = buffer.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
+    guard argc &gt; 0 else { return nil }
+    var offset = 4
+    while offset &lt; size, buffer[offset] != 0 { offset += 1 }
+    while offset &lt; size, buffer[offset] == 0 { offset += 1 }
+    guard offset &lt; size else { return nil }
+    let start = offset
+    while offset &lt; size, buffer[offset] != 0 { offset += 1 }
+    guard offset &gt; start else { return nil }
+    let argv0 = String(decoding: buffer[start..&lt;offset], as: UTF8.self)
+    guard let lastSlash = argv0.lastIndex(of: "/") else { return argv0 }
+    let basename = argv0[argv0.index(after: lastSlash)...]
+    return basename.isEmpty ? nil : String(basename)
+  }
+}
+```
+`WorkroomSessionProtocol` is already linked into both `WorkroomApp` (project.yml:237) and `workroom-session` (project.yml:437) — the correct shared home, needing zero new project.yml target wiring.
+
+**4. `macapp/Scripts/fetch-tool-logos.sh`** — see script section below.
+
+**5. `macapp/WorkroomAppTests/ToolLogoRegistryTests.swift`** — mirrors `AgentUsageTests.swift`'s shape:
+```swift
+@testable import Workroom
+import XCTest
+
+final class ToolLogoRegistryTests: XCTestCase {
+  func testMatchesExecutableAliasesCaseSensitively() {
+    XCTAssertEqual(ToolLogoRegistry.matchingEntry(forExecutableName: "vim")?.id, "vim")
+    XCTAssertEqual(ToolLogoRegistry.matchingEntry(forExecutableName: "vi")?.id, "vim")
+    XCTAssertEqual(ToolLogoRegistry.matchingEntry(forExecutableName: "/opt/homebrew/bin/nvim")?.id, "nvim")
+    XCTAssertNil(ToolLogoRegistry.matchingEntry(forExecutableName: "Vim"))  // case-sensitive
+  }
+
+  func testMatchesTitleFirstTokenAndRejectsProseFalsePositives() {
+    XCTAssertEqual(ToolLogoRegistry.matchingEntry(forTitle: "claude --resume abc")?.id, "claude")
+    XCTAssertEqual(ToolLogoRegistry.matchingEntry(forTitle: "Claude Code")?.id, "claude")
+    for title in ["Go to definition", "Ruby on Rails guide", "installing docker Desktop"] {
+      XCTAssertNil(ToolLogoRegistry.matchingEntry(forTitle: title), "false positive for \(title)")
+    }
+  }
+
+  func testUnrecognizedNameOrTitleReturnsNil() {
+    XCTAssertNil(ToolLogoRegistry.matchingEntry(forExecutableName: "some-random-binary"))
+    XCTAssertNil(ToolLogoRegistry.matchingEntry(forTitle: nil))
+  }
+}
+```
+This exercises `matchingEntry` (pure, works regardless of which imagesets have been fetched yet). Do not assert on `tool(forExecutableName:)`/`tool(forTitle:)` (the image-gated variants) in CI-portable tests — they depend on which imagesets happen to be committed at test time.
+
+## Modified files
+
+**`macapp/WorkroomApp/Core/TerminalSessions.swift`**
+- `TerminalState` (struct at 301-324): add a field next to `activeAgentBackend` (314):
+  ```swift
+  /// The curated CLI/TUI tool recognized as currently running in this terminal's foreground (issue
+  /// #141) — a broader, data-driven sibling of `activeAgentBackend`, latched/cleared identically.
+  var activeTool: RecognizedTool?
+  ```
+- `TerminalTab` (near `isRunning`, ~73-76): add
+  ```swift
+  var recognizedTool: RecognizedTool? {
+    if case .terminal(let s) = content { return s.activeTool }
+    return nil
+  }
+  ```
+- `updateTitle` (1351-1369): resolve the tool alongside the agent, and latch it the same way:
+  ```swift
+  let detectedTool = s.view.foregroundTool ?? ToolLogoRegistry.tool(forTitle: trimmed)
+  guard
+    s.liveTitle != trimmed || (s.activeAgentBackend == nil &amp;&amp; detectedAgent != nil)
+      || (s.activeTool == nil &amp;&amp; detectedTool != nil)
+  else { return }
+  mutateTerminalState(tabID, target: target) {
+    $0.liveTitle = trimmed
+    if $0.activeAgentBackend == nil { $0.activeAgentBackend = detectedAgent }
+    if $0.activeTool == nil { $0.activeTool = detectedTool }
+  }
+  ```
+- `handleCommandFinished` (1396-1408): clear it in the same mutation block: `$0.activeTool = nil`.
+- **Scope note (matters for review):** this is a first-wins latch, identical in spirit to `activeAgentBackend`'s documented behavior (comment at 311-313) — the icon does **not** swap mid-command if the foreground process changes under one shell prompt (e.g. `claude` shelling out to `git` keeps the Claude logo). It swaps *between* commands: clear at `command_finished`, re-latch on the next command's title. Don't read "swaps correctly as foreground process changes" in the ask as requiring mid-command swapping — that would mean re-resolving on every title repaint, which is exactly what `activeAgentBackend` deliberately avoids and issue #141 has no stated need to change.
+- **tmux/screen note:** inside a multiplexer the PTY's foreground pgid is tmux itself, so a pane running `tmux` latches the tmux logo and does not see the inner program — same limitation the existing "conservatively from shell title … for multiplexed sessions" comment already accepts for agent detection. Not a regression to fix here.
+
+**`macapp/WorkroomApp/Core/GhosttySurfaceView.swift`** (near `foregroundAgentBackend`, 36-43): add `import WorkroomSessionProtocol` and a sibling computed property that fixes the PID resolution bug for its own case too:
+```swift
+var foregroundTool: RecognizedTool? {
+  if let foregroundProcessNameForTesting {
+    return ToolLogoRegistry.tool(forExecutableName: foregroundProcessNameForTesting)
+  }
+  guard let surface else { return nil }
+  let pid = pid_t(ghostty_surface_foreground_pid(surface))
+  return ToolLogoRegistry.tool(forExecutableName: ProcessArgv0.executableName(processID: pid))
+}
+```
+Reuses the existing `foregroundProcessNameForTesting` seam — no new test hook needed. This does query the surface's foreground pid a second time per title-change event (once for `foregroundAgentBackend`, once for `foregroundTool`); title-change is not a hot path (fires on OSC 0/2, not per-keystroke), so the duplicate `sysctl` call is an accepted minor cost, not worth merging into one combined API.
+
+**`macapp/WorkroomApp/Core/AgentUsage.swift`** (129-145): fix the load-bearing bug in the *existing* inline-diagnosis feature's PID path — add `import WorkroomSessionProtocol` and replace `backend(forPID:)`'s body:
+```swift
+static func backend(forPID pid: pid_t) -&gt; AgentBackend? {
+  guard pid &gt; 1 else { return nil }
+  return backend(forProcessName: ProcessArgv0.executableName(processID: pid))
+}
+```
+This deletes the `proc_name`/`MAXPATHLEN` buffer dance (shorter, and correct) and fixes the same bug for the unrelated inline-diagnosis feature as a side effect of sharing the low-level helper — `AgentTitleRecognition`/`AgentBackend` themselves are untouched, per your decision to keep that enum separate.
+
+**`macapp/WorkroomSession/SessionPTY.swift`**: delete `executableName(processID:)` (148-181) — moved, not duplicated.
+
+**`macapp/WorkroomSession/SessionDaemon.swift`**: update the one call site (385) to `ProcessArgv0.executableName(processID: group)`, and the doc-comment mention at 682 to point at the new location. `WorkroomSessionProtocol` is already imported (line 2) — no import change needed here. Bonus: this is where session reattach (already argv0-correct) and the live-pane path converge on the same helper, so a reattached pane's synthesized OSC 2 title (`SessionDaemon.swift:385-390`) flows into `updateTitle` and latches a tool correctly for free.
+
+**`macapp/WorkroomApp/Views/TerminalTabStrip.swift`** (`TerminalTabChip.body`, in the content-kind-glyph slot after the changeset glyph at 516-521, before the unread-activity dot at 522-529):
+```swift
+// A recognized CLI/TUI's real brand favicon (issue #141). `tab.recognizedTool` is nil for a
+// content tab, an unrecognized command, or a registry entry whose logo hasn't been fetched yet —
+// `ToolLogoRegistry` only vends entries with a bundled image, so this never renders a
+// missing/broken asset. Dynamic (unlike the diff/file/changeset glyphs, which are fixed for the
+// tab's life) — same category of mid-session width change as the ✦ agent badge above (477-487);
+// no special-casing needed, `TabWidthKey` already re-measures on every body re-evaluation.
+if let tool = tab.recognizedTool {
+  Image(ToolLogoRegistry.assetName(for: tool.id))
+    .resizable()
+    .aspectRatio(contentMode: .fit)
+    .frame(width: 12, height: 12)
+    .help(tool.displayName)
+    .accessibilityLabel(tool.displayName)
+}
+```
+`.aspectRatio(.fit)` (not bare `.resizable()`) matters: several fetched favicons won't be perfectly square, and without it they'd stretch to fill a square frame.
+
+**`macapp/project.yml`** (WorkroomApp `sources:`, alongside the `Resources/markdown` entry at ~178-183): add
+```yaml
+      - path: Resources/tool-logos
+        type: folder
+        buildPhase: resources
+```
+No other project.yml change is needed: new `.swift` files under already-globbed `- path: WorkroomApp` / `- path: WorkroomSessionProtocol` and new imagesets under `Assets.xcassets` are picked up automatically by `xcodegen generate` (already run by every `make app-*` target per `macapp/CLAUDE.md`'s gotcha).
+
+**`Makefile`**: add a target mirroring `app-icon` (line ~130):
+```makefile
+app-tool-logos: ## Fetch/refresh curated tool-logo assets (macapp/Scripts/fetch-tool-logos.sh)
+	cd macapp &amp;&amp; Scripts/fetch-tool-logos.sh
+```
+and add `app-tool-logos` to the `.PHONY` list (line 13).
+
+## Curated registry v1 (registry.json content)
+
+30 entries, covering every tool the issue names plus a few obvious rounding-outs:
+
+| id | display name | executables | faviconSource |
+|---|---|---|---|
+| claude | Claude Code | claude | https://claude.ai |
+| codex | Codex | codex | https://openai.com |
+| git | Git | git | https://git-scm.com |
+| vim | Vim | vim, vi, view, gvim | https://www.vim.org |
+| nvim | Neovim | nvim | https://neovim.io |
+| tmux | tmux | tmux | https://tmux.github.io |
+| docker | Docker | docker, docker-compose | https://www.docker.com |
+| kubectl | kubectl | kubectl | https://kubernetes.io |
+| k9s | k9s | k9s | https://k9scli.io |
+| npm | npm | npm, npx | https://www.npmjs.com |
+| node | Node.js | node | https://nodejs.org |
+| yarn | Yarn | yarn | https://yarnpkg.com |
+| pnpm | pnpm | pnpm | https://pnpm.io |
+| bun | Bun | bun | https://bun.sh |
+| deno | Deno | deno | https://deno.com |
+| python | Python | python, python3 | https://www.python.org |
+| ruby | Ruby | ruby, irb | https://www.ruby-lang.org |
+| rust | Rust | cargo, rustc | https://www.rust-lang.org |
+| go | Go | go | https://go.dev |
+| htop | htop | htop | https://htop.dev |
+| btop | btop | btop | https://github.com/aristocratos/btop |
+| lazygit | lazygit | lazygit | https://github.com/jesseduffield/lazygit |
+| gh | GitHub CLI | gh | https://cli.github.com |
+| redis | Redis | redis-cli | https://redis.io |
+| postgres | PostgreSQL | psql | https://www.postgresql.org |
+| mysql | MySQL | mysql | https://www.mysql.com |
+| ssh | OpenSSH | ssh, scp, sftp | https://www.openssh.com |
+| terraform | Terraform | terraform | https://www.terraform.io |
+| aws | AWS CLI | aws | https://aws.amazon.com |
+| curl | curl | curl | https://curl.se |
+
+`claude`/`titles: ["claude code"]` is the one entry needing the `titles` field (mirrors `AgentTitleRecognition`'s existing "claude code" literal-title special case); everything else matches purely by executable basename. `btop`, `lazygit`, `tmux` are GitHub-pages projects with no distinct brand domain — flag these for the human eyeball pass below; they may need the `faviconSource` field pointed at a direct image URL (e.g. a raw.githubusercontent.com logo) instead of a homepage, once reviewed.
+
+## Fetch script (`macapp/Scripts/fetch-tool-logos.sh`)
+
+Bash, following `vendor-markdown.sh`'s exact conventions (`curl` + `python3 -c` for JSON, no new dependency):
+
+```bash
+#!/usr/bin/env bash
+# Fetch/refresh curated tool-logo assets (issue #141). Reads Resources/tool-logos/registry.json and,
+# per entry, writes an Assets.xcassets/ToolLogo-&lt;id&gt;.imageset from its real favicon.
+#
+#   macapp/Scripts/fetch-tool-logos.sh            # refresh every entry
+#   macapp/Scripts/fetch-tool-logos.sh claude gh  # refresh just these ids
+#
+# Highest quality first: apple-touch-icon.png (typically 180×180) → Google's public favicon proxy at
+# 256px (resolves whatever a site actually declares, without this script parsing HTML) → favicon.ico
+# as a last resort. ALWAYS eyeball the fetched PNGs once — Google's proxy succeeds with a generic
+# globe for sites it can't resolve, so a bad fetch doesn't error, it just looks wrong.
+set -euo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." &amp;&amp; pwd)"
+REGISTRY="$DIR/Resources/tool-logos/registry.json"
+ASSETS="$DIR/WorkroomApp/Assets.xcassets"
+TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+ids_filter=("$@")
+
+wanted() { [[ ${#ids_filter[@]} -eq 0 ]] &amp;&amp; return 0; for w in "${ids_filter[@]}"; do [[ "$w" == "$1" ]] &amp;&amp; return 0; done; return 1; }
+
+fetch_source() {
+  local id="$1" source="$2" domain
+  domain="$(sed -E 's#^https?://##; s#/.*##' &lt;&lt;&lt;"$source")"
+  for url in "$source/apple-touch-icon.png" \
+             "https://www.google.com/s2/favicons?domain=$domain&amp;sz=256" \
+             "$source/favicon.ico"; do
+    if curl -fsSL --max-time 10 "$url" -o "$TMP/$id.raw" 2&gt;/dev/null \
+      &amp;&amp; [[ -s "$TMP/$id.raw" ]] \
+      &amp;&amp; sips -s format png "$TMP/$id.raw" --out "$TMP/$id.png" &gt;/dev/null 2&gt;&amp;1
+    then echo "  $id ← $url"; return 0; fi
+  done
+  return 1
+}
+
+write_imageset() {
+  local id="$1" dir="$ASSETS/ToolLogo-$id.imageset"
+  mkdir -p "$dir"
+  sips -Z 32 "$TMP/$id.png" --out "$dir/logo_32.png" &gt;/dev/null   # -Z: proportional, not force-square
+  sips -Z 64 "$TMP/$id.png" --out "$dir/logo_32@2x.png" &gt;/dev/null
+  cat &gt;"$dir/Contents.json" &lt;&lt;JSON
+{
+  "images" : [
+    { "idiom" : "universal", "scale" : "1x", "filename" : "logo_32.png" },
+    { "idiom" : "universal", "scale" : "2x", "filename" : "logo_32@2x.png" }
+  ],
+  "info" : { "author" : "xcode", "version" : 1 }
+}
+JSON
+}
+
+failed=()
+while IFS=$'\t' read -r id source; do
+  wanted "$id" || continue
+  if fetch_source "$id" "$source"; then write_imageset "$id"
+  else echo "  $id: no favicon fetched" &gt;&amp;2; failed+=("$id"); fi
+done &lt; &lt;(python3 -c '
+import json, sys
+for e in json.load(open(sys.argv[1])): print(f"{e[\"id\"]}\t{e[\"faviconSource\"]}")
+' "$REGISTRY")
+
+echo "Done. Eyeball the ~30 PNGs under $ASSETS/ToolLogo-*.imageset before committing —"
+echo "Google's proxy succeeds silently with a generic globe for unresolvable domains."
+[[ ${#failed[@]} -gt 0 ]] &amp;&amp; { echo "warning: no logo for: ${failed[*]}" &gt;&amp;2; exit 1; }
+```
+
+No VENDOR.md-style checksum manifest (unlike `vendor-markdown.sh`) — that exists there because DOMPurify is security-critical (sanitizes untrusted content); these are decorative brand icons with no such risk, so a checksum ledger would be unrequested complexity.
+
+## Sequencing — this cannot be fully finished inside a sandboxed session
+
+1. Land registry.json + `ToolLogoRegistry.swift` + `ProcessArgv0.swift` + the `SessionPTY`/`SessionDaemon`/`AgentUsage`/`GhosttySurfaceView`/`TerminalSessions`/`TerminalTabChip` edits + the fetch script + `project.yml` + `Makefile` changes + `ToolLogoRegistryTests.swift`. At this point `ToolLogoRegistry.entries`/`matchingEntry(...)` compile and pass tests; `tool(forExecutableName:)`/`tool(forTitle:)` return nil for everything (no imagesets exist yet) — the chip renders nothing, which is correct, not broken.
+2. **Run `make app-tool-logos` (i.e. `fetch-tool-logos.sh`) as a separate, human/CI step with real network access.** This repo's current sandbox network allowlist (`literal.fun, github.com, raw.githubusercontent.com, api.github.com, …chatgpt.com`) does **not** include `claude.ai`, `git-scm.com`, `docker.com`, `neovim.io`, or — critically — `www.google.com` (the s2-favicons fallback). Running the script inside this sandbox will fail every fetch; it needs `dangerouslyDisableSandbox: true` or a `/sandbox` allowlist change, run by whoever lands this (not something this planning session can do).
+3. Eyeball the fetched PNGs (script prints the reminder); fix up `btop`/`lazygit`/`tmux` (and anything else that came back as Google's generic globe) via a direct-image-URL `faviconSource` override, then re-run for just those ids.
+4. Commit the ~30 `ToolLogo-*.imageset` folders, run `make app-generate &amp;&amp; make app-test`.
+
+## Verification plan
+
+- **Unit-testable:** `ToolLogoRegistryTests` (above) — alias matching, case-sensitivity, false-positive rejection. Run via `make app-test`.
+- **Manual, end-to-end, using long-running tools (so the icon has time to be seen, unlike a 40ms `git status` flash):** open terminal tabs and run `claude`, `nvim`, `htop`, `lazygit`, `psql`, `ssh` one at a time — confirm each tab chip shows the right logo + `.help()` tooltip with the display name, confirm switching between tabs holds the right icon per tab, and confirm exiting back to the shell prompt clears the icon (matching `command_finished`). Also confirm an unrecognized command (e.g. some ad hoc script) shows no icon, and that a tool run *inside* `tmux` shows the tmux icon, not the inner program's (accepted v1 limitation).
+- **Regression check for the bug fix:** confirm the existing inline-diagnosis feature (issue #49, `AgentBackend`) still identifies `claude`/`codex` correctly post-fix — `AgentUsageTests.swift`'s existing `testRecognizesOnlyDirectAgentProcessNames` covers this at the unit level; a quick manual check that the ✦ diagnosis badge still appears for a running `claude` is worth doing since its PID-resolution path changed.
+
+### Critical Files for Implementation
+- macapp/WorkroomApp/Core/TerminalSessions.swift
+- macapp/WorkroomApp/Core/AgentUsage.swift
+- macapp/WorkroomApp/Core/GhosttySurfaceView.swift
+- macapp/WorkroomApp/Views/TerminalTabStrip.swift
+- macapp/WorkroomSession/SessionPTY.swift
+- macapp/project.yml</result>
+<usage><subagent_tokens>127331</subagent_tokens><tool_uses>40</tool_uses><duration_ms>708241</duration_ms></usage>
+</task-notification>
