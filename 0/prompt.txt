@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bktyng55v</task-id>
+<tool-use-id>toolu_01LdnrLWVasqB7a8uXr8QiyL</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/117a8de0-0920-4b33-973d-ebd9f406e777/tasks/bktyng55v.output</output-file>
+<status>completed</status>
+<summary>Background command "Resume watching nightly run to completion" completed (exit code 0)</summary>
+</task-notification>
