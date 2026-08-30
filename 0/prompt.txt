@@ -1,0 +1,1 @@
+Stop. We plan to build a full keyboard shortcut editor that will cover that. Delete the todo
