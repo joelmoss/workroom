@@ -1,0 +1,1 @@
+only use the focused workroom styling in workroom split groups. if only a single workroom is shown, we don't need to highlight it
