@@ -1,0 +1,1 @@
+[Image #2] the agent usage footer needs a new hover and click state that shows a detailed view of usage, like the attached image
