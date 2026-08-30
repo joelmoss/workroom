@@ -1,0 +1,1 @@
+looks like another user based on the geographic location. we want to filter out these, and don't enable sentry on dev builds. Only enable on actually releases (nightly, pre, stable, etc)
