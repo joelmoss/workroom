@@ -1,0 +1,1 @@
+on welcome page, make the logo twice as big, and with no border.
