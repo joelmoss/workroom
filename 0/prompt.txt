@@ -1,0 +1,713 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/AppStore.swift
+  - macapp/WorkroomApp/Core/RemoteStateModel.swift
+  - macapp/WorkroomApp/Core/StatusCommandRunner.swift
+  - macapp/WorkroomApp/Core/UITestFixture.swift
+  - macapp/WorkroomApp/Core/VCSModels.swift
+  - macapp/WorkroomApp/Core/VCSWriting.swift
+  - macapp/WorkroomApp/Views/ChangesPanel.swift
+  - macapp/WorkroomApp/Views/VCSToolbar.swift
+  - macapp/WorkroomAppTests/RemoteStateModelTests.swift
+  - macapp/WorkroomAppTests/VCSRemoteTriggerTests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/AppStore.swift ===
+@@ -175,6 +175,10 @@ final class AppStore: ObservableObject {
+       if selectedTargetID != oldValue {
+         focusHistoryIfShown()
+         focusRemoteStateIfShown()
++        // A confirmation asking about the OLD workroom's dirty tree is meaningless once the selection
++        // moves. `runRemoteAction` re-checks the sid so answering it couldn't misfire anyway, but leaving
++        // the dialog up would ask about a workroom the user is no longer looking at.
++        if pendingRemoteConfirm != nil { pendingRemoteConfirm = nil }
+       }
+     }
+   }
+@@ -520,6 +524,14 @@ final class AppStore: ObservableObject {
+   /// no command configured (`showsRunWarning: true`). See `PendingProjectSettings`'s doc comment for
+   /// why this is ONE store-level source rather than a sidebar-local `@State` plus a second one.
+   @Published var pendingProjectSettings: PendingProjectSettings?
++  /// A remote action awaiting confirmation — currently only a pull over a dirty working tree, where
++  /// `--autostash` will stash and reapply.
++  ///
++  /// Store-level rather than a `RightInspector` `@State` for the same reason `pendingProjectSettings` is:
++  /// there are two entry points (the toolbar segment and the Source Control menu's ⌥⇧⌘P), and a gate
++  /// owned by one view can only guard that view. It carries the `SidebarID` it was raised for so the
++  /// confirmed action can't be redirected onto whatever is selected by the time the dialog is answered.
++  @Published var pendingRemoteConfirm: PendingVCSAction?
+   /// A workroom being created in THIS window (issue #116). Non-nil from the moment the user picks a
+   /// project until the setup dialog is dismissed (a setup script ran) or auto-dismisses (no script).
+   /// Drives the immediate full-pane setup dialog AND the provisional "Creating…" tab chip — both
+@@ -547,6 +559,9 @@ final class AppStore: ObservableObject {
+       || pendingWorkroomClose != nil
+       || pendingProjectDeletion != nil || pendingWorkroomLabel != nil
+       || pendingProjectSettings != nil || errorMessage != nil
++      // Included so the Source Control shortcuts are inert while the confirmation is up — otherwise
++      // ⌥⇧⌘P could queue a second pull behind the dialog asking about the first.
++      || pendingRemoteConfirm != nil
+   }
+ 
+   let terminals = TerminalSessions()
+@@ -619,8 +634,30 @@ final class AppStore: ObservableObject {
+   /// and the push goes through jj's `--change` path. Pushing a bare `@` fails when the working copy is
+   /// empty AND undescribed — exactly the state a fresh workroom sits in — so the revision falls back to
+   /// its parent. The working-copy facts come from the status sweep, at no extra cost.
++  /// Request a remote action, confirming first when one is needed.
++  ///
++  /// **The confirmation gate lives HERE, not in the toolbar.** It used to sit in `VCSToolbar.perform`,
++  /// which meant the Source Control menu's ⌥⇧⌘P went straight past it: the button warned before
++  /// autostashing a dirty tree and the keyboard shortcut didn't. A safety gate that only one of two
++  /// entry points honours isn't a gate, so every caller funnels through this.
+   func performRemoteAction(_ action: VCSRemoteAction) {
+     guard let target = remoteState.target else { return }
++    // A pull rewrites the working copy, and workroom trees are essentially always dirty — `--autostash`
++    // will stash and reapply, which is worth saying before it happens.
++    if action == .pull, workroomStatuses[target.sid]?.dirty == true {
++      pendingRemoteConfirm = PendingVCSAction(action: action, sid: target.sid)
++      return
++    }
++    runRemoteAction(action, on: target.sid)
++  }
++
++  /// Run a confirmed action against the workroom it was confirmed FOR.
++  ///
++  /// The `sid` is checked rather than trusted: the confirmation dialog is not modal to the sidebar, so
++  /// the selection can move while it is open. Re-deriving the target at click time would silently run
++  /// the pull against a different workroom than the one the dirty-tree warning described.
++  func runRemoteAction(_ action: VCSRemoteAction, on sid: SidebarID) {
++    guard let target = remoteState.target, target.sid == sid else { return }
+     guard vcsAllowsRemoteActions(vcs: target.vcs) else { return }
+     let workingCopy = workroomStatuses[target.sid]?.jjWorkingCopy
+     let revision = CLIVCSWriter.jjPushRevision(
+@@ -746,8 +783,8 @@ final class AppStore: ObservableObject {
+     self.remoteState.onBranchResolved = { [weak self] sid, name in
+       self?.setResolvedBranchName(name, for: sid)
+     }
+-    self.remoteState.onDidMutate = { [weak self] action in
+-      self?.handleRemoteMutation(action)
++    self.remoteState.onDidMutate = { [weak self] action, sid in
++      self?.handleRemoteMutation(action, on: sid)
+     }
+     pendingRestoreSelection = Defaults[.sidebarSelection]
+     // Route each terminal's activity (OSC/bell) through the notification spine, gated on
+@@ -3106,6 +3143,14 @@ final class AppStore: ObservableObject {
+     // backstop, but clearing here keeps it immediate and prevents a same-named recreate from
+     // inheriting a stale label.
+     forgetLabels(forProject: project.path, workroomNames: project.workrooms.map(\.name))
++    // Drop this project's recorded fetch stamp for the same reason the labels go: it is keyed by
++    // project ROOT PATH in a persisted dictionary with no other pruning, so without this it survives
++    // for the life of the install and a re-add of the same path inherits a stale "last fetched".
++    if Defaults[.vcsLastFetch][project.path] != nil {
++      var stamps = Defaults[.vcsLastFetch]
++      stamps[project.path] = nil
++      Defaults[.vcsLastFetch] = stamps
++    }
+     // Drop any pending sheet targeting this project — otherwise its Save path (e.g.
+     // setRunConfig(forProject:)) still fires for the now-deleted path, and a later re-add of the
+     // same path would silently inherit the stale config (#127 follow-up).
+@@ -3868,16 +3913,21 @@ final class AppStore: ObservableObject {
+   /// commits and its rebase exits 0, so the exit code can't tell — and the writer cannot re-read the
+   /// working copy itself, because that would re-enter `JJSnapshotGate` for the same project root, which
+   /// that type documents as a deadlock. So the read happens HERE, after the gate has released.
+-  private func handleRemoteMutation(_ action: VCSRemoteAction) {
++  /// `sid` is the workroom the action RAN in, handed over by the model rather than read back off it.
++  ///
++  /// It used to read `remoteState.target?.sid` here, which is whatever is selected by the time the action
++  /// finishes — so a pull in one workroom completing after the user moved to another read the SECOND
++  /// workroom's conflict flag and attributed it to the first one's pull.
++  private func handleRemoteMutation(_ action: VCSRemoteAction, on sid: SidebarID) {
+     refreshWorkroomStatuses(force: true)
+     if historySectionShown { commitHistory.refresh() }
+-    guard action == .pull, let sid = remoteState.target?.sid else { return }
++    guard action == .pull else { return }
+     // The forced sweep above is async; read the conflict flag once it has landed.
+     let sweep = statusSweepTask
+     Task { [weak self] in
+       await sweep?.value
+       guard let self else { return }
+-      self.remoteState.noteConflictState(self.workroomStatuses[sid]?.conflicted == true)
++      self.remoteState.noteConflictState(self.workroomStatuses[sid]?.conflicted == true, for: sid)
+     }
+   }
+ 
+
+
+=== DIFF: macapp/WorkroomApp/Core/RemoteStateModel.swift ===
+@@ -58,13 +58,21 @@ final class RemoteStateModel: ObservableObject {
+   private let now: @Sendable () -> Date
+   private var task: Task<Void, Never>?
+   private var actionTask: Task<Void, Never>?
++  /// Which workroom the in-flight action belongs to.
++  ///
++  /// `inFlight` is a model-WIDE lock — one action at a time, because the writer and `JJSnapshotGate` are
++  /// shared — but the toolbar renders per selection, so "an action is running" and "an action is running
++  /// *here*" are different questions. Without this, switching workrooms mid-push left the newly selected
++  /// one showing "Pushing…" with every segment disabled until the other workroom's action finished (up to
++  /// 300s for a pull).
++  private var inFlightTarget: Target?
+   /// When each project last auto-fetched, in-memory (a relaunch may legitimately fetch again).
+   private var lastAutoFetch: [String: Date] = [:]
+ 
+   /// Fired after a successful mutation so the store can refresh everything downstream — workroom
+   /// status (the dirty/conflict badge), the commit history, and this model itself. Wired post-init so
+   /// the model needs no `AppStore` to be unit-tested (the `workroomFileWatcher` idiom).
+-  var onDidMutate: (@MainActor (VCSRemoteAction) -> Void)?
++  var onDidMutate: (@MainActor (VCSRemoteAction, SidebarID) -> Void)?
+   /// Publishes the resolved branch name so `AppStore.branchName(for:)` — the one accessor every
+   /// branch-showing surface reads — can lead with it. This model is the only writer.
+   var onBranchResolved: (@MainActor (SidebarID, String?) -> Void)?
+@@ -195,6 +203,13 @@ final class RemoteStateModel: ObservableObject {
+ 
+   // MARK: Derived
+ 
++  /// The in-flight action IF it belongs to the workroom currently on screen — what the toolbar renders.
++  ///
++  /// Distinct from `inFlight`, which is the model-wide lock and is what `canFetch`/`canPush`/`canPull`
++  /// gate on: a second action must be blocked even when it was started from another workroom, because
++  /// the writer and the gate are shared. Only the LABEL is per-target.
++  var activeAction: VCSRemoteAction? { inFlightTarget == target ? inFlight : nil }
++
+   var canFetch: Bool { snapshot?.primaryRemote != nil && inFlight == nil }
+   var canPush: Bool { snapshot?.primaryRemote != nil && inFlight == nil }
+   /// Pull needs something to pull FROM: a counterpart that exists on the remote.
+@@ -234,6 +249,7 @@ final class RemoteStateModel: ObservableObject {
+       return
+     }
+     inFlight = action
++    inFlightTarget = target
+     lastAction = action
+     lastFailure = nil
+     lastPullConflicted = false
+@@ -269,15 +285,27 @@ final class RemoteStateModel: ObservableObject {
+ 
+   private func finish(_ action: VCSRemoteAction, result: VCSRemoteActionResult, for target: Target)
+   {
++    // Always cleared: the action really is over, and this is the model-wide single-action lock. What is
++    // NOT unconditional is the RESULT, below.
+     inFlight = nil
++    inFlightTarget = nil
++    // The work happened in `target`'s repo whatever is selected now, so the fetch stamp and the
++    // downstream refresh belong to it and fire regardless.
++    if case .ok = result {
++      if action == .fetch || action == .pull { recordOwnFetch(projectRoot: target.projectRoot) }
++      onDidMutate?(action, target.sid)
++    }
++    // Everything past here writes PUBLISHED state that the toolbar renders for whatever is selected NOW,
++    // so it needs the same guard `apply` has. Without it, starting a push in one workroom and switching
++    // to another put the first one's failure — and its action label — on the second one's toolbar,
++    // reporting a failure for a workroom where nothing was attempted.
++    guard self.target == target else { return }
+     switch result {
+     case .ok:
+       lastFailure = nil
+-      if action == .fetch || action == .pull { recordOwnFetch(projectRoot: target.projectRoot) }
+       // Re-read immediately AND let the store refresh everything downstream. The metadata watcher
+       // would get there on its own, but its coalesce window is ~1s and the toolbar should feel instant.
+       refresh(force: true)
+-      onDidMutate?(action)
+     case .failed(let failure):
+       // Deliberately leaves `snapshot` intact: a failed action tells you nothing new about the repo.
+       lastFailure = failure
+@@ -293,8 +321,10 @@ final class RemoteStateModel: ObservableObject {
+ 
+   /// Called by the store after the post-mutation status refresh lands: a pull that reported success may
+   /// still have produced conflicts (jj writes them into commits and exits 0).
+-  func noteConflictState(_ conflicted: Bool) {
+-    guard lastAction == .pull, lastFailure == nil else { return }
++  /// `sid` is the workroom the pull ran in — checked, not trusted, for the same reason `finish` checks it:
++  /// the sweep this waits on is async, so the selection can move before it lands.
++  func noteConflictState(_ conflicted: Bool, for sid: SidebarID) {
++    guard target?.sid == sid, lastAction == .pull, lastFailure == nil else { return }
+     lastPullConflicted = conflicted
+   }
+ 
+
+
+=== DIFF: macapp/WorkroomApp/Core/StatusCommandRunner.swift ===
+@@ -137,6 +137,22 @@ struct StatusCommandRunner: StatusCommandRunning, Sendable {
+     env["PATH"] = ShellEnvironment.path()
+     env["GIT_OPTIONAL_LOCKS"] = "0"
+     env["GIT_TERMINAL_PROMPT"] = "0"
++    // Pin the message locale: EVERY consumer of this runner classifies failures by matching English
++    // substrings of git's stderr (`CLIVCSWriter.classify`, `WorkroomStatusResolver`), and git ships
++    // translated message catalogs. Homebrew git 2.55 under a French locale answers
++    // `erreur : le spécificateur de chemin …`, so without this a non-English user loses the ENTIRE
++    // failure taxonomy at once — auth, host-key, rejected-push, dirty-tree and leftover-lock all
++    // collapse to `.other(rawStderr)` with no recovery offered.
++    //
++    // `LC_ALL`, not `LC_MESSAGES`: this env is seeded from `ProcessInfo.environment`, so the user's own
++    // `LC_ALL` may be inherited, and it OUTRANKS `LC_MESSAGES` — setting the narrower variable is
++    // silently defeated (measured: `LC_ALL=fr_FR.UTF-8 LC_MESSAGES=C git …` still answers in French).
++    //
++    // Safe for paths despite forcing the C charset: git writes pathnames as raw bytes (and quotes
++    // non-ASCII per `core.quotePath` regardless of locale), so `LC_ALL=C` renders a `café-ünï.txt`
++    // byte-identically to the user's own locale — verified, not assumed. jj and gh are unaffected
++    // either way; neither localizes.
++    env["LC_ALL"] = "C"
+     // A workroom can be a clone of an *untrusted* repo, and the status sweep runs git automatically
+     // on load/focus/selection. `git diff` would otherwise run an inherited external-diff program;
+     // unset it so only the explicit `--no-ext-diff` flag (see WorkroomStatusResolver) governs diffs.
+
+
+=== DIFF: macapp/WorkroomApp/Core/UITestFixture.swift ===
+@@ -836,7 +836,7 @@ struct StubAgentRunner: AgentRunning {
+ }
+ 
+ /// The `VCSWriting` used under `-WorkroomUITestFixture`: serves the seeded `UITestFixture.remoteState`
+-/// and RECORDS which actions were requested, without running git or jj.
++/// and answers every action without running git or jj.
+ ///
+ /// What no other tier can see is the button→engine seam: whether clicking "Push origin" actually asks
+ /// for a push, whether the confirmation dialog swallows the click, and whether a second click while one
+@@ -848,10 +848,6 @@ struct StubAgentRunner: AgentRunning {
+ /// makes the failed action's own label the one shown — both of which name the action that was
+ /// requested, in the accessibility tree, without a side channel.
+ actor FixtureVCSWriter: VCSWriting {
+-  /// Actions requested, oldest first. Exposed to the app under test via `lastActionLabel` so an
+-  /// XCUITest can read it out of the accessibility tree — a test process cannot reach into this actor.
+-  private(set) var requested: [VCSRemoteAction] = []
+-
+   /// Set for `-WorkroomUITestSyncFailure`, so the error tier renders.
+   private let failing: Bool
+   /// Delays each action so the in-flight state is observable rather than instantaneous.
+@@ -891,7 +887,6 @@ actor FixtureVCSWriter: VCSWriting {
+   }
+ 
+   private func record(_ action: VCSRemoteAction) async -> VCSRemoteActionResult {
+-    requested.append(action)
+     if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+     return failing
+       ? .failed(.authRequired("fixture: authentication refused"))
+
+
+=== DIFF: macapp/WorkroomApp/Core/VCSModels.swift ===
+@@ -200,9 +200,6 @@ struct VCSTracking: Equatable, Sendable {
+   /// The counterpart ref is gone from the remote (or was never pushed). Counts are meaningless; the
+   /// toolbar offers Publish rather than Push.
+   let gone: Bool
+-
+-  var isInSync: Bool { !gone && ahead == 0 && behind == 0 }
+-  var isDiverged: Bool { (ahead ?? 0) > 0 && (behind ?? 0) > 0 }
+ }
+ 
+ /// When the repo last fetched. Three-way rather than `Date?` because the copy differs per case and
+
+
+=== DIFF: macapp/WorkroomApp/Core/VCSWriting.swift ===
+@@ -13,9 +13,6 @@ enum VCSRemoteAction: String, Equatable, Sendable, CaseIterable {
+     }
+   }
+ 
+-  /// Whether the action contacts a remote — drives the timeout budget and whether the command needs
+-  /// the auth-forwarding environment (`StatusCommandRunner.runNetwork`).
+-  var touchesNetwork: Bool { self != .abortRebase }
+ }
+ 
+ /// Why a remote read or action failed.
+@@ -64,6 +61,18 @@ enum VCSRemoteFailure: Equatable, Sendable {
+   case other(String)
+ }
+ 
++/// A VCS remote action queued behind a confirmation. Only a pull over a dirty working tree needs one:
++/// `--autostash` stashes and reapplies, and workroom trees are essentially always dirty, so this fires
++/// most times someone pulls — the copy has to be worth reading rather than a speed bump.
++///
++/// Carries the `SidebarID` it was raised for, and `AppStore.runRemoteAction` verifies it: the dialog is
++/// not modal to the sidebar, so the selection can move while it is open.
++struct PendingVCSAction: Identifiable, Equatable, Sendable {
++  let action: VCSRemoteAction
++  let sid: SidebarID
++  var id: String { "\(action.rawValue)-\(sid.hashValue)" }
++}
++
+ /// A lock file found blocking a VCS operation.
+ ///
+ /// Located by parsing the path out of git's own error, which names it exactly, then stat-ing it — so the
+
+
+=== DIFF: macapp/WorkroomApp/Views/ChangesPanel.swift ===
+@@ -14,9 +14,6 @@ struct RightInspector: View {
+   @Environment(\.openURL) private var openURL
+   /// A PR action awaiting confirmation (close), surfaced via a confirmation dialog.
+   @State private var pendingConfirm: PendingPRAction?
+-  /// A VCS remote action awaiting confirmation — currently only a pull over a dirty working tree, where
+-  /// `--autostash` will stash and reapply. Shares this view's confirmation mechanism with the PR one.
+-  @State private var pendingVCSConfirm: PendingVCSAction?
+ 
+   var body: some View {
+     // The active activity-bar section decides which sub-sections this pane stacks (Changes stacks
+@@ -31,20 +28,23 @@ struct RightInspector: View {
+       // Changes section. Only for the Changes activity section: branch/remote state is what that section
+       // is about, and showing it over the Files tree would jump the layout on every activity-bar click.
+       if store.activeInspectorSection == .changes {
+-        VCSToolbar(
+-          onNeedsConfirmation: { action, sid in
+-            pendingVCSConfirm = PendingVCSAction(action: action, sid: sid)
+-          }, model: store.remoteState)
++        VCSToolbar(model: store.remoteState)
+       }
+       inspectorSplit(subs: subs)
+     }
++    // Bound to the STORE, not a local `@State`: the gate that raises this lives in
++    // `AppStore.performRemoteAction` so the Source Control menu's ⌥⇧⌘P goes through it too. When the
++    // toolbar owned the gate, the shortcut autostashed a dirty tree with no warning at all.
+     .confirmationDialog(
+-      pendingVCSConfirm.map { "\($0.action.label) with uncommitted changes?" } ?? "",
++      store.pendingRemoteConfirm.map { "\($0.action.label) with uncommitted changes?" } ?? "",
+       isPresented: Binding(
+-        get: { pendingVCSConfirm != nil }, set: { if !$0 { pendingVCSConfirm = nil } }),
+-      presenting: pendingVCSConfirm
++        get: { store.pendingRemoteConfirm != nil },
++        set: { if !$0 { store.pendingRemoteConfirm = nil } }),
++      presenting: store.pendingRemoteConfirm
+     ) { item in
+-      Button(item.action.label) { store.performRemoteAction(item.action) }
++      // `runRemoteAction(on:)`, which re-checks `item.sid` — the dialog isn't modal to the sidebar, so
++      // the selection can move while it's open and `performRemoteAction` would re-derive the target.
++      Button(item.action.label) { store.runRemoteAction(item.action, on: item.sid) }
+       Button("Cancel", role: .cancel) {}
+     } message: { _ in
+       Text("Your uncommitted changes will be stashed and reapplied after the rebase.")
+@@ -320,15 +320,6 @@ private struct PendingPRAction: Identifiable {
+   var id: String { "\(action.rawValue)-\(number)" }
+ }
+ 
+-/// A VCS remote action queued behind a confirmation. Only a pull over a dirty working tree needs one:
+-/// `--autostash` stashes and reapplies, and workroom trees are essentially always dirty, so this fires
+-/// most times someone pulls — the copy has to be worth reading rather than a speed bump.
+-private struct PendingVCSAction: Identifiable {
+-  let action: VCSRemoteAction
+-  let sid: SidebarID
+-  var id: String { "\(action.rawValue)-\(sid.hashValue)" }
+-}
+-
+ /// The Changes section header's changed-file count.
+ ///
+ /// Geometry and type are `PRNumberBadge`'s, so the two section headers' badges match — but this one is
+
+
+=== DIFF: macapp/WorkroomApp/Views/VCSToolbar.swift ===
+@@ -42,6 +42,9 @@ enum VCSToolbarMetrics {
+   /// Verbatim from `PRNumberBadge`, so the toolbar's pill matches the ref pill 40pt below it.
+   static let pillHorizontalPadding: CGFloat = 5
+   static let pillVerticalPadding: CGFloat = 1
++  /// The pill's ↑/↓ glyph. Smaller than `glyph` on purpose — it sits inside a `.caption2` capsule and
++  /// has to read as a direction marker beside the count, not as an icon in its own right.
++  static let pillArrowGlyph: CGFloat = 7
+ }
+ 
+ /// The VCS toolbar: current branch, a sync segment that shows and performs the right remote action, and
+@@ -52,11 +55,6 @@ enum VCSToolbarMetrics {
+ /// modifier: the window toolbar is kept an empty AppKit `NSToolbar` because a SwiftUI toolbar item's
+ /// overflow `menuFormRepresentation` caused a multi-second app hang.
+ struct VCSToolbar: View {
+-  /// Raised when an action needs confirming first — currently only a pull over a dirty working tree.
+-  /// The dialog lives in `RightInspector` beside the PR one rather than here, so the inspector keeps
+-  /// one confirmation mechanism.
+-  let onNeedsConfirmation: (VCSRemoteAction, SidebarID) -> Void
+-
+   /// Observed EXPLICITLY, like `HistoryPanel`'s and `FilesPanel`'s models.
+   ///
+   /// `RemoteStateModel` is its own `ObservableObject`; `AppStore` merely holds it and does not forward
+@@ -77,7 +75,9 @@ struct VCSToolbar: View {
+     VCSSyncPresenter.make(
+       state: model.snapshot, hasTarget: model.target != nil,
+       toolsUsable: store.vcsAllowsRemoteActions(vcs: model.target?.vcs ?? "git"),
+-      activity: model.inFlight.map { .running($0) } ?? .idle,
++      // `activeAction`, not `inFlight`: the label must describe THIS workroom. `inFlight` is the
++      // model-wide lock, so rendering it directly showed "Pushing…" on a workroom that wasn't pushing.
++      activity: model.activeAction.map { .running($0) } ?? .idle,
+       failure: model.lastFailure, lastAction: model.lastAction, now: now)
+   }
+ 
+@@ -101,7 +101,7 @@ struct VCSToolbar: View {
+           .frame(minWidth: VCSToolbarMetrics.segmentMinWidth, maxWidth: .infinity)
+         divider
+         VCSFetchSegment(
+-          isRunning: model.inFlight == .fetch,
++          isRunning: model.activeAction == .fetch,
+           isEnabled: model.canFetch
+             && store.vcsAllowsRemoteActions(vcs: model.target?.vcs ?? "git"),
+           onFetch: { perform(.fetch) }
+@@ -130,14 +130,13 @@ struct VCSToolbar: View {
+     model.target.flatMap { store.branchName(for: $0.sid) }
+   }
+ 
++  /// Hands straight to the store, which owns the dirty-tree confirmation gate.
++  ///
++  /// The gate used to live here, and that was the bug: the Source Control menu calls
++  /// `performRemoteAction` directly, so ⌥⇧⌘P autostashed a dirty tree with no warning while this button
++  /// warned. A gate only one of two entry points honours isn't a gate.
+   private func perform(_ action: VCSRemoteAction?) {
+-    guard let action, let target = model.target else { return }
+-    // A pull rewrites the working copy, and workroom trees are essentially always dirty — `--autostash`
+-    // will stash and reapply, which is worth saying before it happens.
+-    if action == .pull, store.workroomStatuses[target.sid]?.dirty == true {
+-      onNeedsConfirmation(action, target.sid)
+-      return
+-    }
++    guard let action else { return }
+     store.performRemoteAction(action)
+   }
+ }
+@@ -396,7 +395,7 @@ private struct VCSCountPill: View {
+     HStack(spacing: 2) {
+       Text("\(badge.count)").font(.caption2).fontWeight(.semibold).monospacedDigit()
+       Image(systemName: badge.direction == .ahead ? "arrow.up" : "arrow.down")
+-        .font(.system(size: 7, weight: .semibold))
++        .font(.system(size: VCSToolbarMetrics.pillArrowGlyph, weight: .semibold))
+     }
+     .foregroundStyle(theme.fgMuted)
+     .padding(.horizontal, VCSToolbarMetrics.pillHorizontalPadding)
+
+
+=== DIFF: macapp/WorkroomAppTests/RemoteStateModelTests.swift ===
+@@ -239,7 +239,7 @@ final class RemoteStateModelTests: XCTestCase {
+     m.focus(target)
+     await m.awaitCurrentLoad()
+     var mutations: [VCSRemoteAction] = []
+-    m.onDidMutate = { mutations.append($0) }
++    m.onDidMutate = { action, _ in mutations.append(action) }
+     m.perform(.push)
+     await m.awaitCurrentLoad()
+     XCTAssertNil(m.inFlight)
+@@ -286,7 +286,7 @@ final class RemoteStateModelTests: XCTestCase {
+     m.focus(target)
+     await m.awaitCurrentLoad()
+     var mutations: [VCSRemoteAction] = []
+-    m.onDidMutate = { mutations.append($0) }
++    m.onDidMutate = { action, _ in mutations.append(action) }
+     m.perform(.fetch)
+     await m.awaitCurrentLoad()
+     XCTAssertTrue(mutations.isEmpty)
+@@ -352,7 +352,7 @@ final class RemoteStateModelTests: XCTestCase {
+     m.perform(.pull)
+     await m.awaitCurrentLoad()
+     XCTAssertFalse(m.lastPullConflicted)
+-    m.noteConflictState(true)
++    m.noteConflictState(true, for: target.sid)
+     XCTAssertTrue(m.lastPullConflicted)
+   }
+ 
+@@ -363,10 +363,80 @@ final class RemoteStateModelTests: XCTestCase {
+     await m.awaitCurrentLoad()
+     m.perform(.push)
+     await m.awaitCurrentLoad()
+-    m.noteConflictState(true)
++    m.noteConflictState(true, for: target.sid)
+     XCTAssertFalse(m.lastPullConflicted, "a push can't produce a rebase conflict")
+   }
+ 
++  // MARK: Stale target
++
++  /// **The regression this pins.** `apply` has always guarded against a read landing after the model
++  /// moved on; `finish` did not. So starting a push in one workroom and switching to another put the
++  /// FIRST workroom's failure — and its action label — on the SECOND workroom's toolbar, reporting a
++  /// failure for a workroom where nothing was attempted.
++  func testAFailedActionDoesNotLandOnAWorkroomSwitchedToMidFlight() async {
++    let writer = StubWriter(
++      state: .state(state(ahead: 1)), action: .failed(.authRequired("nope")))
++    let m = model(writer, ttl: 0)
++    m.focus(target)
++    await m.awaitCurrentLoad()
++    m.perform(.push)
++    // Switch while the push is in flight, then let it finish.
++    m.focus(otherTarget)
++    await m.awaitCurrentLoad()
++    XCTAssertNil(
++      m.lastFailure,
++      "the other workroom's push failure must not surface on this one; got "
++        + String(describing: m.lastFailure))
++  }
++
++  /// The successful path is target-scoped too — a completed push must not clear or re-read state for a
++  /// workroom it had nothing to do with.
++  func testASuccessfulActionStillReportsItsOwnWorkroomDownstream() async {
++    let writer = StubWriter(state: .state(state(ahead: 1)), action: .ok(summary: "pushed"))
++    let m = model(writer, ttl: 0)
++    var mutated: [SidebarID] = []
++    m.onDidMutate = { _, sid in mutated.append(sid) }
++    m.focus(target)
++    await m.awaitCurrentLoad()
++    m.perform(.push)
++    m.focus(otherTarget)
++    await m.awaitCurrentLoad()
++    XCTAssertEqual(
++      mutated, [target.sid],
++      "the mutation must be attributed to the workroom it ran in, not the one now selected")
++  }
++
++  /// `inFlight` is the model-wide lock (a second action must be blocked wherever it was started from),
++  /// but the LABEL is per-workroom: rendering `inFlight` directly left a freshly selected workroom
++  /// showing "Pushing…" with every segment disabled until someone else's action finished.
++  func testTheInFlightLabelIsScopedToItsOwnWorkroom() async {
++    let writer = StubWriter(state: .state(state(ahead: 1)), action: .ok(summary: "pushed"))
++    let m = model(writer, ttl: 0)
++    m.focus(target)
++    await m.awaitCurrentLoad()
++    m.perform(.push)
++    XCTAssertEqual(m.activeAction, .push, "the acting workroom shows its own action")
++
++    m.focus(otherTarget)
++    XCTAssertNil(m.activeAction, "a different workroom must not claim someone else's action")
++    XCTAssertNotNil(m.inFlight, "but the model-wide lock still holds — one action at a time")
++    XCTAssertFalse(m.canPush, "so a second action stays blocked")
++    await m.awaitCurrentLoad()
++  }
++
++  /// The conflict upgrade arrives from an async sweep, so the selection can move before it lands.
++  func testConflictUpgradeIsIgnoredForADifferentWorkroom() async {
++    let writer = StubWriter(state: .state(state(behind: 1)))
++    let m = model(writer, ttl: 0)
++    m.focus(target)
++    await m.awaitCurrentLoad()
++    m.perform(.pull)
++    await m.awaitCurrentLoad()
++    m.noteConflictState(true, for: otherTarget.sid)
++    XCTAssertFalse(
++      m.lastPullConflicted, "another workroom's conflict flag must not attach to this pull")
++  }
++
+   // MARK: Auto-fetch
+ 
+   func testAutoFetchRunsOnceThenRespectsTheInterval() async {
+
+
+=== DIFF: macapp/WorkroomAppTests/VCSRemoteTriggerTests.swift ===
+@@ -192,6 +192,110 @@ final class VCSRemoteTriggerTests: XCTestCase {
+     store.selectedTargetID = .workroom(project: "/p", name: "gone")
+     XCTAssertNil(store.remoteTarget())
+   }
++
++  // MARK: The dirty-tree confirmation gate
++
++  private func markDirty(_ store: AppStore, _ sid: SidebarID) {
++    store.workroomStatuses[sid] = WorkroomStatus(dirty: true, lastChecked: Date())
++  }
++
++  /// **The gate must live in the STORE, not the toolbar.** It used to sit in `VCSToolbar.perform`, so the
++  /// Source Control menu's ⌥⇧⌘P — which calls `performRemoteAction` directly — autostashed a dirty tree
++  /// with no warning while the button warned. This asserts the gate from the store's own entry point,
++  /// which is the one the menu uses.
++  func testPullOverADirtyTreeRaisesAConfirmationInsteadOfActing() async {
++    let (store, writer) = makeStore(visible: true, section: .changes)
++    let sid = SidebarID.workroom(project: "/p", name: "feat")
++    await select(store, sid)
++    markDirty(store, sid)
++
++    store.performRemoteAction(.pull)
++    await store.remoteState.awaitCurrentLoad()
++
++    XCTAssertEqual(store.pendingRemoteConfirm?.action, .pull)
++    XCTAssertEqual(store.pendingRemoteConfirm?.sid, sid)
++    XCTAssertNil(store.remoteState.inFlight, "nothing may run until the user answers")
++    let pulls = await writer.pulls
++    XCTAssertEqual(pulls, 0, "the engine must not be reached before confirmation")
++  }
++
++  /// A clean tree has nothing to stash, so the confirmation would be a speed bump.
++  func testPullOverACleanTreeActsWithoutConfirming() async {
++    let (store, writer) = makeStore(visible: true, section: .changes)
++    let sid = SidebarID.workroom(project: "/p", name: "feat")
++    await select(store, sid)
++    store.workroomStatuses[sid] = WorkroomStatus(dirty: false, lastChecked: Date())
++
++    store.performRemoteAction(.pull)
++    await store.remoteState.awaitCurrentLoad()
++
++    XCTAssertNil(store.pendingRemoteConfirm)
++    let pulls = await writer.pulls
++    XCTAssertEqual(pulls, 1)
++  }
++
++  /// The confirmation isn't modal to the sidebar, so the selection can move while it's open. Confirming
++  /// then must NOT silently redirect the pull onto whatever is selected now — the dirty-tree warning was
++  /// about a specific workroom.
++  func testAConfirmedPullIsRejectedIfTheSelectionMoved() async {
++    let (store, writer) = makeStore(visible: true, section: .changes)
++    store.projects = [
++      Project(
++        path: "/p", vcs: "git",
++        workrooms: [
++          Workroom(name: "feat", path: "/p/feat", vcsName: "workroom/feat", warnings: []),
++          Workroom(name: "other", path: "/p/other", vcsName: "workroom/other", warnings: []),
++        ])
++    ]
++    let first = SidebarID.workroom(project: "/p", name: "feat")
++    let second = SidebarID.workroom(project: "/p", name: "other")
++    await select(store, first)
++    markDirty(store, first)
++    store.performRemoteAction(.pull)
++    let pending = try? XCTUnwrap(store.pendingRemoteConfirm)
++    XCTAssertEqual(pending?.sid, first)
++
++    await select(store, second)
++    // Answer the dialog that was raised for `first` while `second` is selected.
++    store.runRemoteAction(.pull, on: first)
++    await store.remoteState.awaitCurrentLoad()
++
++    let pulls = await writer.pulls
++    XCTAssertEqual(pulls, 0, "a pull confirmed for one workroom must not run against another")
++  }
++
++  /// And the stale dialog is dismissed rather than left asking about a workroom nobody is looking at.
++  func testChangingSelectionDismissesAPendingConfirmation() async {
++    let (store, _) = makeStore(visible: true, section: .changes)
++    store.projects = [
++      Project(
++        path: "/p", vcs: "git",
++        workrooms: [
++          Workroom(name: "feat", path: "/p/feat", vcsName: "workroom/feat", warnings: []),
++          Workroom(name: "other", path: "/p/other", vcsName: "workroom/other", warnings: []),
++        ])
++    ]
++    let first = SidebarID.workroom(project: "/p", name: "feat")
++    await select(store, first)
++    markDirty(store, first)
++    store.performRemoteAction(.pull)
++    XCTAssertNotNil(store.pendingRemoteConfirm)
++
++    await select(store, .workroom(project: "/p", name: "other"))
++    XCTAssertNil(store.pendingRemoteConfirm)
++  }
++
++  /// A confirmation up means the Source Control shortcuts must be inert, or ⌥⇧⌘P could queue a second
++  /// pull behind the dialog asking about the first.
++  func testAPendingConfirmationCountsAsAModalPresentation() async {
++    let (store, _) = makeStore(visible: true, section: .changes)
++    let sid = SidebarID.workroom(project: "/p", name: "feat")
++    await select(store, sid)
++    markDirty(store, sid)
++    XCTAssertFalse(store.hasModalPresentation)
++    store.performRemoteAction(.pull)
++    XCTAssertTrue(store.hasModalPresentation)
++  }
+ }
+ 
+ /// Counts reads and actions. Returns a usable snapshot so the model reaches `.loaded` and its derived
+@@ -199,6 +303,7 @@ final class VCSRemoteTriggerTests: XCTestCase {
+ private actor CountingWriter: VCSWriting {
+   private(set) var stateReads = 0
+   private(set) var fetches = 0
++  private(set) var pulls = 0
+ 
+   func remoteState(path: String, projectRoot: String) async -> VCSRemoteResolution {
+     stateReads += 1
+@@ -221,7 +326,10 @@ private actor CountingWriter: VCSWriting {
+ 
+   func pullRebase(
+     path: String, projectRoot: String, current: VCSRef, remote: String, tracking: VCSTracking?
+-  ) async -> VCSRemoteActionResult { .ok(summary: "") }
++  ) async -> VCSRemoteActionResult {
++    pulls += 1
++    return .ok(summary: "")
++  }
+ 
+   func abortRebase(path: String, projectRoot: String) async -> VCSRemoteActionResult {
+     .ok(summary: "")
+
+
+Investigate per the method in your instructions, then return the findings list.
