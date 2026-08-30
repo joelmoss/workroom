@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>b7iywx0qb</task-id>
+<tool-use-id>toolu_01BCZYguMy9LyKMbNc1ZWYcq</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/ad9e5754-d4c8-4063-beb8-947970ea5d8f/tasks/b7iywx0qb.output</output-file>
+<status>completed</status>
+<summary>Background command "Run full macapp test suite incl UI/XCUITest (long-running)" completed (exit code 0)</summary>
+</task-notification>
