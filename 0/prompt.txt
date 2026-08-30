@@ -1,0 +1,200 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/VCSWriting.swift
+  - macapp/WorkroomAppTests/VCSRemoteIntegrationTests.swift
+  - macapp/WorkroomAppTests/VCSWritingTests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/VCSWriting.swift ===
+@@ -315,11 +315,29 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+   /// `--set-upstream` only when there is no counterpart yet; passing it on every push would rewrite
+   /// `branch.<name>.remote`/`.merge` each time. **Never** `--force`/`--force-with-lease`: a rejection
+   /// becomes `.rejected` and the UI offers Pull.
++  ///
++  /// `--porcelain` is what makes the rejection detectable without reading prose — see
++  /// `gitPushRejected(stdout:)`. It moves a machine-readable per-ref line onto stdout and leaves
++  /// stderr's hints alone, so nothing else about the failure path changes.
+   static func gitPushArgs(branch: String, remote: String, setUpstream: Bool) -> [String] {
+-    WorkroomStatusResolver.gitHardening + ["push"]
++    WorkroomStatusResolver.gitHardening + ["push", "--porcelain"]
+       + (setUpstream ? ["--set-upstream"] : []) + [remote, branch]
+   }
+ 
++  /// Whether `push --porcelain` reported a rejected ref.
++  ///
++  /// Each porcelain line is `<flag>\t<from>:<to>\t<summary>`, and the flag is the contract: `!`
++  /// rejected, ` ` updated, `*` new ref, `=` up to date, `-` deleted, `+` forced (we never force).
++  ///
++  /// This exists because the prose we used to match is translated and the flag is not. Homebrew git
++  /// 2.55 under `fr_FR.UTF-8` answers `Les mises à jour ont été rejetées …` on stderr while stdout
++  /// still reads `!\trefs/heads/master:refs/heads/master\t[rejected] (fetch first)` — measured, both
++  /// locales. `StatusCommandRunner` pins `LC_ALL=C` so the prose match works today; this stops
++  /// `.rejected` — the one failure whose recovery is a *different action* — depending on that pin.
++  static func gitPushRejected(stdout: String) -> Bool {
++    stdout.split(whereSeparator: \.isNewline).contains { $0.hasPrefix("!\t") }
++  }
++
+   /// `--autostash` is mandatory, not a nicety: workroom trees are essentially always dirty, and
+   /// without it every pull dies on "cannot pull with rebase: You have unstaged changes". The remote
+   /// branch is explicit so a workroom with no configured upstream can still pull.
+@@ -377,12 +395,26 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+     ["log", "--no-graph"] + jjReadFlags + ["-r", revset, "-T", #""x\n""#]
+   }
+ 
++  /// Quote a name for interpolation into a revset.
++  ///
++  /// Bare interpolation is a real parse bug, not a hypothetical. Verified against jj 0.43: a remote
++  /// named `a b`, `a)b` or `a:b` fails outright (`Failed to parse revset: Syntax error`), and — worse —
++  /// `a|b` *succeeds* as the UNION of two patterns, so the count comes back wrong with no error to
++  /// notice. Quoting fixes all of them.
++  ///
++  /// `\` is escaped before `"`, so the backslash pass cannot re-escape the escapes the quote pass adds.
++  static func jjQuote(_ name: String) -> String {
++    let escaped = name.replacingOccurrences(of: "\\", with: "\\\\")
++      .replacingOccurrences(of: "\"", with: "\\\"")
++    return "\"\(escaped)\""
++  }
++
+   /// What bare `jj git push` would send, so the ahead count and the Push button agree by construction.
+   static func jjAheadRevset(remote: String) -> String {
+-    "remote_bookmarks(remote=\(remote))..@"
++    "remote_bookmarks(remote=\(jjQuote(remote)))..@"
+   }
+   static func jjBehindRevset(remote: String) -> String {
+-    "@..remote_bookmarks(remote=\(remote))"
++    "@..remote_bookmarks(remote=\(jjQuote(remote)))"
+   }
+ 
+   static func jjFetchArgs(remote: String) -> [String] {
+@@ -558,7 +590,12 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+     {
+       return .noRemote
+     }
+-    if err.contains("Updates were rejected") || err.contains("! [rejected]") {
++    // Flag column first, prose second. The string checks stay as a fallback rather than being replaced:
++    // `--porcelain` is ours to pass on the push path only, so a rejection surfaced by any other route
++    // (a remote helper, a future caller that forgets the flag) still classifies.
++    if gitPushRejected(stdout: result.stdout) || err.contains("Updates were rejected")
++      || err.contains("! [rejected]")
++    {
+       return .rejected(err)
+     }
+     if err.contains("Failed to take lock for Git import/export")
+
+
+=== DIFF: macapp/WorkroomAppTests/VCSRemoteIntegrationTests.swift ===
+@@ -364,9 +364,15 @@ final class VCSRemoteIntegrationTests: XCTestCase {
+     guard case .failed(let failure) = result else {
+       return XCTFail("a non-fast-forward push must be rejected, got \(result)")
+     }
+-    guard case .rejected = failure else {
++    guard case .rejected(let message) = failure else {
+       return XCTFail("expected .rejected, got \(failure)")
+     }
++    // Pins the `--porcelain` flag against REAL git, not a fixture string: if the flag is ever dropped
++    // from `gitPushArgs` this line goes, and the classification silently falls back to matching English
++    // prose that a French locale would defeat.
++    XCTAssertTrue(
++      message.split(whereSeparator: \.isNewline).contains { $0.hasPrefix("!\t") },
++      "the porcelain flag column must be present in the output we classified: \(message)")
+   }
+ 
+   // MARK: - jj
+
+
+=== DIFF: macapp/WorkroomAppTests/VCSWritingTests.swift ===
+@@ -94,6 +94,54 @@ final class VCSWritingTests: XCTestCase {
+       XCTAssertFalse(args.contains("--force"))
+       XCTAssertFalse(args.contains("--force-with-lease"))
+       XCTAssertFalse(args.contains("-f"))
++      XCTAssertTrue(
++        args.contains("--porcelain"),
++        "the rejection must be readable from the flag column, not from translated prose")
++    }
++  }
++
++  /// The flag column is `!` for a rejected ref, and only for that.
++  func testPushRejectionIsReadFromThePorcelainFlagColumn() {
++    let rejected = """
++      To ../origin.git
++      !\trefs/heads/master:refs/heads/master\t[rejected] (fetch first)
++      Done
++      """
++    XCTAssertTrue(CLIVCSWriter.gitPushRejected(stdout: rejected))
++
++    for ok in [
++      " \trefs/heads/master:refs/heads/master\t327c4e6..896d14c",  // updated
++      "*\trefs/heads/feat:refs/heads/feat\t[new branch]",  // new ref
++      "=\trefs/heads/feat:refs/heads/feat\t[up to date]",  // nothing to do
++    ] {
++      XCTAssertFalse(
++        CLIVCSWriter.gitPushRejected(stdout: "To ../origin.git\n\(ok)\nDone"),
++        "not a rejection: \(ok)")
++    }
++    XCTAssertFalse(CLIVCSWriter.gitPushRejected(stdout: ""))
++    XCTAssertFalse(
++      CLIVCSWriter.gitPushRejected(stdout: "! not a porcelain line"),
++      "the flag is one character followed by a TAB — a bare ! is prose")
++  }
++
++  /// The point of the flag column: classification must survive a translated stderr. This is the exact
++  /// pairing Homebrew git 2.55 produces under `fr_FR.UTF-8` — no English anywhere in the message.
++  func testARejectedPushClassifiesWithNoEnglishInTheMessage() {
++    let result = CommandResult(
++      stdout: """
++        To ../origin.git
++        !\trefs/heads/master:refs/heads/master\t[rejected] (fetch first)
++        Done
++        """,
++      stderr: """
++        erreur : impossible de pousser des références vers '../origin.git'
++        astuce : Les mises à jour ont été rejetées car le distant contient du travail que vous
++        astuce : n'avez pas localement.
++        """,
++      exitCode: 1, timedOut: false)
++    let failure = CLIVCSWriter.classify(result, action: .push, tool: "git")
++    guard case .rejected = failure else {
++      return XCTFail("expected .rejected, got \(String(describing: failure))")
+     }
+   }
+ 
+@@ -151,9 +199,32 @@ final class VCSWritingTests: XCTestCase {
+   /// The ahead revset must be exactly what bare `jj git push` sends, so the count and the button agree.
+   func testJJAheadRevsetMatchesWhatPushWouldSend() {
+     XCTAssertEqual(
+-      CLIVCSWriter.jjAheadRevset(remote: "origin"), "remote_bookmarks(remote=origin)..@")
++      CLIVCSWriter.jjAheadRevset(remote: "origin"), #"remote_bookmarks(remote="origin")..@"#)
+     XCTAssertEqual(
+-      CLIVCSWriter.jjBehindRevset(remote: "origin"), "@..remote_bookmarks(remote=origin)")
++      CLIVCSWriter.jjBehindRevset(remote: "origin"), #"@..remote_bookmarks(remote="origin")"#)
++  }
++
++  /// Interpolating a remote name bare is a parse bug. Verified against jj 0.43: `a b`, `a)b` and `a:b`
++  /// fail with `Failed to parse revset`, and `a|b` silently parses as a UNION of two patterns — a wrong
++  /// count with no error. Every one of them parses once quoted.
++  func testRevsetRemoteNamesAreQuotedAndEscaped() {
++    XCTAssertEqual(CLIVCSWriter.jjQuote("origin"), #""origin""#)
++    XCTAssertEqual(CLIVCSWriter.jjQuote("a b"), #""a b""#)
++    XCTAssertEqual(CLIVCSWriter.jjQuote("a|b"), #""a|b""#)
++    // `\` before `"`, so the quote pass's own escapes don't get re-escaped.
++    XCTAssertEqual(CLIVCSWriter.jjQuote(#"a"b"#), #""a\"b""#)
++    XCTAssertEqual(CLIVCSWriter.jjQuote(#"a\b"#), #""a\\b""#)
++    XCTAssertEqual(CLIVCSWriter.jjQuote(#"a\"b"#), #""a\\\"b""#)
++
++    for name in ["a b", "a)b", "a:b", "a|b", #"a"b"#] {
++      for revset in [
++        CLIVCSWriter.jjAheadRevset(remote: name), CLIVCSWriter.jjBehindRevset(remote: name),
++      ] {
++        XCTAssertTrue(
++          revset.contains("remote=\(CLIVCSWriter.jjQuote(name))"),
++          "the name must reach the revset quoted: \(revset)")
++      }
++    }
+   }
+ 
+   /// jj refuses to push a commit with an empty description, and a fresh `@` after `jj new` has neither
+
+
+Investigate per the method in your instructions, then return the findings list.
