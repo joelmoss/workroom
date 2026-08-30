@@ -1,0 +1,1 @@
+remove the CLI assets from the github relases, and include an intel release
