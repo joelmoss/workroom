@@ -1,0 +1,200 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/VCSSyncPresentation.swift
+  - macapp/WorkroomApp/Views/VCSToolbar.swift
+  - macapp/WorkroomAppTests/VCSSyncPresentationTests.swift
+  - macapp/WorkroomAppUITests/VCSToolbarUITests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/VCSSyncPresentation.swift ===
+@@ -89,7 +89,8 @@ enum VCSSyncPresenter {
+   static func make(
+     state: VCSRemoteState?, hasTarget: Bool, toolsUsable: Bool = true,
+     activity: VCSSyncActivity = .idle, failure: VCSRemoteFailure? = nil,
+-    lastAction: VCSRemoteAction? = nil, pullRebase: Bool = true, now: Date
++    lastAction: VCSRemoteAction? = nil, pullRebase: Bool = true, pullConflicted: Bool = false,
++    now: Date
+   ) -> VCSSyncPresentation {
+     // [13] A failure outranks everything: it's the only state with something to recover from, and
+     // burying it under a count would leave the user with no idea the action didn't happen.
+@@ -128,6 +129,29 @@ enum VCSSyncPresenter {
+         accessibility: "\(title) \(subtitle)")
+     }
+ 
++    // [14] The pull we ran landed conflicts.
++    //
++    // BELOW the in-flight tier, deliberately: a running action's progress outranks a previous action's
++    // outcome. ABOVE the counts, equally deliberately — a conflicted pull leaves behind at 0, so the
++    // count tiers would render "Push origin" and say nothing at all about the tree being conflicted,
++    // which is both the more urgent fact and a prerequisite for that push making sense.
++    //
++    // Reached only by jj in practice: git's rebase stops on a conflict and exits non-zero, so a
++    // conflicted git pull is already a `.rebaseInProgress` failure offering Abort. jj's rebase commits
++    // the conflict and exits 0, which is why the outcome had to be read from working status at all.
++    //
++    // No action offered, for `.locked`'s reason: resolving conflicts is work in an editor, and a button
++    // that can't do it is a promise broken on click.
++    if pullConflicted {
++      let remedy =
++        "The rebase completed with conflicts. Resolve them in this workroom — the Changes list marks "
++        + "each conflicted file."
++      return VCSSyncPresentation(
++        subtitle: "Pulled with conflicts", subtitleShort: "Conflicts",
++        symbol: "exclamationmark.triangle.fill", action: nil, isEnabled: false,
++        tone: .warning, help: remedy, accessibility: "Pulled with conflicts. \(remedy)")
++    }
++
+     // [1] Nothing selected.
+     guard hasTarget else {
+       return disabled("No workroom selected", symbol: nil)
+@@ -246,6 +270,17 @@ enum VCSSyncPresenter {
+     }
+   }
+ 
++  /// Whether the pull **we** ran has conflicts still outstanding — the `[14]` tier's condition.
++  ///
++  /// Both halves are load-bearing. `lastPullConflicted` says the conflicts came from Workroom's own
++  /// pull: a workroom can be conflicted from a merge the user ran in a terminal, and attributing that to
++  /// the Pull button would be a lie. The live status says they are still there: the flag is cleared only
++  /// by a new action or a workroom switch, so on its own the message would outlive the conflicts and go
++  /// on calling a resolved tree broken.
++  static func pullConflicted(lastPullConflicted: Bool, statusConflicted: Bool) -> Bool {
++    lastPullConflicted && statusConflicted
++  }
++
+   /// One-line, actionable copy per failure. The raw stderr is legible for some cases and baffling for
+   /// others, so the baffling ones get written copy.
+   static func describe(_ failure: VCSRemoteFailure) -> String {
+
+
+=== DIFF: macapp/WorkroomApp/Views/VCSToolbar.swift ===
+@@ -91,7 +91,21 @@ struct VCSToolbar: View {
+       // `activeAction`, not `inFlight`: the label must describe THIS workroom. `inFlight` is the
+       // model-wide lock, so rendering it directly showed "Pushing…" on a workroom that wasn't pushing.
+       activity: model.activeAction.map { .running($0) } ?? .idle,
+-      failure: model.lastFailure, lastAction: model.lastAction, now: now)
++      failure: model.lastFailure, lastAction: model.lastAction,
++      pullConflicted: pullConflicted, now: now)
++  }
++
++  /// Whether our own pull left conflicts that are still unresolved.
++  ///
++  /// The live half is read from the store rather than the model because the model has no view of
++  /// working status — `noteConflictState` is pushed into it once, after the sweep that follows a pull,
++  /// and is never revised. Reading `workroomStatuses` here means resolving the conflicts in a terminal
++  /// clears the message on the next sweep, instead of it lingering until the next action.
++  private var pullConflicted: Bool {
++    guard let sid = model.target?.sid else { return false }
++    return VCSSyncPresenter.pullConflicted(
++      lastPullConflicted: model.lastPullConflicted,
++      statusConflicted: store.workroomStatuses[sid]?.conflicted == true)
+   }
+ 
+   var body: some View {
+
+
+=== DIFF: macapp/WorkroomAppTests/VCSSyncPresentationTests.swift ===
+@@ -246,6 +246,56 @@ final class VCSSyncPresentationTests: XCTestCase {
+     XCTAssertEqual(p.title, "Pushing…")
+   }
+ 
++  // MARK: - [14] a pull that landed conflicts
++
++  /// jj's rebase commits conflicts and exits 0, so a conflicted pull is a SUCCESS the segment still has
++  /// to report. Before this it said nothing: behind returns to 0, so the count tiers rendered "Push
++  /// origin" over a conflicted tree.
++  func testAConflictedPullIsReportedAndOffersNoAction() {
++    let p = VCSSyncPresenter.make(
++      state: state(ahead: 1), hasTarget: true, lastAction: .pull, pullConflicted: true, now: now)
++    XCTAssertEqual(p.subtitle, "Pulled with conflicts")
++    XCTAssertEqual(p.tone, .warning, "an outcome needing work, not a failed operation")
++    XCTAssertNil(p.action, "resolving conflicts is work in an editor; a button can't do it")
++    XCTAssertFalse(p.isEnabled)
++    XCTAssertTrue(p.help.contains("Resolve"), "the remedy belongs in the tooltip; got \(p.help)")
++  }
++
++  /// It must outrank the counts — the whole point — but yield to both an in-flight action (a running
++  /// action's progress beats a previous outcome) and a failure (which has recovery to offer).
++  func testConflictedPullOutranksCountsButYieldsToFlightAndFailure() {
++    let counts = VCSSyncPresenter.make(
++      state: state(ahead: 3), hasTarget: true, pullConflicted: true, now: now)
++    XCTAssertEqual(
++      counts.subtitle, "Pulled with conflicts", "a push offer would hide the conflicts")
++    XCTAssertNil(counts.badge, "no count pill competing with the conflict message")
++
++    let running = VCSSyncPresenter.make(
++      state: state(), hasTarget: true, activity: .running(.fetch), pullConflicted: true, now: now)
++    XCTAssertEqual(running.title, "Fetching…")
++
++    let failed = VCSSyncPresenter.make(
++      state: state(), hasTarget: true, failure: .authRequired("nope"), lastAction: .pull,
++      pullConflicted: true, now: now)
++    XCTAssertEqual(failed.tone, .failure)
++  }
++
++  /// Both flags are required. `lastPullConflicted` alone would attribute a terminal-side merge conflict
++  /// to Workroom's Pull; the live status alone would let the message outlive the conflicts, since the
++  /// flag is cleared only by a new action or a workroom switch.
++  func testPullConflictedNeedsBothOurPullAndAStillConflictedTree() {
++    XCTAssertTrue(
++      VCSSyncPresenter.pullConflicted(lastPullConflicted: true, statusConflicted: true))
++    XCTAssertFalse(
++      VCSSyncPresenter.pullConflicted(lastPullConflicted: true, statusConflicted: false),
++      "resolved in a terminal — the message must clear on the next sweep")
++    XCTAssertFalse(
++      VCSSyncPresenter.pullConflicted(lastPullConflicted: false, statusConflicted: true),
++      "conflicted, but not by our pull — don't claim the credit")
++    XCTAssertFalse(
++      VCSSyncPresenter.pullConflicted(lastPullConflicted: false, statusConflicted: false))
++  }
++
+   /// A parked rebase must offer ABORT, never a retry — a retry fails identically until it's cleared.
+   func testRebaseInProgressOffersAbortNotRetry() {
+     let p = VCSSyncPresenter.make(
+
+
+=== DIFF: macapp/WorkroomAppUITests/VCSToolbarUITests.swift ===
+@@ -285,6 +285,38 @@ class VCSToolbarUITestsBase: XCTestCase {
+       "the sync segment reports the in-flight fetch; got \(sync(app).label)")
+   }
+ 
++  /// The end of the conflicted-pull path, and the only tier whose outcome is neither a success nor a
++  /// failure. jj's rebase exits 0 WITH conflicts, so nothing in the failure taxonomy fires — and behind
++  /// returns to 0, so before this the count tiers rendered "Push origin" over a conflicted tree and said
++  /// nothing at all about it.
++  ///
++  /// The whole chain runs here: click → dirty-tree confirmation → fixture writer returns `.ok` → the
++  /// forced status sweep lands → `noteConflictState` → this tier. A unit test can pin the tier but not
++  /// that the flag ever reaches it.
++  func testAPullThatLandsConflictsIsReported() {
++    let app = launchedApp(syncState: "behind", extraArguments: ["-WorkroomUITestConflict", "1"])
++    XCTAssertTrue(waitExists(sync(app)))
++    XCTAssertTrue(waitLabel(sync(app), contains: "Pull"))
++    XCTAssertTrue(button(app, id: "vcs.toolbar.sync").isHittable)
++    button(app, id: "vcs.toolbar.sync").click()
++
++    // The fixture workroom is dirty, so the autostash confirmation comes first. Matched by exact label:
++    // the sync segment itself is spoken "Pull origin with rebase", so this can only be the dialog.
++    //
++    // Matched by an EXACT-label predicate, not `app.buttons["Pull"]`: that subscript matches identifier
++    // as well as label and resolved to several elements, which fails the click with "Multiple matching
++    // elements found". Exactly one button is labelled "Pull" — the sync segment is spoken "Pull origin
++    // with rebase" — so this can only be the dialog's confirm.
++    let confirm = app.buttons.matching(NSPredicate(format: "label == %@", "Pull")).firstMatch
++    XCTAssertTrue(waitExists(confirm, true, 8), "the dirty-tree confirmation should appear")
++    confirm.click()
++
++    XCTAssertTrue(
++      waitLabel(sync(app), contains: "Pulled with conflicts", 15),
++      "a conflicted pull must be reported, not left reading as a push offer; got \(sync(app).label)"
++    )
++  }
++
+   /// A failed action must NOT blank the toolbar — the ref is still known, and the repo is unchanged.
+   func testAFailedActionKeepsTheBranchVisible() {
+     let app = launchedApp(syncState: "ahead", extraArguments: ["-WorkroomUITestSyncFailure", "1"])
+
+
+Investigate per the method in your instructions, then return the findings list.
