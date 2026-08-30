@@ -296,8 +296,15 @@ struct GitProvider: VCSProviding {
     -> Patch?
   {
     switch delta.type {
-    case .untracked, .added, .modified, .renamed:
+    case .untracked, .modified, .renamed:
       return try repo.patch(from: delta)
+    case .added:
+      // SwiftGitX's own `patch(from:delta:)` looks up `delta.oldFile.id` unconditionally for
+      // `.added`, but that's a null OID for a file new since HEAD (e.g. a staged `git add` of a
+      // new file) — `show(id:)` throws on it instead of treating it as "no old side". Build the
+      // patch by hand instead, the same nil-old-blob shape `combinedWorkingDiff` already uses.
+      let newFileURL = root.appendingPathComponent(delta.newFile.path)
+      return try repo.patch(from: nil, to: newFileURL)
     case .deleted:
       let oldBlob: Blob = try repo.show(id: delta.oldFile.id)
       return try repo.patch(from: oldBlob, to: nil)
