@@ -1,0 +1,1 @@
+codex only has weekly number, so no need for the "wk"
