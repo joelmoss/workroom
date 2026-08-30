@@ -1,0 +1,262 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/VCSSyncPresentation.swift
+  - macapp/WorkroomApp/Core/VCSWriting.swift
+  - macapp/WorkroomAppTests/VCSWritingTests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/VCSSyncPresentation.swift ===
+@@ -100,7 +100,11 @@ enum VCSSyncPresenter {
+       return VCSSyncPresentation(
+         // With no recovery to offer, the title must not read as a button. "Retry" over a failure that
+         // cannot be retried is the whole defect this branch fixes.
+-        titleVariants: recovery == nil ? [] : (lastAction?.label).map { [$0] } ?? ["Retry"],
++        //
++        // The title names the RECOVERY, not the action that failed. It used to read `lastAction?.label`
++        // while `action:` below was `recovery` — so a rejected push rendered a button labelled "Push"
++        // that performed a Pull. The two must be the same verb or the button lies about what it does.
++        titleVariants: recovery.map { [$0.label] } ?? [],
+         subtitle: message, subtitleShort: message,
+         symbol: "exclamationmark.triangle.fill",
+         action: recovery,
+
+
+=== DIFF: macapp/WorkroomApp/Core/VCSWriting.swift ===
+@@ -218,16 +218,23 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+   /// the project and every sibling workroom reading "never fetched" while their remote refs were
+   /// perfectly fresh. At the root it's one fact every workroom of the project agrees on.
+   ///
+-  /// **jj push also runs at the root**, because bookmarks are repo-global. Everything else runs in the
+-  /// workroom: push/pull act on THIS worktree's HEAD, and jj's `rebase` must rewrite THIS workspace's
+-  /// `@`.
+-  static func opDirectory(_ action: VCSRemoteAction, path: String, vcs: String, projectRoot: String)
+-    -> String
+-  {
++  /// **Everything except fetch runs in the workroom, including jj push.** It used to send jj push to the
++  /// root on the grounds that bookmarks are repo-global. Bookmarks are — but `@` is not: it is
++  /// WORKSPACE-scoped, resolved against the working directory. So `jj git push --change @` run at the root
++  /// pushed the ROOT workspace's working copy and left the workroom's commit at home, while still
++  /// returning `.ok` so the toolbar reported "Pushed to origin".
++  ///
++  /// Measured, root holding `ROOT-WORKSPACE-WORK` and workspace `wsA` holding `WORKROOM-WORK`: the push
++  /// created `refs/heads/push-<root's change id>` carrying `ROOT-WORKSPACE-WORK`. Wrong commit published,
++  /// the user's work never sent, success reported. `--bookmark` works from a secondary workspace too, so
++  /// nothing needed the root.
++  ///
++  /// The integration test could not see this — it passes `path` and `projectRoot` as the same directory,
++  /// which makes the two indistinguishable. `opDirectoryTests` now pins them as different.
++  static func opDirectory(_ action: VCSRemoteAction, path: String, projectRoot: String) -> String {
+     switch action {
+     case .fetch: return projectRoot
+-    case .push: return vcs == "jj" ? projectRoot : path
+-    case .pull, .abortRebase: return path
++    case .push, .pull, .abortRebase: return path
+     }
+   }
+ 
+@@ -308,8 +315,9 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+   /// No `--prune`: omitting it lets the repo's own `fetch.prune` decide, the same
+   /// pass-NULL-and-honour-config philosophy `GitCommitDiff` documents. No `--no-write-fetch-head`
+   /// either — `FETCH_HEAD` is exactly what `gitLastFetch` reads.
++  /// `--` closes the option list. See `gitPushArgs` for why every builder in this file does that.
+   static func gitFetchArgs(remote: String) -> [String] {
+-    WorkroomStatusResolver.gitHardening + ["fetch", remote]
++    WorkroomStatusResolver.gitHardening + ["fetch", "--", remote]
+   }
+ 
+   /// `--set-upstream` only when there is no counterpart yet; passing it on every push would rewrite
+@@ -319,9 +327,26 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+   /// `--porcelain` is what makes the rejection detectable without reading prose — see
+   /// `gitPushRejected(stdout:)`. It moves a machine-readable per-ref line onto stdout and leaves
+   /// stderr's hints alone, so nothing else about the failure path changes.
++  /// **The branch is sent as a fully-qualified refspec, never as a bare operand.** An argv array stops
++  /// SHELL injection; it does nothing about OPTION injection, and git parses options that appear after
++  /// the positional remote.
++  ///
++  /// The whole chain is verified on git 2.55, not theorised. `refs/heads/--all` is a legal refname
++  /// (`check-ref-format` accepts it; only the `--branch` shorthand refuses). A malicious remote that
++  /// points its `HEAD` at that ref makes `git clone` create a LOCAL branch called `--all`, which is what
++  /// `git branch --show-current` and therefore `GitProvider.currentRef` then report. Feeding that to
++  /// `push <remote> <branch>` pushed **every** branch in the repo to the attacker's server — measured:
++  /// `refs/heads/--all`, `refs/heads/private-work-1`, `refs/heads/private-work-2`. Since every workroom
++  /// of a project is a `git worktree add -b` in the same repo, that is every workroom's branch. `--mirror`
++  /// is worse still: it can delete remote refs that are absent locally.
++  ///
++  /// A `refs/heads/…:refs/heads/…` refspec cannot present as an option no matter what the name contains,
++  /// and it also pins the push to this one ref regardless of `push.default`. `--` alone would fix THIS
++  /// builder, but not the pull one (see `gitPullArgs`), so both use refspecs for one rule.
+   static func gitPushArgs(branch: String, remote: String, setUpstream: Bool) -> [String] {
+     WorkroomStatusResolver.gitHardening + ["push", "--porcelain"]
+-      + (setUpstream ? ["--set-upstream"] : []) + [remote, branch]
++      + (setUpstream ? ["--set-upstream"] : [])
++      + ["--", remote, "refs/heads/\(branch):refs/heads/\(branch)"]
+   }
+ 
+   /// Whether `push --porcelain` reported a rejected ref.
+@@ -341,8 +366,17 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+   /// `--autostash` is mandatory, not a nicety: workroom trees are essentially always dirty, and
+   /// without it every pull dies on "cannot pull with rebase: You have unstaged changes". The remote
+   /// branch is explicit so a workroom with no configured upstream can still pull.
++  ///
++  /// **`--` is NOT enough here, which is why the branch is fully qualified.** Measured on git 2.55 with a
++  /// local branch named `--upload-pack=<script>` (a legal refname, planted by a malicious remote's HEAD
++  /// as `gitPushArgs` describes): `pull --rebase --autostash <remote> <branch>` ran the script, and so did
++  /// `pull --rebase --autostash -- <remote> <branch>` — `git pull` forwards the refspec to fetch in a way
++  /// that still parses it as an option. `pull … <remote> refs/heads/<branch>` did not, and neither did
++  /// `fetch -- <remote> <branch>`. So the operand boundary is per-subcommand and cannot be reasoned about
++  /// from `--` alone; a `refs/heads/` prefix can never look like an option, so that is the rule used.
+   static func gitPullArgs(remote: String, branch: String) -> [String] {
+-    WorkroomStatusResolver.gitHardening + ["pull", "--rebase", "--autostash", remote, branch]
++    WorkroomStatusResolver.gitHardening
++      + ["pull", "--rebase", "--autostash", "--", remote, "refs/heads/\(branch)"]
+   }
+ 
+   static func gitAbortRebaseArgs() -> [String] {
+@@ -907,7 +941,7 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+   // MARK: - Actions
+ 
+   func fetch(path: String, projectRoot: String, remote: String) async -> VCSRemoteActionResult {
+-    let dir = Self.opDirectory(.fetch, path: path, vcs: vcs, projectRoot: projectRoot)
++    let dir = Self.opDirectory(.fetch, path: path, projectRoot: projectRoot)
+     let args = vcs == "jj" ? Self.jjFetchArgs(remote: remote) : Self.gitFetchArgs(remote: remote)
+     guard
+       let result = await gated(
+@@ -928,7 +962,7 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+     path: String, projectRoot: String, current: VCSRef, remote: String, setUpstream: Bool,
+     anonymousRevision: String
+   ) async -> VCSRemoteActionResult {
+-    let dir = Self.opDirectory(.push, path: path, vcs: vcs, projectRoot: projectRoot)
++    let dir = Self.opDirectory(.push, path: path, projectRoot: projectRoot)
+     let args: [String]
+     if vcs == "jj" {
+       if current.kind == .branch, let bookmark = current.name {
+@@ -967,7 +1001,7 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+     // "last fetched" label — correct for every workroom of the project.
+     // Hoisted above the fetch: BOTH steps classify against it, since a lock can block either one.
+     let gitDir = Self.worktreeGitDir(at: path)
+-    let fetchDir = Self.opDirectory(.fetch, path: path, vcs: vcs, projectRoot: projectRoot)
++    let fetchDir = Self.opDirectory(.fetch, path: path, projectRoot: projectRoot)
+     let fetchArgs =
+       vcs == "jj" ? Self.jjFetchArgs(remote: remote) : Self.gitFetchArgs(remote: remote)
+     guard
+@@ -981,7 +1015,7 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+       return .failed(failure)
+     }
+ 
+-    let dir = Self.opDirectory(.pull, path: path, vcs: vcs, projectRoot: projectRoot)
++    let dir = Self.opDirectory(.pull, path: path, projectRoot: projectRoot)
+     let args: [String]
+     if vcs == "jj" {
+       // Always rebases now. An unbookmarked `@` falls back to `trunk()` rather than returning early:
+@@ -1023,7 +1057,7 @@ struct CLIVCSWriter: VCSWriting, Sendable {
+       // jj's rebase is atomic and undoable — there is no half-finished state to abort.
+       return .ok(summary: "Nothing to abort")
+     }
+-    let dir = Self.opDirectory(.abortRebase, path: path, vcs: vcs, projectRoot: projectRoot)
++    let dir = Self.opDirectory(.abortRebase, path: path, projectRoot: projectRoot)
+     guard
+       let result = await gated(
+         projectRoot,
+
+
+=== DIFF: macapp/WorkroomAppTests/VCSWritingTests.swift ===
+@@ -18,28 +18,21 @@ final class VCSWritingTests: XCTestCase {
+   /// fetch runs at the project root for BOTH backends: jj because a secondary workspace has no `.git`,
+   /// git because `FETCH_HEAD` is per-worktree and the root is the one answer every workroom shares.
+   func testFetchAlwaysRunsAtTheProjectRoot() {
+-    for vcs in ["git", "jj"] {
+-      XCTAssertEqual(
+-        CLIVCSWriter.opDirectory(.fetch, path: "/w/room", vcs: vcs, projectRoot: "/p"), "/p",
+-        "\(vcs) fetch must run at the project root")
+-    }
+-  }
+-
+-  /// jj bookmarks are repo-global, so its push runs at the root; a git push acts on this worktree.
+-  func testPushDirectoryDiffersByBackend() {
+-    XCTAssertEqual(
+-      CLIVCSWriter.opDirectory(.push, path: "/w/room", vcs: "git", projectRoot: "/p"), "/w/room")
+-    XCTAssertEqual(
+-      CLIVCSWriter.opDirectory(.push, path: "/w/room", vcs: "jj", projectRoot: "/p"), "/p")
++    XCTAssertEqual(CLIVCSWriter.opDirectory(.fetch, path: "/w/room", projectRoot: "/p"), "/p")
+   }
+ 
+-  func testPullAndAbortRunInTheWorkroom() {
+-    for vcs in ["git", "jj"] {
+-      XCTAssertEqual(
+-        CLIVCSWriter.opDirectory(.pull, path: "/w/room", vcs: vcs, projectRoot: "/p"), "/w/room")
++  /// **Push must run in the WORKROOM, for jj too.** It used to run jj's push at the project root because
++  /// bookmarks are repo-global. Bookmarks are — but `@` is workspace-scoped, so `jj git push --change @`
++  /// at the root published the ROOT workspace's working copy and left the workroom's commit at home,
++  /// reporting success. Measured: the push created `push-<root's change id>` carrying the root's commit.
++  ///
++  /// `path` and `projectRoot` are deliberately DIFFERENT here — `VCSRemoteIntegrationTests` passes the
++  /// same directory for both, which is exactly why it could not catch this.
++  func testEveryActionExceptFetchRunsInTheWorkroom() {
++    for action in [VCSRemoteAction.push, .pull, .abortRebase] {
+       XCTAssertEqual(
+-        CLIVCSWriter.opDirectory(.abortRebase, path: "/w/room", vcs: vcs, projectRoot: "/p"),
+-        "/w/room")
++        CLIVCSWriter.opDirectory(action, path: "/w/room", projectRoot: "/p"), "/w/room",
++        "\(action.label) must act on the selected workroom, not the project root")
+     }
+   }
+ 
+@@ -100,6 +93,43 @@ final class VCSWritingTests: XCTestCase {
+     }
+   }
+ 
++  /// **No repo-derived name may occupy a bare argv slot.** An argv array stops SHELL injection and does
++  /// nothing about OPTION injection, and git parses options that appear after the positional remote.
++  ///
++  /// Verified on git 2.55: `refs/heads/--all` is a legal refname, a malicious remote pointing its HEAD at
++  /// it makes `git clone` name the LOCAL branch `--all`, and `push <remote> --all` then pushed every
++  /// branch in the repo — every workroom's branch — to that remote. `--mirror` can delete remote refs
++  /// outright. A `refs/heads/…` refspec can never present as an option.
++  func testNoRepoDerivedNameLandsInABareArgvSlot() {
++    let hostile = "--all"
++    let push = CLIVCSWriter.gitPushArgs(branch: hostile, remote: "origin", setUpstream: false)
++    XCTAssertFalse(
++      push.contains(hostile), "a bare `--all` in argv is a mirror/all-branches push: \(push)")
++    XCTAssertTrue(push.contains("refs/heads/--all:refs/heads/--all"))
++
++    // `--` is enough for push and fetch but NOT for pull — `git pull` forwards the refspec to fetch in a
++    // way that still parses it as an option (measured: the `--upload-pack=` payload ran even after `--`).
++    // So pull is pinned on the refspec form, which is the only thing that held.
++    let pull = CLIVCSWriter.gitPullArgs(remote: "origin", branch: hostile)
++    XCTAssertFalse(pull.contains(hostile), "got \(pull)")
++    XCTAssertTrue(pull.contains("refs/heads/--all"))
++
++    // Every builder closes its option list. `fetch -- --all` is SAFE and deliberately allowed: after
++    // `--`, git reads `--all` as the remote's name, which is the point. What must never happen is a
++    // dash-leading operand with no `--` ahead of it.
++    for args in [push, pull, CLIVCSWriter.gitFetchArgs(remote: hostile)] {
++      guard let separator = args.firstIndex(of: "--") else {
++        return XCTFail("every builder must close its option list: \(args)")
++      }
++      let dashLeadingBeforeSeparator = args[..<separator].dropFirst(2).contains {
++        $0.hasPrefix("-") && $0 != "--porcelain" && $0 != "--set-upstream" && $0 != "--rebase"
++          && $0 != "--autostash"
++      }
++      XCTAssertFalse(
++        dashLeadingBeforeSeparator, "an operand reached the option side of `--`: \(args)")
++    }
++  }
++
+   /// The flag column is `!` for a rejected ref, and only for that.
+   func testPushRejectionIsReadFromThePorcelainFlagColumn() {
+     let rejected = """
+@@ -151,7 +181,8 @@ final class VCSWritingTests: XCTestCase {
+     let args = CLIVCSWriter.gitPullArgs(remote: "origin", branch: "main")
+     XCTAssertTrue(args.contains("--rebase"))
+     XCTAssertTrue(args.contains("--autostash"))
+-    XCTAssertEqual(Array(args.suffix(2)), ["origin", "main"])
++    // Fully qualified, not bare — see `testNoRepoDerivedNameLandsInABareArgvSlot`.
++    XCTAssertEqual(Array(args.suffix(2)), ["origin", "refs/heads/main"])
+   }
+ 
+   // MARK: - jj argument builders
+
+
+Investigate per the method in your instructions, then return the findings list.
