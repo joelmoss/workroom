@@ -1,0 +1,24 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - .github/workflows/nightly.yml
+
+Unified diff (only + lines are new):
+
+=== DIFF: .github/workflows/nightly.yml ===
+@@ -137,8 +137,10 @@ jobs:
+         with:
+           go-version-file: go.mod
+ 
+-      - name: Install XcodeGen + create-dmg + protobuf
+-        run: brew install xcodegen create-dmg protobuf
++      # jj is required by WorkroomStatusIntegrationTests / VCSProviderConformanceTests / etc.
++      # (see ci.yml) — git + gh are preinstalled on the runner, jj is not.
++      - name: Install XcodeGen + jj + create-dmg + protobuf
++        run: brew install xcodegen jj create-dmg protobuf
+ 
+       # Separate step, and deliberately non-fatal — unlike the release workflow, which installs
+       # sentry-cli on the same fatal brew line. This job is an unattended cron: a Homebrew/tap hiccup
+
+
+Investigate per the method in your instructions, then return the findings list.
