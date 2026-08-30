@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bdlx54urr</task-id>
+<tool-use-id>toolu_01BxqZy8Sc1WuAyhs1KKZbsj</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/1d87ba48-cde2-404f-bd39-1c1da34fd079/tasks/bdlx54urr.output</output-file>
+<status>completed</status>
+<summary>Background command "rtk grep -rl "statusItem\|NSStatusBar\|MenuBarExtra" /Users/joelmoss/dev/workroom/macapp -l 2&gt;/dev/null" completed (exit code 0)</summary>
+</task-notification>
