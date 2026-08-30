@@ -1,0 +1,1 @@
+quota usage setting says "Claude quota usage". rename to "Show usage". remove all horizontal rules between a setting an its help text
