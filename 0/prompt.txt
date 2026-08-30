@@ -1,0 +1,7 @@
+<task-notification>
+<task-id>bs3ew2md0</task-id>
+<tool-use-id>toolu_01HvM6vLCxZbhnxS1Y9XHHkC</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/3550f850-2eb1-41c3-8866-543c08bb8bcb/tasks/bs3ew2md0.output</output-file>
+<status>completed</status>
+<summary>Background command "Run Codex design critique in background" completed (exit code 0)</summary>
+</task-notification>
