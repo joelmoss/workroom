@@ -1,0 +1,1 @@
+ok, so this issue https://develop-with-style.sentry.io/issues/7664499084/events/3199b5532adf456992820bd6502de9f1/ just appeared again after I opened a large Git diff of a CSS file. See the diff for the changed ~/dev/codaset/app/views/pages/workroom.css in codaset project
