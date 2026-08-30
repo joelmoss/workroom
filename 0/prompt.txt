@@ -1,0 +1,98 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Views/VCSToolbar.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Views/VCSToolbar.swift ===
+@@ -9,6 +9,11 @@ import SwiftUI
+ enum VCSToolbarMetrics {
+   /// 11pt semibold title (13pt line) + 1pt + 10pt caption (12pt line) = 26, plus 5pt above and below.
+   /// Two lines genuinely don't fit the section headers' 34pt, and 36 also reads as a distinct band.
++  ///
++  /// The count pills sit on the title line, so that row is as tall as a `.caption2` capsule rather than
++  /// 13pt whenever one is shown. That takes the stack a couple of points past 26 and leaves the band
++  /// unchanged — the slack was already there, which is why the pills could move up without this number
++  /// moving with them.
+   static let height: CGFloat = 36
+   static let outerInset: CGFloat = 12
+   /// Inner edges of the segments — tighter than `outerInset` so the middle segment isn't starved.
+@@ -267,9 +272,6 @@ private struct VCSSyncSegment: View {
+           ProgressView().controlSize(.mini).frame(width: VCSToolbarMetrics.glyphSlot)
+         }
+         content
+-        Spacer(minLength: 4)
+-        if let badge = presentation.badge { VCSCountPill(badge: badge) }
+-        if let secondary = presentation.secondaryBadge { VCSCountPill(badge: secondary) }
+       }
+       .padding(.horizontal, VCSToolbarMetrics.innerInset)
+       .vcsToolbarSegment(hovering: hovering && presentation.isEnabled, reduceMotion: reduceMotion)
+@@ -309,20 +311,34 @@ private struct VCSSyncSegment: View {
+ 
+   @ViewBuilder private var content: some View {
+     if presentation.isSingleLine {
+-      // Centred and a step up in size/contrast: a lone dim 10pt line in a 36pt bar reads as broken.
+-      Text(presentation.subtitle)
+-        .font(VCSToolbarMetrics.soloFont)
+-        .foregroundStyle(presentation.tone == .normal ? theme.fgMuted : toneColor)
+-        .lineLimit(1)
+-        .truncationMode(.tail)
++      HStack(spacing: VCSToolbarMetrics.glyphSpacing) {
++        // Centred and a step up in size/contrast: a lone dim 10pt line in a 36pt bar reads as broken.
++        Text(presentation.subtitle)
++          .font(VCSToolbarMetrics.soloFont)
++          .foregroundStyle(presentation.tone == .normal ? theme.fgMuted : toneColor)
++          .lineLimit(1)
++          .truncationMode(.tail)
++        Spacer(minLength: 4)
++        pills
++      }
+     } else {
+       VStack(alignment: .leading, spacing: 1) {
+-        // Longest variant first — `ViewThatFits` takes the first that fits, so inverting this order
+-        // silently defeats the whole ladder. `VCSSyncPresentationTests` pins the ordering.
+-        ViewThatFits(in: .horizontal) {
+-          ForEach(presentation.titleVariants, id: \.self) { variant in
+-            Text(variant).font(VCSToolbarMetrics.titleFont).lineLimit(1)
++        // The pills ride the TITLE line rather than the whole cell. As siblings of this VStack they
++        // narrowed BOTH lines, and the line they cost the most was the one that could least afford it:
++        // the timestamp is the longest string in the bar ("Fetched 22 minutes ago") and the only one
++        // whose full form is worth reading, while the title above it is short and has an abbreviation
++        // ladder to fall back on. Now the timestamp gets the segment's whole width and the pills
++        // compete only with the title, which is what the ladder is for.
++        HStack(spacing: VCSToolbarMetrics.glyphSpacing) {
++          // Longest variant first — `ViewThatFits` takes the first that fits, so inverting this order
++          // silently defeats the whole ladder. `VCSSyncPresentationTests` pins the ordering.
++          ViewThatFits(in: .horizontal) {
++            ForEach(presentation.titleVariants, id: \.self) { variant in
++              Text(variant).font(VCSToolbarMetrics.titleFont).lineLimit(1)
++            }
+           }
++          Spacer(minLength: 4)
++          pills
+         }
+         // The staleness caveat abbreviates but survives. It must NOT be the first thing dropped: the
+         // count pill it qualifies is pinned, so losing the caveat first would leave an unverified number
+@@ -336,8 +352,18 @@ private struct VCSSyncSegment: View {
+         .lineLimit(1)
+         .truncationMode(.tail)
+       }
++      // The cell no longer has a `Spacer` of its own to fill it, so the VStack claims the width — which
++      // is also what lets the subtitle's ladder measure against the full cell.
++      .frame(maxWidth: .infinity, alignment: .leading)
+     }
+   }
++
++  /// Ahead first, then behind — the diverged order the presenter fixes (`↓` before `↑` is decided there,
++  /// not here; this just renders `badge` then `secondaryBadge`).
++  @ViewBuilder private var pills: some View {
++    if let badge = presentation.badge { VCSCountPill(badge: badge) }
++    if let secondary = presentation.secondaryBadge { VCSCountPill(badge: secondary) }
++  }
+ }
+ 
+ /// Segment 3: fetch.
+
+
+Investigate per the method in your instructions, then return the findings list.
