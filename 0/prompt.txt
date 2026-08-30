@@ -1,0 +1,1 @@
+cut a new beta release - don't forget to run the full test suite (inc. UI) before
