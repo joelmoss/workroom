@@ -1,0 +1,1 @@
+how to show the symbol for the super keys, such as command and opt?
