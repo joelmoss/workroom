@@ -1,0 +1,1 @@
+Increase size of text in detail pane footer
