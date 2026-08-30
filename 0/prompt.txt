@@ -1,0 +1,1 @@
+when CI completes successfully, create a new beta release. UI tests already ran, so don't run them again
