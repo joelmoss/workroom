@@ -1,0 +1,96 @@
+# App Hanging: App hanging for at least 2000 ms.
+
+**Issue ID:** 7664499084
+**Short ID:** WORKROOM-2T
+**Project:** workroom
+**Date:** Aug 10, 2026 9:55:23 PM UTC
+
+## Tags
+
+- **app.device:** 5bbea68d7a5231f7046c4a1b594554fb8d16bfb1
+- **device:** MacBookPro18,1
+- **device.family:** macOS
+- **dist:** 596
+- **environment:** nightly
+- **interface_type:** exception
+- **level:** error
+- **mechanism:** AppHang
+- **os:** macOS 26.5.2
+- **os.build:** 25F84
+- **os.name:** macOS
+- **os.rooted:** no
+- **release:** com.developwithstyle.workroom.nightly@2.0.0-nightly.596+596
+- **user:** id:C659B14C-8DF1-4A5B-B84D-311E1CFD58F8
+
+## Exception
+
+### Exception 1
+**Type:** App Hanging
+**Value:** App hanging for at least 2000 ms.
+
+#### Stacktrace
+
+```
+ swift_getObjCClassMetadata in unknown file [Line null] (Not in app)
+ getSuperclassForMaybeIncompleteMetadata in unknown file [Line null] (Not in app)
+ swift_conformsToProtocolMaybeInstantiateSuperclasses in unknown file [Line null] (Not in app)
+ swift_conformsToProtocol2 in unknown file [Line null] (Not in app)
+ AppKitPlatformViewHost.focusView.getter in unknown file [Line null] (Not in app)
+ NSViewResponder.focusItem.getter in unknown file [Line null] (Not in app)
+ closure in ViewRendererHost.focusResponder in unknown file [Line null] (Not in app)
+ closure in ResponderNode.visitFocusResponders in unknown file [Line null] (Not in app)
+ ResponderNode.visit in unknown file [Line null] (Not in app)
+ MultiViewResponder.visit in unknown file [Line null] (Not in app)
+ PlatformUnaryViewResponder.visit in unknown file [Line null] (Not in app)
+ MultiViewResponder.visit in unknown file [Line null] (Not in app)
+ MultiViewResponder.visit in unknown file [Line null] (Not in app)
+ MultiViewResponder.visit in unknown file [Line null] (Not in app)
+ MultiViewResponder.visit in unknown file [Line null] (Not in app)
+ MultiViewResponder.visit in unknown file [Line null] (Not in app)
+```
+
+## Thread:  Thread 0 (current)
+
+#### Stacktrace
+
+```
+ swift_getObjCClassMetadata in unknown file [Line null] (Not in app)
+ getSuperclassForMaybeIncompleteMetadata in unknown file [Line null] (Not in app)
+ swift_conformsToProtocolMaybeInstantiateSuperclasses in unknown file [Line null] (Not in app)
+ swift_conformsToProtocol2 in unknown file [Line null] (Not in app)
+ AppKitPlatformViewHost.focusView.getter in unknown file [Line null] (Not in app)
+ NSViewResponder.focusItem.getter in unknown file [Line null] (Not in app)
+ closure in ViewRendererHost.focusResponder in unknown file [Line null] (Not in app)
+ closure in ResponderNode.visitFocusResponders in unknown file [Line null] (Not in app)
+ ResponderNode.visit in unknown file [Line null] (Not in app)
+ MultiViewResponder.visit in unknown file [Line null] (Not in app)
+ PlatformUnaryViewResponder.visit in unknown file [Line null] (Not in app)
+ MultiViewResponder.visit in unknown file [Line null] (Not in app)
+ MultiViewResponder.visit in unknown file [Line null] (Not in app)
+ MultiViewResponder.visit in unknown file [Line null] (Not in app)
+ MultiViewResponder.visit in unknown file [Line null] (Not in app)
+ MultiViewResponder.visit in unknown file [Line null] (Not in app)
+```
+
+## Breadcrumbs
+
+- **http** `http` [info]
+  {"http.query":"s=48&d=404","method":"GET","reason":"no error","request_start":"2026-08-10T21:55:06.570Z","response_body_size":2602,"status_code":200,"url":"https://www.gravatar.com/avatar/4fe35d76373429a6bdd9326b5ebbd515"}
+- **http** `http` [info]
+  {"http.query":"s=48&d=404","method":"GET","reason":"no error","request_start":"2026-08-10T21:55:06.572Z","response_body_size":2602,"status_code":200,"url":"https://www.gravatar.com/avatar/4fe35d76373429a6bdd9326b5ebbd515"}
+- **http** `http` [info]
+  {"http.query":"s=48&d=404","method":"GET","reason":"no error","request_start":"2026-08-10T21:55:06.572Z","response_body_size":2602,"status_code":200,"url":"https://www.gravatar.com/avatar/4fe35d76373429a6bdd9326b5ebbd515"}
+- **http** `http` [info]
+  {"http.query":"s=48&d=404","method":"GET","reason":"no error","request_start":"2026-08-10T21:55:06.570Z","response_body_size":2602,"status_code":200,"url":"https://www.gravatar.com/avatar/4fe35d76373429a6bdd9326b5ebbd515"}
+- **http** `http` [info]
+  {"http.query":"s=48&d=404","method":"GET","reason":"no error","request_start":"2026-08-10T21:55:06.573Z","response_body_size":2602,"status_code":200,"url":"https://www.gravatar.com/avatar/4fe35d76373429a6bdd9326b5ebbd515"}
+- **http** `http` [info]
+  {"http.query":"s=48&d=404","method":"GET","reason":"no error","request_start":"2026-08-10T21:55:06.573Z","response_body_size":2602,"status_code":200,"url":"https://www.gravatar.com/avatar/4fe35d76373429a6bdd9326b5ebbd515"}
+- **http** `http` [info]
+  {"http.query":"s=48&d=404","method":"GET","reason":"no error","request_start":"2026-08-10T21:55:06.573Z","response_body_size":2602,"status_code":200,"url":"https://www.gravatar.com/avatar/4fe35d76373429a6bdd9326b5ebbd515"}
+- **http** `http` [info]
+  {"http.query":"s=48&d=404","method":"GET","reason":"no error","request_start":"2026-08-10T21:55:06.572Z","response_body_size":2602,"status_code":200,"url":"https://www.gravatar.com/avatar/4fe35d76373429a6bdd9326b5ebbd515"}
+- **http** `http` [info]
+  {"http.query":"s=48&d=404","method":"GET","reason":"no error","request_start":"2026-08-10T21:55:06.571Z","response_body_size":2602,"status_code":200,"url":"https://www.gravatar.com/avatar/4fe35d76373429a6bdd9326b5ebbd515"}
+- **http** `http` [info]
+  {"http.query":"s=48&d=404","method":"GET","reason":"no error","request_start":"2026-08-10T21:55:06.573Z","response_body_size":2602,"status_code":200,"url":"https://www.gravatar.com/avatar/4fe35d76373429a6bdd9326b5ebbd515"}
