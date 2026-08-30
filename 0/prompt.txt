@@ -1,0 +1,1 @@
+replace the "sidebar" feature item with a version control item with a title of "Version Control Built in"
