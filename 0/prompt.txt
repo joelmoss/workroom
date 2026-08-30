@@ -1,0 +1,1 @@
+Will these mini views be identical to the full panes?
