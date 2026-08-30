@@ -1,0 +1,8 @@
+<task-notification>
+<task-id>bzgvg99oj</task-id>
+<summary>Monitor event: "full XCUITest suite progress and failures"</summary>
+<event>Test Suite 'DiffHighlightUITests' passed at 2026-08-04 13:47:42.345.
+Test Suite 'DiffPaneFocusUITests' started at 2026-08-04 13:47:42.348.
+Test Suite 'DiffPaneFocusUITests' passed at 2026-08-04 13:48:03.035.
+Test Suite 'DiffViewerUITests' started at 2026-08-04 13:48:03.036.</event>
+</task-notification>
