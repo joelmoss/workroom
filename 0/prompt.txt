@@ -1,0 +1,24 @@
+<task-notification>
+<task-id>a4712c0251d03f4ae</task-id>
+<tool-use-id>toolu_0124GWL9wU8W6za5zW99ghrS</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/3ee247a6-8416-4d29-bc9b-ce21bb5267ad/tasks/a4712c0251d03f4ae.output</output-file>
+<status>completed</status>
+<summary>Agent "Find run-status indicators outside the toast" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Findings
+
+Yes — an ongoing run (`.running` or `.restarting`, both covered by `RunState.isRunning`, AppStore.swift:1360-1366) has **multiple persistent, non-toast indicators**, independent of `RunToastView`:
+
+1. **Sidebar row button** — `ProjectSidebar.swift:714-741` (`RowRunButton`): always-rendered on root/workroom rows (when `canRunCommand`), showing a green `stop.circle.fill` icon while running (red on hover-to-stop), `play.circle.fill` gray/green when stopped. Placed at ProjectSidebar.swift:323 (root row) and ProjectSidebar.swift:391 (workroom row).
+
+2. **Workroom tab-bar dot** — `WorkroomTabBar.swift:546-562`: trailing green `play.circle.fill` glyph on the top workroom/root tab chip itself when `runRunning` is true; shows a red `xmark.octagon.fill` if `runFailed`. Driven by `runRunning` at WorkroomTabBar.swift:479.
+
+3. **Terminal tab chip icon** — `TerminalTabStrip.swift:130-138` computes `runState` via `store.isRunCommandRunning`; rendered at `TerminalTabStrip.swift:505-512` as a leading green `play.circle.fill` on the dedicated run tab's chip (glyph spec at TerminalTabStrip.swift:481-486).
+
+4. **Detail toolbar** — `TargetDetailToolbar.swift:160-183`: shows Restart/Stop icons (vs. idle Run) whenever `isRunCommandRunning` is true, in the pane's own toolbar.
+
+5. (Bonus, not always-visible) **Quick switcher pip** — `SwitcherRailView.swift:358-367,401-402`: a small colored dot on a workroom's card when `card.isRunning`, but only while the switcher overlay is open.
+
+**Answer to "can I tell without the toast":** Yes — the sidebar run button and the workroom tab-bar dot are both persistent/always-on-screen and reflect running/restarting state, so a user can confirm "server still running" purely from sidebar or tab bar.</result>
+<usage><subagent_tokens>51579</subagent_tokens><tool_uses>13</tool_uses><duration_ms>72944</duration_ms></usage>
+</task-notification>
