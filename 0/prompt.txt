@@ -1,0 +1,130 @@
+<task-notification>
+<task-id>a2e2c0a571624deca</task-id>
+<tool-use-id>REDACTED</tool-use-id>
+<output-file>/private/tmp/claude-501/-Users-joelmoss-dev-workroom/abe7e228-2303-43dd-ba5f-a29b5159e792/tasks/a2e2c0a571624deca.output</output-file>
+<status>completed</status>
+<summary>Agent "Adversarial review" finished</summary>
+<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>
+<result>## Review: History → Changes-stack sub-section (uncommitted working tree)
+
+Scope confirmed: 9 production files + 11 test files, `git diff` only. No untracked files. `"inspector.layout"` (v1) is read nowhere any more — grep across the repo returns only the v2 declaration and one test comment, so nothing mis-maps the old value; it is simply orphaned in the plist.
+
+---
+
+### 1. FIXABLE — the eager `focus` is now a real VCS read fired in the *default* configuration, with the inspector closed, undebounced, on an uncancellable dispatch
+
+This is the finding that matters. Four call sites moved from `activeInspectorSection == .history` to `historySectionShown`:
+
+`AppStore.swift:322-324`
+```swift
+var historySectionShown: Bool {
+  activeInspectorSection.subSections.contains(.history) &amp;&amp; !historySectionCollapsed
+}
+```
+
+Both conjuncts are true for the **shipped defaults** (`.changes` is the key default; `historySectionCollapsed = false`; and §3 below guarantees every upgrading user lands there). The old gate was a deliberate minority state — a user who had clicked the History icon in the rail. So `AppStore.swift:175` and `AppStore.swift:774` now fire for essentially everyone, on every selection change and every tab open/close.
+
+The justification for skipping the visibility gate is factually wrong. `AppStore.swift:319-321`:
+```
+/// swapped-out section must not run VCS reads for a log nobody can see. Deliberately NOT gated on
+/// `inspectorIsVisible`: the visibility gate belongs to the *refresh* triggers (which fire on
+/// external events), while a focus only points the model so the pane is ready when it's shown.
+```
+A focus does not "only point the model" — `HistoryModel.swift:58` is `load(limit: pageSize)`, and `GitProvider.swift:20-32` is `Repository.open` + a 101-commit revwalk + a full ref enumeration (`decorations`) + `GitGraph.unpushed`, an **unbounded** `HEAD --not refs/remotes/origin/*` revwalk. That is not a cheap "point".
+
+It is also undebounced, three lines below the neighbour that documents exactly why it must be. `AppStore.swift:163-165`:
+```swift
+// Freshen the newly-selected workroom's status (incl. CI) — debounced so arrow-key
+// cycling through rows doesn't fork a probe per row (issue #24).
+scheduleSelectedStatusRefresh()
+```
+`scheduleSelectedStatusRefresh` sleeps `selectionDebounce` and cancels its predecessor. `commitHistory.focus` does neither — and `HistoryModel.load`'s `task?.cancel()` **does not stop the work**. `Timeout.swift:63-64`:
+```
+/// Like `withTimeout`'s detached read, the call can't be cancelled mid-flight; a cancelled caller
+/// just abandons the result once the closure returns.
+```
+So arrow-key cycling N sidebar rows dispatches N concurrent full revwalks, each holding a `DispatchQueue.global` thread to completion. Same at launch: selection restore → tab opens → `refreshSelectionHasTabs()` → read, competing with the startup status sweep. This is the exact failure class the same file already records at `Timeout.swift:59-61` ("That's the 'History pane loads forever' bug").
+
+**Caution for the fix:** do not naively add `inspectorIsVisible` to `historySectionShown`. `showInspector` is a bare `@Default`, and per `AppStore.swift:287-289` the inspector content does not observe `@Default` changes — so `HistoryPanel.activationKey` would not flip when the inspector opens, and the un-gated focus is currently the only thing keeping the model's root current while the inspector is closed. Debounce/coalesce the focus, or gate it on visibility **and** add a focus on the open transition.
+
+### 2. FIXABLE — the new didSet's side-effect escapes the `isLoadingInspectorState` guard
+
+`AppStore.swift:306-314`:
+```swift
+didSet {
+  persistInspectorState()
+  ...
+  if !historySectionCollapsed, historySectionShown {
+    commitHistory.focus(inspectorTarget.map { URL(fileURLWithPath: $0.path) })
+```
+`persistInspectorState()` is guarded (`AppStore.swift:3724`); the `focus` is not. It fires from inside `loadInspectorState()` (`AppStore.swift:3701`), which runs inside `init` (`AppStore.swift:636`). Benign **today only by accident of ordering**: at init `selectionHasTabs == false`, so `inspectorTarget` is nil and `HistoryModel.swift:49`'s `guard self.root != root` no-ops. Nothing reads an uninitialised property (all stored props precede the method call) and nothing writes Defaults during load — but the invariant is undocumented and one selection-bearing caller away from turning a "load" into a VCS read. The flag's own doc still describes the old contract (`AppStore.swift:391-392`: "so their `didSet`s don't persist the values straight back"); it says nothing about suppressing loads. This is also the only one of the four collapse didSets carrying a side-effect beyond persistence.
+
+### 3. FIXABLE — the `.v2` rename silently discards collapse state, not just weights
+
+`DefaultsKeys.swift:142-146` justifies the rename purely in weight terms:
+```
+/// weights are meaningless for the new stack ... The rename discards those once, so the three
+/// sections start at equal heights.
+```
+But `collapsed` and `weights` live in the *same* value (`DefaultsKeys.swift:198-203`), and `reconcileInspectorState` never sees the old key. Every existing user's deliberate Changes / Files / Pull Request collapse choices are reset to all-expanded on upgrade — a user who kept Pull Request collapsed (common when `gh` is unavailable) gets it back, unexplained. Avoidable: keep the key, reset only `weights` (the described symptom — a never-dragged History weight of 1 renormalising to `expandedMinHeight` — is a weights-only problem).
+
+### 4. FIXABLE — the UI-test fixture pins three inspector prefs but not the one this diff made load-bearing
+
+`UITestFixture.swift:347-350`:
+```swift
+Defaults[.showInspector] = true
+Defaults[.activeInspectorSection] = inspectorSection
+Defaults[.diffViewMode] = diffViewMode
+```
+No `Defaults[.inspectorLayout]`. Collapse state now decides whether History renders at all, so the diff compensates with ad-hoc "click it if the label says collapsed" in **four** places (`ChangesetDetailUITests.openHistory`, `HistoryPushStateUITests.openHistory`, the new `ChangesPanelUITests.expandChanges`, `InspectorAnimationUITests`). That method's own doc (`UITestFixture.swift:315-322`) is the argument for the missing line: *"without this a test inherits whatever the developer last left behind. That is not hypothetical…"*. One-line fix.
+
+### 5. FIXABLE — `historySectionCollapsed` has no per-store test seam, so three unit-test classes now write the shared pref
+
+`HistoryLiveRefreshTests.swift:79`, `HistoryPushRefreshTests.swift:96`, `EmptiedWorkroomSelectionTests.swift:291` all do `store.historySectionCollapsed = false`, which reaches `persistInspectorState()` — no `persistsSidebarPrefs` guard, no override, no save/restore, and `HistoryPushRefreshTests.tearDown` (`:20-24`) only removes temp dirs. That is exactly the cross-worker leak the other two halves of this gate have seams for, and the file documenting the hazard best is one of the three leaking. `HistoryLiveRefreshTests.swift:15-18`:
+```
+/// Both halves of the gate are pinned **per store** — `inspectorVisibleOverrideForTesting` and
+/// `isolatesInspectorSectionForTesting` — never by writing the shared inspector settings
+```
+The gate now has three halves. `WorkroomStatusTests.swift:265-266` shows the correct pattern (`let original = … defer { … }`). Findings 4 and 5 compound: the leak is already producing the workarounds in 4.
+
+### 6. INVESTIGATE — the inspector's a11y/render surface tripled and already broke queries
+
+`HistoryPushStateUITests`' new comment:
+```
+/// has to evaluate the whole snapshot, and since History joined the Changes stack the inspector holds
+/// three sections' worth of rows at once — the unscoped version started failing with "Timed out while
+/// evaluating UI query"
+```
+Four unscoped predicate queries had to be narrowed. That is a *measured* signal the Changes pane's accessibility snapshot grew past a multi-second query budget — which lands on VoiceOver users, not just XCUITest. Amplifier: `RightInspector` observes `AppStore` as `@EnvironmentObject`, so any store publish re-runs `pushContent` (`InspectorSplitView.swift:451-457`) and re-assigns `bodyHost.rootView` with a fresh `AnyView`; HistoryPanel with up to 100 rows is now in that path for every user always, not only for those who picked the History pane. This codebase already has one `.task` re-fire loop in this hosted-inspector path (the DiffViewer `loadedKey` guard). Measure a Changes-pane update with 100 commits + a dirty worktree before shipping.
+
+### 7. INVESTIGATE — fill-mode collapse is a genuinely new code path
+
+`InspectorSplitView.swift:112`:
+```swift
+(fillsBody ? bodyHost.view : bodyScroll).isHidden = collapsed
+```
+History is the only fill-mode section (`ChangesPanel.swift:32`, `fills: subs.map { $0 == .history }`) and until this diff it could never collapse — so the `fillsBody == true` branch of this line has never executed. It differs from scroll mode: there the hidden view is the `NSScrollView` and the hosting view's own `isHidden` stays false; here the `NSHostingController`'s view is hidden directly, which is what drives SwiftUI's appear/disappear. The expand path *depends* on `.task(id: activationKey)` re-firing across that hide/unhide (`HistoryPanel.swift:54`). Separately, with the pane pinned to `headerHeight` (`:367`) and the fill body constrained top-to-header-bottom / bottom-to-container-bottom (`:98-101`), the body resolves to height 0 with a live SwiftUI `ScrollView` inside it. Verify with a real collapse/expand cycle on a loaded log — per this repo's own notes, synthetic clicks are not evidence for this class of bug.
+
+### 8. FIXABLE (minor) — the key's two doc comments now contradict each other on the vector order
+
+`DefaultsKeys.swift:134-136` says `"(Changes / History / Files / Pull Request) … ordered as InspectorSectionKind.allCases"` — that list is *display* order; `allCases` is Changes, Files, Pull Request, History. `DefaultsKeys.swift:191-192` says `"(Changes, Files, Pull Request, History)"`. The entire `storeIndex` scheme is a nameless 4-vector of bools whose only safety is these comments — as the diff's own new test says, *"it's the slot a mis-mapped load would silently swap, since the vector is four bools with no names in it."* Also `DefaultsKeys.swift:192-193` leaves a broken doc line (`/// \`weights\`` orphaned on its own line).
+
+### 9. FIXABLE (minor) — two controls in the Changes pane now share an auto-derived a11y identifier
+
+`InspectorHeaderButton` (`ChangesPanel.swift:499-521`) sets only `.accessibilityLabel(help)`; SwiftUI derives the identifier from the SF Symbol, so the Changes refresh and the new History refresh both surface as `arrow.clockwise` in one pane. The diff worked around it in tests ("the Changes section header in the same pane carries an identical `arrow.clockwise` refresh button") rather than giving them distinct identifiers.
+
+### 10. FIXABLE (minor) — the three-way default split can push the bottom section below its floor
+
+`InspectorPanePolicy.swift:106` `heights[index] = max(expandedMinHeight, share)` with no check that `3 × 120 + 2 dividers` fits `capacity`. Below roughly 370pt of inspector height the summed heights exceed capacity, `setPositions` (`InspectorSplitView.swift:321-328`) clamps, and Pull Request is squeezed under its floor via the breakable `.defaultHigh` constraint (`:371-374`). With two panes this needed a ~250pt inspector; with three it is reachable on a laptop with the window un-maximised.
+
+### Array-index safety: checked, no live crash path
+
+Asked for explicitly, so: none found. `reconcileInspectorState` (`AppStore.swift:3715-3718`) always returns arrays of `InspectorSectionKind.allCases.count`; `updateInspectorSizeWeights` (`:3737`) guards the count; `InspectorPaneState.default` is 4/4; `storeIndex`'s `?? 0` keeps every index in `0..&lt;4`; the write-back at `ChangesPanel.swift:41-42` expands the shown slice into the full vector by `storeIndex`. Two unguarded spots that hold only by convention, worth an assertion: `ChangesPanel.swift:38` `store.inspectorSizeWeights[$0.storeIndex]` — a raw subscript in a view body with no invariant stated — and `InspectorSplitView.swift:222`'s `precondition(collapsed.count == panes.count)`, a hard release-mode trap that survives only because the rebuild check at `:418-419` keys on the same `sectionKey` the collapse array is derived from.
+
+### Reachability: no dead-end found
+
+I walked collapse → pane switch → close-all-tabs → hide inspector → relaunch in both orders. The History section always stays reachable (chevron on its own header + ⌥⌘Y) and never strands stale commits: the expand didSet focuses, and if the model is mid-flight `activate`'s `isSettled` guard (`HistoryModel.swift:74`) prevents a double read while still retrying a `.failed` state. `⌥⌘Y` is already covered by `GhosttySurfaceView.isAppShortcut:997` (`key == "y"` under `[.command, .option]`), so a focused TUI won't swallow it. `Defaults[.activeInspectorSection] == "history"` falls back to `.changes` as claimed, though the stale `"history"` string is never rewritten (harmless — nothing else reads that key).
+
+Recommendation: **Do not commit as-is — fix finding 1 first**, because the migration in finding 3 guarantees every upgrading user lands in the exact default state (`.changes` + History expanded) where an unbounded, undebounced, uncancellable `GitGraph.unpushed` revwalk now fires on every sidebar selection change even with the inspector closed, which is the same GCD-starvation shape as the "History pane loads forever" bug this codebase already fixed once.</result>
+<usage><subagent_tokens>180295</subagent_tokens><tool_uses>35</tool_uses><duration_ms>605222</duration_ms></usage>
+</task-notification>
