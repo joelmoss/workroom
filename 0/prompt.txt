@@ -1,0 +1,116 @@
+Review this change for security vulnerabilities.
+
+Changed files (you may Read these and any other file in the repo):
+  - macapp/WorkroomApp/Core/VCSToolVersions.swift
+  - macapp/WorkroomAppTests/VCSToolVersionsTests.swift
+
+Unified diff (only + lines are new):
+
+=== DIFF: macapp/WorkroomApp/Core/VCSToolVersions.swift ===
+@@ -80,6 +80,19 @@ enum VCSToolVersions {
+       }
+     }
+ 
++    /// Whether a tool we actually RAN reported absent from PATH (exit 127).
++    ///
++    /// Used to decide a verdict is too fragile to cache: absence is the one `Status` that can be an
++    /// artefact of WHEN we probed rather than what is installed, because the PATH is still the
++    /// deterministic floor until the interactive-shell probe lands. See `VCSToolVersionCache.report`.
++    ///
++    /// `probedJJ` is load-bearing, not decoration: when it is false `jj` is reported `.notInstalled`
++    /// WITHOUT running anything, so counting that would refuse to cache on every launch with no jj
++    /// project registered — turning a one-shot `git --version` into one per call.
++    func hasMissingTool(probedJJ: Bool) -> Bool {
++      git == .notInstalled || (probedJJ && jj == .notInstalled)
++    }
++
+     /// Whether remote actions are permitted for a project of this VCS (`"git"` / `"jj"`).
+     func allowsRemoteActions(vcs: String) -> Bool {
+       guard Self.isUsable(git) else { return false }
+@@ -195,7 +208,18 @@ actor VCSToolVersionCache {
+     let task = Task { await VCSToolVersions.probe(runner: runner, probeJJ: probeJJ) }
+     inFlight = (task, probeJJ)
+     let report = await task.value
+-    cached = (report, probeJJ)
++    // Never cache a `.notInstalled`. That verdict comes from exit 127, i.e. the tool wasn't on PATH —
++    // and at launch the PATH may still be the deterministic floor, because `ShellEnvironment.path()`
++    // silently returns the floor until the interactive-shell probe lands and nothing joins that probe
++    // (it is fired detached in `WorkroomApp.init`, while `refreshVCSToolReport` runs from
++    // `apply(projects)`). The floor covers Homebrew but NOT a version-manager shim dir, Nix, or
++    // MacPorts, so a jj living in one of those reads as missing — and caching that pinned "jj isn't
++    // installed" for the entire process, since `cached` is only cleared by the tests-only `reset()`.
++    // Re-probing costs one `--version` and by then the enriched PATH has usually landed.
++    //
++    // `.unknown` is safe to cache by contrast: `warnings(hasJJProject:)` ignores it, so it never
++    // becomes a false claim.
++    if !report.hasMissingTool(probedJJ: probeJJ) { cached = (report, probeJJ) }
+     inFlight = nil
+     return report
+   }
+
+
+=== DIFF: macapp/WorkroomAppTests/VCSToolVersionsTests.swift ===
+@@ -226,6 +226,60 @@ final class VCSToolVersionsTests: XCTestCase {
+     XCTAssertTrue(warning?.title.contains("2.41") == true, "must name the requirement")
+     XCTAssertTrue(warning?.detail.contains("2.30.0") == true, "must name what was found")
+   }
++
++  // MARK: - VCSToolVersionCache: never pin an absence
++
++  /// A `.notInstalled` verdict must NOT be cached. It comes from exit 127 — the tool wasn't on PATH —
++  /// and at launch the PATH may still be the deterministic floor, because `ShellEnvironment.path()`
++  /// returns the floor until the detached interactive-shell probe lands and nothing joins that probe.
++  /// The floor covers Homebrew but not a shim dir, Nix or MacPorts, so a jj living in one read as
++  /// missing and the cache pinned "jj isn't installed" for the whole process (`cached` is cleared only
++  /// by the tests-only `reset()`). Re-probing costs one `--version`.
++  func testAbsentToolIsNotCachedSoALaterProbeCanSeeAnEnrichedPath() async {
++    let runner = RecordingVersionRunner(responses: [
++      "git": CommandResult(stdout: "git version 2.55.0", stderr: "", exitCode: 0, timedOut: false)
++      // no "jj" response ⇒ the runner returns 127, i.e. not on PATH
++    ])
++    let cache = VCSToolVersionCache()
++
++    _ = await cache.report(probeJJ: true, runner: runner)
++    _ = await cache.report(probeJJ: true, runner: runner)
++
++    let jjProbes = await runner.executables().filter { $0 == "jj" }.count
++    XCTAssertEqual(jjProbes, 2, "an absent tool was cached, pinning it for the whole session")
++  }
++
++  /// The other direction: a settled verdict IS cached, so this doesn't turn into a probe per call.
++  func testPresentToolsAreStillCached() async {
++    let runner = RecordingVersionRunner(responses: [
++      "git": CommandResult(stdout: "git version 2.55.0", stderr: "", exitCode: 0, timedOut: false),
++      "jj": CommandResult(stdout: "jj 0.43.0", stderr: "", exitCode: 0, timedOut: false),
++    ])
++    let cache = VCSToolVersionCache()
++
++    _ = await cache.report(probeJJ: true, runner: runner)
++    _ = await cache.report(probeJJ: true, runner: runner)
++
++    let probes = await runner.executables().count
++    XCTAssertEqual(probes, 2, "a good report should be cached, not re-probed")
++  }
++
++  /// `probeJJ: false` reports jj `.notInstalled` WITHOUT running it. That is not an absence we
++  /// discovered, so it must not block caching — otherwise every launch with no jj project registered
++  /// re-probes `git --version` on every call.
++  func testSkippedJJDoesNotBlockCaching() async {
++    let runner = RecordingVersionRunner(responses: [
++      "git": CommandResult(stdout: "git version 2.55.0", stderr: "", exitCode: 0, timedOut: false)
++    ])
++    let cache = VCSToolVersionCache()
++
++    _ = await cache.report(probeJJ: false, runner: runner)
++    _ = await cache.report(probeJJ: false, runner: runner)
++
++    let gitProbes = await runner.executables().filter { $0 == "git" }.count
++    XCTAssertEqual(gitProbes, 1, "a skipped jj was mistaken for a discovered absence")
++  }
++
+ }
+ 
+ /// Records which executables were asked for, so a test can assert `jj` was never spawned.
+
+
+Investigate per the method in your instructions, then return the findings list.
