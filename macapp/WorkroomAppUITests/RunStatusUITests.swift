@@ -7,10 +7,12 @@ import XCTest
 ///      child-exit code is unreliable in the pinned GhosttyKit, so this proves the recorded-code path).
 ///   2. in-pane ⌃C → `onInterrupt` → NOT a failure (the `keyDown`/NSEvent wiring the unit tests skip).
 ///
-/// The fixture run command is overridden per-test via `-WorkroomUITestRunCommand`. The run-status
-/// chip icon inherits the tab's `terminal.tab.<title>` identifier, so it's queried by its a11y LABEL
-/// (`running` / `stopped` / `failed`), not an identifier. Colour isn't assertable via XCUITest — the
-/// red tint is checked in manual QA; here we assert the failed indicator's PRESENCE / ABSENCE.
+/// The fixture run command is overridden per-test via `-WorkroomUITestRunCommand`. The run tab's
+/// chip has its own explicit `.accessibilityLabel` (issue #141's recognized-tool favicon), which
+/// makes the whole chip ONE accessibility element — the nested run-state icon is not independently
+/// queryable, so run state is read off the CHIP's own `.accessibilityValue` (`running` / `stopped` /
+/// `failed`) instead. Colour isn't assertable via XCUITest — the red tint is checked in manual QA;
+/// here we assert the failed indicator's PRESENCE / ABSENCE.
 final class RunStatusUITests: XCTestCase {
   override func setUp() {
     super.setUp()
@@ -34,9 +36,26 @@ final class RunStatusUITests: XCTestCase {
     app.menuBars.menuBarItems["Run"].menuItems["Run"].click()
   }
 
-  /// A run-status chip icon by its a11y label (`running` / `stopped` / `failed`).
-  private func runIcon(_ app: XCUIApplication, label: String) -> XCUIElement {
-    app.images.matching(NSPredicate(format: "label == %@", label)).firstMatch
+  private func runTabChip(_ app: XCUIApplication) -> XCUIElement {
+    app.descendants(matching: .any).matching(identifier: "terminal.tab.Run").firstMatch
+  }
+
+  /// XCUITest has no built-in "wait for this value"; the run's own state arrives from the
+  /// supervisor's callback thread, not from a UI event this test drove, so polling is unavoidable.
+  private func poll(timeout: TimeInterval, until condition: () -> Bool) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      if condition() { return true }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+    }
+    return condition()
+  }
+
+  private func waitForRunState(_ app: XCUIApplication, _ label: String, timeout: TimeInterval = 15)
+    -> Bool
+  {
+    let chip = runTabChip(app)
+    return poll(timeout: timeout) { (chip.value as? String) == label }
   }
 
   /// A run that exits non-zero on its own surfaces the failed run icon (red xmark octagon).
@@ -44,17 +63,17 @@ final class RunStatusUITests: XCTestCase {
     let app = launchedApp(runCommand: "sleep 1; exit 7")
     startRun(app)
     XCTAssertTrue(
-      runIcon(app, label: "failed").waitForExistence(timeout: 15),
-      "a non-zero exit shows the failed run icon (#79)")
+      waitForRunState(app, "failed"),
+      "a non-zero exit shows the failed run icon (#79); got \(runTabChip(app).value ?? "<nil>")")
   }
 
   /// A run that exits 0 is a success, not a failure: no failed icon (the chip settles on stopped).
   func testCleanExitDoesNotShowFailedIndicator() {
     let app = launchedApp(runCommand: "sleep 1; exit 0")
     startRun(app)
-    XCTAssertTrue(
-      runIcon(app, label: "stopped").waitForExistence(timeout: 15), "the run finished")
-    XCTAssertFalse(runIcon(app, label: "failed").exists, "a clean exit is not a failure (#79)")
+    XCTAssertTrue(waitForRunState(app, "stopped"), "the run finished")
+    XCTAssertNotEqual(
+      runTabChip(app).value as? String, "failed", "a clean exit is not a failure (#79)")
   }
 
   /// Typing ⌃C into the run terminal is a user interrupt, not a crash: the run stops but the failed
@@ -68,12 +87,12 @@ final class RunStatusUITests: XCTestCase {
 
     // Focus the (backgrounded) run terminal, then ⌃C it: forwards SIGINT to the PTY and fires
     // onInterrupt, so the exit is recorded as a user stop.
-    app.descendants(matching: .any).matching(identifier: "terminal.tab.Run").firstMatch.click()
+    runTabChip(app).click()
     app.typeKey("c", modifierFlags: .control)
 
-    XCTAssertTrue(
-      runIcon(app, label: "stopped").waitForExistence(timeout: 15), "the run stopped after ⌃C")
-    XCTAssertFalse(
-      runIcon(app, label: "failed").exists, "in-pane ⌃C reads as a stop, not a failure (#79)")
+    XCTAssertTrue(waitForRunState(app, "stopped"), "the run stopped after ⌃C")
+    XCTAssertNotEqual(
+      runTabChip(app).value as? String, "failed",
+      "in-pane ⌃C reads as a stop, not a failure (#79)")
   }
 }

@@ -494,9 +494,12 @@ private struct TerminalTabChip: View {
           .font(.system(size: 10))
           .foregroundStyle(spec.color)
           .help("Run command \(spec.label)")
-          // The state word is the a11y label (and the XCUITest query handle for the failed icon, #79);
-          // the chip's own `terminal.tab.<title>` identifier overrides any identifier set here.
-          .accessibilityLabel(spec.label)
+          // Purely visual: the chip's own `.accessibilityValue` below (not this glyph) is the
+          // XCUITest query handle for run state (#79) — the chip's explicit `.accessibilityLabel`
+          // (issue #141) makes it a single accessibility element, so this nested image's own
+          // label/identifier are unreachable regardless of `.accessibilityElement(children:)`
+          // policy (measured: `.contain` in either modifier position still didn't expose it).
+          .accessibilityHidden(true)
       }
       // A diff (content) tab gets a leading glyph so it reads as not-a-terminal at a glance (#66).
       if case .diff = tab.content {
@@ -634,19 +637,23 @@ private struct TerminalTabChip: View {
     .help(tab.filePath ?? tab.title)
     .accessibilityIdentifier("terminal.tab.\(tab.title)")
     // The recognized tool's favicon (issue #141) is otherwise conveyed ONLY by a plain `Image` — a
-    // container that carries its own accessibility identifier/value (as this chip does, below)
-    // auto-combines its children into ONE element, so a leaf `.accessibilityIdentifier` on the icon
-    // itself is silently unreachable (measured: an XCUITest querying it never found the element,
-    // even though the model-layer detection and the image asset both resolved correctly). Folded
-    // into the chip's own label instead — the same fix this file already applies to the busy state
-    // below, and the title stays in the label so VoiceOver still reads the tab's name.
+    // leaf `.accessibilityIdentifier` on the icon itself is silently unreachable (measured: an
+    // XCUITest querying it never found the element, even though the model-layer detection and the
+    // image asset both resolved correctly). Folded into the chip's own label instead, and the title
+    // stays in the label so VoiceOver still reads the tab's name.
     .accessibilityLabel(
       tab.recognizedTool.map { "\(tab.title), \($0.displayName)" } ?? tab.title
     )
     // The running state is otherwise conveyed ONLY by the flowing underline above — invisible to
     // VoiceOver, and unassertable in XCUITest. `GhosttyActionDispatchUITests` reads this to prove
     // `GHOSTTY_ACTION_PROGRESS_REPORT` (OSC 9;4) still reaches the tab model after an engine change.
-    .accessibilityValue(tab.isRunning ? "Busy" : "Idle")
+    // On the dedicated run tab (#79) this instead reports the run's own state — `running` / `stopped`
+    // / `failed` — since the chip's explicit `.accessibilityLabel` above (issue #141) makes the whole
+    // chip ONE accessibility element: no `.accessibilityElement(children:)` policy kept the nested
+    // run-state icon or the ✦ badge separately queryable once the chip has its own label (measured;
+    // `.contain` didn't help in either modifier position), so run state has to live on the chip's own
+    // value instead of a descendant's.
+    .accessibilityValue(runState.map { runIconSpec($0).label } ?? (tab.isRunning ? "Busy" : "Idle"))
     .scaleEffect(isDragging ? 1.04 : 1)
     .shadow(color: .black.opacity(isDragging ? 0.25 : 0), radius: isDragging ? 6 : 0, y: 2)
   }
