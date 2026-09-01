@@ -203,16 +203,24 @@ jobs:
 
       # SPM resolves ~15 packages (Sparkle, Sentry, libghostty, the tree-sitter grammars, and
       # swift-syntax pulled transitively) by cloning them from GitHub on every run. Cache the
-      # resolved checkouts keyed on project.yml (the sole source of the dependency set — the
-      # .xcodeproj is xcodegen-generated and gitignored) so an unchanged set skips the network
-      # entirely. The restore-keys fallback reuses an older cache after a dep change so only the
+      # resolved checkouts keyed on project.yml AND the tracked Package.resolved (checkout already
+      # places this one file — the rest of the gitignored .xcodeproj doesn't exist yet) so an
+      # unchanged set skips the network entirely. Package.resolved is in the key, not just
+      # project.yml, because a pin can be re-reviewed to a different revision under the SAME
+      # version string (GhosttyPinIntegrityTests exists for exactly this: the packager has re-cut an
+      # already-published tag before) — keying on project.yml alone let a stale cache silently keep
+      # serving the old revision after such a bump, failing that test on every run until the cache
+      # aged out. The restore-keys fallback reuses an older cache after a dep change so only the
       # delta is fetched.
       - name: Cache SPM packages
         id: spm
         uses: actions/cache@v4
         with:
           path: macapp/DerivedData/SourcePackages
-          key: spm-${{ runner.os }}-${{ hashFiles('macapp/project.yml') }}
+          key: >-
+            spm-${{ runner.os }}-${{
+            hashFiles('macapp/project.yml', 'macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved')
+            }}
           restore-keys: spm-${{ runner.os }}-
 
       # Compiling the dependency graph — libgit2 (429 tasks), SwiftGitX, the tree-sitter grammars,
