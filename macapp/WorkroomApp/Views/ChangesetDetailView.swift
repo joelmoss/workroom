@@ -13,6 +13,12 @@ struct ChangesetDetailView: View {
   /// back/forward step and updates the tab), rather than a view-local `@State`.
   let tabID: TerminalTab.ID
   let target: TerminalTarget
+  /// Whether this pane holds focus — only the focused pane feeds the (shared) find model and shows
+  /// the find bar. Mirrors `DiffViewer.isFocused`/`PlainFileViewer.isFocused`.
+  var isFocused: Bool = true
+  /// The shared find state (owned by `AppStore`, `contentFind`), threaded through to the internal
+  /// `DiffViewer`.
+  @ObservedObject var find: FileFindModel
   @EnvironmentObject var store: AppStore
 
   @State private var state: LoadState = .loading
@@ -57,6 +63,30 @@ struct ChangesetDetailView: View {
       .background(theme.tokens.bg)
       // Fetch on appear + whenever the tab is retargeted to another commit (preview reuse).
       .task(id: descriptor.commitID) { await load() }
+      // Close find whenever there's nothing to search (loading, failed, empty changeset, or a
+      // selection that doesn't match any current file) — otherwise a retarget (history back/forward,
+      // no focus change) to a state with no `DiffViewer` on screen would leave stale matches/needle
+      // behind with no bar visible, and ⌘G would silently step through them (eng review). `initial:
+      // true` also covers arriving already in one of these states.
+      .onChange(of: hasSearchableDiff, initial: true) { _, has in
+        if !has, isFocused { find.close() }
+      }
+  }
+
+  /// Whether `diffPane` will actually render a `DiffViewer` right now.
+  private var hasSearchableDiff: Bool {
+    Self.diffPaneHasContent(state: state, selectedPath: selectedPath)
+  }
+
+  /// Pure form of `hasSearchableDiff` (mirrors `DiffViewer.shouldLoad`'s "extract the bounds-checked
+  /// logic" pattern) — unit-testable without hosting a live view. `false` for loading/failed/empty
+  /// states, or a `selectedPath` that doesn't match any current file (a stale selection after a
+  /// retarget) — every case where `diffPane` falls back to its "no file" message instead of a
+  /// `DiffViewer`.
+  static func diffPaneHasContent(state: LoadState, selectedPath: String?) -> Bool {
+    guard case .loaded(let changeset) = state, !changeset.files.isEmpty, let path = selectedPath
+    else { return false }
+    return changeset.files.contains { $0.path == path }
   }
 
   @ViewBuilder private var content: some View {
@@ -371,7 +401,8 @@ struct ChangesetDetailView: View {
         // project root is needed to key `JJSnapshotGate`.
         projectRoot: nil,
         showsFileHeader: true,
-        headerModeBinding: $diffMode)
+        headerModeBinding: $diffMode,
+        isFocused: isFocused, find: find)
     } else {
       message("Select a file", systemImage: "sidebar.left", detail: nil)
     }

@@ -559,9 +559,11 @@ final class AppStore: ObservableObject {
   /// Store-owned state for the VCS toolbar (branch, divergence, last fetch, fetch/push/pull). Third
   /// sibling to `fileTree` and `commitHistory`.
   let remoteState: RemoteStateModel
-  /// Shared in-file find state for the read-only file viewer (⌘F in a file pane). Only the focused
-  /// `PlainFileViewer` feeds + shows it; routed to from `startFindInFocusedPane`.
-  let fileFind = FileFindModel()
+  /// Shared find state for ⌘F across file/diff/changeset panes — one instance for all three content
+  /// kinds (`FileFindModel` has no content-specific logic), so only the focused pane feeds + shows it,
+  /// and `onFocusChange`/`startFindInFocusedPane`/`navigateFocusedPaneSearch` each need a single
+  /// branch/call rather than one per content kind.
+  let contentFind = FileFindModel()
   /// True while `loadInspectorState` is writing the four collapse flags + weights, so their
   /// `didSet`s don't persist the values straight back (and the load isn't mistaken for a user edit).
   private var isLoadingInspectorState = false
@@ -936,10 +938,10 @@ final class AppStore: ObservableObject {
       // reason as the `selectedTargetID` didSet: the switcher's own commit runs under
       // `isNavigatingHistory`.
       SwitcherRecency.shared.recordPane(tabID)
-      // The in-file find is tied to the focused file pane (the model is shared across panes). Any
-      // focused-tab change ends that session: close it so ⌘G can't step a hidden find from a
-      // terminal/diff pane, and the bar doesn't reappear pre-filled on the next file (review).
-      if self.fileFind.isOpen { self.fileFind.close() }
+      // Find is tied to the focused file/diff/changeset pane (the model is shared across all three
+      // kinds). Any focused-tab change ends that session: close it so ⌘G can't step a hidden find
+      // from a terminal pane, and the bar doesn't reappear pre-filled on the next pane (review).
+      if self.contentFind.isOpen { self.contentFind.close() }
       // A focus change includes a freshly-added tab appearing → re-enable the inspector.
       self.refreshSelectionHasTabs()
       guard !self.isNavigatingHistory else { return }
@@ -3933,18 +3935,17 @@ final class AppStore: ObservableObject {
   func scrollFocusedTerminalToBottom() { focusedSurface?.scrollToBottom() }
 
   /// Open the find bar on the focused pane (⌘F / Edit ▸ Find): the terminal's scrollback search for a
-  /// terminal pane, the in-file find for a file pane. A diff pane has no find (no-op).
+  /// terminal pane, the shared find for a file/diff/changeset pane.
   func startFindInFocusedPane() {
     guard let target = selectedTarget, let tab = terminals.focusedTab(for: target) else { return }
     switch tab.content {
     case .terminal: focusedSurface?.startSearch()
-    case .file: fileFind.open()
-    case .diff, .changeset: break
+    case .file, .diff, .changeset: contentFind.open()
     }
   }
 
   /// Navigate the focused pane's *active* find to the next/previous match (⌘G / ⇧⌘G), wrapping at the
-  /// ends. Tries the terminal search, then the in-file find. Returns `false` (so the key passes
+  /// ends. Tries the terminal search, then the shared find. Returns `false` (so the key passes
   /// through to the terminal) when neither is open. `@discardableResult` for the menu-button call site.
   @discardableResult
   func navigateFocusedPaneSearch(forward: Bool) -> Bool {
@@ -3952,14 +3953,18 @@ final class AppStore: ObservableObject {
       surface.searchModel.navigate(forward ? .next : .previous)
       return true
     }
-    // Only when a file pane is actually focused: the find model is shared, so a stale open state
-    // must not let ⌘G step a hidden file find from a terminal/diff pane (review). `onFocusChange`
+    // Only when a file/diff/changeset pane is actually focused: the find model is shared, so a stale
+    // open state must not let ⌘G step a hidden find from a terminal pane (review). `onFocusChange`
     // already closes it on focus-away; this is the defence-in-depth read-side check.
-    if let target = selectedTarget, let tab = terminals.focusedTab(for: target),
-      case .file = tab.content, fileFind.isOpen, fileFind.hasMatches
-    {
-      forward ? fileFind.next() : fileFind.previous()
-      return true
+    if let target = selectedTarget, let tab = terminals.focusedTab(for: target) {
+      switch tab.content {
+      case .file, .diff, .changeset:
+        guard contentFind.isOpen, contentFind.hasMatches else { break }
+        forward ? contentFind.next() : contentFind.previous()
+        return true
+      case .terminal:
+        break
+      }
     }
     return false
   }

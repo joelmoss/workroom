@@ -16,7 +16,7 @@ struct UnifiedDiff: Equatable, Sendable {
   }
 
   struct Line: Equatable, Sendable {
-    enum Kind: Equatable, Sendable {
+    enum Kind: Hashable, Sendable {
       case context
       case addition
       case deletion

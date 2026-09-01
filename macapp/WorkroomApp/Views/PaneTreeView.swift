@@ -523,7 +523,8 @@ private struct PaneLeafView: View {
       let diff = DiffViewer(
         descriptor: descriptor, directory: target.path,
         projectRoot: store.projectRoot(forTarget: target),
-        viewModeOverride: sessions.tab(tabID, for: target)?.diffViewModeOverride
+        viewModeOverride: sessions.tab(tabID, for: target)?.diffViewModeOverride,
+        isFocused: focused, find: store.contentFind
       )
       if let tab = sessions.tab(tabID, for: target) {
         contentPanel(
@@ -538,7 +539,7 @@ private struct PaneLeafView: View {
       let file = PlainFileViewer(
         descriptor: descriptor, directory: target.path, isFocused: focused,
         previewOverride: sessions.tab(tabID, for: target)?.markdownPreviewOverride,
-        find: store.fileFind
+        find: store.contentFind
       )
       if let tab = sessions.tab(tabID, for: target) {
         contentPanel(
@@ -552,7 +553,8 @@ private struct PaneLeafView: View {
       // reuses DiffViewer via a `.commit` source). Same rounded clip + chip context menu as the other
       // content leaves, so "Keep Open"/Close/split behave identically.
       let detail = ChangesetDetailView(
-        descriptor: descriptor, directory: target.path, tabID: tabID, target: target)
+        descriptor: descriptor, directory: target.path, tabID: tabID, target: target,
+        isFocused: focused, find: store.contentFind)
       // `content.filePath` is nil for a changeset: its own `DiffViewer` header (`showsFileHeader`)
       // already names the selected file, so a footer path would just say it twice.
       if let tab = sessions.tab(tabID, for: target) {

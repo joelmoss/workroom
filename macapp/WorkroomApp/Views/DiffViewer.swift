@@ -1,6 +1,36 @@
 import Defaults
 import SwiftUI
 
+/// Stable identity for a `UnifiedDiff.Line` within ONE loaded diff (`DiffResolver` always resolves a
+/// single file's diff, so `UnifiedDiff.parse`'s own multi-file generality never actually applies here)
+/// — line numbers only increase across a file's hunks, so `(kind, oldLine, newLine)` is unique without
+/// needing a hunk/offset index. Used to map a `FileFindModel` match (an index into a flat line array)
+/// back to the specific rendered row, in both the unified and side-by-side layouts.
+struct DiffLineID: Hashable {
+  let kind: UnifiedDiff.Line.Kind
+  let oldLine: Int?
+  let newLine: Int?
+
+  static func id(for line: UnifiedDiff.Line) -> DiffLineID {
+    DiffLineID(kind: line.kind, oldLine: line.oldLine, newLine: line.newLine)
+  }
+}
+
+/// `unifiedBody`'s `ForEach` element — `Identifiable` by `DiffLineID` directly, so that identity is
+/// the ONE thing driving both the `List` row's diffing identity and its `ScrollViewReader` scroll-to
+/// target (see the doc comment at that `ForEach` for why a second, separate `.id()` modifier broke
+/// `List`'s lazy row realization).
+private struct IdentifiedDiffLine: Identifiable {
+  let id: DiffLineID
+  let line: UnifiedDiff.Line
+}
+
+/// `sideBySideBody`'s `ForEach` element — same reasoning as `IdentifiedDiffLine`.
+private struct IdentifiedSideBySideRow: Identifiable {
+  let id: DiffLineID
+  let row: UnifiedDiff.SideBySideRow
+}
+
 /// Renders a single file's diff inside a content tab (issue #66): a unified, inline view (old/new
 /// gutter + colored +/- lines), or a side-by-side view (old left, new right). The layout follows the
 /// tab toolbar's per-file toggle (`viewModeOverride`) when set, else the global `Defaults[.diffViewMode]`
@@ -37,6 +67,12 @@ struct DiffViewer: View {
   /// header (and layout follows `viewModeOverride`/global as before). Lets the changeset detail own
   /// the choice so it persists across file selection, without touching the global default.
   var headerModeBinding: Binding<DiffViewMode?>? = nil
+  /// Whether this pane holds focus — only the focused diff/changeset pane feeds the (shared) find
+  /// model and shows the find bar / match highlights. Mirrors `PlainFileViewer.isFocused`.
+  var isFocused: Bool = true
+  /// The shared find state (owned by `AppStore`, `contentFind`) — reused unmodified across file, diff,
+  /// and changeset panes.
+  @ObservedObject var find: FileFindModel
 
   @State private var state: LoadState = .loading
   /// The file identity (`fetchKey`) the current diff was loaded for — so a spurious `.task` re-run
@@ -74,6 +110,15 @@ struct DiffViewer: View {
   /// (`fileHeader` reads it on every highlight/theme/mode-flip re-render). `nil` until loaded, or
   /// when there's no line diff.
   @State private var loadedStats: (additions: Int, removals: Int)?
+  /// The find source + line-identity index for the loaded diff (both the unified and side-by-side
+  /// orderings — see `FindIndex`'s doc). Boxed for the same AttributeGraph reason as `SideBySideRows`.
+  /// `nil` until a diff is loaded.
+  @State private var findIndex: FindIndex?
+  /// Which layout is CURRENTLY on screen, tracked explicitly (not read inline from `showSideBySide`)
+  /// so a flip can be observed and re-feed `find` with the newly-active ordering — unified and
+  /// side-by-side show the same lines in a different visual order (see `FindIndex`), so `⌘G` must
+  /// step through whichever order is on screen right now.
+  @State private var isSideBySideActive = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   /// The global default diff layout (issue #66), used when this tab has no `viewModeOverride`. A
   /// narrow pane additionally falls back to unified (see `sideBySideMinWidth`).
@@ -101,6 +146,54 @@ struct DiffViewer: View {
     init(_ rows: [[UnifiedDiff.SideBySideRow]]) { self.rows = rows }
   }
 
+  /// Find source + line-identity index for a loaded diff, boxed for the same AttributeGraph reason as
+  /// `SideBySideRows` (rebuilt once per `load()`, not per render). Holds BOTH visual orderings: unified
+  /// (document order — one line per row) and side-by-side (row-major, left-then-right — rows pair a
+  /// deletion run with the addition run that follows it, so row count ≠ line count and the visual
+  /// order differs from document order). `⌘G` must step through whichever ordering is on screen.
+  private final class FindIndex {
+    let unifiedLines: [String]
+    let unifiedIDs: [DiffLineID]
+    let unifiedIndexByID: [DiffLineID: Int]
+    let sideBySideLines: [String]
+    let sideBySideIDs: [DiffLineID]
+    let sideBySideIndexByID: [DiffLineID: Int]
+
+    init(_ diff: UnifiedDiff, sbsRows: [[UnifiedDiff.SideBySideRow]]) {
+      let unified = DiffViewer.findSource(for: diff)
+      unifiedLines = unified.lines
+      unifiedIDs = unified.ids
+      #if DEBUG
+        precondition(
+          !DiffViewer.hasDuplicateIDs(unified.ids),
+          "DiffLineID collision in unified ordering — (kind,oldLine,newLine) invariant violated")
+      #endif
+      // `uniquingKeysWith` (not `Dictionary(uniqueKeysWithValues:)`): a collision — which the debug
+      // precondition above already asserts can't happen for any current call path — degrades to
+      // "first line wins" in RELEASE rather than crashing.
+      unifiedIndexByID = Dictionary(
+        zip(unifiedIDs, unifiedIDs.indices), uniquingKeysWith: { first, _ in first })
+
+      let sideBySide = DiffViewer.findSourceSideBySide(sbsRows: sbsRows)
+      sideBySideLines = sideBySide.lines
+      sideBySideIDs = sideBySide.ids
+      #if DEBUG
+        precondition(
+          !DiffViewer.hasDuplicateIDs(sideBySide.ids),
+          "DiffLineID collision in side-by-side ordering — (kind,oldLine,newLine) invariant violated"
+        )
+      #endif
+      sideBySideIndexByID = Dictionary(
+        zip(sideBySideIDs, sideBySideIDs.indices), uniquingKeysWith: { first, _ in first })
+    }
+
+    func lines(sideBySide: Bool) -> [String] { sideBySide ? sideBySideLines : unifiedLines }
+    func ids(sideBySide: Bool) -> [DiffLineID] { sideBySide ? sideBySideIDs : unifiedIDs }
+    func indexByID(sideBySide: Bool) -> [DiffLineID: Int] {
+      sideBySide ? sideBySideIndexByID : unifiedIndexByID
+    }
+  }
+
   var body: some View {
     Group {
       if showsFileHeader {
@@ -115,6 +208,14 @@ struct DiffViewer: View {
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     .background(theme.tokens.bg)
+    // Find bar (⌘F), top-trailing over the focused pane only — search state is shared across every
+    // file/diff/changeset pane (`AppStore.contentFind`), so only the focused one shows/feeds it.
+    .overlay(alignment: .topTrailing) { if isFocused { FileFindBar(model: find) } }
+    // Feed the find model this diff's lines (in whichever ordering is on screen) when focus arrives,
+    // mirroring `PlainFileViewer.swift`'s equivalent `onChange`.
+    .onChange(of: isFocused) { _, focused in
+      if focused { find.setSource(findIndex?.lines(sideBySide: isSideBySideActive) ?? []) }
+    }
     // Re-fetch whenever the file or its source revision changes (preview retarget, tab switch).
     // Load ONCE per file identity: SwiftUI re-runs this `.task` on the same view instance when the
     // body re-renders after `applyHighlight` populates `highlightedLines` (even though `fetchKey`
@@ -267,13 +368,17 @@ struct DiffViewer: View {
       emphasis = IntraLineDiff.emphasis(for: diff)
       // Pair the side-by-side rows once here (same place/pattern as `emphasis`) — bounded by the
       // line cap, so the layout never re-pairs on a render-only update (highlight, theme).
-      sbsRows = SideBySideRows(diff.hunks.map(UnifiedDiff.sideBySideRows(for:)))
+      let pairedRows = diff.hunks.map(UnifiedDiff.sideBySideRows(for:))
+      sbsRows = SideBySideRows(pairedRows)
       loadedStats = UnifiedDiff.lineStats(for: diff)
+      findIndex = FindIndex(diff, sbsRows: pairedRows)
     } else {
       emphasis = ([:], [:])
       sbsRows = nil
       loadedStats = nil
+      findIndex = nil
     }
+    if isFocused { find.setSource(findIndex?.lines(sideBySide: isSideBySideActive) ?? []) }
     loadToken &+= 1  // signal the highlight task to (re)build against this diff
   }
 
@@ -363,10 +468,24 @@ struct DiffViewer: View {
   /// available content width for the global default's narrow-pane fallback.
   @ViewBuilder private func diffBody(_ diff: UnifiedDiff) -> some View {
     GeometryReader { proxy in
-      if showSideBySide(width: proxy.size.width) {
-        sideBySideBody(diff)
-      } else {
-        unifiedBody(diff)
+      let active = showSideBySide(width: proxy.size.width)
+      Group {
+        if active {
+          sideBySideBody(diff)
+        } else {
+          unifiedBody(diff)
+        }
+      }
+      // Track which layout is on screen (`isSideBySideActive`) so find can be re-searched against
+      // whichever ordering matches it — a live resize crossing `sideBySideMinWidth`, or the header's
+      // mode switch, changes what's actually visible without a diff reload. `initial: true` also
+      // syncs state on first render, so a diff that opens already wide enough for side-by-side isn't
+      // stuck reading the (default-false) unified ordering. Guarded so a resize that doesn't cross the
+      // threshold (recomputed every frame) doesn't re-`setSource` on every pixel.
+      .onChange(of: active, initial: true) { _, newValue in
+        guard isSideBySideActive != newValue else { return }
+        isSideBySideActive = newValue
+        if isFocused { find.setSource(findIndex?.lines(sideBySide: newValue) ?? []) }
       }
     }
   }
@@ -387,54 +506,102 @@ struct DiffViewer: View {
     // `List` was avoided elsewhere in this codebase (macOS list chrome fighting custom row styling) and
     // why that concern didn't hold up here once actually tried (`.listStyle(.plain)` +
     // `.listRowInsets`/`.listRowSeparator(.hidden)` + `.environment(\.defaultMinListRowHeight, 0)`).
-    List {
-      if let from = diff.renamedFrom {
-        headerNote("Renamed from \(from)")
-          .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
-      }
-      ForEach(Array(diff.hunks.enumerated()), id: \.offset) { _, hunk in
-        hunkHeader(hunk.header)
-          .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
-        ForEach(Array(hunk.lines.enumerated()), id: \.offset) { _, line in
-          lineRow(line)
+    ScrollViewReader { proxy in
+      List {
+        if let from = diff.renamedFrom {
+          headerNote("Renamed from \(from)")
+            .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
+        }
+        ForEach(Array(diff.hunks.enumerated()), id: \.offset) { _, hunk in
+          hunkHeader(hunk.header)
+            .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
+          // `Identifiable`-based (not a second `.id()` modifier layered on an `id: \.offset` ForEach):
+          // two identity mechanisms on the same rows made `List`/`ScrollViewReader` abandon lazy row
+          // realization on macOS (measured — every row built, `DiffViewerLazyRenderingTests` caught it,
+          // WORKROOM-2T class regression). One identity, used directly, keeps virtualization intact.
+          ForEach(hunk.lines.map { IdentifiedDiffLine(id: DiffLineID.id(for: $0), line: $0) }) {
+            item in
+            lineRow(item.line)
+              .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
+          }
+        }
+        if diff.truncated {
+          headerNote("Diff truncated — file too large to show in full.")
             .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
         }
       }
-      if diff.truncated {
-        headerNote("Diff truncated — file too large to show in full.")
-          .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
-      }
+      .listStyle(.plain)
+      .environment(\.defaultMinListRowHeight, 0)
+      .scrollContentBackground(.hidden)
+      .onChange(of: find.current) { _, _ in scrollToMatch(proxy, sideBySide: false) }
+      .onChange(of: find.matches) { _, _ in scrollToMatch(proxy, sideBySide: false) }
+      .onChange(of: find.sourceGeneration) { _, _ in scrollToMatch(proxy, sideBySide: false) }
     }
-    .listStyle(.plain)
-    .environment(\.defaultMinListRowHeight, 0)
-    .scrollContentBackground(.hidden)
   }
 
   /// Side-by-side body (issue #66): same `List` shell as `unifiedBody` (see its comment for why `List`,
   /// WORKROOM-2T), but each hunk's rows come from the memoized `sbsRows` and render as a
   /// left(old) | divider | right(new) `HStack`.
   private func sideBySideBody(_ diff: UnifiedDiff) -> some View {
-    List {
-      if let from = diff.renamedFrom {
-        headerNote("Renamed from \(from)")
-          .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
-      }
-      ForEach(Array(diff.hunks.enumerated()), id: \.offset) { index, hunk in
-        hunkHeader(hunk.header)
-          .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
-        ForEach(Array(rows(forHunk: index).enumerated()), id: \.offset) { _, row in
-          sideBySideRow(row)
+    ScrollViewReader { proxy in
+      List {
+        if let from = diff.renamedFrom {
+          headerNote("Renamed from \(from)")
+            .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
+        }
+        ForEach(Array(diff.hunks.enumerated()), id: \.offset) { index, hunk in
+          hunkHeader(hunk.header)
+            .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
+          // See the matching comment in `unifiedBody`: `Identifiable`-based, not a second `.id()`.
+          ForEach(
+            rows(forHunk: index).map { IdentifiedSideBySideRow(id: Self.rowID(for: $0), row: $0) }
+          ) { item in
+            sideBySideRow(item.row)
+              .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
+          }
+        }
+        if diff.truncated {
+          headerNote("Diff truncated — file too large to show in full.")
             .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
         }
       }
-      if diff.truncated {
-        headerNote("Diff truncated — file too large to show in full.")
-          .listRowInsets(EdgeInsets()).listRowSeparator(.hidden)
-      }
+      .listStyle(.plain)
+      .environment(\.defaultMinListRowHeight, 0)
+      .scrollContentBackground(.hidden)
+      .onChange(of: find.current) { _, _ in scrollToMatch(proxy, sideBySide: true) }
+      .onChange(of: find.matches) { _, _ in scrollToMatch(proxy, sideBySide: true) }
+      .onChange(of: find.sourceGeneration) { _, _ in scrollToMatch(proxy, sideBySide: true) }
     }
-    .listStyle(.plain)
-    .environment(\.defaultMinListRowHeight, 0)
-    .scrollContentBackground(.hidden)
+  }
+
+  /// Scroll to the current find match, gated on `isFocused` (the shared-model isolation requirement —
+  /// `find` is one instance shared across every visible diff/changeset pane). `sideBySide` picks which
+  /// ordering's ids to resolve the match against, and must match whichever body is calling this (each
+  /// caller passes its own literal, not `isSideBySideActive`, which can lag one render behind a layout
+  /// flip). For side-by-side, a row's `.id()` is its left-else-right line id (`rowID(for:)`), so the
+  /// match's line id must be resolved to whichever ROW contains it — rows ≠ lines there (a deletion run
+  /// pairs with the addition run that follows it into shared rows).
+  private func scrollToMatch(_ proxy: ScrollViewProxy, sideBySide: Bool) {
+    guard isFocused, let findIndex else { return }
+    guard
+      let id = Self.matchedLineID(
+        match: find.currentMatch, ids: findIndex.ids(sideBySide: sideBySide))
+    else { return }
+    let scrollID: DiffLineID?
+    if sideBySide {
+      // The matched line's id may be the row's RIGHT side while the row's own `.id()` (`rowID(for:)`,
+      // left-else-right) is keyed by its LEFT side — so check both sides for containment, then
+      // resolve to the row's actual scroll-id, not the matched line's id directly.
+      scrollID = sbsRows?.rows.lazy.flatMap { $0 }.first(where: {
+        $0.left.map(DiffLineID.id(for:)) == id || $0.right.map(DiffLineID.id(for:)) == id
+      }).map(Self.rowID(for:))
+    } else {
+      scrollID = id
+    }
+    guard let scrollID else { return }
+    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) {
+      proxy.scrollTo(scrollID, anchor: .center)
+    }
   }
 
   /// The memoized side-by-side rows for a hunk index (empty if out of range — should not happen, as
@@ -453,6 +620,68 @@ struct DiffViewer: View {
   {
     guard let rows, index >= 0, index < rows.count else { return [] }
     return rows[index]
+  }
+
+  // MARK: Find
+
+  /// The unified find source: every line's text + identity, in document order across all hunks.
+  /// Excludes chrome that isn't rendered via `styledText` (hunk headers, the renamed-from note, the
+  /// truncated footer) — nothing there has a natural `DiffLineID`. Pure — unit-tested.
+  static func findSource(for diff: UnifiedDiff) -> (lines: [String], ids: [DiffLineID]) {
+    let flat = diff.hunks.flatMap { $0.lines }
+    return (flat.map(\.text), flat.map(DiffLineID.id(for:)))
+  }
+
+  /// The side-by-side find source: row-major, left-then-right (reading order), so `⌘G` steps through
+  /// matches top-to-bottom the way the eye reads a two-column diff — NOT document order (which would
+  /// step through every deletion on the left, then jump back to the top for every addition on the
+  /// right, since `sideBySideRows` pairs a deletion run with the addition run that follows it into
+  /// shared rows). A context row's `left`/`right` are the SAME line (see `sideBySideRows`'s doc), so
+  /// it contributes exactly one entry, not two. Pure — unit-tested.
+  static func findSourceSideBySide(sbsRows: [[UnifiedDiff.SideBySideRow]])
+    -> (lines: [String], ids: [DiffLineID])
+  {
+    var lines: [String] = []
+    var ids: [DiffLineID] = []
+    for hunkRows in sbsRows {
+      for row in hunkRows {
+        let leftID = row.left.map(DiffLineID.id(for:))
+        if let left = row.left, let leftID {
+          lines.append(left.text)
+          ids.append(leftID)
+        }
+        if let right = row.right {
+          let rightID = DiffLineID.id(for: right)
+          guard rightID != leftID else { continue }  // context row: left/right are the same line
+          lines.append(right.text)
+          ids.append(rightID)
+        }
+      }
+    }
+    return (lines, ids)
+  }
+
+  /// Whether `ids` contains a duplicate — the debug-only guard on the `(kind, oldLine, newLine)`
+  /// identity invariant (verified true for every current call path: a single file's diff). Kept as a
+  /// plain function rather than an inline `precondition` so it's unit-testable directly.
+  static func hasDuplicateIDs(_ ids: [DiffLineID]) -> Bool { Set(ids).count != ids.count }
+
+  /// A side-by-side row's scroll-to identity — its left line's id, or its right's if left is absent.
+  /// Non-optional (`.id()` and `ScrollViewProxy.scrollTo` must agree on the SAME concrete `ID` type —
+  /// `AnyHashable` does not treat `DiffLineID?` and `DiffLineID` as equal, so mixing them would make
+  /// `scrollTo` silently fail to find the row); the fallback sentinel is unreachable in practice
+  /// (`sideBySideRows` never emits a row with neither side present) but keeps this total rather than
+  /// force-unwrapping in a render path.
+  static func rowID(for row: UnifiedDiff.SideBySideRow) -> DiffLineID {
+    row.left.map(DiffLineID.id(for:)) ?? row.right.map(DiffLineID.id(for:))
+      ?? DiffLineID(kind: .context, oldLine: nil, newLine: nil)
+  }
+
+  /// The `DiffLineID` the current find match hit, bounds-checked against `ids` (out of range ⇒ a
+  /// stale match from a load that raced a keystroke — no scroll, not a crash). Pure — unit-tested.
+  static func matchedLineID(match: FileFindMatch?, ids: [DiffLineID]) -> DiffLineID? {
+    guard let match, match.line >= 0, match.line < ids.count else { return nil }
+    return ids[match.line]
   }
 
   #if DEBUG
@@ -496,7 +725,7 @@ struct DiffViewer: View {
     HStack(alignment: .top, spacing: 0) {
       sideGutter(side == .left ? line?.oldLine : line?.newLine)
       if let line {
-        styledText(line)
+        styledText(line, sideBySide: true)
           .frame(maxWidth: .infinity, alignment: .leading)
           .padding(.leading, 4)
           .padding(.trailing, 8)
@@ -551,7 +780,7 @@ struct DiffViewer: View {
         .font(.system(.callout, design: .monospaced))
         .foregroundStyle(foreground(line.kind))
         .frame(width: 16, alignment: .center)
-      styledText(line)
+      styledText(line, sideBySide: false)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.leading, 4)
         .padding(.trailing, 8)
@@ -600,30 +829,85 @@ struct DiffViewer: View {
   }
 
   /// The styled, soft-wrapping text for one diff line, shared by the unified row and each
-  /// side-by-side cell. Additions/context use the new-side highlight run; deletions use the old-side
-  /// (pre-image) run — both built in `applyHighlight`. Intra-line change emphasis is folded into the
-  /// highlighted run by the mapper, or applied here (`emphasizedLine`) when highlighting is absent.
-  @ViewBuilder private func styledText(_ line: UnifiedDiff.Line) -> some View {
+  /// side-by-side cell. `sideBySide` says which body is asking, so highlighting is looked up against
+  /// the ordering ACTUALLY on screen (passed explicitly from the caller rather than read off
+  /// `isSideBySideActive`, which can lag one render behind the body GeometryReader just picked).
+  private func styledText(_ line: UnifiedDiff.Line, sideBySide: Bool) -> some View {
+    Text(styledAttributed(line, sideBySide: sideBySide))
+      .font(.system(.callout, design: .monospaced))
+      .textSelection(.enabled)
+      .fixedSize(horizontal: false, vertical: true)  // wrap long lines, never truncate
+  }
+
+  /// Additions/context use the new-side highlight run; deletions use the old-side (pre-image) run —
+  /// both built in `applyHighlight`. Intra-line change emphasis is folded into the highlighted run by
+  /// the mapper, or applied here (`emphasizedLine`) when highlighting is absent. Composites the find
+  /// match background on top of whichever of the three built the base string (`applyFindHighlight`).
+  private func styledAttributed(_ line: UnifiedDiff.Line, sideBySide: Bool) -> AttributedString {
     let highlighted: AttributedString? =
       line.kind == .deletion
       ? line.oldLine.flatMap { highlightedOldLines[$0] }
       : line.newLine.flatMap { highlightedLines[$0] }
-    let emphasized: AttributedString? = highlighted == nil ? emphasizedLine(line) : nil
-    Group {
-      if let highlighted {
-        Text(highlighted)  // syntax foreground + intra-line emphasis background
-      } else if let emphasized {
-        Text(emphasized)  // plain foreground + intra-line emphasis background
-      } else {
-        // Not syntax-highlighted: use the default code foreground (never the add/remove colour), so
-        // the row background — not the text colour — carries the change signal. Keeps text legible
-        // and matches the highlighted lines' uncaptured runs.
-        Text(line.text.isEmpty ? " " : line.text).foregroundStyle(codeTextColor)
-      }
+    var base: AttributedString
+    if let highlighted {
+      base = highlighted  // syntax foreground + intra-line emphasis background
+    } else if let emphasized = emphasizedLine(line) {
+      base = emphasized  // plain foreground + intra-line emphasis background
+    } else {
+      // Not syntax-highlighted: use the default code foreground (never the add/remove colour), so
+      // the row background — not the text colour — carries the change signal. Keeps text legible
+      // and matches the highlighted lines' uncaptured runs.
+      base = AttributedString(line.text.isEmpty ? " " : line.text)
+      base.foregroundColor = codeTextColor
     }
-    .font(.system(.callout, design: .monospaced))
-    .textSelection(.enabled)
-    .fixedSize(horizontal: false, vertical: true)  // wrap long lines, never truncate
+    let hits = findHits(for: line, sideBySide: sideBySide)
+    guard !hits.isEmpty else { return base }
+    return Self.applyFindHighlight(
+      base, hits: hits,
+      currentBg: theme.tokens.accent.opacity(0.55), otherBg: theme.tokens.accent.opacity(0.28))
+  }
+
+  /// This line's find-match ranges (character offsets), or empty when there's nothing to highlight.
+  /// Gated on `isFocused` — `find` is shared across every visible diff/changeset pane, and an
+  /// unfocused pane's `findIndex` describes UNRELATED content. `sideBySide` picks which ordering to
+  /// look the line up in.
+  private func findHits(for line: UnifiedDiff.Line, sideBySide: Bool) -> [(
+    range: Range<Int>, isCurrent: Bool
+  )] {
+    guard isFocused, let findIndex,
+      let idx = findIndex.indexByID(sideBySide: sideBySide)[DiffLineID.id(for: line)]
+    else { return [] }
+    return find.highlights(onLine: idx)
+  }
+
+  /// Composite find-match backgrounds onto an already-built `AttributedString` — generic over what
+  /// colored it (syntax mapper, `emphasizedPlain`, or the freshly-wrapped plain branch above). `hits`
+  /// are CHARACTER-offset ranges (`FileFindModel.highlights`, via `String.distance`). `AttributedString`
+  /// itself does not expose a bounds-checked `index(_:offsetBy:limitedBy:)` (its own `index(_:offsetBy:)`
+  /// traps out of range), but `.characters` — the `BidirectionalCollection<Character>` view — shares
+  /// `AttributedString`'s own `Index` type, so walking offsets through `.characters` and subscripting
+  /// `out[...]` directly with the result is correct, and safely bounds-checked. Correct regardless of
+  /// the base string having been assembled from UTF-8 byte-sliced runs (`emphasizedPlain`,
+  /// `DiffHighlightMapper`) — byte-slicing only matters at construction time; grapheme-cluster
+  /// boundaries are recomputed over the final joined string. Pure — unit-tested.
+  static func applyFindHighlight(
+    _ base: AttributedString, hits: [(range: Range<Int>, isCurrent: Bool)],
+    currentBg: Color, otherBg: Color
+  ) -> AttributedString {
+    guard !hits.isEmpty else { return base }
+    var out = base
+    let characters = out.characters
+    for hit in hits {
+      guard
+        let lo = characters.index(
+          characters.startIndex, offsetBy: hit.range.lowerBound, limitedBy: characters.endIndex),
+        let hi = characters.index(
+          characters.startIndex, offsetBy: hit.range.upperBound, limitedBy: characters.endIndex),
+        lo <= hi
+      else { continue }
+      out[lo..<hi].backgroundColor = hit.isCurrent ? currentBg : otherBg
+    }
+    return out
   }
 
   /// Whether `line` renders with a syntax-highlighted run — its new-side line (add/context) or its

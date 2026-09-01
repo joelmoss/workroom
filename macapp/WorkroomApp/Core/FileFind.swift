@@ -54,13 +54,23 @@ final class FileFindModel: ObservableObject {
   @Published private(set) var matches: [FileFindMatch] = []
   /// Index into `matches` of the highlighted hit (0-based); 0 when there are none.
   @Published private(set) var current = 0
+  /// Bumped unconditionally on every `setSource` call, even when the new `lines`/`matches`/`current`
+  /// happen to equal the previous state (e.g. switching to different content whose matches are
+  /// byte-identical to what was there before). `onChange(of: current)`/`onChange(of: matches)` only
+  /// fire on an actual VALUE change, so a consumer that needs to react to "the underlying content
+  /// changed" specifically (not "the match set changed") observes this instead.
+  @Published private(set) var sourceGeneration = 0
 
   private var lines: [String] = []
+  /// `matches` grouped by line, so `highlights(onLine:)` doesn't linear-scan the whole match list per
+  /// call — needed once a caller (e.g. `DiffViewer`) calls it once per visible row on every render.
+  private var matchesByLine: [Int: [Int]] = [:]
 
   /// Point the model at the focused viewer's content and re-search with the current needle. Called
   /// when the focused file changes (or its content loads).
   func setSource(_ lines: [String]) {
     self.lines = lines
+    sourceGeneration &+= 1
     recompute(resetCurrent: true)
   }
 
@@ -70,6 +80,7 @@ final class FileFindModel: ObservableObject {
     isOpen = false
     needle = ""
     matches = []
+    matchesByLine = [:]
     current = 0
   }
 
@@ -91,6 +102,7 @@ final class FileFindModel: ObservableObject {
 
   private func recompute(resetCurrent: Bool) {
     matches = FileFind.matches(in: lines, needle: needle)
+    matchesByLine = Dictionary(grouping: matches.indices, by: { matches[$0].line })
     current = resetCurrent ? 0 : min(current, max(0, matches.count - 1))
   }
 
@@ -107,11 +119,7 @@ final class FileFindModel: ObservableObject {
   /// The hits on a given line with whether each is the current one — for the viewer's per-line
   /// highlighting. Empty for lines with no hits (the common case), so most rows do no work.
   func highlights(onLine line: Int) -> [(range: Range<Int>, isCurrent: Bool)] {
-    guard isOpen, !matches.isEmpty else { return [] }
-    var out: [(range: Range<Int>, isCurrent: Bool)] = []
-    for (offset, match) in matches.enumerated() where match.line == line {
-      out.append((match.range, offset == current))
-    }
-    return out
+    guard isOpen, let indices = matchesByLine[line] else { return [] }
+    return indices.map { (matches[$0].range, $0 == current) }
   }
 }

@@ -1410,6 +1410,31 @@ views, so it wants a deliberate visual pass rather than a drive-by change.
 
 **Priority:** P3 (consistency + theme correctness; no functional bug).
 
+### XCUITest coverage for find-bar render+scroll integration (macapp) — ⌘F-on-diffs eng-review follow-up
+
+**What:** add XCUITest coverage asserting the find bar actually appears, highlights the right text,
+and scrolls to matches — across the file viewer, diff, and changeset panes.
+
+**Why:** `FileFindTests.swift`'s own doc comment states render+scroll for `PlainFileViewer` is "covered
+by manual QA" — no automated integration test exists. The ⌘F-on-diffs fix (`plan-eng-review`,
+2026-09-01) extended the same `FileFindModel`/`FileFindBar` pattern from one content kind (file) to
+three (file, diff, changeset) without adding integration coverage for any of them — the outside-voice
+review pass flagged this explicitly ("integration risk remains untested... shortcut → visible bar →
+correct source → highlighted row → scrolling... left to manual QA").
+
+**How to start:** `DiffPaneFocusUITests.swift` already proves the fixture-mode click/focus pattern
+works for diff panes in this app (canned jj diffs via `-WorkroomUITestFixture 1`, `terminal.pane`
+accessibility elements). XCUITest can't see `NSAttributedString` colours directly, so this needs a new
+test-observable `accessibilityValue` signal for "this row has a find match" / "is the current match" —
+mirroring `lineRow`'s existing `highlighted`/`plain` `accessibilityValue` convention (already used to
+make syntax-highlight state testable without reading pixels).
+
+**Depends on:** the ⌘F-on-diffs fix shipping first (nothing to test against yet). Touches
+`WorkroomAppUITests/`, `Views/DiffViewer.swift`, `Views/PlainFileViewer.swift`.
+
+**Priority:** P3 (real coverage gap, not blocking — manual QA is this feature's accepted testing
+boundary today).
+
 ## P3 — Terminal, panes, and focus
 
 ### Consolidate terminal focus authority + cross-window reconciliation (macapp) — focus-desync follow-up

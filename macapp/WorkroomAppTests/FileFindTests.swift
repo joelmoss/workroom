@@ -109,4 +109,23 @@ final class FileFindTests: XCTestCase {
     XCTAssertFalse(model.isOpen)
     XCTAssertTrue(model.highlights(onLine: 0).isEmpty)
   }
+
+  /// `sourceGeneration` must bump on EVERY `setSource` call, even when the new content happens to
+  /// produce array-equal `matches`/`current` to what was there before — that's exactly the case a
+  /// consumer needing an unambiguous "content changed" signal (`DiffViewer`'s scroll-to-match) can't
+  /// get from `onChange(of: matches)`/`onChange(of: current)` alone, since SwiftUI's `onChange` only
+  /// fires on an actual VALUE difference.
+  @MainActor func testSourceGenerationBumpsOnEverySetSourceEvenWhenMatchesAreEqual() {
+    let model = FileFindModel()
+    model.setSource(["foo"])
+    model.open()
+    model.setNeedle("foo")
+    let generationAfterFirstSource = model.sourceGeneration
+    let matchesAfterFirstSource = model.matches
+
+    // A different "file" whose content happens to produce an identical match set.
+    model.setSource(["foo"])
+    XCTAssertEqual(model.matches, matchesAfterFirstSource)
+    XCTAssertGreaterThan(model.sourceGeneration, generationAfterFirstSource)
+  }
 }

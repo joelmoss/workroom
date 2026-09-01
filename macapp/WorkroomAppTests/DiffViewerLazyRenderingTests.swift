@@ -48,7 +48,8 @@ final class DiffViewerLazyRenderingTests: XCTestCase {
   /// area, not the whole screen, so "how many rows does it build" is a meaningful question.
   private func host(_ descriptor: DiffDescriptor) -> (NSWindow, NSView) {
     let root = DiffViewer(
-      descriptor: descriptor, directory: "/diff-lazy-rendering", projectRoot: nil
+      descriptor: descriptor, directory: "/diff-lazy-rendering", projectRoot: nil,
+      find: FileFindModel()
     )
     .frame(width: 700, height: 500)
     let hosting = NSHostingView(rootView: root)
