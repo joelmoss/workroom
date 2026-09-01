@@ -1,7 +1,7 @@
 # macapp/CLAUDE.md
 
 The Workroom macOS app: a SwiftUI (macOS 15+) front-end that bundles the `workroom`
-Go binary and drives it over the CLI's `--json` contract. See README.md for full
+Go binary and drives it over the CLI's `--json` contract. See README.md and CONTRIBUTING.md for full
 architecture, signing, and notarization detail — this file is the quick reference.
 
 ## Dev tasks (Makefile)
@@ -242,7 +242,7 @@ menu item + the Settings toggle bind to it). The `SU*` keys in `project.yml` (`S
 `CFBundleShortVersionString`/`CFBundleVersion` resolve from `$(MARKETING_VERSION)`/
 `$(CURRENT_PROJECT_VERSION)`, which `release.sh` injects from the git tag (build number =
 commit count, so it only ever increases — Sparkle compares it). The appcast feed is an asset
-on the fixed `appcast` GitHub release. See `README.md` ("Auto-update") for the one-time keypair
+on the fixed `appcast` GitHub release. See `CONTRIBUTING.md` ("Auto-update") for the one-time keypair
 setup and the `SPARKLE_PRIVATE_KEY` secret.
 
 **Release channels (issue #91) — two build identities.** The **main** app (`Release` config)
