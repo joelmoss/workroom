@@ -469,6 +469,15 @@ private struct TerminalTabChip: View {
     }
   }
 
+  /// Pulled out of the `body` modifier chain, with an explicit return type: inlined, the
+  /// map/ternary combo made the chip's already-large `body` "unable to type-check in reasonable
+  /// time" on a clean CI build (it type-checked fine locally only because a warm `DerivedData`
+  /// incremental cache skipped re-inferring it).
+  private var runOrBusyAccessibilityValue: String {
+    if let runState { return runIconSpec(runState).label }
+    return tab.isRunning ? "Busy" : "Idle"
+  }
+
   var body: some View {
     // Title and close button laid out side by side: a compact gap keeps the ✕ visibly tied to its
     // tab (a wide gap reads as detached) while still clearing the title so they never crowd.
@@ -653,7 +662,7 @@ private struct TerminalTabChip: View {
     // run-state icon or the ✦ badge separately queryable once the chip has its own label (measured;
     // `.contain` didn't help in either modifier position), so run state has to live on the chip's own
     // value instead of a descendant's.
-    .accessibilityValue(runState.map { runIconSpec($0).label } ?? (tab.isRunning ? "Busy" : "Idle"))
+    .accessibilityValue(runOrBusyAccessibilityValue)
     .scaleEffect(isDragging ? 1.04 : 1)
     .shadow(color: .black.opacity(isDragging ? 0.25 : 0), radius: isDragging ? 6 : 0, y: 2)
   }
