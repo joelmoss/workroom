@@ -240,25 +240,25 @@ private struct WorkroomPaneLeaf: View {
       }
       // One unconditional slot. The "Directory not found" state and the withheld-during-setup state
       // both live INSIDE `TargetTerminalDetail`'s own ZStack, so nothing here ever swaps branches.
-      TargetTerminalDetail(target: target, surfaceActive: focused)
+      TargetTerminalDetail(target: target, surfaceActive: focused, workroomIsSplit: multi)
     }
     // The pane reads as a unit by a subtle raised fill over the `panel` base plus the shadow +
-    // rounded corners (issue #110), and is FRAMED by a stroke whose colour carries focus: the focused
-    // member takes a full-strength accent frame, the rest a neutral hairline. Its fill stays
-    // accent-tinted as the secondary cue — accent @ 0.10 over a `panel` that is itself only 5.5% off
-    // the theme background moves luminance by a couple of percent, which was too faint to pick the
-    // focused member out of a split at a glance.
+    // rounded corners (issue #110). The frame itself stays the plain neutral hairline regardless of
+    // focus — an accent frame around the whole card read as too loud/inconsistent, so the fill and
+    // shadow alone carry which member is focused. Fill stays accent-tinted as that cue — accent @
+    // 0.10 over a `panel` that is itself only 5.5% off the theme background moves luminance by a
+    // couple of percent, which was too faint to pick the focused member out of a split at a glance.
     //
-    // All three read `highlighted`, NOT `focused`: the accent means "this member, not that one", so a
-    // solo pane — always the focused one, since the no-split layout is `.leaf(selected)` — wears the
-    // neutral resting card instead. Both layers stay unconditionally MOUNTED (only their values swap);
-    // the treatment, not the mounting, is what's split-only.
+    // The fill/shadow read `highlighted`, NOT `focused`: the accent means "this member, not that
+    // one", so a solo pane — always the focused one, since the no-split layout is `.leaf(selected)` —
+    // wears the neutral resting card instead. The fill layer stays unconditionally MOUNTED (only its
+    // value swaps); the treatment, not the mounting, is what's split-only.
     .background(WorkroomPaneCardBackground(highlighted: highlighted))
     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     // Mounted AFTER the clip (so the frame isn't clipped away) and BEFORE the shadow: `strokeBorder`
     // insets by half its width, so the stroke sits inside the card and the shadow's silhouette — and
     // every pane rect — is unchanged.
-    .overlay { WorkroomPaneCardBorder(highlighted: highlighted) }
+    .overlay { WorkroomPaneCardBorder() }
     .shadow(
       color: .black.opacity(highlighted ? 0.18 : 0.10), radius: highlighted ? 6 : 3, y: 2
     )
@@ -336,46 +336,36 @@ private struct WorkroomPaneCardBackground: View {
   }
 }
 
-/// The pane card's frame — the primary focus cue. Its own view for the same two reasons as
-/// `WorkroomPaneCardBackground`: it reads `\.controlActiveState` (so the accent drops on a background
-/// window), and as a child it absorbs those activation re-renders instead of passing them to
-/// `WorkroomPaneLeaf` and the libghostty surface below it.
-///
-/// The stroke is ALWAYS mounted and only its colour swaps — the same shape as the terminal pane's ring
-/// (`PaneTreeView`) and the dialogs' highlighted rows. A structural `if highlighted` here would add a
-/// `_ConditionalContent` branch beside the leaf's content slot, which is the one thing this pane's
-/// hierarchy must not do.
+/// The pane card's frame — a constant neutral hairline; the fill and shadow carry which member is
+/// focused (see the comment above `.background` at the call site). Its own view only to mirror
+/// `WorkroomPaneCardBackground`'s isolation of the libghostty surface below it from this layer's
+/// re-renders.
 struct WorkroomPaneCardBorder: View {
-  let highlighted: Bool
-  @Environment(\.controlActiveState) private var activeState
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   private let theme = ThemeService.shared
 
   var body: some View {
     RoundedRectangle(cornerRadius: 8, style: .continuous)
-      .strokeBorder(
-        Self.tint(highlighted: highlighted, active: activeState != .inactive, tokens: theme.tokens),
-        lineWidth: 1.5
-      )
+      .strokeBorder(theme.tokens.border, lineWidth: 1.5)
       .allowsHitTesting(false)
-      .animation(reduceMotion ? nil : .easeInOut(duration: 0.08), value: highlighted)
   }
 
   /// Whether the card wears the focused treatment at all. Model focus alone isn't enough: a solo pane
-  /// is ALWAYS `focused` (the no-split layout is `.leaf(selected)`), and an accent frame/fill with no
+  /// is ALWAYS `focused` (the no-split layout is `.leaf(selected)`), and an accent fill/shadow with no
   /// peer to be distinguished FROM is decoration rather than a selection cue — it spends the accent
   /// that should mean "this member, not that one". The same expression the `.isSelected` trait uses,
-  /// kept pure so the gate is testable without hosting a view. The frame, the fill and the shadow all
-  /// read this one value.
+  /// kept pure so the gate is testable without hosting a view. The fill and the shadow both read this
+  /// one value.
   static func isHighlighted(focused: Bool, multi: Bool) -> Bool { focused && multi }
 
-  /// Which colour frames the card. Pure and static (same rationale as `PaneTreeView.shouldDim`) so the
-  /// three-way decision is testable without hosting a view. Its input is `isHighlighted`, so a solo
-  /// pane takes the same neutral hairline an unfocused member does.
+  /// Which colour frames a focused pane's ring — kept here for `PaneTreeView`'s split-terminal ring
+  /// (`PaneLeafView.borderColor`), which still highlights on focus; this view's own frame no longer
+  /// calls it. Pure and static (same rationale as `PaneTreeView.shouldDim`) so the three-way decision
+  /// is testable without hosting a view. Its input is a split-only "highlighted" gate, so a solo pane
+  /// takes the same neutral hairline an unfocused member does.
   ///
-  /// 1.5pt of `accent` deliberately matches the terminal pane's focus ring rather than the 2pt accent
-  /// box of the drag drop-edge highlight in this file, so a focused pane can't be mistaken for a drop
-  /// target. On a background window the frame goes neutral (`focused`, fg @ 0.3) rather than holding a
+  /// 1.5pt of `accent` matches this view's own frame width and the terminal pane's other overlays, so
+  /// a focused pane can't be mistaken for the 2pt accent box of the drag drop-edge highlight in this
+  /// file. On a background window it goes neutral (`focused`, fg @ 0.3) rather than holding a
   /// saturated accent — the same convention the card fill follows.
   static func tint(highlighted: Bool, active: Bool, tokens: ThemeTokens) -> Color {
     guard highlighted else { return tokens.border }

@@ -15,6 +15,10 @@ struct WorkroomTerminalsView: View {
   /// Whether this workroom's terminal may hold keyboard focus — `false` for a co-displayed but
   /// non-focused split member, so it doesn't steal first responder (and the workroom selection) on mount.
   var surfaceActive: Bool = true
+  /// Whether this workroom is itself one member of a multi-workroom split — forwarded to
+  /// `PaneTreeView` so a solo terminal within it still gets the focused border (see
+  /// `PaneTreeView.workroomIsSplit`).
+  var workroomIsSplit: Bool = false
   @EnvironmentObject var notifications: NotificationCenterStore
   @EnvironmentObject var store: AppStore
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -39,7 +43,7 @@ struct WorkroomTerminalsView: View {
         // split leaf) fighting over the same surface and stranding it in a detached container (#3).
         PaneTreeView(
           layout: contentLayout(active: active), target: target, sessions: sessions,
-          externalDrag: chipPaneDrag, surfaceActive: surfaceActive
+          externalDrag: chipPaneDrag, surfaceActive: surfaceActive, workroomIsSplit: workroomIsSplit
         )
         .background(
           GeometryReader { geo in

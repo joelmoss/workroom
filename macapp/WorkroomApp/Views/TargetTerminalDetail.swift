@@ -20,13 +20,17 @@ struct TargetTerminalDetail: View {
   /// Whether this workroom pane is the focused one — gates terminal first-responder so a co-displayed
   /// non-focused workroom doesn't steal focus on mount (issue #23 follow-up). `true` for a solo target.
   var surfaceActive: Bool = true
+  /// Whether this workroom is itself one member of a multi-workroom split — forwarded to
+  /// `WorkroomTerminalsView` (see `PaneTreeView.workroomIsSplit`).
+  var workroomIsSplit: Bool = false
   @EnvironmentObject var store: AppStore
 
   var body: some View {
     ZStack {
       if !target.isMissing && !store.isCreationBlocking(target.id) {
         WorkroomTerminalsView(
-          target: target, sessions: store.terminals, surfaceActive: surfaceActive)
+          target: target, sessions: store.terminals, surfaceActive: surfaceActive,
+          workroomIsSplit: workroomIsSplit)
       }
       if target.isMissing {
         ContentUnavailableView {

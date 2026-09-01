@@ -22,6 +22,11 @@ struct PaneTreeView: View {
   /// renders without grabbing first responder on mount — otherwise each co-displayed workroom's surface
   /// would steal focus (and retarget the workroom selection) as the split mounts.
   var surfaceActive: Bool = true
+  /// Whether this tree's *workroom* is one member of a multi-workroom split (`WorkroomPaneLeaf.multi`
+  /// in `WorkroomSplitView`) — distinct from `multiPane` below, which is this tree's OWN split (≥2
+  /// terminal panes within the one workroom). A solo terminal in a workroom that is itself split still
+  /// wants the focused ring, since it's the thing being picked out among the OTHER workrooms on screen.
+  var workroomIsSplit: Bool = false
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var drag: PaneDragState?
@@ -55,7 +60,7 @@ struct PaneTreeView: View {
               tabID: tabID, content: tab.content, target: target, sessions: sessions,
               title: tab.title,
               focused: surfaceActive && tabID == focusedID, multiPane: multiPane,
-              surfaceActive: surfaceActive,
+              surfaceActive: surfaceActive, workroomIsSplit: workroomIsSplit,
               paneIndex: index + 1, paneCount: layout.tabIDs.count, coordinateSpace: Self.space,
               onDragChanged: { beginOrUpdateDrag(tabID: tabID, at: $0) },
               onDragEnded: { commitDrag(plan: plan) },
@@ -363,6 +368,9 @@ private struct PaneLeafView: View {
   /// `multiPane` (see `PaneTreeView.shouldDim`). Non-defaulted on purpose: the compiler then forces
   /// the call site to thread it through, so the dim can't silently no-op (issue #82).
   let surfaceActive: Bool
+  /// Whether this pane's workroom is itself one member of a multi-workroom split — see
+  /// `PaneTreeView.workroomIsSplit`. Drives `borderColor` alongside `multiPane`.
+  let workroomIsSplit: Bool
   let paneIndex: Int
   let paneCount: Int
   let coordinateSpace: String
@@ -374,6 +382,8 @@ private struct PaneLeafView: View {
   /// chip would).
   let onActivate: () -> Void
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  /// Drives `borderColor` — see `WorkroomPaneCardBorder.tint`, which this pane's ring shares.
+  @Environment(\.controlActiveState) private var activeState
   @State private var flashing = false
   @State private var hovering = false
   // The shared @Observable service; reading `theme.tokens` in a body still tracks changes via the
@@ -405,9 +415,11 @@ private struct PaneLeafView: View {
           .animation(reduceMotion ? nil : .easeInOut(duration: 0.07), value: focused)
           .animation(reduceMotion ? nil : .easeInOut(duration: 0.07), value: surfaceActive)
       }
-      // A rounded border frames every terminal, the same in a split or solo: `borderColor` is the
-      // focus tint on the focused pane (a solo terminal is always focused, so it always gets it) and a
-      // neutral hairline on unfocused split panes — all at 1.5pt.
+      // A rounded border frames every terminal at 1.5pt. `borderColor` only highlights a pane with a
+      // peer to be picked out from (same gate as `WorkroomPaneCardBorder.isHighlighted`): either this
+      // workroom's own terminal tree is split (`multiPane`), or the workroom itself is one member of a
+      // multi-workroom split (`workroomIsSplit`). A truly solo terminal — one pane, unsplit workroom —
+      // keeps the plain hairline even though it's always the model-focused pane.
       .overlay {
         RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius)
           .strokeBorder(borderColor, lineWidth: 1.5)
@@ -610,11 +622,14 @@ private struct PaneLeafView: View {
   }
 
   private var borderColor: Color {
-    // The focused terminal gets the solid, theme-following `focused` tint — solo or split alike (and
-    // an unfocused pane briefly flashes it on activity). Non-focused panes keep a faint neutral
-    // hairline that still frames the surface.
-    if focused || flashing { return theme.tokens.focused }
-    return theme.tokens.border
+    // Shares `WorkroomPaneCardBorder.tint`, so a focused terminal reads the same whether it's a split
+    // terminal pane or a split workroom pane: accent on a key window, the neutral `focused` tint when
+    // the window isn't key. Highlights only with a peer to be picked out from — this tree split
+    // (`multiPane`) or the workroom itself split (`workroomIsSplit`); a truly solo terminal never
+    // highlights.
+    WorkroomPaneCardBorder.tint(
+      highlighted: (multiPane || workroomIsSplit) && (focused || flashing),
+      active: activeState != .inactive, tokens: theme.tokens)
   }
 }
 
