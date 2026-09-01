@@ -380,6 +380,12 @@ enum UITestFixture {
     flag("WorkroomUITestUpdateAvailable") ? "9.9.9" : nil
   }
 
+  /// When set (`-WorkroomUITestUpdateDownloading 1`), `Updater` seeds the downloading state so the
+  /// pill renders its disabled "Downloading…" look for visual QA without a live Sparkle download.
+  static var updateDownloading: Bool {
+    flag("WorkroomUITestUpdateDownloading")
+  }
+
   /// When set (`-WorkroomUITestWhatsNew 1`), `WhatsNewService.checkOnLaunch` returns `whatsNewNotes`
   /// so the What's-New dialog renders for visual QA without hitting GitHub.
   static var forceWhatsNew: Bool {

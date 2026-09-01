@@ -25,6 +25,12 @@ final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate, SPUStandard
   /// `String` (not `SUAppcastItem`) so views don't depend on Sparkle types.
   @Published private(set) var availableVersionString: String?
 
+  /// Whether a download triggered by the pill/menu is in flight. `canCheckForUpdates` stays true while
+  /// Sparkle's own progress window is up, so it can't gate a redundant click during a download — this
+  /// tracks it explicitly. Cleared authoritatively by `didFinishUpdateCycleFor`, which fires
+  /// on every cycle end, so the flag can't get stuck true if a more specific callback is missed.
+  @Published private(set) var isDownloading = false
+
   override init() {
     super.init()
     controller = SPUStandardUpdaterController(
@@ -34,6 +40,7 @@ final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate, SPUStandard
 
     // Visual-QA seam: surface a fake pending update so the pill renders without a live Sparkle check.
     if let fake = UITestFixture.updateAvailableVersion { setAvailable(fake) }
+    if UITestFixture.updateDownloading { setDownloading(true) }
 
     migrateReleaseChannelIfNeeded()  // before the first check, so it honors the migrated channel
 
@@ -112,6 +119,15 @@ final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate, SPUStandard
 
   func clearAvailable() { setAvailable(nil) }
 
+  /// Set/clear the downloading flag, same main-thread routing as `setAvailable`.
+  func setDownloading(_ downloading: Bool) {
+    if Thread.isMainThread {
+      isDownloading = downloading
+    } else {
+      DispatchQueue.main.async { [weak self] in self?.isDownloading = downloading }
+    }
+  }
+
   // MARK: - SPUStandardUserDriverDelegate (gentle scheduled update reminders)
 
   var supportsGentleScheduledUpdateReminders: Bool { true }
@@ -170,5 +186,33 @@ final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate, SPUStandard
   func updater(_ updater: SPUUpdater, willInstallUpdate item: SUAppcastItem) {
     // Installing now; the relaunch resets state anyway, but clear so the pill doesn't linger.
     clearAvailable()
+  }
+
+  // MARK: - SPUUpdaterDelegate (download-in-progress tracking)
+
+  func updater(
+    _ updater: SPUUpdater, willDownloadUpdate item: SUAppcastItem, with request: NSMutableURLRequest
+  ) {
+    setDownloading(true)
+  }
+
+  func updater(_ updater: SPUUpdater, didDownloadUpdate item: SUAppcastItem) {
+    setDownloading(false)
+  }
+
+  func updater(_ updater: SPUUpdater, failedToDownloadUpdate item: SUAppcastItem, error: Error) {
+    setDownloading(false)
+  }
+
+  func userDidCancelDownload(_ updater: SPUUpdater) {
+    setDownloading(false)
+  }
+
+  /// Authoritative clear: fires at the end of every update cycle (success, failure, or cancel), so
+  /// `isDownloading` can't get stuck true if a more specific callback above is missed or races.
+  func updater(
+    _ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck, error: Error?
+  ) {
+    setDownloading(false)
   }
 }

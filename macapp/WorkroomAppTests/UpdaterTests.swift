@@ -19,6 +19,14 @@ final class UpdaterTests: XCTestCase {
     XCTAssertNil(updater.availableVersionString)
   }
 
+  func testSetAndClearDownloadingDrivesPillState() {
+    let updater = Updater()
+    updater.setDownloading(true)
+    XCTAssertTrue(updater.isDownloading)
+    updater.setDownloading(false)
+    XCTAssertFalse(updater.isDownloading)
+  }
+
   /// Build-identity channels (issue #91): the pinned nightly build always tracks `nightly`
   /// regardless of the stored preference; the main app uses the picked channel's floor set.
   func testAllowedChannelsByBuildIdentity() {
