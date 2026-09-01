@@ -265,6 +265,9 @@ targets:
         LSMinimumSystemVersion: "15.0"
         NSHighResolutionCapable: true
         LSApplicationCategoryType: public.app-category.developer-tools
+        # Shown once by the Automation TCC prompt when ⌘-clicking a file path in the terminal opens
+        # it via `/usr/bin/open` (see CODE_SIGN_ENTITLEMENTS above).
+        NSAppleEventsUsageDescription: "Workroom uses Apple Events to open files you ⌘-click in the terminal with your chosen editor."
         # Resolve from the build settings below so Scripts/release.sh can inject them from the
         # git tag. CFBundleVersion MUST increase every release — Sparkle compares it to decide
         # whether a newer build is available.
@@ -291,6 +294,10 @@ targets:
         # Non-sandboxed (Developer ID): the app spawns git/jj and the bundled
         # workroom binary, and opens terminals in arbitrary project directories.
         ENABLE_APP_SANDBOX: NO
+        # TerminalLinkOpener shells out to `/usr/bin/open` (⌘-click a file path in the terminal),
+        # which sends an Apple Event on our behalf; without this the hardened runtime blocks it and
+        # TCC prompts "Workroom would like to access data from other apps" with no usage string.
+        CODE_SIGN_ENTITLEMENTS: WorkroomApp/Workroom.entitlements
         SWIFT_VERSION: "5.0"
         DEAD_CODE_STRIPPING: YES
         DEVELOPMENT_TEAM: B898J443L9
