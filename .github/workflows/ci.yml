@@ -210,8 +210,15 @@ jobs:
       # version string (GhosttyPinIntegrityTests exists for exactly this: the packager has re-cut an
       # already-published tag before) — keying on project.yml alone let a stale cache silently keep
       # serving the old revision after such a bump, failing that test on every run until the cache
-      # aged out. The restore-keys fallback reuses an older cache after a dep change so only the
-      # delta is fetched.
+      # aged out.
+      #
+      # Deliberately NO restore-keys fallback: a fuzzy prefix match can restore an older cache whose
+      # checked-out `workspace-state.json` disagrees with the CURRENT Package.resolved — and SPM
+      # trusts that already-resolved state over reconciling against the file, so a exact-key miss
+      # silently re-served the stale revision anyway (reproduced on run 33511971205, right after
+      # adding Package.resolved to the key above got this far). Paying the network cost in full on
+      # every exact-key miss is the correct tradeoff: it's rare (only a real dependency change), and
+      # it's exactly the situation this cache must not paper over.
       - name: Cache SPM packages
         id: spm
         uses: actions/cache@v4
@@ -221,7 +228,6 @@ jobs:
             spm-${{ runner.os }}-${{
             hashFiles('macapp/project.yml', 'macapp/WorkroomApp.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved')
             }}
-          restore-keys: spm-${{ runner.os }}-
 
       # Compiling the dependency graph — libgit2 (429 tasks), SwiftGitX, the tree-sitter grammars,
       # Sentry, Sparkle, swift-syntax — is ~60% of the build's work and none of it changes between
