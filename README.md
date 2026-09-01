@@ -23,8 +23,9 @@ branches at the same time without losing context. You can even work on multiple 
 split view.
 
 <p align="center">
-  <img src="docs/workroom-app.png" width="900"
+  <video src="https://github.com/user-attachments/assets/ee234785-981c-4dc6-a9e4-306d9033ad2f" width="900" controls muted
     alt="The Workroom macOS app: a sidebar tree of several projects and their workrooms with current branches and change badges; two workrooms open side by side, one with a vertically split terminal running a test suite and a dev server, the other showing a syntax-highlighted file diff; and an inspector with Changes, Pull Request, and Notifications panels.">
+  </video>
 </p>
 
 <p align="center">
