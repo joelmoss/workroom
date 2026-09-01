@@ -2004,6 +2004,30 @@ pins only what we already vendored.
 
 **Priority:** P3.
 
+### Verify `minimum-contrast` precedence vs a user's own ghostty config (macapp)
+
+**What:** Confirm load order between Workroom's generated `theme` config file
+(`GhosttyApp.writeThemeConfig`) and a user's own `~/.config/ghostty/config` for the `minimum-contrast`
+key — does theirs win, ours win, or do they conflict/merge unpredictably?
+
+**Why:** If a user has separately set their own `minimum-contrast`, it's unclear whether Workroom's
+value silently overrides theirs or vice versa.
+
+**Pros:** closes a real (if narrow) unknown before it surprises a power user who tunes their own
+Ghostty config.
+
+**Cons:** requires the user to have set this exact key themselves — low likelihood, low urgency.
+
+**Context:** raised during the outside-voice (Codex) review of the light-theme terminal-contrast fix
+(2026-09-01, `GhosttyApp.writeThemeConfig` adding `minimum-contrast = 3.0`). Not investigated as part
+of that fix — narrow edge case. Start by reading how `ghostty_config_load_file` handles multiple
+loaded config sources for the same key (last-wins vs first-wins) — likely documented in the pinned
+`libghostty-spm` source or Ghostty's own config docs.
+
+**Depends on:** nothing.
+
+**Priority:** P3.
+
 ## P3 — Pull requests and GitHub
 
 ### At-a-glance review status in the sidebar / collapsed PR header (macapp) — #52 follow-up
@@ -2351,6 +2375,34 @@ the block happens deep inside a real `read()` syscall on the main test thread. B
 used for this kind of poll-until-`wouldBlock` loop need `SessionIO.setNonBlocking`.
 
 **Priority:** done.
+
+### UITestFixture: no deterministic appearance-mode override (macapp)
+
+**What:** Add `-WorkroomUITestAppearance "light"|"dark"|"system"`, mirrored into `Defaults[.theme]`
+(`ThemePreference`) inside `UITestFixture.applyFixtureDefaults`, following the exact pattern already
+used for `themeFamily` (`UITestFixture.swift:536-620`) — read the launch arg, fall back sanely on an
+unrecognized value, mirror into `Defaults` before any `AppStore` is built.
+
+**Why:** every existing UI test today inherits whatever appearance the Dev domain's `Defaults[.theme]`
+last held — nothing pins it. Any future test that needs a specific light/dark rendering (visual
+regression, theme-dependent assertions) has no deterministic way to force it, the same class of
+flakiness `themeFamily` was built to prevent for theme *family* selection.
+
+**Pros:** closes a real, generically-useful gap; small, in-pattern addition (~10 lines) once someone
+actually needs it.
+
+**Cons:** speculative until a concrete test needs it — no test currently blocked on this.
+
+**Context:** discovered while planning a light-theme terminal-contrast fix (2026-09-01,
+`GhosttyApp.writeThemeConfig` `minimum-contrast` addition). That plan's test was originally going to
+need this (a pixel-capture XCUITest requiring a forced-light render) but was redesigned around
+config introspection instead of rendering after outside-voice review found the pixel approach had
+unfixable-cheaply design bugs — so the immediate need went away, but the underlying fixture gap is
+still real and un-addressed.
+
+**Depends on:** nothing.
+
+**Priority:** P3.
 
 ## P3 — Performance and diagnostics (WORKROOM-2B follow-ups)
 
