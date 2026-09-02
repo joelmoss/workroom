@@ -1327,9 +1327,27 @@ final class GhosttySurfaceView: NSView {
     keyEvent.consumed_mods = GHOSTTY_MODS_NONE
     keyEvent.composing = false
     keyEvent.text = nil
-    keyEvent.unshifted_codepoint =
-      event.charactersIgnoringModifiers?.unicodeScalars.first?.value ?? 0
+    keyEvent.unshifted_codepoint = Self.unshiftedCodepoint(for: event)
     return keyEvent
+  }
+
+  /// The unshifted codepoint for a key event, or 0 when the event has no characters to speak of.
+  ///
+  /// **`charactersIgnoringModifiers` is only legal on `.keyDown`/`.keyUp`.** AppKit raises
+  /// `NSInternalInconsistencyException` ("Invalid message sent to event") for every other type, and
+  /// `flagsChanged(with:)` routes bare modifier presses through `buildKeyEvent` too — so reading it
+  /// unconditionally threw an ObjC exception on EVERY modifier press and release over a terminal
+  /// surface. Observed live: nine of them from three ⌘-Tab round-trips, all
+  /// `type=FlagsChanged keyCode=55`. AppKit catches the exception at its event-dispatch boundary so
+  /// the app survives, but it unwinds out of Swift frames (which cannot be unwound safely), and the
+  /// two statements after the `buildKeyEvent` call in `flagsChanged` never run: libghostty is never
+  /// told the modifier changed, and `updateCmdHoverCursor` never refreshes.
+  ///
+  /// Guarding here rather than at the `flagsChanged` call site covers all seven `buildKeyEvent`
+  /// callers at once, including any future one that forwards a non-key event.
+  static func unshiftedCodepoint(for event: NSEvent) -> UInt32 {
+    guard event.type == .keyDown || event.type == .keyUp else { return 0 }
+    return event.charactersIgnoringModifiers?.unicodeScalars.first?.value ?? 0
   }
 
   private func consumedModsFromFlags(

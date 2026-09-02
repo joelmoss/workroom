@@ -196,3 +196,56 @@ final class TerminalSelectionChangedDeferralTests: XCTestCase {
       view.selectionChangePending, "one hop for the whole burst — 10 events, 1 notification")
   }
 }
+
+/// Guards the ObjC exception that `flagsChanged` raised on every modifier press over a terminal
+/// surface. `-[NSEvent charactersIgnoringModifiers]` is only legal on `.keyDown`/`.keyUp`; AppKit
+/// raises `NSInternalInconsistencyException` ("Invalid message sent to event") for any other type,
+/// and `flagsChanged(with:)` routes bare modifier presses through the same `buildKeyEvent` helper.
+/// Observed live: nine exceptions from three ⌘-Tab round-trips, all `type=FlagsChanged keyCode=55`.
+///
+/// The visible cost is not the exception itself (AppKit catches it at the event-dispatch boundary)
+/// but the two statements after the throwing call that never ran: libghostty was never told the
+/// modifier changed, and the ⌘-hover cursor never refreshed.
+@MainActor
+final class GhosttyUnshiftedCodepointTests: XCTestCase {
+
+  private func flagsChangedEvent(keyCode: UInt16, flags: NSEvent.ModifierFlags) throws -> NSEvent {
+    try XCTUnwrap(
+      NSEvent.keyEvent(
+        with: .flagsChanged, location: .zero, modifierFlags: flags, timestamp: 0,
+        windowNumber: 0, context: nil, characters: "", charactersIgnoringModifiers: "",
+        isARepeat: false, keyCode: keyCode))
+  }
+
+  func testFlagsChangedEventYieldsZeroWithoutRaising() throws {
+    // Left Command (55) — the exact event shape seen throwing in the live app during ⌘-Tab. Reading
+    // `charactersIgnoringModifiers` here is what raised; reaching the assertion at all is the test.
+    let event = try flagsChangedEvent(keyCode: 55, flags: .command)
+    XCTAssertEqual(
+      GhosttySurfaceView.unshiftedCodepoint(for: event), 0,
+      "a bare modifier has no unshifted codepoint — and must not raise reading for one")
+  }
+
+  func testEveryModifierKeyIsSafe() throws {
+    // Shift/Option/Control/CapsLock, left and right, plus the release event (flags cleared) — only
+    // ⌘ was exercised by hand, so pin the whole family rather than the one that was observed.
+    for keyCode: UInt16 in [54, 55, 56, 57, 58, 59, 60, 61, 62] {
+      for flags: NSEvent.ModifierFlags in [[], .command, .shift, .option, .control, .capsLock] {
+        let event = try flagsChangedEvent(keyCode: keyCode, flags: flags)
+        XCTAssertEqual(
+          GhosttySurfaceView.unshiftedCodepoint(for: event), 0, "keyCode \(keyCode) must be safe")
+      }
+    }
+  }
+
+  func testRealKeyEventStillReportsItsCodepoint() throws {
+    // The guard must not blind the path it protects: a real keyDown still yields its codepoint.
+    let event = try XCTUnwrap(
+      NSEvent.keyEvent(
+        with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0,
+        context: nil, characters: "a", charactersIgnoringModifiers: "a", isARepeat: false,
+        keyCode: 0))
+    XCTAssertEqual(
+      GhosttySurfaceView.unshiftedCodepoint(for: event), UInt32(Character("a").asciiValue!))
+  }
+}
