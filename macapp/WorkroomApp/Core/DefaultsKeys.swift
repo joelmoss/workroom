@@ -1,6 +1,34 @@
 import Defaults
 import Foundation
 
+// MARK: - Dotted key names cannot be OBSERVED (measured 2026-09-03)
+//
+// Twelve keys below carry a dot in their `UserDefaults` name (`"sidebar.visible"`,
+// `"inspector.width"`, `"app.lastSeenVersion"`, …), which is why every launch logs a dozen
+// `[Defaults] The key name must be ASCII, not start with @, and cannot contain a dot (.)` faults.
+//
+// That warning is not cosmetic. `Defaults` observes a key with raw KVO
+// (`suite.addObserver(self, forKeyPath: name, …)`, `Observation.swift:177`), and `UserDefaults` KVO
+// treats a dot as a KEY-PATH SEPARATOR — so it looks for a `sidebar` container with a `visible`
+// member instead of a key literally named `sidebar.visible`, and the observation silently never
+// fires. Measured directly, not inferred: writing a flat key notified its observer, writing a
+// dotted key notified nothing, and both values read back correctly. Storage works; notification
+// does not.
+//
+// **No live bug today, and that is the only reason these names still stand:** none of the dotted
+// keys is observed anywhere — no `@Default(…)`, no `Defaults.observe(…)`, no `Defaults.publisher(…)`
+// (audited across `Views/` and `Core/`). Every one is read and written imperatively, which works
+// fine.
+//
+// **So the rule is: do NOT attach `@Default`, `Defaults.observe` or `Defaults.publisher` to any key
+// whose name contains a dot.** It will compile, run, and silently never update — the worst failure
+// shape there is. Rename the key (and migrate the stored value, or the user loses that setting on
+// upgrade) BEFORE observing it. Renaming all twelve pre-emptively was considered and deliberately
+// not done: it rewrites persisted user state to remove log noise and a latent trap, which is a poor
+// trade immediately before a release.
+//
+// New keys should simply avoid the dot — prefer `sidebarVisible` over `sidebar.visible`.
+
 /// A project's "Run command" config (issue #7). Configured per PROJECT (keyed by the project's
 /// absolute path in `Defaults[.runCommands]`), but executed in the SELECTED WORKROOM's directory.
 /// `Codable` → `Defaults` serialises it as JSON. The field names (`command`/`autoRun`) and the key

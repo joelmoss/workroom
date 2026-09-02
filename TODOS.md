@@ -1547,6 +1547,78 @@ boundary today).
 
 ## P3 — Terminal, panes, and focus
 
+### SwiftUI "Publishing changes from within view updates" — 9 per launch, UNRESOLVED (2026-09-03)
+
+**What:** the app logs `Publishing changes from within view updates is not allowed, this will cause
+undefined behavior` **exactly 9 times per launch**, confirmed identical across four separate pids. A
+tight ~3ms burst on one thread about 2.2s into launch, right after the first Defaults key init and
+CoreSpotlight's donation pass. Deterministic; no user interaction involved.
+
+**Why it's worth chasing:** it is Apple-declared undefined behaviour in the AttributeGraph, and this
+repo has three App Hang investigations — WORKROOM-2B, 2T, and **3A, still open with "NO CODE CAUSE
+FOUND"**. 3A's investigation ruled out a dynamic menu, a `@FocusedObject` invalidation storm, and
+menu-graph accumulation, but never looked at publishes landing inside a view update. Nine documented
+UB violations per launch sitting beside an unexplained hang is the strongest lead that file has.
+
+**Mechanism identified, culprit NOT.** Publishing during an update comes from an `ObservableObject`'s
+`objectWillChange` firing inside `body`. Two candidate sources here: any of `AppStore`'s 65
+`@Published`, and `Defaults.Observable` (the library's `@Default` backing), whose `observe()` spawns a
+`@MainActor` task that calls `objectWillChange.send()` on every key update
+(`Defaults/SwiftUI.swift:36-49`) — so a Defaults write landing mid-update produces exactly this.
+
+**What was tried, and why it failed — read this before spending another session on it:**
+
+- `_os_log_fault_impl` is NOT the sink. The breakpoint resolves and never hits; SwiftUI's runtime
+  issues go through `SwiftUI.Log.runtimeIssuesLog`, not that symbol.
+- `Combine.ObservableObjectPublisher.send()` IS the right hook and resolves cleanly (set it AFTER the
+  process is running — set at launch it stays pending and never binds). But stopping on every publish
+  slows launch so much that **the violation stops reproducing entirely**: 240s of run time, 11 hits,
+  and zero faults logged. The debugger perturbs the race. Every publisher it did catch was
+  `AgentUsageMonitor`'s refresh timer publishing from an async completion — not a view update, not
+  the culprit.
+- Static search came up empty: every `.onPreferenceChange` in the app writes `@State`
+  (`TerminalTabStrip`/`WorkroomTabBar` `drag`, `WorkroomTerminalsView` `contentFrame`,
+  `ChangesetDetailView` `descriptionTruncatable`), not an `ObservableObject`.
+
+**The next thing to try, and it should be first:** Xcode's own **runtime-issue breakpoint**
+(Debug → Breakpoints → + → Runtime Issue Breakpoint). It breaks AT the violation with a live stack
+instead of stopping on every publish, so it should name the culprit in a single launch — and it
+avoids the perturbation that defeated the `send()` breakpoint. It cannot be set from the CLI, which
+is the only reason this entry is still open.
+
+**Priority:** P2 if the hang matters for GA — it is the only untested hypothesis left for WORKROOM-3A.
+P3 as pure hygiene if 3A stays dormant.
+
+### `Defaults` keys with dots in their names cannot be observed (macapp) — measured, NOT fixed (2026-09-03)
+
+**What:** twelve `Defaults.Key`s use dotted `UserDefaults` names (`"sidebar.visible"`,
+`"inspector.width"`, `"sidebar.width"`, `"sidebar.selectionTargetID"`, `"sidebar.collapsedProjects"`,
+`"settings.selectedPane"`, `"onboarding.hasCompleted"`, `"vcs.lastFetch"`, `"app.lastSeenVersion"`,
+`"app.whatsNewAttemptVersion"`, `"app.whatsNewAttempts"`, `"workroomsView.tabOrder"`), which is why
+every launch logs a dozen `[Defaults] The key name must be ASCII…` faults.
+
+**The warning is real, and measured — not inferred.** `Defaults` observes via raw KVO
+(`suite.addObserver(self, forKeyPath: name, …)`, `Observation.swift:177`), and `UserDefaults` KVO
+reads a dot as a key-path separator. A standalone probe on this OS: writing a flat key notified its
+observer, writing a dotted key notified **nothing**, and both values read back correctly. Storage
+works, notification does not.
+
+**No live bug, which is why it is not fixed.** Audited `Views/` and `Core/`: none of the twelve is
+observed — no `@Default`, no `Defaults.observe`, no `Defaults.publisher`. All are read/written
+imperatively, which is unaffected.
+
+**What was done instead:** a rule at the top of `Core/DefaultsKeys.swift` — never attach `@Default`,
+`observe` or `publisher` to a dotted key; it compiles, runs, and silently never updates. Rename plus
+a stored-value migration first, or the user loses that setting on upgrade.
+
+**If it is ever fixed:** rename all twelve to dot-free names with a one-time migration (old key
+present and new one absent ⇒ copy across, remove old). Deliberately NOT done before a release —
+rewriting persisted user state to remove log noise and a latent trap is the wrong trade at that
+moment.
+
+**Priority:** P3, and arguably "leave it". Revisit only when someone actually needs to observe one of
+these keys, or alongside an unrelated settings migration.
+
 ### `flagsChanged` threw an ObjC exception on every modifier press (macapp) — FIXED (2026-09-02)
 
 **Found by accident**, while verifying the focus-reconciliation entry below in the live app: the
