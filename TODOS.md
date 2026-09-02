@@ -2472,6 +2472,74 @@ unrelated-publish case is now 0 rebuilds (was 200); the 1000-file tree now build
 
 **Priority:** done.
 
+### Main-menu rebuild App Hang (macapp) — WORKROOM-3A — NO CODE CAUSE FOUND (2026-09-02)
+
+**What:** Sentry WORKROOM-3A, `App Hanging: App hanging for at least 2000 ms.`, culprit `_xzm_free`.
+**One event**, nightly build 733 (`2.0.0-nightly.733`), macOS 26.6.2, MacBookPro18,1,
+2026-09-02 18:21:21Z. `app_start_time` 12:16Z — the app had been up **~6 hours**, so not a
+launch/window-restore stall. Breadcrumbs: five alternating `app.lifecycle active/inactive` pairs, i.e.
+app-activation churn. Main thread, **zero in-app frames**:
+
+```
+NSRunLoop.flushObservers → AppGraph.graphDidChange → AppDelegate.scenesDidChange
+  → AppDelegate.makeMainMenu → AppKitMainMenuItem.updateMainMenu → updateMenuHost
+  → ViewGraphRootValueUpdater.invalidateProperties → GraphHost.updatePreferences
+  → DynamicContainerInfo.updateItems → ForEachList.applyNodes → ~18× ModifiedViewList.applyNodes
+  → DynamicViewListItem → MappedViews chain release
+     (swift::RefCounts::doDecrementSlow → _swift_release_dealloc → _xzm_free)
+```
+
+A scene change rebuilt the SwiftUI main menu, and the sample landed in the teardown of the previous
+menu view-list graph.
+
+**Three code-side hypotheses, all measured and all dead** (Debug build, temporary `#if DEBUG` counter
+at the top of `WorkroomCommands.body` logging evals/second; reverted after measuring):
+
+- **A dynamic/huge menu.** There is no `ForEach` anywhere in the app's menu code — `WorkroomCommands`
+  (`WorkroomApp.swift:985`) is the repo's only `Commands` conformer and declares 71 static leaves
+  (43 `Button` + 9 `Toggle` + 19 `Divider`, 36 `.keyboardShortcut`, 45 `.disabled`). The
+  `ForEachList`/`DynamicViewListItem` frames are SwiftUI's **own** per-window list for
+  `WindowGroup(for: WindowSeed.self)` (`WorkroomApp.swift:71`), not app code.
+- **An invalidation storm off `@FocusedObject private var store: AppStore?`** (`WorkroomApp.swift:996`;
+  `AppStore` has 65 `@Published`, hover/drag state included, and `RootView.swift:725-730` documents the
+  menu as explicitly *not* observing the store). Plausible on paper — WORKROOM-2B's shape — but
+  **measured: ~4 body evals/sec peak** during real-mouse sidebar-edge hover and split-divider drags,
+  **~0.2/sec idle**, 21 in the launch burst. (If the sidebar was expanded during that gesture,
+  `hoveringLeftToggle`/`previewingLeft` never fired and the 4/sec is drag-only — the conclusion rests on
+  the independent activation/RSS test either way.) SwiftUI coalesces those publishes. Thousands of evals over
+  a 6-hour session, not millions; nowhere near a 2s stall. The planned `@FocusedObject` → `Equatable`
+  weak-store-box swap was **not** landed: it would have been a no-op against a hang this size.
+- **Menu-graph accumulation across rebuilds** (retained `MappedViews` generations freed in one go).
+  Measured with 100 scripted app-activation cycles: **~5 body evals per activation** (502 over the run)
+  and **RSS flat** — 183 MB → 193 MB, dipping to 164 MB mid-run. Old generations are freed as they go:
+  **no accumulation in 100 rapid cycles**. Scope that honestly — the test was ~30s, one window, whatever
+  dev state was open; the crash session was 6h with ~7 ghostty surfaces (the kqueue×3+futex+poll thread
+  groups in the event). It rules out a straight leak, not every slow-growth shape.
+
+**Reading: unexplained.** One sample, not reproducible, and no metric grew under test. An ANR sample
+is *where the main thread stood at the 2s mark, not where the time went* — the same gap the
+"Main-thread timing from a real hang" entry below was filed to close — so the menu rebuild may be a
+bystander rather than the cost. Note the event argues against a memory-pressure story: `usable_memory`
+was 11.1 GB of 16 GB and `thermal_state` was `nominal` (the low `free_memory: 3.3 GB` is just file
+cache, as it always is on macOS).
+
+**If it recurs** (a second event is what would justify spending more here), capture in this order:
+1. All events on the issue — Sentry fingerprints App Hangs loosely (WORKROOM-2T grouped two distinct
+   bugs), so confirm the other stacks really share `scenesDidChange → makeMainMenu`.
+2. Device memory pressure at hang time (`free_memory` vs `memory_size` in the event context) — if the
+   recurrences all sit at low free memory, it's the allocator/pressure story and not ours to fix.
+3. Only if the stacks are consistent AND memory is healthy: Time Profiler over N window open/close and
+   activation cycles, timing `makeMainMenu` vs N. Growth ⇒ accumulation; flat-but-large ⇒ intrinsic
+   cost, which is the one outcome that justifies the AppKit escape hatch — a hand-built `NSApp.mainMenu`
+   replacing the 71 SwiftUI leaves, the same remedy already used for the toolbar
+   (`Core/WindowBackgroundThemer.swift:63` hides SwiftUI's injected toolbar for this hang family).
+   Every shortcut would have to stay reserved in `GhosttySurfaceView.isAppShortcut`.
+
+**Not done, deliberately:** no production change. Rewriting a 71-item menu against one unreproduced
+sample with every measurable code-side cause ruled out is how you ship a regression for nothing.
+
+**Priority:** P3 — dormant until a second occurrence.
+
 ### Main-thread timing from a real hang (macapp) — WORKROOM-2B follow-up
 
 **What:** a bounded way to learn *how long* the main thread was held, and by what, from a hang report on
