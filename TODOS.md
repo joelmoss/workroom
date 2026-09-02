@@ -1547,12 +1547,88 @@ boundary today).
 
 ## P3 — Terminal, panes, and focus
 
-### Consolidate terminal focus authority + cross-window reconciliation (macapp) — focus-desync follow-up
+### `flagsChanged` threw an ObjC exception on every modifier press (macapp) — FIXED (2026-09-02)
+
+**Found by accident**, while verifying the focus-reconciliation entry below in the live app: the
+unified log carried nine `NSInternalInconsistencyException`s from three ⌘-Tab round-trips.
+
+```
+*** Assertion failure in NSEvent.m:2916
+Invalid message sent to event "NSEvent: type=FlagsChanged ... keyCode=55"
+  -[NSEvent charactersIgnoringModifiers]
+  GhosttySurfaceView.buildKeyEvent(from:action:)
+  GhosttySurfaceView.flagsChanged(with:)
+```
+
+**Root cause:** `charactersIgnoringModifiers` is only legal on `.keyDown`/`.keyUp` — AppKit raises for
+every other event type. `buildKeyEvent` read it unconditionally to fill `unshifted_codepoint`, and
+`flagsChanged(with:)` routes bare modifier presses through that same helper. A red probe (the guard
+removed) shows it throws for **every** modifier keyCode — 54/55 ⌘, 56/60 ⇧, 57 caps, 58/61 ⌥,
+59/62 ⌃, left and right, pressed and released — so only the ⌘-Tab test limited what was observed.
+
+**Why it mattered, beyond the log noise:** AppKit catches the exception at its event-dispatch
+boundary so the app survives, but it unwinds out of Swift frames (which cannot be unwound safely) and
+the two statements AFTER the `buildKeyEvent` call in `flagsChanged` never ran — `ghostty_surface_key`
+was never told the modifier changed, and `updateCmdHoverCursor` never refreshed. Every modifier
+press/release over a terminal surface was silently dropped on the way to libghostty.
+
+**Fix:** one type guard in `GhosttySurfaceView.unshiftedCodepoint(for:)`, extracted from
+`buildKeyEvent` so all seven of its callers are covered at once rather than only the `flagsChanged`
+path the log named. Non-key events return 0 (a bare modifier has no codepoint anyway).
+
+**Verified both ways:** `GhosttyUnshiftedCodepointTests` fails without the guard (the whole modifier
+family raises) and passes with it, and the rebuilt app logged **zero** exceptions across the same
+⌘-Tab round-trips that produced nine on the old build.
+
+**Priority:** done.
+
+### Consolidate terminal focus authority (macapp) — focus-desync follow-up — HALF SHIPPED (2026-09-02)
+
+**Part (2), cross-window reconciliation: SHIPPED.** `WindowRegistry`'s `didBecomeKeyNotification`
+handler now calls `reconcileTerminalFocus`, which hands first responder back to
+`store.terminals.focusedTab(for:)?.surface` when — and only when — focus has genuinely drifted. The
+decision is a single pure-ish function against a real `NSWindow`,
+`TerminalFocusReconciliation.shouldRestoreFirstResponder(in:to:)`, taking Codex's caveat seriously:
+"no sheet is open" is NOT sufficient on its own, so only three states count as drift — no first
+responder, the window itself, or a DETACHED view. Anything still mounted in the window (a text field
+or its field editor, the sidebar table, another split pane) keeps the keyboard, and a focused tab
+with no surface (diff / file / changeset) is left exactly as AppKit restored it, so this can never
+drag focus out of a diff into a terminal.
+
+`TerminalFocusReconciliationTests` covers both halves — the guard against a real window in every
+state it distinguishes EXCEPT the app-modal one (`NSApp.modalWindow`, which no unit test can raise),
+plus the WIRING (post the real `didBecomeKeyNotification` at a registered window and assert
+the surface takes focus; a second test posts it with a text field focused and asserts it does not).
+Modelled on `TerminalFocusAdoptionTests`; `spawnsSurface: false` matters because these mount the view
+in a window, and `isReleasedWhenClosed = false` on every window (the sheet test closes one, and
+without it the next test in the class crashes — that cost a debug cycle).
+
+**MEASURED IN THE LIVE APP (2026-09-02): it is a backstop that never fires, and that is now a fact
+rather than a guess.** A temporary `os.Logger` probe in `reconcileTerminalFocus` (since removed)
+logged the responder state at every key-gain across seven real ⌘-Tab round-trips over a terminal, a
+text field and a diff pane. Result: **7/7 `restore=false`, every one because first responder was
+ALREADY the `GhosttySurfaceView`** — macOS preserves first responder across app deactivate/reactivate,
+so the drift this entry assumed does not happen on ⌘-Tab. The one remaining event was a clean
+`no focused surface` bail on a pane with no terminal. So the handler runs, is correctly wired, and
+correctly does nothing.
+
+Kept anyway: it is a guarded no-op that measured 7/7 correct, and it still covers states ⌘-Tab does
+not produce (a sheet dismissed while the window was inactive, a pane unmounted mid-split). But do not
+carry the belief that ⌘-Tab strands focus — it does not, and a future "keys dead" report needs a
+fresh diagnosis rather than pointing here. **Reasonable to delete this whole mechanism** if the
+codebase would rather not carry dead-in-practice code.
+
+Note on capture, worth knowing next time: `NSLog` from this app does NOT reach the unified log
+(`log show` finds nothing), and `make app-run` uses `open`, so its stdout isn't in the make log
+either. `os.Logger` with a `com.developwithstyle.workroom` subsystem DOES show up. A first attempt at
+this measurement was silently empty for exactly that reason.
+
+**Part (1), the DRY collapse, remains open** — deliberately not taken with (2): refactoring focus
+timing right before GA is how the next focus race ships. Original description follows.
 
 **What:** (1) Collapse the ~5 duplicated "make first responder + `setSurfaceFocused`" call sites in
-`GhosttySurfaceView`/`TerminalContainerView` into one guarded helper; (2) add window key-gain focus
-reconciliation so the focused pane's surface reclaims first responder when the app window
-reactivates (Cmd-Tab / Mission Control) and first responder had drifted to a non-terminal view.
+`GhosttySurfaceView`/`TerminalContainerView` into one guarded helper; ~~(2) add window key-gain focus
+reconciliation~~ (shipped, above).
 
 **Current state:** The reported bug — arrows/letters dead when a TUI selection prompt appears in a
 freshly-mounted/unfocused-looking pane — is **fixed**: `createSurface` now re-syncs the libghostty
@@ -1571,18 +1647,14 @@ away). Surfaced by `/plan-eng-review` (DRY finding) and the Codex outside-voice 
 deferred to avoid refactoring focus timing before the root cause was confirmed.
 
 **How to start:** Extract `focusTerminal(surface:)` with a single guard set; route the existing call
-sites through it. For reconciliation, extend the `WindowRegistry` `didBecomeKeyNotification` handler
-(`Core/WindowRegistry.swift:50`) to restore first responder to the focused pane **only** when no
-sheet is open AND the current first responder is nil/the window/a removed responder (NOT a live text
-field or sidebar table — codex's caveat: "no sheet" alone is insufficient). Unit-test the guard as a
-pure decision.
+sites through it — the reconciliation half is done, so this is purely the DRY pass now.
 
 **Depends on:** the shipped createSurface focus-sync; also relates to the queued first-responder
 stale-state recheck noted under "Workroom split: deferred follow-ups" (`TerminalContainerView`
 `applyFocus`) — fold both into the one helper.
 
-**Priority:** P3 (primary bug fixed; this is the DRY/robustness follow-up that prevents the next
-focus race).
+**Priority:** P3 (primary bug fixed, reconciliation shipped; what's left is the DRY pass that
+prevents the next focus race — worth doing right AFTER a release, not before one).
 
 ### Workroom split: deferred follow-ups (macapp) — #23
 

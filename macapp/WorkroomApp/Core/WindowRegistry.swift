@@ -62,6 +62,10 @@ final class WindowRegistry: ObservableObject {
         // this, ⌘` to another window leaves the switcher's MRU head pointing at the window you left,
         // so the next ⌥Tab tap flips somewhere you didn't come from.
         SwitcherRecency.shared.recordWorkroom(store: store, sid: store.selectedTargetID)
+        // Put the keyboard back on the focused pane if first responder drifted off it while this
+        // window wasn't key (⌘-Tab, Mission Control, a dismissed sheet, a pane unmounted mid-split).
+        // Guarded — see `TerminalFocusReconciliation`.
+        self.reconcileTerminalFocus(in: window, store: store)
       }
     }
     // Drop a window as it closes (issue #46). `unregister` previously had NO caller: entries were
@@ -78,6 +82,30 @@ final class WindowRegistry: ObservableObject {
         self.unregister(window: window)
       }
     }
+  }
+
+  // MARK: Focus reconciliation
+
+  /// Restore first responder to the focused pane's surface on key-gain, when and only when first
+  /// responder has genuinely drifted off it. The complement to `GhosttySurfaceView`'s own
+  /// `adoptFocusIfFirstResponder`, which handles the surface-CREATION race but not this one (the
+  /// surface already exists; first responder moved away). `makeFirstResponder` routes through
+  /// `becomeFirstResponder`, so libghostty's focus flag and the store's logical focus both follow.
+  ///
+  /// A content pane (diff / file / changeset) has no surface, so a window whose focused tab is one
+  /// is left exactly as AppKit restored it — this never drags focus out of a diff into a terminal.
+  ///
+  /// Ordering: this registry's observer is installed at init, before any surface's own key-window
+  /// observer (`GhosttySurfaceView.viewDidMoveToWindow`), so first responder is set here first and
+  /// the surface's `syncFocusToKeyWindow` then reads `holdsFirstResponder == true` and no-ops. The
+  /// reverse order would be harmless too — `lastSetFocus` dedups, so the TUI never sees a duplicate
+  /// DECSET-1004 focus report either way.
+  private func reconcileTerminalFocus(in window: NSWindow, store: AppStore) {
+    guard let target = store.selectedTarget,
+      let surface = store.terminals.focusedTab(for: target)?.surface,
+      TerminalFocusReconciliation.shouldRestoreFirstResponder(in: window, to: surface)
+    else { return }
+    window.makeFirstResponder(surface)
   }
 
   // MARK: Registration
