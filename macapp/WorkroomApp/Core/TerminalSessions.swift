@@ -364,6 +364,15 @@ final class TerminalSessions: ObservableObject {
   /// pane's border instead of badging it (you can see it, so no banner/badge — just a glance cue).
   /// Keyed by tab id; the value is an opaque counter the leaf view watches for changes.
   @Published private(set) var activityPulses: [TerminalTab.ID: Int] = [:]
+  /// The pane rects the renderer last laid out, per target — the only measurement a CONTENT pane
+  /// (diff / file / changeset) has, since it owns no `GhosttySurfaceView` whose bounds could be
+  /// read. Fed by `PaneTreeView` through a preference (so it is written after layout, never during
+  /// body evaluation) and consumed only by `fits`.
+  ///
+  /// Deliberately **not** `@Published`: it is written from a layout callback on every resize, and
+  /// publishing from there would both churn the view graph and risk "Publishing changes from within
+  /// view updates". Nothing renders from it — it is a measurement cache, not model state.
+  var paneRects: [TerminalTarget.ID: [TerminalTab.ID: CGRect]] = [:]
   /// Per-target running counter so tab titles ("Terminal 1", "2", …) stay stable across closes.
   private var counts: [TerminalTarget.ID: Int] = [:]
   /// Set once by `AppStore`: forwards each terminal's notification-worthy activity (OSC) up to the
@@ -1087,7 +1096,7 @@ final class TerminalSessions: ObservableObject {
   /// is solo, any existing split is dissolved first — at most one split exists at a time.
   func splitFocusedPane(for target: TerminalTarget, edge: PaneEdge) {
     guard let focused = focusedTab(for: target) else { return }
-    guard fits(splitting: focused.surface, orientation: edge.orientation) else { return }
+    guard fits(splitting: focused, orientation: edge.orientation, for: target) else { return }
 
     let newTab = newPaneTab(splitting: focused, for: target)
     tabsByTarget[target.id, default: [:]][newTab.id] = newTab
@@ -1149,7 +1158,7 @@ final class TerminalSessions: ObservableObject {
     // too small to halve, and `select` has already moved the focused tab and promoted this workroom
     // to the focused split member by then — so a refused split still visibly changed the selection,
     // with nothing to explain why. The anchor `splitFocusedPane` would evaluate is this same tab.
-    guard fits(splitting: tab.surface, orientation: edge.orientation) else { return }
+    guard fits(splitting: tab, orientation: edge.orientation, for: target) else { return }
     select(tabID, for: target)
     splitFocusedPane(for: target, edge: edge)
   }
@@ -1170,7 +1179,7 @@ final class TerminalSessions: ObservableObject {
     // anyway. Rearranging *within* an existing split is exempt — the pane count doesn't change, so
     // nothing new has to fit; only a drop that adds a member to this pane is measured.
     let addsAMember = !(splitByTarget[target.id]?.contains(movedID) ?? false)
-    if addsAMember, !fits(splitting: dest.surface, orientation: edge.orientation) { return }
+    if addsAMember, !fits(splitting: dest, orientation: edge.orientation, for: target) { return }
 
     // Base = the current split with `movedID` removed if it was in it; else the existing split when it
     // holds `destID`; else just the destination leaf (a fresh split, dissolving any unrelated one).
@@ -1542,13 +1551,26 @@ final class TerminalSessions: ObservableObject {
   /// divided — `minPaneWidth` for a side-by-side split, `minPaneHeight` for a stacked one (D4). When the
   /// pane has no laid-out size yet (e.g. in tests, or before first layout) the guard can't evaluate, so
   /// it permits the split and lets the renderer's clamp handle sizing.
-  private func fits(splitting surface: GhosttySurfaceView?, orientation: SplitOrientation) -> Bool {
-    // A content pane (e.g. a diff) has no surface bounds to evaluate — permit the split and let the
-    // renderer's points-based clamp size it, the same as a not-yet-laid-out terminal pane.
-    guard let surface else { return true }
-    let available = orientation == .horizontal ? surface.bounds.width : surface.bounds.height
-    guard available > 0 else { return true }
-    return (available - Self.dividerThickness) / 2 >= PaneTreeLayout.minPane(along: orientation)
+  /// Whether `tab`'s pane can be halved along `orientation` without either side landing under the
+  /// floor.
+  ///
+  /// A terminal pane measures its own `GhosttySurfaceView`; a CONTENT pane (diff / file / changeset)
+  /// has no surface, so it reads the rect the renderer last laid out (`paneRects`). Content panes
+  /// used to be exempt outright — `guard let surface else { return true }` — which meant ⌘D on a diff
+  /// pane in a 400pt split produced two ~198pt panes, in the one place the floor exists *for*: the
+  /// diff toolbar is ~145pt of the 300pt `minPaneWidth`.
+  ///
+  /// An unmeasured pane (no surface and no laid-out rect yet) still permits the split, and
+  /// `PaneTreeLayout.canSplit` treats a zero rect the same way — the renderer's points-based clamp is
+  /// the authority before first layout.
+  private func fits(
+    splitting tab: TerminalTab, orientation: SplitOrientation, for target: TerminalTarget
+  ) -> Bool {
+    let rect =
+      tab.surface.map { CGRect(origin: .zero, size: $0.bounds.size) }
+      ?? paneRects[target.id]?[tab.id]
+    guard let rect else { return true }
+    return PaneTreeLayout.canSplit(rect, along: orientation)
   }
 
   /// The tab to focus after `tabID` is closed: the on-screen neighbour that slides into its slot, else

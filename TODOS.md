@@ -1798,11 +1798,23 @@ insert over the same four cases and asserts they agree, which is the divergence 
 view calling the predicate is a one-line code-read, not covered by a test (`dropHighlight` is a
 `@ViewBuilder`).
 
-**Still open: the `fits` content-pane exemption** (second bullet below). `TerminalSessions.fits` keeps
-`guard let surface else { return true }`, so ⌘D on a diff/file/changeset pane is still unguarded. That
-one is genuinely harder — ⌘D goes through `splitTab`, inside `TerminalSessions`, which has no layout
-knowledge and no size seam at all (checked: nothing but two hardcoded `CGSize`s for background runs).
-It needs either the pane rect passed in from the view or a last-known-plan cache on the store.
+**The `fits` content-pane exemption is ALSO fixed now** (second bullet below), which closes this
+entry. `fits` no longer takes a `GhosttySurfaceView?` — it takes the tab and measures whichever
+rect exists: a terminal pane's surface bounds, else `TerminalSessions.paneRects`, the rects the
+renderer last laid out. Both cases then run through the same `PaneTreeLayout.canSplit`, so the
+drag-drop path and ⌘D share one formula. An unmeasured pane (no surface, no rect yet) still permits
+the split, exactly as before.
+
+The size seam that was missing is a preference: `PaneTreeView` already computes `plan.panes` every
+layout, so it now emits them via `PaneRectsKey` and writes them into the store from
+`onPreferenceChange` — after layout, never during body evaluation. `paneRects` is deliberately NOT
+`@Published`: it is rewritten on every resize, and publishing from a layout callback would both churn
+the graph and risk the "Publishing changes from within view updates" class documented above. Nothing
+renders from it; it is a measurement cache.
+
+`ContentPaneFloorTests` covers it, red-verified — dropping the `paneRects` lookup reproduces both
+symptoms exactly: a 400pt diff pane splits into two ~198pt halves, and `splitTab`'s refused split
+still steals the selection (that ordering is why `splitTab` checks the fit BEFORE `select`).
 Original description follows.
 
 
@@ -1828,8 +1840,7 @@ signature change across several files on a drag path that only XCUITest can exer
 
 `splitTab` and `moveTabIntoSplit` — the two that only needed the surface already in hand — are fixed.
 
-**Priority:** P3 for what remains (the ⌘D-on-content-pane half only; bad layout, recoverable by
-resizing, no data loss). The workroom drag-drop half is shipped.
+**Priority:** done — both halves shipped (workroom drag-drop, then the ⌘D content-pane exemption).
 
 ### Pane-footer truncation is manual-verify only (macapp) — #136 follow-up
 

@@ -933,3 +933,82 @@ final class TerminalSessionsTests: XCTestCase {
     return state.activeAgentBackend
   }
 }
+
+/// The pane floor as it applies to a CONTENT pane (diff / file / changeset). These own no
+/// `GhosttySurfaceView`, so `fits` used to exempt them outright (`guard let surface else { return
+/// true }`) — which meant ⌘D on a diff pane in a 400pt split produced two ~198pt panes, in the one
+/// place the floor exists *for*: the diff toolbar is ~145pt of the 300pt `minPaneWidth`.
+///
+/// The measurement now comes from `paneRects`, the rects the renderer last laid out and hands to the
+/// store through a preference. Seeding it directly here is exactly what `PaneTreeView` does after
+/// layout.
+@MainActor
+final class ContentPaneFloorTests: XCTestCase {
+  private let target = TerminalTarget(id: "wr|/p|foo", title: "foo", path: "/tmp", isMissing: false)
+
+  private func makeSessions() -> TerminalSessions {
+    let sessions = TerminalSessions()
+    sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
+    sessions.recordUnrecognizedTool = { _ in }
+    return sessions
+  }
+
+  /// A diff pane, focused, with `rect` reported as its laid-out size (nil ⇒ never measured).
+  private func sessionsWithFocusedDiff(rect: CGRect?) -> (TerminalSessions, TerminalTab.ID) {
+    let s = makeSessions()
+    let tab = s.openDiffPreview(
+      DiffDescriptor(path: "A.swift", change: .modified, source: .gitWorktree, isPreview: true),
+      for: target)
+    if let rect { s.paneRects[target.id] = [tab: rect] }
+    return (s, tab)
+  }
+
+  private let tooNarrow = CGRect(x: 0, y: 0, width: 400, height: 900)
+  private let roomy = CGRect(x: 0, y: 0, width: 1200, height: 900)
+
+  func testSplittingATooNarrowDiffPaneIsRefused() {
+    let (s, _) = sessionsWithFocusedDiff(rect: tooNarrow)
+    s.splitFocusedPane(for: target, edge: .right)
+    XCTAssertEqual(s.tabs(for: target).count, 1, "no second pane may be created")
+    XCTAssertNil(s.split(for: target), "and no split layout")
+  }
+
+  func testSplittingAWideEnoughDiffPaneIsAllowed() {
+    let (s, _) = sessionsWithFocusedDiff(rect: roomy)
+    s.splitFocusedPane(for: target, edge: .right)
+    XCTAssertEqual(s.split(for: target)?.tabIDs.count, 2)
+  }
+
+  /// The floor is per-axis: the same pane too narrow to split side-by-side is plenty tall to stack.
+  func testTheOtherAxisIsStillAllowed() {
+    let (s, _) = sessionsWithFocusedDiff(rect: tooNarrow)
+    s.splitFocusedPane(for: target, edge: .bottom)
+    XCTAssertEqual(s.split(for: target)?.tabIDs.count, 2)
+  }
+
+  /// Before first layout there is nothing to measure, so the split proceeds and the renderer's own
+  /// points-based clamp sizes it — the pre-existing behaviour, deliberately preserved.
+  func testAnUnmeasuredContentPaneStillSplits() {
+    let (s, _) = sessionsWithFocusedDiff(rect: nil)
+    s.splitFocusedPane(for: target, edge: .right)
+    XCTAssertEqual(s.split(for: target)?.tabIDs.count, 2)
+  }
+
+  /// `splitTab` checks the fit BEFORE `select`, so a refused split must not have moved focus either.
+  func testARefusedSplitTabLeavesSelectionAlone() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    let terminal = s.activeTab(for: target)!.id
+    let diff = s.openDiffPreview(
+      DiffDescriptor(path: "A.swift", change: .modified, source: .gitWorktree, isPreview: true),
+      for: target)
+    s.select(terminal, for: target)
+    s.paneRects[target.id] = [diff: tooNarrow]
+
+    s.splitTab(diff, on: .right, for: target)
+
+    XCTAssertEqual(s.tabs(for: target).count, 2, "the refused split created nothing")
+    XCTAssertEqual(
+      s.activeTab(for: target)?.id, terminal, "and must not have stolen the selection")
+  }
+}

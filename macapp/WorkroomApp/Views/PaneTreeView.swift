@@ -82,6 +82,14 @@ struct PaneTreeView: View {
         dragGhost()
       }
       .coordinateSpace(.named(Self.space))
+      // Hand the measured pane rects to the store so `fits` can apply the pane floor to a CONTENT
+      // pane, which owns no surface to measure. A preference (rather than a write from inside this
+      // GeometryReader) keeps the write out of body evaluation.
+      .preference(key: PaneRectsKey.self, value: plan.panes)
+    }
+    .onPreferenceChange(PaneRectsKey.self) { [target, sessions] rects in
+      // `paneRects` is a plain (non-`@Published`) cache, so this cannot publish into a view update.
+      MainActor.assumeIsolated { sessions.paneRects[target.id] = rects }
     }
   }
 
@@ -149,6 +157,19 @@ struct PaneTreeView: View {
       // Dragged up out of the panes (toward the strip) → pop this pane out of the split to solo.
       sessions.extractFromSplit(drag.tabID, for: target)
     }
+  }
+}
+
+/// The pane rects the renderer laid out, carried to `TerminalSessions.paneRects`. Reduce keeps the
+/// last non-empty value: sibling subtrees contribute nothing, so an empty map must not clobber a
+/// real measurement (same shape as `ContentFrameKey`'s non-zero rule).
+private struct PaneRectsKey: PreferenceKey {
+  static var defaultValue: [TerminalTab.ID: CGRect] = [:]
+  static func reduce(
+    value: inout [TerminalTab.ID: CGRect], nextValue: () -> [TerminalTab.ID: CGRect]
+  ) {
+    let next = nextValue()
+    if !next.isEmpty { value = next }
   }
 }
 
