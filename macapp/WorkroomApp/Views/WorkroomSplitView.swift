@@ -51,13 +51,13 @@ struct WorkroomSplitView: View {
   /// `RootView`; shared with the tab bar so a title-bar drag drops onto the same panes a chip would.
   let localize: (CGPoint) -> CGPoint?
   /// Where a drag at a global location lands (member pane + edge), or nil if not over a pane.
-  let dropTarget: (CGPoint) -> (sid: SidebarID, edge: PaneEdge)?
+  let dropTarget: (CGPoint) -> (sid: SidebarID, edge: PaneEdge, rect: CGRect)?
   let onFocus: (SidebarID) -> Void
   let onSetRatio: (CGFloat, UUID) -> Void
   let onClose: (SidebarID) -> Void
   /// Move a member to land beside another at an edge (drag a group by its title bar). Wired to
   /// `store.insertWorkroomSplit`, the same transform the tab-bar chip drop uses.
-  let onMove: (SidebarID, SidebarID, PaneEdge) -> Void
+  let onMove: (SidebarID, SidebarID, PaneEdge, CGRect) -> Void
 
   private static let space = "workroomSplitContent"
   /// The gutter holding the pane cards off the left/right sidebars (issue #110). Unconditional since
@@ -175,9 +175,9 @@ private struct WorkroomPaneLeaf: View {
   /// The shared workroom-drag state — the title bar writes it while dragging this group (issue #110).
   @Binding var externalDrag: WorkroomPaneDrag?
   let localize: (CGPoint) -> CGPoint?
-  let dropTarget: (CGPoint) -> (sid: SidebarID, edge: PaneEdge)?
+  let dropTarget: (CGPoint) -> (sid: SidebarID, edge: PaneEdge, rect: CGRect)?
   let onClose: () -> Void
-  let onMove: (SidebarID, SidebarID, PaneEdge) -> Void
+  let onMove: (SidebarID, SidebarID, PaneEdge, CGRect) -> Void
 
   var body: some View {
     // `content` MUST stay at ONE structural position (the second child of this VStack) — the title bar
@@ -219,7 +219,7 @@ private struct WorkroomPaneLeaf: View {
           }
           .onEnded { value in
             if let drop = dropTarget(value.location), drop.sid != sid {
-              onMove(sid, drop.sid, drop.edge)
+              onMove(sid, drop.sid, drop.edge, drop.rect)
             }
             externalDrag = nil
           },

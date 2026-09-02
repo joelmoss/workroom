@@ -30,7 +30,7 @@ struct WorkroomTabBar: View {
   /// the bar (→ a reorder, not a drop-into-content). Owned by `RootView` (it knows the content frame).
   let localize: (CGPoint) -> CGPoint?
   /// Where a chip dropped at a global location lands (workroom pane + edge), or nil if not over a pane.
-  let dropTarget: (CGPoint) -> (sid: SidebarID, edge: PaneEdge)?
+  let dropTarget: (CGPoint) -> (sid: SidebarID, edge: PaneEdge, rect: CGRect)?
 
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var notifications: NotificationCenterStore
@@ -165,7 +165,8 @@ struct WorkroomTabBar: View {
             }
             .onEnded { value in
               if let drop = dropTarget(value.location) {
-                store.insertWorkroomSplit(tab.sid, beside: drop.sid, edge: drop.edge)
+                store.insertWorkroomSplit(
+                  tab.sid, beside: drop.sid, edge: drop.edge, destinationRect: drop.rect)
                 drag.cancel()
               } else {
                 // Recompute the clamp from `value.translation` rather than reading `drag.translation`:

@@ -95,6 +95,57 @@ final class WorkroomSplitTests: XCTestCase {
     XCTAssertEqual(onlySplit(store)?.tabIDs.count, 3)
   }
 
+  // MARK: pane floor (`destinationRect`)
+
+  /// A pane too narrow to yield two floor-width halves must refuse the drop outright, rather than
+  /// nesting a split that trips `lengths`' even-split fallback and leaves two 172pt panes. Workroom
+  /// panes are the one place each pane draws its own `TerminalTabStrip`, whose diff toolbar alone is
+  /// ~145pt — which is where `minPaneWidth` came from.
+  private func tooNarrow() -> CGRect { CGRect(x: 0, y: 0, width: 348, height: 800) }
+  private func roomy() -> CGRect { CGRect(x: 0, y: 0, width: 1200, height: 800) }
+
+  func testDropIsRefusedWhenThePaneCannotHoldTwoHalves() {
+    let store = store3()
+    store.insertWorkroomSplit(
+      wr("feature"), beside: wr("main"), edge: .right, destinationRect: tooNarrow())
+    XCTAssertTrue(store.workroomSplits.isEmpty, "the split must not be created at all")
+    XCTAssertFalse(store.workroomSplitActive)
+  }
+
+  func testDropIsAllowedWhenThePaneIsWideEnough() {
+    let store = store3()
+    store.insertWorkroomSplit(
+      wr("feature"), beside: wr("main"), edge: .right, destinationRect: roomy())
+    XCTAssertEqual(onlySplit(store)?.tabIDs, [wr("main"), wr("feature")])
+  }
+
+  func testTheFloorIsPerAxis() {
+    // The same 348pt-wide pane is plenty tall, so a top/bottom drop onto it is fine.
+    let store = store3()
+    store.insertWorkroomSplit(
+      wr("feature"), beside: wr("main"), edge: .bottom, destinationRect: tooNarrow())
+    XCTAssertEqual(onlySplit(store)?.tabIDs.count, 2, "a vertical split reads height, not width")
+  }
+
+  func testRearrangingWithinAGroupIsNotBlockedByTheFloor() {
+    // Moving a member that is ALREADY in the group leaves the pane count unchanged, so the floor
+    // must not apply — the same policy `TerminalSessions.moveTabIntoSplit` applies via `addsAMember`.
+    let store = store3()
+    store.insertWorkroomSplit(
+      wr("feature"), beside: wr("main"), edge: .right, destinationRect: roomy())
+    store.insertWorkroomSplit(
+      wr("main"), beside: wr("feature"), edge: .right, destinationRect: tooNarrow())
+    XCTAssertEqual(onlySplit(store)?.tabIDs.count, 2, "a rearrangement must still go through")
+    XCTAssertEqual(Set(onlySplit(store)?.tabIDs ?? []), [wr("main"), wr("feature")])
+  }
+
+  func testAnUnmeasuredCallerKeepsThePreFloorBehaviour() {
+    // `destinationRect: nil` is the default — no measurement available, so no floor is applied.
+    let store = store3()
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    XCTAssertEqual(onlySplit(store)?.tabIDs.count, 2)
+  }
+
   func testInsertMovingExistingMemberIsNotADuplicate() {
     let store = store3()
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)  // [main, feature]

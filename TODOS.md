@@ -1683,7 +1683,48 @@ The pieces below were explicitly deferred — each small, none blocking.
 
 **Priority:** P3 (polish on a shipped feature).
 
-### Two split paths still bypass the pane floor (macapp) — pane-min-width follow-up
+### Two split paths still bypass the pane floor (macapp) — pane-min-width follow-up — DRAG-DROP HALF SHIPPED (2026-09-02)
+
+**The workroom drag-drop half is fixed.** `AppStore.insertWorkroomSplit` now takes an optional
+`destinationRect` and refuses a drop that would halve the destination pane under the axis floor.
+The decision is `PaneTreeLayout.canSplit(_:along:)` — the same arithmetic as `TerminalSessions.fits`
+(`(available - dividerThickness) / 2 >= minPane(along:)`) but over a MEASURED rect rather than a live
+`GhosttySurfaceView`'s bounds, which is exactly what the workroom tree lacked.
+
+**The entry's cost estimate below was wrong, and that's the reusable lesson.** It said the fix needed
+a pane size threaded through `RootView → WorkroomSplitView → WorkroomPaneLeaf → tab bar`, "a
+signature change across several files on a drag path that only XCUITest can exercise." In fact
+`RootView.workroomChipDropTarget` ALREADY computes `plan.panes` (a `[SidebarID: CGRect]`) and calls
+`PaneTreeLayout.dropTarget`, which found the hit rect and threw it away. Widening that one resolver's
+result to `(sid, edge, rect)` put the measurement at all three call sites for free — nothing below
+`RootView` forwards it anywhere except back to the store, so no rendering code changed, and the whole
+thing is unit-testable at the store level with no XCUITest at all.
+
+**A wrong turn worth recording:** the first plan was to put the floor inside `PaneTreeLayout.dropTarget`
+itself, since it is the shared resolver for BOTH trees. That is wrong — it would also block legitimate
+REARRANGEMENTS within an existing split, which `TerminalSessions.moveTabIntoSplit` deliberately permits
+via its `addsAMember` gate. The floor belongs where "does this add a member" is known, so the store
+mirrors that gate with `AppStore.workroomSplitWouldAddMember(_:beside:)`.
+
+**Tests:** `PaneCanSplitTests` pins the pure decision (exactly at the floor passes, one point under
+fails, each axis reads only its own dimension, a zero rect permits — matching `fits`' `available > 0`
+escape, and the reported 348pt regression width is refused). `WorkroomSplitTests` pins the wiring:
+a too-narrow drop leaves `workroomSplits` empty (red-verified — reverting the guard fails exactly
+this test), a roomy one splits, a vertical drop onto the same narrow-but-tall pane is allowed, a
+rearrangement is never blocked, and `destinationRect: nil` keeps the pre-floor behaviour.
+
+**Known gap, deliberate:** the drop INDICATOR still draws for a drop that will now be refused —
+`dropHighlight` renders from `dropTarget` alone, which doesn't know the dragged sid and so can't tell
+whether the drop adds a member. Suppressing the band needs the closure to grow to
+`(CGPoint, SidebarID) -> …`. Worth doing if the silent refusal reads as a bug.
+
+**Still open: the `fits` content-pane exemption** (second bullet below). `TerminalSessions.fits` keeps
+`guard let surface else { return true }`, so ⌘D on a diff/file/changeset pane is still unguarded. That
+one is genuinely harder — ⌘D goes through `splitTab`, inside `TerminalSessions`, which has no layout
+knowledge and no size seam at all (checked: nothing but two hardcoded `CGSize`s for background runs).
+It needs either the pane rect passed in from the view or a last-known-plan cache on the store.
+Original description follows.
+
 
 **What:** `TerminalSessions.fits` is the single floor guard (`minPaneWidth` 300 / `minPaneHeight` 120,
 `eb762b87`). Two paths don't consult it, and can't today, because it measures a
@@ -1707,7 +1748,8 @@ signature change across several files on a drag path that only XCUITest can exer
 
 `splitTab` and `moveTabIntoSplit` — the two that only needed the surface already in hand — are fixed.
 
-**Priority:** P3 (bad layout, recoverable by resizing; no data loss).
+**Priority:** P3 for what remains (the ⌘D-on-content-pane half only; bad layout, recoverable by
+resizing, no data loss). The workroom drag-drop half is shipped.
 
 ### Pane-footer truncation is manual-verify only (macapp) — #136 follow-up
 

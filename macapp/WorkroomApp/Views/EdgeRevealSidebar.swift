@@ -299,7 +299,7 @@ struct EdgeRevealSidebars: ViewModifier {
   /// register immediately, with no "release over the panel to cancel" zone the other two paths get.
   var paneDrag: Binding<WorkroomPaneDrag?> = .constant(nil)
   var localize: (CGPoint) -> CGPoint? = { _ in nil }
-  var dropTarget: (CGPoint) -> (sid: SidebarID, edge: PaneEdge)? = { _ in nil }
+  var dropTarget: (CGPoint) -> (sid: SidebarID, edge: PaneEdge, rect: CGRect)? = { _ in nil }
 
   func body(content: Content) -> some View {
     // The revealed leading panel sits at offset 0 occupying detail-local x `[margin, margin+width]`

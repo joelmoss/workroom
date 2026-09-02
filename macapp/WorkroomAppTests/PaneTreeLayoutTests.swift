@@ -166,3 +166,52 @@ final class PaneTreeLayoutTests: XCTestCase {
     XCTAssertTrue(fromA == b || fromA == c)  // a right-column pane
   }
 }
+
+/// The measured-rect pane floor (`PaneTreeLayout.canSplit`) behind
+/// `AppStore.insertWorkroomSplit`'s drop guard. `TerminalSessions.fits` answers the same question
+/// from a live `GhosttySurfaceView`'s bounds; the workroom pane tree has no surface to measure, so
+/// this takes the rect the renderer's own plan produced.
+final class PaneCanSplitTests: XCTestCase {
+
+  private let divider = TerminalSessions.dividerThickness
+  private let minW = TerminalSessions.minPaneWidth
+  private let minH = TerminalSessions.minPaneHeight
+
+  private func rect(w: CGFloat, h: CGFloat) -> CGRect {
+    CGRect(x: 0, y: 0, width: w, height: h)
+  }
+
+  func testExactlyAtTheFloorIsPermitted() {
+    // Two floor-width halves plus the divider is the smallest pane that may still be split.
+    let exact = minW * 2 + divider
+    XCTAssertTrue(PaneTreeLayout.canSplit(rect(w: exact, h: 1000), along: .horizontal))
+    let exactV = minH * 2 + divider
+    XCTAssertTrue(PaneTreeLayout.canSplit(rect(w: 1000, h: exactV), along: .vertical))
+  }
+
+  func testOnePointUnderTheFloorIsRefused() {
+    XCTAssertFalse(
+      PaneTreeLayout.canSplit(rect(w: minW * 2 + divider - 1, h: 1000), along: .horizontal))
+    XCTAssertFalse(
+      PaneTreeLayout.canSplit(rect(w: 1000, h: minH * 2 + divider - 1), along: .vertical))
+  }
+
+  func testTheReportedRegressionWidthIsRefused() {
+    // The measurement from the bug report: a third workroom chip dropped into a 348pt pane yielded
+    // two 172pt panes.
+    XCTAssertFalse(PaneTreeLayout.canSplit(rect(w: 348, h: 800), along: .horizontal))
+  }
+
+  func testEachAxisOnlyConsultsItsOwnDimension() {
+    // A pane far too narrow to split side-by-side can still split top/bottom, and vice versa.
+    XCTAssertTrue(PaneTreeLayout.canSplit(rect(w: 200, h: 1000), along: .vertical))
+    XCTAssertFalse(PaneTreeLayout.canSplit(rect(w: 200, h: 1000), along: .horizontal))
+  }
+
+  func testUnmeasuredRectPermitsTheSplit() {
+    // Matches `TerminalSessions.fits`' `available > 0` escape: nothing is laid out yet, so the
+    // renderer's points-based clamp is the authority, not a floor applied to a zero rect.
+    XCTAssertTrue(PaneTreeLayout.canSplit(.zero, along: .horizontal))
+    XCTAssertTrue(PaneTreeLayout.canSplit(.zero, along: .vertical))
+  }
+}

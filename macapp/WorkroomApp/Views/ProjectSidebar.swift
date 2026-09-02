@@ -23,7 +23,7 @@ struct ProjectSidebar: View {
   /// area (→ not a drop). Owned by `RootView` (it knows the content frame).
   var localize: (CGPoint) -> CGPoint? = { _ in nil }
   /// Where a drop at a global point lands (workroom pane + edge), or nil if it isn't over a pane.
-  var dropTarget: (CGPoint) -> (sid: SidebarID, edge: PaneEdge)? = { _ in nil }
+  var dropTarget: (CGPoint) -> (sid: SidebarID, edge: PaneEdge, rect: CGRect)? = { _ in nil }
 
   @State private var hovered: SidebarID?
   /// The terminal row currently under the cursor (issue #30). Keyed by the tab's UUID rather than a
@@ -81,7 +81,8 @@ struct ProjectSidebar: View {
       }
       .onEnded { value in
         if let drop = dropTarget(value.location) {
-          store.insertWorkroomSplit(id, beside: drop.sid, edge: drop.edge)
+          store.insertWorkroomSplit(
+            id, beside: drop.sid, edge: drop.edge, destinationRect: drop.rect)
         }
         paneDrag.wrappedValue = nil
       }

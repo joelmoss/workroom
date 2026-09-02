@@ -184,6 +184,20 @@ enum PaneTreeLayout {
   /// The pane floor along the axis a split divides: width for side-by-side, height for stacked. The two
   /// differ because the tab strip's furniture only constrains width — see `TerminalSessions.minPaneWidth`.
   /// Every clamp and fit guard reads the floor through here, so the axis can never be picked twice.
+  /// Whether `rect` can be split along `orientation` without either half landing under the axis
+  /// floor. The same arithmetic as `TerminalSessions.fits`, but over a MEASURED pane rect rather than
+  /// a live `GhosttySurfaceView`'s bounds — so it also works for the workroom pane tree, whose leaves
+  /// are `SidebarID`s with no surface to measure (`AppStore.insertWorkroomSplit` had no fit guard at
+  /// all, and a third workroom dropped into ~700pt produced two 172pt panes).
+  ///
+  /// A zero/degenerate rect permits the split, matching `fits`' `available > 0` escape: nothing has
+  /// been laid out yet, so the renderer's own points-based clamp is the authority.
+  static func canSplit(_ rect: CGRect, along orientation: SplitOrientation) -> Bool {
+    let available = orientation == .horizontal ? rect.width : rect.height
+    guard available > 0 else { return true }
+    return (available - dividerThickness) / 2 >= minPane(along: orientation)
+  }
+
   static func minPane(along orientation: SplitOrientation) -> CGFloat {
     orientation == .horizontal ? minPaneWidth : minPaneHeight
   }

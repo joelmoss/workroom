@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// Workroom-into-workroom split (issue #23 follow-up). The stored `@Published var workroomSplits` lives
@@ -146,13 +147,35 @@ extension AppStore {
   /// **removes `sid` from its current group first** so dragging an existing pane to a new edge is a
   /// *move*, not a duplicate. Focuses the inserted member. No-op for a self-drop or non-resolving leaf.
   /// Mirrors `TerminalSessions.moveTabIntoSplit`.
-  func insertWorkroomSplit(_ sid: SidebarID, beside: SidebarID, edge: PaneEdge) {
+  /// Whether inserting `sid` beside `beside` GROWS the destination group, rather than rearranging
+  /// within it. Two members of the same group swapping places leaves the pane count (and so the pane
+  /// sizes) unchanged, which is why the floor below only applies to a genuine addition — the same
+  /// policy `TerminalSessions.moveTabIntoSplit` applies with its own `addsAMember` gate.
+  func workroomSplitWouldAddMember(_ sid: SidebarID, beside: SidebarID) -> Bool {
+    let from = splitIndex(containing: sid)
+    return from == nil || from != splitIndex(containing: beside)
+  }
+
+  func insertWorkroomSplit(
+    _ sid: SidebarID, beside: SidebarID, edge: PaneEdge, destinationRect: CGRect? = nil
+  ) {
     // Reject a self-drop, a non-resolving leaf (`.project` / deleted workroom), and a workroom whose
     // directory is gone (`isMissing`) — a missing leaf would render a "Directory not found" pane that
     // can only be backed out of again, so don't let one into the split in the first place (#23).
     guard sid != beside, let dropped = target(for: sid), !dropped.isMissing,
       target(for: beside) != nil
     else { return }
+    // Pane floor. Workroom panes are the one place each pane draws its OWN `TerminalTabStrip`, whose
+    // diff toolbar alone is ~145pt — which is where `minPaneWidth` (300) came from. Without this a
+    // third chip dropped into ~700pt nested a split at `total: 348`, tripping `lengths`' even-split
+    // fallback and yielding two 172pt panes. `destinationRect` is the pane's measured rect, threaded
+    // from `RootView.workroomChipDropTarget` (the only layer that has the plan); `nil` means an
+    // unmeasured caller and keeps the pre-floor behaviour rather than guessing.
+    if let destinationRect, workroomSplitWouldAddMember(sid, beside: beside),
+      !PaneTreeLayout.canSplit(destinationRect, along: edge.orientation)
+    {
+      return
+    }
     // Leave whatever group `sid` was in (possibly dissolving it) BEFORE joining `beside`'s — structural
     // only, no selection re-point: `sid` is about to be focused anyway.
     detachFromSplitGroup(sid)

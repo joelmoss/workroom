@@ -594,13 +594,21 @@ struct RootView: View {
 
   /// Where a chip dropped at `global` lands (workroom pane + edge), using the same plan the renderer
   /// uses, or nil if it isn't over a pane.
-  private func workroomChipDropTarget(at global: CGPoint) -> (sid: SidebarID, edge: PaneEdge)? {
+  ///
+  /// Carries the hit pane's MEASURED rect as well: `AppStore.insertWorkroomSplit` needs it to refuse a
+  /// drop that would halve a pane under the floor, and this is the only layer that has it (the plan is
+  /// computed here). Nothing below forwards it anywhere but back to the store.
+  private func workroomChipDropTarget(at global: CGPoint) -> (
+    sid: SidebarID, edge: PaneEdge, rect: CGRect
+  )? {
     guard let local = workroomChipLocal(global), let layout = workroomDropLayout() else {
       return nil
     }
     let plan = PaneTreeLayout.plan(layout, in: CGRect(origin: .zero, size: workroomPaneSpace.size))
-    guard let hit = PaneTreeLayout.dropTarget(at: local, panes: plan.panes) else { return nil }
-    return (sid: hit.tab, edge: hit.edge)
+    guard let hit = PaneTreeLayout.dropTarget(at: local, panes: plan.panes),
+      let rect = plan.panes[hit.tab]
+    else { return nil }
+    return (sid: hit.tab, edge: hit.edge, rect: rect)
   }
 
   /// Focus a workroom tab — mirrors `ProjectSidebar`'s selection setter (sets both the target and the
@@ -716,7 +724,7 @@ struct RootView: View {
         onFocus: { selectWorkroomTab($0) },
         onSetRatio: { store.setWorkroomSplitRatio($0, forSplit: $1) },
         onClose: { store.removeWorkroomSplitMember($0) },
-        onMove: { store.insertWorkroomSplit($0, beside: $1, edge: $2) }
+        onMove: { store.insertWorkroomSplit($0, beside: $1, edge: $2, destinationRect: $3) }
       )
     }
   }
