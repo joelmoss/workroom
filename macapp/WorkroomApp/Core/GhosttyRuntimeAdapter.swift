@@ -8,9 +8,16 @@ import os
 /// callbacks resolve back to the originating view via `ghostty_surface_userdata`.
 ///
 /// Threading: `action_cb`, the clipboard callbacks, and `close_surface_cb` all fire synchronously
-/// while libghostty is being driven by `ghostty_app_tick`, which `GhosttyApp` only ever runs on the
-/// main thread — so it's safe to touch AppKit/`GhosttySurfaceView` directly here. (`wakeup_cb`, which
-/// can fire off-thread, only schedules a tick and lives on `GhosttyApp`.)
+/// on the MAIN thread — either while libghostty is driven by `ghostty_app_tick`, or directly inside
+/// one of our own `ghostty_surface_*` calls — so it's always safe to touch AppKit/
+/// `GhosttySurfaceView` directly here. (`wakeup_cb`, which can fire off-thread, only schedules a
+/// tick and lives on `GhosttyApp`.)
+///
+/// What is NOT uniformly safe is calling BACK into the engine from a handler. An action delivered
+/// on a `ghostty_surface_*` stack can be holding the renderer mutex, which is not recursive, so an
+/// engine read from that stack deadlocks the main thread. `GHOSTTY_ACTION_SELECTION_CHANGED` is the
+/// known case (see its comment below); assume any new action may be one until checked against
+/// ghostty's source, and defer engine reads with `DispatchQueue.main.async` when in doubt.
 final class GhosttyRuntimeAdapter {
   static let shared = GhosttyRuntimeAdapter()
 
@@ -123,10 +130,14 @@ final class GhosttyRuntimeAdapter {
       // (`GhosttySurfaceView.pollAccessibilityContent`), which still owns the screen-content half:
       // there is no content-changed action to hang that one on.
       //
-      // UNLIKE every other case here, this one does NOT arrive via `ghostty_app_tick` — it fires
-      // synchronously inside our own `ghostty_surface_mouse_pos`/`_mouse_button`/`_key` calls,
-      // from inside `Surface.setSelection`, WITH THE RENDERER MUTEX HELD. So the handler must not
-      // touch the engine on this stack (it would deadlock); see `handleSelectionChanged()`.
+      // UNLIKE every other case here, this one usually does NOT arrive via `ghostty_app_tick`: it
+      // fires synchronously inside our own `ghostty_surface_mouse_pos`/`_mouse_button`/`_key`
+      // calls, from inside `Surface.setSelection`. (Drag-autoscroll is the exception — there
+      // `selection_scroll_tick` reaches `setSelection` via `handleMessage`, which IS tick-drained.)
+      // What matters is the same on BOTH paths: `setSelection` is documented as requiring the
+      // renderer mutex, so this handler always runs WITH THAT MUTEX HELD and must not touch the
+      // engine on this stack — the mutex isn't recursive, so a read here deadlocks the main
+      // thread. See `handleSelectionChanged()`, which defers.
       guard let view = surfaceView(from: target) else { return false }
       view.handleSelectionChanged()
       return true

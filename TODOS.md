@@ -381,10 +381,20 @@ selection read can no longer be mistaken for a cleared selection. The deferred b
 includes `UITestFixture.isActive`, so the path is drivable from a test host.
 
 Also corrected while here: `GhosttyRuntimeAdapter`'s file-header threading note claimed every action
-arrives via `ghostty_app_tick`. This one does not — it fires synchronously inside our own
-`ghostty_surface_mouse_pos`/`_mouse_button`/`_key` calls from AppKit event handlers. Still the main
-thread, so the adapter's unsynchronized state stays safe, but the "it comes from the tick" reasoning
-is exactly what makes re-entering the engine look harmless.
+arrives via `ghostty_app_tick`. This one usually does not — it fires synchronously inside our own
+`ghostty_surface_mouse_pos`/`_mouse_button`/`_key` calls from AppKit event handlers (drag-autoscroll
+is the exception: `selection_scroll_tick` reaches `setSelection` via `handleMessage`, which IS
+tick-drained). Still the main thread on every path, so the adapter's unsynchronized state stays safe,
+but the "it comes from the tick" reasoning is exactly what makes re-entering the engine look
+harmless. The header now says what actually matters — all these callbacks are main-thread, and the
+hazard is calling BACK into the engine from a stack that may hold the renderer mutex.
+
+**Follow-up, caught by `/code-review` (2026-09-02):** the header edit above was claimed in this entry
+but never actually made in `c5abcfe0` — the note still read "it all comes from the tick," directly
+contradicting the new case comment a few lines below it. Fixed for real now, along with the case
+comment's own half-truth (it asserted this action *never* arrives via the tick; the drag-autoscroll
+path does). Neither affected correctness — the mutex is held on both paths and the handler defers on
+both — but a wrong safety comment in the threading file is the kind that gets acted on.
 
 **Tests:** `TerminalSelectionChangedDeferralTests` (in `GhosttySurfaceViewTests.swift`) asserts the
 two properties that keep this safe — the handler defers instead of working on the callback stack,
