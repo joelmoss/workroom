@@ -101,10 +101,16 @@ in descending order of how much it matters:
    perl process calling `setsid()`, confirms it's alive from outside the daemon, sends `.killAll`, and
    asserts the grandchild's pid is actually gone. Fails (reproducing survival) with either half of the
    fix reverted on its own, passes with both restored.
-6. **`TerminalSessions.assignedSessionID`'s `isQuickTerminal` parameter is dead.** No caller passes
-   `true` for it any more (the quick-terminal exclusion is handled elsewhere in
-   `TerminalPersistentSessionPolicy` now) — cosmetic, but confusing for the next reader trying to
-   figure out which layer actually excludes quick terminals.
+6. ~~**`TerminalSessions.assignedSessionID`'s `isQuickTerminal` parameter is dead.**~~ **FIXED.**
+   The parameter is gone from `TerminalPersistentSessionPolicy.usesPersistentSession`, from its sole
+   production call site, and from the tests. Note this entry's original claim — that "the
+   quick-terminal exclusion is handled elsewhere in `TerminalPersistentSessionPolicy` now" — was
+   wrong, and was itself the confusion it warned about: that flag was the only quick-terminal logic
+   in the file. Quick terminals are excluded **by construction**, not by any policy check —
+   `QuickTerminalController` builds its own `GhosttySurfaceView` in a bare `NSWindow` and never
+   routes through `TerminalSessions`, so it never reaches `assignedSessionID` and never gets a
+   session ID. That's now a doc comment on the policy, which is the durable answer to "which layer
+   actually excludes quick terminals."
 
 **P0 architectural note, accepted as-is (not a bug for this PR):** the daemon's only authentication
 is `LOCAL_PEERCRED`/`peerUserID == getuid()` — any process running as the same user can list/attach/
@@ -120,7 +126,8 @@ in the common path — they're edge cases (process launch races, resource exhaus
 windows, an encoding ceiling, escaping cleanup, dead code) that are real but lower-value than the
 three fixed directly.
 
-**Priority:** P2. (1)-(5) are fixed (see above) — what remains is (6), cosmetic dead code, not a bug.
+**Priority:** done. (1)-(6) are all fixed (see above). The P0 architectural note stands as accepted,
+not as open work.
 
 ### Bump the libghostty pin (macapp) — SHIPPED, 2026-08-13
 

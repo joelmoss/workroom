@@ -9,7 +9,6 @@ final class TerminalPersistentSessionPolicyTests: XCTestCase {
         preferenceEnabled: true,
         isAvailable: true,
         isRunCommand: false,
-        isQuickTerminal: false,
         isFixture: false))
   }
 
@@ -19,23 +18,16 @@ final class TerminalPersistentSessionPolicyTests: XCTestCase {
         preferenceEnabled: false,
         isAvailable: true,
         isRunCommand: false,
-        isQuickTerminal: false,
         isFixture: false))
   }
 
-  func testRunCommandAndQuickTerminalAndFixtureAreExcluded() {
+  func testRunCommandAndFixtureAreExcluded() {
     XCTAssertFalse(
       TerminalPersistentSessionPolicy.usesPersistentSession(
-        preferenceEnabled: true, isAvailable: true, isRunCommand: true,
-        isQuickTerminal: false, isFixture: false))
+        preferenceEnabled: true, isAvailable: true, isRunCommand: true, isFixture: false))
     XCTAssertFalse(
       TerminalPersistentSessionPolicy.usesPersistentSession(
-        preferenceEnabled: true, isAvailable: true, isRunCommand: false,
-        isQuickTerminal: true, isFixture: false))
-    XCTAssertFalse(
-      TerminalPersistentSessionPolicy.usesPersistentSession(
-        preferenceEnabled: true, isAvailable: true, isRunCommand: false,
-        isQuickTerminal: false, isFixture: true))
+        preferenceEnabled: true, isAvailable: true, isRunCommand: false, isFixture: true))
   }
 
   func testUnavailableHelperFallsBack() {
@@ -44,7 +36,6 @@ final class TerminalPersistentSessionPolicyTests: XCTestCase {
         preferenceEnabled: true,
         isAvailable: false,
         isRunCommand: false,
-        isQuickTerminal: false,
         isFixture: false))
   }
 }
