@@ -386,7 +386,10 @@ struct HistoryRow: View, Equatable {
           return
         }
         try? await Task.sleep(for: .milliseconds(500))
-        guard !Task.isCancelled else { return }
+        // Also re-read the LIVE hover state: `.task(id:)` swaps its id in place at a stable row
+        // slot, and cancellation delivery for that shape isn't reliable everywhere (see TODOS
+        // "`.task(id:)` cancellation is not reliably delivered on an in-place value swap").
+        guard !Task.isCancelled, hovering else { return }
         showCard = true
       }
       // Eager single-click preview, quick second click (< 0.35s) persists — the same manual

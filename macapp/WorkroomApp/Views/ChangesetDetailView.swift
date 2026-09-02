@@ -22,6 +22,17 @@ struct ChangesetDetailView: View {
   @EnvironmentObject var store: AppStore
 
   @State private var state: LoadState = .loading
+  /// The id of whichever `.task(id:)` invocation most recently started a load at this
+  /// view-identity slot — a generation token, held ALONGSIDE `Task.isCancelled` rather than
+  /// instead of it. Retargeting this pane swaps the id value at a stable slot (the view instance is
+  /// reused, not recreated), and cancellation delivery for that shape does not measure the same
+  /// way everywhere: `AvatarView` measured `Task.isCancelled == false` throughout the outgoing
+  /// invocation in the live app (see TODOS "`.task(id:)` cancellation is not reliably delivered on
+  /// an in-place value swap"), while this view measured it DELIVERED in a hosted-view harness
+  /// (`DiffViewerStaleLoadTests`). The harness is not the app's view tree and the flag's delivery is
+  /// an unspecified SwiftUI detail, so the flag is the guard the test proves and the token is the
+  /// belt. `@State` survives the slot being reused, so whichever invocation started LAST wins.
+  @State private var activeCommitID: String?
   /// Committed width of the file-list pane. Starts intentionally narrow.
   @State private var listWidth: CGFloat = 230
   /// Live width during a divider drag (`nil` when not dragging). Kept in local `@State` so the drag
@@ -62,7 +73,11 @@ struct ChangesetDetailView: View {
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
       .background(theme.tokens.bg)
       // Fetch on appear + whenever the tab is retargeted to another commit (preview reuse).
-      .task(id: descriptor.commitID) { await load() }
+      .task(id: descriptor.commitID) {
+        let myCommitID = descriptor.commitID
+        activeCommitID = myCommitID
+        await load(commitID: myCommitID)
+      }
       // Close find whenever there's nothing to search (loading, failed, empty changeset, or a
       // selection that doesn't match any current file) — otherwise a retarget (history back/forward,
       // no focus change) to a state with no `DiffViewer` on screen would leave stale matches/needle
@@ -122,10 +137,9 @@ struct ChangesetDetailView: View {
     }
   }
 
-  private func load() async {
+  private func load(commitID: String) async {
     state = .loading
     let root = URL(fileURLWithPath: directory, isDirectory: true)
-    let commitID = descriptor.commitID
     do {
       let changeset: VCSChangeset
       if UITestFixture.isActive {
@@ -135,10 +149,14 @@ struct ChangesetDetailView: View {
         // stays off the cooperative pool — no `Task.detached` wrapper needed.
         changeset = try await VCS.provider(for: root).changeset(root: root, commitID: commitID)
       }
-      if Task.isCancelled { return }
+      // Stale-write guard (see `activeCommitID`). Worth more here than anywhere else: a stale
+      // changeset doesn't just show the wrong commit, it also drives `selectedPath`'s
+      // first-file fallback, so the embedded `DiffViewer` is retargeted at the wrong commit's file
+      // too.
+      guard !Task.isCancelled, activeCommitID == commitID else { return }
       state = .loaded(changeset)
     } catch {
-      if Task.isCancelled { return }
+      guard !Task.isCancelled, activeCommitID == commitID else { return }
       state = .failed("\(error)")
     }
   }

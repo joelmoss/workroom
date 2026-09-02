@@ -73,11 +73,38 @@ struct DiffViewer: View {
   /// The shared find state (owned by `AppStore`, `contentFind`) — reused unmodified across file, diff,
   /// and changeset panes.
   @ObservedObject var find: FileFindModel
+  /// The diff fetch, injectable so a test can hold one file's load open while the pane is retargeted
+  /// to another (the stale-write race `activeFetchKey` guards). Defaults to the real resolver.
+  var resolveDiff: (DiffDescriptor, String, String?) async -> DiffResult = {
+    await DiffResolver().resolve($0, in: $1, projectRoot: $2)
+  }
+  #if DEBUG
+    /// Test-only observation seam for the stale-load regression test — fires with the `LoadState`
+    /// this SPECIFIC instance just committed. Per-instance (a `@MainActor` closure the test owns),
+    /// not a shared static, for the same reason `AvatarView.onCommit` is: the macOS XCTest host runs
+    /// the real, fully-live app alongside the test's hosted view, so a global seam would also catch
+    /// commits from unrelated `DiffViewer`s already on screen.
+    var onCommit: (@MainActor (LoadState) -> Void)? = nil
+  #endif
 
   @State private var state: LoadState = .loading
   /// The file identity (`fetchKey`) the current diff was loaded for — so a spurious `.task` re-run
   /// for the SAME file no-ops instead of re-entering `load()` (see the load task's comment).
   @State private var loadedKey: String?
+  /// The id of whichever `.task(id:)` invocation most recently started a load at this
+  /// view-identity slot — a generation token, held ALONGSIDE `Task.isCancelled` rather than
+  /// instead of it. Retargeting this pane swaps the id value at a stable slot (the view instance is
+  /// reused, not recreated), and cancellation delivery for that shape does not measure the same
+  /// way everywhere: `AvatarView` measured `Task.isCancelled == false` throughout the outgoing
+  /// invocation in the live app (see TODOS "`.task(id:)` cancellation is not reliably delivered on
+  /// an in-place value swap"), while this view measured it DELIVERED in a hosted-view harness
+  /// (`DiffViewerStaleLoadTests`). The harness is not the app's view tree and the flag's delivery is
+  /// an unspecified SwiftUI detail, so the flag is the guard the test proves and the token is the
+  /// belt. `@State` survives the slot being reused, so whichever invocation started LAST wins.
+  @State private var activeFetchKey: String?
+  /// The same generation token for the highlight task (`.task(id: highlightKey)`), tracked
+  /// separately because the two tasks have independent keys and lifetimes.
+  @State private var activeHighlightKey: String?
   /// Syntax-highlighted new-side lines, keyed by 1-based new-file line number. Empty ⇒ render plain
   /// (the always-available fallback). Built asynchronously off the diff render — highlighting can
   /// never block or break the diff.
@@ -226,13 +253,19 @@ struct DiffViewer: View {
     // changes `fetchKey`; a tab reopen recreates the view (so `@State` resets) — both re-run.
     .task(id: fetchKey) {
       guard Self.shouldLoad(loadedKey: loadedKey, fetchKey: fetchKey) else { return }
-      loadedKey = fetchKey
-      await load()
+      let myKey = fetchKey
+      loadedKey = myKey
+      activeFetchKey = myKey
+      await load(key: myKey)
     }
     // Build (or rebuild) highlighting once a diff is loaded, and re-colour on theme change. Keyed
     // on source+path+theme-generation+load-token so a superseded run is cancelled and a stale
     // result (wrong file or old theme) is never applied.
-    .task(id: highlightKey) { await applyHighlight() }
+    .task(id: highlightKey) {
+      let myKey = highlightKey
+      activeHighlightKey = myKey
+      await applyHighlight(key: myKey)
+    }
   }
 
   /// Identity of the file+revision this diff is for — the load task's key and the re-load guard.
@@ -344,7 +377,7 @@ struct DiffViewer: View {
     }
   }
 
-  private func load() async {
+  private func load(key: String) async {
     state = .loading
     highlightedLines = [:]  // drop any previous file's colours immediately (no stale flash)
     highlightedOldLines = [:]
@@ -353,7 +386,12 @@ struct DiffViewer: View {
     let result =
       UITestFixture.isActive
       ? UITestFixture.diff(for: descriptor)
-      : await DiffResolver().resolve(descriptor, in: directory, projectRoot: projectRoot)
+      : await resolveDiff(descriptor, directory, projectRoot)
+    // Stale-write guard. This path had NO staleness check at all, so a slow diff for the file this
+    // pane USED to show could land after a retarget and paint file A's diff, stats and find index
+    // into file B's slot — reproduced red/green by `DiffViewerStaleLoadTests`. The token half is the
+    // belt; see `activeFetchKey` for why both are here.
+    guard !Task.isCancelled, activeFetchKey == key else { return }
     switch result {
     case .diff(let diff): state = diff.hunks.isEmpty ? .empty : .loaded(diff)
     case .binary: state = .binary
@@ -380,12 +418,15 @@ struct DiffViewer: View {
     }
     if isFocused { find.setSource(findIndex?.lines(sideBySide: isSideBySideActive) ?? []) }
     loadToken &+= 1  // signal the highlight task to (re)build against this diff
+    #if DEBUG
+      onCommit?(state)
+    #endif
   }
 
   /// Build syntax highlighting for the loaded diff, off-main and cancellable. Any miss (no grammar,
   /// no/blocked content, parse failure, stale/cancelled) leaves the diff rendering plain — this can
   /// never block or break the diff. Only additions + context are coloured; deletions stay plain.
-  private func applyHighlight() async {
+  private func applyHighlight(key: String) async {
     guard case .loaded(let diff) = state else {
       highlightedLines = [:]
       return
@@ -409,7 +450,7 @@ struct DiffViewer: View {
       UITestFixture.isActive
       ? UITestFixture.fileContent(for: descriptor)
       : await DiffResolver().fileContent(for: descriptor, in: directory)
-    guard !Task.isCancelled else { return }
+    guard !Task.isCancelled, activeHighlightKey == key else { return }
     guard let content else {
       highlightedLines = [:]
       return
@@ -424,11 +465,11 @@ struct DiffViewer: View {
     let spans = await Task.detached(priority: .utility) {
       SyntaxHighlighter.shared.spans(for: content, grammar: grammar)
     }.value
-    guard !Task.isCancelled else { return }
+    guard !Task.isCancelled, activeHighlightKey == key else { return }
     let lines = DiffHighlightMapper.attributedLines(
       diff: diff, content: content, spans: spans, tokens: theme.tokens,
       additionEmphasis: emphasis.additions)
-    guard !Task.isCancelled else { return }
+    guard !Task.isCancelled, activeHighlightKey == key else { return }
     highlightedLines = lines
 
     // Old side: highlight the DELETED lines from the pre-image file (the new-side pass can't — they
@@ -438,11 +479,11 @@ struct DiffViewer: View {
     let oldContent =
       UITestFixture.isActive
       ? nil : await DiffResolver().oldFileContent(for: descriptor, in: directory)
-    guard !Task.isCancelled, let oldContent else { return }
+    guard !Task.isCancelled, activeHighlightKey == key, let oldContent else { return }
     let oldSpans = await Task.detached(priority: .utility) {
       SyntaxHighlighter.shared.spans(for: oldContent, grammar: grammar)
     }.value
-    guard !Task.isCancelled else { return }
+    guard !Task.isCancelled, activeHighlightKey == key else { return }
     highlightedOldLines = DiffHighlightMapper.attributedLines(
       diff: diff, content: oldContent, spans: oldSpans, tokens: theme.tokens,
       side: .old, deletionEmphasis: emphasis.deletions)

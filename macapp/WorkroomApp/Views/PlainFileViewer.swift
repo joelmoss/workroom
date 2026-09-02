@@ -20,6 +20,17 @@ struct PlainFileViewer: View {
   @ObservedObject var find: FileFindModel
 
   @State private var state: LoadState = .loading
+  /// The id of whichever `.task(id:)` invocation most recently started a load at this
+  /// view-identity slot — a generation token, held ALONGSIDE `Task.isCancelled` rather than
+  /// instead of it. Retargeting this pane swaps the id value at a stable slot (the view instance is
+  /// reused, not recreated), and cancellation delivery for that shape does not measure the same
+  /// way everywhere: `AvatarView` measured `Task.isCancelled == false` throughout the outgoing
+  /// invocation in the live app (see TODOS "`.task(id:)` cancellation is not reliably delivered on
+  /// an in-place value swap"), while this view measured it DELIVERED in a hosted-view harness
+  /// (`DiffViewerStaleLoadTests`). The harness is not the app's view tree and the flag's delivery is
+  /// an unspecified SwiftUI detail, so the flag is the guard the test proves and the token is the
+  /// belt. `@State` survives the slot being reused, so whichever invocation started LAST wins.
+  @State private var activePath: String?
   /// The displayed lines (capped — see `lineCap`), the always-available plain fallback.
   @State private var lines: [String] = []
   /// The (possibly line-capped) content the highlight task parses; kept so a theme change recolours
@@ -87,7 +98,11 @@ struct PlainFileViewer: View {
         if isFocused && !showingPreview { FileFindBar(model: find) }
       }
       .background(theme.tokens.bg)
-      .task(id: descriptor.path) { await load() }
+      .task(id: descriptor.path) {
+        let myPath = descriptor.path
+        activePath = myPath
+        await load(path: myPath)
+      }
       .task(id: highlightKey) { await applyHighlight() }
       // Feed the find model this file's lines when focus arrives (or the file/content changes), so a
       // search runs against what's actually on screen.
@@ -105,7 +120,7 @@ struct PlainFileViewer: View {
 
   // MARK: Loading
 
-  private func load() async {
+  private func load(path: String) async {
     state = .loading
     lines = []
     attributed = NSAttributedString()
@@ -124,7 +139,9 @@ struct PlainFileViewer: View {
       else { return nil }
       return PlainFileViewer.classify(data: data)
     }.value
-    guard !Task.isCancelled else { return }
+    // Stale-write guard (see `activePath`): a slow read of the file this pane USED to show must
+    // never paint file A's text into file B's slot.
+    guard !Task.isCancelled, activePath == path else { return }
     switch outcome {
     case .none: state = .failed("File unavailable")
     case .empty: state = .empty

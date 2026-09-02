@@ -770,8 +770,65 @@ stale-write race on `Task.isCancelled` alone is potentially relying on the same 
 `Task.isCancelled` near a `.task(id:` call before trusting one; the working pattern is the
 generation-token comparison above, not the cancellation flag.
 
-**Priority:** informational — no other call site audited yet. Worth a pass if another stale-write bug
-surfaces in a `.task(id:)`-driven view.
+### The audit — DONE (2026-09-02), and it found a real bug the entry didn't predict
+
+All 15 `.task(id:)` sites in the app were triaged. The headline is **not** the dead-guard class this
+entry was filed about: it's that **`DiffViewer.load` had no staleness guard at all**.
+
+**Fixed, red/green-verified:** a content pane is REUSED when the user picks another file (the pane
+tree's `ForEach` keys by tab id, `PaneTreeView.swift:57`, so `DiffViewer` keeps its identity and only
+`descriptor` changes). `load()` awaited the diff resolve and then wrote `state`, `emphasis`,
+`sbsRows`, `loadedStats` and the find index with nothing checking whether the pane had since been
+retargeted — so a slow diff for file A could land after the user moved to file B and paint A's diff,
+A's ± counts and A's find index into B's pane. New `DiffViewerStaleLoadTests` reproduces it
+deterministically (an injected `resolveDiff` holds A's resolve open until B has committed, via a new
+per-instance `#if DEBUG onCommit` seam modelled on `AvatarView`'s): **fails** with the guard removed
+(`alpha.swift` overwrites `bravo.swift`), **passes** with it restored.
+
+**The measurement discrepancy, unresolved — read this before trusting either half of a guard.** The
+guard shipped is `guard !Task.isCancelled, activeFetchKey == key`. Only the FIRST half is falsifiable
+by the new test: measured in a hosted-`NSHostingView` harness on macOS 26.6.2, SwiftUI **does**
+deliver cancellation for an in-place id swap, so removing the token alone still passes. Measured both
+slot shapes — a plain `@ObservedObject` value swap and a `ForEach(..., id: \.offset)` slot — and
+cancellation was delivered in both, which directly contradicts this entry's own live-app measurement
+of the identical described shape. A throwaway offset-keyed regression test was written and then
+**deleted**: it passed with and without the token, so it pinned nothing and its message claimed a
+"measured dead" result that isn't true. The token is kept anyway (~3 lines, cannot be wrong) because a
+hosted harness is not the app's real view tree and the flag's delivery is an unspecified SwiftUI
+detail. **If a stale-content report ever arrives, instrument in the live app — not in a harness.**
+
+**Guards added as belt** (each already had `Task.isCancelled`, which measures sufficient above; the
+token is the same generation-token pattern, threaded as a captured `key` parameter so nothing
+re-reads a mixed live/frozen key after a suspension):
+
+| Site | Was | Now |
+| --- | --- | --- |
+| `DiffViewer.load` | **no guard** | `!Task.isCancelled` + `activeFetchKey` — the real bug |
+| `DiffViewer.applyHighlight` (5 write points) | `Task.isCancelled` | + `activeHighlightKey` |
+| `PlainFileViewer.load` | `Task.isCancelled` | + `activePath` |
+| `ChangesetDetailView.load` | `Task.isCancelled` | + `activeCommitID` |
+| `HistoryPanel` hover-dwell card (`:383`) | `Task.isCancelled` | + a live `hovering` re-read |
+
+`ChangesetDetailView` is the most visible of the four: a stale changeset doesn't just show the wrong
+commit, it also drives `selectedPath`'s first-file fallback, so the embedded `DiffViewer` gets
+retargeted at the wrong commit's file too.
+
+**Triaged as safe, no change needed** (so a future pass doesn't re-walk them):
+
+- `PlainFileViewer.applyHighlight` — already guards on `source == content`, a live content-identity
+  compare that is strictly stronger than either the flag or a token.
+- Synchronous `.task(id:)` bodies with no await-then-write: `HistoryPanel:81`, `FilesPanel:44`,
+  `VCSToolbar:168`, `TerminalStatusBar:98`, `WorkroomTerminalsView:100`.
+- `DetachedSessionsButton:36` — its write goes to a store keyed by `workroomID`, not to view `@State`,
+  so a stale invocation refreshes the OLD workroom's own entry rather than overwriting the new one's.
+- Manual `Task {}` handles the owner explicitly `.cancel()`s, plus live-state re-reads:
+  `ToastStack:290`, `EdgeRevealSidebar:245`, `SettingsView:358`.
+- Model-owned tasks (`RemoteStateModel`, `AppStore+WorkroomStatus`, `HistoryModel`,
+  `TerminalAgentManager`, `AgentUsage`, `FileTreeModel`, `AppStore`) — structured or owner-cancelled,
+  out of this entry's scope entirely.
+
+**Priority:** done for the audit. The unresolved cancellation-delivery discrepancy above is the only
+live thread, and it needs a live-app measurement, not more harness work.
 
 ### `withTimeout` doesn't observe the CALLER's own cancellation (macapp) — FIXED
 
