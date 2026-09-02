@@ -156,6 +156,20 @@ extension AppStore {
     return from == nil || from != splitIndex(containing: beside)
   }
 
+  /// Whether a drop of `sid` beside `beside` at `edge` will be ACCEPTED — the admissibility half of
+  /// `insertWorkroomSplit`, split out so the drop indicator can ask the same question the commit
+  /// answers. Drawing the accent band from anything else lets the preview promise a split the drop
+  /// then silently refuses.
+  ///
+  /// `destinationRect` is the destination pane's measured rect; `nil` (no measurement available)
+  /// admits the drop, matching `insertWorkroomSplit`'s own default.
+  func canInsertWorkroomSplit(
+    _ sid: SidebarID, beside: SidebarID, edge: PaneEdge, destinationRect: CGRect?
+  ) -> Bool {
+    guard let destinationRect, workroomSplitWouldAddMember(sid, beside: beside) else { return true }
+    return PaneTreeLayout.canSplit(destinationRect, along: edge.orientation)
+  }
+
   func insertWorkroomSplit(
     _ sid: SidebarID, beside: SidebarID, edge: PaneEdge, destinationRect: CGRect? = nil
   ) {
@@ -171,11 +185,8 @@ extension AppStore {
     // fallback and yielding two 172pt panes. `destinationRect` is the pane's measured rect, threaded
     // from `RootView.workroomChipDropTarget` (the only layer that has the plan); `nil` means an
     // unmeasured caller and keeps the pre-floor behaviour rather than guessing.
-    if let destinationRect, workroomSplitWouldAddMember(sid, beside: beside),
-      !PaneTreeLayout.canSplit(destinationRect, along: edge.orientation)
-    {
-      return
-    }
+    guard canInsertWorkroomSplit(sid, beside: beside, edge: edge, destinationRect: destinationRect)
+    else { return }
     // Leave whatever group `sid` was in (possibly dissolving it) BEFORE joining `beside`'s — structural
     // only, no selection re-point: `sid` is about to be focused anyway.
     detachFromSplitGroup(sid)

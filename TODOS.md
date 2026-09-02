@@ -1713,10 +1713,18 @@ a too-narrow drop leaves `workroomSplits` empty (red-verified — reverting the 
 this test), a roomy one splits, a vertical drop onto the same narrow-but-tall pane is allowed, a
 rearrangement is never blocked, and `destinationRect: nil` keeps the pre-floor behaviour.
 
-**Known gap, deliberate:** the drop INDICATOR still draws for a drop that will now be refused —
-`dropHighlight` renders from `dropTarget` alone, which doesn't know the dragged sid and so can't tell
-whether the drop adds a member. Suppressing the band needs the closure to grow to
-`(CGPoint, SidebarID) -> …`. Worth doing if the silent refusal reads as a bug.
+**The drop INDICATOR was fixed in a follow-up**, and the note that preceded it here was wrong: it
+claimed suppressing the band needed the resolver closure to grow to `(CGPoint, SidebarID) -> …`.
+It didn't — `WorkroomSplitView.dropHighlight` already has the dragged sid (`externalDrag.sid`), the
+destination (`hit.tab`), the edge and the rect (`plan.panes[hit.tab]`), and the view already holds
+`let store: AppStore`. The admissibility half of `insertWorkroomSplit` is now
+`AppStore.canInsertWorkroomSplit(_:beside:edge:destinationRect:)`, which the commit path and the band
+both call — so the preview cannot promise a split the drop then refuses.
+
+`WorkroomSplitTests.testAdmissibilityMatchesWhatInsertActuallyDoes` walks the predicate and the real
+insert over the same four cases and asserts they agree, which is the divergence that matters. The
+view calling the predicate is a one-line code-read, not covered by a test (`dropHighlight` is a
+`@ViewBuilder`).
 
 **Still open: the `fits` content-pane exemption** (second bullet below). `TerminalSessions.fits` keeps
 `guard let surface else { return true }`, so ⌘D on a diff/file/changeset pane is still unguarded. That

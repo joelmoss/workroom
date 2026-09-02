@@ -146,6 +146,38 @@ final class WorkroomSplitTests: XCTestCase {
     XCTAssertEqual(onlySplit(store)?.tabIDs.count, 2)
   }
 
+  /// The indicator and the commit must agree — `dropHighlight` gates the accent band on exactly this
+  /// predicate, so a divergence here is a band that previews a drop the store then refuses.
+  func testAdmissibilityMatchesWhatInsertActuallyDoes() {
+    for (rect, edge, expected) in [
+      (tooNarrow(), PaneEdge.right, false),
+      (tooNarrow(), PaneEdge.bottom, true),  // narrow but tall — the other axis is fine
+      (roomy(), PaneEdge.right, true),
+      (CGRect?.none, PaneEdge.right, true),  // unmeasured ⇒ admitted, as insert defaults
+    ] as [(CGRect?, PaneEdge, Bool)] {
+      let store = store3()
+      XCTAssertEqual(
+        store.canInsertWorkroomSplit(
+          wr("feature"), beside: wr("main"), edge: edge, destinationRect: rect),
+        expected, "predicate disagreed for \(String(describing: rect)) / \(edge)")
+      store.insertWorkroomSplit(
+        wr("feature"), beside: wr("main"), edge: edge, destinationRect: rect)
+      XCTAssertEqual(
+        !store.workroomSplits.isEmpty, expected,
+        "insert disagreed with the predicate for \(String(describing: rect)) / \(edge)")
+    }
+  }
+
+  func testAdmissibilityAllowsARearrangementTheFloorWouldOtherwiseBlock() {
+    let store = store3()
+    store.insertWorkroomSplit(
+      wr("feature"), beside: wr("main"), edge: .right, destinationRect: roomy())
+    XCTAssertTrue(
+      store.canInsertWorkroomSplit(
+        wr("main"), beside: wr("feature"), edge: .right, destinationRect: tooNarrow()),
+      "the band must still show for a rearrangement, which the floor does not gate")
+  }
+
   func testInsertMovingExistingMemberIsNotADuplicate() {
     let store = store3()
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)  // [main, feature]

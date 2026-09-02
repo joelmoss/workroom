@@ -129,7 +129,11 @@ struct WorkroomSplitView: View {
   private func dropHighlight(plan: PaneTreeLayout.Plan<SidebarID>) -> some View {
     if let drag = externalDrag,
       let hit = PaneTreeLayout.dropTarget(at: drag.location, panes: plan.panes),
-      hit.tab != drag.sid, let rect = plan.panes[hit.tab]
+      hit.tab != drag.sid, let rect = plan.panes[hit.tab],
+      // Don't promise a split the drop will refuse: a pane too small to hold two floor-width halves
+      // rejects the insert, so previewing it would read as a broken drop rather than a guarded one.
+      store.canInsertWorkroomSplit(
+        drag.sid, beside: hit.tab, edge: hit.edge, destinationRect: rect)
     {
       let band = PaneTreeLayout.edgeBand(hit.edge, in: rect)
       RoundedRectangle(cornerRadius: 8)
