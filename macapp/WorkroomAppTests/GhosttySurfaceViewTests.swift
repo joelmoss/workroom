@@ -168,3 +168,31 @@ final class TerminalFocusAdoptionLiveSurfaceTests: XCTestCase {
       view.focusSyncCount, 1, "createSurface must re-sync focus for the first-responder view")
   }
 }
+
+/// Guards the two properties that keep `GHOSTTY_ACTION_SELECTION_CHANGED` safe. libghostty emits
+/// that action from inside `Surface.setSelection`, which upstream documents as "must be called with
+/// the renderer mutex held" — so `handleSelectionChanged()` must do NOTHING on the calling stack
+/// (any engine read re-locks a non-recursive mutex on the thread already holding it and wedges the
+/// main thread), and a drag's per-mouse-move burst must collapse to one hop rather than one
+/// notification per event. Both show up in `selectionChangePending`: set means the work was
+/// deferred, and a second call while it is set must not queue a second hop.
+@MainActor
+final class TerminalSelectionChangedDeferralTests: XCTestCase {
+  func testHandlerDefersInsteadOfWorkingOnTheCallbackStack() {
+    let view = GhosttySurfaceView(workingDirectory: "/tmp", spawnsSurface: false)
+    XCTAssertFalse(view.selectionChangePending)
+    view.handleSelectionChanged()
+    XCTAssertTrue(view.selectionChangePending, "must defer off the engine's stack, not act inline")
+  }
+
+  func testBurstCoalescesIntoOneHop() {
+    let view = GhosttySurfaceView(workingDirectory: "/tmp", spawnsSurface: false)
+    for _ in 0..<10 { view.handleSelectionChanged() }
+    XCTAssertTrue(view.selectionChangePending)
+    let drained = expectation(description: "queued hop ran")
+    DispatchQueue.main.async { drained.fulfill() }  // FIFO: runs after the single queued hop
+    wait(for: [drained], timeout: 2)
+    XCTAssertFalse(
+      view.selectionChangePending, "one hop for the whole burst — 10 events, 1 notification")
+  }
+}

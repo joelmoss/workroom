@@ -205,7 +205,9 @@ final class GhosttySurfaceView: NSView {
   private var accessibilityPollTimer: Timer?
   private static let accessibilityPollInterval: TimeInterval = 0.4
   private var lastAccessibilityValue: String?
-  private var lastAccessibilitySelectedText: String?
+  /// Set while a `GHOSTTY_ACTION_SELECTION_CHANGED` hop is already queued — see
+  /// `handleSelectionChanged()`, which coalesces a drag's per-mouse-move burst into one notification.
+  private(set) var selectionChangePending = false
 
   init(workingDirectory: String, command: String? = nil, spawnsSurface: Bool = true) {
     self.workingDirectory = workingDirectory
@@ -994,15 +996,18 @@ final class GhosttySurfaceView: NSView {
     UITestFixture.isActive ? "terminal.surface" : super.accessibilityIdentifier()
   }
 
-  /// Poll the visible screen and selection at a fixed interval and tell VoiceOver when either changed.
+  /// Poll the visible screen at a fixed interval and tell VoiceOver when it changed.
   ///
-  /// Libghostty gives no per-frame "content changed" callback to drive notifications off (the runtime
-  /// adapter's `GHOSTTY_ACTION_*` switch has nothing render-shaped — checked before building this), so
-  /// this polls instead. Gated on `NSWorkspace.shared.isVoiceOverEnabled`, checked FIRST and cheaply on
-  /// every tick: the real cost — materializing the whole viewport into a `String` — is paid only while
-  /// VoiceOver is actually listening, which is the rare case, not the common one. The timer itself runs
-  /// unconditionally so turning VoiceOver on mid-session is picked up within one interval, with no
-  /// separate on/off notification to subscribe to.
+  /// No libghostty action reports that the screen CONTENT changed — the linked header's action list
+  /// has nothing of that shape (`GHOSTTY_ACTION_RENDER` is a draw request, not a content diff, and
+  /// this embedding never sees it: libghostty drives its own layer, we call no draw entry point) — so
+  /// the screen half polls. The SELECTION half doesn't: it's engine-pushed via
+  /// `GHOSTTY_ACTION_SELECTION_CHANGED` into `handleSelectionChanged()`. Gated on
+  /// `NSWorkspace.shared.isVoiceOverEnabled`, checked FIRST and cheaply on every tick: the real cost —
+  /// materializing the whole viewport into a `String` — is paid only while VoiceOver is actually
+  /// listening, which is the rare case, not the common one. The timer itself runs unconditionally so
+  /// turning VoiceOver on mid-session is picked up within one interval, with no separate on/off
+  /// notification to subscribe to.
   private func startAccessibilityPolling() {
     guard accessibilityPollTimer == nil else { return }
     accessibilityPollTimer = Timer.scheduledTimer(
@@ -1022,9 +1027,34 @@ final class GhosttySurfaceView: NSView {
       lastAccessibilityValue = value
       NSAccessibility.post(element: self, notification: .valueChanged)
     }
-    let selected = readSelectionText()
-    if selected != lastAccessibilitySelectedText {
-      lastAccessibilitySelectedText = selected
+  }
+
+  /// `GHOSTTY_ACTION_SELECTION_CHANGED` — the engine changed the selection. A bare tag, no payload.
+  ///
+  /// **Never call back into the engine from this stack.** libghostty emits the action from inside
+  /// `Surface.setSelection`, which upstream documents as "must be called with the renderer mutex
+  /// held" (verified in `src/Surface.zig` at our pinned rev) — and `ghostty_surface_has_selection` /
+  /// `ghostty_surface_read_selection` both lock that same `std.Thread.Mutex`, which is NOT recursive.
+  /// Reading the selection here would re-lock it on the thread already holding it and wedge the main
+  /// thread permanently. So this hops to the next runloop turn, by which point the engine has
+  /// released the lock, and only posts the notification — VoiceOver pulls the text itself via
+  /// `accessibilitySelectedText()`, off this stack.
+  ///
+  /// The hop coalesces too, which the poll used to do for free: a drag emits one action per
+  /// mouse-move (`cursorPosCallback`), and `selectionChangePending` collapses that burst into one
+  /// notification per runloop turn. No last-value diff either — the engine fires this only on a
+  /// genuine change, so unlike the poll there is nothing to compare against and no stale comparison
+  /// to go wrong after VoiceOver is toggled mid-session.
+  func handleSelectionChanged() {
+    guard !selectionChangePending else { return }
+    selectionChangePending = true
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      selectionChangePending = false
+      // Gate on the same seam as the content accessors, not raw VoiceOver: a detached view has no
+      // listener (`viewDidMoveToWindow` stops the poll for the same reason), and the fixture seam
+      // keeps this path drivable from an XCUITest.
+      guard window != nil, accessibilityContentEnabled else { return }
       NSAccessibility.post(element: self, notification: .selectedTextChanged)
     }
   }

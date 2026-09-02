@@ -117,6 +117,20 @@ final class GhosttyRuntimeAdapter {
       view.applySearchEvent(.selected(Int(action.action.search_selected.selected)))
       return true
 
+    case GHOSTTY_ACTION_SELECTION_CHANGED:
+      // The engine's selection changed. A bare tag — the action union carries no payload. Replaces
+      // the selection half of the VoiceOver accessibility poll
+      // (`GhosttySurfaceView.pollAccessibilityContent`), which still owns the screen-content half:
+      // there is no content-changed action to hang that one on.
+      //
+      // UNLIKE every other case here, this one does NOT arrive via `ghostty_app_tick` — it fires
+      // synchronously inside our own `ghostty_surface_mouse_pos`/`_mouse_button`/`_key` calls,
+      // from inside `Surface.setSelection`, WITH THE RENDERER MUTEX HELD. So the handler must not
+      // touch the engine on this stack (it would deadlock); see `handleSelectionChanged()`.
+      guard let view = surfaceView(from: target) else { return false }
+      view.handleSelectionChanged()
+      return true
+
     case GHOSTTY_ACTION_RING_BELL:
       // libghostty delegates the bell to the host — it does NOT produce audio/flash itself, so
       // without this the bell would be silent. Ring the system bell. We intentionally do not record

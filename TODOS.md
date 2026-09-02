@@ -348,7 +348,43 @@ AppleScript driving again.
 
 **Priority:** P3 — the manual checklist still covers this; nothing is unguarded, just unautomated.
 
-### Wire native `selection_changed` notification (macapp) — CMT-3 follow-up, unblocked by the pin bump, filed 2026-08-14
+### Wire native `selection_changed` notification (macapp) — SHIPPED (2026-09-02)
+
+**Shipped, but NOT as the original entry described — the naive version deadlocks.** The action is
+now handled, and the poll owns only the screen-content half. The trap, found by `/review`'s
+adversarial pass and confirmed against ghostty's own source at our pinned rev (`35e1a016`,
+`src/Surface.zig`): libghostty emits `selection_changed` from inside `Surface.setSelection`, whose
+doc comment reads *"This must be called with the renderer mutex held"*, and
+`ghostty_surface_has_selection` / `ghostty_surface_read_selection` both lock that same
+`std.Thread.Mutex` — which is not recursive. So the obvious handler the original entry proposed
+("call `readSelectionText()`, diff, post") re-locks the mutex on the thread already holding it and
+wedges the main thread permanently, on the first selection gesture with VoiceOver on. **Anything
+added to this action's handler must stay off the engine.**
+
+What shipped instead: `handleSelectionChanged()` sets a `selectionChangePending` flag and hops to
+the next runloop turn via `DispatchQueue.main.async`, where the engine has released the lock, then
+posts `.selectedTextChanged` and nothing else — VoiceOver pulls the text itself through
+`accessibilitySelectedText()`, off that stack. Three side effects of not reading: the hop coalesces
+a drag's per-mouse-move action burst (`cursorPosCallback` fires one per event, 60-120Hz, where the
+poll coalesced to 2.5Hz) into one notification per turn; there is no last-value diff to go stale
+when VoiceOver is toggled mid-session, so `lastAccessibilitySelectedText` is deleted; and a failed
+selection read can no longer be mistaken for a cleared selection. The deferred block gates on
+`window != nil` (matching `viewDidMoveToWindow`'s `stopAccessibilityPolling`) and on
+`accessibilityContentEnabled` rather than raw `NSWorkspace.shared.isVoiceOverEnabled` — that seam
+includes `UITestFixture.isActive`, so the path is drivable from a test host.
+
+Also corrected while here: `GhosttyRuntimeAdapter`'s file-header threading note claimed every action
+arrives via `ghostty_app_tick`. This one does not — it fires synchronously inside our own
+`ghostty_surface_mouse_pos`/`_mouse_button`/`_key` calls from AppKit event handlers. Still the main
+thread, so the adapter's unsynchronized state stays safe, but the "it comes from the tick" reasoning
+is exactly what makes re-entering the engine look harmless.
+
+**Tests:** `TerminalSelectionChangedDeferralTests` (in `GhosttySurfaceViewTests.swift`) asserts the
+two properties that keep this safe — the handler defers instead of working on the callback stack,
+and a 10-event burst collapses to one hop. The notification *delivery* itself is still
+manual-verify: VoiceOver on, select text in a pane, listen.
+
+**Original entry:**
 
 **What:** `GhosttySurfaceView.startAccessibilityPolling`/`pollAccessibilityContent`
 (`GhosttySurfaceView.swift:990-1014`) drive VoiceOver's `.valueChanged`/`.selectedTextChanged` off a
