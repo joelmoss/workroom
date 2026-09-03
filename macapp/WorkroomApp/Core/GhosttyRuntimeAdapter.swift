@@ -280,7 +280,7 @@ final class GhosttyRuntimeAdapter {
   /// the engine's heap-allocated request, which `completeClipboardRequest` deliberately does NOT
   /// free on this route precisely so it survives until we answer.
   ///
-  /// Denying simply drops it: GhosttyKit 1.2.3 exposes no `ghostty_surface_deny_clipboard_request`,
+  /// Denying simply drops it: the pinned engine exposes no `ghostty_surface_deny_clipboard_request`,
   /// so the request allocation is leaked on every denial — upstream's own macOS app at the pinned
   /// ref does exactly the same, and inventing a completion here would re-enter the same error path
   /// and prompt again in a loop.

@@ -463,37 +463,56 @@ ref *we* pin, and point `project.yml` at it.
 **Status: demoted from P1, and re-argued.** Two of the three rationales this entry used to carry were
 wrong, and are struck:
 
-- ~~"We trail ghostty by ~2 versions"~~ — a **package-vs-ghostty version confusion**; see the trap
-  described in the pin-bump entry above. We have been on ghostty's newest *release* the whole time.
+- ~~"We trail ghostty by ~2 versions"~~ — as *originally argued* this was a **package-vs-ghostty
+  version confusion**; see the trap described in the pin-bump entry above. It was true at the time
+  that we sat on ghostty's newest release. **That is no longer true (re-checked 2026-09-03):** ghostty
+  has since tagged v1.3.0 and v1.3.1, and our pin `35e1a016` is an UNTAGGED Jul 10 commit, so we are
+  two ghostty releases behind. Struck as a reason to *own* the build, not as a statement of fact —
+  see "Measured" below, and note the fix is a pin bump, not a fork.
 - ~~"Only owning the pin can reach OSC 99"~~ — **a fork cannot deliver OSC 99 either.** See the OSC 99
   entry under Notifications for the upstream state; the short version is that the open parser PR
   routes the command into an "unimplemented → discard" branch, and the pieces that would make it
   reach an embedder do not exist as PRs at all.
 
 **What survives, and it is the whole argument: supply chain.** The shipped binary is **not stock
-ghostty**. `Patches/ghostty/` carries 11 patches (~200 KB, including a 113 KB prebuilt-framedata
-patch and the ~18 KB host-managed-IO patch that rewrites PTY hosting), applied at build time by a
-single maintainer. The artifact is checksummed by SPM but **not signed or notarized** — unlike
+ghostty**. `Patches/ghostty/` carries **20 files, ~400 KB** (re-counted 2026-09-03; it was 11 files
+/ ~200 KB on 2026-08-14) — including a 113 KB prebuilt-framedata patch and the ~18 KB host-managed-IO
+patch that rewrites PTY hosting — applied at build time by a single maintainer. Note that only about
+half are `.patch` files: `0004-ios-fixes.sh`, `0005-ios-metal-rendering-v2.sh`,
+`0007-disable-inspector.sh`, `0013-host-toolchain.sh` and friends are **shell scripts that rewrite
+ghostty's source at build time**, which is a wider blast radius than a diff you can read.
+
+The artifact is checksummed by SPM but **not signed or notarized** — unlike
 ghostty-org, which minisigns its own `ghostty-vt` artifacts. We link that into a notarized app, in
 the component that runs the user's shell. Slice composition churns too: arm64e slices shipped
 2026-07-21 and were reverted three days later, re-cutting an already-published tag.
 
-**And the lag concern is real — for a mechanism the old entry never identified.** The packager does
-**not** track ghostty. `.github/workflows/build.yml` reads its ghostty commit from a hand-maintained
-`Ghostty.ref` file (regex-validated as a 40-char sha), and the weekly cron never queries ghostty at
-all — it bumps the package's own patch number and bails with `"main matches package tag …, skipping
-scheduled release"` when the package repo hasn't moved. Release-tag auto-detection existed up to
-package 1.2.9 and was **removed**. Five package releases in 17 days all shipped one engine. So when
-ghostty ships 1.4.0, nothing pulls it until one person edits a file.
+**The lag MECHANISM is still there, but the observed behaviour is much better (re-checked
+2026-09-03).** `.github/workflows/build.yml` still reads its ghostty commit from a hand-maintained
+`Ghostty.ref` (regex-validated as a 40-char sha), and it is now `on: workflow_dispatch:` — **no cron
+at all** on the engine build, so nothing pulls a new ghostty until one person edits that file and
+presses the button. What changed is that the person is doing it: the engine moved `35e1a016`
+(Jul 10) → `332b2aef` (= ghostty v1.3.1, Aug 20) → `c4e16970` (Sep 3), four bumps in two weeks.
+`github-actions[bot]` authors those releases only because the workflow creates them — it is not
+automation tracking upstream. The workflow also gained a `Test XCFramework Consumer` step.
 
-**Measured, not hypothetical (2026-08-14):** `ghostty-org/ghostty`'s own `main` is **652 commits
-ahead** of our pinned `35e1a016` (last moved 2026-07-10) — over a month of drift already, and
-counting. `libghostty-spm` has cut nothing since `1.3.2` (2026-07-27); its own `main` last moved
-2026-08-06 and is still building that same engine ref. Not urgent — nothing we need today is stuck
-behind it — but this is now a live, growing number, not a someday-risk.
+**Measured 2026-09-03 (supersedes the 2026-08-14 numbers this paragraph used to carry — "652 commits
+ahead", "libghostty-spm has cut nothing since 1.3.2"; both are dead).** The drift is now ours, not
+the packager's:
 
-**How to start:** clone `ghostty-org/ghostty` at the chosen ref, decide deliberately which of the 11
-patches to carry (`0002-host-managed-io*` is load-bearing for embedding; the iOS/Catalyst ones are
+- ghostty's newest tag is **v1.3.1** (`332b2aef`). Our pin `35e1a016` is untagged and predates both
+  v1.3.0 and v1.3.1.
+- `libghostty-spm` is on **1.5.20260903**, released the same day, built from ghostty main
+  `c4e16970`. It also publishes release-tracking builds: **package `1.5.2` is ghostty v1.3.1**
+  (`upstream.1.3.1-3`), and that is the one to want — a tagged upstream beats an untagged main
+  commit.
+- We are still pinned `exactVersion: 1.3.2` in `project.yml`, so none of this can move under us.
+
+The practical read: a build from a real ghostty RELEASE is now available off the shelf, which makes
+the pin bump easier and weakens the case for owning the build rather than strengthening it.
+
+**How to start:** clone `ghostty-org/ghostty` at the chosen ref, decide deliberately which of the 20
+patch files to carry (`0002-host-managed-io*` is load-bearing for embedding; the iOS/Catalyst ones are
 not ours), and regenerate `terminfo`/`shell-integration` from that same ref. Vendor the xcframework +
 a 2-file C shim, or host it as a release artifact in a separate repo's CI. Zig is needed only to
 *build*, not to *consume*. Signing is unchanged (a static archive in the main executable, no new
@@ -503,9 +522,28 @@ implies** — see "Build path for owning GhosttyKit.xcframework" below.
 **Depends on:** nothing in-app. Best decided once GA has shipped and the pin bump has baked, since
 owning the pin means owning the patch decisions above.
 
-**Priority:** P3 — a real supply-chain posture question with no feature blocked behind it. Revisit at
-GA, or the first time the hand-maintained `Ghostty.ref` leaves us stranded on an engine we need to
-move off.
+**Decided 2026-09-03: don't own it, and the GA gate this entry existed for is answered.** The
+supply-chain concern is real and unchanged, but `exactVersion: 1.3.2` means there is NO passive
+exposure — the only moment the risk exists is a bump we initiate. Owning the build buys that one
+moment at the cost of 20 patch decisions, Zig in CI, universal builds, terminfo/shell-integration
+regeneration, and rebasing the stack on every ghostty bump, permanently.
+
+Put the safety on the bump gate instead, where the risk actually lives:
+
+1. Prefer the `upstream.<ghostty-release>` package builds (today: package `1.5.2` = ghostty v1.3.1)
+   over the date-versioned main-tracking ones.
+2. Diff `Patches/ghostty/` against the previous pin and read what changed — ~10 minutes, and it is
+   the only step that catches the actual threat.
+3. Confirm the release body's ghostty sha resolves to a ghostty TAG before accepting it.
+
+**Follow-up that falls out of this:** we are two ghostty releases behind on an untagged commit, and a
+v1.3.1 build is available now. Bumping the pin to package `1.5.2` is the useful next move — see
+"Bump the libghostty pin" above for the patch-swap risk, the resources that must be regenerated with
+it, and the bake gate; that entry's process applies unchanged.
+
+**Priority:** P3 — a real supply-chain posture question with no feature blocked behind it. Reopen the
+ownership question only if the hand-maintained `Ghostty.ref` leaves us stranded on an engine we need
+to move off.
 
 ### Build path for owning GhosttyKit.xcframework (macapp) — CMT-2 finding, checked 2026-08-12
 
@@ -3182,7 +3220,7 @@ hang to these faults; 3A stays open and dormant pending a second occurrence.
 **2026-09-03 — OSC 52 / paste confirmation shipped, and the TODO entry's premise was wrong.**
 The old entry ("writes are gated to `text/*` mime and reads use Ghostty's permissive default
 (auto-allow); `confirmReadClipboard` is a stub") described a permissive pass-through. It wasn't one.
-Read at the pinned ghostty ref (`35e1a016`, GhosttyKit 1.2.3): `apprt/embedded.zig`'s
+Read at the pinned ghostty ref (`35e1a016` — see `project.yml` for the pin): `apprt/embedded.zig`'s
 `completeClipboardRequest` catches `error.UnsafePaste` / `error.UnauthorizedPaste` from
 `Surface.completeClipboardRequest` and calls `confirm_read_clipboard` — so the empty stub meant BOTH
 of these were **silently dropped**, not auto-allowed:
@@ -3215,7 +3253,7 @@ the main thread.
 - **So is `userdata`.** It only names a live `GhosttySurfaceView` during the call; resolving it
   after the async hop would be a `takeUnretainedValue()` on a possibly-freed pointer (close the tab
   while the prompt is up). The view is resolved synchronously and captured weakly.
-- **Denying leaks, and there's no way around it at this pin.** GhosttyKit 1.2.3 has no
+- **Denying leaks, and there's no way around it at this pin.** The pinned engine has no
   `ghostty_surface_deny_clipboard_request` (it exists on `main`), and "completing" with
   `confirmed: false` re-enters the same error path and re-prompts forever. Upstream's own macOS app
   at this ref leaks it identically. Revisit when the pin bumps.
