@@ -114,6 +114,35 @@ final class MultiWindowTests: XCTestCase {
       registry.aggregateUnread, 3, "the badge/menu-bar count sums every window's unread")
   }
 
+  /// **The window number is assigned AFTER the view update, and must stay that way.** `register` is
+  /// reached from `WindowAccessor`'s `viewDidMoveToWindow`, which SwiftUI runs while it installs the
+  /// representable's backing view — i.e. inside a view update. Assigning `AppStore.windowNumber`
+  /// (`@Published`) from there fired `objectWillChange` mid-update, which is Apple-declared undefined
+  /// behaviour: "Publishing changes from within view updates is not allowed, this will cause
+  /// undefined behavior", logged exactly 9 times per launch, every one of them this call path
+  /// (measured 9 before the deferral, 0 after). `recomputeBadge`'s `aggregateUnread` rides along for
+  /// the same reason.
+  ///
+  /// A SwiftUI runtime issue can't be asserted from a unit test, so what's pinned is the property
+  /// that removes it: nothing observable is written on `register`'s own turn.
+  func testWindowNumberIsAssignedAfterRegisterReturnsNotDuringIt() async {
+    let registry = WindowRegistry()
+    let store = AppStore(projectStore: ProjectStore())
+
+    registry.register(window: NSWindow(), store: store)
+    XCTAssertEqual(
+      store.windowNumber, 0,
+      """
+      `register` assigned the window number on its own turn again — that write lands inside a \
+      SwiftUI view update and is undefined behaviour. It must be deferred to the main actor.
+      """)
+
+    // The deferred work is a main-actor `Task`, which cannot start until this one suspends.
+    for _ in 0..<10 where store.windowNumber == 0 { await Task.yield() }
+    XCTAssertEqual(
+      store.windowNumber, 1, "the first registered window still gets number 1, just a turn later")
+  }
+
   // MARK: Window cycling (issue #87)
 
   func testCyclePlanForwardSurfacesSecondAndSendsFrontBack() {

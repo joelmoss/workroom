@@ -119,12 +119,31 @@ final class WindowRegistry: ObservableObject {
     } else {
       entries.append(Entry(window: window, store: store))
     }
-    assignWindowNumberIfNeeded(store)
     if lastActiveStore == nil { lastActiveStore = store }
-    recomputeBadge()
     // The saved session is rebuilt from the live windows (issue #46), and the window layer publishes
     // through none of the store's own publishers — so opening a window has to say so itself.
     SessionCoordinator.shared.markDirty()
+    // The two publishing writes wait a turn. `register` is reached from `WindowAccessor`'s
+    // `viewDidMoveToWindow`, which SwiftUI runs WHILE it is installing the representable's backing
+    // view — i.e. inside a view update — and `assignWindowNumberIfNeeded` (`AppStore.windowNumber`,
+    // `@Published`) plus `recomputeBadge` (`aggregateUnread`, `@Published`) both fire
+    // `objectWillChange` from there. That is "Publishing changes from within view updates is not
+    // allowed, this will cause undefined behavior": measured at exactly 9 faults per launch, all of
+    // them this one call path.
+    //
+    // Deferred here rather than at the `WindowAccessor` callback, which must NOT move: `attachWindow`
+    // depends on running pre-display (it sets the window's frame, hides the title bar before the
+    // open-time flash, and claims the saved session), and the rest of `register` must stay
+    // synchronous too — a window can become key immediately, and `didBecomeKeyNotification`'s handler
+    // above bails when `store(for:)` can't find it yet. Only these two are safe to slip: both are
+    // derived display state (a Window-menu number, a Dock badge) that nothing reads this turn.
+    //
+    // A `Task` on the main actor cannot start until the actor yields, which is after the update
+    // finishes — that is the whole point, so don't "simplify" this into a direct call.
+    Task { @MainActor in
+      assignWindowNumberIfNeeded(store)
+      recomputeBadge()
+    }
   }
 
   /// Give a newly registered window the smallest unused positive number, so the untitled-window

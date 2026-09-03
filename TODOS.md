@@ -1599,48 +1599,6 @@ politeness rather than a blocker.
 
 **Priority:** done for the badge. The ✕ follow-up is P3.
 
-### SwiftUI "Publishing changes from within view updates" — 9 per launch, UNRESOLVED (2026-09-03)
-
-**What:** the app logs `Publishing changes from within view updates is not allowed, this will cause
-undefined behavior` **exactly 9 times per launch**, confirmed identical across four separate pids. A
-tight ~3ms burst on one thread about 2.2s into launch, right after the first Defaults key init and
-CoreSpotlight's donation pass. Deterministic; no user interaction involved.
-
-**Why it's worth chasing:** it is Apple-declared undefined behaviour in the AttributeGraph, and this
-repo has three App Hang investigations — WORKROOM-2B, 2T, and **3A, still open with "NO CODE CAUSE
-FOUND"**. 3A's investigation ruled out a dynamic menu, a `@FocusedObject` invalidation storm, and
-menu-graph accumulation, but never looked at publishes landing inside a view update. Nine documented
-UB violations per launch sitting beside an unexplained hang is the strongest lead that file has.
-
-**Mechanism identified, culprit NOT.** Publishing during an update comes from an `ObservableObject`'s
-`objectWillChange` firing inside `body`. Two candidate sources here: any of `AppStore`'s 65
-`@Published`, and `Defaults.Observable` (the library's `@Default` backing), whose `observe()` spawns a
-`@MainActor` task that calls `objectWillChange.send()` on every key update
-(`Defaults/SwiftUI.swift:36-49`) — so a Defaults write landing mid-update produces exactly this.
-
-**What was tried, and why it failed — read this before spending another session on it:**
-
-- `_os_log_fault_impl` is NOT the sink. The breakpoint resolves and never hits; SwiftUI's runtime
-  issues go through `SwiftUI.Log.runtimeIssuesLog`, not that symbol.
-- `Combine.ObservableObjectPublisher.send()` IS the right hook and resolves cleanly (set it AFTER the
-  process is running — set at launch it stays pending and never binds). But stopping on every publish
-  slows launch so much that **the violation stops reproducing entirely**: 240s of run time, 11 hits,
-  and zero faults logged. The debugger perturbs the race. Every publisher it did catch was
-  `AgentUsageMonitor`'s refresh timer publishing from an async completion — not a view update, not
-  the culprit.
-- Static search came up empty: every `.onPreferenceChange` in the app writes `@State`
-  (`TerminalTabStrip`/`WorkroomTabBar` `drag`, `WorkroomTerminalsView` `contentFrame`,
-  `ChangesetDetailView` `descriptionTruncatable`), not an `ObservableObject`.
-
-**The next thing to try, and it should be first:** Xcode's own **runtime-issue breakpoint**
-(Debug → Breakpoints → + → Runtime Issue Breakpoint). It breaks AT the violation with a live stack
-instead of stopping on every publish, so it should name the culprit in a single launch — and it
-avoids the perturbation that defeated the `send()` breakpoint. It cannot be set from the CLI, which
-is the only reason this entry is still open.
-
-**Priority:** P2 if the hang matters for GA — it is the only untested hypothesis left for WORKROOM-3A.
-P3 as pure hygiene if 3A stays dormant.
-
 ### `Defaults` keys with dots in their names cannot be observed (macapp) — measured, NOT fixed (2026-09-03)
 
 **What:** twelve `Defaults.Key`s use dotted `UserDefaults` names (`"sidebar.visible"`,
@@ -1861,7 +1819,8 @@ The size seam that was missing is a preference: `PaneTreeView` already computes 
 layout, so it now emits them via `PaneRectsKey` and writes them into the store from
 `onPreferenceChange` — after layout, never during body evaluation. `paneRects` is deliberately NOT
 `@Published`: it is rewritten on every resize, and publishing from a layout callback would both churn
-the graph and risk the "Publishing changes from within view updates" class documented above. Nothing
+the graph and risk the "Publishing changes from within view updates" class (see Recently done,
+2026-09-03, for the one instance of it this app actually had). Nothing
 renders from it; it is a measurement cache.
 
 `ContentPaneFloorTests` covers it, red-verified — dropping the `paneRects` lookup reproduces both
@@ -3172,6 +3131,53 @@ error) is one of the hardest to diagnose from a bug report.
 
 Condensed from the long status notes this file used to carry at the top; the full write-ups are in git
 history. Kept here for the parts that stay useful: what changed, and the traps found doing it.
+
+**2026-09-03 — the 9 "Publishing changes from within view updates" faults per launch: found and
+fixed. Both filed hypotheses were wrong, and so was the blocker.** The entry said Xcode's runtime-issue
+breakpoint was the only way forward and "cannot be set from the CLI, which is the only reason this
+entry is still open". No debugger was needed at all: `libsystem_trace` records a backtrace at
+emission for every fault-type message, so
+
+    log show --last 1m --predicate 'process == "Workroom Dev" AND eventMessage CONTAINS "Publishing changes"' --backtrace
+
+hands over all 9 stacks with ZERO timing perturbation — which is what defeated the previous session's
+`ObservableObjectPublisher.send()` breakpoint. App frames come back as image UUID + offset; the app's
+own code is `Workroom Dev.debug.dylib` (`dwarfdump --uuid` to match it), symbolicated with
+`atos -o <dylib> -arch arm64 -l 0 <offset>`. Reach for this FIRST for any SwiftUI runtime issue.
+
+All 9 are one call path, not nine sources:
+
+    WindowResolvingView.viewDidMoveToWindow()   WindowRegistry.swift
+    closure #1 in RootWindow.body.getter        WorkroomApp.swift
+    WindowRegistry.register(window:store:)
+    WindowRegistry.assignWindowNumberIfNeeded
+    AppStore.windowNumber.setter                @Published
+
+`WindowAccessor` is an `NSViewRepresentable`, so SwiftUI runs `viewDidMoveToWindow` WHILE it installs
+the representable's backing view — inside a view update. `register` then synchronously set
+`AppStore.windowNumber` (`@Published`) and, via `recomputeBadge`, `aggregateUnread` (`@Published`).
+Neither of the entry's two candidate mechanisms was involved: not `AppStore`'s 65 `@Published`
+generally, and not `Defaults.Observable` (whose `objectWillChange.send()` runs from a `@MainActor`
+Task, which cannot start until the main actor yields — i.e. never during a synchronous update).
+
+**Fixed** by deferring those two writes with `Task { @MainActor in … }`, which for the same reason
+cannot run until the update finishes. Measured with the same command both ways: **9 faults per launch
+before, 0 after.**
+
+**The trap, and why the obvious fix is wrong:** don't defer the `WindowAccessor` callback itself, and
+don't defer `register` wholesale. `attachWindow` depends on running PRE-DISPLAY — it sets the window
+frame (issue #70), hides the title bar before the open-time flash, and claims the saved session — and
+the rest of `register` must stay synchronous too, because a window can become key immediately and
+`didBecomeKeyNotification`'s handler bails when `store(for:)` can't find it yet. Only the window
+number and the Dock badge are safe to slip: both are derived display state nothing reads that turn.
+
+Pinned by `MultiWindowTests.testWindowNumberIsAssignedAfterRegisterReturnsNotDuringIt` (a SwiftUI
+runtime issue can't be asserted from a unit test, so what it pins is the property that removes it:
+nothing observable is written on `register`'s own turn). Red-checked — it fails with the deferral
+reverted.
+
+**This does NOT close WORKROOM-3A.** It removes 3A's last untested hypothesis, but nothing links the
+hang to these faults; 3A stays open and dormant pending a second occurrence.
 
 **2026-09-03 — OSC 52 / paste confirmation shipped, and the TODO entry's premise was wrong.**
 The old entry ("writes are gated to `text/*` mime and reads use Ghostty's permissive default
