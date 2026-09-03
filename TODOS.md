@@ -1645,54 +1645,6 @@ and `VCSStatusFailure.staleWorkingCopy`. Relates to "VCS write actions — Phase
 
 **Priority:** P3 (the state is now self-explaining; this saves the trip to a terminal).
 
-### Background fetch — cadence policy + Settings toggle (macapp) — PARTIALLY SHIPPED
-
-**Status:** the on-focus half has **shipped** with the VCS toolbar. `RemoteStateModel.autoFetchIfDue`
-fetches when the inspector gains focus, interval-guarded (5 min per project), gated on the inspector
-being visible with the Changes section active, skipped entirely under the UI-test fixture, and silent
-on failure — it sets the toolbar's inline error but raises no alert and never blocks a read.
-
-**What's LEFT:** the two things this entry originally said were the reason not to "just add a fetch" —
-a real cadence policy (a periodic timer, not only focus) and a **Settings toggle** to turn it off. The
-5-minute interval is currently a hardcoded constant with no UI. Also worth revisiting: whether an
-unattended machine should auto-fetch at all, which is a preference question, not a technical one.
-
-**Why the staleness reasoning below still stands:** it is the clearest writeup of the problem in the
-repo, and the toolbar's ahead/behind counts inherit it exactly — they are computed from local
-remote-tracking refs, so they are only as fresh as the last fetch. That is why the toolbar shows "last
-fetched N ago" beside the counts rather than presenting them as fact.
-
----
-
-**What (original):** A periodic / on-focus `git fetch` (and `jj git fetch`) so remote-tracking refs —
-and therefore the History pane's unpushed badge — reflect the server rather than the last manual fetch.
-
-**Why:** Every push-state answer in the app is local knowledge: `GitGraph` walks
-`HEAD --not refs/remotes/origin/*` and the jj core evaluates `ancestors(<tracked @origin tips>)`.
-Neither touches the network. So a commit pushed from another machine keeps its badge until you fetch,
-and a commit that was force-pushed away still reads as pushed. The badge tooltip is honest about this
-("based on your local remote-tracking refs"), but admitting it isn't fixing it.
-
-**Pros:** The badge (and anything later built on the same reads — ahead/behind counts, a push action)
-becomes truthful without the user doing anything.
-
-**Cons:** This turns a pure local read into a network feature: auth prompts for private remotes, rate
-limits, timeouts, and partial failures on a path that today cannot fail. It needs a cadence policy and
-almost certainly a Settings toggle — "just add a fetch" is the wrong shape.
-
-**Context / how to start:** The read path itself needs no change — a fetch only has to write refs; the
-per-project watcher (`AppStore.handleRootBranchChange`, which watches each project's `.git`/`.jj`) then
-repaints History automatically, exactly as it does after a local push. So the work is entirely about
-*when* to fetch and how to fail quietly: pick the trigger (app focus + an interval), keep it off the
-synchronous log-read path, decide the credential story (the status sweep already shells `gh`, so there
-is precedent for network reads), and surface failure without a modal. Deliberately NOT done as part of
-the badge: see the "Staleness" trap in the unpushed-badge plan.
-
-**Depends on:** the unpushed badge (shipped) and on-focus auto-fetch (shipped). Wants a `Defaults` key
-+ Settings row, and `RemoteStateModel.autoFetchInterval` lifted out of a constant.
-
-**Priority:** P3 (on-focus fetch covers the common case; a user who wants it OFF currently can't).
-
 ### Three independent change-badge palettes (macapp) — jj conflict-status follow-up
 
 **What:** the same change-kind badge is coloured by three separate mappings: `ChangeBadge`
