@@ -1547,6 +1547,58 @@ boundary today).
 
 ## P3 — Terminal, panes, and focus
 
+### The ✦ diagnosis badge was unreachable to accessibility (macapp) — FIXED (2026-09-03)
+
+**Found by the pre-release XCUITest run:** `TerminalAgentUITests.testFailedTabShowsAgentBadge` was
+failing, and had been for some time — it also fails on `ca9f4695`, so it predates this session's
+work (verified by checking that commit out and re-running).
+
+**Root cause, already documented in the file that caused it.** The tab chip carries its own
+`.accessibilityLabel` (added by issue #141 so a recognized tool's favicon gets announced), which
+collapses the whole chip into ONE accessibility element and makes every nested control unreachable.
+`TerminalTabStrip`'s own comment says so and names the casualty: "no `.accessibilityElement(children:)`
+policy kept the nested run-state icon **or the ✦ badge** separately queryable once the chip has its
+own label (measured; `.contain` didn't help in either modifier position)". Issue #141 fixed RUN STATE
+by moving it onto the chip's `.accessibilityValue` and left the badge behind, along with a test still
+querying `app.buttons["Diagnosis available"]` — an element accessibility no longer exposes. So the
+test waited 20s and failed on every run.
+
+**This was never a functional bug.** The badge renders and clicks; `agentBadge` reads the same
+`agentManager.banners[tab.id]` the status bar reads, and every other test in that class passes
+(status bar, Investigate, Dismiss). What was broken was perception and operability.
+
+**A second, worse defect in the same class:** `testDismissFromPopoverClearsDiagnosis` asserted
+`XCTAssertFalse(app.buttons["Diagnosis available"].exists)` — **vacuously true**, since that element
+is never exposed. It passed whether or not dismiss cleared the badge. A test that cannot fail is
+worse than a red one, because it reads as coverage.
+
+**Fix:**
+- The badge is announced in the chip's own label (`chipAccessibilityLabel`: title, tool, badge).
+  Deliberately the LABEL and not the value: run state owns the value, and
+  `RunStatusUITests`/`GhosttyActionDispatchUITests` assert it with EXACT equality (`value == "failed"`,
+  `== "Busy"`) — and a failed run is precisely the case that also raises a badge, so appending there
+  would have broken them. The label is asserted with `contains` (`ToolFaviconUITests`), so it extends
+  safely.
+- `.accessibilityActions { if agentBadge { Button("Show diagnosis") … } }` makes the badge
+  **operable** — a VoiceOver user could not reach or activate it at all before. That is the
+  substantive half of this fix.
+- Both tests repaired to read the chip's label. Each was red/green-verified by probe: forcing the
+  label to never announce fails the badge test, forcing it to always announce fails the dismiss test.
+  Both assertions are now load-bearing.
+
+**Residual gap, deliberate:** clicking the badge to open the popover is manual-verify only. XCUITest
+cannot invoke a named accessibility action, and the badge has no reachable element to click. The
+popover's contents and actions are covered from the status-bar entry point instead.
+
+**Still open, same mechanism:** the nested ✕ close button carries its own
+`.accessibilityLabel("Close <title>")` and is swallowed identically, so it is presumably also
+unreachable to assistive technology. No UI test exercises it via accessibility, so this is inferred
+from the same documented behaviour rather than measured. Worth an `.accessibilityActions` entry
+alongside the badge's — the chip already has a close affordance in its context menu, so this is
+politeness rather than a blocker.
+
+**Priority:** done for the badge. The ✕ follow-up is P3.
+
 ### SwiftUI "Publishing changes from within view updates" — 9 per launch, UNRESOLVED (2026-09-03)
 
 **What:** the app logs `Publishing changes from within view updates is not allowed, this will cause

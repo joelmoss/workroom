@@ -473,6 +473,26 @@ private struct TerminalTabChip: View {
   /// map/ternary combo made the chip's already-large `body` "unable to type-check in reasonable
   /// time" on a clean CI build (it type-checked fine locally only because a warm `DerivedData`
   /// incremental cache skipped re-inferring it).
+  /// The chip's accessibility label: title, plus the recognized tool, plus the ✦ diagnosis badge.
+  ///
+  /// The badge has to live here (or on the chip's value) because the chip's explicit
+  /// `.accessibilityLabel` makes it ONE accessibility element and its descendants unreachable — see
+  /// the note on `.accessibilityValue` below. The VALUE is already taken by run state, which
+  /// `RunStatusUITests`/`GhosttyActionDispatchUITests` assert with EXACT equality
+  /// (`value == "failed"`, `== "Busy"`), and a failed run is exactly the case that also raises a
+  /// badge — so appending there would have broken those. The label is composed and asserted with
+  /// `contains` (`ToolFaviconUITests`), so it extends safely.
+  ///
+  /// Extracted as a computed property for the same reason `runOrBusyAccessibilityValue` is: inlined
+  /// in the chip's already-large `body`, this kind of map/ternary combo blew the type-checker's
+  /// budget on a clean build.
+  private var chipAccessibilityLabel: String {
+    var parts = [tab.title]
+    if let tool = tab.recognizedTool { parts.append(tool.displayName) }
+    if agentBadge { parts.append("Diagnosis available") }
+    return parts.joined(separator: ", ")
+  }
+
   private var runOrBusyAccessibilityValue: String {
     if let runState { return runIconSpec(runState).label }
     return tab.isRunning ? "Busy" : "Idle"
@@ -650,9 +670,17 @@ private struct TerminalTabChip: View {
     // XCUITest querying it never found the element, even though the model-layer detection and the
     // image asset both resolved correctly). Folded into the chip's own label instead, and the title
     // stays in the label so VoiceOver still reads the tab's name.
-    .accessibilityLabel(
-      tab.recognizedTool.map { "\(tab.title), \($0.displayName)" } ?? tab.title
-    )
+    .accessibilityLabel(chipAccessibilityLabel)
+    // The ✦ badge is a real control that assistive technology could not reach at all: it is a nested
+    // `Button`, and the chip's own label above collapses the chip into a single element. Announcing
+    // it in the label (see `chipAccessibilityLabel`) makes it perceivable; this makes it OPERABLE,
+    // so VoiceOver can open the diagnosis without a mouse. Same reasoning applies to the nested ✕,
+    // which is still unreachable — see the TODOS entry.
+    .accessibilityActions {
+      if agentBadge {
+        Button("Show diagnosis") { onAgentTap() }
+      }
+    }
     // The running state is otherwise conveyed ONLY by the flowing underline above — invisible to
     // VoiceOver, and unassertable in XCUITest. `GhosttyActionDispatchUITests` reads this to prove
     // `GHOSTTY_ACTION_PROGRESS_REPORT` (OSC 9;4) still reaches the tab model after an engine change.
