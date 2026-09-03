@@ -463,12 +463,9 @@ ref *we* pin, and point `project.yml` at it.
 **Status: demoted from P1, and re-argued.** Two of the three rationales this entry used to carry were
 wrong, and are struck:
 
-- ~~"We trail ghostty by ~2 versions"~~ — as *originally argued* this was a **package-vs-ghostty
-  version confusion**; see the trap described in the pin-bump entry above. It was true at the time
-  that we sat on ghostty's newest release. **That is no longer true (re-checked 2026-09-03):** ghostty
-  has since tagged v1.3.0 and v1.3.1, and our pin `35e1a016` is an UNTAGGED Jul 10 commit, so we are
-  two ghostty releases behind. Struck as a reason to *own* the build, not as a statement of fact —
-  see "Measured" below, and note the fix is a pin bump, not a fork.
+- ~~"We trail ghostty by ~2 versions"~~ — a **package-vs-ghostty version confusion**; see the trap
+  described in the pin-bump entry above. We are on an engine four months NEWER than ghostty's newest
+  release, and still are (re-verified 2026-09-03; see "Measured" below).
 - ~~"Only owning the pin can reach OSC 99"~~ — **a fork cannot deliver OSC 99 either.** See the OSC 99
   entry under Notifications for the upstream state; the short version is that the open parser PR
   routes the command into an "unimplemented → discard" branch, and the pieces that would make it
@@ -497,19 +494,24 @@ presses the button. What changed is that the person is doing it: the engine move
 automation tracking upstream. The workflow also gained a `Test XCFramework Consumer` step.
 
 **Measured 2026-09-03 (supersedes the 2026-08-14 numbers this paragraph used to carry — "652 commits
-ahead", "libghostty-spm has cut nothing since 1.3.2"; both are dead).** The drift is now ours, not
-the packager's:
+ahead", "libghostty-spm has cut nothing since 1.3.2"; both are dead).**
 
-- ghostty's newest tag is **v1.3.1** (`332b2aef`). Our pin `35e1a016` is untagged and predates both
-  v1.3.0 and v1.3.1.
-- `libghostty-spm` is on **1.5.20260903**, released the same day, built from ghostty main
-  `c4e16970`. It also publishes release-tracking builds: **package `1.5.2` is ghostty v1.3.1**
-  (`upstream.1.3.1-3`), and that is the one to want — a tagged upstream beats an untagged main
-  commit.
-- We are still pinned `exactVersion: 1.3.2` in `project.yml`, so none of this can move under us.
+**Check the DATES, not the version numbers — this is the same trap the entry above warns about, and
+it caught this file again on 2026-09-03.** A first pass at these corrections read the packager's new
+`upstream.1.3.1-*` tags as "ghostty moved past us" and briefly recorded that we were two releases
+behind. The opposite is true:
 
-The practical read: a build from a real ghostty RELEASE is now available off the shelf, which makes
-the pin bump easier and weakens the case for owning the build rather than strengthening it.
+- **ghostty has tagged nothing since v1.3.1, and v1.3.1 is `332b2aef` dated 2026-03-13.** Our pin
+  `35e1a016` is 2026-07-10 — four months NEWER than ghostty's newest release. The previous bump went
+  `332b2aef` → `35e1a016`, i.e. off v1.3.1 and onto post-release main.
+- So the packager's `upstream.1.3.1`, `-2`, `-3` builds (Aug 20 – Sep 2) are **rebuilds of the March
+  release**, and package `1.5.2` with them. Taking any of those would be an engine **DOWNGRADE**.
+- The only forward move on offer is **package `1.5.20260903`** = ghostty main `c4e16970`
+  (2026-08-25), ~6 weeks ahead of our pin.
+- We are pinned `exactVersion: 1.3.2` in `project.yml`, so none of this can move under us.
+
+**This also blunts the "prefer a tagged upstream" rule below**: there is no newer tag to prefer, so
+any forward move from here is a main build, exactly like the pin we already ship.
 
 **How to start:** clone `ghostty-org/ghostty` at the chosen ref, decide deliberately which of the 20
 patch files to carry (`0002-host-managed-io*` is load-bearing for embedding; the iOS/Catalyst ones are
@@ -530,16 +532,23 @@ regeneration, and rebasing the stack on every ghostty bump, permanently.
 
 Put the safety on the bump gate instead, where the risk actually lives:
 
-1. Prefer the `upstream.<ghostty-release>` package builds (today: package `1.5.2` = ghostty v1.3.1)
-   over the date-versioned main-tracking ones.
+1. Prefer an `upstream.<ghostty-release>` package build over a date-versioned main-tracking one —
+   **but only when the release is actually newer than the pin.** Today it is not: the newest ghostty
+   tag is four months older than what we ship, so this rule currently selects nothing and any bump
+   is a main build.
 2. Diff `Patches/ghostty/` against the previous pin and read what changed — ~10 minutes, and it is
    the only step that catches the actual threat.
 3. Confirm the release body's ghostty sha resolves to a ghostty TAG before accepting it.
 
-**Follow-up that falls out of this:** we are two ghostty releases behind on an untagged commit, and a
-v1.3.1 build is available now. Bumping the pin to package `1.5.2` is the useful next move — see
-"Bump the libghostty pin" above for the patch-swap risk, the resources that must be regenerated with
-it, and the bake gate; that entry's process applies unchanged.
+**Follow-up that falls out of this — and it is a real one, just not the one first written here.**
+The only bump target that moves us forward is package `1.5.20260903` (ghostty main `c4e16970`,
+2026-08-25), and it carries something this app specifically wants: *"renderer: release GPU resources
+for hidden surfaces (macOS)"*, which upstream measured at **384.6 MiB → 18.3 MiB** of tracked GPU
+allocations with 1 visible + 20 hidden tabs, and a 0.43 ms average swap-chain rebuild on unhide. A
+workroom window is many surfaces of which one is visible, so that is close to a best case for us —
+see "Memory / live-surface diagnostics" below, which this would partly answer. Run it through "Bump
+the libghostty pin" above (patch-swap risk, resource regeneration, bake gate); that entry's process
+applies unchanged.
 
 **Priority:** P3 — a real supply-chain posture question with no feature blocked behind it. Reopen the
 ownership question only if the hand-maintained `Ghostty.ref` leaves us stranded on an engine we need
