@@ -2093,6 +2093,58 @@ Codex outside-voice pass during `/plan-eng-review`.
 
 **Priority:** P3 (8pt already doubles the old 4pt target; only revisit if users still find it tight).
 
+### Clipboard confirmation: two deliberate gaps from the ABI port (macapp) — filed 2026-09-03
+
+**What:** two things the `c4e16970` clipboard port left on the floor on purpose.
+
+1. **The "remember this decision" session grant is never offered.** The new ABI's confirmation
+   carries `can_remember`, and the completion carries `remember`; we always send `remember: false`,
+   so a program that asks twice is asked about twice. A persistent allow is a bigger promise than the
+   current prompt explains ("this program, for this session" vs what the wording implies), so
+   surfacing it is product work — a checkbox plus copy that says what the grant covers and how it
+   ends — not a port detail.
+2. **A prompt whose surface disappears still leaks the request.** `confirmReadClipboard` answers via
+   the surface, so if the tab is closed while the sheet is up there is nothing to complete or deny
+   with and the engine's `ClipboardRequest` allocation is stranded. One allocation per abandoned
+   prompt, and it needs a user to close a tab mid-prompt. The C API exposes no surface-free way to
+   answer; the honest fix is to dismiss the sheet when the surface goes away, which needs a teardown
+   signal `GhosttySurfaceView` does not currently publish.
+
+**Why:** neither is reachable by accident and neither loses data — but (1) is the difference between
+a prompt users tolerate and one they dismiss reflexively, and (2) is a real (if tiny) leak that the
+rest of this file's leak entries would not let pass unrecorded.
+
+**How to start:** (1) thread `can_remember` through `clipboardConfirmation` into an
+`NSAlert.showsSuppressionButton`, and decide the grant's scope + expiry before writing the copy.
+(2) give `GhosttySurfaceView` a teardown hook the adapter can observe, and cancel any live sheet for
+that surface.
+
+**Depends on:** the clipboard port (landed).
+
+**Priority:** P3 both. (1) is product work with no forcing function; (2) is bounded and only fires on
+a close-during-prompt.
+
+### Wire ghostty's `terminfo.version` into the resource-contract test (macapp) — filed 2026-09-03
+
+**What:** ghostty gained a content-derived hash of its terminfo source (`terminfo.version` in
+`src/terminfo/ghostty.zig`) at `c4e16970`. Record the pinned engine's value and assert the bundled
+`Resources/ghostty/terminfo` was regenerated for that engine.
+
+**Why:** today the only thing that catches a stale bundled terminfo is a human remembering to diff
+`src/terminfo/*.zig` between two refs at bump time — and the bundled entry is what makes Backspace and
+line editing work, so a missed regeneration is a user-visible break with no test behind it. `CHECKSUMS`
+pins the bytes we ship but says nothing about which ENGINE they belong to, which is exactly the gap.
+Both of the last two bumps changed terminfo (`Se` last time, `Smol`/`Rmol` this time), so "it rarely
+changes" is not the reason to skip it.
+
+**How to start:** the hash is a comptime constant in ghostty's source, not exposed through the C API,
+so it has to be read from the pinned ref and stored next to the pin — the same shape as
+`GhosttyPinIntegrityTests.expectedRevision`, and it should fail the same way on the next bump.
+
+**Depends on:** nothing.
+
+**Priority:** P3 — small, and it converts a manual bump step into a tripwire.
+
 ### Memory / live-surface diagnostics (macapp)
 
 **What:** Lightweight instrumentation of live `ghostty_surface_t` count and process memory, to
@@ -2108,6 +2160,16 @@ counter + a memory read, not crash-crumb recovery (D1). (None of this exists yet
 `mach_task_basic_info` read, no surface-count logging.)
 
 **Depends on:** `TerminalSessions` (surface inventory), `GhosttyApp` (`os.Logger` already set up).
+
+**Amended 2026-09-03 — the premise changed, and the question is now narrower.** The
+`c4e16970` pin bump brings upstream's "release GPU resources for hidden surfaces (macOS)", which they
+measured at 384.6 MiB → 18.3 MiB of tracked GPU allocations with 1 visible + 20 hidden tabs (swap-chain
+rebuild on unhide 0.43 ms avg). That is most of what this entry was worried about, inherited for free.
+So this is no longer "is there a problem at high tab counts" — it is **verify the win actually lands
+for us**, which our surface shape (many surfaces, one visible, panes as well as tabs) makes likely but
+does not guarantee. That reframing makes the instrumentation below cheaper to justify AND easier to
+build: a one-off measurement at 20 tabs on the old and new pins answers it, and only if the answer is
+disappointing is a permanent sampler worth writing.
 
 **Priority:** P3 (diagnostic aid; pair with the manual surface-budget QA pass).
 
