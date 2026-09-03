@@ -1717,10 +1717,17 @@ final class AppStore: ObservableObject {
   // MARK: Run command — actions (issue #7)
 
   /// The owning project of a terminal target (root or workroom), by matching the live project list.
+  ///
+  /// Compares **ids only** — same as `sidebarID(forTarget:)` below. Materialising `rootTarget`
+  /// here would `stat` every project directory on the render path (`TerminalStatusBar.body` →
+  /// `branchLabel` → here), which is what hung the app in WORKROOM-3D. A lookup never needs the
+  /// `isMissing`/`title` a target carries.
   private func project(forTarget target: TerminalTarget) -> Project? {
     projects.first { p in
-      p.rootTarget.id == target.id
-        || p.workrooms.contains { $0.target(inProject: p.path).id == target.id }
+      TerminalTarget.rootID(project: p.path) == target.id
+        || p.workrooms.contains {
+          TerminalTarget.workroomID(project: p.path, name: $0.name) == target.id
+        }
     }
   }
 
