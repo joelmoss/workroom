@@ -24,6 +24,9 @@ final class GhosttyRuntimeAdapter {
   private let logger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "GhosttyRuntime")
 
+  /// Guards against an OSC 52 flood stacking alerts — see `confirmClipboard`. Main-thread only.
+  private var isPresentingClipboardConfirmation = false
+
   // MARK: Action dispatch
 
   nonisolated func handleAction(
@@ -203,6 +206,13 @@ final class GhosttyRuntimeAdapter {
   // MARK: Clipboard
 
   /// Copy (write) — ⌘C and OSC 52 writes. Writes the first text payload to the general pasteboard.
+  ///
+  /// `confirm` is the engine's own policy signal: it is `clipboard-write == .ask`
+  /// (`Surface.clipboardWrite`), so it is false for the ⌘C copy binding and, today, for OSC 52 too
+  /// — we generate our own ghostty config (`GhosttyApp.writeThemeConfig`) and never set
+  /// `clipboard-write`, so it keeps ghostty's `allow` default. Honoured anyway rather than dropped:
+  /// it is the engine telling us a write needs the user's consent, and ignoring that would silently
+  /// downgrade the policy the moment the config gains the key.
   nonisolated func writeClipboard(
     userdata: UnsafeMutableRawPointer?,
     location: ghostty_clipboard_e,
@@ -222,6 +232,15 @@ final class GhosttyRuntimeAdapter {
       break
     }
     guard let text, !text.isEmpty else { return }
+    guard confirm else { return Self.setPasteboard(text) }
+    confirmClipboard(kind: .osc52Write, preview: text, over: surfaceView(fromUserdata: userdata)) {
+      allowed in
+      guard allowed else { return }
+      Self.setPasteboard(text)
+    }
+  }
+
+  private static func setPasteboard(_ text: String) {
     let pb = NSPasteboard.general
     pb.clearContents()
     pb.setString(text, forType: .string)
@@ -241,13 +260,99 @@ final class GhosttyRuntimeAdapter {
     return true
   }
 
+  /// The engine could not complete a clipboard request without the user's consent, and is asking us
+  /// to obtain it. Reached from `apprt.embedded.Surface.completeClipboardRequest` whenever the core
+  /// returns `error.UnsafePaste` or `error.UnauthorizedPaste`, i.e. for BOTH:
+  ///
+  /// - `GHOSTTY_CLIPBOARD_REQUEST_PASTE` — paste protection (`clipboard-paste-protection`, default
+  ///   on) flagged the pasteboard's contents as unsafe. In practice that is a multi-line paste into
+  ///   a program with no bracketed-paste mode (`cat`, a raw `ssh` prompt), or any paste containing
+  ///   a bracketed-paste terminator.
+  /// - `GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ` — an application asked to read the pasteboard and
+  ///   `clipboard-read` is `ask`, which is ghostty's default and therefore ours.
+  ///
+  /// This used to be an empty stub, which was not the permissive pass-through it read as: with
+  /// nothing completing the request, BOTH of those cases were silently dropped — the unsafe paste
+  /// never landed and the OSC 52 read never got a reply.
+  ///
+  /// `content` is only valid for the duration of this call (it is the `withCString` buffer from our
+  /// own `readClipboard`), so it is copied to a Swift `String` before anything defers. `state` is
+  /// the engine's heap-allocated request, which `completeClipboardRequest` deliberately does NOT
+  /// free on this route precisely so it survives until we answer.
+  ///
+  /// Denying simply drops it: GhosttyKit 1.2.3 exposes no `ghostty_surface_deny_clipboard_request`,
+  /// so the request allocation is leaked on every denial — upstream's own macOS app at the pinned
+  /// ref does exactly the same, and inventing a completion here would re-enter the same error path
+  /// and prompt again in a loop.
   nonisolated func confirmReadClipboard(
     userdata: UnsafeMutableRawPointer?,
     content: UnsafePointer<CChar>?,
     state: UnsafeMutableRawPointer?,
     request: ghostty_clipboard_request_e
   ) {
-    // OSC 52 read confirmation flow is not surfaced to the user in Workroom; nothing to confirm.
+    guard let content, let kind = ClipboardConfirmationKind(request) else { return }
+    let view = surfaceView(fromUserdata: userdata)
+    let text = String(cString: content)
+    confirmClipboard(kind: kind, preview: text, over: view) { [weak view] allowed in
+      guard allowed, let surface = view?.surface else { return }
+      text.withCString { ghostty_surface_complete_clipboard_request(surface, $0, state, true) }
+    }
+  }
+
+  /// Ask the user to authorize a clipboard request, then resolve on the main thread.
+  ///
+  /// Always defers: the clipboard callbacks can fire inside one of our own `ghostty_surface_*`
+  /// calls with the renderer mutex held (the same hazard `GHOSTTY_ACTION_SELECTION_CHANGED`
+  /// documents above), so running a modal — and calling back into the engine from its completion —
+  /// on this stack risks deadlocking the main thread.
+  ///
+  /// One prompt at a time. A hostile program can emit OSC 52 in a loop, and without this a single
+  /// escape-sequence flood would stack an unbounded pile of alerts over the terminal; the surplus
+  /// requests are denied rather than queued.
+  private nonisolated func confirmClipboard(
+    kind: ClipboardConfirmationKind,
+    preview: String,
+    over view: GhosttySurfaceView?,
+    then resolve: @escaping (Bool) -> Void
+  ) {
+    let copy = Self.clipboardConfirmation(for: kind, preview: preview)
+    DispatchQueue.main.async { [weak self] in
+      guard let self, !isPresentingClipboardConfirmation else { return resolve(false) }
+      isPresentingClipboardConfirmation = true
+      let alert = NSAlert()
+      alert.alertStyle = .warning
+      alert.messageText = copy.title
+      alert.informativeText = copy.message
+      alert.addButton(withTitle: copy.allowButton)
+      alert.addButton(withTitle: copy.denyButton)
+      // Take Return OFF the allow button. This sheet drops in front of someone who is TYPING, so
+      // leaving allow as the default action means their next Return authorizes the very clipboard
+      // access they were meant to judge. Escape denies instead — AppKit only wires Escape up
+      // automatically for a button titled "Cancel", so "Deny" has to ask for it.
+      alert.buttons[0].keyEquivalent = ""
+      alert.buttons[1].keyEquivalent = "\u{1b}"
+      let done: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+        self?.isPresentingClipboardConfirmation = false
+        resolve(response == .alertFirstButtonReturn)
+      }
+      // Sheet it over the surface's own window so it is obvious WHICH terminal asked. The quick
+      // terminal is a plain titled `NSWindow` (`QuickTerminalWindow`), so it sheets like any other;
+      // only a surface with no window at all falls back to an app-modal alert.
+      if let window = view?.window {
+        alert.beginSheetModal(for: window, completionHandler: done)
+      } else {
+        done(alert.runModal())
+      }
+    }
+  }
+
+  /// The clipboard callbacks pass the surface's `userdata` rather than a `ghostty_target_s`, so
+  /// they can't use `surfaceView(from:)`. Call this SYNCHRONOUSLY on the callback — the pointer is
+  /// only guaranteed to name a live view for the duration of the call, so anything deferred must
+  /// capture the resolved (weak) view, never the raw pointer.
+  private func surfaceView(fromUserdata userdata: UnsafeMutableRawPointer?) -> GhosttySurfaceView? {
+    guard let userdata else { return nil }
+    return Unmanaged<GhosttySurfaceView>.fromOpaque(userdata).takeUnretainedValue()
   }
 
   // MARK: Close
@@ -255,6 +360,83 @@ final class GhosttyRuntimeAdapter {
   nonisolated func closeSurface(userdata: UnsafeMutableRawPointer?, needsConfirm: Bool) {
     // Workroom owns its tab lifecycle (plan A5): a surface/shell exiting leaves the tab in place (as
     // SwiftTerm did) until the user closes it, so libghostty's close request is intentionally ignored.
+  }
+
+  // MARK: Clipboard confirmation copy (pure, unit-tested)
+
+  /// Why the engine is asking for the user's consent. Mirrors `ghostty_clipboard_request_e`, but as
+  /// our own type so the copy below stays pure Swift and testable — `WorkroomAppTests` links the app
+  /// module, not the GhosttyKit C module.
+  enum ClipboardConfirmationKind {
+    case paste
+    case osc52Read
+    case osc52Write
+
+    /// nil for a request kind we don't recognise, which `confirmClipboard` treats as a denial — a
+    /// libghostty upgrade that adds a kind must not silently start auto-allowing it.
+    init?(_ request: ghostty_clipboard_request_e) {
+      switch request {
+      case GHOSTTY_CLIPBOARD_REQUEST_PASTE: self = .paste
+      case GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ: self = .osc52Read
+      case GHOSTTY_CLIPBOARD_REQUEST_OSC_52_WRITE: self = .osc52Write
+      default: return nil
+      }
+    }
+  }
+
+  /// Longest clipboard preview shown in a confirmation alert. A pasteboard can hold megabytes, and
+  /// an `NSAlert` grown to that height is unreadable and unclickable — the point of the preview is
+  /// to let the user recognise the content, not to display all of it.
+  static let clipboardPreviewLimit = 200
+
+  /// Wording for a clipboard confirmation. Pure + side-effect-free so it is testable without a live
+  /// terminal (same rationale as `terminalActivity` below).
+  static func clipboardConfirmation(
+    for kind: ClipboardConfirmationKind, preview: String
+  ) -> (title: String, message: String, allowButton: String, denyButton: String) {
+    let shown = truncatedClipboardPreview(preview)
+    switch kind {
+    case .paste:
+      return (
+        "Paste this text?",
+        """
+        It looks like it could run commands — multi-line text pasted into a program that doesn't \
+        frame pastes is executed as soon as it arrives.
+
+        \(shown)
+        """,
+        "Paste", "Cancel"
+      )
+    case .osc52Read:
+      return (
+        "Allow this terminal to read the clipboard?",
+        """
+        An application running in this terminal asked for the clipboard's contents. It would \
+        receive:
+
+        \(shown)
+        """,
+        "Allow", "Deny"
+      )
+    case .osc52Write:
+      return (
+        "Allow this terminal to change the clipboard?",
+        """
+        An application running in this terminal asked to replace the clipboard's contents with:
+
+        \(shown)
+        """,
+        "Allow", "Deny"
+      )
+    }
+  }
+
+  /// Clamp a preview to `clipboardPreviewLimit` characters, marking that it was cut. Counts
+  /// Characters (grapheme clusters), so a multi-byte or emoji-heavy clipboard can't slip past the
+  /// limit or be cut mid-character.
+  static func truncatedClipboardPreview(_ text: String) -> String {
+    guard text.count > clipboardPreviewLimit else { return text }
+    return String(text.prefix(clipboardPreviewLimit)) + "…"
   }
 
   // MARK: Notification mapping (T2 — pure, unit-tested)

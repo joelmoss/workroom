@@ -1960,26 +1960,6 @@ counter + a memory read, not crash-crumb recovery (D1). (None of this exists yet
 
 **Priority:** P3 (diagnostic aid; pair with the manual surface-budget QA pass).
 
-### OSC 52 clipboard-confirmation policy (macapp)
-
-**What:** A real policy/UI for terminal-app clipboard access (OSC 52) — the runtime's
-`read_clipboard_cb` / `write_clipboard_cb`. Today writes are gated to `text/*` mime and reads use
-Ghostty's permissive default (auto-allow); `confirmReadClipboard` is a stub, so a deliberate
-prompt/allowlist is deferred.
-
-**Why:** Code-review finding #7. OSC 52 lets a remote program read/write the system pasteboard;
-the permissive default is fine for a beta (it matches Ghostty's own default) but a security-minded
-user should be able to require confirmation.
-
-**How to start:** Implement `confirm_read_clipboard_cb` to surface a prompt (or consult a
-`Defaults.Keys` policy: allow / prompt / deny); gate `write_clipboard_cb` similarly. Decide the
-default (Ghostty = allow).
-
-**Depends on:** the clipboard callbacks already wired
-(`macapp/WorkroomApp/Core/GhosttyRuntimeAdapter.swift`, `Core/GhosttyApp.swift`).
-
-**Priority:** P3 (permissive default is acceptable for the beta).
-
 ### Quick-switcher deferrals (macapp) — #132 follow-ups
 
 **What:** Five things the ⌥Tab / ⌃Tab switcher shipped without, deliberately. Independent of each
@@ -3192,6 +3172,77 @@ error) is one of the hardest to diagnose from a bug report.
 
 Condensed from the long status notes this file used to carry at the top; the full write-ups are in git
 history. Kept here for the parts that stay useful: what changed, and the traps found doing it.
+
+**2026-09-03 — OSC 52 / paste confirmation shipped, and the TODO entry's premise was wrong.**
+The old entry ("writes are gated to `text/*` mime and reads use Ghostty's permissive default
+(auto-allow); `confirmReadClipboard` is a stub") described a permissive pass-through. It wasn't one.
+Read at the pinned ghostty ref (`35e1a016`, GhosttyKit 1.2.3): `apprt/embedded.zig`'s
+`completeClipboardRequest` catches `error.UnsafePaste` / `error.UnauthorizedPaste` from
+`Surface.completeClipboardRequest` and calls `confirm_read_clipboard` — so the empty stub meant BOTH
+of these were **silently dropped**, not auto-allowed:
+
+- **an unsafe paste never landed.** `clipboard-paste-protection` defaults on. In practice this bites
+  a multi-line paste into a program with no bracketed-paste mode (`cat`, a raw `ssh` prompt), or any
+  paste containing a bracketed-paste terminator — with bracketed paste on,
+  `clipboard-paste-bracketed-safe` makes it safe, which is why it never showed up in normal use.
+- **an OSC 52 read never got a reply.** `clipboard-read` defaults to `ask`, not `allow` — the entry
+  had this backwards.
+
+Each dropped request also leaked the engine's `ClipboardRequest` allocation, which
+`completeClipboardRequest` deliberately does not free on the confirmation route precisely because
+the apprt is supposed to answer it.
+
+**Shipped:** `confirmReadClipboard` now presents an `NSAlert`, sheeted over the asking surface's own
+window (so it's obvious WHICH terminal asked), with per-request wording — paste vs. "read your
+clipboard" vs. "change your clipboard" are three different asks and must not be interchangeable.
+`writeClipboard` honours the engine's `confirm` flag through the same prompt. The alert is always
+presented via `DispatchQueue.main.async`: the clipboard callbacks can fire inside one of our own
+`ghostty_surface_*` calls with the renderer mutex held (the `GHOSTTY_ACTION_SELECTION_CHANGED`
+hazard), so running a modal — and completing the request from it — on that stack risks deadlocking
+the main thread.
+
+**Traps found doing it:**
+
+- **The `content` pointer is our own `withCString` stack buffer.** It comes back out of
+  `ghostty_surface_complete_clipboard_request`, so it's valid only for the duration of the callback
+  and must be copied to a Swift `String` before anything defers.
+- **So is `userdata`.** It only names a live `GhosttySurfaceView` during the call; resolving it
+  after the async hop would be a `takeUnretainedValue()` on a possibly-freed pointer (close the tab
+  while the prompt is up). The view is resolved synchronously and captured weakly.
+- **Denying leaks, and there's no way around it at this pin.** GhosttyKit 1.2.3 has no
+  `ghostty_surface_deny_clipboard_request` (it exists on `main`), and "completing" with
+  `confirmed: false` re-enters the same error path and re-prompts forever. Upstream's own macOS app
+  at this ref leaks it identically. Revisit when the pin bumps.
+- **`WorkroomAppTests` doesn't link the GhosttyKit C module**, so a pure mapper taking
+  `ghostty_clipboard_request_e` compiles in the app and not in the tests. The copy mapper takes an
+  app-owned `ClipboardConfirmationKind` instead, mapped from the C enum at the callback boundary —
+  where the `default: return nil` arm makes an unrecognised future request kind deny rather than
+  auto-allow.
+
+**Return does not approve.** The first `NSAlert` button is the default action, and this sheet lands
+in front of someone who is TYPING — their next Return would authorize the access they were meant to
+judge. `keyEquivalent` is cleared on allow and Escape is wired to deny (AppKit only binds Escape
+automatically for a button titled "Cancel").
+
+**Deliberately skipped:** no `Defaults` policy key (allow/ask/deny). The TODO proposed one for "a
+security-minded user should be able to require confirmation" — but ghostty's `clipboard-read` default
+IS `ask`, so implementing the prompt satisfies that with zero configuration. `clipboard-write` keeps
+ghostty's `allow` default (matching upstream rather than inventing a stricter posture), which makes
+`writeClipboard`'s confirm branch dead today; it's kept because it's the engine's security signal and
+costs three lines. One prompt at a time is enforced, so an OSC 52 flood can't stack alerts.
+**Red/green-verified against a real PTY.** `ClipboardConfirmationUITests` drives the two repros:
+`printf '\033]52;c;?\007'` (OSC 52 read) and a multi-line ⌘V into `cat` (paste protection, which
+needs `cat` rather than the shell prompt — zsh's line editor turns bracketed paste on, and
+`clipboard-paste-bracketed-safe` then makes the paste safe). With the stub restored BOTH fail
+exactly as the bug described — "produced no confirmation" — and with the fix both pass, the allowed
+paste actually reaching the screen. The Return guard was red-checked separately: with the
+`keyEquivalent` lines removed, the test's synthetic Return dismisses the sheet, i.e. approves the
+clipboard read. Also unit-tested: `ClipboardConfirmationCopyTests` (per-kind copy, preview
+truncation at 200 grapheme clusters).
+
+A `screencapture` of the live alert wasn't possible (the shell has no Screen Recording permission),
+so the two properties a screenshot would have judged are asserted in the UI test instead: Escape
+dismisses, and Return does not.
 
 **2026-08-16 — `make app-test` was silently reading and acting on the developer's real config.**
 `WorkroomApp`'s top-level `WindowGroup` scene has no test-mode branch of its own — `WorkroomAppTests`
