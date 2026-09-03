@@ -304,6 +304,113 @@ loudly if the packager ever re-cuts the `1.3.2` tag).
 user's shell. SHIPPED; watching the bake gate and the residual gaps filed below before promoting to
 a `pre` tag.
 
+### Bump the libghostty pin again — package 1.5.20260903 / ghostty `c4e16970` (macapp), scoped 2026-09-03
+
+**What:** `macapp/project.yml` `exactVersion: 1.3.2` (ghostty `35e1a016`, 2026-07-10) →
+**`1.5.20260903`** (ghostty `c4e16970`, 2026-08-25). ~6 weeks of upstream. Re-check the target
+against the packager's newest release before starting; it moves. Everything below was measured
+against those two refs, not assumed.
+
+**Do NOT take package `1.5.2` or any `upstream.1.3.1-*` build.** They are rebuilds of ghostty v1.3.1
+(`332b2aef`, **2026-03-13**), four months OLDER than our pin. Ghostty has tagged nothing since March,
+so `1.5.20260903` — a main build — is the only forward move. See "Own the GhosttyKit xcframework"
+below for why that also blunts the "prefer a tagged upstream" rule.
+
+**Why: one measured win, one gap it closes.**
+
+- **`renderer: release GPU resources for hidden surfaces (macOS)`** (`c4e16970` itself). Upstream's
+  numbers at 1 visible + 20 hidden tabs: tracked GPU allocations **384.6 MiB → 18.3 MiB**,
+  `MTLDevice.currentAllocatedSize` 393.3 → 19.7 MiB, IOSurface footprint 309 → 15 MB, swap-chain
+  rebuild on unhide 0.43 ms average / 0.55 ms max. A workroom window is many surfaces with one
+  visible, so this is close to a best case for us — and it is most of what "Memory / live-surface
+  diagnostics" below is asking about.
+- **`ghostty_surface_deny_clipboard_request` exists at `c4e16970`.** The clipboard confirmation
+  shipped 2026-09-03 leaks the engine's `ClipboardRequest` on every denial because no deny API exists
+  at the current pin (see Recently done). This bump is what makes that fixable.
+
+**The headline risk: FOUR patch variants swap at once, all of them never run here.** Both of
+`Script/apply-patches.sh`'s source probes flip between the two refs (verified by grepping ghostty at
+each ref, not inferred):
+
+| probe | `35e1a016` (now) | `c4e16970` (target) |
+|---|---|---|
+| `pub fn environMap` in `src/global.zig` | absent → `global_env_refactored=false` | present → `true` |
+| `linkSystemLibrary2` in `src/build/GhosttyFrameData.zig` | present → `zig_build_api_v2=false` | absent → `true` |
+
+so the stack swaps:
+
+- `0002-host-managed-io-modern.patch` → **`0002-host-managed-io-modern-v2.patch`** — PTY/IO hosting:
+  surface teardown, orphan shells, the `EXC_BAD_ACCESS` site `WorkroomApp.swift` documents. This is
+  the one that matters, and it is the same class of risk the last bump flagged — except last time
+  ONE patch swapped and this time four do.
+- `0003-prebuilt-framedata.patch` → `-v2.patch`
+- `0006-disable-custom-shaders.sh` → `-v2.sh`
+- `0005-ios-metal-rendering.sh` → `-v2.sh` (iOS, not ours — ignore)
+
+**New since the last bump, and worth knowing before trusting a green build:** `apply_unified_patch`
+now falls back to `git apply --3way` when context has drifted, and a three-way merge only *echoes*
+"context drifted; regenerate it" — it does not fail. So the PTY-hosting patch can land merged rather
+than applied cleanly and the build still goes green. Read the packager's build log for that string
+before accepting the artifact.
+
+**C-ABI: the clipboard API is rewritten wholesale — this is the bulk of the app-side work.** Swept as
+a full `diff -u` of `include/ghostty.h` (`35e1a016` → `c4e16970`). Everything else we call is
+byte-identical; the clipboard is not:
+
+- `ghostty_runtime_read_clipboard_cb` now returns `ghostty_clipboard_read_result_e` (was `bool`) and
+  takes three more parameters (`const char* const*`, `size_t`, `bool`).
+- `ghostty_runtime_confirm_read_clipboard_cb`'s second parameter is now a
+  `const ghostty_clipboard_confirm_s*` (was `const char*`) carrying contents + available mime types +
+  a `name` for the prompt + `can_remember`.
+- `ghostty_surface_complete_clipboard_request` now takes a `const ghostty_clipboard_complete_s*`
+  (was `const char*, void*, bool`), which carries `confirmed` and `remember`.
+- `ghostty_clipboard_content_s` gains `size_t len` — binary-safe, no longer implicitly
+  null-terminated, so `writeClipboard`'s `String(cString:)` loop must use the length.
+- `ghostty_clipboard_e` gains `GHOSTTY_CLIPBOARD_PRIMARY`.
+- `ghostty_clipboard_request_e` gains `KITTY_READ`, `KITTY_WRITE`, `LIST`. Our
+  `ClipboardConfirmationKind(_:)` returns nil for anything unrecognised and `confirmClipboard` reads
+  nil as a denial, so these fail SAFE — but they will silently deny until copy is written for them.
+- `remember` / `can_remember` are an "always allow this" affordance that did not exist. Deciding
+  whether to surface it is new product work, not a port; denying it (never remember) is a valid
+  first cut.
+
+Blast radius is small in files: 13 call sites across `GhosttyApp.swift` and
+`GhosttyRuntimeAdapter.swift`. `ClipboardConfirmationUITests` + `ClipboardConfirmationCopyTests`
+already exist and are red/green-proven, so the port has a working harness on day one — run them
+first, they are the cheapest signal that the new ABI is wired right.
+
+**Enum renumbering: not a risk, same reasoning as last time.** `GHOSTTY_ACTION_EXPORT_TERMINAL_IO`,
+`SET_WINDOW_TITLE` and `MOVE_TAB_TO_NEW_WINDOW` are inserted mid-enum and renumber everything after,
+but header and static archive ship together, `handleAction` dispatches on symbolic labels (15 cases),
+and nothing persists a raw tag. Don't spend retest budget there, and don't write a test asserting a
+raw value — test and app import the same header, so it can never fail.
+
+**Resources MUST be regenerated — verified, not assumed.** `src/terminfo/ghostty.zig` gained `Smol`
+/ `Rmol` (overline, `\E[53m` / `\E[55m`), so `macapp/Resources/ghostty/terminfo` is stale. Regenerate
+via `infocmp`/`tic` from the pinned commit exactly as the last bump did, and re-copy
+`shell-integration/`. Upstream also added a content-derived `terminfo.version` hash at this ref,
+which is a better tripwire than a date — worth wiring into the resource-contract check.
+
+**Also required (unchanged from the last bump — that entry's process applies in full):**
+
+- `GhosttyPinIntegrityTests` pins the resolved revision; it must be updated in the same commit.
+- Universal Release build — inherited daily from `nightly.yml`, plus `release.sh`'s thin-Mach-O gate.
+- The bake gate: N clean nightlies before it enters a `pre` tag. N is still undecided.
+- `QA-libghostty.md` §N — run it against the CURRENT engine first for a baseline; a baseline taken
+  after the bump is worthless.
+- Re-verify the GhosttyKit modulemap-collision workaround (`macapp/CLAUDE.md`). New reason to
+  re-check this time: the xcframework now ships visionOS + visionOS-simulator slices it didn't
+  before.
+- Rollback is not one line: revert, `rm -rf macapp/DerivedData/SourcePackages`, rebuild. CI's
+  `spm-`/`xcbuild-` cache `restore-keys` can restore a mixed state.
+
+**Depends on:** nothing. The clipboard port is the only new app-side work, and it is bounded.
+
+**Priority:** P2 — bigger than the last bump (four patch swaps vs one, plus a real ABI port), but it
+buys a measured memory win this app is unusually well positioned for and closes the clipboard
+deny-leak. Not a GA blocker; a good first change after the GA tag, on the same reasoning the previous
+bump used.
+
 ### Automate the rest of §N's IO-layer checklist (macapp) — libghostty-bump follow-up, filed 2026-08-13
 
 **What:** the 1.3.2 bump (above) added exactly one automated tripwire
