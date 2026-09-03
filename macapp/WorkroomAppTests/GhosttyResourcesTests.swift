@@ -170,10 +170,10 @@ final class GhosttyResourcesTests: XCTestCase {
 /// bump, and that failure is the point — it forces whoever does that bump to notice and deliberately
 /// update `expectedRevision`, rather than the pin silently drifting under an unchanged version string.
 final class GhosttyPinIntegrityTests: XCTestCase {
-  /// The exact commit `macapp/project.yml`'s `libghostty` pin (version 1.3.2) resolved to when this
-  /// bump was researched and landed. Update this alongside `project.yml`'s `exactVersion` on every
-  /// future bump — see "Bump the libghostty pin" in `TODOS.md`.
-  private static let expectedRevision = "817666339c968dbe0bf90205cdc10806de2cdf31"
+  /// The exact commit `macapp/project.yml`'s `libghostty` pin (version 1.5.20260903) resolved to
+  /// when this bump was researched and landed. Update this alongside `project.yml`'s `exactVersion`
+  /// on every future bump — see "Bump the libghostty pin again" in `TODOS.md`.
+  private static let expectedRevision = "a2565ccf047c03c74a59dd7c16a8fac7c477852f"
 
   /// `Package.resolved` lives next to the (gitignored) `.xcodeproj`, not under `Resources` — it isn't
   /// a bundled resource, so this walks up from the test file's own source location instead of going

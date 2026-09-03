@@ -54,10 +54,16 @@ packages:
     # THIS IS THE SINGLE SOURCE OF TRUTH FOR THE TERMINAL ENGINE VERSION. Do not restate it in
     # docs or code comments — point here instead. Two numbers, and they are NOT the same number:
     #
-    #   package version : 1.3.2          (Lakr233/libghostty-spm's OWN version — the pin below)
-    #   ghostty engine  : untagged        (what that package is built from; sha 35e1a016, 2026-07-10)
+    #   package version : 1.5.20260903   (Lakr233/libghostty-spm's OWN version — the pin below)
+    #   ghostty engine  : untagged        (what that package is built from; sha c4e16970, 2026-08-25)
     #
-    # The package versions itself independently of ghostty: package 1.3.2 is NOT ghostty v1.3.2.
+    # The package versions itself independently of ghostty: package 1.5.20260903 is not a ghostty
+    # version at all, and package 1.3.2 was NOT ghostty v1.3.2.
+    #
+    # CHECK THE DATES, NOT THE VERSION NUMBERS. ghostty's newest TAG is v1.3.1 (332b2aef,
+    # 2026-03-13) — four months OLDER than the engine we ship. The packager's `upstream.1.3.1-*`
+    # builds (and package 1.5.2 with them) are rebuilds of that March release, so taking one would
+    # be an engine DOWNGRADE. This has now misled two separate readings of this pin.
     # Reading the package version as a ghostty version once put a false premise into TODOS.md and
     # made a P1 out of it. To check what a package release actually contains, read its release body
     # ("Ghostty commit: …") and the repo's hand-maintained `Ghostty.ref` — never the tag alone.
@@ -65,7 +71,7 @@ packages:
     # Bumping this is NOT a one-line change: see "Bump the libghostty pin" in TODOS.md for the
     # patch-swap risk, the resources that must be regenerated with it, and the bake gate.
     url: https://github.com/Lakr233/libghostty-spm
-    exactVersion: 1.3.2
+    exactVersion: 1.5.20260903
   Sentry:
     # Crash reporting, app-hang detection, tracing, profiling, and metrics. We link the `Sentry`
     # SPM product (the recommended static framework — it also re-exports the SwiftUI APIs since

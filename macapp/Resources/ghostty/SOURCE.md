@@ -27,6 +27,24 @@ in `b81d5c6d`, the SwiftTerm → libghostty commit). This section records what w
 deliberately does not duplicate it. The comparison baseline was a stock Ghostty.app install of that
 same version. Re-measure after a pin bump; these findings expire with it.
 
+**Regenerated 2026-09-03 for the 1.3.2 → 1.5.20260903 pin bump** (engine `35e1a016` → `c4e16970`).
+Three files changed and nothing else moved:
+
+- `terminfo/78/xterm-ghostty` + its `67/ghostty` byte-copy — `src/terminfo/ghostty.zig` gained two
+  capabilities between the refs, the overline pair `Smol=\E[53m` / `Rmol=\E[55m`. Regenerated the same
+  source-diff-driven way the previous bump established (see below): `infocmp -x` the old entry, insert
+  exactly the two lines the upstream diff adds, `tic -x` back. A source-to-source `infocmp` diff of
+  the result confirms those two capabilities are the ONLY difference, and `cmp` confirms the alias is
+  still byte-identical to the main entry and still a real file, not a symlink.
+- `shell-integration/nushell/vendor/autoload/ghostty.nu` — upstream added `@complete external` to the
+  `ssh` and `sudo` wrappers. Every other shell-integration file is byte-unchanged across the two refs
+  (verified with `diff -rq` against a fresh checkout at the pinned commit).
+
+Upstream also added a `src/shell-integration/README.md` at this ref, deliberately NOT vendored: it is
+documentation, never injected into a shell, and the tracked manifest covers what libghostty actually
+runs. Upstream gained a content-derived `terminfo.version` hash at this ref too — a better tripwire
+for "are the bundled resources stale" than a date, and worth wiring into the resource-contract test.
+
 **Regenerated 2026-08-12 for the 1.2.3 → 1.3.2 pin bump** (engine `332b2aef` → `35e1a016`). Both
 subtrees below were re-derived from a fresh `ghostty-org/ghostty` checkout at the new pinned commit —
 see each subsection for what changed and how it was verified.

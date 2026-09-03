@@ -74,13 +74,14 @@ final class GhosttyApp {
     rt.action_cb = { app, target, action in
       GhosttyRuntimeAdapter.shared.handleAction(app: app, target: target, action: action)
     }
-    rt.read_clipboard_cb = { userdata, location, state in
+    rt.read_clipboard_cb = { userdata, location, state, mimes, mimeCount, wantsAvailable in
       GhosttyRuntimeAdapter.shared.readClipboard(
-        userdata: userdata, location: location, state: state)
+        userdata: userdata, location: location, state: state, mimes: mimes, mimeCount: mimeCount,
+        wantsAvailable: wantsAvailable)
     }
-    rt.confirm_read_clipboard_cb = { userdata, content, state, request in
+    rt.confirm_read_clipboard_cb = { userdata, confirm, state, request in
       GhosttyRuntimeAdapter.shared.confirmReadClipboard(
-        userdata: userdata, content: content, state: state, request: request)
+        userdata: userdata, confirm: confirm, state: state, request: request)
     }
     rt.write_clipboard_cb = { userdata, location, content, count, confirm in
       GhosttyRuntimeAdapter.shared.writeClipboard(

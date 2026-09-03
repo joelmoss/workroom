@@ -50,22 +50,40 @@ final class ClipboardConfirmationCopyTests: XCTestCase {
 
   func testEachRequestKindHasItsOwnPrompt() {
     let paste = GhosttyRuntimeAdapter.clipboardConfirmation(for: .paste, preview: "rm -rf /")
-    let read = GhosttyRuntimeAdapter.clipboardConfirmation(for: .osc52Read, preview: "hunter2")
-    let write = GhosttyRuntimeAdapter.clipboardConfirmation(for: .osc52Write, preview: "hunter2")
+    let read = GhosttyRuntimeAdapter.clipboardConfirmation(for: .read, preview: "hunter2")
+    let write = GhosttyRuntimeAdapter.clipboardConfirmation(for: .write, preview: "hunter2")
 
     XCTAssertEqual(paste.allowButton, "Paste")
     XCTAssertEqual(paste.denyButton, "Cancel")
     XCTAssertEqual(read.allowButton, "Allow")
     XCTAssertEqual(write.allowButton, "Allow")
-    // Read and write are both "authorize OSC 52" but must not be interchangeable: one hands the
-    // clipboard OUT, the other overwrites it.
+    // Read and write are both "authorize a program's clipboard access" but must not be
+    // interchangeable: one hands the clipboard OUT, the other overwrites it.
     XCTAssertNotEqual(read.title, write.title)
     XCTAssertNotEqual(read.message, write.message)
   }
 
   func testPreviewIsIncludedVerbatimWhenShort() {
-    let copy = GhosttyRuntimeAdapter.clipboardConfirmation(for: .osc52Read, preview: "hunter2")
+    let copy = GhosttyRuntimeAdapter.clipboardConfirmation(for: .read, preview: "hunter2")
     XCTAssertTrue(copy.message.contains("hunter2"))
+  }
+
+  func testRequesterNameLeadsTheMessageWhenTheProtocolSuppliesOne() {
+    // Naming who asked is most of what makes this prompt answerable. When no name is carried the
+    // copy must still read as a sentence, not leave a hole.
+    let named = GhosttyRuntimeAdapter.clipboardConfirmation(
+      for: .read, preview: "hunter2", requester: "curl")
+    let anonymous = GhosttyRuntimeAdapter.clipboardConfirmation(for: .read, preview: "hunter2")
+    XCTAssertTrue(named.message.contains("curl"))
+    XCTAssertFalse(anonymous.message.contains("curl"))
+    XCTAssertTrue(anonymous.message.contains("An application running in this terminal"))
+  }
+
+  func testListPromptDoesNotLeakTheClipboardContents() {
+    // A LIST request asks what representations exist, not for the data. Echoing the preview into
+    // that prompt would show the user's clipboard for a request that never asked for it.
+    let copy = GhosttyRuntimeAdapter.clipboardConfirmation(for: .list, preview: "hunter2")
+    XCTAssertFalse(copy.message.contains("hunter2"))
   }
 
   func testLongPreviewIsTruncated() {
@@ -91,7 +109,7 @@ final class ClipboardConfirmationCopyTests: XCTestCase {
 
   func testEveryKindProducesBothButtons() {
     // Exhaustive over the enum: a new kind added without copy would ship an alert with no way out.
-    for kind in [Kind.paste, .osc52Read, .osc52Write] {
+    for kind in [Kind.paste, .read, .write, .list] {
       let copy = GhosttyRuntimeAdapter.clipboardConfirmation(for: kind, preview: "x")
       XCTAssertFalse(copy.title.isEmpty)
       XCTAssertFalse(copy.allowButton.isEmpty)

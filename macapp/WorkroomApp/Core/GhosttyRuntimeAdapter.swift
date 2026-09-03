@@ -205,7 +205,13 @@ final class GhosttyRuntimeAdapter {
 
   // MARK: Clipboard
 
-  /// Copy (write) — ⌘C and OSC 52 writes. Writes the first text payload to the general pasteboard.
+  /// The one representation we serve. The engine asks for the exact MIME types it wants and always
+  /// requests text-like data as the canonical `text/plain`, so anything else is a type we cannot
+  /// produce from `NSPasteboard.string(forType:)`.
+  private static let servedClipboardMIME = "text/plain"
+
+  /// Copy (write) — ⌘C, OSC 52 and kitty clipboard writes. Writes the first text payload to the
+  /// general pasteboard.
   ///
   /// `confirm` is the engine's own policy signal: it is `clipboard-write == .ask`
   /// (`Surface.clipboardWrite`), so it is false for the ⌘C copy binding and, today, for OSC 52 too
@@ -224,17 +230,20 @@ final class GhosttyRuntimeAdapter {
     var text: String?
     for i in 0..<count {
       let entry = content[i]
-      // Only forward text payloads: a binary mime (image/*, etc.) would be garbled by
-      // String(cString:), and breaking on the first non-null entry would skip a later text/plain one.
+      // Only forward text payloads: a binary mime (image/*, etc.) would be garbled, and breaking on
+      // the first non-null entry would skip a later text/plain one.
       let isText = entry.mime.map { String(cString: $0).hasPrefix("text/") } ?? true
       guard isText, let data = entry.data else { continue }
-      text = String(cString: data)
+      // `len` is authoritative — the payload is binary-safe and NOT necessarily null-terminated, so
+      // `String(cString:)` would read past the end or truncate at an embedded NUL.
+      text = String(decoding: UnsafeRawBufferPointer(start: data, count: entry.len), as: UTF8.self)
       break
     }
     guard let text, !text.isEmpty else { return }
     guard confirm else { return Self.setPasteboard(text) }
-    confirmClipboard(kind: .osc52Write, preview: text, over: surfaceView(fromUserdata: userdata)) {
-      allowed in
+    confirmClipboard(
+      kind: .write, preview: text, requester: nil, over: surfaceView(fromUserdata: userdata)
+    ) { allowed in
       guard allowed else { return }
       Self.setPasteboard(text)
     }
@@ -246,18 +255,75 @@ final class GhosttyRuntimeAdapter {
     pb.setString(text, forType: .string)
   }
 
-  /// Paste (read) — ⌘V and OSC 52 reads. Completes the request with the pasteboard's text.
+  /// Paste (read) — ⌘V, OSC 52 and kitty clipboard reads.
+  ///
+  /// The return value reports only facts about the pasteboard, not policy: `STARTED` promises that
+  /// exactly one of `ghostty_surface_complete_clipboard_request` / `..._deny_clipboard_request` will
+  /// eventually be called with this `state`; `UNAVAILABLE` means there is nothing servable to hand
+  /// over; `UNSUPPORTED` means we cannot serve this request at all. The core decides what each
+  /// non-started answer does — a paste binding, for instance, falls through to its default.
   nonisolated func readClipboard(
     userdata: UnsafeMutableRawPointer?,
     location: ghostty_clipboard_e,
-    state: UnsafeMutableRawPointer?
-  ) -> Bool {
-    guard let userdata else { return false }
+    state: UnsafeMutableRawPointer?,
+    mimes: UnsafePointer<UnsafePointer<CChar>?>?,
+    mimeCount: Int,
+    wantsAvailable: Bool
+  ) -> ghostty_clipboard_read_result_e {
+    guard let userdata else { return GHOSTTY_CLIPBOARD_READ_UNSUPPORTED }
     let view = Unmanaged<GhosttySurfaceView>.fromOpaque(userdata).takeUnretainedValue()
-    guard let surface = view.surface else { return false }
-    let text = NSPasteboard.general.string(forType: .string) ?? ""
-    text.withCString { ghostty_surface_complete_clipboard_request(surface, $0, state, false) }
-    return true
+    guard let surface = view.surface else { return GHOSTTY_CLIPBOARD_READ_UNSUPPORTED }
+    guard Self.requestsServedMIME(mimes, count: mimeCount) else {
+      return GHOSTTY_CLIPBOARD_READ_UNSUPPORTED
+    }
+    // Distinguishing "no text on the pasteboard" from "here is an empty string" matters: the former
+    // must leave a paste binding free to fall through, which is what the old `bool` return could not
+    // express (it always handed back "" and claimed success).
+    guard let text = NSPasteboard.general.string(forType: .string) else {
+      return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE
+    }
+    // `confirmed: false` submits it to the engine's own `clipboard-read` policy, which is what
+    // routes an OSC 52 read into `confirmReadClipboard` below.
+    Self.completeClipboardRequest(surface: surface, text: text, state: state, confirmed: false)
+    return GHOSTTY_CLIPBOARD_READ_STARTED
+  }
+
+  /// Whether the engine asked for a representation we can actually produce. An empty list means the
+  /// caller expressed no preference, which we read as "text is fine".
+  private static func requestsServedMIME(
+    _ mimes: UnsafePointer<UnsafePointer<CChar>?>?, count: Int
+  ) -> Bool {
+    guard let mimes, count > 0 else { return true }
+    for i in 0..<count where mimes[i].map({ String(cString: $0) }) == servedClipboardMIME {
+      return true
+    }
+    return false
+  }
+
+  /// Hand the engine one `text/plain` representation. `available` is left empty: it is the listing
+  /// of every MIME type on the pasteboard, requested via `read_clipboard`'s trailing bool, and we
+  /// serve exactly one type — reporting the pasteboard's full type list would disclose more about
+  /// the user's clipboard than the single representation they are being asked to approve.
+  ///
+  /// `remember` is always false. The engine offers a "remember this decision" session grant
+  /// (`can_remember` on the confirmation), but a persistent allow for a terminal program that asked
+  /// once is a bigger promise than this prompt currently explains, so every request is asked afresh.
+  private static func completeClipboardRequest(
+    surface: ghostty_surface_t, text: String, state: UnsafeMutableRawPointer?, confirmed: Bool
+  ) {
+    servedClipboardMIME.withCString { mime in
+      text.withCString { data in
+        var content = ghostty_clipboard_content_s(
+          mime: mime, data: data, len: text.utf8.count)
+        withUnsafePointer(to: &content) { contents in
+          var complete = ghostty_clipboard_complete_s(
+            contents: contents, contents_len: 1,
+            available: nil, available_len: 0,
+            confirmed: confirmed, remember: false)
+          ghostty_surface_complete_clipboard_request(surface, &complete, state)
+        }
+      }
+    }
   }
 
   /// The engine could not complete a clipboard request without the user's consent, and is asking us
@@ -268,34 +334,43 @@ final class GhosttyRuntimeAdapter {
   ///   on) flagged the pasteboard's contents as unsafe. In practice that is a multi-line paste into
   ///   a program with no bracketed-paste mode (`cat`, a raw `ssh` prompt), or any paste containing
   ///   a bracketed-paste terminator.
-  /// - `GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ` — an application asked to read the pasteboard and
-  ///   `clipboard-read` is `ask`, which is ghostty's default and therefore ours.
+  /// - the OSC 52 / kitty read + write requests, when `clipboard-read` is `ask` (ghostty's default,
+  ///   and therefore ours) or `clipboard-write` is.
   ///
   /// This used to be an empty stub, which was not the permissive pass-through it read as: with
   /// nothing completing the request, BOTH of those cases were silently dropped — the unsafe paste
   /// never landed and the OSC 52 read never got a reply.
   ///
-  /// `content` is only valid for the duration of this call (it is the `withCString` buffer from our
-  /// own `readClipboard`), so it is copied to a Swift `String` before anything defers. `state` is
-  /// the engine's heap-allocated request, which `completeClipboardRequest` deliberately does NOT
-  /// free on this route precisely so it survives until we answer.
-  ///
-  /// Denying simply drops it: the pinned engine exposes no `ghostty_surface_deny_clipboard_request`,
-  /// so the request allocation is leaked on every denial — upstream's own macOS app at the pinned
-  /// ref does exactly the same, and inventing a completion here would re-enter the same error path
-  /// and prompt again in a loop.
+  /// Every pointer here is borrowed for the duration of the call — the confirmation struct, its
+  /// contents, and the requesting program's name — so everything the deferred prompt needs is copied
+  /// out first. `state` is the exception by design: it is the engine's heap-allocated request, which
+  /// `completeClipboardRequest` deliberately does NOT free on this route precisely so it survives
+  /// until we answer.
   nonisolated func confirmReadClipboard(
     userdata: UnsafeMutableRawPointer?,
-    content: UnsafePointer<CChar>?,
+    confirm: UnsafePointer<ghostty_clipboard_confirm_s>?,
     state: UnsafeMutableRawPointer?,
     request: ghostty_clipboard_request_e
   ) {
-    guard let content, let kind = ClipboardConfirmationKind(request) else { return }
+    guard let confirm, let kind = ClipboardConfirmationKind(request) else { return }
+    let payload = confirm.pointee
+    var text = ""
+    if let contents = payload.contents, payload.contents_len > 0, let data = contents[0].data {
+      text = String(
+        decoding: UnsafeRawBufferPointer(start: data, count: contents[0].len), as: UTF8.self)
+    }
+    // Not every protocol carries a requesting program's name; the prompt falls back to "an
+    // application" when it doesn't.
+    let requester = payload.name.map { String(cString: $0) }
     let view = surfaceView(fromUserdata: userdata)
-    let text = String(cString: content)
-    confirmClipboard(kind: kind, preview: text, over: view) { [weak view] allowed in
-      guard allowed, let surface = view?.surface else { return }
-      text.withCString { ghostty_surface_complete_clipboard_request(surface, $0, state, true) }
+    confirmClipboard(kind: kind, preview: text, requester: requester, over: view) {
+      [weak view] allowed in
+      // A surface that went away mid-prompt (its tab was closed) can neither complete nor deny, so
+      // the engine's request allocation leaks. Nothing in the C API answers a request without a
+      // surface, and it is one allocation per abandoned prompt.
+      guard let surface = view?.surface else { return }
+      guard allowed else { return ghostty_surface_deny_clipboard_request(surface, state) }
+      Self.completeClipboardRequest(surface: surface, text: text, state: state, confirmed: true)
     }
   }
 
@@ -312,10 +387,11 @@ final class GhosttyRuntimeAdapter {
   private nonisolated func confirmClipboard(
     kind: ClipboardConfirmationKind,
     preview: String,
+    requester: String?,
     over view: GhosttySurfaceView?,
     then resolve: @escaping (Bool) -> Void
   ) {
-    let copy = Self.clipboardConfirmation(for: kind, preview: preview)
+    let copy = Self.clipboardConfirmation(for: kind, preview: preview, requester: requester)
     DispatchQueue.main.async { [weak self] in
       guard let self, !isPresentingClipboardConfirmation else { return resolve(false) }
       isPresentingClipboardConfirmation = true
@@ -364,21 +440,33 @@ final class GhosttyRuntimeAdapter {
 
   // MARK: Clipboard confirmation copy (pure, unit-tested)
 
-  /// Why the engine is asking for the user's consent. Mirrors `ghostty_clipboard_request_e`, but as
-  /// our own type so the copy below stays pure Swift and testable — `WorkroomAppTests` links the app
-  /// module, not the GhosttyKit C module.
+  /// What the user is being asked to allow. Mirrors `ghostty_clipboard_request_e`, but as our own
+  /// type so the copy below stays pure Swift and testable — `WorkroomAppTests` links the app module,
+  /// not the GhosttyKit C module.
+  ///
+  /// Deliberately named for the ACT, not the protocol: OSC 52 and the kitty clipboard protocol ask
+  /// the same two questions of the user, and a prompt that named the escape sequence would be
+  /// telling them the one thing they cannot act on.
   enum ClipboardConfirmationKind {
+    /// Pasting content the engine flagged as unsafe to send to the running program.
     case paste
-    case osc52Read
-    case osc52Write
+    /// A program wants to be handed the clipboard's contents.
+    case read
+    /// A program wants to replace the clipboard's contents.
+    case write
+    /// A program wants the listing of what representations the clipboard holds. Discloses less than
+    /// a read, but still discloses.
+    case list
 
     /// nil for a request kind we don't recognise, which `confirmClipboard` treats as a denial — a
     /// libghostty upgrade that adds a kind must not silently start auto-allowing it.
     init?(_ request: ghostty_clipboard_request_e) {
       switch request {
       case GHOSTTY_CLIPBOARD_REQUEST_PASTE: self = .paste
-      case GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ: self = .osc52Read
-      case GHOSTTY_CLIPBOARD_REQUEST_OSC_52_WRITE: self = .osc52Write
+      case GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ, GHOSTTY_CLIPBOARD_REQUEST_KITTY_READ: self = .read
+      case GHOSTTY_CLIPBOARD_REQUEST_OSC_52_WRITE, GHOSTTY_CLIPBOARD_REQUEST_KITTY_WRITE:
+        self = .write
+      case GHOSTTY_CLIPBOARD_REQUEST_LIST: self = .list
       default: return nil
       }
     }
@@ -391,10 +479,14 @@ final class GhosttyRuntimeAdapter {
 
   /// Wording for a clipboard confirmation. Pure + side-effect-free so it is testable without a live
   /// terminal (same rationale as `terminalActivity` below).
+  ///
+  /// `requester` is the program name the protocol supplied, when it supplied one — naming who asked
+  /// is most of what makes this prompt answerable, so it leads the message whenever it is present.
   static func clipboardConfirmation(
-    for kind: ClipboardConfirmationKind, preview: String
+    for kind: ClipboardConfirmationKind, preview: String, requester: String? = nil
   ) -> (title: String, message: String, allowButton: String, denyButton: String) {
     let shown = truncatedClipboardPreview(preview)
+    let who = requester.map { "“\($0)”" } ?? "An application running in this terminal"
     switch kind {
     case .paste:
       return (
@@ -407,24 +499,32 @@ final class GhosttyRuntimeAdapter {
         """,
         "Paste", "Cancel"
       )
-    case .osc52Read:
+    case .read:
       return (
         "Allow this terminal to read the clipboard?",
         """
-        An application running in this terminal asked for the clipboard's contents. It would \
-        receive:
+        \(who) asked for the clipboard's contents. It would receive:
 
         \(shown)
         """,
         "Allow", "Deny"
       )
-    case .osc52Write:
+    case .write:
       return (
         "Allow this terminal to change the clipboard?",
         """
-        An application running in this terminal asked to replace the clipboard's contents with:
+        \(who) asked to replace the clipboard's contents with:
 
         \(shown)
+        """,
+        "Allow", "Deny"
+      )
+    case .list:
+      return (
+        "Allow this terminal to inspect the clipboard?",
+        """
+        \(who) asked what kinds of content the clipboard holds. That does not hand over the \
+        contents themselves, but it does reveal what you last copied the shape of.
         """,
         "Allow", "Deny"
       )

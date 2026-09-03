@@ -304,7 +304,45 @@ loudly if the packager ever re-cuts the `1.3.2` tag).
 user's shell. SHIPPED; watching the bake gate and the residual gaps filed below before promoting to
 a `pre` tag.
 
-### Bump the libghostty pin again — package 1.5.20260903 / ghostty `c4e16970` (macapp), scoped 2026-09-03
+### Bump the libghostty pin again — package 1.5.20260903 / ghostty `c4e16970` (macapp) — LANDED 2026-09-03
+
+**Landed 2026-09-03.** Everything below was the scope written before doing it; this note records
+what the work actually found. Both headline risks resolved with evidence, and one NEW trap appeared
+that the scope did not predict:
+
+- **The four patch variants applied CLEANLY.** Pulled the packager's own CI log for the build behind
+  this release (`gh run view <id> -R Lakr233/libghostty-spm --log`): every patch reports
+  `[+] applied patch:`, none reports the `--3way` "context drifted" fallback, none failed — and the
+  variants selected were exactly the predicted `0002-host-managed-io-modern-v2.patch` and
+  `0003-prebuilt-framedata-v2.patch`. **Reading that log is now part of this procedure**: it is the
+  only place the three-way fallback is visible, and it does not fail the build.
+- **NEW TRAP — the first build after the pin change said `BUILD SUCCEEDED`, falsely.** Xcode does not
+  recompile Swift sources when only the binary artifact's header changes, so the app linked the new
+  static archive against stale objects compiled from the OLD header. `touch`ing the two clipboard
+  files surfaced four hard ABI errors immediately. **Always force-recompile the files that consume
+  the C API after a pin bump** — a green build straight after the resolve proves nothing.
+- **Resolving needs the old checkout removed first.** SPM leaves `checkouts/libghostty-spm` mode 555
+  and fails the new checkout with `Unable to create '.git/index.lock': Permission denied`.
+  `chmod -R u+w` then `rm -rf` that one checkout (the full `rm -rf SourcePackages` in the rollback
+  note also works, just slower).
+- **The clipboard port is done and verified live.** `ClipboardConfirmationUITests` (OSC 52 prompt,
+  Return-does-not-approve, Escape denies, allowed paste reaches the screen) pass against the new
+  engine. The new ABI also let four things improve: denials now call
+  `ghostty_surface_deny_clipboard_request` instead of leaking the request; a read distinguishes
+  `UNAVAILABLE` (nothing on the pasteboard, so a paste binding can fall through) from an empty
+  string; writes use the content's explicit `len` instead of `String(cString:)`, so they are
+  binary-safe; and prompts name the requesting program when the protocol carries one. Kitty
+  clipboard read/write map onto the same two prompts, and the new `LIST` request got its own copy
+  that deliberately does NOT echo the clipboard contents.
+- **Resources: three files changed, verified not assumed.** terminfo gained `Smol`/`Rmol` (overline)
+  and one shell-integration file gained `@complete external` on its nushell ssh/sudo wrappers.
+  Full account in `Resources/ghostty/SOURCE.md`.
+- **Full unit suite: 2391/2394, 2 failures, both parallel-run flakes.** Pre-bump baseline on the old
+  pin was 2389/2392 with a DIFFERENT pair failing; all four pass in isolation. (The +2 count is this
+  bump's own new tests.) That is the documented full-suite flake behaviour, not a regression.
+
+**Still open on this bump:** the bake gate (N clean nightlies before it enters a `pre` tag) is
+undecided, as it was last time, and `QA-libghostty.md` §N's manual items have not been re-run.
 
 **What:** `macapp/project.yml` `exactVersion: 1.3.2` (ghostty `35e1a016`, 2026-07-10) →
 **`1.5.20260903`** (ghostty `c4e16970`, 2026-08-25). ~6 weeks of upstream. Re-check the target
