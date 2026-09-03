@@ -75,6 +75,14 @@ note-curation steps.
   How the macOS app drives the CLI; streams setup/teardown as NDJSON log events on stderr.
 - `--confirm NAME` — Skip delete confirmation (delete subcommand only)
 
+## Sentry
+
+Workroom's crash reports live in the **`develop-with-style`** org (US region), project `workroom`.
+Use the project-scoped `mcp__sentry-workroom__*` tools (configured in `.mcp.json`, authed by
+`SENTRY_ACCESS_TOKEN` in `.claude/settings.local.json`). The machine-wide `mcp__claude_ai_Sentry__*`
+connector is signed into a **different account** (`harley-therapy`) and cannot see this project —
+ignore it here.
+
 ## Skill routing
 
 When the user's request matches an available skill, invoke it via the Skill tool. When in doubt, invoke the skill.

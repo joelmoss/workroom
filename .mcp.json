@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "sentry-workroom": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@sentry/mcp-server@latest",
+        "--organization-slug=develop-with-style",
+        "--project-slug=workroom"
+      ],
+      "env": {
+        "SENTRY_ACCESS_TOKEN": "${SENTRY_ACCESS_TOKEN}"
+      }
+    }
+  }
+}
