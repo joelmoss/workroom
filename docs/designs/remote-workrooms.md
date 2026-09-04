@@ -383,39 +383,45 @@ plus the foreground-pgid logic, so decide in advance which items may come back u
 ### Phase 1 — the agent exists, locally
 `feat(agent): tunnel local sessions through a versioned agent stream`
 
-- **Decide the relay binary first — Phase 1 is not startable without this.**
+- **The relay is a mode of the agent, not a second binary. DECIDED.**
   `applyPersistentSession` sets `config.command` to a *command line* (`<binaryPath> attach`,
-  `PersistentSessionService.swift:47-49`), so libghostty forks a **process**. That means two
-  distinct components, and this document does not yet pick their languages:
-  (a) the forked relay executable libghostty runs, and (b) the in-process Swift `AgentConnection`
-  the rest of the app uses. If the relay stays Swift, `SessionAttachClient.swift` (354 lines)
-  survives — and note it lives *inside* `macapp/WorkroomSession/`, so that branch is incompatible
-  with deleting that directory wholesale.
-  **The count is worse than "pick a language" implies — there are three Rust build products, and
-  `vcs/` produces none of them today:**
-  1. **A macOS `wr-agent`.** Unconditional, not a consequence of the relay choice: Phase 1 runs the
-     agent locally over a Unix socket by decision, so a universal macOS Rust *executable* is
-     required either way. `vcs/` produces a static xcframework, not an executable. Note the gap
-     precisely: `macapp/Scripts/build-helper.sh` already builds and signs an executable into the
-     bundle (that is exactly what it does for the Go CLI) — what does not exist is a **universal
+  `PersistentSessionService.swift:47-49`), so libghostty forks a **process** — meaning Phase 1 needs
+  both a forked relay executable and the in-process Swift `AgentConnection` the rest of the app uses.
+  **One Rust binary serves both roles: `wr-agent serve` owns ptys and services, `wr-agent attach` is
+  what libghostty forks.** That is exactly today's `workroom-session daemon|attach` shape, which is
+  already shipped and debugged, and it means the frame codec exists once in one language rather than
+  being duplicated in Swift and Rust indefinitely.
+  What settled it: the unify decision already requires the local agent to be a separate **process**
+  (that is how jj-lib leaves the app's address space), so a universal-macOS-Rust executable target is
+  unavoidable regardless. Once you are paying for that target, a second binary buys nothing — and
+  keeping the Swift relay would have saved no build target while leaving `SessionAttachClient.swift`
+  alive inside `macapp/WorkroomSession/`, blocking that directory's deletion.
+  **So the build products are two binaries from one crate, plus one open question:**
+  1. **A universal macOS `wr-agent`.** `vcs/` produces a static xcframework, not an executable.
+     The gap is precise: `macapp/Scripts/build-helper.sh` already builds and signs an executable into
+     the bundle (that is exactly what it does for the Go CLI) — what does not exist is a **universal
      Rust** target, and the distributed CLI comes from goreleaser rather than that script.
-  2. **A Linux `wr-agent`**, pushed to the far side. **Name the architectures** — if boxd guests can
-     be x86_64 *or* arm64 you ship two ELFs per artifact, which also doubles the codesign question in
+  2. **A Linux `wr-agent`**, pushed to the far side. **Name the architectures** — if guests can be
+     x86_64 *or* arm64 you ship two ELFs per artifact, which also doubles the codesign question in
      the Distribution Plan.
-  3. **A client-side `HostDriver`.** Provisioning happens *before* any agent exists on the far side,
-     so the driver runs on the Mac — inside a Swift app. That means a Rust library or CLI callable
-     from Swift, which is a third product nobody has named. (Or the driver is written in Swift and
-     the trait is not Rust at all — also a legitimate answer, but it must be chosen.)
-  Resolve all three before anyone starts Phase 1.
+  3. **Still open: where the `HostDriver` lives.** Provisioning precedes any far-side agent, so the
+     driver runs on the Mac, inside a Swift app. Either a Rust library callable from Swift (a third
+     product) or the driver is simply written in Swift and the trait is not Rust at all. The second is
+     probably right — the driver talks HTTP to provider APIs, which Swift does natively — but it is
+     not yet decided. Tracked as OQ21.
 - **Name what survives (S6).** `macapp/WorkroomSession/` (1967 lines) is the daemon plus attach
   client and is what the agent replaces. `macapp/WorkroomSessionProtocol/` (1346 lines) is a
   separate target holding `SessionFrame`, `SessionReplayBuffer`, `SessionBytes`, `SessionMessages`
   and `SessionIdentifier`, imported by six app files including `TerminalSessions.swift` and
   `PersistentSessionControlClient.swift`. A Rust agent means the wire types exist in **both**
   languages; that duplication is a deliberate accepted cost, and the envelope version is what
-  keeps them honest. **Two consequences the success criteria previously got wrong:** the deletion
-  is of the daemon and its helpers, *not* necessarily the whole directory (the Swift-relay branch above
-  keeps `SessionAttachClient.swift`, which is in there); and
+  keeps them honest — and note the duplication is now **asymmetric**, which is the point of the
+  relay decision: Rust owns the pty, the replay buffer and the framing; Swift keeps only what a
+  client needs to speak the wire (`SessionFrame`, `SessionBytes`, `SessionIdentifier`), so
+  `SessionReplayBuffer`'s Swift copy retires with the daemon rather than living on in parallel.
+  **Two consequences for the deletion:** `macapp/WorkroomSession/` goes in full — daemon, `SessionPTY`,
+  `SessionAttachClient.swift` and `main.swift` alike, since `wr-agent attach` replaces the relay —
+  while `macapp/WorkroomSessionProtocol/` survives in slimmed form for the Swift client. And
   `SessionDaemonEndToEndTests.swift` (7 tests) plus `SessionDaemonHarness.swift` drive the Swift
   daemon binary directly, so they must be **rewritten against the agent**, not expected to pass.
 - New crate `wr-agent` beside `wr-vcs-core`. A **versioned** multiplex envelope carrying stream id,
@@ -566,21 +572,29 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   workroom-creation time — as does a warning where the provider can only issue a broadly-scoped
   control-plane token for the shim.
 - **The far side carries exactly two provider-specific pieces, and no more.**
-  - **A supervisor.** `SessionDaemon.swift:97-107` exits its loop when
-    `sessions.isEmpty && connections.isEmpty`. An agent that also owns VCS reads, the file watcher
-    and the busy/idle decision must not self-exit that way, and something must start it on boot and
-    after resume. Name it per driver (systemd unit, provider init hook, wrapper) — drivers
-    legitimately differ here, because it *is* how the far side boots.
+  - **A supervisor.** Something must start the agent on boot and after resume, and on the far side
+    that is genuinely per-driver (systemd unit, provider init hook, wrapper) because it *is* how that
+    provider's box boots. Note the far side differs from local here: a remote agent must survive with
+    no client attached, since the busy/idle reports feeding the shim have to keep flowing while your
+    Mac sleeps. So remote does need supervision that local does not.
   - **A lifecycle shim.** Takes the agent's busy/idle reports and makes the provider's control-plane
     defer call, so a job survives an idle timer with the Mac asleep (see Provider Decision). Holds
     an instance-scoped provider credential, must die with the instance including on failure paths,
     and must stay small enough to audit by reading. Its credential scope is a declared trait.
   Everything else pushed to the far side is the agnostic agent. If a third provider-specific
   component appears, that is the signal the abstraction is wrong.
-- **Local Phase 1 has no driver, so name its supervisor too.** The agent runs over a Unix socket with
-  no provider involved, and the self-exit behaviour above is what the doc says must go — so decide
-  what starts, restarts and stops the local agent (launchd agent, or app-managed lifecycle as today's
-  daemon is). Unaddressed until now, and it blocks Phase 1 rather than Phase 3.
+- **Local needs no supervisor at all. DECIDED — and an earlier claim in this document was wrong.**
+  A previous revision asserted that `SessionDaemon.swift:97-107`'s self-exit
+  (`sessions.isEmpty && connections.isEmpty`) had to go, because the agent would also own VCS reads
+  and the file watcher. That does not follow: diffs, history and watches are things a **connected
+  client** asks for, so an agent with no connections and no ptys is holding nothing anyone can lose.
+  The one thing that must outlive the app is a live terminal session — which is precisely what the
+  existing rule already protects. So the local agent keeps today's mechanism unchanged:
+  `posix_spawn` on connect-failure, a `flock` so only one instance wins, idle self-exit when the last
+  pty and client are gone. Zero work, already debugged (including the fallback-socket-path collision
+  and the `sockaddr_un` length off-by-one found in review), and no install footprint. If some later
+  service genuinely must outlive every client, that is when supervision earns its place, and it will
+  be obvious.
 - **SDK language is a precondition, not an assumption.** Whatever process opens the driver
   stream embeds the provider SDK in *its* language. "An SDK exec call satisfies the contract
   equally" holds only where an SDK exists for the relay's language. Verify per provider before
@@ -749,6 +763,11 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     scoped to the repo, a GitHub App installation token, or a dedicated machine user. Each reopens
     "Workroom stores a secret", which premise 6 exists to avoid — so this is a real decision, not a
     detail, and it is separate from OQ6 (non-GitHub remotes).
+21. **Is the client-side `HostDriver` Rust or Swift?** Provisioning precedes any far-side agent, so
+    the driver runs on the Mac. Swift is the likely answer — it talks HTTP to provider APIs, which
+    Swift does natively, and it avoids a third Rust build product — but that makes the driver trait a
+    Swift protocol rather than a Rust trait, which is worth stating deliberately rather than drifting
+    into. Small, but it shapes where every driver lives.
 
 ## Success Criteria
 
@@ -776,9 +795,10 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   as the rollback named in the Distribution Plan (a third state on the existing
   `backgroundSessions` preference,
   `DefaultsKeys.swift:76`). Deletion of `SessionDaemon`, `SessionPTY` and their helpers is a
-  criterion for the release *after* that, not for Phase 1; `macapp/WorkroomSessionProtocol/` remains
-  either way, and whether `SessionAttachClient.swift` goes with them follows from the relay decision
-  in Phase 1. **Note the tension this accepts:** Approach A was chosen partly because it "never has
+  criterion for the release *after* that, not for Phase 1. When it lands, `macapp/WorkroomSession/`
+  goes entirely — `SessionAttachClient.swift` included, since `wr-agent attach` replaces it — while
+  `macapp/WorkroomSessionProtocol/` remains in slimmed form as the Swift client's wire codec.
+  **Note the tension this accepts:** Approach A was chosen partly because it "never has
   two code paths", and a selectable daemon is two code paths for one release. That is a deliberate,
   time-boxed exception for rollback safety, not a reversal of the unify decision — and it is
   narrower than Approach B's rejected version, which would have run two paths indefinitely with the
@@ -830,34 +850,32 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
 
 ## Next Steps
 
-**Two decisions block Phase 1 and cost nothing but thought — make them first:**
+**The two decisions that blocked Phase 1 are now made** (both recorded in Phase 1 and Phase 3):
+the relay is a mode of one Rust binary, `wr-agent serve|attach`, mirroring today's
+`workroom-session daemon|attach`; and the local agent keeps its existing on-demand spawn and idle
+self-exit, because the reason given for replacing it did not survive scrutiny. One smaller question
+took their place: whether the client-side `HostDriver` is Rust-called-from-Swift or simply written in
+Swift (OQ21 — probably Swift, since it talks HTTP to provider APIs).
 
-1. **The relay binary** — language and build target. If it is Rust, it adds a universal-macOS-Rust
-   executable, a build product `vcs/` does not make today (it makes a static xcframework). Note this
-   is one of three Rust products; see Phase 1.
-2. **What supervises the *local* agent.** Phase 1 runs it over a Unix socket with no driver, and the
-   daemon's current self-exit-when-idle is what the design says must go. launchd agent, or
-   app-managed lifecycle as today? Nothing downstream is decidable without this.
+**Measure before writing anything:**
 
-**Then measure, before writing anything:**
-
-3. **Phase 0 spike — one day, six items, thrown away, item 5 first.** Item 5 no longer asks *whether*
+1. **Phase 0 spike — one day, six items, thrown away, item 5 first.** Item 5 no longer asks *whether*
    the far side can stay awake (the lifecycle shim settled that); it asks **what boxd measures and
    how narrowly the shim's credential can be scoped.** Start it and item 6's four-hour hibernation
    in the background at hour zero, then work through the rest: Rust pty plus `/proc` introspection,
    framing over a stream, the mid-TUI repaint after a killed link, the non-admin deploy-key case,
    and deriving two instances from one base. €30 boxd signup credit covers the provider items.
    Between them, items 5 and 6 settle five open questions.
-4. **Price open question 1 before Phase 2 is estimated.** Spike **gix** (already in the lock) on one
+2. **Price open question 1 before Phase 2 is estimated.** Spike **gix** (already in the lock) on one
    method — `log` against a real repo — and diff its output against `GitProvider.log`, watching page
    order and rename detection. Crate placement needs a decision against **two** stated invariants,
    not one: `wr-vcs-core/Cargo.toml:8` ("the ONLY crate allowed to depend on jj-lib… jj-only by
    design") and `wr-vcs-model/Cargo.toml:9` ("adding jj-lib or gix here is a layering violation").
    A third crate is probably the answer.
-5. **Build the generated/fuzzed differential harness before porting the replay buffer.** Translate
+3. **Build the generated/fuzzed differential harness before porting the replay buffer.** Translate
    the 15 existing tests, then generate the cases they do not cover — split escapes, alt-screen
    transitions, truncated UTF-8, embedded queries.
-6. **Then Phase 1**, from `master` — and expect the estimate to move once step 4 lands, because
+4. **Then Phase 1**, from `master` — and expect the estimate to move once step 2 lands, because
    Phase 2's git half is the largest unpriced item in the plan.
 
 ## Reviewer Concerns
