@@ -7,6 +7,10 @@ members = [
   "crates/wr-vcs-diff",
   "crates/wr-vcs-core",
   "crates/wr-vcs-uniffi",
+  # SPIKE, not shipped — prices the gix-vs-libgit2 question for the remote-workrooms agent.
+  # Remove this member (and the crate) once open question 1 of docs/designs/remote-workrooms.md
+  # is answered; nothing in the app links it.
+  "crates/wr-vcs-git",
 ]
 resolver = "2"
 

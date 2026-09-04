@@ -678,19 +678,35 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
 
 ## Open Questions
 
-1. **How does the Rust agent read git — and the earlier answer here was wrong.** The draft proposed
-   spiking `git2-rs`. Correction: **gix is already in the tree.** `vcs/Cargo.lock:664` has
-   `gix 0.85.0` with 46 `gix-*` crates, pulled transitively by `jj-lib =0.43.0`, and the only
-   `-sys` crates in the lock (`core-foundation-sys`, `js-sys`, `linux-raw-sys`, `windows-sys`) are
-   pure-Rust platform shims — no C toolchain anywhere. So adopting gix costs roughly a
-   `Cargo.toml` line, while `git2-rs` would *add* `libgit2-sys` plus `openssl-sys`/`libz-sys` to a
-   C-free tree and undercut the "Rust cross-compiles cleanly" premise behind the language choice.
-   **Spike gix, not git2-rs.** The real risk is unchanged and stays real: output parity against
-   SwiftGitX/libgit2 — `GIT_SORT_NONE` page ordering (documented at `VCSProviding.swift:19-24`) and
-   rename detection (`GitCommitDiff`). Note this retires `wr-vcs-core`'s own stated invariant
-   ("the ONLY crate allowed to depend on jj-lib… jj-only by design",
-   `vcs/crates/wr-vcs-core/Cargo.toml:8`), which needs an explicit decision rather than a silent
-   overturn — possibly a second crate rather than widening that one.
+1. **How does the Rust agent read git? gix, and the log half is now MEASURED.** An early draft
+   proposed `git2-rs`; that was wrong, because **gix is already in the tree** — `vcs/Cargo.lock:664`
+   has `gix 0.85.0` with 46 `gix-*` crates via `jj-lib =0.43.0`, and the only `-sys` crates in the
+   lock are pure-Rust platform shims. `git2-rs` would have *added* `libgit2-sys` plus
+   `openssl-sys`/`libz-sys` to a C-free tree, undercutting the premise behind choosing Rust at all.
+   **Spiked and answered for `log`** (`vcs/crates/wr-vcs-git`, a throwaway marked as such):
+   - **Parity is exact.** Over 400 commits of this repo including all 5 merge commits, gix and
+     `git log` agree on every field the app uses — commit id, abbreviated id, subject, author name
+     and email, epoch seconds, timezone offset (two distinct zones exercised), and parent ids —
+     with **zero mismatches**, and in the same order.
+   - **But ordering must be set explicitly.** gix's default is `Sorting::BreadthFirst`, which does
+     *not* match. `Sorting::ByCommitTime(CommitTimeOrder::NewestFirst)` does. This is the concrete
+     form of the `GIT_SORT_NONE` risk this question named: it is real, it is one line, and getting
+     it wrong would silently reorder History rather than fail.
+   - **Feature gotcha worth keeping.** `default-features = false` alone does not build: `gix-hash`
+     gates its `Kind` enum variants behind the `sha1` feature, so with no hash feature the enum is
+     empty and `gix-hash` fails to compile *itself*. `features = ["revision", "sha1"]` is the
+     minimum, and both are pure Rust — the C-free property survives.
+   - **Cost:** ~80-125 ms for a 400-to-759-commit page in release, including process start and JSON
+     serialisation, so the real in-agent cost is lower.
+   - **Crate placement confirmed empirically:** a new crate. Both existing homes forbid gix by
+     written invariant — `wr-vcs-core/Cargo.toml:8` ("the ONLY crate allowed to depend on jj-lib…
+     jj-only by design") and `wr-vcs-model/Cargo.toml:9` ("adding jj-lib or gix here is a layering
+     violation") — so the third-crate guess was right and neither invariant needs overturning.
+   **Still unpriced, and these are the parts that matter for Phase 2's estimate:** rename-detected
+   commit diffs (`GitCommitDiff`, the other half of this question), ref decorations
+   (`GitProvider.decorations`), and push state (`GitGraph.unpushed`, a second revwalk with
+   `--not refs/remotes/origin/*`). The log result says gix is viable and its output trustworthy; it
+   does not say the diff API is.
 2. **Does the alt-screen repaint trick survive real network latency?** Phase 0 item 3 answers it.
    If not, mosh's state-synchronisation model becomes the serious option and the replay buffer's
    port scope changes.
@@ -866,12 +882,12 @@ Swift (OQ21 — probably Swift, since it talks HTTP to provider APIs).
    framing over a stream, the mid-TUI repaint after a killed link, the non-admin deploy-key case,
    and deriving two instances from one base. €30 boxd signup credit covers the provider items.
    Between them, items 5 and 6 settle five open questions.
-2. **Price open question 1 before Phase 2 is estimated.** Spike **gix** (already in the lock) on one
-   method — `log` against a real repo — and diff its output against `GitProvider.log`, watching page
-   order and rename detection. Crate placement needs a decision against **two** stated invariants,
-   not one: `wr-vcs-core/Cargo.toml:8` ("the ONLY crate allowed to depend on jj-lib… jj-only by
-   design") and `wr-vcs-model/Cargo.toml:9` ("adding jj-lib or gix here is a layering violation").
-   A third crate is probably the answer.
+2. **Finish pricing open question 1.** The `log` half is **done** — gix matches `git log` exactly
+   over 400 commits including merges, in a new `wr-vcs-git` crate, with the sorting caveat and the
+   `sha1` feature gotcha recorded above. What remains is the half that actually drives Phase 2's
+   estimate: **rename-detected commit diffs** (against `GitCommitDiff`'s libgit2 behaviour), plus
+   ref decorations and the push-state revwalk. Extend the same spike crate rather than starting a
+   new one.
 3. **Build the generated/fuzzed differential harness before porting the replay buffer.** Translate
    the 15 existing tests, then generate the cases they do not cover — split escapes, alt-screen
    transitions, truncated UTF-8, embedded queries.

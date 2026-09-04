@@ -1,0 +1,32 @@
+# SPIKE — prices open question 1 of docs/designs/remote-workrooms.md: can gix serve the git half of
+# the agent's VCS reads, matching what GitProvider (SwiftGitX/libgit2) returns today?
+#
+# gix is already in this workspace's lockfile transitively via jj-lib =0.43.0, so this crate is a
+# direct dependency on something already vendored rather than a new one. `default-features = false`
+# is deliberate: the point of preferring gix over git2-rs is that the tree stays free of C-linking
+# crates (libgit2-sys / openssl-sys), and gix's default feature set pulls network transports that
+# would undo that. If this spike graduates, that constraint is the thing to keep testing.
+#
+# It lives in its own crate because both existing homes forbid it by written invariant:
+# wr-vcs-core is "the ONLY crate allowed to depend on jj-lib ... jj-only by design" and
+# wr-vcs-model says "adding jj-lib or gix here is a layering violation".
+[package]
+name = "wr-vcs-git"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# `sha1` is not optional in practice: gix-hash gates its `Kind` enum variants behind it, so with no
+# hash feature the enum is empty and gix-hash fails to compile itself. `revision` is what provides
+# rev_walk. Both are pure Rust — no C toolchain enters the tree, which is the whole reason for
+# preferring gix over git2-rs here.
+gix = { version = "0.85", default-features = false, features = ["revision", "sha1"] }
+wr-vcs-model = { path = "../wr-vcs-model" }
+serde = { workspace = true }
+serde_json = "1"
+
+[[bin]]
+name = "gix-log-spike"
+path = "src/main.rs"
