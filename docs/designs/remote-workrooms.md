@@ -101,10 +101,18 @@ OSC 2 title and OSC 7 cwd from the foreground pgid when a full-screen program is
 
 ## Provider Decision
 
-Settled by a separate 30-product sweep (`sandbox-comparison.md`, Sept 2026 — all figures below are
-that document's, fetched from vendor pages, and it carries its own data-quality caveats). It found
-the deciding axes to be lifetime model, isolation tier, and who owns the kernel; SDK language, cold
-start and fork primitive are filters after those.
+Settled by a separate provider sweep run out-of-tree in September 2026, covering roughly 30 products
+across agent-sandbox specialists, platform-attached sandboxes, LLM-vendor built-ins, persistent dev
+VMs, self-host isolation runtimes, and bare-metal baselines. **That document is not in this repo and
+was not preserved**, so every provider figure and capability claim below is second-hand here and
+should be re-verified against vendor documentation before anything is bought or built on it — the
+sweep itself flagged contradictions on vendors' own pages (conflicting cold-start numbers, session
+caps that differ between docs and marketing, isolation tiers described two ways). Treat the reasoning
+below as sound and the numbers as stale-by-default.
+
+The sweep found the deciding axes to be lifetime model, isolation tier, and who owns the kernel; SDK
+language, cold start and fork primitive are filters after those. That framing is what shaped this
+design, and it survives independently of any individual figure.
 
 **How this section is meant to be read.** The provider is a *first driver*, not a foundation.
 Everything below either becomes a portable trait or an accelerator; nothing below is allowed to
@@ -119,7 +127,7 @@ Morph's Infinibranch is nearest at <250 ms). It also **hibernates after 4 h idle
 milliseconds, and bills disk-only while asleep**, which is what makes many idle workrooms cheap.
 
 **Live fork is an accelerator, not the mechanism.** The portable primitive is *prepare a base, then
-derive instances from it* — `deriveFromBase` — and the sweep shows that is near-universal: E2B
+derive instances from it* — `deriveFromBase` — and the sweep reported that as near-universal: E2B
 templates and snapshot-into-many-forks, Daytona snapshots, Vercel auto-snapshot plus `fork()`, Fly
 suspend-as-snapshot, Morph branch, Freestyle fork, CodeSandbox fork, Hetzner snapshots. What is rare
 is forking a *running* machine. So the contract asks every driver to derive an instance from a
@@ -181,7 +189,8 @@ base-resident pty, and any credential baked into the base. Tracked as open quest
   boxd can fork a hibernated machine is unverified, which puts a caveat on the sub-second creation
   claim.
 
-The sweep also notes Firecracker documents resuming one snapshot twice as insecure, with net/vsock
+The sweep also reported that Firecracker documents resuming one snapshot twice as insecure, with
+net/vsock
 dropping on resume. boxd is the same KVM-microVM class, and fork-two-workrooms-from-one-base is
 exactly that pattern — an inherited hazard to measure, not a foreign one.
 
@@ -196,7 +205,7 @@ full-size workroom consumes); Daytona's OSS path (README says unmaintained since
 moved to a private codebase); `kern` (Linux-only by design, and its own docs call its shared-kernel
 boundary unsafe for other people's code — fine locally, not shippable in a macOS app).
 
-**Single-vendor risk, stated plainly:** boxd is a small, new provider, and the sweep records no
+**Single-vendor risk, stated plainly:** boxd is a small, new provider, and the sweep recorded no
 funding or maturity signal for it (unlike exe.dev's Series A). Its self-host licence is also
 unknown. That is a real bet — and it is exactly why the driver seam was specified before any
 provider was chosen. The
