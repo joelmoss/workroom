@@ -84,46 +84,6 @@ fn co_authors(message: &str, primary_email: &str) -> Vec<Author> {
     out
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parsers_match_the_swift_original() {
-        // messageBody: everything after line one, trimmed; empty for a one-liner.
-        assert_eq!(message_body("just a summary"), "");
-        assert_eq!(message_body("summary\n\n  body here \n\n"), "body here");
-
-        // Multibyte lines must not panic — this is what the first spike run hit, on a real commit
-        // in this repo whose message contains `→`.
-        assert!(co_authors("summary\n→ a note\n", "me@example.com").is_empty());
-        assert_eq!(message_body("summary\n→ a note"), "→ a note");
-
-        // Co-authors: case-insensitive, LAST angle pair, primary deduped, email fallback for name.
-        let m = "s\n\nCo-Authored-By: Ada <ada@example.com>\nco-authored-by: <bob@example.com>\n\
-                 Co-authored-by: Dup <ADA@example.com>\nCo-authored-by: Me <me@example.com>\n";
-        let got = co_authors(m, "me@example.com");
-        assert_eq!(
-            got.len(),
-            2,
-            "primary and duplicate emails must both be dropped"
-        );
-        assert_eq!(
-            (got[0].name.as_str(), got[0].email.as_str()),
-            ("Ada", "ada@example.com")
-        );
-        assert_eq!(
-            (got[1].name.as_str(), got[1].email.as_str()),
-            ("bob@example.com", "bob@example.com"),
-            "an empty name falls back to the email"
-        );
-
-        // Malformed trailers are skipped, not fatal.
-        assert!(co_authors("s\nCo-authored-by: no brackets\n", "me@x").is_empty());
-        assert!(co_authors("s\nCo-authored-by: > < backwards\n", "me@x").is_empty());
-    }
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let root = args
@@ -193,4 +153,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     eprintln!("spike: {} rows, reached_end={}", rows.len(), !seen_beyond);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parsers_match_the_swift_original() {
+        // messageBody: everything after line one, trimmed; empty for a one-liner.
+        assert_eq!(message_body("just a summary"), "");
+        assert_eq!(message_body("summary\n\n  body here \n\n"), "body here");
+
+        // Multibyte lines must not panic — this is what the first spike run hit, on a real commit
+        // in this repo whose message contains `→`.
+        assert!(co_authors("summary\n→ a note\n", "me@example.com").is_empty());
+        assert_eq!(message_body("summary\n→ a note"), "→ a note");
+
+        // Co-authors: case-insensitive, LAST angle pair, primary deduped, email fallback for name.
+        let m = "s\n\nCo-Authored-By: Ada <ada@example.com>\nco-authored-by: <bob@example.com>\n\
+                 Co-authored-by: Dup <ADA@example.com>\nCo-authored-by: Me <me@example.com>\n";
+        let got = co_authors(m, "me@example.com");
+        assert_eq!(
+            got.len(),
+            2,
+            "primary and duplicate emails must both be dropped"
+        );
+        assert_eq!(
+            (got[0].name.as_str(), got[0].email.as_str()),
+            ("Ada", "ada@example.com")
+        );
+        assert_eq!(
+            (got[1].name.as_str(), got[1].email.as_str()),
+            ("bob@example.com", "bob@example.com"),
+            "an empty name falls back to the email"
+        );
+
+        // Malformed trailers are skipped, not fatal.
+        assert!(co_authors("s\nCo-authored-by: no brackets\n", "me@x").is_empty());
+        assert!(co_authors("s\nCo-authored-by: > < backwards\n", "me@x").is_empty());
+    }
 }
