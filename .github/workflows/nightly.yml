@@ -185,6 +185,17 @@ jobs:
           make app-test
           APP_SIGN_FLAGS="CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM="
 
+      # Parallel xcodebuild prints NO assertion text — just a `Failing tests:` list — so a red run
+      # here says WHICH test failed and nothing about why. The message only exists in the xcresult,
+      # which is why diagnosing nightly 33955949260's failure needed a local repro instead of a read.
+      - name: Upload test results (xcresult)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcresult-nightly
+          path: macapp/DerivedData/Logs/Test/*.xcresult
+          retention-days: 7
+
       - name: Build, sign, notarize, staple, package DMG
         env:
           NOTARY_KEY: ${{ secrets.NOTARY_KEY }}

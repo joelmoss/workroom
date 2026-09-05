@@ -30,13 +30,6 @@ final class DiffViewerStaleLoadTests: XCTestCase {
   private static let pathA = "alpha.swift"
   private static let pathB = "bravo.swift"
 
-  override func setUp() {
-    super.setUp()
-    // `resolveDiff` is only consulted outside fixture mode; another suite in this process may have
-    // left the flag on (`DiffViewerLazyRenderingTests` sets it in its own `setUp`).
-    UserDefaults.standard.removeObject(forKey: UITestFixture.defaultsKey)
-  }
-
   /// A one-shot gate a test opens by hand, so "A's fetch is still in flight" is a fact rather than a
   /// sleep. Polled rather than continuation-based: the waiter runs on the main actor, and polling via
   /// `Task.sleep` suspends it so the run loop `settle` pumps stays live.

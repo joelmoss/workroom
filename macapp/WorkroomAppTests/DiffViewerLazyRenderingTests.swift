@@ -20,8 +20,9 @@ import XCTest
 /// Harness: the offscreen-`NSWindow` hosting pattern from `PaneRenderingTests`/`HistoryRowInvalidationTests`.
 /// The huge diff itself comes from `UITestFixture.hugeDiff()` via the `huge.css` magic path — reached
 /// by forcing `UITestFixture.isActive` on for the duration of this suite (a plain unit-test process
-/// doesn't set the `-WorkroomUITestFixture` launch argument the way `WorkroomAppUITests` does, so the
-/// flag is set directly on `UserDefaults.standard` and reset in `tearDown`).
+/// doesn't set the `-WorkroomUITestFixture` launch argument the way `WorkroomAppUITests` does, so
+/// `setUp` puts the flag in this process's own argument domain and `tearDown` takes it back out —
+/// see `setUp` for why it must NOT be a plain `UserDefaults.set`).
 @MainActor
 final class DiffViewerLazyRenderingTests: XCTestCase {
 
@@ -29,13 +30,27 @@ final class DiffViewerLazyRenderingTests: XCTestCase {
   private static let linesPerHunk = 100
   private static var lineCount: Int { hunkCount * linesPerHunk }
 
+  /// Force fixture mode on for this suite through the **volatile argument domain**, not
+  /// `set(_:forKey:)`. A plain write lands in the app's PERSISTED domain, which every
+  /// `-parallel-testing` worker shares on disk — so this suite silently flipped
+  /// `UITestFixture.isActive` inside the other workers too, for as long as its tests ran. That is
+  /// how `AppStoreCreateWorkroomTests.testCreationTargetAppearsAsTab` failed on CI (nightly run
+  /// 33955949260) while this class ran in a sibling worker: `AppStore.load` saw fixture mode, served
+  /// `loadFixture()` instead of the injected CLI's project list, and the created workroom never
+  /// landed in `projects`. The argument domain is process-local (never written to disk), reads back
+  /// through `UserDefaults.bool(forKey:)` at the highest priority, and is what a real fixture launch
+  /// (`-WorkroomUITestFixture 1`) populates anyway.
   override func setUp() {
     super.setUp()
-    UserDefaults.standard.set(true, forKey: UITestFixture.defaultsKey)
+    var domain = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+    domain[UITestFixture.defaultsKey] = true
+    UserDefaults.standard.setVolatileDomain(domain, forName: UserDefaults.argumentDomain)
   }
 
   override func tearDown() {
-    UserDefaults.standard.removeObject(forKey: UITestFixture.defaultsKey)
+    var domain = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+    domain.removeValue(forKey: UITestFixture.defaultsKey)
+    UserDefaults.standard.setVolatileDomain(domain, forName: UserDefaults.argumentDomain)
     super.tearDown()
   }
 
