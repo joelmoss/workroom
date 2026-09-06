@@ -205,6 +205,63 @@ full-size workroom consumes); Daytona's OSS path (README says unmaintained since
 moved to a private codebase); `kern` (Linux-only by design, and its own docs call its shared-kernel
 boundary unsafe for other people's code — fine locally, not shippable in a macOS app).
 
+**Second driver candidate, for the self-host path only: `celesto.ai` / SmolVM.** Added 2026-09-06
+and then verified against the vendor's own docs, CLI reference, pricing page and GitHub the same day
+— so unlike the rest of this section these figures are first-hand, not sweep-inherited. The
+verification changed the verdict: **the hosted cloud is not a viable driver, the self-hostable open
+core is.** Both halves are worth recording because the split is the whole finding.
+
+**Why Celesto Cloud fails as a driver, on three measured counts.** (1) **No fork and no snapshot in
+the cloud API at all** — `celesto computer` exposes create/get/list/run/ssh/stop/start/delete and
+port publish/list/unpublish, and nothing else; snapshots are documented only for self-hosted SmolVM.
+So `deriveFromBase` degrades to picking a stock template (`scratch` or `coding-agent`) with no
+user-created base, which is the full-clone-per-workroom worst case this design assigned to
+Cloudflare. (2) **Instances cap at Large = 4 vCPU / 12 GB, with root disk 512 MB-20 GB on every plan
+including Enterprise-listed tiers.** That is not "64 cores for twenty minutes"; it deletes the
+per-task-hardware prize outright. (3) **Concurrency is plan-capped** at 1 / 2 / 10 / 100 active
+sandboxes (Free / Nano / Builder / Growth), which is a ceiling on one-VM-per-workroom itself.
+
+**The four unknowns, answered.** (1) **Maximum instance lifetime: no wall-clock cap is documented
+anywhere** — the lifecycle doc describes only explicit create/stop/start/delete, and no page states a
+hard maximum. The real cap is *quota-shaped* instead: Free and Nano "hard stop" active sandboxes
+when the monthly balance depletes (30 and 750 Nano-hours), Builder/Growth bill overage at
+$0.10/$0.08 per standard hour. A wall of 750 hours is roughly one sandbox running all month, so for
+a single workroom it is not the boxd-style four-hour wall — but on the two cheap plans it still kills
+running work, which is the wrong failure mode for "close the lid, come back to finished tests".
+(2) **Idle: no automatic idle-stop is documented for cloud computers.** Stop is something the caller
+does. The only trace of automatic sleep is the pricing FAQ's "Sleeping sandboxes do not consume
+hours", which is billing copy with no documented trigger. Provisionally, then, the wakefulness hazard
+that forced the far-side shim **does not appear on this provider** — but "not documented" is not
+"guaranteed absent", and it stays a question for the vendor rather than a settled trait.
+(3) **Egress is not the blocker it looked like.** SmolVM's network doc states plainly that "by
+default, sandboxes have full internet access", with `internet_settings.allowed_domains` as an
+**opt-in** allowlist. The homepage's "restricted egress" is that opt-in feature, not a default. A
+workroom can reach `git push`, registries and LLM APIs; the allowlist is available if we ever want
+it. (4) **`--json` / `-j` is supported on most `celesto computer` commands** (create, list, run);
+`celesto computer ssh` is interactive and has no JSON, which costs nothing because ssh is the
+`openStream` transport, not a parsed call. There is no Rust SDK — Python and TypeScript only, plus
+REST — so a driver talks CLI-with-`--json` or REST from Rust, exactly as the Phase 3 SDK-language
+precondition anticipated for E2B.
+
+**What is actually attractive here: the self-hosted core.** `CelestoAI/SmolVM` is Apache-2.0 (verified
+on GitHub, 881 stars and pushed the same day it was checked — the homepage's "239 stars" is stale).
+It is a Python orchestration layer over Firecracker, QEMU and libkrun rather than a VMM of its own,
+and it is where every primitive this design needs actually lives: full/diff/disk snapshots capturing
+CPU, memory and disk, `SmolVM.from_snapshot(...)` to derive an instance (a real `deriveFromBase`),
+Firecracker copy-on-write disk copies on `diff`, live capture that keeps a QEMU guest running through
+a disk-only snapshot, host mounts, port forwarding, and an HTTP API. Self-hosted, none of the cloud's
+three blockers exist: no size cap, no plan concurrency cap, no sandbox-hour quota — **and no
+third-party control-plane credential on the VM**, because the far-side lifecycle shim would be
+calling infrastructure the author already owns. That is the one thing boxd cannot offer, and it is
+the reason this belongs in the design at all. Beware the name: the unrelated `smol-machines/smolvm`
+(Rust, ~6k stars) is a different project.
+
+**So: a self-host driver candidate, not a cloud one, and not a first driver.** Building it means
+running Linux hosts with KVM, which is a different commitment from "Workroom provisions the VM" and
+is precisely why it stays a second driver behind the portable path. Its honest role is as the escape
+hatch that proves the driver seam works — the thing that makes boxd replaceable rather than
+load-bearing, exercised rather than asserted.
+
 **Single-vendor risk, stated plainly:** boxd is a small, new provider, and the sweep recorded no
 funding or maturity signal for it (unlike exe.dev's Series A). Its self-host licence is also
 unknown. That is a real bet — and it is exactly why the driver seam was specified before any
