@@ -170,18 +170,31 @@ struct TerminalStatusBar: View {
       }
     } else {
       let isLoading = agentUsage.loading.contains(backend)
-      HStack(spacing: 4) {
-        if isLoading { ProgressView().controlSize(.mini) }
-        Text(
-          isLoading
-            ? "Loading \(backend.displayName) usage…" : "\(backend.displayName) usage unavailable")
+      // The reason (and the retry) matter only once the read has settled — mid-load there's nothing
+      // to explain yet, and a click would just cancel the refresh already running.
+      let reason = isLoading ? nil : agentUsage.unavailableReason(for: backend)
+      Button {
+        agentUsage.refresh()
+      } label: {
+        HStack(spacing: 4) {
+          if isLoading {
+            ProgressView().controlSize(.mini)
+            Text("Loading \(backend.displayName) usage…")
+          } else {
+            Text("\(backend.displayName) usage unavailable")
+            Image(systemName: "arrow.clockwise")
+          }
+        }
       }
+      .buttonStyle(StatusBarSegmentButtonStyle())
+      .disabled(isLoading)
       .foregroundStyle(theme.tokens.fgDim)
-      .help("Waiting for a fresh local \(backend.displayName) quota snapshot")
+      .help((reason.map { "\($0) Click to refresh." }) ?? "Reading the local quota snapshot…")
+      .accessibilityElement(children: .ignore)
       .accessibilityLabel(
         isLoading
           ? "Loading \(backend.displayName) quota usage"
-          : "\(backend.displayName) quota usage unavailable"
+          : "\(backend.displayName) quota usage unavailable. \(reason ?? "") Click to refresh."
       )
       .accessibilityIdentifier("terminal.statusBar.agentUsage.unavailable")
     }

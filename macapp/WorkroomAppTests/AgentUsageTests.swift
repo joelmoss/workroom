@@ -91,6 +91,69 @@ final class AgentUsageTests: XCTestCase {
     XCTAssertNil(AgentUsageDecoding.claude(data: partial, capturedAt: now, now: now))
   }
 
+  /// Every empty-quota footer has to be able to say WHY, so each way the Claude cache comes up empty
+  /// gets its own sentence.
+  func testClaudeReadDistinguishesMissingUnreadableAndResetCaches() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let cacheURL = root.appendingPathComponent("claude-rate-limits.json")
+
+    func reason() -> String {
+      guard
+        case .failure(let value) = AgentUsageDecoding.readClaudeSnapshot(
+          cacheURL: cacheURL, now: now)
+      else { return "" }
+      return value
+    }
+
+    XCTAssertTrue(reason().contains("hasn't received"), reason())
+    try Data("{".utf8).write(to: cacheURL)
+    XCTAssertTrue(reason().contains("couldn't be read"), reason())
+    try Data(#"{"five_hour":{"used_percentage":10,"resets_at":1999999999}}"#.utf8).write(
+      to: cacheURL)
+    XCTAssertTrue(reason().contains("since reset"), reason())
+
+    try Data(#"{"five_hour":{"used_percentage":10,"resets_at":2000003600}}"#.utf8).write(
+      to: cacheURL)
+    let read = AgentUsageDecoding.readClaudeSnapshot(cacheURL: cacheURL, now: now)
+    XCTAssertEqual(read.snapshot?.windows.first?.usedPercentage, 10)
+  }
+
+  /// A stored snapshot expires where it sits, with no refresh running to record why — so the reason
+  /// has to be derived when the footer reads it, not when the file was read.
+  @MainActor func testStoredSnapshotThatExpiresExplainsItselfWithoutARefresh() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let cacheURL = root.appendingPathComponent("claude-rate-limits.json")
+    try Data(#"{"five_hour":{"used_percentage":10,"resets_at":2000003600}}"#.utf8).write(
+      to: cacheURL)
+
+    let clock = Clock(value: now)
+    let monitor = AgentUsageMonitor(
+      codexSessionsURL: root.appendingPathComponent("sessions"), claudeCacheURL: cacheURL,
+      now: { clock.value }, startAutomatically: false)
+    XCTAssertTrue(monitor.unavailableReason(for: .claude).contains("has been read yet"))
+
+    monitor.refresh()
+    for _ in 0..<200 where monitor.loading.contains(.claude) {
+      try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    XCTAssertNotNil(monitor.snapshot(for: .claude))
+
+    clock.value = now.addingTimeInterval(4_000)
+    XCTAssertNil(monitor.snapshot(for: .claude))
+    XCTAssertTrue(
+      monitor.unavailableReason(for: .claude).contains("since reset"),
+      monitor.unavailableReason(for: .claude))
+  }
+
+  private final class Clock: @unchecked Sendable {
+    var value: Date
+    init(value: Date) { self.value = value }
+  }
+
   func testCodexDecodesAdvertisedWindowsAndNewestCumulativeSnapshot() throws {
     let older = rollout(
       timestamp: "2033-05-18T03:33:20.000Z", primary: (5, 300, 2_000_003_600), secondary: nil)

@@ -166,6 +166,40 @@ enum AgentUsageDecoding {
     return normalized(.claude, windows: windows, capturedAt: capturedAt, now: now)
   }
 
+  /// A Claude cache read, carrying WHY it produced nothing so the footer can say so.
+  enum ClaudeRead: Sendable {
+    case snapshot(AgentQuotaSnapshot)
+    case failure(String)
+
+    var snapshot: AgentQuotaSnapshot? {
+      if case .snapshot(let value) = self { return value }
+      return nil
+    }
+  }
+
+  static func readClaudeSnapshot(cacheURL: URL, now: Date) -> ClaudeRead {
+    guard let data = try? Data(contentsOf: cacheURL),
+      let modified = (try? FileManager.default.attributesOfItem(atPath: cacheURL.path))?[
+        .modificationDate] as? Date
+    else {
+      return .failure(
+        "Workroom hasn't received a Claude quota snapshot yet — Claude writes one each time its "
+          + "status line runs.")
+    }
+    if let snapshot = claude(data: data, capturedAt: modified, now: now) {
+      return .snapshot(snapshot)
+    }
+    // `isFresh` is `now < resetsAt`, so decoding again at `.distantPast` keeps every window that
+    // parsed — the only thing that separates "the file is unreadable" from "its windows have all
+    // reset since it was written".
+    guard claude(data: data, capturedAt: modified, now: .distantPast) != nil else {
+      return .failure("Claude's cached quota file couldn't be read.")
+    }
+    let written = modified.formatted(.relative(presentation: .named))
+    return .failure(
+      "Claude's cached quota (written \(written)) covers windows that have since reset.")
+  }
+
   static func codexRollout(data: Data, fileSize: UInt64, modifiedAt: Date, now: Date)
     -> AgentQuotaSnapshot?
   {
@@ -294,6 +328,9 @@ enum AgentUsageDecoding {
 final class AgentUsageMonitor: ObservableObject {
   @Published private(set) var snapshots: [AgentBackend: AgentQuotaSnapshot] = [:]
   @Published private(set) var loading: Set<AgentBackend> = []
+  /// Why the last read produced no snapshot, per backend. Surfaced by the footer so an unavailable
+  /// quota says what's missing instead of being a dead end.
+  @Published private(set) var readFailures: [AgentBackend: String] = [:]
 
   let codexSessionsURL: URL
   let claudeCacheURL: URL
@@ -333,6 +370,18 @@ final class AgentUsageMonitor: ObservableObject {
     snapshots[backend]?.fresh(at: now())
   }
 
+  /// One sentence explaining an empty `snapshot(for:)`, evaluated at READ time — a stored snapshot
+  /// expires wherever it sits, with no refresh running to record why, so expiry can only be caught
+  /// here.
+  func unavailableReason(for backend: AgentBackend) -> String {
+    let name = backend.displayName
+    if let stored = snapshots[backend], stored.fresh(at: now()) == nil {
+      let captured = stored.capturedAt.formatted(.relative(presentation: .named))
+      return "The last \(name) quota snapshot (\(captured)) covers windows that have since reset."
+    }
+    return readFailures[backend] ?? "No \(name) quota snapshot has been read yet."
+  }
+
   func refresh() {
     // A seeded agent title is a model-only UI fixture. Never replace its deterministic snapshot
     // (including the intentional unavailable case) by reading the developer's real provider files.
@@ -347,17 +396,18 @@ final class AgentUsageMonitor: ObservableObject {
     let current = now()
     refreshTask = Task.detached(priority: .utility) {
       let codex = AgentUsageDecoding.readCodexSnapshot(sessionsRoot: codexURL, now: current)
-      let claude: AgentQuotaSnapshot? = {
-        guard let data = try? Data(contentsOf: claudeURL),
-          let attrs = try? FileManager.default.attributesOfItem(atPath: claudeURL.path),
-          let modified = attrs[.modificationDate] as? Date
-        else { return nil }
-        return AgentUsageDecoding.claude(data: data, capturedAt: modified, now: current)
-      }()
+      let claude = AgentUsageDecoding.readClaudeSnapshot(cacheURL: claudeURL, now: current)
+      var failures: [AgentBackend: String] = [:]
+      if codex == nil {
+        failures[.codex] =
+          "No recent Codex rate-limit record in \(codexURL.path(percentEncoded: false))."
+      }
+      if case .failure(let reason) = claude { failures[.claude] = reason }
       guard !Task.isCancelled else { return }
       await MainActor.run {
         self.snapshots = Dictionary(
-          uniqueKeysWithValues: [codex, claude].compactMap { $0 }.map { ($0.backend, $0) })
+          uniqueKeysWithValues: [codex, claude.snapshot].compactMap { $0 }.map { ($0.backend, $0) })
+        self.readFailures = failures
         self.loading.removeAll()
         self.rebuildWatches()
       }

@@ -53,11 +53,16 @@ final class AgentUsageUITests: XCTestCase {
     XCTAssertTrue(app.buttons["Cancel"].exists)
   }
 
-  func testDetectedAgentWithoutSnapshotShowsUnavailableState() {
+  func testDetectedAgentWithoutSnapshotExplainsWhyAndOffersARefresh() {
     let app = launchedApp(agent: "codex", usageUnavailable: true)
     let unavailable = app.descendants(matching: .any)[
       "terminal.statusBar.agentUsage.unavailable"]
     XCTAssertTrue(unavailable.waitForExistence(timeout: 15))
+    XCTAssertTrue(unavailable.label.contains("has been read yet"), unavailable.label)
+    XCTAssertTrue(unavailable.label.contains("Click to refresh"), unavailable.label)
+    XCTAssertTrue(unavailable.isHittable)
+    unavailable.click()
+    XCTAssertTrue(unavailable.waitForExistence(timeout: 5))
   }
 
   func testZeroUsageOmitsPace() {
