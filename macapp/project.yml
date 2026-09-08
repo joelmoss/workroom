@@ -301,8 +301,12 @@ targets:
         # workroom binary, and opens terminals in arbitrary project directories.
         ENABLE_APP_SANDBOX: NO
         # TerminalLinkOpener shells out to `/usr/bin/open` (⌘-click a file path in the terminal),
-        # which sends an Apple Event on our behalf; without this the hardened runtime blocks it and
-        # TCC prompts "Workroom would like to access data from other apps" with no usage string.
+        # which sends an Apple Event on our behalf; without this the hardened runtime blocks it.
+        # NOTE this entitlement gates kTCCServiceAppleEvents only. It does NOT stop the separate
+        # "Workroom would like to access data from other apps" prompt — that's
+        # kTCCServiceSystemPolicyAppData, raised when a terminal child (e.g. an agent CLI) reads
+        # ~/Library/Application Support/*, attributed to us because children inherit the app as
+        # their responsible process. No entitlement suppresses it; grant the app Full Disk Access.
         CODE_SIGN_ENTITLEMENTS: WorkroomApp/Workroom.entitlements
         SWIFT_VERSION: "5.0"
         DEAD_CODE_STRIPPING: YES
