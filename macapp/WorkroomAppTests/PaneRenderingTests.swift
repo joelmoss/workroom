@@ -25,6 +25,7 @@ final class PaneRenderingTests: XCTestCase {
     // in the headless CI unit-test host crashed XCTest's post-test memory checker on teardown; the
     // view-mount/layout path this suite verifies needs no live surface.
     s.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd, spawnsSurface: false) }
+    s.recency = SwitcherRecency()  // never write this suite's tabs into the shared MRU
     return s
   }
 

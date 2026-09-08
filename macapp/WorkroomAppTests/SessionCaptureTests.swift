@@ -16,6 +16,7 @@ final class SessionCaptureTests: XCTestCase {
     sessions.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command)
     }
+    sessions.recency = SwitcherRecency()  // never write this suite's tabs into the shared MRU
     return sessions
   }
 

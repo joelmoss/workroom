@@ -160,6 +160,42 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertTrue(s.isSplitVisible(for: target))
   }
 
+  /// A two-member split dissolves when one member closes, but its lone survivor was on screen beside
+  /// the closed pane — so it wins over a more-recently-focused tab from outside the split.
+  func testCloseTwoMemberSplitPrefersTheSurvivingSibling() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    let members = s.split(for: target)!.tabIDs
+    XCTAssertEqual(members.count, 2)
+    let outsider = s.addTab(for: target).id  // solo, and more recent than the sibling
+    s.select(members[1], for: target)
+    s.closeTab(members[1], for: target)
+
+    XCTAssertNil(s.split(for: target), "a 2-member split dissolves when one member closes")
+    XCTAssertEqual(s.activeTab(for: target)?.id, members[0], "the sibling that was on screen")
+    XCTAssertNotEqual(s.activeTab(for: target)?.id, outsider)
+  }
+
+  /// `recency.panes` is app-wide, so the successor must be filtered to this target: a more-recent
+  /// pane in another workroom is not somewhere this close can land.
+  func testCloseSuccessorIgnoresMoreRecentPaneFromAnotherTarget() {
+    let s = makeSessions()
+    let other = TerminalTarget(id: "wr|/p|other", title: "other", path: "/tmp", isMissing: false)
+    s.addTab(for: target)
+    s.addTab(for: target)
+    s.addTab(for: target)  // focus order: 1 → 2 → 3
+    let first = s.tabs(for: target)[0].id
+    s.select(first, for: target)
+    let elsewhere = s.addTab(for: other).id  // the most recent pane app-wide
+    s.closeTab(first, for: target)
+
+    let successor = s.activeTab(for: target)?.id
+    XCTAssertNotEqual(successor, elsewhere)
+    XCTAssertEqual(
+      s.activeTab(for: target)?.title, "Terminal 3", "the last tab focused in THIS target")
+  }
+
   func testCloseLastLeavesNoActive() {
     let s = makeSessions()
     s.addTab(for: target)
