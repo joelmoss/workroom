@@ -42,6 +42,100 @@ and SIGWINCH, strip terminal query sequences (OSC 4/10-21/52, CSI DA/DSR/DECRQM)
 client cannot re-answer a stale query (this previously leaked the clipboard), and resynthesise
 OSC 2 title and OSC 7 cwd from the foreground pgid when a full-screen program is running.
 
+## Goal
+
+**Parity, in both directions: a remote workroom is indiscernible from a local one, and a local one
+from a remote.** Functionality and speed both. This is the governing goal, stated here because the
+doc only implied it — the Problem Statement's "behaves exactly like a local one" is this as an
+aside — and because three existing claims contradict it once it is explicit (see *What parity
+overturns*).
+
+Both directions matter. Remote-like-local is the obvious half: no greyed-out inspector, no missing
+badge, no slower panel. Local-like-remote is the half that is easy to lose: **no capability is
+implemented on the remote side only, and no local behaviour regresses to match a remote
+limitation.** That second risk is concrete in this design, not theoretical — see the shadow
+emulator below.
+
+### Functionality parity is a checklist; speed parity is physics
+
+The functional gaps are enumerable and already scoped: the two host-gated warnings (premise 7),
+`gh`-backed status (Phase 2), Run tabs (OQ4), the Quick Terminal's bypass of `TerminalSessions`
+(OQ5).
+
+Speed parity is **not fully achievable, and the goal is only useful once that is admitted.** A
+keystroke to a nearby region and back is tens of milliseconds; local is zero, and no transport
+removes a round trip. Predictive local echo hides it *at a shell prompt* and nowhere else — it
+predicts printable characters and backspace, not cursor motion inside `vim`, not command output,
+and not an agent's alt-screen repaint, which is most of what actually happens in a workroom. So
+the goal takes a measurable form rather than an adjective:
+
+- **An echo budget:** keystroke-to-glyph at a prompt, indistinguishable from local, delivered by
+  prediction.
+- **Region proximity is a hard requirement, not a declared trait.** It is the only lever on
+  everything prediction cannot cover. A provider that cannot place an instance near the user cannot
+  deliver this product, however fast its fork.
+- Everything else — panel opens, diff loads, creation — takes a target measured against the local
+  path, not against "feels fine".
+
+### What parity makes mandatory
+
+**The far-side terminal emulator, unconditionally.** It is currently gated on OQ2 going badly.
+Prediction needs server-side screen state and prediction is the only answer to keystroke latency,
+so the emulator is required either way, and OQ2 stops deciding *whether* — it only prices how much
+extra the bad outcome costs. See the re-priced return in Phase 3's scrollback bullet.
+
+**But as a shadow, never as the render path.** Raw bytes stay the live path — full Ghostty
+fidelity, over the reliable stream, as already designed. The emulator runs alongside on the same
+byte stream and is read only for reattach repaint, post-reboot screen state, and prediction. This
+is deliberately unlike mosh, which renders *from* its state model because it wants lossy
+datagrams; the portable path has no such constraint. Two reasons the distinction is load-bearing:
+
+1. **Local-like-remote.** Unify means local runs the same code, so a state-sync render path would
+   drag local fidelity down to whatever the far-side emulator preserves — every mode Ghostty
+   handles today (kitty keyboard negotiation, OSC 52, synchronised output, mouse modes, bell)
+   reduced to what survives parse → state → re-synthesis. That is parity in the wrong direction and
+   it is worse than the problem it solves.
+2. **The risk shrinks and becomes testable.** "Renders every TUI correctly" is unbounded.
+   "Reconstructs the screen on reattach" is a differential test: feed one recorded byte stream to
+   both a reference emulator and the shadow, and diff the two grids. That is the same harness
+   Next Steps item 3 already calls for, pointed at a second target.
+
+### What parity overturns
+
+- **The capability gate is not singular.** `maxLifetime` stays (Constraints, premise 8, OQ15). Add
+  **region proximity**, and **live-process suspend on any provider that stops instances regardless
+  of the wakefulness service** — where the far-side shim can defer the stop this is not a gate;
+  where it cannot, a resumed workroom loses the running process, and no emulator recovers a dead
+  child.
+- **The accepted degradation closing premise 8 is no longer acceptable.** "Returns primary-screen
+  content but neither its running process nor a full-screen program's screen" is the most
+  discernible difference available. The screen half is answered by the shadow emulator; the process
+  half is the gate above.
+- **Provider agnosticism demotes from headline to correctness floor.** "Behaves the same on every
+  provider" survives as a correctness statement, but it does not mean every provider delivers the
+  product: portable full-clone derivation is minutes and parity is sub-second, so a provider
+  without fast derive or a nearby region ships a degraded thing rather than the thing. Worth saying
+  plainly instead of letting agnosticism imply interchangeability.
+
+### What parity settles
+
+- **Unify stops being a preference.** Premise 3 concedes it is "an architectural bet, not a free
+  local win" now the starvation dividend is gone. Under parity it is the mechanism rather than a
+  bet: separate local and remote paths diverge by construction, and one agent for both is the only
+  way parity holds without continuous manual reconciliation. The local Unix-socket path also
+  becomes the remote path's test harness — every local session exercises it minus the network.
+- **OQ8 splits.** Agent-side session naming and enumeration is parity work — and it is a **new
+  deliverable for local, not a confirmation of local behaviour**: terminals survive quit today via
+  the pty daemon, but pane UUIDs, tab layout and split geometry are client-side in `session.json`
+  (see Phase 1's session-identity bullet), so local-like-remote means that state has to move to the
+  agent for local as well. Reattaching from a *second Mac* stays beyond parity — still the "follows
+  you to another machine" prize, but no longer gating.
+- **Phase 2 services want subscribe/notify shaping, not pure request/response.** Not an
+  architectural pivot: local VCS reads are not instant either (`runBlocking` around libgit2 and the
+  jj CLI, hundreds of milliseconds on a large repo). The parity-relevant case is a panel already
+  populated on attach rather than one that fetches on open — which matters most in precisely the
+  detached-then-changed state this feature creates.
+
 ## Constraints
 
 - **Builder mode.** A side project built because the author wants it. Coolness and architectural
@@ -53,7 +147,9 @@ OSC 2 title and OSC 7 cwd from the foreground pgid when a full-screen program is
   the same on every provider. Provider-specific capabilities are *accelerators* beneath a portable
   contract, never the mechanism the product depends on. **The claim has one stated boundary:** a
   hard maximum instance lifetime defeats anything Workroom can do, so it is the single capability
-  gate. Idle policy is *not* a gate — it is translated by a far-side per-driver shim (see below).
+  gate. **Amended by the Goal: the gate is not singular** — region proximity and live-process
+  suspend join it, and agnosticism is a correctness floor rather than interchangeability. Idle
+  policy is *not* a gate — it is translated by a far-side per-driver shim (see below).
   **And agnosticism is scoped to the agent, not to the whole far side:** exactly one small,
   auditable, provider-specific component is sanctioned over there. See Provider Decision and Phase 3.
 
@@ -338,8 +434,10 @@ driver seam is what makes boxd replaceable rather than load-bearing.
    itself a declared trait**, since an account-wide token on a disposable box is a much worse deal
    than an instance-scoped defer token. The remaining differences are accelerators or
    agent-supplied capabilities (busy/idle decision, port forwarding, primary-screen scrollback).
-   Accepted degradation: where a provider cannot suspend with processes, a resumed workroom returns
-   primary-screen content but neither its running process nor a full-screen program's screen.
+   ~~Accepted degradation: where a provider cannot suspend with processes, a resumed workroom returns
+   primary-screen content but neither its running process nor a full-screen program's screen.~~
+   **RETRACTED by the Goal** — that is the most discernible difference available. The screen half is
+   answered by the shadow emulator; the process half becomes a provider gate.
 
 ## Cross-Model Perspective
 
@@ -597,6 +695,19 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     full-screen program's *screen* after a reboot needs server-side terminal state — a mosh- or
     tmux-shaped emulator on the far side — which is materially larger scope and belongs next to
     OQ2, not inside this bullet.
+    **Re-priced — that sentence is right about the cost and wrong about the return.** It charges the
+    far-side emulator against the reboot case alone, which is the *third* most valuable thing it
+    buys. It also buys: (a) **the repaint trick and the replay buffer's whole bug class, deleted
+    rather than fixed** — state synchronisation sends "here is the screen now", so there is no tape
+    to re-emit stale colour/DA/DSR/kitty-keyboard queries into a fresh client
+    (`SessionReplayBuffer.swift:7`, `:71` — the `replayBytes` query stripping exists precisely
+    because byte replay has this failure mode), and no dependence on a TUI answering SIGWINCH inside
+    a tuned settle; and (b) **predictive local echo**, which nothing else under consideration offers
+    and which is the difference between a transcontinental terminal feeling local and feeling awful.
+    Against that: mosh keeps **no scrollback by design**, so the replay buffer shrinks to its
+    primary-screen job rather than disappearing, and the far-side emulator has to be good enough
+    that a real TUI renders correctly through it — the actual risk in this option, and one Phase 0
+    item 3 does **not** measure.
 - **`gh`-backed status.** `WorkroomStatusResolver` runs `gh pr list`, `gh repo view`,
   `gh api graphql` and `gh run list` **with the workroom as cwd** (`:222,237,277,306,323,433`). For
   a remote workroom that directory does not exist locally, so every PR/CI/branch badge fails with
@@ -766,7 +877,12 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
    does not say the diff API is.
 2. **Does the alt-screen repaint trick survive real network latency?** Phase 0 item 3 answers it.
    If not, mosh's state-synchronisation model becomes the serious option and the replay buffer's
-   port scope changes.
+   port scope changes — shrinking to primary-screen scrollback, which mosh's model does not cover,
+   rather than being dropped. **Weigh it on the re-priced return, not on the reboot case alone**
+   (see the scrollback bullet in Phase 3): the far-side emulator resolves the repaint trick, the
+   replay bug class, predictive local echo, and post-reboot screen state together. Its own risk is
+   whether a real TUI renders correctly through a from-scratch emulator, which is not what item 3
+   measures — so a bad OQ2 result buys a second measurement, not a decision.
 3. ~~**Provider selection.**~~ **ANSWERED for the first driver** — boxd.sh, with a local container
    as the fixture. See Provider Decision. Residual risk is vendor maturity, not selection. Which
    provider becomes the *second* driver is open, and the agnosticism claim is unverifiable until one
@@ -806,7 +922,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     and the Nightly flag protecting remote does not protect that; the Distribution Plan names
     keeping the Swift daemon selectable for one release as the mitigation, but the rollback trigger
     and the dual-run period are undecided.
-15. **What is the `maxLifetime` floor?** It is the one hard gate, so it needs a number. A working day
+15. **What is the `maxLifetime` floor?** It is one of three hard gates (see the Goal), so it needs
+    a number. A working day
     is the obvious candidate, but a workroom is supposed to outlive a working day — which suggests
     the real floor is "no cap at all", and that quietly excludes a whole class of sandbox provider
     from ever being a driver. Decide it before advertising provider-agnosticism, because it is the
