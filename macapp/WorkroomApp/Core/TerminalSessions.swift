@@ -375,6 +375,9 @@ final class TerminalSessions: ObservableObject {
   var paneRects: [TerminalTarget.ID: [TerminalTab.ID: CGRect]] = [:]
   /// Per-target running counter so tab titles ("Terminal 1", "2", …) stay stable across closes.
   private var counts: [TerminalTarget.ID: Int] = [:]
+  /// The app-wide most-recently-focused pane order (issue #132), written by `setFocused` and read by
+  /// `closeSuccessor`. Injectable like `makeView` so a test never mutates the singleton's order.
+  var recency: SwitcherRecency = .shared
   /// Set once by `AppStore`: forwards each terminal's notification-worthy activity (OSC) up to the
   /// notification spine. A closure (not a store reference) so sessions stay ignorant of `AppStore`.
   var activityHandler: ((TerminalTarget.ID, TerminalTab.ID, TerminalActivity) -> Void)?
@@ -1249,11 +1252,17 @@ final class TerminalSessions: ObservableObject {
   /// close-successor — fires `onFocusChange` so navigation history can record the new location.
   /// `notify: false` is used only by `reap` (the target is being torn down; nothing is focused
   /// afterward, and its history entries are skipped at replay instead). No-op when unchanged.
+  ///
+  /// Also the recency write-point (issue #132): quick-switcher MRU order and the close-successor
+  /// (issue #160) are the same question — "where was the user last" — so both read one list, written
+  /// here rather than from the `onFocusChange` observer, which would leave this file's own
+  /// close-successor depending on `AppStore` having wired it up.
   private func setFocused(
     _ tabID: TerminalTab.ID?, for targetID: TerminalTarget.ID, notify: Bool = true
   ) {
     guard focusedTabByTarget[targetID] != tabID else { return }
     focusedTabByTarget[targetID] = tabID
+    recency.recordPane(tabID)  // nil (a `reap`) is ignored by `recordPane`
     if notify { onFocusChange?(targetID, tabID) }
   }
 
@@ -1573,16 +1582,31 @@ final class TerminalSessions: ObservableObject {
     return PaneTreeLayout.canSplit(rect, along: orientation)
   }
 
-  /// The tab to focus after `tabID` is closed: the on-screen neighbour that slides into its slot, else
-  /// the new last on-screen tab, else nil.
+  /// The tab to focus after `tabID` is closed: the most-recently-focused tab that is still open
+  /// (issue #160 — closing lands you back where you were, matching what ⌃Tab calls "the last pane"),
+  /// falling back to the on-screen neighbour that slides into the closed tab's slot for tabs recency
+  /// has never seen (a restored session), else nil.
+  ///
+  /// When the closed tab was a split member and the split *survives* the close, only its surviving
+  /// members are candidates: `isSplitVisible` follows focus, so a most-recent tab from outside would
+  /// take the whole split off screen.
   private func closeSuccessor(of tabID: TerminalTab.ID, for target: TerminalTarget) -> TerminalTab
     .ID?
   {
     let order = displayedTabIDs(for: target)
-    guard let idx = order.firstIndex(of: tabID) else { return order.first { $0 != tabID } }
     let remaining = order.filter { $0 != tabID }
     guard !remaining.isEmpty else { return nil }
-    return remaining[min(idx, remaining.count - 1)]
+    let survivors = splitByTarget[target.id]
+      .flatMap { $0.contains(tabID) ? $0.removingLeaf(tabID)?.tabIDs : nil }
+      .flatMap { $0.count >= 2 ? $0 : nil }
+    let candidates = survivors ?? remaining
+    if let recent = recency.panes.ids.first(where: candidates.contains) { return recent }
+    // Positional fallback, measured within the candidates (so a surviving split's neighbour is one of
+    // its own members, not whatever sits after the run on screen).
+    let slots = order.filter { $0 == tabID || candidates.contains($0) }
+    guard let idx = slots.firstIndex(of: tabID) else { return candidates.first }
+    let after = slots.filter { $0 != tabID }
+    return after[min(idx, after.count - 1)]
   }
 
   private func insert(_ tab: TerminalTab, for target: TerminalTarget) {

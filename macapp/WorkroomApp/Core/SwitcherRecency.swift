@@ -102,10 +102,11 @@ struct RecencyList<ID: Hashable>: Equatable {
 /// aggregation / run ownership / quit — recency is none of those, and keeping it here keeps
 /// `RecencyList` a trivially testable value type.
 ///
-/// **Recording is unconditional.** Both write-points sit *above* `AppStore`'s `isNavigatingHistory`
-/// guard, because `applyLocation` raises that flag for its whole body and the switcher's own commit
-/// goes through it — a gated write would never record where the switcher just took you, and ⌥Tab
-/// would ping-pong between two places forever. Recency answers "where did the user actually end up",
+/// **Recording is unconditional.** Both write-points — `AppStore`'s `selectedTargetID` didSet for
+/// workrooms, `TerminalSessions.setFocused` for panes — sit *above* `AppStore`'s
+/// `isNavigatingHistory` guard, because `applyLocation` raises that flag for its whole body and the
+/// switcher's own commit goes through it — a gated write would never record where the switcher just
+/// took you, and ⌥Tab would ping-pong between two places forever. Recency answers "where did the user actually end up",
 /// which is true for a switcher commit, a ⌘[ back-nav and a sidebar click alike; history suppression
 /// is a different question (avoid phantom *history* entries).
 @MainActor

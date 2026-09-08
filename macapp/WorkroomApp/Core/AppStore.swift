@@ -934,10 +934,6 @@ final class AppStore: ObservableObject {
     // Record each focused-tab change for back/forward history (issue #26), unless we're replaying.
     terminals.onFocusChange = { [weak self] _, tabID in
       guard let self else { return }
-      // Quick-switcher recency (issue #132) — recorded before the history guard below, for the same
-      // reason as the `selectedTargetID` didSet: the switcher's own commit runs under
-      // `isNavigatingHistory`.
-      SwitcherRecency.shared.recordPane(tabID)
       // Find is tied to the focused file/diff/changeset pane (the model is shared across all three
       // kinds). Any focused-tab change ends that session: close it so ⌘G can't step a hidden find
       // from a terminal pane, and the bar doesn't reappear pre-filled on the next pane (review).
