@@ -16,6 +16,9 @@ final class TerminalSessionsTests: XCTestCase {
     // unrecognized name doesn't silently write to the developer's real `Application Support` file
     // (review finding) — the same reasoning `makeView` above already applies to spawning real shells.
     sessions.recordUnrecognizedTool = { _ in }
+    // A fresh recency list per test, so close-successor order never depends on (or pollutes) the
+    // app-wide singleton the quick switcher uses.
+    sessions.recency = SwitcherRecency()
     return sessions
   }
 
@@ -108,17 +111,53 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertEqual(s.tabs(for: target).map(\.title), ["Terminal 1", "Terminal 3", "Terminal 4"])
   }
 
-  func testCloseActiveSelectsNeighborThatSlidIn() {
+  /// Issue #160: closing the active tab lands you back on the tab you were last in, not on whichever
+  /// tab happens to slide into the closed one's slot.
+  func testCloseActiveSelectsLastFocusedTab() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    s.addTab(for: target)
+    s.addTab(for: target)  // focus order so far: 1 → 2 → 3
+    let first = s.tabs(for: target)[0].id
+    s.select(first, for: target)
+    s.closeTab(first, for: target)
+    // "Terminal 2" slid into slot 0, but "Terminal 3" is where the user was before this tab.
+    XCTAssertEqual(s.activeTab(for: target)?.title, "Terminal 3")
+    XCTAssertEqual(s.tabs(for: target).count, 2)
+  }
+
+  /// Tabs recency has never seen (a restored session) keep the old rule: the neighbour that slides
+  /// into the closed tab's slot.
+  func testCloseActiveFallsBackToNeighbourWithoutRecency() {
     let s = makeSessions()
     s.addTab(for: target)
     s.addTab(for: target)
     s.addTab(for: target)
     let first = s.tabs(for: target)[0].id
     s.select(first, for: target)
+    s.recency = SwitcherRecency()  // as if none of these tabs had ever been focused
     s.closeTab(first, for: target)
-    // The neighbour that slid into slot 0 (originally "Terminal 2") becomes active.
     XCTAssertEqual(s.activeTab(for: target)?.title, "Terminal 2")
-    XCTAssertEqual(s.tabs(for: target).count, 2)
+  }
+
+  /// A split that survives the close keeps focus inside itself — `isSplitVisible` follows focus, so a
+  /// most-recent tab from outside would take the whole split off screen.
+  func testCloseSplitMemberStaysInsideASurvivingSplit() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    s.splitFocusedPane(for: target, orientation: .vertical)
+    let members = s.split(for: target)!.tabIDs
+    XCTAssertEqual(members.count, 3)
+    let outsider = s.addTab(for: target).id  // solo, and now the most recent tab
+    let closing = members[2]
+    s.select(closing, for: target)  // a split member is focused again
+    s.closeTab(closing, for: target)
+
+    let successor = s.activeTab(for: target)?.id
+    XCTAssertNotEqual(successor, outsider, "focusing the outsider would hide the surviving split")
+    XCTAssertTrue(s.split(for: target)!.contains(successor!))
+    XCTAssertTrue(s.isSplitVisible(for: target))
   }
 
   func testCloseLastLeavesNoActive() {
@@ -950,6 +989,9 @@ final class ContentPaneFloorTests: XCTestCase {
     let sessions = TerminalSessions()
     sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
     sessions.recordUnrecognizedTool = { _ in }
+    // A fresh recency list per test, so close-successor order never depends on (or pollutes) the
+    // app-wide singleton the quick switcher uses.
+    sessions.recency = SwitcherRecency()
     return sessions
   }
 
