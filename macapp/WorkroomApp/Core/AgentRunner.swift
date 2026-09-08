@@ -13,8 +13,9 @@ enum AgentBackend: String, Sendable, CaseIterable {
   /// The executable name, resolved on the augmented PATH by `StatusCommandRunner` via `/usr/bin/env`.
   var executable: String { rawValue }
 
-  /// How the agent is named in the UI ("Resume Claude…"). Separate from `executable` so a rename of
-  /// either cannot silently change the other.
+  /// How the agent is named in the UI (the quota footer's "Claude usage unavailable" and its
+  /// accessibility labels). Separate from `executable` so a rename of either cannot silently
+  /// change the other.
   var displayName: String {
     switch self {
     case .claude: return "Claude"
