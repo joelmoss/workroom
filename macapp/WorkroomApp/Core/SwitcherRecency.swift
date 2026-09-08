@@ -106,9 +106,9 @@ struct RecencyList<ID: Hashable>: Equatable {
 /// workrooms, `TerminalSessions.setFocused` for panes — sit *above* `AppStore`'s
 /// `isNavigatingHistory` guard, because `applyLocation` raises that flag for its whole body and the
 /// switcher's own commit goes through it — a gated write would never record where the switcher just
-/// took you, and ⌥Tab would ping-pong between two places forever. Recency answers "where did the user actually end up",
-/// which is true for a switcher commit, a ⌘[ back-nav and a sidebar click alike; history suppression
-/// is a different question (avoid phantom *history* entries).
+/// took you, and ⌥Tab would ping-pong between two places forever. Recency answers "where did the
+/// user actually end up", which is true for a switcher commit, a ⌘[ back-nav and a sidebar click
+/// alike; history suppression is a different question (avoid phantom *history* entries).
 @MainActor
 final class SwitcherRecency {
   static let shared = SwitcherRecency()

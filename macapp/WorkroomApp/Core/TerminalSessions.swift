@@ -1250,20 +1250,27 @@ final class TerminalSessions: ObservableObject {
   /// The single write-point for a target's focused tab (issue #26). Centralising the seven former
   /// direct writes means every focus change — `addTab`, splits, drag-into-split, `focus`, and the
   /// close-successor — fires `onFocusChange` so navigation history can record the new location.
-  /// `notify: false` is used only by `reap` (the target is being torn down; nothing is focused
-  /// afterward, and its history entries are skipped at replay instead). No-op when unchanged.
+  /// `notify: false` is used by `reap` (the target is being torn down; nothing is focused afterward,
+  /// and its history entries are skipped at replay instead) and by `restore` (materialising saved
+  /// panes is not a navigation). No-op when unchanged.
   ///
   /// Also the recency write-point (issue #132): quick-switcher MRU order and the close-successor
   /// (issue #160) are the same question — "where was the user last" — so both read one list, written
   /// here rather than from the `onFocusChange` observer, which would leave this file's own
   /// close-successor depending on `AppStore` having wired it up.
+  ///
+  /// Both writes sit under `notify`, which is what keeps them meaning "the user went here". `reap`
+  /// and `restore` are the two callers that pass `notify: false`, and a restore is eager across
+  /// every saved target at launch — recording those would push a pane the user has never touched to
+  /// the head of the app-wide MRU, retargeting the first ⌃Tab and the first close of the session.
   private func setFocused(
     _ tabID: TerminalTab.ID?, for targetID: TerminalTarget.ID, notify: Bool = true
   ) {
     guard focusedTabByTarget[targetID] != tabID else { return }
     focusedTabByTarget[targetID] = tabID
-    recency.recordPane(tabID)  // nil (a `reap`) is ignored by `recordPane`
-    if notify { onFocusChange?(targetID, tabID) }
+    guard notify else { return }
+    recency.recordPane(tabID)
+    onFocusChange?(targetID, tabID)
   }
 
   /// Move focus to the adjacent pane in `direction` within the visible split (⌃⌘arrows, issue #3).
@@ -1318,14 +1325,13 @@ final class TerminalSessions: ObservableObject {
     activityPulses[tabID] = nil
 
     if let split = splitByTarget[target.id], split.contains(tabID) {
-      if let collapsed = split.removingLeaf(tabID), collapsed.tabIDs.count >= 2 {
-        splitByTarget[target.id] = collapsed
-      } else {
-        splitByTarget[target.id] = nil  // dropped to a lone tab — no split anymore
-      }
+      let collapsed = splitRemoving(tabID, for: target.id)
+      // A lone remaining member is not a split any more.
+      splitByTarget[target.id] = (collapsed?.tabIDs.count ?? 0) >= 2 ? collapsed : nil
     }
 
     if wasFocused { setFocused(successor, for: target.id) }
+    recency.forgetPanes([tabID])  // after the successor is picked, before anyone else looks
     reconcileOcclusion(for: target)
     agentManager.tabClosed(tabID)
     onTabsRemoved?(target.id, [tabID])
@@ -1347,6 +1353,7 @@ final class TerminalSessions: ObservableObject {
     orderByTarget[id] = nil
     splitByTarget[id] = nil
     setFocused(nil, for: id, notify: false)
+    recency.forgetPanes(removedIDs)
     counts[id] = nil
     for removed in removedIDs {
       agentManager.tabClosed(removed)
@@ -1587,19 +1594,17 @@ final class TerminalSessions: ObservableObject {
   /// falling back to the on-screen neighbour that slides into the closed tab's slot for tabs recency
   /// has never seen (a restored session), else nil.
   ///
-  /// When the closed tab was a split member and the split *survives* the close, only its surviving
-  /// members are candidates: `isSplitVisible` follows focus, so a most-recent tab from outside would
-  /// take the whole split off screen.
+  /// When the closed tab was a split member, only the members that survive it are candidates —
+  /// including the lone survivor of a two-pane split, which stops being a split at all. Focus drives
+  /// what is on screen (`isSplitVisible`, `visibleTabIDs`), so landing on a most-recent tab from
+  /// outside would sweep a pane the user was looking at a moment ago off screen.
   private func closeSuccessor(of tabID: TerminalTab.ID, for target: TerminalTarget) -> TerminalTab
     .ID?
   {
     let order = displayedTabIDs(for: target)
     let remaining = order.filter { $0 != tabID }
     guard !remaining.isEmpty else { return nil }
-    let survivors = splitByTarget[target.id]
-      .flatMap { $0.contains(tabID) ? $0.removingLeaf(tabID)?.tabIDs : nil }
-      .flatMap { $0.count >= 2 ? $0 : nil }
-    let candidates = survivors ?? remaining
+    let candidates = splitRemoving(tabID, for: target.id)?.tabIDs ?? remaining
     if let recent = recency.panes.ids.first(where: candidates.contains) { return recent }
     // Positional fallback, measured within the candidates (so a surviving split's neighbour is one of
     // its own members, not whatever sits after the run on screen).
@@ -1607,6 +1612,18 @@ final class TerminalSessions: ObservableObject {
     guard let idx = slots.firstIndex(of: tabID) else { return candidates.first }
     let after = slots.filter { $0 != tabID }
     return after[min(idx, after.count - 1)]
+  }
+
+  /// The target's split with `tabID` removed, or nil when `tabID` was not one of its members (or was
+  /// its only leaf). Deliberately unfiltered on member count: the two callers want different things
+  /// from the same tree. `closeTab` keeps it as the layout only when ≥2 members remain (one pane is
+  /// not a split), while `closeSuccessor` wants every survivor — the lone survivor of a two-pane
+  /// split is exactly the pane that was on screen beside the one just closed.
+  private func splitRemoving(_ tabID: TerminalTab.ID, for targetID: TerminalTarget.ID)
+    -> TerminalPaneLayout?
+  {
+    guard let split = splitByTarget[targetID], split.contains(tabID) else { return nil }
+    return split.removingLeaf(tabID)
   }
 
   private func insert(_ tab: TerminalTab, for target: TerminalTarget) {

@@ -16,6 +16,7 @@ final class SessionRestoreTests: XCTestCase {
     sessions.makeView = { _, cwd, command in
       GhosttySurfaceView(workingDirectory: cwd, command: command)
     }
+    sessions.recency = SwitcherRecency()  // never write this suite's tabs into the shared MRU
     return sessions
   }
 
@@ -44,6 +45,22 @@ final class SessionRestoreTests: XCTestCase {
       for: target)
 
     XCTAssertEqual(sessions.tabs(for: target).first?.surface?.workingDirectory, target.path)
+  }
+
+  /// A restore is not a visit: it materialises saved panes across EVERY target at launch, so seeding
+  /// the app-wide MRU with them would put a pane the user never touched at the head of ⌃Tab and of
+  /// the close-successor (issue #160).
+  func testRestoreDoesNotSeedRecency() {
+    let sessions = makeSessions()
+    sessions.restore(
+      TargetSession(
+        targetID: target.id,
+        tabs: [terminal("a", title: "Terminal 1"), terminal("b", title: "Terminal 2")],
+        focusedKey: "b"),
+      for: target)
+
+    XCTAssertEqual(sessions.activeTab(for: target)?.title, "Terminal 2", "saved focus is restored")
+    XCTAssertTrue(sessions.recency.panes.ids.isEmpty, "…but it is not a recency touch")
   }
 
   func testRestoresTabsInOrderWithTitles() {

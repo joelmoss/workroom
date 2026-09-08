@@ -963,7 +963,6 @@ final class AppStore: ObservableObject {
     // back later — the subtree is meant to be re-opened deliberately.
     terminals.onTabsRemoved = { [weak self] targetID, ids in
       guard let self else { return }
-      SwitcherRecency.shared.forgetPanes(ids)  // drop closed panes from the ⌃Tab order (issue #132)
       self.history.prune(removing: Set(ids))
       if self.terminals.tabCount(forTargetID: targetID) < 2 {
         self.expandedTerminalTargets.remove(targetID)
