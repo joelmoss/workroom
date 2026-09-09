@@ -29,7 +29,7 @@ split view.
 </p>
 
 <p align="center">
-  <a href="https://github.com/joelmoss/workroom/releases"><strong>⬇&nbsp;&nbsp;Download for macOS (beta)</strong></a>
+  <a href="https://github.com/joelmoss/workroom/releases"><strong>⬇&nbsp;&nbsp;Download for macOS</strong></a>
   &nbsp;·&nbsp;
   <a href="#the-macos-app">The macOS app</a>
   &nbsp;·&nbsp;
@@ -118,9 +118,8 @@ Building either component from source has its own toolchain requirements — see
 
 ## The macOS app
 
-> **🚧 Beta.** The macOS app is young and under active development — expect rough edges, and some
-> flows still want polish. [Bug reports and feedback](https://github.com/joelmoss/workroom/issues)
-> are very welcome.
+> The macOS app is under active development and moving quickly.
+> [Bug reports and feedback](https://github.com/joelmoss/workroom/issues) are very welcome.
 
 The native app (macOS 15 Sequoia or later, Apple Silicon) is a home for every project you work on
 and every workroom inside it. Pick a workroom in the sidebar, get a real terminal already `cd`'d
@@ -129,9 +128,8 @@ into it, and run whatever you like — Workroom keeps each one alive and out of 
 ### Install
 
 Download the latest `workroom-macos-app_<version>.dmg` from the
-[Releases page](https://github.com/joelmoss/workroom/releases) — the newest build is at the top
-(the app currently ships as a `v2.0.0-beta` prerelease) — open it, and drag
-**Workroom** into Applications. The app is Developer ID-signed and notarized, so it launches with
+[Releases page](https://github.com/joelmoss/workroom/releases) — the newest build is at the top —
+open it, and drag **Workroom** into Applications. The app is Developer ID-signed and notarized, so it launches with
 no Gatekeeper warning — and it **updates itself** in the background (or on demand via
 *Workroom ▸ Check for Updates…*).
 
@@ -361,7 +359,7 @@ exits with a [stable code](#exit-codes). Progress (setup/teardown logs) streams 
 **Success envelope:**
 
 ```json
-{ "ok": true, "schema_version": 1, "cli_version": "v2.0.0-beta.1",
+{ "ok": true, "schema_version": 1, "cli_version": "v2.0.0",
   "command": "create", "name": "swift-meadow", "path": "/Users/you/workrooms/swift-meadow",
   "vcs": "git", "project": "/Users/you/dev/myapp" }
 ```
@@ -369,7 +367,7 @@ exits with a [stable code](#exit-codes). Progress (setup/teardown logs) streams 
 **Error envelope** (machine code + human message):
 
 ```json
-{ "ok": false, "schema_version": 1, "cli_version": "v2.0.0-beta.1",
+{ "ok": false, "schema_version": 1, "cli_version": "v2.0.0",
   "command": "create", "error": { "kind": "WorkspaceExists", "message": "Git worktree already exists: …" } }
 ```
 
