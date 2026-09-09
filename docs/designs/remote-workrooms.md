@@ -84,21 +84,55 @@ Prediction needs server-side screen state and prediction is the only answer to k
 so the emulator is required either way, and OQ2 stops deciding *whether* — it only prices how much
 extra the bad outcome costs. See the re-priced return in Phase 3's scrollback bullet.
 
+**Amended — the emulator is linked, not written. `libghostty-vt` has a C API.** Ghostty now builds
+its terminal emulator as a standalone C library (`src/lib_vt.zig`, `include/ghostty/vt.h` plus ~30
+headers), and it is present at the revision this app **already pins** — engine sha `c4e16970`
+(2026-08-25), via `libghostty-spm` 1.5.20260903. So the far side runs *Ghostty's own emulator*, the
+same one rendering locally, rather than a second implementation of one. Three of its API groups map
+one-to-one onto what this design needs:
+
+- **`snapshot.h` — save and restore complete terminal state.** A versioned, per-record CRC32C
+  binary format carrying **every** screen (alternate included), scrollback as HISTORY pages ordered
+  newest-first so a decoder can prepend them incrementally, and the **unfinished VT/UTF-8 parser
+  continuation**. A READY marker separates the renderable prefix from history, so attach can render
+  immediately and backfill scrollback after.
+- **`formatter.h` — print the state back out as bytes.** Formats screen contents as plain text,
+  **VT sequences**, or HTML. Reattach repaint becomes a re-synthesis from state — **cell content
+  from the formatter, plus modes, palette, cursor and scrolling region from `terminal.h`/`modes.h`
+  in a specific order**; see Phase 3's scrollback bullet, which records that order rather than
+  leaving it to be rediscovered.
+- **`render.h` — the delta primitive.** Two-phase update (`begin`/`end`, so the terminal lock is
+  held only for the first half) with two independent layers of dirty tracking, global and per-row.
+  That is what predictive local echo needs and nothing else under consideration offered.
+
+Found via `boldsoftware/exe.dev`'s `exe-scroll`, a Zig dtach-alike that embeds `ghostty-vt` for
+exactly this attach-with-scrollback job. **exe-scroll itself is not adopted** — it is the daemon
+already shipped in `macapp/WorkroomSession/`, in a fourth language, with no multiplex and no
+services. Its two transferable parts are recorded where they land: the static Linux cross-build in
+Phase 1, and the multi-client size-owner policy in Phase 1's session-identity bullet.
+
 **But as a shadow, never as the render path.** Raw bytes stay the live path — full Ghostty
 fidelity, over the reliable stream, as already designed. The emulator runs alongside on the same
 byte stream and is read only for reattach repaint, post-reboot screen state, and prediction. This
 is deliberately unlike mosh, which renders *from* its state model because it wants lossy
 datagrams; the portable path has no such constraint. Two reasons the distinction is load-bearing:
 
-1. **Local-like-remote.** Unify means local runs the same code, so a state-sync render path would
-   drag local fidelity down to whatever the far-side emulator preserves — every mode Ghostty
-   handles today (kitty keyboard negotiation, OSC 52, synchronised output, mouse modes, bell)
-   reduced to what survives parse → state → re-synthesis. That is parity in the wrong direction and
-   it is worse than the problem it solves.
-2. **The risk shrinks and becomes testable.** "Renders every TUI correctly" is unbounded.
-   "Reconstructs the screen on reattach" is a differential test: feed one recorded byte stream to
-   both a reference emulator and the shadow, and diff the two grids. That is the same harness
-   Next Steps item 3 already calls for, pointed at a second target.
+1. **Local-like-remote — and the reason is the byte channel, not the emulator's quality.** Unify
+   means local runs the same code, so a state-sync render path would put parse → state →
+   re-synthesis between the child and the real client *everywhere*, local included. Linking
+   `libghostty-vt` removes the *grid* half of this objection — it is the same emulator, so cells,
+   styles, wrapping and reflow survive. What it does not remove is everything **negotiated**, which
+   needs a live bidirectional byte channel to the actual client and cannot be reconstructed from a
+   grid: kitty keyboard protocol negotiation, OSC 52 clipboard, synchronised output, mouse mode
+   handshakes, the bell. Rendering from state would degrade local to a remote limitation — parity
+   in the wrong direction, and worse than the problem it solves.
+2. **The risk shrinks and changes shape.** The original framing — whether a **from-scratch**
+   emulator renders every TUI correctly — is void; it is Ghostty's emulator, the one already
+   rendering every local pane. What replaces it is narrower and is a **round-trip assertion, not a
+   two-emulator grid diff**: encode a snapshot, decode it, and assert grid, styles, cursor, modes
+   and continuation match the source terminal. Next Steps item 3 and Phase 1's differential harness
+   both change target accordingly. **The residual unknown is that this API is young** — see the
+   caveats in Phase 3's scrollback bullet and the new Phase 0 item 7.
 
 ### What parity overturns
 
@@ -488,7 +522,7 @@ expensive.
 
 ## Recommended Approach
 
-**Approach A, preceded by a throwaway spike (one day, six items, prioritised).**
+**Approach A, preceded by a throwaway spike (one day, seven items, prioritised).**
 
 **Honesty note.** With premise 3 corrected, Phases 1-2 are a multi-thousand-line Swift→Rust
 port with no measurable local dividend, standing in front of the feature this document exists to
@@ -497,14 +531,17 @@ deliberately and repeatedly. That is a legitimate reason. It is not the same as 
 Phase 0 or open question 1 goes badly, Approach C is the honest fallback rather than a defeat.
 
 ### Phase 0 — the spike (one day, thrown away)
-On a throwaway branch, prove **six** unknowns, write down what happened, delete the branch. Phase 1
-starts from `master` so the spike cannot become the implementation by accident.
+On a throwaway branch, prove **seven** unknowns, write down what happened, delete the branch.
+Phase 1 starts from `master` so the spike cannot become the implementation by accident.
 
 **The day is a budget, and two items are gated on four-hour provider timers** (item 5's idle window,
 item 6's hibernated base), so start both in the background at hour zero and do the rest while they
 run — otherwise this is 8+ hours of wall clock inside a day. Item 1 alone is three syscall families
 plus the foreground-pgid logic, so decide in advance which items may come back unanswered. Items 3,
-5 and 6 may not.
+5, 6 and 7 may not. **Item 7 does not displace item 3; item 3 is retargeted** — item 7 round-trips
+the library against itself and cannot see a missing interaction mode, which is exactly what item 3
+now tests from a fresh client (see OQ2). Run 7 before 3, since 3 exercises the mechanism 7 proves
+exists, but run both.
 
 1. **Rust pty ownership on Linux — including process introspection.** The poll loop and `forkpty`
    are the easy half. The risky half is the foreground-detection layer the OSC 2/7 resynthesis
@@ -516,6 +553,15 @@ plus the foreground-pgid logic, so decide in advance which items may come back u
    this design. The alt-screen drop plus row-bump/SIGWINCH trick was tuned for a local relaunch
    with a 0.03s settle; whether it survives real network latency is unknown. If it fails, mosh's
    model displaces the replay buffer and the port scope changes.
+   **Retargeted by the `libghostty-vt` amendment — same test, new mechanism, and now it must check
+   interaction, not just pixels.** Reattach a **fresh** client repainted from emulator state and
+   assert three things beyond a correct-looking screen: the mouse wheel reaches the application
+   rather than scrolling a dead local buffer, keys are encoded as the application negotiated
+   (kitty keyboard flags, bracketed paste, application cursor keys), and leaving the alternate
+   screen restores the real shell history rather than a blank buffer. Those are the failures a
+   screen comparison cannot see and item 7 structurally cannot reach. `exe-scroll`'s
+   `formatTerminal` emission order (quoted in Phase 3's scrollback bullet) is the reference to
+   implement against, not to rediscover.
 4. `git clone` on a fresh box using a deploy key generated on that box, registered via `gh api`.
    Try it on an org repo where you are a writer but **not** an admin — that is the case premise 6 caveat (b) says
    fails, and it is the common case.
@@ -534,6 +580,31 @@ plus the foreground-pgid logic, so decide in advance which items may come back u
    resume. Open questions 9, 10 and 11 turn on this. Do it on the *live-fork* path, since that is
    the derivation most likely to copy state it should not. Then hibernate the base for four hours
    and derive again — see the hibernated-base caveat in Provider Decision.
+7. **Does `libghostty-vt` snapshot round-trip, and does it cross-compile?** New, and it **precedes**
+   item 3 rather than replacing it — 7 proves the mechanism exists, 3 proves a fresh client is
+   interactive through it (see the Goal amendment and OQ2). Two halves, both Mac-local and
+   provider-free:
+   - **Round-trip fidelity.** Build `libghostty-vt` at the revision the app already pins
+     (`c4e16970`), drive a terminal with a real TUI byte stream — an agent at its prompt, `vim`,
+     `tmux` — then `snapshot` encode → decode and assert the grid, styles, cursor, modes and
+     CONTINUATION match. Then bind it from Rust via the C header, since that is the actual
+     consumption path and `exe-scroll` proves only the Zig-module one. **This is the half that
+     matters**: it is the only unmeasured risk left in the far-side emulator, and everything the
+     Phase 3 scrollback bullet now claims rests on it. **`exe-scroll` does not de-risk this half:**
+     it pins Ghostty `48d3e972` (2026-04-01), which *predates* `snapshot.h` — verified, the path
+     404s at that revision — and consequently hand-rolls its own parser-pending tracking (~50 lines
+     of byte-at-a-time state machine around `TerminalStream`, including a retried-invalid-UTF-8
+     special case) to do what the CONTINUATION record now does as a format field. That is good
+     evidence the *problem* is real and the emulator embeds cleanly; it is zero evidence the
+     snapshot API works.
+   - **Cross-build.** Produce a static-musl `x86_64-linux` and `aarch64-linux` archive, linked into
+     a Rust binary. `exe-scroll`'s `build-static.sh` is the working recipe — Zig cross-compiles both
+     Linux targets from a Mac host with no qemu and no buildx — so this half should be hours, not a
+     day. What it prices is the **new toolchain cost**: a pinned Zig alongside the Rust one, and a
+     C-ABI static library entering a tree OQ1 deliberately kept C-free. Not `libgit2-sys`-shaped
+     (no `openssl-sys`, no `libz-sys`, one vendored source at a pinned revision), but it is a real
+     addition the vcs-foundation toolchain notes do not cover, and it lands in **both** `wr-agent`
+     targets — universal macOS and Linux.
 
 ### Phase 1 — the agent exists, locally
 `feat(agent): tunnel local sessions through a versioned agent stream`
@@ -558,7 +629,12 @@ plus the foreground-pgid logic, so decide in advance which items may come back u
      Rust** target, and the distributed CLI comes from goreleaser rather than that script.
   2. **A Linux `wr-agent`**, pushed to the far side. **Name the architectures** — if guests can be
      x86_64 *or* arm64 you ship two ELFs per artifact, which also doubles the codesign question in
-     the Distribution Plan.
+     the Distribution Plan. **The cross-build is a solved recipe, borrowed:** `exe-scroll`'s
+     `build-static.sh` emits fully static `x86_64-linux-musl` and `aarch64-linux-musl` binaries
+     with `ghostty-vt` linked in, from a Mac host, with no qemu and no buildx — Zig is the
+     cross-compiler. Two details from it worth copying rather than rediscovering: pin the toolchain
+     by version *and* checksum, and **key the build cache by target triple**, because a shared
+     cache across two `-Dtarget`s yields a non-reproducible second binary.
   3. **Still open: where the `HostDriver` lives.** Provisioning precedes any far-side agent, so the
      driver runs on the Mac, inside a Swift app. Either a Rust library callable from Swift (a third
      product) or the driver is simply written in Swift and the trait is not Rust at all. The second is
@@ -571,8 +647,9 @@ plus the foreground-pgid logic, so decide in advance which items may come back u
   `PersistentSessionControlClient.swift`. A Rust agent means the wire types exist in **both**
   languages; that duplication is a deliberate accepted cost, and the envelope version is what
   keeps them honest — and note the duplication is now **asymmetric**, which is the point of the
-  relay decision: Rust owns the pty, the replay buffer and the framing; Swift keeps only what a
-  client needs to speak the wire (`SessionFrame`, `SessionBytes`, `SessionIdentifier`), so
+  relay decision: Rust owns the pty, the terminal state (`libghostty-vt`, replacing the replay
+  buffer rather than porting it — see Phase 3's scrollback bullet) and the framing; Swift keeps
+  only what a client needs to speak the wire (`SessionFrame`, `SessionBytes`, `SessionIdentifier`), so
   `SessionReplayBuffer`'s Swift copy retires with the daemon rather than living on in parallel.
   **Two consequences for the deletion:** `macapp/WorkroomSession/` goes in full — daemon, `SessionPTY`,
   `SessionAttachClient.swift` and `main.swift` alike, since `wr-agent attach` replaces the relay —
@@ -595,6 +672,15 @@ plus the foreground-pgid logic, so decide in advance which items may come back u
   streams** — escape-sequence fragments split across chunk boundaries, alt-screen enter/exit,
   truncated UTF-8, embedded queries — and diff the two implementations' replay output, asserting
   the daemon's documented invariants directly.
+  **Retargeted by the `libghostty-vt` amendment: same input corpus, different assertion.** There is
+  no longer a 457-line tape implementation to port line-for-line, so "diff the two implementations'
+  replay output" has no second implementation to diff against. Feed the same generated corpus into
+  a terminal, then assert **snapshot round-trip** — encode, decode, compare grid, styles, cursor,
+  modes, continuation — plus the end-to-end property that actually matters: a client attaching
+  mid-stream sees the same screen a client that watched from byte zero sees. The four generated
+  cases stay exactly as named; three of them (split escapes, truncated UTF-8, alt-screen
+  transitions) now exercise format fields rather than hand-written tape logic, which is the
+  point.
 - **Session identity and cross-machine reattach.** Identity today is a client-minted 16-byte UUID
   per pane (`TerminalSessions.swift:1724`, `persisted ?? UUID()`), stored in a snapshot at
   `Application Support/Workroom/<bundleID>/session.json` (`SessionStore.defaultURL`) — **local
@@ -608,6 +694,18 @@ plus the foreground-pgid logic, so decide in advance which items may come back u
   mapping. Cross-machine reattach therefore requires **agent-side session naming and enumeration,
   plus workroom UI state living with the workroom rather than the client**. That is a real
   deliverable, not a free consequence; it is scheduled in Phase 4 and tracked as open question 8.
+  **And multiple clients on one session need a size policy, which nothing here has.** Two attached
+  Macs will not agree on window size, and last-write-wins makes the pty thrash. Adopt
+  `exe-scroll`'s answer wholesale, since it is worked out and cheap: the session tracks a single
+  **size owner** whose window the pty follows; other clients' resizes are recorded but not applied
+  until one of them **types**, which claims ownership. Only an attached client advertising a
+  nonzero size may own. When the owner detaches the size is unowned and the next resize or
+  keystroke claims it — except that with exactly one client left the pty snaps to its size
+  immediately, so closing one laptop never strands the terminal at a stale geometry. **The
+  load-bearing exclusion:** terminal auto-replies that share the input path — focus reports, cursor
+  position and device-attribute answers — must never claim ownership, and nor must wheel scroll; a
+  click does. That is the same failure family as `replayBytes`' query stripping, and worth
+  recognising as such before it is rediscovered as a bug.
 - Integration test: type a sentinel, drop the transport, reconnect with the same pane UUID, assert
   replay.
 
@@ -708,6 +806,53 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     primary-screen job rather than disappearing, and the far-side emulator has to be good enough
     that a real TUI renders correctly through it — the actual risk in this option, and one Phase 0
     item 3 does **not** measure.
+    **Resolved by `libghostty-vt`'s `snapshot.h` (see the Goal amendment) — and the residual scope
+    is smaller than either pricing assumed.** The snapshot format carries every screen, alternate
+    included, so the alt-screen hole that made this bullet "buy nothing" is closed at the format
+    level rather than worked around. Three consequences:
+    - **`SessionReplayBuffer` retires rather than shrinking.** Both prior positions had it
+      surviving in reduced form — mosh's model leaves primary-screen scrollback uncovered, and the
+      re-pricing kept it for that job. `snapshot.h` covers scrollback as HISTORY pages, so there is
+      no residual job. The Swift copy retires with the daemon (already planned in Phase 1's
+      survivors bullet) and the Rust port is a snapshot encode/decode rather than a translation of
+      457 lines of tape semantics. The whole stale-query bug class goes with it: there is no tape
+      to re-emit, so `replayBytes`' query stripping has nothing to strip.
+    - **The repaint trick has a replacement, not a fix — but the replacement is more than the
+      formatter.** `formatter.h` emits **cell content** as VT sequences; a fresh client also needs
+      the palette, the cursor's visibility and position, the scrolling region, DECOM, and every
+      **interaction** mode re-synthesised from `terminal.h`/`modes.h` — alternate screen, mouse
+      reporting, bracketed paste, kitty keyboard flags — or it paints correctly and then behaves
+      wrongly (wheel gestures scrolling a dead local buffer instead of reaching the application).
+      **The emission order is load-bearing and non-obvious**, and `exe-scroll`'s `formatTerminal`
+      is a worked reference for it: cursor visibility in both directions first, then palette, then
+      content-affecting modes while **holding** DECOM, save-cursor, synchronised output and the
+      screen switch; when the alternate screen is active, paint the **primary** screen first and
+      recreate the 1049-saved origin bit before one canonical `1049h`, otherwise a later `1049l`
+      restores the shell's history as blank; paint the active screen; when the primary is active,
+      reconstruct the inactive alternate through legacy `47h`/`47l`; and only then restore
+      DECSTBM/DECSLRM/DECOM and place the cursor, region-relative if origin mode is on. One further
+      trap it documents: `Terminal.modes` retains **every** bit ever set, so the mutually-exclusive
+      mouse-event and mouse-format groups must be cleared and re-derived from the effective flags
+      before replay, or a reattaching client is handed contradictory mouse modes.
+      What this removes is the **artificial** row-count bump, the deferred resize-back, and the
+      dependence on a TUI voluntarily repainting inside a tuned settle window. It does **not**
+      remove SIGWINCH: a client attaching at a different size still needs a real resize, which is
+      what Phase 1's size-owner policy exists to arbitrate.
+    - **Split escapes are a format field, not a fuzz target.** The CONTINUATION record holds the
+      unfinished VT/UTF-8 input by design, which is the single hardest case Phase 1's generated
+      harness was built to chase.
+    **Two caveats that must not be lost.** (a) The header states plainly that the API is
+    "incomplete, work-in-progress … definitely going to change" and that snapshot format version 1
+    "does not yet carry a binary-compatibility guarantee". So pin an exact Ghostty revision the way
+    `exe-scroll` does, and treat a snapshot as **agent-internal state, never a wire contract**
+    between two agents at different revisions — which is a stronger statement of the same policy
+    the Distribution Plan's resume-policy item already needs. (b) `libghostty-vt` is a **separate
+    build product from the GhosttyKit this app links**: the shipped
+    `GhosttyKit.xcframework/macos-arm64_x86_64/libghostty.a` exports `ghostty_app_*`,
+    `ghostty_surface_*`, config and inspector symbols and **no** `ghostty_terminal_*` or
+    `ghostty_snapshot_*` (verified by `nm`). Two products out of one repo whose revisions now have
+    to be kept in step, and the app's side of that pin comes from a third-party repackager
+    (`Lakr233/libghostty-spm`) rather than upstream.
 - **`gh`-backed status.** `WorkroomStatusResolver` runs `gh pr list`, `gh repo view`,
   `gh api graphql` and `gh run list` **with the workroom as cwd** (`:222,237,277,306,323,433`). For
   a remote workroom that directory does not exist locally, so every PR/CI/branch badge fails with
@@ -883,6 +1028,21 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
    replay bug class, predictive local echo, and post-reboot screen state together. Its own risk is
    whether a real TUI renders correctly through a from-scratch emulator, which is not what item 3
    measures — so a bad OQ2 result buys a second measurement, not a decision.
+   **Largely mooted as asked, and the residual risk has moved — but item 3 is retargeted, not
+   demoted.** With `libghostty-vt` linked (Goal amendment), state re-synthesis replaces the
+   artificial row-bump, so a bad result on the *old* trick no longer forces a model change. The
+   emulator's own risk is **not** rendering fidelity, since it is the same emulator already
+   rendering every local pane. Two things are genuinely unmeasured, and they need **different**
+   tests:
+   - **Whether the re-synthesised client is *interactive*, not merely correct-looking.** This is
+     item 3's new job and nothing else covers it: kill the link mid-TUI, attach a **fresh** client,
+     and check that the screen is right *and* that the wheel reaches the application, keys are
+     encoded as the application negotiated, and leaving the alternate screen restores real shell
+     history rather than a blank buffer. A mode gap is invisible to a screen comparison, and item 7
+     cannot see it at all — item 7 round-trips the library against itself.
+   - **The maturity of a young API**: whether snapshot encode/decode round-trips faithfully
+     (item 7), and how often a pinned-revision bump breaks against an explicitly unstable header
+     (carried by the Distribution Plan).
 3. ~~**Provider selection.**~~ **ANSWERED for the first driver** — boxd.sh, with a local container
    as the fixture. See Provider Decision. Residual risk is vendor maturity, not selection. Which
    provider becomes the *second* driver is open, and the agnosticism claim is unverifiable until one
@@ -993,10 +1153,18 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
   time-boxed exception for rollback safety, not a reversal of the unify decision — and it is
   narrower than Approach B's rejected version, which would have run two paths indefinitely with the
   remote one diverging.
-- The ported replay buffer matches the Swift original on the generated/fuzzed corpus. Every session
-  and store test passes **except** `SessionDaemonEndToEndTests` (7 tests) and
-  `SessionDaemonHarness`, which drive the deleted binary and are rewritten against the agent rather
-  than expected to pass.
+- ~~The ported replay buffer matches the Swift original on the generated/fuzzed corpus.~~
+  **Restated — there is no ported replay buffer.** `libghostty-vt` holds the terminal state, so the
+  criterion is: on the generated/fuzzed corpus, a snapshot round-trips (grid, styles, cursor,
+  modes, continuation), and a client attaching mid-stream renders the same screen as one that
+  watched from byte zero — **including under an alternate-screen program**, which the Swift
+  original could not do at all. Every session and store test passes **except**
+  `SessionDaemonEndToEndTests` (7 tests) and `SessionDaemonHarness`, which drive the deleted binary
+  and are rewritten against the agent rather than expected to pass.
+- **The far-side terminal state survives a provider stop-and-reboot**: reopen after one, and the
+  alternate-screen program's screen is still there (the process is not — that is the live-process
+  suspend gate, not a bug). This criterion did not previously exist because nothing could satisfy
+  it; `snapshot.h` persisted across the reboot is what makes it testable.
 
 ## Distribution Plan
 
@@ -1019,7 +1187,30 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     negotiate with the old one over the versioned envelope? Unspecified today, and it decides
     whether the versioning is real or ceremonial.
 - **New CI burden:** a Rust Linux cross-compile for `wr-agent` (note `prost` in the lock means
-  `protoc` is a build-time requirement) plus the container-driver integration job.
+  `protoc` is a build-time requirement) plus the container-driver integration job. **Add a pinned
+  Zig toolchain and a Ghostty checkout** for `libghostty-vt` — checksum-pinned, cache keyed by
+  target triple, per Phase 0 item 7 — on the macOS and both Linux targets.
+- **A second Ghostty pin enters the build — the first one taken from upstream directly — and it
+  must track the app's.** The app links `GhosttyKit` (the app-embedding API: `ghostty_app_*`,
+  `ghostty_surface_*`, config, inspector) via the `Lakr233/libghostty-spm` repackager, and
+  `macapp/Resources/ghostty` vendors that same engine's terminfo and shell-integration under its own
+  `CHECKSUMS`. The agent would link `libghostty-vt` (emulator only: `ghostty_terminal_*`,
+  `ghostty_snapshot_*`) from an upstream source checkout at a pinned sha. **Two build products out
+  of one repo, and the app's side comes from a third-party repackager whose version numbers are not
+  Ghostty versions** — `project.yml:57-71` already documents that trap and says to check dates, not
+  version numbers, and `Resources/ghostty/SOURCE.md` records the engine sha its measurements were
+  taken against for the same reason. Bump both together and record one engine sha for the pair.
+- **The snapshot format is not a wire contract, and that constrains the resume policy directly.**
+  Version 1 carries no binary-compatibility guarantee, so a snapshot is agent-internal state. The
+  concrete hazard is not the app holding one — it never does — it is **agent-replacement across a
+  reboot**: agent revision A writes a v1 snapshot to the VM's disk, the provider stops and reboots
+  the box, a newer app pushes agent revision B on reconnect, and B cannot decode A's format. The
+  screen is lost on precisely the stop-and-reboot criterion added to Success Criteria. Two
+  acceptable policies, and one of them has to be chosen: the outgoing agent decodes and hands off
+  its state before it is replaced, or the bootstrap **refuses** to replace an agent whose snapshot
+  version it cannot read and keeps the old one running. Either way, "replace the running agent on
+  reconnect" is not safe unconditionally — which is the resume-policy question below, now with a
+  forcing case rather than an abstraction.
 - **A past trap, already fixed, worth not re-introducing.** Xcode's `ARCHS` is a space-separated
   list, and this repo once case-matched it as a single token, silently falling back to arm64 on
   universal builds and shipping an arm64-only Go CLI inside a fat `.app` for 23 betas.
@@ -1049,22 +1240,28 @@ Swift (OQ21 — probably Swift, since it talks HTTP to provider APIs).
 
 **Measure before writing anything:**
 
-1. **Phase 0 spike — one day, six items, thrown away, item 5 first.** Item 5 no longer asks *whether*
-   the far side can stay awake (the lifecycle shim settled that); it asks **what boxd measures and
-   how narrowly the shim's credential can be scoped.** Start it and item 6's four-hour hibernation
-   in the background at hour zero, then work through the rest: Rust pty plus `/proc` introspection,
-   framing over a stream, the mid-TUI repaint after a killed link, the non-admin deploy-key case,
-   and deriving two instances from one base. €30 boxd signup credit covers the provider items.
-   Between them, items 5 and 6 settle five open questions.
+1. **Phase 0 spike — one day, seven items, thrown away, items 5 and 7 first.** Item 5 no longer asks
+   *whether* the far side can stay awake (the lifecycle shim settled that); it asks **what boxd
+   measures and how narrowly the shim's credential can be scoped.** Start it and item 6's four-hour
+   hibernation in the background at hour zero, then work through the rest: **`libghostty-vt`
+   snapshot round-trip bound from Rust plus its static-musl cross-build (item 7, new — and the
+   thing most of Phase 1's shape now rests on)**, Rust pty plus `/proc` introspection, framing over
+   a stream, the mid-TUI repaint after a killed link, the non-admin deploy-key case, and deriving
+   two instances from one base. €30 boxd signup credit covers the provider items. Between them,
+   items 5 and 6 settle five open questions, and item 7 settles what is left of OQ2.
 2. **Finish pricing open question 1.** The `log` half is **done** — gix matches `git log` exactly
    over 400 commits including merges, in a new `wr-vcs-git` crate, with the sorting caveat and the
    `sha1` feature gotcha recorded above. What remains is the half that actually drives Phase 2's
    estimate: **rename-detected commit diffs** (against `GitCommitDiff`'s libgit2 behaviour), plus
    ref decorations and the push-state revwalk. Extend the same spike crate rather than starting a
    new one.
-3. **Build the generated/fuzzed differential harness before porting the replay buffer.** Translate
-   the 15 existing tests, then generate the cases they do not cover — split escapes, alt-screen
-   transitions, truncated UTF-8, embedded queries.
+3. **Build the generated/fuzzed harness before porting the terminal service.** Translate the 15
+   existing tests, then generate the cases they do not cover — split escapes, alt-screen
+   transitions, truncated UTF-8, embedded queries. **Retargeted:** with `snapshot.h` there is no
+   replay buffer to port and no second implementation to diff, so the assertion is snapshot
+   round-trip plus attach-mid-stream equivalence. Same corpus, different oracle — see Phase 1's
+   harness bullet. **Order it after step 1's new item 7**, since that is what proves the oracle
+   exists.
 4. **Then Phase 1**, from `master` — and expect the estimate to move once step 2 lands, because
    Phase 2's git half is the largest unpriced item in the plan.
 
