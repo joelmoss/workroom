@@ -561,8 +561,8 @@ still backstops a cross-product install, but it is a backstop, not the channel f
 
 The canonical tag → channel classification lives in **`internal/channel`** (Go), mirrored by
 `macapp/WorkroomApp/Core/ReleaseChannel.swift` and `macapp/Scripts/channel-helper.sh` — keep the
-three in sync. All appcast-writing workflows
-(`release`, `nightly`, `appcast-notes`) share a `concurrency: appcast-feed` group so they can't
+three in sync. All appcast-writing workflows (`release`, `nightly`, `appcast-notes`) share a
+`concurrency: appcast-feed` group so they can't
 clobber each other's `appcast.xml` edits.
 
 ### Required CI secrets
