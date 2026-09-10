@@ -38,6 +38,7 @@ maintainer follows.
 - [Deployment & Releases](#deployment--releases)
   - [Continuous integration](#continuous-integration)
   - [Cutting a release](#cutting-a-release)
+  - [Patch releases](#patch-releases)
   - [Release channels](#release-channels)
   - [Required CI secrets](#required-ci-secrets)
   - [Release artifacts](#release-artifacts)
@@ -447,7 +448,8 @@ components automatically when you push a version tag.
 
 ### Continuous integration
 
-`.github/workflows/ci.yml` runs on every push to `master` and every PR against it:
+`.github/workflows/ci.yml` runs on every push to `master` or a `release/**` maintenance branch,
+and every PR against either:
 
 - **`cli` job** (`ubuntu-latest`): sets up Go from `go.mod`, runs `golangci-lint` (subsumes `go vet`
   / `gofmt`), `go build`, and `go test ./...`.
@@ -484,6 +486,42 @@ list with a succinct, themed summary (a headline, a one-line framing, and groupe
 the release notes also triggers `appcast-notes.yml`, which re-renders the Sparkle update dialog's
 notes from your curated body.
 
+### Patch releases
+
+`master` is always the **next minor**. Patches to an already-released line ship from a maintenance
+branch, so shipping `v2.0.1` never means holding back what's landed on master.
+
+Branch **lazily** — only when the first patch is actually needed, never eagerly at each minor:
+
+```bash
+git branch release/2.0 v2.0.0
+git push -u origin release/2.0
+```
+
+Land the fix on `master` first, then carry it over and tag:
+
+```bash
+git checkout release/2.0
+git cherry-pick -x <sha>          # -x records the source commit in the message
+git push
+# CI runs on the branch; once green:
+git tag v2.0.1 && git push origin v2.0.1
+```
+
+`release.yml` triggers on `push: tags: v*` with no branch filter, so a tag on a release branch cuts
+a real release exactly like one on master — nothing to configure.
+
+**Cherry-pick, never merge back.** Merging `release/2.0` into `master` would make `v2.0.1`
+reachable from master, and the nightly's `git describe` would then compute its base off a patch tag
+that has nothing to do with master's line. Fixes flow master → release branch, one way.
+
+**One caveat if you ever patch an *old* minor** (tagging `v2.0.1` after `v2.1.0` has shipped):
+GitHub's `/releases/latest` picks the most recent non-prerelease by **creation date**, not semver,
+so `v2.0.1` would become "Latest" and the stable updater — which reads `/releases/latest` for
+byte-parity with the download page — would offer 2.1 users a downgrade. If that becomes a real
+workflow, the stable updater needs to move to the `pre` channel's list-and-max-semver path.
+Patching only the newest released line (the normal case) is unaffected.
+
 ### Release channels
 
 Channels are delivered as **two products**, not one switchable install:
@@ -498,7 +536,7 @@ Channels are delivered as **two products**, not one switchable install:
 
 | Channel | Source | Appcast tagging | Delivered as |
 | --- | --- | --- | --- |
-| `stable` | clean `vX.Y.Z` tags | untagged (Sparkle default — everyone) | main app / `workroom` |
+| `stable` | clean `vX.Y.Z` tags (master, or a `release/X.Y` branch) | untagged (Sparkle default — everyone) | main app / `workroom` |
 | `pre` | `vX.Y.Z-beta.N` / `-rc` / `-alpha` tags | `<sparkle:channel>pre</sparkle:channel>` | main app / `workroom` |
 | `nightly` | daily build off `master` | `<sparkle:channel>nightly</sparkle:channel>` | Workroom Nightly / `workroom-nightly` |
 
@@ -507,9 +545,12 @@ build — `.github/workflows/nightly.yml` runs on a daily cron (and `workflow_di
 `Nightly` configuration ("Workroom Nightly" app) and baking `-X main.channel=nightly` into the CLI
 archives. It's hosted on a single fixed **`nightly`** prerelease whose assets and appcast item are
 clobbered in place each run (no per-day tags accumulate). Its version is
-`<incpatch(latest-tag)>-nightly.<commit-count>`; the commit count is the monotonic key the CLI and
-Sparkle order nightlies by. A no-new-commits guard skips a run when nothing changed, and the release
-title (the version) is stamped only after assets + appcast publish succeed, so a partial run retries.
+`<base>-nightly.<commit-count>`, where `<base>` is derived from the latest tag reachable from
+master — a prerelease tag targets its own release (`v2.0.0-rc.1` → `2.0.0`), a stable tag bumps the
+**minor** (`v2.0.0` → `2.1.0`) because master is the next minor and patches ship from a
+`release/X.Y` branch. The commit count is the monotonic key the CLI and Sparkle order nightlies
+by. A no-new-commits guard skips a run when nothing changed, and the release title (the version) is
+stamped only after assets + appcast publish succeed, so a partial run retries.
 
 Two appcast feeds: `appcast.xml` carries stable + pre for the main app (whose `allowedChannels` is
 the picked stable/pre floor), and `appcast-nightly.xml` carries the single rolling nightly item.

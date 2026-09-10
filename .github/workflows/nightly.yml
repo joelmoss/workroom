@@ -21,10 +21,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Decide whether there's anything new to build, and compute the nightly version. Base rule:
-  # incpatch(latest reachable tag) — a prerelease tag targets its own release (v2.0.0-beta.21 →
-  # 2.0.0), a stable tag bumps patch (v1.3.0 → 1.3.1). The commit count is the monotonic ordering
-  # key the CLI + Sparkle compare on.
+  # Decide whether there's anything new to build, and compute the nightly version. Base rule, off
+  # the latest tag reachable from master: a prerelease tag targets its own release
+  # (v2.0.0-beta.21 → 2.0.0), a stable tag bumps MINOR (v1.3.0 → 1.4.0). Minor, not patch, because
+  # master is always the next minor — patch releases ship from a `release/X.Y` branch (see
+  # CONTRIBUTING "Patch releases"), and a `2.0.1-nightly.N` here would semver-sort *below* the
+  # v2.0.1 cut over there. Release-branch tags stay unreachable from master (fixes are
+  # cherry-picked onto the branch, never merged back), so `git describe` here never sees them.
+  # The commit count is the monotonic ordering key the CLI + Sparkle compare on.
   check:
     runs-on: ubuntu-latest
     outputs:
@@ -48,8 +52,8 @@ jobs:
           if [ "$RAW" != "$CORE" ]; then
             BASE="$CORE"                         # prerelease latest → target that release line
           else
-            MAJOR="${CORE%%.*}"; TMP="${CORE#*.}"; MINOR="${TMP%%.*}"; PATCH="${TMP#*.}"
-            BASE="${MAJOR}.${MINOR}.$((PATCH + 1))"  # stable latest → bump patch
+            MAJOR="${CORE%%.*}"; TMP="${CORE#*.}"; MINOR="${TMP%%.*}"
+            BASE="${MAJOR}.$((MINOR + 1)).0"       # stable latest → next minor (master's line)
           fi
           COUNT="$(git rev-list --count HEAD)"
           VERSION="${BASE}-nightly.${COUNT}"

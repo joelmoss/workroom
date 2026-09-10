@@ -2,12 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    # `release/**` are the maintenance branches patch releases are cut from (CONTRIBUTING "Patch
+    # releases"). They get the same gate as master — a v2.0.1 tag pushed there triggers a real
+    # release, so it must not be the first CI that branch has seen.
+    branches: [master, "release/**"]
   pull_request:
-    branches: [master]
+    branches: [master, "release/**"]
 
-# Superseded PR pushes stop burning a macOS runner. Master keeps every run so each commit on the
-# release branch has its own signal.
+# Superseded PR pushes stop burning a macOS runner. Branch pushes keep every run so each commit a
+# release can be cut from — on master or a `release/**` branch — has its own signal.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

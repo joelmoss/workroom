@@ -22,6 +22,14 @@ config in `project.yml`: bundle id `…workroom.nightly`, `AppIcon-Nightly`, `Wo
 Info.plist marker). Channel is a runtime pref for stable/pre, a build identity for nightly, so
 nothing can drift/collide (the main binary rejects `--channel nightly`).
 
+**Branching.** `master` is always the next minor; patch releases come off a lazily-cut
+`release/X.Y` branch (`git branch release/2.0 v2.0.0`), fixes **cherry-picked** from master, never
+merged back — release-branch tags must stay unreachable from master or the nightly's `git describe`
+base goes wrong. `release.yml` has no branch filter, so a tag on a release branch just works. CI
+covers `release/**`. Full runbook: CONTRIBUTING "Patch releases", including the one open caveat
+(patching an *old* minor makes it GitHub's "Latest" by creation date and misleads the stable
+updater).
+
 Canonical tag→channel classification is `internal/channel` (Go), mirrored by
 `macapp/WorkroomApp/Core/ReleaseChannel.swift` and `macapp/Scripts/channel-helper.sh` — **keep the
 three in lockstep**. **Two Sparkle feeds**, both assets on the fixed `appcast` release: `appcast.xml` (stable + pre)
@@ -35,6 +43,8 @@ it. Do NOT collapse the feeds back together.
 The updater selects per channel (stable = `/releases/latest` for byte-parity;
 pre = `/releases` list, newest stable-or-prerelease; nightly = the fixed `nightly` release by tag),
 orders nightlies by the monotonic commit-count and everything else by semver, and verifies against
-`checksums.txt`. Nightly is a scheduled build (`.github/workflows/nightly.yml`, daily cron;
+`checksums.txt`. Nightly's version base is next-**minor** off the latest tag reachable from master
+(a stable `v2.0.0` → `2.1.0-nightly.N`), so it can never sort below a `v2.0.1` cut on a release
+branch. Nightly is a scheduled build (`.github/workflows/nightly.yml`, daily cron;
 `CONFIGURATION=Nightly make app-release`) on a fixed `nightly` prerelease; all appcast-writing
 workflows share a `concurrency: appcast-feed` group.
