@@ -87,9 +87,12 @@ private final class GatedFakeCLI: WorkroomCLIProtocol, @unchecked Sendable {
 
   let projectPath: String
   let hasSetup: Bool
-  let gate: Gate
   /// Names whose `create` throws once released — a setup script that failed after the workroom existed.
   let failing: Set<String>
+  /// Where each name stops, if at all. Defaults to `gate` for every name; pass `gates` to hold two
+  /// creates at DIFFERENT points — the only way to model one create finishing underneath another
+  /// create's pre-name loader. A name absent from this map never stops.
+  private let gates: [String: Gate]
   private let names: [String]
   private let lock = NSLock()
   private var callIndex = 0
@@ -99,13 +102,13 @@ private final class GatedFakeCLI: WorkroomCLIProtocol, @unchecked Sendable {
 
   init(
     projectPath: String, names: [String], hasSetup: Bool, gate: Gate = .afterReady,
-    failing: Set<String> = []
+    failing: Set<String> = [], gates: [String: Gate]? = nil
   ) {
     self.projectPath = projectPath
     self.names = names
     self.hasSetup = hasSetup
-    self.gate = gate
     self.failing = failing
+    self.gates = gates ?? Dictionary(uniqueKeysWithValues: names.map { ($0, gate) })
   }
 
   /// Let the named create past its gate (idempotent, and safe to call before it reaches the gate).
@@ -168,12 +171,13 @@ private final class GatedFakeCLI: WorkroomCLIProtocol, @unchecked Sendable {
     callIndex += 1
     lock.unlock()
 
-    if gate == .beforeReady { await hold(name) }
+    let stop = gates[name]
+    if stop == .beforeReady { await hold(name) }
     lock.lock()
     ready.append(name)
     lock.unlock()
     onReady?(name, path(name), hasSetup)
-    if gate == .afterReady { await hold(name) }
+    if stop == .afterReady { await hold(name) }
     if failing.contains(name) { throw WorkroomCLIError.timedOut }
     return CreateResponse(name: name, path: path(name), vcs: "git", project: project)
   }
@@ -333,13 +337,22 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     let session = ScriptLogSession(title: "t", phase: "setup")
     let proj = Project(path: projectPath, vcs: "git", workrooms: [])
 
-    // Pre-name: the loader owns the detail regardless of any prior selection.
+    // Pre-name with nothing on screen: the loader owns the detail — the case it exists for.
     store.pendingCreation = WorkroomCreation(session: session, project: proj)
-    store.selectedTargetID = .root(project: projectPath)
-    XCTAssertTrue(store.isCreationFocused, "pre-name the loader owns the detail")
+    store.selectedTargetID = nil
+    XCTAssertTrue(store.isCreationFocused, "pre-name with nothing selected, the loader owns it")
+
+    // Pre-name with a LIVE target selected: it must NOT take the window (issue #167). Full-frame is
+    // a blackout — it blanked a concurrent create's streaming dialog and every split pane.
+    store.projects = [self.project(withWorkroom: "live")]
+    store.selectedTargetID = .workroom(project: projectPath, name: "live")
+    XCTAssertFalse(
+      store.isCreationFocused, "a pre-name create must not blank the workroom already on screen")
+    XCTAssertNotNil(store.pendingCreation, "the create is still running — it just isn't full-frame")
 
     // Named: focused only when the new workroom's own tab is selected.
     store.pendingCreation = nil
+    store.projects = []
     let wrID = TerminalTarget.workroomID(project: projectPath, name: "wr")
     store.creations[wrID] = WorkroomCreation(
       session: session, project: proj, name: "wr", targetID: wrID, hasSetup: true)
@@ -858,6 +871,41 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     store.startRunCommand(for: target)
     XCTAssertNotNil(store.runStates[idA]?.tab, "once setup is done, Run works normally")
     store.setRunConfig(.empty, forProject: projectPath)
+  }
+
+  /// A no-setup create that finishes while ANOTHER create's pre-name loader is up must not be buried
+  /// by it: its pane has to become mountable the moment its own entry clears, or it never opens a
+  /// terminal, never gains a tab chip, and leaves its auto-run armed until the user hunts it down in
+  /// the sidebar. Before `focusedCreation` yielded to a live selected target, B's full-frame loader
+  /// kept covering A for as long as the CLI took to name B.
+  func testACompletedCreateIsNotBuriedByAnotherCreatesPreNameLoader() async {
+    // A lands first and holds mid-create; B then starts and parks BEFORE its ready event, so B owns
+    // the pre-name slot at the moment A finishes underneath it.
+    let fake = GatedFakeCLI(
+      projectPath: projectPath, names: ["wr-a", "wr-b"], hasSetup: false,
+      gates: ["wr-a": .afterReady, "wr-b": .beforeReady])
+    let store = makeStore(fake)
+
+    let a = await startAndLand(store, "wr-a", project: emptyProject)
+    let b = Task { await store.createWorkroom(in: emptyProject) }
+    await waitUntil({ store.pendingCreation != nil }, "B never claimed the pre-name slot")
+
+    fake.release("wr-a")
+    await a.value
+
+    XCTAssertNotNil(store.pendingCreation, "B is still pre-name and still owns the slot")
+    XCTAssertEqual(
+      store.selectedTargetID, .workroom(project: projectPath, name: "wr-a"),
+      "A's landing selected A")
+    XCTAssertTrue(
+      store.creations.isEmpty, "A had no setup script, so its entry cleared when it ended")
+    XCTAssertNil(
+      store.focusedCreation,
+      "so nothing covers A's pane — it can mount, open its terminal and take its tab")
+    XCTAssertFalse(store.isCreationFocused)
+
+    fake.release("wr-b")
+    await b.value
   }
 
 }

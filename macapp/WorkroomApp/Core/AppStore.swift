@@ -666,8 +666,11 @@ final class AppStore: ObservableObject {
   /// terminal withholding and their own Dismiss. Per-window, like selection.
   @Published var creations: [TerminalTarget.ID: WorkroomCreation] = [:]
   /// The one create still in its PRE-NAME phase — no target id exists yet, so it can't be keyed, and
-  /// it is correctly full-frame (there is no workroom to render it beside). Presentation only:
-  /// newest create wins, and each create clears this slot only if it still owns it (by session id).
+  /// having no workroom to render beside it can only be full-frame. That is why `focusedCreation`
+  /// shows it ONLY when nothing else is selected: full-frame is a window-wide blackout, and a create
+  /// is not a reason to take the window away from a workroom the user is already looking at.
+  /// Presentation only: newest create wins, and each create clears this slot only if it still owns
+  /// it (by session id).
   @Published var pendingCreation: WorkroomCreation?
   /// Mirrors whether one of RootView's *view-local* sheets is up (Add Project, Keyboard Shortcuts,
   /// What's New — the theme dropdown is a transient popover, not modal, and deliberately NOT counted:
@@ -3078,8 +3081,9 @@ final class AppStore: ObservableObject {
 
     let session = ScriptLogSession(
       title: "Setting up new workroom in \(project.displayName)", phase: "setup")
-    // Show the pre-name loader immediately — before the CLI has even reported the (generated) name —
-    // so the window shows progress from the first click, not just the sidebar spinner (issue #116).
+    // Claim the pre-name loader slot immediately, so a create started from the empty state shows
+    // progress in the window from the first click rather than only in the sidebar (issue #116). With
+    // a workroom already on screen it stays a chip + row spinner instead — see `focusedCreation`.
     // Once the workroom exists the landing moves this create into `creations[id]`, keyed on its own
     // target, and — for a setup script — the loader gives way to that target's dialog.
     pendingCreation = WorkroomCreation(session: session, project: project)
@@ -3256,13 +3260,29 @@ final class AppStore: ObservableObject {
     if !landedInSplit { selectedTargetID = sid }
   }
 
-  /// The create that owns the whole detail right now (issue #116), if any: the pre-name loader (a
-  /// brief phase with no workroom to render beside, so it is correctly full-frame), else the SELECTED
-  /// workroom's own create. Scoped to selection once named, so a setup script blocks ONLY that
-  /// workroom — selecting another reveals it while the create keeps running in the background.
+  /// The create that owns the whole detail right now (issue #116), if any. Two sources, in this
+  /// order — and the order is the point (issue #167):
+  ///
+  /// 1. **The SELECTED workroom's own create.** It has a target, so it is scoped to that target: a
+  ///    setup script blocks ONLY its own workroom, and selecting another reveals that one while the
+  ///    script keeps running in the background.
+  /// 2. **The pre-name loader, but only when there is nothing else to show.** It has no target yet,
+  ///    so it can only be full-frame — which makes it a window-wide blackout for as long as the CLI
+  ///    takes to report a name (worktree creation: seconds on a large repo). Unconditionally first,
+  ///    it meant starting a second create blanked the first create's live streaming dialog and every
+  ///    split pane, and clicking another workroom tab looked like a no-op (selection moved; the
+  ///    loader stayed). Worse, a no-setup create that finished under someone else's loader never got
+  ///    its pane mounted — so it never opened a terminal, never gained a tab chip, and left its
+  ///    auto-run armed until the user hunted it down in the sidebar.
+  ///
+  /// So the loader now yields to a live selected target, and the sidebar spinner plus the
+  /// provisional "Creating…" chip carry the progress instead. It still owns the detail in the case
+  /// it was written for — a create started with nothing selected, where there IS nothing else.
   var focusedCreation: WorkroomCreation? {
-    if let pendingCreation { return pendingCreation }
-    return Self.targetIDString(for: selectedTargetID).flatMap { creations[$0] }
+    if let sid = Self.targetIDString(for: selectedTargetID), let creation = creations[sid] {
+      return creation
+    }
+    return selectedTarget == nil ? pendingCreation : nil
   }
 
   /// Whether the detail pane belongs to a create rather than to a terminal — see `focusedCreation`.
