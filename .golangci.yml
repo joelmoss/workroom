@@ -1,23 +1,56 @@
-# golangci-lint configuration (v1.x). Run with `make cli-lint` or `golangci-lint run`.
-# Default linters (errcheck, gosimple, govet, ineffassign, staticcheck, unused) stay on; the
-# entries below add low-noise formatting/correctness checks. See https://golangci-lint.run.
+# golangci-lint configuration (v2.x). Run with `make cli-lint` or `golangci-lint run`.
+#
+# This was v1-format until golangci-lint v1 stopped being usable here: v1's vendored go/types is
+# capped at export-data version 2, so v1.64.8 cannot typecheck a Go 1.27 toolchain's stdlib at all
+# ("export data version 4 is greater than maximum supported version 2") no matter which Go builds
+# it. v2 is the only version that reads current export data, so the config moved with it. Keep the
+# CI pin in .github/workflows/ci.yml on the SAME major — a v1 binary cannot read this file (it
+# errors "unsupported version of the configuration"), and v2 cannot read the old one.
+version: "2"
+
 run:
   timeout: 5m
 
 linters:
+  # The v1 config relied on the implicit default set; v2 makes it explicit. "standard" is
+  # errcheck + govet + ineffassign + staticcheck + unused (v2 folded gosimple into staticcheck).
+  default: standard
+  enable:
+    - misspell # common misspellings in comments/strings
+    - unconvert # redundant type conversions
+  exclusions:
+    # v1 defaulted `issues.exclude-use-default: true`, which silently applied its EXC0001-EXC0015
+    # exclusion set — most importantly the errcheck one for `fmt.*print(f|ln)?`/`Close`/`Flush`.
+    # v2 renamed that to these presets and defaults it to NONE, so without this line the migration
+    # would newly fail the build on 46 unchecked `fmt.Fprintln` returns that CI has never gated on.
+    # This restores the previous gate; it does not switch off a rule that used to fire.
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    # v2 moved these out of the old top-level `issues.exclude-rules`.
+    rules:
+      # Test setup routinely ignores errors from os.WriteFile/Mkdir, config seeding, etc.;
+      # a real failure surfaces as a failing assertion downstream.
+      - path: _test\.go
+        linters:
+          - errcheck
+
+# v2 splits formatters out of `linters` — gofmt/goimports are no longer enabled alongside the
+# analyzers. `golangci-lint fmt` applies them; `run` still reports them as findings.
+formatters:
   enable:
     - gofmt # gofmt -s formatting
     - goimports # import grouping/ordering
-    - misspell # common misspellings in comments/strings
-    - unconvert # redundant type conversions
+  exclusions:
+    # `run` analyzes the module's package graph and never sees these; `fmt` WALKS THE FILESYSTEM,
+    # so without this it reports the vendored tree-sitter Go bindings under macapp/DerivedData
+    # (gitignored SwiftPM checkouts) and `make cli-lint` can never be green.
+    paths:
+      - macapp/DerivedData
 
 issues:
   # Report everything (golangci-lint otherwise caps repeats), so the gate is honest.
   max-issues-per-linter: 0
   max-same-issues: 0
-  exclude-rules:
-    # Test setup routinely ignores errors from os.WriteFile/Mkdir, config seeding, etc.;
-    # a real failure surfaces as a failing assertion downstream.
-    - path: _test\.go
-      linters:
-        - errcheck

@@ -53,12 +53,21 @@ jobs:
             | sudo tar -xz -C /usr/local/bin ./jj
           jj --version
 
-      # golangci-lint subsumes `go vet` (govet) and the gofmt check (gofmt linter). Installed
-      # with `go install` so it's built with the project's Go toolchain (go.mod), matching local.
+      # golangci-lint subsumes `go vet` (govet) and the gofmt/goimports checks. Installed with
+      # `go install` so it's built with the project's Go toolchain (go.mod), matching local — a
+      # prebuilt binary built against an older Go cannot read the current toolchain's export data.
+      # Note the `/v2` module path: v2 is required, since v1 rejects the v2-format .golangci.yml
+      # and its vendored go/types cannot analyze a Go 1.27 stdlib at all.
+      #
+      # Two commands, not one: v2 moved formatters out of `run`, so `run` alone reports NO
+      # gofmt/goimports findings and the formatting gate would be silently lost. `fmt --diff`
+      # reports them without rewriting and exits non-zero. Keep in step with the Makefile's
+      # cli-lint target.
       - name: Lint
         run: |
-          go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
           "$(go env GOPATH)/bin/golangci-lint" run
+          "$(go env GOPATH)/bin/golangci-lint" fmt --diff
 
       - name: Build
         run: go build -o workroom .

@@ -34,7 +34,10 @@ make cli-lint                       # golangci-lint (config: .golangci.yml)
 make cli-install                    # install to $GOBIN
 ```
 
-`cli-lint` requires `golangci-lint` (v1.x): `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`.
+`cli-lint` requires `golangci-lint` **v2.x** (`.golangci.yml` is v2-format; a v1 binary refuses it,
+and v1 cannot typecheck Go 1.27 at all):
+`go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2` — note the `/v2` in the
+module path, and install with `go install` so it's built by the local toolchain.
 The macOS app targets (`app-build`, `app-run`, `app-test`, `app-test-scripts`, `app-format`,
 `app-lint`, …) are documented in `macapp/CLAUDE.md`.
 

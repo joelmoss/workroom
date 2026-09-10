@@ -368,7 +368,7 @@ exits with a [stable code](#exit-codes). Progress (setup/teardown logs) streams 
 
 ```json
 { "ok": false, "schema_version": 1, "cli_version": "v2.0.0",
-  "command": "create", "error": { "kind": "WorkspaceExists", "message": "Git worktree already exists: …" } }
+  "command": "create", "error": { "kind": "WorkspaceExists", "message": "git worktree already exists: …" } }
 ```
 
 **Streaming log event (stderr, one per line):**

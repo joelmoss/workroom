@@ -68,7 +68,7 @@ func TestWithLockSerializesAgainstALiveSlowHolder(t *testing.T) {
 	}
 	// A must fully finish (start+end) before B starts, since A held the lock
 	// first and B must wait for the real holder rather than stealing it.
-	if !(order[0] == "A:start" && order[1] == "A:end" && order[2] == "B:start" && order[3] == "B:end") {
+	if order[0] != "A:start" || order[1] != "A:end" || order[2] != "B:start" || order[3] != "B:end" {
 		t.Fatalf("expected A to fully finish before B started, got %v", order)
 	}
 }
