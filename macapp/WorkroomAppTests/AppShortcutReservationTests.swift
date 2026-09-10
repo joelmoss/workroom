@@ -58,7 +58,7 @@ final class AppShortcutReservationTests: XCTestCase {
   }
 
   func testExistingOptionCommandShortcutsStayReserved() {
-    for key in ["r", "c", "f", "y", "p", "s", "b"] {
+    for key in ["r", "c", "f", "y", "p", "s", "b", "n", "o"] {
       XCTAssertTrue(reserved(key, [.command, .option]), "⌥⌘\(key.uppercased())")
     }
   }
@@ -123,10 +123,12 @@ final class AppShortcutReservationTests: XCTestCase {
     XCTAssertFalse(reserved("x", [.command, .shift, .option]), "not a Source Control key")
   }
 
-  /// ⌥⌘N was the Notifications inspector toggle; removed with issue #118, so it must no longer be
-  /// reserved. Pinned because a stale reservation steals a key from the terminal for nothing.
-  func testRemovedShortcutIsNoLongerReserved() {
-    XCTAssertFalse(reserved("n", [.command, .option]), "⌥⌘N was removed with issue #118")
+  /// ⌥⌘N/⌥⌘O are the File-menu "…in Split" items (issue #163). ⌥⌘N was previously the
+  /// Notifications inspector toggle and was un-reserved with issue #118; it is deliberately
+  /// re-taken here, which is why the old "must no longer be reserved" guard is gone.
+  func testSplitWorkroomShortcutsAreReserved() {
+    XCTAssertTrue(reserved("n", [.command, .option]), "⌥⌘N = New Workroom in Split")
+    XCTAssertTrue(reserved("o", [.command, .option]), "⌥⌘O = Open Workroom in Split")
   }
 
   func testEmptyCharactersAreNotReserved() {

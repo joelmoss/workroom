@@ -1259,8 +1259,10 @@ final class GhosttySurfaceView: NSView {
     // monitor — reserved here too, defensively, like ⌘1-9 above (issue #128). ⌥⌘B is the secondary
     // Projects sidebar toggle, same treatment.
     if flags == [.command, .option] {
+      // n/o = New/Open Workroom (split right) (issue #163) — File-menu key equivalents, so they
+      // must be reserved here or a focused TUI swallows them before the menu ever sees the key.
       return key == "r" || key == "c" || key == "f" || key == "y" || key == "p" || key == "s"
-        || key == "b"
+        || key == "b" || key == "n" || key == "o"
     }
     // ⌃⌘S = Projects sidebar toggle (issue #128).
     if flags == [.command, .control] { return key == "s" }

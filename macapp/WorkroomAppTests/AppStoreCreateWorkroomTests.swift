@@ -14,25 +14,32 @@ private final class CreatingFakeCLI: WorkroomCLIProtocol {
   let hasSetup: Bool
   let logLines: [String]
   let failAfterReady: Bool
+  /// Workrooms that already exist in the project and must SURVIVE the post-create reload. Without
+  /// them `list` returns only the new workroom, so a split anchor stops resolving the moment
+  /// `landOnCreatedWorkroom` reloads — and the split is (correctly) refused for the wrong reason.
+  let existingWorkrooms: [String]
 
   init(
     projectPath: String, workroomName: String, hasSetup: Bool, logLines: [String] = [],
-    failAfterReady: Bool = false
+    failAfterReady: Bool = false, existingWorkrooms: [String] = []
   ) {
     self.projectPath = projectPath
     self.workroomName = workroomName
     self.hasSetup = hasSetup
     self.logLines = logLines
     self.failAfterReady = failAfterReady
+    self.existingWorkrooms = existingWorkrooms
   }
 
   private var workroomAbsPath: String { "\(projectPath)/.workrooms/\(workroomName)" }
 
   func list(warnings: String, project: String?) async throws -> ListResponse {
-    let workroom = Workroom(
-      name: workroomName, path: workroomAbsPath, vcsName: "git", warnings: [])
+    let workrooms = (existingWorkrooms + [workroomName]).map {
+      Workroom(
+        name: $0, path: "\(projectPath)/.workrooms/\($0)", vcsName: "git", warnings: [])
+    }
     return ListResponse(
-      projects: [Project(path: projectPath, vcs: "git", workrooms: [workroom])],
+      projects: [Project(path: projectPath, vcs: "git", workrooms: workrooms)],
       workroomsDir: nil, configPath: nil)
   }
 
@@ -323,4 +330,91 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
       store.creatingWorkrooms.isEmpty,
       "a late onReady echo (no active creation) must not leave a leaked creating flag")
   }
+
+  // MARK: - Create as a split (issue #163)
+
+  /// A project + anchor workroom the new one can land beside. The anchor must RESOLVE for
+  /// `insertWorkroomSplit` to accept it, so it goes into the seeded project list.
+  private func anchoredStore(_ fake: WorkroomCLIProtocol, anchor: String) -> (AppStore, SidebarID) {
+    let store = makeStore(fake)
+    store.projects = [project(withWorkroom: anchor)]
+    store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
+    let sid = SidebarID.workroom(project: projectPath, name: anchor)
+    store.selectedTargetID = sid
+    return (store, sid)
+  }
+
+  func testCreateWithAnAnchorLandsTheNewWorkroomInASplit() async {
+    let fake = CreatingFakeCLI(
+      projectPath: projectPath, workroomName: "calm-otter", hasSetup: false,
+      existingWorkrooms: ["anchor-wr"])
+    let (store, anchor) = anchoredStore(fake, anchor: "anchor-wr")
+    let created = SidebarID.workroom(project: projectPath, name: "calm-otter")
+
+    await store.createWorkroom(
+      in: Project(path: projectPath, vcs: "git", workrooms: []), splitAnchor: anchor)
+
+    // Order matters: `.right` must place the anchor first and the new workroom second.
+    XCTAssertEqual(store.workroomSplits.first?.tabIDs, [anchor, created])
+    XCTAssertEqual(store.selectedTargetID, created, "focus lands on the new member")
+  }
+
+  func testCreateWithNoAnchorStillLandsSolo() async {
+    let fake = CreatingFakeCLI(
+      projectPath: projectPath, workroomName: "calm-otter", hasSetup: false)
+    let (store, _) = anchoredStore(fake, anchor: "anchor-wr")
+
+    await store.createWorkroom(in: Project(path: projectPath, vcs: "git", workrooms: []))
+
+    XCTAssertTrue(store.workroomSplits.isEmpty, "no anchor ⇒ today's behaviour, unchanged")
+    XCTAssertEqual(store.selectedTargetID, .workroom(project: projectPath, name: "calm-otter"))
+  }
+
+  /// The anchor is captured when the project is picked, but the create is async — so by landing
+  /// time the anchor may be gone. `insertWorkroomSplit`'s own resolve guard returns false and the
+  /// plain landing stands; the new workroom must never be lost.
+  func testAnAnchorDeletedMidCreateDegradesToAPlainLanding() async {
+    // The fake's `list` deliberately omits the anchor, so the post-create reload drops it —
+    // exactly what a real delete during a slow setup script does.
+    let fake = CreatingFakeCLI(
+      projectPath: projectPath, workroomName: "calm-otter", hasSetup: false)
+    let (store, _) = anchoredStore(fake, anchor: "anchor-wr")
+    let vanished = SidebarID.workroom(project: projectPath, name: "anchor-wr")
+
+    await store.createWorkroom(
+      in: Project(path: projectPath, vcs: "git", workrooms: []), splitAnchor: vanished)
+
+    XCTAssertTrue(store.workroomSplits.isEmpty)
+    XCTAssertEqual(store.selectedTargetID, .workroom(project: projectPath, name: "calm-otter"))
+  }
+
+  /// Selecting elsewhere while the create runs must NOT retarget the split: the anchor is a
+  /// captured parameter, and its pane rect is derived from its own layout rather than from a cache
+  /// that only ever holds the current selection's.
+  func testSelectingElsewhereMidCreateStillSplitsBesideTheOriginalAnchor() async {
+    let fake = CreatingFakeCLI(
+      projectPath: projectPath, workroomName: "calm-otter", hasSetup: false,
+      existingWorkrooms: ["anchor-wr", "elsewhere"])
+    let store = makeStore(fake)
+    store.projects = [
+      Project(
+        path: projectPath, vcs: "git",
+        workrooms: ["anchor-wr", "elsewhere"].map {
+          Workroom(
+            name: $0, path: "\(projectPath)/.workrooms/\($0)", vcsName: "git", warnings: [])
+        })
+    ]
+    store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1200, height: 800)
+    let anchor = SidebarID.workroom(project: projectPath, name: "anchor-wr")
+    store.selectedTargetID = .workroom(project: projectPath, name: "elsewhere")
+
+    await store.createWorkroom(
+      in: Project(path: projectPath, vcs: "git", workrooms: []), splitAnchor: anchor)
+
+    let created = SidebarID.workroom(project: projectPath, name: "calm-otter")
+    XCTAssertEqual(
+      store.workroomSplits.first?.tabIDs, [anchor, created],
+      "the split pairs the ORIGINAL anchor, not whatever was selected at landing")
+  }
+
 }

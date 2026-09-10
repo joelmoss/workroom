@@ -18,17 +18,25 @@ import SwiftUI
 /// Keyboard highlight indexes into the flat `filtered` list (headers aren't rows, so ↑/↓ skips
 /// them); `grouped` only regroups those same rows for display.
 ///
-///   ┌─ "Open workroom" ──────────── Done ─┐
+/// ⌥⏎ (or ⌥-click) opens the target as a **split** beside the current workroom instead of
+/// replacing it (issue #163); raised by ⌥⌘O the whole dialog is already in split mode, so a plain
+/// ⏎ splits — which is why the title and footer are derived from `PickerSplitIntent`, not fixed.
+///
+///   ┌─ "Open Workroom [(split right)]" Done ─┐
 ///   │ 🔍 [ filter…                       ] │  ← auto-focused; single-line, so ↑/↓/⏎ bubble up
 ///   │ PROJECT-A                            │  ← header (not selectable)
 ///   │   🏠 project-a                       │  ← root (⏎ / click opens)
 ///   │   📦 fix-auth                        │  ← workroom (alphabetical)
+///   │        ⏎ open · ⌥⏎ split             │  ← hint; reads "⏎ split" in split mode
 ///   └─────────────────────────────────────┘
 struct OpenWorkroomDialog: View {
   @ObservedObject var store: AppStore
   /// Closes the dialog (the presenter owns the presentation state). Replaces `@Environment(\.dismiss)`
   /// now that the dialog is shown as a `DialogOverlay`, not a `.sheet`.
   let onClose: () -> Void
+  /// Whether this dialog was raised in split mode (⌥⌘O) — consumed once by the presenter, so a
+  /// cancelled raise can't leak into the next one. In split mode a plain pick already splits.
+  var splitIntent = false
   private let theme = ThemeService.shared
 
   @State private var query = ""
@@ -57,15 +65,19 @@ struct OpenWorkroomDialog: View {
 
   /// Open a target: dismiss first, then switch/focus it. `openExisting` selects + focuses the
   /// target (and brings the app forward), so the detail pane shows it — no extra wiring here.
-  private func pick(_ target: OpenTarget) {
+  private func pick(_ target: OpenTarget, split: Bool = false) {
     onClose()
-    store.openExisting(target.sid)
+    if split || splitIntent {
+      store.openExistingAsSplit(target.sid)
+    } else {
+      store.openExisting(target.sid)
+    }
   }
 
   private func targetRow(_ target: OpenTarget) -> some View {
     OpenTargetRow(target: target, isHighlighted: target.id == highlightedID)
       .contentShape(Rectangle())
-      .onTapGesture { pick(target) }
+      .onTapGesture { pick(target, split: PickerSplitIntent.requestedFromCurrentModifiers()) }
       // Keyed on the immutable real name (not the label-derived `title`) so it stays a stable
       // UI-test handle even when a display label changes what's shown (issue #41).
       .accessibilityIdentifier("openWorkroom.target.\(target.name)")
@@ -75,7 +87,7 @@ struct OpenWorkroomDialog: View {
   var body: some View {
     VStack(spacing: 0) {
       HStack {
-        Text("Open workroom").font(.headline)
+        Text(PickerSplitIntent.title(open: true, split: splitIntent)).font(.headline)
         Spacer()
         Button("Cancel") { onClose() }.keyboardShortcut(.cancelAction)
       }
@@ -118,6 +130,8 @@ struct OpenWorkroomDialog: View {
           }
         }
       }
+
+      PickerHintFooter(open: true, split: splitIntent)
     }
     .frame(width: 420, height: 460)
     .onAppear {
@@ -134,9 +148,12 @@ struct OpenWorkroomDialog: View {
       highlighted = OpenPickerModel.move(highlight: highlighted, by: 1, count: filtered.count)
       return .handled
     }
-    .onKeyPress(.return) {
+    // ⌥⏎ splits, plain ⏎ opens (issue #163). The `keys:` overload is what carries the modifiers;
+    // the plain `.onKeyPress(.return)` closure has none. Still wired ONLY here, never on the
+    // field's `.onSubmit` — a double-fire would open twice.
+    .onKeyPress(keys: [.return]) { press in
       if let target = OpenPickerModel.selection(filtered: filtered, highlight: highlighted) {
-        pick(target)
+        pick(target, split: PickerSplitIntent.requested(press.modifiers))
       }
       return .handled
     }
@@ -186,12 +203,17 @@ struct OpenWorkroomDialog: View {
 /// type-checker's budget — the same reason `NewWorkroomPresenter` is a modifier.
 struct OpenWorkroomPresenter: ViewModifier {
   @ObservedObject var store: AppStore
+  /// The split intent of the CURRENT raise, taken from the store as the picker goes up.
+  @State private var splitIntent = false
 
   func body(content: Content) -> some View {
     content
       // Raising Open sets `activePicker = .open`, which replaces New if it was showing (issue #94).
       .onChange(of: store.requestOpenWorkroomPicker) { _, request in
         if request {
+          // Consume the split intent as we raise, so it can never be read by a LATER plain raise
+          // (⌥⌘O → Esc → the title bar's open button would otherwise still split).
+          splitIntent = store.consumePickerSplitIntent()
           store.activePicker = .open
           store.requestOpenWorkroomPicker = false
         }
@@ -200,7 +222,8 @@ struct OpenWorkroomPresenter: ViewModifier {
       .overlay {
         if store.activePicker == .open {
           DialogOverlay(onDismiss: { store.activePicker = nil }) {
-            OpenWorkroomDialog(store: store, onClose: { store.activePicker = nil })
+            OpenWorkroomDialog(
+              store: store, onClose: { store.activePicker = nil }, splitIntent: splitIntent)
           }
         }
       }

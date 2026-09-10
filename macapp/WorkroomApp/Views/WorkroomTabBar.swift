@@ -380,7 +380,7 @@ struct WorkroomTabBar: View {
       "plus", hovering: addHovering, help: "New workroom (⌘N)", label: "New workroom",
       identifier: "NewWorkroom",
       onHover: { addHovering = $0 },
-      action: { store.requestNewWorkroomPicker = true })
+      action: { store.raiseWorkroomPicker(.new) })
   }
 
   /// The "open workroom" button — raises the Open Workroom picker (`requestOpenWorkroomPicker`, the
@@ -391,7 +391,7 @@ struct WorkroomTabBar: View {
       "chevron.down", hovering: openHovering, help: "Open workroom (⌘O)", label: "Open workroom",
       identifier: "OpenWorkroom",
       onHover: { openHovering = $0 },
-      action: { store.requestOpenWorkroomPicker = true })
+      action: { store.raiseWorkroomPicker(.open) })
   }
 
   /// One builder for both trailing buttons, so their well and hit area are identical **by

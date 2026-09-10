@@ -146,6 +146,193 @@ final class WorkroomSplitTests: XCTestCase {
     XCTAssertEqual(onlySplit(store)?.tabIDs.count, 2)
   }
 
+  // MARK: insert's return value (issue #163)
+
+  /// Every keyboard/menu caller uses the `Bool` as its ONLY guard and falls back to a plain open
+  /// when it's false, so each reject branch has to report itself accurately — a reject that
+  /// returned true would swallow the workroom instead of opening it.
+  func testInsertReportsWhetherItActuallySplit() {
+    let store = store3()
+    XCTAssertTrue(
+      store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right),
+      "seeding a new group")
+    XCTAssertTrue(
+      store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .right),
+      "growing an existing group")
+  }
+
+  func testInsertReportsFalseOnEveryRejectBranch() {
+    let store = makeStore([project("/a", present: ["main", "feature"], missing: ["gone"])])
+    XCTAssertFalse(
+      store.insertWorkroomSplit(wr("main"), beside: wr("main"), edge: .right), "self-drop")
+    XCTAssertFalse(
+      store.insertWorkroomSplit(wr("nope"), beside: wr("main"), edge: .right),
+      "leaf that doesn't resolve")
+    XCTAssertFalse(
+      store.insertWorkroomSplit(wr("gone"), beside: wr("main"), edge: .right),
+      "missing directory")
+    XCTAssertFalse(
+      store.insertWorkroomSplit(
+        wr("feature"), beside: wr("main"), edge: .right, destinationRect: tooNarrow()),
+      "below the pane floor")
+    XCTAssertTrue(store.workroomSplits.isEmpty, "none of those may have changed the model")
+  }
+
+  // MARK: workroomPaneRect (issue #163)
+
+  func testPaneRectIsNilWithoutAMeasuredContainer() {
+    let store = store3()
+    XCTAssertNil(store.workroomPaneRect(for: wr("main")), "nothing laid out yet")
+  }
+
+  func testPaneRectIsNilForALeafThatDoesNotResolve() {
+    let store = store3()
+    store.workroomPaneSpace = roomy()
+    XCTAssertNil(store.workroomPaneRect(for: wr("nope")))
+  }
+
+  func testSoloAnchorGetsTheWholeContainer() {
+    let store = store3()
+    store.workroomPaneSpace = roomy()
+    XCTAssertEqual(store.workroomPaneRect(for: wr("main"))?.width, roomy().width)
+  }
+
+  func testGroupedAnchorGetsItsOwnSlotNotTheWholeContainer() {
+    let store = store3()
+    store.workroomPaneSpace = roomy()
+    store.insertWorkroomSplit(
+      wr("feature"), beside: wr("main"), edge: .right, destinationRect: roomy())
+    let width = store.workroomPaneRect(for: wr("main"))?.width
+    XCTAssertNotNil(width)
+    XCTAssertLessThan(width ?? .infinity, roomy().width, "a member occupies half, not the whole")
+  }
+
+  /// The regression that killed the per-pane-cache design: the renderer only lays out the CURRENT
+  /// selection's layout, so a remembered map holds nothing for an anchor the user has navigated
+  /// away from — which is exactly the create-then-select-elsewhere path. Deriving per call means
+  /// the anchor's rect stays available regardless of what is selected.
+  func testPaneRectIsDerivableForAnAnchorThatIsNotSelected() {
+    let store = store3()
+    store.workroomPaneSpace = roomy()
+    store.selectedTargetID = wr("bugfix")
+    XCTAssertEqual(
+      store.workroomPaneRect(for: wr("main"))?.width, roomy().width,
+      "an unselected solo anchor still measures as a full-width pane")
+  }
+
+  // MARK: openExistingAsSplit (issue #163)
+
+  func testOpenAsSplitLandsToTheRightOfTheSelectionAndFocusesIt() {
+    let store = store3()
+    store.workroomPaneSpace = roomy()
+    store.selectedTargetID = wr("main")
+    store.openExistingAsSplit(wr("feature"))
+    // Order, not just membership: `.right` must put the anchor first and the newcomer second.
+    XCTAssertEqual(onlySplit(store)?.tabIDs, [wr("main"), wr("feature")])
+    if case .split(_, let orientation, _, _, _) = onlySplit(store) {
+      XCTAssertEqual(orientation, .horizontal, "side by side, not stacked")
+    } else {
+      XCTFail("expected a split node")
+    }
+    XCTAssertEqual(store.selectedTargetID, wr("feature"), "focus follows the newly opened member")
+  }
+
+  /// A refused split must NOT fall back to a plain open. `openExisting` REPLACES the selection, so
+  /// falling back cost the user the pane they were looking at — right after the picker promised a
+  /// split. A refusal is a no-op (with a beep); `canOpenAsSplit` keeps the menu item away.
+  func testOpenAsSplitWithNoSelectionDoesNothing() {
+    let store = store3()
+    store.workroomPaneSpace = roomy()
+    store.selectedTargetID = nil
+    store.openExistingAsSplit(wr("feature"))
+    XCTAssertTrue(store.workroomSplits.isEmpty)
+    XCTAssertNil(store.selectedTargetID, "no anchor ⇒ no split AND no replacement")
+    XCTAssertFalse(store.canOpenAsSplit(wr("feature")), "…and the affordance is hidden")
+  }
+
+  func testOpenAsSplitOnTheSelectionItselfDoesNothing() {
+    let store = store3()
+    store.workroomPaneSpace = roomy()
+    store.selectedTargetID = wr("main")
+    store.openExistingAsSplit(wr("main"))
+    XCTAssertTrue(store.workroomSplits.isEmpty)
+    XCTAssertEqual(store.selectedTargetID, wr("main"))
+    XCTAssertFalse(store.canOpenAsSplit(wr("main")), "you cannot split a workroom beside itself")
+  }
+
+  /// The common case: a window too narrow for the floor. Replacing here is the worst outcome —
+  /// the user loses their current pane and gains one they didn't ask to swap to.
+  func testOpenAsSplitBelowThePaneFloorKeepsTheCurrentPane() {
+    let store = store3()
+    store.workroomPaneSpace = tooNarrow()
+    store.selectedTargetID = wr("main")
+    store.openExistingAsSplit(wr("feature"))
+    XCTAssertTrue(store.workroomSplits.isEmpty, "too narrow to split")
+    XCTAssertEqual(store.selectedTargetID, wr("main"), "and the current pane is NOT replaced")
+    XCTAssertFalse(store.canOpenAsSplit(wr("feature")), "…and the affordance is hidden")
+  }
+
+  /// `insertWorkroomSplit` rejects a missing directory because a missing leaf "can only be backed
+  /// out of again" (issue #23) — so falling back to a plain open did exactly what that guard
+  /// prevents, at full-frame size, and cost the user their pane.
+  func testOpenAsSplitOfAMissingWorkroomNeitherSplitsNorNavigates() {
+    let store = makeStore([project("/a", present: ["main"], missing: ["gone"])])
+    store.workroomPaneSpace = roomy()
+    store.selectedTargetID = wr("main")
+    store.openExistingAsSplit(wr("gone"))
+    XCTAssertTrue(store.workroomSplits.isEmpty)
+    XCTAssertEqual(store.selectedTargetID, wr("main"), "a missing workroom must not take the pane")
+    XCTAssertFalse(store.canOpenAsSplit(wr("gone")), "…and the affordance is hidden for it")
+  }
+
+  /// Accepted semantics (issue #163): opening a member of a BACKGROUND group detaches it, which
+  /// dissolves that group when it drops below two — the same thing dragging it already does.
+  /// Pinned so a later change here is a deliberate decision rather than a silent drift.
+  func testOpenAsSplitOfABackgroundGroupMemberDissolvesThatGroup() {
+    let store = makeStore([project("/a", workrooms: ["main", "feature", "bugfix", "docs"])])
+    store.workroomPaneSpace = roomy()
+    store.insertWorkroomSplit(
+      wr("feature"), beside: wr("docs"), edge: .right, destinationRect: roomy())
+    XCTAssertEqual(groupSets(store), [[wr("docs"), wr("feature")]])
+    store.selectedTargetID = wr("main")
+    store.openExistingAsSplit(wr("feature"))
+    XCTAssertEqual(
+      groupSets(store), [[wr("main"), wr("feature")]],
+      "feature moved out; its old pair dropped below two and dissolved")
+  }
+
+  // MARK: picker split intent (issue #163)
+
+  func testRaiseWorkroomPickerSetsTheMatchingRequestFlag() {
+    let store = store3()
+    store.raiseWorkroomPicker(.new, split: true)
+    XCTAssertTrue(store.requestNewWorkroomPicker)
+    XCTAssertFalse(store.requestOpenWorkroomPicker)
+    store.requestNewWorkroomPicker = false
+    store.raiseWorkroomPicker(.open)
+    XCTAssertTrue(store.requestOpenWorkroomPicker)
+    XCTAssertFalse(store.requestNewWorkroomPicker)
+  }
+
+  func testConsumingTheSplitIntentReturnsItOnce() {
+    let store = store3()
+    store.raiseWorkroomPicker(.open, split: true)
+    XCTAssertTrue(store.consumePickerSplitIntent())
+    XCTAssertFalse(store.consumePickerSplitIntent(), "consumed — a second read is false")
+  }
+
+  /// REGRESSION GUARD: ⌥⌘N → Esc → the title bar's + button must CREATE, not split. Every raise
+  /// site goes through `raiseWorkroomPicker`, and each raise consumes exactly once, so a cancelled
+  /// split intent cannot survive into the next plain raise.
+  func testACancelledSplitIntentDoesNotLeakIntoTheNextPlainRaise() {
+    let store = store3()
+    store.raiseWorkroomPicker(.new, split: true)
+    _ = store.consumePickerSplitIntent()  // the picker goes up…
+    store.requestNewWorkroomPicker = false  // …and is cancelled without a pick
+    store.raiseWorkroomPicker(.new)  // the title bar's + button
+    XCTAssertFalse(store.consumePickerSplitIntent(), "the plain raise must not inherit split mode")
+  }
+
   /// The indicator and the commit must agree — `dropHighlight` gates the accent band on exactly this
   /// predicate, so a divergence here is a band that previews a drop the store then refuses.
   func testAdmissibilityMatchesWhatInsertActuallyDoes() {
