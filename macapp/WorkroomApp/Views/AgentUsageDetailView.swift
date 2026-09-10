@@ -1,8 +1,9 @@
 import SwiftUI
 
 /// The detailed usage breakdown opened by clicking the footer's quota segment — one row per window,
-/// each showing a progress bar against the reset countdown, plus a pace caption. The compact footer
-/// segment stays a glanceable summary; this is where the numbers behind it live.
+/// each showing a progress bar against the reset countdown, plus a pace caption. Since issue #168
+/// the footer segment is bars alone, so this popover (and the segment's tooltip) is the ONLY place
+/// the percentages behind them are written out.
 struct AgentUsageDetailView: View {
   /// The popover's fixed presented width (the caller applies this via `.frame(width:)`) — kept here,
   /// not just at the call site, so `barWidth` below derives from the same number rather than a second
@@ -45,11 +46,7 @@ struct AgentUsageDetailView: View {
 
   private func windowRow(_ window: AgentQuotaWindow) -> some View {
     let pace = window.pace(at: currentTime)
-    // The marker sits at the "sustainable pace" point — where usage would be if it exactly tracked
-    // the window's elapsed time — derived from the pace already computed for the compact footer
-    // (`usedPercentage - pace.percentagePoints` recovers that elapsed fraction) rather than a second,
-    // independently-maintained calculation.
-    let paceMarker = min(max(window.usedPercentage - pace.percentagePoints, 0), 100)
+    let paceMarker = window.sustainablePacePercentage(at: currentTime)
 
     return VStack(alignment: .leading, spacing: 6) {
       HStack(alignment: .firstTextBaseline) {
@@ -64,7 +61,7 @@ struct AgentUsageDetailView: View {
 
       QuotaBar(
         usedPercentage: window.usedPercentage, markerPercentage: paceMarker,
-        markerIsOverPace: pace.isOver, width: barWidth)
+        fill: QuotaBar.fill(for: pace.severity, theme.tokens), width: barWidth)
 
       Text(caption(for: pace))
         .font(.caption)
@@ -94,53 +91,102 @@ struct AgentUsageDetailView: View {
   }
 }
 
-/// A track with a filled portion (usage) and a marker pin (the sustainable-pace point). The fill
-/// stays one constant tint rather than a severity traffic light — the footer's inline text already
-/// carries that — but the marker itself IS state-colored: failure-red once this window is past its
-/// sustainable pace (a deficit is the case worth noticing), success-green while still under it.
+/// A track with a filled portion (usage) and a marker pin (the sustainable-pace point), drawn at two
+/// scales: the popover's full-width rows and the pane footer's compact segment (issue #168).
+///
+/// ```
+/// 0%                          used%                        100%
+/// ├────────────────────────────┤                             ┤
+/// ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  fill (severity) on track (border)
+///                  █                                          pace pin at elapsed%, fgMuted
+///                  └ offset = width × pct/100 − haloWidth/2
+/// ```
+///
+/// Three colour decisions, each of them a correction rather than a preference:
+///
+/// - **The fill is severity-colored, not one constant tint.** It used to be a flat `accent`, on the
+///   reasoning that the footer's inline text carried the severity instead. Issue #168 deleted that
+///   text, so the fill is now the only place a deficit is visible — and both surfaces read the same
+///   rule from `QuotaBar.fill(for:_:)`, so a window can't be amber in the footer and plain in the
+///   popover.
+/// - **The track is `border` (fg @ 0.12), not `surface` (fg @ 0.08).** `surface` on the footer's
+///   `panel` ground is fainter than a hairline divider and barely above `hover`'s deliberate wash,
+///   which at compact height read as no track at all — leaving a fill you couldn't see the extent of.
+/// - **The pin's gap is a real knockout, not a painted-over patch.** It was `surface`, which is
+///   translucent: composited over the fill it came out as fill + 8% fg and notched nothing, in
+///   direct contradiction of the comment that used to sit here. Painting an opaque colour instead
+///   only moves the problem, because the caller has to GUESS its own ground and both callers guessed
+///   wrong — the footer's segment paints `hover` behind itself while hovered (which is now the
+///   primary read path, since the percentages live in the tooltip), and the popover never sets a
+///   background at all, so its content sits on system material. `.blendMode(.destinationOut)` inside
+///   a `.compositingGroup()` erases instead of painting, so the gap is correct on every ground
+///   without anyone having to name it.
+///
+/// The pin itself is neutral (`fgMuted`). It was state-colored — red past pace, green under it — but
+/// with the fill now carrying that signal, coloring the pin too double-encodes it; the row caption
+/// ("May run out before reset") already says it in words.
 ///
 /// Takes an explicit `width` rather than reading one from a `GeometryReader`: a `.popover`'s content
 /// view computes its own preferred size once at presentation time, and a `GeometryReader` anywhere in
 /// that tree throws that computation off — it reported an intrinsic size too short to hold this row's
 /// caption text, which then rendered truncated instead of wrapped. The caller already fixes the
 /// popover to `AgentUsageDetailView.popoverWidth`, so the bar can just derive from that same constant.
-private struct QuotaBar: View {
+struct QuotaBar: View {
   let usedPercentage: Double
   let markerPercentage: Double
-  let markerIsOverPace: Bool
+  let fill: Color
   let width: CGFloat
+  /// Scales the two HORIZONTAL marker constants for the footer's short bars. Heights are untouched:
+  /// the footer is a fixed 28pt whose content height is already set by its 11pt font, so a 12pt
+  /// marker neither clips nor grows anything. The widths do need it: on the narrowest footer bar a
+  /// 6pt halo would be a quarter of the whole track, and measuring a first pass at 4pt showed it
+  /// swallowing the entire gap between the fill's edge and the pin — leaving a pin that no longer
+  /// showed which side of sustainable pace the window was on.
+  var compact: Bool = false
+
+  /// The one place a `PaceSeverity` becomes a colour, shared by the footer segment and the popover
+  /// rows so the two cannot disagree about the same window.
+  static func fill(for severity: PaceSeverity, _ tokens: ThemeTokens) -> Color {
+    switch severity {
+    case .onPace: return tokens.accent
+    case .warning: return tokens.warning
+    case .critical: return tokens.failure
+    }
+  }
 
   private let theme = ThemeService.shared
   private let trackHeight: CGFloat = 6
   /// Taller than the track, so the marker reads as a pin planted on it rather than another band of
   /// the bar's own color.
   private let markerHeight: CGFloat = 12
-  private let markerHaloWidth: CGFloat = 6
-  private let markerLineWidth: CGFloat = 2.5
+  private var markerHaloWidth: CGFloat { compact ? 2.5 : 6 }
+  private var markerLineWidth: CGFloat { compact ? 1.5 : 2.5 }
 
-  private var markerColor: Color {
-    markerIsOverPace ? theme.tokens.failure : theme.tokens.diffAddFg
-  }
+  /// Where the pin's centre sits along the track.
+  private var markerCenter: CGFloat { width * CGFloat(markerPercentage / 100) }
 
   var body: some View {
     ZStack(alignment: .leading) {
-      Capsule().fill(theme.tokens.surface).frame(width: width, height: trackHeight)
+      Capsule().fill(theme.tokens.border).frame(width: width, height: trackHeight)
       Capsule()
-        .fill(theme.tokens.accent)
+        .fill(fill)
         .frame(width: width * CGFloat(usedPercentage / 100), height: trackHeight)
-      marker
+      // Erases the track and fill beneath it rather than painting over them, so the gap reads the
+      // same whether the pin lands on the filled or the empty portion, on any background.
+      Capsule()
+        .frame(width: markerHaloWidth, height: markerHeight)
+        .offset(x: max(0, markerCenter - markerHaloWidth / 2))
+        .blendMode(.destinationOut)
+    }
+    // Required for `.destinationOut`: it composites against the group, not the whole window.
+    .compositingGroup()
+    // The pin itself goes OUTSIDE the group, or the knockout would erase it too.
+    .overlay(alignment: .leading) {
+      Capsule()
+        .fill(theme.tokens.fgMuted)
+        .frame(width: markerLineWidth, height: markerHeight)
+        .offset(x: max(0, markerCenter - markerLineWidth / 2))
     }
     .frame(height: markerHeight)
-  }
-
-  /// A halo in the track's own base color — so it cuts the same clean notch whether it lands over the
-  /// filled or the empty portion — around a bold, state-colored center line.
-  private var marker: some View {
-    ZStack {
-      Capsule().fill(theme.tokens.surface).frame(width: markerHaloWidth)
-      Capsule().fill(markerColor).frame(width: markerLineWidth)
-    }
-    .frame(height: markerHeight)
-    .offset(x: max(0, width * CGFloat(markerPercentage / 100) - markerHaloWidth / 2))
   }
 }

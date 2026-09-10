@@ -142,6 +142,34 @@ struct TerminalStatusBar: View {
 
   // MARK: Agent quota
 
+  /// Resolved once per launch rather than per render. `ToolLogoRegistry.tool(...)` runs an
+  /// `NSImage(named:)` gate on every call, and this bar's body reads five observable sources, so it
+  /// re-evaluates on cwd, branch, run-state and quota-file changes in every pane.
+  ///
+  /// Worth being precise about what this does and doesn't buy, since the obvious reading overstates
+  /// it: `NSImage(named:)` hits AppKit's own name cache and `matchingEntry` is a dictionary lookup,
+  /// so the call was already cheap — and `Image(assetName(for:))` below resolves the asset per render
+  /// regardless, which no cache here can avoid. This removes one of two lookups, not both.
+  /// `AgentBackend.allCases` has two members, so the dictionary costs two entries to do it.
+  private static let logoTools: [AgentBackend: RecognizedTool] = Dictionary(
+    uniqueKeysWithValues: AgentBackend.allCases.compactMap { backend in
+      ToolLogoRegistry.tool(forExecutableName: backend.executable).map { (backend, $0) }
+    })
+
+  /// Bar widths for the `ViewThatFits` variants, widest first (the ladder takes the first that fits,
+  /// so inverting this order defeats it). Width is the only thing that varies — the segment is the
+  /// logo plus bars, with nothing else to shed.
+  ///
+  /// Which bar is which window is deliberately not drawn. They run shortest-window-first
+  /// (`AgentUsageDecoding.normalized` sorts by duration), and the segment's tooltip and popover both
+  /// name them in full: the footer is a glance, not a reading.
+  ///
+  /// Three rungs rather than two because the middle one earns its place: measured on a two-pane
+  /// split, the 44pt variant doesn't fit but the 32pt one does, and dropping straight to 24pt
+  /// squeezes the fill-to-pin gap down to about the marker's own halo width — which is where the pin
+  /// stops telling you which side of sustainable pace you're on.
+  private static let quotaBarWidths: [CGFloat] = [44, 32, 24]
+
   @ViewBuilder private func agentUsageSegment(_ backend: AgentBackend) -> some View {
     if backend == .claude, claudeUsageBridge.state == .disabled {
       Button("Enable Claude usage…") { confirmingClaudeUsage = true }
@@ -150,23 +178,43 @@ struct TerminalStatusBar: View {
         .help("Enable the opt-in Claude status-line bridge")
         .accessibilityIdentifier("terminal.statusBar.agentUsage.enableClaude")
     } else if let snapshot = agentUsage.snapshot(for: backend) {
-      let label = quotaAccessibilityLabel(snapshot)
-      Button {
-        usageDetailPinned.toggle()
-      } label: {
-        ViewThatFits(in: .horizontal) {
-          quotaFull(snapshot)
-          quotaCompact(snapshot)
+      // ONE schedule for the whole segment. The pace pin's offset is a function of wall-clock time
+      // — it crosses a bar in the window's own duration, ~9pt/hour on the 44pt variant for a 5h
+      // window — and this bar has no clock of its own otherwise, so an idle pane would park the pin
+      // wherever the last unrelated re-render left it. The tooltip and the accessibility label
+      // quote the same `now`, so they can't disagree with the pin beside them.
+      //
+      // It sits OUTSIDE the `ViewThatFits` deliberately: that view instantiates every child to
+      // measure it, so a `TimelineView` inside the variants would run one schedule per variant.
+      // `VCSToolbar` wraps its whole bar for the same reason.
+      TimelineView(.periodic(from: .now, by: 60)) { context in
+        let now = context.date
+        let label = quotaAccessibilityLabel(snapshot, now: now)
+        Button {
+          usageDetailPinned.toggle()
+        } label: {
+          // No `.fixedSize` here, unlike the text ladder this replaced. `fixedSize` proposes an
+          // UNSPECIFIED width, so `ViewThatFits` measures the first variant against no constraint,
+          // it always "fits", and every later variant is dead code — which is exactly what happened
+          // to the old compact half. The modifier existed only to stop a `Text` truncating under
+          // this bar's ambient `.lineLimit(1)`; fixed-frame capsules cannot truncate.
+          ViewThatFits(in: .horizontal) {
+            ForEach(Self.quotaBarWidths, id: \.self) { width in
+              quotaBars(snapshot, now: now, barWidth: width)
+            }
+          }
         }
-        .fixedSize(horizontal: true, vertical: false)
-      }
-      .buttonStyle(StatusBarSegmentButtonStyle())
-      .accessibilityElement(children: .ignore)
-      .accessibilityLabel(label)
-      .accessibilityIdentifier("terminal.statusBar.agentUsage")
-      .popover(isPresented: usageDetailPresented, arrowEdge: .bottom) {
-        AgentUsageDetailView(snapshot: snapshot, now: Date())
-          .frame(width: AgentUsageDetailView.popoverWidth)
+        .buttonStyle(StatusBarSegmentButtonStyle())
+        // The percentages left the segment with issue #168, so hover is the only way to read one
+        // without opening the popover.
+        .help(label)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityIdentifier("terminal.statusBar.agentUsage")
+        .popover(isPresented: usageDetailPresented, arrowEdge: .bottom) {
+          AgentUsageDetailView(snapshot: snapshot, now: now)
+            .frame(width: AgentUsageDetailView.popoverWidth)
+        }
       }
     } else {
       let isLoading = agentUsage.loading.contains(backend)
@@ -200,46 +248,48 @@ struct TerminalStatusBar: View {
     }
   }
 
-  /// One concatenated `Text` (not an `HStack` of separate `Text`s, like `quotaCompact` below) because
-  /// the pace figure needs its own color run inline within a window's segment. Shown, and colored,
-  /// only in deficit — under-pace/on-pace is the unremarkable case and stays silent.
-  private func quotaFull(_ snapshot: AgentQuotaSnapshot) -> Text {
-    let now = Date()
-    // A single window needs no "5h"/"wk" prefix to disambiguate from — there's nothing else in the
-    // segment it could be confused with (e.g. Codex, which only ever reports one window).
-    let showsWindowKind = snapshot.windows.count > 1
-    return snapshot.windows.reduce(Text(snapshot.backend.displayName)) { text, window in
-      let used = Int(window.usedPercentage.rounded())
-      let usedText = showsWindowKind ? "\(window.kind.compactLabel) \(used)%" : "\(used)%"
-      var windowText = Text(" · \(usedText)")
-      let pace = window.pace(at: now)
-      if pace.isOver {
-        let paceText = Text(" (\(pace.compactDescription))").foregroundColor(paceColor(pace))
-        windowText = windowText + paceText
-      }
-      return text + windowText
-    }
-  }
-
-  private func quotaCompact(_ snapshot: AgentQuotaSnapshot) -> some View {
-    let showsWindowKind = snapshot.windows.count > 1
-    return HStack(spacing: 5) {
+  /// The agent's logo followed by one bar per window. `barWidth` is the only thing the `ViewThatFits`
+  /// ladder varies between its variants.
+  private func quotaBars(_ snapshot: AgentQuotaSnapshot, now: Date, barWidth: CGFloat) -> some View
+  {
+    HStack(spacing: 8) {
+      agentLogo(snapshot.backend)
       ForEach(snapshot.windows) { window in
-        let used = Int(window.usedPercentage.rounded())
-        Text(showsWindowKind ? "\(window.kind.compactLabel) \(used)%" : "\(used)%")
+        quotaBar(window, now: now, width: barWidth)
       }
     }
   }
 
-  /// Only reached for a window already confirmed `pace.isOver` (in deficit) — a deeper deficit reads
-  /// as failure, a shallower one as warning. Independent of the popover's marker, which only
-  /// distinguishes over/under pace, not degree.
-  private func paceColor(_ pace: AgentPace) -> Color {
-    pace.percentagePoints > 15 ? theme.tokens.failure : theme.tokens.warning
+  private func quotaBar(_ window: AgentQuotaWindow, now: Date, width: CGFloat) -> some View {
+    let pace = window.pace(at: now)
+    return QuotaBar(
+      usedPercentage: window.usedPercentage,
+      markerPercentage: window.sustainablePacePercentage(at: now),
+      fill: QuotaBar.fill(for: pace.severity, theme.tokens), width: width, compact: true)
   }
 
-  private func quotaAccessibilityLabel(_ snapshot: AgentQuotaSnapshot) -> String {
-    let now = Date()
+  /// The agent's brand logo, or its name when no logo is bundled — `ToolLogoRegistry` only vends
+  /// entries whose imageset actually shipped, so this never renders a blank. Same modifiers as the
+  /// tab chip's favicon (`TerminalTabStrip`). No template-tinting risk: neither agent imageset
+  /// declares `template-rendering-intent`, so this bar's ambient `foregroundStyle` leaves the brand
+  /// colour alone.
+  @ViewBuilder private func agentLogo(_ backend: AgentBackend) -> some View {
+    if let tool = Self.logoTools[backend] {
+      Image(ToolLogoRegistry.assetName(for: tool.id))
+        .resizable()
+        .aspectRatio(contentMode: .fit)
+        .frame(width: 12, height: 12)
+        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+        .accessibilityHidden(true)
+    } else {
+      Text(backend.displayName)
+    }
+  }
+
+  /// Takes `now` from the segment's `TimelineView` rather than reading its own clock, so the tooltip
+  /// and the VoiceOver label describe the same instant the pace pins are drawn for. The FORMAT is
+  /// load-bearing: every `AgentUsageUITests` assertion reads this string.
+  private func quotaAccessibilityLabel(_ snapshot: AgentQuotaSnapshot, now: Date) -> String {
     let windows = snapshot.windows.map { window in
       let used = Int(window.usedPercentage.rounded())
       let pace = used == 0 ? "" : ", \(window.pace(at: now).accessibilityDescription)"

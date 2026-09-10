@@ -2033,6 +2033,90 @@ pane floor (`TerminalSessions.fits` returns `true` when there's no surface), whi
 
 **Priority:** P3 (degraded legibility in a narrow split; no data loss, no wrong information).
 
+### Agent-usage bar visuals are manual-verify only (macapp) — #168 follow-up
+
+**What:** Issue #168 replaced the pane footer's quota text with a logo plus one bar per quota window.
+Several things about that segment are **eyeball-only**, exactly like the path-truncation entry above: the
+brand logo rendering at all, the two bar fills (`accent` / `warning` / `failure` by
+`AgentPace.severity`), the two pace-pin positions, and the pin's knockout gap reading as a gap on
+whatever ground it lands on.
+
+NOT in this list any more: which `ViewThatFits` bar-width rung rendered. That one IS machine-checkable
+after all — XCUITest reads element frames, and `testNarrowSplitKeepsBothWindowsAndShrinksTheBars`
+now asserts the segment shrinks on a split (116pt → 92pt under the fixture window) and stays inside
+its window. That guards the dead-ladder regression; the rest of the list genuinely has no mechanism.
+
+**Why it's open:** same root cause as `#136`'s path truncation, one entry above. The unit gate can't
+assert SwiftUI text at all (`NSHostingView` in a test process reports an `AXGroup` with 0 children —
+documented at `macapp/WorkroomAppTests/HistoryCommitCardTests.swift:9-13`), and XCUITest reads the
+accessibility *label*, which `TerminalStatusBar.quotaAccessibilityLabel` keeps byte-identical to what
+it was before the bars existed — so `AgentUsageUITests` passes whichever variant rendered, and would
+pass if the segment drew nothing. `testNarrowSplitKeepsBothWindows` is named to say so.
+
+Verified by eye on 2026-09-10 at the 44pt and 32pt rungs, dark and light: logo in brand colour,
+amber 5h + red weekly, track visible on both grounds, halo notching both fills. 24pt was checked at
+an earlier 4pt halo and was the reason the compact halo came down to 2.5pt — the 4pt version
+swallowed the whole fill-to-pin gap. Re-check 24pt if the halo or the widths move again.
+
+**How to check it:** `make app-run`, then relaunch with
+`-WorkroomUITestFixture 1 -WorkroomUITestUsageAgent codex`. The fixture is tuned for this
+(`UITestFixture.swift`): the 5h window is 42% used resetting in 3.5h ⇒ pace +12 ⇒ amber `.warning`
+with a ~12-point gap between the fill's edge and the pin; weekly is 61% used resetting in 4d ⇒ pace
++18 ⇒ red `.critical`. Add `-WorkroomUITestUsageZero 1` for the plain-`accent` `.onPace` case. Split
+a pane once for the 32pt variant, three times for 24pt. Check a light AND a dark theme: the track is
+`theme.tokens.border` on the footer's `panel`.
+
+On the colour encoding, measured across all 116 bundled themes (CIELAB ΔE plus deutan/protan/tritan
+simulation) during the #168 review, so nobody re-derives it: **on-pace vs deficit is fine** —
+`accent` (palette[4]) vs `warning` (palette[3]) are adjacent by ANSI INDEX but they are blue vs
+yellow, the one pair that survives every colour-vision deficiency, holding ΔE ≥ 12 in 114 of 116
+themes under normal vision and all three CVD simulations. Two real limits remain: `warning` vs
+`critical` (yellow vs red) collapses below ΔE 12 in 52 of 116 themes under tritanopia and 12 of 116
+under deuteranopia — low stakes, both bands mean "in deficit" and the action is identical, but do
+not add a fourth band on top of it; and `Sequoia Monochrome Light`/`Dark` defeat all three fills for
+everyone (ΔE 3.4–6.7), which is inherent to a deliberately achromatic theme where every other
+colour-coded semantic collapses too.
+
+Do NOT try to guard this with `ThemeTokens.contrastRatio` — that is a WCAG luminance ratio, not a
+hue-distinguishability metric, and it reads below its 3.0 floor for `accent` vs `failure` in 116 of
+116 themes while those two have a median ΔE of 51.6. A `legible(...)`-style nudge driven by it would
+fire on every theme and drag each palette toward `fg`, which is exactly the mistake the note at
+`ThemeTokens.swift:213` already records. A real guard needs Lab ΔE, and for two achromatic themes it
+is not worth the code.
+
+**Depends on:** nothing. Subsumed entirely by the image-snapshot evaluation in "P3 — Tests and
+tooling" if that ever lands.
+
+**Priority:** P3 (no data loss; the accessibility label and the popover still carry the numbers).
+
+### One vocabulary for quota window names (macapp) — #168 follow-up
+
+**What:** Decide whether the footer and its popover should name the same two quota windows the same
+way, or keep two vocabularies on purpose.
+
+**Why:** `AgentQuotaWindowKind.compactLabel` (`Core/AgentUsage.swift`) says `5h` / `wk`;
+`AgentUsageDetailView.title(for:)` says `Session` / `Weekly`. Same windows, two vocabularies.
+
+Note the #168 footer does NOT show `compactLabel` on screen — the bars are unlabelled, identified by
+order and by the tooltip. So the visible collision is narrower than it first looks: it is the
+segment's TOOLTIP and accessibility label ("5h quota 42% used…") against the popover rows they sit
+directly above ("Session 42% used"). Still two names for one window in two adjacent surfaces, just
+not two names drawn side by side.
+
+**Pros:** one name per concept. **Cons:** both choices are deliberate — the compact labels exist
+because the footer's tooltip and accessibility label are read in a narrow strip, and the prose titles
+exist because the popover has room and reads better in sentences. "Unify" probably means
+picking which surface gets the worse name.
+
+**Context for whoever picks this up:** two wrinkles make it more than a rename. `compactLabel` also
+feeds `quotaAccessibilityLabel`, which all of `AgentUsageUITests` asserts on — changing it
+re-baselines seven tests. And the `.duration(minutes:)` case GENERATES its label (`3d`, `12h`,
+`45m`), so a prose vocabulary needs a generated-name rule, not just two more constants.
+
+**Depends on:** nothing. It's a naming/design call, not an engineering one.
+
+**Priority:** P3 (cosmetic inconsistency, visible only when the popover is open).
+
 ### AppKit tracking-handle divider for an even wider resize target (macapp) — #83 follow-up
 
 **What:** Replace the SwiftUI invisible-`Rectangle` resize divider (`SplitDivider` in
@@ -2758,6 +2842,35 @@ logic wasn't reviewed against this change.
 **Priority:** done.
 
 ## P3 — Tests and tooling
+
+### Evaluate image-snapshot testing for SwiftUI chrome (macapp)
+
+**What:** Try ONE narrowly-scoped image-snapshot test and see whether it survives a month, rather
+than committing to a suite.
+
+**Why:** macapp has a structural blind spot and it now has three TODOS entries sharing one root
+cause, not three unlucky features. Unit tests cannot assert SwiftUI text — macOS only materializes
+a11y elements for a live AX client, so an `NSHostingView` in a test process reports an `AXGroup` with
+0 children (`WorkroomAppTests/HistoryCommitCardTests.swift:9-13`). XCUITest reads the accessibility
+label, which carries the full string regardless of what is drawn. So `#136`'s path truncation is
+eyeball-only, and `#168` added more eyeball-only visuals in the same footer. Snapshots are the
+only mechanism that would catch any of them, and they'd cover future pane chrome retroactively.
+
+**Cons, stated up front because they're the reason this is an evaluation and not a task:** the
+existing `#136` entry already names the killer objection — snapshots "would churn on every theme and
+font change" — and this app ships 56 themes. A naive full-window suite would be permanently red.
+
+**How to start:** snapshot ONE component under ONE pinned theme and ONE pinned font, and leave it a
+month before adding a second. The hard part is already solved: `UITestFixture.usageSnapshot` is a
+deterministic model-only fixture with four launch flags, so there's a stable subject to shoot. Open
+questions are scope (single component vs whole window), how many themes, and whether
+`swift-snapshot-testing` earns a new SPM dependency in a project that has none for testing.
+
+**Depends on:** nothing. Subsumes the `#136` path-truncation entry and the `#168` agent-usage-bar
+entry, both in "P3 — Terminal, panes, and focus".
+
+**Priority:** P3 (nothing is broken today; this buys the ability to notice when it breaks).
+
 
 ### Onboarding wizard's failed-add step has no test coverage (macapp) — filed 2026-08-19, issue #151
 

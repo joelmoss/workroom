@@ -45,10 +45,24 @@ final class AgentUsageTests: XCTestCase {
       window.pace(at: now.addingTimeInterval(-100)).percentagePoints, 40, accuracy: 0.001)
   }
 
+  /// The pace pin's position, hoisted out of two view methods that each carried this expression
+  /// verbatim while claiming to avoid a second copy of it.
+  func testSustainablePacePercentageTracksElapsedTime() {
+    let window = AgentQuotaWindow(
+      kind: .fiveHour, usedPercentage: 42, duration: 300,
+      resetsAt: now.addingTimeInterval(150))
+    // Half the window elapsed ⇒ the pin sits at 50%, wherever usage happens to be.
+    XCTAssertEqual(window.sustainablePacePercentage(at: now), 50, accuracy: 0.001)
+    XCTAssertEqual(window.sustainablePacePercentage(at: window.resetsAt), 100, accuracy: 0.001)
+    // Before the window opened, and long past its reset: both ends stay on the track.
+    XCTAssertEqual(
+      window.sustainablePacePercentage(at: now.addingTimeInterval(-1000)), 0, accuracy: 0.001)
+    XCTAssertEqual(
+      window.sustainablePacePercentage(at: window.resetsAt.addingTimeInterval(9999)), 100,
+      accuracy: 0.001)
+  }
+
   func testPaceDescriptionsAndPercentageClamping() {
-    XCTAssertEqual(AgentPace(percentagePoints: 6.4).compactDescription, "+6%")
-    XCTAssertEqual(AgentPace(percentagePoints: -3.2).compactDescription, "−3%")
-    XCTAssertEqual(AgentPace(percentagePoints: 0.2).compactDescription, "0%")
     XCTAssertEqual(
       AgentPace(percentagePoints: 6.4).accessibilityDescription, "6% in deficit")
     XCTAssertEqual(AgentPace(percentagePoints: -3.2).accessibilityDescription, "3% in reserve")
@@ -58,6 +72,37 @@ final class AgentUsageTests: XCTestCase {
     XCTAssertEqual(
       AgentQuotaWindow(kind: .weekly, usedPercentage: -4, duration: 10, resetsAt: now)
         .usedPercentage, 0)
+  }
+
+  /// The bar-fill severity bands (issue #168). Pinned here rather than left in the view that draws
+  /// them: this rule used to be a bare `> 15` inside a PRIVATE method of `TerminalStatusBar`, which
+  /// no test could reach. The boundary compares `roundedPoints`, so a raw 15.4 — which both
+  /// remaining numeric surfaces describe as "15% in deficit" — stays `.warning` rather than
+  /// colouring as critical.
+  func testPaceSeverityThresholds() {
+    XCTAssertEqual(AgentPace(percentagePoints: -20).severity, .onPace)
+    XCTAssertEqual(AgentPace(percentagePoints: 0).severity, .onPace)
+    // Rounds to 0 ⇒ not over pace at all, matching `isOver`.
+    XCTAssertEqual(AgentPace(percentagePoints: 0.4).severity, .onPace)
+    XCTAssertEqual(AgentPace(percentagePoints: 1).severity, .warning)
+    XCTAssertEqual(AgentPace(percentagePoints: 15).severity, .warning)
+    XCTAssertEqual(AgentPace(percentagePoints: 15.4).severity, .warning)
+    XCTAssertEqual(
+      AgentPace(percentagePoints: 15.4).accessibilityDescription, "15% in deficit")
+    // 15.6 rounds to 16, so it crosses on the value the user is shown, not on the raw double.
+    XCTAssertEqual(AgentPace(percentagePoints: 15.6).severity, .critical)
+    XCTAssertEqual(AgentPace(percentagePoints: 16).severity, .critical)
+    XCTAssertEqual(AgentPace(percentagePoints: 90).severity, .critical)
+  }
+
+  /// `QuotaBar.fill(for:_:)` is the only thing carrying severity in the footer now that the pace
+  /// text is gone, so swapping two arms of its switch would ship green. Modelled on
+  /// `ChangeBadgeTests`, which exists because a colour switch drifted once before.
+  @MainActor func testQuotaBarFillMapsEachSeverityToItsOwnToken() {
+    let tokens = ThemeService.shared.tokens
+    XCTAssertEqual(QuotaBar.fill(for: .onPace, tokens), tokens.accent)
+    XCTAssertEqual(QuotaBar.fill(for: .warning, tokens), tokens.warning)
+    XCTAssertEqual(QuotaBar.fill(for: .critical, tokens), tokens.failure)
   }
 
   func testRelativeResetDescriptionCapsAtTwoUnits() {
