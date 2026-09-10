@@ -221,13 +221,27 @@ struct WorkroomTabBar: View {
     .onPreferenceChange(WorkroomTabWidthKey.self) { drag.setWidths($0) }
   }
 
-  /// The in-progress create whose chip isn't yet a real tab (issue #116): shown as a provisional
-  /// "Creating…" chip until its named chip resolves into `tabs` (which happens once the CLI reports
-  /// the workroom and the reload lands it in `projects`). nil otherwise — no double chip.
+  /// The in-progress create whose chip isn't yet a real tab (issue #116): the pre-name slot, else a
+  /// LANDED create whose named chip hasn't resolved into `tabs`. nil otherwise — no double chip.
+  ///
+  /// That second clause is not just the landing blink it looks like. `apply` assigns `projects =
+  /// fresh` with no ordering guard, so an out-of-order `list` — four are in flight when two creates
+  /// overlap — can revert `projects` to a snapshot predating a landed workroom. `validatedSelection`
+  /// then nils the selection, `focusedCreation` goes nil with it, and a workroom whose setup script
+  /// is still running would otherwise have NO chip and NO dialog until some unrelated reload
+  /// repaired it. This chip is the way back in. (Dropping the stale `apply` at the source is the
+  /// root-cause fix and belongs to the reload path, not here.)
+  ///
+  /// The pre-name slot wins, matching `focusedCreation`. Sorted so two unresolved creates pick the
+  /// same one every render rather than flickering between them.
   private var provisionalCreation: WorkroomCreation? {
-    guard let creation = store.creation else { return nil }
-    if let tid = creation.targetID, tabs.contains(where: { $0.target.id == tid }) { return nil }
-    return creation
+    if let pending = store.pendingCreation { return pending }
+    return store.creations.values
+      .sorted { ($0.targetID ?? "") < ($1.targetID ?? "") }
+      .first { creation in
+        guard let tid = creation.targetID else { return false }
+        return !tabs.contains { $0.target.id == tid }
+      }
   }
 
   /// Whether to draw a hairline on the leading edge of tab `index`. Every tab gets a leading divider

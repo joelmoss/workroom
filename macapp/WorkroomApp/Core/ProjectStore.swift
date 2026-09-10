@@ -51,14 +51,27 @@ final class ProjectStore: ObservableObject {
   /// production never reassigns it.
   var vcsToolVersionCache = VCSToolVersionCache()
 
-  /// Project paths with an in-flight create/delete (for per-row progress + disabling).
-  @Published var busyProjects: Set<String> = []
+  /// How many creates are in flight against each project path (for the sidebar row's spinner +
+  /// disabling). Counted rather than a `Set` for the reason `committingProjectRoots` is: two creates
+  /// in one project are a normal action, and the first to finish must not clear the other's spinner.
+  @Published var busyProjects: [String: Int] = [:]
 
   /// Target ids of workrooms whose create is still in flight — from the "created" event until the
   /// create flow ends (issue #116). A workroom here must not be deleted: its setup script is running
   /// against the worktree. Shared across windows so a delete from ANY window is blocked, not just the
   /// creating one.
   @Published var creatingWorkrooms: Set<TerminalTarget.ID> = []
+
+  /// The subset of `creatingWorkrooms` that is running an actual SETUP SCRIPT — the ones whose
+  /// terminal must stay withheld, not merely undeletable (issue #167).
+  ///
+  /// Shared for the reason `creatingWorkrooms` is, and it has to be: `AppStore.creations` is per
+  /// WINDOW, so window 1 starting a create publishes the new workroom through THIS shared store,
+  /// window 2's sidebar shows it, and clicking it there mounted a login shell cwd'd into the worktree
+  /// the setup script was still writing. The withholding belongs to the operation, and the operation
+  /// outlives any one window's dialog. Held separately from `creatingWorkrooms` because that set also
+  /// covers no-setup creates, which must never withhold — their terminal is the point.
+  @Published var settingUpWorkrooms: Set<TerminalTarget.ID> = []
 
   /// Sidebar rows with a commit in flight, for the per-row button state.
   ///

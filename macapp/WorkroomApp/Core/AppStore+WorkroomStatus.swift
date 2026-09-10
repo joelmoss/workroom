@@ -122,6 +122,28 @@ extension AppStore {
     githubCLIStatus = status
   }
 
+  /// Probe ONE workroom's local status now, whatever is selected (issue #167). The post-create
+  /// refresh needs this: `scheduleSelectedStatusRefresh` below reads `selectedTargetID`, and when two
+  /// creates overlap the second owns the selection by the time the first finishes — so the finished
+  /// workroom got no probe at all, and since its own final `reload()` also skipped it (the create
+  /// guard was still set), its dirty dot kept reading its pre-setup value until the user happened to
+  /// select it. Local only: the watcher and the CI/PR probes stay selection-scoped, which is correct.
+  ///
+  /// Undebounced and untracked by `selectionStatusTask` on purpose — it fires once per create, and
+  /// sharing that task handle would let a landing cancel a pending selection probe.
+  func refreshLocalStatus(for sid: SidebarID) {
+    if UITestFixture.isActive { return }
+    guard let item = selectedStatusWorkItem(for: sid) else { return }
+    // Same two suppressions the selection path applies — another create/commit may still be writing.
+    if isCreating(sid) || isCommittingProject(item.projectRoot) { return }
+    let resolver = statusResolver
+    Task { [weak self] in
+      let fresh = await resolver.resolveLocal(
+        path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
+      self?.mergeLocalStatus(fresh, into: sid)
+    }
+  }
+
   /// Freshen just the selected workroom (local + CI, forced), debounced so arrow-key cycling
   /// through rows doesn't fork a probe per row. Cancels the prior pending refresh.
   func scheduleSelectedStatusRefresh() {

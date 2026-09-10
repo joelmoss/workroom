@@ -233,7 +233,7 @@ struct ProjectSidebar: View {
       // Both buttons stay laid out while a workroom is being created so the row size never shifts
       // (issue #51) — the create spinner overlays the new-workroom button (which it replaces) rather
       // than swapping the buttons out for a smaller ProgressView.
-      let busy = store.busyProjects.contains(project.path)
+      let busy = store.isBusyProject(project.path)
       // Project settings (run command, etc.), revealed on hover to the left of the new-workroom
       // button (issue #7). Laid out always (opacity-gated) so the row size is stable. Hidden while
       // busy so the spinner reads as the sole active control.
@@ -263,6 +263,11 @@ struct ProjectSidebar: View {
       } label: {
         Label("New Workroom", systemImage: "plus")
       }
+      // Disabled while a create is in flight, matching the row's own "+" button above (issue #167) —
+      // ungated, this menu item was one right-click away from N concurrent pre-name creates, only one
+      // of which can own the loader slot. Re-read here rather than reusing the `busy` above: that one
+      // is scoped to the row's own `HStack` builder.
+      .disabled(store.isBusyProject(project.path))
       Divider()
       Button {
         store.pendingProjectSettings = PendingProjectSettings(project: project)
