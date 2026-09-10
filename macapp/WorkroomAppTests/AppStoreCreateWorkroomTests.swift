@@ -916,7 +916,11 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     let (proj, root, _) = makeRealProject(workroom: "wr")
     defer { try? FileManager.default.removeItem(atPath: root) }
     let store = makeStore(FakeWorkroomCLI(canonical: root, projects: [proj]))
-    await store.reload()
+    // Seeded directly rather than via `reload()`: that forks the status SWEEP, which probes this same
+    // row on its own lane and — having no freshness guard of its own — can land `.notRepository` over
+    // the newer value staged below. On CI it did exactly that. This test is about ONE lane, so it
+    // must be the only lane running.
+    store.projects = [proj]
     let sid = SidebarID.workroom(project: root, name: "wr")
 
     // Positive control first: with nothing newer recorded, the probe DOES merge. `makeRealProject`
