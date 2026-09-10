@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
+	"syscall"
 
 	"github.com/joelmoss/workroom/internal/errs"
 )
@@ -31,6 +33,13 @@ func Run(scriptType, scriptPath, workroomDir, name, rootPath string, stream io.W
 	}
 
 	cmd := exec.Command(scriptPath)
+	// Give the script its own process group so it can be killed as a TREE. A setup script is
+	// typically a shell that forks further (npm, bundle, cargo); killing only the script's own pid
+	// leaves those grandchildren writing the worktree. The macOS app relies on this: its CLI call has
+	// a timeout, and on expiry it terminates THIS process — after which it treats the worktree as
+	// settled and re-allows deletion. Without the group, a quiet installer outlived that and kept
+	// writing files a teardown was already removing.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Dir = workroomDir
 	cmd.Env = append(os.Environ(),
 		"WORKROOM_NAME="+name,
@@ -48,7 +57,36 @@ func Run(scriptType, scriptPath, workroomDir, name, rootPath string, stream io.W
 	cmd.Stdout = sink
 	cmd.Stderr = sink
 
-	err := cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+	// Take the script's whole process group down with us when we're terminated. `Setpgid` above only
+	// makes the tree killable; nothing kills it unless we ask, and the default SIGTERM disposition
+	// exits this process immediately — orphaning the group to keep writing. Installed only for the
+	// script's lifetime, and stopped in every exit path so a long-lived caller keeps its own default
+	// handling. SIGKILL cannot be caught, which is why the app's timeout sends SIGTERM first.
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	done := make(chan struct{})
+	go func() {
+		select {
+		case sig := <-sigs:
+			if cmd.Process != nil {
+				// Negative pid = the whole group. Best-effort: the group may already be gone.
+				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+			}
+			signal.Stop(sigs)
+			// Re-raise so the caller's own exit status still reflects the signal it was sent.
+			if s, ok := sig.(syscall.Signal); ok {
+				_ = syscall.Kill(os.Getpid(), s)
+			}
+		case <-done:
+		}
+	}()
+
+	err := cmd.Wait()
+	close(done)
+	signal.Stop(sigs)
 	output := buf.String()
 
 	if err != nil {
