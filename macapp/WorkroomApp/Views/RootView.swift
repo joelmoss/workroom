@@ -643,7 +643,7 @@ struct RootView: View {
 
   @ViewBuilder
   private var detailContent: some View {
-    if store.isCreationFocused, let creation = store.creation {
+    if let creation = store.focusedCreation {
       // The creating slot owns the detail (issue #116): a loader through the pre-name phase (and all
       // the way to the terminal for a no-setup workroom), swapped for the streaming setup dialog once
       // a setup script starts. Scoped to this focused slot — selecting another workroom shows it.
@@ -706,11 +706,11 @@ struct RootView: View {
 
   /// The creating slot's detail (issue #116): a centered loader until a setup script's dialog is ready,
   /// then the streaming setup dialog. A workroom with no setup script never reaches the dialog — the
-  /// loader shows until the create completes (which clears `store.creation`) and the terminal mounts.
+  /// loader shows until the create completes (which clears its `creations` entry) and the terminal mounts.
   @ViewBuilder
   private func creationDetail(_ creation: WorkroomCreation) -> some View {
-    if creation.targetID != nil, creation.hasSetup {
-      SetupOverlay(session: creation.session) { store.dismissCreation() }
+    if let id = creation.targetID, creation.hasSetup {
+      SetupOverlay(session: creation.session) { store.dismissCreation(id) }
     } else {
       CreationLoader()
     }

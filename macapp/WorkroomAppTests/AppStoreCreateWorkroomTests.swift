@@ -55,12 +55,127 @@ private final class CreatingFakeCLI: WorkroomCLIProtocol {
     // Returns IMMEDIATELY after the ready event — the worst case for the create flow, and the whole
     // point of this fake. There used to be a 40ms sleep here "to let the main-queue onReady work
     // settle", which papered over a real ordering hazard: the landing is async, so a create whose
-    // ready→exit gap is short read `creation?.targetID == nil`, re-landed with `setup: false` and
+    // ready→exit gap is short saw no landing yet, re-landed with `setup: false` and
     // cleared the dialog. 40ms only made that rare (it still flaked ~1 run in 6). `createWorkroom`
     // now awaits the landing, so no sleep is needed and this gap is a deterministic assertion.
     if failAfterReady { throw WorkroomCLIError.timedOut }
     return CreateResponse(
       name: workroomName, path: workroomAbsPath, vcs: "git", project: project)
+  }
+
+  func delete(name: String, project: String, onLog: ((String) -> Void)?) async throws {}
+
+  func deleteProject(
+    _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: ((String) -> Void)?
+  ) async throws -> [URL] { [] }
+}
+
+/// A fake CLI that lets a test control the INTERLEAVING of two real `createWorkroom` calls (issue
+/// #167). `create` hands out the next name in `names`, and suspends on a continuation — either just
+/// before it fires `onReady` (`.beforeReady`, so the create stays in its pre-name phase) or just
+/// after (`.afterReady`, so the workroom exists and its setup script is "running") — until the test
+/// calls `release(name)`. That's what makes two creates genuinely overlap inside their own real
+/// `createWorkroom` bodies, which is where every defect in #167 lived; hand-assigning store state and
+/// calling `landOnCreatedWorkroom` proves an isolated guard and nothing about the flow.
+///
+/// `list` reports every workroom that has fired `onReady` so far, so each landing's reload resolves.
+private final class GatedFakeCLI: WorkroomCLIProtocol, @unchecked Sendable {
+  enum Gate {
+    case beforeReady
+    case afterReady
+  }
+
+  let projectPath: String
+  let hasSetup: Bool
+  let gate: Gate
+  /// Names whose `create` throws once released — a setup script that failed after the workroom existed.
+  let failing: Set<String>
+  private let names: [String]
+  private let lock = NSLock()
+  private var callIndex = 0
+  private var ready: [String] = []
+  private var waiting: [String: CheckedContinuation<Void, Never>] = [:]
+  private var released: Set<String> = []
+
+  init(
+    projectPath: String, names: [String], hasSetup: Bool, gate: Gate = .afterReady,
+    failing: Set<String> = []
+  ) {
+    self.projectPath = projectPath
+    self.names = names
+    self.hasSetup = hasSetup
+    self.gate = gate
+    self.failing = failing
+  }
+
+  /// Let the named create past its gate (idempotent, and safe to call before it reaches the gate).
+  func release(_ name: String) {
+    lock.lock()
+    released.insert(name)
+    let pending = waiting.removeValue(forKey: name)
+    lock.unlock()
+    pending?.resume()
+  }
+
+  /// How many creates have taken a name. `create` is nonisolated, so two `createWorkroom` tasks
+  /// reach it in whatever order the executor picks — a test that needs task A to own `names[0]` must
+  /// wait for this to reach 1 before starting B, or A and B can swap gates and the test deadlocks.
+  var assignedCount: Int {
+    lock.lock()
+    defer { lock.unlock() }
+    return callIndex
+  }
+
+  private func path(_ name: String) -> String { "\(projectPath)/.workrooms/\(name)" }
+
+  private func hold(_ name: String) async {
+    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+      lock.lock()
+      if released.contains(name) {
+        lock.unlock()
+        continuation.resume()
+        return
+      }
+      waiting[name] = continuation
+      lock.unlock()
+    }
+  }
+
+  func list(warnings: String, project: String?) async throws -> ListResponse {
+    lock.lock()
+    let names = ready
+    lock.unlock()
+    return ListResponse(
+      projects: [
+        Project(
+          path: projectPath, vcs: "git",
+          workrooms: names.map {
+            Workroom(name: $0, path: path($0), vcsName: "git", warnings: [])
+          })
+      ],
+      workroomsDir: nil, configPath: nil)
+  }
+
+  func addProject(_ path: String, create: Bool) async throws -> String { projectPath }
+
+  func create(
+    project: String,
+    onLog: ((String) -> Void)?,
+    onReady: ((String, String, Bool) -> Void)?
+  ) async throws -> CreateResponse {
+    lock.lock()
+    let name = names[min(callIndex, names.count - 1)]
+    callIndex += 1
+    lock.unlock()
+
+    if gate == .beforeReady { await hold(name) }
+    lock.lock()
+    ready.append(name)
+    lock.unlock()
+    onReady?(name, path(name), hasSetup)
+    if gate == .afterReady { await hold(name) }
+    if failing.contains(name) { throw WorkroomCLIError.timedOut }
+    return CreateResponse(name: name, path: path(name), vcs: "git", project: project)
   }
 
   func delete(name: String, project: String, onLog: ((String) -> Void)?) async throws {}
@@ -120,7 +235,8 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
   // MARK: - Async create flow
 
   /// With NO setup script there's no dialog — just the loader — and the create clears itself when it
-  /// completes: `creation` ends nil and the new workroom is selected so its terminal drops in (#116).
+  /// completes: no `creations` entry survives, `pendingCreation` clears, and the new workroom is
+  /// selected so its terminal drops in (#116).
   func testNoSetupCreateClearsAndSelects() async {
     let fake = CreatingFakeCLI(
       projectPath: projectPath, workroomName: "calm-otter", hasSetup: false)
@@ -128,7 +244,8 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
 
     await store.createWorkroom(in: Project(path: projectPath, vcs: "git", workrooms: []))
 
-    XCTAssertNil(store.creation, "a no-setup create must clear itself when done")
+    XCTAssertTrue(store.creations.isEmpty, "a no-setup create must clear itself when done")
+    XCTAssertNil(store.pendingCreation)
     XCTAssertEqual(store.selectedTargetID, .workroom(project: projectPath, name: "calm-otter"))
     XCTAssertFalse(store.isCreationFocused)
     XCTAssertTrue(store.creatingWorkrooms.isEmpty, "the create guard lifts when done (issue #116)")
@@ -145,20 +262,21 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     await store.createWorkroom(in: Project(path: projectPath, vcs: "git", workrooms: []))
 
     let wrID = TerminalTarget.workroomID(project: projectPath, name: "brave-fox")
-    XCTAssertNotNil(store.creation, "a setup create must keep the dialog up until dismissed")
-    XCTAssertEqual(store.creation?.hasSetup, true)
-    XCTAssertEqual(store.creation?.targetID, wrID)
+    XCTAssertNotNil(store.creations[wrID], "a setup create must keep the dialog up until dismissed")
+    XCTAssertEqual(store.creations[wrID]?.hasSetup, true)
+    XCTAssertEqual(store.creations[wrID]?.targetID, wrID)
+    XCTAssertNil(store.pendingCreation, "the pre-name slot clears once the create ends")
     XCTAssertTrue(store.isCreationBlocking(wrID), "the terminal must stay withheld during setup")
     XCTAssertTrue(store.isCreationFocused, "the new workroom's slot owns the detail")
     XCTAssertEqual(store.selectedTargetID, .workroom(project: projectPath, name: "brave-fox"))
-    XCTAssertEqual(store.creation?.session.isFinished, true)
-    XCTAssertNil(store.creation?.session.failureMessage)
+    XCTAssertEqual(store.creations[wrID]?.session.isFinished, true)
+    XCTAssertNil(store.creations[wrID]?.session.failureMessage)
     XCTAssertTrue(
       store.creatingWorkrooms.isEmpty, "setup finished → the workroom is deletable again (#116)")
 
     // Dismissing clears the dialog (which lets the withheld terminal mount).
-    store.dismissCreation()
-    XCTAssertNil(store.creation)
+    store.dismissCreation(wrID)
+    XCTAssertTrue(store.creations.isEmpty)
     XCTAssertFalse(store.isCreationBlocking(wrID))
     XCTAssertFalse(store.isCreationFocused)
   }
@@ -174,11 +292,13 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     await store.createWorkroom(in: Project(path: projectPath, vcs: "git", workrooms: []))
 
     let wrID = TerminalTarget.workroomID(project: projectPath, name: "lost-cat")
-    XCTAssertNotNil(store.creation, "a failed setup must keep the dialog up")
-    XCTAssertEqual(store.creation?.hasSetup, true)
+    XCTAssertNotNil(store.creations[wrID], "a failed setup must keep the dialog up")
+    XCTAssertEqual(store.creations[wrID]?.hasSetup, true)
     XCTAssertTrue(store.isCreationBlocking(wrID))
     XCTAssertNotNil(
-      store.creation?.session.failureMessage, "the failure must be shown in the dialog")
+      store.creations[wrID]?.session.failureMessage, "the failure must be shown in the dialog")
+    XCTAssertTrue(
+      store.creatingWorkrooms.isEmpty, "a failed setup releases its own deletion protection")
   }
 
   // MARK: - Synchronous state semantics
@@ -193,11 +313,11 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
 
     XCTAssertFalse(store.isCreationBlocking(wrID), "no creation → never blocking")
 
-    store.creation = WorkroomCreation(
+    store.creations[wrID] = WorkroomCreation(
       session: session, project: proj, name: "wr", targetID: wrID, hasSetup: false)
     XCTAssertFalse(store.isCreationBlocking(wrID), "a no-setup create never blocks")
 
-    store.creation = WorkroomCreation(
+    store.creations[wrID] = WorkroomCreation(
       session: session, project: proj, name: "wr", targetID: wrID, hasSetup: true)
     XCTAssertTrue(store.isCreationBlocking(wrID))
     XCTAssertFalse(
@@ -214,13 +334,14 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     let proj = Project(path: projectPath, vcs: "git", workrooms: [])
 
     // Pre-name: the loader owns the detail regardless of any prior selection.
-    store.creation = WorkroomCreation(session: session, project: proj)
+    store.pendingCreation = WorkroomCreation(session: session, project: proj)
     store.selectedTargetID = .root(project: projectPath)
     XCTAssertTrue(store.isCreationFocused, "pre-name the loader owns the detail")
 
     // Named: focused only when the new workroom's own tab is selected.
+    store.pendingCreation = nil
     let wrID = TerminalTarget.workroomID(project: projectPath, name: "wr")
-    store.creation = WorkroomCreation(
+    store.creations[wrID] = WorkroomCreation(
       session: session, project: proj, name: "wr", targetID: wrID, hasSetup: true)
     store.selectedTargetID = .root(project: projectPath)
     XCTAssertFalse(store.isCreationFocused, "another workroom stays visible while setup runs")
@@ -240,14 +361,14 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
       store.orderedWorkroomTargets().contains { $0.target.id == wrID },
       "no tab before creation (the workroom has no live terminal)")
 
-    store.creation = WorkroomCreation(
+    store.creations[wrID] = WorkroomCreation(
       session: ScriptLogSession(title: "t", phase: "setup"),
       project: project(withWorkroom: "tab-wr"), name: "tab-wr", targetID: wrID, hasSetup: true)
     XCTAssertTrue(
       store.orderedWorkroomTargets().contains { $0.target.id == wrID },
       "the creation target must show as a tab during setup")
 
-    store.dismissCreation()
+    store.dismissCreation(wrID)
     XCTAssertFalse(
       store.orderedWorkroomTargets().contains { $0.target.id == wrID },
       "the tab falls back to terminal-presence once the dialog is dismissed")
@@ -316,19 +437,23 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
       "once setup completes the worktree must be probed again")
   }
 
-  /// A late `onReady` echo lands in `landOnCreatedWorkroom` with `creation == nil`. The early
-  /// `creatingWorkrooms.insert` MUST be undone on that bail, or the workroom is permanently
-  /// suppressed (its dirty dot / Changes panel never updates again). Reachable only by calling the
-  /// method directly — `onReady` is non-escaping, so a fake CLI can't reproduce the timing.
-  func testLateEchoLandingRemovesCreatingFlag() async {
+  /// A landing that arrives after its create has ended (a late `onReady` echo) must record NOTHING:
+  /// its create's release points have already run, so a `creatingWorkrooms` insert here would strand
+  /// the workroom undeletable — with its status probes suppressed — until relaunch. Reachable only by
+  /// calling the method directly with a closed box; the real CLI drains stderr before `create`
+  /// returns, so `onReady` can't actually fire this late.
+  func testLandingAfterTheCreateEndedRecordsNothing() async {
     let fake = FakeWorkroomCLI(canonical: projectPath, projects: [project(withWorkroom: "wr")])
     let store = makeStore(fake)
-    store.creation = nil  // the create already finished + cleared creation; this is the late echo
+    let landing = CreationLandingBox()
+    landing.close()  // the create already finished; this is the late echo
     await store.landOnCreatedWorkroom(
-      name: "wr", project: project(withWorkroom: "wr"), setup: false)
+      name: "wr", project: project(withWorkroom: "wr"), setup: false,
+      session: ScriptLogSession(title: "t", phase: "setup"), landing: landing)
     XCTAssertTrue(
       store.creatingWorkrooms.isEmpty,
-      "a late onReady echo (no active creation) must not leave a leaked creating flag")
+      "a landing past the end of its create must not leave a leaked creating flag")
+    XCTAssertTrue(store.creations.isEmpty, "nor a creation entry nobody will clear")
   }
 
   // MARK: - Create as a split (issue #163)
@@ -415,6 +540,324 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     XCTAssertEqual(
       store.workroomSplits.first?.tabIDs, [anchor, created],
       "the split pairs the ORIGINAL anchor, not whatever was selected at landing")
+  }
+
+  // MARK: - Two concurrent creates (issue #167)
+
+  /// Start a gated create and wait until it has landed (its workroom exists and its setup is running).
+  private func startAndLand(
+    _ store: AppStore, _ name: String, project: Project
+  ) async -> Task<Void, Never> {
+    let task = Task { await store.createWorkroom(in: project) }
+    await waitUntil(
+      { store.creations[TerminalTarget.workroomID(project: self.projectPath, name: name)] != nil },
+      "\(name) never landed")
+    return task
+  }
+
+  private var emptyProject: Project { Project(path: projectPath, vcs: "git", workrooms: []) }
+
+  /// DEFECT 1. A create superseded by a second one still releases its OWN deletion protection.
+  /// Before #167 the release was keyed on whoever held the single presentation slot, so B taking the
+  /// slot during A's final `await reload()` skipped A's cleanup — and nothing else ever removed it:
+  /// A stayed undeletable (silently — `deleteWorkroom` just returns), with a permanent sidebar
+  /// spinner and its status probes suppressed, until the app was relaunched.
+  func testASupersededCreateStillReleasesItsOwnDeletionProtection() async {
+    let fake = GatedFakeCLI(projectPath: projectPath, names: ["wr-a", "wr-b"], hasSetup: true)
+    let store = makeStore(fake)
+    let idA = TerminalTarget.workroomID(project: projectPath, name: "wr-a")
+
+    let a = await startAndLand(store, "wr-a", project: emptyProject)
+    let b = await startAndLand(store, "wr-b", project: emptyProject)
+    XCTAssertTrue(store.creatingWorkrooms.contains(idA), "A's setup is still running")
+
+    fake.release("wr-a")
+    await a.value
+    XCTAssertFalse(
+      store.creatingWorkrooms.contains(idA),
+      "A's create ended, so A's deletion protection must lift — even though B owns the newest state"
+    )
+
+    fake.release("wr-b")
+    await b.value
+    XCTAssertTrue(store.creatingWorkrooms.isEmpty)
+  }
+
+  /// DEFECT 2. B's landing is a STALE landing as far as A is concerned. It must not release A's
+  /// deletion protection while A's subprocess is still writing A's worktree — `deleteWorkroom` would
+  /// then run a full teardown (worktree removal included) against a directory a setup script is
+  /// actively writing to.
+  func testAStaleLandingCannotReleaseAnotherCreatesProtection() async {
+    let fake = GatedFakeCLI(projectPath: projectPath, names: ["wr-a", "wr-b"], hasSetup: true)
+    let store = makeStore(fake)
+    let idA = TerminalTarget.workroomID(project: projectPath, name: "wr-a")
+
+    let a = await startAndLand(store, "wr-a", project: emptyProject)
+    let b = await startAndLand(store, "wr-b", project: emptyProject)
+
+    XCTAssertTrue(
+      store.creatingWorkrooms.contains(idA),
+      "B landing must not lift the guard on A, whose subprocess is still running")
+    // The chokepoint itself: a delete of A is refused outright while that holds.
+    let projectNow = store.projects.first { $0.path == projectPath }
+    let workroomA = projectNow?.workrooms.first { $0.name == "wr-a" }
+    XCTAssertNotNil(workroomA)
+    store.deleteWorkroom(workroomA!, in: projectNow!)
+    XCTAssertTrue(
+      store.projects.first { $0.path == projectPath }?.workrooms.contains { $0.name == "wr-a" }
+        ?? false,
+      "a workroom mid-setup must not be torn down")
+
+    fake.release("wr-a")
+    fake.release("wr-b")
+    await a.value
+    await b.value
+  }
+
+  /// DEFECT 3. Terminal withholding and the armed auto-run follow the WORKROOM, not the presentation
+  /// slot. Before #167, B taking the slot made `isCreationBlocking(A)` false: A's pane mounted, its
+  /// `.task` ran `ensureInitialTerminal`, and the auto-run armed by A's own landing fired the project
+  /// command into a half-built tree — exactly what issue #7's failure-path disarm exists to prevent.
+  ///
+  /// Arms directly rather than through `setRunConfig`: that writes `Defaults[.runCommands]`, which a
+  /// parallel worker running `RunCommandTests` wipes wholesale in its own setUp/tearDown.
+  func testWithholdingAndAutoRunSurviveASecondCreate() async {
+    let fake = GatedFakeCLI(projectPath: projectPath, names: ["wr-a", "wr-b"], hasSetup: true)
+    let store = makeStore(fake)
+    let idA = TerminalTarget.workroomID(project: projectPath, name: "wr-a")
+
+    let a = await startAndLand(store, "wr-a", project: emptyProject)
+    store.armAutoRun(forWorkroom: idA)  // as A's own landing does when its project has auto-run on
+    let b = await startAndLand(store, "wr-b", project: emptyProject)
+    // Release on EVERY exit: the `guard case .armed` below returns early on failure, and an
+    // unreleased gate parks both `createWorkroom` tasks on their continuations for the life of the
+    // test process instead of failing cleanly.
+    defer {
+      fake.release("wr-a")
+      fake.release("wr-b")
+    }
+
+    XCTAssertTrue(
+      store.isCreationBlocking(idA), "A's terminal stays withheld while A's setup script runs")
+    guard case .armed = store.runStates[idA] else {
+      return XCTFail("A's auto-run must stay armed until A's own pane mounts")
+    }
+
+    fake.release("wr-a")
+    fake.release("wr-b")
+    await a.value
+    await b.value
+  }
+
+  /// DEFECT 3, failure half. A superseded create that then FAILS must still run its own failure path:
+  /// disarm its auto-run (the command must never launch against a half-set-up tree), keep its dialog
+  /// up with the failure, and release its own deletion protection. Before #167 all three sat inside a
+  /// branch gated on owning the presentation slot, so B taking it skipped them.
+  func testASupersededCreateThatFailsStillDisarmsAndReleases() async {
+    let fake = GatedFakeCLI(
+      projectPath: projectPath, names: ["wr-a", "wr-b"], hasSetup: true, failing: ["wr-a"])
+    let store = makeStore(fake)
+    let idA = TerminalTarget.workroomID(project: projectPath, name: "wr-a")
+
+    let a = await startAndLand(store, "wr-a", project: emptyProject)
+    store.armAutoRun(forWorkroom: idA)
+    let b = await startAndLand(store, "wr-b", project: emptyProject)
+
+    fake.release("wr-a")
+    await a.value
+
+    XCTAssertNil(store.runStates[idA], "a failed setup must disarm its own auto-run (issue #7)")
+    XCTAssertEqual(
+      store.creations[idA]?.hasSetup, true, "its dialog stays up to show the failure")
+    XCTAssertNotNil(store.creations[idA]?.session.failureMessage)
+    XCTAssertFalse(
+      store.creatingWorkrooms.contains(idA), "and it releases its own deletion protection")
+
+    fake.release("wr-b")
+    await b.value
+  }
+
+  /// DEFECT 4. Each create keeps its own setup log, and each pane's Dismiss clears only its own
+  /// target — what a co-displayed create-as-split pane renders (`TargetTerminalDetail`).
+  func testEachCreateKeepsItsOwnSessionAndDismissal() async {
+    let fake = GatedFakeCLI(projectPath: projectPath, names: ["wr-a", "wr-b"], hasSetup: true)
+    let store = makeStore(fake)
+    let idA = TerminalTarget.workroomID(project: projectPath, name: "wr-a")
+    let idB = TerminalTarget.workroomID(project: projectPath, name: "wr-b")
+
+    let a = await startAndLand(store, "wr-a", project: emptyProject)
+    // The moment a create lands it stops being pre-name, so the detail must show ITS dialog — not
+    // the loader the pre-name slot draws (which has no target, so it can only be full-frame).
+    store.selectedTargetID = .workroom(project: projectPath, name: "wr-a")
+    XCTAssertNil(store.pendingCreation, "a landed create must give up the pre-name loader slot")
+    XCTAssertEqual(
+      store.focusedCreation?.targetID, idA, "the focused detail is A's own setup dialog")
+
+    let b = await startAndLand(store, "wr-b", project: emptyProject)
+
+    XCTAssertNotEqual(
+      store.creations[idA]?.session.id, store.creations[idB]?.session.id,
+      "two concurrent creates must not share one setup log")
+    XCTAssertEqual(store.creations[idA]?.name, "wr-a")
+    XCTAssertEqual(store.creations[idB]?.name, "wr-b")
+
+    fake.release("wr-a")
+    fake.release("wr-b")
+    await a.value
+    await b.value
+
+    store.dismissCreation(idA)
+    XCTAssertNil(store.creations[idA])
+    XCTAssertNotNil(store.creations[idB], "one pane's Dismiss must not clear the other's dialog")
+    XCTAssertTrue(store.isCreationBlocking(idB), "nor mount the other's withheld terminal")
+  }
+
+  /// DEFECT 5. Two creates in one project each keep their own spinner: `busyProjects` is a count, so
+  /// the first to finish can't clear the other's. Gated BEFORE the ready event, which is the window
+  /// the spinner covers (the landing drops it the moment the workroom exists).
+  func testTwoCreatesInOneProjectEachKeepTheirOwnSpinner() async {
+    let fake = GatedFakeCLI(
+      projectPath: projectPath, names: ["wr-a", "wr-b"], hasSetup: false, gate: .beforeReady)
+    let store = makeStore(fake)
+
+    // `create` is nonisolated, so the two tasks reach it in executor order, not declaration order.
+    // Wait for A to take its name before starting B — otherwise B can take "wr-a", and releasing
+    // "wr-a" then awaiting `a.value` deadlocks on a gate this test only opens afterwards.
+    let a = Task { await store.createWorkroom(in: emptyProject) }
+    await waitUntil({ fake.assignedCount == 1 }, "A never reached the CLI")
+    let b = Task { await store.createWorkroom(in: emptyProject) }
+    await waitUntil(
+      { (store.busyProjects[self.projectPath] ?? 0) == 2 }, "both creates must be busy")
+
+    fake.release("wr-a")
+    await a.value
+    XCTAssertTrue(
+      store.isBusyProject(projectPath), "A finishing must not clear B's spinner")
+
+    fake.release("wr-b")
+    await b.value
+    XCTAssertFalse(store.isBusyProject(projectPath), "both done ⇒ no spinner")
+    XCTAssertTrue(store.creatingWorkrooms.isEmpty, "and neither create stranded its own guard")
+  }
+
+  /// A CLI whose `create` throws BEFORE it ever fires `onReady` — a create that failed before the
+  /// workroom existed. No gated fake can express this (they all report ready first), and it is the
+  /// one `createWorkroom` branch with no coverage: the `else` that surfaces the error, plus the
+  /// unconditional `clearPendingCreation` that stops the pre-name loader outliving a dead create.
+  private final class FailsBeforeReadyCLI: WorkroomCLIProtocol {
+    func list(warnings: String, project: String?) async throws -> ListResponse {
+      ListResponse(projects: [], workroomsDir: nil, configPath: nil)
+    }
+    func addProject(_ path: String, create: Bool) async throws -> String { path }
+    func create(
+      project: String, onLog: ((String) -> Void)?, onReady: ((String, String, Bool) -> Void)?
+    ) async throws -> CreateResponse {
+      throw WorkroomCLIError.timedOut  // onReady never fires
+    }
+    func delete(name: String, project: String, onLog: ((String) -> Void)?) async throws {}
+    func deleteProject(
+      _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: ((String) -> Void)?
+    ) async throws -> [URL] { [] }
+  }
+
+  /// A create that dies before the workroom exists must leave NOTHING behind — no loader stuck on
+  /// screen, no half-registered target — and must say so.
+  func testCreateFailingBeforeTheWorkroomExistsClearsEverything() async {
+    let store = makeStore(FailsBeforeReadyCLI())
+
+    await store.createWorkroom(in: emptyProject)
+
+    XCTAssertNil(store.pendingCreation, "a pre-landing failure must clear the loader slot")
+    XCTAssertTrue(store.creations.isEmpty, "there was never a target to key an entry on")
+    XCTAssertTrue(store.creatingWorkrooms.isEmpty)
+    XCTAssertFalse(store.isCreationFocused, "the detail must fall back to the terminal")
+    XCTAssertFalse(store.isBusyProject(projectPath), "and the row's spinner must stop")
+    XCTAssertNotNil(store.errorMessage, "the failure must be surfaced, not swallowed")
+  }
+
+  /// Both in-flight creates get their own tab chip at once — the `formUnion(creations.keys)` that
+  /// replaced a single-slot insert. A regression collapsing it back to "most recent only" passes
+  /// every single-create test.
+  func testBothConcurrentCreatesAppearAsTabsAtOnce() async {
+    let fake = GatedFakeCLI(projectPath: projectPath, names: ["wr-a", "wr-b"], hasSetup: true)
+    let store = makeStore(fake)
+    let idA = TerminalTarget.workroomID(project: projectPath, name: "wr-a")
+    let idB = TerminalTarget.workroomID(project: projectPath, name: "wr-b")
+
+    let a = await startAndLand(store, "wr-a", project: emptyProject)
+    let b = await startAndLand(store, "wr-b", project: emptyProject)
+    defer {
+      fake.release("wr-a")
+      fake.release("wr-b")
+    }
+
+    let ids = Set(store.orderedWorkroomTargets().map(\.target.id))
+    XCTAssertTrue(ids.contains(idA), "A's chip must survive B landing")
+    XCTAssertTrue(ids.contains(idB))
+
+    fake.release("wr-a")
+    fake.release("wr-b")
+    await a.value
+    await b.value
+  }
+
+  /// The withholding is SHARED, so a second window can't mount a terminal into a worktree whose
+  /// setup script is running — `creations` is per-window, `settingUpWorkrooms` is not. A no-setup
+  /// create still never withholds.
+  func testWithholdingIsSharedAcrossWindows() async {
+    let fake = GatedFakeCLI(projectPath: projectPath, names: ["wr-a"], hasSetup: true)
+    let store = makeStore(fake)
+    // A second window: its own AppStore (own selection, own `creations`), the SAME shared
+    // ProjectStore — exactly how `WorkroomApp` builds a ⌘N window.
+    let other = AppStore(projectStore: store.projectStore, cli: fake)
+    other.terminals.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
+    let idA = TerminalTarget.workroomID(project: projectPath, name: "wr-a")
+
+    let a = await startAndLand(store, "wr-a", project: emptyProject)
+    XCTAssertTrue(store.isCreationBlocking(idA), "the creating window withholds")
+    XCTAssertTrue(
+      other.isCreationBlocking(idA),
+      "so does a window that never started it — the script writes the same worktree")
+
+    fake.release("wr-a")
+    await a.value
+    XCTAssertFalse(
+      other.isCreationBlocking(idA), "the other window has no dialog, so it stops withholding")
+    XCTAssertTrue(
+      store.isCreationBlocking(idA), "the creating window keeps it until ITS dialog is dismissed")
+  }
+
+  /// Run must not launch the project command against a worktree still being set up (issue #7's
+  /// disarm exists for the same reason). Guarded in `startRunCommand`, the one place the toolbar,
+  /// sidebar and menu all route through.
+  func testRunIsRefusedWhileTheWorkroomIsStillBeingCreated() async {
+    let fake = GatedFakeCLI(projectPath: projectPath, names: ["wr-a"], hasSetup: true)
+    let store = AppStore(cli: fake)
+    // Never spawn a real PTY: this test only cares whether a run TAB was opened.
+    store.terminals.makeView = { _, cwd, command in
+      GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
+    }
+    let idA = TerminalTarget.workroomID(project: projectPath, name: "wr-a")
+
+    let a = await startAndLand(store, "wr-a", project: emptyProject)
+    defer { fake.release("wr-a") }
+    guard let target = store.target(for: .workroom(project: projectPath, name: "wr-a")) else {
+      return XCTFail("the created workroom must resolve")
+    }
+    // Configured immediately before the call, and cleared right after: `Defaults[.runCommands]` is
+    // one domain shared with every parallel test worker, and `RunCommandTests` wipes it wholesale.
+    store.setRunConfig(RunConfig(command: "echo hi", autoRun: false), forProject: projectPath)
+    store.startRunCommand(for: target)
+    XCTAssertNil(store.runStates[idA]?.tab, "no run terminal may open against a half-built tree")
+
+    fake.release("wr-a")
+    await a.value
+
+    // Positive control: with the create finished the SAME call starts a run, so the assertion above
+    // failed on the guard rather than on a missing command.
+    store.startRunCommand(for: target)
+    XCTAssertNotNil(store.runStates[idA]?.tab, "once setup is done, Run works normally")
+    store.setRunConfig(.empty, forProject: projectPath)
   }
 
 }
