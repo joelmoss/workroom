@@ -46,6 +46,24 @@ final class ToolLogoRegistryTests: XCTestCase {
     XCTAssertNil(ToolLogoRegistry.matchingEntry(forTitle: nil))
   }
 
+  /// The BUNDLED-asset gate, which every other test in this file skips: `matchingEntry` only proves
+  /// `registry.json` mentions the tool, while `tool(...)` additionally requires the imageset to have
+  /// actually shipped (`NSImage(named:) != nil`). Since issue #168 that gate decides whether the
+  /// pane footer shows an agent's logo or falls back to its name, and the failure is silent — rename
+  /// `ToolLogo-claude.imageset`, change an id, or lose an asset from `fetch-tool-logos.sh`, and the
+  /// footer quietly reverts to text with every other assertion still green.
+  func testAgentBackendsResolveBundledLogos() {
+    for backend in AgentBackend.allCases {
+      // Identity, not just non-nil: a cross-wired registry (executable "claude" aliased to the
+      // entry whose id is "codex") satisfies a nil check and then renders the wrong brand logo,
+      // since the asset name is built from `tool.id`. This is the only thing pinning the
+      // `AgentBackend.rawValue` ↔ registry-id coupling the whole lookup rests on.
+      XCTAssertEqual(
+        ToolLogoRegistry.tool(forExecutableName: backend.executable)?.id, backend.rawValue,
+        "no bundled logo for agent backend \(backend.rawValue)")
+    }
+  }
+
   /// Registry data-integrity guard (X1 cross-model tension): a future copy-paste in `registry.json`
   /// could give two entries the same `id`, or the same executable/title alias to two different
   /// entries, silently making `byExecutable`/`byTitle` pick whichever was processed last. Pure data

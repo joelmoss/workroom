@@ -18,6 +18,16 @@ enum AgentQuotaWindowKind: Equatable, Sendable {
   }
 }
 
+/// How far past sustainable pace a window is, in three bands — the rule behind every quota bar's
+/// fill colour. Lives here rather than in the view that draws it so the threshold below is
+/// reachable by a test: it used to be a bare `> 15` inside `TerminalStatusBar.paceColor`, which no
+/// test layer in this app can see.
+enum PaceSeverity: Equatable, Sendable {
+  case onPace
+  case warning
+  case critical
+}
+
 struct AgentPace: Equatable, Sendable {
   /// Percentage points ahead of sustainable use. Negative means under pace.
   let percentagePoints: Double
@@ -25,9 +35,13 @@ struct AgentPace: Equatable, Sendable {
   var roundedPoints: Int { Int(percentagePoints.rounded()) }
   var isOver: Bool { roundedPoints > 0 }
 
-  var compactDescription: String {
-    if roundedPoints == 0 { return "0%" }
-    return "\(roundedPoints > 0 ? "+" : "−")\(abs(roundedPoints))%"
+  /// Compares `roundedPoints`, not `percentagePoints`. `isOver` already rounds, and so do the two
+  /// surfaces that still print a number (the popover caption and the accessibility label), so the
+  /// severity step reads the same value the user is shown — comparing the raw double would colour a
+  /// pace described as "15% in deficit" as critical.
+  var severity: PaceSeverity {
+    guard isOver else { return .onPace }
+    return roundedPoints > 15 ? .critical : .warning
   }
 
   var accessibilityDescription: String {
@@ -59,6 +73,22 @@ struct AgentQuotaWindow: Equatable, Sendable, Identifiable {
     let startsAt = resetsAt.addingTimeInterval(-duration)
     let elapsed = min(max(now.timeIntervalSince(startsAt) / duration, 0), 1) * 100
     return AgentPace(percentagePoints: usedPercentage - elapsed)
+  }
+
+  /// Where a quota bar's pace pin sits: the point usage would have reached if it exactly tracked
+  /// the window's elapsed time. Recovered from `pace(at:)` (`usedPercentage - percentagePoints`
+  /// gives back that elapsed fraction) rather than computing elapsed a second time, so the pin and
+  /// the pace figure beside it can never disagree. Clamped because `usedPercentage` is clamped but
+  /// the subtraction is not — a window past its reset can otherwise land outside the track.
+  ///
+  /// Lives here rather than in either view because BOTH bars need it: the footer segment and the
+  /// popover's rows used to carry this same expression, each commenting that it avoided a second
+  /// copy of the calculation.
+  /// No clamp needed: `pace(at:)` already clamps its elapsed fraction to 0…100, and
+  /// `used - (used - elapsed)` is `elapsed`, so the result is in range by construction. (The
+  /// `duration <= 0` branch returns `usedPercentage`, which cancels to 0.)
+  func sustainablePacePercentage(at now: Date) -> Double {
+    usedPercentage - pace(at: now).percentagePoints
   }
 
   func isFresh(at now: Date) -> Bool { now < resetsAt }
