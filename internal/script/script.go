@@ -65,20 +65,24 @@ func Run(scriptType, scriptPath, workroomDir, name, rootPath string, stream io.W
 	// exits this process immediately — orphaning the group to keep writing. Installed only for the
 	// script's lifetime, and stopped in every exit path so a long-lived caller keeps its own default
 	// handling. SIGKILL cannot be caught, which is why the app's timeout sends SIGTERM first.
+	//
+	// The handler forwards and then STOPS — it deliberately does not re-raise on itself. Re-raising
+	// looked tidier (the exit status would reflect the signal), but `select` picks at random among
+	// ready cases, so a signal arriving in the same instant the script exits cleanly could be chosen
+	// over `done` and kill this process before it wrote its result: a create that actually succeeded,
+	// reported to the app as a timeout. Not re-raising costs nothing that matters — the app's timeout
+	// already follows SIGTERM with SIGKILL two seconds later, by which point the group is reaped and
+	// the response written, and an interactive Ctrl-C still ends the run through the script's own
+	// non-zero exit.
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	done := make(chan struct{})
 	go func() {
 		select {
-		case sig := <-sigs:
+		case <-sigs:
 			if cmd.Process != nil {
 				// Negative pid = the whole group. Best-effort: the group may already be gone.
 				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-			}
-			signal.Stop(sigs)
-			// Re-raise so the caller's own exit status still reflects the signal it was sent.
-			if s, ok := sig.(syscall.Signal); ok {
-				_ = syscall.Kill(os.Getpid(), s)
 			}
 		case <-done:
 		}
