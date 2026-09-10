@@ -53,11 +53,21 @@ jobs:
             | sudo tar -xz -C /usr/local/bin ./jj
           jj --version
 
-      # golangci-lint subsumes `go vet` (govet) and the gofmt/goimports checks. Installed with
-      # `go install` so it's built with the project's Go toolchain (go.mod), matching local — a
-      # prebuilt binary built against an older Go cannot read the current toolchain's export data.
-      # Note the `/v2` module path: v2 is required, since v1 rejects the v2-format .golangci.yml
-      # and its vendored go/types cannot analyze a Go 1.27 stdlib at all.
+      # golangci-lint subsumes `go vet` (govet) and the gofmt/goimports checks. Note the `/v2`
+      # module path: v2 is required, since v1 rejects the v2-format .golangci.yml and its vendored
+      # go/types cannot analyze a Go 1.27 stdlib at all (`@latest` on the old v1 path still
+      # resolves to the final v1 — don't).
+      #
+      # GOTOOLCHAIN=auto on the install ONLY. setup-go pins GOTOOLCHAIN=local to go.mod's Go
+      # (1.25.7), but golangci-lint v2.13.2's own go.mod requires >= 1.26, so a local-pinned
+      # `go install` fails outright ("requires go >= 1.26.0 ... GOTOOLCHAIN=local"). `auto` lets
+      # Go fetch a toolchain for that one build; every other step still runs go.mod's version,
+      # which is the point of go-version-file.
+      #
+      # The constraint to respect when bumping either version is *directional*: the linter's
+      # typechecker must be at least as new as the Go whose code it reads (older cannot decode
+      # newer export data — that is what killed v1 here), so a linter built by a NEWER Go than
+      # the module targets is correct, not a mismatch.
       #
       # Two commands, not one: v2 moved formatters out of `run`, so `run` alone reports NO
       # gofmt/goimports findings and the formatting gate would be silently lost. `fmt --diff`
@@ -65,7 +75,7 @@ jobs:
       # cli-lint target.
       - name: Lint
         run: |
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
+          GOTOOLCHAIN=auto go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
           "$(go env GOPATH)/bin/golangci-lint" run
           "$(go env GOPATH)/bin/golangci-lint" fmt --diff
 
