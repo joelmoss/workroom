@@ -167,3 +167,33 @@ gh release view "$FEED_TAG" --repo "$REPO" >/dev/null 2>&1 ||
     --notes "Sparkle update feed for the Workroom macOS app — not a download. Do not delete."
 gh release upload "$FEED_TAG" "$FEED" --repo "$REPO" --clobber
 echo "✅ Published appcast.xml to the '${FEED_TAG}' release"
+
+# The Workroom Nightly app reads its OWN feed (Info.plist SUFeedURL → $(WORKROOM_APPCAST), set per
+# configuration in project.yml). Sparkle offers every UNTAGGED item — the stable channel — to every
+# client regardless of `allowedChannels`, so on the shared feed a Nightly install was offered the
+# main Workroom DMG as soon as a stable build number outran the newest nightly item (v2.0.0 = 769
+# vs nightly 767 on 2026-09-10) and then failed the code-signing check, because the two apps have
+# different bundle ids by design: "The update is improperly signed and could not be validated."
+#
+# Always exactly one item, so this feed is rewritten whole rather than merged. The item keeps its
+# <sparkle:channel>nightly</sparkle:channel> tag, so a main-app install pointed here by accident is
+# still offered nothing.
+#
+# The nightly item is ALSO still written into the shared appcast.xml above: installs predating this
+# change read that feed and need an item there to reach a build that knows the new URL. Drop the
+# dual write once no such installs remain.
+if [ "$CHANNEL" = "nightly" ]; then
+  NIGHTLY_FEED="${BUILD}/appcast-nightly.xml"
+  # printf, not a heredoc: $ITEM carries the release notes as HTML, which an unquoted heredoc
+  # would try to expand.
+  printf '%s\n' \
+    '<?xml version="1.0" encoding="utf-8"?>' \
+    '<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">' \
+    '  <channel>' \
+    '    <title>Workroom Nightly</title>' \
+    "$ITEM" \
+    '  </channel>' \
+    '</rss>' >"$NIGHTLY_FEED"
+  gh release upload "$FEED_TAG" "$NIGHTLY_FEED" --repo "$REPO" --clobber
+  echo "✅ Published appcast-nightly.xml to the '${FEED_TAG}' release"
+fi

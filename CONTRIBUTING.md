@@ -511,11 +511,16 @@ clobbered in place each run (no per-day tags accumulate). Its version is
 Sparkle order nightlies by. A no-new-commits guard skips a run when nothing changed, and the release
 title (the version) is stamped only after assets + appcast publish succeed, so a partial run retries.
 
-One appcast feed carries all channels; the main app's `allowedChannels` is the picked stable/pre
-floor while the nightly app's is fixed to `{nightly}`, and Sparkle's bundle-id check is the backstop
-that stops either from ever installing the other's DMG. The canonical tag → channel classification
-lives in **`internal/channel`** (Go), mirrored by `macapp/WorkroomApp/Core/ReleaseChannel.swift` and
-`macapp/Scripts/channel-helper.sh` — keep the three in sync. All appcast-writing workflows
+Two appcast feeds: `appcast.xml` carries stable + pre for the main app (whose `allowedChannels` is
+the picked stable/pre floor), and `appcast-nightly.xml` carries the single rolling nightly item.
+They are separate because Sparkle offers every *untagged* item to every client whatever
+`allowedChannels` says, so one shared feed offered the nightly app the main DMG — see
+[Auto-update](#auto-update-sparkle-appcast) for the failure it caused. Sparkle's bundle-id check
+still backstops a cross-product install, but it is a backstop, not the channel filter.
+
+The canonical tag → channel classification lives in **`internal/channel`** (Go), mirrored by
+`macapp/WorkroomApp/Core/ReleaseChannel.swift` and `macapp/Scripts/channel-helper.sh` — keep the
+three in sync. All appcast-writing workflows
 (`release`, `nightly`, `appcast-notes`) share a `concurrency: appcast-feed` group so they can't
 clobber each other's `appcast.xml` edits.
 
@@ -549,7 +554,8 @@ Each release publishes both components:
 | macOS app installer | `workroom-macos-app_<version>.dmg` | `workroom-macos-app_1.4.0.dmg` |
 | Nightly CLI archive | `workroom_nightly_<os>_<arch>.<ext>` | `workroom_nightly_linux_amd64.tar.gz` |
 | Nightly app installer | `workroom-macos-app_nightly.dmg` | (clobbered on the fixed `nightly` release) |
-| Sparkle feed | `appcast.xml` | published to a fixed `appcast` release |
+| Sparkle feed (main app) | `appcast.xml` | published to a fixed `appcast` release |
+| Sparkle feed (Nightly app) | `appcast-nightly.xml` | same `appcast` release, single rolling item |
 
 Nightly asset names are **version-independent** (the fixed `nightly` release clobbers them each
 run, so download URLs stay stable). `workroom update` on the stable/pre channels resolves the exact
@@ -585,16 +591,29 @@ version, download URL, EdDSA signature, release notes) into `appcast.xml` and up
 `.github/workflows/appcast-notes.yml` re-renders that item's `<description>` so the in-app update
 dialog shows the polished notes instead of raw commits.
 
-**Channels.** One feed carries every channel. `appcast.sh` tags each item with
-`<sparkle:channel>pre</sparkle:channel>` or `nightly` (stable items stay untagged). The **main app**
-reads `Updater.allowedChannels(for:)` = the picked stable/pre floor (from *Settings ▸ General ▸
-Release channel*); the **Workroom Nightly** app returns a fixed `{nightly}`. Sparkle only offers
-items whose channel is allowed — the untagged/default (stable) channel is always allowed, giving the
-nested model for free — and its bundle-id check means the nightly app can never install a main-app
-DMG (or vice-versa) even though they share the feed. The nightly item is a single **rolling** entry
-(replaced each run so its enclosure signature never goes stale); pre/GA items are appended and
-idempotent on `(channel, build)`. The app's channel is separate from the CLI's `workroom update`
-channel — the app is Sparkle-managed, the standalone CLI self-updates.
+**Channels.** `appcast.xml` carries stable and pre: `appcast.sh` tags each item with
+`<sparkle:channel>pre</sparkle:channel>` (stable items stay untagged), and the **main app** reads
+`Updater.allowedChannels(for:)` = the picked stable/pre floor (from *Settings ▸ General ▸ Release
+channel*). Sparkle only offers items whose channel is allowed, and the untagged/default channel is
+always allowed, which gives the nested stable ⊂ pre model for free. Pre/GA items are appended and
+idempotent on `(channel, build)`.
+
+**Workroom Nightly reads a separate feed**, `appcast-nightly.xml` — a single rolling item, rewritten
+whole each run so its enclosure signature never goes stale. It gets its own feed precisely *because*
+the untagged/default channel is always allowed: on the shared feed, `allowedChannels = {nightly}`
+did not stop Sparkle offering a Nightly install the main Workroom DMG, and it happened as soon as a
+stable build number outran the newest nightly item — v2.0.0 (build 769) against nightly 767 on
+2026-09-10. Sparkle then refused the download at the code-signing check, because the two apps carry
+different bundle identifiers by design, and every Nightly user saw *"The update is improperly signed
+and could not be validated."* That check is a backstop, not a channel filter; separate feeds are
+what actually keeps the two products apart. The feed URL is per-configuration:
+`project.yml` templates `SUFeedURL` on `$(WORKROOM_APPCAST)`, which the `Nightly` config overrides.
+`Scripts/test-invariants_test.sh` pins all three halves.
+
+The nightly item is *also* still written into `appcast.xml`, so installs predating the split can
+reach a build that knows the new URL; drop that dual write once none remain. The app's channel is
+separate from the CLI's `workroom update` channel — the app is Sparkle-managed, the standalone CLI
+self-updates.
 
 **Upgrade migration (main app).** New installs default to `stable`. But since the app has only ever
 shipped betas, an existing user upgrading into the channel-aware build would otherwise be defaulted

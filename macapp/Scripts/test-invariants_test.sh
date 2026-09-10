@@ -75,6 +75,32 @@ if ! grep -Eq '^[[:space:]]*echo "MIN_OS=' "$RELEASE_SH"; then
   fails=$((fails + 1))
 fi
 
+# --- Workroom Nightly keeps its own Sparkle feed --------------------------------------------
+# Sparkle offers every UNTAGGED item — the stable channel — to every client, whatever
+# `allowedChannels` says. While Nightly shared appcast.xml it was therefore offered the main
+# Workroom DMG the moment a stable build number outran the newest nightly item (v2.0.0 = 769 vs
+# nightly 767 on 2026-09-10), then refused it at the code-signing check because the two apps have
+# different bundle ids by design — surfacing to the user as "The update is improperly signed and
+# could not be validated." Nothing else catches a regression here: both feeds publish green and
+# the break only appears on a user's machine, in the window after a release tag. Pin all three
+# halves — the per-config setting, the templated URL, and the publisher.
+PROJECT_YML="${TEST_INVARIANTS_PROJECT_YML:-$ROOT/macapp/project.yml}"
+if ! grep -q 'WORKROOM_APPCAST: appcast-nightly.xml' "$PROJECT_YML"; then
+  echo "FAIL: project.yml's Nightly config no longer sets WORKROOM_APPCAST: appcast-nightly.xml —"
+  echo "      Workroom Nightly would share the main feed and be offered the main Workroom DMG."
+  fails=$((fails + 1))
+fi
+if ! grep -q 'SUFeedURL: .*\$(WORKROOM_APPCAST)' "$PROJECT_YML"; then
+  echo "FAIL: project.yml's SUFeedURL no longer resolves \$(WORKROOM_APPCAST); the per-config"
+  echo "      nightly feed override cannot take effect."
+  fails=$((fails + 1))
+fi
+if ! grep -q 'appcast-nightly.xml' "$APPCAST_SH"; then
+  echo "FAIL: appcast.sh no longer publishes appcast-nightly.xml — the Nightly app's feed would"
+  echo "      404 and nightly installs would stop updating entirely."
+  fails=$((fails + 1))
+fi
+
 if [ "$fails" -ne 0 ]; then
   echo "test-invariants_test: $fails failure(s)" >&2
   exit 1

@@ -282,7 +282,15 @@ targets:
         # Sparkle auto-updater. SUPublicEDKey is the Ed25519 PUBLIC key from Sparkle's
         # `generate_keys` (run once); its private half signs the appcast in CI. The feed is an
         # asset on the fixed `appcast` GitHub release. See macapp/README.md ("Auto-update").
-        SUFeedURL: "https://github.com/joelmoss/workroom/releases/download/appcast/appcast.xml"
+        #
+        # The FILENAME is per-configuration (WORKROOM_APPCAST below) because Sparkle offers every
+        # UNTAGGED item — the stable channel — to every client, whatever `allowedChannels` says.
+        # Sharing one feed therefore offered Workroom Nightly the main Workroom DMG the moment a
+        # stable build number outran the newest nightly item (v2.0.0 = 769 vs nightly 767 on
+        # 2026-09-10), and Sparkle rejected it at the code-signing check — the two apps have
+        # different bundle ids on purpose — with "The update is improperly signed and could not be
+        # validated." Nightly reads its own single-item feed instead, so the two can't collide.
+        SUFeedURL: "https://github.com/joelmoss/workroom/releases/download/appcast/$(WORKROOM_APPCAST)"
         SUPublicEDKey: "JUdX5urBRS1a/heb5qKRuxdxQtHXS3WLGYd0+qI9P6k="
         SUEnableAutomaticChecks: true
         SUScheduledCheckInterval: 86400
@@ -314,6 +322,9 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # Base identity is the main/release channel (empty marker). Debug + Nightly override below.
         WORKROOM_RELEASE_CHANNEL: ""
+        # Sparkle feed filename, substituted into SUFeedURL above. Nightly overrides it; Debug
+        # inherits the main feed (Dev builds can't self-update, so it is never fetched).
+        WORKROOM_APPCAST: appcast.xml
       configs:
         Debug:
           # Distinct identity so a local Debug build runs alongside the installed release build
@@ -347,6 +358,9 @@ targets:
           PRODUCT_NAME: "Workroom Nightly"
           ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon-Nightly
           WORKROOM_RELEASE_CHANNEL: nightly
+          # Own feed — see the SUFeedURL comment above. Published by Scripts/appcast.sh alongside
+          # the main appcast.xml.
+          WORKROOM_APPCAST: appcast-nightly.xml
           CODE_SIGN_STYLE: Manual
           CODE_SIGN_IDENTITY: "Developer ID Application"
           OTHER_CODE_SIGN_FLAGS: "--timestamp"

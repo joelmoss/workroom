@@ -103,7 +103,11 @@ DMG we ship, signed with an Ed25519 key whose **public** half is embedded as `SU
 
 The appcast is hosted as `appcast.xml` on a fixed **`appcast`** GitHub release
 (`…/releases/download/appcast/appcast.xml`); each `v*` release appends an item to it via
-`Scripts/appcast.sh`. Versioning is tag-driven: `release.sh` sets `CFBundleShortVersionString`
+`Scripts/appcast.sh`. **Workroom Nightly reads its own feed**, `appcast-nightly.xml`, on the same
+release — Sparkle always offers untagged (stable) items to every client whatever `allowedChannels`
+says, so a shared feed offered the Nightly app the main Workroom DMG and it failed the
+code-signing check with *"The update is improperly signed"* (see CONTRIBUTING → Auto-update).
+`project.yml` templates `SUFeedURL` on `$(WORKROOM_APPCAST)` and the `Nightly` config overrides it. Versioning is tag-driven: `release.sh` sets `CFBundleShortVersionString`
 from the tag and `CFBundleVersion` to the commit count (monotonic, so Sparkle always sees a newer
 release as an upgrade).
 

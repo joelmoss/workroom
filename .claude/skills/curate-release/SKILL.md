@@ -24,7 +24,15 @@ nothing can drift/collide (the main binary rejects `--channel nightly`).
 
 Canonical tag→channel classification is `internal/channel` (Go), mirrored by
 `macapp/WorkroomApp/Core/ReleaseChannel.swift` and `macapp/Scripts/channel-helper.sh` — **keep the
-three in lockstep**. The updater selects per channel (stable = `/releases/latest` for byte-parity;
+three in lockstep**. **Two Sparkle feeds**, both assets on the fixed `appcast` release: `appcast.xml` (stable + pre)
+and `appcast-nightly.xml` (one rolling item). Nightly needs its own because Sparkle offers every
+UNTAGGED item to every client whatever `allowedChannels` says — on the shared feed a Nightly
+install was offered the main DMG the moment a stable build number outran the newest nightly item,
+then failed Sparkle's code-signing check ("improperly signed"). `SUFeedURL` is templated on
+`$(WORKROOM_APPCAST)`, overridden by the `Nightly` config; `Scripts/test-invariants_test.sh` pins
+it. Do NOT collapse the feeds back together.
+
+The updater selects per channel (stable = `/releases/latest` for byte-parity;
 pre = `/releases` list, newest stable-or-prerelease; nightly = the fixed `nightly` release by tag),
 orders nightlies by the monotonic commit-count and everything else by semver, and verifies against
 `checksums.txt`. Nightly is a scheduled build (`.github/workflows/nightly.yml`, daily cron;
