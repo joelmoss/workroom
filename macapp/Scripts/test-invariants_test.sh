@@ -51,6 +51,30 @@ for wf in ci.yml release.yml nightly.yml; do
   fi
 done
 
+# --- the appcast's minimum system version stays derived, never restated ---------------------
+# appcast.sh hardcoded MIN_OS="14.0" and went stale when the app's minimum rose to 15.0
+# (2a50af72), so beta.19 through the v2.0.0 GA all advertised 14.0 in
+# <sparkle:minimumSystemVersion> — Sparkle offered macOS 14 users a 37 MB DMG their OS refuses to
+# launch. Nothing else catches it: the value is only read by Sparkle on a user's machine, so both
+# the release and the feed publish green. The fix was to read LSMinimumSystemVersion off the built
+# bundle in release.sh and pass it through appcast-fields.env, so pin BOTH halves.
+APPCAST_SH="${TEST_INVARIANTS_APPCAST_SH:-$ROOT/macapp/Scripts/appcast.sh}"
+RELEASE_SH="${TEST_INVARIANTS_RELEASE_SH:-$ROOT/macapp/Scripts/release.sh}"
+if grep -Eq '^[[:space:]]*MIN_OS=' "$APPCAST_SH"; then
+  echo "FAIL: appcast.sh assigns MIN_OS itself — it must come from appcast-fields.env (release.sh"
+  echo "      reads it off the built app), or the feed will drift from the app's real minimum."
+  fails=$((fails + 1))
+fi
+if ! grep -q 'LSMinimumSystemVersion' "$RELEASE_SH"; then
+  echo "FAIL: release.sh no longer reads LSMinimumSystemVersion from the built app; the appcast's"
+  echo "      minimum system version would be unset or stale."
+  fails=$((fails + 1))
+fi
+if ! grep -Eq '^[[:space:]]*echo "MIN_OS=' "$RELEASE_SH"; then
+  echo "FAIL: release.sh no longer writes MIN_OS into appcast-fields.env; appcast.sh requires it."
+  fails=$((fails + 1))
+fi
+
 if [ "$fails" -ne 0 ]; then
   echo "test-invariants_test: $fails failure(s)" >&2
   exit 1

@@ -13,7 +13,6 @@ BUILD="${MACAPP_DIR}/build/release"
 FIELDS="${BUILD}/appcast-fields.env"
 FEED="${BUILD}/appcast.xml"
 FEED_TAG="appcast"  # the fixed release that hosts appcast.xml (matches SUFeedURL)
-MIN_OS="14.0"
 
 # Shared channel classification (kept in lockstep with internal/channel + ReleaseChannel).
 # shellcheck source=channel-helper.sh
@@ -28,7 +27,7 @@ if [ ! -f "$FIELDS" ]; then
 fi
 
 # shellcheck disable=SC1090
-. "$FIELDS"  # SPARKLE_STATUS, SHORT_VERSION, BUILD_NUMBER, ENCLOSURE_ATTRS
+. "$FIELDS"  # SPARKLE_STATUS, SHORT_VERSION, BUILD_NUMBER, MIN_OS, ENCLOSURE_ATTRS
 : "${SPARKLE_STATUS:?SPARKLE_STATUS required (missing from $FIELDS)}"
 : "${TAG:?TAG required}"
 : "${REPO:?REPO required}"
@@ -53,6 +52,14 @@ signed) ;;
   exit 1
   ;;
 esac
+
+# The feed's minimum system version must be what the app ACTUALLY requires, so release.sh reads it
+# from the built bundle's LSMinimumSystemVersion rather than this script restating the deployment
+# target. It used to be hardcoded here, and went stale the moment the minimum rose to 15.0
+# (2a50af72): every item from beta.19 through the v2.0.0 GA advertised 14.0, offering macOS 14 users
+# a 37 MB DMG their OS cannot run. Required — a silently absent value would re-advertise everything
+# to every OS version.
+: "${MIN_OS:?MIN_OS required (missing from $FIELDS — release.sh reads it from the built app)}"
 
 # Classify the release into a Sparkle channel. Stable items ship untagged (Sparkle's default
 # channel, offered to everyone); pre/nightly items carry <sparkle:channel> so only opted-in

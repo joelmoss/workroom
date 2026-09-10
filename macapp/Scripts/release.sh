@@ -289,13 +289,25 @@ else
   SPARKLE_STATUS="unconfigured"
   SIG_ATTRS=""
 fi
+# The appcast's <sparkle:minimumSystemVersion> comes from the built bundle, not from a constant
+# restated in Scripts/appcast.sh — that copy went stale when the minimum rose to 15.0 (2a50af72)
+# and advertised 14.0 all the way through the v2.0.0 GA, offering macOS 14 users a DMG that cannot
+# launch. Reading the shipped artifact makes the feed's claim and the app's requirement the same
+# fact. Loud on absence: a blank minimum offers every build to every OS version.
+MIN_OS="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APP/Contents/Info.plist" 2>/dev/null || true)"
+if [ -z "$MIN_OS" ]; then
+  echo "${GITHUB_ACTIONS:+::error::}error: $APP/Contents/Info.plist has no LSMinimumSystemVersion; refusing to publish an appcast that states no minimum system version." >&2
+  exit 1
+fi
+
 {
   echo "SPARKLE_STATUS=$SPARKLE_STATUS"
   echo "SHORT_VERSION=$SHORT_VERSION"
   echo "BUILD_NUMBER=$BUILD_NUMBER"
+  echo "MIN_OS=$MIN_OS"
   # Single-quoted: the value holds spaces and double quotes (sparkle:edSignature="…" length="…").
   echo "ENCLOSURE_ATTRS='$SIG_ATTRS'"
 } >"$BUILD/appcast-fields.env"
-echo "    appcast fields → $BUILD/appcast-fields.env (SPARKLE_STATUS=$SPARKLE_STATUS)"
+echo "    appcast fields → $BUILD/appcast-fields.env (SPARKLE_STATUS=$SPARKLE_STATUS, MIN_OS=$MIN_OS)"
 
 echo "✅ Notarized + stapled installer: $DMG"
