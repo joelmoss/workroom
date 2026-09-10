@@ -95,7 +95,7 @@ final class BranchLabelTests: XCTestCase {
     store.setResolvedBranchName("old-name", for: sid)
 
     store.mergeLocalStatus(
-      WorkroomStatus(branchForCI: "switched-to"), into: sid, readAt: Date())
+      WorkroomStatus(branchForCI: "switched-to"), into: sid)
 
     XCTAssertNil(store.resolvedBranchNames[sid], "the cache is no longer the freshest answer")
     XCTAssertEqual(store.branchName(for: sid), "switched-to")
@@ -109,13 +109,13 @@ final class BranchLabelTests: XCTestCase {
     store.setResolvedBranchName("feature/login", for: sid)
 
     store.mergeLocalStatus(
-      WorkroomStatus(branchForCI: "feature/login"), into: sid, readAt: Date())
+      WorkroomStatus(branchForCI: "feature/login"), into: sid)
     XCTAssertEqual(store.resolvedBranchNames[sid], "feature/login")
 
-    store.mergeLocalStatus(WorkroomStatus(branchForCI: nil), into: sid, readAt: Date())
+    store.mergeLocalStatus(WorkroomStatus(branchForCI: nil), into: sid)
     XCTAssertEqual(store.resolvedBranchNames[sid], "feature/login")
 
-    store.mergeLocalStatus(WorkroomStatus(branchForCI: ""), into: sid, readAt: Date())
+    store.mergeLocalStatus(WorkroomStatus(branchForCI: ""), into: sid)
     XCTAssertEqual(store.resolvedBranchNames[sid], "feature/login")
   }
 

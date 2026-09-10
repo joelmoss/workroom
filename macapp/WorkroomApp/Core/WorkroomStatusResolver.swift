@@ -93,14 +93,24 @@ struct WorkroomStatusResolver: Sendable {
   /// defaulted, so every call site is forced to supply the key `resolveJJ`'s snapshot gate needs;
   /// `resolveGit` ignores it (git reads are never gated).
   func resolveLocal(path: String, vcs: String, projectRoot: String) async -> WorkroomStatus {
-    guard FileManager.default.fileExists(atPath: path) else {
-      return WorkroomStatus(dirty: nil, failure: .missingPath)
+    var status: WorkroomStatus
+    if FileManager.default.fileExists(atPath: path) {
+      switch vcs {
+      case "git": status = await resolveGit(path)
+      case "jj": status = await resolveJJ(path, projectRoot: projectRoot)
+      default: status = WorkroomStatus(dirty: nil, failure: .notRepository)
+      }
+    } else {
+      status = WorkroomStatus(dirty: nil, failure: .missingPath)
     }
-    switch vcs {
-    case "git": return await resolveGit(path)
-    case "jj": return await resolveJJ(path, projectRoot: projectRoot)
-    default: return WorkroomStatus(dirty: nil, failure: .notRepository)
-    }
+    // Stamp when this read FINISHED, so `mergeLocalStatus` can order results that its five unordered
+    // lanes produce. It has to be stamped here rather than by the caller: a jj read can sit in
+    // `JJSnapshotGate` for seconds before it observes anything, so the caller's invocation time can
+    // say a probe is older when it actually saw a LATER tree. Completion is the closest observable
+    // bound on when the tree was seen. (Two overlapping reads can still finish in the opposite order
+    // to their observations; closing that needs a filesystem generation number, not a clock.)
+    status.localReadAt = Date()
+    return status
   }
 
   /// Which "unknown" badge a typed backend error earns. Pure, so the mapping is unit-tested without

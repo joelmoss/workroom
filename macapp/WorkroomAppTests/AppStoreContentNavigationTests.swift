@@ -499,7 +499,7 @@ final class AppStoreContentNavigationTests: XCTestCase {
 
     var status = WorkroomStatus()
     status.changedFiles = [ChangedFile(path: "A.swift", change: .deleted)]
-    store.mergeLocalStatus(status, into: a, readAt: Date())
+    store.mergeLocalStatus(status, into: a)
 
     guard case .diff(let refreshed)? = store.terminals.tab(diffTab, for: targetA)?.content else {
       return XCTFail("the diff tab must still be a diff tab")
@@ -537,7 +537,7 @@ final class AppStoreContentNavigationTests: XCTestCase {
 
     var status = WorkroomStatus()
     status.changedFiles = [ChangedFile(path: "A.swift", change: .deleted)]
-    store.mergeLocalStatus(status, into: a, readAt: Date())
+    store.mergeLocalStatus(status, into: a)
 
     XCTAssertEqual(
       store.history.entries.count, count,

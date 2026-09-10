@@ -908,12 +908,11 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     await b.value
   }
 
-  /// Local status merges are ordered on the READ, not on when the result lands. Five lanes probe the
-  /// same row and none is ordered against the others, so a slow probe routinely lands after a faster
-  /// one that read the tree later — and merge-time ordering cannot tell those apart, because by then
-  /// both results exist and the timestamps say nothing about which tree each one saw. Getting this
-  /// backwards discards the FRESH result and leaves the dirty dot stale, which is the failure the
-  /// post-create probe exists to prevent.
+  /// Local status merges are ordered on when the read FINISHED, not on when the result lands. Five
+  /// lanes probe the same row and none is ordered against the others, so a slow probe routinely lands
+  /// after a faster one that saw the tree later — and landing order says nothing about which tree
+  /// each result saw. Getting this backwards discards the FRESH result and leaves the dirty dot
+  /// stale, which is the failure the post-create probe exists to prevent.
   func testALocalStatusMergeIsOrderedOnItsReadNotOnWhenItLands() async {
     let (proj, root, _) = makeRealProject(workroom: "wr")
     defer { try? FileManager.default.removeItem(atPath: root) }
@@ -925,31 +924,38 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
 
     let early = Date()
     let late = early.addingTimeInterval(1)
-    var stale = WorkroomStatus.unresolved
-    stale.dirty = false
     var fresh = WorkroomStatus.unresolved
     fresh.dirty = true
+    fresh.localReadAt = late
+    var stale = WorkroomStatus.unresolved
+    stale.dirty = false
+    stale.localReadAt = early
 
     // The later read lands FIRST — the fast lane.
-    store.mergeLocalStatus(fresh, into: sid, readAt: late)
+    store.mergeLocalStatus(fresh, into: sid)
     XCTAssertEqual(store.workroomStatuses[sid]?.dirty, true)
 
-    // Then the earlier read lands, from a lane that started before it but resolved slower. It saw an
-    // older tree, so it must be dropped even though it is the newer WRITE.
-    store.mergeLocalStatus(stale, into: sid, readAt: early)
+    // Then the earlier read lands, from a lane that saw an older tree but resolved slower. It must be
+    // dropped even though it is the newer WRITE.
+    store.mergeLocalStatus(stale, into: sid)
     XCTAssertEqual(
       store.workroomStatuses[sid]?.dirty, true,
-      "a result whose read began earlier must not overwrite one that read the tree later")
+      "a result read earlier must not overwrite one that saw the tree later")
 
-    // And ordering never blocks genuine progress: a read newer than the recorded one still lands.
+    // Ordering never blocks genuine progress: a later read still lands.
     var newest = WorkroomStatus.unresolved
     newest.dirty = false
-    store.mergeLocalStatus(newest, into: sid, readAt: late.addingTimeInterval(1))
-    XCTAssertEqual(store.workroomStatuses[sid]?.dirty, false, "a genuinely newer read must win")
+    newest.localReadAt = late.addingTimeInterval(1)
+    store.mergeLocalStatus(newest, into: sid)
+    XCTAssertEqual(store.workroomStatuses[sid]?.dirty, false, "a genuinely later read must win")
+
+    // And an unstamped status (hand-built, as several tests do) can't be ordered, so it merges.
+    store.mergeLocalStatus(WorkroomStatus(dirty: true), into: sid)
+    XCTAssertEqual(store.workroomStatuses[sid]?.dirty, true, "an unstamped result still merges")
   }
 
-  /// The post-create probe goes through that same ordering — it is one of the five lanes, not a
-  /// special case with its own guard.
+  /// The resolver stamps the read itself, and the post-create probe goes through that same shared
+  /// ordering — it is one of the five lanes, not a special case with its own guard.
   func testThePostCreateProbeMergesThroughTheSharedOrdering() async {
     let (proj, root, _) = makeRealProject(workroom: "wr")
     defer { try? FileManager.default.removeItem(atPath: root) }
@@ -958,12 +964,12 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     let sid = SidebarID.workroom(project: root, name: "wr")
 
     // With nothing recorded the probe merges: `makeRealProject` is a plain directory, so a probe that
-    // actually runs resolves `.notRepository`.
+    // actually runs resolves `.notRepository` — and carries the resolver's own read stamp.
     store.refreshLocalStatus(for: sid)
     await waitUntil(
       { store.workroomStatuses[sid]?.failure == .notRepository }, "the probe must merge normally")
     XCTAssertNotNil(
-      store.workroomStatuses[sid]?.localReadAt, "and must record the read it merged from")
+      store.workroomStatuses[sid]?.localReadAt, "the resolver must stamp the read it performed")
 
     // A result already recorded from a LATER read wins over the probe's own older one.
     var fresher = WorkroomStatus.unresolved
