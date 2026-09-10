@@ -226,7 +226,7 @@ final class WorkroomStatusTests: XCTestCase {
       jjWorkingCopy: JJCommitChanges(
         changeID: "pw", commitID: "7d74470b", refs: ["mybook"], description: "feat: x",
         files: [ChangedFile(path: "a.rb", change: .added)]))
-    store.mergeLocalStatus(fresh, into: sid)
+    store.mergeLocalStatus(fresh, into: sid, readAt: Date())
     let stored = store.workroomStatuses[sid]
     XCTAssertEqual(stored?.dirty, true)
     XCTAssertEqual(stored?.jjWorkingCopy?.refs, ["mybook"])
@@ -248,7 +248,7 @@ final class WorkroomStatusTests: XCTestCase {
       jjWorkingCopy: JJCommitChanges(changeID: "aaaa", refs: ["old"]))
     // A fresh GIT probe (no jj head) lands.
     let gitFresh = WorkroomStatus(dirty: false, branchForCI: "main")
-    store.mergeLocalStatus(gitFresh, into: sid)
+    store.mergeLocalStatus(gitFresh, into: sid, readAt: Date())
     let stored = store.workroomStatuses[sid]
     XCTAssertEqual(stored?.ci, .passing)  // CI preserved across the local refresh
     XCTAssertEqual(stored?.branchForCI, "main")
@@ -487,7 +487,8 @@ final class WorkroomStatusTests: XCTestCase {
       pr: PullRequestInfo(
         number: 5, title: "t", state: .open, isDraft: false, url: "u", reviewDecision: .approved,
         reviewers: [Reviewer(identity: .user(login: "iainad"), state: .approved)]))
-    store.mergeLocalStatus(WorkroomStatus(dirty: false, branchForCI: "main"), into: sid)
+    store.mergeLocalStatus(
+      WorkroomStatus(dirty: false, branchForCI: "main"), into: sid, readAt: Date())
     XCTAssertEqual(store.workroomStatuses[sid]?.pr?.number, 5)  // PR survives the local refresh
     XCTAssertEqual(store.workroomStatuses[sid]?.pr?.reviewers.count, 1)  // …with its reviewers
   }
@@ -500,7 +501,8 @@ final class WorkroomStatusTests: XCTestCase {
     let store = AppStore()
     store.projects = []  // the project the sweep captured has since been deleted
     let sid = SidebarID.root(project: "/gone")
-    store.mergeLocalStatus(WorkroomStatus(dirty: true, branchForCI: "main"), into: sid)
+    store.mergeLocalStatus(
+      WorkroomStatus(dirty: true, branchForCI: "main"), into: sid, readAt: Date())
     XCTAssertNil(store.workroomStatuses[sid])  // no ghost entry created
   }
 

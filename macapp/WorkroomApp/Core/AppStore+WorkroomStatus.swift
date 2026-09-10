@@ -9,7 +9,10 @@ import Foundation
 /// here (this sweep, `scheduleSelectedStatusRefresh`, `handleWorkroomFileChange`) — plus a fourth
 /// outside this file, the Changes panel's working-copy diff (`DiffResolver`) — can all reach a jj
 /// snapshot for the same project concurrently; `JJSnapshotGate` (via `WorkroomStatusResolver`)
-/// serializes same-project jj snapshots across ALL of them, not just within one lane.
+/// serializes same-project jj snapshots across ALL of them, not just within one lane. It does NOT
+/// order their RESULTS, though — a slow probe still lands after a faster one that read the tree
+/// later — so every local lane hands its read start to `mergeLocalStatus`, which drops a result
+/// whose read began before the recorded one's.
 extension AppStore {
   fileprivate static let localStatusTTL: TimeInterval = 15  // git/jj dirty/changed-files
   fileprivate static let ciStatusTTL: TimeInterval = 300  // gh CI (network)
@@ -132,27 +135,20 @@ extension AppStore {
   /// Undebounced and untracked by `selectionStatusTask` on purpose — it fires once per create, and
   /// sharing that task handle would let a landing cancel a pending selection probe.
   ///
-  /// Which makes it a FOURTH unordered lane onto the same row, so it must not clobber: the lanes
-  /// listed at the top of this file cancel-and-replace within themselves but are not ordered against
-  /// each other, and `mergeLocalStatus` has no freshness check — it just stamps `lastChecked`. A
-  /// setup script finishing is exactly when the watcher lane is busiest (the script just wrote the
-  /// tree), so this probe can easily read pre-edit state and land after a newer answer, leaving the
-  /// dirty dot stale — the very thing it was added to fix. So it yields to whatever arrived while it
-  /// was running. Safe to drop rather than re-probe: this is a one-shot best-effort refresh, and any
-  /// result that beat it is at least as fresh as its own read.
+  /// Which makes it one more unordered lane onto the same row — a setup script finishing is exactly
+  /// when the file-watcher lane is busiest — so like every other lane it hands its read time to
+  /// `mergeLocalStatus`, which is where the cross-lane ordering lives.
   func refreshLocalStatus(for sid: SidebarID) {
     if UITestFixture.isActive { return }
     guard let item = selectedStatusWorkItem(for: sid) else { return }
     // Same two suppressions the selection path applies — another create/commit may still be writing.
     if isCreating(sid) || isCommittingProject(item.projectRoot) { return }
     let resolver = statusResolver
-    let startedAt = Date()
+    let readAt = Date()
     Task { [weak self] in
       let fresh = await resolver.resolveLocal(
         path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
-      guard let self else { return }
-      if let last = self.workroomStatuses[sid]?.lastChecked, last > startedAt { return }
-      self.mergeLocalStatus(fresh, into: sid)
+      self?.mergeLocalStatus(fresh, into: sid, readAt: readAt)
     }
   }
 
@@ -179,10 +175,11 @@ extension AppStore {
       try? await Task.sleep(nanoseconds: UInt64(Self.selectionDebounce * 1_000_000_000))
       if Task.isCancelled { return }
       guard let self else { return }
+      let readAt = Date()  // after the debounce — the read is what's being ordered, not the request
       let fresh = await resolver.resolveLocal(
         path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
       if Task.isCancelled { return }
-      self.mergeLocalStatus(fresh, into: sid)
+      self.mergeLocalStatus(fresh, into: sid, readAt: readAt)
       // Skip the network CI/PR probes when `gh` isn't usable (the inspector shows a warning instead).
       await self.refreshGitHubCLI(resolver: resolver)
       if Task.isCancelled { return }
@@ -491,31 +488,37 @@ extension AppStore {
     async
   {
     guard !items.isEmpty else { return }
-    await withTaskGroup(of: (SidebarID, WorkroomStatus).self) { group in
+    await withTaskGroup(of: (SidebarID, WorkroomStatus, Date).self) { group in
       var idx = 0
       let initial = min(cap, items.count)
       while idx < initial {
         let item = items[idx]
         idx += 1
         group.addTask {
-          (
+          // Per item, not per sweep: this one may sit behind `JJSnapshotGate` for seconds while a
+          // sibling reads immediately, so a sweep-wide stamp would misreport both.
+          let readAt = Date()
+          return (
             item.sid,
             await resolver.resolveLocal(
-              path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
+              path: item.path, vcs: item.vcs, projectRoot: item.projectRoot),
+            readAt
           )
         }
       }
-      while let (sid, fresh) = await group.next() {
+      while let (sid, fresh, readAt) = await group.next() {
         if Task.isCancelled { break }
-        mergeLocalStatus(fresh, into: sid)
+        mergeLocalStatus(fresh, into: sid, readAt: readAt)
         if idx < items.count {
           let item = items[idx]
           idx += 1
           group.addTask {
-            (
+            let readAt = Date()
+            return (
               item.sid,
               await resolver.resolveLocal(
-                path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
+                path: item.path, vcs: item.vcs, projectRoot: item.projectRoot),
+              readAt
             )
           }
         }
@@ -577,8 +580,20 @@ extension AppStore {
   /// CI fields so a local refresh never wipes the CI badge. Carries the jj working-copy change set
   /// through too — it comes from the same local probe as `dirty`, so dropping it here would leave
   /// the Changes panel on the git fallback even for a jj repo.
-  func mergeLocalStatus(_ fresh: WorkroomStatus, into sid: SidebarID) {
+  /// `readAt` is when THIS probe started reading the tree — captured by the caller immediately before
+  /// its `resolveLocal`, and the only monotonic fact about a result's content.
+  ///
+  /// The five local lanes (this file's sweep, selection refresh, post-commit refresh, file-watcher
+  /// refresh, and the post-create probe) cancel-and-replace within themselves but are NOT ordered
+  /// against each other, so a slow probe routinely lands after a faster one that read the tree later.
+  /// Ordering on merge time cannot fix that — by then both results exist and the timestamps say
+  /// nothing about which tree each one saw. So the ordering lives here, on the read: a result whose
+  /// read began before the recorded one's is dropped. That is what keeps a stale answer off the dirty
+  /// dot no matter which lane wins the race, rather than each lane guarding itself and getting the
+  /// comparison subtly wrong.
+  func mergeLocalStatus(_ fresh: WorkroomStatus, into sid: SidebarID, readAt: Date) {
     guard targetExists(sid) else { return }  // deleted mid-sweep → don't write a ghost entry
+    if let prior = workroomStatuses[sid]?.localReadAt, prior > readAt { return }
     var s = workroomStatuses[sid] ?? .unresolved
     s.dirty = fresh.dirty
     s.conflicted = fresh.conflicted
@@ -588,6 +603,7 @@ extension AppStore {
     s.branchForCI = fresh.branchForCI
     s.jjWorkingCopy = fresh.jjWorkingCopy
     s.failure = fresh.failure
+    s.localReadAt = readAt
     s.lastChecked = Date()
     workroomStatuses[sid] = s
     // This sweep is the freshest evidence anyone has for these two, so it settles both of the caches
@@ -773,11 +789,12 @@ extension AppStore {
   func refreshStatus(for sid: SidebarID) {
     guard !UITestFixture.isActive, let item = selectedStatusWorkItem(for: sid) else { return }
     let resolver = statusResolver
+    let readAt = Date()
     Task { [weak self] in
       let fresh = await resolver.resolveLocal(
         path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
       guard let self, self.targetExists(sid) else { return }
-      self.mergeLocalStatus(fresh, into: sid)
+      self.mergeLocalStatus(fresh, into: sid, readAt: readAt)
     }
   }
 
@@ -821,11 +838,12 @@ extension AppStore {
     if item.vcs == "jj", !paths.isEmpty, paths.allSatisfy(Self.isJJInternalPath) { return }
     let resolver = statusResolver
     watchRefreshTask?.cancel()
+    let readAt = Date()
     watchRefreshTask = Task { [weak self] in
       let fresh = await resolver.resolveLocal(
         path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
       guard let self, !Task.isCancelled, self.selectedTargetID == sid else { return }
-      self.mergeLocalStatus(fresh, into: sid)
+      self.mergeLocalStatus(fresh, into: sid, readAt: readAt)
     }
   }
 

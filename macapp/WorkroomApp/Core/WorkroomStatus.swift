@@ -257,6 +257,13 @@ struct WorkroomStatus: Equatable, Sendable {
   /// from `[]`. Cleared whenever the PR's identity changes or the PR goes away (see `applyPRStatus`).
   var checks: [CICheck]?
   var lastChecked: Date?
+  /// When the local probe behind the current values STARTED reading, as opposed to when its result
+  /// landed. Five independent lanes probe local status (see `AppStore+WorkroomStatus`), none ordered
+  /// against the others, so a slow probe can merge after a faster one that read the tree LATER —
+  /// and `lastChecked` cannot tell those apart, because it records the landing, not the read. This
+  /// is what `mergeLocalStatus` compares to refuse an older read. Local-probe fields only; the CI/PR
+  /// stages keep their own clocks above.
+  var localReadAt: Date?
   /// When CI was last probed — separate from `lastChecked` because CI has a much longer TTL
   /// (the local git probe refreshes often; the network `gh` call should not).
   var ciCheckedAt: Date?
