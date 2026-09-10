@@ -22,7 +22,12 @@ fails=0
 command -v go >/dev/null 2>&1 || { echo "build-helper_test: SKIP (go not on PATH)"; exit 0; }
 command -v lipo >/dev/null 2>&1 || { echo "build-helper_test: SKIP (lipo not on PATH)"; exit 0; }
 
-WORK="$(mktemp -d)"
+# Template-less `mktemp -d` is NOT $TMPDIR-aware on macOS — BSD mktemp asks
+# confstr(_CS_DARWIN_USER_TEMP_DIR) and lands in /var/folders/… whatever $TMPDIR says. That makes
+# this suite unrunnable inside a sandbox that only grants $TMPDIR (every case fails with
+# "mkdtemp failed … Operation not permitted", then cascades into bogus assertion failures because
+# $WORK is empty). Naming the template honours $TMPDIR on both BSD and GNU mktemp.
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/build-helper_test.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
 # A throwaway Go module standing in for the repo root, so the test never depends on the real CLI

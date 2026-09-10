@@ -24,7 +24,9 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REGISTRY="$DIR/Resources/tool-logos/registry.json"
 ASSETS="$DIR/WorkroomApp/Assets.xcassets"
-TMP="$(mktemp -d)"
+# Named template so $TMPDIR is honoured: template-less `mktemp -d` on macOS ignores it and uses
+# confstr(_CS_DARWIN_USER_TEMP_DIR), which a $TMPDIR-only sandbox refuses (see build-helper_test.sh).
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/fetch-tool-logos.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 ids_filter=("$@")
 
