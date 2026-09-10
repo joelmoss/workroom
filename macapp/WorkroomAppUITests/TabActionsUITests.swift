@@ -1,6 +1,7 @@
 import XCTest
 
-/// UI tests for the tab toolbar + context menus + File-menu bulk close (issue #72). Driven through the
+/// UI tests for the pane title bar's toolbar + context menus + File-menu bulk close (issue #72; the
+/// toolbar moved from the tab strip into each pane's own bar in issue #150). Driven through the
 /// real app in fixture mode (`-WorkroomUITestFixture 1`): the workroom auto-selects so a terminal pane
 /// renders on launch, and clicking a Changes-panel row opens a canned diff tab. Panes are counted via
 /// the per-leaf `terminal.pane` accessibility element (one per rendered pane, diff or terminal).
@@ -102,18 +103,18 @@ final class TabActionsUITests: XCTestCase {
   func testTerminalToolbarHasSplitAndCloseAllNotOpenFile() {
     let app = launchedApp()
     openWorkroom(app)
-    XCTAssertTrue(app.buttons["tab.toolbar.splitRight"].waitForExistence(timeout: 6))
-    XCTAssertTrue(app.buttons["tab.toolbar.splitDown"].exists)
-    XCTAssertTrue(app.buttons["tab.toolbar.closeAll"].exists)
+    XCTAssertTrue(app.buttons["pane.toolbar.splitRight"].waitForExistence(timeout: 6))
+    XCTAssertTrue(app.buttons["pane.toolbar.splitDown"].exists)
+    XCTAssertTrue(app.buttons["workroom.pane.closeAll"].exists)
     XCTAssertFalse(
-      app.buttons["tab.toolbar.openFile"].exists, "a terminal tab has no Open-file action")
+      app.buttons["pane.toolbar.openFile"].exists, "a terminal tab has no Open-file action")
   }
 
   func testTerminalToolbarSplitRightCreatesTwoPanes() {
     let app = launchedApp()
     openWorkroom(app)
     assertCount(panes(app), reaches: 1)
-    app.buttons["tab.toolbar.splitRight"].click()
+    app.buttons["pane.toolbar.splitRight"].click()
     assertCount(panes(app), reaches: 2)
   }
 
@@ -121,7 +122,7 @@ final class TabActionsUITests: XCTestCase {
     let app = launchedApp()
     openWorkroom(app)
     assertCount(panes(app), reaches: 1)
-    app.buttons["tab.toolbar.splitDown"].click()
+    app.buttons["pane.toolbar.splitDown"].click()
     assertCount(panes(app), reaches: 2)
   }
 
@@ -132,10 +133,10 @@ final class TabActionsUITests: XCTestCase {
     let app = launchedApp()
     openWorkroom(app)
     openDiffPreview(app)
-    XCTAssertTrue(app.buttons["tab.toolbar.openFile"].waitForExistence(timeout: 6))
-    XCTAssertTrue(app.buttons["tab.toolbar.splitRight"].exists)
-    XCTAssertTrue(app.buttons["tab.toolbar.splitDown"].exists)
-    XCTAssertTrue(app.buttons["tab.toolbar.closeAll"].exists)
+    XCTAssertTrue(app.buttons["pane.toolbar.openFile"].waitForExistence(timeout: 6))
+    XCTAssertTrue(app.buttons["pane.toolbar.splitRight"].exists)
+    XCTAssertTrue(app.buttons["pane.toolbar.splitDown"].exists)
+    XCTAssertTrue(app.buttons["workroom.pane.closeAll"].exists)
   }
 
   /// Splitting a diff from the toolbar opens a second pane (a diff pane of the same file, #72).
@@ -144,7 +145,7 @@ final class TabActionsUITests: XCTestCase {
     openWorkroom(app)
     openDiffPreview(app)
     assertCount(panes(app), reaches: 1)  // the diff is shown solo
-    app.buttons["tab.toolbar.splitRight"].click()
+    app.buttons["pane.toolbar.splitRight"].click()
     assertCount(panes(app), reaches: 2)
   }
 
@@ -152,9 +153,9 @@ final class TabActionsUITests: XCTestCase {
   func testToolbarCloseAllClosesEveryPane() {
     let app = launchedApp()
     openWorkroom(app)
-    app.buttons["tab.toolbar.splitRight"].click()
+    app.buttons["pane.toolbar.splitRight"].click()
     assertCount(panes(app), reaches: 2)
-    app.buttons["tab.toolbar.closeAll"].click()
+    app.buttons["workroom.pane.closeAll"].click()
     assertCount(panes(app), reaches: 0)
   }
 
@@ -226,7 +227,7 @@ final class TabActionsUITests: XCTestCase {
     let app = launchedApp()
     openWorkroom(app)
     openDiffPreview(app)
-    app.buttons["tab.toolbar.splitRight"].click()
+    app.buttons["pane.toolbar.splitRight"].click()
     assertCount(panes(app), reaches: 2)
     panes(app).element(boundBy: 1).rightClick()  // the second pane's body
     let remove = menuItem(app, "Remove from Split")
@@ -242,7 +243,7 @@ final class TabActionsUITests: XCTestCase {
   func testFileMenuCloseAllTabsClosesEverything() {
     let app = launchedApp()
     openWorkroom(app)
-    app.buttons["tab.toolbar.splitRight"].click()
+    app.buttons["pane.toolbar.splitRight"].click()
     assertCount(panes(app), reaches: 2)
 
     let fileMenu = app.menuBars.menuBarItems["File"]

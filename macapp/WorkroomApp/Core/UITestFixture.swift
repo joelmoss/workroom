@@ -284,6 +284,22 @@ enum UITestFixture {
   /// deterministically instead of depending on a real long name existing somewhere on disk.
   static let longWorkroomNameValue = String(repeating: "abcdefghij", count: 13)  // 130 chars
 
+  /// When set (`-WorkroomUITestLongTabTitle 1`), the fixture's first terminal tab is given a title
+  /// far past the chips' 180pt cap, so the pane title bar's untruncated rendering (issue #150) can be
+  /// asserted deterministically instead of depending on whatever a real shell happens to set.
+  ///
+  /// Separate from `longWorkroomName`, which seeds the WORKROOM's name for the chip/header title-cap
+  /// test — this one is the TAB's title, which is what `PaneTitleBar` renders.
+  static var longTabTitle: Bool {
+    flag("WorkroomUITestLongTabTitle")
+  }
+
+  /// The oversized tab title seeded under `longTabTitle`. Deliberately a run of distinct words rather
+  /// than a repeated string: the title bar tail-truncates a terminal title, so a test asserting the
+  /// rendered width needs a value whose head is recognizable and whose length is unambiguous.
+  static let longTabTitleValue =
+    "workroom detail panel title bar rendering fixture for the very long terminal title case"
+
   /// When set (`-WorkroomUITestWorkroomSplit 1`), the fixture starts already in a workroom-into-
   /// workroom split of the project ROOT + the first workroom, so the split group title bar (issue
   /// #112) renders on launch WITHOUT an XCUITest drag (which is flaky). One split covers both menu

@@ -23,7 +23,7 @@ final class WorkroomPaneToolbarPresentationTests: XCTestCase {
   func testSoloHealthyWorkroomShowsBothGroupsAndTheDivider() {
     XCTAssertEqual(
       controls(),
-      .init(run: true, openIn: true, divider: true, removeFromSplit: false))
+      .init(run: true, openIn: true, divider: true, closeAll: true, removeFromSplit: false))
   }
 
   /// Run does **not** depend on a command being configured — that's the point. The button is always there
@@ -45,8 +45,22 @@ final class WorkroomPaneToolbarPresentationTests: XCTestCase {
     XCTAssertFalse(c.run)
     XCTAssertFalse(c.openIn)
     XCTAssertFalse(c.divider)
+    // No terminals to close either — the directory they would have run in is gone.
+    XCTAssertFalse(c.closeAll)
     // The ✕ stays: popping it out of the split is the only way to get rid of a "Directory not found" pane.
     XCTAssertTrue(c.removeFromSplit)
+  }
+
+  /// "Close all tabs in this workroom" moved here from the terminal tab strip's toolbar when issue #150
+  /// emptied it. Unlike its neighbours it is gated on ONE thing — the directory — because it needs
+  /// neither an owning project (it acts on this target's tabs) nor an installed editor, and it is a
+  /// workroom-level action, so it is present on a solo pane exactly as on a split member.
+  func testCloseAllNeedsOnlyAPresentDirectory() {
+    XCTAssertTrue(controls().closeAll)
+    XCTAssertTrue(controls(projectPath: nil).closeAll)
+    XCTAssertTrue(controls(hasEditor: false).closeAll)
+    XCTAssertTrue(controls(multi: true).closeAll)
+    XCTAssertFalse(controls(isMissing: true).closeAll)
   }
 
   /// No editor installed → no "Open in…", and **no divider**: a rule with nothing on its trailing side

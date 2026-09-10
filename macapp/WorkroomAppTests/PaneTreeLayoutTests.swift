@@ -7,7 +7,7 @@ import XCTest
 final class PaneTreeLayoutTests: XCTestCase {
   private let divider = TerminalSessions.dividerThickness  // 4
   private let minW = TerminalSessions.minPaneWidth  // 300 — the tab strip's furniture sets this
-  private let minH = TerminalSessions.minPaneHeight  // 120
+  private let minH = TerminalSessions.minPaneHeight  // 150 since issue #150's title bar
 
   func testLengthsSumToUsableAndSplitEvenly() {
     let (a, b) = PaneTreeLayout.lengths(total: 1000, ratio: 0.5, along: .horizontal)

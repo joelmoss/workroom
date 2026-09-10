@@ -2,7 +2,7 @@ import XCTest
 
 /// UI tests for the tab strips' overflow behaviour (issue #129): once the chips scroll, the "+" must
 /// lift out of the scroller and pin at the trailing edge — always visible, always clickable, and never
-/// abutting the per-tab toolbar. While the chips fit, it must stay inline hugging the last chip.
+/// abutting the strip's trailing edge. While the chips fit, it must stay inline hugging the last chip.
 ///
 /// Driven through the real app in fixture mode (`-WorkroomUITestFixture 1`) with the overflow seams
 /// added for these tests: `-WorkroomUITestTerminalTabs <n>` (terminal strip) and
@@ -72,21 +72,25 @@ final class TabStripOverflowUITests: XCTestCase {
       "the + scrolled out of the window — issue #129")
   }
 
-  /// Issue #129, symptom 1: the pinned "+" sits immediately left of the per-tab toolbar with a gutter —
-  /// no abutting, no overlap.
+  /// Issue #129, symptom 1: the pinned "+" sits at the strip's trailing edge with a gutter — no
+  /// abutting, no overlap, not clipped.
+  ///
+  /// Anchored on the pane's title bar, which spans the pane's full width, so its `maxX` IS the strip's
+  /// trailing edge. It used to be anchored on the strip's own trailing toolbar; issue #150 moved every
+  /// per-pane action into that title bar, leaving the "+" as the strip's last element.
   ///
   /// The upper bound is also the witness that the strip really is in its PINNED state: an inline "+" on
-  /// a row that fits would be hundreds of points from the toolbar. So if the overflow predicate never
-  /// fires (e.g. the in-scroller width measurement reporting the viewport instead of the content), this
-  /// fails loudly rather than silently asserting nothing.
-  func testPinnedAddButtonKeepsGutterFromToolbar() {
+  /// a row that fits would be hundreds of points from the trailing edge. So if the overflow predicate
+  /// never fires (e.g. the in-scroller width measurement reporting the viewport instead of the
+  /// content), this fails loudly rather than silently asserting nothing.
+  func testPinnedAddButtonKeepsGutterFromStripEdge() {
     let app = launchedApp(terminalTabs: overflowTabs)
     let plus = element(app, id: "NewTerminal")
-    let toolbar = element(app, id: "tab.toolbar.splitRight")
+    let pane = element(app, id: "terminal.pane.titlebar")
     XCTAssertTrue(plus.waitForExistence(timeout: 10))
-    XCTAssertTrue(toolbar.waitForExistence(timeout: 10))
-    let gap = toolbar.frame.minX - plus.frame.maxX
-    XCTAssertGreaterThanOrEqual(gap, 4, "the + must not abut the trailing toolbar (issue #129)")
+    XCTAssertTrue(pane.waitForExistence(timeout: 10))
+    let gap = pane.frame.maxX - plus.frame.maxX
+    XCTAssertGreaterThanOrEqual(gap, 0, "the + must stay inside the strip (issue #129)")
     XCTAssertLessThanOrEqual(
       gap, 28, "the + is not pinned — is the window wide enough that \(overflowTabs) tabs fit?")
   }
@@ -107,8 +111,8 @@ final class TabStripOverflowUITests: XCTestCase {
   /// The hug bound is measured from the chip's **title** (`terminalChips` matches the title StaticText,
   /// which is how chips are counted 1:1), so it has to clear the chip's own trailing furniture: the
   /// close button, the chip's 4pt trailing pad, the hairline, and the row spacing — ~40pt in total. The
-  /// load-bearing assertion is the second one: an inline "+" is hundreds of points from the toolbar,
-  /// a pinned one is within ~28pt of it.
+  /// load-bearing assertion is the second one: an inline "+" is hundreds of points from the strip's
+  /// trailing edge, a pinned one is within ~28pt of it.
   func testAddButtonStaysInlineWhenTabsFit() {
     let app = launchedApp()
     let chip = terminalChips(app).firstMatch
@@ -117,11 +121,11 @@ final class TabStripOverflowUITests: XCTestCase {
     XCTAssertTrue(plus.waitForExistence(timeout: 10))
     XCTAssertLessThanOrEqual(
       plus.frame.minX - chip.frame.maxX, 56, "the + should hug the last tab when the row fits")
-    let toolbar = element(app, id: "tab.toolbar.splitRight")
-    XCTAssertTrue(toolbar.waitForExistence(timeout: 10))
+    let pane = element(app, id: "terminal.pane.titlebar")
+    XCTAssertTrue(pane.waitForExistence(timeout: 10))
     XCTAssertGreaterThan(
-      toolbar.frame.minX - plus.frame.maxX, 40,
-      "with one tab the + must NOT be pinned beside the toolbar")
+      pane.frame.maxX - plus.frame.maxX, 40,
+      "with one tab the + must NOT be pinned at the strip's trailing edge")
   }
 
   // MARK: Accessibility geometry of the chrome glyph buttons
@@ -179,7 +183,7 @@ final class TabStripOverflowUITests: XCTestCase {
     let app = launchedApp()
     XCTAssertTrue(terminalChips(app).firstMatch.waitForExistence(timeout: 10))
     for id in [
-      "NewTerminal", "tab.toolbar.splitRight", "tab.toolbar.splitDown", "tab.toolbar.closeAll",
+      "NewTerminal", "pane.toolbar.splitRight", "pane.toolbar.splitDown", "pane.toolbar.close",
     ] {
       let button = element(app, id: id)
       XCTAssertTrue(button.waitForExistence(timeout: 10), "\(id) never appeared")
@@ -194,7 +198,7 @@ final class TabStripOverflowUITests: XCTestCase {
   func testChromeGlyphButtonsAreHittableWhenInline() {
     let app = launchedApp()
     XCTAssertTrue(terminalChips(app).firstMatch.waitForExistence(timeout: 10))
-    for id in ["NewTerminal", "tab.toolbar.splitRight", "NewWorkroom", "OpenWorkroom"] {
+    for id in ["NewTerminal", "pane.toolbar.splitRight", "NewWorkroom", "OpenWorkroom"] {
       assertHittableButton(app, id, "inline")
     }
   }
@@ -204,7 +208,7 @@ final class TabStripOverflowUITests: XCTestCase {
   func testChromeGlyphButtonsAreHittableWhenPinned() {
     let app = launchedApp(terminalTabs: overflowTabs, workrooms: overflowWorkrooms)
     assertCount(terminalChips(app), reaches: overflowTabs)
-    for id in ["NewTerminal", "tab.toolbar.splitRight", "NewWorkroom", "OpenWorkroom"] {
+    for id in ["NewTerminal", "pane.toolbar.splitRight", "NewWorkroom", "OpenWorkroom"] {
       assertHittableButton(app, id, "pinned")
     }
   }

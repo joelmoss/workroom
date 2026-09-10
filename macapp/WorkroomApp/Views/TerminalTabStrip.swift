@@ -25,10 +25,6 @@ struct TerminalTabStrip: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   /// The tab whose ✦ agent popover is open.
   @State private var agentPopoverTab: TerminalTab.ID?
-  /// Global default diff layout — the toolbar's mode toggle shows it as active until this tab gets a
-  /// per-tab override (`TerminalTab.diffViewModeOverride`).
-  @Default(.diffViewMode) private var defaultDiffViewMode
-
   /// The live drop-into-pane preview, shared with `PaneTreeView` via the coordinator.
   @Binding var chipPaneDrag: PaneDragState?
   /// The pane-local point for a chip drag at a global location, or nil when the cursor is still over
@@ -49,8 +45,9 @@ struct TerminalTabStrip: View {
   @State private var drag = TabReorderDrag<TerminalTab.ID>()
 
   private let tabSpacing: CGFloat = 4
-  /// The strip's own right inset. Lives here rather than on `tabToolbar` (which renders *nothing* when
-  /// there's no active tab) so a pinned "+" is never flush against the pane edge.
+  /// The strip's own right inset, so a pinned "+" is never flush against the pane edge. The strip has
+  /// carried no trailing toolbar since issue #150 moved every per-pane action into the pane's own
+  /// title bar, so the "+" is now the strip's last element.
   private static let stripTrailingInset: CGFloat = 4
 
   /// The strip's leading inset, lining the leftmost tab up with the terminal panel below it: the pane
@@ -94,12 +91,6 @@ struct TerminalTabStrip: View {
       } controls: {
         addTerminalButton
       }
-      // Per-current-tab actions (issue #72), pinned to the strip's right edge as a fixed-size layout
-      // sibling of the scrolling tabs — so the chip area yields first in a cramped split pane and the
-      // toolbar never overlaps the chips. An overflowing strip's "+" now sits between the two, pinned
-      // to the scroller's trailing edge (issue #129). The remove-from-split ✕ used to sit to its
-      // right; it now lives in the workroom-split group title bar (issue #110).
-      tabToolbar
     }
     // No top padding: the strip sits flush at the top of the detail pane so the terminal tabs align
     // with the top of the sidebar (the pane's own top inset is dropped too — see `WorkroomPaneLeaf`).
@@ -271,66 +262,6 @@ struct TerminalTabStrip: View {
     .help("New terminal (⌘T)")
     .accessibilityLabel("New terminal")
     .accessibilityIdentifier("NewTerminal")
-  }
-
-  /// Icon-only actions for the *current* (active) tab (issue #72): the diff view-mode toggle + "Open
-  /// file in…" (diff tabs only), "Split right", and "Close all". Renders nothing when there's no
-  /// active tab. `fixedSize` so it keeps its intrinsic width and the scrolling chip area yields first
-  /// in a narrow split pane.
-  @ViewBuilder
-  private var tabToolbar: some View {
-    if let active = tabs.first(where: { $0.id == activeID }) {
-      HStack(spacing: 2) {
-        // Diff (content) tab: the unified/side-by-side switch (issue #66) + open the working file in
-        // the in-app viewer. The switch is one grouped segmented control — the active mode's
-        // segment stays lit; clicking sets this tab's override (`TerminalTab.diffViewModeOverride`),
-        // which the pane's `DiffViewer` re-renders to. Shows the global default until a choice is made.
-        if case .diff(let descriptor) = active.content {
-          DiffModeSwitch(mode: active.diffViewModeOverride ?? defaultDiffViewMode) {
-            sessions.setDiffViewMode($0, forTab: active.id, in: target)
-          }
-          // Open the working file in the in-app viewer (issue #117). Disabled when the source was
-          // deleted (review D4) — there's no working copy to open.
-          TabToolbarButton(
-            systemImage: "doc.text", help: "Open File",
-            accessibilityLabel: "Open File", identifier: "tab.toolbar.openFile"
-          ) {
-            store.openFilePreview(path: descriptor.path)
-          }
-          .disabled(descriptor.change == .deleted)
-        }
-        // Markdown file tab: the source/preview switch (the toggle lifted out of the file viewer's
-        // own header into the tab toolbar, alongside split). Sets this tab's
-        // `markdownPreviewOverride`, which the pane's `PlainFileViewer` reads. Markdown-only —
-        // other files have no rendered form, so no switch.
-        if case .file(let descriptor) = active.content,
-          PlainFileViewer.isMarkdown(descriptor.path)
-        {
-          MarkdownModeSwitch(preview: active.markdownPreviewOverride ?? true) {
-            sessions.setMarkdownPreview($0, forTab: active.id, in: target)
-          }
-        }
-        TabToolbarButton(
-          systemImage: "rectangle.trailinghalf.inset.filled", help: "Split right (⌘D)",
-          accessibilityLabel: "Split right", identifier: "tab.toolbar.splitRight"
-        ) {
-          sessions.splitTab(active.id, on: .right, for: target)
-        }
-        TabToolbarButton(
-          systemImage: "rectangle.bottomhalf.inset.filled", help: "Split down (⇧⌘D)",
-          accessibilityLabel: "Split down", identifier: "tab.toolbar.splitDown"
-        ) {
-          sessions.splitTab(active.id, on: .bottom, for: target)
-        }
-        TabToolbarButton(
-          systemImage: "xmark.square", help: "Close all tabs in this workroom",
-          accessibilityLabel: "Close all tabs in this workroom", identifier: "tab.toolbar.closeAll"
-        ) {
-          store.requestCloseAllTerminalTabs(for: target)
-        }
-      }
-      .fixedSize()
-    }
   }
 
   /// A rounded *outline* bracketing the split's contiguous chip run, so it's easy to see which tabs
@@ -530,23 +461,11 @@ private struct TerminalTabChip: View {
           // policy (measured: `.contain` in either modifier position still didn't expose it).
           .accessibilityHidden(true)
       }
-      // A diff (content) tab gets a leading glyph so it reads as not-a-terminal at a glance (#66).
-      if case .diff = tab.content {
-        Image(systemName: "plusminus")
-          .font(.system(size: 9, weight: .semibold))
-          .foregroundStyle(theme.tokens.fgMuted)
-          .accessibilityHidden(true)
-      }
-      // A file (content) tab gets a document glyph, same intent as the diff glyph above.
-      if case .file = tab.content {
-        Image(systemName: "doc")
-          .font(.system(size: 9, weight: .semibold))
-          .foregroundStyle(theme.tokens.fgMuted)
-          .accessibilityHidden(true)
-      }
-      // A changeset (commit detail) tab gets a clock glyph (issue #59), same intent as above.
-      if case .changeset = tab.content {
-        Image(systemName: "clock")
+      // A content tab gets a leading glyph so it reads as not-a-terminal at a glance (#66 diff, #59
+      // changeset). The symbol comes from `TabContent.glyph`, shared with the pane's own title bar
+      // (issue #150) so the two can't drift; nil for a terminal, which is the unmarked default.
+      if let glyph = tab.content.glyph {
+        Image(systemName: glyph)
           .font(.system(size: 9, weight: .semibold))
           .foregroundStyle(theme.tokens.fgMuted)
           .accessibilityHidden(true)
@@ -820,7 +739,7 @@ struct DiffModeSwitch: View {
 /// match `DiffModeSwitch` (same track + raised-thumb styling) so the two toolbars read as siblings.
 /// Clicking a segment reports whether preview should be on. Lives in the tab toolbar (issue: file
 /// viewer toggle moved out of the pane header, alongside the split button).
-private struct MarkdownModeSwitch: View {
+struct MarkdownModeSwitch: View {
   /// Whether rendered preview is the effective mode (this tab's override, defaulting to preview) — the
   /// lit segment.
   let preview: Bool
@@ -911,6 +830,21 @@ extension View {
   ) -> some View {
     self.contextMenu {
       if case .diff(let descriptor) = tab.content {
+        // Unified / side-by-side, mirroring the pane title bar's switch (issue #150). The switch was
+        // the only per-pane control with no menu or keyboard route at all, which is what forced it to
+        // survive the bar's narrow-pane collapse; with this it has a second way in. Sets the same
+        // per-tab override the switch does.
+        Picker(
+          "View",
+          selection: Binding(
+            get: { tab.diffViewModeOverride ?? Defaults[.diffViewMode] },
+            set: { sessions.setDiffViewMode($0, forTab: tab.id, in: target) })
+        ) {
+          Label("Unified", systemImage: "text.alignleft").tag(DiffViewMode.unified)
+          Label("Side by Side", systemImage: "rectangle.split.2x1").tag(DiffViewMode.sideBySide)
+        }
+        .pickerStyle(.inline)
+        Divider()
         // Open the working file in the in-app viewer (issue #117), alongside the external-editor
         // "Open File in…" below — mirrors the Changes-panel row menu. Both no-op / disabled for a
         // deleted source (no working copy).
@@ -938,6 +872,22 @@ extension View {
       // A file tab gets the same actions as a diff tab (open in editor, pin a preview), so the new
       // file panes right-click like diff panes (they share this menu via PaneTreeView).
       if case .file(let descriptor) = tab.content {
+        // Rendered preview / source for a markdown file — the menu route for the pane title bar's
+        // other mode switch (issue #150). Markdown-only, like the switch: nothing else has a rendered
+        // form to offer.
+        if PlainFileViewer.isMarkdown(descriptor.path) {
+          Picker(
+            "View",
+            selection: Binding(
+              get: { tab.markdownPreviewOverride ?? true },
+              set: { sessions.setMarkdownPreview($0, forTab: tab.id, in: target) })
+          ) {
+            Label("Rendered Preview", systemImage: "eye").tag(true)
+            Label("Source", systemImage: "chevron.left.forwardslash.chevron.right").tag(false)
+          }
+          .pickerStyle(.inline)
+          Divider()
+        }
         Button {
           store.openFileInEditor(path: descriptor.path)
         } label: {

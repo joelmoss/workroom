@@ -397,7 +397,7 @@ enum PaneTreeLayout {
 
 /// One terminal pane: hosts the surface, the focus ring, the activity flash (D3), and — in a split — a
 /// small semi-transparent grip chip at the top-center that you drag to move the pane. (Closing is via
-/// the strip ✕ / ⌘W, so the pane needs no close affordance of its own.)
+/// the strip ✕ / ⌘W — and, since issue #150, this pane's own title bar.)
 private struct PaneLeafView: View {
   let tabID: TerminalTab.ID
   /// The pane's content — a terminal surface or non-terminal content (issue #66). All the pane chrome
@@ -438,106 +438,121 @@ private struct PaneLeafView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   /// Drives `borderColor` — see `WorkroomPaneCardBorder.tint`, which this pane's ring shares.
   @Environment(\.controlActiveState) private var activeState
+  /// The global diff view mode, for a pane whose tab has set no override of its own — resolved here
+  /// and handed to the title bar, which stays store- and defaults-free (issue #150).
+  @Default(.diffViewMode) private var defaultDiffViewMode
   @State private var flashing = false
-  @State private var hovering = false
   // The shared @Observable service; reading `theme.tokens` in a body still tracks changes via the
   // Observation framework (no environment injection required, so view-rendering tests don't need it).
   private let theme = ThemeService.shared
 
   var body: some View {
-    paneContent
-      // Dim every pane that isn't the focused one so the active terminal reads instantly. This fires
-      // for split-mates AND for every pane of a co-displayed *backgrounded* workroom — which passes
-      // `surfaceActive: false`, so all its panes arrive here `focused == false` (`shouldDim` gates on
-      // `multiPane || !surfaceActive`, so a backgrounded *solo* workroom dims too — issue #82). A
-      // focused solo terminal never dims. A scrim (not `.opacity`) because the libghostty Metal
-      // surface composites its own layer. The scrim is the terminal's own background colour
-      // (`.terminalDim`) so it washes the text toward the background — the BG itself barely changes.
-      // The scrim is ALWAYS mounted and only its opacity animates (0↔0.3): conditionally inserting it
-      // would make a solo workroom's focus transition snap instead of fade. An activity flash lifts
-      // the dim so the pulse is visible on a backgrounded pane.
-      .overlay {
-        RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius)
-          .fill(
-            theme.tokens.terminalDim.opacity(
-              PaneTreeView.shouldDim(
-                multiPane: multiPane, surfaceActive: surfaceActive, focused: focused,
-                flashing: flashing, enabled: dimUnfocusedPanes) ? 0.3 : 0)
-          )
-          .allowsHitTesting(false)
-          .animation(reduceMotion ? nil : .easeInOut(duration: 0.1), value: flashing)
-          .animation(reduceMotion ? nil : .easeInOut(duration: 0.07), value: focused)
-          .animation(reduceMotion ? nil : .easeInOut(duration: 0.07), value: surfaceActive)
-          .animation(reduceMotion ? nil : .easeInOut(duration: 0.07), value: dimUnfocusedPanes)
-      }
-      // A rounded border frames every terminal at 1.5pt. `borderColor` only highlights a pane with a
-      // peer to be picked out from (same gate as `WorkroomPaneCardBorder.isHighlighted`): either this
-      // workroom's own terminal tree is split (`multiPane`), or the workroom itself is one member of a
-      // multi-workroom split (`workroomIsSplit`). A truly solo terminal — one pane, unsplit workroom —
-      // keeps the plain hairline even though it's always the model-focused pane.
-      .overlay {
-        RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius)
-          .strokeBorder(borderColor, lineWidth: 1.5)
-          .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: flashing)
-          .animation(reduceMotion ? nil : .easeInOut(duration: 0.08), value: focused)
-      }
-      .overlay(alignment: .top) { handle }
-      // The one-time auto-diagnose opt-in — attached to the pane so it fires wherever the failure
-      // surfaces (the diagnosis itself lives in the detail-panel status bar / tab badge, issue #49).
-      .confirmationDialog(
-        "Auto-diagnose failures from now on?",
-        isPresented: Binding(
-          get: { agentManager.autoOptInPromptTab == tabID },
-          set: { if !$0 { agentManager.respondToAutoOptIn(enable: false) } }),
-        titleVisibility: .visible
-      ) {
-        Button("Auto-diagnose") { agentManager.respondToAutoOptIn(enable: true) }
-        Button("Not now", role: .cancel) { agentManager.respondToAutoOptIn(enable: false) }
-      } message: {
-        Text("Workroom can diagnose failed commands automatically, instead of waiting for a click.")
-      }
-      // A uniform 1pt pad on EVERY pane (solo or split) — split panes need it as the inter-pane gutter
-      // (plus the surrounding panel gutter from WorkroomTerminalsView) so the rounded panes read as
-      // separate cards, and a solo pane keeps the same pad so the panel doesn't shift when you switch
-      // between a solo tab and a grouped/split one. Surface identity is held by `.id(tabID)` on the
-      // host (not this padding), so no surface is re-parented across the change (issue #3).
-      .padding(1)
-      // Non-terminal panes (a diff) have no first responder to claim focus on click, so a click
-      // anywhere in the body focuses the pane. Gated on `!isTerminal` ONLY — the content type is
-      // stable for a pane's lifetime, so the gesture is never attached/detached mid-interaction
-      // (gating on `focused` would flip the modifier's structural branch on every focus, tearing
-      // down and rebuilding the DiffViewer — a reload flash + lag). A terminal pane skips this
-      // entirely; its surface eats SwiftUI gestures and focuses via first responder.
-      // `isBlocked` is checked when a click FIRES rather than folded into `enabled` above, precisely
-      // to preserve the invariant that comment describes.
-      .modifier(
-        ActivateOnPress(
-          enabled: !isTerminal, onActivate: onActivate,
-          isBlocked: { store.activePicker != nil })
-      )
-      .onHover { hovering = $0 }
-      .onChange(of: sessions.activityPulses[tabID]) { _, _ in
-        // Flash a backgrounded pane on activity — a split-mate, or any pane of a co-displayed
-        // backgrounded workroom (`!surfaceActive`), mirroring the dim gate so the pulse lifts the
-        // scrim (issue #82). Never the focused pane — you're looking at it.
-        guard multiPane || !surfaceActive, !focused else { return }
-        flashing = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { flashing = false }
-      }
-      // The Metal surface contributes nothing to the a11y tree, so expose the pane itself as one
-      // accessibility element: a stable per-pane signal UI tests count to verify how many panes
-      // render (issue #3), and a clear VoiceOver target. The focused pane carries the selected trait.
-      .accessibilityElement(children: .contain)
-      .accessibilityIdentifier("terminal.pane")
-      .accessibilityLabel(Text(accessibilityLabel))
-      // `multiPane || UITestFixture.isActive`: with one pane there's normally no need to mark it
-      // selected, but that left single-pane keyboard focus with NO queryable signal, so a UI test
-      // asserting "the terminal has focus" could only ever be vacuous — and focus races here are a
-      // recurring bug class (the ⌘F find-bar hatch in TerminalContainerView, DiffPaneFocusUITests, and
-      // the dialog-vs-terminal race this trait now covers). Fixture-gated rather than unconditional:
-      // a lone pane announcing itself "selected" to VoiceOver would be wrong for real users.
-      .accessibilityAddTraits(
-        focused && (multiPane || UITestFixture.isActive) ? .isSelected : [])
+    // The pane's own title bar (issue #150), a SIBLING above the content — never a wrapper around it.
+    // `paneContent` therefore keeps the single structural position that `PaneLeafView` has always
+    // guaranteed it: an `if` around the content would swap SwiftUI's `_ConditionalContent` branch and
+    // re-parent the libghostty surface (the blank/stranded-pane bug, issue #3). The bar is
+    // unconditional, so there is no branch on this axis at all.
+    //
+    // The clip lives HERE rather than inside each `paneContent` branch, so the bar and the content
+    // round as one panel — and every chrome overlay below (scrim, focus ring, padding, a11y) wraps
+    // both, which is why the bar needs no unfocused fade of its own.
+    VStack(spacing: 0) {
+      titleBar
+      paneContent
+    }
+    .clipShape(
+      RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius, style: .continuous)
+    )
+    // Dim every pane that isn't the focused one so the active terminal reads instantly. This fires
+    // for split-mates AND for every pane of a co-displayed *backgrounded* workroom — which passes
+    // `surfaceActive: false`, so all its panes arrive here `focused == false` (`shouldDim` gates on
+    // `multiPane || !surfaceActive`, so a backgrounded *solo* workroom dims too — issue #82). A
+    // focused solo terminal never dims. A scrim (not `.opacity`) because the libghostty Metal
+    // surface composites its own layer. The scrim is the terminal's own background colour
+    // (`.terminalDim`) so it washes the text toward the background — the BG itself barely changes.
+    // The scrim is ALWAYS mounted and only its opacity animates (0↔0.3): conditionally inserting it
+    // would make a solo workroom's focus transition snap instead of fade. An activity flash lifts
+    // the dim so the pulse is visible on a backgrounded pane.
+    .overlay {
+      RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius)
+        .fill(
+          theme.tokens.terminalDim.opacity(
+            PaneTreeView.shouldDim(
+              multiPane: multiPane, surfaceActive: surfaceActive, focused: focused,
+              flashing: flashing, enabled: dimUnfocusedPanes) ? 0.3 : 0)
+        )
+        .allowsHitTesting(false)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.1), value: flashing)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.07), value: focused)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.07), value: surfaceActive)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.07), value: dimUnfocusedPanes)
+    }
+    // A rounded border frames every terminal at 1.5pt. `borderColor` only highlights a pane with a
+    // peer to be picked out from (same gate as `WorkroomPaneCardBorder.isHighlighted`): either this
+    // workroom's own terminal tree is split (`multiPane`), or the workroom itself is one member of a
+    // multi-workroom split (`workroomIsSplit`). A truly solo terminal — one pane, unsplit workroom —
+    // keeps the plain hairline even though it's always the model-focused pane.
+    .overlay {
+      RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius)
+        .strokeBorder(borderColor, lineWidth: 1.5)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: flashing)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.08), value: focused)
+    }
+    // The one-time auto-diagnose opt-in — attached to the pane so it fires wherever the failure
+    // surfaces (the diagnosis itself lives in the detail-panel status bar / tab badge, issue #49).
+    .confirmationDialog(
+      "Auto-diagnose failures from now on?",
+      isPresented: Binding(
+        get: { agentManager.autoOptInPromptTab == tabID },
+        set: { if !$0 { agentManager.respondToAutoOptIn(enable: false) } }),
+      titleVisibility: .visible
+    ) {
+      Button("Auto-diagnose") { agentManager.respondToAutoOptIn(enable: true) }
+      Button("Not now", role: .cancel) { agentManager.respondToAutoOptIn(enable: false) }
+    } message: {
+      Text("Workroom can diagnose failed commands automatically, instead of waiting for a click.")
+    }
+    // A uniform 1pt pad on EVERY pane (solo or split) — split panes need it as the inter-pane gutter
+    // (plus the surrounding panel gutter from WorkroomTerminalsView) so the rounded panes read as
+    // separate cards, and a solo pane keeps the same pad so the panel doesn't shift when you switch
+    // between a solo tab and a grouped/split one. Surface identity is held by `.id(tabID)` on the
+    // host (not this padding), so no surface is re-parented across the change (issue #3).
+    .padding(1)
+    // Non-terminal panes (a diff) have no first responder to claim focus on click, so a click
+    // anywhere in the body focuses the pane. Gated on `!isTerminal` ONLY — the content type is
+    // stable for a pane's lifetime, so the gesture is never attached/detached mid-interaction
+    // (gating on `focused` would flip the modifier's structural branch on every focus, tearing
+    // down and rebuilding the DiffViewer — a reload flash + lag). A terminal pane skips this
+    // entirely; its surface eats SwiftUI gestures and focuses via first responder.
+    // `isBlocked` is checked when a click FIRES rather than folded into `enabled` above, precisely
+    // to preserve the invariant that comment describes.
+    .modifier(
+      ActivateOnPress(
+        enabled: !isTerminal, onActivate: onActivate,
+        isBlocked: { store.activePicker != nil })
+    )
+    .onChange(of: sessions.activityPulses[tabID]) { _, _ in
+      // Flash a backgrounded pane on activity — a split-mate, or any pane of a co-displayed
+      // backgrounded workroom (`!surfaceActive`), mirroring the dim gate so the pulse lifts the
+      // scrim (issue #82). Never the focused pane — you're looking at it.
+      guard multiPane || !surfaceActive, !focused else { return }
+      flashing = true
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { flashing = false }
+    }
+    // The Metal surface contributes nothing to the a11y tree, so expose the pane itself as one
+    // accessibility element: a stable per-pane signal UI tests count to verify how many panes
+    // render (issue #3), and a clear VoiceOver target. The focused pane carries the selected trait.
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("terminal.pane")
+    .accessibilityLabel(Text(accessibilityLabel))
+    // `multiPane || UITestFixture.isActive`: with one pane there's normally no need to mark it
+    // selected, but that left single-pane keyboard focus with NO queryable signal, so a UI test
+    // asserting "the terminal has focus" could only ever be vacuous — and focus races here are a
+    // recurring bug class (the ⌘F find-bar hatch in TerminalContainerView, DiffPaneFocusUITests, and
+    // the dialog-vs-terminal race this trait now covers). Fixture-gated rather than unconditional:
+    // a lone pane announcing itself "selected" to VoiceOver would be wrong for real users.
+    .accessibilityAddTraits(
+      focused && (multiPane || UITestFixture.isActive) ? .isSelected : [])
   }
 
   /// The pane's centre: a hosted terminal surface, or a diff viewer for a content tab. Clipped to the
@@ -557,8 +572,7 @@ private struct PaneLeafView: View {
         // byte-for-byte duplicate of it. PaneTreeView's own `focused` still drives the focus ring, the
         // find bar and the a11y trait, so only the AppKit responder follows the dialog.
         TerminalContainerView(
-          view: s.view, isFocusedPane: focused && store.activePicker == nil,
-          roundsBottomCorners: false
+          view: s.view, isFocusedPane: focused && store.activePicker == nil
         )
         // Scrollback find bar (⌘F), pinned top-trailing over the focused pane only — search state
         // is per-surface, and only the focused pane can be searched. Nothing until active.
@@ -569,8 +583,6 @@ private struct PaneLeafView: View {
         }
         TerminalStatusBar(target: target, tabID: tabID, state: s)
       }
-      .clipShape(
-        RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius, style: .continuous))
     case .diff(let descriptor):
       // The diff pane body carries the SAME context menu as its tab chip (issue #72) — fetch the live
       // tab so "Keep Open" / split-guard reflect its current preview / split state. A diff leaf is
@@ -583,10 +595,9 @@ private struct PaneLeafView: View {
       )
       if let tab = sessions.tab(tabID, for: target) {
         contentPanel(
-          diff.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions),
-          filePath: content.filePath)
+          diff.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions))
       } else {
-        contentPanel(diff, filePath: content.filePath)
+        contentPanel(diff)
       }
     case .file(let descriptor):
       // Read-only file viewer (Files inspector section). Same rounded clip + chip context menu as the
@@ -598,10 +609,9 @@ private struct PaneLeafView: View {
       )
       if let tab = sessions.tab(tabID, for: target) {
         contentPanel(
-          file.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions),
-          filePath: content.filePath)
+          file.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions))
       } else {
-        contentPanel(file, filePath: content.filePath)
+        contentPanel(file)
       }
     case .changeset(let descriptor):
       // A whole commit's detail (issue #59): metadata + file list + the selected file's diff (which
@@ -610,32 +620,23 @@ private struct PaneLeafView: View {
       let detail = ChangesetDetailView(
         descriptor: descriptor, directory: target.path, tabID: tabID, target: target,
         isFocused: focused, find: store.contentFind)
-      // `content.filePath` is nil for a changeset: its own `DiffViewer` header (`showsFileHeader`)
-      // already names the selected file, so a footer path would just say it twice.
       if let tab = sessions.tab(tabID, for: target) {
         contentPanel(
-          detail.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions),
-          filePath: content.filePath)
+          detail.tabChipContextMenu(tab: tab, target: target, store: store, sessions: sessions))
       } else {
-        contentPanel(detail, filePath: content.filePath)
+        contentPanel(detail)
       }
     }
   }
 
   /// Wrap a non-terminal content pane (diff / file / changeset) with its status bar (issue #49), so
-  /// every pane — terminal or not — carries the same bottom chrome. The content rounds its top with
-  /// the bar's bottom into one panel, matching the terminal leaf.
-  ///
-  /// `filePath` is passed in rather than read off `self.content`: the parameter below would shadow
-  /// the `content` property, so `content.filePath` inside here silently resolves against the View.
-  /// The call sites in `paneContent` already hold the descriptor, so they name it explicitly.
-  private func contentPanel(_ view: some View, filePath: String?) -> some View {
+  /// every pane — terminal or not — carries the same bottom chrome. The rounding is applied once by
+  /// `body`, around the title bar and this pair together.
+  private func contentPanel(_ view: some View) -> some View {
     VStack(spacing: 0) {
       view
-      TerminalStatusBar(target: target, tabID: tabID, state: nil, filePath: filePath)
+      TerminalStatusBar(target: target, tabID: tabID, state: nil)
     }
-    .clipShape(
-      RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius, style: .continuous))
   }
 
   private var isTerminal: Bool {
@@ -650,32 +651,52 @@ private struct PaneLeafView: View {
     return multiPane ? "\(base), pane \(paneIndex) of \(paneCount)" : base
   }
 
-  /// A small semi-transparent grip chip at the pane's top-center — drag it to move the pane (onto
-  /// another pane's edge, or up to the strip to pop it out). Only in a split; hidden until the pane
-  /// is hovered, so it isn't a permanent mark over the terminal's top line.
-  @ViewBuilder private var handle: some View {
-    if multiPane {
-      Image(systemName: "line.3.horizontal")
-        .font(.system(size: 9, weight: .semibold))
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 3)
-        .background(.regularMaterial, in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
-        .opacity(hovering ? 0.95 : 0)
-        .padding(.top, 5)
-        .contentShape(Capsule())
-        .gesture(
-          DragGesture(coordinateSpace: .named(coordinateSpace))
-            .onChanged { onDragChanged($0.location) }
-            .onEnded { _ in onDragEnded() }
-        )
-        .help("Drag to move this pane")
-        .accessibilityIdentifier("pane.grip")
-        .accessibilityLabel("Move pane")
-        .accessibilityHint("Drag onto a pane edge to rearrange, or to the tab strip to pop out")
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.15), value: hovering)
-    }
+  /// This pane's own title bar (issue #150) — its identity and its actions, acting on THIS tab rather
+  /// than on whichever tab happens to be active. It also replaced the hover-only grip chip as the
+  /// pane's drag handle: a permanently visible affordance instead of one that appeared on hover, and
+  /// one XCUITest can actually drive.
+  ///
+  /// The bar is store-free, so everything it shows is resolved here — this view already observes
+  /// `sessions` and holds the store, and doing it once per pane keeps that churn out of the bar.
+  private var titleBar: some View {
+    let tab = sessions.tab(tabID, for: target)
+    return PaneTitleBar(
+      title: PaneTitlePresentation.title(for: content, tabTitle: title),
+      glyph: content.glyph,
+      controls: PaneToolbarPresentation.controls(for: content),
+      diffMode: tab?.diffViewModeOverride ?? defaultDiffViewMode,
+      markdownPreview: tab?.markdownPreviewOverride ?? true,
+      openFileEnabled: !isDeletedDiff,
+      focused: focused,
+      multiPane: multiPane,
+      help: helpText,
+      coordinateSpace: coordinateSpace,
+      onSetDiffMode: { sessions.setDiffViewMode($0, forTab: tabID, in: target) },
+      onSetMarkdownPreview: { sessions.setMarkdownPreview($0, forTab: tabID, in: target) },
+      // The pane's OWN target, not `selectedTarget` — see `AppStore.openFilePreview(path:for:)`.
+      onOpenFile: {
+        if let path = content.filePath { store.openFilePreview(path: path, for: target) }
+      },
+      onSplitRight: { sessions.splitTab(tabID, on: .right, for: target) },
+      onSplitDown: { sessions.splitTab(tabID, on: .bottom, for: target) },
+      onClose: { store.requestCloseTerminalTab(tabID, for: target) },
+      onActivate: onActivate,
+      onDragChanged: onDragChanged,
+      onDragEnded: onDragEnded
+    )
+  }
+
+  /// A diff whose source file was deleted has no working copy to open (review D4).
+  private var isDeletedDiff: Bool {
+    if case .diff(let descriptor) = content { return descriptor.change == .deleted }
+    return false
+  }
+
+  /// The bar's tooltip: the full title, plus the file's absolute path where there is one — so a name
+  /// the pane was too narrow to show is still readable on hover.
+  private var helpText: String {
+    guard let path = content.filePath else { return title }
+    return "\(title)\n\((target.path as NSString).appendingPathComponent(path))"
   }
 
   private var borderColor: Color {

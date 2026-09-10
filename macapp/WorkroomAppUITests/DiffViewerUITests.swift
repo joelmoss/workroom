@@ -55,7 +55,7 @@ final class DiffViewerUITests: XCTestCase {
       .matching(
         NSPredicate(
           format: "identifier == %@ AND (label CONTAINS %@ OR value CONTAINS %@)",
-          "terminal.statusBar.path", path, path)
+          "terminal.pane.titlebar", path, path)
       )
       .firstMatch
   }
