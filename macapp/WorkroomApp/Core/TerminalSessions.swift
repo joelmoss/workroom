@@ -128,6 +128,21 @@ enum TabContent {
     case .terminal, .changeset: return nil
     }
   }
+
+  /// The SF Symbol marking this content kind wherever a tab is named — the chip (`TerminalTabChip`)
+  /// and the pane's own title bar (`PaneTitleBar`, issue #150). `nil` for a terminal: a terminal is
+  /// the default, and the glyphs exist to say "this one is NOT a terminal" (issue #66).
+  ///
+  /// One source for both sites so they cannot drift; enumerated for the same reason `filePath` is —
+  /// a fifth `TabContent` kind must be a compile error here, not a silently unmarked tab.
+  var glyph: String? {
+    switch self {
+    case .terminal: return nil
+    case .diff: return "plusminus"
+    case .file: return "doc"
+    case .changeset: return "clock"
+    }
+  }
 }
 
 // MARK: - Navigation-history bridge
@@ -446,21 +461,27 @@ final class TerminalSessions: ObservableObject {
   /// Smallest usable pane WIDTH (points). A split is refused when it would shrink a pane below this;
   /// the renderer applies the same minimum as its divider clamp.
   ///
-  /// Width and height need different floors because a pane's chrome is horizontal: the tab strip's own
-  /// furniture is what sets the width floor, and it is wider than people guess. Measured on a real
-  /// window: the *widest* toolbar a pane can show is a diff tab's (~145pt — the unified/side-by-side
-  /// switch, Open File, split right, split down, close all), plus the pinned "+" (~28pt), the 8pt
-  /// gutter, the 4pt leading inset, one ~100pt chip and the strip's 4pt trailing inset = ~293pt. Below
-  /// that a pane cannot render the strip it must show, never mind its content — at the old 120pt floor
-  /// a terminal tab left ~12pt for chips and a diff tab's toolbar alone overflowed the pane. The floor
-  /// has to hold for whatever tab the pane switches to, so it is sized for the widest one.
+  /// Width and height need different floors because a pane's chrome is horizontal: a row of toolbar
+  /// furniture is what sets the width floor, and it is wider than people guess. That furniture used to
+  /// live in the tab strip; since issue #150 each pane carries it in its own title bar, so the budget
+  /// moved but the arithmetic barely did. The *widest* bar a pane can show is a diff pane's: five
+  /// 28pt `ToolbarIconButtonStyle` footprints (overflow, split right, split down, close, Open File)
+  /// plus the ~60pt unified/side-by-side switch, a 9pt divider and the 6pt spacings ≈ 190pt trailing,
+  /// plus the bar's 10pt leading inset. At 300pt that leaves the title ~100pt — tight, which is why
+  /// the bar collapses its optional controls into an overflow menu rather than squeezing the title to
+  /// nothing.
   ///
   /// 300pt is also about 41 terminal columns, which is the first width where a terminal is honestly
   /// usable rather than merely non-degenerate.
   static let minPaneWidth: CGFloat = 300
-  /// Smallest usable pane HEIGHT (points) — unchanged at 120, which is the tab strip plus roughly seven
-  /// rows. Height has no equivalent of the strip's horizontal furniture, so it needs no larger floor.
-  static let minPaneHeight: CGFloat = 120
+  /// Smallest usable pane HEIGHT (points). Raised 120 → 150 with issue #150: a pane now carries 56pt
+  /// of horizontal chrome (a 28pt title bar above the content and a 28pt status bar below it) where it
+  /// used to carry 28. 150 keeps the same ~94pt of actual content the old 120 left, rather than
+  /// shrinking every stacked pane to roughly four terminal rows.
+  ///
+  /// Read together with `fits(splitting:)`, which measures the whole PANE rect — chrome included — for
+  /// every content kind, so this number means the same thing for a terminal and a diff pane.
+  static let minPaneHeight: CGFloat = 150
   /// Inter-pane gutter thickness (points), shared by the fit guard and the renderer. No separator
   /// rule is drawn anymore, so this is just the gap between panes and the width of the (invisible)
   /// resize hit-zone — kept tight, since the panes' own rounded borders mark the boundary.
@@ -1563,28 +1584,30 @@ final class TerminalSessions: ObservableObject {
 
   // MARK: Internals
 
-  /// Whether splitting `view` in `orientation` would leave both halves ≥ the floor for the axis being
-  /// divided — `minPaneWidth` for a side-by-side split, `minPaneHeight` for a stacked one (D4). When the
-  /// pane has no laid-out size yet (e.g. in tests, or before first layout) the guard can't evaluate, so
-  /// it permits the split and lets the renderer's clamp handle sizing.
   /// Whether `tab`'s pane can be halved along `orientation` without either side landing under the
-  /// floor.
+  /// floor for that axis — `minPaneWidth` side-by-side, `minPaneHeight` stacked (D4).
   ///
-  /// A terminal pane measures its own `GhosttySurfaceView`; a CONTENT pane (diff / file / changeset)
-  /// has no surface, so it reads the rect the renderer last laid out (`paneRects`). Content panes
-  /// used to be exempt outright — `guard let surface else { return true }` — which meant ⌘D on a diff
-  /// pane in a 400pt split produced two ~198pt panes, in the one place the floor exists *for*: the
-  /// diff toolbar is ~145pt of the 300pt `minPaneWidth`.
+  /// **Measures the laid-out PANE rect, for every content kind.** It used to prefer a terminal's own
+  /// `GhosttySurfaceView.bounds` and fall back to `paneRects` only for content panes — which measured
+  /// two different rectangles: a surface excludes the pane's chrome, a pane rect includes it. The gap
+  /// was the chrome height (28pt for the status bar alone; 56pt once every pane also carries a title
+  /// bar, issue #150), so a terminal and a diff pane of identical on-screen size disagreed about
+  /// whether the same split fit. The floors are expressed in whole-pane points — `PaneTreeLayout`'s
+  /// `canSplit` and the renderer's `lengths` clamp both work that way — so the pane rect is the
+  /// measurement that agrees with what actually enforces them.
   ///
-  /// An unmeasured pane (no surface and no laid-out rect yet) still permits the split, and
-  /// `PaneTreeLayout.canSplit` treats a zero rect the same way — the renderer's points-based clamp is
-  /// the authority before first layout.
+  /// The surface stays as the PRE-LAYOUT fallback: `paneRects` is empty until the renderer has laid
+  /// the tree out once, and a live surface already knows its size by then.
+  ///
+  /// An unmeasured pane (no rect and no surface) still permits the split, and `PaneTreeLayout.canSplit`
+  /// treats a zero rect the same way — the renderer's points-based clamp is the authority before first
+  /// layout.
   private func fits(
     splitting tab: TerminalTab, orientation: SplitOrientation, for target: TerminalTarget
   ) -> Bool {
     let rect =
-      tab.surface.map { CGRect(origin: .zero, size: $0.bounds.size) }
-      ?? paneRects[target.id]?[tab.id]
+      paneRects[target.id]?[tab.id]
+      ?? tab.surface.map { CGRect(origin: .zero, size: $0.bounds.size) }
     guard let rect else { return true }
     return PaneTreeLayout.canSplit(rect, along: orientation)
   }

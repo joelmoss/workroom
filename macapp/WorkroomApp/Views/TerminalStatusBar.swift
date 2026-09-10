@@ -1,10 +1,14 @@
 import SwiftUI
 
 /// A status bar pinned to the bottom of a single pane (issue #49). Part of the pane itself, so every
-/// pane in a split carries its own — it reflects THAT pane's tab: the open file's path (a file or
-/// diff pane, issue #136) or the cwd (a terminal), the branch/bookmark, the run command's state
-/// (only on the run tab), and the inline agent's diagnosis. Themed to match
-/// the terminal (same background + foreground palette) so it reads as the pane's own chrome.
+/// pane in a split carries its own — it reflects THAT pane's live working state: the cwd (a
+/// terminal), the branch/bookmark, the run command's state (only on the run tab), and the inline
+/// agent's diagnosis. Themed to match the terminal (same background + foreground palette) so it reads
+/// as the pane's own chrome.
+///
+/// It no longer carries a content pane's file path (issue #136): since issue #150 every pane has a
+/// title bar naming itself, so the path was being shown twice. Identity goes at the top of the pane,
+/// live state at the bottom.
 ///
 /// The diagnosis is a compact indicator that opens the full `TerminalAgentBanner` in a POPOVER — not
 /// an overlay. A SwiftUI overlay's controls sit over the terminal's Metal `NSView`, which wins AppKit
@@ -13,13 +17,8 @@ struct TerminalStatusBar: View {
   let target: TerminalTarget
   let tabID: TerminalTab.ID
   /// The pane's terminal, or nil for a non-terminal (diff / file / changeset) pane — which shows no
-  /// cwd, run state or diagnosis, only the path (where there is one) and the branch.
+  /// cwd, run state or diagnosis, only the branch.
   let state: TerminalState?
-  /// The repo-relative path of the file this pane shows (issue #136), or nil for a pane that isn't
-  /// a file: a terminal (which shows its cwd instead) or a changeset (whose in-pane `DiffViewer`
-  /// header already carries the path). Supplied by `PaneLeafView` from `TabContent.filePath`.
-  /// Defaulted, so the terminal mount doesn't have to say `filePath: nil`.
-  var filePath: String? = nil
   @EnvironmentObject var store: AppStore
   @EnvironmentObject var agentManager: TerminalAgentManager
   @EnvironmentObject var agentUsage: AgentUsageMonitor
@@ -52,7 +51,7 @@ struct TerminalStatusBar: View {
   var body: some View {
     // Computed once per render so a divider between two segments only appears when BOTH sides are
     // actually showing something — each segment is independently optional.
-    let hasLeading = filePath != nil || cwd != nil
+    let hasLeading = cwd != nil
     let hasBranch = store.branchLabel(for: target) != nil
     let hasDiagnosis = diagnosis != nil
     let hasDetached = !sessionsStore.detached(for: target.id).isEmpty
@@ -60,9 +59,8 @@ struct TerminalStatusBar: View {
     let hasAgentUsage = activeAgent != nil
 
     HStack(spacing: 12) {
-      // Path and cwd are mutually exclusive in practice — a content pane has no cwd, a terminal has
-      // no file — so they share the leading slot, ahead of the branch.
-      pathSegment
+      // A terminal's cwd leads the bar. The file path a content pane used to show here moved to the
+      // pane's own title bar (issue #150), which names the pane; this bar is its live working state.
       cwdSegment
       if hasLeading, hasBranch { statusBarDivider }
       branchSegment
@@ -328,21 +326,6 @@ struct TerminalStatusBar: View {
   ///   split diff pane can be ~198pt wide; without a priority SwiftUI shrinks both labels
   ///   proportionally. The path is this pane's identity, while the branch is the same on every pane
   ///   of the workroom and already shown in the sidebar.
-  @ViewBuilder private var pathSegment: some View {
-    if let filePath {
-      Label {
-        Text(filePath).truncationMode(.head)
-      } icon: {
-        Image(systemName: "doc")
-      }
-      .labelStyle(.titleAndIcon)
-      .layoutPriority(1)
-      .help((target.path as NSString).appendingPathComponent(filePath))
-      .accessibilityLabel("File \(filePath)")
-      .accessibilityIdentifier("terminal.statusBar.path")
-    }
-  }
-
   @ViewBuilder private var branchSegment: some View {
     if let branch = store.branchLabel(for: target) {
       Label {

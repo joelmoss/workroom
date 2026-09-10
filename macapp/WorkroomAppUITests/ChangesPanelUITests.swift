@@ -246,7 +246,7 @@ final class ChangesPanelUITests: XCTestCase {
       .matching(
         NSPredicate(
           format: "identifier == %@ AND (label CONTAINS %@ OR value CONTAINS %@)",
-          "terminal.statusBar.path", "Gemfile", "Gemfile")
+          "terminal.pane.titlebar", "Gemfile", "Gemfile")
       )
       .firstMatch
     XCTAssertTrue(

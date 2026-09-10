@@ -155,6 +155,10 @@ enum TabStripMetrics {
   /// three can be on screen at once, so a per-view copy — this was three, each cross-referenced only by
   /// comment — is directly comparable and drifts visibly. Note a workroom chip spends it on two names
   /// (project + workroom) against a terminal chip's one, so it starts truncating sooner.
+  ///
+  /// The DETAIL PANEL's title bar (`PaneTitleBar`, issue #150) is the deliberate exception: it exists
+  /// precisely so a pane's identity is readable when the chip's cap has cut it, so capping it here too
+  /// would be capping the fix. It takes whatever width its toolbar leaves instead.
   static let maxChipTitle: CGFloat = 180
 }
 

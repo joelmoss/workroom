@@ -1012,7 +1012,8 @@ final class TerminalSessionsTests: XCTestCase {
 /// The pane floor as it applies to a CONTENT pane (diff / file / changeset). These own no
 /// `GhosttySurfaceView`, so `fits` used to exempt them outright (`guard let surface else { return
 /// true }`) — which meant ⌘D on a diff pane in a 400pt split produced two ~198pt panes, in the one
-/// place the floor exists *for*: the diff toolbar is ~145pt of the 300pt `minPaneWidth`.
+/// place the floor exists *for*: a diff pane's own toolbar is ~190pt of the 300pt `minPaneWidth`
+/// (issue #150 moved it out of the tab strip and into the pane's title bar).
 ///
 /// The measurement now comes from `paneRects`, the rects the renderer last laid out and hands to the
 /// store through a preference. Seeding it directly here is exactly what `PaneTreeView` does after

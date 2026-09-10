@@ -203,7 +203,10 @@ private struct WorkroomPaneLeaf: View {
       WorkroomPaneTitleBar(
         target: target, projectPath: projectPath, projectLabel: projectLabel,
         workroomName: workroomName, focused: focused,
-        controls: toolbarControls, onClose: onClose
+        controls: toolbarControls, onClose: onClose,
+        // The bar stays store-free (see `WorkroomSplitView.store`), so the leaf — which has the
+        // store — supplies the action.
+        onCloseAll: { store.requestCloseAllTerminalTabs(for: target) }
       )
       // Drag the group by its title bar to move the whole member within the split (issue #110) —
       // the SAME gesture/closures the tab-bar chip uses, so it drops onto the same panes and shows
@@ -393,6 +396,10 @@ enum WorkroomPaneToolbarPresentation {
     let openIn: Bool
     /// The rule between the run group and "Open in…" — only when both are actually there.
     let divider: Bool
+    /// "Close all tabs in this workroom" — moved here from the terminal tab strip's toolbar when that
+    /// toolbar was emptied (issue #150). It belongs on the WORKROOM's bar because it acts on the whole
+    /// workroom, not on one pane; every per-pane action went to the panes instead.
+    let closeAll: Bool
     let removeFromSplit: Bool
   }
 
@@ -405,8 +412,11 @@ enum WorkroomPaneToolbarPresentation {
     // be keyed to. "Open in…" is gated, because with no editor installed there is nowhere to open.
     let run = !isMissing && projectPath != nil
     let openIn = !isMissing && hasEditor
+    // Gated on the directory the same way its neighbours are: a workroom whose directory is gone has
+    // no terminals to close.
     return Controls(
-      run: run, openIn: openIn, divider: run && openIn, removeFromSplit: multi)
+      run: run, openIn: openIn, divider: run && openIn, closeAll: !isMissing,
+      removeFromSplit: multi)
   }
 }
 
@@ -432,6 +442,7 @@ private struct WorkroomPaneTitleBar: View {
   /// `WorkroomSplitView.store`).
   let controls: WorkroomPaneToolbarPresentation.Controls
   let onClose: () -> Void
+  let onCloseAll: () -> Void
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   /// "Dim unfocused panes" (issue #162) — the toolbar's fade is in lockstep with the pane scrim, so
   /// the setting gates it too (see `PaneTreeView.shouldRecede`). The focus *colours* above are not
@@ -485,6 +496,10 @@ private struct WorkroomPaneTitleBar: View {
         // stray mark, and either group can be absent (no run command configured, no editor installed).
         if controls.divider { TitlebarDivider() }
         if controls.openIn { OpenInControl(path: target.path) }
+        if controls.closeAll {
+          if controls.run || controls.openIn { TitlebarDivider() }
+          CloseAllTabsButton(action: onCloseAll)
+        }
         if controls.removeFromSplit {
           TitlebarDivider()
           CloseWorkroomPaneButton(action: onClose)
@@ -526,6 +541,29 @@ private struct WorkroomPaneTitleBar: View {
   /// a `SidebarID`, so this presentation view keeps its store/sid independence.
   private var fullTitle: String {
     WorkroomLabel(project: projectLabel, workroom: workroomName).full
+  }
+}
+
+/// "Close all tabs in this workroom", in the workroom's own title bar since issue #150 emptied the
+/// terminal tab strip's toolbar. A view (not an inline button) so it carries its own `onHover`, which
+/// is what reliably installs the `.help` tooltip's tracking area — the same reason
+/// `CloseWorkroomPaneButton` is one.
+///
+/// Wears the group's inherited `ToolbarIconButtonStyle`, so it grew from the strip toolbar's 11pt
+/// glyph to the header's 13pt and picked up the same 22pt well as its neighbours.
+private struct CloseAllTabsButton: View {
+  let action: () -> Void
+  @State private var hovering = false
+
+  var body: some View {
+    Button(action: action) {
+      Image(systemName: "xmark.square")
+        .foregroundStyle(hovering ? .primary : .secondary)
+    }
+    .onHover { hovering = $0 }
+    .help("Close all tabs in this workroom")
+    .accessibilityLabel("Close all tabs in this workroom")
+    .accessibilityIdentifier("workroom.pane.closeAll")
   }
 }
 

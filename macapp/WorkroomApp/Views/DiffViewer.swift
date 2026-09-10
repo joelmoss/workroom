@@ -347,10 +347,10 @@ struct DiffViewer: View {
   }
 
   /// The header path with its leading directories dimmed and the file name in the primary colour.
+  /// Shares `panePathText` with the pane title bar (issue #150) so a path reads the same in both.
   private var headerPathText: Text {
     let name = (descriptor.path as NSString).lastPathComponent
-    let prefix = String(descriptor.path.dropLast(name.count))
-    return Text(prefix).foregroundStyle(.tertiary) + Text(name)
+    return panePathText(prefix: String(descriptor.path.dropLast(name.count)), name: name)
   }
 
   /// Single-letter change symbol, matching the changeset file-list badges.

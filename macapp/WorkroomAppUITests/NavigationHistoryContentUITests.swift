@@ -3,7 +3,8 @@ import XCTest
 /// End-to-end coverage for back/forward across *content* panes — the one thing the store-level tests
 /// cannot show, because the reported bug was about what the DETAIL PANE displays.
 ///
-/// Asserts `terminal.statusBar.path` (the pane's own file footer, issue #136), not the tab chip. The
+/// Asserts `terminal.pane.titlebar` (the pane's own header — it names the file since issue #150 moved
+/// the path out of the status bar footer), not the tab chip. The
 /// chip moved correctly even while the bug was live, so a chip-only assertion would have passed
 /// against broken code.
 ///
@@ -43,7 +44,7 @@ final class NavigationHistoryContentUITests: XCTestCase {
     app.descendants(matching: .any).matching(
       NSPredicate(
         format: "identifier == %@ AND (label CONTAINS %@ OR value CONTAINS %@)",
-        "terminal.statusBar.path", path, path)
+        "terminal.pane.titlebar", path, path)
     ).firstMatch
   }
 

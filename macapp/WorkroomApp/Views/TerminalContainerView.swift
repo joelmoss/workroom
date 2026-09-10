@@ -8,7 +8,7 @@ enum TerminalPanelMetrics {
   static let cornerRadius: CGFloat = 8
 }
 
-/// Hosts a single terminal surface, clipped to rounded corners. Terminals live in
+/// Hosts a single terminal surface. Terminals live in
 /// `TerminalSessions` (retained across switches); this view mounts whichever one it's given and
 /// re-mounts when that changes.
 ///
@@ -31,36 +31,24 @@ struct TerminalContainerView: NSViewRepresentable {
   /// Whether this pane should hold keyboard focus. Solo callers leave it `true`; the split renderer
   /// passes `true` only for the focused leaf.
   var isFocusedPane: Bool = true
-  /// When a status bar is stacked below the surface (issue #49), the surface rounds only its TOP
-  /// corners so the terminal and the bar together read as one rounded panel (the enclosing clip
-  /// rounds the bottom). Solo/default keeps all four rounded.
-  var roundsBottomCorners: Bool = true
-
   func makeNSView(context: Context) -> NSView {
     let container = NSView()
     container.wantsLayer = true
-    // Round the terminal's corners. masksToBounds clips the hosted surface (pinned to the
-    // container edges) to the rounded shape.
-    container.layer?.cornerRadius = TerminalPanelMetrics.cornerRadius
-    container.layer?.cornerCurve = .continuous
+    // The surface itself rounds NOTHING: since issue #150 it is sandwiched between the pane's title
+    // bar above and its status bar below, so all four of its corners are interior. The pane's rounded
+    // silhouette is cut once by `PaneLeafView`'s `clipShape`, around the whole stack.
+    //
+    // `masksToBounds` stays — it clips the hosted surface (pinned to the container's edges) to the
+    // container, which is what keeps a mid-resize surface from painting outside its pane.
     container.layer?.masksToBounds = true
-    applyRoundedCorners(container)
     mount(in: container)
     applyFocus(in: container)
     return container
   }
 
   func updateNSView(_ container: NSView, context: Context) {
-    applyRoundedCorners(container)
     mount(in: container)
     applyFocus(in: container)
-  }
-
-  private func applyRoundedCorners(_ container: NSView) {
-    container.layer?.maskedCorners =
-      roundsBottomCorners
-      ? [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMaxYCorner]
-      : [.layerMinXMaxYCorner, .layerMaxXMaxYCorner]  // top corners only (top-left, top-right)
   }
 
   // No `dismantleNSView`: occlusion is driven by the model (`reconcileOcclusion`) and by AppKit's

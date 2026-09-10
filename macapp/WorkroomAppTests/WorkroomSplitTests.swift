@@ -98,9 +98,9 @@ final class WorkroomSplitTests: XCTestCase {
   // MARK: pane floor (`destinationRect`)
 
   /// A pane too narrow to yield two floor-width halves must refuse the drop outright, rather than
-  /// nesting a split that trips `lengths`' even-split fallback and leaves two 172pt panes. Workroom
-  /// panes are the one place each pane draws its own `TerminalTabStrip`, whose diff toolbar alone is
-  /// ~145pt — which is where `minPaneWidth` came from.
+  /// nesting a split that trips `lengths`' even-split fallback and leaves two 172pt panes. The width
+  /// floor is set by the toolbar furniture a pane must render — since issue #150 that is the pane's
+  /// own `PaneTitleBar` (~190pt of controls on a diff pane); see `TerminalSessions.minPaneWidth`.
   private func tooNarrow() -> CGRect { CGRect(x: 0, y: 0, width: 348, height: 800) }
   private func roomy() -> CGRect { CGRect(x: 0, y: 0, width: 1200, height: 800) }
 

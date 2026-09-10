@@ -2739,6 +2739,13 @@ final class AppStore: ObservableObject {
         if let title = UITestFixture.usageAgentTitle {
           terminals.tabs(for: target).first?.surface?.onTitleChange?(title)
         }
+        // Oversized tab title for the pane title bar's truncation tests (issue #150). Same route as
+        // the agent title above — a shell-set title latches as `liveTitle`, which is what
+        // `TerminalTab.title` (and so the chip and the pane bar) reads first.
+        if UITestFixture.longTabTitle {
+          terminals.tabs(for: target).first?.surface?
+            .onTitleChange?(UITestFixture.longTabTitleValue)
+        }
         // Two-tab scenario (drag/reorder XCUITest, issue #23): also open a terminal for the second
         // workroom so the workroom tab bar shows two chips to reorder.
         if UITestFixture.twoTabs, project.workrooms.count > 1 {
@@ -3982,8 +3989,23 @@ final class AppStore: ObservableObject {
 
   /// Open a repo file as the selected target's single PREVIEW content tab (single-click in the Files
   /// inspector section), read-only. Shares the preview slot with diffs. No-op if nothing's selected.
+  ///
+  /// Resolving `selectedTarget` is right for the Files inspector, which acts on the selection by
+  /// definition. It is WRONG for anything attached to a specific pane — see the overload below.
   func openFilePreview(path: String) {
     guard let target = selectedTarget else { return }
+    openFilePreview(path: path, for: target)
+  }
+
+  /// Open a repo file as `target`'s preview content tab — for callers that belong to a particular
+  /// pane rather than to the selection (issue #150's per-pane title bar, `PaneTitleBar`'s "Open
+  /// File").
+  ///
+  /// The distinction is only visible in a WORKROOM split, where two workrooms are co-displayed and
+  /// exactly one of them is `selectedTarget`: without an explicit target, a button sitting on the
+  /// non-focused workroom's diff pane opened the file into the *other* workroom's tab strip. A pane's
+  /// own controls must act on that pane's target, which is the whole point of moving them there.
+  func openFilePreview(path: String, for target: TerminalTarget) {
     terminals.openFilePreview(FileDescriptor(path: path, isPreview: true), for: target)
   }
 
