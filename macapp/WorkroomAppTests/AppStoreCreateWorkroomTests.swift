@@ -908,39 +908,75 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     await b.value
   }
 
-  /// The post-create probe is a FOURTH unordered lane onto the same row, and `mergeLocalStatus` has
-  /// no freshness check — so it must yield to whatever arrived while it was running. Without this a
-  /// setup script finishing (exactly when the file-watcher lane is busiest) could land a pre-edit
-  /// read on top of a newer one and leave the dirty dot stale until the next refresh.
-  func testThePostCreateProbeYieldsToANewerResult() async {
+  /// Local status merges are ordered on the READ, not on when the result lands. Five lanes probe the
+  /// same row and none is ordered against the others, so a slow probe routinely lands after a faster
+  /// one that read the tree later — and merge-time ordering cannot tell those apart, because by then
+  /// both results exist and the timestamps say nothing about which tree each one saw. Getting this
+  /// backwards discards the FRESH result and leaves the dirty dot stale, which is the failure the
+  /// post-create probe exists to prevent.
+  func testALocalStatusMergeIsOrderedOnItsReadNotOnWhenItLands() async {
     let (proj, root, _) = makeRealProject(workroom: "wr")
     defer { try? FileManager.default.removeItem(atPath: root) }
     let store = makeStore(FakeWorkroomCLI(canonical: root, projects: [proj]))
-    // Seeded directly rather than via `reload()`: that forks the status SWEEP, which probes this same
-    // row on its own lane and — having no freshness guard of its own — can land `.notRepository` over
-    // the newer value staged below. On CI it did exactly that. This test is about ONE lane, so it
-    // must be the only lane running.
+    // Seeded directly rather than via `reload()`: that forks the status sweep, which probes this same
+    // row on its own lane. This test drives the lanes by hand, so it must be the only one running.
     store.projects = [proj]
     let sid = SidebarID.workroom(project: root, name: "wr")
 
-    // Positive control first: with nothing newer recorded, the probe DOES merge. `makeRealProject`
-    // is a plain directory, so a probe that runs resolves `.notRepository`.
+    let early = Date()
+    let late = early.addingTimeInterval(1)
+    var stale = WorkroomStatus.unresolved
+    stale.dirty = false
+    var fresh = WorkroomStatus.unresolved
+    fresh.dirty = true
+
+    // The later read lands FIRST — the fast lane.
+    store.mergeLocalStatus(fresh, into: sid, readAt: late)
+    XCTAssertEqual(store.workroomStatuses[sid]?.dirty, true)
+
+    // Then the earlier read lands, from a lane that started before it but resolved slower. It saw an
+    // older tree, so it must be dropped even though it is the newer WRITE.
+    store.mergeLocalStatus(stale, into: sid, readAt: early)
+    XCTAssertEqual(
+      store.workroomStatuses[sid]?.dirty, true,
+      "a result whose read began earlier must not overwrite one that read the tree later")
+
+    // And ordering never blocks genuine progress: a read newer than the recorded one still lands.
+    var newest = WorkroomStatus.unresolved
+    newest.dirty = false
+    store.mergeLocalStatus(newest, into: sid, readAt: late.addingTimeInterval(1))
+    XCTAssertEqual(store.workroomStatuses[sid]?.dirty, false, "a genuinely newer read must win")
+  }
+
+  /// The post-create probe goes through that same ordering — it is one of the five lanes, not a
+  /// special case with its own guard.
+  func testThePostCreateProbeMergesThroughTheSharedOrdering() async {
+    let (proj, root, _) = makeRealProject(workroom: "wr")
+    defer { try? FileManager.default.removeItem(atPath: root) }
+    let store = makeStore(FakeWorkroomCLI(canonical: root, projects: [proj]))
+    store.projects = [proj]
+    let sid = SidebarID.workroom(project: root, name: "wr")
+
+    // With nothing recorded the probe merges: `makeRealProject` is a plain directory, so a probe that
+    // actually runs resolves `.notRepository`.
     store.refreshLocalStatus(for: sid)
     await waitUntil(
       { store.workroomStatuses[sid]?.failure == .notRepository }, "the probe must merge normally")
+    XCTAssertNotNil(
+      store.workroomStatuses[sid]?.localReadAt, "and must record the read it merged from")
 
-    // Now stamp a result newer than the probe's start and re-probe: the stale answer must be dropped.
-    var newer = WorkroomStatus.unresolved
-    newer.dirty = true
-    newer.lastChecked = Date().addingTimeInterval(60)
-    store.workroomStatuses[sid] = newer
+    // A result already recorded from a LATER read wins over the probe's own older one.
+    var fresher = WorkroomStatus.unresolved
+    fresher.dirty = true
+    fresher.localReadAt = Date().addingTimeInterval(60)
+    store.workroomStatuses[sid] = fresher
 
     store.refreshLocalStatus(for: sid)
     try? await Task.sleep(nanoseconds: 400_000_000)  // > the probe's own resolve time
 
-    XCTAssertEqual(store.workroomStatuses[sid]?.dirty, true, "the newer result must survive")
+    XCTAssertEqual(store.workroomStatuses[sid]?.dirty, true, "the later read must survive")
     XCTAssertNil(
-      store.workroomStatuses[sid]?.failure, "the stale probe must not have merged over it")
+      store.workroomStatuses[sid]?.failure, "the older read must not have merged over it")
   }
 
 }
