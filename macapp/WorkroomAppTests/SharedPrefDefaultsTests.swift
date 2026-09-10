@@ -36,6 +36,8 @@ final class SharedPrefDefaultsTests: XCTestCase {
   private let activeSectionKey = "inspector.activeSection"
   private let diffModeKey = "diffViewMode"
   private let sidebarVisibleKey = "sidebar.visible"
+  private let dimArgKey = "WorkroomUITestDimUnfocusedPanes"
+  private let dimKey = "dimUnfocusedPanes"
 
   /// Every raw key this test writes, saved/restored so it never leaks into the real Dev defaults
   /// (the unit tests run in the app's own UserDefaults domain — cf. `ActivitySectionTests`).
@@ -47,7 +49,10 @@ final class SharedPrefDefaultsTests: XCTestCase {
   /// unrelated class happens to be running beside it. The keys that remain are written by this class
   /// alone (see above), so nothing else can see them mid-flight.
   private var keys: [String] {
-    [sectionArgKey, diffModeArgKey, visibleKey, activeSectionKey, diffModeKey, sidebarVisibleKey]
+    [
+      sectionArgKey, diffModeArgKey, visibleKey, activeSectionKey, diffModeKey, sidebarVisibleKey,
+      dimArgKey, dimKey,
+    ]
   }
   private var saved: [String: Any?] = [:]
 
@@ -238,19 +243,47 @@ final class SharedPrefDefaultsTests: XCTestCase {
     XCTAssertEqual(Defaults[.diffViewMode], .unified)
   }
 
+  // MARK: fixture seam — pane dimming
+
+  /// Fixture mode with no dimming argument pins dimming **on** — the shipped default — over a
+  /// persisted "off". Same reason as the diff-mode pin above: the scrim and the strip/header fades
+  /// decide how every pane renders, so a developer who turned dimming off in Settings must not
+  /// silently rebaseline the next fixture launch or any screenshot taken from one (issue #162).
+  func testFixtureModeForcesDimmingOnOverAPersistedOff() {
+    Defaults[.dimUnfocusedPanes] = false
+
+    UITestFixture.applyFixtureDefaults(active: true)
+
+    XCTAssertTrue(Defaults[.dimUnfocusedPanes])
+  }
+
+  /// `-WorkroomUITestDimUnfocusedPanes 0` opts a test out of dimming. The value arrives as a STRING,
+  /// which is the whole reason a bare `-dimUnfocusedPanes 0` can't do this job.
+  func testDimmingArgumentTurnsItOff() {
+    UserDefaults.standard.set("0", forKey: dimArgKey)
+
+    UITestFixture.applyFixtureDefaults(active: true)
+
+    XCTAssertFalse(UITestFixture.dimUnfocusedPanes)
+    XCTAssertFalse(Defaults[.dimUnfocusedPanes])
+  }
+
   // MARK: fixture seam — production
 
   /// Inert outside fixture mode: a real user's persisted state must survive untouched — the inspector
-  /// they closed, the section they left, and the diff layout they picked in Settings.
+  /// they closed, the section they left, the diff layout they picked in Settings, and their pane
+  /// dimming choice.
   func testDoesNothingWhenNotInFixtureMode() {
     Defaults[.showInspector] = false
     Defaults[.activeInspectorSection] = .files
     Defaults[.diffViewMode] = .sideBySide
+    Defaults[.dimUnfocusedPanes] = false
 
     UITestFixture.applyFixtureDefaults(active: false)
 
     XCTAssertFalse(Defaults[.showInspector], "a normal launch keeps the user's closed pane")
     XCTAssertEqual(Defaults[.activeInspectorSection], .files, "and their active section")
     XCTAssertEqual(Defaults[.diffViewMode], .sideBySide, "and their diff layout")
+    XCTAssertFalse(Defaults[.dimUnfocusedPanes], "and their pane-dimming choice")
   }
 }
