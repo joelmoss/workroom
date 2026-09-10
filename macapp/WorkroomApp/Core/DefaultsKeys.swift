@@ -84,6 +84,10 @@ extension Defaults.Keys {
   /// Bundle id of the last editor picked from the toolbar "Open in…" menu; "" = none yet.
   static let lastEditor = Key<String>("openInEditorBundleID", default: "")
 
+  /// Dim every pane that isn't the focused one (issue #162). On by default — the scrim is what makes
+  /// the active terminal read instantly in a split; off keeps every pane at full contrast.
+  static let dimUnfocusedPanes = Key<Bool>("dimUnfocusedPanes", default: true)
+
   /// Whether the right-hand inspector (Changes / Files / Pull Request) is open. The stored key is
   /// still `showNotificationsInspector` for back-compat — the inspector used to carry a Notifications
   /// section (moved to the left sidebar, issue #118), but the persisted user state is preserved.

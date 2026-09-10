@@ -70,6 +70,9 @@ final class SettingsSidebarUITests: XCTestCase {
     pane(app, "appearance").click()
     XCTAssertTrue(waitExists(control(app, "diffView"), true), "Appearance shows its controls")
     XCTAssertTrue(
+      control(app, "dimUnfocusedPanes").exists,
+      "Appearance shows the pane-dimming toggle (issue #162)")
+    XCTAssertTrue(
       waitExists(control(app, "confirmQuit"), false),
       "switching away replaces the General detail")
 

@@ -1,4 +1,5 @@
 import AppKit
+import Defaults
 import SwiftUI
 
 /// Geometry the workroom pane cards share with the chrome AROUND them.
@@ -432,6 +433,10 @@ private struct WorkroomPaneTitleBar: View {
   let controls: WorkroomPaneToolbarPresentation.Controls
   let onClose: () -> Void
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  /// "Dim unfocused panes" (issue #162) — the toolbar's fade is in lockstep with the pane scrim, so
+  /// the setting gates it too (see `PaneTreeView.shouldRecede`). The focus *colours* above are not
+  /// gated: they emphasise the focused pane rather than dimming the others, like the accent ring.
+  @Default(.dimUnfocusedPanes) private var dimUnfocusedPanes
   private let theme = ThemeService.shared
 
   var body: some View {
@@ -492,8 +497,9 @@ private struct WorkroomPaneTitleBar: View {
       // still clickable — opacity doesn't block hit-testing, which matters for the ✕, the way out of a
       // cramped split — they just stop competing with the focused pane's. Matching curve and duration so
       // the header, the strip, and the per-pane scrim all fade as one.
-      .opacity(focused ? 1 : 0.45)
+      .opacity(PaneTreeView.shouldRecede(active: focused, enabled: dimUnfocusedPanes) ? 0.45 : 1)
       .animation(reduceMotion ? nil : .easeInOut(duration: 0.07), value: focused)
+      .animation(reduceMotion ? nil : .easeInOut(duration: 0.07), value: dimUnfocusedPanes)
     }
     // Trailing inset is tighter than the leading so the trailing-most control lines up with the
     // terminal tab strip's own toolbar below it (both land 4pt inside the card's trailing edge; the
