@@ -452,6 +452,11 @@ struct RootView: View {
           // on `hasModalPresentation` — ⌘N/⌘O must still work while a picker is open, because raising
           // one picker replaces the other and that's the documented behaviour (issue #94).
           hasProjects: !store.projects.isEmpty,
+          // `hasWorkroomAnchor`: the two "(split right)" items (⌥⌘N/⌥⌘O, issue #163) need a workroom
+          // to split BESIDE. Deliberately NOT gated on `hasModalPresentation`, for the same reason
+          // `hasProjects` isn't — a disabled item drops its key equivalent, and these chords must
+          // keep working while a picker is up, exactly as their plain ⌘N/⌘O siblings do.
+          hasWorkroomAnchor: store.selectedTargetID != nil,
           // Go-menu Back/Forward (issue #26).
           canNavigateBack: store.canGoBack && !store.hasModalPresentation,
           canNavigateForward: store.canGoForward && !store.hasModalPresentation,
@@ -550,6 +555,11 @@ struct RootView: View {
         // observes the frame directly and fires reliably on every change.
         .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) {
           detailContentFrame = $0
+          // Mirror the derived pane space into the store so a NON-drag caller (⌥⌘O, "Open in
+          // Split") can apply the same pane floor a drop does. Derived from `$0` rather than from
+          // the just-written `@State`, so it cannot depend on read-after-write ordering. Assigning
+          // a plain (non-`@Published`) var, so this cannot re-enter layout.
+          store.workroomPaneSpace = Self.paneSpace(in: $0)
         }
     }
     // The detail column (tab bar + region around the panes) uses the theme *panel* colour — a
@@ -578,8 +588,13 @@ struct RootView: View {
   /// the drop would land (RootView's rect contains it) with no edge preview ever shown (the
   /// renderer's rect does not). Solo used to be exempt because it had no gutter; since issue #139 it
   /// has one too.
-  private var workroomPaneSpace: CGRect {
-    var space = detailContentFrame.insetBy(dx: WorkroomSplitView.outerGutter, dy: 0)
+  private var workroomPaneSpace: CGRect { Self.paneSpace(in: detailContentFrame) }
+
+  /// The pure inset, shared by `workroomPaneSpace` (chip-drop hit-testing) and the mirror into
+  /// `AppStore.workroomPaneSpace` (the pane floor for keyboard/menu splits) so the two can never
+  /// disagree about where the panes actually are.
+  static func paneSpace(in frame: CGRect) -> CGRect {
+    var space = frame.insetBy(dx: WorkroomSplitView.outerGutter, dy: 0)
     space.size.height -= WorkroomPaneMetrics.windowBottomMargin
     return space
   }
@@ -740,6 +755,7 @@ private struct MenuStateValues: ViewModifier {
   let workroomSelected: Bool
   let hasNotifications: Bool
   let hasProjects: Bool
+  let hasWorkroomAnchor: Bool
   let canNavigateBack: Bool
   let canNavigateForward: Bool
   let hasRunCommand: Bool
@@ -762,6 +778,7 @@ private struct MenuStateValues: ViewModifier {
       .focusedSceneValue(\.workroomSelected, workroomSelected)
       .focusedSceneValue(\.hasNotifications, hasNotifications)
       .focusedSceneValue(\.hasProjects, hasProjects)
+      .focusedSceneValue(\.hasWorkroomAnchor, hasWorkroomAnchor)
       .focusedSceneValue(\.canNavigateBack, canNavigateBack)
       .focusedSceneValue(\.canNavigateForward, canNavigateForward)
       .focusedSceneValue(\.hasRunCommand, hasRunCommand)

@@ -1952,6 +1952,16 @@ insert over the same four cases and asserts they agree, which is the divergence 
 view calling the predicate is a one-line code-read, not covered by a test (`dropHighlight` is a
 `@ViewBuilder`).
 
+**A THIRD caller arrived with issue #163** (⌥⌘O / ⌥⌘N / the "Open in Split" menu item) and it has
+no gesture to measure, so it does not fit the drag shape above. It reads
+`AppStore.workroomPaneRect(for:)`, which plans the anchor's own visible layout into the container
+rect `RootView` mirrors into `AppStore.workroomPaneSpace` — the same two steps
+`workroomChipDropTarget` runs, just without a cursor. Note the shape that was REJECTED there: a
+per-pane `[SidebarID: CGRect]` cache (the obvious mirror of `TerminalSessions.paneRects`) is wrong
+for workrooms, because the renderer only ever lays out the CURRENT selection's layout — start a
+create beside A, select B, and the anchor's entry is simply gone by landing time, silently
+reopening this very hole. Only the container is stable enough to remember; the pane must be derived.
+
 **The `fits` content-pane exemption is ALSO fixed now** (second bullet below), which closes this
 entry. `fits` no longer takes a `GhosttySurfaceView?` — it takes the tab and measures whichever
 rect exists: a terminal pane's surface bounds, else `TerminalSessions.paneRects`, the rects the

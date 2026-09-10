@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 
@@ -170,15 +171,19 @@ extension AppStore {
     return PaneTreeLayout.canSplit(destinationRect, along: edge.orientation)
   }
 
+  /// Returns whether a split was actually made. The three drag call sites ignore it (hence
+  /// `@discardableResult`); the keyboard/menu callers use it as their single guard, so they never
+  /// re-derive this function's reject conditions and can't drift from them.
+  @discardableResult
   func insertWorkroomSplit(
     _ sid: SidebarID, beside: SidebarID, edge: PaneEdge, destinationRect: CGRect? = nil
-  ) {
+  ) -> Bool {
     // Reject a self-drop, a non-resolving leaf (`.project` / deleted workroom), and a workroom whose
     // directory is gone (`isMissing`) — a missing leaf would render a "Directory not found" pane that
     // can only be backed out of again, so don't let one into the split in the first place (#23).
     guard sid != beside, let dropped = target(for: sid), !dropped.isMissing,
       target(for: beside) != nil
-    else { return }
+    else { return false }
     // Pane floor. Workroom panes are the one place each pane draws its OWN `TerminalTabStrip`, whose
     // diff toolbar alone is ~145pt — which is where `minPaneWidth` (300) came from. Without this a
     // third chip dropped into ~700pt nested a split at `total: 348`, tripping `lengths`' even-split
@@ -186,7 +191,7 @@ extension AppStore {
     // from `RootView.workroomChipDropTarget` (the only layer that has the plan); `nil` means an
     // unmeasured caller and keeps the pre-floor behaviour rather than guessing.
     guard canInsertWorkroomSplit(sid, beside: beside, edge: edge, destinationRect: destinationRect)
-    else { return }
+    else { return false }
     // Leave whatever group `sid` was in (possibly dissolving it) BEFORE joining `beside`'s — structural
     // only, no selection re-point: `sid` is about to be focused anyway.
     detachFromSplitGroup(sid)
@@ -204,6 +209,63 @@ extension AppStore {
           second: edge.placesDroppedFirst ? anchor : dropped))
     }
     focusWorkroomMember(sid)
+    return true
+  }
+
+  /// The rect the anchor pane will occupy RIGHT NOW — derived per call, never remembered. Plans
+  /// the anchor's own visible layout into the measured container and returns its slot, exactly the
+  /// two steps `RootView.workroomChipDropTarget` runs for a drop. nil before the first layout pass
+  /// (no container yet), which `canInsertWorkroomSplit` treats as "unmeasured" and admits.
+  ///
+  /// Derived rather than cached because the renderer only lays out the CURRENT selection's layout:
+  /// a per-pane cache holds no entry for an anchor the user has since navigated away from, which
+  /// is precisely the create-then-select-elsewhere path where the floor has to hold.
+  func workroomPaneRect(for sid: SidebarID) -> CGRect? {
+    guard let space = workroomPaneSpace, target(for: sid) != nil else { return nil }
+    let layout = visibleWorkroomLayout(for: sid)
+    return PaneTreeLayout.plan(layout, in: CGRect(origin: .zero, size: space.size)).panes[sid]
+  }
+
+  /// Whether a split of `sid` beside the current selection can actually be made — the predicate
+  /// behind both the "Open (split right)" menu item's visibility and `openExistingAsSplit`'s guard, so
+  /// the affordance can never offer an action the action then refuses.
+  ///
+  /// Mirrors the drop indicator's contract (`canInsertWorkroomSplit` gates the accent band for the
+  /// same reason): a preview must not promise a split the commit declines.
+  func canOpenAsSplit(_ sid: SidebarID) -> Bool {
+    guard let anchor = selectedTargetID, anchor != sid else { return false }
+    // Same rejects `insertWorkroomSplit` applies, asked in advance.
+    guard let dropped = target(for: sid), !dropped.isMissing, target(for: anchor) != nil else {
+      return false
+    }
+    return canInsertWorkroomSplit(
+      sid, beside: anchor, edge: .right, destinationRect: workroomPaneRect(for: anchor))
+  }
+
+  /// Open `sid` beside the current workroom instead of replacing it (issue #163) — the action
+  /// behind ⌥⌘O, ⌥⏎ in the Open picker, and the "Open (split right)" context-menu item.
+  ///
+  /// **A refused split does NOT fall back to a plain open.** That was the first shape and it was
+  /// wrong: `openExisting` REPLACES the selected workroom, so on a window too narrow for the pane
+  /// floor (`canSplit` wants ~602pt of pane) ⌥⌘O silently threw away the pane the user was looking
+  /// at — moments after the picker's own header and footer promised a split. A missing target was
+  /// worse: `insertWorkroomSplit` rejects `isMissing` precisely because a missing leaf can only be
+  /// backed out of again (issue #23), and the fallback then full-framed it. So a refusal is a no-op
+  /// with a beep, and `canOpenAsSplit` keeps the menu item away in the first place.
+  ///
+  /// It deliberately does NOT retry on another edge: landing to the right is the whole contract.
+  func openExistingAsSplit(_ sid: SidebarID) {
+    guard let anchor = selectedTargetID,
+      insertWorkroomSplit(
+        sid, beside: anchor, edge: .right, destinationRect: workroomPaneRect(for: anchor))
+    else {
+      // Reachable from the chord even when the menu item is hidden, so say something rather than
+      // nothing — and never at the cost of the current pane.
+      NSSound.beep()
+      return
+    }
+    // `insertWorkroomSplit` already focused the new member; bring the app forward to show it.
+    NSApp.activate(ignoringOtherApps: true)
   }
 
   /// Structural-only removal of `sid` from its group: collapse to the survivor subtree, or drop the

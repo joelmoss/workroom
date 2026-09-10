@@ -15,7 +15,7 @@ import XCTest
 final class SplitPaneUITests: XCTestCase {
   override func setUpWithError() throws { continueAfterFailure = false }
 
-  private func launchedApp(workroomSplit: Bool = false) -> XCUIApplication {
+  private func launchedApp(workroomSplit: Bool = false, workroomCount: Int = 0) -> XCUIApplication {
     let app = XCUIApplication()
     // Fixture mode: deterministic fake projects/workrooms (not the developer's real config), with the
     // close/quit confirmations suppressed in-app — so ⌘W closes synchronously and teardown never
@@ -24,6 +24,10 @@ final class SplitPaneUITests: XCTestCase {
     // Workroom-split scenario (issue #112): start already in a root + workroom split so the group
     // title bar renders on launch without a flaky XCUITest drag.
     if workroomSplit { app.launchArguments += ["-WorkroomUITestWorkroomSplit", "1"] }
+    // A SECOND workroom (`uitest-room-2`) to open as a split — the default fixture seeds one.
+    if workroomCount > 1 {
+      app.launchArguments += ["-WorkroomUITestWorkroomCount", String(workroomCount)]
+    }
     // Start each test clean, ignoring persisted window state (cf. NewWindowUITests).
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
     app.launch()
@@ -162,6 +166,53 @@ final class SplitPaneUITests: XCTestCase {
       hittableMenuItem(app, "Set Label…"), "…and Set Label…")
     XCTAssertNotNil(
       hittableMenuItem(app, "Delete Workroom…"), "…and Delete Workroom…")
+  }
+
+  // MARK: - Open/create as a split (issue #163)
+
+  /// ⌥⌘O opens the picked workroom BESIDE the current one. Only a UI test can prove the chord
+  /// survives AppKit's menu dispatch and that two panes actually render.
+  func testOptionCmdOOpensWorkroomAsSplit() throws {
+    let app = launchedApp(workroomCount: 2)
+    try openWorkroom(app)
+    assertCount(titlebars(app), reaches: 1)
+
+    app.typeKey("o", modifierFlags: [.command, .option])
+    let row = app.descendants(matching: .any)
+      .matching(identifier: "openWorkroom.target.uitest-room-2").firstMatch
+    XCTAssertTrue(
+      row.waitForExistence(timeout: 6), "the Open picker should list the other workroom")
+    row.click()
+
+    assertCount(titlebars(app), reaches: 2)
+  }
+
+  /// The mouse-reachable equivalent, and the surface most people will look for first. Also pins
+  /// that the item is absent on the workroom that IS the selection — there is nothing to split
+  /// beside itself.
+  func testSidebarContextMenuOpenInSplit() throws {
+    let app = launchedApp(workroomCount: 2)
+    try openWorkroom(app)
+    assertCount(titlebars(app), reaches: 1)
+
+    let selected = app.descendants(matching: .any)
+      .matching(identifier: "sidebar.workroom.uitest-room").firstMatch
+    XCTAssertTrue(selected.waitForExistence(timeout: 10))
+    selected.rightClick()
+    XCTAssertNil(
+      hittableMenuItem(app, "Open (split right)"),
+      "the selected workroom has nothing to split beside itself")
+    app.typeKey(.escape, modifierFlags: [])
+
+    let other = app.descendants(matching: .any)
+      .matching(identifier: "sidebar.workroom.uitest-room-2").firstMatch
+    XCTAssertTrue(other.waitForExistence(timeout: 6))
+    other.rightClick()
+    let item = hittableMenuItem(app, "Open (split right)")
+    XCTAssertNotNil(item, "a non-selected workroom should offer Open in Split")
+    item?.click()
+
+    assertCount(titlebars(app), reaches: 2)
   }
 
   /// A **project-root** split member is never labelled or deletable, but it can still be closed or

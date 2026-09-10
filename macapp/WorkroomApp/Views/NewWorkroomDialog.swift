@@ -8,18 +8,26 @@ import SwiftUI
 /// deliberate difference: ↑/↓ only MOVE the highlight here — they never create. Creating a workroom
 /// per keystroke would be a disaster, so creation fires only on click or Return.
 ///
-///   ┌─ "New Workroom" ───────────── Done ─┐
+/// ⌥⏎ (or ⌥-click) creates the workroom as a **split** beside the current one instead of
+/// replacing it (issue #163); raised by ⌥⌘N the whole dialog is already in split mode, so a plain
+/// ⏎ splits — which is why the title and footer are derived from `PickerSplitIntent`, not fixed.
+///
+///   ┌─ "New Workroom [(split right)]" ─ Done ─┐
 ///   │ 🔍 [ filter…                       ] │  ← auto-focused; single-line, so ↑/↓/⏎ bubble up
 ///   │ ┌─────────────────────────────────┐ │
 ///   │ │ project-a            ~/code/a     │ │  ← highlighted row (⏎ / click creates)
 ///   │ │ project-b            ~/code/b     │ │
 ///   │ └─────────────────────────────────┘ │
+///   │      ⏎ create · ⌥⏎ split            │  ← hint; reads "⏎ split" in split mode
 ///   └─────────────────────────────────────┘
 struct NewWorkroomDialog: View {
   @ObservedObject var store: AppStore
   /// Closes the dialog (the presenter owns the presentation state). Replaces `@Environment(\.dismiss)`
   /// now that the dialog is shown as a `DialogOverlay`, not a `.sheet`.
   let onClose: () -> Void
+  /// Whether this dialog was raised in split mode (⌥⌘N) — consumed once by the presenter, so a
+  /// cancelled raise can't leak into the next one. In split mode a plain pick already splits.
+  var splitIntent = false
   private let theme = ThemeService.shared
 
   @State private var query = ""
@@ -33,22 +41,25 @@ struct NewWorkroomDialog: View {
 
   /// Pick a project: dismiss first, then kick off the (async) create+open. `createWorkroom` mounts
   /// and selects the new workroom, so the detail pane opens it — no extra wiring here.
-  private func pick(_ project: Project) {
+  private func pick(_ project: Project, split: Bool = false) {
     onClose()
-    Task { await store.createWorkroom(in: project) }
+    // Capture the anchor NOW, not at landing: the create is async and the user can select a
+    // different workroom while a setup script runs.
+    let anchor = (split || splitIntent) ? store.selectedTargetID : nil
+    Task { await store.createWorkroom(in: project, splitAnchor: anchor) }
   }
 
   private func projectRow(_ project: Project, isHighlighted: Bool) -> some View {
     ProjectRow(project: project, isHighlighted: isHighlighted)
       .contentShape(Rectangle())
-      .onTapGesture { pick(project) }
+      .onTapGesture { pick(project, split: PickerSplitIntent.requestedFromCurrentModifiers()) }
       .accessibilityIdentifier("newWorkroom.project.\(project.displayName)")
   }
 
   var body: some View {
     VStack(spacing: 0) {
       HStack {
-        Text("New Workroom").font(.headline)
+        Text(PickerSplitIntent.title(open: false, split: splitIntent)).font(.headline)
         Spacer()
         Button("Cancel") { onClose() }.keyboardShortcut(.cancelAction)
       }
@@ -82,6 +93,8 @@ struct NewWorkroomDialog: View {
           }
         }
       }
+
+      PickerHintFooter(open: false, split: splitIntent)
     }
     .frame(width: 420, height: 460)
     .onAppear { searchFocused = true }
@@ -96,9 +109,12 @@ struct NewWorkroomDialog: View {
       highlighted = ProjectPickerModel.move(highlight: highlighted, by: 1, count: filtered.count)
       return .handled
     }
-    .onKeyPress(.return) {
+    // ⌥⏎ splits, plain ⏎ creates (issue #163). The `keys:` overload is what carries the modifiers;
+    // the plain `.onKeyPress(.return)` closure has none. Still wired ONLY here, never on the
+    // field's `.onSubmit` — a double-fire would be a double *create*.
+    .onKeyPress(keys: [.return]) { press in
       if let project = ProjectPickerModel.selection(filtered: filtered, highlight: highlighted) {
-        pick(project)
+        pick(project, split: PickerSplitIntent.requested(press.modifiers))
       }
       return .handled
     }
@@ -143,12 +159,17 @@ struct NewWorkroomDialog: View {
 /// state so RootView doesn't have to.
 struct NewWorkroomPresenter: ViewModifier {
   @ObservedObject var store: AppStore
+  /// The split intent of the CURRENT raise, taken from the store as the picker goes up.
+  @State private var splitIntent = false
 
   func body(content: Content) -> some View {
     content
       // Raising New sets `activePicker = .new`, which replaces Open if it was showing (issue #94).
       .onChange(of: store.requestNewWorkroomPicker) { _, request in
         if request {
+          // Consume the split intent as we raise, so it can never be read by a LATER plain raise
+          // (⌥⌘N → Esc → the title bar's + button would otherwise still split).
+          splitIntent = store.consumePickerSplitIntent()
           store.activePicker = .new
           store.requestNewWorkroomPicker = false
           // Warm the shell-environment probe while the dialog is open. `create` awaits the same
@@ -162,7 +183,8 @@ struct NewWorkroomPresenter: ViewModifier {
       .overlay {
         if store.activePicker == .new {
           DialogOverlay(onDismiss: { store.activePicker = nil }) {
-            NewWorkroomDialog(store: store, onClose: { store.activePicker = nil })
+            NewWorkroomDialog(
+              store: store, onClose: { store.activePicker = nil }, splitIntent: splitIntent)
           }
         }
       }

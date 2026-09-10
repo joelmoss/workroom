@@ -166,7 +166,9 @@ extension KeyboardShortcutsView {
       title: "App",
       items: [
         ShortcutItem(label: "New Workroom", keys: "⌘N"),
+        ShortcutItem(label: "New Workroom (split right)", keys: "⌥⌘N"),
         ShortcutItem(label: "Open workroom…", keys: "⌘O"),
+        ShortcutItem(label: "Open Workroom (split right)", keys: "⌥⌘O"),
         ShortcutItem(label: "Settings", keys: "⌘,"),
         ShortcutItem(label: "Quit", keys: "⌘Q"),
         ShortcutItem(label: "Show/Hide Workroom (global)", keys: "⌘§"),

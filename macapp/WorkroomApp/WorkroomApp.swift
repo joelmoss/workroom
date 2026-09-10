@@ -810,6 +810,17 @@ struct HasProjectsKey: FocusedValueKey {
   typealias Value = Bool
 }
 
+/// Whether a workroom is selected to split BESIDE — published by RootView so the two "…in Split"
+/// items (⌥⌘N / ⌥⌘O, issue #163) disable when there is no anchor.
+///
+/// Deliberately NOT `workroomSelected`, which ANDs in `!hasModalPresentation`: a disabled item
+/// drops its key equivalent, so gating on that would make ⌥⌘O dead whenever ANY picker or sheet is
+/// up — while plain ⌘N/⌘O are deliberately un-gated so that raising one picker replaces the other
+/// (issue #94). Same reasoning, so the same policy: presence of an anchor only, no modal gate.
+struct HasWorkroomAnchorKey: FocusedValueKey {
+  typealias Value = Bool
+}
+
 /// Whether back/forward navigation can move (issue #26) — published by RootView, so the Go-menu
 /// Back/Forward commands disable at the ends of history.
 struct CanNavigateBackKey: FocusedValueKey {
@@ -918,6 +929,10 @@ extension FocusedValues {
     get { self[HasProjectsKey.self] }
     set { self[HasProjectsKey.self] = newValue }
   }
+  var hasWorkroomAnchor: Bool? {
+    get { self[HasWorkroomAnchorKey.self] }
+    set { self[HasWorkroomAnchorKey.self] = newValue }
+  }
   var canNavigateBack: Bool? {
     get { self[CanNavigateBackKey.self] }
     set { self[CanNavigateBackKey.self] = newValue }
@@ -999,6 +1014,7 @@ struct WorkroomCommands: Commands {
   @FocusedValue(\.hasTerminal) private var hasTerminal
   @FocusedValue(\.hasNotifications) private var hasNotifications
   @FocusedValue(\.hasProjects) private var hasProjects
+  @FocusedValue(\.hasWorkroomAnchor) private var hasWorkroomAnchor
   @FocusedValue(\.canNavigateBack) private var canNavigateBack
   @FocusedValue(\.canNavigateForward) private var canNavigateForward
   @FocusedValue(\.hasRunCommand) private var hasRunCommand
@@ -1066,16 +1082,25 @@ struct WorkroomCommands: Commands {
 
       Divider()
 
-      Button("New Workroom…") { store?.requestNewWorkroomPicker = true }
+      Button("New Workroom…") { store?.raiseWorkroomPicker(.new) }
         .keyboardShortcut("n", modifiers: .command)
         .disabled(hasProjects != true)
+      // (split right) (⌥⌘N, issue #163): same picker, but the pick lands BESIDE the current workroom
+      // instead of replacing it. Needs an anchor, hence `hasWorkroomAnchor` — which, unlike
+      // `workroomSelected`, is not modal-gated, so this behaves like ⌘N while a picker is open.
+      Button("New Workroom (split right)") { store?.raiseWorkroomPicker(.new, split: true) }
+        .keyboardShortcut("n", modifiers: [.command, .option])
+        .disabled(hasProjects != true || hasWorkroomAnchor != true)
       // Open workroom… (⌘O, issue #94): raises the open-existing picker (RootView observes
       // `requestOpenWorkroomPicker`); picking a root/workroom switches + focuses it. ⌘O moved here
       // from the Go-menu "Open in Editor" (which keeps its menu item, no shortcut). Disabled with no
       // projects, so ⌘O is a silent no-op rather than an empty picker.
-      Button("Open Workroom…") { store?.requestOpenWorkroomPicker = true }
+      Button("Open Workroom…") { store?.raiseWorkroomPicker(.open) }
         .keyboardShortcut("o", modifiers: .command)
         .disabled(hasProjects != true)
+      Button("Open Workroom (split right)") { store?.raiseWorkroomPicker(.open, split: true) }
+        .keyboardShortcut("o", modifiers: [.command, .option])
+        .disabled(hasProjects != true || hasWorkroomAnchor != true)
 
       Divider()
     }

@@ -306,6 +306,20 @@ final class AppStore: ObservableObject {
   @Published var workroomSplits: [PaneLayout<SidebarID>] = [] {
     didSet { markSessionDirty() }
   }
+  /// The rect `WorkroomSplitView` lays its panes out in — the detail content inset by the split
+  /// renderer's outer gutter and bottom margin. Mirrored here from `RootView.workroomPaneSpace`
+  /// (the only layer that measures it) so a NON-drag caller can apply the pane floor: a drag
+  /// threads its own measured rect down from the drop resolver, but ⌥⌘O and the "Open (split right)"
+  /// menu item have no gesture to carry one.
+  ///
+  /// Only the CONTAINER is remembered; the anchor's own rect is derived per call in
+  /// `workroomPaneRect(for:)`. A per-pane cache was tried and is wrong: the renderer only ever
+  /// lays out the *current* selection's layout, so starting a create beside A and then selecting B
+  /// leaves no entry for A at landing time and the floor silently stops applying.
+  ///
+  /// A plain `var`, deliberately NOT `@Published`: it is written from a layout callback, and
+  /// publishing there would re-enter layout. Nothing observes it — every reader is an action.
+  var workroomPaneSpace: CGRect?
   /// Terminal targets whose terminal subtree is *expanded* in the sidebar (issue #30). Inverse
   /// polarity to `collapsedProjects`: terminals are collapsed by default, so the set holds only the
   /// expanded ones (empty = all collapsed). Persisted with the session (issue #46) — restored only for
@@ -601,6 +615,10 @@ final class AppStore: ObservableObject {
   /// Which command-palette dialog is currently shown (nil = none). Single source of truth so the New
   /// and Open Workroom presenters are mutually exclusive — opening one replaces the other (issue #94).
   @Published var activePicker: ActivePicker?
+  /// Whether the picker about to be raised should SPLIT rather than replace (issue #163) — set by
+  /// ⌥⌘N / ⌥⌘O. Plain `var`, not `@Published`: it is read once by the presenter as it raises and
+  /// cleared in the same breath (`consumePickerSplitIntent`), so nothing observes it.
+  var pickerSplits = false
   /// A workroom awaiting delete confirmation; setting it raises the confirmation prompt.
   @Published var pendingDeletion: PendingWorkroomDeletion?
   /// A target awaiting close confirmation (tab bar "Close"); setting it raises the close prompt.
@@ -3023,7 +3041,11 @@ final class AppStore: ObservableObject {
     }
   }
 
-  func createWorkroom(in project: Project) async {
+  /// `splitAnchor` (issue #163) opens the new workroom BESIDE that one instead of replacing it —
+  /// ⌥⌘N and ⌥⏎ in the New picker pass the selection as it stood when the project was picked.
+  /// A parameter rather than a field on `creation`, so each landing closure captures its own: that
+  /// slot is presentation state, and nothing serializes overlapping creates.
+  func createWorkroom(in project: Project, splitAnchor: SidebarID? = nil) async {
     busyProjects.insert(project.path)
     defer { busyProjects.remove(project.path) }
 
@@ -3061,7 +3083,8 @@ final class AppStore: ObservableObject {
           // when `create` returned, so there was nothing for the `await` below to wait on.
           landing.set(
             Task { @MainActor in
-              await self.landOnCreatedWorkroom(name: name, project: project, setup: setup)
+              await self.landOnCreatedWorkroom(
+                name: name, project: project, setup: setup, splitAnchor: splitAnchor)
             })
         }
       )
@@ -3069,7 +3092,8 @@ final class AppStore: ObservableObject {
       session.finish()
       // Land now if the early "created" event never arrived (older CLI) — no setup flag to read.
       if creation?.targetID == nil {
-        await landOnCreatedWorkroom(name: created.name, project: project, setup: false)
+        await landOnCreatedWorkroom(
+          name: created.name, project: project, setup: false, splitAnchor: splitAnchor)
       } else {
         await reload()  // reflect the finished setup script's tree
       }
@@ -3129,7 +3153,9 @@ final class AppStore: ObservableObject {
   // `internal` (not `private`) only so `@testable` can drive the late-echo bail path directly — a
   // late `onReady` echo lands here with `creation == nil`, and `onReady` is non-escaping so a fake
   // CLI can't reproduce that timing through `create()`. Not called from outside `AppStore`.
-  func landOnCreatedWorkroom(name: String, project: Project, setup: Bool) async {
+  func landOnCreatedWorkroom(
+    name: String, project: Project, setup: Bool, splitAnchor: SidebarID? = nil
+  ) async {
     // Drop the project row's creating spinner the moment the workroom exists (issue #116) — the
     // creating slot (its loader, then a setup script's dialog) now carries the progress, so the
     // sidebar indicator is redundant. `created` fires as setup begins, so this is the earlier of the
@@ -3159,7 +3185,26 @@ final class AppStore: ObservableObject {
     let cfg = runConfig(forProject: project.path)
     if cfg.autoRun, cfg.hasCommand { armAutoRun(forWorkroom: id) }
     selectedProjectID = project.id
-    selectedTargetID = .workroom(project: project.path, name: name)
+    let sid = SidebarID.workroom(project: project.path, name: name)
+    // Create-as-split (issue #163): land the new workroom BESIDE the anchor the user was on when
+    // they picked the project, rather than replacing it. `insertWorkroomSplit` focuses the new
+    // member itself, so a successful insert needs no `selectedTargetID` assignment. It returns
+    // false — and we fall back to the plain landing — if the anchor was deleted while the create
+    // ran, or if the anchor pane can't hold two halves.
+    // KNOWN, ACCEPTED: the split is not VISIBLE until the create finishes. `isCreationFocused`
+    // goes true the moment `insertWorkroomSplit` focuses the new workroom, and
+    // `RootView.detailContent` hands the whole detail to the chrome-less creating slot while it
+    // holds — so ⌥⌘N shows a full-frame loader (a moment for a no-setup create, until Dismiss for
+    // a setup script) and both panes appear once `creation` clears. The MODEL is correct
+    // throughout; only the render is deferred. Rendering the creating pane inside the split needs
+    // per-target creation state (one `creation` slot cannot serve two concurrent creates) — see the
+    // create-lifecycle issue.
+    let landedInSplit =
+      splitAnchor.map {
+        insertWorkroomSplit(
+          sid, beside: $0, edge: .right, destinationRect: workroomPaneRect(for: $0))
+      } ?? false
+    if !landedInSplit { selectedTargetID = sid }
   }
 
   /// Whether the in-progress create (issue #116) is the focused detail — i.e. the detail pane should
@@ -4220,6 +4265,24 @@ final class AppStore: ObservableObject {
   /// notification jumps, so the selection + focus land together and record exactly one history entry.
   func revealTerminal(_ tabID: TerminalTab.ID, at sid: SidebarID) {
     applyLocation(target: sid, tab: tabID, recordHistory: true)
+  }
+
+  /// Raise a workroom picker, recording whether the pick should split (issue #163). THE entry
+  /// point — every raise site goes through it (the two File-menu pairs and the title bar's + and
+  /// open buttons), so `pickerSplits` cannot be left set by one path and read by another.
+  func raiseWorkroomPicker(_ kind: ActivePicker, split: Bool = false) {
+    pickerSplits = split
+    switch kind {
+    case .new: requestNewWorkroomPicker = true
+    case .open: requestOpenWorkroomPicker = true
+    }
+  }
+
+  /// Read the pending split intent and clear it. Each raise consumes exactly once, so a cancelled
+  /// ⌥⌘N cannot leak "split" into a later plain raise from the title bar's + button.
+  func consumePickerSplitIntent() -> Bool {
+    defer { pickerSplits = false }
+    return pickerSplits
   }
 
   /// Open an existing root/workroom from the Open Workroom picker (⌘O, issue #94). Brings the app

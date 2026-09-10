@@ -173,9 +173,10 @@ dependencies install and config copy in real time, and the terminal opens only o
 Deleting is a hover-to-trash with a confirmation; teardown runs in the background and the row clears
 immediately. (See [Setup and teardown scripts](#setup-and-teardown-scripts).)
 
-**Jump in with the keyboard.** `⌘1`–`⌘9` focus terminals left-to-right, `⌘T` opens a new one, `⌘W`
-closes the active one (with an optional confirm), and `⌘O` adds a project. A global `⌘§` hotkey
-shows or hides Workroom from anywhere.
+**Jump in with the keyboard.** `⌘1`–`⌘9` focus terminals left-to-right, `⌘T` opens a new one, and
+`⌘W` closes the active one (with an optional confirm). `⌘N` creates a workroom and `⌘O` opens an
+existing one; hold `⌥` on either (`⌥⌘N` / `⌥⌘O`) to land it beside the current workroom as a split
+instead of replacing it. A global `⌘§` hotkey shows or hides Workroom from anywhere.
 
 **Stay in your editor.** `⌘`-click a file path in any terminal to open it in your editor — VS Code,
 Zed, or Xcode — at the right working directory. The detail toolbar also has *Open in…*, *Reveal in

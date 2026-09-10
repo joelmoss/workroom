@@ -405,6 +405,12 @@ struct ProjectSidebar: View {
         if inside { hovered = id } else if hovered == id { hovered = nil }
       }
       .contextMenu {
+        // Open this workroom beside the current one (issue #163) — the same shared item the tab
+        // chip and split pane title bar get from `workroomContextMenu`. Called directly because
+        // this row's menu is its own inline list, not that shared builder; migrating it wholesale
+        // would silently add a "Close" item and reorder the menu.
+        openInSplitMenuItem(store: store, sid: id)
+        if canOpenInSplit(store: store, sid: id) { Divider() }
         // Set/edit the display label, and remove it when one is set (issue #41). A label is a
         // display-only alias — the workroom name and its branch are unchanged.
         Button {
