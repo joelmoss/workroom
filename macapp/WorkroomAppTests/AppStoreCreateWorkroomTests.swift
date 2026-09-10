@@ -908,4 +908,35 @@ final class AppStoreCreateWorkroomTests: XCTestCase {
     await b.value
   }
 
+  /// The post-create probe is a FOURTH unordered lane onto the same row, and `mergeLocalStatus` has
+  /// no freshness check — so it must yield to whatever arrived while it was running. Without this a
+  /// setup script finishing (exactly when the file-watcher lane is busiest) could land a pre-edit
+  /// read on top of a newer one and leave the dirty dot stale until the next refresh.
+  func testThePostCreateProbeYieldsToANewerResult() async {
+    let (proj, root, _) = makeRealProject(workroom: "wr")
+    defer { try? FileManager.default.removeItem(atPath: root) }
+    let store = makeStore(FakeWorkroomCLI(canonical: root, projects: [proj]))
+    await store.reload()
+    let sid = SidebarID.workroom(project: root, name: "wr")
+
+    // Positive control first: with nothing newer recorded, the probe DOES merge. `makeRealProject`
+    // is a plain directory, so a probe that runs resolves `.notRepository`.
+    store.refreshLocalStatus(for: sid)
+    await waitUntil(
+      { store.workroomStatuses[sid]?.failure == .notRepository }, "the probe must merge normally")
+
+    // Now stamp a result newer than the probe's start and re-probe: the stale answer must be dropped.
+    var newer = WorkroomStatus.unresolved
+    newer.dirty = true
+    newer.lastChecked = Date().addingTimeInterval(60)
+    store.workroomStatuses[sid] = newer
+
+    store.refreshLocalStatus(for: sid)
+    try? await Task.sleep(nanoseconds: 400_000_000)  // > the probe's own resolve time
+
+    XCTAssertEqual(store.workroomStatuses[sid]?.dirty, true, "the newer result must survive")
+    XCTAssertNil(
+      store.workroomStatuses[sid]?.failure, "the stale probe must not have merged over it")
+  }
+
 }

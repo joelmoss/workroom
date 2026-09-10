@@ -131,16 +131,28 @@ extension AppStore {
   ///
   /// Undebounced and untracked by `selectionStatusTask` on purpose — it fires once per create, and
   /// sharing that task handle would let a landing cancel a pending selection probe.
+  ///
+  /// Which makes it a FOURTH unordered lane onto the same row, so it must not clobber: the lanes
+  /// listed at the top of this file cancel-and-replace within themselves but are not ordered against
+  /// each other, and `mergeLocalStatus` has no freshness check — it just stamps `lastChecked`. A
+  /// setup script finishing is exactly when the watcher lane is busiest (the script just wrote the
+  /// tree), so this probe can easily read pre-edit state and land after a newer answer, leaving the
+  /// dirty dot stale — the very thing it was added to fix. So it yields to whatever arrived while it
+  /// was running. Safe to drop rather than re-probe: this is a one-shot best-effort refresh, and any
+  /// result that beat it is at least as fresh as its own read.
   func refreshLocalStatus(for sid: SidebarID) {
     if UITestFixture.isActive { return }
     guard let item = selectedStatusWorkItem(for: sid) else { return }
     // Same two suppressions the selection path applies — another create/commit may still be writing.
     if isCreating(sid) || isCommittingProject(item.projectRoot) { return }
     let resolver = statusResolver
+    let startedAt = Date()
     Task { [weak self] in
       let fresh = await resolver.resolveLocal(
         path: item.path, vcs: item.vcs, projectRoot: item.projectRoot)
-      self?.mergeLocalStatus(fresh, into: sid)
+      guard let self else { return }
+      if let last = self.workroomStatuses[sid]?.lastChecked, last > startedAt { return }
+      self.mergeLocalStatus(fresh, into: sid)
     }
   }
 
