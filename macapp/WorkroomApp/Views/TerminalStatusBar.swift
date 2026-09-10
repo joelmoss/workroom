@@ -170,25 +170,35 @@ struct TerminalStatusBar: View {
   /// stops telling you which side of sustainable pace you're on.
   private static let quotaBarWidths: [CGFloat] = [44, 32, 24]
 
+  /// ONE schedule for the whole segment, wrapping the BRANCH and not just the bars.
+  ///
+  /// The pace pin's offset is a function of wall-clock time — it crosses a bar in the window's own
+  /// duration, ~9pt/hour on the 44pt variant for a 5h window — and this bar has no clock of its own
+  /// otherwise, so an idle pane would park the pin wherever the last unrelated re-render left it.
+  /// The tooltip and the accessibility label read the same `now`, so they can't disagree with the
+  /// pin beside them.
+  ///
+  /// It wraps the branch because `agentUsage.snapshot(for:)` is what applies the freshness filter
+  /// (`fresh(at:)` drops windows past their `resetsAt`). Resolving the snapshot outside the schedule
+  /// and letting the ticks re-render a captured value means an idle agent that stops rewriting its
+  /// quota file keeps an EXPIRED window on screen indefinitely, marching the pin to 100% and
+  /// eventually claiming "resets now" — the filter never gets a chance to run.
+  /// `AgentUsageMonitor.unavailableReason` exists precisely for that state and says so in its own
+  /// doc comment; re-resolving here is what lets the segment reach it.
+  ///
+  /// It also sits OUTSIDE the `ViewThatFits` below: that view instantiates every child to measure
+  /// it, so a `TimelineView` inside the variants would run one schedule per rung. `VCSToolbar`
+  /// wraps its whole bar for the same reason.
   @ViewBuilder private func agentUsageSegment(_ backend: AgentBackend) -> some View {
-    if backend == .claude, claudeUsageBridge.state == .disabled {
-      Button("Enable Claude usage…") { confirmingClaudeUsage = true }
-        .buttonStyle(StatusBarSegmentButtonStyle())
-        .foregroundStyle(theme.tokens.accent)
-        .help("Enable the opt-in Claude status-line bridge")
-        .accessibilityIdentifier("terminal.statusBar.agentUsage.enableClaude")
-    } else if let snapshot = agentUsage.snapshot(for: backend) {
-      // ONE schedule for the whole segment. The pace pin's offset is a function of wall-clock time
-      // — it crosses a bar in the window's own duration, ~9pt/hour on the 44pt variant for a 5h
-      // window — and this bar has no clock of its own otherwise, so an idle pane would park the pin
-      // wherever the last unrelated re-render left it. The tooltip and the accessibility label
-      // quote the same `now`, so they can't disagree with the pin beside them.
-      //
-      // It sits OUTSIDE the `ViewThatFits` deliberately: that view instantiates every child to
-      // measure it, so a `TimelineView` inside the variants would run one schedule per variant.
-      // `VCSToolbar` wraps its whole bar for the same reason.
-      TimelineView(.periodic(from: .now, by: 60)) { context in
-        let now = context.date
+    TimelineView(.periodic(from: .now, by: 60)) { context in
+      let now = context.date
+      if backend == .claude, claudeUsageBridge.state == .disabled {
+        Button("Enable Claude usage…") { confirmingClaudeUsage = true }
+          .buttonStyle(StatusBarSegmentButtonStyle())
+          .foregroundStyle(theme.tokens.accent)
+          .help("Enable the opt-in Claude status-line bridge")
+          .accessibilityIdentifier("terminal.statusBar.agentUsage.enableClaude")
+      } else if let snapshot = agentUsage.snapshot(for: backend) {
         let label = quotaAccessibilityLabel(snapshot, now: now)
         Button {
           usageDetailPinned.toggle()
@@ -215,36 +225,38 @@ struct TerminalStatusBar: View {
           AgentUsageDetailView(snapshot: snapshot, now: now)
             .frame(width: AgentUsageDetailView.popoverWidth)
         }
-      }
-    } else {
-      let isLoading = agentUsage.loading.contains(backend)
-      // The reason (and the retry) matter only once the read has settled — mid-load there's nothing
-      // to explain yet, and a click would just cancel the refresh already running.
-      let reason = isLoading ? nil : agentUsage.unavailableReason(for: backend)
-      Button {
-        agentUsage.refresh()
-      } label: {
-        HStack(spacing: 4) {
-          if isLoading {
-            ProgressView().controlSize(.mini)
-            Text("Loading \(backend.displayName) usage…")
-          } else {
-            Text("\(backend.displayName) usage unavailable")
-            Image(systemName: "arrow.clockwise")
+      } else {
+        let isLoading = agentUsage.loading.contains(backend)
+        // The reason (and the retry) matter only once the read has settled — mid-load there's
+        // nothing to explain yet, and a click would just cancel the refresh already running. The
+        // reason is re-read on every tick along with the branch above it, so a snapshot that
+        // expires while sitting here updates its own explanation.
+        let reason = isLoading ? nil : agentUsage.unavailableReason(for: backend)
+        Button {
+          agentUsage.refresh()
+        } label: {
+          HStack(spacing: 4) {
+            if isLoading {
+              ProgressView().controlSize(.mini)
+              Text("Loading \(backend.displayName) usage…")
+            } else {
+              Text("\(backend.displayName) usage unavailable")
+              Image(systemName: "arrow.clockwise")
+            }
           }
         }
+        .buttonStyle(StatusBarSegmentButtonStyle())
+        .disabled(isLoading)
+        .foregroundStyle(theme.tokens.fgDim)
+        .help((reason.map { "\($0) Click to refresh." }) ?? "Reading the local quota snapshot…")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+          isLoading
+            ? "Loading \(backend.displayName) quota usage"
+            : "\(backend.displayName) quota usage unavailable. \(reason ?? "") Click to refresh."
+        )
+        .accessibilityIdentifier("terminal.statusBar.agentUsage.unavailable")
       }
-      .buttonStyle(StatusBarSegmentButtonStyle())
-      .disabled(isLoading)
-      .foregroundStyle(theme.tokens.fgDim)
-      .help((reason.map { "\($0) Click to refresh." }) ?? "Reading the local quota snapshot…")
-      .accessibilityElement(children: .ignore)
-      .accessibilityLabel(
-        isLoading
-          ? "Loading \(backend.displayName) quota usage"
-          : "\(backend.displayName) quota usage unavailable. \(reason ?? "") Click to refresh."
-      )
-      .accessibilityIdentifier("terminal.statusBar.agentUsage.unavailable")
     }
   }
 
