@@ -539,6 +539,17 @@ enum UITestFixture {
     return DiffViewMode(rawValue: raw) ?? .unified
   }
 
+  /// Whether unfocused panes dim on a fixture launch (`-WorkroomUITestDimUnfocusedPanes 0` to turn it
+  /// off). Defaults to the shipped `true`, so a fixture run renders a deterministic dim state instead
+  /// of inheriting whatever the developer last chose in Settings — the pane scrim and the strip /
+  /// header fades all key off this, so a drifted value silently rebaselines every visual QA pass
+  /// (issue #162 review). Fixture-namespaced because a bare `-dimUnfocusedPanes 0` cannot work: see
+  /// `applyFixtureDefaults`'s note on argument-domain strings.
+  static var dimUnfocusedPanes: Bool {
+    // The arg arrives as a STRING, so parse it as one; unset ⇒ the shipped default.
+    text("WorkroomUITestDimUnfocusedPanes").map { ($0 as NSString).boolValue } ?? true
+  }
+
   /// The theme family every fixture launch starts on
   /// (`-WorkroomUITestThemeFamily "<family name>"`). Unset (or unknown) = the `Workroom` default.
   ///
@@ -616,6 +627,11 @@ enum UITestFixture {
     // Without this a theme test inherits whatever the developer last picked, and a test that applies
     // a theme leaves it applied for the next run.
     Defaults[.themeFamily] = themeFamily
+    // Unfocused-pane dimming, for the same reason as `themeFamily`: it PERSISTS in the real Dev
+    // domain, and it decides whether the pane scrim, the terminal tab strip and the pane header render
+    // at full contrast or 0.45 — so a developer who turns it off once silently rebaselines every later
+    // fixture launch and every screenshot taken from one (issue #162 review).
+    Defaults[.dimUnfocusedPanes] = dimUnfocusedPanes
     // Pinned "already onboarded" for the same reason as `themeFamily`/`diffViewMode` above: the flag
     // PERSISTS in the real Dev `Defaults` domain, so a fresh machine with zero registered projects
     // would otherwise pop the onboarding wizard (issue #151) over e.g. `NewWorkroomDialogUITests`'

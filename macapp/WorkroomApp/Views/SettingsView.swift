@@ -269,6 +269,7 @@ private struct AppearanceSettingsPane: View {
   @Default(.themeFamily) private var themeFamily
   @Default(.diffViewMode) private var diffViewMode
   @Default(.loadRemoteAvatars) private var loadRemoteAvatars
+  @Default(.dimUnfocusedPanes) private var dimUnfocusedPanes
   @State private var showThemePopover = false
 
   var body: some View {
@@ -309,6 +310,15 @@ private struct AppearanceSettingsPane: View {
       }
       .help("Layout for newly opened diff tabs. A narrow pane falls back to unified.")
       .accessibilityIdentifier("settings.control.diffView")
+
+      // Pane dimming (issue #162): the scrim over every non-focused pane. On by default — it's what
+      // makes the active terminal read instantly in a split. See `PaneTreeView.shouldDim`.
+      Toggle("Dim unfocused panes", isOn: $dimUnfocusedPanes)
+        .help(
+          "Shade every pane except the focused one, so the active terminal stands out in a split. "
+            + "Off keeps every pane at full contrast."
+        )
+        .accessibilityIdentifier("settings.control.dimUnfocusedPanes")
 
       // Privacy: author/reviewer avatars are fetched from Gravatar (by email hash) and GitHub. Off ⇒
       // only the coloured initials chip shows and nothing is requested, so viewing an untrusted

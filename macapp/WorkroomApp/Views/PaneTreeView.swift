@@ -1,4 +1,5 @@
 import AppKit
+import Defaults
 import SwiftUI
 
 /// Renders a target's pane layout (issue #3): a solo terminal is a single-leaf layout, a split is a
@@ -29,6 +30,8 @@ struct PaneTreeView: View {
   var workroomIsSplit: Bool = false
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  /// "Dim unfocused panes" (issue #162) — read here, at the tree, and passed to every leaf.
+  @Default(.dimUnfocusedPanes) private var dimUnfocusedPanes
   @State private var drag: PaneDragState?
   private static let space = "paneContent"
 
@@ -42,11 +45,23 @@ struct PaneTreeView: View {
   /// disables focus for some other reason. `!focused` never dims the active pane. Gating on
   /// `surfaceActive` (not merely `!focused`) keeps a solo *focused* workroom undimmed even if its
   /// `focusedID` is momentarily nil. `!flashing`: an activity pulse briefly lifts the dim so a
-  /// backgrounded pane's pulse is visible. Pure + unit-tested (issue #82) like the layout math.
-  static func shouldDim(multiPane: Bool, surfaceActive: Bool, focused: Bool, flashing: Bool) -> Bool
-  {
-    (multiPane || !surfaceActive) && !focused && !flashing
+  /// backgrounded pane's pulse is visible. `enabled` is the user's `dimUnfocusedPanes` setting
+  /// (issue #162) — off ⇒ no pane ever dims; non-defaulted so the call site must thread it and the
+  /// setting can't silently no-op. Pure + unit-tested (issue #82) like the layout math.
+  static func shouldDim(
+    multiPane: Bool, surfaceActive: Bool, focused: Bool, flashing: Bool, enabled: Bool
+  ) -> Bool {
+    enabled && (multiPane || !surfaceActive) && !focused && !flashing
   }
+
+  /// Whether a pane's *chrome* — its terminal tab strip (`WorkroomTerminalsView`) and its header
+  /// toolbar (`WorkroomPaneTitleBar`) — recedes to 0.45. Those two fades are deliberately in lockstep
+  /// with the scrim above ("the header, the strip, and the per-pane scrim all fade as one"), so the
+  /// `dimUnfocusedPanes` setting has to reach all three: gating only the scrim left half-faded chrome
+  /// floating over a full-brightness terminal, which is the very defect those fades were added to fix
+  /// (issue #162 review). `active` is whichever focus signal that site already used — `surfaceActive`
+  /// for the strip (the whole workroom is backgrounded), `focused` for the header. Pure + unit-tested.
+  static func shouldRecede(active: Bool, enabled: Bool) -> Bool { enabled && !active }
 
   var body: some View {
     let focusedID = sessions.focusedTab(for: target)?.id
@@ -60,7 +75,8 @@ struct PaneTreeView: View {
               tabID: tabID, content: tab.content, target: target, sessions: sessions,
               title: tab.title,
               focused: surfaceActive && tabID == focusedID, multiPane: multiPane,
-              surfaceActive: surfaceActive, workroomIsSplit: workroomIsSplit,
+              surfaceActive: surfaceActive, dimUnfocusedPanes: dimUnfocusedPanes,
+              workroomIsSplit: workroomIsSplit,
               paneIndex: index + 1, paneCount: layout.tabIDs.count, coordinateSpace: Self.space,
               onDragChanged: { beginOrUpdateDrag(tabID: tabID, at: $0) },
               onDragEnded: { commitDrag(plan: plan) },
@@ -403,6 +419,9 @@ private struct PaneLeafView: View {
   /// `multiPane` (see `PaneTreeView.shouldDim`). Non-defaulted on purpose: the compiler then forces
   /// the call site to thread it through, so the dim can't silently no-op (issue #82).
   let surfaceActive: Bool
+  /// The user's "Dim unfocused panes" setting (issue #162), read once per tree and threaded down the
+  /// way `multiPane` / `surfaceActive` are — one `Defaults` observer per tree rather than per pane.
+  let dimUnfocusedPanes: Bool
   /// Whether this pane's workroom is itself one member of a multi-workroom split — see
   /// `PaneTreeView.workroomIsSplit`. Drives `borderColor` alongside `multiPane`.
   let workroomIsSplit: Bool
@@ -443,12 +462,13 @@ private struct PaneLeafView: View {
             theme.tokens.terminalDim.opacity(
               PaneTreeView.shouldDim(
                 multiPane: multiPane, surfaceActive: surfaceActive, focused: focused,
-                flashing: flashing) ? 0.3 : 0)
+                flashing: flashing, enabled: dimUnfocusedPanes) ? 0.3 : 0)
           )
           .allowsHitTesting(false)
           .animation(reduceMotion ? nil : .easeInOut(duration: 0.1), value: flashing)
           .animation(reduceMotion ? nil : .easeInOut(duration: 0.07), value: focused)
           .animation(reduceMotion ? nil : .easeInOut(duration: 0.07), value: surfaceActive)
+          .animation(reduceMotion ? nil : .easeInOut(duration: 0.07), value: dimUnfocusedPanes)
       }
       // A rounded border frames every terminal at 1.5pt. `borderColor` only highlights a pane with a
       // peer to be picked out from (same gate as `WorkroomPaneCardBorder.isHighlighted`): either this

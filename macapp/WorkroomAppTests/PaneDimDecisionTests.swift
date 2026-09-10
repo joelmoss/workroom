@@ -8,47 +8,53 @@ import XCTest
 /// are the regression guards (a future gate edit must not dim the active pane).
 final class PaneDimDecisionTests: XCTestCase {
 
-  // MARK: PaneTreeView.shouldDim — (multiPane || !surfaceActive) && !focused && !flashing
+  // MARK: PaneTreeView.shouldDim — enabled && (multiPane || !surfaceActive) && !focused && !flashing
 
   /// ① A focused solo workroom (the active terminal) must never dim. Regression guard.
   func testFocusedSoloActiveDoesNotDim() {
     XCTAssertFalse(
-      PaneTreeView.shouldDim(multiPane: false, surfaceActive: true, focused: true, flashing: false))
+      PaneTreeView.shouldDim(
+        multiPane: false, surfaceActive: true, focused: true, flashing: false, enabled: true))
   }
 
   /// ② A backgrounded solo workroom dims — the core fix. (surfaceActive: false, solo terminal.)
   func testBackgroundedSoloDims() {
     XCTAssertTrue(
       PaneTreeView.shouldDim(
-        multiPane: false, surfaceActive: false, focused: false, flashing: false))
+        multiPane: false, surfaceActive: false, focused: false, flashing: false, enabled: true))
   }
 
   /// ③ Within a focused workroom's terminal split, the focused pane must not dim. Regression guard.
   func testFocusedMultiFocusedPaneDoesNotDim() {
     XCTAssertFalse(
-      PaneTreeView.shouldDim(multiPane: true, surfaceActive: true, focused: true, flashing: false))
+      PaneTreeView.shouldDim(
+        multiPane: true, surfaceActive: true, focused: true, flashing: false, enabled: true))
   }
 
   /// ④ Within a focused workroom's terminal split, a non-focused sibling dims (pre-existing).
   func testFocusedMultiSiblingDims() {
     XCTAssertTrue(
-      PaneTreeView.shouldDim(multiPane: true, surfaceActive: true, focused: false, flashing: false))
+      PaneTreeView.shouldDim(
+        multiPane: true, surfaceActive: true, focused: false, flashing: false, enabled: true))
   }
 
   /// ⑤ Every pane of a backgrounded workroom that itself has a terminal split dims — uniformly, with
   /// one scrim per pane (no double-dim), matching the solo case.
   func testBackgroundedMultiEveryPaneDims() {
     XCTAssertTrue(
-      PaneTreeView.shouldDim(multiPane: true, surfaceActive: false, focused: false, flashing: false)
+      PaneTreeView.shouldDim(
+        multiPane: true, surfaceActive: false, focused: false, flashing: false, enabled: true)
     )
   }
 
   /// ⑥ An activity flash lifts the dim so the pulse is visible on a backgrounded pane.
   func testFlashingLiftsDim() {
     XCTAssertFalse(
-      PaneTreeView.shouldDim(multiPane: true, surfaceActive: false, focused: false, flashing: true))
+      PaneTreeView.shouldDim(
+        multiPane: true, surfaceActive: false, focused: false, flashing: true, enabled: true))
     XCTAssertFalse(
-      PaneTreeView.shouldDim(multiPane: false, surfaceActive: false, focused: false, flashing: true)
+      PaneTreeView.shouldDim(
+        multiPane: false, surfaceActive: false, focused: false, flashing: true, enabled: true)
     )
   }
 
@@ -57,11 +63,43 @@ final class PaneDimDecisionTests: XCTestCase {
   /// property that keeps non-split contexts byte-for-byte unchanged.
   func testPlainSoloNeverDims() {
     XCTAssertFalse(
-      PaneTreeView.shouldDim(multiPane: false, surfaceActive: true, focused: true, flashing: false))
+      PaneTreeView.shouldDim(
+        multiPane: false, surfaceActive: true, focused: true, flashing: false, enabled: true))
     // Even if focusedID is momentarily nil (focused == false), surfaceActive == true blocks the dim.
     XCTAssertFalse(
-      PaneTreeView.shouldDim(multiPane: false, surfaceActive: true, focused: false, flashing: false)
+      PaneTreeView.shouldDim(
+        multiPane: false, surfaceActive: true, focused: false, flashing: false, enabled: true)
     )
+  }
+
+  /// ⑦ The user's "Dim unfocused panes" setting off ⇒ nothing dims, even the strongest would-dim
+  /// inputs (a backgrounded workroom's non-focused split pane). Issue #162.
+  func testDisabledSettingNeverDims() {
+    XCTAssertFalse(
+      PaneTreeView.shouldDim(
+        multiPane: true, surfaceActive: false, focused: false, flashing: false, enabled: false))
+    XCTAssertFalse(
+      PaneTreeView.shouldDim(
+        multiPane: false, surfaceActive: false, focused: false, flashing: false, enabled: false))
+    XCTAssertFalse(
+      PaneTreeView.shouldDim(
+        multiPane: true, surfaceActive: true, focused: false, flashing: false, enabled: false))
+  }
+
+  // MARK: PaneTreeView.shouldRecede — enabled && !active
+
+  /// The pane's chrome (terminal tab strip, header toolbar) fades in lockstep with the scrim, so the
+  /// setting has to gate all three: with it off, a non-focused member's strip and controls stay at
+  /// full contrast instead of floating half-faded over an undimmed terminal (issue #162 review).
+  func testChromeRecedesOnlyWhenEnabled() {
+    XCTAssertTrue(PaneTreeView.shouldRecede(active: false, enabled: true))
+    XCTAssertFalse(PaneTreeView.shouldRecede(active: false, enabled: false))
+  }
+
+  /// The focused/active pane's chrome never recedes, either way. Regression guard.
+  func testActiveChromeNeverRecedes() {
+    XCTAssertFalse(PaneTreeView.shouldRecede(active: true, enabled: true))
+    XCTAssertFalse(PaneTreeView.shouldRecede(active: true, enabled: false))
   }
 
   // MARK: AppStore.shouldPulse — isOnScreen && (isSelectedMember ? !isCursorTab : true)
