@@ -64,6 +64,23 @@ struct PaneTreeView: View {
   /// for the strip (the whole workroom is backgrounded), `focused` for the header. Pure + unit-tested.
   static func shouldRecede(active: Bool, enabled: Bool) -> Bool { enabled && !active }
 
+  /// Whether a focus change should CROSS-FADE (the ring's tint, the dim scrim) or land instantly.
+  ///
+  /// The fades exist for a focus MOVE — click another pane and the accent slides across rather than
+  /// popping (issue #162). Closing a pane also hands focus to a survivor, but there the tree has
+  /// changed SHAPE: the survivor is re-laid-out in the same update, so fading its chrome through
+  /// that reads as the border chasing a terminal that has already snapped to its new size. The
+  /// libghostty surface is an `NSView` and never animates, so any chrome that does is on its own.
+  ///
+  /// `lastPaneCount` is the count this pane last rendered with, so a mismatch means *this* update is
+  /// the structural one — `onChange` records the new value only after the body has run. nil is the
+  /// first render, which has no transition to make either way.
+  static func fadesFocusChange(paneCount: Int, lastPaneCount: Int?, reduceMotion: Bool) -> Bool {
+    guard !reduceMotion else { return false }
+    guard let lastPaneCount else { return true }
+    return lastPaneCount == paneCount
+  }
+
   var body: some View {
     let focusedID = sessions.focusedTab(for: target)?.id
     let multiPane = layout.tabIDs.count >= 2
@@ -83,6 +100,16 @@ struct PaneTreeView: View {
               onDragEnded: { commitDrag(plan: plan) },
               onActivate: { sessions.select(tabID, for: target) }
             )
+            // Take the new rect as ONE unit. Every `.animation(_:value: focused)` inside the pane
+            // — the scrim, the focus ring — animates *all* animatable changes in its subtree when
+            // that value flips, geometry included. Closing one of two panes flips the survivor to
+            // focused and resizes it in the same update, so the ring interpolated its way across the
+            // window while the libghostty surface (an `NSView`, no SwiftUI animation) snapped: a
+            // border sliding over a terminal that had already moved. `geometryGroup` resolves this
+            // subtree's geometry before its children animate, which leaves the colour fades intact
+            // and makes the frame change instant — the same thing `commitDrag` is careful about,
+            // since animating pane frames also floods the surface with resize calls.
+            .geometryGroup()
             .frame(width: rect.width, height: rect.height)
             .position(x: rect.midX, y: rect.midY)
             .id(tabID)
@@ -556,6 +583,10 @@ private struct PaneLeafView: View {
   /// and handed to the title bar, which stays store- and defaults-free (issue #150).
   @Default(.diffViewMode) private var defaultDiffViewMode
   @State private var flashing = false
+  /// The pane count this view last rendered with, so `fadesFocusChange` can tell a focus MOVE from
+  /// the tree changing shape. Recorded after the body runs, which is what makes the comparison
+  /// during a structural update see the previous value.
+  @State private var lastPaneCount: Int?
   // The shared @Observable service; reading `theme.tokens` in a body still tracks changes via the
   // Observation framework (no environment injection required, so view-rendering tests don't need it).
   private let theme = ThemeService.shared
@@ -619,9 +650,9 @@ private struct PaneLeafView: View {
         )
         .allowsHitTesting(false)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.1), value: flashing)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.07), value: focused)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.07), value: surfaceActive)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.07), value: dimUnfocusedPanes)
+        .animation(focusFade(0.07), value: focused)
+        .animation(focusFade(0.07), value: surfaceActive)
+        .animation(focusFade(0.07), value: dimUnfocusedPanes)
     }
     // A rounded border frames every terminal at 1.5pt. `borderColor` only highlights a pane with a
     // peer to be picked out from (same gate as `WorkroomPaneCardBorder.isHighlighted`): either this
@@ -632,8 +663,12 @@ private struct PaneLeafView: View {
       RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius)
         .strokeBorder(borderColor, lineWidth: 1.5)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: flashing)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.08), value: focused)
+        .animation(focusFade(0.08), value: focused)
     }
+    // Records the count this render used, so the NEXT update can tell a focus move from a
+    // structural one. Deliberately after the body: during the structural update itself the state
+    // still holds the previous count, which is exactly the signal `focusFade` reads.
+    .onChange(of: paneCount, initial: true) { _, new in lastPaneCount = new }
     // The one-time auto-diagnose opt-in — attached to the pane so it fires wherever the failure
     // surfaces (the diagnosis itself lives in the detail-panel status bar / tab badge, issue #49).
     .confirmationDialog(
@@ -820,6 +855,16 @@ private struct PaneLeafView: View {
   private var helpText: String {
     guard let path = content.filePath else { return title }
     return "\(title)\n\((target.path as NSString).appendingPathComponent(path))"
+  }
+
+  /// The animation for a focus-driven fade — nil while the tree is changing shape, so a pane
+  /// opening or closing lands instantly instead of animating its chrome into a new rect.
+  private func focusFade(_ duration: Double) -> Animation? {
+    guard
+      PaneTreeView.fadesFocusChange(
+        paneCount: paneCount, lastPaneCount: lastPaneCount, reduceMotion: reduceMotion)
+    else { return nil }
+    return .easeInOut(duration: duration)
   }
 
   private var borderColor: Color {

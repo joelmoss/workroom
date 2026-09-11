@@ -184,4 +184,36 @@ final class PaneDimDecisionTests: XCTestCase {
       XCTAssertEqual(out.record, record, "record for \(label)")
     }
   }
+
+  // MARK: PaneTreeView.fadesFocusChange (issue #126 follow-up)
+
+  /// Clicking another pane: the tree keeps its shape, so the ring and scrim cross-fade as designed.
+  func testAFocusMoveWithinAStableTreeFades() {
+    XCTAssertTrue(
+      PaneTreeView.fadesFocusChange(paneCount: 2, lastPaneCount: 2, reduceMotion: false))
+  }
+
+  /// Closing one of two panes: the survivor takes focus AND is re-laid-out in the same update, so
+  /// its chrome must land with the new frame instead of animating into it.
+  func testAClosedPaneLandsInstantly() {
+    XCTAssertFalse(
+      PaneTreeView.fadesFocusChange(paneCount: 1, lastPaneCount: 2, reduceMotion: false))
+  }
+
+  func testAnOpenedPaneLandsInstantly() {
+    XCTAssertFalse(
+      PaneTreeView.fadesFocusChange(paneCount: 3, lastPaneCount: 2, reduceMotion: false))
+  }
+
+  func testTheFirstRenderHasNoTransitionToSuppress() {
+    XCTAssertTrue(
+      PaneTreeView.fadesFocusChange(paneCount: 2, lastPaneCount: nil, reduceMotion: false))
+  }
+
+  func testReduceMotionNeverFades() {
+    XCTAssertFalse(
+      PaneTreeView.fadesFocusChange(paneCount: 2, lastPaneCount: 2, reduceMotion: true))
+    XCTAssertFalse(
+      PaneTreeView.fadesFocusChange(paneCount: 2, lastPaneCount: nil, reduceMotion: true))
+  }
 }
