@@ -464,12 +464,13 @@ final class TerminalSessions: ObservableObject {
   /// Width and height need different floors because a pane's chrome is horizontal: a row of toolbar
   /// furniture is what sets the width floor, and it is wider than people guess. That furniture used to
   /// live in the tab strip; since issue #150 each pane carries it in its own title bar, so the budget
-  /// moved but the arithmetic barely did. The *widest* bar a pane can show is a diff pane's: five
-  /// 28pt `ToolbarIconButtonStyle` footprints (overflow, split right, split down, close, Open File)
-  /// plus the ~60pt unified/side-by-side switch, a 9pt divider and the 6pt spacings ≈ 190pt trailing,
-  /// plus the bar's 10pt leading inset. At 300pt that leaves the title ~100pt — tight, which is why
-  /// the bar collapses its optional controls into an overflow menu rather than squeezing the title to
-  /// nothing.
+  /// moved but the arithmetic barely did. The *widest* bar a pane can show is a diff pane's FULL row:
+  /// four 28pt `ToolbarIconButtonStyle` footprints (Open File, split right, split down, close) plus
+  /// the ~60pt unified/side-by-side switch, a 9pt divider and the 6pt spacings ≈ 190pt trailing, plus
+  /// the bar's 10pt leading inset. (The overflow menu is not in that total — it belongs to the
+  /// COLLAPSED row, which renders instead of this one, never beside it.) At 300pt that leaves the
+  /// title ~100pt — tight, which is why the bar collapses its optional controls rather than squeezing
+  /// the title to nothing.
   ///
   /// 300pt is also about 41 terminal columns, which is the first width where a terminal is honestly
   /// usable rather than merely non-degenerate.

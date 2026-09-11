@@ -49,6 +49,21 @@ final class PaneTitleBarUITests: XCTestCase {
     return pane
   }
 
+  /// Open a diff pane by clicking its row in the Changes panel, and wait for the pane's bar to name
+  /// it — the pane title bar carries the file's path since issue #150.
+  private func openDiffPane(_ app: XCUIApplication, path: String = "app/models/user.rb") {
+    let row = app.descendants(matching: .any).matching(identifier: "changes.file.\(path)")
+      .firstMatch
+    XCTAssertTrue(row.waitForExistence(timeout: 10), "the Changes panel should list \(path)")
+    row.click()
+    let named = app.descendants(matching: .any).matching(
+      NSPredicate(
+        format: "identifier == %@ AND (label CONTAINS %@ OR value CONTAINS %@)",
+        "terminal.pane.titlebar", path, path)
+    ).firstMatch
+    XCTAssertTrue(named.waitForExistence(timeout: 10), "the diff pane's bar should name \(path)")
+  }
+
   /// Every pane carries exactly one bar — solo included. That is the whole change: the bar is
   /// unconditional, so a pane's identity and its actions are always where the pane is.
   func testEveryPaneHasExactlyOneTitleBar() {
@@ -117,6 +132,71 @@ final class PaneTitleBarUITests: XCTestCase {
     XCTAssertTrue(split.waitForExistence(timeout: 6))
     split.click()
     assertCount(panes(app), reaches: 2)
+  }
+
+  /// The narrow-pane collapse actually engages: below `PaneTitleBarMetrics.minTitle` the full row
+  /// stops fitting and `ViewThatFits` falls to the collapsed candidate, folding the mode switch and
+  /// Open File into `pane.toolbar.overflow`.
+  ///
+  /// This codebase has already shipped a DEAD `ViewThatFits` ladder with the whole suite green —
+  /// `AgentUsageUITests.testNarrowSplitKeepsBothWindowsAndShrinksTheBars` documents it (issue #168:
+  /// a `.fixedSize` made the first variant always "fit", so every later rung was unreachable). The
+  /// same trap applies here, so assert the collapse by OBSERVING it, not by trusting the ladder.
+  func testNarrowPaneCollapsesTheOptionalControlsIntoTheOverflowMenu() {
+    let app = launchedApp()
+    openWorkroom(app)
+    openDiffPane(app)
+
+    // Wide: the mode switch is in the row and there is nothing to overflow.
+    XCTAssertTrue(app.buttons["tab.toolbar.diffSideBySide"].waitForExistence(timeout: 8))
+    XCTAssertFalse(app.buttons["pane.toolbar.overflow"].exists)
+
+    // Halve the pane twice — ~420pt is where the full row stops fitting.
+    app.menuBars.menuBarItems["View"].menuItems["Split Right"].click()
+    assertCount(panes(app), reaches: 2)
+    app.menuBars.menuBarItems["View"].menuItems["Split Right"].click()
+    assertCount(panes(app), reaches: 3)
+
+    let overflow = app.buttons["pane.toolbar.overflow"]
+    XCTAssertTrue(
+      overflow.waitForExistence(timeout: 8),
+      "the ladder never collapsed — a dead ViewThatFits keeps its widest candidate (issue #168)")
+    XCTAssertFalse(
+      app.buttons["tab.toolbar.diffSideBySide"].exists,
+      "the mode switch must leave the row when it folds into the overflow menu")
+    XCTAssertTrue(
+      app.windows.firstMatch.frame.contains(overflow.frame),
+      "the collapsed toolbar overflowed its pane instead of fitting")
+  }
+
+  /// "Open File" opens the working copy of the file being diffed, so a DELETED source has nothing to
+  /// open. The button stays visible and goes disabled rather than vanishing (review D4) — a control
+  /// that disappears reads as a missing feature.
+  func testOpenFileIsDisabledForADeletedSource() {
+    let app = launchedApp()
+    openWorkroom(app)
+    openDiffPane(app, path: "app/models/legacy_user.rb")
+
+    let openFile = app.buttons["pane.toolbar.openFile"]
+    XCTAssertTrue(openFile.waitForExistence(timeout: 8))
+    XCTAssertFalse(openFile.isEnabled, "a deleted source has no working copy to open")
+  }
+
+  /// A solo pane's bar must not drag. The gesture is masked `.subviews` when there is no split, so
+  /// this asserts the inert half of that mask; `testSoloPaneButtonsStillFire` asserts the half that
+  /// would break every button if the mask were `.none` instead. Mirrors
+  /// `WorkroomPaneHeaderUITests.testSoloTitleBarDragDoesNotCreateASplit` for the workroom bar above.
+  func testSoloPaneBarDragDoesNotCreateASplit() {
+    let app = launchedApp()
+    openWorkroom(app)
+    assertCount(panes(app), reaches: 1)
+
+    let bar = titlebars(app).firstMatch
+    XCTAssertTrue(bar.waitForExistence(timeout: 8))
+    bar.press(forDuration: 0.4, thenDragTo: app.windows.firstMatch)
+
+    assertCount(panes(app), reaches: 1)
+    XCTAssertEqual(titlebars(app).count, 1, "dragging a solo pane's bar must not split anything")
   }
 
   /// A terminal pane offers no per-file controls: no diff mode switch, no "Open File". They are not

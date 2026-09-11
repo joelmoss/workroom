@@ -237,12 +237,13 @@ final class ChangesPanelUITests: XCTestCase {
     XCTAssertTrue(
       markerVisible(app, fileMarker), "the in-app viewer renders the file's real content")
 
-    // The footer names the file too (issue #136) — this is the `.file` half of `TabContent.filePath`;
+    // The pane title bar names the file too (issue #136, moved there by #150) — this is the `.file`
+    // half of `TabContent.filePath`;
     // `DiffViewerUITests` covers the `.diff` half (and, with its nested rows, the directory case that
     // a root-level `Gemfile` can't show). The segment's string arrives as the element's `value`, not
     // its `label` — macOS exposes a SwiftUI `Text`'s accessibility string that way (same reason the
     // viewer assertions above read `value`), so match on both rather than guessing.
-    let footerPath = app.descendants(matching: .any)
+    let paneTitlePath = app.descendants(matching: .any)
       .matching(
         NSPredicate(
           format: "identifier == %@ AND (label CONTAINS %@ OR value CONTAINS %@)",
@@ -250,6 +251,6 @@ final class ChangesPanelUITests: XCTestCase {
       )
       .firstMatch
     XCTAssertTrue(
-      footerPath.waitForExistence(timeout: 6), "the pane footer names the open file")
+      paneTitlePath.waitForExistence(timeout: 6), "the pane title bar names the open file")
   }
 }

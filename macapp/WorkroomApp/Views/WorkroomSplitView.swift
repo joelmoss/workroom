@@ -498,7 +498,12 @@ private struct WorkroomPaneTitleBar: View {
         if controls.openIn { OpenInControl(path: target.path) }
         if controls.closeAll {
           if controls.run || controls.openIn { TitlebarDivider() }
-          CloseAllTabsButton(action: onCloseAll)
+          // Shares `PaneToolbarButton` with the detail-panel title bar below this one, so both bars'
+          // buttons carry the same hover well and the same tooltip tracking.
+          PaneToolbarButton(
+            systemImage: "xmark.square", help: "Close all tabs in this workroom",
+            accessibilityLabel: "Close all tabs in this workroom",
+            identifier: "workroom.pane.closeAll", action: onCloseAll)
         }
         if controls.removeFromSplit {
           TitlebarDivider()
@@ -541,29 +546,6 @@ private struct WorkroomPaneTitleBar: View {
   /// a `SidebarID`, so this presentation view keeps its store/sid independence.
   private var fullTitle: String {
     WorkroomLabel(project: projectLabel, workroom: workroomName).full
-  }
-}
-
-/// "Close all tabs in this workroom", in the workroom's own title bar since issue #150 emptied the
-/// terminal tab strip's toolbar. A view (not an inline button) so it carries its own `onHover`, which
-/// is what reliably installs the `.help` tooltip's tracking area — the same reason
-/// `CloseWorkroomPaneButton` is one.
-///
-/// Wears the group's inherited `ToolbarIconButtonStyle`, so it grew from the strip toolbar's 11pt
-/// glyph to the header's 13pt and picked up the same 22pt well as its neighbours.
-private struct CloseAllTabsButton: View {
-  let action: () -> Void
-  @State private var hovering = false
-
-  var body: some View {
-    Button(action: action) {
-      Image(systemName: "xmark.square")
-        .foregroundStyle(hovering ? .primary : .secondary)
-    }
-    .onHover { hovering = $0 }
-    .help("Close all tabs in this workroom")
-    .accessibilityLabel("Close all tabs in this workroom")
-    .accessibilityIdentifier("workroom.pane.closeAll")
   }
 }
 

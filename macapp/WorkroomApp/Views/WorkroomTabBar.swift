@@ -97,7 +97,8 @@ struct WorkroomTabBar: View {
   /// a chevron left behind in the scroller would sit under the fade as the first thing to scroll away.
   ///
   /// `fixedSize` so the block keeps its intrinsic width and the scrolling chip area yields first in a
-  /// cramped window — the same reason `TerminalTabStrip.tabToolbar` is fixed-size. `OverflowingTabScroller`
+  /// cramped window — the same reason `PaneTitleBar`'s trailing controls are fixed-size (that bar
+  /// inherited the role when issue #150 emptied the terminal strip's toolbar). `OverflowingTabScroller`
   /// measures this width and feeds it to the overflow predicate; the internal spacing is identical in
   /// both positions, so that one number is valid either way, which is what keeps the predicate
   /// branch-independent.

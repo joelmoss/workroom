@@ -8,9 +8,10 @@ import SwiftUI
 /// its frame moves), so its surface is never re-parented (the close-a-split-pane blank bug). Frame and
 /// drop-target math are pure and unit-tested (plan D5).
 ///
-/// Drag-and-drop (Phase 2): each split pane shows a small grip chip at its top-center; dragging it
-/// shows 4 edge drop zones on the pane under the cursor and, on drop, moves/rearranges via
-/// `moveTabIntoSplit` (or pops the pane out to solo via `extractFromSplit` if dragged up to the strip).
+/// Drag-and-drop (Phase 2): a split pane is dragged by its own title bar (`PaneTitleBar`, issue #150 —
+/// it replaced a hover-only grip chip); dragging shows 4 edge drop zones on the pane under the cursor
+/// and, on drop, moves/rearranges via `moveTabIntoSplit` (or pops the pane out to solo via
+/// `extractFromSplit` if dragged up to the strip).
 struct PaneTreeView: View {
   let layout: TerminalPaneLayout
   let target: TerminalTarget
@@ -395,9 +396,9 @@ enum PaneTreeLayout {
 
 // MARK: - Leaf
 
-/// One terminal pane: hosts the surface, the focus ring, the activity flash (D3), and — in a split — a
-/// small semi-transparent grip chip at the top-center that you drag to move the pane. (Closing is via
-/// the strip ✕ / ⌘W — and, since issue #150, this pane's own title bar.)
+/// One terminal pane: hosts its title bar (issue #150), the surface, the focus ring and the activity
+/// flash (D3). In a split the title bar is also the pane's drag handle — it replaced a hover-only grip
+/// chip, so the affordance is always visible. (Closing is via the strip ✕ / ⌘W, or that same bar.)
 private struct PaneLeafView: View {
   let tabID: TerminalTab.ID
   /// The pane's content — a terminal surface or non-terminal content (issue #66). All the pane chrome
@@ -458,7 +459,29 @@ private struct PaneLeafView: View {
     // both, which is why the bar needs no unfocused fade of its own.
     VStack(spacing: 0) {
       titleBar
+      // Non-terminal panes (a diff) have no first responder to claim focus on click, so a click
+      // anywhere in the body focuses the pane. Gated on `!isTerminal` ONLY — the content type is
+      // stable for a pane's lifetime, so the gesture is never attached/detached mid-interaction
+      // (gating on `focused` would flip the modifier's structural branch on every focus, tearing
+      // down and rebuilding the DiffViewer — a reload flash + lag). A terminal pane skips this
+      // entirely; its surface eats SwiftUI gestures and focuses via first responder.
+      // `isBlocked` is checked when a click FIRES rather than folded into `enabled` above, precisely
+      // to preserve the invariant that comment describes.
+      //
+      // Scoped to the CONTENT, never the title bar. The catcher is a `.background` sized to whatever
+      // it modifies and its monitor fires on mouse-DOWN without consuming the event, so covering the
+      // whole stack made every click on a bar button focus the pane before the button's own action
+      // ran. That silently broke `splitTab`'s guarantee that a REFUSED split (pane too small to
+      // halve) leaves the selection untouched: the fit guard refused, but the workroom had already
+      // been promoted to selected, so later selection-based commands (Run, Close All) retargeted to
+      // a pane where nothing visibly happened. The bar does its own activation via `.onTapGesture`,
+      // which a button consumes before it fires, so scoping this here loses nothing.
       paneContent
+        .modifier(
+          ActivateOnPress(
+            enabled: !isTerminal, onActivate: onActivate,
+            isBlocked: { store.activePicker != nil })
+        )
     }
     .clipShape(
       RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius, style: .continuous)
@@ -518,19 +541,6 @@ private struct PaneLeafView: View {
     // between a solo tab and a grouped/split one. Surface identity is held by `.id(tabID)` on the
     // host (not this padding), so no surface is re-parented across the change (issue #3).
     .padding(1)
-    // Non-terminal panes (a diff) have no first responder to claim focus on click, so a click
-    // anywhere in the body focuses the pane. Gated on `!isTerminal` ONLY — the content type is
-    // stable for a pane's lifetime, so the gesture is never attached/detached mid-interaction
-    // (gating on `focused` would flip the modifier's structural branch on every focus, tearing
-    // down and rebuilding the DiffViewer — a reload flash + lag). A terminal pane skips this
-    // entirely; its surface eats SwiftUI gestures and focuses via first responder.
-    // `isBlocked` is checked when a click FIRES rather than folded into `enabled` above, precisely
-    // to preserve the invariant that comment describes.
-    .modifier(
-      ActivateOnPress(
-        enabled: !isTerminal, onActivate: onActivate,
-        isBlocked: { store.activePicker != nil })
-    )
     .onChange(of: sessions.activityPulses[tabID]) { _, _ in
       // Flash a backgrounded pane on activity — a split-mate, or any pane of a co-displayed
       // backgrounded workroom (`!surfaceActive`), mirroring the dim gate so the pulse lifts the
