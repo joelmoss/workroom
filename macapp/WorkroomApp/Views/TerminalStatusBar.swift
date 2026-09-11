@@ -101,7 +101,7 @@ struct TerminalStatusBar: View {
       Button("Enable") {
         do {
           try claudeUsageBridge.enable()
-          agentUsage.refresh()
+          agentUsage.refresh(userInitiated: true)
         } catch {
           claudeBridgeError = error.localizedDescription
         }
@@ -231,7 +231,7 @@ struct TerminalStatusBar: View {
         // expires while sitting here updates its own explanation.
         let reason = isLoading ? nil : agentUsage.unavailableReason(for: backend)
         Button {
-          agentUsage.refresh()
+          agentUsage.refresh(userInitiated: true)
         } label: {
           HStack(spacing: 4) {
             if isLoading {
