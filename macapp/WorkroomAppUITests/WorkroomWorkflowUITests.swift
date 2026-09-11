@@ -25,6 +25,10 @@ final class WorkroomWorkflowUITests: XCTestCase {
   private func launchedApp(fixture: Bool = true, extraArgs: [String] = []) -> XCUIApplication {
     let app = XCUIApplication()
     if fixture { app.launchArguments += ["-WorkroomUITestFixture", "1"] }
+    // Preferences stay out of the real domain even on the `fixture: false` path, which has no
+    // fixture flag and (being the app, not the runner) no `XCTestConfigurationFilePath` either.
+    // Without this the real-bootstrap smoke test writes the developer's own Dev preferences.
+    app.launchArguments += ["-WorkroomUITestIsolatePreferences", "1"]
     // Start each test clean, ignoring persisted window state (cf. NewWindowUITests).
     app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
     app.launchArguments += extraArgs

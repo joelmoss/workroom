@@ -32,16 +32,31 @@ extension UserDefaults {
   /// a quit-and-relaunch test should see the preferences it left behind, exactly as it did on
   /// `.standard` before this existed.
   static let app: UserDefaults = {
-    let underTest = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-    guard underTest || UITestFixture.isActive else { return .standard }
-    let base = "com.developwithstyle.workroom.tests"
-    let name = underTest ? "\(base).\(ProcessInfo.processInfo.processIdentifier)" : base
-    guard let suite = UserDefaults(suiteName: name) else { return .standard }
-    if underTest {
-      suite.removePersistentDomain(forName: name)  // a reused pid must not inherit its predecessor
-      pruneDeadSuites(base: base, keeping: name)
-    }
-    return suite
+    #if DEBUG
+      let underTest = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+      // `isolatesPreferences` is separate from `isActive` on purpose: a UI test that launches
+      // WITHOUT fixture mode (to exercise the real bootstrap) has neither the fixture flag nor
+      // `XCTestConfigurationFilePath`, and used to land straight in the developer's real domain.
+      guard underTest || UITestFixture.isActive || UITestFixture.isolatesPreferences else {
+        return .standard
+      }
+      let base = "com.developwithstyle.workroom.tests"
+      let name = underTest ? "\(base).\(ProcessInfo.processInfo.processIdentifier)" : base
+      guard let suite = UserDefaults(suiteName: name) else { return .standard }
+      if underTest {
+        // A reused pid must not inherit its predecessor's values.
+        suite.removePersistentDomain(forName: name)
+        pruneDeadSuites(base: base, keeping: name)
+      }
+      return suite
+    #else
+      // Release never redirects preferences. The env-var probe above is not enough on its own: a
+      // shipped app launched from a shell that still exports `XCTestConfigurationFilePath` (a
+      // wrapper script, `launchctl setenv`, a terminal left over from a test run) would otherwise
+      // take the throwaway branch and hand the user a factory-reset app whose every later setting
+      // lands in a suite a future test run deletes. Silent settings loss, no error path.
+      return .standard
+    #endif
   }()
 
   /// Delete the per-process suites left by test runs whose process is gone, so per-pid naming does

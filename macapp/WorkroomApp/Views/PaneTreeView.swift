@@ -357,30 +357,40 @@ enum PaneTreeLayout {
   /// `lengths` runs out of room to honour the floor at all, falling back to an even split of
   /// whatever is left (a 370pt column becomes two 184pt panes). Refusing every later split in that
   /// subtree would block a ⇧⌘D that only divides HEIGHT and takes nothing off the offending width —
-  /// the "⌘D silently does nothing" papercut, reintroduced from the other side. So a pane already
-  /// under a floor is judged on whether this split makes that axis worse, not on the floor itself.
-  /// Omit the argument to demand the floor outright.
+  /// the "⌘D silently does nothing" papercut, reintroduced from the other side.
+  ///
+  /// The comparison is PER PANE, by identity. A global minimum was the first shape and it was wrong:
+  /// one narrow pane anywhere pinned the minimum for the whole tree, so an unrelated healthy pane
+  /// could be split clean through the floor and the guard still said yes. Measured on the shape that
+  /// found it — `(A | B) | (C | D)` at root 0.3 in 1000pt is `149, 149, 348, 348`, and splitting the
+  /// 348 gave `149, 149, 173, 173, 348` with the old rule admitting it. A pane that SURVIVES the
+  /// edit may not shrink below its own current size once it is under the floor; a pane the edit
+  /// CREATES is held to the floor outright. Omit the argument to demand the floor of everything.
   static func fitsEveryPane<Leaf: Hashable>(
-    _ tree: PaneLayout<Leaf>, in container: CGRect, notWorseThan current: PaneLayout<Leaf>? = nil
+    _ tree: PaneLayout<Leaf>, in container: CGRect, notWorseThan current: PaneLayout<Leaf>? = nil,
+    splitting anchor: Leaf? = nil
   ) -> Bool {
     guard container.width > 0, container.height > 0 else { return true }
-    let after = smallestPane(tree, in: container)
-    if after.width >= minPaneWidth, after.height >= minPaneHeight { return true }
-    guard let current else { return false }
-    let before = smallestPane(current, in: container)
-    return after.width >= min(before.width, minPaneWidth)
-      && after.height >= min(before.height, minPaneHeight)
-  }
-
-  /// The smallest width and the smallest height across every pane of `tree` (not necessarily the
-  /// same pane) — the two numbers the floors are judged against.
-  private static func smallestPane<Leaf: Hashable>(_ tree: PaneLayout<Leaf>, in container: CGRect)
-    -> CGSize
-  {
-    let rects = plan(tree, in: container).panes.values
-    return CGSize(
-      width: rects.map(\.width).min() ?? container.width,
-      height: rects.map(\.height).min() ?? container.height)
+    let after = plan(tree, in: container).panes
+    guard let current else {
+      return after.values.allSatisfy { $0.width >= minPaneWidth && $0.height >= minPaneHeight }
+    }
+    let before = plan(current, in: container).panes
+    for (leaf, rect) in after {
+      // What this pane has to answer to. A survivor answers to its own previous size. A pane the
+      // edit CREATED answers to the anchor it was split from — it cannot be wider than the column
+      // it was carved out of, so holding it to the bare floor would refuse a ⇧⌘D that divides only
+      // the height of an already-narrow pane, which is the papercut `notWorseThan` exists to avoid.
+      guard let was = before[leaf] ?? anchor.flatMap({ before[$0] }) else {
+        // No reference at all (no anchor passed): hold it to the floor.
+        guard rect.width >= minPaneWidth, rect.height >= minPaneHeight else { return false }
+        continue
+      }
+      guard rect.width >= min(was.width, minPaneWidth),
+        rect.height >= min(was.height, minPaneHeight)
+      else { return false }
+    }
+    return true
   }
 
   /// The tree a mutation will ACTUALLY store (issue #126): evened when the auto-even pref is on and

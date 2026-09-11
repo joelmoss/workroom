@@ -355,6 +355,7 @@ final class PaneFitNotWorseTests: XCTestCase {
   private let a = UUID()
   private let b = UUID()
   private let c = UUID()
+  private let d = UUID()
 
   private func rect(w: CGFloat, h: CGFloat) -> CGRect { CGRect(x: 0, y: 0, width: w, height: h) }
 
@@ -380,7 +381,8 @@ final class PaneFitNotWorseTests: XCTestCase {
       PaneTreeLayout.fitsEveryPane(prospective, in: container),
       "precondition: the absolute-floor rule refuses it, because the column is already too narrow")
     XCTAssertTrue(
-      PaneTreeLayout.fitsEveryPane(prospective, in: container, notWorseThan: current),
+      PaneTreeLayout.fitsEveryPane(
+        prospective, in: container, notWorseThan: current, splitting: c),
       "but it makes nothing worse, so it must be admitted")
   }
 
@@ -389,8 +391,51 @@ final class PaneFitNotWorseTests: XCTestCase {
     let prospective = current.inserting(
       UUID(), beside: c, orientation: .horizontal, newLeafFirst: false, ratio: 0.5)
     XCTAssertFalse(
-      PaneTreeLayout.fitsEveryPane(prospective, in: rect(w: 1300, h: 985), notWorseThan: current),
+      PaneTreeLayout.fitsEveryPane(
+        prospective, in: rect(w: 1300, h: 985), notWorseThan: current, splitting: c),
       "halving an already-too-narrow column is exactly what the floor is for")
+  }
+
+  /// The hole the `notWorseThan` relaxation opened, caught by the adversarial pass and reproduced
+  /// before fixing: comparing the SMALLEST pane in the whole tree let one narrow pane anywhere lower
+  /// the bar for every other pane. Measured — `(A | B) | (C | D)` at root 0.3 in 1000pt renders
+  /// `149, 149, 348, 348`; splitting the healthy 348 gives `149, 149, 173, 173, 348`, and the global
+  /// rule admitted it because the minimum was still 149. Comparison is per pane, by identity.
+  func testANarrowPaneElsewhereDoesNotLicenseBreakingTheFloorHere() {
+    let container = rect(w: 1000, h: 1000)
+    let current = PaneLayout<UUID>.split(
+      id: UUID(), orientation: .horizontal, ratio: 0.3,
+      first: .split(
+        id: UUID(), orientation: .horizontal, ratio: 0.5, first: .leaf(a), second: .leaf(b)),
+      second: .split(
+        id: UUID(), orientation: .horizontal, ratio: 0.5, first: .leaf(c), second: .leaf(d)))
+    // Precondition: two panes are already far under the floor, through no fault of this split.
+    let before = PaneTreeLayout.plan(current, in: container).panes
+    XCTAssertEqual(before[a]?.width ?? 0, 149, accuracy: 2)
+    let prospective = current.inserting(
+      UUID(), beside: d, orientation: .horizontal, newLeafFirst: false, ratio: 0.5)
+    XCTAssertFalse(
+      PaneTreeLayout.fitsEveryPane(
+        prospective, in: container, notWorseThan: current, splitting: d),
+      "splitting a HEALTHY pane through the floor must be refused, whatever an unrelated pane does")
+  }
+
+  /// The other half: the already-narrow panes must still be splittable along the axis they are NOT
+  /// starved on, which is what `notWorseThan` was added for in the first place.
+  func testTheAlreadyNarrowPaneCanStillSplitOnTheHealthyAxis() {
+    let container = rect(w: 1000, h: 1000)
+    let current = PaneLayout<UUID>.split(
+      id: UUID(), orientation: .horizontal, ratio: 0.3,
+      first: .split(
+        id: UUID(), orientation: .horizontal, ratio: 0.5, first: .leaf(a), second: .leaf(b)),
+      second: .split(
+        id: UUID(), orientation: .horizontal, ratio: 0.5, first: .leaf(c), second: .leaf(d)))
+    let prospective = current.inserting(
+      UUID(), beside: a, orientation: .vertical, newLeafFirst: false, ratio: 0.5)
+    XCTAssertTrue(
+      PaneTreeLayout.fitsEveryPane(
+        prospective, in: container, notWorseThan: current, splitting: a),
+      "dividing its HEIGHT takes nothing off the width it is already starved on")
   }
 
   func testAHealthyTreeIsStillJudgedAgainstTheFloor() {

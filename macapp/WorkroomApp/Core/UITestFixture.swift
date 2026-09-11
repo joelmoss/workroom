@@ -580,6 +580,23 @@ enum UITestFixture {
     text("WorkroomUITestAutoResizeSplitsEvenly").map { ($0 as NSString).boolValue } ?? true
   }
 
+  /// Whether this launch must keep its preferences out of the real domain
+  /// (`-WorkroomUITestIsolatePreferences 1`), INDEPENDENT of whether fake projects are seeded.
+  ///
+  /// `isActive` is the wrong signal on its own: a UI test may deliberately launch with
+  /// `fixture: false` to exercise the real bootstrap path (`WorkroomWorkflowUITests`
+  /// `testAppLaunchesWithChrome` does exactly that), and such a launch still has no
+  /// `XCTestConfigurationFilePath` — so `UserDefaults.app` fell through to `.standard` and the test
+  /// wrote the developer's own window state, selection and release-channel migration. Isolation and
+  /// fake data are separate decisions; this flag is the one that governs preferences.
+  ///
+  /// Routed through `flag` like every other fixture read, so it is inert in Release. Reading
+  /// `UserDefaults.standard` directly would reintroduce the latching trap this file documents: a
+  /// stray `defaults write com.developwithstyle.workroom WorkroomUITestIsolatePreferences -bool YES`
+  /// would silently move a REAL user's preferences into a throwaway suite, i.e. factory-reset the
+  /// app and lose every setting they changed afterwards.
+  static var isolatesPreferences: Bool { flag("WorkroomUITestIsolatePreferences") }
+
   /// The theme family every fixture launch starts on
   /// (`-WorkroomUITestThemeFamily "<family name>"`). Unset (or unknown) = the `Workroom` default.
   ///
