@@ -628,6 +628,14 @@ private struct WorkroomSplitDivider: View {
           // nothing rather than republishing the ratio it already has. The final translation comes from
           // this closure's own value; there's no need to mirror each tick into a second `@State`.
           .onEnded { value in
+            // Re-anchor here too, not just in `onChanged`. An auto-even can land AFTER the last
+            // mouse-moved tick — hold the divider still while a workroom delete lands and
+            // `pruneWorkroomSplitToLiveLeaves` evens the group — and this handler is the one that
+            // PERSISTS. Without it the release replays `stale start + whole-gesture translation`
+            // and silently overwrites the even, which is the exact defect the re-anchor exists to
+            // prevent, left open on the only path that writes to the store. (`SplitDivider` in
+            // `PaneTreeView` is unaffected: it writes live each tick and commits nothing on end.)
+            reanchorIfMovedElsewhere(value.translation)
             guard let start = startRatio else { return }
             onCommit(dragged(from: start, by: rebased(value.translation)))
             startRatio = nil
