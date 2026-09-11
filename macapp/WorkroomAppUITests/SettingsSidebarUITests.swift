@@ -73,6 +73,9 @@ final class SettingsSidebarUITests: XCTestCase {
       control(app, "dimUnfocusedPanes").exists,
       "Appearance shows the pane-dimming toggle (issue #162)")
     XCTAssertTrue(
+      control(app, "autoResizeSplitsEvenly").exists,
+      "Appearance shows the auto-even-splits toggle (issue #126)")
+    XCTAssertTrue(
       waitExists(control(app, "confirmQuit"), false),
       "switching away replaces the General detail")
 
