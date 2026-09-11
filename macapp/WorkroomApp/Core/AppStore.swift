@@ -1079,9 +1079,7 @@ final class AppStore: ObservableObject {
     }
     // Something tried to focus a pane that lives in its own window; its window is the honest answer.
     terminals.onPaneRaiseRequested = { [weak self] tabID in
-      guard let window = self?.detachedPanes.window(for: tabID) else { return }
-      NSApp.activate(ignoringOtherApps: true)
-      window.makeKeyAndOrderFront(nil)
+      self?.raiseDetachedPane(tabID)
     }
     // Hydrate the (global) inspector section layout once at launch — it's shared across all
     // workrooms, so it's loaded here rather than re-loaded on every selection change (issue #24).
@@ -1377,15 +1375,8 @@ final class AppStore: ObservableObject {
   /// window's selection on the way). The two such paths are the notification click in `AppDelegate`
   /// and the cross-window Run reveal below.
   func window(forTab tabID: TerminalTab.ID?) -> NSWindow? {
-    guard let tabID, detachedPanes.hasWindow(for: tabID) else { return hostWindow }
-    return detachedPanes.window(for: tabID)
-  }
-
-  /// Whether `tabID` is currently living in its own window. The gate every activation path checks
-  /// BEFORE it navigates — see `openTerminal`.
-  func isDetached(_ tabID: TerminalTab.ID?) -> Bool {
-    guard let tabID else { return false }
-    return terminals.detachedTabIDs.contains(tabID)
+    guard let tabID else { return hostWindow }
+    return detachedPanes.window(for: tabID) ?? hostWindow
   }
 
   /// Raise a detached pane's window and return true, or return false when the tab isn't detached.
@@ -1409,7 +1400,7 @@ final class AppStore: ObservableObject {
       tabID: tabID, title: tab.title, project: location.project, workroom: location.workroom,
       origin: origin, frame: frame,
       onCloseTab: { [weak self] in self?.requestCloseTerminalTab(tabID, for: target) },
-      onDock: { [weak self] in self?.terminals.dockPane(tabID, for: target) },
+      onDock: { [weak self] in self?.dockPane(tabID, for: target) },
       content: {
         DetachedPaneView(
           tabID: tabID, content: tab.content, target: target, title: tab.title,
@@ -1432,7 +1423,23 @@ final class AppStore: ObservableObject {
     guard let store = WindowRegistry.shared.ownerOf(tabID: tabID),
       let target = store.targetOwning(tabID)
     else { return }
-    store.terminals.dockPane(tabID, for: target)
+    store.dockPane(tabID, for: target)
+  }
+
+  /// Dock a pane and SHOW it — the inverse of detaching, which raises the window it opens.
+  ///
+  /// The model half alone is not enough: docking closes the window the user is looking at, and the
+  /// pane returns to a workroom that may not be selected, in a window that may be behind everything
+  /// or minimised. Detaching is most useful precisely when you then go and do something else in the
+  /// origin, so that is the common case, and without this the pane simply appears to vanish.
+  func dockPane(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
+    terminals.dockPane(tabID, for: target)
+    if let sid = Self.sidebarID(forTargetID: target.id, in: projects), selectedTargetID != sid {
+      selectedTargetID = sid
+      selectedProjectID = Self.projectPath(of: sid)
+    }
+    NSApp.activate(ignoringOtherApps: true)
+    hostWindow?.makeKeyAndOrderFront(nil)
   }
 
   /// The target that owns `tabID`, for the paths that carry only a tab id.
@@ -3903,7 +3910,8 @@ final class AppStore: ObservableObject {
   /// Close every tab in `target` (the tab strip's "Close all" / File ▸ "Close All Tabs"), confirming
   /// once if any has a live process. No-op when the target has no tabs.
   func requestCloseAllTerminalTabs(for target: TerminalTarget) {
-    let victims = terminals.tabs(for: target).map(\.id)
+    // `allTabs`, not `tabs`: "every tab" includes a pane that is currently in its own window.
+    let victims = terminals.allTabs(for: target).map(\.id)
     guard !victims.isEmpty else { return }
     requestClose(victims, for: target, keep: nil)
   }
@@ -3914,7 +3922,9 @@ final class AppStore: ObservableObject {
   /// shared `performClose` (graceful run-command stop included). Once the last tab closes the chip
   /// leaves the bar. The workroom's files are untouched — that's `deleteWorkroom`. No-op if empty.
   func closeWorkroom(for target: TerminalTarget) {
-    let victims = terminals.tabs(for: target).map(\.id)
+    // `allTabs`: a detached pane left behind here would keep the workroom's chip in the bar forever
+    // (`activeTargetIDs` reads the unfiltered dictionary).
+    let victims = terminals.allTabs(for: target).map(\.id)
     guard !victims.isEmpty else { return }
     performClose(victims, for: target)
   }
@@ -3933,7 +3943,7 @@ final class AppStore: ObservableObject {
   /// Close every tab in `target` except `keepID` ("Close others"), confirming once if any victim has
   /// a live process. No-op when there's nothing else to close.
   func requestCloseOtherTerminalTabs(_ keepID: TerminalTab.ID, for target: TerminalTarget) {
-    let victims = terminals.tabs(for: target).map(\.id).filter { $0 != keepID }
+    let victims = terminals.allTabs(for: target).map(\.id).filter { $0 != keepID }
     guard !victims.isEmpty else { return }
     requestClose(victims, for: target, keep: keepID)
   }
@@ -3946,7 +3956,9 @@ final class AppStore: ObservableObject {
   private func requestClose(
     _ victims: [TerminalTab.ID], for target: TerminalTarget, keep: TerminalTab.ID?
   ) {
-    let tabs = terminals.tabs(for: target).filter { victims.contains($0.id) }
+    // `allTabs`: the confirm list must be able to see a detached victim, or a live process could be
+    // killed without `closeNeedsConfirm` ever considering it.
+    let tabs = terminals.allTabs(for: target).filter { victims.contains($0.id) }
     let proceed: () -> Void = { [weak self] in
       guard let self else { return }
       if let keep { self.terminals.select(keep, for: target) }
@@ -4388,7 +4400,7 @@ final class AppStore: ObservableObject {
       selectedTargetID = sid
       guard let target = selectedTarget, !target.isMissing else { return }
       let resolved =
-        tabID.flatMap { id in terminals.tabs(for: target).contains { $0.id == id } ? id : nil }
+        tabID.flatMap { id in terminals.allTabs(for: target).contains { $0.id == id } ? id : nil }
         ?? terminals.focusedTab(for: target)?.id
       guard let resolved else { return }
       terminals.focus(resolved, for: target)
@@ -4435,7 +4447,7 @@ final class AppStore: ObservableObject {
       let landedTab: TerminalTab.ID
       if let recorded = terminals.tab(loc.tab, for: target), landing.matchesTab(recorded.content) {
         landedTab = recorded.id  // 1 — already showing it
-      } else if let other = terminals.tabs(for: target).first(where: {
+      } else if let other = terminals.allTabs(for: target).first(where: {
         landing.matchesTab($0.content)
       }) {
         terminals.focus(other.id, for: target)
@@ -4488,7 +4500,9 @@ final class AppStore: ObservableObject {
   /// of their own — neither has to observe the sweep's high-frequency publisher (WORKROOM-2B).
   func refreshOpenDiffChangeKinds(for sid: SidebarID, status: WorkroomStatus?) {
     guard let target = target(for: sid) else { return }
-    for tab in terminals.tabs(for: target) {
+    // `allTabs`: this refreshes MODEL state, so a detached diff pane must be swept too — otherwise
+    // it keeps whatever change kind it had when it was popped out.
+    for tab in terminals.allTabs(for: target) {
       guard case .diff(let descriptor) = tab.content,
         let live = Self.liveChangeKind(for: descriptor, in: status)
       else { continue }
@@ -4511,7 +4525,9 @@ final class AppStore: ObservableObject {
   /// "Changeset unavailable" state.
   private func isLive(_ loc: NavLocation) -> Bool {
     guard let target = target(for: loc.target), !target.isMissing else { return false }
-    return terminals.tabs(for: target).contains { $0.id == loc.tab }
+    // `allTabs`: a detached pane is still reachable (its own window, ⌃⌘O), so its history entries
+    // are live.
+    return terminals.allTabs(for: target).contains { $0.id == loc.tab }
   }
 
   // MARK: Sidebar terminal subtree (issue #30)

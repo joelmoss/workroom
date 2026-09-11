@@ -49,21 +49,34 @@ final class DetachedPaneEnvironmentTests: XCTestCase {
       .filter { $0.pathExtension == "swift" } ?? []
     XCTAssertGreaterThan(files.count, 50, "parse looks wrong — the app has more sources than this")
 
-    // `@EnvironmentObject var name: Type` — collect every Type the app declares a dependency on.
+    // Collect every type the app declares an `@EnvironmentObject` dependency on.
+    //
+    // A regex, not `components(separatedBy: "@EnvironmentObject var ")`: that split silently misses
+    // every `@EnvironmentObject private var` declaration, which is the form six of them use. It
+    // passed anyway, purely because the private-var types happened to be a subset of the plain-var
+    // ones — so the guarantee this test exists for ("a NEW environment object fails the test") did
+    // not hold for the codebase's more common declaration style.
+    let pattern = try NSRegularExpression(
+      pattern:
+        #"@EnvironmentObject\s+(?:private\s+|fileprivate\s+|internal\s+|public\s+)?var\s+\w+\s*:\s*(\w+)"#
+    )
     var required: Set<String> = []
     for file in files {
       let source = try String(contentsOf: file, encoding: .utf8)
-      for declaration in source.components(separatedBy: "@EnvironmentObject var ").dropFirst() {
-        guard let colon = declaration.firstIndex(of: ":") else { continue }
-        let type = declaration[declaration.index(after: colon)...]
-          .prefix { $0 != "\n" }
-          .trimmingCharacters(in: .whitespaces)
-        if !type.isEmpty { required.insert(type) }
+      let range = NSRange(source.startIndex..., in: source)
+      for match in pattern.matches(in: source, range: range) {
+        guard let r = Range(match.range(at: 1), in: source) else { continue }
+        required.insert(String(source[r]))
       }
     }
     XCTAssertTrue(
       required.contains("AppStore") && required.contains("ClaudeUsageBridge"),
       "parse looks wrong — these are known to be declared (found: \(required.sorted()))")
+    // Pins the parser itself: `Updater` is declared ONLY as `@EnvironmentObject private var`, so if
+    // this drops out, the private-var blind spot is back and the test is quietly guarding nothing.
+    XCTAssertTrue(
+      required.contains("Updater"),
+      "parser regressed — `Updater` is declared only as `@EnvironmentObject private var`")
 
     let injected = try String(
       contentsOf: macappRoot.appendingPathComponent("WorkroomApp/Views/DetachedPaneView.swift"),

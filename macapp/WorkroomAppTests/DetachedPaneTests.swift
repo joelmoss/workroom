@@ -35,18 +35,22 @@ final class DetachedPaneTests: XCTestCase {
     let s = makeSessions()
     let first = s.addTab(for: target)
     let second = s.addTab(for: target)
+    let third = s.addTab(for: target)
 
+    // The MIDDLE tab, deliberately: detaching the LAST one leaves `[first, second]` either way, so an
+    // implementation that appended detached tabs to the tail would satisfy the position claim below
+    // without restoring anything.
     s.detachPane(second.id, for: target, at: .zero)
 
     XCTAssertEqual(
-      s.displayedTabIDs(for: target), [first.id],
+      s.displayedTabIDs(for: target), [first.id, third.id],
       "a detached pane is not in the strip or the layout")
     XCTAssertEqual(
-      s.normalizedTabIDs(forTargetID: target.id), [first.id, second.id],
-      "the raw order keeps it, in its original position")
+      s.normalizedTabIDs(forTargetID: target.id), [first.id, second.id, third.id],
+      "the raw order keeps it in its ORIGINAL slot, not at the end")
     XCTAssertEqual(
-      s.sessionCapture(forTargetID: target.id)?.tabs.map(\.id), [first.id, second.id],
-      "capture reads the raw order, so a relaunch can bring it back")
+      s.sessionCapture(forTargetID: target.id)?.tabs.map(\.id), [first.id, second.id, third.id],
+      "capture reads the raw order, so a relaunch brings it back where it was")
   }
 
   /// The black-pane regression: `reconcileOcclusion` pauses every surface not in `visibleTabIDs`, so
@@ -158,13 +162,18 @@ final class DetachedPaneTests: XCTestCase {
     let s = makeSessions()
     let first = s.addTab(for: target)
     let second = s.addTab(for: target)
+    let third = s.addTab(for: target)
     s.detachPane(second.id, for: target, at: .zero)
+    XCTAssertEqual(s.displayedTabIDs(for: target), [first.id, third.id])
 
     var closed: [TerminalTab.ID] = []
     s.onPaneDocked = { closed.append($0) }
     s.dockPane(second.id, for: target)
 
-    XCTAssertEqual(s.displayedTabIDs(for: target), [first.id, second.id], "back in its old slot")
+    // The MIDDLE tab again: a dock that re-appended would read `[first, third, second]`, which is
+    // exactly what "its old slot" has to rule out.
+    XCTAssertEqual(
+      s.displayedTabIDs(for: target), [first.id, second.id, third.id], "back in its old slot")
     XCTAssertFalse(s.detachedTabIDs.contains(second.id))
     XCTAssertEqual(closed, [second.id], "and its window is closed")
     XCTAssertEqual(
@@ -213,6 +222,107 @@ final class DetachedPaneTests: XCTestCase {
     XCTAssertEqual(reported.count, 1)
     XCTAssertEqual(reported.first?.1, tab.id)
     XCTAssertEqual(reported.first?.2, CGPoint(x: 120, y: 340))
+  }
+
+  // MARK: Session persistence — the durability promise
+
+  private func terminalTab(_ key: String, title: String) -> TabSession {
+    TabSession(
+      key: key, kind: TabSession.terminalKind,
+      terminal: TerminalPayload(defaultTitle: title, cwd: nil))
+  }
+
+  /// Quit with a pane detached, relaunch, it comes back detached at its frame. That is the feature's
+  /// headline durability claim and it had no coverage at all.
+  func testARestoredPaneComesBackDetachedAtItsSavedFrame() {
+    let s = makeSessions()
+    var restored: [(TerminalTab.ID, NSRect)] = []
+    s.onPaneRestoredDetached = { _, tabID, frame in restored.append((tabID, frame)) }
+
+    let frame = NSRect(x: 120, y: 340, width: 800, height: 560)
+    var detached = terminalTab("b", title: "Terminal 2")
+    detached.detachedFrame = NSStringFromRect(frame)
+    _ = s.restore(
+      TargetSession(
+        targetID: target.id, tabs: [terminalTab("a", title: "Terminal 1"), detached]),
+      for: target)
+
+    XCTAssertEqual(restored.count, 1, "the saved window must be rebuilt")
+    XCTAssertEqual(restored.first?.1, frame, "at the frame it was left at")
+    let id = restored.first!.0
+    XCTAssertTrue(s.detachedTabIDs.contains(id))
+    XCTAssertFalse(
+      s.displayedTabIDs(for: target).contains(id), "and it must not ALSO be in the strip")
+    XCTAssertTrue(s.visibleTabIDs(for: target).contains(id), "it renders in its own window")
+  }
+
+  /// `NSRectFromString` returns a zero rect for anything it cannot parse, so a corrupted session file
+  /// must fall back to docked rather than opening a zero-size window.
+  func testAnUnparseableDetachedFrameRestoresDocked() {
+    let s = makeSessions()
+    var restored = 0
+    s.onPaneRestoredDetached = { _, _, _ in restored += 1 }
+
+    var detached = terminalTab("a", title: "Terminal 1")
+    detached.detachedFrame = "not a rect"
+    _ = s.restore(TargetSession(targetID: target.id, tabs: [detached]), for: target)
+
+    XCTAssertEqual(restored, 0, "a zero frame must not open a zero-size window")
+    XCTAssertTrue(s.detachedTabIDs.isEmpty)
+    XCTAssertEqual(s.displayedTabIDs(for: target).count, 1, "it comes back docked instead")
+  }
+
+  // MARK: Splits — the two-pane case, which takes the other branch
+
+  /// Detaching one half of a TWO-pane split dissolves the split entirely. The three-member test above
+  /// only exercises the `>= 2 survivors` arm; this is the common gesture and it takes the other one.
+  func testDetachingOneHalfOfATwoPaneSplitDissolvesTheSplit() {
+    let s = makeSessions()
+    let a = s.addTab(for: target)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    let b = s.focusedTab(for: target)!
+    XCTAssertEqual(Set(s.split(for: target)?.tabIDs ?? []), [a.id, b.id])
+
+    s.detachPane(b.id, for: target, at: .zero)
+
+    XCTAssertNil(s.split(for: target), "one survivor is not a split")
+    XCTAssertEqual(s.displayedTabIDs(for: target), [a.id])
+    XCTAssertEqual(s.focusedTab(for: target)?.id, a.id, "the survivor takes focus")
+    XCTAssertTrue(s.visibleTabIDs(for: target).contains(b.id), "the detached one keeps rendering")
+  }
+
+  // MARK: Bulk close — a detached pane is still a tab
+
+  /// `tabs(for:)` hides detached panes, so every path that means "all of this target's tabs" has to
+  /// read `allTabs`. It did not, and "Close All Tabs" left a popped-out pane alive with its process.
+  func testAllTabsIncludesADetachedPaneSoBulkClosesReachIt() {
+    let s = makeSessions()
+    let first = s.addTab(for: target)
+    let second = s.addTab(for: target)
+    s.detachPane(second.id, for: target, at: .zero)
+
+    XCTAssertEqual(
+      s.tabs(for: target).map(\.id), [first.id], "the strip hides it")
+    XCTAssertEqual(
+      s.allTabs(for: target).map(\.id), [first.id, second.id],
+      "but it is still a tab, so a bulk close must be able to see it")
+  }
+
+  /// Docking a tab that was never detached must change nothing — the mirror of the repeated-detach
+  /// no-op, and reachable in practice via the Window menu against a stale tab id.
+  func testDockingATabThatIsNotDetachedIsANoOp() {
+    let s = makeSessions()
+    let first = s.addTab(for: target)
+    let second = s.addTab(for: target)
+    XCTAssertEqual(s.focusedTab(for: target)?.id, second.id)
+
+    var closed = 0
+    s.onPaneDocked = { _ in closed += 1 }
+    s.dockPane(first.id, for: target)
+
+    XCTAssertEqual(closed, 0, "no window exists, so nothing may be told to close one")
+    XCTAssertEqual(
+      s.focusedTab(for: target)?.id, second.id, "and a stale dock must not steal focus")
   }
 
   /// Detaching twice is a no-op, so the "one tab, one window" invariant cannot be broken by a

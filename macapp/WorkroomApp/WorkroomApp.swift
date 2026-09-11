@@ -1069,6 +1069,25 @@ struct WorkroomCommands: Commands {
   /// through a dialog — verified: ⌘T behind the Add Project sheet really did open a terminal tab.
   private var modalBlocked: Bool { modalPresented == true }
 
+  /// Whether a workroom-scoped command must be disabled because a DETACHED pane's window is key
+  /// (issue #172).
+  ///
+  /// These windows are deliberately kept out of `WindowRegistry` so the `AppDelegate` key monitor
+  /// cannot route ⌘T / ⌘1–9 to the origin store while one is key. The SwiftUI menu had the same hole
+  /// by a different route: `@FocusedObject`/`@FocusedValue` are SCENE-scoped, and a detached window is
+  /// not a scene, so they keep reporting the last scene's store — and ⌘T would open a terminal in the
+  /// main window's currently-selected workroom, which has nothing to do with the pane you are looking
+  /// at. `isAppShortcut` withholds those keys from the pane's own TUI either way, so there is no
+  /// useful fallback to preserve. Disabling also frees the key equivalent, the same mechanism this
+  /// app already relies on for Tab.
+  private var detachedWindowKey: Bool { detachedFocus.keyTabID != nil }
+
+  /// The gate every workroom-scoped menu item ANDs in: not blocked by a modal, and not aimed at the
+  /// wrong window.
+  private func workroomCommandEnabled(_ flag: Bool?) -> Bool {
+    flag == true && !detachedWindowKey
+  }
+
   private func storeFlag(_ keyPath: ReferenceWritableKeyPath<AppStore, Bool>) -> Binding<Bool> {
     Binding(
       get: { store?[keyPath: keyPath] ?? false },
@@ -1118,7 +1137,7 @@ struct WorkroomCommands: Commands {
         store?.newTerminalInSelectedTarget()
       }
       .keyboardShortcut("t", modifiers: .command)
-      .disabled(workroomSelected != true)
+      .disabled(!workroomCommandEnabled(workroomSelected))
 
       // Quick terminal at ~/ in its own chrome-less window (issue #39) — same open/focus action as
       // the toolbar button. Always enabled (needs no workroom). Shows ⌥§ as its equivalent: no
@@ -1141,7 +1160,7 @@ struct WorkroomCommands: Commands {
         store?.closeCurrentTerminalTab()
       }
       .keyboardShortcut("w", modifiers: .command)
-      .disabled(hasTerminal != true)
+      .disabled(!workroomCommandEnabled(hasTerminal))
 
       // Bulk close (issue #72), no shortcuts. Labelled "Tabs" (not "Terminals") since they act on
       // diff/content tabs too. "Close Other Tabs" needs ≥2 tabs; "Close All Tabs" needs ≥1.
@@ -1152,7 +1171,7 @@ struct WorkroomCommands: Commands {
       Button("Close All Tabs") {
         store?.closeAllTerminalTabsInSelectedTarget()
       }
-      .disabled(hasTerminal != true)
+      .disabled(!workroomCommandEnabled(hasTerminal))
 
       Divider()
 
@@ -1336,14 +1355,14 @@ struct WorkroomCommands: Commands {
       Divider()
       Button("Split Right") { store?.splitFocusedRight() }
         .keyboardShortcut("d", modifiers: .command)
-        .disabled(hasTerminal != true)
+        .disabled(!workroomCommandEnabled(hasTerminal))
       Button("Split Left") { store?.splitFocusedLeft() }
-        .disabled(hasTerminal != true)
+        .disabled(!workroomCommandEnabled(hasTerminal))
       Button("Split Down") { store?.splitFocusedDown() }
         .keyboardShortcut("d", modifiers: [.command, .shift])
-        .disabled(hasTerminal != true)
+        .disabled(!workroomCommandEnabled(hasTerminal))
       Button("Split Up") { store?.splitFocusedUp() }
-        .disabled(hasTerminal != true)
+        .disabled(!workroomCommandEnabled(hasTerminal))
 
       // Resize a split's panes back to even (issue #83): one item per split kind, each enabled only
       // when that kind of split is actually on screen (a focused terminal split / the selected
@@ -1368,7 +1387,7 @@ struct WorkroomCommands: Commands {
       CommandMenu("Run") {
         Button("Run") { store?.runOrFocusRunCommand() }
           .keyboardShortcut("r", modifiers: .command)
-          .disabled(hasRunCommand != true)
+          .disabled(!workroomCommandEnabled(hasRunCommand))
         Button("Restart") { store?.restartSelectedRunCommand() }
           .keyboardShortcut("r", modifiers: [.command, .option])
           .disabled(runCommandActive != true)
@@ -1404,13 +1423,13 @@ struct WorkroomCommands: Commands {
       Divider()
       Button("Find…") { store?.startFindInFocusedPane() }
         .keyboardShortcut("f", modifiers: .command)
-        .disabled(hasTerminal != true)
+        .disabled(!workroomCommandEnabled(hasTerminal))
       Button("Find Next") { store?.navigateFocusedPaneSearch(forward: true) }
         .keyboardShortcut("g", modifiers: .command)
-        .disabled(hasTerminal != true)
+        .disabled(!workroomCommandEnabled(hasTerminal))
       Button("Find Previous") { store?.navigateFocusedPaneSearch(forward: false) }
         .keyboardShortcut("g", modifiers: [.command, .shift])
-        .disabled(hasTerminal != true)
+        .disabled(!workroomCommandEnabled(hasTerminal))
 
       // Edit menu: toggle copy-on-select (checkmark reflects state). A divider sets it apart
       // from the standard Cut/Copy/Paste group above, since it governs clipboard behaviour
@@ -1434,7 +1453,7 @@ struct WorkroomCommands: Commands {
       } else {
         Button("Move pane into new window") { store?.detachFocusedPane() }
           .keyboardShortcut("o", modifiers: [.command, .control])
-          .disabled(workroomSelected != true)
+          .disabled(!workroomCommandEnabled(workroomSelected))
       }
       Divider()
     }
@@ -1469,10 +1488,10 @@ struct WorkroomCommands: Commands {
       Divider()
       Button("Scroll to Top") { store?.scrollFocusedTerminalToTop() }
         .keyboardShortcut(.upArrow, modifiers: .command)
-        .disabled(hasTerminal != true)
+        .disabled(!workroomCommandEnabled(hasTerminal))
       Button("Scroll to Bottom") { store?.scrollFocusedTerminalToBottom() }
         .keyboardShortcut(.downArrow, modifiers: .command)
-        .disabled(hasTerminal != true)
+        .disabled(!workroomCommandEnabled(hasTerminal))
 
       // Cycle terminal tabs (⌥⌘←/→) and workroom tabs (⇧⌥⌘←/→) (issue #29). The keys are caught by
       // the AppDelegate monitor so they fire before the terminal; shown here for discoverability (the

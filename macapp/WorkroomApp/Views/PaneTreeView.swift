@@ -722,9 +722,6 @@ struct PaneLeafView: View {
   /// untouched: this only removes chrome around it, so the single-structural-slot rule that protects
   /// the libghostty view is not in play.
   var chromeless: Bool = false
-  /// Pop out into a new window, or dock back. Defaulted so the pane tree's own call site, which
-  /// resolves it from the store below, stays the only place that knows how.
-  var onPopOut: (() -> Void)?
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   /// Drives `borderColor` — see `WorkroomPaneCardBorder.tint`, which this pane's ring shares.
   @Environment(\.controlActiveState) private var activeState
@@ -992,7 +989,7 @@ struct PaneLeafView: View {
       onSplitDown: { sessions.splitTab(tabID, on: .bottom, for: target) },
       onClose: { store.requestCloseTerminalTab(tabID, for: target) },
       onActivate: onActivate,
-      onPopOut: onPopOut ?? {
+      onPopOut: {
         // Same screen placement a drag-out would produce, minus the drag: put the window under the
         // pointer rather than somewhere arbitrary.
         sessions.detachPane(tabID, for: target, at: NSEvent.mouseLocation)
