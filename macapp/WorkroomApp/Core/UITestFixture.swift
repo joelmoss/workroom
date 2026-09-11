@@ -572,6 +572,14 @@ enum UITestFixture {
     text("WorkroomUITestDimUnfocusedPanes").map { ($0 as NSString).boolValue } ?? true
   }
 
+  /// Whether splits auto-even on add/remove in a fixture launch
+  /// (`-WorkroomUITestAutoResizeSplitsEvenly 0` to turn it off). Defaults to the shipped `true`, and
+  /// pinned for the same reason as `dimUnfocusedPanes`: it persists in the real Dev domain and it
+  /// decides every divider position a split test or screenshot sees (issue #126).
+  static var autoResizeSplitsEvenly: Bool {
+    text("WorkroomUITestAutoResizeSplitsEvenly").map { ($0 as NSString).boolValue } ?? true
+  }
+
   /// The theme family every fixture launch starts on
   /// (`-WorkroomUITestThemeFamily "<family name>"`). Unset (or unknown) = the `Workroom` default.
   ///
@@ -654,6 +662,9 @@ enum UITestFixture {
     // at full contrast or 0.45 — so a developer who turns it off once silently rebaselines every later
     // fixture launch and every screenshot taken from one (issue #162 review).
     Defaults[.dimUnfocusedPanes] = dimUnfocusedPanes
+    // Auto-even splits: same persistence trap, and it decides where every divider in a split lands
+    // (issue #126) — an unpinned value rebaselines any test or screenshot that measures panes.
+    Defaults[.autoResizeSplitsEvenly] = autoResizeSplitsEvenly
     // Pinned "already onboarded" for the same reason as `themeFamily`/`diffViewMode` above: the flag
     // PERSISTS in the real Dev `Defaults` domain, so a fresh machine with zero registered projects
     // would otherwise pop the onboarding wizard (issue #151) over e.g. `NewWorkroomDialogUITests`'

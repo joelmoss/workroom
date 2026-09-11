@@ -320,6 +320,11 @@ final class AppStore: ObservableObject {
   /// A plain `var`, deliberately NOT `@Published`: it is written from a layout callback, and
   /// publishing there would re-enter layout. Nothing observes it — every reader is an action.
   var workroomPaneSpace: CGRect?
+
+  /// Issue #126's auto-even pref, read live so the Settings toggle applies to the very next split
+  /// without a relaunch. Injected rather than read inline so tests can drive both states without
+  /// touching `Defaults`, whose domain a parallel test worker shares and wipes cross-process.
+  var autoEvenSplits: () -> Bool = { Defaults[.autoResizeSplitsEvenly] }
   /// Terminal targets whose terminal subtree is *expanded* in the sidebar (issue #30). Inverse
   /// polarity to `collapsedProjects`: terminals are collapsed by default, so the set holds only the
   /// expanded ones (empty = all collapsed). Persisted with the session (issue #46) — restored only for

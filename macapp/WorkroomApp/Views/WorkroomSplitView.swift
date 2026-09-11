@@ -73,7 +73,11 @@ struct WorkroomSplitView: View {
   /// `RootView` and rebuilds every pane (and every pane title bar) at cursor rate; local state keeps
   /// the churn inside this view and commits once on mouse-up. Same pattern as `SidebarColumn`'s
   /// resize handle.
-  @State private var liveRatio: (split: UUID, ratio: CGFloat)?
+  /// `stored` is the node's ratio as the store held it when the drag began. If the store moves that
+  /// node while the mouse is down — an auto-even after a pane closed (issue #126) — the override is
+  /// dropped so the divider sees the new value and re-anchors onto it, instead of the drag silently
+  /// replaying its stale start over the even.
+  @State private var liveRatio: (split: UUID, ratio: CGFloat, stored: CGFloat)?
 
   var body: some View {
     let leaves = layout.tabIDs
@@ -100,7 +104,7 @@ struct WorkroomSplitView: View {
         ForEach(plan.dividers) { d in
           WorkroomSplitDivider(
             orientation: d.orientation, ratio: d.ratio, total: d.total,
-            onLive: { liveRatio = (d.id, $0) },
+            onLive: { liveRatio = (d.id, $0, layout.ratio(forSplit: d.id) ?? d.ratio) },
             onCommit: {
               liveRatio = nil
               onSetRatio($0, d.id)
@@ -122,6 +126,8 @@ struct WorkroomSplitView: View {
   /// live. Once committed, `liveRatio` clears and the store's own value takes over.
   private var displayedLayout: PaneLayout<SidebarID> {
     guard let liveRatio else { return layout }
+    // The store moved this node underneath the drag: show the store's tree so the divider re-anchors.
+    guard layout.ratio(forSplit: liveRatio.split) == liveRatio.stored else { return layout }
     return layout.settingRatio(liveRatio.ratio, forSplit: liveRatio.split)
   }
 
@@ -571,6 +577,13 @@ private struct WorkroomSplitDivider: View {
   /// The final ratio, once, on mouse-up — this is the one that persists.
   let onCommit: (CGFloat) -> Void
   @State private var startRatio: CGFloat?
+  /// The translation this drag is measured FROM. Normally zero (the gesture's own origin), but it
+  /// re-bases whenever the divider is re-anchored mid-drag — `value.translation` is cumulative for
+  /// the whole gesture, so a new anchor needs a new origin or the pointer jumps.
+  @State private var baseTranslation: CGSize = .zero
+  /// The last ratio this drag emitted, so an incoming `ratio` that differs from it can only have
+  /// come from somewhere else (issue #126: an auto-even landing while the mouse is down).
+  @State private var lastEmitted: CGFloat?
 
   var body: some View {
     Rectangle()
@@ -579,17 +592,18 @@ private struct WorkroomSplitDivider: View {
       .gesture(
         DragGesture(coordinateSpace: .global)
           .onChanged { value in
-            let start = startRatio ?? ratio
-            if startRatio == nil { startRatio = start }
-            onLive(dragged(from: start, by: value.translation))
+            reanchorIfMovedElsewhere(value.translation)
+            onLive(dragged(from: startRatio ?? ratio, by: value.translation - baseTranslation))
           }
           // `startRatio` is set by `onChanged`, so a nil one means the gesture never moved — commit
           // nothing rather than republishing the ratio it already has. The final translation comes from
           // this closure's own value; there's no need to mirror each tick into a second `@State`.
           .onEnded { value in
             guard let start = startRatio else { return }
-            onCommit(dragged(from: start, by: value.translation))
+            onCommit(dragged(from: start, by: value.translation - baseTranslation))
             startRatio = nil
+            lastEmitted = nil
+            baseTranslation = .zero
           }
       )
       .onHover { inside in
@@ -623,6 +637,27 @@ private struct WorkroomSplitDivider: View {
   private func dragged(from start: CGFloat, by translation: CGSize) -> CGFloat {
     let usable = max(1, total - PaneTreeLayout.dividerThickness)
     let delta = orientation == .horizontal ? translation.width : translation.height
-    return PaneTreeLayout.clampRatio(start + delta / usable, total: total, along: orientation)
+    let next = PaneTreeLayout.clampRatio(start + delta / usable, total: total, along: orientation)
+    lastEmitted = next
+    return next
+  }
+
+  /// Latch the drag's origin, and re-latch it when the divider moved for a reason other than this
+  /// drag (issue #126). `equalized()` keeps every split node's `id`, so an auto-even landing while
+  /// the mouse is down leaves this view — and its latched start — alive over a tree that has since
+  /// changed underneath it. Without re-anchoring, the next tick (and the mouse-up commit) replays
+  /// `stale start + whole-gesture translation` and silently undoes the even.
+  private func reanchorIfMovedElsewhere(_ translation: CGSize) {
+    let movedElsewhere = lastEmitted.map { abs(ratio - $0) > 0.0005 } ?? false
+    guard startRatio == nil || movedElsewhere else { return }
+    startRatio = ratio
+    baseTranslation = translation
+  }
+}
+
+extension CGSize {
+  /// Component-wise difference, for re-basing a cumulative gesture translation onto a new origin.
+  static func - (lhs: CGSize, rhs: CGSize) -> CGSize {
+    CGSize(width: lhs.width - rhs.width, height: lhs.height - rhs.height)
   }
 }

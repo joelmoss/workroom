@@ -1,4 +1,5 @@
 import AppKit
+import Defaults
 import WorkroomSessionProtocol
 
 /// One tab in a target's strip. A tab is exactly one PANE: historically always a terminal surface,
@@ -388,6 +389,22 @@ final class TerminalSessions: ObservableObject {
   /// publishing from there would both churn the view graph and risk "Publishing changes from within
   /// view updates". Nothing renders from it — it is a measurement cache, not model state.
   var paneRects: [TerminalTarget.ID: [TerminalTab.ID: CGRect]] = [:]
+
+  /// The rect `PaneTreeView` lays a target's whole split out in — the container those `paneRects`
+  /// tile. Same feed, same posture (written after layout, never `@Published`), but a different
+  /// question: the per-pane rects answer "can THIS pane be halved", while auto-even (issue #126)
+  /// has to ask "can the GROUP hold another pane" and "would evening actually render evenly here".
+  /// Neither is derivable from the pane rects alone once a divider has been dragged.
+  ///
+  /// Absent (no layout pass yet) means unmeasured, which every reader treats as permissive — the
+  /// same posture `PaneTreeLayout.canSplit` takes for a zero rect.
+  var paneSpace: [TerminalTarget.ID: CGRect] = [:]
+
+  /// Issue #126's auto-even pref, read live so the Settings toggle applies to the very next split
+  /// without a relaunch. Injected rather than read inline so tests can drive both states: a parallel
+  /// test worker shares (and wipes) the `Defaults` domain cross-process, which is why
+  /// `AppStoreCreateWorkroomTests` stopped arming auto-run through `Defaults[.runCommands]`.
+  var autoEvenSplits: () -> Bool = { Defaults[.autoResizeSplitsEvenly] }
   /// Per-target running counter so tab titles ("Terminal 1", "2", …) stay stable across closes.
   private var counts: [TerminalTarget.ID: Int] = [:]
   /// The app-wide most-recently-focused pane order (issue #132), written by `setFocused` and read by
@@ -1129,10 +1146,13 @@ final class TerminalSessions: ObservableObject {
     tabsByTarget[target.id, default: [:]][newTab.id] = newTab
 
     if let existing = splitByTarget[target.id], existing.contains(focused.id) {
-      // Grow the existing split beside the focused leaf, on the requested side.
-      splitByTarget[target.id] = existing.inserting(
-        newTab.id, beside: focused.id, orientation: edge.orientation,
-        newLeafFirst: edge.placesDroppedFirst, ratio: 0.5)
+      // Grow the existing split beside the focused leaf, on the requested side. Always an add, so
+      // it always evens (issue #126) — every caller of this function is a split command.
+      setSplit(
+        existing.inserting(
+          newTab.id, beside: focused.id, orientation: edge.orientation,
+          newLeafFirst: edge.placesDroppedFirst, ratio: 0.5),
+        for: target.id, evening: true)
     } else {
       // Start a fresh split from the focused solo tab; dissolve any other split.
       let new = PaneLayout.leaf(newTab.id)
@@ -1220,9 +1240,13 @@ final class TerminalSessions: ObservableObject {
     }
 
     if base.contains(destID) {
-      splitByTarget[target.id] = base.inserting(
-        movedID, beside: destID, orientation: edge.orientation,
-        newLeafFirst: edge.placesDroppedFirst, ratio: 0.5)
+      // `addsAMember` is the same predicate the pane floor above uses, so auto-even and the floor
+      // agree on what counts as an addition — a rearrange within the group keeps its dividers.
+      setSplit(
+        base.inserting(
+          movedID, beside: destID, orientation: edge.orientation,
+          newLeafFirst: edge.placesDroppedFirst, ratio: 0.5),
+        for: target.id, evening: addsAMember)
     } else {
       let dropped = PaneLayout.leaf(movedID)
       let anchor = PaneLayout.leaf(destID)
@@ -1241,7 +1265,8 @@ final class TerminalSessions: ObservableObject {
   func extractFromSplit(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
     guard let split = splitByTarget[target.id], split.contains(tabID) else { return }
     if let collapsed = split.removingLeaf(tabID), collapsed.tabIDs.count >= 2 {
-      splitByTarget[target.id] = collapsed
+      // A removal: the survivors keep ratios budgeted for the pane that just left, so even them.
+      setSplit(collapsed, for: target.id, evening: true)
     } else {
       splitByTarget[target.id] = nil
     }
@@ -1350,8 +1375,10 @@ final class TerminalSessions: ObservableObject {
 
     if let split = splitByTarget[target.id], split.contains(tabID) {
       let collapsed = splitRemoving(tabID, for: target.id)
-      // A lone remaining member is not a split any more.
-      splitByTarget[target.id] = (collapsed?.tabIDs.count ?? 0) >= 2 ? collapsed : nil
+      // A lone remaining member is not a split any more; two or more get evened, since their
+      // dividers still budget space for the pane that just closed (issue #126).
+      let survivors = (collapsed?.tabIDs.count ?? 0) >= 2 ? collapsed : nil
+      setSplit(survivors, for: target.id, evening: survivors != nil)
     }
 
     if wasFocused { setFocused(successor, for: target.id) }
@@ -1608,11 +1635,44 @@ final class TerminalSessions: ObservableObject {
   private func fits(
     splitting tab: TerminalTab, orientation: SplitOrientation, for target: TerminalTarget
   ) -> Bool {
+    // Group-aware once the renderer has measured the container (issue #126). With auto-even on,
+    // adding a pane redistributes the WHOLE group instead of halving this one, so "can this pane be
+    // halved" stops being the question — a pane dragged narrow would refuse ⌘D while the group has
+    // ample room. Ask instead whether every pane of the tree we are about to store clears the
+    // floors, using the same `evenedIfHonourable` step the mutation itself uses so the guard and the
+    // commit can never disagree.
+    if let space = paneSpace[target.id], space.width > 0, space.height > 0 {
+      let base =
+        splitByTarget[target.id].flatMap { $0.contains(tab.id) ? $0 : nil } ?? .leaf(tab.id)
+      // The side the new leaf lands on mirrors the tree without changing any pane's size, so the
+      // guard doesn't need the edge — only the axis and the resulting pane count.
+      let prospective = base.inserting(
+        UUID(), beside: tab.id, orientation: orientation, newLeafFirst: false, ratio: 0.5)
+      let stored = PaneTreeLayout.evenedIfHonourable(
+        prospective, in: space, enabled: autoEvenSplits())
+      return PaneTreeLayout.fitsEveryPane(stored, in: space)
+    }
+    // Pre-layout fallback: the pane's own rect (or its surface), judged by the anchor-only rule.
     let rect =
       paneRects[target.id]?[tab.id]
       ?? tab.surface.map { CGRect(origin: .zero, size: $0.bounds.size) }
     guard let rect else { return true }
     return PaneTreeLayout.canSplit(rect, along: orientation)
+  }
+
+  /// Store `tree` for `target`, evening it first when this edit added or removed a pane and the
+  /// container can honour equality (issue #126). The gate is INTENT, not a leaf-count delta: every
+  /// caller already knows whether it is adding, removing, or merely rearranging, and a rearrange
+  /// must keep the dividers the user dragged.
+  private func setSplit(
+    _ tree: TerminalPaneLayout?, for targetID: TerminalTarget.ID, evening: Bool
+  ) {
+    guard let tree, evening else {
+      splitByTarget[targetID] = tree
+      return
+    }
+    splitByTarget[targetID] = PaneTreeLayout.evenedIfHonourable(
+      tree, in: paneSpace[targetID], enabled: autoEvenSplits())
   }
 
   /// The tab to focus after `tabID` is closed: the most-recently-focused tab that is still open
