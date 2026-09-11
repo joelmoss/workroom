@@ -1275,16 +1275,48 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
     XCTAssertEqual(rootRatio(s) ?? -1, 0.8, accuracy: 0.0001, "and so did the close")
   }
 
+  /// Evening must decline when the container cannot render the result evenly — and the path that
+  /// actually REACHES that decision is a removal, not an insert. Asserting it through an insert was
+  /// vacuous: the floor refuses the insert outright, so the ratio never moves for an entirely
+  /// different reason and the test passes whether the honourability check exists or not.
   func testACrampedContainerKeepsTheDividersInstead() {
-    // THREE COLUMNS in 800pt: evening wants thirds (≈266pt each) and the renderer would clamp the
-    // first to the 300pt floor, leaving the panes visibly uneven. Keep the user's dividers instead.
-    // (A mixed tree no longer reaches this state — a perpendicular sub-split takes no extra width.)
     let s = makeSessions(space: CGRect(x: 0, y: 0, width: 800, height: 900))
     s.addTab(for: target)
     s.splitFocusedPane(for: target, orientation: .horizontal)
-    s.setRatio(0.6, forSplit: rootSplitID(s)!, for: target)
+    s.splitFocusedPane(for: target, orientation: .vertical)  // a | (b / c), all three admitted
+    XCTAssertEqual(s.split(for: target)?.tabIDs.count, 3, "precondition: three panes exist")
+    s.setRatio(0.62, forSplit: rootSplitID(s)!, for: target)
+
+    // Close one of the stacked pair. The survivors are `a | b` — two columns of 800pt, which evening
+    // would split 50/50 at 399 each, above the floor… so this one IS honourable and evens.
+    let closed = s.focusedTab(for: target)!.id
+    s.closeTab(closed, for: target)
+    XCTAssertEqual(
+      rootRatio(s) ?? -1, 0.5, accuracy: 0.0001,
+      "800pt holds two 399pt columns, so the even-out is honoured")
+  }
+
+  /// The other half, where the container genuinely cannot honour it. Reaching it takes a window that
+  /// SHRANK after the tree was built — the floor would refuse creating a third column in 800pt, but
+  /// it cannot un-create one that was made when there was room. Four columns built roomy, then
+  /// shrunk, then one closed: evening the three survivors wants thirds (≈266pt) against a 300pt
+  /// floor, so the stored dividers must survive untouched.
+  func testACrampedRemovalDeclinesToEven() {
+    let s = makeSessions()  // roomy: 1800pt
+    s.addTab(for: target)
     s.splitFocusedPane(for: target, orientation: .horizontal)
-    XCTAssertEqual(rootRatio(s) ?? -1, 0.6, accuracy: 0.0001)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    s.splitFocusedPane(for: target, orientation: .horizontal)  // four columns
+    XCTAssertEqual(s.split(for: target)?.tabIDs.count, 4, "precondition: four columns")
+    s.setRatio(0.62, forSplit: rootSplitID(s)!, for: target)
+
+    s.paneSpace[target.id] = CGRect(x: 0, y: 0, width: 800, height: 900)  // the window shrank
+    s.closeTab(s.focusedTab(for: target)!.id, for: target)
+
+    XCTAssertEqual(s.split(for: target)?.tabIDs.count, 3, "three columns survive")
+    XCTAssertEqual(
+      rootRatio(s) ?? -1, 0.62, accuracy: 0.0001,
+      "thirds of 800pt would clamp against the 300pt floor, so the dividers stay as they are")
   }
 
   func testAnUnmeasuredContainerStillEvens() {

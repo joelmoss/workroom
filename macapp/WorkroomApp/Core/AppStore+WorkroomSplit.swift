@@ -173,7 +173,14 @@ extension AppStore {
     // a split the group has room for. Built from the same `evenedIfHonourable` step the commit uses,
     // so the drop indicator, `canOpenAsSplit` and `insertWorkroomSplit` still agree by construction.
     if let space = workroomPaneSpace, space.width > 0, space.height > 0 {
-      let base = splitIndex(containing: beside).map { workroomSplits[$0] } ?? .leaf(beside)
+      // The LIVE tree, not the raw stored one. A workroom deleted in another window stays in this
+      // window's tree until the next reload prunes it, while the renderer already drops it on read
+      // (`visibleWorkroomLayout`) and the commit below prunes it too. Judging the raw tree budgets
+      // space for a pane nobody can see and refuses a split the user can plainly make — the
+      // "⌘D silently does nothing" papercut, through the ghost door.
+      let base =
+        splitIndex(containing: beside).map { liveLeavesOnly(workroomSplits[$0]) }
+        ?? .leaf(beside)
       let prospective = base.inserting(
         sid, beside: beside, orientation: edge.orientation,
         newLeafFirst: edge.placesDroppedFirst, ratio: 0.5)
@@ -214,9 +221,24 @@ extension AppStore {
     // (issue #126); `detachFromSplitGroup` is therefore never an auto-even site itself, or this one
     // rearrange would be evened twice over.
     let adds = workroomSplitWouldAddMember(sid, beside: beside)
+    // A survivor of the group `sid` is LEAVING, captured before the detach so the source group can be
+    // found again afterwards (indices shift when a group dissolves). A cross-group move removes a
+    // member from that group exactly as the ✕ does, so its survivors are owed the same even-out —
+    // without this, dragging C out of a skewed `A | (B / C)` left A and B at 0.8 while removing C
+    // through the menu rebalanced them.
+    let sourceSurvivor: SidebarID? =
+      adds
+      ? splitIndex(containing: sid).flatMap { workroomSplits[$0].removingLeaf(sid)?.firstTabID }
+      : nil
     // Leave whatever group `sid` was in (possibly dissolving it) BEFORE joining `beside`'s — structural
     // only, no selection re-point: `sid` is about to be focused anyway.
     detachFromSplitGroup(sid)
+    if autoEvenSplits(), let sourceSurvivor, sourceSurvivor != beside,
+      let sourceIndex = splitIndex(containing: sourceSurvivor)
+    {
+      workroomSplits[sourceIndex] = PaneTreeLayout.evenedIfHonourable(
+        workroomSplits[sourceIndex], in: workroomPaneSpace, enabled: true)
+    }
     if let index = splitIndex(containing: beside) {
       let grown = workroomSplits[index].inserting(
         sid, beside: beside, orientation: edge.orientation,
@@ -438,12 +460,20 @@ extension AppStore {
   /// before its structural edit: a prune that dissolved the group afterwards would leave the
   /// selection on a workroom that no longer resolves, so that path evens without pruning.
   private func prunedAndEvened(_ group: PaneLayout<SidebarID>) -> PaneLayout<SidebarID>? {
+    let live = liveLeavesOnly(group)
+    guard live.tabIDs.count >= 2 else { return nil }
+    return live.equalized()
+  }
+
+  /// `group` with every leaf whose workroom no longer resolves dropped — what the renderer shows and
+  /// what a commit stores. Shared so the admission guard cannot judge a different tree from the one
+  /// the mutation will write.
+  private func liveLeavesOnly(_ group: PaneLayout<SidebarID>) -> PaneLayout<SidebarID> {
     var live = group
     for leaf in group.tabIDs where target(for: leaf) == nil {
       live = live.removingLeaf(leaf) ?? live
     }
-    guard live.tabIDs.count >= 2 else { return nil }
-    return live.equalized()
+    return live
   }
 
   /// Drop split leaves whose workroom no longer resolves (deleted / reloaded away) from every group,

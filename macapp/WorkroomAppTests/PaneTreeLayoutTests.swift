@@ -224,6 +224,7 @@ final class PaneGroupFitTests: XCTestCase {
   private let a = UUID()
   private let b = UUID()
   private let c = UUID()
+  private let d = UUID()
   private let divider = TerminalSessions.dividerThickness
   private let minW = TerminalSessions.minPaneWidth
   private let minH = TerminalSessions.minPaneHeight
@@ -270,6 +271,27 @@ final class PaneGroupFitTests: XCTestCase {
     // The same 800pt that cannot hold three columns holds A beside a stacked pair comfortably: the
     // pair needs one column's width, not two.
     XCTAssertTrue(PaneTreeLayout.plansEvenly(mixedTree().equalized(), in: rect(w: 800, h: 900)))
+  }
+
+  /// The P1 two reviewers cited, with their numbers. `lengths` abandons the ratio below twice the
+  /// floor and returns a bare half — which EQUALS the ratio-implied length when the ratio is already
+  /// 0.5, so the drift check alone read the emergency fallback as honoured and committed panes under
+  /// the floor. Measured before the fix: C and D went 395/394 -> 274/273 against a 300pt floor.
+  func testTheEmergencyHalfAndHalfFallbackIsNotHonourable() {
+    let container = rect(w: 1100, h: 1000)
+    let survivors = PaneLayout<UUID>.split(
+      id: UUID(), orientation: .horizontal, ratio: 0.28, first: .leaf(a),
+      second: .split(
+        id: UUID(), orientation: .vertical, ratio: 0.5, first: .leaf(b),
+        second: .split(
+          id: UUID(), orientation: .horizontal, ratio: 0.5, first: .leaf(c), second: .leaf(d))))
+    let widths = { (t: PaneLayout<UUID>) in
+      PaneTreeLayout.plan(t, in: container).panes
+    }
+    XCTAssertGreaterThan(widths(survivors)[c]?.width ?? 0, PaneTreeLayout.minPaneWidth)
+    XCTAssertEqual(
+      PaneTreeLayout.evenedIfHonourable(survivors, in: container, enabled: true), survivors,
+      "evening would drive C and D under the floor, so the dividers stay as they are")
   }
 
   func testUnmeasuredContainerPlansEvenly() {

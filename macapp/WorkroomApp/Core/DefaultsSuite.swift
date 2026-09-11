@@ -75,7 +75,10 @@ extension UserDefaults {
         let pid = Int32(name.dropFirst(base.count + 1)),
         kill(pid, 0) != 0, errno == ESRCH
       else { continue }
-      try? FileManager.default.removeItem(at: file)
+      // Through `UserDefaults`, not `removeItem`: `cfprefsd` owns these files and caches their
+      // contents, so unlinking one behind its back is unreliable and hardcodes the
+      // `~/Library/Preferences/<name>.plist` layout this loop only uses to FIND them.
+      UserDefaults(suiteName: name)?.removePersistentDomain(forName: name)
     }
   }
 }
