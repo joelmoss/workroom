@@ -55,24 +55,46 @@ final class SharedPrefDefaultsTests: XCTestCase {
     ]
   }
   private var saved: [String: Any?] = [:]
+  /// Keys this test wrote into the ARGUMENT domain, so `clearArguments` can undo exactly those.
+  private var writtenArguments: Set<String> = []
+
+  /// Simulate a launch argument. The argument domain is process-local — never written to disk — so
+  /// unlike a plain `UserDefaults.set`, this cannot leave `-WorkroomUITest…` junk in the developer's
+  /// real preferences. `UITestFixture` reads arguments through `UserDefaults.standard`, which is
+  /// where they live regardless of which suite the app's own PREFERENCES use.
+  private func setArgument(_ value: String, forKey key: String) {
+    var domain = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+    domain[key] = value
+    UserDefaults.standard.setVolatileDomain(domain, forName: UserDefaults.argumentDomain)
+    writtenArguments.insert(key)
+  }
+
+  private func clearArguments() {
+    guard !writtenArguments.isEmpty else { return }
+    var domain = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+    for key in writtenArguments { domain.removeValue(forKey: key) }
+    UserDefaults.standard.setVolatileDomain(domain, forName: UserDefaults.argumentDomain)
+    writtenArguments = []
+  }
 
   override func setUp() {
     super.setUp()
     for key in keys {
-      saved[key] = UserDefaults.standard.object(forKey: key)
-      UserDefaults.standard.removeObject(forKey: key)
+      saved[key] = UserDefaults.app.object(forKey: key)
+      UserDefaults.app.removeObject(forKey: key)
     }
   }
 
   override func tearDown() {
     for (key, value) in saved {
       if let value {
-        UserDefaults.standard.set(value, forKey: key)
+        UserDefaults.app.set(value, forKey: key)
       } else {
-        UserDefaults.standard.removeObject(forKey: key)
+        UserDefaults.app.removeObject(forKey: key)
       }
     }
     saved = [:]
+    clearArguments()
     super.tearDown()
   }
 
@@ -190,7 +212,7 @@ final class SharedPrefDefaultsTests: XCTestCase {
   /// `-WorkroomUITestInspectorSection <raw>` picks the pane. The flag is read with
   /// `UserDefaults.string(forKey:)`, which is exactly what makes a launch argument usable here.
   func testSectionArgumentSelectsThePane() {
-    UserDefaults.standard.set("files", forKey: sectionArgKey)
+    setArgument("files", forKey: sectionArgKey)
 
     UITestFixture.applyFixtureDefaults(active: true)
 
@@ -201,7 +223,7 @@ final class SharedPrefDefaultsTests: XCTestCase {
   /// An unrecognised section falls back to Changes rather than leaving the pane on whatever was
   /// persisted — a typo'd flag must still produce a deterministic launch.
   func testUnknownSectionArgumentFallsBackToChanges() {
-    UserDefaults.standard.set("bogus", forKey: sectionArgKey)
+    setArgument("bogus", forKey: sectionArgKey)
     Defaults[.activeInspectorSection] = .files
 
     UITestFixture.applyFixtureDefaults(active: true)
@@ -225,7 +247,7 @@ final class SharedPrefDefaultsTests: XCTestCase {
 
   /// `-WorkroomUITestDiffViewMode sideBySide` opts a test into the two-column layout.
   func testDiffModeArgumentSelectsSideBySide() {
-    UserDefaults.standard.set("sideBySide", forKey: diffModeArgKey)
+    setArgument("sideBySide", forKey: diffModeArgKey)
 
     UITestFixture.applyFixtureDefaults(active: true)
 
@@ -235,7 +257,7 @@ final class SharedPrefDefaultsTests: XCTestCase {
 
   /// A typo'd layout falls back to unified rather than to whatever was persisted.
   func testUnknownDiffModeArgumentFallsBackToUnified() {
-    UserDefaults.standard.set("bogus", forKey: diffModeArgKey)
+    setArgument("bogus", forKey: diffModeArgKey)
     Defaults[.diffViewMode] = .sideBySide
 
     UITestFixture.applyFixtureDefaults(active: true)
@@ -260,7 +282,7 @@ final class SharedPrefDefaultsTests: XCTestCase {
   /// `-WorkroomUITestDimUnfocusedPanes 0` opts a test out of dimming. The value arrives as a STRING,
   /// which is the whole reason a bare `-dimUnfocusedPanes 0` can't do this job.
   func testDimmingArgumentTurnsItOff() {
-    UserDefaults.standard.set("0", forKey: dimArgKey)
+    setArgument("0", forKey: dimArgKey)
 
     UITestFixture.applyFixtureDefaults(active: true)
 

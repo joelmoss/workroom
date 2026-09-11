@@ -15,20 +15,20 @@ final class ConfirmOnCloseTerminalTests: XCTestCase {
 
   override func setUp() {
     super.setUp()
-    saved = UserDefaults.standard.object(forKey: key)
+    saved = UserDefaults.app.object(forKey: key)
   }
 
   override func tearDown() {
     if let saved {
-      UserDefaults.standard.set(saved, forKey: key)
+      UserDefaults.app.set(saved, forKey: key)
     } else {
-      UserDefaults.standard.removeObject(forKey: key)
+      UserDefaults.app.removeObject(forKey: key)
     }
     super.tearDown()
   }
 
   func testEnabledByDefaultWhenUnset() {
-    UserDefaults.standard.removeObject(forKey: key)
+    UserDefaults.app.removeObject(forKey: key)
     XCTAssertTrue(Defaults[.confirmOnCloseTerminal])
   }
 

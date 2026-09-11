@@ -81,7 +81,7 @@ final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate, SPUStandard
       return
     }
 
-    let keyIsSet = UserDefaults.standard.object(forKey: Defaults.Keys.releaseChannel.name) != nil
+    let keyIsSet = UserDefaults.app.object(forKey: Defaults.Keys.releaseChannel.name) != nil
     if Self.shouldDefaultToPre(channelKeyIsSet: keyIsSet, currentVersion: AppVersion.current) {
       Defaults[.releaseChannel] = .pre
     }

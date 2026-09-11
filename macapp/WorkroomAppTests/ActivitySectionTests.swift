@@ -22,11 +22,15 @@ final class ActivitySectionTests: XCTestCase {
   /// write from here landing between that seam's write and its read — about one failure in five 6-class
   /// parallel iterations). That class is now the suite's only writer of the real key, and it covers the
   /// shipped default. See its class doc.
-  private let probe = Defaults.Key<ActivitySection>("test.activeSectionProbe", default: .changes)
+  /// Declared with the app's suite, like every shipped key: a bare `Defaults.Key` defaults to
+  /// `UserDefaults.standard`, which under test means the developer's own preferences — this probe
+  /// was the last thing writing a stray `test.activeSectionProbe` into the real Dev domain.
+  private let probe = Defaults.Key<ActivitySection>(
+    "test.activeSectionProbe", default: .changes, suite: .app)
   private let probeKey = "test.activeSectionProbe"
 
   override func tearDown() {
-    UserDefaults.standard.removeObject(forKey: probeKey)
+    UserDefaults.app.removeObject(forKey: probeKey)
     super.tearDown()
   }
 
@@ -57,7 +61,7 @@ final class ActivitySectionTests: XCTestCase {
   /// History is not a bar section any more — a `Defaults` value left behind by a build where it was
   /// falls back to `.changes`, the pane it now lives in (rather than blanking the inspector).
   func testStoredHistorySectionFallsBackToChanges() {
-    UserDefaults.standard.set("history", forKey: probeKey)
+    UserDefaults.app.set("history", forKey: probeKey)
     XCTAssertEqual(Defaults[probe], .changes)
   }
 
@@ -71,7 +75,7 @@ final class ActivitySectionTests: XCTestCase {
   }
 
   func testDefaultsToChangesWhenUnset() {
-    UserDefaults.standard.removeObject(forKey: probeKey)
+    UserDefaults.app.removeObject(forKey: probeKey)
     XCTAssertEqual(Defaults[probe], .changes)
   }
 
@@ -80,12 +84,12 @@ final class ActivitySectionTests: XCTestCase {
   func testRoundTripsAValidValueAsItsRawString() {
     Defaults[probe] = .files
     XCTAssertEqual(Defaults[probe], .files)
-    XCTAssertEqual(UserDefaults.standard.string(forKey: probeKey), "files")
+    XCTAssertEqual(UserDefaults.app.string(forKey: probeKey), "files")
   }
 
   /// A corrupt/renamed raw string deserialises to `nil`, and `Defaults` falls back to `.changes`.
   func testCorruptStoredValueFallsBackToChanges() {
-    UserDefaults.standard.set("bogus", forKey: probeKey)
+    UserDefaults.app.set("bogus", forKey: probeKey)
     XCTAssertEqual(Defaults[probe], .changes)
   }
 }

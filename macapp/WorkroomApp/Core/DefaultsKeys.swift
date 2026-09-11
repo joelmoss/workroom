@@ -55,128 +55,136 @@ struct RunConfig: Codable, Hashable, Defaults.Serializable {
 extension Defaults.Keys {
   /// Appearance: System (follows the OS) / Light / Dark. Stored as the bare raw string via
   /// `ThemePreference: PreferRawRepresentable` (matching the old `@AppStorage` encoding).
-  static let theme = Key<ThemePreference>("themePreference", default: .system)
+  static let theme = Key<ThemePreference>("themePreference", default: .system, suite: .app)
 
   /// The selected theme **family** name (issue #36). The family bundles a dark + light variant;
   /// the active variant follows `theme`/the OS appearance. Defaults to the shipped `Workroom`
   /// family so existing users get the Workroom look on upgrade. Resolved by `ThemeService`.
-  static let themeFamily = Key<String>("themeFamily", default: ThemeService.defaultFamilyName)
+  static let themeFamily = Key<String>(
+    "themeFamily", default: ThemeService.defaultFamilyName, suite: .app)
 
   /// Copy a finished terminal selection to the pasteboard automatically (xterm/iTerm2 convention).
-  static let copyOnSelect = Key<Bool>("copyOnSelect", default: true)
+  static let copyOnSelect = Key<Bool>("copyOnSelect", default: true, suite: .app)
 
   /// Confirm before quitting (quitting tears down every terminal with no undo).
-  static let confirmOnQuit = Key<Bool>("confirmOnQuit", default: true)
+  static let confirmOnQuit = Key<Bool>("confirmOnQuit", default: true, suite: .app)
 
   /// Confirm before closing a terminal (closing kills its shell and any running process, no undo).
-  static let confirmOnCloseTerminal = Key<Bool>("confirmOnCloseTerminal", default: true)
+  static let confirmOnCloseTerminal = Key<Bool>(
+    "confirmOnCloseTerminal", default: true, suite: .app)
 
   /// Keep ordinary workroom shells running after quit and reattach them on relaunch.
   /// On by default; turn off to restore in-process PTYs that die with the app.
-  static let backgroundSessions = Key<Bool>("backgroundSessions", default: true)
+  static let backgroundSessions = Key<Bool>("backgroundSessions", default: true, suite: .app)
 
   /// Whether the global ⌘§ show/hide hotkey is registered (issue #13).
-  static let globalHotkey = Key<Bool>("globalHotkeyEnabled", default: true)
+  static let globalHotkey = Key<Bool>("globalHotkeyEnabled", default: true, suite: .app)
 
   /// Bundle id of the editor for ⌘-clicked file paths; "" = the file's default app.
-  static let filePathEditor = Key<String>("filePathEditorBundleID", default: "")
+  static let filePathEditor = Key<String>("filePathEditorBundleID", default: "", suite: .app)
 
   /// Bundle id of the last editor picked from the toolbar "Open in…" menu; "" = none yet.
-  static let lastEditor = Key<String>("openInEditorBundleID", default: "")
+  static let lastEditor = Key<String>("openInEditorBundleID", default: "", suite: .app)
 
   /// Dim every pane that isn't the focused one (issue #162). On by default — the scrim is what makes
   /// the active terminal read instantly in a split; off keeps every pane at full contrast.
-  static let dimUnfocusedPanes = Key<Bool>("dimUnfocusedPanes", default: true)
+  static let dimUnfocusedPanes = Key<Bool>("dimUnfocusedPanes", default: true, suite: .app)
 
   /// Re-even a split's dividers whenever a pane is added to or removed from it (issue #126). On by
   /// default: a third pane otherwise lands at a quarter width, and removing one leaves the survivors
   /// budgeted for a pane that's gone. Off keeps every divider where it is; View ▸ Resize Splits
   /// Evenly stays available either way.
-  static let autoResizeSplitsEvenly = Key<Bool>("autoResizeSplitsEvenly", default: true)
+  static let autoResizeSplitsEvenly = Key<Bool>(
+    "autoResizeSplitsEvenly", default: true, suite: .app)
 
   /// Whether the right-hand inspector (Changes / Files / Pull Request) is open. The stored key is
   /// still `showNotificationsInspector` for back-compat — the inspector used to carry a Notifications
   /// section (moved to the left sidebar, issue #118), but the persisted user state is preserved.
-  static let showInspector = Key<Bool>("showNotificationsInspector", default: false)
+  static let showInspector = Key<Bool>("showNotificationsInspector", default: false, suite: .app)
 
   /// The selected top-level section in the right activity bar (the vertical icon rail), so it reopens
   /// where you left it. Stored as the bare raw string via `ActivitySection: PreferRawRepresentable`;
   /// a stored value matching no case falls back to `.changes`. Which *pane* the inspector shows;
   /// whether the pane is visible at all is `showInspector`.
   static let activeInspectorSection = Key<ActivitySection>(
-    "inspector.activeSection", default: .changes)
+    "inspector.activeSection", default: .changes, suite: .app)
 
   /// Inline terminal agent (issue #49): always on — a failed command can be diagnosed by the local
   /// `claude`/`codex` CLI and a fix suggested in the pane's status bar. (No enable toggle; automatic
   /// vs manual diagnosis is `terminalAgentAutoDiagnose`.)
   /// When on, an eligible failure diagnoses automatically; otherwise the status bar waits for a click.
   /// Set the first time the user accepts the "auto-diagnose next time?" prompt.
-  static let terminalAgentAutoDiagnose = Key<Bool>("terminalAgentAutoDiagnose", default: false)
+  static let terminalAgentAutoDiagnose = Key<Bool>(
+    "terminalAgentAutoDiagnose", default: false, suite: .app)
   /// Whether the one-time "auto-diagnose from now on?" prompt has been shown (after the first manual
   /// Diagnose). Prevents re-asking on every manual diagnosis.
   static let terminalAgentAutoDiagnosePrompted = Key<Bool>(
-    "terminalAgentAutoDiagnosePrompted", default: false)
+    "terminalAgentAutoDiagnosePrompted", default: false, suite: .app)
   /// Mask common secret shapes in captured output before it's sent to the agent. On by default.
-  static let terminalAgentRedactSecrets = Key<Bool>("terminalAgentRedactSecrets", default: true)
+  static let terminalAgentRedactSecrets = Key<Bool>(
+    "terminalAgentRedactSecrets", default: true, suite: .app)
   /// Preferred agent backend: "auto" (claude, else codex), "claude", or "codex".
-  static let terminalAgentBackend = Key<String>("terminalAgentBackend", default: "auto")
+  static let terminalAgentBackend = Key<String>(
+    "terminalAgentBackend", default: "auto", suite: .app)
   /// Model for the inline (no-tools) diagnosis. A fast, cheap model is plenty for a bounded
   /// error diagnosis and avoids the user's default (often Opus) running on every failure. Empty =
   /// let the CLI pick its default. (Issue #49 cost optimisation.)
   static let terminalAgentModel = Key<String>(
-    "terminalAgentModel", default: "claude-haiku-4-5-20251001")
+    "terminalAgentModel", default: "claude-haiku-4-5-20251001", suite: .app)
 
   /// The docked right inspector's remembered column width. `.inspector` resets to its `ideal`
   /// width every time it's re-shown, so we feed this back as the ideal — hiding and re-showing
   /// (and relaunching) restores the user's last width instead of snapping back to 300. Written
   /// from the live width measurement, clamped to the `.inspectorColumnWidth` min/max range.
-  static let inspectorWidth = Key<Double>("inspector.width", default: 300)
+  static let inspectorWidth = Key<Double>("inspector.width", default: 300, suite: .app)
 
   /// The docked Projects sidebar's remembered column width. The sidebar is a custom resizable column
   /// (`SidebarColumn`, not `NavigationSplitView`'s native one), so its width is persisted here and
   /// fed back on launch — mirrors `inspectorWidth`. Clamped to the column's min/max when applied.
-  static let sidebarWidth = Key<Double>("sidebar.width", default: 270)
+  static let sidebarWidth = Key<Double>("sidebar.width", default: 270, suite: .app)
 
   /// Whether the Projects sidebar column is shown, mirroring `showInspector`. Persisted so closing
   /// it survives a relaunch — previously session-only (reset to visible on every launch).
-  static let sidebarVisible = Key<Bool>("sidebar.visible", default: true)
+  static let sidebarVisible = Key<Bool>("sidebar.visible", default: true, suite: .app)
 
   /// Whether the notifications menu bar item is shown (issue #33). On by default.
-  static let showMenuBarItem = Key<Bool>("showMenuBarItem", default: true)
+  static let showMenuBarItem = Key<Bool>("showMenuBarItem", default: true, suite: .app)
 
   /// Load remote author/reviewer avatars — Gravatar (by commit-author email) and
   /// `github.com/<login>.png`. On by default. Off ⇒ only the coloured initials chip renders and NO
   /// avatar image request is made, so opening an untrusted repo's History never beacons the viewer's
   /// IP + an author-email hash to gravatar.com. A privacy control (issue #59 review); the initials
   /// fallback is always the same one used for unknown/404 avatars, so nothing else changes.
-  static let loadRemoteAvatars = Key<Bool>("loadRemoteAvatars", default: true)
+  static let loadRemoteAvatars = Key<Bool>("loadRemoteAvatars", default: true, suite: .app)
 
   /// The persisted selected sidebar target as a `TerminalTarget.ID` string, or nil (issue #14).
-  static let sidebarSelection = Key<String?>("sidebar.selectionTargetID", default: nil)
+  static let sidebarSelection = Key<String?>("sidebar.selectionTargetID", default: nil, suite: .app)
 
   /// The last-viewed pane in the Settings window (⌘,), so it reopens where you left it (macOS
   /// System Settings behaviour). Stored as the bare raw string via `SettingsPane:
   /// PreferRawRepresentable`; a stored value matching no case falls back to `.general`.
-  static let settingsSelectedPane = Key<SettingsPane>("settings.selectedPane", default: .general)
+  static let settingsSelectedPane = Key<SettingsPane>(
+    "settings.selectedPane", default: .general, suite: .app)
 
   /// The last window's frame as `NSStringFromRect` (issue #70). The launch window restores it so it
   /// reopens at the size you left; empty means "use the default size". The value-based `WindowGroup`
   /// doesn't restore window size itself, so it's managed app-side in `AppStore.attachWindow`.
-  static let mainWindowFrame = Key<String>("window.mainFrame", default: "")
+  static let mainWindowFrame = Key<String>("window.mainFrame", default: "", suite: .app)
 
   /// Project paths the user has collapsed in the sidebar; absence of a path means expanded
   /// (the default). Persisted natively as a string array (issue #14).
-  static let collapsedProjects = Key<Set<String>>("sidebar.collapsedProjects", default: [])
+  static let collapsedProjects = Key<Set<String>>(
+    "sidebar.collapsedProjects", default: [], suite: .app)
 
   /// Per-project "Run command" config, keyed by the project's absolute path (issue #7). Absence of a
   /// path means no run command configured. A single path-keyed map (mirrors `collapsedProjects`):
   /// `Defaults` keys are static, so per-project keys aren't an option.
-  static let runCommands = Key<[String: RunConfig]>("runCommands", default: [:])
+  static let runCommands = Key<[String: RunConfig]>("runCommands", default: [:], suite: .app)
 
   /// Remembered order of the workroom tab bar, as `TerminalTarget.ID` strings (issue #23, same
   /// encoding as `sidebarSelection`). Terminals now DO survive a relaunch (issue #46), but this stays
   /// an ordering hint applied to whatever is currently active — stale ids resolve away harmlessly.
-  static let workroomTabOrder = Key<[String]>("workroomsView.tabOrder", default: [])
+  static let workroomTabOrder = Key<[String]>("workroomsView.tabOrder", default: [], suite: .app)
 
   /// Trigger modifiers for the two quick switchers (issue #132): ⌥Tab steps open workrooms across
   /// every window, ⌃Tab steps the current workroom's panes. Retunable because a global hotkey grabber
@@ -184,9 +192,9 @@ extension Defaults.Keys {
   /// ⌥Tab by default via a CGEvent tap, so for those users the default is unreachable and a different
   /// modifier is the only fix. No Settings UI yet; `SwitcherModifier` owns the offered set.
   static let switcherWorkroomModifier = Key<SwitcherModifier>(
-    "switcher.workroomModifier", default: .option)
+    "switcher.workroomModifier", default: .option, suite: .app)
   static let switcherPaneModifier = Key<SwitcherModifier>(
-    "switcher.paneModifier", default: .control)
+    "switcher.paneModifier", default: .control, suite: .app)
 
   /// When Workroom itself last fetched a project, keyed by the project's absolute path (fetch always
   /// runs at the project root, so this is per-project, never per-workroom). Path-keyed map for the
@@ -201,7 +209,7 @@ extension Defaults.Keys {
   ///
   /// `RemoteStateModel` therefore reports `max(backend evidence, this)`. The backend still wins when
   /// it's newer, which is what keeps a `jj git fetch` run in the user's own terminal visible.
-  static let vcsLastFetch = Key<[String: Date]>("vcs.lastFetch", default: [:])
+  static let vcsLastFetch = Key<[String: Date]>("vcs.lastFetch", default: [:], suite: .app)
 
   /// Global inspector layout (issue #24): which of the inspector's sections are collapsed and the
   /// relative heights of the panes, ordered as `InspectorSectionKind.allCases` — Changes, Files, Pull
@@ -219,12 +227,12 @@ extension Defaults.Keys {
   /// divider carries a never-dragged weight of 1 for History and would open it squeezed to its floor.
   /// The rename discards those once, so the three sections start at equal heights.
   static let inspectorLayout = Key<InspectorPaneState>(
-    "inspector.layout.v2", default: .default)
+    "inspector.layout.v2", default: .default, suite: .app)
 
   /// The app `CFBundleShortVersionString` whose release notes the user has already seen (issue: What's
   /// New). nil on a fresh install / first launch after this feature shipped — recorded silently with
   /// no historical backfill. The What's-New dialog shows only when the running version is newer.
-  static let lastSeenVersion = Key<String?>("app.lastSeenVersion", default: nil)
+  static let lastSeenVersion = Key<String?>("app.lastSeenVersion", default: nil, suite: .app)
 
   /// Whether the first-launch onboarding wizard (issue #151) has been completed. Unset (false) on a
   /// fresh install. Flips true the moment the wizard reaches its "Done" step, by any path (skip or a
@@ -232,19 +240,21 @@ extension Defaults.Keys {
   /// show-gate (`OnboardingGate.shouldShow`) also checks `projects.isEmpty`, so a project added some
   /// other way suppresses the wizard too — this flag only needs writing from the wizard itself, not
   /// from `AppStore.addProject`'s general path.
-  static let hasCompletedOnboarding = Key<Bool>("onboarding.hasCompleted", default: false)
+  static let hasCompletedOnboarding = Key<Bool>(
+    "onboarding.hasCompleted", default: false, suite: .app)
 
   /// Bounded-retry bookkeeping for the auto What's-New fetch (so a firewalled machine doesn't fire a
   /// doomed GitHub request every launch forever). `whatsNewAttemptVersion` is the version those
   /// attempts were for; the count resets when the running version changes. After
   /// `WhatsNewService.maxAutoAttempts` failures the auto fetch gives up (the menu item still works).
-  static let whatsNewAttemptVersion = Key<String?>("app.whatsNewAttemptVersion", default: nil)
-  static let whatsNewAttempts = Key<Int>("app.whatsNewAttempts", default: 0)
+  static let whatsNewAttemptVersion = Key<String?>(
+    "app.whatsNewAttemptVersion", default: nil, suite: .app)
+  static let whatsNewAttempts = Key<Int>("app.whatsNewAttempts", default: 0, suite: .app)
 
   /// Diff viewer layout (issue #66): `.unified` (default) or `.sideBySide`. Read by `DiffViewer` at
   /// view-construct time, so the choice applies to newly opened diff tabs (a narrow pane falls back
   /// to unified regardless). Stored as the bare raw string via `DiffViewMode: PreferRawRepresentable`.
-  static let diffViewMode = Key<DiffViewMode>("diffViewMode", default: .unified)
+  static let diffViewMode = Key<DiffViewMode>("diffViewMode", default: .unified, suite: .app)
 
   /// Per-workroom display label (issue #41), keyed by the workroom's `targetIDString`
   /// ("wr|<project>|<name>", via `TerminalTarget.workroomID`). A label is a display-only alias —
@@ -255,19 +265,19 @@ extension Defaults.Keys {
   /// are static, so per-workroom keys aren't an option, and the project-scoped id keeps same-named
   /// workrooms in different projects from colliding. The key *string* `workroomLabels` is a
   /// stored-data contract — keep it byte-for-byte stable once shipped.
-  static let workroomLabels = Key<[String: String]>("workroomLabels", default: [:])
+  static let workroomLabels = Key<[String: String]>("workroomLabels", default: [:], suite: .app)
 
   /// The split "Merge" button's chosen strategy (issue #88): create a merge commit (default),
   /// squash, or rebase. Global (not per-project) so the choice persists across projects and
   /// restarts. Stored as the bare raw string via `PRMergeMethod: PreferRawRepresentable`.
-  static let prMergeMethod = Key<PRMergeMethod>("prMergeMethod", default: .merge)
+  static let prMergeMethod = Key<PRMergeMethod>("prMergeMethod", default: .merge, suite: .app)
 
   /// The release channel for Sparkle auto-updates (issue #91): stable (default), pre, or nightly.
   /// Drives `SPUUpdaterDelegate.allowedChannels(for:)`, read live so switching the Settings picker
   /// takes effect on the next check. Independent of the Go CLI's own `channel` config: the app is
   /// Sparkle-managed, while the standalone CLI self-updates via `workroom update --channel`. Stored
   /// as the bare raw string via `ReleaseChannel: PreferRawRepresentable`.
-  static let releaseChannel = Key<ReleaseChannel>("releaseChannel", default: .stable)
+  static let releaseChannel = Key<ReleaseChannel>("releaseChannel", default: .stable, suite: .app)
 }
 
 /// The global persisted inspector layout: the collapse state and relative pane heights of the
