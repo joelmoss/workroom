@@ -531,3 +531,64 @@ final class DividerReanchorTests: XCTestCase {
       PaneTreeLayout.shouldReanchorDrag(currentRatio: 0.5, lastEmitted: nil, hasStarted: true))
   }
 }
+
+/// `PaneTreeLayout.dragOutcome` — what a finished pane-handle drag does (issue #172). Its own class
+/// because the fixture (a window, a content inset, two panes) is shared by every case here and by
+/// nothing above.
+final class PaneDragOutcomeTests: XCTestCase {
+
+  /// The pane tree sits at (0, 60) in a 1000x800 window, so the strip and title bar occupy
+  /// y ∈ [-60, 0) in content coordinates — "above the panes but still inside the window".
+  private let windowBounds = CGRect(x: 0, y: -60, width: 1000, height: 800)
+  private let panes: [String: CGRect] = [
+    "a": CGRect(x: 0, y: 0, width: 500, height: 740),
+    "b": CGRect(x: 500, y: 0, width: 500, height: 740),
+  ]
+
+  private func outcome(_ point: CGPoint, dragging: String = "a")
+    -> PaneTreeLayout.PaneDragOutcome<String>
+  {
+    PaneTreeLayout.dragOutcome(
+      cursor: point, windowBounds: windowBounds, panes: panes, dragging: dragging)
+  }
+
+  /// Move wins over everything: a drop on another pane is a rearrange, whatever else is true.
+  func testDropOnAnotherPaneMoves() {
+    XCTAssertEqual(outcome(CGPoint(x: 950, y: 370)), .move(tab: "b", edge: .right))
+  }
+
+  /// Dropping on the pane being dragged means nothing.
+  func testDropOnItselfDoesNothing() {
+    XCTAssertEqual(outcome(CGPoint(x: 250, y: 370)), PaneTreeLayout.PaneDragOutcome<String>.none)
+  }
+
+  /// Above the panes but INSIDE the window is still the old pop-out-of-the-split gesture.
+  func testAboveThePanesInsideTheWindowExtracts() {
+    XCTAssertEqual(outcome(CGPoint(x: 250, y: -30)), PaneTreeLayout.PaneDragOutcome<String>.extract)
+  }
+
+  /// The regression this fence exists for: the top edge must TEAR OFF, not extract.
+  ///
+  /// The old condition was a bare `location.y < 0`, which is equally true a pixel above the panes and
+  /// a mile above the screen — so without the fence the top edge could never detach, and it is the
+  /// edge the pane title bar's own accessibility hint points people toward.
+  func testPastTheTopEdgeDetachesRatherThanExtracting() {
+    XCTAssertEqual(outcome(CGPoint(x: 250, y: -61)), PaneTreeLayout.PaneDragOutcome<String>.detach)
+  }
+
+  /// All four exits detach, so the gesture reads the same whichever way you pull.
+  func testEveryEdgeDetaches() {
+    XCTAssertEqual(outcome(CGPoint(x: -1, y: 370)), PaneTreeLayout.PaneDragOutcome<String>.detach)
+    XCTAssertEqual(outcome(CGPoint(x: 1001, y: 370)), PaneTreeLayout.PaneDragOutcome<String>.detach)
+    XCTAssertEqual(outcome(CGPoint(x: 250, y: -61)), PaneTreeLayout.PaneDragOutcome<String>.detach)
+    XCTAssertEqual(outcome(CGPoint(x: 250, y: 741)), PaneTreeLayout.PaneDragOutcome<String>.detach)
+  }
+
+  /// One point inside the boundary is not a tear-off — the fence must not fire early, or a drag that
+  /// merely overshoots the strip would pop a window open.
+  func testJustInsideTheEdgeDoesNotDetach() {
+    XCTAssertNotEqual(
+      outcome(CGPoint(x: 0, y: 370)), PaneTreeLayout.PaneDragOutcome<String>.detach)
+    XCTAssertEqual(outcome(CGPoint(x: 250, y: -60)), PaneTreeLayout.PaneDragOutcome<String>.extract)
+  }
+}

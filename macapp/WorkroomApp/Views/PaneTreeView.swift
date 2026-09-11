@@ -97,7 +97,7 @@ struct PaneTreeView: View {
               workroomIsSplit: workroomIsSplit,
               paneIndex: index + 1, paneCount: layout.tabIDs.count, coordinateSpace: Self.space,
               onDragChanged: { beginOrUpdateDrag(tabID: tabID, at: $0) },
-              onDragEnded: { commitDrag(plan: plan) },
+              onDragEnded: { commitDrag(plan: plan, contentFrame: geo.frame(in: .global)) },
               onActivate: { sessions.select(tabID, for: target) }
             )
             // Take the new rect as ONE unit. Every `.animation(_:value: focused)` inside the pane
@@ -197,17 +197,43 @@ struct PaneTreeView: View {
     }
   }
 
-  private func commitDrag(plan: PaneTreeLayout.Plan<TerminalTab.ID>) {
+  private func commitDrag(
+    plan: PaneTreeLayout.Plan<TerminalTab.ID>, contentFrame: CGRect
+  ) {
     defer { drag = nil }
     guard let drag else { return }
-    if let hit = PaneTreeLayout.dropTarget(at: drag.location, panes: plan.panes),
-      hit.tab != drag.tabID
+    switch PaneTreeLayout.dragOutcome(
+      cursor: drag.location, windowBounds: Self.windowBounds(contentFrame: contentFrame),
+      panes: plan.panes, dragging: drag.tabID)
     {
-      sessions.moveTabIntoSplit(drag.tabID, ontoEdge: hit.edge, of: hit.tab, for: target)
-    } else if drag.location.y < 0 {
-      // Dragged up out of the panes (toward the strip) → pop this pane out of the split to solo.
+    case .move(let tab, let edge):
+      sessions.moveTabIntoSplit(drag.tabID, ontoEdge: edge, of: tab, for: target)
+    case .extract:
+      // Dragged up out of the panes (toward the strip) but still inside the window → pop this pane
+      // out of the split to solo.
       sessions.extractFromSplit(drag.tabID, for: target)
+    case .detach:
+      // Dragged clear of the window → its own window, at the cursor (issue #172).
+      sessions.detachPane(drag.tabID, for: target, at: NSEvent.mouseLocation)
+    case .none:
+      break
     }
+  }
+
+  /// The host window's bounds expressed in the pane tree's own content space, which is what
+  /// `dragOutcome`'s extract fence is measured against.
+  ///
+  /// `contentFrame` is `.global`, i.e. the window's coordinate space with its origin at the top-left
+  /// of the window INCLUDING the title bar — the same reading `RootView.workroomChipLocal` already
+  /// relies on when it compares a global `y` against `WorkroomTitlebar.height`. Subtracting that
+  /// origin therefore puts the whole window into content coordinates, with negative `y` covering the
+  /// strip and title bar above the panes. The window is resolved through `NSApp.keyWindow` because a
+  /// mouse drag belongs to the window it started in, which AppKit keeps key for the gesture's
+  /// lifetime; with no key window the fence opens (no window, nothing to be outside of).
+  private static func windowBounds(contentFrame: CGRect) -> CGRect {
+    guard let size = NSApp.keyWindow?.frame.size else { return .infinite }
+    return CGRect(origin: .zero, size: size)
+      .offsetBy(dx: -contentFrame.minX, dy: -contentFrame.minY)
   }
 }
 
@@ -519,6 +545,42 @@ enum PaneTreeLayout {
     return (hit.key, nearestEdge(of: point, in: hit.value))
   }
 
+  /// What a pane-handle drag should do when the mouse comes up (issue #172). Pure geometry, so the
+  /// three-way branch — and crucially its ORDER — is unit-testable without a window or a mouse, the
+  /// same reason `plan`/`dropTarget` live here rather than in the renderer.
+  ///
+  /// Every point is in the pane tree's own content space, including `windowBounds`: one coordinate
+  /// space in, no conversion inside.
+  enum PaneDragOutcome<Leaf: Hashable>: Equatable {
+    /// Drop onto another pane's edge — rearrange, or add a member to the split.
+    case move(tab: Leaf, edge: PaneEdge)
+    /// Dragged up out of the panes but still inside the window → pop out of the split to solo.
+    case extract
+    /// Dragged clear of the window on ANY edge → detach into its own window.
+    case detach
+    /// Dropped somewhere that means nothing; put it back.
+    case none
+  }
+
+  /// Resolve a finished pane drag. The order is the contract: **move beats extract beats detach.**
+  ///
+  /// `extract` is fenced to `windowBounds`, and that fence is the whole reason this is a function
+  /// rather than the two inline conditions it replaced. The old test was a bare `location.y < 0`
+  /// ("above the panes" ⇒ pop out to solo), which is ALSO true once the cursor has left the top of
+  /// the window — so without the fence the top edge could never tear a pane off, and it is the edge
+  /// the pane title bar's own accessibility hint points people toward ("drag to the tab strip to pop
+  /// out"). Fenced, the two gestures separate by distance: still inside ⇒ extract, past the edge in
+  /// any direction ⇒ detach.
+  static func dragOutcome<Leaf: Hashable>(
+    cursor: CGPoint, windowBounds: CGRect, panes: [Leaf: CGRect], dragging: Leaf
+  ) -> PaneDragOutcome<Leaf> {
+    if let hit = dropTarget(at: cursor, panes: panes), hit.tab != dragging {
+      return .move(tab: hit.tab, edge: hit.edge)
+    }
+    guard windowBounds.contains(cursor) else { return .detach }
+    return cursor.y < 0 ? .extract : .none
+  }
+
   /// The edge of `rect` nearest `point`, normalised by the rect's aspect (so a wide pane still splits
   /// top/bottom near its short edges).
   static func nearestEdge(of point: CGPoint, in rect: CGRect) -> PaneEdge {
@@ -580,7 +642,10 @@ enum PaneTreeLayout {
 /// One terminal pane: hosts its title bar (issue #150), the surface, the focus ring and the activity
 /// flash (D3). In a split the title bar is also the pane's drag handle — it replaced a hover-only grip
 /// chip, so the affordance is always visible. (Closing is via the strip ✕ / ⌘W, or that same bar.)
-private struct PaneLeafView: View {
+/// Internal rather than file-private since issue #172: `DetachedPaneView` hosts this exact view in a
+/// popped-out window, so a detached pane is the same pane — same chrome, same title bar, same status
+/// bar — rather than a second rendering of one.
+struct PaneLeafView: View {
   let tabID: TerminalTab.ID
   /// The pane's content — a terminal surface or non-terminal content (issue #66). All the pane chrome
   /// (focus ring, dim scrim, drag handle, a11y) wraps *both* kinds; only the centre swaps.
@@ -617,6 +682,12 @@ private struct PaneLeafView: View {
   /// with no responder hook, so without this a click in its body never focuses it (only the strip
   /// chip would).
   let onActivate: () -> Void
+  /// Whether this leaf is being rendered in its own window (issue #172) — only `DetachedPaneView`
+  /// passes true; the pane tree never renders a detached tab.
+  var isDetached: Bool = false
+  /// Pop out into a new window, or dock back. Defaulted so the pane tree's own call site, which
+  /// resolves it from the store below, stays the only place that knows how.
+  var onPopOut: (() -> Void)?
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   /// Drives `borderColor` — see `WorkroomPaneCardBorder.tint`, which this pane's ring shares.
   @Environment(\.controlActiveState) private var activeState
@@ -876,10 +947,16 @@ private struct PaneLeafView: View {
       onOpenFile: {
         if let path = content.filePath { store.openFilePreview(path: path, for: target) }
       },
+      isDetached: isDetached,
       onSplitRight: { sessions.splitTab(tabID, on: .right, for: target) },
       onSplitDown: { sessions.splitTab(tabID, on: .bottom, for: target) },
       onClose: { store.requestCloseTerminalTab(tabID, for: target) },
       onActivate: onActivate,
+      onPopOut: onPopOut ?? {
+        // Same screen placement a drag-out would produce, minus the drag: put the window under the
+        // pointer rather than somewhere arbitrary.
+        sessions.detachPane(tabID, for: target, at: NSEvent.mouseLocation)
+      },
       onDragChanged: onDragChanged,
       onDragEnded: onDragEnded
     )

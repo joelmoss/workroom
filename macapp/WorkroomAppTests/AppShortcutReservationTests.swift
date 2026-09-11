@@ -89,6 +89,14 @@ final class AppShortcutReservationTests: XCTestCase {
     }
   }
 
+  /// ⌃⌘O opens the focused detail panel in its own window (issue #172). It is a Window-menu key
+  /// equivalent, so without the reservation a focused TUI in an enhanced keyboard mode eats it and the
+  /// menu item never fires — the exact bite the ⌃⌘S sidebar toggle already took.
+  func testControlCommandOIsReservedForPopOut() {
+    XCTAssertTrue(reserved("o", [.command, .control]))
+    XCTAssertFalse(reserved("p", [.command, .control]), "only S and O are ours on ⌃⌘")
+  }
+
   /// Tab (keyCode 48) is **deliberately never reserved**, for either quick switcher (issue #132).
   ///
   /// Adding it here was considered and rejected: this classifier is static, but whether the app owns
