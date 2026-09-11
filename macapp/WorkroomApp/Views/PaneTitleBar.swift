@@ -17,6 +17,22 @@ enum PaneTitleBarMetrics {
   /// 160pt is ~22 characters at `.subheadline`: enough to read a file name plus a directory or two,
   /// which is the point at which collapsing the optional controls buys more than it costs.
   static let minTitle: CGFloat = 160
+
+  /// This bar's buttons are deliberately DENSER than the two title bars around it. Those carry two or
+  /// three controls across a full window or workroom card; this one carries up to four plus a mode
+  /// switch inside a pane that can be as narrow as `TerminalSessions.minPaneWidth` (300pt), all
+  /// competing with the title the bar exists to show. At the shared 22pt/3pt/13pt the group ran ~190pt
+  /// and left the title ~100pt; at these numbers it runs ~155pt.
+  ///
+  /// 18pt still clears a comfortable pointer target (the tab strip's own glyph buttons have always sat
+  /// in this range), and the well keeps its `contentShape`, so the hit area is the whole well rather
+  /// than the glyph.
+  static let wellSize: CGFloat = 18
+  static let wellPadding: CGFloat = 1
+  static let glyph: CGFloat = 11
+  /// Gap between controls. Tighter than the title bars' 6pt for the same density reason; the wells'
+  /// own padding keeps them from reading as one blob.
+  static let controlSpacing: CGFloat = 2
 }
 
 /// Which OPTIONAL trailing controls a pane title bar offers. Split right / split down / close are
@@ -223,7 +239,7 @@ struct PaneTitleBar: View {
   /// which is why nothing here is a `TabToolbarButton`: that sets its own `.plain` style and 11pt
   /// glyph, so it would not inherit the group and the row would carry two button sizes.
   private func trailing(collapsed: Bool) -> some View {
-    HStack(spacing: 6) {
+    HStack(spacing: PaneTitleBarMetrics.controlSpacing) {
       if collapsed {
         if controls.hasOptional {
           overflowMenu
@@ -255,8 +271,12 @@ struct PaneTitleBar: View {
         systemImage: "xmark", help: "Close (⌘W)", accessibilityLabel: "Close pane",
         identifier: "pane.toolbar.close", action: onClose)
     }
-    .buttonStyle(ToolbarIconButtonStyle())
-    .font(.system(size: PaneToolbarIcon.glyph))
+    .buttonStyle(
+      ToolbarIconButtonStyle(
+        wellSize: PaneTitleBarMetrics.wellSize,
+        horizontalPadding: PaneTitleBarMetrics.wellPadding)
+    )
+    .font(.system(size: PaneTitleBarMetrics.glyph))
     // Keeps its intrinsic width so the TITLE yields under width pressure, not the buttons — the same
     // reason the tab strip's toolbar was fixed-size.
     .fixedSize()
