@@ -45,22 +45,30 @@ final class WorkroomPaneToolbarPresentationTests: XCTestCase {
     XCTAssertFalse(c.run)
     XCTAssertFalse(c.openIn)
     XCTAssertFalse(c.divider)
-    // No terminals to close either — the directory they would have run in is gone.
-    XCTAssertFalse(c.closeAll)
+    // Close-all STAYS. Tabs live in `TerminalSessions`, not on disk, so a workroom whose directory
+    // vanished keeps the terminals it had open — and a missing target withholds `WorkroomTerminalsView`,
+    // taking the tab strip, the chip menu and File ▸ Close All Tabs with it. This button is the only
+    // bulk-close those retained sessions have left.
+    XCTAssertTrue(c.closeAll)
     // The ✕ stays: popping it out of the split is the only way to get rid of a "Directory not found" pane.
     XCTAssertTrue(c.removeFromSplit)
   }
 
   /// "Close all tabs in this workroom" moved here from the terminal tab strip's toolbar when issue #150
-  /// emptied it. Unlike its neighbours it is gated on ONE thing — the directory — because it needs
-  /// neither an owning project (it acts on this target's tabs) nor an installed editor, and it is a
-  /// workroom-level action, so it is present on a solo pane exactly as on a split member.
-  func testCloseAllNeedsOnlyAPresentDirectory() {
+  /// emptied it. It is the one control gated on NOTHING: it needs no owning project (it acts on this
+  /// target's tabs), no installed editor, and — unlike every neighbour — no directory, because tabs
+  /// live in `TerminalSessions` rather than on disk.
+  ///
+  /// The missing case is the load-bearing one. A missing target withholds `WorkroomTerminalsView`, so
+  /// its tab strip, its chip context menu and its `focusedSceneValue(\.hasTerminal)` all go with it —
+  /// leaving File ▸ Close All Tabs disabled and this button the only way to close sessions the
+  /// vanished directory stranded.
+  func testCloseAllIsNeverGated() {
     XCTAssertTrue(controls().closeAll)
     XCTAssertTrue(controls(projectPath: nil).closeAll)
     XCTAssertTrue(controls(hasEditor: false).closeAll)
     XCTAssertTrue(controls(multi: true).closeAll)
-    XCTAssertFalse(controls(isMissing: true).closeAll)
+    XCTAssertTrue(controls(isMissing: true).closeAll)
   }
 
   /// No editor installed → no "Open in…", and **no divider**: a rule with nothing on its trailing side

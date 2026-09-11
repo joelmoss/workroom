@@ -412,11 +412,18 @@ enum WorkroomPaneToolbarPresentation {
     // be keyed to. "Open in…" is gated, because with no editor installed there is nowhere to open.
     let run = !isMissing && projectPath != nil
     let openIn = !isMissing && hasEditor
-    // Gated on the directory the same way its neighbours are: a workroom whose directory is gone has
-    // no terminals to close.
+    // Close-all is the one control NOT gated on the directory, and deliberately so. Its neighbours are
+    // gated because a vanished directory gives them nothing to act on — there is nowhere to run and
+    // nothing to open. Tabs are different: they live in `TerminalSessions`, not on disk, so a workroom
+    // whose directory disappears keeps every terminal it had open.
+    //
+    // And a missing target is exactly where they get stranded. `TargetTerminalDetail` withholds
+    // `WorkroomTerminalsView` for a missing directory, which takes the tab strip, the chip context
+    // menu and `focusedSceneValue(\.hasTerminal)` with it — so File ▸ Close All Tabs is disabled too.
+    // This button is then the only bulk-close left. Ungated it is harmless where there is nothing to
+    // close, which is already true of a present workroom with no tabs.
     return Controls(
-      run: run, openIn: openIn, divider: run && openIn, closeAll: !isMissing,
-      removeFromSplit: multi)
+      run: run, openIn: openIn, divider: run && openIn, closeAll: true, removeFromSplit: multi)
   }
 }
 
