@@ -241,10 +241,46 @@ final class AgentUsageTests: XCTestCase {
     try Data("{partial".utf8).write(to: malformedURL)
     try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: malformedURL.path)
 
-    let snapshot = try XCTUnwrap(
-      AgentUsageDecoding.readCodexSnapshot(
-        sessionsRoot: root, now: now, maximumTailBytes: 1024))
+    let read = AgentUsageDecoding.readCodex(sessionsRoot: root, now: now, maximumTailBytes: 1024)
+    let snapshot = try XCTUnwrap(read.snapshot)
     XCTAssertEqual(snapshot.windows[0].usedPercentage, 33)
+  }
+
+  /// What the read asks to be watched: the directories Codex is actually appending to, plus the
+  /// ancestors that will have to create tomorrow's directory — never every directory in the tree.
+  /// The monitor reopens one descriptor per directory in this set, on the main actor, so an
+  /// unbounded set is a main-thread stall that grows with the user's history (issue: app hang in
+  /// `rebuildWatches`).
+  func testCodexReadWatchesOnlyTheNewestRolloutDirectoriesAndTheirAncestors() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let month = root.appendingPathComponent("2033/05")
+    var days: [URL] = []
+    for day in 1...(AgentUsageDecoding.candidateLimit + 2) {
+      let directory = month.appendingPathComponent(String(format: "%02d", day))
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+      let file = directory.appendingPathComponent("rollout.jsonl")
+      try Data(
+        (rollout(
+          timestamp: "2033-05-18T03:33:20Z", primary: (7, 300, 2_000_003_600), secondary: nil)
+          + "\n").utf8
+      ).write(to: file)
+      // Oldest first, so the two lowest-numbered days fall outside the candidate cap.
+      try FileManager.default.setAttributes(
+        [.modificationDate: now.addingTimeInterval(TimeInterval(day))], ofItemAtPath: file.path)
+      days.append(directory)
+    }
+
+    let read = AgentUsageDecoding.readCodex(sessionsRoot: root, now: now)
+    let watched = Set(read.watchDirectories.map(\.path))
+    XCTAssertEqual(read.watchDirectories.first?.path, root.path)
+    XCTAssertEqual(
+      watched,
+      Set(
+        ([root, root.appendingPathComponent("2033"), month]
+          + days.suffix(
+            AgentUsageDecoding.candidateLimit)).map(\.path)))
+    for stale in days.prefix(2) { XCTAssertFalse(watched.contains(stale.path)) }
   }
 
   private func rollout(
