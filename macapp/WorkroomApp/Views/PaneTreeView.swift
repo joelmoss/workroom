@@ -325,6 +325,12 @@ enum PaneTreeLayout {
     }
     let axis = orientation == .horizontal ? container.width : container.height
     let usable = max(0, axis - dividerThickness)
+    // Below twice the floor `lengths` abandons the ratio entirely and returns a bare half-and-half.
+    // That fallback EQUALS the ratio-implied length whenever the stored ratio is already 0.5, so the
+    // drift check below cannot see it — and both children are under the floor by construction.
+    // Measured (the shape two reviewers independently cited): `A | ((B / E) / (C | D))` at root 0.28
+    // in 1100x1000, close E, and evening takes C and D from 395/394 to 274/273 against a 300 floor.
+    guard usable > 2 * minPane(along: orientation) else { return false }
     let (firstLen, secondLen) = lengths(total: axis, ratio: ratio, along: orientation)
     // What the ratio asked for, before any clamp. More than a point of drift means the renderer
     // overrode it.

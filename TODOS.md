@@ -9,56 +9,6 @@
 
 ## P2 — perf, correctness, and the next VCS phase
 
-### Auto-even splits: the adversarial findings not fixed in #126 (macapp) — filed 2026-09-11
-
-**What:** four defects the `/ship` adversarial pass (Codex + a Claude subagent) found in the #126
-auto-even work, deferred with the branch's own fixes already landed. Each has a concrete repro.
-
-1. **`plansEvenly` accepts the renderer's emergency half/half fallback.** When `usable <= 2 * floor`,
-   `lengths` abandons the ratio and splits evenly; if the stored ratio is already `0.5`, the
-   drift check (`abs(firstLen - (usable * ratio).rounded()) <= 1`) sees no drift and reports the
-   layout honoured. Auto-even can then commit a tree whose panes are under the floor. Codex's repro:
-   `A | ((B / E) / (C | D))` in 1100x1000, root `0.28`, other ratios `0.5`; close `E` and `C`/`D`
-   go from 395/394 to 274/273. NOT reproduced locally — a simplified two-level variant stayed above
-   the floor, so the exact shape matters. Fix: have `plansEvenly` also require that no node hit the
-   `usable <= 2 * floor` branch.
-
-2. **Admission and commit judge different trees.** `canInsertWorkroomSplit` builds its prospective
-   tree from the raw stored group (ghost leaves included); the commit runs `prunedAndEvened`. With a
-   stored `deleted | A` at root `0.5` in 700pt, adding `B` beside `A` is refused because admission
-   measures three panes, while the renderer already shows `A` alone and the pruned result would give
-   both panes 349pt. Reachable between a cross-window delete and this window's next reload. Fix:
-   build ONE prospective live tree and use it for both admission and mutation.
-
-3. **A cross-group move never evens the source group.** `insertWorkroomSplit` calls
-   `detachFromSplitGroup`, which preserves survivor ratios, and evens only the destination — unlike
-   `removeWorkroomSplitMember`, which evens survivors explicitly. Move `C` out of `A | (B / C)` with
-   root `0.8` and `A`/`B` stay skewed, though removing `C` via the ✕ would rebalance them. Both the
-   coverage audit and Codex flagged it independently, and there is no test either way. Fix: capture
-   a source survivor's identity before detaching, then even its remaining group — re-deriving the
-   index, never carrying one across a dissolve.
-
-4. **`pruneDeadSuites` unlinks plists behind `cfprefsd`.** `kill(pid, 0)` + `removeItem` is right in
-   the safe direction (EPERM and pid reuse cause a leak, not a wrongful delete), but it deletes a
-   file `cfprefsd` owns and caches, and hardcodes the `~/Library/Preferences/<name>.plist` layout.
-   Fix: `UserDefaults(suiteName: name)?.removePersistentDomain(forName: name)` instead of unlinking.
-
-**Also worth a pass, from the same reviews:** `testACrampedContainerKeepsTheDividersInstead` (both
-the workroom and terminal variants) is VACUOUS — the coverage audit traced the arithmetic and found
-the insert is refused outright by the floor before evening's result can matter, and neither test
-asserts member count. The reachable case (a REMOVAL from an already-squeezed group, where
-`evenedIfHonourable` must revert) has no coverage. This is the seventh vacuous test in this family;
-the branch fixed six.
-
-**Why it matters:** 1 and 3 are user-visible layout wrongness, 2 is a silently refused split, 4 is
-a cleanup that can fail quietly. None is a crash or data loss, which is why they were deferred.
-
-**Depends on:** nothing — all four are self-contained in `PaneTreeView.swift`,
-`AppStore+WorkroomSplit.swift` and `DefaultsSuite.swift`.
-
-**Priority:** P2.
-
-
 ### `workroom-session` daemon: the findings the `/review` pass didn't fix (macapp) — persist-sessions follow-up
 
 **What:** The `workroom-session` daemon (persisted ordinary terminals across quit, `b28e9134`) went

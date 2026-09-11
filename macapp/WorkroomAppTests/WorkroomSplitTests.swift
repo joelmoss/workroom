@@ -1268,15 +1268,18 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
     XCTAssertEqual(rootRatio(store) ?? -1, 0.5, accuracy: 0.0001)
   }
 
-  func testACrampedContainerKeepsTheDividersInstead() {
-    // THREE COLUMNS in 800pt: thirds would be ≈266pt and the renderer clamps the first to the 300pt
-    // floor, so the honourable move is to leave the dividers alone. (A perpendicular sub-split
-    // takes no extra width, so a mixed tree no longer reaches this state.)
+  /// The insert below is REFUSED by the group floor (three 300pt columns do not fit in 800pt), so
+  /// this asserts the refusal, not the honourability check — the earlier version claimed the latter
+  /// and would have passed with that check deleted.
+  func testACrampedContainerRefusesTheThirdColumnOutright() {
     let store = makeStore(["main", "feature", "bugfix"])
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 800, height: 900)
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
     store.setWorkroomSplitRatio(0.6, forSplit: rootSplitID(store)!)
-    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .right)
+    XCTAssertFalse(
+      store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .right),
+      "three 300pt columns cannot fit in 800pt")
+    XCTAssertEqual(store.workroomSplits.first?.tabIDs.count, 2, "so the group is untouched")
     XCTAssertEqual(rootRatio(store) ?? -1, 0.6, accuracy: 0.0001)
   }
 
@@ -1296,6 +1299,43 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
         wr("bugfix"), beside: wr("feature"), edge: .right, destinationRect: narrowAnchor),
       "the group has room for a third pane even though the anchor can't be halved")
     XCTAssertEqual(store.workroomSplits.first?.tabIDs.count, 3)
+  }
+
+  /// A workroom deleted in another window lingers in this window's stored tree until the next
+  /// reload. The renderer already drops it, and the commit prunes it — so the admission guard must
+  /// judge the same LIVE tree, or it budgets for a pane nobody can see and refuses a split the user
+  /// can plainly make.
+  func testAGhostLeafDoesNotBlockASplitTheUserCanSee() {
+    let store = makeStore(["main", "feature"])
+    store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 700, height: 900)
+    store.workroomSplits = [
+      .split(
+        id: UUID(), orientation: .horizontal, ratio: 0.5,
+        first: .leaf(wr("deleted")), second: .leaf(wr("main")))
+    ]
+    XCTAssertTrue(
+      store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right),
+      "the live tree is `main` alone, so `main | feature` fits in 700pt at 349 each")
+    XCTAssertEqual(store.workroomSplits.first?.tabIDs, [wr("main"), wr("feature")])
+  }
+
+  /// Dragging a member into another group REMOVES it from its own, so the survivors it leaves owe
+  /// the same even-out the ✕ gives them. Before the fix the source stayed skewed at 0.8.
+  func testACrossGroupMoveEvensTheSourceGroupToo() {
+    let store = makeStore(["main", "feature", "bugfix", "docs"])
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .right)  // group A: 3
+    store.setWorkroomSplitRatio(0.8, forSplit: rootSplitID(store, group: 0)!)
+
+    // Move bugfix OUT of group A and into a new group with the ungrouped `docs`.
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("docs"), edge: .right)
+
+    let groupA = store.workroomSplits.first { Set($0.tabIDs) == [wr("main"), wr("feature")] }
+    XCTAssertNotNil(groupA, "group A lost bugfix and kept its other two members")
+    guard case .split(_, _, let ratio, _, _) = groupA else { return XCTFail("expected a split") }
+    XCTAssertEqual(
+      ratio, 0.5, accuracy: 0.0001,
+      "the survivors of the group it LEFT are evened, exactly as the ✕ would")
   }
 
   func testAGroupWithNoRoomStillRefuses() {
