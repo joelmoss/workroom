@@ -408,19 +408,6 @@ final class TerminalSessions: ObservableObject {
   /// same posture `PaneTreeLayout.canSplit` takes for a zero rect.
   var paneSpace: [TerminalTarget.ID: CGRect] = [:]
 
-  /// Where a target's pane tree sits in its WINDOW, in SwiftUI `.global` coordinates (origin at the
-  /// window's top-left, title bar included). `paneRects`/`paneSpace` are pane-tree-local and so say
-  /// nothing about where that tree is on screen; docking a detached pane (issue #172) has to convert
-  /// a screen point into pane-tree coordinates, and this is the missing term. Same posture as the two
-  /// above: written after layout, never `@Published`.
-  var contentFrameInWindow: [TerminalTarget.ID: CGRect] = [:]
-
-  /// A drag in progress in a DETACHED pane's window, expressed in the ORIGIN pane tree's coordinate
-  /// space, so that tree can render its usual drop preview for a pane being dragged back (issue #172).
-  /// `@Published` — unlike the measurement caches above — because it exists precisely to drive a
-  /// re-render, and it is written on mouse-move only while a dock drag is live.
-  @Published var detachedDrag: PaneDragState?
-
   /// Issue #126's auto-even pref, read live so the Settings toggle applies to the very next split
   /// without a relaunch. Injected rather than read inline so tests can drive both states: a parallel
   /// test worker shares (and wipes) the `Defaults` domain cross-process, which is why
@@ -1376,18 +1363,12 @@ final class TerminalSessions: ObservableObject {
   /// Bring a detached pane back into the pane tree (issue #172) — the mirror of `detachPane`, and the
   /// only way a tab leaves `detachedTabIDs` while staying alive.
   ///
-  /// With a drop target it lands on that pane's edge exactly as a chip drop would; without one it
-  /// simply becomes the focused solo tab in its old strip position.
-  func dockPane(
-    _ tabID: TerminalTab.ID, for target: TerminalTarget,
-    onto destination: TerminalTab.ID? = nil, edge: PaneEdge? = nil
-  ) {
+  /// It returns as the focused solo tab in its old strip position. There is deliberately no
+  /// land-on-an-edge variant: docking is a button in the detached window's title bar, so there is no
+  /// drop point to interpret. Re-splitting afterwards is the normal split gesture.
+  func dockPane(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
     guard undetach(tabID) else { return }
-    if let destination, let edge, destination != tabID {
-      moveTabIntoSplit(tabID, ontoEdge: edge, of: destination, for: target)
-    } else {
-      focus(tabID, for: target)
-    }
+    focus(tabID, for: target)
     reconcileOcclusion(for: target)
   }
 

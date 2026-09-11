@@ -1,11 +1,14 @@
 import AppKit
 import SwiftUI
 
-/// The content of a popped-out pane's window (issue #172): the same `PaneLeafView` the pane tree
-/// renders, hosted alone.
+/// The content of a popped-out pane's window (issue #172): the pane itself, edge to edge, with no
+/// chrome of its own.
 ///
-/// It is always focused, never multi-pane, and always surface-active — in its own window there is
-/// nothing to be unfocused relative to.
+/// A detached pane is alone in a real window, so the window IS its chrome — the native title bar
+/// names it and closes it, and the pane's own title bar, rounded card and focus ring would only
+/// repeat that at the cost of the space the pane was popped out to get. `chromeless` drops all three;
+/// the pane's status bar stays, because nothing in the window chrome says what directory or branch
+/// you are looking at.
 ///
 /// **Environment is re-injected by hand** because it does not cross the `NSHostingView` the window
 /// hosts this in, exactly as `RightInspector` re-injects per inspector section and
@@ -14,12 +17,6 @@ import SwiftUI
 /// **One structural slot, load-bearing.** `PaneLeafView` must not be wrapped in an `if` here: SwiftUI
 /// would swap a `_ConditionalContent` branch and re-parent the libghostty view, blanking the pane —
 /// the invariant spelled out in `PaneTreeView`, `WorkroomSplitView` and `TargetTerminalDetail`.
-///
-/// `WindowBackgroundThemer` does the window chrome: it is a window-agnostic probe that resolves its
-/// host window and applies `.fullSizeContentView`, a transparent title bar, a hidden title and the
-/// panel background, re-applying on `.themeDidChange`. Reusing it (rather than hand-rolling the same
-/// six AppKit lines a third time, after `QuickTerminalController`) is also what makes the pane's own
-/// title bar sit in the window's title-bar row.
 struct DetachedPaneView: View {
   let tabID: TerminalTab.ID
   let content: TabContent
@@ -27,34 +24,54 @@ struct DetachedPaneView: View {
   let title: String
   @ObservedObject var sessions: TerminalSessions
   let store: AppStore
-  /// Reports the drag on the pane's title bar, in this window's coordinate space, so the window can
-  /// follow the cursor and the drop can be hit-tested against the origin window.
-  let onDragChanged: (CGPoint) -> Void
-  let onDragEnded: () -> Void
+  /// Push the pane's live title onto the window, so a terminal that renames itself renames its window
+  /// (the pane's own title bar used to carry this).
+  let onTitleChange: (String) -> Void
 
   private static let space = "detachedPaneContent"
 
+  /// The pane's current title, which for a terminal changes as commands run.
+  private var liveTitle: String { sessions.tab(tabID, for: target)?.title ?? title }
+
   var body: some View {
     PaneLeafView(
-      tabID: tabID, content: content, target: target, sessions: sessions, title: title,
+      tabID: tabID, content: content, target: target, sessions: sessions, title: liveTitle,
       focused: true, multiPane: false, surfaceActive: true,
       dimUnfocusedPanes: false, workroomIsSplit: false,
       paneIndex: 1, paneCount: 1, coordinateSpace: Self.space,
-      onDragChanged: onDragChanged, onDragEnded: onDragEnded,
+      onDragChanged: { _ in }, onDragEnded: {},
       onActivate: {},
       isDetached: true,
-      onPopOut: { sessions.dockPane(tabID, for: target) }
+      chromeless: true
     )
     .coordinateSpace(.named(Self.space))
-    // Traffic lights sit in the pane title bar's row (the window is full-size-content), so inset the
-    // bar's leading edge to clear them — the same reserve `RootView`'s title-bar accessory makes.
-    .padding(.leading, WorkroomTitlebar.trafficLightInset)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(ThemeService.shared.tokens.panel)
-    .background(WindowBackgroundThemer())
-    .environmentObject(store)
-    .environmentObject(store.notifications)
-    .environmentObject(sessions)
-    .environmentObject(sessions.agentManager)
+    // `takesOverTitlebar: false` — unlike the main window, this one keeps a normal title bar so the
+    // pane has a name and a place to drag from; the themer only paints its background.
+    .background(WindowBackgroundThemer(takesOverTitlebar: false))
+    .onChange(of: liveTitle, initial: true) { _, new in onTitleChange(new) }
+    .detachedPaneEnvironment(store: store, sessions: sessions)
+  }
+}
+
+extension View {
+  /// Every environment object a pane's subtree can reach, injected by hand for a hosting tree that
+  /// cannot inherit them (issue #172).
+  ///
+  /// This exists as ONE modifier because the failure mode is a hard crash, not a blank view:
+  /// `@EnvironmentObject` traps when it is missing, and the miss is invisible until the exact view
+  /// that wants it renders. It cost a crash already — `TerminalStatusBar` reaches for
+  /// `claudeUsageBridge` and `agentUsage`, which are scene-level in `WorkroomApp` and so were absent
+  /// here. If a pane ever grows a dependency on `updater` or `whatsNew` (today purely `RootView`
+  /// chrome, and the only two of the app's eight environment objects left out), add it here.
+  func detachedPaneEnvironment(store: AppStore, sessions: TerminalSessions) -> some View {
+    self
+      .environmentObject(store)
+      .environmentObject(store.notifications)
+      .environmentObject(sessions)
+      .environmentObject(sessions.agentManager)
+      .environmentObject(AgentUsageMonitor.shared)
+      .environmentObject(ClaudeUsageBridge.shared)
   }
 }

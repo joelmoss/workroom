@@ -171,18 +171,6 @@ final class DetachedPaneTests: XCTestCase {
       s.focusedTab(for: target)?.id, second.id, "docking focuses what you just put back")
   }
 
-  /// Docking onto a pane's edge splits there, exactly as dropping a tab chip would.
-  func testDockingOntoAnEdgeSplits() {
-    let s = makeSessions()
-    let first = s.addTab(for: target)
-    let second = s.addTab(for: target)
-    s.detachPane(second.id, for: target, at: .zero)
-
-    s.dockPane(second.id, for: target, onto: first.id, edge: .right)
-
-    XCTAssertEqual(Set(s.split(for: target)?.tabIDs ?? []), [first.id, second.id])
-  }
-
   // MARK: Teardown — a window may never outlive its tab
 
   func testClosingADetachedTabClosesItsWindow() {

@@ -149,9 +149,6 @@ struct PaneTitleBar: View {
   let onSetDiffMode: (DiffViewMode) -> Void
   let onSetMarkdownPreview: (Bool) -> Void
   let onOpenFile: () -> Void
-  /// Whether this pane is currently living in its own window (issue #172) — flips the pop-out button
-  /// into a Dock button, since in a detached window the only useful direction is back.
-  var isDetached: Bool = false
   let onSplitRight: () -> Void
   let onSplitDown: () -> Void
   let onClose: () -> Void
@@ -217,11 +214,9 @@ struct PaneTitleBar: View {
     .accessibilityIdentifier("terminal.pane.titlebar")
     .accessibilityLabel(Text(title.plain))
     .accessibilityHint(
-      isDetached
-        ? "Drag onto a pane edge in the main window to dock this pane back"
-        : multiPane
-          ? "Drag onto a pane edge to rearrange, to the tab strip to pop out of the split, or out of the window to open in a new window"
-          : "Drag out of the window to open this pane in a new window")
+      multiPane
+        ? "Drag onto a pane edge to rearrange, to the tab strip to pop out of the split, or out of the window to open in a new window"
+        : "Drag out of the window to open this pane in a new window")
   }
 
   /// One complete row. `titleMinWidth` is what makes the full-toolbar candidate fail to fit in a
@@ -276,10 +271,8 @@ struct PaneTitleBar: View {
         if controls.hasOptional { TitlebarDivider() }
       }
       PaneToolbarButton(
-        systemImage: isDetached ? "macwindow.badge.minus" : "macwindow.badge.plus",
-        help: isDetached ? "Dock back into the main window" : "Open in New Window",
-        accessibilityLabel: isDetached ? "Dock pane" : "Open pane in new window",
-        identifier: isDetached ? "pane.toolbar.dock" : "pane.toolbar.popOut",
+        systemImage: "macwindow.badge.plus", help: "Move to new window",
+        accessibilityLabel: "Move pane into new window", identifier: "pane.toolbar.popOut",
         action: onPopOut)
       PaneToolbarButton(
         systemImage: "rectangle.trailinghalf.inset.filled", help: "Split right (⌘D)",

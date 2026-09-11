@@ -47,10 +47,8 @@ struct WorkroomTerminalsView: View {
         // split leaf) fighting over the same surface and stranding it in a detached container (#3).
         PaneTreeView(
           layout: contentLayout(active: active), target: target, sessions: sessions,
-          // `detachedDrag` is a pane being dragged back in from its own window (issue #172): it
-          // renders through the same edge preview a chip drag does, so docking is not a blind drop.
-          externalDrag: chipPaneDrag ?? sessions.detachedDrag,
-          surfaceActive: surfaceActive, workroomIsSplit: workroomIsSplit
+          externalDrag: chipPaneDrag, surfaceActive: surfaceActive,
+          workroomIsSplit: workroomIsSplit
         )
         .background(
           GeometryReader { geo in
@@ -79,12 +77,7 @@ struct WorkroomTerminalsView: View {
     .padding(.bottom, 1)
     .padding(.top, 0)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .onPreferenceChange(ContentFrameKey.self) { [target, sessions] frame in
-      contentFrame = frame
-      // Mirror it for the dock-back hit test, which runs from another window and so cannot read this
-      // view's `@State` (issue #172). A plain (non-`@Published`) cache, like `paneRects`.
-      MainActor.assumeIsolated { sessions.contentFrameInWindow[target.id] = frame }
-    }
+    .onPreferenceChange(ContentFrameKey.self) { contentFrame = $0 }
     .safeAreaInset(edge: .top, spacing: 0) {
       // No tab bar when there are no terminals: the empty state's "New Terminal" button (and ⌘T) cover
       // adding one, so the strip and its "+" would be redundant. A split member's remove-from-split ✕

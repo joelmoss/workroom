@@ -9,8 +9,10 @@ import UserNotifications
 struct WorkroomApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
   @StateObject private var updater = Updater()
-  @StateObject private var agentUsage = AgentUsageMonitor()
-  @StateObject private var claudeUsageBridge = ClaudeUsageBridge()
+  // The shared instances, so a detached pane's window can inject the SAME objects (issue #172):
+  // environment does not cross an `NSHostingView`, so that window cannot inherit these from the scene.
+  @StateObject private var agentUsage = AgentUsageMonitor.shared
+  @StateObject private var claudeUsageBridge = ClaudeUsageBridge.shared
   /// Fetches release notes for the "What's New" dialog (shown automatically on the first launch
   /// after an update). One instance shared across windows; presentation is owned window-side,
   /// gated to the launch/restore window.
@@ -1001,6 +1003,10 @@ extension FocusedValues {
 /// regardless of which pane has focus.
 struct WorkroomCommands: Commands {
   @ObservedObject var updater: Updater
+  /// Which detached pane has key focus (issue #172), so the pop-out item can flip into its own
+  /// inverse. Observed directly because a detached window is not a scene: nothing about it reaches
+  /// `@FocusedValue`, so without this the body would never re-evaluate when one becomes key.
+  @ObservedObject private var detachedFocus = DetachedPaneFocus.shared
   /// The focused window's store (issue #70). Optional — nil when no Workroom window is key, in which
   /// case actions no-op and toggle bindings read false.
   ///
@@ -1418,12 +1424,18 @@ struct WorkroomCommands: Commands {
     // window-management commands (Minimize, Zoom, …).
     CommandGroup(before: .windowSize) {
       Button("New Window") { openWindow(value: WindowSeed(id: UUID(), restore: false)) }
-      // Pop the focused detail panel into a window of its own (issue #172). The title-bar button and
-      // the tear-off drag are the discoverable paths; this one makes it keyboard-reachable, and it is
-      // what the XCUITest drives (a synthetic drag past a window edge is not trustworthy here).
-      Button("Open Pane in New Window") { store?.detachFocusedPane() }
-        .keyboardShortcut("o", modifiers: [.command, .control])
-        .disabled(workroomSelected != true)
+      // Pop the focused detail panel into a window of its own, or put it back (issue #172). ONE item
+      // that flips, rather than two: the two directions are mutually exclusive, the same key does
+      // both, and a second permanently-greyed item would be noise. The title-bar buttons and the
+      // tear-off drag are the discoverable paths; this makes both keyboard-reachable.
+      if let detached = detachedFocus.keyTabID {
+        Button("Move back to main window") { AppStore.dockDetachedPane(detached) }
+          .keyboardShortcut("o", modifiers: [.command, .control])
+      } else {
+        Button("Move pane into new window") { store?.detachFocusedPane() }
+          .keyboardShortcut("o", modifiers: [.command, .control])
+          .disabled(workroomSelected != true)
+      }
       Divider()
     }
 

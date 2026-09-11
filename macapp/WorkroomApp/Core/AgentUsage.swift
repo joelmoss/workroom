@@ -486,6 +486,12 @@ private final class ReadCancellation: @unchecked Sendable {
 
 @MainActor
 final class AgentUsageMonitor: ObservableObject {
+  /// The app's one monitor. `WorkroomApp` injects it into every scene, and a detached pane's window
+  /// (issue #172) injects it too — environment does not cross an `NSHostingView`, so that window has
+  /// to reach the same instance by name rather than inherit it. Tests keep building their own with
+  /// injected roots; nothing forces them through this.
+  static let shared = AgentUsageMonitor()
+
   @Published private(set) var snapshots: [AgentBackend: AgentQuotaSnapshot] = [:]
   @Published private(set) var loading: Set<AgentBackend> = []
   /// Why the last read produced no snapshot, per backend. Surfaced by the footer so an unavailable

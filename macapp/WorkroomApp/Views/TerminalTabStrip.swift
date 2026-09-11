@@ -177,11 +177,29 @@ struct TerminalTabStrip: View {
           DragGesture(minimumDistance: 6, coordinateSpace: .global)
             .onChanged { value in
               drag.update(tab.id, translation: value.translation.width)
+              // Dragged clear of the window → this is a tear-off (issue #172), so show the ghost of
+              // the window it will become and stop previewing a drop into the panes.
+              if isDragOutsideWindow(value.location) {
+                chipPaneDrag = nil
+                DetachedPaneDragPreview.shared.show(
+                  title: tab.title, glyph: tab.content.glyph, at: NSEvent.mouseLocation)
+                return
+              }
+              DetachedPaneDragPreview.shared.hide()
               // Dragged down over the pane area → preview a drop-into-pane (the strip stops gapping).
               chipPaneDrag = localize(value.location)
                 .map { PaneDragState(tabID: tab.id, location: $0) }
             }
             .onEnded { value in
+              DetachedPaneDragPreview.shared.hide()
+              if isDragOutsideWindow(value.location) {
+                // A chip dragged out of the window tears its pane off, exactly as dragging the pane's
+                // own title bar out does — the chip is the other handle on the same pane.
+                sessions.detachPane(tab.id, for: target, at: NSEvent.mouseLocation)
+                drag.cancel()
+                chipPaneDrag = nil
+                return
+              }
               if let drop = dropTarget(value.location) {
                 sessions.moveTabIntoSplit(
                   tab.id, ontoEdge: drop.edge, of: drop.tab, for: target)

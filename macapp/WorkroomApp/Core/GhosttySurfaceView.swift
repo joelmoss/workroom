@@ -1264,7 +1264,7 @@ final class GhosttySurfaceView: NSView {
       return key == "r" || key == "c" || key == "f" || key == "y" || key == "p" || key == "s"
         || key == "b" || key == "n" || key == "o"
     }
-    // ⌃⌘S = Projects sidebar toggle (issue #128); ⌃⌘O = Open Pane in New Window (issue #172) — a
+    // ⌃⌘S = Projects sidebar toggle (issue #128); ⌃⌘O = Move pane into new window (issue #172) — a
     // Window-menu key equivalent, so it must be reserved here or a focused TUI swallows it before the
     // menu ever sees the key.
     if flags == [.command, .control] { return key == "s" || key == "o" }
