@@ -85,6 +85,15 @@ jobs:
       - name: Build
         run: go build -o workroom .
 
+      # Releases (goreleaser) and the nightly archives ship windows/linux builds, but this job only
+      # ever compiled for the runner. A unix-only syscall (Setpgid, syscall.Kill) therefore passed CI
+      # and broke the nightly + the next tag. One vet per non-native GOOS keeps that on the PR.
+      - name: Cross-compile check
+        run: |
+          for os in windows linux darwin; do
+            GOOS="$os" GOARCH=amd64 go build -o /dev/null .
+          done
+
       - name: Test
         run: go test ./...
 
