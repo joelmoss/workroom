@@ -325,12 +325,17 @@ enum PaneTreeLayout {
     }
     let axis = orientation == .horizontal ? container.width : container.height
     let usable = max(0, axis - dividerThickness)
-    // Below twice the floor `lengths` abandons the ratio entirely and returns a bare half-and-half.
-    // That fallback EQUALS the ratio-implied length whenever the stored ratio is already 0.5, so the
-    // drift check below cannot see it — and both children are under the floor by construction.
-    // Measured (the shape two reviewers independently cited): `A | ((B / E) / (C | D))` at root 0.28
-    // in 1100x1000, close E, and evening takes C and D from 395/394 to 274/273 against a 300 floor.
-    guard usable > 2 * minPane(along: orientation) else { return false }
+    // BELOW twice the floor `lengths` abandons the ratio and returns a bare half-and-half, which
+    // EQUALS the ratio-implied length whenever the stored ratio is already 0.5 — so the drift check
+    // below cannot see it, and both children are under the floor by construction. Measured (the
+    // shape two reviewers independently cited): `A | ((B / E) / (C | D))` at root 0.28 in 1100x1000,
+    // close E, and evening takes C and D from 395/394 to 274/273 against a 300pt floor.
+    //
+    // AT exactly twice the floor the fallback still fires, but its two children land exactly ON the
+    // floor rather than under it — an honourable result the drift check can then adjudicate on its
+    // own (a ratio other than 0.5 still diverges from half-and-half and is caught). Rejecting the
+    // equality cancelled evening for the whole group over a split that fits precisely.
+    guard usable >= 2 * minPane(along: orientation) else { return false }
     let (firstLen, secondLen) = lengths(total: axis, ratio: ratio, along: orientation)
     // What the ratio asked for, before any clamp. More than a point of drift means the renderer
     // overrode it.
