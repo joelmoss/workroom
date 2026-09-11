@@ -716,9 +716,6 @@ final class AppStore: ObservableObject {
   /// is a subset of this store's: the tabs they host stay in `terminals`, and their surfaces are
   /// released when this store is, so a detached window must never outlive it.
   let detachedPanes = DetachedPaneWindows()
-  /// The cursor-to-window-origin offset latched at the start of a dock drag, so the window tracks
-  /// the pointer without jumping to centre on it. Nil when no dock drag is in flight.
-  private var dockDragGrab: CGPoint?
 
   /// Bottom-right toast queue (issue #31): the foreground, inspector-*closed* surface for a new
   /// notification. FIFO, capped at `maxToasts` (a new toast beyond the cap pushes the oldest out);
@@ -1402,94 +1399,46 @@ final class AppStore: ObservableObject {
   }
 
   /// Build and show a detached pane's window. `frame` restores a saved one (session restore);
-  /// otherwise `origin` is the cursor at drop time and the window is sized from the pane's last
-  /// measured rect.
+  /// otherwise `origin` is the cursor at drop time and the window opens at the standard size.
   func openDetachedPane(
     tab: TerminalTab, target: TerminalTarget, origin: CGPoint?, frame: NSRect?
   ) {
     let tabID = tab.id
+    let location = detachedLocation(for: target)
     detachedPanes.open(
-      tabID: tabID, title: tab.title,
-      measuredSize: terminals.paneRects[target.id]?[tabID]?.size, origin: origin, frame: frame,
+      tabID: tabID, title: tab.title, project: location.project, workroom: location.workroom,
+      origin: origin, frame: frame,
       onCloseTab: { [weak self] in self?.requestCloseTerminalTab(tabID, for: target) },
+      onDock: { [weak self] in self?.terminals.dockPane(tabID, for: target) },
       content: {
         DetachedPaneView(
           tabID: tabID, content: tab.content, target: target, title: tab.title,
           sessions: terminals, store: self,
-          onDragChanged: { [weak self] _ in self?.dockDragMoved(tabID, for: target) },
-          onDragEnded: { [weak self] in self?.dockDragEnded(tabID, for: target) }
+          onTitleChange: { [weak self] title in
+            guard let self else { return }
+            let location = self.detachedLocation(for: target)
+            self.detachedPanes.setTitle(
+              title, project: location.project, workroom: location.workroom, for: tabID)
+          }
         )
       })
   }
 
-  /// Where a detached pane dropped at a screen point should land (issue #172).
-  enum DockResolution: Equatable {
-    /// Not over the origin window at all — or over it but occluded by another window, where docking
-    /// would drop the pane into something the user cannot see and it would read as vanishing.
-    case refuse
-    /// Over the origin's detail area, but there is no pane to land beside: the origin is showing its
-    /// empty state (detach the only pane and this is the COMMON case), or it has moved on to another
-    /// workroom so its cached pane rects describe a layout nobody is looking at.
-    case solo
-    /// Over a live pane — land on that edge, exactly as a tab-chip drop would.
-    case onto(tab: TerminalTab.ID, edge: PaneEdge)
-  }
-
-  /// Resolve a dock-back drop, in three steps that each exist for a specific failure.
+  /// Dock a detached pane from anywhere, given only its tab id — the Window-menu path, which runs
+  /// while the DETACHED window is key and so has no focused store of its own to act on.
   ///
-  /// `detachedWindowNumber` is excluded from the front-most test because the window being dragged is
-  /// itself under the cursor; `windowNumber(at:belowWindowWithWindowNumber:)` is the one call that
-  /// answers "what would the user consider themselves to be dropping onto".
-  func resolveDock(
-    _ tabID: TerminalTab.ID, for target: TerminalTarget, at screenPoint: CGPoint,
-    detachedWindowNumber: Int
-  ) -> DockResolution {
-    guard let window = hostWindow else { return .refuse }
-    // 1. Is the origin actually the front-most window at the cursor?
-    let front = NSWindow.windowNumber(
-      at: screenPoint, belowWindowWithWindowNumber: detachedWindowNumber)
-    guard front == window.windowNumber else { return .refuse }
-
-    guard let contentFrame = terminals.contentFrameInWindow[target.id] else { return .refuse }
-    let local = Self.paneLocalPoint(
-      screenPoint: screenPoint, window: window, contentFrame: contentFrame)
-    let localBounds = CGRect(origin: .zero, size: contentFrame.size)
-    guard localBounds.contains(local) else { return .refuse }
-
-    // 2. Is the origin currently showing THIS target, with panes measured to land beside?
-    let showing = onScreenTarget(forID: target.id) != nil
-    if showing, let panes = terminals.paneRects[target.id],
-      let hit = PaneTreeLayout.dropTarget(at: local, panes: panes), hit.tab != tabID
-    {
-      return .onto(tab: hit.tab, edge: hit.edge)
-    }
-    // 3. Otherwise the whole detail area is the target.
-    return .solo
+  /// Tab ids are unique across windows, so the registry can name the store that owns this one.
+  static func dockDetachedPane(_ tabID: TerminalTab.ID) {
+    guard let store = WindowRegistry.shared.ownerOf(tabID: tabID),
+      let target = store.targetOwning(tabID)
+    else { return }
+    store.terminals.dockPane(tabID, for: target)
   }
 
-  /// Dock a detached pane at a screen point, re-selecting its workroom when the origin had moved on
-  /// (a drop there means "put this back", so showing it is part of putting it back).
-  @discardableResult
-  func dockPane(
-    _ tabID: TerminalTab.ID, for target: TerminalTarget, at screenPoint: CGPoint,
-    detachedWindowNumber: Int
-  ) -> Bool {
-    switch resolveDock(
-      tabID, for: target, at: screenPoint, detachedWindowNumber: detachedWindowNumber)
-    {
-    case .refuse:
-      return false
-    case .solo:
-      if let sid = Self.sidebarID(forTargetID: target.id, in: projects), selectedTargetID != sid {
-        selectedTargetID = sid
-        selectedProjectID = Self.projectPath(of: sid)
-      }
-      terminals.dockPane(tabID, for: target)
-      return true
-    case .onto(let tab, let edge):
-      terminals.dockPane(tabID, for: target, onto: tab, edge: edge)
-      return true
-    }
+  /// The target that owns `tabID`, for the paths that carry only a tab id.
+  func targetOwning(_ tabID: TerminalTab.ID) -> TerminalTarget? {
+    terminals.activeTargetIDs.compactMap { terminalTarget(forID: $0) }
+      .first { terminals.tab(tabID, for: $0) != nil }
   }
 
   /// Pop the selected workroom's focused pane out into its own window — the View/Window-menu path
@@ -1499,68 +1448,19 @@ final class AppStore: ObservableObject {
     terminals.detachPane(tab.id, for: target, at: NSEvent.mouseLocation)
   }
 
-  /// A dock drag moved: carry the window with the cursor, and publish the cursor into the origin
-  /// tree so it renders the same drop preview a tab-chip drag does. Without the preview this is the
-  /// only drop in the app where you find out where the pane landed by releasing.
+  /// Where a detached pane lives, for the secondary half of its window's title bar: which project,
+  /// and which workroom within it. The pane's own name says what it is; this says where it is, which
+  /// is precisely what you cannot tell from a window floating on its own.
   ///
-  /// The cursor is read from `NSEvent.mouseLocation` rather than the gesture's own value: the window
-  /// moves underneath the gesture, so a window-relative location would chase itself.
-  private func dockDragMoved(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
-    guard let detached = detachedPanes.window(for: tabID) else { return }
-    let cursor = NSEvent.mouseLocation
-    if let grab = dockDragGrab {
-      detached.setFrameOrigin(CGPoint(x: cursor.x - grab.x, y: cursor.y - grab.y))
-    } else {
-      dockDragGrab = CGPoint(
-        x: cursor.x - detached.frame.minX, y: cursor.y - detached.frame.minY)
-    }
-    guard let window = hostWindow, let contentFrame = terminals.contentFrameInWindow[target.id]
-    else { return }
-    let previewing =
-      resolveDock(
-        tabID, for: target, at: cursor, detachedWindowNumber: detached.windowNumber) != .refuse
-    terminals.detachedDrag =
-      previewing
-      ? PaneDragState(
-        tabID: tabID,
-        location: Self.paneLocalPoint(
-          screenPoint: cursor, window: window, contentFrame: contentFrame))
-      : nil
-  }
-
-  /// A dock drag finished: dock if the drop resolved, otherwise leave the window where it was let go.
-  private func dockDragEnded(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
-    defer {
-      dockDragGrab = nil
-      terminals.detachedDrag = nil
-    }
-    guard let detached = detachedPanes.window(for: tabID) else { return }
-    dockPane(
-      tabID, for: target, at: NSEvent.mouseLocation,
-      detachedWindowNumber: detached.windowNumber)
-  }
-
-  /// A screen point in the pane tree's own content coordinates.
-  ///
-  /// Two flips in one step, which is why it is pulled out and unit-tested: AppKit screen coordinates
-  /// are bottom-left origin, while SwiftUI `.global` — the space `contentFrame` is measured in — is
-  /// top-left origin from the window's top edge, title bar included.
-  static func paneLocalPoint(screenPoint: CGPoint, window: NSWindow, contentFrame: CGRect)
-    -> CGPoint
-  {
-    paneLocalPoint(
-      screenPoint: screenPoint, windowFrame: window.frame, contentFrame: contentFrame)
-  }
-
-  /// The window-free core, so the conversion can be tested without an `NSWindow`. `nonisolated`
-  /// because it is pure arithmetic — the test does not need the main actor to check two sign flips.
-  nonisolated static func paneLocalPoint(
-    screenPoint: CGPoint, windowFrame: CGRect, contentFrame: CGRect
-  ) -> CGPoint {
-    let inWindowX = screenPoint.x - windowFrame.minX
-    // Screen y grows upward from the bottom; window-global y grows downward from the top.
-    let inWindowY = windowFrame.maxY - screenPoint.y
-    return CGPoint(x: inWindowX - contentFrame.minX, y: inWindowY - contentFrame.minY)
+  /// `workroom` is nil for a project ROOT target — there is no workroom to name, and the title bar
+  /// uses that to pick the house glyph over the cube.
+  func detachedLocation(for target: TerminalTarget) -> (project: String, workroom: String?) {
+    // `project(forTargetID:)` already matches a target id back to its project (both the `root|` and
+    // `wr|` forms); a workroom directory does NOT live under the project path, so matching on paths
+    // would miss every workroom.
+    guard let project = project(forTargetID: target.id) else { return (target.title, nil) }
+    let isRoot = target.id == TerminalTarget.rootID(project: project.path)
+    return (project.displayName, isRoot ? nil : target.title)
   }
 
   /// The selected workroom, only when a workroom (not a root) is selected. Used by delete,

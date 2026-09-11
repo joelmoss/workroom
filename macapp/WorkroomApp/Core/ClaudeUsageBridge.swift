@@ -2,6 +2,9 @@ import Foundation
 
 @MainActor
 final class ClaudeUsageBridge: ObservableObject {
+  /// The app's one bridge — see `AgentUsageMonitor.shared` for why a named instance exists.
+  static let shared = ClaudeUsageBridge()
+
   enum State: Equatable {
     case disabled
     case enabled

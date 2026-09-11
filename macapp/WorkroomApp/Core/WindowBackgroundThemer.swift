@@ -10,19 +10,27 @@ import SwiftUI
 ///
 /// A zero-size probe view locates the host `NSWindow` once it's mounted.
 struct WindowBackgroundThemer: NSViewRepresentable {
+  /// Whether to take the title bar over as content (the main window) or leave it a normal title bar
+  /// and only paint the background (a detached pane's window, issue #172, which wants the standard
+  /// chrome: traffic lights, the pane's name beside them, and something to drag the window by).
+  var takesOverTitlebar = true
+
   func makeNSView(context: Context) -> NSView {
     let probe = NSView(frame: .zero)
-    DispatchQueue.main.async { [weak probe] in Self.apply(to: probe?.window) }
+    let takesOver = takesOverTitlebar
+    DispatchQueue.main.async { [weak probe] in
+      Self.apply(to: probe?.window, takesOverTitlebar: takesOver)
+    }
     context.coordinator.observer = NotificationCenter.default.addObserver(
       forName: .themeDidChange, object: nil, queue: .main
     ) { [weak probe] _ in
-      MainActor.assumeIsolated { Self.apply(to: probe?.window) }
+      MainActor.assumeIsolated { Self.apply(to: probe?.window, takesOverTitlebar: takesOver) }
     }
     return probe
   }
 
   func updateNSView(_ nsView: NSView, context: Context) {
-    Self.apply(to: nsView.window)
+    Self.apply(to: nsView.window, takesOverTitlebar: takesOverTitlebar)
   }
 
   func makeCoordinator() -> Coordinator { Coordinator() }
@@ -34,8 +42,12 @@ struct WindowBackgroundThemer: NSViewRepresentable {
     }
   }
 
-  @MainActor private static func apply(to window: NSWindow?) {
+  @MainActor private static func apply(to window: NSWindow?, takesOverTitlebar: Bool = true) {
     guard let window else { return }
+    // The background is the part every themed window wants; everything below it takes the title bar
+    // over, which a window with a normal title bar must not do.
+    window.backgroundColor = ThemeService.shared.tokens.nsPanel
+    guard takesOverTitlebar else { return }
     // Content extends up under the (transparent) title bar so the custom bar can be drawn as the
     // top strip of the content at any height — see `WorkroomTitlebar` / `TitlebarBars`.
     window.styleMask.insert(.fullSizeContentView)
@@ -63,10 +75,6 @@ struct WindowBackgroundThemer: NSViewRepresentable {
     window.toolbar?.isVisible = false
     // `.none` separator so no hairline rule appears under the bar when the terminal scrolls.
     window.titlebarSeparatorStyle = .none
-    // The title bar belongs to the chrome panel, so it takes the panel colour (a subtle step off
-    // the terminal background) — title bar + tab bar + panel read as one surface, terminals as
-    // another (issue #36).
-    window.backgroundColor = ThemeService.shared.tokens.nsPanel
     // We no longer hand-position the traffic lights. Manually moving the standard window
     // buttons into our 38pt bar fought AppKit (it re-lays them to the standard row on every layout
     // change — opening the first terminal, resize, fullscreen — so they shifted, and re-centering on

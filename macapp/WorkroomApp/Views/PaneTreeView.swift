@@ -96,7 +96,10 @@ struct PaneTreeView: View {
               surfaceActive: surfaceActive, dimUnfocusedPanes: dimUnfocusedPanes,
               workroomIsSplit: workroomIsSplit,
               paneIndex: index + 1, paneCount: layout.tabIDs.count, coordinateSpace: Self.space,
-              onDragChanged: { beginOrUpdateDrag(tabID: tabID, at: $0) },
+              onDragChanged: {
+                beginOrUpdateDrag(
+                  tabID: tabID, at: $0, plan: plan, contentFrame: geo.frame(in: .global))
+              },
               onDragEnded: { commitDrag(plan: plan, contentFrame: geo.frame(in: .global)) },
               onActivate: { sessions.select(tabID, for: target) }
             )
@@ -187,7 +190,10 @@ struct PaneTreeView: View {
   /// points update instantly so the highlight tracks the cursor with no lag. The end is left
   /// un-animated so the result snaps into place — and crucially never animates pane *frames* (which
   /// would flood the surface with resize calls).
-  private func beginOrUpdateDrag(tabID: TerminalTab.ID, at location: CGPoint) {
+  private func beginOrUpdateDrag(
+    tabID: TerminalTab.ID, at location: CGPoint,
+    plan: PaneTreeLayout.Plan<TerminalTab.ID>, contentFrame: CGRect
+  ) {
     if drag == nil {
       withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.12)) {
         drag = PaneDragState(tabID: tabID, location: location)
@@ -195,12 +201,35 @@ struct PaneTreeView: View {
     } else {
       drag = PaneDragState(tabID: tabID, location: location)
     }
+    updateDetachPreview(tabID: tabID, at: location, plan: plan, contentFrame: contentFrame)
+  }
+
+  /// Show the tear-off ghost once the drag would detach, and take it away again if the cursor comes
+  /// back inside. Without it the drag has NO feedback at all past the window edge: the in-tree
+  /// `dragGhost` is a SwiftUI overlay, so it stops existing exactly where the new gesture begins.
+  private func updateDetachPreview(
+    tabID: TerminalTab.ID, at location: CGPoint,
+    plan: PaneTreeLayout.Plan<TerminalTab.ID>, contentFrame: CGRect
+  ) {
+    let outcome = PaneTreeLayout.dragOutcome(
+      cursor: location, windowBounds: Self.windowBounds(contentFrame: contentFrame),
+      panes: plan.panes, dragging: tabID)
+    guard outcome == .detach, let tab = sessions.tab(tabID, for: target) else {
+      DetachedPaneDragPreview.shared.hide()
+      return
+    }
+    DetachedPaneDragPreview.shared.show(
+      title: tab.title, glyph: tab.content.glyph, at: NSEvent.mouseLocation)
   }
 
   private func commitDrag(
     plan: PaneTreeLayout.Plan<TerminalTab.ID>, contentFrame: CGRect
   ) {
-    defer { drag = nil }
+    defer {
+      drag = nil
+      // Unconditional: the ghost may never have been shown, and hiding is idempotent.
+      DetachedPaneDragPreview.shared.hide()
+    }
     guard let drag else { return }
     switch PaneTreeLayout.dragOutcome(
       cursor: drag.location, windowBounds: Self.windowBounds(contentFrame: contentFrame),
@@ -685,6 +714,14 @@ struct PaneLeafView: View {
   /// Whether this leaf is being rendered in its own window (issue #172) — only `DetachedPaneView`
   /// passes true; the pane tree never renders a detached tab.
   var isDetached: Bool = false
+  /// Drop the pane's own chrome: its title bar, its rounded card and its focus ring.
+  ///
+  /// A detached pane is alone in a real window, so all three are redundant or wrong — the window's
+  /// own title bar names it, there is no sibling to be focused relative to, and a rounded card inset
+  /// from the window edge just wastes the space the pane was popped out to get. The CONTENT is
+  /// untouched: this only removes chrome around it, so the single-structural-slot rule that protects
+  /// the libghostty view is not in play.
+  var chromeless: Bool = false
   /// Pop out into a new window, or dock back. Defaulted so the pane tree's own call site, which
   /// resolves it from the store below, stays the only place that knows how.
   var onPopOut: (() -> Void)?
@@ -714,7 +751,7 @@ struct PaneLeafView: View {
     // round as one panel — and every chrome overlay below (scrim, focus ring, padding, a11y) wraps
     // both, which is why the bar needs no unfocused fade of its own.
     VStack(spacing: 0) {
-      titleBar
+      if !chromeless { titleBar }
       // Non-terminal panes (a diff) have no first responder to claim focus on click, so a click
       // anywhere in the body focuses the pane. Gated on `!isTerminal` ONLY — the content type is
       // stable for a pane's lifetime, so the gesture is never attached/detached mid-interaction
@@ -740,7 +777,8 @@ struct PaneLeafView: View {
         )
     }
     .clipShape(
-      RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius, style: .continuous)
+      RoundedRectangle(
+        cornerRadius: chromeless ? 0 : TerminalPanelMetrics.cornerRadius, style: .continuous)
     )
     // Dim every pane that isn't the focused one so the active terminal reads instantly. This fires
     // for split-mates AND for every pane of a co-displayed *backgrounded* workroom — which passes
@@ -772,8 +810,8 @@ struct PaneLeafView: View {
     // multi-workroom split (`workroomIsSplit`). A truly solo terminal — one pane, unsplit workroom —
     // keeps the plain hairline even though it's always the model-focused pane.
     .overlay {
-      RoundedRectangle(cornerRadius: TerminalPanelMetrics.cornerRadius)
-        .strokeBorder(borderColor, lineWidth: 1.5)
+      RoundedRectangle(cornerRadius: chromeless ? 0 : TerminalPanelMetrics.cornerRadius)
+        .strokeBorder(chromeless ? .clear : borderColor, lineWidth: 1.5)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: flashing)
         .animation(focusFade(0.08), value: focused)
     }
@@ -800,7 +838,7 @@ struct PaneLeafView: View {
     // separate cards, and a solo pane keeps the same pad so the panel doesn't shift when you switch
     // between a solo tab and a grouped/split one. Surface identity is held by `.id(tabID)` on the
     // host (not this padding), so no surface is re-parented across the change (issue #3).
-    .padding(1)
+    .padding(chromeless ? 0 : 1)
     .onChange(of: sessions.activityPulses[tabID]) { _, _ in
       // Flash a backgrounded pane on activity — a split-mate, or any pane of a co-displayed
       // backgrounded workroom (`!surfaceActive`), mirroring the dim gate so the pulse lifts the
@@ -950,7 +988,6 @@ struct PaneLeafView: View {
       onOpenFile: {
         if let path = content.filePath { store.openFilePreview(path: path, for: target) }
       },
-      isDetached: isDetached,
       onSplitRight: { sessions.splitTab(tabID, on: .right, for: target) },
       onSplitDown: { sessions.splitTab(tabID, on: .bottom, for: target) },
       onClose: { store.requestCloseTerminalTab(tabID, for: target) },
