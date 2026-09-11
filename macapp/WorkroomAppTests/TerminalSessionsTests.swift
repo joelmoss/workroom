@@ -1167,12 +1167,16 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
     s.splitFocusedPane(for: target, orientation: .vertical)
   }
 
+  /// `a | (b / c)`: the stacked pair is ONE column, so `a` keeps half the width. The skew matters —
+  /// this shape sits at 0.5 with or without evening, so asserting 0.5 on a fresh tree would pass
+  /// against code that never evens at all (measured: it did).
   func testAThirdPaneEvensTheSplit() {
     let s = makeSessions()
-    threePanes(s)
-    XCTAssertEqual(
-      rootRatio(s) ?? -1, 0.5, accuracy: 0.0001,
-      "`a | (b / c)`: the stacked pair is one column, so `a` keeps half the width")
+    s.addTab(for: target)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    s.setRatio(0.8, forSplit: rootSplitID(s)!, for: target)
+    s.splitFocusedPane(for: target, orientation: .vertical)
+    XCTAssertEqual(rootRatio(s) ?? -1, 0.5, accuracy: 0.0001)
   }
 
   func testAThirdPaneOnTheSameAxisSplitsIntoThirds() {
@@ -1213,6 +1217,7 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
   func testClosingAPaneEvensTheSurvivors() {
     let s = makeSessions()
     threePanes(s)
+    s.setRatio(0.8, forSplit: rootSplitID(s)!, for: target)  // or 0.5 would hold either way
     let closed = s.focusedTab(for: target)!.id
     s.closeTab(closed, for: target)
     XCTAssertEqual(s.split(for: target)?.tabIDs.count, 2)
@@ -1224,6 +1229,7 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
   func testExtractingAPaneEvensTheSurvivors() {
     let s = makeSessions()
     threePanes(s)
+    s.setRatio(0.8, forSplit: rootSplitID(s)!, for: target)  // or 0.5 would hold either way
     let extracted = s.focusedTab(for: target)!.id
     s.extractFromSplit(extracted, for: target)
     XCTAssertEqual(s.split(for: target)?.tabIDs.count, 2)
@@ -1286,7 +1292,10 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
     // than withhold the behaviour on the very first split of a session.
     let s = makeSessions()
     s.paneSpace[target.id] = nil
-    threePanes(s)
+    s.addTab(for: target)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    s.setRatio(0.8, forSplit: rootSplitID(s)!, for: target)  // or 0.5 would hold either way
+    s.splitFocusedPane(for: target, orientation: .vertical)
     XCTAssertEqual(rootRatio(s) ?? -1, 0.5, accuracy: 0.0001)
   }
 
@@ -1303,6 +1312,7 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
     s.focus(ids[1], for: target)
     s.splitFocusedPane(for: target, orientation: .vertical)  // (t1 / t4) | (t2 / t3)
     XCTAssertEqual(s.split(for: target)?.tabIDs.count, 4)
+    s.setRatio(0.8, forSplit: rootSplitID(s)!, for: target)  // or 0.5 would hold either way
 
     let bottomLeft = s.split(for: target)!.tabIDs.first { $0 != ids[0] && $0 != ids[1] }!
     s.closeTab(bottomLeft, for: target)

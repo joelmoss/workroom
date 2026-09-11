@@ -72,9 +72,6 @@ indirect enum PaneLayout<Leaf: Hashable>: Equatable {
 
   func contains(_ id: Leaf) -> Bool { tabIDs.contains(id) }
 
-  /// Whether this (sub)tree holds the split NODE `splitID` — the divider-addressing counterpart to
-  /// `contains(_:)`. Lets a caller holding several trees (the window's workroom split groups, issue #23
-  /// follow-up) find which one owns the divider being dragged, instead of rewriting them all.
   /// The stored divider fraction of the split node with `splitID`, or nil if this tree has no such
   /// node. Lets a live drag notice that its node moved for some other reason (issue #126).
   func ratio(forSplit splitID: UUID) -> CGFloat? {
@@ -87,6 +84,9 @@ indirect enum PaneLayout<Leaf: Hashable>: Equatable {
     }
   }
 
+  /// Whether this (sub)tree holds the split NODE `splitID` — the divider-addressing counterpart to
+  /// `contains(_:)`. Lets a caller holding several trees (the window's workroom split groups, issue #23
+  /// follow-up) find which one owns the divider being dragged, instead of rewriting them all.
   func containsSplit(_ splitID: UUID) -> Bool {
     switch self {
     case .leaf:
