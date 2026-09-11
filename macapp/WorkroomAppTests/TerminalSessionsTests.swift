@@ -1127,3 +1127,148 @@ final class ContentPaneFloorTests: XCTestCase {
       s.activeTab(for: target)?.id, terminal, "and must not have stolen the selection")
   }
 }
+
+/// Auto-even for the in-workroom pane split (issue #126). Same intent gate as the workroom side:
+/// `splitFocusedPane`, `closeTab` and `extractFromSplit` always change the pane count, while
+/// `moveTabIntoSplit` consults the `addsAMember` predicate it already used for the pane floor.
+///
+/// `autoEvenSplits` is set directly, never through `Defaults` — a parallel worker wipes that domain
+/// cross-process.
+@MainActor
+final class TerminalSplitAutoEvenTests: XCTestCase {
+  private let target = TerminalTarget(id: "wr|/p|foo", title: "foo", path: "/tmp", isMissing: false)
+
+  private func makeSessions(space: CGRect = CGRect(x: 0, y: 0, width: 1800, height: 1000))
+    -> TerminalSessions
+  {
+    let sessions = TerminalSessions()
+    sessions.makeView = { _, cwd, _ in GhosttySurfaceView(workingDirectory: cwd) }
+    sessions.recordUnrecognizedTool = { _ in }
+    sessions.recency = SwitcherRecency()
+    // Roomy by default so evening is always honourable; the clamp case gets its own container.
+    sessions.paneSpace[target.id] = space
+    return sessions
+  }
+
+  private func rootRatio(_ s: TerminalSessions) -> CGFloat? {
+    guard case .split(_, _, let ratio, _, _) = s.split(for: target) else { return nil }
+    return ratio
+  }
+
+  private func rootSplitID(_ s: TerminalSessions) -> UUID? {
+    guard case .split(let id, _, _, _, _) = s.split(for: target) else { return nil }
+    return id
+  }
+
+  /// `a | (b / c)` — three panes, the shape where a naive 0.5 leaves `a` at half the width.
+  private func threePanes(_ s: TerminalSessions) {
+    s.addTab(for: target)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    s.splitFocusedPane(for: target, orientation: .vertical)
+  }
+
+  func testAThirdPaneEvensTheSplit() {
+    let s = makeSessions()
+    threePanes(s)
+    XCTAssertEqual(
+      rootRatio(s) ?? -1, 1.0 / 3.0, accuracy: 0.0001, "the first pane is 1 of 3 leaves")
+  }
+
+  func testASplitEvensAwayASkewedDivider() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    s.setRatio(0.8, forSplit: rootSplitID(s)!, for: target)
+    s.splitFocusedPane(for: target, orientation: .vertical)
+    XCTAssertEqual(rootRatio(s) ?? -1, 1.0 / 3.0, accuracy: 0.0001)
+  }
+
+  func testClosingAPaneEvensTheSurvivors() {
+    let s = makeSessions()
+    threePanes(s)
+    let closed = s.focusedTab(for: target)!.id
+    s.closeTab(closed, for: target)
+    XCTAssertEqual(s.split(for: target)?.tabIDs.count, 2)
+    XCTAssertEqual(
+      rootRatio(s) ?? -1, 0.5, accuracy: 0.0001,
+      "the survivors must not keep the 1/3 budgeted for three panes")
+  }
+
+  func testExtractingAPaneEvensTheSurvivors() {
+    let s = makeSessions()
+    threePanes(s)
+    let extracted = s.focusedTab(for: target)!.id
+    s.extractFromSplit(extracted, for: target)
+    XCTAssertEqual(s.split(for: target)?.tabIDs.count, 2)
+    XCTAssertEqual(rootRatio(s) ?? -1, 0.5, accuracy: 0.0001)
+  }
+
+  func testARearrangeWithinTheSplitKeepsItsDividers() {
+    // `moveTabIntoSplit` with a tab that is ALREADY a member changes no pane count — it just moves
+    // one pane to another edge — so the dividers the user dragged must survive it.
+    let s = makeSessions()
+    threePanes(s)
+    s.setRatio(0.7, forSplit: rootSplitID(s)!, for: target)
+    let ids = s.split(for: target)!.tabIDs
+    s.moveTabIntoSplit(ids[2], ontoEdge: .right, of: ids[1], for: target)
+    XCTAssertEqual(
+      rootRatio(s) ?? -1, 0.7, accuracy: 0.0001, "same panes, new edge — not an addition")
+  }
+
+  func testDraggingASoloTabInEvensTheSplit() {
+    // The other half of `moveTabIntoSplit`: a tab from outside the split IS an addition.
+    let s = makeSessions()
+    s.addTab(for: target)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    s.setRatio(0.8, forSplit: rootSplitID(s)!, for: target)
+    let solo = s.addTab(for: target).id
+    let member = s.split(for: target)!.tabIDs[0]
+    s.moveTabIntoSplit(solo, ontoEdge: .bottom, of: member, for: target)
+    XCTAssertEqual(s.split(for: target)?.tabIDs.count, 3)
+    // The drop stacked the solo tab under the FIRST member, so that subtree now holds 2 of the 3
+    // leaves and takes two thirds of the width — which is what equal-sized panes means here.
+    XCTAssertEqual(rootRatio(s) ?? -1, 2.0 / 3.0, accuracy: 0.0001)
+  }
+
+  func testPrefOffKeepsEveryDivider() {
+    let s = makeSessions()
+    s.autoEvenSplits = { false }
+    s.addTab(for: target)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    s.setRatio(0.8, forSplit: rootSplitID(s)!, for: target)
+    s.splitFocusedPane(for: target, orientation: .vertical)
+    XCTAssertEqual(rootRatio(s) ?? -1, 0.8, accuracy: 0.0001, "the split left it alone")
+    s.closeTab(s.focusedTab(for: target)!.id, for: target)
+    XCTAssertEqual(rootRatio(s) ?? -1, 0.8, accuracy: 0.0001, "and so did the close")
+  }
+
+  func testACrampedContainerKeepsTheDividersInstead() {
+    // 800pt of width: evening wants the first pane at 1/3 (≈266pt) and the renderer would clamp it
+    // to the 300pt floor, leaving panes visibly unequal. Keep the user's dividers instead.
+    let s = makeSessions(space: CGRect(x: 0, y: 0, width: 800, height: 900))
+    s.addTab(for: target)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    s.setRatio(0.6, forSplit: rootSplitID(s)!, for: target)
+    s.splitFocusedPane(for: target, orientation: .vertical)
+    XCTAssertEqual(rootRatio(s) ?? -1, 0.6, accuracy: 0.0001)
+  }
+
+  func testAnUnmeasuredContainerStillEvens() {
+    // No layout pass yet (no `paneSpace` entry): nothing to judge, so even optimistically rather
+    // than withhold the behaviour on the very first split of a session.
+    let s = makeSessions()
+    s.paneSpace[target.id] = nil
+    threePanes(s)
+    XCTAssertEqual(rootRatio(s) ?? -1, 1.0 / 3.0, accuracy: 0.0001)
+  }
+
+  func testTheMenuActionStillEvensWithThePrefOff() {
+    let s = makeSessions()
+    s.autoEvenSplits = { false }
+    s.addTab(for: target)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    s.setRatio(0.9, forSplit: rootSplitID(s)!, for: target)
+    s.equalizeSplit(for: target)
+    XCTAssertEqual(rootRatio(s) ?? -1, 0.5, accuracy: 0.0001)
+  }
+}

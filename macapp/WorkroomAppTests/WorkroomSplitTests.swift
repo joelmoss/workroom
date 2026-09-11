@@ -1256,13 +1256,19 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
   }
 
   func testAGroupWithRoomAdmitsASplitThatTheAnchorAloneWouldRefuse() {
-    // The floor is group-aware now (TD1): the anchor pane is well under 2 × 300pt, but evening
-    // redistributes the whole 1800pt group, so all three panes clear the floor and the split stands.
+    // The floor is group-aware now (TD1). The anchor's measured rect is 448pt — under the 602pt the
+    // anchor-only rule demands, so that rule refuses — but evening redistributes the whole 1800pt
+    // group into three ~597pt panes, all clear of the floor. Passing the rect explicitly is what
+    // makes this test distinguish the two rules: without one, the old path permits by default.
     let store = makeStore(["main", "feature", "bugfix"])
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
-    store.setWorkroomSplitRatio(0.75, forSplit: rootSplitID(store)!)  // feature ≈ 448pt
+    let narrowAnchor = CGRect(x: 0, y: 0, width: 448, height: 900)
+    XCTAssertFalse(
+      PaneTreeLayout.canSplit(narrowAnchor, along: .horizontal),
+      "precondition: the anchor-only rule would refuse this rect")
     XCTAssertTrue(
-      store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .right),
+      store.insertWorkroomSplit(
+        wr("bugfix"), beside: wr("feature"), edge: .right, destinationRect: narrowAnchor),
       "the group has room for a third pane even though the anchor can't be halved")
     XCTAssertEqual(store.workroomSplits.first?.tabIDs.count, 3)
   }
@@ -1272,7 +1278,9 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 700, height: 900)
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
     XCTAssertFalse(
-      store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .right),
+      store.insertWorkroomSplit(
+        wr("bugfix"), beside: wr("feature"), edge: .right,
+        destinationRect: CGRect(x: 0, y: 0, width: 349, height: 900)),
       "three 300pt panes cannot fit in 700pt, however the space is shared out")
     XCTAssertEqual(store.workroomSplits.first?.tabIDs.count, 2)
   }
