@@ -36,6 +36,16 @@ struct TerminalContainerView: NSViewRepresentable {
   /// Whether this pane should hold keyboard focus. Solo callers leave it `true`; the split renderer
   /// passes `true` only for the focused leaf.
   var isFocusedPane: Bool = true
+  /// Whether THIS host is the one currently entitled to the surface (issue #172).
+  ///
+  /// A surface has exactly one host, but two of them can briefly exist: popping a pane out mounts it
+  /// in the detached window while the origin tree still has one update pass left to run, and
+  /// `updateNSView` re-homes unconditionally — so the origin re-adopted the surface and then took it
+  /// down with its own container, stranding it in no window at all (a blank detached pane, and the
+  /// same failure shape as the split-collapse bug in issue #3). The caller resolves this from the
+  /// model — a host may adopt the surface only when its kind matches `detachedTabIDs` — so a stale
+  /// pass is inert in both directions, popping out and docking back.
+  var mayHostSurface: Bool = true
   func makeNSView(context: Context) -> NSView {
     let container = NSView()
     container.wantsLayer = true
@@ -46,12 +56,14 @@ struct TerminalContainerView: NSViewRepresentable {
     // `masksToBounds` stays — it clips the hosted surface (pinned to the container's edges) to the
     // container, which is what keeps a mid-resize surface from painting outside its pane.
     container.layer?.masksToBounds = true
+    guard mayHostSurface else { return container }
     mount(in: container)
     applyFocus(in: container)
     return container
   }
 
   func updateNSView(_ container: NSView, context: Context) {
+    guard mayHostSurface else { return }
     mount(in: container)
     applyFocus(in: container)
   }

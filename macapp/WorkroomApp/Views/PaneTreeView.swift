@@ -842,7 +842,10 @@ struct PaneLeafView: View {
         // byte-for-byte duplicate of it. PaneTreeView's own `focused` still drives the focus ring, the
         // find bar and the a11y trait, so only the AppKit responder follows the dialog.
         TerminalContainerView(
-          view: s.view, isFocusedPane: focused && store.activePicker == nil
+          view: s.view, isFocusedPane: focused && store.activePicker == nil,
+          // Only the host whose kind matches the model may hold the surface (issue #172): the pane
+          // tree while the tab is docked, the detached window while it is not.
+          mayHostSurface: sessions.detachedTabIDs.contains(tabID) == isDetached
         )
         // Scrollback find bar (⌘F), pinned top-trailing over the focused pane only — search state
         // is per-surface, and only the focused pane can be searched. Nothing until active.

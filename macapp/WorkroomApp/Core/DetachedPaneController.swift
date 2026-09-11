@@ -91,7 +91,6 @@ final class DetachedPaneWindows {
     // Only the window-level a11y id in this app besides the onboarding window's — XCUITest has no
     // other way to scope a query to this window (see `DetachedPaneUITests`).
     window.setAccessibilityIdentifier("detachedPane.window")
-    window.contentView = NSHostingView(rootView: content())
     if let frame {
       window.setFrame(Self.onVisibleScreen(frame), display: false)
     } else if let origin {
@@ -108,7 +107,15 @@ final class DetachedPaneWindows {
     window.delegate = delegate
     delegates[tabID] = delegate
     windows[tabID] = window
+
+    // ORDER FRONT BEFORE MOUNTING THE CONTENT. `GhosttySurfaceView.viewDidMoveToWindow` decides
+    // whether to render from `window.occlusionState.contains(.visible)`, and a window that has not
+    // been ordered in yet is not visible — so mounting first paused the renderer the instant the
+    // surface arrived, and the pane came up blank while its title bar (plain SwiftUI) drew fine.
+    // Nothing recovered it either: the occlusion observer only fires on a CHANGE, and the surface
+    // had already recorded "not visible" before the window ever appeared.
     window.makeKeyAndOrderFront(nil)
+    window.contentView = NSHostingView(rootView: content())
   }
 
   /// Close a detached pane's window WITHOUT closing its tab — a dock, or a teardown where the tab is

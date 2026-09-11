@@ -58,6 +58,17 @@ final class PaneRenderingTests: XCTestCase {
     return found
   }
 
+  /// Whether `needle` is anywhere in `haystack`'s view tree (regardless of window attachment).
+  private func contains(_ haystack: NSView, _ needle: NSView?) -> Bool {
+    guard let needle else { return false }
+    var node: NSView? = needle
+    while let current = node {
+      if current === haystack { return true }
+      node = current.superview
+    }
+    return false
+  }
+
   /// Poll the runloop until SwiftUI commits and the mounted-surface count settles to `expected`.
   @discardableResult
   private func waitForSurfaces(in view: NSView, count expected: Int, timeout: TimeInterval = 3)
@@ -197,6 +208,63 @@ final class PaneRenderingTests: XCTestCase {
     XCTAssertEqual(
       s.tab(stay.id, for: target)?.surface, mounted.first,
       "and the one still mounted is the one that stayed")
+
+  }
+
+  /// The blank-detached-pane regression (issue #172), which needs BOTH hosts alive to reproduce.
+  ///
+  /// Popping a pane out mounts it in the detached window while the origin tree still has one update
+  /// pass queued, and `updateNSView` re-homes unconditionally — so the origin re-adopted the surface
+  /// and then took it down with its own container, leaving it in no window at all. The pane's chrome
+  /// (SwiftUI) still drew, so it looked like a rendering bug rather than an ownership one.
+  ///
+  /// `mountedSurfaces` cannot see this: a stranded surface has no window either. What settles it is
+  /// WHICH window ends up holding the view.
+  func testADetachedPaneEndsUpInTheDetachedWindowNotTheOrigin() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    let detached = s.focusedTab(for: target)!.id
+    let surface = s.tab(detached, for: target)!.surface!
+
+    let (origin, originView) = host(s)
+    defer {
+      origin.orderOut(nil)
+      origin.close()
+    }
+    XCTAssertEqual(waitForSurfaces(in: originView, count: 2).count, 2)
+
+    // Stand in for `DetachedPaneWindows`: a second window hosting the same surface under the same
+    // model-driven gate the real detached window uses.
+    let detachedHost = NSHostingView(
+      rootView: TestDetachedHost(tabID: detached, surface: surface, sessions: s))
+    detachedHost.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
+    let detachedWindow = NSWindow(
+      contentRect: detachedHost.frame, styleMask: [.titled], backing: .buffered, defer: false)
+    detachedWindow.isReleasedWhenClosed = false
+    defer {
+      detachedWindow.orderOut(nil)
+      detachedWindow.close()
+    }
+
+    s.detachPane(detached, for: target, at: .zero)
+    detachedWindow.contentView = detachedHost
+    detachedWindow.makeKeyAndOrderFront(nil)
+
+    // Let BOTH trees settle — the origin's trailing update pass is the one that used to steal it.
+    for _ in 0..<10 {
+      originView.layoutSubtreeIfNeeded()
+      detachedHost.layoutSubtreeIfNeeded()
+      RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+    }
+
+    XCTAssertTrue(
+      contains(detachedHost, surface),
+      "the detached window must end up holding the surface")
+    XCTAssertFalse(
+      contains(originView, surface),
+      "and the origin must not have re-adopted it on its trailing update pass")
+    XCTAssertNotNil(surface.window, "a surface in no window renders nothing — the blank-pane bug")
   }
 
   /// Docking is the mirror: the pane comes back into the origin tree and is mounted again, with no
@@ -219,6 +287,20 @@ final class PaneRenderingTests: XCTestCase {
     let mounted = waitForSurfaces(in: view, count: 1)
     XCTAssertEqual(mounted.count, 1, "docked solo, so one pane is on screen")
     XCTAssertEqual(mounted.first, surface, "the SAME surface came back — nothing was respawned")
+  }
+}
+
+/// Stands in for `DetachedPaneView`: hosts one surface under the same model-driven ownership gate,
+/// so the two-host tug of war can be reproduced without building a real detached window.
+private struct TestDetachedHost: View {
+  let tabID: TerminalTab.ID
+  let surface: GhosttySurfaceView
+  @ObservedObject var sessions: TerminalSessions
+
+  var body: some View {
+    TerminalContainerView(
+      view: surface, isFocusedPane: true,
+      mayHostSurface: sessions.detachedTabIDs.contains(tabID))
   }
 }
 
