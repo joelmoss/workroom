@@ -90,9 +90,15 @@ struct WorkroomSplitView: View {
           if let target = resolve(sid), let rect = plan.panes[sid] {
             WorkroomPaneLeaf(
               store: store, sid: sid, target: target, focused: sid == focusedID, multi: multi,
+              memberCount: leaves.count,
               externalDrag: $externalDrag, localize: localize, dropTarget: dropTarget,
               onClose: { onClose(sid) }, onMove: onMove
             )
+            // Same reason as the terminal panes (`PaneTreeView`): the header toolbar inside this
+            // card carries `.animation(_:value: focused)`, so without a geometry group it animates
+            // its own frame across the window whenever a member closes and the survivor both takes
+            // focus and resizes in one update.
+            .geometryGroup()
             .frame(width: rect.width, height: rect.height)
             .position(x: rect.midX, y: rect.midY)
             .id(sid)
@@ -183,6 +189,9 @@ private struct WorkroomPaneLeaf: View {
   let target: TerminalTarget
   let focused: Bool
   let multi: Bool
+  /// How many members the group has right now. Only used to tell a focus MOVE from the group
+  /// changing shape — see `PaneTreeView.fadesFocusChange`.
+  let memberCount: Int
   /// The shared workroom-drag state — the title bar writes it while dragging this group (issue #110).
   @Binding var externalDrag: WorkroomPaneDrag?
   let localize: (CGPoint) -> CGPoint?
@@ -208,7 +217,7 @@ private struct WorkroomPaneLeaf: View {
       // *which* member this is and offers the way back out of the group.
       WorkroomPaneTitleBar(
         target: target, projectPath: projectPath, projectLabel: projectLabel,
-        workroomName: workroomName, focused: focused,
+        workroomName: workroomName, focused: focused, memberCount: memberCount,
         controls: toolbarControls, onClose: onClose,
         // The bar stays store-free (see `WorkroomSplitView.store`), so the leaf — which has the
         // store — supplies the action.
@@ -451,6 +460,19 @@ private struct WorkroomPaneTitleBar: View {
   let projectLabel: String
   let workroomName: String?
   let focused: Bool
+  /// See `WorkroomPaneLeaf.memberCount` — the group's size, so the fade below can sit out a close.
+  let memberCount: Int
+  /// The size this bar last rendered with — recorded after the body, so during a structural update
+  /// it still holds the previous value. Same mechanism as `PaneLeafView.lastPaneCount`.
+  @State private var lastMemberCount: Int?
+
+  /// The animation for this bar's focus fade — nil while the group is changing shape, so a member
+  /// closing lands instantly. One decision, shared with the terminal panes.
+  private var focusFade: Animation? {
+    PaneTreeView.fadesFocusChange(
+      paneCount: memberCount, lastPaneCount: lastMemberCount, reduceMotion: reduceMotion)
+      ? .easeInOut(duration: 0.07) : nil
+  }
   /// Resolved by the leaf, which has the store — this view stays store-free on purpose (see
   /// `WorkroomSplitView.store`).
   let controls: WorkroomPaneToolbarPresentation.Controls
@@ -531,8 +553,12 @@ private struct WorkroomPaneTitleBar: View {
       // cramped split — they just stop competing with the focused pane's. Matching curve and duration so
       // the header, the strip, and the per-pane scrim all fade as one.
       .opacity(PaneTreeView.shouldRecede(active: focused, enabled: dimUnfocusedPanes) ? 0.45 : 1)
-      .animation(reduceMotion ? nil : .easeInOut(duration: 0.07), value: focused)
-      .animation(reduceMotion ? nil : .easeInOut(duration: 0.07), value: dimUnfocusedPanes)
+      // nil while the group is changing shape: removing a member re-lays every survivor out, and
+      // fading this header through that is the chrome chasing a layout that already moved
+      // (`PaneTreeView.fadesFocusChange`). A focus move still cross-fades.
+      .animation(focusFade, value: focused)
+      .animation(focusFade, value: dimUnfocusedPanes)
+      .onChange(of: memberCount, initial: true) { _, new in lastMemberCount = new }
     }
     // Trailing inset is tighter than the leading so the trailing-most control lines up with the
     // terminal tab strip's own toolbar below it (both land 4pt inside the card's trailing edge; the
