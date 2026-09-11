@@ -285,6 +285,26 @@ enum PaneTreeLayout {
     orientation == .horizontal ? minPaneWidth : minPaneHeight
   }
 
+  /// How far a divider's incoming ratio may sit from the last value THIS drag emitted before the
+  /// drag treats it as having been moved by something else.
+  static let reanchorTolerance: CGFloat = 0.0005
+
+  /// Whether a divider drag must re-anchor: it has not started yet, or the ratio it is being handed
+  /// no longer matches the last one it emitted, which means something other than this drag moved it.
+  ///
+  /// That second case is an auto-even landing while the mouse is down (issue #126): `equalized()`
+  /// preserves every split node's `id`, so the divider view — and its latched start ratio — survive
+  /// a tree that has changed underneath them. Replaying `stale start + whole-gesture translation`
+  /// then undoes the even, on the next tick for a live-writing divider and at mouse-up for a
+  /// committing one. Shared by both dividers so the two cannot drift on the rule.
+  static func shouldReanchorDrag(currentRatio: CGFloat, lastEmitted: CGFloat?, hasStarted: Bool)
+    -> Bool
+  {
+    guard hasStarted else { return true }
+    guard let lastEmitted else { return false }
+    return abs(currentRatio - lastEmitted) > reanchorTolerance
+  }
+
   /// Whether `tree`, laid out in `container`, actually RENDERS the ratios it stores. `lengths`
   /// clamps every node to its own axis floor and, below twice that floor, abandons the ratio
   /// altogether for a bare half-and-half — so a tree can be evened in the model and visibly uneven
@@ -1004,7 +1024,9 @@ private struct SplitDivider: View {
             // keeps every split node's `id`, so an auto-even landing mid-drag leaves this view and
             // its latched start alive over a tree that has since changed; replaying
             // `stale start + whole-gesture translation` would undo the even on the very next tick.
-            if startRatio == nil || lastEmitted.map({ abs(ratio - $0) > 0.0005 }) == true {
+            if PaneTreeLayout.shouldReanchorDrag(
+              currentRatio: ratio, lastEmitted: lastEmitted, hasStarted: startRatio != nil)
+            {
               startRatio = ratio
               baseTranslation = value.translation
             }

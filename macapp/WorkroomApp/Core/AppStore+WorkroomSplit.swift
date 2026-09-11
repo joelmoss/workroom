@@ -222,8 +222,12 @@ extension AppStore {
         newLeafFirst: edge.placesDroppedFirst, ratio: 0.5)
       // The one auto-even site that can still meet a ghost leaf: a workroom deleted elsewhere is
       // dropped from the tree by `pruneWorkroomSplitToLiveLeaves` on the next reload, not before.
-      if adds, autoEvenSplits(), let evened = prunedAndEvened(grown) {
-        workroomSplits[index] = honourable(evened, else: grown)
+      // The pruned-and-evened candidate cannot go through `evenedIfHonourable` (which evens the
+      // tree it is handed), so this one site asks the honourability question directly.
+      if adds, autoEvenSplits(), let evened = prunedAndEvened(grown),
+        workroomPaneSpace.map({ PaneTreeLayout.plansEvenly(evened, in: $0) }) ?? true
+      {
+        workroomSplits[index] = evened
       } else {
         workroomSplits[index] = grown
       }
@@ -327,8 +331,8 @@ extension AppStore {
     // not the pruning variant: `survivor` was chosen above and a prune-driven dissolve here would
     // strand the selection on it. Indices shift when a group dissolves, so re-derive.
     if autoEvenSplits(), let survivor, let index = splitIndex(containing: survivor) {
-      workroomSplits[index] = honourable(
-        workroomSplits[index].equalized(), else: workroomSplits[index])
+      workroomSplits[index] = PaneTreeLayout.evenedIfHonourable(
+        workroomSplits[index], in: workroomPaneSpace, enabled: true)
     }
     if wasFocused, let survivor { focusWorkroomMember(survivor) }
   }
@@ -429,21 +433,9 @@ extension AppStore {
   /// `insertWorkroomSplit` (issue #126) so the manual and automatic paths can't drift.
   ///
   /// Deliberately unconditional — the menu item must work with the auto-even pref off — and
-  /// deliberately NOT used by `removeWorkroomSplitMember`, which picks the survivor to focus before
-  /// its structural edit: a prune that dissolved the group afterwards would leave the selection on a
-  /// workroom that no longer resolves.
-  /// Keep `evened` only when the measured container can actually RENDER it evenly; otherwise keep
-  /// `original` (issue #126). `PaneTreeView.lengths` clamps every node to its own axis floor, so a
-  /// container roomy on one axis and tight on the other silently overrides equal-area ratios — and a
-  /// third outcome that is neither even nor what the user dragged is worse than leaving the dividers
-  /// alone. An unmeasured container (no layout pass yet) evens optimistically, matching `canSplit`.
-  private func honourable(
-    _ evened: PaneLayout<SidebarID>, else original: PaneLayout<SidebarID>
-  ) -> PaneLayout<SidebarID> {
-    guard let space = workroomPaneSpace else { return evened }
-    return PaneTreeLayout.plansEvenly(evened, in: space) ? evened : original
-  }
-
+  /// deliberately NOT called by `removeWorkroomSplitMember`, which picks the survivor to focus
+  /// before its structural edit: a prune that dissolved the group afterwards would leave the
+  /// selection on a workroom that no longer resolves, so that path evens without pruning.
   private func prunedAndEvened(_ group: PaneLayout<SidebarID>) -> PaneLayout<SidebarID>? {
     var live = group
     for leaf in group.tabIDs where target(for: leaf) == nil {
@@ -484,7 +476,8 @@ extension AppStore {
         // (issue #126): even the survivors rather than leave them budgeted for the workroom that
         // went away. Plain `equalized` — the tree in hand is the pruned one.
         kept.append(
-          autoEvenSplits() ? honourable(pruned.equalized(), else: pruned) : pruned)
+          PaneTreeLayout.evenedIfHonourable(
+            pruned, in: workroomPaneSpace, enabled: autoEvenSplits()))
       } else if let survivor = live.first {
         survivors.append(survivor)
       }

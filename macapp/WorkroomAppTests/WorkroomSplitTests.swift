@@ -1150,11 +1150,14 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
     return store
   }
 
+  /// `main | (feature / bugfix)`: the stacked pair is ONE column, so main keeps half the width. The
+  /// skew is what makes this discriminate — the shape sits at 0.5 with or without evening.
   func testAThirdMemberEvensTheGroup() {
-    let store = threePaneStore()
-    XCTAssertEqual(
-      rootRatio(store) ?? -1, 0.5, accuracy: 0.0001,
-      "`main | (feature / bugfix)`: the stacked pair is one column, so main keeps half the width")
+    let store = makeStore(["main", "feature", "bugfix"])
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    store.setWorkroomSplitRatio(0.8, forSplit: rootSplitID(store)!)
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)
+    XCTAssertEqual(rootRatio(store) ?? -1, 0.5, accuracy: 0.0001)
   }
 
   func testAThirdMemberOnTheSameAxisSplitsIntoThirds() {
@@ -1228,6 +1231,7 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
     // An EXTERNAL delete (CLI, another window): the workroom vanishes from the project list, so the
     // reload's sweep prunes the leaf — and the survivors are left budgeted for three panes.
     let store = threePaneStore()
+    store.setWorkroomSplitRatio(0.8, forSplit: rootSplitID(store)!)  // or 0.5 would hold either way
     store.selectedTargetID = wr("main")
     store.projects = [
       Project(

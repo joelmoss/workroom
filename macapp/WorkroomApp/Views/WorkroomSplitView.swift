@@ -466,6 +466,12 @@ private struct WorkroomPaneTitleBar: View {
   /// it still holds the previous value. Same mechanism as `PaneLeafView.lastPaneCount`.
   @State private var lastMemberCount: Int?
 
+  /// Resolved by the leaf, which has the store — this view stays store-free on purpose (see
+  /// `WorkroomSplitView.store`).
+  let controls: WorkroomPaneToolbarPresentation.Controls
+  let onClose: () -> Void
+  let onCloseAll: () -> Void
+
   /// The animation for this bar's focus fade — nil while the group is changing shape, so a member
   /// closing lands instantly. One decision, shared with the terminal panes.
   private var focusFade: Animation? {
@@ -473,11 +479,6 @@ private struct WorkroomPaneTitleBar: View {
       paneCount: memberCount, lastPaneCount: lastMemberCount, reduceMotion: reduceMotion)
       ? .easeInOut(duration: 0.07) : nil
   }
-  /// Resolved by the leaf, which has the store — this view stays store-free on purpose (see
-  /// `WorkroomSplitView.store`).
-  let controls: WorkroomPaneToolbarPresentation.Controls
-  let onClose: () -> Void
-  let onCloseAll: () -> Void
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   /// "Dim unfocused panes" (issue #162) — the toolbar's fade is in lockstep with the pane scrim, so
   /// the setting gates it too (see `PaneTreeView.shouldRecede`). The focus *colours* above are not
@@ -619,14 +620,16 @@ private struct WorkroomSplitDivider: View {
         DragGesture(coordinateSpace: .global)
           .onChanged { value in
             reanchorIfMovedElsewhere(value.translation)
-            onLive(dragged(from: startRatio ?? ratio, by: value.translation - baseTranslation))
+            let next = dragged(from: startRatio ?? ratio, by: rebased(value.translation))
+            lastEmitted = next  // what `reanchorIfMovedElsewhere` compares the incoming ratio to
+            onLive(next)
           }
           // `startRatio` is set by `onChanged`, so a nil one means the gesture never moved — commit
           // nothing rather than republishing the ratio it already has. The final translation comes from
           // this closure's own value; there's no need to mirror each tick into a second `@State`.
           .onEnded { value in
             guard let start = startRatio else { return }
-            onCommit(dragged(from: start, by: value.translation - baseTranslation))
+            onCommit(dragged(from: start, by: rebased(value.translation)))
             startRatio = nil
             lastEmitted = nil
             baseTranslation = .zero
@@ -663,9 +666,15 @@ private struct WorkroomSplitDivider: View {
   private func dragged(from start: CGFloat, by translation: CGSize) -> CGFloat {
     let usable = max(1, total - PaneTreeLayout.dividerThickness)
     let delta = orientation == .horizontal ? translation.width : translation.height
-    let next = PaneTreeLayout.clampRatio(start + delta / usable, total: total, along: orientation)
-    lastEmitted = next
-    return next
+    return PaneTreeLayout.clampRatio(start + delta / usable, total: total, along: orientation)
+  }
+
+  /// This gesture's translation measured from its current anchor. `value.translation` is cumulative
+  /// for the whole gesture, so a re-anchor mid-drag needs its origin subtracted.
+  private func rebased(_ translation: CGSize) -> CGSize {
+    CGSize(
+      width: translation.width - baseTranslation.width,
+      height: translation.height - baseTranslation.height)
   }
 
   /// Latch the drag's origin, and re-latch it when the divider moved for a reason other than this
@@ -674,16 +683,11 @@ private struct WorkroomSplitDivider: View {
   /// changed underneath it. Without re-anchoring, the next tick (and the mouse-up commit) replays
   /// `stale start + whole-gesture translation` and silently undoes the even.
   private func reanchorIfMovedElsewhere(_ translation: CGSize) {
-    let movedElsewhere = lastEmitted.map { abs(ratio - $0) > 0.0005 } ?? false
-    guard startRatio == nil || movedElsewhere else { return }
+    guard
+      PaneTreeLayout.shouldReanchorDrag(
+        currentRatio: ratio, lastEmitted: lastEmitted, hasStarted: startRatio != nil)
+    else { return }
     startRatio = ratio
     baseTranslation = translation
-  }
-}
-
-extension CGSize {
-  /// Component-wise difference, for re-basing a cumulative gesture translation onto a new origin.
-  static func - (lhs: CGSize, rhs: CGSize) -> CGSize {
-    CGSize(width: lhs.width - rhs.width, height: lhs.height - rhs.height)
   }
 }

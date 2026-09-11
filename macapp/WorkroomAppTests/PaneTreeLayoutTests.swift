@@ -404,3 +404,39 @@ final class PaneFitNotWorseTests: XCTestCase {
       PaneTreeLayout.fitsEveryPane(prospective, in: rect(w: 700, h: 900), notWorseThan: current))
   }
 }
+
+/// The divider drag's re-anchor decision (issue #126). Both dividers share it, and neither can test
+/// its own gesture — this is the part that CAN be tested, so it is.
+final class DividerReanchorTests: XCTestCase {
+
+  func testAnUnstartedDragAlwaysAnchors() {
+    XCTAssertTrue(
+      PaneTreeLayout.shouldReanchorDrag(currentRatio: 0.5, lastEmitted: nil, hasStarted: false))
+  }
+
+  func testADragHoldingItsOwnValueDoesNotReanchor() {
+    // The ratio coming back is the one this drag just wrote, so nothing moved it.
+    XCTAssertFalse(
+      PaneTreeLayout.shouldReanchorDrag(currentRatio: 0.42, lastEmitted: 0.42, hasStarted: true))
+  }
+
+  func testAnAutoEvenLandingMidDragReanchors() {
+    // The drag last wrote 0.8; the tree now says 0.5 because a pane closed and the group evened.
+    XCTAssertTrue(
+      PaneTreeLayout.shouldReanchorDrag(currentRatio: 0.5, lastEmitted: 0.8, hasStarted: true))
+  }
+
+  func testRoundingDriftDoesNotReanchor() {
+    // Sub-tolerance drift is the renderer's rounding, not somebody else's write — re-anchoring on it
+    // would reset the drag's origin every tick and make the divider crawl.
+    let drift = PaneTreeLayout.reanchorTolerance / 2
+    XCTAssertFalse(
+      PaneTreeLayout.shouldReanchorDrag(
+        currentRatio: 0.5 + drift, lastEmitted: 0.5, hasStarted: true))
+  }
+
+  func testAStartedDragWithNothingEmittedYetDoesNotReanchor() {
+    XCTAssertFalse(
+      PaneTreeLayout.shouldReanchorDrag(currentRatio: 0.5, lastEmitted: nil, hasStarted: true))
+  }
+}

@@ -37,6 +37,7 @@ final class SharedPrefDefaultsTests: XCTestCase {
   private let diffModeKey = "diffViewMode"
   private let sidebarVisibleKey = "sidebar.visible"
   private let dimArgKey = "WorkroomUITestDimUnfocusedPanes"
+  private let autoEvenArgKey = "WorkroomUITestAutoResizeSplitsEvenly"
   private let dimKey = "dimUnfocusedPanes"
 
   /// Every raw key this test writes, saved/restored so it never leaks into the real Dev defaults
@@ -51,7 +52,7 @@ final class SharedPrefDefaultsTests: XCTestCase {
   private var keys: [String] {
     [
       sectionArgKey, diffModeArgKey, visibleKey, activeSectionKey, diffModeKey, sidebarVisibleKey,
-      dimArgKey, dimKey,
+      dimArgKey, dimKey, autoEvenArgKey, "autoResizeSplitsEvenly",
     ]
   }
   private var saved: [String: Any?] = [:]
@@ -288,6 +289,18 @@ final class SharedPrefDefaultsTests: XCTestCase {
 
     XCTAssertFalse(UITestFixture.dimUnfocusedPanes)
     XCTAssertFalse(Defaults[.dimUnfocusedPanes])
+  }
+
+  /// The auto-even pref (issue #126) is pinned by the same seam and decides where every divider in a
+  /// split lands, so a test or screenshot that measures panes depends on this parsing exactly as the
+  /// dimming ones depend on the sibling above.
+  func testAutoResizeSplitsArgumentTurnsItOff() {
+    setArgument("0", forKey: autoEvenArgKey)
+
+    UITestFixture.applyFixtureDefaults(active: true)
+
+    XCTAssertFalse(UITestFixture.autoResizeSplitsEvenly)
+    XCTAssertFalse(Defaults[.autoResizeSplitsEvenly])
   }
 
   // MARK: fixture seam — production
