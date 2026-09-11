@@ -258,29 +258,41 @@ enum PaneTreeLayout {
     orientation == .horizontal ? minPaneWidth : minPaneHeight
   }
 
-  /// How far planned pane areas may drift and still count as "even" (issue #126). Divider
-  /// subtraction and per-node rounding leave a sub-percent spread on a tree that IS equal — the
-  /// same drift `PaneLayoutTests.testEqualizedMixedOrientationGivesEqualAreas` allows for. A clamp
-  /// that actually defeats the even-out is an order of magnitude larger than this (the measured
-  /// 800pt case lands ~18% apart), so the two are never confused.
-  static let evenAreaTolerance: CGFloat = 0.05
-
-  /// Whether `tree`, laid out in `container`, actually RENDERS its panes even. `equalized()` writes
-  /// equal-AREA ratios, but `lengths` clamps every node to its OWN axis floor, so a container that
-  /// is roomy on one axis and tight on the other silently overrides them: `[A | B]` in 800pt of
-  /// usable width, split vertically on B, wants A at 1/3 (266pt) and gets the 300pt width floor
-  /// instead — leaving A visibly smaller than B and C with the even-splits setting on, and nothing
-  /// on screen to explain it. Auto-even asks this first and keeps the user's dividers rather than
-  /// producing a third outcome that is neither even nor what they dragged.
+  /// Whether `tree`, laid out in `container`, actually RENDERS the ratios it stores. `lengths`
+  /// clamps every node to its own axis floor and, below twice that floor, abandons the ratio
+  /// altogether for a bare half-and-half — so a tree can be evened in the model and visibly uneven
+  /// on screen. Measured: three columns evened to thirds of 800pt want 266pt each and get the 300pt
+  /// floor on the first one, leaving the other two to share what's left.
   ///
-  /// Compares AREAS, not lengths: a mixed-orientation tree can only be equal by area (one
-  /// full-height pane beside two stacked ones). An unmeasured container permits, matching
-  /// `canSplit` — nothing has been laid out yet, so there is nothing to judge.
+  /// Auto-even asks this before committing and keeps the user's dividers when the answer is no,
+  /// rather than producing a third outcome that is neither even nor what they dragged (issue #126).
+  ///
+  /// Asks it per NODE rather than by comparing pane sizes, because "even" is not one shape: after
+  /// #126's slot weighting a mixed tree is deliberately not equal-area (a full-width pane above two
+  /// side-by-side ones is twice their area), so only the node's own axis can say whether its
+  /// division survived. An unmeasured container permits, matching `canSplit`.
   static func plansEvenly<Leaf: Hashable>(_ tree: PaneLayout<Leaf>, in container: CGRect) -> Bool {
     guard container.width > 0, container.height > 0 else { return true }
-    let areas = plan(tree, in: container).panes.values.map { $0.width * $0.height }
-    guard let low = areas.min(), let high = areas.max(), high > 0 else { return true }
-    return high - low <= high * evenAreaTolerance
+    guard case .split(_, let orientation, let ratio, let first, let second) = tree else {
+      return true
+    }
+    let axis = orientation == .horizontal ? container.width : container.height
+    let usable = max(0, axis - dividerThickness)
+    let (firstLen, secondLen) = lengths(total: axis, ratio: ratio, along: orientation)
+    // What the ratio asked for, before any clamp. More than a point of drift means the renderer
+    // overrode it.
+    guard abs(firstLen - (usable * ratio).rounded()) <= 1 else { return false }
+    let (firstRect, secondRect) =
+      orientation == .horizontal
+      ? (
+        CGRect(x: 0, y: 0, width: firstLen, height: container.height),
+        CGRect(x: 0, y: 0, width: secondLen, height: container.height)
+      )
+      : (
+        CGRect(x: 0, y: 0, width: container.width, height: firstLen),
+        CGRect(x: 0, y: 0, width: container.width, height: secondLen)
+      )
+    return plansEvenly(first, in: firstRect) && plansEvenly(second, in: secondRect)
   }
 
   /// Whether every pane of `tree` lands at or above BOTH axis floors in `container` — the

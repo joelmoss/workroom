@@ -193,8 +193,12 @@ final class PaneLayoutTests: XCTestCase {
     }
   }
 
-  func testEqualizedMixedOrientationGivesEqualAreas() {
-    // A | (B / C): A can only equal the stacked panes by AREA, not width/height (Codex #3).
+  func testEqualizedMixedOrientationKeepsThePerpendicularDivider() {
+    // A | (B / C). The nested split runs the other way, so it is ONE column: A and the stacked pair
+    // each get half the width, and the pair splits its own height. Weighting by leaf count instead
+    // gave A a third of the width — a split made inside the right column resizing the left one,
+    // which is the defect #126 reported ("split down, then split right, and the untouched pane
+    // shrinks"). Deliberately NOT equal-area: A is twice either stacked pane, as in every tiler.
     let tree = PaneLayout.split(
       id: UUID(), orientation: .horizontal, ratio: 0.8,
       first: .leaf(a),
@@ -202,12 +206,27 @@ final class PaneLayoutTests: XCTestCase {
         id: UUID(), orientation: .vertical, ratio: 0.8, first: .leaf(b), second: .leaf(c)))
     let rect = CGRect(x: 0, y: 0, width: 1200, height: 900)
     let panes = PaneTreeLayout.plan(tree.equalized(), in: rect).panes
-    let areas = [a, b, c].compactMap { panes[$0] }.map { $0.width * $0.height }
-    XCTAssertEqual(areas.count, 3)
-    let avg = areas.reduce(0, +) / CGFloat(areas.count)
-    // Divider subtraction + rounding leaves a sub-percent drift, not exact equality (Codex #1).
-    for area in areas {
-      XCTAssertEqual(area, avg, accuracy: avg * 0.05)
+    XCTAssertEqual(panes[a]?.width ?? 0, 599, accuracy: 2, "half the width")
+    XCTAssertEqual(panes[a]?.height ?? 0, 900, accuracy: 2, "full height, untouched")
+    XCTAssertEqual(panes[b]?.width ?? 0, 599, accuracy: 2)
+    XCTAssertEqual(panes[b]?.height ?? 0, 449, accuracy: 2, "the pair splits its own height")
+    XCTAssertEqual(panes[c]?.height ?? 0, 449, accuracy: 2)
+  }
+
+  func testEqualizedGridGivesFourIdenticalPanes() {
+    // (A / B) | (C / D): two columns, each split in half. Every pane the same size.
+    let tree = PaneLayout.split(
+      id: UUID(), orientation: .horizontal, ratio: 0.8,
+      first: .split(
+        id: UUID(), orientation: .vertical, ratio: 0.2, first: .leaf(a), second: .leaf(b)),
+      second: .split(
+        id: UUID(), orientation: .vertical, ratio: 0.7, first: .leaf(c), second: .leaf(d)))
+    let panes = PaneTreeLayout.plan(
+      tree.equalized(), in: CGRect(x: 0, y: 0, width: 1200, height: 900)
+    ).panes
+    for id in [a, b, c, d] {
+      XCTAssertEqual(panes[id]?.width ?? 0, 599, accuracy: 2)
+      XCTAssertEqual(panes[id]?.height ?? 0, 449, accuracy: 2)
     }
   }
 

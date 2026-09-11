@@ -558,14 +558,26 @@ final class WorkroomSplitTests: XCTestCase {
 
   // MARK: equalize (issue #83 — "Resize Workroom Splits Evenly")
 
-  func testEqualizeWeightsByLeafCount() {
+  func testEqualizeWeightsBySameAxisSlots() {
     let store = store3()
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
     store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)
     // tree: main | (feature / bugfix). Skew the outer divider, then equalize.
     store.setWorkroomSplitRatio(0.9, forSplit: rootSplitID(store)!)
     store.equalizeWorkroomSplit()
-    XCTAssertEqual(rootRatio(store) ?? -1, 1.0 / 3.0, accuracy: 0.0001, "main is 1 of 3 leaves")
+    XCTAssertEqual(
+      rootRatio(store) ?? -1, 0.5, accuracy: 0.0001,
+      "the stacked pair is ONE column, so the outer divider is a half — not a third (#126)")
+  }
+
+  func testEqualizeStillDividesASameAxisChainEvenly() {
+    let store = store3()
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .right)
+    store.setWorkroomSplitRatio(0.9, forSplit: rootSplitID(store)!)
+    store.equalizeWorkroomSplit()
+    XCTAssertEqual(
+      rootRatio(store) ?? -1, 1.0 / 3.0, accuracy: 0.0001, "three columns in one chain are thirds")
   }
 
   func testEqualizeNoOpWithoutSplit() {
@@ -1141,8 +1153,15 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
   func testAThirdMemberEvensTheGroup() {
     let store = threePaneStore()
     XCTAssertEqual(
-      rootRatio(store) ?? -1, 1.0 / 3.0, accuracy: 0.0001,
-      "main is 1 of 3 leaves, so it gets a third of the width")
+      rootRatio(store) ?? -1, 0.5, accuracy: 0.0001,
+      "`main | (feature / bugfix)`: the stacked pair is one column, so main keeps half the width")
+  }
+
+  func testAThirdMemberOnTheSameAxisSplitsIntoThirds() {
+    let store = makeStore(["main", "feature", "bugfix"])
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .right)
+    XCTAssertEqual(rootRatio(store) ?? -1, 1.0 / 3.0, accuracy: 0.0001)
   }
 
   func testAnInsertEvensAwayASkewedDivider() {
@@ -1150,13 +1169,14 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
     store.setWorkroomSplitRatio(0.9, forSplit: rootSplitID(store)!)
     store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)
-    XCTAssertEqual(rootRatio(store) ?? -1, 1.0 / 3.0, accuracy: 0.0001)
+    XCTAssertEqual(rootRatio(store) ?? -1, 0.5, accuracy: 0.0001)
   }
 
   func testRemovingAMemberEvensTheSurvivors() {
-    // `main | (feature / bugfix)` at root 1/3: dropping bugfix collapses it to `main | feature`,
-    // which would otherwise KEEP the 1/3 budgeted for three panes and leave a 33/67 pair.
+    // Skew the group first so the removal has something to put right: dropping bugfix collapses
+    // `main | (feature / bugfix)` to `main | feature`, which would otherwise keep the skew.
     let store = threePaneStore()
+    store.setWorkroomSplitRatio(0.8, forSplit: rootSplitID(store)!)
     store.removeWorkroomSplitMember(wr("bugfix"))
     XCTAssertEqual(store.workroomSplits.first?.tabIDs, [wr("main"), wr("feature")])
     XCTAssertEqual(rootRatio(store) ?? -1, 0.5, accuracy: 0.0001, "two survivors split evenly")
@@ -1245,13 +1265,14 @@ final class WorkroomSplitAutoEvenTests: XCTestCase {
   }
 
   func testACrampedContainerKeepsTheDividersInstead() {
-    // Too narrow for three panes to render evenly (the renderer's per-axis floor clamp would
-    // override the evened ratios), so the honourable move is to leave the dividers alone.
+    // THREE COLUMNS in 800pt: thirds would be ≈266pt and the renderer clamps the first to the 300pt
+    // floor, so the honourable move is to leave the dividers alone. (A perpendicular sub-split
+    // takes no extra width, so a mixed tree no longer reaches this state.)
     let store = makeStore(["main", "feature", "bugfix"])
     store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 800, height: 900)
     store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
     store.setWorkroomSplitRatio(0.6, forSplit: rootSplitID(store)!)
-    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .right)
     XCTAssertEqual(rootRatio(store) ?? -1, 0.6, accuracy: 0.0001)
   }
 
