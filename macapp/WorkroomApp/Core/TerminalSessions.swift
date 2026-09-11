@@ -380,6 +380,14 @@ final class TerminalSessions: ObservableObject {
   /// pane's border instead of badging it (you can see it, so no banner/badge — just a glance cue).
   /// Keyed by tab id; the value is an opaque counter the leaf view watches for changes.
   @Published private(set) var activityPulses: [TerminalTab.ID: Int] = [:]
+  /// The tabs currently living in their own window (issue #172). Membership only — the windows
+  /// themselves are owned by `AppStore`'s `DetachedPaneWindows`, and the two are kept in step by
+  /// `detachPane`/`dockPane` firing `onPaneDetached`/`onPaneDocked`. The invariant every reader may
+  /// rely on: **a tab in here has exactly one live detached window, and vice versa.**
+  ///
+  /// A detached tab is deliberately absent from `splitByTarget` (detaching runs the same removal
+  /// `extractFromSplit` does), so the split/divider/auto-even machinery needs no awareness of it.
+  @Published private(set) var detachedTabIDs: Set<TerminalTab.ID> = []
   /// The pane rects the renderer last laid out, per target — the only measurement a CONTENT pane
   /// (diff / file / changeset) has, since it owns no `GhosttySurfaceView` whose bounds could be
   /// read. Fed by `PaneTreeView` through a preference (so it is written after layout, never during
@@ -399,6 +407,19 @@ final class TerminalSessions: ObservableObject {
   /// Absent (no layout pass yet) means unmeasured, which every reader treats as permissive — the
   /// same posture `PaneTreeLayout.canSplit` takes for a zero rect.
   var paneSpace: [TerminalTarget.ID: CGRect] = [:]
+
+  /// Where a target's pane tree sits in its WINDOW, in SwiftUI `.global` coordinates (origin at the
+  /// window's top-left, title bar included). `paneRects`/`paneSpace` are pane-tree-local and so say
+  /// nothing about where that tree is on screen; docking a detached pane (issue #172) has to convert
+  /// a screen point into pane-tree coordinates, and this is the missing term. Same posture as the two
+  /// above: written after layout, never `@Published`.
+  var contentFrameInWindow: [TerminalTarget.ID: CGRect] = [:]
+
+  /// A drag in progress in a DETACHED pane's window, expressed in the ORIGIN pane tree's coordinate
+  /// space, so that tree can render its usual drop preview for a pane being dragged back (issue #172).
+  /// `@Published` — unlike the measurement caches above — because it exists precisely to drive a
+  /// re-render, and it is written on mouse-move only while a dock drag is live.
+  @Published var detachedDrag: PaneDragState?
 
   /// Issue #126's auto-even pref, read live so the Settings toggle applies to the very next split
   /// without a relaunch. Injected rather than read inline so tests can drive both states: a parallel
@@ -444,6 +465,21 @@ final class TerminalSessions: ObservableObject {
   /// never grabs first responder). A closure (not a store reference), mirroring `onFocusChange`, so
   /// sessions stay ignorant of `AppStore`.
   var onSurfaceFocused: ((TerminalTarget.ID) -> Void)?
+  /// Set once by `AppStore`: a pane just became detached and needs a window opened for it at the
+  /// given SCREEN point (issue #172). A closure, not a store reference, so sessions stay ignorant of
+  /// `AppStore` — the same posture as `onFocusChange`/`onTabsRemoved` above. Firing it is the second
+  /// half of the one coordinated transition `detachPane` performs; nothing else may open that window.
+  var onPaneDetached: ((TerminalTarget.ID, TerminalTab.ID, CGPoint) -> Void)?
+  /// The mirror of `onPaneDetached`: this tab is docked again, so its window must go. Also fired by
+  /// `closeTab`/`reap` by way of `undetach`, so a detached window can never outlive its tab.
+  var onPaneDocked: ((TerminalTab.ID) -> Void)?
+  /// Something tried to focus a detached pane. Its window is the honest answer, so `AppStore` raises
+  /// it (see `setFocused`, which refuses the focus write itself).
+  var onPaneRaiseRequested: ((TerminalTab.ID) -> Void)?
+  /// A restored pane was detached when the session was saved, so its window must be rebuilt at the
+  /// saved frame. Separate from `onPaneDetached` because restore is not a gesture: there is no cursor
+  /// to place the window at, and the frame is authoritative.
+  var onPaneRestoredDetached: ((TerminalTarget.ID, TerminalTab.ID, NSRect) -> Void)?
 
   /// Factory seam (plan T1): how a surface view is created for a target at a working directory.
   /// Overridable in tests so the lifecycle can be exercised without a real window/shell. The cwd
@@ -558,9 +594,20 @@ final class TerminalSessions: ObservableObject {
 
   // MARK: Queries
 
-  /// Tab ids in strip order: the loose order, with the split's members replaced by the split tree's
-  /// order as a contiguous block at the earliest member's slot. So the bracket is always one run and
-  /// strip order always matches pane order (rearranging panes IS strip reorder).
+  // THREE tab-list accessors, and since issue #172 they deliberately DISAGREE about a detached tab.
+  // They look near-identical and they answer three different questions, so do not "consolidate" any
+  // two of them — collapsing the first two reintroduces the blank-pane class of issue #3:
+  //
+  //   displayedTabIDs  "what is in the strip / the layout"   detached: EXCLUDED
+  //   visibleTabIDs    "what must keep rendering"            detached: INCLUDED
+  //   sessionCapture   "what must survive a relaunch"        detached: INCLUDED
+  //
+  // A detached pane is not in this window's strip, but its surface is very much on screen (in its own
+  // window) and it very much has to come back after a relaunch. `normalizedTabIDs` is the shared core
+  // the first and third read, so the split-anchor normalisation itself exists once.
+
+  /// Tab ids in strip order, **excluding detached panes** — the layout and the strip both read this,
+  /// so a detached tab leaves both by this one exclusion.
   func displayedTabIDs(for target: TerminalTarget) -> [TerminalTab.ID] {
     displayedTabIDs(forTargetID: target.id)
   }
@@ -568,6 +615,18 @@ final class TerminalSessions: ObservableObject {
   /// The id-addressed core of `displayedTabIDs(for:)`. Session capture (issue #46) walks
   /// `activeTargetIDs` and has no `TerminalTarget` value in hand, and only the id was ever used.
   func displayedTabIDs(forTargetID targetID: TerminalTarget.ID) -> [TerminalTab.ID] {
+    guard !detachedTabIDs.isEmpty else { return normalizedTabIDs(forTargetID: targetID) }
+    return normalizedTabIDs(forTargetID: targetID).filter { !detachedTabIDs.contains($0) }
+  }
+
+  /// Strip order with the split's members normalised into one contiguous run, **detached panes
+  /// included**. This is the raw ordering; `displayedTabIDs` is this minus the detached ones, and
+  /// `sessionCapture` reads this directly so a detached pane is persisted in its old strip position.
+  ///
+  /// The loose order, with the split's members replaced by the split tree's order as a contiguous
+  /// block at the earliest member's slot. So the bracket is always one run and strip order always
+  /// matches pane order (rearranging panes IS strip reorder).
+  func normalizedTabIDs(forTargetID targetID: TerminalTarget.ID) -> [TerminalTab.ID] {
     let order = orderByTarget[targetID] ?? []
     guard let split = splitByTarget[targetID] else { return order }
     let members = split.tabIDs
@@ -601,7 +660,11 @@ final class TerminalSessions: ObservableObject {
   func sessionCapture(forTargetID targetID: TerminalTarget.ID) -> SessionCapture? {
     let dict = tabsByTarget[targetID] ?? [:]
     guard !dict.isEmpty else { return nil }
-    let ordered = displayedTabIDs(forTargetID: targetID).compactMap { dict[$0] }
+    // `normalizedTabIDs`, NOT `displayedTabIDs`: a detached pane (issue #172) must be captured in its
+    // old strip position or it is lost. This matters before quit as well as at quit — the app writes
+    // the session on `willResignActive`, so a filtered capture would drop a detached pane from merely
+    // ⌘-tabbing away.
+    let ordered = normalizedTabIDs(forTargetID: targetID).compactMap { dict[$0] }
     guard !ordered.isEmpty else { return nil }
     return SessionCapture(
       tabs: ordered, split: splitByTarget[targetID], focused: focusedTabByTarget[targetID],
@@ -673,11 +736,21 @@ final class TerminalSessions: ObservableObject {
   }
 
   /// The tab ids currently on screen: the split's members when the split is visible, else the focused
-  /// solo tab. Drives occlusion.
+  /// solo tab — PLUS this target's detached panes, which are on screen in their own windows. Drives
+  /// occlusion.
+  ///
+  /// The detached half is load-bearing, not tidiness: `reconcileOcclusion` `setVisible(false)`s every
+  /// tab that is not in this list, so omitting them would pause a popped-out terminal's renderer the
+  /// moment anything touched this store — a black pane in a window the user is looking at. It is also
+  /// why a detached pane survives the origin switching workroom: it never leaves its own window, so
+  /// `viewDidMoveToWindow`'s pause path cannot fire either.
   func visibleTabIDs(for target: TerminalTarget) -> [TerminalTab.ID] {
-    if isSplitVisible(for: target), let split = splitByTarget[target.id] { return split.tabIDs }
-    if let focused = focusedTab(for: target) { return [focused.id] }
-    return []
+    let detached = detachedTabIDs.filter { tabsByTarget[target.id]?[$0] != nil }
+    if isSplitVisible(for: target), let split = splitByTarget[target.id] {
+      return split.tabIDs + detached
+    }
+    if let focused = focusedTab(for: target) { return [focused.id] + detached }
+    return Array(detached)
   }
 
   // MARK: Lifecycle
@@ -723,6 +796,7 @@ final class TerminalSessions: ObservableObject {
     var idsByKey: [String: TerminalTab.ID] = [:]
     var order: [TerminalTab.ID] = []
     var tabs: [TerminalTab.ID: TerminalTab] = [:]
+    var restoredDetached: [(TerminalTab.ID, NSRect)] = []
 
     for saved in session.tabs {
       let tab: TerminalTab
@@ -745,6 +819,12 @@ final class TerminalSessions: ObservableObject {
       idsByKey[saved.key] = tab.id
       order.append(tab.id)
       tabs[tab.id] = tab
+      // A pane that was in its own window comes back in one (issue #172). Recorded here and reported
+      // to `AppStore` below, once the tab dictionaries are actually populated — the window's content
+      // resolves the tab by id, so it must exist before the window opens.
+      if let frame = saved.detachedFrame.map(NSRectFromString), frame.width > 0, frame.height > 0 {
+        restoredDetached.append((tab.id, frame))
+      }
     }
 
     guard !order.isEmpty else { return .nothing }
@@ -759,6 +839,13 @@ final class TerminalSessions: ObservableObject {
     // `makeTerminalTab` bumps the counter per terminal it builds, so take whichever is higher: the
     // saved value keeps "Terminal 7" from becoming "Terminal 3" again after closes.
     counts[target.id] = max(session.terminalCounter ?? 0, counts[target.id] ?? 0)
+    // Re-detach AFTER the dictionaries are set: `onPaneDetached` builds a window whose content looks
+    // the tab up by id. Restoring is not a user gesture, so this skips `detachPane` — the split was
+    // already captured without these tabs, and focus was set above.
+    for (tabID, frame) in restoredDetached {
+      detachedTabIDs.insert(tabID)
+      onPaneRestoredDetached?(target.id, tabID, frame)
+    }
     reconcileOcclusion(for: target)
     return RestoreResult(count: order.count)
   }
@@ -1260,6 +1347,61 @@ final class TerminalSessions: ObservableObject {
     reconcileOcclusion(for: target)
   }
 
+  /// Move a pane into its own window (issue #172). One coordinated transition: the model half here,
+  /// the window half through `onPaneDetached`, so the two can never be observed apart.
+  ///
+  /// The model half IS `extractFromSplit` plus the flag — a detached tab must not remain a split
+  /// member, or the layout would still try to render it. The focus successor is computed BEFORE the
+  /// mutation, the same ordering `closeTab` uses, because `closeSuccessor` reads the on-screen order.
+  ///
+  /// A preview tab is pinned on the way out: `previewTabID` scans the unfiltered `tabsByTarget`, so
+  /// the next Changes/Files click would otherwise replace this pane's content in place and the
+  /// popped-out window would silently become a different file.
+  func detachPane(_ tabID: TerminalTab.ID, for target: TerminalTarget, at screenPoint: CGPoint) {
+    guard let tab = tabsByTarget[target.id]?[tabID], !detachedTabIDs.contains(tabID) else { return }
+    let wasFocused = focusedTabByTarget[target.id] == tabID
+    let successor = closeSuccessor(of: tabID, for: target)
+    if tab.isPreview { persist(tabID, for: target) }
+    if let split = splitByTarget[target.id], split.contains(tabID) {
+      let collapsed = splitRemoving(tabID, for: target.id)
+      let survivors = (collapsed?.tabIDs.count ?? 0) >= 2 ? collapsed : nil
+      setSplit(survivors, for: target.id, evening: survivors != nil)
+    }
+    detachedTabIDs.insert(tabID)
+    if wasFocused { setFocused(successor, for: target.id) }
+    reconcileOcclusion(for: target)
+    onPaneDetached?(target.id, tabID, screenPoint)
+  }
+
+  /// Bring a detached pane back into the pane tree (issue #172) — the mirror of `detachPane`, and the
+  /// only way a tab leaves `detachedTabIDs` while staying alive.
+  ///
+  /// With a drop target it lands on that pane's edge exactly as a chip drop would; without one it
+  /// simply becomes the focused solo tab in its old strip position.
+  func dockPane(
+    _ tabID: TerminalTab.ID, for target: TerminalTarget,
+    onto destination: TerminalTab.ID? = nil, edge: PaneEdge? = nil
+  ) {
+    guard undetach(tabID) else { return }
+    if let destination, let edge, destination != tabID {
+      moveTabIntoSplit(tabID, ontoEdge: edge, of: destination, for: target)
+    } else {
+      focus(tabID, for: target)
+    }
+    reconcileOcclusion(for: target)
+  }
+
+  /// Drop a tab's detached membership and tell `AppStore` to close its window. Returns whether the
+  /// tab actually was detached, so callers can skip the rest of a dock. The single un-detach point:
+  /// `dockPane` uses it, and so do `closeTab`/`reap`, which is what stops a detached window ever
+  /// outliving its tab.
+  @discardableResult
+  private func undetach(_ tabID: TerminalTab.ID) -> Bool {
+    guard detachedTabIDs.remove(tabID) != nil else { return false }
+    onPaneDocked?(tabID)
+    return true
+  }
+
   /// Pull a tab out of the split so it's a solo terminal again (drag a chip clear of the group). The
   /// split dissolves if only one member would remain. No-op if the tab isn't in a split.
   func extractFromSplit(_ tabID: TerminalTab.ID, for target: TerminalTarget) {
@@ -1315,6 +1457,19 @@ final class TerminalSessions: ObservableObject {
   private func setFocused(
     _ tabID: TerminalTab.ID?, for targetID: TerminalTarget.ID, notify: Bool = true
   ) {
+    // A DETACHED pane may never become this target's focused tab (issue #172). This is the single
+    // focus write-point, and every route into it clears `focus`'s only check (the tab still exists in
+    // `tabsByTarget`), which a detached tab does. Letting the write through makes `contentLayout`
+    // render `.leaf(detached)` back in this window, and `TerminalContainerView.mount` then re-homes
+    // the libghostty view out of the detached window — which goes blank. At least six paths reach
+    // here: the surface's own `mouseDown` → `onFocused` → `select`, `ActivateOnPress` on a content
+    // pane, navigation history back/forward, notification routing via `ownerOf(tabID:)`, ⌃Tab's pane
+    // switcher, and Files/Changes re-focusing an existing preview tab. Guarding the write-point
+    // covers all of them at once; raising the pane's own window is the useful thing to do instead.
+    if let tabID, detachedTabIDs.contains(tabID) {
+      onPaneRaiseRequested?(tabID)
+      return
+    }
     guard focusedTabByTarget[targetID] != tabID else { return }
     focusedTabByTarget[targetID] = tabID
     guard notify else { return }
@@ -1367,6 +1522,8 @@ final class TerminalSessions: ObservableObject {
     // Compute the focus successor BEFORE mutating, using the on-screen order.
     let successor = closeSuccessor(of: tabID, for: target)
 
+    // Close the detached window first, so it can never outlive the tab it hosts (issue #172).
+    undetach(tabID)
     pendingCloseKills.append(Task { await self.endPersistentSession(for: tab) })
     teardown(tab)
     tabsByTarget[target.id]?[tabID] = nil
@@ -1394,6 +1551,7 @@ final class TerminalSessions: ObservableObject {
   /// the workroom's directory only after any daemon-held shell has actually exited (issue #7).
   func reap(_ id: TerminalTarget.ID) async {
     let removedIDs = Array((tabsByTarget[id] ?? [:]).keys)
+    for removed in removedIDs { undetach(removed) }  // no detached window outlives its tab (#172)
     for tab in (tabsByTarget[id] ?? [:]).values {
       await endPersistentSession(for: tab)
       teardown(tab)

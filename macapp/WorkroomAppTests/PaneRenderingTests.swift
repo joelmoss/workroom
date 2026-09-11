@@ -164,6 +164,62 @@ final class PaneRenderingTests: XCTestCase {
     s.extractFromSplit(b, for: target)  // b → solo + focused
     XCTAssertEqual(waitForSurfaces(in: view, count: 1).count, 1)
   }
+
+  // MARK: Detaching (issue #172) — the origin must LET GO of the surface
+
+  /// Detaching a pane unmounts it from the origin tree, and — the part that matters — the surface is
+  /// still alive and unowned, ready for the detached window to adopt.
+  ///
+  /// This is the handoff half of the blank-pane class: `TerminalContainerView.mount` re-homes a
+  /// surface between containers by design, so the failure mode is not "the view dies" but "both hosts
+  /// think they own it". A tab the origin still rendered would drag the surface straight back out of
+  /// the detached window.
+  func testDetachingUnmountsThePaneFromTheOriginTree() {
+    let s = makeSessions()
+    let stay = s.addTab(for: target)
+    // `splitFocusedPane` mints the second pane, so the split is (stay | detached).
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    let detached = s.focusedTab(for: target)!.id
+    let (window, view) = host(s)
+    defer {
+      window.orderOut(nil)
+      window.close()
+    }
+    XCTAssertEqual(waitForSurfaces(in: view, count: 2).count, 2)
+
+    s.detachPane(detached, for: target, at: .zero)
+
+    let mounted = waitForSurfaces(in: view, count: 1)
+    XCTAssertEqual(mounted.count, 1, "the origin renders only the pane it still owns")
+    XCTAssertNotNil(
+      s.tab(detached, for: target)?.surface,
+      "the detached tab keeps its surface — it moved windows, it did not die")
+    XCTAssertEqual(
+      s.tab(stay.id, for: target)?.surface, mounted.first,
+      "and the one still mounted is the one that stayed")
+  }
+
+  /// Docking is the mirror: the pane comes back into the origin tree and is mounted again, with no
+  /// second surface created for it.
+  func testDockingRemountsThePaneInTheOriginTree() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    let second = s.addTab(for: target)
+    let surface = s.tab(second.id, for: target)?.surface
+    s.detachPane(second.id, for: target, at: .zero)
+    let (window, view) = host(s)
+    defer {
+      window.orderOut(nil)
+      window.close()
+    }
+    XCTAssertEqual(waitForSurfaces(in: view, count: 1).count, 1)
+
+    s.dockPane(second.id, for: target)
+
+    let mounted = waitForSurfaces(in: view, count: 1)
+    XCTAssertEqual(mounted.count, 1, "docked solo, so one pane is on screen")
+    XCTAssertEqual(mounted.first, surface, "the SAME surface came back — nothing was respawned")
+  }
 }
 
 /// Mirrors `WorkroomTerminalsView`'s content decision (split when visible, else the focused solo tab)

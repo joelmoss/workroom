@@ -654,7 +654,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // falling back to the key window; bring it forward, then open the terminal there.
         let registry = WindowRegistry.shared
         let store = tabID.flatMap { registry.ownerOf(tabID: $0) } ?? registry.keyStore
-        store?.hostWindow?.makeKeyAndOrderFront(nil)
+        // `window(forTab:)`, not `hostWindow`: a detached pane (issue #172) lives in its own window,
+        // and raising the main one would both show the wrong window and retarget its selection.
+        store?.window(forTab: tabID)?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         store?.openTerminal(targetID: targetID, tabID: tabID, notifID: notifID)
       }
@@ -1416,6 +1418,12 @@ struct WorkroomCommands: Commands {
     // window-management commands (Minimize, Zoom, …).
     CommandGroup(before: .windowSize) {
       Button("New Window") { openWindow(value: WindowSeed(id: UUID(), restore: false)) }
+      // Pop the focused detail panel into a window of its own (issue #172). The title-bar button and
+      // the tear-off drag are the discoverable paths; this one makes it keyboard-reachable, and it is
+      // what the XCUITest drives (a synthetic drag past a window edge is not trustworthy here).
+      Button("Open Pane in New Window") { store?.detachFocusedPane() }
+        .keyboardShortcut("o", modifiers: [.command, .control])
+        .disabled(workroomSelected != true)
       Divider()
     }
 

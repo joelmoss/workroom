@@ -149,10 +149,17 @@ struct PaneTitleBar: View {
   let onSetDiffMode: (DiffViewMode) -> Void
   let onSetMarkdownPreview: (Bool) -> Void
   let onOpenFile: () -> Void
+  /// Whether this pane is currently living in its own window (issue #172) — flips the pop-out button
+  /// into a Dock button, since in a detached window the only useful direction is back.
+  var isDetached: Bool = false
   let onSplitRight: () -> Void
   let onSplitDown: () -> Void
   let onClose: () -> Void
   let onActivate: () -> Void
+  /// Pop this pane out into its own window, or dock it back when it already is one (issue #172).
+  /// A button as well as a drag because a drag is not keyboard-reachable and not reliably drivable
+  /// from XCUITest, so this is the path the automated coverage uses.
+  var onPopOut: () -> Void = {}
   let onDragChanged: (CGPoint) -> Void
   let onDragEnded: () -> Void
   private let theme = ThemeService.shared
@@ -195,7 +202,12 @@ struct PaneTitleBar: View {
       DragGesture(minimumDistance: 6, coordinateSpace: .named(coordinateSpace))
         .onChanged { onDragChanged($0.location) }
         .onEnded { _ in onDragEnded() },
-      including: multiPane ? .all : .subviews
+      // `.all` unconditionally since issue #172: a solo pane could not be dragged at all before,
+      // because the only thing a drag could do was rearrange a split. Tearing off is available to
+      // every pane, so the gesture has to be too. (`.subviews` rather than `.none` remains the right
+      // *shape* for a disabled state — `.none` would kill this bar's own buttons — but there is no
+      // longer a state that disables it.)
+      including: .all
     )
     // A click on the bar's empty area focuses the pane. A terminal focuses itself through its
     // surface's first responder and a content pane through `ActivateOnPress`, but neither covers this
@@ -205,7 +217,11 @@ struct PaneTitleBar: View {
     .accessibilityIdentifier("terminal.pane.titlebar")
     .accessibilityLabel(Text(title.plain))
     .accessibilityHint(
-      multiPane ? "Drag onto a pane edge to rearrange, or to the tab strip to pop out" : "")
+      isDetached
+        ? "Drag onto a pane edge in the main window to dock this pane back"
+        : multiPane
+          ? "Drag onto a pane edge to rearrange, to the tab strip to pop out of the split, or out of the window to open in a new window"
+          : "Drag out of the window to open this pane in a new window")
   }
 
   /// One complete row. `titleMinWidth` is what makes the full-toolbar candidate fail to fit in a
@@ -259,6 +275,12 @@ struct PaneTitleBar: View {
         }
         if controls.hasOptional { TitlebarDivider() }
       }
+      PaneToolbarButton(
+        systemImage: isDetached ? "macwindow.badge.minus" : "macwindow.badge.plus",
+        help: isDetached ? "Dock back into the main window" : "Open in New Window",
+        accessibilityLabel: isDetached ? "Dock pane" : "Open pane in new window",
+        identifier: isDetached ? "pane.toolbar.dock" : "pane.toolbar.popOut",
+        action: onPopOut)
       PaneToolbarButton(
         systemImage: "rectangle.trailinghalf.inset.filled", help: "Split right (⌘D)",
         accessibilityLabel: "Split right", identifier: "pane.toolbar.splitRight",

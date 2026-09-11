@@ -56,7 +56,12 @@ extension AppStore {
       for tab in captured.tabs {
         guard tabs.count < SessionLimits.maxTabsPerTarget else { break }
         let key = tab.id.uuidString
-        guard let session = TabSession(key: key, tab: tab) else { continue }
+        guard var session = TabSession(key: key, tab: tab) else { continue }
+        // A detached pane records its window's LIVE frame (issue #172) — asked of the controller
+        // rather than cached, so a window the user moved is persisted where it actually is.
+        if let frame = detachedPanes.frame(for: tab.id) {
+          session.detachedFrame = NSStringFromRect(frame)
+        }
         keysByTabID[tab.id] = key
         tabs.append(session)
       }

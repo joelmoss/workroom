@@ -393,6 +393,13 @@ struct TabSession: Codable, Hashable, Sendable {
   var diff: DiffPayload?
   var file: FilePayload?
   var changeset: ChangesetPayload?
+  /// `NSStringFromRect` of this pane's own window when it was detached (issue #172), nil when docked
+  /// — so a popped-out pane comes back popped out, where the user left it.
+  ///
+  /// Additive and optional on purpose: an older build reading a newer file ignores the key, a newer
+  /// build reading an older one decodes nil, and `SessionFile.windows` is `@Lossy` either way. That
+  /// is why this needs no `schemaVersion` bump.
+  var detachedFrame: String?
 
   static let terminalKind = "terminal"
   static let diffKind = "diff"

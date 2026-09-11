@@ -158,6 +158,9 @@ final class WindowRegistry: ObservableObject {
   }
 
   func unregister(window: NSWindow) {
+    // Close this window's popped-out panes first (issue #172). Their surfaces belong to the store
+    // that is going away, so a window left behind would host a view about to be released.
+    store(for: window)?.detachedPanes.closeAll()
     entries.removeAll { $0.window === window || $0.window == nil }
     recomputeBadge()
     // Without this a closed window is never noticed, and comes back on the next launch. The quit
@@ -227,7 +230,10 @@ final class WindowRegistry: ObservableObject {
   /// `canBecomeKey` guard is what excludes it, and `SwitcherPanel` relies on that staying true.
   func isCycleableWindow(_ window: NSWindow) -> Bool {
     guard window.isVisible, window.canBecomeKey else { return false }
+    // `DetachedPaneWindow` (issue #172) owns no store, so it fails the registry test — but it holds a
+    // real pane the user works in, so ⌘` must reach it, exactly as it reaches the quick terminal.
     return store(for: window) != nil || window is QuickTerminalWindow
+      || window is DetachedPaneWindow
   }
 
   /// Pure rotation math for `cycleWindows`, extracted so it's unit-testable without live z-ordering.
