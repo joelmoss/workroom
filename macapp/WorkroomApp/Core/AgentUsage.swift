@@ -177,6 +177,11 @@ enum AgentProcessRecognition {
 enum AgentUsageDecoding {
   static let maximumTailBytes = 256 * 1024
 
+  /// How many of the newest rollouts one read will try, and so how many directories it asks to be
+  /// watched. A malformed or partially-written newest file must not suppress a slightly older valid
+  /// one; the cap is what keeps both the read and the watch set bounded on a years-deep tree.
+  static let candidateLimit = 12
+
   static func claude(data: Data, capturedAt: Date, now: Date) -> AgentQuotaSnapshot? {
     guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
       return nil
@@ -274,16 +279,29 @@ enum AgentUsageDecoding {
     return nil
   }
 
-  static func readCodexSnapshot(
+  /// What one Codex read produced: the snapshot, and where to watch for the next one.
+  struct CodexRead: Sendable {
+    let snapshot: AgentQuotaSnapshot?
+    /// Every directory holding a rollout this read considered, plus that rollout's ancestors up to
+    /// and including `sessionsRoot`.
+    let watchDirectories: [URL]
+  }
+
+  /// Read the newest usable rollout, and report the directories worth watching for the next one.
+  ///
+  /// Both answers come out of ONE enumeration, on whatever background thread called this. The watch
+  /// set used to be derived by a *second*, fully recursive walk performed on the main actor after
+  /// every read (`AgentUsageMonitor.updateWatches`), which is why it's computed here now.
+  static func readCodex(
     sessionsRoot: URL, now: Date, maximumTailBytes: Int = maximumTailBytes,
     fileManager: FileManager = .default
-  ) -> AgentQuotaSnapshot? {
+  ) -> CodexRead {
     guard
       let enumerator = fileManager.enumerator(
         at: sessionsRoot,
         includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
         options: [.skipsHiddenFiles, .skipsPackageDescendants])
-    else { return nil }
+    else { return CodexRead(snapshot: nil, watchDirectories: [sessionsRoot]) }
     var candidates: [(URL, Date)] = []
     for case let url as URL in enumerator where url.pathExtension == "jsonl" {
       guard
@@ -295,7 +313,9 @@ enum AgentUsageDecoding {
       candidates.append((url, values.contentModificationDate ?? .distantPast))
     }
     // A malformed/partially-written newest rollout must not suppress a slightly older valid one.
-    for (url, modifiedAt) in candidates.sorted(by: { $0.1 > $1.1 }).prefix(12) {
+    let newest = candidates.sorted(by: { $0.1 > $1.1 }).prefix(candidateLimit)
+    let watchDirectories = watchDirectories(for: newest.map(\.0), root: sessionsRoot)
+    for (url, modifiedAt) in newest {
       guard let handle = try? FileHandle(forReadingFrom: url) else { continue }
       defer { try? handle.close() }
       let size = (try? handle.seekToEnd()) ?? 0
@@ -305,10 +325,38 @@ enum AgentUsageDecoding {
       if let snapshot = codexRollout(
         data: data, fileSize: size, modifiedAt: modifiedAt, now: now)
       {
-        return snapshot
+        return CodexRead(snapshot: snapshot, watchDirectories: watchDirectories)
       }
     }
-    return nil
+    return CodexRead(snapshot: nil, watchDirectories: watchDirectories)
+  }
+
+  /// The rollouts' own directories plus every ancestor up to `root`, deduped, `root` always first.
+  ///
+  /// The ancestor chain is load-bearing. A rollout lands in `sessions/YYYY/MM/DD`, a directory that
+  /// does not exist until that day arrives, so nothing can watch it in advance — but whichever
+  /// level has to *create* it is itself watched, and because the chain always reaches the root, a
+  /// gap of any length (a new day, a new month, a first-ever session) still fires one event, which
+  /// brings both the snapshot and this set up to date. Watching every directory in the tree instead
+  /// (what this replaced) buys nothing: Codex only ever appends to the newest ones.
+  private static func watchDirectories(for rollouts: [URL], root: URL) -> [URL] {
+    let rootPath = root.standardizedFileURL.path
+    var ordered: [URL] = []
+    var seen = Set<String>()
+    func add(_ url: URL) {
+      guard seen.insert(url.path).inserted else { return }
+      ordered.append(url)
+    }
+
+    add(root.standardizedFileURL)
+    for rollout in rollouts {
+      var directory = rollout.standardizedFileURL.deletingLastPathComponent()
+      while directory.path.hasPrefix(rootPath + "/") {
+        add(directory)
+        directory = directory.deletingLastPathComponent()
+      }
+    }
+    return ordered
   }
 
   private static func decodeClaudeWindow(
@@ -347,10 +395,21 @@ enum AgentUsageDecoding {
     }
   }
 
+  /// Parsed with two cached `ISO8601FormatStyle`s, fractional seconds first.
+  ///
+  /// This used to allocate one or two `ISO8601DateFormatter`s per call, and each allocation builds
+  /// an ICU date formatter: ~0.2 ms, against ~0.005 ms for the parse itself. A rollout tail holds
+  /// ~1000 `token_count` records and the scan above walks them until one has an unexpired window,
+  /// so a tail of stale records cost ~180 ms per file and up to `candidateLimit`× that per refresh —
+  /// measured at 2.2 s, and an app-hang report sampled the main-thread stall with this very
+  /// allocation running. `ISO8601FormatStyle` is a `Sendable` value type parsed in Swift: no
+  /// formatter, no allocation, and the same instants back (it keeps sub-millisecond digits the
+  /// formatter truncated).
+  private static let iso8601Fractional = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+  private static let iso8601 = Date.ISO8601FormatStyle()
+
   private static func parseISO8601(_ value: String) -> Date? {
-    let formatter = ISO8601DateFormatter()
-    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+    (try? iso8601Fractional.parse(value)) ?? (try? iso8601.parse(value))
   }
 }
 
@@ -367,6 +426,8 @@ final class AgentUsageMonitor: ObservableObject {
   private let now: () -> Date
   private var refreshTask: Task<Void, Never>?
   private var watches: [DispatchSourceFileSystemObject] = []
+  /// Paths of the directories `watches` covers, so an unchanged set can skip a rebuild.
+  private var watchedPaths: Set<String> = []
   private var debounce: DispatchWorkItem?
 
   init(
@@ -384,10 +445,10 @@ final class AgentUsageMonitor: ObservableObject {
       return
     }
     if UITestFixture.usageAgentTitle != nil { return }
-    if startAutomatically {
-      refresh()
-      installWatches()
-    }
+    // No `installWatches()` here: the first read reports which directories to watch (it enumerates
+    // the tree anyway, off the main thread), so the watches come up with its result rather than
+    // costing a second recursive walk during window setup.
+    if startAutomatically { refresh() }
   }
 
   deinit {
@@ -420,47 +481,68 @@ final class AgentUsageMonitor: ObservableObject {
       return
     }
     refreshTask?.cancel()
-    loading = Set(AgentBackend.allCases)
+    // Only a backend with nothing on screen can show a spinner — `TerminalStatusBar` reads
+    // `loading` solely in its no-snapshot branch — so flagging the rest would publish two extra
+    // view-graph passes per read for no visible difference, and reads are frequent: every watched
+    // directory event schedules one, and the Claude bridge's status line rewrites its cache file
+    // (a create + rename in a watched directory) on every single invocation.
+    let pending = Set(AgentBackend.allCases.filter { snapshot(for: $0) == nil })
+    if loading != pending { loading = pending }
     let codexURL = codexSessionsURL
     let claudeURL = claudeCacheURL
     let current = now()
     refreshTask = Task.detached(priority: .utility) {
-      let codex = AgentUsageDecoding.readCodexSnapshot(sessionsRoot: codexURL, now: current)
+      let codex = AgentUsageDecoding.readCodex(sessionsRoot: codexURL, now: current)
       let claude = AgentUsageDecoding.readClaudeSnapshot(cacheURL: claudeURL, now: current)
       var failures: [AgentBackend: String] = [:]
-      if codex == nil {
+      if codex.snapshot == nil {
         failures[.codex] =
           "No recent Codex rate-limit record in \(codexURL.path(percentEncoded: false))."
       }
       if case .failure(let reason) = claude { failures[.claude] = reason }
       guard !Task.isCancelled else { return }
       await MainActor.run {
-        self.snapshots = Dictionary(
-          uniqueKeysWithValues: [codex, claude.snapshot].compactMap { $0 }.map { ($0.backend, $0) })
-        self.readFailures = failures
-        self.loading.removeAll()
-        self.rebuildWatches()
+        self.apply(
+          snapshots: [codex.snapshot, claude.snapshot].compactMap { $0 }, failures: failures,
+          codexDirectories: codex.watchDirectories)
       }
     }
   }
 
-  private func installWatches() { rebuildWatches() }
+  /// Publish only what actually changed.
+  ///
+  /// Every `@Published` write invalidates every view observing this object, and the status bar's
+  /// `ViewThatFits` instantiates all of its children to measure them — so the common read (one
+  /// rollout line appended, same percentages) has to be silent.
+  private func apply(
+    snapshots read: [AgentQuotaSnapshot], failures: [AgentBackend: String],
+    codexDirectories: [URL]
+  ) {
+    let keyed = Dictionary(uniqueKeysWithValues: read.map { ($0.backend, $0) })
+    if snapshots != keyed { snapshots = keyed }
+    if readFailures != failures { readFailures = failures }
+    if !loading.isEmpty { loading.removeAll() }
+    updateWatches(codexDirectories: codexDirectories)
+  }
 
-  private func rebuildWatches() {
+  /// Install the file-system watches, and only when the set of directories actually changed.
+  ///
+  /// Main-actor work, because the sources deliver to `.main` and are owned here — so it has to stay
+  /// O(watched set). It used to re-walk the entire sessions tree and reopen one descriptor per
+  /// directory found, on every read — 43 ms and 699 descriptors for two years of sessions, and a
+  /// read follows every watched directory event — plus once more during window setup, synchronously,
+  /// with a cold page cache. The set now arrives from the read's own enumeration
+  /// (`AgentUsageDecoding.watchDirectories`) and changes only when Codex writes somewhere new.
+  private func updateWatches(codexDirectories: [URL]) {
+    let wanted = (codexDirectories + [claudeCacheURL.deletingLastPathComponent()]).filter {
+      FileManager.default.fileExists(atPath: $0.path)
+    }
+    let paths = Set(wanted.map(\.path))
+    guard paths != watchedPaths else { return }
+    watchedPaths = paths
     for watch in watches { watch.cancel() }
     watches.removeAll()
-    var paths = [codexSessionsURL, claudeCacheURL.deletingLastPathComponent()]
-    if let enumerator = FileManager.default.enumerator(
-      at: codexSessionsURL, includingPropertiesForKeys: [.isDirectoryKey],
-      options: [.skipsHiddenFiles, .skipsPackageDescendants])
-    {
-      for case let url as URL in enumerator {
-        if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
-          paths.append(url)
-        }
-      }
-    }
-    for url in paths where FileManager.default.fileExists(atPath: url.path) {
+    for url in wanted {
       let descriptor = open(url.path, O_EVTONLY)
       guard descriptor >= 0 else { continue }
       let source = DispatchSource.makeFileSystemObjectSource(
