@@ -292,18 +292,29 @@ enum AgentUsageDecoding {
   /// Both answers come out of ONE enumeration, on whatever background thread called this. The watch
   /// set used to be derived by a *second*, fully recursive walk performed on the main actor after
   /// every read (`AgentUsageMonitor.updateWatches`), which is why it's computed here now.
+  ///
+  /// `isCancelled` is polled between files rather than read from `Task.isCancelled`, because this
+  /// runs inside `runBlocking`'s GCD closure where there is no ambient task and `Task.isCancelled`
+  /// is always `false`. Without it, superseding a read only sets a flag nobody reads: the walk runs
+  /// to the end anyway — one `resourceValues` stat per rollout in the tree plus up to
+  /// `candidateLimit` 256KB tail reads — so at the refresh cadence this monitor actually sees (one
+  /// per Claude status-line invocation) several abandoned full-tree walks pile up at once.
   static func readCodex(
     sessionsRoot: URL, now: Date, maximumTailBytes: Int = maximumTailBytes,
-    fileManager: FileManager = .default
+    fileManager: FileManager = .default, isCancelled: () -> Bool = { false }
   ) -> CodexRead {
     guard
       let enumerator = fileManager.enumerator(
         at: sessionsRoot,
         includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
         options: [.skipsHiddenFiles, .skipsPackageDescendants])
-    else { return CodexRead(snapshot: nil, watchDirectories: [sessionsRoot]) }
+    else { return CodexRead(snapshot: nil, watchDirectories: [sessionsRoot.standardizedFileURL]) }
     var candidates: [(URL, Date)] = []
-    for case let url as URL in enumerator where url.pathExtension == "jsonl" {
+    for case let url as URL in enumerator {
+      // Before the extension filter, not after: `where` runs per element ahead of the body, so a
+      // poll inside a filtered loop never sees directories or non-rollout entries.
+      if isCancelled() { return CodexRead(snapshot: nil, watchDirectories: []) }
+      guard url.pathExtension == "jsonl" else { continue }
       guard
         let values = try? url.resourceValues(forKeys: [
           .isRegularFileKey, .contentModificationDateKey,
@@ -316,6 +327,7 @@ enum AgentUsageDecoding {
     let newest = candidates.sorted(by: { $0.1 > $1.1 }).prefix(candidateLimit)
     let watchDirectories = watchDirectories(for: newest.map(\.0), root: sessionsRoot)
     for (url, modifiedAt) in newest {
+      if isCancelled() { return CodexRead(snapshot: nil, watchDirectories: []) }
       guard let handle = try? FileHandle(forReadingFrom: url) else { continue }
       defer { try? handle.close() }
       let size = (try? handle.seekToEnd()) ?? 0
@@ -339,7 +351,9 @@ enum AgentUsageDecoding {
   /// gap of any length (a new day, a new month, a first-ever session) still fires one event, which
   /// brings both the snapshot and this set up to date. Watching every directory in the tree instead
   /// (what this replaced) buys nothing: Codex only ever appends to the newest ones.
-  private static func watchDirectories(for rollouts: [URL], root: URL) -> [URL] {
+  private static func watchDirectories(
+    for rollouts: [URL], root: URL, fileManager: FileManager = .default
+  ) -> [URL] {
     let rootPath = root.standardizedFileURL.path
     var ordered: [URL] = []
     var seen = Set<String>()
@@ -356,7 +370,42 @@ enum AgentUsageDecoding {
         directory = directory.deletingLastPathComponent()
       }
     }
+    for directory in newestChain(from: root.standardizedFileURL, fileManager: fileManager) {
+      add(directory)
+    }
     return ordered
+  }
+
+  /// Walk down from `root` taking the highest-sorting subdirectory at each level.
+  ///
+  /// The ancestor chains above only cover directories that ALREADY hold a rollout, which leaves a
+  /// real gap: `sessions/YYYY/MM/DD` exists from the moment Codex creates it, but until it holds a
+  /// file this read has no reason to name it, and a directory watch is not recursive — so the first
+  /// rollout written into it notifies nobody and the quota sits stale until something else fires.
+  /// Reproduced against the previous full-tree walk, which did catch it. Following the newest
+  /// subdirectory down finds that directory without knowing the layout or the local date (a
+  /// date-derived guess gets the timezone wrong at midnight; sort order does not), and without the
+  /// walk this replaced: `maximumChainDepth` levels, one listing each, whatever the history's size.
+  private static let maximumChainDepth = 4
+
+  private static func newestChain(from root: URL, fileManager: FileManager) -> [URL] {
+    var chain: [URL] = []
+    var directory = root
+    for _ in 0..<maximumChainDepth {
+      guard
+        let children = try? fileManager.contentsOfDirectory(
+          at: directory, includingPropertiesForKeys: [.isDirectoryKey],
+          options: [.skipsHiddenFiles, .skipsPackageDescendants])
+      else { break }
+      let subdirectories = children.filter {
+        (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+      }
+      guard let newest = subdirectories.max(by: { $0.lastPathComponent < $1.lastPathComponent })
+      else { break }
+      directory = newest.standardizedFileURL
+      chain.append(directory)
+    }
+    return chain
   }
 
   private static func decodeClaudeWindow(
@@ -413,6 +462,28 @@ enum AgentUsageDecoding {
   }
 }
 
+/// One read's "give up" switch, readable from the GCD thread the read runs on.
+///
+/// `Task.isCancelled` cannot do this job here: the read executes inside `runBlocking`'s
+/// `DispatchQueue.global` closure, which carries no task context, so that flag reads `false` no
+/// matter what the owning task does.
+private final class ReadCancellation: @unchecked Sendable {
+  private let lock = NSLock()
+  private var cancelled = false
+
+  func cancel() {
+    lock.lock()
+    cancelled = true
+    lock.unlock()
+  }
+
+  func isCancelled() -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return cancelled
+  }
+}
+
 @MainActor
 final class AgentUsageMonitor: ObservableObject {
   @Published private(set) var snapshots: [AgentBackend: AgentQuotaSnapshot] = [:]
@@ -426,9 +497,22 @@ final class AgentUsageMonitor: ObservableObject {
   private let now: () -> Date
   private var refreshTask: Task<Void, Never>?
   private var watches: [DispatchSourceFileSystemObject] = []
-  /// Paths of the directories `watches` covers, so an unchanged set can skip a rebuild.
-  private var watchedPaths: Set<String> = []
+  /// Paths that actually got a descriptor in the last `updateWatches` — a record of what IS
+  /// watched, never a cache consulted to skip work. Assigned only from successful `open()` calls so
+  /// it cannot claim coverage that does not exist.
+  private(set) var watchedDirectoryPaths: Set<String> = []
+  /// Reads that reached `apply`. Not `@Published` — it exists so a test can wait for a read to land
+  /// rather than for a published value to change, which is precisely what a read that correctly
+  /// publishes nothing never does.
+  private(set) var completedReadCount = 0
+  /// Cancels the in-flight read. Not `Task.isCancelled`: the read runs in `runBlocking`'s GCD
+  /// closure, outside any task, where that flag is always `false`.
+  private var activeRead: ReadCancellation?
   private var debounce: DispatchWorkItem?
+  private static let initialWatchRetryDelay: TimeInterval = 1
+  private static let maximumWatchRetryDelay: TimeInterval = 60
+  private var watchRetry: DispatchWorkItem?
+  private var watchRetryDelay: TimeInterval = initialWatchRetryDelay
 
   init(
     codexSessionsURL: URL = FileManager.default.homeDirectoryForCurrentUser
@@ -453,7 +537,9 @@ final class AgentUsageMonitor: ObservableObject {
 
   deinit {
     refreshTask?.cancel()
+    activeRead?.cancel()
     debounce?.cancel()
+    watchRetry?.cancel()
     for watch in watches { watch.cancel() }
   }
 
@@ -473,7 +559,13 @@ final class AgentUsageMonitor: ObservableObject {
     return readFailures[backend] ?? "No \(name) quota snapshot has been read yet."
   }
 
-  func refresh() {
+  /// Re-read both backends.
+  ///
+  /// `userInitiated` is the difference between a read the user asked for and the many that arrive on
+  /// their own. It decides only whether a backend that has ALREADY failed gets a spinner: an
+  /// automatic read must not flag one (see `pendingBackends`), but the footer's retry button and the
+  /// Settings toggle must, or a click on "usage unavailable" produces no visible response at all.
+  func refresh(userInitiated: Bool = false) {
     // A seeded agent title is a model-only UI fixture. Never replace its deterministic snapshot
     // (including the intentional unavailable case) by reading the developer's real provider files.
     guard UITestFixture.usageAgentTitle == nil else {
@@ -481,32 +573,64 @@ final class AgentUsageMonitor: ObservableObject {
       return
     }
     refreshTask?.cancel()
-    // Only a backend with nothing on screen can show a spinner — `TerminalStatusBar` reads
-    // `loading` solely in its no-snapshot branch — so flagging the rest would publish two extra
-    // view-graph passes per read for no visible difference, and reads are frequent: every watched
-    // directory event schedules one, and the Claude bridge's status line rewrites its cache file
-    // (a create + rename in a watched directory) on every single invocation.
-    let pending = Set(AgentBackend.allCases.filter { snapshot(for: $0) == nil })
-    if loading != pending { loading = pending }
+    activeRead?.cancel()
+    let cancellation = ReadCancellation()
+    activeRead = cancellation
+    // An AUTOMATIC read may only ADD to `loading`, never shrink it. A watch event landing while a
+    // user-initiated retry is still in flight would otherwise recompute `pending` from the
+    // not-yet-cleared `readFailures`, drop that backend, and take the spinner away from the click
+    // that asked for it — the exact response `userInitiated` exists to guarantee. `apply` stays the
+    // only place that clears. Unioning with an empty set is a no-op, so the `[] -> [x] -> []` flip
+    // this parameter was added to kill does not come back.
+    let pending = pendingBackends(userInitiated: userInitiated)
+    let next = userInitiated ? pending : loading.union(pending)
+    if loading != next { loading = next }
     let codexURL = codexSessionsURL
     let claudeURL = claudeCacheURL
     let current = now()
-    refreshTask = Task.detached(priority: .utility) {
-      let codex = AgentUsageDecoding.readCodex(sessionsRoot: codexURL, now: current)
-      let claude = AgentUsageDecoding.readClaudeSnapshot(cacheURL: claudeURL, now: current)
+    // `Task`, not `Task.detached`: this type is `@MainActor`, so the body resumes here and `apply`
+    // needs no second hop. `[weak self]` because a detached task holding `self` strongly made
+    // `deinit` — and therefore the watch teardown in it — unreachable for the life of a read.
+    refreshTask = Task { [weak self] in
+      // `runBlocking` (GCD), not the Swift cooperative pool: both reads block their thread for the
+      // whole call, and the pool is only as wide as the core count. That is the "History pane loads
+      // forever" starvation this repo already fixed once; see `Timeout.swift`.
+      let read = try? await runBlocking(qos: .utility) {
+        (
+          codex: AgentUsageDecoding.readCodex(
+            sessionsRoot: codexURL, now: current, isCancelled: cancellation.isCancelled),
+          claude: AgentUsageDecoding.readClaudeSnapshot(cacheURL: claudeURL, now: current)
+        )
+      }
+      guard let self, let read, !cancellation.isCancelled(), !Task.isCancelled else { return }
       var failures: [AgentBackend: String] = [:]
-      if codex.snapshot == nil {
+      if read.codex.snapshot == nil {
         failures[.codex] =
           "No recent Codex rate-limit record in \(codexURL.path(percentEncoded: false))."
       }
-      if case .failure(let reason) = claude { failures[.claude] = reason }
-      guard !Task.isCancelled else { return }
-      await MainActor.run {
-        self.apply(
-          snapshots: [codex.snapshot, claude.snapshot].compactMap { $0 }, failures: failures,
-          codexDirectories: codex.watchDirectories)
-      }
+      if case .failure(let reason) = read.claude { failures[.claude] = reason }
+      self.apply(
+        snapshots: [read.codex.snapshot, read.claude.snapshot].compactMap { $0 },
+        failures: failures, codexDirectories: read.codex.watchDirectories)
     }
+  }
+
+  /// Which backends may show a spinner.
+  ///
+  /// Only a backend with nothing on screen can: `TerminalStatusBar` reads `loading` solely in its
+  /// no-snapshot branch, and only for the ONE active agent's backend. A backend that has already
+  /// recorded a `readFailures` reason is excluded too, because it is not loading — it is settled and
+  /// unavailable, and it never resolves for a user who runs only the other agent. Without that
+  /// exclusion `loading` flips `[] -> [backend] -> []` on every automatic read forever, which is two
+  /// whole view-graph passes per read (the status bar's `ViewThatFits` instantiates every child to
+  /// measure it) for a spinner nothing renders — and automatic reads are frequent: every watched
+  /// directory event schedules one, and the Claude bridge's status line rewrites its cache file (a
+  /// create + rename in a watched directory) on every single invocation.
+  private func pendingBackends(userInitiated: Bool) -> Set<AgentBackend> {
+    Set(
+      AgentBackend.allCases.filter {
+        snapshot(for: $0) == nil && (userInitiated || readFailures[$0] == nil)
+      })
   }
 
   /// Publish only what actually changed.
@@ -518,33 +642,71 @@ final class AgentUsageMonitor: ObservableObject {
     snapshots read: [AgentQuotaSnapshot], failures: [AgentBackend: String],
     codexDirectories: [URL]
   ) {
+    completedReadCount += 1
     let keyed = Dictionary(uniqueKeysWithValues: read.map { ($0.backend, $0) })
-    if snapshots != keyed { snapshots = keyed }
+    if !Self.displaysSame(snapshots, keyed) { snapshots = keyed }
     if readFailures != failures { readFailures = failures }
     if !loading.isEmpty { loading.removeAll() }
     updateWatches(codexDirectories: codexDirectories)
   }
 
-  /// Install the file-system watches, and only when the set of directories actually changed.
+  /// Would these two read the same on screen? `capturedAt` is deliberately excluded.
+  ///
+  /// `AgentQuotaSnapshot`'s synthesized `==` includes it, and Claude's `capturedAt` is the cache
+  /// file's mtime — which the bridge's status-line wrapper freshens on EVERY invocation by `mv -f`
+  /// of a rebuilt temp file, whether or not a single percentage moved. Comparing on it therefore
+  /// made the guard above fire on every read for the most frequent trigger there is, which is the
+  /// one thing this method exists to prevent. Nothing displays `capturedAt`; it reaches the user
+  /// only through `unavailableReason`'s relative phrase for an EXPIRED snapshot, and holding the
+  /// instant the numbers last actually changed is the more truthful answer there anyway.
+  private static func displaysSame(
+    _ lhs: [AgentBackend: AgentQuotaSnapshot], _ rhs: [AgentBackend: AgentQuotaSnapshot]
+  ) -> Bool {
+    lhs.count == rhs.count
+      && lhs.allSatisfy { backend, snapshot in rhs[backend]?.windows == snapshot.windows }
+  }
+
+  /// Install the file-system watches, rebuilding unconditionally.
   ///
   /// Main-actor work, because the sources deliver to `.main` and are owned here — so it has to stay
   /// O(watched set). It used to re-walk the entire sessions tree and reopen one descriptor per
   /// directory found, on every read — 43 ms and 699 descriptors for two years of sessions, and a
   /// read follows every watched directory event — plus once more during window setup, synchronously,
   /// with a cold page cache. The set now arrives from the read's own enumeration
-  /// (`AgentUsageDecoding.watchDirectories`) and changes only when Codex writes somewhere new.
+  /// (`AgentUsageDecoding.watchDirectories`) and is a handful of directories, so reopening it every
+  /// time costs a few syscalls.
+  ///
+  /// There is deliberately NO "skip if the paths are unchanged" fast path. A vnode source watches an
+  /// INODE, not a name, so path-string equality is not evidence the descriptors are still live:
+  /// deleting a watched directory and recreating it at the same path leaves the descriptor bound to
+  /// the unlinked inode — measured, a file created in the replacement fires nothing — and a
+  /// per-directory `open()` failure (EACCES, or the window between the existence check and the open)
+  /// leaves that one directory uncovered. Memoizing makes either permanent, because these watches
+  /// are the monitor's ONLY automatic refresh trigger.
+  ///
+  /// Rebuilding does NOT rescue the process-wide case: if the descriptor limit is reached, every
+  /// `open()` in the loop fails together, no watch survives to deliver the event that would call
+  /// this again, and nothing here retries. Note also that cancelling a source closes its descriptor
+  /// asynchronously, on this same queue — so the old ones are still held while the replacements
+  /// open, and the peak is twice the watched set. That bound is what keeps this affordable; it is
+  /// also why the replacements are guaranteed fresh descriptor numbers rather than reusing the ones
+  /// being closed.
   private func updateWatches(codexDirectories: [URL]) {
-    let wanted = (codexDirectories + [claudeCacheURL.deletingLastPathComponent()]).filter {
-      FileManager.default.fileExists(atPath: $0.path)
+    var wanted: [URL] = []
+    var seen = Set<String>()
+    for url in codexDirectories + [claudeCacheURL.deletingLastPathComponent()] {
+      guard let existing = Self.nearestExisting(url), seen.insert(existing.path).inserted else {
+        continue
+      }
+      wanted.append(existing)
     }
-    let paths = Set(wanted.map(\.path))
-    guard paths != watchedPaths else { return }
-    watchedPaths = paths
     for watch in watches { watch.cancel() }
     watches.removeAll()
+    watchedDirectoryPaths.removeAll()
     for url in wanted {
       let descriptor = open(url.path, O_EVTONLY)
       guard descriptor >= 0 else { continue }
+      watchedDirectoryPaths.insert(url.path)
       let source = DispatchSource.makeFileSystemObjectSource(
         fileDescriptor: descriptor, eventMask: [.write, .extend, .attrib, .rename, .delete],
         queue: .main)
@@ -553,6 +715,47 @@ final class AgentUsageMonitor: ObservableObject {
       source.resume()
       watches.append(source)
     }
+    noteWatchShortfall(installed: watchedDirectoryPaths.count, wanted: wanted.count)
+  }
+
+  /// The path itself if it exists, else the closest parent that does, at most two levels up.
+  ///
+  /// Dropping a missing directory outright is a dead end, because these watches are the only
+  /// automatic refresh trigger: `~/.codex/sessions` deleted and recreated would never be noticed
+  /// again, and the Claude bridge's directory does not exist at all until the bridge is enabled, so
+  /// enabling it fired nothing. Two levels is the cap because one more reaches shared ground like
+  /// `~/Library/Application Support`, where every unrelated app's writes would drive a refresh.
+  private static func nearestExisting(_ url: URL) -> URL? {
+    var candidate = url.standardizedFileURL
+    for _ in 0...2 {
+      if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+      let parent = candidate.deletingLastPathComponent()
+      guard parent.path != candidate.path else { return nil }
+      candidate = parent
+    }
+    return nil
+  }
+
+  /// Re-read on a backoff when fewer directories got a descriptor than were asked for.
+  ///
+  /// Nothing else would: a failed `open()` costs the event that would have called this again, and
+  /// with no watches left there is no trigger at all — the quota bar simply stops updating for the
+  /// rest of the session. The descriptor limit is the case that takes them all at once (it is
+  /// process-wide, so every `open()` in the loop fails together), and it is also the one that
+  /// clears on its own once whatever exhausted the table lets go, which is exactly what a backoff
+  /// retry is for. Resets on the first fully-installed read, so a healthy app never schedules one.
+  private func noteWatchShortfall(installed: Int, wanted: Int) {
+    watchRetry?.cancel()
+    watchRetry = nil
+    guard installed < wanted else {
+      watchRetryDelay = Self.initialWatchRetryDelay
+      return
+    }
+    let delay = watchRetryDelay
+    watchRetryDelay = min(delay * 2, Self.maximumWatchRetryDelay)
+    let item = DispatchWorkItem { [weak self] in self?.refresh() }
+    watchRetry = item
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
   }
 
   private func scheduleRefresh() {

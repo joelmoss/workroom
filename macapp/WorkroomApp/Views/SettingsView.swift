@@ -549,7 +549,7 @@ private struct AgentSettingsPane: View {
       case .enabled: try claudeUsageBridge.disable()
       case .needsRepair: try claudeUsageBridge.repair()
       }
-      agentUsage.refresh()
+      agentUsage.refresh(userInitiated: true)
     } catch {
       bridgeError = error.localizedDescription
       claudeUsageBridge.refreshState()

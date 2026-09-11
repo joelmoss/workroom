@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import XCTest
 
@@ -252,7 +253,11 @@ final class AgentUsageTests: XCTestCase {
   /// unbounded set is a main-thread stall that grows with the user's history (issue: app hang in
   /// `rebuildWatches`).
   func testCodexReadWatchesOnlyTheNewestRolloutDirectoriesAndTheirAncestors() throws {
-    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    // Standardized to match what `AgentUsageDecoding.watchDirectories` returns: it standardizes
+    // every URL it hands back, so expectations built off a raw `temporaryDirectory` compare two
+    // differently-normalized spellings on any machine whose temp dir carries a `/private` prefix.
+    let root = FileManager.default.temporaryDirectory.standardizedFileURL
+      .appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let month = root.appendingPathComponent("2033/05")
     var days: [URL] = []
@@ -281,6 +286,260 @@ final class AgentUsageTests: XCTestCase {
           + days.suffix(
             AgentUsageDecoding.candidateLimit)).map(\.path)))
     for stale in days.prefix(2) { XCTAssertFalse(watched.contains(stale.path)) }
+  }
+
+  /// The read that finds nothing new must publish NOTHING.
+  ///
+  /// Every `@Published` write invalidates every view observing the monitor, and the status bar's
+  /// `ViewThatFits` instantiates all of its children to measure them — so the common read (same
+  /// numbers, Claude's bridge having merely rewritten its cache file) has to be silent. Two things
+  /// used to break that and neither is visible from the published values alone, which is why this
+  /// counts `objectWillChange` instead: `capturedAt` rides in `AgentQuotaSnapshot`'s synthesized
+  /// `==` and moves with the file's mtime on every rewrite, and `loading` toggled on and off for a
+  /// backend that never resolves. Deleting either guard leaves every value assertion in this file
+  /// passing.
+  @MainActor func testASecondIdenticalReadPublishesNothing() async throws {
+    let root = FileManager.default.temporaryDirectory.standardizedFileURL
+      .appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let cacheURL = root.appendingPathComponent("claude-rate-limits.json")
+    try Data(#"{"five_hour":{"used_percentage":10,"resets_at":2000003600}}"#.utf8).write(
+      to: cacheURL)
+
+    let monitor = AgentUsageMonitor(
+      codexSessionsURL: root.appendingPathComponent("sessions"), claudeCacheURL: cacheURL,
+      now: { self.now }, startAutomatically: false)
+
+    var publishes = 0
+    let subscription = monitor.objectWillChange.sink { _ in publishes += 1 }
+    defer { subscription.cancel() }
+
+    monitor.refresh()
+    await settle { monitor.completedReadCount == 1 }
+    XCTAssertEqual(monitor.completedReadCount, 1, "first read never landed")
+    XCTAssertNotNil(monitor.snapshot(for: .claude))
+    XCTAssertGreaterThan(publishes, 0, "the first read must publish — it put a snapshot on screen")
+
+    // Exactly what the Claude bridge does on every status-line invocation: same bytes, new mtime.
+    // The mtime is set explicitly, not just implied by rewriting — two back-to-back writes can land
+    // in one timestamp tick, and then `capturedAt` never moves and this test proves nothing.
+    try Data(#"{"five_hour":{"used_percentage":10,"resets_at":2000003600}}"#.utf8).write(
+      to: cacheURL)
+    try FileManager.default.setAttributes(
+      [.modificationDate: now.addingTimeInterval(120)], ofItemAtPath: cacheURL.path)
+    XCTAssertNotEqual(
+      try XCTUnwrap(
+        FileManager.default.attributesOfItem(atPath: cacheURL.path)[.modificationDate] as? Date),
+      try XCTUnwrap(monitor.snapshot(for: .claude)).capturedAt,
+      "the rewrite has to move the mtime, or the capturedAt half of this test is vacuous")
+    let afterFirst = publishes
+    monitor.refresh()
+    // Wait for the READ to land, not for a value to change: a read that correctly publishes nothing
+    // changes nothing, so any published-state predicate here would return before the read ran.
+    await settle { monitor.completedReadCount == 2 }
+    XCTAssertEqual(monitor.completedReadCount, 2, "second read never landed")
+    XCTAssertEqual(
+      publishes, afterFirst,
+      "a read that found the same numbers published \(publishes - afterFirst) time(s)")
+  }
+
+  /// What the monitor actually holds descriptors on, and that it is rebuilt every read rather than
+  /// memoized. `watchedDirectoryPaths` is populated only from `open()` calls that SUCCEEDED, so a
+  /// regression that records wanted-but-unopened paths shows up here.
+  @MainActor func testWatchesCoverTheRolloutChainAndTheClaudeCacheDirectory() async throws {
+    let root = FileManager.default.temporaryDirectory.standardizedFileURL
+      .appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let sessions = root.appendingPathComponent("sessions")
+    let day = sessions.appendingPathComponent("2033/05/18")
+    try FileManager.default.createDirectory(at: day, withIntermediateDirectories: true)
+    try Data(
+      (rollout(timestamp: "2033-05-18T03:33:20Z", primary: (7, 300, 2_000_003_600), secondary: nil)
+        + "\n").utf8
+    ).write(to: day.appendingPathComponent("rollout.jsonl"))
+    let cacheURL = root.appendingPathComponent("claude-rate-limits.json")
+    try Data(#"{"five_hour":{"used_percentage":10,"resets_at":2000003600}}"#.utf8).write(
+      to: cacheURL)
+
+    let monitor = AgentUsageMonitor(
+      codexSessionsURL: sessions, claudeCacheURL: cacheURL, now: { self.now },
+      startAutomatically: false)
+    monitor.refresh()
+    await settle { monitor.completedReadCount == 1 }
+
+    XCTAssertEqual(
+      monitor.watchedDirectoryPaths,
+      Set(
+        [
+          sessions, sessions.appendingPathComponent("2033"),
+          sessions.appendingPathComponent("2033/05"), day, root,
+        ].map(\.path)))
+
+    // Rebuilt, not memoized: a second read with an unchanged set must still hold every descriptor.
+    monitor.refresh()
+    await settle { monitor.completedReadCount == 2 }
+    XCTAssertEqual(monitor.watchedDirectoryPaths.count, 5)
+  }
+
+  /// A directory that does not exist yet falls back to its nearest existing parent.
+  ///
+  /// The Claude bridge's directory is absent until the bridge is enabled, and `~/.codex/sessions`
+  /// can be deleted. Dropping a missing path outright leaves nothing watching for its creation, and
+  /// since these watches are the only automatic trigger, it would never be noticed at all.
+  @MainActor func testMissingDirectoriesAreWatchedAtTheirNearestExistingParent() async throws {
+    let root = FileManager.default.temporaryDirectory.standardizedFileURL
+      .appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let monitor = AgentUsageMonitor(
+      codexSessionsURL: root.appendingPathComponent("sessions"),
+      claudeCacheURL: root.appendingPathComponent("bridge/claude-rate-limits.json"),
+      now: { self.now }, startAutomatically: false)
+    monitor.refresh()
+    await settle { monitor.completedReadCount == 1 }
+
+    XCTAssertTrue(
+      monitor.watchedDirectoryPaths.contains(root.path),
+      "neither missing directory fell back to an existing parent, so nothing is watched: "
+        + "\(monitor.watchedDirectoryPaths)")
+  }
+
+  /// An EMPTY newest date directory still has to be watched.
+  ///
+  /// Codex creates `sessions/YYYY/MM/DD` before it writes anything into it, and a directory watch is
+  /// not recursive — so a set derived only from directories that already hold a rollout misses the
+  /// one the next rollout lands in, and the quota sits stale until some unrelated event fires.
+  /// Reproduced against the full-tree walk this replaced, which did catch it.
+  func testWatchSetIncludesTheNewestDateDirectoryEvenBeforeItHoldsARollout() throws {
+    let root = FileManager.default.temporaryDirectory.standardizedFileURL
+      .appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let withRollout = root.appendingPathComponent("2033/05/18")
+    try FileManager.default.createDirectory(at: withRollout, withIntermediateDirectories: true)
+    try Data(
+      (rollout(timestamp: "2033-05-18T03:33:20Z", primary: (7, 300, 2_000_003_600), secondary: nil)
+        + "\n").utf8
+    ).write(to: withRollout.appendingPathComponent("rollout.jsonl"))
+    // Tomorrow, created but not yet written to — exactly the state Codex leaves behind between
+    // starting a session and appending its first record.
+    let empty = root.appendingPathComponent("2033/05/19")
+    try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+
+    let read = AgentUsageDecoding.readCodex(sessionsRoot: root, now: now)
+    let watched = Set(read.watchDirectories.map(\.path))
+    XCTAssertTrue(
+      watched.contains(empty.path),
+      "the newest date directory is unwatched, so its first rollout will notify nobody")
+    XCTAssertTrue(watched.contains(withRollout.path))
+    XCTAssertNotNil(read.snapshot, "the rollout that does exist must still be read")
+  }
+
+  /// A cancelled read must do no work and claim no watches.
+  ///
+  /// `readCodex` runs inside `runBlocking`'s GCD closure where `Task.isCancelled` is always false,
+  /// so the supersede path rides entirely on this injected probe. Nothing else in the suite passes
+  /// it: every other test awaits `completedReadCount` before refreshing again, so two reads never
+  /// actually race and the early-returns are never taken.
+  func testACancelledCodexReadReturnsNothingAndClaimsNoWatches() throws {
+    let root = FileManager.default.temporaryDirectory.standardizedFileURL
+      .appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let day = root.appendingPathComponent("2033/05/18")
+    try FileManager.default.createDirectory(at: day, withIntermediateDirectories: true)
+    try Data(
+      (rollout(timestamp: "2033-05-18T03:33:20Z", primary: (7, 300, 2_000_003_600), secondary: nil)
+        + "\n").utf8
+    ).write(to: day.appendingPathComponent("rollout.jsonl"))
+
+    // Baseline: the same tree DOES produce a snapshot and watches when nothing cancels, so the
+    // assertions below cannot be satisfied by a read that simply found nothing.
+    let live = AgentUsageDecoding.readCodex(sessionsRoot: root, now: now, isCancelled: { false })
+    XCTAssertNotNil(live.snapshot)
+    XCTAssertFalse(live.watchDirectories.isEmpty)
+
+    let cancelled = AgentUsageDecoding.readCodex(
+      sessionsRoot: root, now: now, isCancelled: { true })
+    XCTAssertNil(cancelled.snapshot)
+    XCTAssertTrue(
+      cancelled.watchDirectories.isEmpty,
+      "a cancelled read must not report a watch set — apply would install it")
+  }
+
+  /// The spinner belongs to the click that asked for it.
+  ///
+  /// `pendingBackends` excludes a backend that has already recorded a failure, so an AUTOMATIC read
+  /// landing mid-retry would recompute `loading` without it and take the spinner away — the exact
+  /// "no visible response" the `userInitiated` flag exists to prevent. Automatic reads may only add.
+  @MainActor func testUserInitiatedSpinnerSurvivesAnAutomaticRefresh() async throws {
+    let root = FileManager.default.temporaryDirectory.standardizedFileURL
+      .appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    // No Claude cache file and no Codex sessions tree: both backends settle as unavailable.
+    let monitor = AgentUsageMonitor(
+      codexSessionsURL: root.appendingPathComponent("sessions"),
+      claudeCacheURL: root.appendingPathComponent("claude-rate-limits.json"), now: { self.now },
+      startAutomatically: false)
+
+    monitor.refresh()
+    await settle { monitor.completedReadCount == 1 }
+    XCTAssertFalse(monitor.readFailures.isEmpty, "both backends should have settled as failed")
+    XCTAssertTrue(monitor.loading.isEmpty)
+
+    // An automatic read never re-raises a settled backend...
+    monitor.refresh()
+    XCTAssertTrue(monitor.loading.isEmpty, "an automatic read must not flag a settled backend")
+    await settle { monitor.completedReadCount == 2 }
+
+    // ...but a click must, and a watch event landing underneath it must not undo that.
+    monitor.refresh(userInitiated: true)
+    XCTAssertEqual(monitor.loading, Set(AgentBackend.allCases))
+    monitor.refresh()
+    XCTAssertEqual(
+      monitor.loading, Set(AgentBackend.allCases),
+      "an automatic refresh stole the spinner from a user-initiated retry")
+  }
+
+  /// `capturedAt` comes from the rollout's own timestamp, not the file's mtime.
+  ///
+  /// The parser was swapped from `ISO8601DateFormatter` to a cached `ISO8601FormatStyle`, and the
+  /// failure path is silent: `parseISO8601` returning nil falls back to `modifiedAt`. Every other
+  /// test here asserts percentages against an absolute `resets_at`, so a parser that returned nil
+  /// for every input would leave the whole file green.
+  func testCapturedAtComesFromTheRolloutTimestampNotTheFileMtime() throws {
+    let root = FileManager.default.temporaryDirectory.standardizedFileURL
+      .appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let file = root.appendingPathComponent("rollout.jsonl")
+    // Fractional seconds: the path the style with `includingFractionalSeconds` has to take.
+    try Data(
+      (rollout(
+        timestamp: "2033-05-18T03:33:20.553Z", primary: (7, 300, 2_000_003_600), secondary: nil)
+        + "\n").utf8
+    ).write(to: file)
+    let mtime = now.addingTimeInterval(90_000)
+    try FileManager.default.setAttributes(
+      [.modificationDate: mtime], ofItemAtPath: file.path)
+
+    let snapshot = try XCTUnwrap(
+      AgentUsageDecoding.readCodex(sessionsRoot: root, now: now).snapshot)
+    XCTAssertEqual(
+      snapshot.capturedAt.timeIntervalSince1970, 2_000_000_000.553, accuracy: 0.0005,
+      "capturedAt should be the parsed rollout timestamp")
+    XCTAssertNotEqual(
+      snapshot.capturedAt, mtime, "capturedAt fell back to the file mtime — the parse failed")
+  }
+
+  /// Poll rather than await the monitor's task: `refresh()` owns it privately, and an
+  /// `XCTNSPredicateExpectation` reads a cached snapshot of the value.
+  @MainActor private func settle(until condition: () -> Bool) async {
+    for _ in 0..<200 {
+      if condition() { return }
+      try? await Task.sleep(nanoseconds: 10_000_000)
+    }
   }
 
   private func rollout(
