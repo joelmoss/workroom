@@ -1262,6 +1262,28 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
     XCTAssertEqual(rootRatio(s) ?? -1, 1.0 / 3.0, accuracy: 0.0001)
   }
 
+  /// The shape manual QA produced: two columns, each split vertically, then one pane closed. The
+  /// left column collapses to a single full-height pane and the root ratio is still the 0.5 that
+  /// budgeted two columns — so the survivor keeps half the width where three leaves want a third.
+  func testClosingAPaneInATwoColumnGridEvensTheSurvivors() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    s.splitFocusedPane(for: target, orientation: .horizontal)  // t1 | t2
+    let ids = s.split(for: target)!.tabIDs
+    s.focus(ids[0], for: target)
+    s.splitFocusedPane(for: target, orientation: .vertical)  // (t1 / t4) | t2
+    s.focus(ids[1], for: target)
+    s.splitFocusedPane(for: target, orientation: .vertical)  // (t1 / t4) | (t2 / t3)
+    XCTAssertEqual(s.split(for: target)?.tabIDs.count, 4)
+
+    let bottomLeft = s.split(for: target)!.tabIDs.first { $0 != ids[0] && $0 != ids[1] }!
+    s.closeTab(bottomLeft, for: target)
+    XCTAssertEqual(s.split(for: target)?.tabIDs.count, 3)
+    XCTAssertEqual(
+      rootRatio(s) ?? -1, 1.0 / 3.0, accuracy: 0.0001,
+      "the survivor column collapsed to one pane, so it is 1 of 3 leaves now")
+  }
+
   func testTheMenuActionStillEvensWithThePrefOff() {
     let s = makeSessions()
     s.autoEvenSplits = { false }

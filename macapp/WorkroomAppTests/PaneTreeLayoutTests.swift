@@ -329,3 +329,62 @@ final class PaneGroupFitTests: XCTestCase {
       PaneTreeLayout.evenedIfHonourable(skewed, in: nil, enabled: true), skewed.equalized())
   }
 }
+
+/// The "already under a floor" half of the group-aware guard (issue #126, caught in manual QA). A
+/// pane can sit below a floor with no split to blame: drag an ancestor divider far enough and
+/// `lengths` cannot honour the floor at all, so it splits what is left evenly. Judging a later
+/// split against the floor itself then refuses work that takes nothing off the offending axis.
+final class PaneFitNotWorseTests: XCTestCase {
+
+  private let a = UUID()
+  private let b = UUID()
+  private let c = UUID()
+
+  private func rect(w: CGFloat, h: CGFloat) -> CGRect { CGRect(x: 0, y: 0, width: w, height: h) }
+
+  /// `a | (b | c)` — the shape the QA pass produced. The root clamp keeps the right COLUMN at or
+  /// above the floor, so the squeeze has to come from the nested split inside it: 368pt of usable
+  /// width cannot give two panes 300pt each, so `lengths` abandons the floor and halves it, leaving
+  /// two 184pt panes that no single divider drag is responsible for.
+  private func squeezed() -> PaneLayout<UUID> {
+    .split(
+      id: UUID(), orientation: .horizontal, ratio: 0.715, first: .leaf(a),
+      second: .split(
+        id: UUID(), orientation: .horizontal, ratio: 0.5, first: .leaf(b),
+        second: .leaf(c)))
+  }
+
+  func testASplitThatTakesNothingOffTheSqueezedAxisIsAdmitted() {
+    let current = squeezed()
+    // Split `c` along its HEIGHT: the right column stays exactly as narrow as it already was.
+    let prospective = current.inserting(
+      UUID(), beside: c, orientation: .vertical, newLeafFirst: false, ratio: 0.5)
+    let container = rect(w: 1300, h: 985)
+    XCTAssertFalse(
+      PaneTreeLayout.fitsEveryPane(prospective, in: container),
+      "precondition: the absolute-floor rule refuses it, because the column is already too narrow")
+    XCTAssertTrue(
+      PaneTreeLayout.fitsEveryPane(prospective, in: container, notWorseThan: current),
+      "but it makes nothing worse, so it must be admitted")
+  }
+
+  func testASplitThatNarrowsTheSqueezedAxisFurtherIsRefused() {
+    let current = squeezed()
+    let prospective = current.inserting(
+      UUID(), beside: c, orientation: .horizontal, newLeafFirst: false, ratio: 0.5)
+    XCTAssertFalse(
+      PaneTreeLayout.fitsEveryPane(prospective, in: rect(w: 1300, h: 985), notWorseThan: current),
+      "halving an already-too-narrow column is exactly what the floor is for")
+  }
+
+  func testAHealthyTreeIsStillJudgedAgainstTheFloor() {
+    // Nothing is under a floor to begin with, so `notWorseThan` must not become a licence to drop
+    // below one: a third pane in 700pt cannot clear 300pt, whatever the current tree looks like.
+    let current = PaneLayout<UUID>.split(
+      id: UUID(), orientation: .horizontal, ratio: 0.5, first: .leaf(a), second: .leaf(b))
+    let prospective = current.inserting(
+      c, beside: b, orientation: .horizontal, newLeafFirst: false, ratio: 0.5)
+    XCTAssertFalse(
+      PaneTreeLayout.fitsEveryPane(prospective, in: rect(w: 700, h: 900), notWorseThan: current))
+  }
+}

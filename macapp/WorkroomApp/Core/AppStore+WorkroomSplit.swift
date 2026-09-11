@@ -179,7 +179,7 @@ extension AppStore {
         newLeafFirst: edge.placesDroppedFirst, ratio: 0.5)
       let stored = PaneTreeLayout.evenedIfHonourable(
         prospective, in: space, enabled: autoEvenSplits())
-      return PaneTreeLayout.fitsEveryPane(stored, in: space)
+      return PaneTreeLayout.fitsEveryPane(stored, in: space, notWorseThan: base)
     }
     // Pre-layout fallback: the destination pane's own rect, judged by the anchor-only rule.
     guard let destinationRect else { return true }
