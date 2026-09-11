@@ -70,7 +70,7 @@ split view.
 - **File explorer** — browse and view the workroom's files with automatic language detection, and syntax highlighting.
 - **Multiple terminals, multiple tabs** — each workroom keeps its own terminal alive, and you can
   open as many terminals as you like in a draggable tab strip.
-- **Split view** — Open and arrange multiple workrooms and tabs horizontally or vertically, in one or many views.
+- **Split view** — Open and arrange multiple workrooms and tabs horizontally or vertically, in one or many views. Splits even themselves out as you add and remove panes, so a third pane never lands at a quarter width (turn it off in *Settings ▸ Appearance*).
 - **Persistent Layout** — Layout and terminal persistence across sessions
 - **Live activity & notifications** — tabs and sidebar rows animate while busy; desktop banners fire
   when a backgrounded terminal needs you.

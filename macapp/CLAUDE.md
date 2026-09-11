@@ -152,6 +152,18 @@ that surfaces violations as **warnings** (non-fatal — `make app-lint` is the h
   config-path override), so they show the same projects/workrooms. `make app-run` only kills the
   `Workroom Dev` instance, never your release build. The three app icons (`make app-icon` renders
   all of them) share the yellow blocked mark; Dev and Nightly overlay their channel labels.
+- **Every `Defaults.Key` must declare `suite: .app`.** `Defaults.Key` captures its suite at
+  DECLARATION and falls back to `UserDefaults.standard`, and `WorkroomAppTests` is *app-hosted*
+  (`TEST_HOST` is `Workroom Dev.app`) — so one key declared without the suite makes `make app-test`
+  rewrite the developer's own theme, release channel, inspector layout and run commands.
+  `Core/DefaultsSuite.swift` defines `UserDefaults.app`: the real domain normally, a throwaway
+  `com.developwithstyle.workroom.tests*` suite under XCTest or an XCUITest launch (per-pid and
+  wiped for hosted unit runs, since `make app-test` shards across parallel workers; one stable
+  name, never wiped, for XCUITest so a quit-and-relaunch test still sees what it left). The whole
+  redirect is `#if DEBUG` — a shipped build must never redirect preferences. `UITestFixture` keeps
+  reading `.standard` on purpose: launch *arguments* live in a different domain from preferences.
+  `DefaultsIsolationTests.testEveryShippedKeyDeclaresTheAppSuite` parses `DefaultsKeys.swift` and
+  fails on a key that forgets it, so the rule is enforced, not just documented.
 - **Adding/removing/renaming a `.swift` file needs an `xcodegen generate`.** XcodeGen
   expands the source glob into explicit file refs in the (gitignored) `.xcodeproj`, so
   the change is invisible (or, for a deleted/renamed file, a hard "Build input file
