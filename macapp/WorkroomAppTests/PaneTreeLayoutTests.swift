@@ -294,6 +294,30 @@ final class PaneGroupFitTests: XCTestCase {
       "evening would drive C and D under the floor, so the dividers stay as they are")
   }
 
+  /// The boundary between the two: at exactly twice the floor the children land ON the floor, which
+  /// is honourable; one point under and they are beneath it, which is not.
+  func testExactlyTwiceTheFloorIsHonourable() {
+    let stacked = PaneLayout<UUID>.split(
+      id: UUID(), orientation: .vertical, ratio: 0.5, first: .leaf(b), second: .leaf(c))
+    let exact = PaneTreeLayout.minPaneHeight * 2 + PaneTreeLayout.dividerThickness
+    XCTAssertTrue(
+      PaneTreeLayout.plansEvenly(stacked, in: rect(w: 1200, h: exact)),
+      "two floor-height panes fit precisely — evening the group must not be cancelled")
+    XCTAssertFalse(
+      PaneTreeLayout.plansEvenly(stacked, in: rect(w: 1200, h: exact - 1)),
+      "one point under and both children are beneath the floor")
+  }
+
+  /// And at the exact fit a ratio the fallback cannot honour is still caught, by the drift check.
+  func testExactFitStillRejectsARatioTheFallbackOverrides() {
+    let skewed = PaneLayout<UUID>.split(
+      id: UUID(), orientation: .vertical, ratio: 0.8, first: .leaf(b), second: .leaf(c))
+    let exact = PaneTreeLayout.minPaneHeight * 2 + PaneTreeLayout.dividerThickness
+    XCTAssertFalse(
+      PaneTreeLayout.plansEvenly(skewed, in: rect(w: 1200, h: exact)),
+      "the fallback renders half-and-half, which is not the 0.8 the tree stored")
+  }
+
   func testUnmeasuredContainerPlansEvenly() {
     // Nothing laid out yet ⇒ nothing to judge, same posture as `canSplit`'s zero rect.
     XCTAssertTrue(PaneTreeLayout.plansEvenly(mixedTree().equalized(), in: .zero))
