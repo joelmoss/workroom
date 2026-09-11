@@ -88,6 +88,12 @@ extension Defaults.Keys {
   /// the active terminal read instantly in a split; off keeps every pane at full contrast.
   static let dimUnfocusedPanes = Key<Bool>("dimUnfocusedPanes", default: true)
 
+  /// Re-even a split's dividers whenever a pane is added to or removed from it (issue #126). On by
+  /// default: a third pane otherwise lands at a quarter width, and removing one leaves the survivors
+  /// budgeted for a pane that's gone. Off keeps every divider where it is; View ▸ Resize Splits
+  /// Evenly stays available either way.
+  static let autoResizeSplitsEvenly = Key<Bool>("autoResizeSplitsEvenly", default: true)
+
   /// Whether the right-hand inspector (Changes / Files / Pull Request) is open. The stored key is
   /// still `showNotificationsInspector` for back-compat — the inspector used to carry a Notifications
   /// section (moved to the left sidebar, issue #118), but the persisted user state is preserved.

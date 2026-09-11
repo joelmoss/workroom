@@ -270,6 +270,7 @@ private struct AppearanceSettingsPane: View {
   @Default(.diffViewMode) private var diffViewMode
   @Default(.loadRemoteAvatars) private var loadRemoteAvatars
   @Default(.dimUnfocusedPanes) private var dimUnfocusedPanes
+  @Default(.autoResizeSplitsEvenly) private var autoResizeSplitsEvenly
   @State private var showThemePopover = false
 
   var body: some View {
@@ -319,6 +320,15 @@ private struct AppearanceSettingsPane: View {
             + "Off keeps every pane at full contrast."
         )
         .accessibilityIdentifier("settings.control.dimUnfocusedPanes")
+
+      // Auto-even splits (issue #126): a third pane otherwise lands at a quarter width, and removing
+      // one leaves the survivors budgeted for a pane that's gone. Off keeps every divider put.
+      Toggle("Resize splits evenly automatically", isOn: $autoResizeSplitsEvenly)
+        .help(
+          "Even out the dividers whenever a pane is added to or removed from a split. Off leaves "
+            + "them where they are; View ▸ Resize Splits Evenly still works either way."
+        )
+        .accessibilityIdentifier("settings.control.autoResizeSplitsEvenly")
 
       // Privacy: author/reviewer avatars are fetched from Gravatar (by email hash) and GitHub. Off ⇒
       // only the coloured initials chip shows and nothing is requested, so viewing an untrusted

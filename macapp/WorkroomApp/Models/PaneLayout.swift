@@ -21,7 +21,9 @@ import Foundation
 /// ```
 ///
 /// All structural edits go through the pure transforms below (`inserting` / `removingLeaf` /
-/// `settingRatio`); callers never walk the tree inline (DRY).
+/// `settingRatio` / `equalized`); callers never walk the tree inline (DRY). Anything that needs a
+/// MEASURED answer (does this still fit? would evening actually render evenly?) belongs on
+/// `PaneTreeLayout` instead — this type has no geometry.
 enum SplitOrientation: Equatable {
   case horizontal  // panes side by side — a vertical divider   (⌘D "split right")
   case vertical  // panes stacked    — a horizontal divider (⇧⌘D "split down")
@@ -73,6 +75,18 @@ indirect enum PaneLayout<Leaf: Hashable>: Equatable {
   /// Whether this (sub)tree holds the split NODE `splitID` — the divider-addressing counterpart to
   /// `contains(_:)`. Lets a caller holding several trees (the window's workroom split groups, issue #23
   /// follow-up) find which one owns the divider being dragged, instead of rewriting them all.
+  /// The stored divider fraction of the split node with `splitID`, or nil if this tree has no such
+  /// node. Lets a live drag notice that its node moved for some other reason (issue #126).
+  func ratio(forSplit splitID: UUID) -> CGFloat? {
+    switch self {
+    case .leaf:
+      return nil
+    case .split(let id, _, let ratio, let first, let second):
+      if id == splitID { return ratio }
+      return first.ratio(forSplit: splitID) ?? second.ratio(forSplit: splitID)
+    }
+  }
+
   func containsSplit(_ splitID: UUID) -> Bool {
     switch self {
     case .leaf:

@@ -215,3 +215,117 @@ final class PaneCanSplitTests: XCTestCase {
     XCTAssertTrue(PaneTreeLayout.canSplit(.zero, along: .vertical))
   }
 }
+
+/// The group-level measurements auto-even needs (issue #126). `canSplit` above asks whether ONE
+/// rect can be halved; these ask what the whole tree does in a measured container — whether evening
+/// would actually render evenly there, and whether every pane still clears the floors.
+final class PaneGroupFitTests: XCTestCase {
+
+  private let a = UUID()
+  private let b = UUID()
+  private let c = UUID()
+  private let divider = TerminalSessions.dividerThickness
+  private let minW = TerminalSessions.minPaneWidth
+  private let minH = TerminalSessions.minPaneHeight
+
+  /// `A | (B / C)` — one full-height pane beside two stacked ones, the mixed-orientation shape whose
+  /// panes can only be equal by AREA.
+  private func mixedTree(ratio: CGFloat = 0.5, inner: CGFloat = 0.5) -> PaneLayout<UUID> {
+    .split(
+      id: UUID(), orientation: .horizontal, ratio: ratio, first: .leaf(a),
+      second: .split(
+        id: UUID(), orientation: .vertical, ratio: inner, first: .leaf(b),
+        second: .leaf(c)))
+  }
+
+  private func rect(w: CGFloat, h: CGFloat) -> CGRect { CGRect(x: 0, y: 0, width: w, height: h) }
+
+  // MARK: plansEvenly
+
+  func testEvenedTreePlansEvenlyInARoomyContainer() {
+    XCTAssertTrue(
+      PaneTreeLayout.plansEvenly(mixedTree().equalized(), in: rect(w: 1200, h: 900)),
+      "1200pt leaves A at 400 — above the 300pt floor, so the evened ratios survive")
+  }
+
+  func testTheClampDefeatsEveningInANarrowContainer() {
+    // The measured case: 800pt of usable width. Evening wants A at 1/3 (≈266pt), the renderer clamps
+    // it to the 300pt width floor, and A ends visibly smaller than B and C — even with the setting
+    // on. Auto-even must see this coming and keep the user's dividers instead.
+    XCTAssertFalse(
+      PaneTreeLayout.plansEvenly(mixedTree().equalized(), in: rect(w: 800, h: 900)),
+      "the per-axis floor clamp overrides the evened ratios here")
+  }
+
+  func testUnmeasuredContainerPlansEvenly() {
+    // Nothing laid out yet ⇒ nothing to judge, same posture as `canSplit`'s zero rect.
+    XCTAssertTrue(PaneTreeLayout.plansEvenly(mixedTree().equalized(), in: .zero))
+  }
+
+  func testASkewedTreeDoesNotPlanEvenly() {
+    // Guards the tolerance from the other side: a deliberately lopsided tree must not read as even,
+    // or auto-even would decline to fix exactly the layouts it exists for.
+    XCTAssertFalse(
+      PaneTreeLayout.plansEvenly(mixedTree(ratio: 0.8), in: rect(w: 1200, h: 900)))
+  }
+
+  // MARK: fitsEveryPane
+
+  func testEveryPaneFitsWhenTheGroupHasRoom() {
+    XCTAssertTrue(PaneTreeLayout.fitsEveryPane(mixedTree().equalized(), in: rect(w: 1200, h: 900)))
+  }
+
+  func testAPaneUnderTheWidthFloorFails() {
+    // Three side-by-side panes need 3 × minW plus two dividers; one point under and the container
+    // cannot hold them, whatever the ratios say.
+    let tree = PaneLayout<UUID>.split(
+      id: UUID(), orientation: .horizontal, ratio: 1.0 / 3.0, first: .leaf(a),
+      second: .split(
+        id: UUID(), orientation: .horizontal, ratio: 0.5, first: .leaf(b),
+        second: .leaf(c)))
+    let tight = minW * 3 + divider * 2 - 1
+    XCTAssertFalse(PaneTreeLayout.fitsEveryPane(tree, in: rect(w: tight, h: 900)))
+    XCTAssertTrue(PaneTreeLayout.fitsEveryPane(tree, in: rect(w: tight + 2, h: 900)))
+  }
+
+  func testBothAxesAreChecked() {
+    // Wide enough, far too short: the stacked pair can't clear the height floor.
+    XCTAssertFalse(
+      PaneTreeLayout.fitsEveryPane(mixedTree().equalized(), in: rect(w: 1200, h: minH * 2 - 1)))
+  }
+
+  func testUnmeasuredContainerFitsEveryPane() {
+    XCTAssertTrue(PaneTreeLayout.fitsEveryPane(mixedTree(), in: .zero))
+  }
+
+  // MARK: evenedIfHonourable
+
+  func testDisabledLeavesTheTreeAlone() {
+    let skewed = mixedTree(ratio: 0.8)
+    XCTAssertEqual(
+      PaneTreeLayout.evenedIfHonourable(skewed, in: rect(w: 1200, h: 900), enabled: false), skewed)
+  }
+
+  func testEnabledEvensWhenTheContainerCanHonourIt() {
+    // One tree, built once: split nodes carry a `UUID` id, so two separately-built trees of the same
+    // shape are never `==`.
+    let skewed = mixedTree(ratio: 0.8)
+    let evened = PaneTreeLayout.evenedIfHonourable(
+      skewed, in: rect(w: 1200, h: 900), enabled: true)
+    XCTAssertEqual(evened, skewed.equalized())
+  }
+
+  func testEnabledKeepsTheDividersWhenTheContainerCannot() {
+    // The 800pt case again, now through the step the mutation actually calls: rather than ship a
+    // third outcome that is neither even nor what the user dragged, leave the tree untouched.
+    let skewed = mixedTree(ratio: 0.8)
+    XCTAssertEqual(
+      PaneTreeLayout.evenedIfHonourable(skewed, in: rect(w: 800, h: 900), enabled: true), skewed)
+  }
+
+  func testANilContainerEvensOptimistically() {
+    let skewed = mixedTree(ratio: 0.8)
+    XCTAssertEqual(
+      PaneTreeLayout.evenedIfHonourable(skewed, in: nil, enabled: true), skewed.equalized())
+  }
+}

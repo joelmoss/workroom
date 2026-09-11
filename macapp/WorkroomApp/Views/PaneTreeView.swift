@@ -103,10 +103,17 @@ struct PaneTreeView: View {
       // pane, which owns no surface to measure. A preference (rather than a write from inside this
       // GeometryReader) keeps the write out of body evaluation.
       .preference(key: PaneRectsKey.self, value: plan.panes)
+      // …and the container those rects tile, which is the group-level measurement auto-even needs
+      // (issue #126): whether the whole group can hold another pane, and whether evening would
+      // actually render evenly here. Same feed, same after-layout write.
+      .preference(key: PaneSpaceKey.self, value: CGRect(origin: .zero, size: geo.size))
     }
     .onPreferenceChange(PaneRectsKey.self) { [target, sessions] rects in
       // `paneRects` is a plain (non-`@Published`) cache, so this cannot publish into a view update.
       MainActor.assumeIsolated { sessions.paneRects[target.id] = rects }
+    }
+    .onPreferenceChange(PaneSpaceKey.self) { [target, sessions] space in
+      MainActor.assumeIsolated { sessions.paneSpace[target.id] = space }
     }
   }
 
@@ -190,6 +197,17 @@ private struct PaneRectsKey: PreferenceKey {
   }
 }
 
+/// The rect the split was laid out in, carried to `TerminalSessions.paneSpace`. Keeps the last
+/// non-empty value for the same reason `PaneRectsKey` does — an empty sibling contribution must not
+/// erase a real measurement.
+private struct PaneSpaceKey: PreferenceKey {
+  static var defaultValue: CGRect = .zero
+  static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+    let next = nextValue()
+    if next != .zero { value = next }
+  }
+}
+
 /// A pane drag in progress: which tab, and the cursor in the content coordinate space.
 struct PaneDragState {
   let tabID: TerminalTab.ID
@@ -239,6 +257,65 @@ enum PaneTreeLayout {
   static func minPane(along orientation: SplitOrientation) -> CGFloat {
     orientation == .horizontal ? minPaneWidth : minPaneHeight
   }
+
+  /// How far planned pane areas may drift and still count as "even" (issue #126). Divider
+  /// subtraction and per-node rounding leave a sub-percent spread on a tree that IS equal — the
+  /// same drift `PaneLayoutTests.testEqualizedMixedOrientationGivesEqualAreas` allows for. A clamp
+  /// that actually defeats the even-out is an order of magnitude larger than this (the measured
+  /// 800pt case lands ~18% apart), so the two are never confused.
+  static let evenAreaTolerance: CGFloat = 0.05
+
+  /// Whether `tree`, laid out in `container`, actually RENDERS its panes even. `equalized()` writes
+  /// equal-AREA ratios, but `lengths` clamps every node to its OWN axis floor, so a container that
+  /// is roomy on one axis and tight on the other silently overrides them: `[A | B]` in 800pt of
+  /// usable width, split vertically on B, wants A at 1/3 (266pt) and gets the 300pt width floor
+  /// instead — leaving A visibly smaller than B and C with the even-splits setting on, and nothing
+  /// on screen to explain it. Auto-even asks this first and keeps the user's dividers rather than
+  /// producing a third outcome that is neither even nor what they dragged.
+  ///
+  /// Compares AREAS, not lengths: a mixed-orientation tree can only be equal by area (one
+  /// full-height pane beside two stacked ones). An unmeasured container permits, matching
+  /// `canSplit` — nothing has been laid out yet, so there is nothing to judge.
+  static func plansEvenly<Leaf: Hashable>(_ tree: PaneLayout<Leaf>, in container: CGRect) -> Bool {
+    guard container.width > 0, container.height > 0 else { return true }
+    let areas = plan(tree, in: container).panes.values.map { $0.width * $0.height }
+    guard let low = areas.min(), let high = areas.max(), high > 0 else { return true }
+    return high - low <= high * evenAreaTolerance
+  }
+
+  /// Whether every pane of `tree` lands at or above BOTH axis floors in `container` — the
+  /// GROUP-level question the split guard should ask once auto-even is on (issue #126). `canSplit`
+  /// asks whether one anchor rect can be halved, which stops being the right question when adding a
+  /// pane redistributes the whole group instead of halving one pane: a pane dragged narrow refuses
+  /// ⌘D even though the group has room for another. Callers with no measured container keep using
+  /// `canSplit`.
+  ///
+  /// `lengths` clamps, so a planned pane only lands under a floor when the container genuinely
+  /// cannot hold this many panes — which is exactly the refusal this guard exists to make.
+  static func fitsEveryPane<Leaf: Hashable>(_ tree: PaneLayout<Leaf>, in container: CGRect) -> Bool
+  {
+    guard container.width > 0, container.height > 0 else { return true }
+    return plan(tree, in: container).panes.values.allSatisfy {
+      $0.width >= minPaneWidth && $0.height >= minPaneHeight
+    }
+  }
+
+  /// The tree a mutation will ACTUALLY store (issue #126): evened when the auto-even pref is on and
+  /// the container can honour equality, otherwise untouched. A nil container — nothing measured yet
+  /// — evens optimistically, the same posture `canSplit` takes when it has no rect.
+  ///
+  /// Shared by the fit guard and the commit that follows it, so the guard can never admit a split
+  /// whose real result it didn't measure. That divergence is the class
+  /// `WorkroomSplitTests.testAdmissibilityMatchesWhatInsertActuallyDoes` exists to catch.
+  static func evenedIfHonourable<Leaf: Hashable>(
+    _ tree: PaneLayout<Leaf>, in container: CGRect?, enabled: Bool
+  ) -> PaneLayout<Leaf> {
+    guard enabled else { return tree }
+    let evened = tree.equalized()
+    guard let container else { return evened }
+    return plansEvenly(evened, in: container) ? evened : tree
+  }
+
   /// Draggable hit-zone thickness for the resize divider (issue #83). The visible gutter stays
   /// `dividerThickness` (2pt); the hit zone is widened to this so the divider is easier to grab. It is
   /// capped at `dividerThickness + 1pt pane padding on each side` (= 4pt) — the widest band that stays
@@ -828,6 +905,12 @@ private struct SplitDivider: View {
   let total: CGFloat
   let onRatio: (CGFloat) -> Void
   @State private var startRatio: CGFloat?
+  /// The translation this drag measures FROM — zero normally, re-based when the drag re-anchors
+  /// mid-gesture (`value.translation` is cumulative, so a new anchor needs a new origin).
+  @State private var baseTranslation: CGSize = .zero
+  /// The last ratio this drag emitted. An incoming `ratio` that differs from it came from somewhere
+  /// else — an auto-even landing while the mouse is down (issue #126).
+  @State private var lastEmitted: CGFloat?
 
   var body: some View {
     Rectangle()
@@ -836,15 +919,29 @@ private struct SplitDivider: View {
       .gesture(
         DragGesture(coordinateSpace: .global)
           .onChanged { value in
-            let start = startRatio ?? ratio
-            if startRatio == nil { startRatio = start }
+            // Re-anchor when the divider moved for a reason other than this drag. `equalized()`
+            // keeps every split node's `id`, so an auto-even landing mid-drag leaves this view and
+            // its latched start alive over a tree that has since changed; replaying
+            // `stale start + whole-gesture translation` would undo the even on the very next tick.
+            if startRatio == nil || lastEmitted.map({ abs(ratio - $0) > 0.0005 }) == true {
+              startRatio = ratio
+              baseTranslation = value.translation
+            }
             let usable = max(1, total - PaneTreeLayout.dividerThickness)
-            let delta =
-              orientation == .horizontal ? value.translation.width : value.translation.height
-            onRatio(
-              PaneTreeLayout.clampRatio(start + delta / usable, total: total, along: orientation))
+            let moved =
+              orientation == .horizontal
+              ? value.translation.width - baseTranslation.width
+              : value.translation.height - baseTranslation.height
+            let next = PaneTreeLayout.clampRatio(
+              (startRatio ?? ratio) + moved / usable, total: total, along: orientation)
+            lastEmitted = next
+            onRatio(next)
           }
-          .onEnded { _ in startRatio = nil }
+          .onEnded { _ in
+            startRatio = nil
+            lastEmitted = nil
+            baseTranslation = .zero
+          }
       )
       .onHover { inside in
         if inside {

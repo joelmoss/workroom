@@ -1087,3 +1087,193 @@ final class WorkroomSplitTests: XCTestCase {
     XCTAssertFalse(WorkroomPaneCardBorder.isHighlighted(focused: false, multi: true))
   }
 }
+
+/// Auto-even on add/remove (issue #126). The gate is INTENT — each of these functions already knows
+/// whether it is adding a member, removing one, or merely rearranging — so these tests drive the
+/// real store functions rather than the pure transform, which `PaneGroupFitTests` covers.
+///
+/// `autoEvenSplits` is set directly rather than through `Defaults`: a parallel test worker shares
+/// (and wipes) that domain cross-process, which is how `Defaults`-driven assertions turn flaky.
+@MainActor
+final class WorkroomSplitAutoEvenTests: XCTestCase {
+
+  private func makeStore(_ names: [String]) -> AppStore {
+    let store = AppStore()
+    store.terminals.makeView = { _, cwd, command in
+      GhosttySurfaceView(workingDirectory: cwd, command: command, spawnsSurface: false)
+    }
+    store.projects = [
+      Project(
+        path: "/a", vcs: "git",
+        workrooms: names.map {
+          Workroom(name: $0, path: "/a/\($0)", vcsName: "workroom/\($0)", warnings: [])
+        })
+    ]
+    // Roomy enough that evening is always honourable — the clamp interaction is covered by
+    // `PaneGroupFitTests`, and a cramped default would make every assertion here read as a no-op.
+    store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 1800, height: 1000)
+    return store
+  }
+
+  private func wr(_ name: String) -> SidebarID { .workroom(project: "/a", name: name) }
+
+  private func rootRatio(_ store: AppStore, group: Int = 0) -> CGFloat? {
+    guard store.workroomSplits.indices.contains(group) else { return nil }
+    if case .split(_, _, let ratio, _, _) = store.workroomSplits[group] { return ratio }
+    return nil
+  }
+
+  private func rootSplitID(_ store: AppStore, group: Int = 0) -> UUID? {
+    guard store.workroomSplits.indices.contains(group) else { return nil }
+    if case .split(let id, _, _, _, _) = store.workroomSplits[group] { return id }
+    return nil
+  }
+
+  /// `main | (feature / bugfix)` — the shape where a naive 0.5 leaves `main` at half the window and
+  /// the other two at a quarter each.
+  private func threePaneStore() -> AppStore {
+    let store = makeStore(["main", "feature", "bugfix"])
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)
+    return store
+  }
+
+  func testAThirdMemberEvensTheGroup() {
+    let store = threePaneStore()
+    XCTAssertEqual(
+      rootRatio(store) ?? -1, 1.0 / 3.0, accuracy: 0.0001,
+      "main is 1 of 3 leaves, so it gets a third of the width")
+  }
+
+  func testAnInsertEvensAwayASkewedDivider() {
+    let store = makeStore(["main", "feature", "bugfix"])
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    store.setWorkroomSplitRatio(0.9, forSplit: rootSplitID(store)!)
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)
+    XCTAssertEqual(rootRatio(store) ?? -1, 1.0 / 3.0, accuracy: 0.0001)
+  }
+
+  func testRemovingAMemberEvensTheSurvivors() {
+    // `main | (feature / bugfix)` at root 1/3: dropping bugfix collapses it to `main | feature`,
+    // which would otherwise KEEP the 1/3 budgeted for three panes and leave a 33/67 pair.
+    let store = threePaneStore()
+    store.removeWorkroomSplitMember(wr("bugfix"))
+    XCTAssertEqual(store.workroomSplits.first?.tabIDs, [wr("main"), wr("feature")])
+    XCTAssertEqual(rootRatio(store) ?? -1, 0.5, accuracy: 0.0001, "two survivors split evenly")
+  }
+
+  /// THE defect the leaf-count design had. `insertWorkroomSplit` detaches before it inserts, so a
+  /// count-delta gate fires on both halves of a same-group move and evens a pure rearrange twice.
+  /// Must be tested with THREE members: a two-member same-group move dissolves and re-appends at
+  /// 0.5 regardless, so it would pass vacuously.
+  func testASameGroupRearrangeKeepsItsDividers() {
+    let store = threePaneStore()
+    store.setWorkroomSplitRatio(0.7, forSplit: rootSplitID(store)!)
+    let before = store.workroomSplits
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .right)
+    XCTAssertEqual(
+      rootRatio(store) ?? -1, 0.7, accuracy: 0.0001,
+      "a rearrange within the group must not even — the panes are the same ones")
+    XCTAssertEqual(
+      Set(store.workroomSplits.first?.tabIDs ?? []), Set(before.first?.tabIDs ?? []),
+      "and the same members remain")
+  }
+
+  func testAnInsertEvensOnlyItsOwnGroup() {
+    let store = makeStore(["main", "feature", "docs", "review"])
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)  // group A
+    store.insertWorkroomSplit(wr("review"), beside: wr("docs"), edge: .right)  // group B
+    store.setWorkroomSplitRatio(0.9, forSplit: rootSplitID(store, group: 0)!)
+    store.insertWorkroomSplit(wr("review"), beside: wr("docs"), edge: .bottom)  // rearrange in B
+    XCTAssertEqual(
+      rootRatio(store, group: 0) ?? -1, 0.9, accuracy: 0.0001, "group A is untouched")
+  }
+
+  func testAGhostLeafIsPrunedBeforeEvening() {
+    // A group still holding a leaf for a deleted workroom: the renderer hides it, but evening the
+    // raw tree would budget a third of the width for a pane nobody can see.
+    let store = makeStore(["main", "feature"])
+    store.workroomSplits = [
+      .split(
+        id: UUID(), orientation: .horizontal, ratio: 0.9,
+        first: .leaf(wr("deleted")), second: .leaf(wr("main")))
+    ]
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    XCTAssertEqual(
+      store.workroomSplits.first?.tabIDs, [wr("main"), wr("feature")], "the ghost leaf is gone")
+    XCTAssertEqual(rootRatio(store) ?? -1, 0.5, accuracy: 0.0001, "and the live panes are even")
+  }
+
+  func testTheSweepEvensAGroupThatLostAWorkroom() {
+    // An EXTERNAL delete (CLI, another window): the workroom vanishes from the project list, so the
+    // reload's sweep prunes the leaf — and the survivors are left budgeted for three panes.
+    let store = threePaneStore()
+    store.selectedTargetID = wr("main")
+    store.projects = [
+      Project(
+        path: "/a", vcs: "git",
+        workrooms: ["main", "feature"].map {
+          Workroom(name: $0, path: "/a/\($0)", vcsName: "workroom/\($0)", warnings: [])
+        })
+    ]
+    store.pruneWorkroomSplitToLiveLeaves(formerSelection: wr("main"))
+    XCTAssertEqual(store.workroomSplits.first?.tabIDs, [wr("main"), wr("feature")])
+    XCTAssertEqual(rootRatio(store) ?? -1, 0.5, accuracy: 0.0001)
+  }
+
+  func testPrefOffKeepsEveryDivider() {
+    let store = makeStore(["main", "feature", "bugfix"])
+    store.autoEvenSplits = { false }
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    store.setWorkroomSplitRatio(0.9, forSplit: rootSplitID(store)!)
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)
+    XCTAssertEqual(rootRatio(store) ?? -1, 0.9, accuracy: 0.0001, "the insert left it alone")
+    store.removeWorkroomSplitMember(wr("bugfix"))
+    XCTAssertEqual(rootRatio(store) ?? -1, 0.9, accuracy: 0.0001, "and so did the removal")
+  }
+
+  func testTheMenuActionStillEvensWithThePrefOff() {
+    // An explicit command must work regardless of the setting — that's what the setting turns off,
+    // the automatic behaviour, not the feature.
+    let store = makeStore(["main", "feature"])
+    store.autoEvenSplits = { false }
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    store.setWorkroomSplitRatio(0.9, forSplit: rootSplitID(store)!)
+    store.selectedTargetID = wr("main")
+    store.equalizeWorkroomSplit()
+    XCTAssertEqual(rootRatio(store) ?? -1, 0.5, accuracy: 0.0001)
+  }
+
+  func testACrampedContainerKeepsTheDividersInstead() {
+    // Too narrow for three panes to render evenly (the renderer's per-axis floor clamp would
+    // override the evened ratios), so the honourable move is to leave the dividers alone.
+    let store = makeStore(["main", "feature", "bugfix"])
+    store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 800, height: 900)
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    store.setWorkroomSplitRatio(0.6, forSplit: rootSplitID(store)!)
+    store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .bottom)
+    XCTAssertEqual(rootRatio(store) ?? -1, 0.6, accuracy: 0.0001)
+  }
+
+  func testAGroupWithRoomAdmitsASplitThatTheAnchorAloneWouldRefuse() {
+    // The floor is group-aware now (TD1): the anchor pane is well under 2 × 300pt, but evening
+    // redistributes the whole 1800pt group, so all three panes clear the floor and the split stands.
+    let store = makeStore(["main", "feature", "bugfix"])
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    store.setWorkroomSplitRatio(0.75, forSplit: rootSplitID(store)!)  // feature ≈ 448pt
+    XCTAssertTrue(
+      store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .right),
+      "the group has room for a third pane even though the anchor can't be halved")
+    XCTAssertEqual(store.workroomSplits.first?.tabIDs.count, 3)
+  }
+
+  func testAGroupWithNoRoomStillRefuses() {
+    let store = makeStore(["main", "feature", "bugfix"])
+    store.workroomPaneSpace = CGRect(x: 0, y: 0, width: 700, height: 900)
+    store.insertWorkroomSplit(wr("feature"), beside: wr("main"), edge: .right)
+    XCTAssertFalse(
+      store.insertWorkroomSplit(wr("bugfix"), beside: wr("feature"), edge: .right),
+      "three 300pt panes cannot fit in 700pt, however the space is shared out")
+    XCTAssertEqual(store.workroomSplits.first?.tabIDs.count, 2)
+  }
+}

@@ -167,7 +167,22 @@ extension AppStore {
   func canInsertWorkroomSplit(
     _ sid: SidebarID, beside: SidebarID, edge: PaneEdge, destinationRect: CGRect?
   ) -> Bool {
-    guard let destinationRect, workroomSplitWouldAddMember(sid, beside: beside) else { return true }
+    guard workroomSplitWouldAddMember(sid, beside: beside) else { return true }
+    // Group-aware once the container has been measured (issue #126): auto-even redistributes the
+    // whole group rather than halving the destination pane, so a pane dragged narrow must not veto
+    // a split the group has room for. Built from the same `evenedIfHonourable` step the commit uses,
+    // so the drop indicator, `canOpenAsSplit` and `insertWorkroomSplit` still agree by construction.
+    if let space = workroomPaneSpace, space.width > 0, space.height > 0 {
+      let base = splitIndex(containing: beside).map { workroomSplits[$0] } ?? .leaf(beside)
+      let prospective = base.inserting(
+        sid, beside: beside, orientation: edge.orientation,
+        newLeafFirst: edge.placesDroppedFirst, ratio: 0.5)
+      let stored = PaneTreeLayout.evenedIfHonourable(
+        prospective, in: space, enabled: autoEvenSplits())
+      return PaneTreeLayout.fitsEveryPane(stored, in: space)
+    }
+    // Pre-layout fallback: the destination pane's own rect, judged by the anchor-only rule.
+    guard let destinationRect else { return true }
     return PaneTreeLayout.canSplit(destinationRect, along: edge.orientation)
   }
 
@@ -192,13 +207,26 @@ extension AppStore {
     // unmeasured caller and keeps the pre-floor behaviour rather than guessing.
     guard canInsertWorkroomSplit(sid, beside: beside, edge: edge, destinationRect: destinationRect)
     else { return false }
+    // Whether this GROWS the destination group, read BEFORE the detach below — afterwards `sid` has
+    // already left its old group and every move would look like an addition. A same-group move
+    // rearranges the panes it already has, so it must keep the dividers the user dragged
+    // (issue #126); `detachFromSplitGroup` is therefore never an auto-even site itself, or this one
+    // rearrange would be evened twice over.
+    let adds = workroomSplitWouldAddMember(sid, beside: beside)
     // Leave whatever group `sid` was in (possibly dissolving it) BEFORE joining `beside`'s — structural
     // only, no selection re-point: `sid` is about to be focused anyway.
     detachFromSplitGroup(sid)
     if let index = splitIndex(containing: beside) {
-      workroomSplits[index] = workroomSplits[index].inserting(
+      let grown = workroomSplits[index].inserting(
         sid, beside: beside, orientation: edge.orientation,
         newLeafFirst: edge.placesDroppedFirst, ratio: 0.5)
+      // The one auto-even site that can still meet a ghost leaf: a workroom deleted elsewhere is
+      // dropped from the tree by `pruneWorkroomSplitToLiveLeaves` on the next reload, not before.
+      if adds, autoEvenSplits(), let evened = prunedAndEvened(grown) {
+        workroomSplits[index] = honourable(evened, else: grown)
+      } else {
+        workroomSplits[index] = grown
+      }
     } else {
       let dropped = PaneLayout<SidebarID>.leaf(sid)
       let anchor = PaneLayout<SidebarID>.leaf(beside)
@@ -294,6 +322,14 @@ extension AppStore {
     // ≥2-members invariant.
     let survivor = workroomSplits[index].removingLeaf(sid)?.firstTabID
     detachFromSplitGroup(sid)
+    // The survivors' dividers still budget space for the pane that just left — `A | (B / C)` at
+    // root 1/3 collapses to `A | B` still at 1/3 — so even them (issue #126). Plain `equalized`,
+    // not the pruning variant: `survivor` was chosen above and a prune-driven dissolve here would
+    // strand the selection on it. Indices shift when a group dissolves, so re-derive.
+    if autoEvenSplits(), let survivor, let index = splitIndex(containing: survivor) {
+      workroomSplits[index] = honourable(
+        workroomSplits[index].equalized(), else: workroomSplits[index])
+    }
     if wasFocused, let survivor { focusWorkroomMember(survivor) }
   }
 
@@ -377,16 +413,44 @@ extension AppStore {
   /// fewer than two leaves remain live (a lone leaf is "no split"). No-op when no group is visible.
   func equalizeWorkroomSplit() {
     guard let sid = selectedTargetID, let index = splitIndex(containing: sid) else { return }
-    let group = workroomSplits[index]
+    if let evened = prunedAndEvened(workroomSplits[index]) {
+      workroomSplits[index] = evened
+    } else {
+      workroomSplits.remove(at: index)
+    }
+  }
+
+  /// Strip leaves whose workroom no longer resolves, then even what's left. nil ⇒ fewer than two
+  /// live leaves, so the caller must dissolve the group (a lone leaf is "no split").
+  ///
+  /// The prune has to come FIRST: the renderer drops dead leaves on read (`visibleWorkroomLayout`)
+  /// while the stored tree still counts them, so evening the raw tree budgets space for a pane
+  /// nobody can see and leaves the visible ones uneven. Shared by the View menu action above and by
+  /// `insertWorkroomSplit` (issue #126) so the manual and automatic paths can't drift.
+  ///
+  /// Deliberately unconditional — the menu item must work with the auto-even pref off — and
+  /// deliberately NOT used by `removeWorkroomSplitMember`, which picks the survivor to focus before
+  /// its structural edit: a prune that dissolved the group afterwards would leave the selection on a
+  /// workroom that no longer resolves.
+  /// Keep `evened` only when the measured container can actually RENDER it evenly; otherwise keep
+  /// `original` (issue #126). `PaneTreeView.lengths` clamps every node to its own axis floor, so a
+  /// container roomy on one axis and tight on the other silently overrides equal-area ratios — and a
+  /// third outcome that is neither even nor what the user dragged is worse than leaving the dividers
+  /// alone. An unmeasured container (no layout pass yet) evens optimistically, matching `canSplit`.
+  private func honourable(
+    _ evened: PaneLayout<SidebarID>, else original: PaneLayout<SidebarID>
+  ) -> PaneLayout<SidebarID> {
+    guard let space = workroomPaneSpace else { return evened }
+    return PaneTreeLayout.plansEvenly(evened, in: space) ? evened : original
+  }
+
+  private func prunedAndEvened(_ group: PaneLayout<SidebarID>) -> PaneLayout<SidebarID>? {
     var live = group
     for leaf in group.tabIDs where target(for: leaf) == nil {
       live = live.removingLeaf(leaf) ?? live
     }
-    if live.tabIDs.count >= 2 {
-      workroomSplits[index] = live.equalized()
-    } else {
-      workroomSplits.remove(at: index)
-    }
+    guard live.tabIDs.count >= 2 else { return nil }
+    return live.equalized()
   }
 
   /// Drop split leaves whose workroom no longer resolves (deleted / reloaded away) from every group,
@@ -416,7 +480,11 @@ extension AppStore {
         for sid in group.tabIDs where target(for: sid) == nil {
           pruned = pruned.removingLeaf(sid) ?? pruned
         }
-        kept.append(pruned)
+        // This branch has already proven the group lost a leaf, so it is a removal like any other
+        // (issue #126): even the survivors rather than leave them budgeted for the workroom that
+        // went away. Plain `equalized` — the tree in hand is the pruned one.
+        kept.append(
+          autoEvenSplits() ? honourable(pruned.equalized(), else: pruned) : pruned)
       } else if let survivor = live.first {
         survivors.append(survivor)
       }
