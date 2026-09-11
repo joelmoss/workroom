@@ -1171,7 +1171,34 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
     let s = makeSessions()
     threePanes(s)
     XCTAssertEqual(
-      rootRatio(s) ?? -1, 1.0 / 3.0, accuracy: 0.0001, "the first pane is 1 of 3 leaves")
+      rootRatio(s) ?? -1, 0.5, accuracy: 0.0001,
+      "`a | (b / c)`: the stacked pair is one column, so `a` keeps half the width")
+  }
+
+  func testAThirdPaneOnTheSameAxisSplitsIntoThirds() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    XCTAssertEqual(
+      rootRatio(s) ?? -1, 1.0 / 3.0, accuracy: 0.0001, "three columns in one chain are thirds")
+  }
+
+  /// The report that reshaped the rule (#126): split down, then split the bottom pane sideways. The
+  /// top pane is in a different row and must not move.
+  func testSplittingOneRowSidewaysLeavesTheOtherRowAlone() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    s.splitFocusedPane(for: target, orientation: .vertical)  // a / b, halves
+    s.splitFocusedPane(for: target, orientation: .horizontal)  // a / (b | c)
+    XCTAssertEqual(
+      rootRatio(s) ?? -1, 0.5, accuracy: 0.0001,
+      "the top row keeps its half of the height; only the bottom row divides")
+    let panes = PaneTreeLayout.plan(
+      s.split(for: target)!, in: CGRect(x: 0, y: 0, width: 1200, height: 900)
+    ).panes
+    let heights = Set(panes.values.map { Int($0.height) })
+    XCTAssertEqual(heights, [449], "both rows are the same height")
   }
 
   func testASplitEvensAwayASkewedDivider() {
@@ -1180,7 +1207,7 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
     s.splitFocusedPane(for: target, orientation: .horizontal)
     s.setRatio(0.8, forSplit: rootSplitID(s)!, for: target)
     s.splitFocusedPane(for: target, orientation: .vertical)
-    XCTAssertEqual(rootRatio(s) ?? -1, 1.0 / 3.0, accuracy: 0.0001)
+    XCTAssertEqual(rootRatio(s) ?? -1, 0.5, accuracy: 0.0001)
   }
 
   func testClosingAPaneEvensTheSurvivors() {
@@ -1225,9 +1252,9 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
     let member = s.split(for: target)!.tabIDs[0]
     s.moveTabIntoSplit(solo, ontoEdge: .bottom, of: member, for: target)
     XCTAssertEqual(s.split(for: target)?.tabIDs.count, 3)
-    // The drop stacked the solo tab under the FIRST member, so that subtree now holds 2 of the 3
-    // leaves and takes two thirds of the width — which is what equal-sized panes means here.
-    XCTAssertEqual(rootRatio(s) ?? -1, 2.0 / 3.0, accuracy: 0.0001)
+    // The drop stacked the solo tab under the FIRST member. That subtree divides its own height,
+    // so as a COLUMN it is still one of two — the outer divider returns to a half.
+    XCTAssertEqual(rootRatio(s) ?? -1, 0.5, accuracy: 0.0001)
   }
 
   func testPrefOffKeepsEveryDivider() {
@@ -1243,13 +1270,14 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
   }
 
   func testACrampedContainerKeepsTheDividersInstead() {
-    // 800pt of width: evening wants the first pane at 1/3 (≈266pt) and the renderer would clamp it
-    // to the 300pt floor, leaving panes visibly unequal. Keep the user's dividers instead.
+    // THREE COLUMNS in 800pt: evening wants thirds (≈266pt each) and the renderer would clamp the
+    // first to the 300pt floor, leaving the panes visibly uneven. Keep the user's dividers instead.
+    // (A mixed tree no longer reaches this state — a perpendicular sub-split takes no extra width.)
     let s = makeSessions(space: CGRect(x: 0, y: 0, width: 800, height: 900))
     s.addTab(for: target)
     s.splitFocusedPane(for: target, orientation: .horizontal)
     s.setRatio(0.6, forSplit: rootSplitID(s)!, for: target)
-    s.splitFocusedPane(for: target, orientation: .vertical)
+    s.splitFocusedPane(for: target, orientation: .horizontal)
     XCTAssertEqual(rootRatio(s) ?? -1, 0.6, accuracy: 0.0001)
   }
 
@@ -1259,7 +1287,7 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
     let s = makeSessions()
     s.paneSpace[target.id] = nil
     threePanes(s)
-    XCTAssertEqual(rootRatio(s) ?? -1, 1.0 / 3.0, accuracy: 0.0001)
+    XCTAssertEqual(rootRatio(s) ?? -1, 0.5, accuracy: 0.0001)
   }
 
   /// The shape manual QA produced: two columns, each split vertically, then one pane closed. The
@@ -1280,8 +1308,8 @@ final class TerminalSplitAutoEvenTests: XCTestCase {
     s.closeTab(bottomLeft, for: target)
     XCTAssertEqual(s.split(for: target)?.tabIDs.count, 3)
     XCTAssertEqual(
-      rootRatio(s) ?? -1, 1.0 / 3.0, accuracy: 0.0001,
-      "the survivor column collapsed to one pane, so it is 1 of 3 leaves now")
+      rootRatio(s) ?? -1, 0.5, accuracy: 0.0001,
+      "still two columns — the left one just stopped being divided")
   }
 
   func testTheMenuActionStillEvensWithThePrefOff() {
