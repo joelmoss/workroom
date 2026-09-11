@@ -292,12 +292,36 @@ enum PaneTreeLayout {
   ///
   /// `lengths` clamps, so a planned pane only lands under a floor when the container genuinely
   /// cannot hold this many panes — which is exactly the refusal this guard exists to make.
-  static func fitsEveryPane<Leaf: Hashable>(_ tree: PaneLayout<Leaf>, in container: CGRect) -> Bool
-  {
+  ///
+  /// `notWorseThan` is the tree as it stands today, and it exists because panes can ALREADY be under
+  /// a floor through no fault of the split being judged: drag an ancestor divider far enough and
+  /// `lengths` runs out of room to honour the floor at all, falling back to an even split of
+  /// whatever is left (a 370pt column becomes two 184pt panes). Refusing every later split in that
+  /// subtree would block a ⇧⌘D that only divides HEIGHT and takes nothing off the offending width —
+  /// the "⌘D silently does nothing" papercut, reintroduced from the other side. So a pane already
+  /// under a floor is judged on whether this split makes that axis worse, not on the floor itself.
+  /// Omit the argument to demand the floor outright.
+  static func fitsEveryPane<Leaf: Hashable>(
+    _ tree: PaneLayout<Leaf>, in container: CGRect, notWorseThan current: PaneLayout<Leaf>? = nil
+  ) -> Bool {
     guard container.width > 0, container.height > 0 else { return true }
-    return plan(tree, in: container).panes.values.allSatisfy {
-      $0.width >= minPaneWidth && $0.height >= minPaneHeight
-    }
+    let after = smallestPane(tree, in: container)
+    if after.width >= minPaneWidth, after.height >= minPaneHeight { return true }
+    guard let current else { return false }
+    let before = smallestPane(current, in: container)
+    return after.width >= min(before.width, minPaneWidth)
+      && after.height >= min(before.height, minPaneHeight)
+  }
+
+  /// The smallest width and the smallest height across every pane of `tree` (not necessarily the
+  /// same pane) — the two numbers the floors are judged against.
+  private static func smallestPane<Leaf: Hashable>(_ tree: PaneLayout<Leaf>, in container: CGRect)
+    -> CGSize
+  {
+    let rects = plan(tree, in: container).panes.values
+    return CGSize(
+      width: rects.map(\.width).min() ?? container.width,
+      height: rects.map(\.height).min() ?? container.height)
   }
 
   /// The tree a mutation will ACTUALLY store (issue #126): evened when the auto-even pref is on and

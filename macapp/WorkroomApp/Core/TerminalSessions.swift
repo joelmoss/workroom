@@ -1650,7 +1650,7 @@ final class TerminalSessions: ObservableObject {
         UUID(), beside: tab.id, orientation: orientation, newLeafFirst: false, ratio: 0.5)
       let stored = PaneTreeLayout.evenedIfHonourable(
         prospective, in: space, enabled: autoEvenSplits())
-      return PaneTreeLayout.fitsEveryPane(stored, in: space)
+      return PaneTreeLayout.fitsEveryPane(stored, in: space, notWorseThan: base)
     }
     // Pre-layout fallback: the pane's own rect (or its surface), judged by the anchor-only rule.
     let rect =
