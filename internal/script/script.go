@@ -39,7 +39,7 @@ func Run(scriptType, scriptPath, workroomDir, name, rootPath string, stream io.W
 	// a timeout, and on expiry it terminates THIS process — after which it treats the worktree as
 	// settled and re-allows deletion. Without the group, a quiet installer outlived that and kept
 	// writing files a teardown was already removing.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	setProcessGroup(cmd)
 	cmd.Dir = workroomDir
 	cmd.Env = append(os.Environ(),
 		"WORKROOM_NAME="+name,
@@ -80,10 +80,7 @@ func Run(scriptType, scriptPath, workroomDir, name, rootPath string, stream io.W
 	go func() {
 		select {
 		case <-sigs:
-			if cmd.Process != nil {
-				// Negative pid = the whole group. Best-effort: the group may already be gone.
-				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-			}
+			killProcessGroup(cmd)
 		case <-done:
 		}
 	}()
