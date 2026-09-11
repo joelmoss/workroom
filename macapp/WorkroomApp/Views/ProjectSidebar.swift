@@ -477,17 +477,11 @@ struct ProjectSidebar: View {
   private func terminalRow(_ tab: TerminalTab, target: TerminalTarget, parent: SidebarID)
     -> some View
   {
-    // A diff/file (content) tab gets the same glyph the tab strip uses (#66), so a glance at the row
-    // says "this isn't a terminal"; a terminal tab keeps the terminal glyph. Exhaustive so a future
-    // `TabContent` case can't silently fall through to the terminal glyph.
-    let glyph: String = {
-      switch tab.content {
-      case .diff: return "plusminus"
-      case .file: return "doc"
-      case .changeset: return "clock"
-      case .terminal: return "terminal"
-      }
-    }()
+    // A content tab gets the same glyph the tab strip and the pane title bar use (#66), so a glance
+    // at the row says "this isn't a terminal". `TabContent.glyph` is that one source; it returns nil
+    // for a terminal (the unmarked default elsewhere), and this row is the one place that wants an
+    // explicit terminal glyph instead, since every row here carries one.
+    let glyph = tab.content.glyph ?? "terminal"
     HStack(spacing: 6) {
       // Leading glyph centered in the shared caret slot, same size/weight as the root house and the
       // workroom chevron so the leading-icon column reads as one set. The fixed-width frame keeps the

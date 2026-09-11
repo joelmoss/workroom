@@ -40,7 +40,7 @@ final class PaneToolbarPresentationTests: XCTestCase {
   func testDiffPaneShowsBothOptionalControlsAndTheDivider() {
     XCTAssertEqual(
       PaneToolbarPresentation.controls(for: diff()),
-      .init(diffMode: true, openFile: true, markdownMode: false, divider: true))
+      .init(diffMode: true, openFile: true, markdownMode: false))
   }
 
   /// Only a markdown file has a rendered form to switch to. Every other file shows source either way,
@@ -48,11 +48,10 @@ final class PaneToolbarPresentationTests: XCTestCase {
   func testOnlyMarkdownFilesGetTheModeSwitch() {
     let markdown = PaneToolbarPresentation.controls(for: file("docs/README.md"))
     XCTAssertTrue(markdown.markdownMode)
-    XCTAssertTrue(markdown.divider)
+    XCTAssertTrue(markdown.hasOptional)
 
     let plain = PaneToolbarPresentation.controls(for: file("src/main.swift"))
     XCTAssertFalse(plain.markdownMode)
-    XCTAssertFalse(plain.divider)
     XCTAssertFalse(plain.hasOptional)
   }
 
@@ -72,9 +71,9 @@ final class PaneToolbarPresentationTests: XCTestCase {
     for content in [terminal(), changeset()] {
       let c = PaneToolbarPresentation.controls(for: content)
       XCTAssertFalse(c.hasOptional)
-      // The divider's whole job is separating the optional group from split/close. With nothing on
-      // its leading side it would be a stray mark.
-      XCTAssertFalse(c.divider)
+      // `hasOptional` also gates the rule between the groups: with nothing on its leading side it
+      // would be a stray mark.
+      XCTAssertFalse(c.hasOptional)
     }
   }
 

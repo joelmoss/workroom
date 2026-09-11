@@ -75,7 +75,7 @@ struct TerminalStatusBar: View {
       if let activeAgent { agentUsageSegment(activeAgent) }
     }
     // `.subheadline` (11pt) — the middle of the two sizes this bar has worn. `.caption` (10pt) was
-    // too small to read at a glance for what the bar carries (a pane's identity: path, branch, run
+    // too small to read at a glance for what the bar carries (a pane's live state: branch, run
     // state); `.callout` (12pt) read as content rather than chrome.
     .font(.subheadline)
     .foregroundStyle(theme.tokens.fgMuted)
@@ -84,7 +84,7 @@ struct TerminalStatusBar: View {
     // Fixed, not vertical padding: the bar's height must not vary with its content (an icon, a
     // `ProgressView`) or a pane would resize as a diagnosis arrives. Held at 28pt across the font
     // change so panes don't reflow — the 11pt text just sits in a little more air.
-    .frame(height: 28)
+    .frame(height: TerminalPanelMetrics.chromeRowHeight)
     .frame(maxWidth: .infinity)
     // `panel` (bg blended 5.5% toward fg), not the raw terminal `bg`: the bar reads as chrome rather
     // than as more terminal. Opaque and theme-derived, so it lifts by the same amount on a light or a
@@ -309,23 +309,12 @@ struct TerminalStatusBar: View {
     return "\(snapshot.backend.displayName) quota. " + windows.joined(separator: ". ")
   }
 
-  // MARK: File path / branch / cwd
+  // MARK: Branch / cwd
 
-  /// The open file's repo-relative path (issue #136) — the pane's identity, which the tab chip can't
-  /// carry (it shows only the basename, so two `user.rb` tabs read the same). Tooltip resolves it
-  /// absolutely against the workroom directory.
-  ///
-  /// Two modifiers here are decisions, not defaults:
-  ///
-  /// - `.head`, unlike the `.middle` its neighbours use. A repo-relative path's discriminating part
-  ///   is its TAIL: middle-truncating `app/models/user.rb` and `app/views/user.rb` elides exactly the
-  ///   component that tells them apart, which is the bug this segment exists to fix. Head truncation
-  ///   drops the shared prefix and keeps the immediate directory plus the filename.
-  /// - `.layoutPriority(1)`, so the branch yields first when the bar is squeezed. Content panes are
-  ///   exempt from the pane-width floor (`TerminalSessions.fits` returns true with no surface), so a
-  ///   split diff pane can be ~198pt wide; without a priority SwiftUI shrinks both labels
-  ///   proportionally. The path is this pane's identity, while the branch is the same on every pane
-  ///   of the workroom and already shown in the sidebar.
+  /// The workroom's current branch or bookmark. Middle-truncates: a long branch name's ends are the
+  /// informative part. The file path that used to lead this row moved to the pane's own title bar in
+  /// issue #150 (`PaneTitlePresentation` kept its `.head` truncation for the same reason it had one
+  /// here — a repo-relative path's discriminating part is its tail).
   @ViewBuilder private var branchSegment: some View {
     if let branch = store.branchLabel(for: target) {
       Label {

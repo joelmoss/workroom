@@ -3,9 +3,9 @@ import SwiftUI
 /// Metrics for the detail-panel title bar (issue #150). One place, for the same reason
 /// `PaneToolbarIcon` exists: the numbers are only consistent if they aren't scattered.
 enum PaneTitleBarMetrics {
-  /// Matches `TerminalStatusBar`'s 28pt so a pane's two chrome rows are the same weight, and matches
-  /// `WorkroomPaneTitleBar` above them.
-  static let height: CGFloat = 28
+  /// Shared with `TerminalStatusBar` so a pane's two chrome rows are the same weight (and it matches
+  /// `WorkroomPaneTitleBar` above them).
+  static let height: CGFloat = TerminalPanelMetrics.chromeRowHeight
   static let leadingInset: CGFloat = 10
   /// Tighter than the leading inset so the trailing-most control lines up with the workroom title
   /// bar's, which lands 4pt inside the card's edge.
@@ -23,21 +23,22 @@ enum PaneTitleBarMetrics {
 /// unconditional and so aren't modelled here.
 ///
 /// Pure and separate from the view (same rationale as `WorkroomPaneToolbarPresentation`) so the
-/// matrix is unit-testable without instantiating SwiftUI, and so the divider — which depends on
-/// **both** the group before it and the always-on group after it — is decided in one pass rather
-/// than by each control guessing.
+/// matrix is unit-testable without instantiating SwiftUI, and so "is there anything before the
+/// split/close group" is decided in one pass rather than by each control guessing.
 enum PaneToolbarPresentation {
   struct Controls: Equatable {
     let diffMode: Bool
     let openFile: Bool
     let markdownMode: Bool
-    /// The rule between the optional group and the always-on split/close group. Only when the
-    /// optional group actually rendered something — a separator with nothing on one side of it is
-    /// worse than no separator.
-    let divider: Bool
 
-    /// Whether anything at all sits before the split/close group. Drives the overflow menu: with
-    /// nothing to collapse, the narrow layout is the wide one.
+    /// Whether anything at all sits before the split/close group. Drives BOTH the rule between the
+    /// two groups (a separator with nothing on one side of it is worse than no separator) and the
+    /// overflow menu (with nothing to collapse, the narrow layout is the wide one).
+    ///
+    /// Deliberately computed rather than a stored `divider` flag, unlike its model
+    /// `WorkroomPaneToolbarPresentation.Controls`: that bar separates TWO independently-absent groups,
+    /// so its `divider` is `run && openIn` and carries real information. Here there is one optional
+    /// group, so a stored flag would be a second name for this exact expression.
     var hasOptional: Bool { diffMode || openFile || markdownMode }
   }
 
@@ -46,16 +47,15 @@ enum PaneToolbarPresentation {
     // A diff pane gets the unified/side-by-side switch and "Open File" (the working copy of the file
     // being diffed, issue #117).
     case .diff:
-      return Controls(diffMode: true, openFile: true, markdownMode: false, divider: true)
+      return Controls(diffMode: true, openFile: true, markdownMode: false)
     // Only a MARKDOWN file has a rendered form to switch to; every other file shows source either way.
     case .file(let descriptor):
       let markdown = PlainFileViewer.isMarkdown(descriptor.path)
-      return Controls(
-        diffMode: false, openFile: false, markdownMode: markdown, divider: markdown)
+      return Controls(diffMode: false, openFile: false, markdownMode: markdown)
     // A terminal has no per-file actions; a changeset's own `DiffViewer` header carries the switch for
     // whichever file is selected inside it, so a second one on the pane would fight it.
     case .terminal, .changeset:
-      return Controls(diffMode: false, openFile: false, markdownMode: false, divider: false)
+      return Controls(diffMode: false, openFile: false, markdownMode: false)
     }
   }
 }
@@ -241,7 +241,7 @@ struct PaneTitleBar: View {
           )
           .disabled(!openFileEnabled)
         }
-        if controls.divider { TitlebarDivider() }
+        if controls.hasOptional { TitlebarDivider() }
       }
       PaneToolbarButton(
         systemImage: "rectangle.trailinghalf.inset.filled", help: "Split right (⌘D)",
@@ -286,8 +286,14 @@ struct PaneTitleBar: View {
       }
     } label: {
       Image(systemName: "ellipsis")
+        .foregroundStyle(.secondary)
     }
-    .menuStyle(.borderlessButton)
+    // `.button`, NOT `.borderlessButton` — the same call the Changes panel's row menu documents
+    // (`ChangesPanel.swift:268`) and `OpenInControl` makes (`TargetDetailToolbar.swift:105`).
+    // `.borderlessButton` is AppKit-backed and never reports hover, so this trigger would be the one
+    // control in the bar with no hover well and a glyph-sized hit area, while its neighbours light up
+    // at 22pt. As a real SwiftUI button it inherits the group's `ToolbarIconButtonStyle` for free.
+    .menuStyle(.button)
     .menuIndicator(.hidden)
     .fixedSize()
     .help("More actions")
@@ -302,7 +308,10 @@ struct PaneTitleBar: View {
 ///
 /// Takes the group's inherited `ToolbarIconButtonStyle` and glyph size rather than styling itself,
 /// so every control in the bar wears one well.
-private struct PaneToolbarButton: View {
+///
+/// Internal, not private: the workroom title bar's "Close all tabs" uses it too, so the two bars a
+/// pane sits between build their buttons the same way.
+struct PaneToolbarButton: View {
   let systemImage: String
   let help: String
   let accessibilityLabel: String

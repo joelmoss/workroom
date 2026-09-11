@@ -493,6 +493,42 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertNil(s.split(for: target))
   }
 
+  /// The laid-out pane rect wins over the surface's own bounds when both are available — the
+  /// measurement `fits(splitting:)` was normalized to in issue #150.
+  ///
+  /// This is the case nothing covered before: a TERMINAL tab has a surface, so it used to be measured
+  /// by `surface.bounds` while a diff tab (no surface) was measured by `paneRects`. Those are two
+  /// different rectangles — a surface excludes the pane's chrome, a pane rect includes it — and the
+  /// gap is now 56pt (title bar + status bar), so two identically-sized panes disagreed about whether
+  /// the same split fit. Seeding the two deliberately in conflict is the only way to prove which one
+  /// the guard reads; with both agreeing, either order passes.
+  func testPaneRectBeatsSurfaceBoundsOnceLaidOut() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    let tab = s.tabs(for: target).first!
+    // The surface alone would REFUSE: (200-4)/2 = 98 < 300.
+    tab.surface!.frame = CGRect(x: 0, y: 0, width: 200, height: 600)
+    // The pane the renderer actually laid out PERMITS: (1000-4)/2 = 498 ≥ 300.
+    s.paneRects[target.id] = [tab.id: CGRect(x: 0, y: 0, width: 1000, height: 600)]
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    XCTAssertEqual(
+      s.tabs(for: target).count, 2,
+      "the laid-out pane rect is authoritative once layout has run, not the surface's bounds")
+    XCTAssertNotNil(s.split(for: target))
+  }
+
+  /// The surface remains the PRE-LAYOUT fallback: before the renderer has laid the tree out once,
+  /// `paneRects` is empty and a live surface is the only thing that knows its size. Without this, the
+  /// normalization above would have made every first split unguarded.
+  func testSurfaceBoundsStillGuardBeforeFirstLayout() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    s.tabs(for: target).first!.surface!.frame = CGRect(x: 0, y: 0, width: 100, height: 100)
+    XCTAssertNil(s.paneRects[target.id], "no layout has run yet")
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    XCTAssertEqual(s.tabs(for: target).count, 1, "refused on the surface's bounds alone")
+  }
+
   /// The guard reads the floor for the axis it is dividing, so the same pane can refuse one split and
   /// permit the other. A tall, narrow pane (400 × 600) can't seat two 300pt-wide halves but seats two
   /// 120pt-tall ones — before the floors were split per axis, 400pt wide was "fine" and produced a pane

@@ -846,6 +846,9 @@ enum UITestFixture {
       ChangedFile(path: "app/controllers/sessions_controller.rb", change: .added),
       ChangedFile(path: "config/routes.rb", change: .modified),
       ChangedFile(path: "test/models/user_test.rb", change: .added),
+      // A DELETED source, so the pane title bar's "Open File" disabled state (there is no working
+      // copy left to open — review D4) is assertable. Nothing else in this list is deleted.
+      ChangedFile(path: "app/models/legacy_user.rb", change: .deleted),
     ]
     if conflicted {
       base.append(ChangedFile(path: conflictedFilePath, change: .conflicted))

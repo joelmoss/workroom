@@ -38,6 +38,57 @@ final class AppStoreContentNavigationTests: XCTestCase {
     return store.terminals.focusedTab(for: store.target(for: sid)!)!.id
   }
 
+  /// `openFilePreview(path:for:)` opens into the target it is GIVEN, not into `selectedTarget`
+  /// (issue #150).
+  ///
+  /// This is the whole reason the overload exists. A workroom split co-displays two workrooms and
+  /// exactly one of them is selected, so a per-pane "Open File" button on the NON-selected workroom's
+  /// diff pane used to open the file into the other workroom's tab strip — a control acting on a pane
+  /// other than its own, which is the defect issue #150 set out to end. The no-target overload keeps
+  /// resolving `selectedTarget`, which is right for the Files inspector.
+  func testOpenFilePreviewForTargetIgnoresTheSelection() {
+    let store = makeStore([project("/a", workrooms: ["main", "other"])])
+    let a = SidebarID.workroom(project: "/a", name: "main")
+    let b = SidebarID.workroom(project: "/a", name: "other")
+    addTerminal(store, a)
+    addTerminal(store, b)
+    let targetA = store.target(for: a)!
+    let targetB = store.target(for: b)!
+
+    // Select A, then open a file explicitly into B — what a button on B's own pane does.
+    store.selectedTargetID = a
+    store.openFilePreview(path: "B-only.swift", for: targetB)
+
+    XCTAssertTrue(
+      store.terminals.tabs(for: targetB).contains { $0.content.filePath == "B-only.swift" },
+      "the file must open into the target the caller named")
+    XCTAssertFalse(
+      store.terminals.tabs(for: targetA).contains { $0.content.filePath == "B-only.swift" },
+      "the selected workroom must not receive another pane's file")
+  }
+
+  /// The no-target overload still follows the selection — the Files inspector acts on whatever is
+  /// selected by definition, so this behaviour must not have changed underneath it.
+  func testOpenFilePreviewWithoutTargetStillFollowsTheSelection() {
+    let store = makeStore([project("/a", workrooms: ["main", "other"])])
+    let a = SidebarID.workroom(project: "/a", name: "main")
+    let b = SidebarID.workroom(project: "/a", name: "other")
+    addTerminal(store, a)
+    addTerminal(store, b)
+
+    store.selectedTargetID = a
+    store.openFilePreview(path: "Selected.swift")
+
+    XCTAssertTrue(
+      store.terminals.tabs(for: store.target(for: a)!).contains {
+        $0.content.filePath == "Selected.swift"
+      })
+    XCTAssertFalse(
+      store.terminals.tabs(for: store.target(for: b)!).contains {
+        $0.content.filePath == "Selected.swift"
+      })
+  }
+
   /// Single-clicking two files in the Changes panel is two visited locations, so Back must return to
   /// the first file's diff.
   ///

@@ -848,8 +848,13 @@ extension View {
         // Open the working file in the in-app viewer (issue #117), alongside the external-editor
         // "Open File in…" below — mirrors the Changes-panel row menu. Both no-op / disabled for a
         // deleted source (no working copy).
+        //
+        // `for: target`, like every other action in this menu: it is attached to a specific chip AND
+        // to the pane body, so in a workroom split it can be raised on a workroom that isn't the
+        // selected one — and the no-target overload resolves `selectedTarget`, which would open the
+        // file into the other workroom's strip (issue #150).
         Button {
-          store.openFilePreview(path: descriptor.path)
+          store.openFilePreview(path: descriptor.path, for: target)
         } label: {
           Label("Open File", systemImage: "doc.text")
         }
