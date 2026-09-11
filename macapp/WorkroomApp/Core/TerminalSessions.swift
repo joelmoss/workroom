@@ -586,8 +586,12 @@ final class TerminalSessions: ObservableObject {
   // two of them — collapsing the first two reintroduces the blank-pane class of issue #3:
   //
   //   displayedTabIDs  "what is in the strip / the layout"   detached: EXCLUDED
+  //   allTabs          "every tab this target owns"          detached: INCLUDED
   //   visibleTabIDs    "what must keep rendering"            detached: INCLUDED
   //   sessionCapture   "what must survive a relaunch"        detached: INCLUDED
+  //
+  // `allTabs` is the one to reach for when CLOSING or refreshing model state. Using `displayedTabIDs`
+  // there is how "Close All Tabs" came to leave a popped-out pane alive with its process running.
   //
   // A detached pane is not in this window's strip, but its surface is very much on screen (in its own
   // window) and it very much has to come back after a relaunch. `normalizedTabIDs` is the shared core
@@ -604,6 +608,17 @@ final class TerminalSessions: ObservableObject {
   func displayedTabIDs(forTargetID targetID: TerminalTarget.ID) -> [TerminalTab.ID] {
     guard !detachedTabIDs.isEmpty else { return normalizedTabIDs(forTargetID: targetID) }
     return normalizedTabIDs(forTargetID: targetID).filter { !detachedTabIDs.contains($0) }
+  }
+
+  /// Every tab a target owns, in strip order, **detached panes included** — the answer to "act on
+  /// all of this target's tabs", as opposed to `tabs(for:)`'s "what the strip shows".
+  ///
+  /// Anything that CLOSES, REAPS or refreshes model state must use this: a detached pane is still a
+  /// live tab with a live process, and `tabs(for:)` hides it. That distinction is what four bulk-close
+  /// paths got wrong when `tabs(for:)` was narrowed (issue #172).
+  func allTabs(for target: TerminalTarget) -> [TerminalTab] {
+    let dict = tabsByTarget[target.id] ?? [:]
+    return normalizedTabIDs(forTargetID: target.id).compactMap { dict[$0] }
   }
 
   /// Strip order with the split's members normalised into one contiguous run, **detached panes
@@ -1337,8 +1352,10 @@ final class TerminalSessions: ObservableObject {
   /// Move a pane into its own window (issue #172). One coordinated transition: the model half here,
   /// the window half through `onPaneDetached`, so the two can never be observed apart.
   ///
-  /// The model half IS `extractFromSplit` plus the flag — a detached tab must not remain a split
-  /// member, or the layout would still try to render it. The focus successor is computed BEFORE the
+  /// The model half MIRRORS `extractFromSplit` (it does not call it) — a detached tab must not remain
+  /// a split member, or the layout would still try to render it. It is a mirror rather than a reuse
+  /// because `extractFromSplit` focuses the tab it pulls out, which is the one thing detaching must
+  /// NOT do: the focus has to go to a survivor. The successor is therefore computed BEFORE the
   /// mutation, the same ordering `closeTab` uses, because `closeSuccessor` reads the on-screen order.
   ///
   /// A preview tab is pinned on the way out: `previewTabID` scans the unfiltered `tabsByTarget`, so

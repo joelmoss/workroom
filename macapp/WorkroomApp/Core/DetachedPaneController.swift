@@ -47,38 +47,41 @@ final class DetachedPaneFocus: ObservableObject {
 /// store's, and closing the origin window can never strand a window over a freed surface.
 ///
 /// ```
-///                 detach ── drag the pane title bar past the window edge
-///                        └─ or "Move to new window" (title-bar button / Window menu)
-///                               │
-///    ┌──────────────────┐       ▼        ┌────────────────────────────┐
-///    │      DOCKED      │ ─────────────▶ │         DETACHED           │
-///    │ a leaf of the    │                │ its own DetachedPaneWindow;│
-///    │ pane tree        │ ◀───────────── │ the tab stays in the       │
-///    └──────────────────┘   dock         │ ORIGIN store's sessions    │
-///         │                  ├─ Dock button        → solo            │
-///         │                  └─ drag onto a pane edge → splits there │
-///         │                                └────────────────────────────┘
-///         │                                          │
-///         │           quit ─▶ session.json records `detachedFrame`
-///         │                   relaunch restores it DETACHED ──┘
-///         │
-///    pane ✕                             red button · ⌘W · the pane's own ✕
-///         │                                          │
-///         └──────────────────▶ ┌──────────┐ ◀────────┘
-///                              │  CLOSED  │
-///                              └──────────┘
-///           closeTab → onTabsRemoved → the detached window closes as a CONSEQUENCE
+///          detach ── drag the pane title bar (or a tab chip) past the window edge
+///                 └─ or "Move to new window" (pane title-bar button / Window menu / ⌃⌘O)
+///                        │
+///   ┌──────────────────┐ ▼  ┌────────────────────────────┐
+///   │      DOCKED      │───▶│         DETACHED           │
+///   │ a leaf of the    │    │ its own DetachedPaneWindow; │
+///   │ pane tree        │◀───│ the tab stays in the        │
+///   └──────────────────┘    │ ORIGIN store's sessions     │
+///        │           dock   └────────────────────────────┘
+///        │        (Dock button / ⌃⌘O)        │
+///        │                                   │
+///        │      quit ─▶ session.json records `detachedFrame`
+///        │              relaunch restores it DETACHED ──┘
+///        │
+///    pane ✕                        red button · ⌘W
+///        │                                   │
+///        └────────────▶ ┌──────────┐ ◀───────┘
+///                       │  CLOSED  │
+///                       └──────────┘
+///      closeTab / reap → undetach → onPaneDocked → close(tabID:), i.e. the window
+///      goes as a CONSEQUENCE of the tab dying
 /// ```
 ///
 /// Three asymmetries, all deliberate, all easy to get backwards:
 ///
 /// 1. The window's **red button and ⌘W close the pane**, not merely the window — Chrome / VS Code
 ///    tear-off semantics. They route through `requestCloseTerminalTab`, so a live process still gets
-///    its confirmation (which is presented by `RootView`, i.e. on the ORIGIN window).
+///    its confirmation (which is presented by `RootView`, i.e. on the ORIGIN window). The pane draws
+///    no ✕ of its own in there: a detached pane renders `chromeless`, so the window's chrome is the
+///    only chrome.
 /// 2. The **Dock button closes the window and keeps the pane.** It is the only close-shaped action
-///    that does, and it goes through `closeWithoutClosingTab`.
-/// 3. `onTabsRemoved` closing a window is a *consequence* of the tab dying, never the cause. Nothing
-///    here may close a window in order to close a tab.
+///    that does, and it goes through `close(tabID:)`, which explicitly does not touch the tab.
+/// 3. A tab dying closes its window as a *consequence*, never the cause: `closeTab`/`reap` call
+///    `undetach`, which fires `onPaneDocked`, which calls `close(tabID:)`. Nothing here may close a
+///    window in order to close a tab.
 ///
 /// Deliberately **not** registered in `WindowRegistry`: these windows own no `AppStore`, and
 /// registering them would make `AppDelegate.shortcutStore(for:)` route ⌘T / ⌘1–9 to the *origin*
@@ -92,19 +95,15 @@ final class DetachedPaneWindows {
   /// Deliberately a CONSTANT rather than the pane's measured rect: on screen a pane is whatever size
   /// the split happened to leave it, and inheriting that means tearing off a narrow column hands you
   /// a narrow, unusable window. Detaching is a request for a window, not for those dimensions.
-  /// Matches `QuickTerminalController`'s 800x500, plus room for the pane's own title and status bars.
+  /// Matches `QuickTerminalController`'s 800x500, plus room for the pane's status bar — ONE chrome
+  /// row, not two: a detached pane renders `chromeless`, so it draws no title bar of its own, and the
+  /// window's own title bar sits outside `contentRect`.
   static let defaultSize = NSSize(
-    width: 800, height: 500 + 2 * TerminalPanelMetrics.chromeRowHeight)
+    width: 800, height: 500 + TerminalPanelMetrics.chromeRowHeight)
 
   private var windows: [TerminalTab.ID: DetachedPaneWindow] = [:]
   private var toolbarDelegates: [TerminalTab.ID: ToolbarDelegate] = [:]
-  /// Set while `close(tabID:)` is tearing a window down, so the `windowShouldClose` delegate hook
-  /// doesn't re-enter and try to close the tab we are merely un-hosting.
-  private var closingWithoutTab: Set<TerminalTab.ID> = []
   private var delegates: [TerminalTab.ID: Delegate] = [:]
-
-  /// Whether this tab currently has a window — the controller's half of the detached invariant.
-  func hasWindow(for tabID: TerminalTab.ID) -> Bool { windows[tabID] != nil }
 
   /// The window hosting `tabID`, for the raise paths (`AppStore.window(forTab:)`).
   func window(for tabID: TerminalTab.ID) -> NSWindow? { windows[tabID] }
@@ -136,7 +135,11 @@ final class DetachedPaneWindows {
     }
     // A restored window keeps the frame the user left it at; a fresh tear-off always opens at the
     // standard size.
-    let size = frame?.size ?? Self.defaultSize
+    // `AppStore.frameOnAVisibleScreen`, not a local copy: it already encodes what "reachable" means
+    // (a real 60pt overlap in BOTH axes, not a shared edge), it is pure and screen-injectable, and it
+    // is unit-tested. A restored frame it rejects is unusable, so fall back to the standard size.
+    let restored = frame.flatMap { AppStore.frameOnAVisibleScreen($0) }
+    let size = restored?.size ?? Self.defaultSize
     let window = DetachedPaneWindow(
       contentRect: NSRect(origin: .zero, size: size),
       styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -169,19 +172,17 @@ final class DetachedPaneWindows {
     // Only the window-level a11y id in this app besides the onboarding window's — XCUITest has no
     // other way to scope a query to this window (see `DetachedPaneUITests`).
     window.setAccessibilityIdentifier("detachedPane.window")
-    if let frame {
-      window.setFrame(Self.onVisibleScreen(frame), display: false)
+    if let restored {
+      window.setFrame(restored, display: false)
     } else if let origin {
       window.setFrameTopLeftPoint(origin)
-      window.setFrame(Self.onVisibleScreen(window.frame), display: false)
+      if let safe = AppStore.frameOnAVisibleScreen(window.frame) {
+        window.setFrame(safe, display: false)
+      }
     } else {
       window.center()
     }
-    let delegate = Delegate(
-      onCloseTab: onCloseTab,
-      isSuppressed: { [weak self] in
-        self?.closingWithoutTab.contains(tabID) ?? false
-      })
+    let delegate = Delegate(onCloseTab: onCloseTab)
     window.delegate = delegate
     delegates[tabID] = delegate
     windows[tabID] = window
@@ -201,10 +202,11 @@ final class DetachedPaneWindows {
   func close(tabID: TerminalTab.ID) {
     guard let window = windows[tabID] else { return }
     toolbarDelegates[tabID] = nil
-    closingWithoutTab.insert(tabID)
+    // Nilling the delegate is the whole guard: `NSWindow.close()` does not consult
+    // `windowShouldClose(_:)` (only `performClose(_:)` does), and with no delegate there is nothing
+    // to consult anyway — so this can never re-enter and try to close the tab we are un-hosting.
     window.delegate = nil
     window.close()
-    closingWithoutTab.remove(tabID)
     windows[tabID] = nil
     delegates[tabID] = nil
     DetachedPaneFocus.shared.refresh()
@@ -214,21 +216,6 @@ final class DetachedPaneWindows {
   /// are about to be released.
   func closeAll() {
     for tabID in windows.keys { close(tabID: tabID) }
-  }
-
-  /// Nudge a frame back onto a screen that still exists — the same protection `AppStore`'s restored
-  /// main-window frame gets, and for the same reason: unplug the display a detached pane was on and
-  /// it would otherwise reopen somewhere unreachable.
-  static func onVisibleScreen(_ frame: NSRect) -> NSRect {
-    let screens = NSScreen.screens
-    guard !screens.isEmpty else { return frame }
-    if screens.contains(where: { $0.visibleFrame.intersects(frame) }) { return frame }
-    let target = (NSScreen.main ?? screens[0]).visibleFrame
-    var moved = frame
-    moved.size.width = min(moved.width, target.width)
-    moved.size.height = min(moved.height, target.height)
-    moved.origin = CGPoint(x: target.midX - moved.width / 2, y: target.midY - moved.height / 2)
-    return moved
   }
 
   /// The detached window's toolbar: the pane's name with its project and workroom alongside it in
@@ -365,16 +352,11 @@ final class DetachedPaneWindows {
 
   /// Turns the window's own close (red button, ⌘W) into a request to close the TAB — asymmetry 1
   /// above. Returning `false` lets `requestCloseTerminalTab` run its confirmation first; the window
-  /// then closes as a consequence, via `onTabsRemoved` → `undetach` → `close(tabID:)`.
+  /// then closes as a consequence, via `closeTab` → `undetach` → `onPaneDocked` → `close(tabID:)`.
   private final class Delegate: NSObject, NSWindowDelegate {
     private let onCloseTab: () -> Void
-    private let isSuppressed: () -> Bool
-    init(onCloseTab: @escaping () -> Void, isSuppressed: @escaping () -> Bool) {
-      self.onCloseTab = onCloseTab
-      self.isSuppressed = isSuppressed
-    }
+    init(onCloseTab: @escaping () -> Void) { self.onCloseTab = onCloseTab }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-      if isSuppressed() { return true }
       onCloseTab()
       return false
     }

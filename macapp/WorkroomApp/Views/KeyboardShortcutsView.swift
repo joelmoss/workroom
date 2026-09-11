@@ -120,6 +120,9 @@ extension KeyboardShortcutsView {
         ShortcutItem(label: "Move focus right", keys: "⌃⌘→"),
         ShortcutItem(label: "Move focus up", keys: "⌃⌘↑"),
         ShortcutItem(label: "Move focus down", keys: "⌃⌘↓"),
+        // Flips with key focus: pops the focused pane out from the main window, moves it back from
+        // the detached one (issue #172).
+        ShortcutItem(label: "Move pane into / back from new window", keys: "⌃⌘O"),
       ]),
     ShortcutGroup(
       title: "Terminals",

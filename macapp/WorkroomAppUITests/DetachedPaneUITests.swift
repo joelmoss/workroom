@@ -2,8 +2,7 @@ import XCTest
 
 /// Popping a detail panel out into its own window and docking it back (issue #172).
 ///
-/// Driven through the **menu item and the title-bar buttons**, never a synthetic drag past the window
-/// edge: `WindowDragUITests` already documents that synthetic drags around the title-bar region do not
+/// Driven through the **Window menu item**, never a synthetic drag past the window edge: `WindowDragUITests` already documents that synthetic drags around the title-bar region do not
 /// behave like a real mouse here, and this app has a history of real-mouse-only bugs. The tear-off
 /// drag's *decision* is covered instead by `PaneDragOutcomeTests` (pure geometry, all four edges); what
 /// these tests prove is the part geometry cannot — that a second window really appears, really contains
@@ -51,6 +50,18 @@ final class DetachedPaneUITests: XCTestCase {
   {
     let exp = XCTNSPredicateExpectation(
       predicate: NSPredicate(format: "count == %d", target), object: app.windows)
+    return XCTWaiter().wait(for: [exp], timeout: timeout) == .completed
+  }
+
+  /// Poll the app-wide pane count, for the same reason `waitForWindowCount` polls windows: the origin
+  /// re-lays out asynchronously after a pane leaves or returns. A fixed `Thread.sleep` is a bet on how
+  /// long that takes — too short under load (false red), and on a fast machine it can read the count
+  /// before the relayout lands (false green).
+  private func waitForPaneCount(_ app: XCUIApplication, _ target: Int, timeout: TimeInterval = 6)
+    -> Bool
+  {
+    let exp = XCTNSPredicateExpectation(
+      predicate: NSPredicate(format: "count == %d", target), object: terminalPanes(app))
     return XCTWaiter().wait(for: [exp], timeout: timeout) == .completed
   }
 
@@ -119,11 +130,9 @@ final class DetachedPaneUITests: XCTestCase {
 
     popOutMenuItem(app).click()
     XCTAssertTrue(detachedWindow(app).waitForExistence(timeout: 5))
-    // Let the origin settle after losing the pane.
-    Thread.sleep(forTimeInterval: 1.0)
 
-    XCTAssertEqual(
-      terminalPanes(app).count, panesBefore,
+    XCTAssertTrue(
+      waitForPaneCount(app, panesBefore),
       "the pane moved windows; nothing was created or destroyed")
   }
 
@@ -144,9 +153,8 @@ final class DetachedPaneUITests: XCTestCase {
 
     XCTAssertTrue(
       waitForWindowCount(app, windowsBefore), "the window goes when its pane does")
-    Thread.sleep(forTimeInterval: 1.0)
-    XCTAssertEqual(
-      terminalPanes(app).count, panesBefore - 1,
+    XCTAssertTrue(
+      waitForPaneCount(app, panesBefore - 1),
       "and the pane is gone from the app entirely, not docked back")
   }
 }

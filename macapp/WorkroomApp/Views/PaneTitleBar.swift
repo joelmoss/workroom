@@ -153,10 +153,11 @@ struct PaneTitleBar: View {
   let onSplitDown: () -> Void
   let onClose: () -> Void
   let onActivate: () -> Void
-  /// Pop this pane out into its own window, or dock it back when it already is one (issue #172).
-  /// A button as well as a drag because a drag is not keyboard-reachable and not reliably drivable
-  /// from XCUITest, so this is the path the automated coverage uses.
-  var onPopOut: () -> Void = {}
+  /// Pop this pane out into its own window (issue #172). Only that direction: a detached pane renders
+  /// `chromeless`, so this bar never appears in a detached window — docking back is that window's own
+  /// toolbar button. A button as well as a drag because a drag is neither keyboard-reachable nor
+  /// reliably drivable from XCUITest.
+  let onPopOut: () -> Void
   let onDragChanged: (CGPoint) -> Void
   let onDragEnded: () -> Void
   private let theme = ThemeService.shared
@@ -190,11 +191,6 @@ struct PaneTitleBar: View {
     // Drag the pane by its bar to move it within the split, or up to the strip to pop it out — the
     // affordance that replaced the hover-only grip chip (issue #150), and the same gesture the
     // workroom title bar uses for its group.
-    //
-    // `including:` MUST be `.subviews` when solo: `GestureMask.none` would disable gestures in the
-    // SUBVIEW hierarchy too, killing this bar's own buttons on every unsplit pane — and
-    // `ToolbarIconButtonStyle`'s hover well is `.onHover`, not a gesture, so they would still light up
-    // and look alive.
     .gesture(
       DragGesture(minimumDistance: 6, coordinateSpace: .named(coordinateSpace))
         .onChanged { onDragChanged($0.location) }
