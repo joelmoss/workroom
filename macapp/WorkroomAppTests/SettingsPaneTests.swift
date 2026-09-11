@@ -16,14 +16,14 @@ final class SettingsPaneTests: XCTestCase {
 
   override func setUp() {
     super.setUp()
-    saved = UserDefaults.standard.object(forKey: key)
+    saved = UserDefaults.app.object(forKey: key)
   }
 
   override func tearDown() {
     if let saved {
-      UserDefaults.standard.set(saved, forKey: key)
+      UserDefaults.app.set(saved, forKey: key)
     } else {
-      UserDefaults.standard.removeObject(forKey: key)
+      UserDefaults.app.removeObject(forKey: key)
     }
     super.tearDown()
   }
@@ -40,7 +40,7 @@ final class SettingsPaneTests: XCTestCase {
   }
 
   func testDefaultsToGeneralWhenUnset() {
-    UserDefaults.standard.removeObject(forKey: key)
+    UserDefaults.app.removeObject(forKey: key)
     XCTAssertEqual(Defaults[.settingsSelectedPane], .general)
   }
 
@@ -53,7 +53,7 @@ final class SettingsPaneTests: XCTestCase {
   /// simulated by writing a plain string straight to the suite — it can't be injected through the
   /// typed `Key`. Deserialising it yields `nil`, and `Defaults` falls back to the key's default.
   func testCorruptStoredValueFallsBackToGeneral() {
-    UserDefaults.standard.set("bogus", forKey: key)
+    UserDefaults.app.set("bogus", forKey: key)
     XCTAssertEqual(Defaults[.settingsSelectedPane], .general)
   }
 }
