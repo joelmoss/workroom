@@ -288,26 +288,40 @@ mod tests {
             return;
         }
 
-        let mut child = Command::new("/bin/bash")
-            .args(["-c", "exec -a definitely-not-sleep sleep 30"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn");
-        let pid = child.id() as i32;
-
-        // `exec` replaces the shell in place, so the pid is stable; give it a moment to land.
-        let mut name = None;
-        for _ in 0..50 {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            name = executable_name(pid);
-            if name.as_deref() == Some("sleep") {
-                break;
+        // Both facts are read in ONE observation, and the loop waits for the REWRITE rather than
+        // for the name: reading `cmdline` after the loop instead meant a fixture that had already
+        // exited read back as "" — a dead process has an empty cmdline — and the test then blamed
+        // the fixture for not rewriting argv[0]. That is what it did on CI, on one matrix leg,
+        // while the other passed.
+        let observe = || -> Option<(String, Option<String>)> {
+            let mut child = Command::new("/bin/bash")
+                .args(["-c", "exec -a definitely-not-sleep sleep 30"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn");
+            let pid = child.id() as i32;
+            // `exec` replaces the shell in place, so the pid is stable; give it a moment to land.
+            let mut seen = None;
+            for _ in 0..50 {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                let cmdline =
+                    std::fs::read_to_string(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+                if cmdline.starts_with("definitely-not-sleep") {
+                    seen = Some((cmdline, executable_name(pid)));
+                    break;
+                }
             }
-        }
-        let cmdline = std::fs::read_to_string(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-        let _ = child.kill();
-        let _ = child.wait();
+            let _ = child.kill();
+            let _ = child.wait();
+            seen
+        };
+
+        // A fixture that dies before it can be observed is a flaky FIXTURE, not a failing
+        // assertion, so give it a couple of goes before believing it.
+        let Some((cmdline, name)) = (0..3).find_map(|_| observe()) else {
+            panic!("the `exec -a` fixture never came up; cannot test what argv[0] is preferred");
+        };
 
         assert!(
             cmdline.starts_with("definitely-not-sleep"),
