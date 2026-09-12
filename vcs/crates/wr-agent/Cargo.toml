@@ -1,0 +1,24 @@
+# The unified agent: one binary serving both local and remote workrooms.
+#
+#   `wr-agent serve`  owns ptys and services
+#   `wr-agent attach` is the relay libghostty forks as its `config.command`
+#
+# Mirrors today's shipped `workroom-session daemon|attach` shape deliberately — that shape is
+# already debugged, and one binary means the frame codec exists once rather than being duplicated
+# in Swift and Rust indefinitely. See docs/designs/remote-workrooms.md, Phase 1.
+#
+# No jj-lib and no gix here: this crate is the transport and process layer. VCS reads arrive later
+# as a service, and they come from the existing wr-vcs-* crates rather than being reimplemented.
+[package]
+name = "wr-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+
+[[bin]]
+name = "wr-agent"
+path = "src/main.rs"
