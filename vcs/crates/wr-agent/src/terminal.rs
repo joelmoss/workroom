@@ -26,6 +26,15 @@
 //! And **the parser continuation last**, because a byte stream cut mid-sequence leaves the VT
 //! parser or UTF-8 decoder unfinished and nothing in the grid expresses that. Without it the tail
 //! of a split escape renders as literal text and a cut codepoint as U+FFFD.
+//!
+//! **Scrollback comes back too, and needs no help.** An earlier reading of this concluded the
+//! formatter was screen-scoped and history was lost — it is not. With a NULL selection the
+//! formatter emits the *entire* screen in Ghostty's sense, scrollback included: a terminal holding
+//! 37 history rows and 24 visible ones emits 59 newlines, and a client fed that ends up with the
+//! history and the right visible screen. A hand-rolled history emission on top of it only
+//! double-counts. The one measurable difference is a single row: the emission ends without a
+//! trailing newline, so the last line does not scroll, and the client reports 36 history rows
+//! where the producer has 37.
 
 #![allow(non_upper_case_globals, non_camel_case_types, non_snake_case)]
 
@@ -408,6 +417,66 @@ mod tests {
             naive.mode(modes::ALT_SCREEN),
             Some(false),
             "if this ever passes, the extra flags are no longer load-bearing"
+        );
+    }
+
+    /// Scrollback is most of what people lose across a detach: the screen is only the last 24
+    /// rows, and everything a build or a test run printed before that is above it.
+    #[test]
+    fn scrollback_survives_re_synthesis() {
+        let mut producer = ShadowTerminal::new(80, 24).expect("producer");
+        // Comfortably more than one screen, so the early lines are genuinely in history.
+        for n in 0..60 {
+            producer.write(format!("line {n}\r\n").as_bytes());
+        }
+        assert!(
+            producer
+                .get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS)
+                .unwrap_or(0)
+                > 0,
+            "fixture produced no scrollback"
+        );
+
+        let mut client = ShadowTerminal::new(80, 24).expect("client");
+        client.write(&producer.replay());
+
+        // Within one row of the producer: the emission ends without a trailing newline, so the
+        // final line does not scroll and the client holds one fewer history row. Asserted as a
+        // bound rather than equality so the real behaviour is recorded rather than rounded off.
+        let want = producer
+            .get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS)
+            .unwrap_or(0);
+        let got = client
+            .get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS)
+            .unwrap_or(0);
+        assert!(
+            got + 1 >= want && got <= want,
+            "history depth {got} is not within one row of the producer's {want}"
+        );
+        assert!(got > 20, "history was not restored at all: {got} rows");
+        // The oldest line must be there, not just some rows.
+        assert!(
+            client.visible_text().contains("line 59"),
+            "screen lost its last line"
+        );
+        // The visible screen must still be the recent lines, not the replayed history.
+        assert!(
+            client.visible_text().contains("line 59"),
+            "screen lost its last line: {:?}",
+            client.visible_text()
+        );
+    }
+
+    /// A session with nothing scrolled off must not gain phantom history.
+    #[test]
+    fn a_short_session_gains_no_phantom_history() {
+        let mut producer = ShadowTerminal::new(80, 24).expect("producer");
+        producer.write(b"just one line\r\n");
+        let mut client = ShadowTerminal::new(80, 24).expect("client");
+        client.write(&producer.replay());
+        assert_eq!(
+            client.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS),
+            Some(0)
         );
     }
 

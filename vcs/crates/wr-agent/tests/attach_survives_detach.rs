@@ -443,3 +443,63 @@ fn a_reattaching_client_is_shown_the_screen() {
     let _ = agent.kill();
     let _ = agent.wait();
 }
+
+/// Scrollback is most of what a detach used to cost: the screen is only the last 24 rows, and a
+/// build or test run's output is all above it. This marker is pushed well off-screen before the
+/// drop, so seeing it again can only mean history was restored.
+#[test]
+fn a_reattaching_client_gets_its_scrollback() {
+    if std::env::var_os("WR_AGENT_HAS_TERMINAL_STATE").is_none() {
+        eprintln!("skipping: agent built without the terminal-state feature");
+        return;
+    }
+
+    let workspace = Workspace::new("scrollback");
+    let socket = workspace.socket();
+    let mut agent = start_agent(&socket);
+    let session = "1b1b1b1b-2c2c-3d3d-4e4e-5f5f5f5f5f5f";
+
+    let mut first = attach(&socket, session);
+    {
+        let stdin = first.stdin.as_mut().expect("stdin");
+        std::thread::sleep(Duration::from_millis(400));
+        stdin
+            .write_all(b"echo SCROLLED-OFF-MARKER\n")
+            .expect("write");
+        // Far more than a 24-row screen, so the marker is unambiguously in history.
+        stdin
+            .write_all(b"for i in 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5; do echo pad$i; done\n")
+            .expect("write");
+        stdin.write_all(b"echo DRAINED\n").expect("write");
+        stdin.flush().expect("flush");
+    }
+    let mut reader = ClientReader::new(&mut first);
+    let seen = reader.read_until("DRAINED", Duration::from_secs(10));
+    assert!(
+        seen.contains("SCROLLED-OFF-MARKER"),
+        "setup failed: {seen:?}"
+    );
+    reader.drain(Duration::from_millis(500));
+
+    first.kill().expect("kill");
+    first.wait().expect("reap");
+    wait_for(Duration::from_secs(5), || {
+        list_sessions(&socket).contains("detached")
+    });
+
+    let mut second = attach(&socket, session);
+    let mut reader = ClientReader::new(&mut second);
+    let seen = reader
+        .read_until("SCROLLED-OFF-MARKER", Duration::from_secs(10))
+        .to_string();
+    assert!(
+        seen.contains("SCROLLED-OFF-MARKER"),
+        "scrollback was not restored; the client saw {} bytes",
+        seen.len()
+    );
+
+    let _ = second.kill();
+    let _ = second.wait();
+    let _ = agent.kill();
+    let _ = agent.wait();
+}
