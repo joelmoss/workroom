@@ -42,6 +42,18 @@ fn main() -> ExitCode {
         Some("protocol") => {
             println!("protocol {PROTOCOL_VERSION} (minimum supported {MIN_SUPPORTED_VERSION})");
             println!("build {BUILD}");
+            // Whether this build can repaint a reattaching client. A build without it serves
+            // sessions perfectly well and then hands a reconnecting pane a blank screen, which is
+            // invisible until someone quits the app and comes back — so it is stated here and
+            // asserted against the shipped binary by macapp/Scripts/build-agent_test.sh.
+            println!(
+                "terminal-state {}",
+                if cfg!(feature = "terminal-state") {
+                    "yes"
+                } else {
+                    "no"
+                }
+            );
             ExitCode::SUCCESS
         }
         Some("serve") if args.iter().any(|a| a == "--stdio") => run_serve_stdio(),

@@ -86,10 +86,17 @@ expect_archs() {
     fails=$((fails + 1))
   fi
   # The binary must actually answer, or the app's health probe reports it unhealthy.
-  if ! "$OUT" protocol 2>/dev/null | grep -q '^protocol '; then
-    # Only meaningful when a slice for this machine's arch is present.
-    if [ "$(lipo -archs "$OUT" 2>/dev/null | tr ' ' '\n' | grep -cx "$(uname -m)")" -gt 0 ]; then
+  # Only meaningful when a slice for this machine's arch is present.
+  if [ "$(lipo -archs "$OUT" 2>/dev/null | tr ' ' '\n' | grep -cx "$(uname -m)")" -gt 0 ]; then
+    if ! "$OUT" protocol 2>/dev/null | grep -q '^protocol '; then
       echo "FAIL: ARCHS='$2' built a binary that does not answer 'protocol'"
+      fails=$((fails + 1))
+    fi
+    # The shipped agent MUST keep a shadow copy of each session's screen. Without it every
+    # session still works and every reattach comes back blank — a pane with no prompt after the
+    # app is quit and relaunched, which is exactly how it was found, in the GUI, by hand.
+    if ! "$OUT" protocol 2>/dev/null | grep -q '^terminal-state yes$'; then
+      echo "FAIL: ARCHS='$2' built an agent that cannot repaint a reattaching client"
       fails=$((fails + 1))
     fi
   fi
