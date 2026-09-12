@@ -82,34 +82,51 @@ final class SessionBackendTests: XCTestCase {
   // MARK: - The probe
 
   func testProbeReportsNotBundledWhenTheBinaryIsAbsent() {
-    let result = SessionBackendProbe.probe(.rustAgent, binaryURL: nil) { _ in
-      XCTFail("must not run anything when there is no binary")
-      return (0, "")
-    }
+    let result = SessionBackendProbe.probe(
+      .rustAgent,
+      locate: { _ in nil },
+      run: {
+        _ in
+        XCTFail("must not run anything when there is no binary")
+        return (0, "")
+      }
+    )
     XCTAssertEqual(result, .notBundled)
     XCTAssertFalse(result.isReady)
   }
 
   func testProbeReportsReadyOnAParseableVersion() {
-    let result = SessionBackendProbe.probe(.rustAgent, binaryURL: URL(fileURLWithPath: "/x")) {
-      _ in (0, "protocol 1 (minimum supported 1)\ngreeting 21 bytes: [57]\n")
-    }
+    let result = SessionBackendProbe.probe(
+      .rustAgent,
+      locate: { _ in URL(fileURLWithPath: "/x") },
+      run: {
+        _ in (0, "protocol 1 (minimum supported 1)\ngreeting 21 bytes: [57]\n")
+      }
+    )
     XCTAssertEqual(result, .ready(version: "protocol 1"))
     XCTAssertTrue(result.isReady)
   }
 
   /// The failure a file-existence check cannot see, and the one a rollback decision needs.
   func testProbeReportsUnhealthyOnANonZeroExit() {
-    let result = SessionBackendProbe.probe(.rustAgent, binaryURL: URL(fileURLWithPath: "/x")) {
-      _ in (127, "")
-    }
+    let result = SessionBackendProbe.probe(
+      .rustAgent,
+      locate: { _ in URL(fileURLWithPath: "/x") },
+      run: {
+        _ in (127, "")
+      }
+    )
     XCTAssertEqual(result, .unhealthy(reason: "exited 127"))
   }
 
   func testProbeReportsUnhealthyOnUnrecognisedOutput() {
-    let result = SessionBackendProbe.probe(.rustAgent, binaryURL: URL(fileURLWithPath: "/x")) {
-      _ in (0, "dyld: Library not loaded\n")
-    }
+    let result = SessionBackendProbe.probe(
+      .rustAgent,
+      locate: { _ in URL(fileURLWithPath: "/x") },
+      run: {
+        _ in (0, "dyld: Library not loaded\n")
+      }
+    )
     XCTAssertEqual(result, .unhealthy(reason: "unrecognised reply"))
   }
 
@@ -117,9 +134,13 @@ final class SessionBackendTests: XCTestCase {
     struct Boom: LocalizedError {
       var errorDescription: String? { "bad CPU type" }
     }
-    let result = SessionBackendProbe.probe(.rustAgent, binaryURL: URL(fileURLWithPath: "/x")) {
-      _ in throw Boom()
-    }
+    let result = SessionBackendProbe.probe(
+      .rustAgent,
+      locate: { _ in URL(fileURLWithPath: "/x") },
+      run: {
+        _ in throw Boom()
+      }
+    )
     XCTAssertEqual(result, .unhealthy(reason: "bad CPU type"))
   }
 
@@ -136,11 +157,14 @@ final class SessionBackendTests: XCTestCase {
   /// The daemon has no self-describing subcommand and is not getting one — it is being retired.
   func testSwiftDaemonIsNotExecutedByTheProbe() {
     let result = SessionBackendProbe.probe(
-      .swiftDaemon, binaryURL: URL(fileURLWithPath: "/x")
-    ) { _ in
-      XCTFail("the shipped daemon must not be executed to answer a health question")
-      return (0, "")
-    }
+      .swiftDaemon,
+      locate: { _ in URL(fileURLWithPath: "/x") },
+      run: {
+        _ in
+        XCTFail("the shipped daemon must not be executed to answer a health question")
+        return (0, "")
+      }
+    )
     XCTAssertTrue(result.isReady)
   }
 }

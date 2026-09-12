@@ -16,15 +16,24 @@ final class PersistentSessionService {
     subsystem: "com.developwithstyle.workroom", category: "PersistentSession")
 
   private var resolvedSocketPath: String?
+  /// The backend `resolvedSocketPath` was resolved for. The two backends deliberately use
+  /// different socket files, so a cached path from before a switch would point the app at the
+  /// other implementation's sessions.
+  private var resolvedForBackend: SessionBackend?
   private var descriptors: [UUID: SessionDescriptor] = [:]
 
   private init() {}
 
+  /// Which helper owns sessions right now. Read through `SessionBackend.selected()` so the
+  /// "a build that does not offer the choice ignores a stored one" rule lives in one place.
+  var backend: SessionBackend { SessionBackend.selected() }
+
   var socketPath: String? {
-    if let resolvedSocketPath { return resolvedSocketPath }
+    if let resolvedSocketPath, resolvedForBackend == backend { return resolvedSocketPath }
     do {
-      let path = try PersistentSessionPaths.resolveSocketPath()
+      let path = try PersistentSessionPaths.resolveSocketPath(backend: backend)
       resolvedSocketPath = path
+      resolvedForBackend = backend
       return path
     } catch {
       logger.error("unable to resolve the session socket path: \(String(describing: error))")
@@ -34,13 +43,23 @@ final class PersistentSessionService {
 
   var existingSocketPath: String? {
     let candidates = [
-      try? PersistentSessionPaths.preferredSocketPath(),
-      try? PersistentSessionPaths.fallbackSocketPath(),
+      try? PersistentSessionPaths.preferredSocketPath(backend: backend),
+      try? PersistentSessionPaths.fallbackSocketPath(backend: backend),
     ]
     return candidates.compactMap { $0 }.first { FileManager.default.fileExists(atPath: $0) }
   }
 
-  var binaryPath: String? { PersistentSessionPaths.binaryURL()?.path }
+  var binaryPath: String? { PersistentSessionPaths.binaryURL(for: backend)?.path }
+
+  /// The control-plane client for whichever helper is in force. `Sendable` because every caller
+  /// uses it from a detached task — these are blocking socket round trips and must not run on the
+  /// main actor.
+  private func controlPlane(socketPath: String) -> any SessionControlPlane & Sendable {
+    switch backend {
+    case .swiftDaemon: return PersistentSessionControlClient(socketPath: socketPath)
+    case .rustAgent: return AgentControlClient(socketPath: socketPath)
+    }
+  }
 
   var isAvailable: Bool { socketPath != nil && binaryPath != nil }
 
@@ -81,7 +100,10 @@ final class PersistentSessionService {
 
   func liveSessions() async -> [SessionDescriptor] {
     guard let socketPath = existingSocketPath else { return [] }
-    let client = PersistentSessionControlClient(socketPath: socketPath)
+    // Both backends answer with the same `SessionDescriptor` payload — the agent emits the wire
+    // format this decoder already reads — so only the framing differs, and every caller of this
+    // is backend-agnostic.
+    let client = controlPlane(socketPath: socketPath)
     return await Task.detached(priority: .utility) { client.list() }.value
   }
 
@@ -89,7 +111,7 @@ final class PersistentSessionService {
     guard let socketPath = existingSocketPath,
       let identifier = SessionIdentifier(uuidString: sessionID.uuidString)
     else { return .unreachable }
-    let client = PersistentSessionControlClient(socketPath: socketPath)
+    let client = controlPlane(socketPath: socketPath)
     return await Task.detached(priority: .utility) {
       guard FileManager.default.fileExists(atPath: socketPath) else { return .unreachable }
       if let descriptor = client.info(identifier: identifier) { return .live(descriptor) }
@@ -108,7 +130,7 @@ final class PersistentSessionService {
     guard let socketPath = existingSocketPath,
       let identifier = SessionIdentifier(uuidString: sessionID.uuidString)
     else { return true }
-    let client = PersistentSessionControlClient(socketPath: socketPath)
+    let client = controlPlane(socketPath: socketPath)
     let killed = await Task.detached(priority: .utility) { client.kill(identifier: identifier) }
       .value
     if !killed {
@@ -134,7 +156,7 @@ final class PersistentSessionService {
     guard !attachedSessionIDs.isEmpty else {
       descriptors.removeAll()
       guard let socketPath = existingSocketPath else { return }
-      let client = PersistentSessionControlClient(socketPath: socketPath)
+      let client = controlPlane(socketPath: socketPath)
       _ = await Task.detached(priority: .utility) { client.killAll() }.value
       return
     }

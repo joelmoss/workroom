@@ -355,6 +355,103 @@ fn dispatch(
     }
 }
 
+/// The session list, in the wire format `SessionDescriptor.decodeList` already reads.
+///
+/// Matching the shipped Swift encoding rather than inventing a second one: the app's decoder,
+/// its `SessionDescriptor` type and every caller of `liveSessions()` then work against either
+/// backend with no branching. The format is
+/// `count:u32`, then per session `id:[16]`, `pid:i32`, `tty:u64`, `cwd:string`,
+/// `attached:u8`, `metadata:entries` — all big-endian, strings length-prefixed.
+///
+/// `tty` is zero: the Swift daemon reports the pty's device number, and nothing in the app reads
+/// it (verified by grep). Reporting a fabricated value would be worse than reporting none.
+pub fn encode_descriptor_list(sessions: &[crate::session::SessionInfo]) -> Vec<u8> {
+    fn put_string(out: &mut Vec<u8>, value: &str) {
+        out.extend_from_slice(&(value.len() as u32).to_be_bytes());
+        out.extend_from_slice(value.as_bytes());
+    }
+
+    let mut out = Vec::new();
+    out.extend_from_slice(&(sessions.len() as u32).to_be_bytes());
+    for info in sessions {
+        out.extend_from_slice(&info.id.0);
+        out.extend_from_slice(&info.pid.to_be_bytes());
+        out.extend_from_slice(&0u64.to_be_bytes());
+        put_string(&mut out, info.cwd.as_deref().unwrap_or(""));
+        out.push(u8::from(info.attached));
+        // Metadata: the foreground command, under the key the app's own daemon uses for it, so a
+        // pane title resolves identically on either backend.
+        match &info.foreground {
+            Some(command) => {
+                out.extend_from_slice(&1u32.to_be_bytes());
+                put_string(&mut out, "command");
+                put_string(&mut out, command);
+            }
+            None => out.extend_from_slice(&0u32.to_be_bytes()),
+        }
+    }
+    out
+}
+
+/// Decodes what `encode_descriptor_list` produced, for `wr-agent list`'s own output.
+pub fn decode_descriptor_list(payload: &[u8]) -> Vec<(String, bool, String)> {
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    let take = |at: &mut usize, n: usize| -> Option<&[u8]> {
+        let slice = payload.get(*at..*at + n)?;
+        *at += n;
+        Some(slice)
+    };
+    let Some(count) = take(&mut at, 4).map(|b| u32::from_be_bytes(b.try_into().unwrap())) else {
+        return out;
+    };
+    for _ in 0..count {
+        let Some(id) = take(&mut at, 16).and_then(SessionId::from_slice) else {
+            break;
+        };
+        if take(&mut at, 4).is_none() || take(&mut at, 8).is_none() {
+            break;
+        }
+        let Some(cwd_len) = take(&mut at, 4).map(|b| u32::from_be_bytes(b.try_into().unwrap()))
+        else {
+            break;
+        };
+        if take(&mut at, cwd_len as usize).is_none() {
+            break;
+        }
+        let Some(attached) = take(&mut at, 1).map(|b| b[0] == 1) else {
+            break;
+        };
+        let Some(entries) = take(&mut at, 4).map(|b| u32::from_be_bytes(b.try_into().unwrap()))
+        else {
+            break;
+        };
+        let mut command = String::from("-");
+        for _ in 0..entries {
+            let Some(key_len) = take(&mut at, 4).map(|b| u32::from_be_bytes(b.try_into().unwrap()))
+            else {
+                break;
+            };
+            let key = take(&mut at, key_len as usize)
+                .map(|b| String::from_utf8_lossy(b).into_owned())
+                .unwrap_or_default();
+            let Some(value_len) =
+                take(&mut at, 4).map(|b| u32::from_be_bytes(b.try_into().unwrap()))
+            else {
+                break;
+            };
+            let value = take(&mut at, value_len as usize)
+                .map(|b| String::from_utf8_lossy(b).into_owned())
+                .unwrap_or_default();
+            if key == "command" {
+                command = value;
+            }
+        }
+        out.push((id.to_hyphenated(), attached, command));
+    }
+    out
+}
+
 /// Pumps a session's pty to the client as `Output` frames. Runs for as long as the client is
 /// attached; the pty keeps running after it stops.
 pub fn pump_output<S: Write>(
@@ -597,6 +694,80 @@ mod tests {
         // Released on drop, so a restart after a clean exit works.
         acquire_instance_lock(&socket).expect("lock after release");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The descriptor list must match what `SessionDescriptor.decodeList` expects, byte for byte,
+    /// or the app silently sees no sessions on the Rust backend.
+    #[test]
+    fn descriptor_list_round_trips_through_our_own_decoder() {
+        use crate::session::SessionInfo;
+        let sessions = vec![
+            SessionInfo {
+                id: SessionId([3u8; 16]),
+                pid: 4242,
+                attached: true,
+                foreground: Some("nvim".into()),
+                cwd: Some("/work/room".into()),
+            },
+            SessionInfo {
+                id: SessionId([9u8; 16]),
+                pid: 77,
+                attached: false,
+                foreground: None,
+                cwd: None,
+            },
+        ];
+        let decoded = decode_descriptor_list(&encode_descriptor_list(&sessions));
+        assert_eq!(decoded.len(), 2);
+        assert_eq!(decoded[0].0, SessionId([3u8; 16]).to_hyphenated());
+        assert!(decoded[0].1);
+        assert_eq!(decoded[0].2, "nvim");
+        assert!(!decoded[1].1);
+        assert_eq!(decoded[1].2, "-");
+    }
+
+    /// The header the Swift decoder reads first, pinned explicitly: a count, then a 16-byte id.
+    /// `SessionDescriptor.minimumEncodedSize` is 37, and `decodeList` rejects a count larger than
+    /// `payload.count / 37` — so an encoder that disagreed here would be rejected wholesale rather
+    /// than producing a visible error.
+    #[test]
+    fn descriptor_list_layout_matches_the_swift_decoder() {
+        use crate::session::SessionInfo;
+        let bytes = encode_descriptor_list(&[SessionInfo {
+            id: SessionId([1u8; 16]),
+            pid: 1,
+            attached: true,
+            foreground: None,
+            cwd: None,
+        }]);
+        assert_eq!(&bytes[..4], &[0, 0, 0, 1], "count is a big-endian u32");
+        assert_eq!(&bytes[4..20], &[1u8; 16], "then the 16-byte identifier");
+        // 4 (count) + 16 + 4 (pid) + 8 (tty) + 4 (empty cwd) + 1 (attached) + 4 (no metadata)
+        assert_eq!(bytes.len(), 41);
+        assert!(
+            1 <= bytes.len() / 37,
+            "a single descriptor must satisfy Swift's minimumEncodedSize guard"
+        );
+    }
+
+    #[test]
+    fn an_empty_descriptor_list_is_just_a_zero_count() {
+        assert_eq!(encode_descriptor_list(&[]), vec![0, 0, 0, 0]);
+        assert!(decode_descriptor_list(&[0, 0, 0, 0]).is_empty());
+    }
+
+    #[test]
+    fn a_truncated_descriptor_list_decodes_to_what_survived() {
+        use crate::session::SessionInfo;
+        let full = encode_descriptor_list(&[SessionInfo {
+            id: SessionId([5u8; 16]),
+            pid: 1,
+            attached: true,
+            foreground: None,
+            cwd: None,
+        }]);
+        // Cut mid-descriptor: no panic, no phantom entry.
+        assert!(decode_descriptor_list(&full[..20]).is_empty());
     }
 
     #[test]
