@@ -503,3 +503,93 @@ fn a_reattaching_client_gets_its_scrollback() {
     let _ = agent.kill();
     let _ = agent.wait();
 }
+
+/// `PersistentSessionService.attachCommand()` builds the command line as `<binary> attach` with no
+/// arguments — everything else is environment. So the agent has to be drivable that way, or the
+/// Swift side needs a special case for which backend it picked.
+#[test]
+fn the_app_environment_contract_alone_is_enough() {
+    let workspace = Workspace::new("envcontract");
+    let socket = workspace.socket();
+    let mut agent = start_agent(&socket);
+
+    let cwd = workspace.dir.join("workroom-dir");
+    std::fs::create_dir_all(&cwd).expect("cwd");
+
+    // No --socket, no --session: exactly what the app passes.
+    let mut client = Command::new(agent_binary())
+        .arg("attach")
+        .env(
+            "WORKROOM_SESSION_ID",
+            "deadbeef-dead-beef-dead-beefdeadbeef",
+        )
+        .env("WORKROOM_SESSION_SOCKET", &socket)
+        .env("WORKROOM_SESSION_SHELL", "/bin/sh")
+        .env("WORKROOM_SESSION_CWD", &cwd)
+        // Empty means "an ordinary shell", not a command to run.
+        .env("WORKROOM_SESSION_COMMAND", "")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn attach");
+
+    {
+        let stdin = client.stdin.as_mut().expect("stdin");
+        std::thread::sleep(Duration::from_millis(400));
+        // Proves the CWD travelled: the agent's own working directory is not this one.
+        stdin.write_all(b"pwd\n").expect("write");
+        stdin.flush().expect("flush");
+    }
+    let mut reader = ClientReader::new(&mut client);
+    let seen = reader.read_until("workroom-dir", Duration::from_secs(10));
+    assert!(
+        seen.contains("workroom-dir"),
+        "the session did not start in the requested directory; saw {seen:?}"
+    );
+
+    assert!(
+        list_sessions(&socket).contains("deadbeef-dead-beef-dead-beefdeadbeef"),
+        "the session id from the environment was not used"
+    );
+
+    let _ = client.kill();
+    let _ = client.wait();
+    let _ = agent.kill();
+    let _ = agent.wait();
+}
+
+/// A run command is `<shell> -c <command>`, and must actually run rather than opening a shell.
+#[test]
+fn a_run_command_from_the_environment_is_executed() {
+    let workspace = Workspace::new("runcmd");
+    let socket = workspace.socket();
+    let mut agent = start_agent(&socket);
+
+    let mut client = Command::new(agent_binary())
+        .arg("attach")
+        .env(
+            "WORKROOM_SESSION_ID",
+            "cafecafe-cafe-cafe-cafe-cafecafecafe",
+        )
+        .env("WORKROOM_SESSION_SOCKET", &socket)
+        .env("WORKROOM_SESSION_SHELL", "/bin/sh")
+        .env("WORKROOM_SESSION_COMMAND", "echo RAN-THE-COMMAND")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn attach");
+
+    let mut reader = ClientReader::new(&mut client);
+    let seen = reader.read_until("RAN-THE-COMMAND", Duration::from_secs(10));
+    assert!(
+        seen.contains("RAN-THE-COMMAND"),
+        "the run command did not execute; saw {seen:?}"
+    );
+
+    let _ = client.kill();
+    let _ = client.wait();
+    let _ = agent.kill();
+    let _ = agent.wait();
+}

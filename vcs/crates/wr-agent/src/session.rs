@@ -130,18 +130,30 @@ impl SessionStore {
         if sessions.contains_key(&spec.id) {
             return Err(SessionError::AlreadyExists(spec.id.to_hyphenated()));
         }
-        let pty = Pty::spawn(
-            spec.program,
-            spec.args,
-            spec.env,
-            spec.cwd,
-            spec.columns,
-            spec.rows,
-        )?;
+        // Resolve the size ONCE, here, and hand the same numbers to both the pty and the shadow.
+        //
+        // Zero means "the client has no size yet" — a relay forked into a pipe rather than a
+        // terminal reports it, and so does an attach that arrives before the surface is laid out.
+        // `Pty::spawn` substitutes 80x24 for it; the shadow, clamping independently, ended up 1x1,
+        // and a 1-column emulator wraps every character onto its own line. The repaint that came
+        // back was one letter per row. Two components applying their own fallback to the same
+        // input is the bug, so there is now one fallback.
+        let columns = if spec.columns == 0 {
+            crate::pty::DEFAULT_COLUMNS
+        } else {
+            spec.columns
+        };
+        let rows = if spec.rows == 0 {
+            crate::pty::DEFAULT_ROWS
+        } else {
+            spec.rows
+        };
+
+        let pty = Pty::spawn(spec.program, spec.args, spec.env, spec.cwd, columns, rows)?;
         let session = Session {
             id: spec.id,
             pty,
-            shadow: Arc::new(Mutex::new(Shadow::new(spec.columns, spec.rows))),
+            shadow: Arc::new(Mutex::new(Shadow::new(columns, rows))),
             attached: true,
         };
         let info = session.info();
@@ -394,6 +406,35 @@ mod tests {
 
         let after = read_until(&store, id(4), "got:sentinel", Duration::from_secs(5));
         assert!(after.contains("got:sentinel"), "got {after:?}");
+        store.kill_all();
+    }
+
+    /// A zero size means "the client has no size yet", and the pty and the shadow must resolve it
+    /// the same way. They did not: the pty substituted 80x24 while the shadow clamped to 1x1, so a
+    /// repaint came back with one character per line. Anything that applies its own fallback to
+    /// this input reintroduces that.
+    #[test]
+    fn a_zero_size_resolves_to_one_default_for_everything() {
+        let store = SessionStore::new();
+        let args = [OsString::from("-c"), OsString::from("stty size; sleep 2")];
+        let e = env();
+        store
+            .create(SessionSpec {
+                id: id(6),
+                program: OsStr::new("/bin/sh"),
+                args: &args,
+                env: &e,
+                cwd: None,
+                columns: 0,
+                rows: 0,
+            })
+            .expect("create");
+
+        let seen = read_until(&store, id(6), "24 80", Duration::from_secs(5));
+        assert!(
+            seen.contains("24 80"),
+            "the pty did not get the default size: {seen:?}"
+        );
         store.kill_all();
     }
 
