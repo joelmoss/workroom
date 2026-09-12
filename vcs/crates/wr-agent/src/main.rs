@@ -1,46 +1,273 @@
 //! `wr-agent serve | attach`, mirroring today's shipped `workroom-session daemon | attach`.
 //!
-//! Phase 1 lands the wire first: the subcommands are recognised and report what they will own, so
-//! the binary, its build targets and its CI wiring are real before the pty port begins. The pty
-//! and the services follow; nothing in the app calls this yet.
+//! That shape is deliberate rather than inherited: `applyPersistentSession` sets libghostty's
+//! `config.command` to a command LINE, so libghostty forks a *process* — meaning there has to be
+//! a forked relay executable as well as the in-process client. One binary in both roles keeps the
+//! frame codec in one language instead of duplicating it forever.
 
+use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
-use wr_agent::protocol::envelope::{Hello, MIN_SUPPORTED_VERSION, PROTOCOL_VERSION};
-
-const BUILD: &str = concat!("wr-agent ", env!("CARGO_PKG_VERSION"));
+use wr_agent::protocol::envelope::{
+    negotiate, Envelope, EnvelopeDecoder, Hello, Service, MIN_SUPPORTED_VERSION, PROTOCOL_VERSION,
+};
+use wr_agent::protocol::frame::{Frame, FrameDecoder, FrameKind};
+use wr_agent::serve::{self, Agent, BUILD, DEFAULT_IDLE_TIMEOUT};
 
 fn usage() -> &'static str {
     "usage:
-  wr-agent serve --socket <path>   own ptys and services (the daemon role)
-  wr-agent attach                  relay stdio to a session (what libghostty forks)
-  wr-agent protocol                print the protocol version this build speaks
+  wr-agent serve --socket <path> [--idle-timeout <secs>]
+        own ptys and services (the daemon role)
+  wr-agent attach --socket <path> [--session <uuid>]
+        relay stdio to a session; what libghostty forks
+  wr-agent list --socket <path>
+        print the agent's live sessions
+  wr-agent protocol
+        print the protocol version this build speaks
 "
+}
+
+fn flag(args: &[String], name: &str) -> Option<String> {
+    let index = args.iter().position(|a| a == name)?;
+    args.get(index + 1).cloned()
 }
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("protocol") => {
-            let hello = Hello::current(BUILD);
             println!("protocol {PROTOCOL_VERSION} (minimum supported {MIN_SUPPORTED_VERSION})");
-            println!(
-                "greeting {} bytes: {:02x?}",
-                hello.encode().len(),
-                hello.encode()
-            );
+            println!("build {BUILD}");
             ExitCode::SUCCESS
         }
-        Some("serve") | Some("attach") => {
-            eprintln!(
-                "wr-agent {}: the protocol is in place; the pty and services are not yet ported.",
-                args[0]
-            );
-            ExitCode::FAILURE
-        }
+        Some("serve") => match flag(&args, "--socket") {
+            Some(socket) => run_serve(PathBuf::from(socket), flag(&args, "--idle-timeout")),
+            None => {
+                eprintln!("error: serve needs --socket <path>");
+                ExitCode::FAILURE
+            }
+        },
+        Some("attach") => run_attach(&args),
+        Some("list") => run_list(&args),
         _ => {
             eprint!("{}", usage());
             ExitCode::FAILURE
         }
     }
+}
+
+fn run_serve(socket: PathBuf, idle: Option<String>) -> ExitCode {
+    // The lock, not the bind, is what guarantees a single agent — see serve.rs. Losing the race is
+    // a normal outcome (two clients spawning at once), not an error worth a non-zero exit: the
+    // other agent is serving, which is all the caller wanted.
+    let _lock = match serve::acquire_instance_lock(&socket) {
+        Ok(lock) => lock,
+        Err(serve::ServeError::AlreadyRunning(_)) => return ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let timeout = idle
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_IDLE_TIMEOUT);
+
+    let agent = Agent::new();
+    match agent.serve(&socket, timeout) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Exit code the app already knows: `SessionAttachClient.daemonUnavailable`.
+const DAEMON_UNAVAILABLE: u8 = 92;
+
+fn run_attach(args: &[String]) -> ExitCode {
+    let Some(socket) = flag(args, "--socket").map(PathBuf::from) else {
+        eprintln!("error: attach needs --socket <path>");
+        return ExitCode::FAILURE;
+    };
+    let session = match flag(args, "--session") {
+        Some(text) => {
+            // Safety: set only so the shared parser can read it; this process is single-threaded
+            // at this point and nothing else reads the variable.
+            unsafe { std::env::set_var("WORKROOM_SESSION_ID", text) };
+            serve::session_id_from_env()
+        }
+        None => serve::session_id_from_env(),
+    };
+    let Some(session) = session else {
+        eprintln!("error: attach needs --session <uuid> or WORKROOM_SESSION_ID");
+        return ExitCode::FAILURE;
+    };
+
+    // Spawn-on-connect-failure, exactly as the Swift attach client does: the agent is started by
+    // whoever needs it first rather than by an installed service, so there is no install footprint.
+    let mut stream = match serve::connect(&socket) {
+        Some(stream) => stream,
+        None => {
+            let binary = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("wr-agent"));
+            if serve::spawn_agent(&binary, &socket).is_err() {
+                return ExitCode::from(DAEMON_UNAVAILABLE);
+            }
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                if let Some(stream) = serve::connect(&socket) {
+                    break stream;
+                }
+                if std::time::Instant::now() >= deadline {
+                    return ExitCode::from(DAEMON_UNAVAILABLE);
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    };
+
+    if handshake(&mut stream).is_err() {
+        return ExitCode::from(DAEMON_UNAVAILABLE);
+    }
+
+    let attach = Frame::new(FrameKind::Attach, session.0.to_vec());
+    if stream
+        .write_all(&Envelope::new(Service::Terminal, 1, attach.encode()).encode())
+        .is_err()
+    {
+        return ExitCode::from(DAEMON_UNAVAILABLE);
+    }
+
+    // stdin -> agent on its own thread; agent -> stdout on this one. Two directions, no polling.
+    let input_stream = match stream.try_clone() {
+        Ok(clone) => clone,
+        Err(_) => return ExitCode::from(DAEMON_UNAVAILABLE),
+    };
+    std::thread::spawn(move || relay_stdin(input_stream));
+
+    let mut decoder = EnvelopeDecoder::new();
+    let mut buffer = [0u8; 8192];
+    let mut stdout = std::io::stdout();
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => decoder.push(&buffer[..n]),
+        }
+        loop {
+            match decoder.next_envelope() {
+                Ok(Some(envelope)) => {
+                    let mut frames = FrameDecoder::new();
+                    frames.push(&envelope.payload);
+                    while let Ok(Some(frame)) = frames.next_frame() {
+                        match frame.kind {
+                            FrameKind::Output => {
+                                if stdout.write_all(&frame.payload).is_err() {
+                                    return ExitCode::SUCCESS;
+                                }
+                                let _ = stdout.flush();
+                            }
+                            FrameKind::Exited => return ExitCode::SUCCESS,
+                            FrameKind::Failure => {
+                                eprintln!("wr-agent: {}", String::from_utf8_lossy(&frame.payload));
+                                return ExitCode::FAILURE;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => return ExitCode::FAILURE,
+            }
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+fn relay_stdin(mut stream: std::os::unix::net::UnixStream) {
+    let mut stdin = std::io::stdin();
+    let mut buffer = [0u8; 4096];
+    loop {
+        match stdin.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                let frame = Frame::new(FrameKind::Input, buffer[..n].to_vec());
+                if stream
+                    .write_all(&Envelope::new(Service::Terminal, 1, frame.encode()).encode())
+                    .is_err()
+                {
+                    break;
+                }
+                let _ = stream.flush();
+            }
+        }
+    }
+}
+
+fn run_list(args: &[String]) -> ExitCode {
+    let Some(socket) = flag(args, "--socket").map(PathBuf::from) else {
+        eprintln!("error: list needs --socket <path>");
+        return ExitCode::FAILURE;
+    };
+    let Some(mut stream) = serve::connect(&socket) else {
+        eprintln!("error: no agent listening on {}", socket.display());
+        return ExitCode::from(DAEMON_UNAVAILABLE);
+    };
+    if handshake(&mut stream).is_err() {
+        return ExitCode::from(DAEMON_UNAVAILABLE);
+    }
+    let request = Frame::control(FrameKind::List);
+    if stream
+        .write_all(&Envelope::new(Service::Control, 0, request.encode()).encode())
+        .is_err()
+    {
+        return ExitCode::FAILURE;
+    }
+
+    let mut decoder = EnvelopeDecoder::new();
+    let mut buffer = [0u8; 8192];
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        match stream.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => decoder.push(&buffer[..n]),
+        }
+        while let Ok(Some(envelope)) = decoder.next_envelope() {
+            let mut frames = FrameDecoder::new();
+            frames.push(&envelope.payload);
+            while let Ok(Some(frame)) = frames.next_frame() {
+                if frame.kind == FrameKind::Sessions {
+                    let body = String::from_utf8_lossy(&frame.payload);
+                    if !body.trim().is_empty() {
+                        println!("{body}");
+                    }
+                    return ExitCode::SUCCESS;
+                }
+            }
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// Exchange greetings and agree a version before anything else crosses the stream.
+fn handshake<S: Read + Write>(stream: &mut S) -> Result<(), ()> {
+    let local = Hello::current(BUILD);
+    stream.write_all(&local.encode()).map_err(|_| ())?;
+    let _ = stream.flush();
+
+    let mut greeting = Vec::new();
+    let mut byte = [0u8; 1];
+    let remote = loop {
+        if let Ok(Some((hello, _))) = Hello::decode(&greeting) {
+            break hello;
+        }
+        match stream.read(&mut byte) {
+            Ok(0) | Err(_) => return Err(()),
+            Ok(_) => greeting.push(byte[0]),
+        }
+    };
+    negotiate(&local, &remote).map_err(|_| ())?;
+    Ok(())
 }
