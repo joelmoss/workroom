@@ -11,3 +11,4 @@
 pub mod process;
 pub mod protocol;
 pub mod pty;
+pub mod session;
