@@ -167,7 +167,7 @@ jobs:
 
       - name: Install Rust
         run: |
-          rustup toolchain install 1.96.1 --profile minimal
+          rustup toolchain install 1.96.1 --profile minimal --component clippy
           rustup default 1.96.1
 
       # Pinned by version AND checksum. An unpinned toolchain would silently change the emulator
