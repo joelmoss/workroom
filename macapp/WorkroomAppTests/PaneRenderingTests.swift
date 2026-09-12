@@ -58,6 +58,29 @@ final class PaneRenderingTests: XCTestCase {
     return found
   }
 
+  /// Poll until `expected` is the surface mounted in `view`, and return whether it got there.
+  ///
+  /// Waiting on the COUNT is not enough when the count does not change: docking swaps which surface
+  /// the origin shows while the total stays at one, so `waitForSurfaces(count: 1)` is already
+  /// satisfied before the swap and can return the OLD surface. That is what failed on CI while
+  /// passing locally — the same "wait for a value the shape already has" trap as a vacuous assertion,
+  /// just in the polling predicate instead.
+  @discardableResult
+  private func waitForSurface(
+    _ expected: GhosttySurfaceView?, in view: NSView, timeout: TimeInterval = 3
+  ) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      view.layoutSubtreeIfNeeded()
+      let mounted = mountedSurfaces(in: view)
+      if mounted.count == 1, mounted.first === expected { return true }
+      RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+    }
+    view.layoutSubtreeIfNeeded()
+    let mounted = mountedSurfaces(in: view)
+    return mounted.count == 1 && mounted.first === expected
+  }
+
   /// Whether `needle` is anywhere in `haystack`'s view tree (regardless of window attachment).
   private func contains(_ haystack: NSView, _ needle: NSView?) -> Bool {
     guard let needle else { return false }
@@ -284,9 +307,9 @@ final class PaneRenderingTests: XCTestCase {
 
     s.dockPane(second.id, for: target)
 
-    let mounted = waitForSurfaces(in: view, count: 1)
-    XCTAssertEqual(mounted.count, 1, "docked solo, so one pane is on screen")
-    XCTAssertEqual(mounted.first, surface, "the SAME surface came back — nothing was respawned")
+    XCTAssertTrue(
+      waitForSurface(surface, in: view),
+      "the SAME surface came back, alone — nothing was respawned")
   }
 }
 
