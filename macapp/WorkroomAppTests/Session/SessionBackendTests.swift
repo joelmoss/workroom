@@ -46,37 +46,58 @@ final class SessionBackendTests: XCTestCase {
     XCTAssertNotEqual(daemon, agent)
   }
 
-  // MARK: - Selection
+  // MARK: - Choosing where a new session goes
 
-  func testDefaultsToTheShippedDaemon() {
-    XCTAssertEqual(SessionBackend.default, .swiftDaemon)
+  /// New sessions go to the agent when it works. Nobody is asked, and nothing is stored.
+  func testNewSessionsPreferTheAgentWhenItIsHealthy() {
+    let backend = SessionBackend.preferred { _ in .ready(version: "protocol 1") }
+    XCTAssertEqual(backend, .rustAgent)
   }
 
-  func testSelectionHonoursTheStoredValueWhereOffered() {
+  /// And keep working on the daemon when it does not. A build where the agent is missing or broken
+  /// must still open terminals — this is the automatic fallback, which is only safe because the
+  /// two never share a socket and ownership is per session.
+  func testNewSessionsFallBackToTheDaemonWhenTheAgentCannotRun() {
+    XCTAssertEqual(SessionBackend.preferred { _ in .notBundled }, .swiftDaemon)
     XCTAssertEqual(
-      SessionBackend.selected(stored: .rustAgent, selectable: true), .rustAgent)
-    XCTAssertEqual(
-      SessionBackend.selected(stored: .swiftDaemon, selectable: true), .swiftDaemon)
+      SessionBackend.preferred { _ in .unhealthy(reason: "exited 127") }, .swiftDaemon)
   }
 
-  /// A stored preference must not select the agent on a build that does not offer it. Without
-  /// this, a value set in Nightly could put a stable build onto unfinished code — the exact thing
-  /// PRODUCT.md principle 5 forbids, arriving through the back door of a shared defaults suite.
-  func testSelectionIgnoresAStoredAgentWhereNotOffered() {
-    XCTAssertEqual(
-      SessionBackend.selected(stored: .rustAgent, selectable: false), .swiftDaemon)
-  }
-
-  /// Raw values are a stored-data contract, like `ReleaseChannel`'s.
+  /// Raw values are a stored-data contract for logs and diagnostics, even though no preference
+  /// stores them any more.
   func testRawValuesAreStable() {
     XCTAssertEqual(SessionBackend.swiftDaemon.rawValue, "swift")
     XCTAssertEqual(SessionBackend.rustAgent.rawValue, "rust")
-    XCTAssertEqual(SessionBackend(rawValue: "swift"), .swiftDaemon)
-    XCTAssertEqual(SessionBackend(rawValue: "rust"), .rustAgent)
   }
 
-  func testUnknownStoredValueFallsBackRatherThanCrashing() {
-    XCTAssertNil(SessionBackend(rawValue: "wasm"))
+  // MARK: - The migration
+
+  /// The property the whole migration rests on: the two helpers use different socket files, so a
+  /// session created by one is never reachable through the other. If these ever matched, a
+  /// draining daemon and a running agent would fight over one socket — and the user would see
+  /// terminals stealing each other's input rather than a clean error.
+  func testTheTwoHelpersCanNeverMeet() throws {
+    let daemon = try PersistentSessionPaths.preferredSocketPath(backend: .swiftDaemon)
+    let agent = try PersistentSessionPaths.preferredSocketPath(backend: .rustAgent)
+    XCTAssertNotEqual(daemon, agent)
+    XCTAssertNotEqual(
+      try PersistentSessionPaths.fallbackSocketPath(backend: .swiftDaemon),
+      try PersistentSessionPaths.fallbackSocketPath(backend: .rustAgent))
+  }
+
+  /// Nothing persists a backend choice. A stored one would go stale the moment a daemon exited or
+  /// an upgrade landed, and would send the app to a helper that is not holding the session.
+  func testNoBackendChoiceIsStored() throws {
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("WorkroomApp/Core/DefaultsKeys.swift"),
+      encoding: .utf8)
+    XCTAssertFalse(
+      source.contains("sessionBackend"),
+      "the backend must not become a stored preference again")
   }
 
   // MARK: - The probe

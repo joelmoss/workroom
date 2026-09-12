@@ -1,26 +1,23 @@
-import Defaults
 import Foundation
 
-/// Which process owns persistent terminal sessions: the shipped Swift daemon, or the Rust agent
-/// that replaces it (issue #154, `docs/designs/remote-workrooms.md` open question 14).
+/// Which process owns a persistent terminal session: the shipped Swift daemon, or the Rust agent
+/// that replaces it (issue #154, `docs/designs/remote-workrooms.md`).
 ///
-/// **Why this is not a third state on `backgroundSessions`.** The design doc suggested exactly
-/// that, and the code says otherwise. `backgroundSessions` answers "should terminals outlive the
-/// app?", and its `false` path is *deliberately destructive*: it raises the "Stop persisted
-/// sessions?" alert and calls `endAllSessions`, because a session nothing will ever reattach to
-/// would otherwise leak forever. Overloading that key with "which implementation?" inherits that
-/// teardown on a question where it makes no sense, and turns a `Key<Bool>` every install has
-/// already stored into an enum needing migration. Two questions, two keys.
+/// **This is resolved per SESSION, not per app, and never by the user.** The two are separate pty
+/// owners with separate sockets and cannot hand sessions to each other, so any app-wide switch
+/// would strand whatever terminals were running at the moment it flipped. Instead the migration
+/// drains: a session the daemon already owns stays with the daemon until it closes on its own, and
+/// every new session goes to the agent. Nothing is taken away, so nothing is noticed, and the
+/// daemon idles out and exits once its last session ends.
 ///
-/// **Switching backends strands running sessions, and that is not a bug we can fix here.** The
-/// daemon and the agent are separate pty owners — the design deliberately has the agent *replace*
-/// the daemon rather than proxy to it, because two pty owners is the thing "unify" exists to
-/// prevent. So they share no sessions, and each keeps its own socket (below) precisely so a
-/// half-switched app can never have both fighting over one. A switch therefore leaves the other
-/// backend's sessions running and unattached; the UI says so before it happens.
-enum SessionBackend: String, CaseIterable, Sendable, Defaults.Serializable,
-  Defaults.PreferRawRepresentable
-{
+/// That is also what makes an automatic fallback safe here. Falling back would be dangerous if
+/// both could own one session — two pty owners racing is the thing "unify" exists to prevent — but
+/// the sockets are distinct and ownership is per session, so a session lives in exactly one of
+/// them by construction.
+/// Not `Defaults.Serializable`: nothing stores this. Which backend owns a session is a fact about
+/// the machine's live processes, answered by asking them, and a stored value would go stale the
+/// moment a daemon exited or an upgrade landed.
+enum SessionBackend: String, CaseIterable, Sendable {
   /// `workroom-session`, shipped and incident-hardened. The default, and the rollback target.
   case swiftDaemon = "swift"
   /// `wr-agent`, the unified local+remote agent.
@@ -54,33 +51,14 @@ enum SessionBackend: String, CaseIterable, Sendable, Defaults.Serializable,
     }
   }
 
-  /// Whether this build offers the choice at all.
+  /// The backend a NEW session should be created in.
   ///
-  /// Dev and Nightly only. PRODUCT.md principle 5 keeps unfinished capability out of stable, and
-  /// this is the riskier half of the work — it replaces session code for *local* users, which the
-  /// remote feature flag does not cover. Widening this to stable is a deliberate decision, not a
-  /// default; it belongs with the decision about when the agent becomes the default at all.
-  static var isSelectable: Bool {
-    #if DEBUG
-      return true
-    #else
-      return ReleaseChannel.current == .nightly
-    #endif
-  }
-}
-
-extension SessionBackend {
-  /// The backend actually in force.
-  ///
-  /// A stored preference cannot select the agent on a build that does not offer it: a user who
-  /// runs Nightly, switches to the agent, and later opens the stable app sharing no defaults
-  /// suite would otherwise carry the choice across. Resolving it here means every call site gets
-  /// the same answer and none of them has to remember the rule.
-  static func selected(
-    stored: SessionBackend = Defaults[.sessionBackend],
-    selectable: Bool = SessionBackend.isSelectable
+  /// The agent, unless it cannot run — see `SessionBackendProbe`. A build where the agent is
+  /// missing or broken keeps working on the daemon rather than failing to open a terminal.
+  static func preferred(
+    probe: (SessionBackend) -> SessionBackendAvailability = { SessionBackendProbe.probe($0) }
   ) -> SessionBackend {
-    selectable ? stored : .default
+    probe(.rustAgent).isReady ? .rustAgent : .swiftDaemon
   }
 }
 
