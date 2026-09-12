@@ -361,6 +361,54 @@ fn child_gone(pid: i32, status: &mut i32) -> bool {
     rc != 0
 }
 
+/// Where the reader is sending output, captured so the write can happen outside the slot lock.
+struct Target {
+    writer: SharedWriter,
+    stream: u32,
+    token: u64,
+}
+
+impl Client {
+    fn target(&self) -> Target {
+        Target {
+            writer: Arc::clone(&self.writer),
+            stream: self.stream,
+            token: self.token,
+        }
+    }
+}
+
+/// The attached client, if any, as a detached copy.
+fn current_client(client: &Arc<Mutex<Option<Client>>>) -> Option<Target> {
+    client.lock().ok()?.as_ref().map(Client::target)
+}
+
+/// Writes to the attached client, and EVICTS it if the write fails.
+///
+/// Eviction is the point. A client that has stopped reading fails its write after the transport's
+/// deadline, and leaving it installed means paying that deadline again on the very next chunk of
+/// output — the session would spend its life stalling on a peer that is never coming back. Dropping
+/// it costs nothing: the session and its pty carry on, and the client reattaches like any other.
+fn deliver(client: &Arc<Mutex<Option<Client>>>, target: &Target, bytes: &[u8]) {
+    let delivered = match target.writer.lock() {
+        Ok(mut writer) => writer
+            .write_all(bytes)
+            .and_then(|()| writer.flush())
+            .is_ok(),
+        Err(_) => false,
+    };
+    if delivered {
+        return;
+    }
+    // Token-checked, for the same reason `detach` is: the client that failed may already have been
+    // replaced, and evicting its successor would detach a healthy connection.
+    if let Ok(mut slot) = client.lock() {
+        if slot.as_ref().is_some_and(|held| held.token == target.token) {
+            *slot = None;
+        }
+    }
+}
+
 fn terminal_envelope(stream: u32, frame: Frame) -> Vec<u8> {
     Envelope::new(Service::Terminal, stream, frame.encode()).encode()
 }
@@ -412,16 +460,12 @@ fn read_session(
         }
 
         if ended {
-            if let Ok(slot) = client.lock() {
-                if let Some(attached) = slot.as_ref() {
-                    let bytes = terminal_envelope(
-                        attached.stream,
-                        Frame::new(FrameKind::Exited, status.to_be_bytes().to_vec()),
-                    );
-                    if let Ok(mut writer) = attached.writer.lock() {
-                        let _ = writer.write_all(&bytes).and_then(|()| writer.flush());
-                    }
-                }
+            if let Some(target) = current_client(&client) {
+                let bytes = terminal_envelope(
+                    target.stream,
+                    Frame::new(FrameKind::Exited, status.to_be_bytes().to_vec()),
+                );
+                deliver(&client, &target, &bytes);
             }
             // The shell IS the session; with it gone there is nothing left to reattach to.
             if let Ok(mut store) = store.lock() {
@@ -432,21 +476,30 @@ fn read_session(
 
         match read {
             Ok(n) => {
-                // One lock around both writes. The shadow must absorb these bytes and the client
-                // must be told about them as one step, or an attach landing between the two either
-                // misses output or replays it twice.
-                let slot = client.lock().expect("client slot poisoned");
-                if let Ok(mut shadow) = shadow.lock() {
-                    shadow.write(&buffer[..n]);
-                }
-                if let Some(attached) = slot.as_ref() {
+                // The shadow absorbs the bytes and the destination is chosen UNDER the slot lock,
+                // as one step — otherwise an attach landing between the two either misses output
+                // or replays it twice. The transport write itself then happens with the lock
+                // RELEASED, and that matters: holding it across a write would let one client that
+                // has stopped reading stall the pty drain for every byte, which is the very
+                // problem this reader exists to prevent.
+                //
+                // Releasing early is still correct because the destination was captured first. A
+                // client that attaches after the capture is painted from the shadow, which already
+                // holds these bytes; it cannot receive them twice, and the superseded client's
+                // writer is the one this write goes to.
+                let target = {
+                    let slot = client.lock().expect("client slot poisoned");
+                    if let Ok(mut shadow) = shadow.lock() {
+                        shadow.write(&buffer[..n]);
+                    }
+                    slot.as_ref().map(Client::target)
+                };
+                if let Some(target) = target {
                     let bytes = terminal_envelope(
-                        attached.stream,
+                        target.stream,
                         Frame::new(FrameKind::Output, buffer[..n].to_vec()),
                     );
-                    if let Ok(mut writer) = attached.writer.lock() {
-                        let _ = writer.write_all(&bytes).and_then(|()| writer.flush());
-                    }
+                    deliver(&client, &target, &bytes);
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -674,6 +727,49 @@ mod tests {
         assert!(
             seen.contains("24 80"),
             "the pty did not get the default size: {seen:?}"
+        );
+        store.kill_all();
+    }
+
+    /// A client whose transport has failed must be dropped, not kept and retried forever.
+    ///
+    /// Left installed, every subsequent chunk of output pays the transport's write deadline again,
+    /// and the session spends its life stalling on a peer that is never coming back — which is the
+    /// same "nobody is draining the pty" failure the session-owned reader exists to prevent,
+    /// arriving through a different door.
+    #[test]
+    fn a_client_that_cannot_be_written_to_is_dropped() {
+        struct Broken;
+        impl Write for Broken {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+        }
+
+        let store = SessionStore::new();
+        let args = [OsString::from("-c"), OsString::from("echo noisy; sleep 5")];
+        let e = env();
+        store.create(spec(id(7), &args, &e)).expect("create");
+
+        let writer: SharedWriter = Arc::new(Mutex::new(Box::new(Broken)));
+        store.attach(id(7), writer, 1).expect("attach");
+        assert!(store.list()[0].attached);
+
+        // The shell's own output is enough to discover the dead transport.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while store.list()[0].attached && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            !store.list()[0].attached,
+            "a client whose writes fail must be evicted"
+        );
+        assert!(
+            store.contains(id(7)),
+            "and the session itself must survive losing its client"
         );
         store.kill_all();
     }
