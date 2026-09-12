@@ -989,9 +989,368 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
 - Idle state per remote workroom in the sidebar. **Cost display is deliberately deferred** —
   it needs per-provider billing APIs and there is no spending policy yet (open question 7).
 
+## Phase 0 Results
+
+Run 2026-09-11/12 on branch `spike/phase-0` (commits `13cddd86`, `93d8c8c8`, `e546a42a`).
+Six of seven items answered; item 4's writer-not-admin half and item 5's Mac-asleep
+confirmation are outstanding and named at the end.
+
+**Read this section before the Provider Decision above it.** That section says of itself that
+every boxd figure in it is "second-hand here and should be re-verified"; the numbers below are
+first-hand, and three of them change the plan rather than confirming it.
+
+### The three results that change the plan
+
+1. **The lifecycle shim needs no Workroom-managed credential on boxd, and premise 6's
+   retraction is over-stated.** Every non-isolated machine ships an in-VM `boxd` CLI authed by
+   the metadata endpoint, and it is **self-scoped**: `boxd machine config set` there takes
+   `<KEY> <VALUE>` with no machine name, because it can only target its own machine. Measured —
+   from inside the VM, `boxd machine config set auto-hibernate.timeout 0` returned
+   `auto-hibernate for wr-idle: off` and `boxd info` confirmed `"auto_hibernate": "off"`. So the
+   VM holds **one** short-lived credential (its git one), not two, and the provider-defer token
+   is provider-supplied, instance-scoped and rotating (5-minute TTL at `/run/boxd/*-token`).
+   The cost is a different one than the doc priced: `--isolated` removes the metadata endpoint
+   *and* the in-VM CLI, so **isolation and the shim are mutually exclusive** on this provider.
+2. **The formatter emits most state itself — including scrollback — so exe-scroll's emission order
+   does not need porting, but three pieces are still hand-emitted and item 3's harness found all
+   three.** Phase 3's
+   scrollback bullet says cell content comes from the formatter "plus modes, palette, cursor and
+   scrolling region from `terminal.h`/`modes.h` in a specific order", with exe-scroll's
+   `formatTerminal` as "the reference to implement against". At `c4e16970`
+   `GhosttyFormatterTerminalExtra` already carries `palette`, `modes`, `scrolling_region`,
+   `tabstops`, `pwd`, `keyboard` and `screen.charsets` — so the ordering work is gone. It does
+   **not** carry the **cursor**, the **kitty keyboard flags**, or the **parser continuation**.
+   The doc's warning is empirically correct — with default options the formatter emitted **8
+   bytes** and a fresh client lost *every* negotiated mode. See "Next Steps item 3" below for
+   what the three remaining pieces cost.
+3. **Forks share the base's ssh host key, machine-id, boot-id and on-disk secrets — but no ssh
+   client ever sees the VM host key, because boxd terminates ssh at a shared gateway.** The
+   fork hazard is real at the disk level and inert at the transport level. Details under item 6.
+
+### Item 7 — `libghostty-vt` snapshot round-trip and cross-build — **PASS**
+
+- **Step zero, and the doc's path is wrong by one segment.** The headers are at
+  `include/ghostty/vt/` (31 of them), not `include/ghostty/`. `snapshot.h` (569 lines),
+  `formatter.h`, `render.h`, `terminal.h` and `modes.h` are all present at `c4e16970`.
+  exe-scroll's pin `48d3e972` 404s on that path, exactly as the doc claims.
+- **Build.** `zig build -Demit-lib-vt=true -Doptimize=ReleaseFast` — 87 s on this Mac, producing
+  `libghostty-vt.a` (10.3 MB), a 1.8 MB dylib and an xcframework. Zig **0.16.0** is the floor
+  (`build.zig.zon`'s `minimum_zig_version`) and is available through `mise`; there is no
+  `.zigversion` in the tree to pin from.
+- **Round-trip: 11/11 cases**, compared on the formatter's VT *and* plain-text output, cursor and
+  size, **each of eight modes queried individually (1049, 1, 2004, 1002, 1006, 1004, 7, 25), and the
+  kitty keyboard flags**. That per-mode comparison is load-bearing rather than thorough: item 3
+  below measures the default formatter emitting 8 bytes and carrying no mode information at all, so
+  a comparison resting on formatter output alone would rate a terminal with every mode on equal to
+  one with every mode off. The cases are plain text, SGR styles incl. 256-colour and truecolour,
+  alt-screen enter *and* exit, negotiated modes, 200 lines of scrollback, wide/combining/ZWJ text,
+  and four
+  cases that cut the byte stream mid-sequence (truncated CSI, truncated UTF-8, truncated OSC,
+  and a combined alt-screen case). Snapshots are small: ~1.2 KB for a screen, 5.4 KB with 200
+  lines of scrollback.
+- **Two API facts the doc does not have, both load-bearing.** (a) Continuation tracking is
+  `GHOSTTY_TERMINAL_OPT_CONTINUATION_MAX_BYTES`, a **`size_t*` byte limit, not a flag**, and it
+  must be set *before* the input that leaves the parser unfinished — "enabling tracking while the
+  parser is already unfinished makes the current continuation unavailable". The agent can never
+  know where a chunk boundary will fall, so this is **always-on from terminal creation**.
+  (b) A snapshot restores parser *state* but **not the tracking option**: a decoded terminal
+  reports `CONTINUATION_MAX_BYTES = 0`, so `ghostty_terminal_continuation_alloc` on it always
+  fails with `INVALID_VALUE`. That makes the continuation query useless as a round-trip oracle —
+  the harness asserts behaviourally instead (write the rest of the cut sequence to both terminals
+  and require they still agree), with a negative control that must *not* agree.
+- **Cross-build: PASS, and cheaper than feared.** Static `x86_64-linux-musl` (17 MB) and
+  `aarch64-linux-musl` (18 MB) archives built from this Mac with no qemu, no buildx and no Docker,
+  cache keyed per target triple as the doc advises.
+
+### Item 5 — what boxd measures, and which lever moves it — **PASS, including Mac asleep**
+
+- **The metric is network idle, for both timers, and the CLI's own help says so**:
+  `--auto-suspend-timeout` and `--auto-hibernate-timeout` are each documented as "Idle **network**
+  seconds". So the doc's open question of whether hibernate shares suspend's metric is answered:
+  it does. CPU activity does not count.
+- **Run 1, no lever: the job died.** A loop appending `date +%s` every 10 s with no network I/O,
+  on a machine created `--auto-suspend-timeout=120 --auto-hibernate-timeout=120`. The machine went
+  to `hibernated` while busy, and the tick log shows a single **193-second gap**. The control
+  machine, created with both timeouts `0`, stayed `running` throughout.
+- **The process survived.** After `boxd machine wake` (0.4 s) the same pid was still running and
+  ticking. So boxd does **not** lose live processes across hibernate — the doc's third capability
+  gate (live-process suspend) is **not binding on this provider**.
+- **Run 2, in-VM lever: no further gaps** over ~9 minutes untouched after the in-VM CLI set both
+  timers off. See result 1 above for why this matters more than it looks.
+- **Credential scope, for the trait table.** External `boxd auth keys` are **org-fenced, never
+  account-wide**, support `--expires-in-secs`, and `--kind org` narrows further. But on this
+  provider the shim needs no external key at all.
+- **Timers are per-machine and settable at create and fork**, which is why this item took minutes
+  rather than the doc's budgeted four hours. The Phase 0 note about starting items 5 and 6 "in the
+  background at hour zero" is obsolete.
+- **Run 3 — the headline capability, measured with the laptop actually asleep.** Two machines, same
+  6-minute job (36 ticks, 10 s apart, no network I/O), both created with
+  `auto-suspend/hibernate = 120s`, lid closed for the duration:
+
+  | | Control (`wr-work`, no shim) | Treatment (`wr-idle`, shim running) |
+  |---|---|---|
+  | ticks recorded | **15 of 37** | **38 of 38** |
+  | clock gap | **789 s** | **none** |
+  | terminal line | — (never reached) | **`DONE 1789205482`** |
+  | status afterwards | `hibernated` | `hibernated` |
+
+  The control was hibernated mid-job and lost 13 minutes of wall clock. The treatment finished
+  within 2 s of its predicted end time with no gap at all. **This is "close the lid, come back to
+  finished tests" demonstrated rather than argued**, and it is the criterion the whole feature
+  exists for.
+- **The shim's full cycle works, so the cost property survives.** Note both machines ended
+  `hibernated`. On the treatment machine that happened *after* `DONE`: the shim restored the 120 s
+  timer when the job exited and the provider then correctly put the idle machine to sleep. Asserting
+  busy is not the same as pinning a machine awake forever, and the measured behaviour is the former.
+  The whole shim is 12 lines of `sh` — `pgrep` the job, set the timer to 0 while it lives, restore
+  it and exit when it does not.
+
+### Item 6 — derive two instances from one base — **PASS, with a real finding**
+
+Live-forked `wr-base` twice while a `sleep` and a `script`-hosted pty were running on it.
+
+| Property | Base | Fork A | Fork B | Verdict |
+|---|---|---|---|---|
+| `/etc/machine-id` | `f3105c90…` | same | same | **duplicated** |
+| `/proc/sys/kernel/random/boot_id` | `cf3cbfb1…` | same | same | **duplicated** |
+| ssh host keys (ed25519, rsa) | — | same | same | **duplicated** |
+| on-disk secret file | `989bf8ba…` | same | same | **duplicated** |
+| live `sleep` / pty | pid 1133 / 1134 | same pids | same pids | **carried, with elapsed time continuing** |
+| hostname | `wr-base` | `wr-fork-a` | `wr-fork-b` | re-minted |
+| IP address | `10.31.207.116` | `10.31.118.128` | `10.31.65.196` | re-minted |
+| DNS + outbound HTTPS | ok | ok | ok | no resume breakage |
+
+- **OQ10 confirmed: mint the deploy key after the fork.** A secret written to the base propagates
+  byte-identically to every fork, so a key baked into a base voids premise 6's blast-radius claim.
+- **OQ9's list is now measured**: machine-id, boot-id, ssh host keys. `boot_id` is not on the
+  doc's list and should be — anything seeded from it collides across forks.
+- **OQ11 did not reproduce.** The inherited Firecracker hazard (net/vsock dropping on a second
+  resume) did not appear: both forks resolved DNS and completed a real HTTPS request, and so did a
+  fork taken from a *hibernated* base.
+- **The hibernated-base caveat is resolved — a hibernated base IS forkable.** `boxd machine fork`
+  against a `hibernated` base returned in **0.38 s**, the base **stayed hibernated** (no
+  wake-then-fork), and the resulting machine had both live processes at their original pids with
+  networking intact. **One anomaly worth carrying into the driver:** that call reported
+  `"boot": "timeout"` while returning `status: running` and a fully working machine, where warm
+  forks reported `"174ms"` / `"185ms"`. So `boot` is not a reliable readiness signal on the
+  cold-fork path — a driver must probe readiness itself rather than trust that field. Warm forks were 174 ms / 185 ms boot, 0.68 s end to end including the API
+  round trip — so the doc's "well under a second" criterion is met, and met from cold too.
+- **Host-key policy, the thing Phase 3 says does not exist — mostly already solved, and for a
+  reason the doc does not anticipate.** The CLI writes a per-machine `~/.ssh/config` stanza
+  (`HostName`, per-VM `Port`, `User boxd`, a per-user `IdentityFile`, `IdentitiesOnly yes`,
+  `ServerAliveInterval 30`) and pre-seeds `known_hosts` keyed `[host]:port` at creation time. It
+  sets **no** `StrictHostKeyChecking` and **no** `UserKnownHostsFile`. Verified: `ssh -o
+  BatchMode=yes` to a freshly created machine connects with no prompt, so the
+  `VCSRemoteFailure.hostKeyUnverified` hazard does not fire. **And all five machines' known_hosts
+  entries carry the same key, which is *not* any VM's own host key** — boxd terminates ssh at a
+  shared gateway, so the duplicated per-VM host keys above are never presented to a client. Two
+  consequences: the fork/host-key hazard is a disk-level fact with no transport-level effect here,
+  and a driver that does not shell out to the boxd CLI must seed `known_hosts` itself, with a key
+  that is constant per cluster rather than per machine.
+- **`/proc/uptime` is meaningless on a derived machine** — a fork minutes old reported ~47 hours.
+  This matters directly for OQ19: any busy/idle heuristic built on an uptime or loadavg delta
+  needs a different clock.
+
+### Item 1 — Rust pty on Linux, including process introspection — **PASS, with a divergence**
+
+- `forkpty` + `poll` from Rust works; `tcgetpgrp(master)` returns the foreground pgid exactly as on
+  Darwin. Statically linked musl binary, 409 KB, built with the same pinned Zig as item 7 — one
+  toolchain addition serves both items.
+- **The introspection half does not port cleanly, and the naive port is wrong.**
+  `executableName`'s doc comment rejects `proc_name`/`p_comm` because some CLIs rename themselves
+  after launch, and relies on `KERN_PROCARGS2` returning the immutable exec-time argv. **Linux has
+  no equivalent guarantee.** Measured against a process that rewrites its own `argv[0]` and calls
+  `prctl(PR_SET_NAME)`, exactly as the comment describes:
+
+  | Source | Self-renamed process | Interpreted CLI (`fakecli`, a python script) |
+  |---|---|---|
+  | `/proc/<pid>/cmdline` | `2.1.232` — **wrong** | `python3` — wrong |
+  | `/proc/<pid>/comm` | `2.1.232` — **wrong** (also 15-byte cap) | `python3` — wrong |
+  | `/proc/<pid>/exe` | `wr-pty-spike` — **correct** | `python3.12` — wrong |
+  | `/proc/<pid>/cwd` | correct | correct |
+
+  So `/proc/<pid>/cmdline` is the *syntactic* analogue of `KERN_PROCARGS2` and has the *semantics*
+  of `p_comm` — the exact thing the Swift comment exists to avoid. The Linux port needs
+  `/proc/<pid>/exe` as the rename-proof source, with a fallback to `argv[1]` of `cmdline` when
+  `exe` resolves to a known interpreter. `/proc/<pid>/cwd` is a clean one-for-one replacement for
+  `proc_pidinfo(PROC_PIDVNODEPATHINFO)`.
+- **Toolchain trap, already in the repo's memory and hit again:** a Homebrew `rustc` cannot
+  cross-compile (`can't find crate for 'core'` even after `rustup target add`, because the target
+  lands in a rustup toolchain that is not the active one). Build through the rustup toolchain.
+
+### Item 2 — `SessionFrame` over a non-socket stream — **PASS on both transports**
+
+Five cases — 5-byte payload, **zero-length** payload, 256 bytes of binary with embedded NULs,
+**70 KB** (larger than any pipe buffer), and multi-byte UTF-8 — with the first frame's 5-byte
+header deliberately **split 2 + 3 across two writes with 250 ms pauses**, so the far side must
+reassemble a header that arrived in pieces. All five passed over **`ssh … --frame-echo`** and,
+unchanged, over **`boxd machine exec`**. That is the doc's "an SDK exec call satisfies the contract
+equally" claim tested rather than asserted: an API-mediated, non-ssh transport satisfies
+`openStream` identically.
+
+### Item 3 — is a re-synthesised client interactive, not merely correct-looking? — **PASS, one gap**
+
+Re-synthesised a terminal that had negotiated alt screen, app cursor keys, bracketed paste,
+button + SGR mouse and focus events, fed the bytes to a **fresh** terminal, and compared modes
+rather than pixels.
+
+| Formatter options | Emitted | Result |
+|---|---|---|
+| default | **8 bytes** | **every** negotiated mode lost — 1049, 1, 2004, 1002, 1006, 1004 all off |
+| `extra` = palette, modes, scrolling_region, tabstops, pwd, keyboard, charsets | 5651 bytes | **all six modes survived** |
+
+- **The doc's warning is confirmed and its remedy is superseded** (result 2 above). A client
+  repainted the naive way is correct-looking and dead — no mouse, wrong key encoding, not even on
+  the alternate screen.
+- **The named mouse-group trap does not reproduce at this revision.** Driving `?1002h ?1003h
+  ?1002l` left only 1003 live on the source, and the fresh client matched on all three of
+  1000/1002/1003. exe-scroll's need to clear and re-derive the mutually-exclusive mouse groups
+  appears to be an artifact of its older pin.
+- **One real gap, and it is in the formatter, not the snapshot.** With `extra.keyboard = true` —
+  whose own documentation says "keyboard modes such as ModifyOtherKeys" — a source at kitty flags
+  `13` produced a client at `0`, and the emitted bytes contain no kitty push. **The snapshot itself
+  carries the flags correctly** (`live=13 → decoded=13`), so nothing is lost across persistence and
+  no side channel is needed; the agent simply has to read
+  `GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS` and write `CSI > <flags> u` after the formatter's
+  output. Verified: doing so restores the client to `13`. This is the one place the Goal section's
+  prediction — that negotiated state cannot be reconstructed from a grid — survives measurement,
+  and it survives in a milder form than predicted.
+- **This runs the real reattach path, not a shortcut.** The source terminal in both tables above is
+  a **snapshot-decoded** terminal (`encode → decode → format → fresh client`), not the live one, so
+  a mode dropped by the snapshot would show up here. None was: all six modes and the kitty flags
+  come through the snapshot intact.
+- **Scope, stated honestly.** This measures mode *state* surviving re-synthesis into a fresh
+  `libghostty-vt` terminal. It does not exercise a real `GhosttySurfaceView` against a real TUI
+  over a real dropped link, which is still worth doing before Phase 1's terminal service is
+  considered proven.
+
+### Item 4 — deploy key minted on the box — **PASS on the admin path; the case that matters is outstanding**
+
+- Keypair generated **on the VM**, public half registered with
+  `gh api --method POST /repos/joelmoss/workroom/keys -F read_only=false` (id 163063310, returned
+  `verified: true`), then `ssh -T git@github.com` from the VM answered
+  *"Hi joelmoss/workroom! You've successfully authenticated"*, a clone succeeded over ssh, and
+  `git push --dry-run` reported `* [new branch] spike-dryrun -> spike-dryrun` — write access
+  granted, nothing created. Key revoked and absence of any pushed branch verified afterwards.
+- **A finding that nearly became a false positive, and a genuine collision with premise 6.** boxd
+  sets in **system** git config:
+
+  ```
+  credential.https://github.com.helper=boxd
+  url.https://github.com/.insteadof=git@github.com:
+  ```
+
+  So `git clone git@github.com:…` is silently rewritten to HTTPS and served by boxd's own
+  credential helper. The first "successful" clone in this spike did **not** use the deploy key at
+  all — it fetched a public repo anonymously. Only with `GIT_CONFIG_NOSYSTEM=1` did origin stay
+  `git@github.com:…` and the deploy key actually carry the traffic. **A per-workroom ssh deploy
+  key is inert on this provider unless the agent explicitly defeats the provider's URL rewrite.**
+  Note also that setting an empty `insteadOf` via `-c` does not clear it.
+- **Also relevant to OQ20:** boxd's error path points at its own GitHub App integration ("ask your
+  org admin to install the boxd GitHub App"), and `/run/boxd/` already carries `figma-token`,
+  `linear-token` and `slack-token` on a stock machine — no `github-token`, because that
+  integration is not connected on this account. A provider-supplied GitHub App installation token
+  is therefore a *live* OQ20 candidate here rather than an unevaluated one, at the cost of the
+  credential being the provider's rather than Workroom's.
+
+### Next Steps item 3 — attach-mid-stream equivalence — **three real bugs found**
+
+The design doc schedules this before the terminal service is ported, and it earned its place.
+The assertion is the doc's own — *a client attaching mid-stream sees the same screen a client
+that watched from byte zero sees* — tested in the stronger form: both clients then receive the
+**rest of the stream**, so a divergence in mode or parser state shows up in what they render
+afterwards rather than only at the join. 23 split points per corpus case, each going through a
+real snapshot encode/decode because a reboot forces that path. Corpus is the four cases the doc
+names — split escapes, alt-screen transitions, truncated UTF-8, embedded queries — plus a
+negotiated-modes-with-scrollback case.
+
+**The naive implementation — "decode the snapshot, run the formatter, send that" — is wrong in
+three separate ways, and each fails differently:**
+
+1. **The formatter does not restore the cursor.** `GhosttyFormatterTerminalExtra` has no cursor
+   field: the formatter homes the cursor, paints the cells, and leaves it wherever the last cell
+   landed. The producer's cursor was at row 1; the repainted client's sat at the end of row 0, so
+   the next bytes overwrote the previous line — `"row 0row 1"`. A hand-emitted `CUP` after the
+   content fixes it. **This is the piece of the doc's original ordering list that survives.**
+2. **The formatter emits screen state, not parser state.** A stream cut mid-sequence leaves the
+   VT parser or UTF-8 decoder unfinished, and nothing in the grid expresses that. Without
+   appending the continuation bytes, the tail of a split escape renders as literal text
+   (`"row 01mrow 1"`) and a cut codepoint as `U+FFFD`. `ghostty_terminal_continuation_alloc`
+   returns exactly the right bytes — this is what that API is for — and they must go **last**,
+   after the cursor.
+3. **The continuation can itself contain a partial query, which re-introduces the leak class
+   `replayBytes` exists to prevent.** Measured: with a corpus containing the queries an
+   application legitimately sends, one split in 23 produced a replay stream carrying `OSC 10;?`.
+   Appending continuation bytes blindly hands a reattaching client a question to answer. **This
+   one is a decision, not a fix**: a mid-flight query is not the same as the *stale* query that
+   caused the original clipboard leak, so Phase 1 has to decide deliberately whether to strip
+   query-shaped continuations (and accept the tail rendering as text) or forward them. Recording
+   it here so that decision is made rather than defaulted into.
+
+**With cursor and continuation both emitted, 3 of 5 corpus cases pass every split**, including
+alt-screen transitions and truncated UTF-8 — the two the doc singled out as hardest. The
+remainder:
+
+- **`embedded queries`** fails 1 split in 23, and only on finding 3 above.
+- **`split escapes mid-CSI`** fails 2 splits in 23 with the screen offset by one row.
+
+  **CORRECTED 2026-09-12 — the diagnosis written here first was wrong, and it was wrong in the
+  direction that costs work.** It said re-synthesis restores the *active screen only*, that
+  scrollback is not replayed, and that replaying it is separate work Phase 3 owns. None of that
+  holds. With a NULL selection the formatter emits the **entire screen in Ghostty's sense, history
+  included**: a terminal holding 37 history rows and 24 visible ones emits 59 newlines, and a
+  client fed those bytes ends up with the history *and* the right visible screen. This was found
+  by building the hand-rolled history emission the original text implied was needed — it worked,
+  and the client came back with **50** history rows against the producer's 37, which is what
+  exposed the double count. The extra emission was deleted; the fix was removing code.
+
+  What survives of the finding is one row, not a class of loss: the emission ends without a
+  trailing newline, so the final line does not scroll and a client reports **36** history rows
+  where the producer has 37. That one-row offset is what the two failing splits above are seeing.
+  Both behaviours are now pinned by tests in `wr-agent`'s terminal module, each verified to fail
+  against a build with the emulator compiled out.
+
+**One API limitation worth carrying into Phase 1.** The continuation must be read from the **live**
+terminal, not a restored one: a snapshot-decoded terminal reports `CONTINUATION_MAX_BYTES = 0`, so
+the query on it fails with `INVALID_VALUE`. A running agent always has the live terminal to hand.
+An agent restarting from a snapshot on disk after a reboot does **not**, and therefore cannot
+recover the parser state — which is exactly the stop-and-reboot case in Success Criteria. The
+screen survives; the unfinished sequence does not.
+
+### Item 4 addendum — the writer-not-admin case reproduces, and one API field lies
+
+Retested with a fine-grained PAT on `joelmoss/workroom` (revoked after the run):
+
+```
+POST /repos/joelmoss/workroom/keys
+-> 403 {"message": "Resource not accessible by personal access token"}
+```
+
+So premise 6 caveat (b) is **confirmed as a hard failure**, not a theoretical one.
+
+**The field an implementation would naturally check is misleading.** The same token reading
+`GET /repos/joelmoss/workroom` gets back `"permissions": {"admin": true, ...}` — because that
+object describes the **authenticated user's role on the repository**, not the **token's** granted
+scopes. A client cannot use it to predict whether deploy-key registration will succeed; it has to
+attempt the `POST` and handle the 403. Worth writing into the driver rather than discovering in
+support.
+
+**Caveat on how isolated this result is.** The PAT used was `Contents: Read-only` — a
+`git push --dry-run` with it returned `remote: Permission to joelmoss/workroom.git denied`. So it
+demonstrates that a non-admin token cannot register a deploy key, but it does not isolate
+`Administration` as the *only* missing scope. Re-running with `Contents: Read and write` plus no
+`Administration` would close that last gap; the failure mode and the `permissions.admin` trap are
+established either way.
+
+### Outstanding
+
+1. **Isolating item 4's 403 to the `Administration` scope specifically** — see the caveat above.
+   The practical conclusion (a writer cannot register a deploy key, so OQ20 needs a real answer)
+   does not depend on it.
+
 ## Open Questions
 
-1. **How does the Rust agent read git? gix, and the log half is now MEASURED.** An early draft
+1. **How does the Rust agent read git? gix — ANSWERED, both halves now measured.** An early draft
    proposed `git2-rs`; that was wrong, because **gix is already in the tree** — `vcs/Cargo.lock:664`
    has `gix 0.85.0` with 46 `gix-*` crates via `jj-lib =0.43.0`, and the only `-sys` crates in the
    lock are pure-Rust platform shims. `git2-rs` would have *added* `libgit2-sys` plus
@@ -1015,12 +1374,70 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
      written invariant — `wr-vcs-core/Cargo.toml:8` ("the ONLY crate allowed to depend on jj-lib…
      jj-only by design") and `wr-vcs-model/Cargo.toml:9` ("adding jj-lib or gix here is a layering
      violation") — so the third-crate guess was right and neither invariant needs overturning.
+   **The second half is now MEASURED too** (2026-09-12, `vcs/crates/wr-vcs-git`, bin
+   `gix-diff-spike`, commit `74f6181a`). Oracle is the **git CLI**, not libgit2 —
+   `GitCommitDiff`'s stated design goal is to agree with `git show`, so matching git is matching
+   the intent and matching libgit2's quirks would not be.
+
+   - **Rename detection is a semantic match, and for the same structural reason.** libgit2 only
+     honours the repo's `diff.renames`/`diff.renamelimit` when you pass NULL find-options;
+     gix's `Tree::changes()` builds its options with `diff::Options::from_configuration`, whose
+     own doc says "similar to `git diff`, rename tracking will be enabled if it is not
+     configured". `Tracking::RenamesAndCopies` maps to `Rewrites { copies: Some(..) }`, so
+     `GIT_DELTA_COPIED`'s equivalent is reachable. Verified on purpose-built fixtures — pure
+     rename, rename+edit, copy, and a file→symlink typechange — across four configurations
+     (**default, `diff.renames=false`, `diff.renames=copies`, `diff.renameLimit=1`**): **16 of 16
+     exact**, including the paired `oldPath`.
+   - **Typechange needs no opt-in.** `GIT_DIFF_INCLUDE_TYPECHANGE` exists because libgit2 would
+     otherwise split a file↔symlink change into DELETED + ADDED *for the same path*, which breaks
+     `VCSChangedFile.id`'s uniqueness. gix reports it as a single `Modification` with a changed
+     `entry_mode` natively, so that whole class of bug does not exist on this side.
+   - **File lists: 150 of 150 exact** over this repo's real history — paths, rename/copy pairing
+     and kind, including merges (first-parent) and the root commit. This is the half that drives
+     the History changed-files UI, and it is clean.
+   - **Line counts: 139 of 150 exact.** The 11 that differ do so by **at most 4 lines**, always
+     symmetrically (`+n / -n`), and always with an **identical file list**. Ruled out by
+     measurement: it is not the algorithm (gix defaults to `myers`, same as git, and forcing each
+     of git's four algorithms changes nothing), not `diff.indentHeuristic`, and not a missing
+     trailing newline. It is `imara-diff` producing a valid but non-minimal edit script where
+     xdiff finds a smaller one. **The decision this forces:** the History row's "+N −M" badge
+     would occasionally disagree with `git show --stat` by a line or two. Acceptable or not is a
+     product call, not a technical blocker — and if it is not acceptable, that is a reason to keep
+     the stats on the existing path rather than a reason to abandon gix.
+   - **Ref decorations: exact**, over 6365 ref-bearing commits — but only after peeling.
+     `Reference::try_id()` returns `None` for a **symbolic** ref, so `origin/HEAD` — which every
+     clone has — silently vanishes until you fall back to `peel_to_id()`. git's own `show-ref`
+     lists it, so without this the decorations are quietly short one entry on every repo.
+   - **Push state: exact.** `repo.rev_walk(head).with_hidden(refs/remotes/*)` reproduces
+     `git rev-list HEAD --not --remotes` directly; no second revwalk implementation needed.
+   - **One gotcha that would have been a real bug:** gix reports the **tree** nodes along a changed
+     path as changes in their own right — a commit touching `macapp/WorkroomApp/Core/AppStore.swift`
+     also yields a `Modification` for `macapp`. git's `--raw` and libgit2's deltas only ever name
+     blobs. Unfiltered this inflated a 4-file commit to 8 and would have collided
+     `VCSChangedFile.id` on a directory name. Filter on `entry_mode.is_tree()`.
+
+   **The one genuine gap, and it is scope rather than risk: `GitCommitDiff.patch`.** That function
+   returns **git-format unified-diff text**, and it gets the whole file header free from
+   `git_patch_to_buf` — `diff --git`, `similarity index`, `rename from`, `rename to` — which is
+   precisely what `UnifiedDiff.parse` reads back into `renamedFrom`. gix's `UnifiedDiff` is
+   **blob-level**: it writes `@@` hunk headers and nothing else. Confirmed by grep — no
+   `diff --git`, `similarity index` or `rename from` anywhere in the gix tree. So the agent must
+   synthesize that header block itself from the tree-diff change it already has (both paths, both
+   modes, both blob ids, and the rename/copy flag are all in hand). Small, but it is real work that
+   the `log` result did not predict, and it is the only part of this question where gix gives less
+   than libgit2 rather than the same or more.
+
+   **`blob-diff` keeps the tree C-free.** The feature pulls `imara-diff`, which is pure Rust, so
+   the property that motivated gix over `git2-rs` survives this expansion.
+2. **Does the alt-screen repaint trick survive real network latency?** Phase 0 item 3 answers it.
+||||||| 2a5600c2
    **Still unpriced, and these are the parts that matter for Phase 2's estimate:** rename-detected
    commit diffs (`GitCommitDiff`, the other half of this question), ref decorations
    (`GitProvider.decorations`), and push state (`GitGraph.unpushed`, a second revwalk with
    `--not refs/remotes/origin/*`). The log result says gix is viable and its output trustworthy; it
    does not say the diff API is.
 2. **Does the alt-screen repaint trick survive real network latency?** Phase 0 item 3 answers it.
+2. **Does the alt-screen repaint trick survive real network latency?** **ANSWERED — Phase 0 item 3, see Phase 0 Results.** Re-synthesis carries every negotiated mode, but only with the formatter's `extra` flags set; with default options a fresh client is correct-looking and non-interactive. Kitty keyboard flags are the one gap and must be emitted by hand. exe-scroll's emission order does NOT need porting. The residual is a live client against a real TUI over a real dropped link. The original framing of this question follows.
    If not, mosh's state-synchronisation model becomes the serious option and the replay buffer's
    port scope changes — shrinking to primary-screen scrollback, which mosh's model does not cover,
    rather than being dropped. **Weigh it on the re-priced return, not on the reboot case alone**
@@ -1060,22 +1477,22 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
 8. **How much workroom UI state moves to the agent?** Cross-machine reattach needs pane→tab
    mapping, titles, and split geometry to live with the workroom. Where the line falls between
    "session state" and "client layout" is undecided.
-9. **What machine identity does a fork need re-minted?** Not session UUIDs — those are client-minted
+9. **What machine identity does a fork need re-minted?** **ANSWERED — Phase 0 item 6.** Measured duplicated across two live forks: `/etc/machine-id`, **`/proc/sys/kernel/random/boot_id`** (not on the list below, and it should be), both ssh host keys, and any on-disk secret. Re-minted by boxd: hostname and IP. Live processes carry across with their original pids. Not session UUIDs — those are client-minted
    and a template base has no sessions. The real list is ssh host key, machine-id, the agent's
    instance/socket identity, and any base-resident pty. Phase 0 item 6 measures which of these
    actually duplicate; the answer decides how much post-fork initialisation the driver owns.
-10. **Deploy key across a live fork, and the base's own credential.** Mint post-fork or every
+10. **Deploy key across a live fork, and the base's own credential.** **CONFIRMED — Phase 0 item 6.** A secret written to the base propagated byte-identically to both forks, so minting post-fork is mandatory, not a preference. The base's own credential remains unresolved. Mint post-fork or every
     workroom shares the base's key. Separately unresolved and arguably harder: what the **base**
     authenticates as when it clones the repo in the first place. It is the one machine that outlives
     every workroom, so a per-workroom-lifecycle key is exactly the wrong shape for it.
-11. **Is the inherited snapshot hazard real here?** The sweep records Firecracker documenting that
+11. **Is the inherited snapshot hazard real here?** **DID NOT REPRODUCE — Phase 0 item 6.** Both forks, and a third taken from a *hibernated* base, resolved DNS and completed a real outbound HTTPS request. No net/vsock breakage observed. The sweep records Firecracker documenting that
     resuming one snapshot twice is insecure, with net/vsock dropping on resume. boxd is the same
     class, and fork-two-from-one-base is that pattern. Measure it (Phase 0 item 6) rather than
     assume the wrapper handles it.
 12. **boxd self-host licence is unknown**, and the provider is new with no maturity signal recorded.
     Worth knowing before it becomes the only real driver — the exit is a second driver, which the
     seam already allows.
-13. **Can the wakefulness service actually defeat an idle timer?** The agnosticism decision bets the
+13. **Can the wakefulness service actually defeat an idle timer?** **ANSWERED — Phase 0 item 5.** Yes, and more cheaply than assumed: both boxd timers measure *network* idle (the CLI help says so), a CPU-busy job with no network I/O was hibernated mid-work with a 193 s clock gap, and the in-VM CLI setting its own `auto-hibernate.timeout` to 0 stopped it recurring. The process survived the hibernate, so the live-process gate is not binding here. The agnosticism decision bets the
     headline capability on it. Phase 0 item 5 settles it. A bad answer does not reopen the provider
     choice — it turns `keepAwake` back into a capability gate, which is a worse product.
 14. **What is the local rollback?** Phases 1-2 replace shipped session code for every *local* user
@@ -1094,8 +1511,8 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
 17. ~~**Where is the keepalive emitted from?**~~ **ANSWERED — a far-side per-driver lifecycle
     shim.** The agnostic agent decides busy/idle; the shim translates it into the provider's
     control-plane call, because a sleeping Mac can emit nothing. Premise 6 is rewritten to account
-    for the instance-scoped provider credential this requires. What remains open is narrower and
-    per-provider: **how tightly can that credential be scoped?** An instance-scoped defer token is
+    for the instance-scoped provider credential this requires. **Scope ANSWERED for boxd — Phase 0 item 5: the shim needs no Workroom-managed credential at all.** The in-VM CLI is self-scoped and authed by the provider's own metadata endpoint (5-minute TTL), so it can defer only its own machine. The trade is that `--isolated` removes that endpoint, making isolation and the shim mutually exclusive. For providers without such a CLI the question stands:
+    **how tightly can that credential be scoped?** An instance-scoped defer token is
     fine; an account-wide token on a disposable box is not, and it should disqualify or downgrade a
     driver. Phase 0 item 5 measures it for boxd.
 18. **What counts as the second driver?** The agnosticism claim is unverifiable with one. The local
@@ -1113,11 +1530,28 @@ these are the subsystems that actually gate "a remote workroom is a real workroo
     scoped to the repo, a GitHub App installation token, or a dedicated machine user. Each reopens
     "Workroom stores a secret", which premise 6 exists to avoid — so this is a real decision, not a
     detail, and it is separate from OQ6 (non-GitHub remotes).
-21. **Is the client-side `HostDriver` Rust or Swift?** Provisioning precedes any far-side agent, so
-    the driver runs on the Mac. Swift is the likely answer — it talks HTTP to provider APIs, which
-    Swift does natively, and it avoids a third Rust build product — but that makes the driver trait a
-    Swift protocol rather than a Rust trait, which is worth stating deliberately rather than drifting
-    into. Small, but it shapes where every driver lives.
+21. **Is the client-side `HostDriver` Rust or Swift?** **ANSWERED — Swift, and the reason is
+    stronger than the one this question anticipated.** The draft argued "it talks HTTP to provider
+    APIs, which Swift does natively". Phase 0 showed the first driver mostly does **not** talk HTTP:
+    it shells out to the `boxd` CLI, because that CLI is also what maintains the `~/.ssh/config`
+    stanza and pre-seeds `known_hosts` (item 6) — a driver that bypassed it would have to
+    reimplement both, and `ssh -o BatchMode=yes` would start failing `hostKeyUnverified` exactly as
+    Phase 3 feared. And item 2 measured `boxd machine exec` satisfying `openStream` byte-for-byte,
+    so even the stream transport is a subprocess rather than an SDK call.
+
+    That makes the driver the same shape as something the app already has and has debugged:
+    **`WorkroomCLI`** (`macapp/WorkroomApp/Core/WorkroomCLI.swift`, 390 lines) drives the bundled Go
+    binary over a `--json` contract behind a protocol seam, with structured errors, timeouts,
+    user-initiated cancellation and NDJSON log streaming via `onLog` — every affordance a
+    `HostDriver` needs, including the streaming one. `boxd`'s own `--json` on every command
+    (verified throughout Phase 0) fits that contract directly. The HTTP case is covered too and
+    also natively: `GitHubReleasesClient` already does `URLSession` behind its own protocol, which
+    is the shape an E2B-over-REST driver would take.
+
+    So `HostDriver` is a **Swift protocol**, there is no third Rust build product, and the Rust side
+    stays exactly what Phase 1 says it is: `wr-agent serve|attach`. The cost, stated deliberately
+    rather than drifted into: driver authors write Swift, so a driver cannot be shared with a
+    non-Apple client if Workroom ever has one. Small, but it shapes where every driver lives.
 
 ## Success Criteria
 
