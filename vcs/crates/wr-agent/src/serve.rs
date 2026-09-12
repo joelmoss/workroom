@@ -22,7 +22,7 @@ use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::protocol::envelope::{
@@ -30,6 +30,7 @@ use crate::protocol::envelope::{
 };
 use crate::protocol::frame::{Frame, FrameDecoder, FrameKind};
 use crate::session::{SessionId, SessionSpec, SessionStore};
+use crate::transport::Transport;
 
 pub const BUILD: &str = concat!("wr-agent ", env!("CARGO_PKG_VERSION"));
 
@@ -137,19 +138,34 @@ impl Agent {
 
 /// Greets, negotiates, then serves envelopes until the peer goes away.
 ///
-/// Takes a `UnixStream` rather than a generic `Read + Write` for one reason: output needs its own
-/// writer, so the pty pump can run while this loop blocks on read. `try_clone` gives that; a
-/// generic stream cannot. The remote path will pass whatever its driver opens through the same
-/// shape — the requirement is a clonable bidirectional stream, not a socket specifically.
-pub fn handle_connection(
-    mut stream: UnixStream,
+/// Generic over the transport, which is the whole point: the driver contract is a bidirectional
+/// byte stream, so `ssh host wr-agent serve --stdio`, a provider's exec channel and a local unix
+/// socket are all the same code path here. It also means the remote protocol can be tested over a
+/// pair of pipes with no container, no ssh and no provider — see `transport::PipeTransport`.
+pub fn handle_connection<T: Transport>(
+    transport: T,
     sessions: SessionStore,
 ) -> Result<(), ProtocolError> {
+    let (mut reader, writer) = transport.split().map_err(|_| ProtocolError::NotAnAgent)?;
+    // One writer, shared. A socket could be cloned instead, but a pipe or an exec channel cannot,
+    // and the agent must not require a transport that can. Contention is negligible: the command
+    // loop writes only replies, and the pump holds the lock for one write at a time.
+    let writer = Arc::new(Mutex::new(writer));
+
+    let send = |bytes: &[u8]| -> bool {
+        match writer.lock() {
+            Ok(mut writer) => writer
+                .write_all(bytes)
+                .and_then(|()| writer.flush())
+                .is_ok(),
+            Err(_) => false,
+        }
+    };
+
     let local = Hello::current(BUILD);
-    stream
-        .write_all(&local.encode())
-        .map_err(|_| ProtocolError::NotAnAgent)?;
-    let _ = stream.flush();
+    if !send(&local.encode()) {
+        return Err(ProtocolError::NotAnAgent);
+    }
 
     // Read the peer's greeting first — everything after depends on the negotiated version, so
     // parsing an envelope before it would be parsing at an unknown version.
@@ -159,7 +175,7 @@ pub fn handle_connection(
         if let Some((hello, _)) = Hello::decode(&greeting)? {
             break hello;
         }
-        match stream.read(&mut byte) {
+        match reader.read(&mut byte) {
             Ok(0) => return Err(ProtocolError::NotAnAgent),
             Ok(_) => greeting.push(byte[0]),
             Err(_) => return Err(ProtocolError::NotAnAgent),
@@ -176,14 +192,13 @@ pub fn handle_connection(
     // needs to be told.
     let stop = Arc::new(AtomicBool::new(false));
 
-    loop {
+    'outer: loop {
         while let Some(envelope) = decoder.next_envelope()? {
             let was_attached = attached;
             if let Some(reply) = dispatch(&envelope, &sessions, &mut attached) {
-                if stream.write_all(&reply.encode()).is_err() {
-                    break;
+                if !send(&reply.encode()) {
+                    break 'outer;
                 }
-                let _ = stream.flush();
             }
             // Start the output pump exactly once, when an attach first succeeds. Starting it
             // before the reply would race the client's own read of `Attached`.
@@ -196,23 +211,21 @@ pub fn handle_connection(
                         let frame = Frame::new(FrameKind::Output, replay);
                         let envelope =
                             Envelope::new(Service::Terminal, envelope.stream, frame.encode());
-                        if stream.write_all(&envelope.encode()).is_err() {
-                            break;
+                        if !send(&envelope.encode()) {
+                            break 'outer;
                         }
-                        let _ = stream.flush();
                     }
-                    if let Ok(writer) = stream.try_clone() {
-                        let sessions = sessions.clone();
-                        let stop = Arc::clone(&stop);
-                        pump = Some(std::thread::spawn(move || {
-                            let mut writer = writer;
-                            pump_output(&sessions, id, &mut writer, envelope.stream, &stop);
-                        }));
-                    }
+                    let sessions = sessions.clone();
+                    let stop = Arc::clone(&stop);
+                    let writer = Arc::clone(&writer);
+                    let service_stream = envelope.stream;
+                    pump = Some(std::thread::spawn(move || {
+                        pump_output(&sessions, id, &writer, service_stream, &stop);
+                    }));
                 }
             }
         }
-        match stream.read(&mut buffer) {
+        match reader.read(&mut buffer) {
             Ok(0) => break,
             Ok(n) => decoder.push(&buffer[..n]),
             Err(_) => break,
@@ -223,14 +236,13 @@ pub fn handle_connection(
     //
     // Detach FIRST, so the session is correctly reported detached even if anything below stalls —
     // a session wrongly listed as attached is what a client sees when it tries to come back.
-    // Then tell the pump to stop and close the socket, and only then join. Joining before setting
-    // the flag deadlocks against an idle shell: the pump is asleep waiting for output that is not
-    // coming, so it never attempts the write that would have discovered the closed socket.
+    // Then tell the pump to stop, and only then join. Joining before setting the flag deadlocks
+    // against an idle shell: the pump is asleep waiting for output that is not coming, so it never
+    // attempts the write that would have discovered the closed transport.
     if let Some(id) = attached {
         sessions.detach(id);
     }
     stop.store(true, Ordering::SeqCst);
-    let _ = stream.shutdown(std::net::Shutdown::Both);
     if let Some(pump) = pump {
         let _ = pump.join();
     }
@@ -439,10 +451,19 @@ pub fn decode_descriptor_list(payload: &[u8]) -> Vec<(String, bool, String)> {
 pub fn pump_output<S: Write>(
     sessions: &SessionStore,
     id: SessionId,
-    stream: &mut S,
+    writer: &Mutex<S>,
     service_stream: u32,
     stop: &AtomicBool,
 ) {
+    let send = |bytes: &[u8]| -> bool {
+        match writer.lock() {
+            Ok(mut writer) => writer
+                .write_all(bytes)
+                .and_then(|()| writer.flush())
+                .is_ok(),
+            Err(_) => false,
+        }
+    };
     let mut buffer = [0u8; 8192];
     loop {
         if stop.load(Ordering::SeqCst) {
@@ -475,8 +496,7 @@ pub fn pump_output<S: Write>(
             }
             let frame = Frame::new(FrameKind::Exited, status.to_be_bytes().to_vec());
             let envelope = Envelope::new(Service::Terminal, service_stream, frame.encode());
-            let _ = stream.write_all(&envelope.encode());
-            let _ = stream.flush();
+            send(&envelope.encode());
             // The shell IS the session; with it gone there is nothing left to reattach to.
             sessions.kill(id);
             break;
@@ -495,10 +515,9 @@ pub fn pump_output<S: Write>(
                 }
                 let frame = Frame::new(FrameKind::Output, buffer[..n].to_vec());
                 let envelope = Envelope::new(Service::Terminal, service_stream, frame.encode());
-                if stream.write_all(&envelope.encode()).is_err() {
+                if !send(&envelope.encode()) {
                     break;
                 }
-                let _ = stream.flush();
             }
             Some(Err(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(5));
