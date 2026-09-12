@@ -18,6 +18,10 @@ repository.workspace = true
 
 [dependencies]
 thiserror = { workspace = true }
+# Only for the pty and process layers: forkpty, tcgetpgrp, sysctl, proc_pidinfo. No async runtime
+# and no C libraries beyond libc itself, so the tree stays as free of native deps as the VCS
+# crates are.
+libc = "0.2"
 
 [[bin]]
 name = "wr-agent"
