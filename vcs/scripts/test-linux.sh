@@ -173,7 +173,18 @@ for line in sys.stdin:
     shutil.copy2(exe, os.path.join(stage, name))
     staged.append(name)
 print("\n".join(staged))
-' "$STAGE" > "$STAGE/.manifest" || true
+' "$STAGE" > "$STAGE/.manifest" || BUILD_RC=$?
+
+# Keep the pipeline's status and FAIL on it. `|| true` alone would not do: cargo can fail after
+# emitting artifacts for earlier targets, leaving a non-empty manifest, and the script would then
+# run an incomplete test set and report success — the same false green this file already carries a
+# comment about. The `|| BUILD_RC=$?` above exists only so the log below can be printed first;
+# `set -o pipefail` makes that status the pipeline's own.
+if [ "${BUILD_RC:-0}" -ne 0 ]; then
+  echo "error: building the Linux tests failed (exit $BUILD_RC)." >&2
+  [ -s "$STAGE/build.log" ] && sed 's/^/    /' "$STAGE/build.log" >&2
+  exit 1
+fi
 
 if ! grep -q . "$STAGE/.manifest" 2>/dev/null; then
   echo "error: cargo reported no test binaries for $TARGET." >&2
@@ -184,7 +195,10 @@ echo "test-linux: staged $(tr '\n' ' ' < "$STAGE/.manifest")"
 
 # The agent binary itself, for the integration tests: WR_AGENT_BIN overrides the absolute host path
 # cargo bakes in at compile time, which does not exist inside the container.
-cargo zigbuild -p wr-agent ${FEATURES[@]+"${FEATURES[@]}"} --target "$TARGET" >/dev/null
+if ! cargo zigbuild -p wr-agent ${FEATURES[@]+"${FEATURES[@]}"} --target "$TARGET" >/dev/null; then
+  echo "error: building the agent binary for $TARGET failed." >&2
+  exit 1
+fi
 cp "target/${TARGET}/debug/wr-agent" "$STAGE/wr-agent"
 
 IMAGE="${WR_LINUX_IMAGE:-docker.io/library/debian:stable-slim}"
