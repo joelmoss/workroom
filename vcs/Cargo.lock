@@ -2787,6 +2787,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "wr-agent"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "wr-vcs-core"
 version = "0.1.0"
 dependencies = [
