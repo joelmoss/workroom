@@ -149,8 +149,64 @@ jobs:
       - name: Clippy
         run: cargo clippy --manifest-path vcs/Cargo.toml --workspace --all-targets -- -D warnings
 
+      # This already covers wr-agent, and covers it on LINUX — the workspace has no
+      # `default-members`, so every member's unit and integration tests run here. That matters
+      # because the agent's pty, /proc introspection and socket code are the parts most likely to
+      # differ between Darwin and Linux, and a bug that only shows up on one of them has already
+      # happened once (an output pump that never noticed a closed socket, which macOS hid).
       - name: Test
         run: cargo test --manifest-path vcs/Cargo.toml
+
+  # The shadow terminal, which is what makes a reattaching client see its screen. Separate from
+  # `vcs-core` because it is the only thing in the repo that needs a Zig toolchain and a Ghostty
+  # checkout, and the rest of the workspace should not wait on either.
+  agent-terminal-state:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install 1.96.1 --profile minimal
+          rustup default 1.96.1
+
+      # Pinned by version AND checksum. An unpinned toolchain would silently change the emulator
+      # this links, and the snapshot format it produces carries no compatibility guarantee.
+      - name: Install Zig
+        env:
+          ZIG_VERSION: "0.16.0"
+          ZIG_SHA256: "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"
+        run: |
+          url="https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          curl -fsSL "$url" -o zig.tar.xz
+          echo "${ZIG_SHA256}  zig.tar.xz" | sha256sum -c -
+          mkdir -p "$HOME/.zig" && tar -xJf zig.tar.xz -C "$HOME/.zig" --strip-components=1
+          echo "$HOME/.zig" >> "$GITHUB_PATH"
+
+      # Keyed on the pinned engine sha, so a bump refetches and rebuilds and nothing else does.
+      # Without this every run clones Ghostty and spends ~75s building the emulator.
+      - name: Cache libghostty-vt
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/workroom/ghostty-vt
+          key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: vcs
+
+      - name: Clippy
+        run: |
+          cargo clippy --manifest-path vcs/Cargo.toml -p wr-agent \
+            --features terminal-state --all-targets -- -D warnings
+
+      # WR_AGENT_HAS_TERMINAL_STATE tells the integration tests the agent under test was built
+      # with the feature, so the repaint and scrollback assertions run instead of skipping. Without
+      # it they would pass by skipping and this job would prove nothing.
+      - name: Test
+        env:
+          WR_AGENT_HAS_TERMINAL_STATE: "1"
+        run: cargo test --manifest-path vcs/Cargo.toml -p wr-agent --features terminal-state
 
   app:
     runs-on: macos-15

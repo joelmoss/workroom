@@ -166,6 +166,17 @@ fn list_sessions(socket: &Path) -> String {
 
 const SESSION: &str = "550e8400-e29b-41d4-a716-446655440000";
 
+/// Whether the agent under test was built with the shadow terminal.
+///
+/// Empty counts as absent. `var_os` returns `Some("")` for a variable that is set but empty, which
+/// is exactly what a container runner passing `--env NAME=` produces — and an `is_none()` check
+/// then runs assertions against a build that cannot satisfy them.
+fn has_terminal_state() -> bool {
+    std::env::var_os("WR_AGENT_HAS_TERMINAL_STATE")
+        .map(|value| !value.is_empty())
+        .unwrap_or(false)
+}
+
 #[test]
 fn a_session_outlives_the_client_that_created_it() {
     let workspace = Workspace::new("survives");
@@ -386,7 +397,7 @@ fn attach_starts_an_agent_when_none_is_running() {
 /// on rather than that it works.
 #[test]
 fn a_reattaching_client_is_shown_the_screen() {
-    if std::env::var_os("WR_AGENT_HAS_TERMINAL_STATE").is_none() {
+    if !has_terminal_state() {
         eprintln!("skipping: agent built without the terminal-state feature");
         return;
     }
@@ -454,7 +465,7 @@ fn a_reattaching_client_is_shown_the_screen() {
 /// drop, so seeing it again can only mean history was restored.
 #[test]
 fn a_reattaching_client_gets_its_scrollback() {
-    if std::env::var_os("WR_AGENT_HAS_TERMINAL_STATE").is_none() {
+    if !has_terminal_state() {
         eprintln!("skipping: agent built without the terminal-state feature");
         return;
     }

@@ -449,32 +449,42 @@ pub fn pump_output<S: Write>(
             break;
         }
         let read = sessions.with_pty(id, |pty| pty.read(&mut buffer));
-        match read {
-            // The session is gone from the store (killed through the control plane).
-            None => break,
-            // EOF on the pty: the shell exited. The client has to be TOLD, or it waits forever on
-            // a session that will never speak again — `wr-agent attach` hung exactly that way, and
-            // in the app it would leave the relay process alive behind a dead pane.
-            Some(Ok(0)) => {
-                // Read the pid under the lock, reap OUTSIDE it. `pty.wait()` is a blocking
-                // waitpid, and holding the session store across it stalls every other session's
-                // operations — including `list`, which made two unrelated tests fail by timing out
-                // rather than by being wrong.
-                let pid = sessions.with_pty(id, |pty| pty.child_pid()).unwrap_or(-1);
-                let mut status = 0;
-                if pid > 0 {
-                    // Non-blocking: EOF on the pty can precede the child's exit by a moment, and
-                    // the exact status matters less than telling the client promptly.
-                    unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
-                }
-                let frame = Frame::new(FrameKind::Exited, status.to_be_bytes().to_vec());
-                let envelope = Envelope::new(Service::Terminal, service_stream, frame.encode());
-                let _ = stream.write_all(&envelope.encode());
-                let _ = stream.flush();
-                // The shell is what the session was; with it gone there is nothing to reattach to.
-                sessions.kill(id);
-                break;
+
+        // "The child is gone" looks different on each platform: reading a pty master whose child
+        // has exited yields EOF on Darwin and **EIO** on Linux. Deciding it once, here, is what
+        // stops the rest of this loop from having to know that — and matching only on EOF meant
+        // the branch below never ran on Linux at all, while macOS exercised it and made the code
+        // look correct. Found by running the suite in a Linux container.
+        let ended = match &read {
+            Some(Ok(0)) => true,
+            Some(Err(e)) => e.raw_os_error() == Some(libc::EIO),
+            _ => false,
+        };
+
+        if ended {
+            // Read the pid under the lock, reap OUTSIDE it. `pty.wait()` is a blocking waitpid,
+            // and holding the session store across it stalls every other session's operations —
+            // including `list`, which made two unrelated tests fail by timing out rather than by
+            // being wrong.
+            let pid = sessions.with_pty(id, |pty| pty.child_pid()).unwrap_or(-1);
+            let mut status = 0;
+            if pid > 0 {
+                // Non-blocking: the read can end a moment before the child's exit is reapable, and
+                // telling the client promptly matters more than the exact status.
+                unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
             }
+            let frame = Frame::new(FrameKind::Exited, status.to_be_bytes().to_vec());
+            let envelope = Envelope::new(Service::Terminal, service_stream, frame.encode());
+            let _ = stream.write_all(&envelope.encode());
+            let _ = stream.flush();
+            // The shell IS the session; with it gone there is nothing left to reattach to.
+            sessions.kill(id);
+            break;
+        }
+
+        match read {
+            // The session was removed from the store, i.e. killed through the control plane.
+            None => break,
             Some(Ok(n)) => {
                 // The shadow sees exactly what the client sees, before the client sees it — so a
                 // client that attaches a moment later is shown a screen that includes this.
