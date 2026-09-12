@@ -246,6 +246,29 @@ jobs:
       - name: Lint (swift-format --strict)
         run: make app-lint
 
+      # The app bundles `wr-agent`, and the bundled build links libghostty-vt so a reattaching
+      # pane can be repainted — see macapp/Scripts/build-agent.sh. That needs a Zig toolchain on
+      # this runner too, pinned by version AND checksum for the same reason the Linux agent job
+      # pins it: an unpinned toolchain silently changes the emulator the app ships against.
+      - name: Install Zig
+        env:
+          ZIG_VERSION: "0.16.0"
+          ZIG_SHA256: "b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489"
+        run: |
+          url="https://ziglang.org/download/${ZIG_VERSION}/zig-aarch64-macos-${ZIG_VERSION}.tar.xz"
+          curl -fsSL "$url" -o zig.tar.xz
+          echo "${ZIG_SHA256}  zig.tar.xz" | shasum -a 256 -c -
+          mkdir -p "$HOME/.zig" && tar -xJf zig.tar.xz -C "$HOME/.zig" --strip-components=1
+          echo "$HOME/.zig" >> "$GITHUB_PATH"
+
+      # Keyed on the pinned engine sha, as in `agent-terminal-state`: a bump refetches and
+      # rebuilds, nothing else does.
+      - name: Cache libghostty-vt
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/workroom/ghostty-vt
+          key: ghostty-vt-${{ runner.os }}-${{ hashFiles('vcs/scripts/build-ghostty-vt.sh') }}
+
       # The Rust VCS core (jj-lib via UniFFI) the app links. `make app-vcs` runs
       # vcs/scripts/build-apple.sh to produce the WrVcs package's xcframework + Swift bindings, and
       # MUST run before SPM resolves that local package below. Rust is preinstalled on the runner.

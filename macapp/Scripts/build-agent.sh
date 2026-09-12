@@ -18,8 +18,11 @@ CARGO_DIR="$(cd "${SRCROOT}/../vcs" && pwd)"
 DEST_DIR="${TARGET_BUILD_DIR}/${EXECUTABLE_FOLDER_PATH}"
 DEST="${DEST_DIR}/${HELPER_NAME}"
 
-# Xcode's build environment lacks cargo/rustup on PATH.
-export PATH="${HOME}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
+# Xcode's build environment lacks cargo/rustup on PATH. `~/.local/bin` is on it for mise, which is
+# how vcs/scripts/build-ghostty-vt.sh gets the pinned Zig on a cache miss — without it an engine-sha
+# bump fails an Xcode-driven build with "no zig and no mise" while the same build from a terminal
+# succeeds.
+export PATH="${HOME}/.cargo/bin:${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
 if ! command -v cargo >/dev/null 2>&1; then
   echo "error: 'cargo' not found on PATH. Install Rust or adjust PATH in build-agent.sh." >&2
   exit 1
@@ -78,10 +81,25 @@ mkdir -p "$SLICE_DIR"
 rm -f "$SLICE_DIR/${HELPER_NAME}-slice-"*
 trap 'rm -f "$SLICE_DIR/${HELPER_NAME}-slice-"*' EXIT
 
+# Where cargo actually puts the binary. NOT unconditionally `$CARGO_DIR/target`: an outer
+# CARGO_TARGET_DIR redirects the build, and copying from the default path would then embed a
+# STALE binary from the developer's tree while reporting a successful build. build-agent_test.sh
+# sets exactly that variable to keep its builds out of the working tree, so the bug it hid was
+# its own assertions passing against a binary this script never produced.
+OUT_ROOT="${CARGO_TARGET_DIR:-$CARGO_DIR/target}"
+
 SLICES=()
 for target in "${TARGETS[@]}"; do
-  ( cd "$CARGO_DIR" && $CARGO build --release -p wr-agent --target "$target" )
-  cp -f "$CARGO_DIR/target/$target/release/$HELPER_NAME" "$SLICE_DIR/${HELPER_NAME}-slice-$target"
+  # `terminal-state` is not optional for the app, whatever its name suggests. Without it the
+  # agent keeps no shadow copy of the screen, so a pane reattaching to a live session is repainted
+  # with nothing — which is what shipping it off looked like: after quitting and relaunching, a
+  # persisted terminal showed an empty pane with no prompt. It is a cargo feature only because it
+  # links libghostty-vt, which a bare `cargo test` should not have to build.
+  #
+  # The library is cached per (engine sha, target) outside the repo, so only the first build of a
+  # given pin pays for it; see vcs/scripts/build-ghostty-vt.sh.
+  ( cd "$CARGO_DIR" && $CARGO build --release -p wr-agent --features terminal-state --target "$target" )
+  cp -f "$OUT_ROOT/$target/release/$HELPER_NAME" "$SLICE_DIR/${HELPER_NAME}-slice-$target"
   SLICES+=("$SLICE_DIR/${HELPER_NAME}-slice-$target")
 done
 
