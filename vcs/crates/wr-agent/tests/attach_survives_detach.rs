@@ -54,6 +54,11 @@ fn start_agent(socket: &Path) -> Child {
         .args(["serve", "--socket"])
         .arg(socket)
         .args(["--idle-timeout", "60"])
+        // The agent spawns $SHELL, so without this these tests run the DEVELOPER's shell — an
+        // interactive zsh with a git-aware prompt and a line editor that redraws pending typeahead
+        // on reattach. That redraw looks exactly like a repaint and made an earlier version of the
+        // repaint test below pass with the feature switched off.
+        .env("SHELL", "/bin/sh")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -87,34 +92,62 @@ fn attach(socket: &Path, session: &str) -> Child {
         .expect("spawn attach")
 }
 
-/// Reads from a child's stdout until `needle` appears. Runs on a thread so a child that says
-/// nothing cannot hang the test.
-fn read_until(child: &mut Child, needle: &str, timeout: Duration) -> String {
-    let stdout = child.stdout.take().expect("stdout");
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut reader = BufReader::new(stdout);
-        let mut seen = String::new();
-        let mut byte = [0u8; 1];
-        while reader.read(&mut byte).unwrap_or(0) > 0 {
-            seen.push(byte[0] as char);
-            if tx.send(seen.clone()).is_err() {
-                return;
-            }
-        }
-    });
+/// A client's stdout, readable more than once.
+///
+/// It owns the reader thread, because taking `child.stdout` is a one-shot: an earlier version
+/// called a `read_until` helper twice on the same client and panicked on the second take.
+struct ClientReader {
+    rx: std::sync::mpsc::Receiver<String>,
+    seen: String,
+}
 
-    let deadline = Instant::now() + timeout;
-    let mut latest = String::new();
-    while Instant::now() < deadline {
-        if let Ok(seen) = rx.recv_timeout(Duration::from_millis(100)) {
-            latest = seen;
-            if latest.contains(needle) {
-                break;
+impl ClientReader {
+    fn new(child: &mut Child) -> ClientReader {
+        let stdout = child.stdout.take().expect("stdout");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            let mut byte = [0u8; 1];
+            while reader.read(&mut byte).unwrap_or(0) > 0 {
+                if tx
+                    .send(String::from_utf8_lossy(&byte).into_owned())
+                    .is_err()
+                {
+                    return;
+                }
             }
+        });
+        ClientReader {
+            rx,
+            seen: String::new(),
         }
     }
-    latest
+
+    /// Accumulates until `needle` appears or the deadline passes. Everything read so far is kept,
+    /// so a later call continues rather than starting over.
+    fn read_until(&mut self, needle: &str, timeout: Duration) -> &str {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if self.seen.contains(needle) {
+                break;
+            }
+            match self.rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(chunk) => self.seen.push_str(&chunk),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(_) => break,
+            }
+        }
+        &self.seen
+    }
+
+    /// Reads whatever is still arriving, for `quiet`, then stops. Used to be sure the shell has
+    /// finished echoing before the client is killed — leftover output would otherwise reach the
+    /// NEXT client as ordinary buffered bytes and make a repaint assertion prove nothing.
+    fn drain(&mut self, quiet: Duration) {
+        while let Ok(chunk) = self.rx.recv_timeout(quiet) {
+            self.seen.push_str(&chunk);
+        }
+    }
 }
 
 fn list_sessions(socket: &Path) -> String {
@@ -145,7 +178,8 @@ fn a_session_outlives_the_client_that_created_it() {
             .expect("write");
         stdin.flush().expect("flush");
     }
-    let seen = read_until(&mut first, "FIRST-CLIENT-MARKER", Duration::from_secs(10));
+    let mut reader = ClientReader::new(&mut first);
+    let seen = reader.read_until("FIRST-CLIENT-MARKER", Duration::from_secs(10));
     assert!(
         seen.contains("FIRST-CLIENT-MARKER"),
         "the first client never saw its own echo; got {seen:?}"
@@ -182,7 +216,8 @@ fn a_session_outlives_the_client_that_created_it() {
             .expect("write");
         stdin.flush().expect("flush");
     }
-    let seen = read_until(&mut second, "SECOND-CLIENT-MARKER", Duration::from_secs(10));
+    let mut reader = ClientReader::new(&mut second);
+    let seen = reader.read_until("SECOND-CLIENT-MARKER", Duration::from_secs(10));
     assert!(
         seen.contains("SECOND-CLIENT-MARKER"),
         "the reattached client could not reach the shell; got {seen:?}"
@@ -219,7 +254,8 @@ fn shell_state_survives_the_drop() {
         stdin.write_all(b"echo SET-OK\n").expect("write");
         stdin.flush().expect("flush");
     }
-    let seen = read_until(&mut first, "SET-OK", Duration::from_secs(10));
+    let mut reader = ClientReader::new(&mut first);
+    let seen = reader.read_until("SET-OK", Duration::from_secs(10));
     assert!(
         seen.contains("SET-OK"),
         "variable was never set; got {seen:?}"
@@ -238,11 +274,8 @@ fn shell_state_survives_the_drop() {
         stdin.write_all(b"echo VALUE=$MARKER\n").expect("write");
         stdin.flush().expect("flush");
     }
-    let seen = read_until(
-        &mut second,
-        "VALUE=survived-the-drop",
-        Duration::from_secs(10),
-    );
+    let mut reader = ClientReader::new(&mut second);
+    let seen = reader.read_until("VALUE=survived-the-drop", Duration::from_secs(10));
     assert!(
         seen.contains("VALUE=survived-the-drop"),
         "the shell was restarted rather than reattached; got {seen:?}"
@@ -285,7 +318,8 @@ fn a_second_agent_does_not_take_over_the_socket() {
         stdin.write_all(b"echo STILL-SERVING\n").expect("write");
         stdin.flush().expect("flush");
     }
-    let seen = read_until(&mut client, "STILL-SERVING", Duration::from_secs(10));
+    let mut reader = ClientReader::new(&mut client);
+    let seen = reader.read_until("STILL-SERVING", Duration::from_secs(10));
     assert!(seen.contains("STILL-SERVING"), "got {seen:?}");
 
     let _ = client.kill();
@@ -309,7 +343,8 @@ fn attach_starts_an_agent_when_none_is_running() {
         stdin.write_all(b"echo SPAWNED-OK\n").expect("write");
         stdin.flush().expect("flush");
     }
-    let seen = read_until(&mut client, "SPAWNED-OK", Duration::from_secs(15));
+    let mut reader = ClientReader::new(&mut client);
+    let seen = reader.read_until("SPAWNED-OK", Duration::from_secs(15));
     assert!(
         seen.contains("SPAWNED-OK"),
         "attach should have started an agent; got {seen:?}"
@@ -327,4 +362,84 @@ fn attach_starts_an_agent_when_none_is_running() {
         .arg(&socket)
         .output();
     let _ = std::fs::remove_file(&socket);
+}
+
+/// The payoff of the shadow terminal: a client that arrives late must be SHOWN the session, not
+/// merely connected to it. Without the shadow a reattached client sees nothing until the next
+/// keystroke produces output, which is what "reattach" looked like before terminal state.
+///
+/// **Getting this test honest took two attempts, and the first version was vacuous.** Asserting
+/// that the second client sees a marker the first one printed passes with or without the shadow:
+/// terminal echo means the marker appears twice in the pty's output, the first client's read
+/// consumed only one, and the leftover reaches the next client as ordinary buffered output.
+///
+/// So the marker has to be *old*: printed, then followed by enough traffic that the first client
+/// demonstrably drained past it, while staying on screen. Bytes that were consumed long ago can
+/// only reach a fresh client by being repainted from state.
+///
+/// Skipped unless the agent was built with the feature — otherwise it would assert the feature is
+/// on rather than that it works.
+#[test]
+fn a_reattaching_client_is_shown_the_screen() {
+    if std::env::var_os("WR_AGENT_HAS_TERMINAL_STATE").is_none() {
+        eprintln!("skipping: agent built without the terminal-state feature");
+        return;
+    }
+
+    let workspace = Workspace::new("repaint");
+    let socket = workspace.socket();
+    let mut agent = start_agent(&socket);
+    let session = "0a0a0a0a-0b0b-0c0c-0d0d-0e0e0e0e0e0e";
+
+    let mut first = attach(&socket, session);
+    {
+        let stdin = first.stdin.as_mut().expect("stdin");
+        std::thread::sleep(Duration::from_millis(400));
+        stdin.write_all(b"echo OLD-MARKER\n").expect("write");
+        // Enough lines that the marker is well behind the read cursor, few enough that it is
+        // still on the 24-row SCREEN. Re-synthesis restores the active screen, not scrollback, so
+        // a marker that has scrolled into history is genuinely unrecoverable — each command here
+        // costs two rows (the shell echoes the input, then prints the output) plus a prompt.
+        for n in 0..3 {
+            stdin
+                .write_all(format!("echo FILLER-{n}\n").as_bytes())
+                .expect("write");
+        }
+        stdin.write_all(b"echo DRAINED\n").expect("write");
+        stdin.flush().expect("flush");
+    }
+    // Reading to DRAINED consumes OLD-MARKER and its echo on the way past. The settle after it
+    // matters: the shell must finish echoing everything it was sent, or leftover output reaches
+    // the next client as ordinary buffered bytes and the assertion below proves nothing.
+    let mut reader = ClientReader::new(&mut first);
+    let seen = reader.read_until("DRAINED", Duration::from_secs(10));
+    assert!(seen.contains("OLD-MARKER"), "setup failed; got {seen:?}");
+    assert!(seen.contains("DRAINED"), "setup failed; got {seen:?}");
+    reader.drain(Duration::from_millis(500));
+
+    first.kill().expect("kill");
+    first.wait().expect("reap");
+    wait_for(Duration::from_secs(5), || {
+        list_sessions(&socket).contains("detached")
+    });
+
+    // The second client types NOTHING, and OLD-MARKER's bytes were consumed by the first client
+    // long before it died. Seeing it now means the screen was repainted from state.
+    let mut second = attach(&socket, session);
+    let mut reader = ClientReader::new(&mut second);
+    let seen = reader
+        .read_until("OLD-MARKER", Duration::from_secs(10))
+        .to_string();
+    if std::env::var_os("WR_DEBUG_REPAINT").is_some() {
+        eprintln!("--- second client saw: {seen:?}");
+    }
+    assert!(
+        seen.contains("OLD-MARKER"),
+        "the reattached client was not repainted; it saw {seen:?}"
+    );
+
+    let _ = second.kill();
+    let _ = second.wait();
+    let _ = agent.kill();
+    let _ = agent.wait();
 }

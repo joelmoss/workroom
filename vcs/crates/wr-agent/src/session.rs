@@ -17,6 +17,7 @@ use std::ffi::{OsStr, OsString};
 use std::sync::{Arc, Mutex};
 
 use crate::pty::{Pty, PtyError};
+use crate::shadow::Shadow;
 
 /// The client-minted session id: 16 bytes, matching `SessionIdentifier`'s UUID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -60,6 +61,11 @@ pub struct SessionInfo {
 pub struct Session {
     pub id: SessionId,
     pty: Pty,
+    /// The emulator shadowing this session's screen, so a client that attaches later can be shown
+    /// what is on it. Behind its own lock rather than the store's: the output pump writes to it on
+    /// every read, and holding the whole store for that would serialise every session's output
+    /// behind every other session's.
+    shadow: Arc<Mutex<Shadow>>,
     /// Whether a client currently holds this session. The daemon detaches the previous client on
     /// a new attach (`SessionDaemon.swift` does the same), so this is single-client by
     /// construction; the size-owner policy the design doc describes is what generalises it.
@@ -135,6 +141,7 @@ impl SessionStore {
         let session = Session {
             id: spec.id,
             pty,
+            shadow: Arc::new(Mutex::new(Shadow::new(spec.columns, spec.rows))),
             attached: true,
         };
         let info = session.info();
@@ -180,6 +187,22 @@ impl SessionStore {
     pub fn with_pty<T>(&self, id: SessionId, f: impl FnOnce(&Pty) -> T) -> Option<T> {
         let sessions = self.sessions.lock().expect("session store poisoned");
         sessions.get(&id).map(|session| f(&session.pty))
+    }
+
+    /// The session's shadow terminal, taken out of the store so the caller can hold it across a
+    /// read without keeping the store locked.
+    pub fn shadow(&self, id: SessionId) -> Option<Arc<Mutex<Shadow>>> {
+        let sessions = self.sessions.lock().expect("session store poisoned");
+        sessions.get(&id).map(|session| Arc::clone(&session.shadow))
+    }
+
+    /// What a client attaching to this session should be sent before anything else, so it sees
+    /// the screen rather than waiting for the next keystroke to produce output.
+    pub fn replay_bytes(&self, id: SessionId) -> Vec<u8> {
+        match self.shadow(id) {
+            Some(shadow) => shadow.lock().map(|s| s.replay()).unwrap_or_default(),
+            None => Vec::new(),
+        }
     }
 
     /// Ends a session and its pty. Returns whether there was one to end.

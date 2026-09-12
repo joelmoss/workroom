@@ -23,6 +23,20 @@ thiserror = { workspace = true }
 # crates are.
 libc = "0.2"
 
+[features]
+# Links libghostty-vt so the agent keeps a shadow copy of each session's screen, which is what
+# lets a reattaching client be repainted rather than arriving at a blank terminal.
+#
+# OFF by default, deliberately: it pulls a pinned Zig toolchain, a Ghostty checkout and libclang
+# (for bindgen) into the build. Everything else in this crate builds with cargo alone, and that
+# stays true for anyone who is not working on terminal state. Turn it on with
+# `cargo build -p wr-agent --features terminal-state`; scripts/build-ghostty-vt.sh supplies the
+# library and is invoked by build.rs.
+terminal-state = ["dep:bindgen"]
+
+[build-dependencies]
+bindgen = { version = "0.72", optional = true }
+
 [[bin]]
 name = "wr-agent"
 path = "src/main.rs"
