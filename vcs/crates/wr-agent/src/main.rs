@@ -89,23 +89,33 @@ fn run_serve(socket: PathBuf, idle: Option<String>) -> ExitCode {
 const DAEMON_UNAVAILABLE: u8 = 92;
 
 fn run_attach(args: &[String]) -> ExitCode {
-    let Some(socket) = flag(args, "--socket").map(PathBuf::from) else {
-        eprintln!("error: attach needs --socket <path>");
+    // Flags win, environment is the fallback — and the environment alone has to be enough, because
+    // `PersistentSessionService.attachCommand()` builds the command line as `<binary> attach` with
+    // no arguments at all. Everything the app wants to say, it says through the variables it
+    // already exports.
+    if let Some(text) = flag(args, "--session") {
+        // Safety: set before any thread is spawned, and only so the shared parser can read it.
+        unsafe { std::env::set_var("WORKROOM_SESSION_ID", text) };
+    }
+    let socket = flag(args, "--socket")
+        .map(PathBuf::from)
+        .or_else(serve::socket_from_env);
+    let Some(socket) = socket else {
+        eprintln!("error: attach needs --socket <path> or WORKROOM_SESSION_SOCKET");
         return ExitCode::FAILURE;
     };
-    let session = match flag(args, "--session") {
-        Some(text) => {
-            // Safety: set only so the shared parser can read it; this process is single-threaded
-            // at this point and nothing else reads the variable.
-            unsafe { std::env::set_var("WORKROOM_SESSION_ID", text) };
-            serve::session_id_from_env()
-        }
-        None => serve::session_id_from_env(),
-    };
-    let Some(session) = session else {
+
+    let mut request = serve::AttachRequest::from_env();
+    let Some(session) = request.id else {
         eprintln!("error: attach needs --session <uuid> or WORKROOM_SESSION_ID");
         return ExitCode::FAILURE;
     };
+    // The pty's initial size comes from the terminal this relay was forked into, so a session is
+    // created at the size it will actually be shown at rather than at 80x24 and then resized —
+    // which a full-screen program would see as a resize on its first frame.
+    let (columns, rows) = terminal_size();
+    request.columns = columns;
+    request.rows = rows;
 
     // Spawn-on-connect-failure, exactly as the Swift attach client does: the agent is started by
     // whoever needs it first rather than by an installed service, so there is no install footprint.
@@ -133,7 +143,8 @@ fn run_attach(args: &[String]) -> ExitCode {
         return ExitCode::from(DAEMON_UNAVAILABLE);
     }
 
-    let attach = Frame::new(FrameKind::Attach, session.0.to_vec());
+    let attach = Frame::new(FrameKind::Attach, request.encode());
+    let _ = session;
     if stream
         .write_all(&Envelope::new(Service::Terminal, 1, attach.encode()).encode())
         .is_err()
@@ -184,6 +195,17 @@ fn run_attach(args: &[String]) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+/// The size of the terminal this process was forked into, or zero when there is none (a pipe, a
+/// test harness) so the agent applies its own default rather than creating a 0x0 pty.
+fn terminal_size() -> (u16, u16) {
+    let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+    let rc = unsafe { libc::ioctl(libc::STDIN_FILENO, libc::TIOCGWINSZ, &mut size) };
+    if rc != 0 {
+        return (0, 0);
+    }
+    (size.ws_col, size.ws_row)
 }
 
 fn relay_stdin(mut stream: std::os::unix::net::UnixStream) {

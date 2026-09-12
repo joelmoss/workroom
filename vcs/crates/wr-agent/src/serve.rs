@@ -15,8 +15,9 @@
 //! anyone can lose. The one thing that must outlive the app is a live terminal, which is precisely
 //! what the rule already protects.
 
+use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
-use std::os::unix::ffi::OsStringExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -259,23 +260,34 @@ fn dispatch(
 
     match frame.kind {
         FrameKind::Attach => {
-            let id = SessionId::from_slice(frame.payload.get(..16)?)?;
+            let request = AttachRequest::decode(&frame.payload)?;
+            let id = request.id?;
             // Create on first attach, reattach afterwards. One code path, so a client that
             // crashed and came back does not have to know which case it is in.
             let result = if sessions.contains(id) {
                 sessions.attach(id).map(|_| ())
             } else {
-                let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into());
-                let env: Vec<_> = std::env::vars_os().collect();
+                let shell = request
+                    .shell
+                    .clone()
+                    .unwrap_or_else(|| OsString::from("/bin/sh"));
+                // A run command is `<shell> -c <command>`, so it inherits the login shell's
+                // environment rather than being exec'd bare — the same shape the app uses today.
+                let args: Vec<OsString> = match &request.command {
+                    Some(command) if !command.is_empty() => {
+                        vec![OsString::from("-c"), command.clone()]
+                    }
+                    _ => Vec::new(),
+                };
                 sessions
                     .create(SessionSpec {
                         id,
                         program: &shell,
-                        args: &[],
-                        env: &env,
-                        cwd: None,
-                        columns: 80,
-                        rows: 24,
+                        args: &args,
+                        env: &request.env,
+                        cwd: request.cwd.as_deref(),
+                        columns: request.columns,
+                        rows: request.rows,
                     })
                     .map(|_| ())
             };
@@ -413,11 +425,139 @@ pub fn spawn_agent(binary: &Path, socket: &Path) -> std::io::Result<()> {
     command.spawn().map(|_| ())
 }
 
-/// Reads a session id from the environment the app sets, matching `PersistentSessionService`'s
-/// `WORKROOM_SESSION_ID`.
-pub fn session_id_from_env() -> Option<SessionId> {
-    let raw = std::env::var_os("WORKROOM_SESSION_ID")?;
-    let text = String::from_utf8(raw.into_vec()).ok()?;
+/// How a client asks for a session to exist: the id, plus what to run if it does not yet.
+///
+/// These travel in the Attach frame rather than being read from the agent's own environment,
+/// because the agent is long-lived and shared — its environment is whatever it happened to be
+/// spawned with, which may be minutes or days older than the client's, and belongs to a different
+/// workroom. The client knows the shell, the directory and the metadata; the agent must be told.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AttachRequest {
+    pub id: Option<SessionId>,
+    pub shell: Option<OsString>,
+    pub command: Option<OsString>,
+    pub cwd: Option<OsString>,
+    pub columns: u16,
+    pub rows: u16,
+    /// Passed to the child verbatim. The client's environment, not the agent's.
+    pub env: Vec<(OsString, OsString)>,
+}
+
+impl AttachRequest {
+    /// 16-byte id, then NUL-terminated `KEY=VALUE` entries. Deliberately not a serialisation
+    /// format: the envelope already carries the version, the fields are all strings, and a
+    /// dependency-free encoding keeps the agent linkable into anything.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&self.id.map(|i| i.0).unwrap_or([0u8; 16]));
+        let mut put = |key: &str, value: &[u8]| {
+            out.extend_from_slice(key.as_bytes());
+            out.push(b'=');
+            out.extend_from_slice(value);
+            out.push(0);
+        };
+        if let Some(shell) = &self.shell {
+            put("SHELL", shell.as_bytes());
+        }
+        if let Some(command) = &self.command {
+            put("COMMAND", command.as_bytes());
+        }
+        if let Some(cwd) = &self.cwd {
+            put("CWD", cwd.as_bytes());
+        }
+        put("COLS", self.columns.to_string().as_bytes());
+        put("ROWS", self.rows.to_string().as_bytes());
+        for (key, value) in &self.env {
+            let mut entry = b"ENV:".to_vec();
+            entry.extend_from_slice(key.as_bytes());
+            out.extend_from_slice(&entry);
+            out.push(b'=');
+            out.extend_from_slice(value.as_bytes());
+            out.push(0);
+        }
+        out
+    }
+
+    pub fn decode(payload: &[u8]) -> Option<AttachRequest> {
+        let id = SessionId::from_slice(payload.get(..16)?)?;
+        let mut request = AttachRequest {
+            id: Some(id),
+            ..Default::default()
+        };
+        for entry in payload[16..].split(|b| *b == 0) {
+            if entry.is_empty() {
+                continue;
+            }
+            let Some(split) = entry.iter().position(|b| *b == b'=') else {
+                continue;
+            };
+            let (key, value) = (&entry[..split], &entry[split + 1..]);
+            let value = OsString::from_vec(value.to_vec());
+            match key {
+                b"SHELL" => request.shell = Some(value),
+                b"COMMAND" => request.command = Some(value),
+                b"CWD" => request.cwd = Some(value),
+                b"COLS" => {
+                    request.columns = value.to_string_lossy().parse().unwrap_or(0);
+                }
+                b"ROWS" => {
+                    request.rows = value.to_string_lossy().parse().unwrap_or(0);
+                }
+                _ => {
+                    if let Some(name) = key.strip_prefix(b"ENV:") {
+                        request.env.push((OsString::from_vec(name.to_vec()), value));
+                    }
+                }
+            }
+        }
+        Some(request)
+    }
+
+    /// Built from the environment `PersistentSessionService.launchEnvironment` sets, so the app
+    /// needs no new contract: it already exports every one of these.
+    pub fn from_env() -> AttachRequest {
+        Self::from_vars(|name| std::env::var_os(name), std::env::vars_os().collect())
+    }
+
+    /// The parsing, with the environment passed in.
+    ///
+    /// Separated from `from_env` so tests never touch the process environment. Setting variables
+    /// in a test is a shared-mutable-state bug waiting to happen: these tests passed serially and
+    /// raced each other under cargo's default parallelism, each clobbering the ids the others had
+    /// just set.
+    pub fn from_vars(
+        get: impl Fn(&str) -> Option<OsString>,
+        env: Vec<(OsString, OsString)>,
+    ) -> AttachRequest {
+        let var = |name: &str| get(name).filter(|v| !v.is_empty());
+        AttachRequest {
+            // An empty COMMAND is the app's "ordinary shell", not a command to run: `sh -c ""`
+            // exits instantly and reads as a session that died on creation.
+            id: var("WORKROOM_SESSION_ID").and_then(|v| parse_session_id(&v)),
+            shell: var("WORKROOM_SESSION_SHELL").or_else(|| var("SHELL")),
+            command: var("WORKROOM_SESSION_COMMAND"),
+            cwd: var("WORKROOM_SESSION_CWD"),
+            columns: 0,
+            rows: 0,
+            env,
+        }
+    }
+}
+
+/// The socket the app told us to use, matching `PersistentSessionService`'s
+/// `WORKROOM_SESSION_SOCKET`. `attachCommand()` passes no flags, so the environment is the whole
+/// contract on the app's side.
+pub fn socket_from_env() -> Option<PathBuf> {
+    std::env::var_os("WORKROOM_SESSION_SOCKET")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Parses the app's `uuidString` form — uppercase and hyphenated — tolerantly: hex digits only,
+/// exactly 32 of them. Tolerant because the id is a stored-data contract with Swift's `UUID`
+/// description, and a formatting difference should not silently orphan a live session.
+pub fn parse_session_id(value: &OsStr) -> Option<SessionId> {
+    let text = String::from_utf8(value.as_bytes().to_vec()).ok()?;
     let hex: String = text.chars().filter(|c| c.is_ascii_hexdigit()).collect();
     if hex.len() != 32 {
         return None;
@@ -427,6 +567,12 @@ pub fn session_id_from_env() -> Option<SessionId> {
         *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
     }
     Some(SessionId(bytes))
+}
+
+/// Reads a session id from the environment the app sets, matching `PersistentSessionService`'s
+/// `WORKROOM_SESSION_ID`.
+pub fn session_id_from_env() -> Option<SessionId> {
+    parse_session_id(&std::env::var_os("WORKROOM_SESSION_ID")?)
 }
 
 #[cfg(test)]
@@ -454,24 +600,113 @@ mod tests {
     }
 
     #[test]
-    fn parses_a_session_id_from_the_environment() {
-        // Safety: single-threaded within this test, and the variable is only read here.
-        unsafe {
-            std::env::set_var(
+    fn attach_request_round_trips() {
+        let request = AttachRequest {
+            id: Some(SessionId([7u8; 16])),
+            shell: Some(OsString::from("/bin/zsh")),
+            command: Some(OsString::from("npm run dev")),
+            cwd: Some(OsString::from("/Users/x/dev/workroom")),
+            columns: 120,
+            rows: 40,
+            env: vec![
+                (OsString::from("TERM"), OsString::from("xterm-ghostty")),
+                (OsString::from("PATH"), OsString::from("/usr/bin:/bin")),
+            ],
+        };
+        let decoded = AttachRequest::decode(&request.encode()).expect("decode");
+        assert_eq!(decoded, request);
+    }
+
+    /// A value containing `=` must survive: PATH-like variables and commands are full of them, and
+    /// splitting on the LAST rather than the FIRST separator would quietly corrupt them.
+    #[test]
+    fn attach_request_keeps_equals_signs_in_values() {
+        let request = AttachRequest {
+            id: Some(SessionId([1u8; 16])),
+            command: Some(OsString::from("FOO=bar make test ARGS=-v")),
+            env: vec![(OsString::from("K"), OsString::from("a=b=c"))],
+            ..Default::default()
+        };
+        let decoded = AttachRequest::decode(&request.encode()).expect("decode");
+        assert_eq!(decoded.command, request.command);
+        assert_eq!(decoded.env, request.env);
+    }
+
+    #[test]
+    fn attach_request_survives_empty_optional_fields() {
+        let request = AttachRequest {
+            id: Some(SessionId([2u8; 16])),
+            ..Default::default()
+        };
+        let decoded = AttachRequest::decode(&request.encode()).expect("decode");
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn attach_request_rejects_a_short_payload() {
+        assert!(AttachRequest::decode(&[0u8; 8]).is_none());
+    }
+
+    /// The app sets these and passes NO flags, so the environment alone has to be sufficient.
+    /// The app sets these and passes NO flags, so the environment alone has to be sufficient.
+    #[test]
+    fn attach_request_reads_the_app_environment_contract() {
+        let vars = [
+            (
                 "WORKROOM_SESSION_ID",
-                "550E8400-E29B-41D4-A716-446655440000",
-            );
-        }
-        let id = session_id_from_env().expect("parse");
+                "550e8400-e29b-41d4-a716-446655440000",
+            ),
+            ("WORKROOM_SESSION_SHELL", "/bin/fish"),
+            ("WORKROOM_SESSION_CWD", "/work/room"),
+            ("WORKROOM_SESSION_COMMAND", ""),
+        ];
+        let request = AttachRequest::from_vars(
+            |name| {
+                vars.iter()
+                    .find(|(k, _)| *k == name)
+                    .map(|(_, v)| OsString::from(*v))
+            },
+            vec![(OsString::from("TERM"), OsString::from("xterm-ghostty"))],
+        );
+        assert_eq!(
+            request.id.map(|i| i.to_hyphenated()).as_deref(),
+            Some("550e8400-e29b-41d4-a716-446655440000")
+        );
+        assert_eq!(request.shell.as_deref(), Some(OsStr::new("/bin/fish")));
+        assert_eq!(request.cwd.as_deref(), Some(OsStr::new("/work/room")));
+        // An empty COMMAND is "ordinary shell", not a command — `sh -c ""` exits instantly and
+        // reads as a session that died on creation.
+        assert_eq!(request.command, None);
+        assert_eq!(request.env.len(), 1);
+    }
+
+    /// Falls back to the plain SHELL when the app did not name one.
+    #[test]
+    fn attach_request_falls_back_to_the_plain_shell_variable() {
+        let request = AttachRequest::from_vars(
+            |name| (name == "SHELL").then(|| OsString::from("/bin/zsh")),
+            Vec::new(),
+        );
+        assert_eq!(request.shell.as_deref(), Some(OsStr::new("/bin/zsh")));
+    }
+
+    #[test]
+    fn parses_the_apps_uuid_format() {
+        let id = parse_session_id(OsStr::new("550E8400-E29B-41D4-A716-446655440000")).expect("id");
         assert_eq!(id.to_hyphenated(), "550e8400-e29b-41d4-a716-446655440000");
-        unsafe { std::env::remove_var("WORKROOM_SESSION_ID") };
-        assert!(session_id_from_env().is_none());
+        // Unhyphenated is the same id: the separators carry no information.
+        assert_eq!(
+            parse_session_id(OsStr::new("550e8400e29b41d4a716446655440000")),
+            Some(id)
+        );
     }
 
     #[test]
     fn rejects_a_malformed_session_id() {
-        unsafe { std::env::set_var("WORKROOM_SESSION_ID", "not-a-uuid") };
-        assert!(session_id_from_env().is_none());
-        unsafe { std::env::remove_var("WORKROOM_SESSION_ID") };
+        assert!(parse_session_id(OsStr::new("not-a-uuid")).is_none());
+        assert!(parse_session_id(OsStr::new("")).is_none());
+        // 31 and 33 hex digits are both wrong, and neither may be silently padded or truncated.
+        assert!(parse_session_id(OsStr::new(&"a".repeat(31))).is_none());
+        assert!(parse_session_id(OsStr::new(&"a".repeat(33))).is_none());
     }
 }
