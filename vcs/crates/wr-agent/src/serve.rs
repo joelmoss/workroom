@@ -188,6 +188,18 @@ pub fn handle_connection(
             // before the reply would race the client's own read of `Attached`.
             if was_attached.is_none() {
                 if let Some(id) = attached {
+                    // Repaint before the pump starts, so the screen arrives ahead of any new
+                    // output rather than being interleaved with it.
+                    let replay = sessions.replay_bytes(id);
+                    if !replay.is_empty() {
+                        let frame = Frame::new(FrameKind::Output, replay);
+                        let envelope =
+                            Envelope::new(Service::Terminal, envelope.stream, frame.encode());
+                        if stream.write_all(&envelope.encode()).is_err() {
+                            break;
+                        }
+                        let _ = stream.flush();
+                    }
                     if let Ok(writer) = stream.try_clone() {
                         let sessions = sessions.clone();
                         let stop = Arc::clone(&stop);
@@ -286,6 +298,13 @@ fn dispatch(
                 let columns = u16::from_be_bytes([frame.payload[0], frame.payload[1]]);
                 let rows = u16::from_be_bytes([frame.payload[2], frame.payload[3]]);
                 sessions.with_pty(id, |pty| pty.resize(columns, rows));
+                // The shadow has to follow the pty, or a reattaching client is repainted at the
+                // wrong geometry and every wrapped line is wrong.
+                if let Some(shadow) = sessions.shadow(id) {
+                    if let Ok(mut shadow) = shadow.lock() {
+                        shadow.resize(columns, rows);
+                    }
+                }
             }
             None
         }
@@ -343,6 +362,13 @@ pub fn pump_output<S: Write>(
             None => break,
             Some(Ok(0)) => break,
             Some(Ok(n)) => {
+                // The shadow sees exactly what the client sees, before the client sees it — so a
+                // client that attaches a moment later is shown a screen that includes this.
+                if let Some(shadow) = sessions.shadow(id) {
+                    if let Ok(mut shadow) = shadow.lock() {
+                        shadow.write(&buffer[..n]);
+                    }
+                }
                 let frame = Frame::new(FrameKind::Output, buffer[..n].to_vec());
                 let envelope = Envelope::new(Service::Terminal, service_stream, frame.encode());
                 if stream.write_all(&envelope.encode()).is_err() {
