@@ -85,6 +85,11 @@ fn attach(socket: &Path, session: &str) -> Child {
         .args(["attach", "--socket"])
         .arg(socket)
         .args(["--session", session])
+        // The shell now comes from the CLIENT's environment, which is the point — the agent is
+        // long-lived and shared, so its own environment is the wrong source. That makes this pin
+        // load-bearing rather than tidy: without it these tests run the developer's interactive
+        // shell, which exits immediately on a piped stdin and takes the session with it.
+        .env("SHELL", "/bin/sh")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -590,6 +595,48 @@ fn a_run_command_from_the_environment_is_executed() {
 
     let _ = client.kill();
     let _ = client.wait();
+    let _ = agent.kill();
+    let _ = agent.wait();
+}
+
+/// When the shell exits, the client must be told and must exit too.
+///
+/// Without an `Exited` frame the relay waits forever on a session that will never speak again.
+/// In the app that is a dead pane with a live relay process behind it; on the command line it is
+/// `wr-agent attach` hanging, which is how this was found.
+#[test]
+fn the_client_exits_when_the_shell_does() {
+    let workspace = Workspace::new("shellexit");
+    let socket = workspace.socket();
+    let mut agent = start_agent(&socket);
+    let session = "feedface-feed-face-feed-facefeedface";
+
+    let mut client = attach(&socket, session);
+    {
+        let stdin = client.stdin.as_mut().expect("stdin");
+        std::thread::sleep(Duration::from_millis(400));
+        stdin.write_all(b"echo BYE; exit\n").expect("write");
+        stdin.flush().expect("flush");
+    }
+
+    // The client must terminate on its own. Polling rather than `wait()` so a hang is a test
+    // failure with a message instead of a suite that never finishes.
+    let exited = wait_for(Duration::from_secs(10), || {
+        matches!(client.try_wait(), Ok(Some(_)))
+    });
+    assert!(exited, "the client did not exit after its shell did");
+
+    // And the session is gone rather than lingering as an unreattachable husk.
+    let cleared = wait_for(Duration::from_secs(5), || {
+        !list_sessions(&socket).contains(session)
+    });
+    assert!(
+        cleared,
+        "the dead session is still listed: {:?}",
+        list_sessions(&socket)
+    );
+
+    let _ = client.kill();
     let _ = agent.kill();
     let _ = agent.wait();
 }
