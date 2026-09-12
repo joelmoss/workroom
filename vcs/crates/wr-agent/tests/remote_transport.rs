@@ -369,3 +369,68 @@ fn serve_stdio_is_the_remote_entry_point() {
     let _ = child.kill();
     assert!(exited, "serve --stdio should exit when its stream closes");
 }
+
+/// A resize must reach the shell, or every full-screen program renders at the geometry the session
+/// happened to be created with. The agent accepted Resize frames long before anything sent one.
+#[test]
+fn a_resize_reaches_the_shell() {
+    let sessions = SessionStore::new();
+    let (mut client, handle) = serve_over_pipe(sessions.clone());
+    client.handshake();
+    client.send(Service::Terminal, 1, attach_frame([4u8; 16]));
+    std::thread::sleep(Duration::from_millis(400));
+
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&120u16.to_be_bytes());
+    payload.extend_from_slice(&40u16.to_be_bytes());
+    client.send(Service::Terminal, 1, Frame::new(FrameKind::Resize, payload));
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Ask the shell itself rather than trusting the frame was accepted: `stty size` reports what
+    // the pty actually carries, which is the only thing a program in it will ever see.
+    client.send(
+        Service::Terminal,
+        1,
+        Frame::new(FrameKind::Input, b"stty size\n".to_vec()),
+    );
+    let seen = client.read_until("40 120", Duration::from_secs(10));
+    assert!(
+        seen.contains("40 120"),
+        "the pty was not resized; the shell reported {seen:?}"
+    );
+
+    close(&client.writer);
+    let _ = handle.join();
+    sessions.kill_all();
+}
+
+/// A zero size means "no terminal" — a relay forked into a pipe reports it. Applying it would
+/// reset the session to a default and reflow everything for nothing.
+#[test]
+fn a_zero_resize_is_ignored() {
+    let sessions = SessionStore::new();
+    let (mut client, handle) = serve_over_pipe(sessions.clone());
+    client.handshake();
+    client.send(Service::Terminal, 1, attach_frame([5u8; 16]));
+    std::thread::sleep(Duration::from_millis(400));
+
+    client.send(
+        Service::Terminal,
+        1,
+        Frame::new(FrameKind::Resize, vec![0, 0, 0, 0]),
+    );
+    std::thread::sleep(Duration::from_millis(200));
+    client.send(
+        Service::Terminal,
+        1,
+        Frame::new(FrameKind::Input, b"stty size\n".to_vec()),
+    );
+
+    // Still the size it was attached at, not a default and not 0x0.
+    let seen = client.read_until("24 80", Duration::from_secs(10));
+    assert!(seen.contains("24 80"), "got {seen:?}");
+
+    close(&client.writer);
+    let _ = handle.join();
+    sessions.kill_all();
+}

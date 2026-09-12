@@ -182,12 +182,20 @@ fn run_attach(args: &[String]) -> ExitCode {
         return ExitCode::from(DAEMON_UNAVAILABLE);
     }
 
-    // stdin -> agent on its own thread; agent -> stdout on this one. Two directions, no polling.
+    // stdin -> agent on its own thread; agent -> stdout on this one.
     let input_stream = match stream.try_clone() {
         Ok(clone) => clone,
         Err(_) => return ExitCode::from(DAEMON_UNAVAILABLE),
     };
     std::thread::spawn(move || relay_stdin(input_stream));
+
+    // And a third watching the terminal's size. Without this the session is stuck at whatever
+    // size it was created with: the agent accepts Resize frames but nothing ever sent one, so
+    // resizing a pane left the shell — and any full-screen program in it — rendering at the old
+    // geometry forever.
+    if let Ok(resize_stream) = stream.try_clone() {
+        std::thread::spawn(move || relay_resizes(resize_stream, columns, rows));
+    }
 
     let mut decoder = EnvelopeDecoder::new();
     let mut buffer = [0u8; 8192];
@@ -236,6 +244,47 @@ fn terminal_size() -> (u16, u16) {
         return (0, 0);
     }
     (size.ws_col, size.ws_row)
+}
+
+/// Watches this relay's terminal for size changes and forwards them.
+///
+/// Polling rather than a SIGWINCH handler, deliberately. A signal handler may only call
+/// async-signal-safe functions, so it could do no more than set a flag that something else polls
+/// anyway — and polling `TIOCGWINSZ` is also correct when a signal is missed or coalesced, which
+/// happens when several resizes land while the process is busy. A tenth of a second is far below
+/// the point a person notices a reflow lagging.
+fn relay_resizes(
+    mut stream: std::os::unix::net::UnixStream,
+    initial_columns: u16,
+    initial_rows: u16,
+) {
+    let (mut columns, mut rows) = (initial_columns, initial_rows);
+    loop {
+        std::thread::sleep(Duration::from_millis(100));
+        let (next_columns, next_rows) = terminal_size();
+        // Zero means there is no terminal — a pipe, a test harness. Sending it would reset the
+        // session to the agent's default and reflow everything for no reason.
+        if next_columns == 0 || next_rows == 0 {
+            continue;
+        }
+        if (next_columns, next_rows) == (columns, rows) {
+            continue;
+        }
+        columns = next_columns;
+        rows = next_rows;
+
+        let mut payload = Vec::with_capacity(4);
+        payload.extend_from_slice(&columns.to_be_bytes());
+        payload.extend_from_slice(&rows.to_be_bytes());
+        let frame = Frame::new(FrameKind::Resize, payload);
+        if stream
+            .write_all(&Envelope::new(Service::Terminal, 1, frame.encode()).encode())
+            .is_err()
+        {
+            return;
+        }
+        let _ = stream.flush();
+    }
 }
 
 fn relay_stdin(mut stream: std::os::unix::net::UnixStream) {
