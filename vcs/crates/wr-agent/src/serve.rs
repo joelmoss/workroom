@@ -29,7 +29,7 @@ use crate::protocol::envelope::{
     negotiate, Envelope, EnvelopeDecoder, Hello, ProtocolError, Service,
 };
 use crate::protocol::frame::{Frame, FrameDecoder, FrameKind};
-use crate::session::{SessionId, SessionSpec, SessionStore};
+use crate::session::{SessionId, SessionSpec, SessionStore, SharedWriter};
 use crate::shell;
 use crate::transport::Transport;
 
@@ -148,10 +148,12 @@ pub fn handle_connection<T: Transport>(
     sessions: SessionStore,
 ) -> Result<(), ProtocolError> {
     let (mut reader, writer) = transport.split().map_err(|_| ProtocolError::NotAnAgent)?;
-    // One writer, shared. A socket could be cloned instead, but a pipe or an exec channel cannot,
-    // and the agent must not require a transport that can. Contention is negligible: the command
-    // loop writes only replies, and the pump holds the lock for one write at a time.
-    let writer = Arc::new(Mutex::new(writer));
+    // One writer, shared, and type-erased. A socket could be cloned instead, but a pipe or an exec
+    // channel cannot, and the agent must not require a transport that can. Boxed because the
+    // SESSION holds it now — its reader outlives this connection, and the next client may arrive
+    // over a different kind of stream. Contention is negligible: the command loop writes only
+    // replies, and the reader holds the lock for one write at a time.
+    let writer: SharedWriter = Arc::new(Mutex::new(Box::new(writer)));
 
     let send = |bytes: &[u8]| -> bool {
         match writer.lock() {
@@ -187,42 +189,22 @@ pub fn handle_connection<T: Transport>(
     let mut decoder = EnvelopeDecoder::new();
     let mut buffer = [0u8; 8192];
     let mut attached: Option<SessionId> = None;
-    let mut pump: Option<std::thread::JoinHandle<()>> = None;
-    // The pump spends most of its life asleep waiting for an idle shell to say something, so it
-    // cannot learn that the client has gone by failing a write — there is nothing to write. It
-    // needs to be told.
-    let stop = Arc::new(AtomicBool::new(false));
+    // Identifies THIS attachment, so ending this connection cannot detach a client that has since
+    // taken the session over.
+    let mut token = 0u64;
 
     'outer: loop {
         while let Some(envelope) = decoder.next_envelope()? {
-            let was_attached = attached;
-            if let Some(reply) = dispatch(&envelope, &sessions, &mut attached) {
+            if let Some(reply) = dispatch(
+                &envelope,
+                &sessions,
+                &mut attached,
+                &mut token,
+                &writer,
+                &send,
+            ) {
                 if !send(&reply.encode()) {
                     break 'outer;
-                }
-            }
-            // Start the output pump exactly once, when an attach first succeeds. Starting it
-            // before the reply would race the client's own read of `Attached`.
-            if was_attached.is_none() {
-                if let Some(id) = attached {
-                    // Repaint before the pump starts, so the screen arrives ahead of any new
-                    // output rather than being interleaved with it.
-                    let replay = sessions.replay_bytes(id);
-                    if !replay.is_empty() {
-                        let frame = Frame::new(FrameKind::Output, replay);
-                        let envelope =
-                            Envelope::new(Service::Terminal, envelope.stream, frame.encode());
-                        if !send(&envelope.encode()) {
-                            break 'outer;
-                        }
-                    }
-                    let sessions = sessions.clone();
-                    let stop = Arc::clone(&stop);
-                    let writer = Arc::clone(&writer);
-                    let service_stream = envelope.stream;
-                    pump = Some(std::thread::spawn(move || {
-                        pump_output(&sessions, id, &writer, service_stream, &stop);
-                    }));
                 }
             }
         }
@@ -233,28 +215,27 @@ pub fn handle_connection<T: Transport>(
         }
     }
 
-    // Order matters here, and getting it wrong hangs the connection thread forever.
-    //
-    // Detach FIRST, so the session is correctly reported detached even if anything below stalls —
-    // a session wrongly listed as attached is what a client sees when it tries to come back.
-    // Then tell the pump to stop, and only then join. Joining before setting the flag deadlocks
-    // against an idle shell: the pump is asleep waiting for output that is not coming, so it never
-    // attempts the write that would have discovered the closed transport.
+    // The session keeps its reader; only the client goes. There is nothing to stop and nothing to
+    // join — which is also why a detached session keeps draining its pty instead of wedging the
+    // shell behind a full output queue.
     if let Some(id) = attached {
-        sessions.detach(id);
-    }
-    stop.store(true, Ordering::SeqCst);
-    if let Some(pump) = pump {
-        let _ = pump.join();
+        sessions.detach(id, token);
     }
     Ok(())
 }
 
 /// Handles one envelope. Returns a reply to send, if any.
+///
+/// `send` is passed in as well as a reply being returned, because the Attach arm must emit
+/// `Attached` BEFORE the session paints the screen behind it — and the painting happens inside
+/// `SessionStore::attach`, under the lock that keeps it from being interleaved with live output.
 fn dispatch(
     envelope: &Envelope,
     sessions: &SessionStore,
     attached: &mut Option<SessionId>,
+    token: &mut u64,
+    writer: &SharedWriter,
+    send: &dyn Fn(&[u8]) -> bool,
 ) -> Option<Envelope> {
     if envelope.service != Service::Terminal && envelope.service != Service::Control {
         return None;
@@ -277,8 +258,8 @@ fn dispatch(
             let id = request.id?;
             // Create on first attach, reattach afterwards. One code path, so a client that
             // crashed and came back does not have to know which case it is in.
-            let result = if sessions.contains(id) {
-                sessions.attach(id).map(|_| ())
+            let created = if sessions.contains(id) {
+                Ok(())
             } else {
                 // Not `<shell>` with no arguments: see `shell::invocation`. Spawning the shell
                 // bare cost the login profile and ghostty's shell integration, which showed up in
@@ -310,10 +291,27 @@ fn dispatch(
                     })
                     .map(|_| ())
             };
+            // Create and reattach take ONE path from here: whether the session is new or was
+            // waiting, the client registers the same way and is painted the same way. A client
+            // that crashed and came back does not have to know which case it is in.
+            let result = created.and_then(|()| {
+                send(
+                    &Envelope::new(
+                        Service::Control,
+                        envelope.stream,
+                        Frame::control(FrameKind::Attached).encode(),
+                    )
+                    .encode(),
+                )
+                .then_some(())
+                .ok_or(crate::session::SessionError::NotFound(id.to_hyphenated()))?;
+                sessions.attach(id, Arc::clone(writer), envelope.stream)
+            });
             match result {
-                Ok(()) => {
+                Ok((_, granted)) => {
                     *attached = Some(id);
-                    reply(Frame::control(FrameKind::Attached))
+                    *token = granted;
+                    None
                 }
                 Err(e) => reply(Frame::new(FrameKind::Failure, e.to_string().into_bytes())),
             }

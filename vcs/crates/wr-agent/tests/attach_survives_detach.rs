@@ -672,6 +672,81 @@ fn the_shell_is_started_the_way_the_app_starts_it() {
     let _ = agent.wait();
 }
 
+/// A session with nobody attached must keep draining its pty.
+///
+/// This is the regression test for a real bug: while the pty reader belonged to the CONNECTION,
+/// a detached session had no reader at all. A job producing output then filled the pty's queue and
+/// **blocked** — the shell stopped mid-command and only resumed if someone reattached. Closing the
+/// app on a running build was enough to do it.
+///
+/// The assertion is deliberately indirect, and that is what makes it discriminating: `seq 1 50000`
+/// is far more than a pty queue holds, so the shell can only reach its `exit` if something drained
+/// it. The agent ends a session when its shell exits, so a session that is GONE proves the drain
+/// happened. Under the old code the shell blocks forever and the session is still listed.
+#[test]
+fn a_detached_session_keeps_draining_its_pty() {
+    let workspace = Workspace::new("detacheddrain");
+    let socket = workspace.socket();
+    let mut agent = start_agent(&socket);
+
+    // A second, idle session that outlives the test. It is the control: without it an empty or
+    // failed listing would satisfy the assertion below and the test would pass against anything.
+    // An earlier version of this test did exactly that.
+    let anchor = "a0c40000-a0c4-0000-a0c4-0000a0c40000";
+    let mut idle = Command::new(agent_binary())
+        .arg("attach")
+        .env("WORKROOM_SESSION_ID", anchor)
+        .env("WORKROOM_SESSION_SOCKET", &socket)
+        .env("WORKROOM_SESSION_SHELL", "/bin/sh")
+        .env("WORKROOM_SESSION_COMMAND", "sleep 60")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn idle");
+
+    let session = "d7a14ed0-d7a1-4ed0-d7a1-4ed0d7a14ed0";
+    let mut client = Command::new(agent_binary())
+        .arg("attach")
+        .env("WORKROOM_SESSION_ID", session)
+        .env("WORKROOM_SESSION_SOCKET", &socket)
+        .env("WORKROOM_SESSION_SHELL", "/bin/sh")
+        .env("WORKROOM_SESSION_COMMAND", "seq 1 50000; exit 0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn attach");
+
+    // The session must EXIST before it can be meaningfully detached — killing the client first
+    // would leave nothing to assert about, which is how this test once passed vacuously.
+    assert!(
+        wait_for(Duration::from_secs(10), || list_sessions(&socket)
+            .contains(session)),
+        "the session under test never started"
+    );
+
+    // Now drop the client, while the command is still pouring out output.
+    let _ = client.kill();
+    let _ = client.wait();
+
+    // The shell needs no help now — if it is being drained it reaches the end on its own, and the
+    // session goes with it. Under a connection-owned pump it blocks on a full pty queue forever.
+    let gone = wait_for(Duration::from_secs(20), || {
+        let listed = list_sessions(&socket);
+        listed.contains(anchor) && !listed.contains(session)
+    });
+    assert!(
+        gone,
+        "the detached session never finished; its shell is blocked on a pty nobody is reading"
+    );
+
+    let _ = idle.kill();
+    let _ = idle.wait();
+    let _ = agent.kill();
+    let _ = agent.wait();
+}
+
 /// When the shell exits, the client must be told and must exit too.
 ///
 /// Without an `Exited` frame the relay waits forever on a session that will never speak again.
