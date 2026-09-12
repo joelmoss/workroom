@@ -261,9 +261,11 @@ fn run_list(args: &[String]) -> ExitCode {
             frames.push(&envelope.payload);
             while let Ok(Some(frame)) = frames.next_frame() {
                 if frame.kind == FrameKind::Sessions {
-                    let body = String::from_utf8_lossy(&frame.payload);
-                    if !body.trim().is_empty() {
-                        println!("{body}");
+                    for (id, attached, command) in serve::decode_descriptor_list(&frame.payload) {
+                        println!(
+                            "{id} {} {command}",
+                            if attached { "attached" } else { "detached" }
+                        );
                     }
                     return ExitCode::SUCCESS;
                 }

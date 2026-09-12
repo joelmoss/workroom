@@ -21,13 +21,16 @@ enum SessionBackendProbe {
   /// Short enough that a hung helper cannot stall app launch or the Settings pane.
   static let timeout: TimeInterval = 2
 
+  /// `locate` is injected rather than defaulted-to-nil because `nil` cannot mean both "use the
+  /// normal lookup" and "there is no binary". It did, and once `wr-agent` was actually bundled the
+  /// two readings diverged: a test asking for the not-bundled case silently got the real binary
+  /// and executed it.
   static func probe(
     _ backend: SessionBackend,
-    binaryURL: URL? = nil,
+    locate: (SessionBackend) -> URL? = { PersistentSessionPaths.binaryURL(for: $0) },
     run: (URL) throws -> (status: Int32, output: String) = SessionBackendProbe.runProtocolCommand
   ) -> SessionBackendAvailability {
-    let resolved = binaryURL ?? PersistentSessionPaths.binaryURL(for: backend)
-    guard let resolved else { return .notBundled }
+    guard let resolved = locate(backend) else { return .notBundled }
 
     // The Swift daemon predates any self-describing subcommand, and adding one to a binary being
     // retired is not worth a release. Its presence is the same check the shipped code already

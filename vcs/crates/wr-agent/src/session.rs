@@ -50,6 +50,9 @@ impl SessionId {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionInfo {
     pub id: SessionId,
+    /// The pty child's pid — the shell, not the foreground program. The app reports it in session
+    /// listings and crash diagnostics.
+    pub pid: i32,
     pub attached: bool,
     /// The foreground command, resolved at read time rather than stored — a session's foreground
     /// process changes without the agent being told, so a cached value is wrong more often than
@@ -81,6 +84,7 @@ impl Session {
         let foreground = self.pty.foreground_pgid();
         SessionInfo {
             id: self.id,
+            pid: self.pty.child_pid(),
             attached: self.attached,
             foreground: foreground.and_then(crate::process::executable_name),
             cwd: foreground.and_then(crate::process::working_directory),
