@@ -575,7 +575,8 @@ fn the_app_environment_contract_alone_is_enough() {
     let _ = agent.wait();
 }
 
-/// A run command is `<shell> -c <command>`, and must actually run rather than opening a shell.
+/// A run command is `/bin/sh -c "exec <command>"`, and must actually run rather than opening a
+/// shell.
 #[test]
 fn a_run_command_from_the_environment_is_executed() {
     let workspace = Workspace::new("runcmd");
@@ -602,6 +603,67 @@ fn a_run_command_from_the_environment_is_executed() {
     assert!(
         seen.contains("RAN-THE-COMMAND"),
         "the run command did not execute; saw {seen:?}"
+    );
+
+    let _ = client.kill();
+    let _ = client.wait();
+    let _ = agent.kill();
+    let _ = agent.wait();
+}
+
+/// The shell must be started the way the app's own daemon starts it, not bare.
+///
+/// This is the regression test for two bugs seen in the app the first time it ran on the agent:
+/// panes titled `user@host:~/dir` instead of by the app. That came from spawning `$SHELL` with no
+/// argv[0] and no shell integration, so the login profile never ran and ghostty's OSC 133 prompt
+/// marks — which are how the app learns a command finished and resets the title — were never
+/// emitted. Asserting through a real attach is the point: `shell::invocation` had unit tests of
+/// its own while the attach path quietly ignored it.
+#[test]
+fn the_shell_is_started_the_way_the_app_starts_it() {
+    let workspace = Workspace::new("shellinvocation");
+    let socket = workspace.socket();
+    let mut agent = start_agent(&socket);
+
+    let mut client = Command::new(agent_binary())
+        .arg("attach")
+        .env(
+            "WORKROOM_SESSION_ID",
+            "5e115e11-5e11-5e11-5e11-5e115e115e11",
+        )
+        .env("WORKROOM_SESSION_SOCKET", &socket)
+        .env("WORKROOM_SESSION_SHELL", "/bin/sh")
+        .env("WORKROOM_SESSION_COMMAND", "")
+        .env("WORKROOM_SESSION_RESOURCES", "/res")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn attach");
+
+    {
+        let stdin = client.stdin.as_mut().expect("stdin");
+        std::thread::sleep(Duration::from_millis(400));
+        // `$0` is how a shell reports its own argv[0], and the leading dash is the ONLY thing that
+        // makes it a login shell.
+        stdin.write_all(b"echo \"argv0=[$0]\"\n").expect("write");
+        stdin
+            .write_all(b"echo \"res=[$GHOSTTY_RESOURCES_DIR]\"\n")
+            .expect("write");
+        stdin.flush().expect("flush");
+    }
+
+    let mut reader = ClientReader::new(&mut client);
+    let seen = reader
+        .read_until("res=[/res]", Duration::from_secs(10))
+        .to_string();
+    assert!(
+        seen.contains("argv0=[-sh]"),
+        "the shell was not started as a login shell; saw {seen:?}"
+    );
+    assert!(
+        seen.contains("res=[/res]"),
+        "ghostty's resources directory did not reach the shell; saw {seen:?}"
     );
 
     let _ = client.kill();

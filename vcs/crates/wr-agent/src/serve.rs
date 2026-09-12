@@ -30,6 +30,7 @@ use crate::protocol::envelope::{
 };
 use crate::protocol::frame::{Frame, FrameDecoder, FrameKind};
 use crate::session::{SessionId, SessionSpec, SessionStore};
+use crate::shell;
 use crate::transport::Transport;
 
 pub const BUILD: &str = concat!("wr-agent ", env!("CARGO_PKG_VERSION"));
@@ -279,24 +280,30 @@ fn dispatch(
             let result = if sessions.contains(id) {
                 sessions.attach(id).map(|_| ())
             } else {
-                let shell = request
-                    .shell
-                    .clone()
-                    .unwrap_or_else(|| OsString::from("/bin/sh"));
-                // A run command is `<shell> -c <command>`, so it inherits the login shell's
-                // environment rather than being exec'd bare — the same shape the app uses today.
-                let args: Vec<OsString> = match &request.command {
-                    Some(command) if !command.is_empty() => {
-                        vec![OsString::from("-c"), command.clone()]
-                    }
-                    _ => Vec::new(),
-                };
+                // Not `<shell>` with no arguments: see `shell::invocation`. Spawning the shell
+                // bare cost the login profile and ghostty's shell integration, which showed up in
+                // the app as panes stuck on the title the user's own prompt sets.
+                let invocation = shell::invocation(
+                    &request
+                        .command
+                        .clone()
+                        .unwrap_or_default()
+                        .to_string_lossy(),
+                    &request.shell.clone().unwrap_or_default().to_string_lossy(),
+                    &request
+                        .resources
+                        .clone()
+                        .unwrap_or_default()
+                        .to_string_lossy(),
+                    &request.env,
+                );
                 sessions
                     .create(SessionSpec {
                         id,
-                        program: &shell,
-                        args: &args,
-                        env: &request.env,
+                        program: &invocation.program,
+                        argv0: invocation.arguments.first().map(|a| a.as_os_str()),
+                        args: &invocation.arguments[1..],
+                        env: &invocation.environment,
                         cwd: request.cwd.as_deref(),
                         columns: request.columns,
                         rows: request.rows,
@@ -568,6 +575,10 @@ pub struct AttachRequest {
     pub shell: Option<OsString>,
     pub command: Option<OsString>,
     pub cwd: Option<OsString>,
+    /// Ghostty's bundled resources, whose `shell-integration` subtree the shell is pointed at.
+    /// Without it the shell loads the user's own config directly and the app loses OSC 2/7 —
+    /// which is what a pane's title and working directory are read from.
+    pub resources: Option<OsString>,
     pub columns: u16,
     pub rows: u16,
     /// Passed to the child verbatim. The client's environment, not the agent's.
@@ -595,6 +606,9 @@ impl AttachRequest {
         }
         if let Some(cwd) = &self.cwd {
             put("CWD", cwd.as_bytes());
+        }
+        if let Some(resources) = &self.resources {
+            put("RESOURCES", resources.as_bytes());
         }
         put("COLS", self.columns.to_string().as_bytes());
         put("ROWS", self.rows.to_string().as_bytes());
@@ -628,6 +642,7 @@ impl AttachRequest {
                 b"SHELL" => request.shell = Some(value),
                 b"COMMAND" => request.command = Some(value),
                 b"CWD" => request.cwd = Some(value),
+                b"RESOURCES" => request.resources = Some(value),
                 b"COLS" => {
                     request.columns = value.to_string_lossy().parse().unwrap_or(0);
                 }
@@ -668,6 +683,7 @@ impl AttachRequest {
             shell: var("WORKROOM_SESSION_SHELL").or_else(|| var("SHELL")),
             command: var("WORKROOM_SESSION_COMMAND"),
             cwd: var("WORKROOM_SESSION_CWD"),
+            resources: var("WORKROOM_SESSION_RESOURCES"),
             columns: 0,
             rows: 0,
             env,
@@ -811,6 +827,9 @@ mod tests {
             shell: Some(OsString::from("/bin/zsh")),
             command: Some(OsString::from("npm run dev")),
             cwd: Some(OsString::from("/Users/x/dev/workroom")),
+            resources: Some(OsString::from(
+                "/Applications/Workroom.app/Contents/Resources/ghostty",
+            )),
             columns: 120,
             rows: 40,
             env: vec![

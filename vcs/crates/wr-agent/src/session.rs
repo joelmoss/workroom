@@ -113,6 +113,9 @@ pub struct SessionStore {
 pub struct SessionSpec<'a> {
     pub id: SessionId,
     pub program: &'a OsStr,
+    /// What the child sees as `argv[0]`. `None` repeats `program`, which is the ordinary
+    /// convention; a login shell needs its own name prefixed with `-` here instead.
+    pub argv0: Option<&'a OsStr>,
     pub args: &'a [OsString],
     pub env: &'a [(OsString, OsString)],
     pub cwd: Option<&'a OsStr>,
@@ -153,7 +156,15 @@ impl SessionStore {
             spec.rows
         };
 
-        let pty = Pty::spawn(spec.program, spec.args, spec.env, spec.cwd, columns, rows)?;
+        let pty = Pty::spawn(
+            spec.program,
+            spec.argv0,
+            spec.args,
+            spec.env,
+            spec.cwd,
+            columns,
+            rows,
+        )?;
         let session = Session {
             id: spec.id,
             pty,
@@ -293,6 +304,7 @@ mod tests {
         SessionSpec {
             id: session,
             program: OsStr::new("/bin/sh"),
+            argv0: None,
             args,
             env,
             cwd: None,
@@ -426,6 +438,7 @@ mod tests {
             .create(SessionSpec {
                 id: id(6),
                 program: OsStr::new("/bin/sh"),
+                argv0: None,
                 args: &args,
                 env: &e,
                 cwd: None,

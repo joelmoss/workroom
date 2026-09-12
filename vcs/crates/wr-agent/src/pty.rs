@@ -61,6 +61,7 @@ impl Pty {
     /// the user in a working shell, not kill the session.
     pub fn spawn(
         program: &OsStr,
+        argv0: Option<&OsStr>,
         args: &[OsString],
         env: &[(OsString, OsString)],
         cwd: Option<&OsStr>,
@@ -70,7 +71,15 @@ impl Pty {
         let c_program =
             CString::new(program.as_bytes()).map_err(|_| PtyError::InteriorNul("program"))?;
         let mut c_args: Vec<CString> = Vec::with_capacity(args.len() + 1);
-        c_args.push(c_program.clone());
+        // argv[0] is not the program path. A shell decides it is a LOGIN shell by seeing its own
+        // name prefixed with `-` here — there is no flag for it — so the caller must be able to
+        // say what it is. `None` means the ordinary convention of repeating the program path.
+        c_args.push(match argv0 {
+            Some(name) => {
+                CString::new(name.as_bytes()).map_err(|_| PtyError::InteriorNul("argv0"))?
+            }
+            None => c_program.clone(),
+        });
         for arg in args {
             c_args
                 .push(CString::new(arg.as_bytes()).map_err(|_| PtyError::InteriorNul("argument"))?);
@@ -373,9 +382,44 @@ mod tests {
         seen
     }
 
+    /// The ordinary exec convention: argv[0] repeats the program path.
+    ///
+    /// Wraps `Pty::spawn` so the tests that do not care about argv[0] do not have to say so. The
+    /// ones that DO care call `Pty::spawn` directly.
+    fn spawn(
+        program: &OsStr,
+        args: &[OsString],
+        env: &[(OsString, OsString)],
+        cwd: Option<&OsStr>,
+        columns: u16,
+        rows: u16,
+    ) -> Result<Pty, PtyError> {
+        Pty::spawn(program, None, args, env, cwd, columns, rows)
+    }
+
+    #[test]
+    fn argv0_is_what_the_caller_says_it_is() {
+        // The whole point of the parameter: a shell reads argv[0] to decide it is a login shell,
+        // and `$0` is how that is observable from inside it.
+        let pty = Pty::spawn(
+            OsStr::new("/bin/sh"),
+            Some(OsStr::new("-sh")),
+            &[OsString::from("-c"), OsString::from("printf %s \"$0\"")],
+            &env(),
+            None,
+            80,
+            24,
+        )
+        .expect("spawn");
+        assert_eq!(
+            read_until(&pty, "-sh", Duration::from_secs(5)).trim(),
+            "-sh"
+        );
+    }
+
     #[test]
     fn runs_a_command_and_reads_its_output() {
-        let pty = Pty::spawn(
+        let pty = spawn(
             OsStr::new("/bin/echo"),
             &[OsString::from("hello-from-pty")],
             &env(),
@@ -392,7 +436,7 @@ mod tests {
     /// moments later, indistinguishable from a shell that exited on its own.
     #[test]
     fn reports_exec_failure_rather_than_a_live_session() {
-        let result = Pty::spawn(OsStr::new("/nonexistent/shell"), &[], &env(), None, 80, 24);
+        let result = spawn(OsStr::new("/nonexistent/shell"), &[], &env(), None, 80, 24);
         match result {
             Err(PtyError::Exec { program, source }) => {
                 assert!(program.contains("nonexistent"));
@@ -404,7 +448,7 @@ mod tests {
 
     #[test]
     fn spawns_in_the_requested_directory() {
-        let pty = Pty::spawn(
+        let pty = spawn(
             OsStr::new("/bin/pwd"),
             &[],
             &env(),
@@ -421,7 +465,7 @@ mod tests {
     /// shell, not a dead session.
     #[test]
     fn falls_back_when_the_directory_is_gone() {
-        let pty = Pty::spawn(
+        let pty = spawn(
             OsStr::new("/bin/pwd"),
             &[],
             &env(),
@@ -436,7 +480,7 @@ mod tests {
 
     #[test]
     fn reports_the_size_it_was_given() {
-        let pty = Pty::spawn(
+        let pty = spawn(
             OsStr::new("/bin/sh"),
             &[OsString::from("-c"), OsString::from("stty size; exit")],
             &env(),
@@ -453,7 +497,7 @@ mod tests {
     /// misbehave rather than fail, so it is replaced rather than passed through.
     #[test]
     fn substitutes_a_default_for_a_zero_size() {
-        let pty = Pty::spawn(
+        let pty = spawn(
             OsStr::new("/bin/sh"),
             &[OsString::from("-c"), OsString::from("stty size; exit")],
             &env(),
@@ -468,7 +512,7 @@ mod tests {
 
     #[test]
     fn resize_reaches_the_child() {
-        let pty = Pty::spawn(
+        let pty = spawn(
             OsStr::new("/bin/sh"),
             &[
                 OsString::from("-c"),
@@ -488,7 +532,7 @@ mod tests {
 
     #[test]
     fn reports_the_foreground_process() {
-        let pty = Pty::spawn(
+        let pty = spawn(
             OsStr::new("/bin/sh"),
             &[OsString::from("-c"), OsString::from("sleep 2")],
             &env(),
@@ -513,7 +557,7 @@ mod tests {
 
     #[test]
     fn input_written_to_the_master_reaches_the_child() {
-        let pty = Pty::spawn(
+        let pty = spawn(
             OsStr::new("/bin/sh"),
             &[
                 OsString::from("-c"),
@@ -535,7 +579,7 @@ mod tests {
     fn rejects_an_interior_nul_rather_than_truncating() {
         let bad = OsString::from_vec(b"/bin/sh\0extra".to_vec());
         assert!(matches!(
-            Pty::spawn(&bad, &[], &env(), None, 80, 24),
+            spawn(&bad, &[], &env(), None, 80, 24),
             Err(PtyError::InteriorNul("program"))
         ));
     }
