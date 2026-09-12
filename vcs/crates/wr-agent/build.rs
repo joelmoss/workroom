@@ -40,8 +40,11 @@ fn link_ghostty_vt() {
                 ("aarch64", "linux", _) => "aarch64-linux-gnu",
                 _ => panic!("libghostty-vt: unsupported target {arch}-{os}-{env_abi}"),
             };
-            let output = Command::new("sh")
-                .arg(&script)
+            // Run the script itself, not `sh <script>`. Naming an interpreter OVERRIDES the
+            // shebang, and on Ubuntu `/bin/sh` is dash, which has no `pipefail` — so the script
+            // died on its own first line there while working on macOS, where `sh` is bash in
+            // POSIX mode. It is executable and says `#!/bin/bash`; let it.
+            let output = Command::new(&script)
                 .args(["--target", zig_target])
                 .output()
                 .unwrap_or_else(|e| panic!("running {}: {e}", script.display()));
