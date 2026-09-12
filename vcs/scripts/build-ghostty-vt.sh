@@ -81,19 +81,52 @@ else
   exit 1
 fi
 
-SRC="${CACHE_ROOT}/src-${GHOSTTY_SHA}"
-if [ ! -d "${SRC}/.git" ]; then
-  echo "libghostty-vt: fetching ghostty @ ${GHOSTTY_SHA}" >&2
-  rm -rf "$SRC"
-  mkdir -p "$(dirname "$SRC")"
-  # Blobless rather than shallow: a shallow clone cannot check out an arbitrary sha, and a full
-  # clone of ghostty is large enough to be worth avoiding.
-  git clone --filter=blob:none --no-checkout "$GHOSTTY_REPO" "$SRC" >&2
+# Source resolution, in order of preference, so a build never reaches the network when it does not
+# have to and never reaches it SILENTLY when it does:
+#
+#   1. $WR_GHOSTTY_SRC       — an existing checkout, for an air-gapped or vendored build
+#   2. vcs/vendor/ghostty    — a submodule or manual checkout inside the repo
+#   3. the cache             — already fetched for this sha on this machine
+#   4. a clone from upstream — the only path that needs network, and it says so
+SRC=""
+if [ -n "${WR_GHOSTTY_SRC:-}" ]; then
+  [ -d "${WR_GHOSTTY_SRC}/.git" ] || {
+    echo "error: WR_GHOSTTY_SRC=${WR_GHOSTTY_SRC} is not a git checkout." >&2
+    exit 1
+  }
+  SRC="$WR_GHOSTTY_SRC"
+elif [ -d "$(dirname "$0")/../vendor/ghostty/.git" ]; then
+  SRC="$(cd "$(dirname "$0")/../vendor/ghostty" && pwd)"
+else
+  SRC="${CACHE_ROOT}/src-${GHOSTTY_SHA}"
+  if [ ! -d "${SRC}/.git" ]; then
+    if ! git ls-remote --exit-code "$GHOSTTY_REPO" HEAD >/dev/null 2>&1; then
+      echo "error: libghostty-vt needs ghostty @ ${GHOSTTY_SHA} and cannot reach ${GHOSTTY_REPO}." >&2
+      echo "       This is the ONLY network dependency in the build, and only with the" >&2
+      echo "       'terminal-state' feature. To build offline, point WR_GHOSTTY_SRC at a checkout," >&2
+      echo "       place one at vcs/vendor/ghostty, or set WR_GHOSTTY_VT_PREFIX to a prebuilt" >&2
+      echo "       library. See vcs/scripts/build-ghostty-vt.sh." >&2
+      exit 1
+    fi
+    echo "libghostty-vt: fetching ghostty @ ${GHOSTTY_SHA}" >&2
+    rm -rf "$SRC"
+    mkdir -p "$(dirname "$SRC")"
+    # Blobless rather than shallow: a shallow clone cannot check out an arbitrary sha, and a full
+    # clone of ghostty is large enough to be worth avoiding.
+    git clone --filter=blob:none --no-checkout "$GHOSTTY_REPO" "$SRC" >&2
+  fi
 fi
-git -C "$SRC" checkout --quiet "$GHOSTTY_SHA" 2>/dev/null || {
+# Only the cache is ours to update. A checkout someone pointed us at is theirs: fetching into it
+# would mutate a tree they may be working in, and the sha assertion below catches a wrong one
+# with a readable message either way.
+if ! git -C "$SRC" checkout --quiet "$GHOSTTY_SHA" 2>/dev/null; then
+  if [ -n "${WR_GHOSTTY_SRC:-}" ] || [ "$SRC" != "${CACHE_ROOT}/src-${GHOSTTY_SHA}" ]; then
+    echo "error: ${SRC} does not contain ghostty ${GHOSTTY_SHA}. Fetch it there first." >&2
+    exit 1
+  fi
   git -C "$SRC" fetch --filter=blob:none origin >&2
   git -C "$SRC" checkout --quiet "$GHOSTTY_SHA" >&2
-}
+fi
 
 # Verify we got what we asked for. A moved branch or a truncated sha that resolved to something
 # else would otherwise link a different emulator than the app ships, which is exactly the failure
