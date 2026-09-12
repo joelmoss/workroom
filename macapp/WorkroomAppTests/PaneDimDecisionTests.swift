@@ -185,6 +185,42 @@ final class PaneDimDecisionTests: XCTestCase {
     }
   }
 
+  /// A popped-out pane (issue #172) answers from its OWN window, overriding all four inputs above.
+  ///
+  /// It has to: the tab is not in the origin's layout, so `isCursorTab` is false for it by
+  /// construction and `isSelectedMember` reports on a workroom that merely happens to be selected
+  /// over there. Left to the docked matrix, every one of these rows records — sound + toast + an
+  /// unread badge for the pane the user is staring straight at.
+  ///
+  /// The rows deliberately feed HOSTILE docked inputs (the exact combination that would otherwise
+  /// suppress, and the one that would otherwise pulse), so the test fails if the detached arm is
+  /// removed rather than passing on agreement by luck.
+  func testADetachedPaneAnswersFromItsOwnWindow() {
+    // Its window is key: the user is looking at it. Suppressed even though every docked input says
+    // off-screen, unselected, non-cursor — which is what the origin honestly reports for it.
+    let seen = AppStore.activityOutcome(
+      appFrontmost: false, isOnScreen: false, isSelectedMember: false, isCursorTab: false,
+      detachedWindowKey: true)
+    XCTAssertFalse(seen.record, "the detached window is key — the user is looking right at it")
+    XCTAssertFalse(seen.pulse, "and a pane you are looking at never pulses")
+
+    // Its window is NOT key: as unseen as an off-screen tab, even though the origin would call this
+    // the frontmost selected cursor pane (the one row that suppresses when docked).
+    let unseen = AppStore.activityOutcome(
+      appFrontmost: true, isOnScreen: true, isSelectedMember: true, isCursorTab: true,
+      detachedWindowKey: false)
+    XCTAssertTrue(unseen.record, "you are not in that window — it notifies")
+    XCTAssertFalse(
+      unseen.pulse,
+      "and never pulses: a border flash in a window you are not looking at locates nothing")
+
+    // nil is the docked case and must change nothing — this is what keeps the matrix above honest.
+    let docked = AppStore.activityOutcome(
+      appFrontmost: true, isOnScreen: true, isSelectedMember: true, isCursorTab: false)
+    XCTAssertEqual(docked.pulse, true)
+    XCTAssertEqual(docked.record, true)
+  }
+
   // MARK: PaneTreeView.fadesFocusChange (issue #126 follow-up)
 
   /// Clicking another pane: the tree keeps its shape, so the ring and scrim cross-fade as designed.

@@ -4599,14 +4599,24 @@ final class AppStore: ObservableObject {
   }
 
   /// The full per-activity decision, composed from the pure parts so the whole matrix is unit-
-  /// testable without `NSApp` (issue #89). Total over all four inputs. `record == false` ⇒ the
+  /// testable without `NSApp` (issue #89). Total over all five inputs. `record == false` ⇒ the
   /// event is suppressed (you're looking at that exact pane). `pulse` border-flashes an on-screen
   /// non-cursor pane to locate it (issue #82) — never the cursor pane (`shouldPulse` handles that),
   /// never while backgrounded (those get a banner, not a pulse). The `isOnScreen` guard on `seen`
   /// keeps it total: an off-screen tab always records, even if flagged selected + cursor.
+  ///
+  /// `detachedWindowKey` is nil for a docked pane and short-circuits everything for a popped-out one
+  /// (issue #172): a pane in its own window is not in the origin's layout at all, so the origin's key
+  /// state, selection and cursor tab each answer the wrong question — its own window is the whole
+  /// answer. Key ⇒ the user is looking straight at it, so the activity is seen. Not key ⇒ as unseen
+  /// as an off-screen tab, and never a pulse: a border flash in a window you are not looking at
+  /// locates nothing. Without this, output in the pane you are staring at still records unread and
+  /// fires the arrival sound + toast.
   nonisolated static func activityOutcome(
-    appFrontmost: Bool, isOnScreen: Bool, isSelectedMember: Bool, isCursorTab: Bool
+    appFrontmost: Bool, isOnScreen: Bool, isSelectedMember: Bool, isCursorTab: Bool,
+    detachedWindowKey: Bool? = nil
   ) -> (pulse: Bool, record: Bool) {
+    if let detachedWindowKey { return (pulse: false, record: !detachedWindowKey) }
     let seen =
       isOnScreen
       && isSeen(
@@ -4630,6 +4640,8 @@ final class AppStore: ObservableObject {
     //   on-screen, not cursor (split-mate)         → pulse (locator) + notify
     //   off-screen                                 → notify (no pulse)
     //   backgrounded / another window key          → banner (no pulse)
+    //   detached, its own window key               → SEEN: suppress (issue #172)
+    //   detached, its own window not key           → notify (no pulse)
     //
     // `seen` (suppress?) keys on `hostWindow?.isKeyWindow` — is THIS pane the one focused. The
     // banner-vs-in-app routing below keys on `NSApp.isActive` — is the APP frontmost at all. Two
@@ -4643,7 +4655,8 @@ final class AppStore: ObservableObject {
     let isCursorTab = onScreen.map { terminals.focusedTab(for: $0)?.id == tabID } ?? false
     let outcome = Self.activityOutcome(
       appFrontmost: appFrontmost, isOnScreen: onScreen != nil,
-      isSelectedMember: isSelectedMember, isCursorTab: isCursorTab)
+      isSelectedMember: isSelectedMember, isCursorTab: isCursorTab,
+      detachedWindowKey: detachedPanes.window(for: tabID)?.isKeyWindow)
     if outcome.pulse { terminals.pulsePaneActivity(tabID) }
     guard outcome.record,
       let note = notifications.record(
