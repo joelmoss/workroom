@@ -15,25 +15,54 @@ final class PersistentSessionService {
   private let logger = Logger(
     subsystem: "com.developwithstyle.workroom", category: "PersistentSession")
 
-  private var resolvedSocketPath: String?
-  /// The backend `resolvedSocketPath` was resolved for. The two backends deliberately use
-  /// different socket files, so a cached path from before a switch would point the app at the
-  /// other implementation's sessions.
-  private var resolvedForBackend: SessionBackend?
+  /// One socket path per backend. They deliberately differ, so these must never be conflated —
+  /// the daemon's sessions and the agent's are reached through different files.
+  private var resolvedSocketPaths: [SessionBackend: String] = [:]
+  /// Where new sessions go. Cached because resolving it runs the agent to check it works, and
+  /// that answer does not change within a launch.
+  private var cachedPreferred: SessionBackend?
   private var descriptors: [UUID: SessionDescriptor] = [:]
 
   private init() {}
 
-  /// Which helper owns sessions right now. Read through `SessionBackend.selected()` so the
-  /// "a build that does not offer the choice ignores a stored one" rule lives in one place.
-  var backend: SessionBackend { SessionBackend.selected() }
+  /// Where a NEW session would be created. Existing sessions are resolved individually — see
+  /// `backend(forSession:)`, which is what makes the migration invisible.
+  var backend: SessionBackend {
+    if let cachedPreferred { return cachedPreferred }
+    let resolved = SessionBackend.preferred()
+    cachedPreferred = resolved
+    return resolved
+  }
 
-  var socketPath: String? {
-    if let resolvedSocketPath, resolvedForBackend == backend { return resolvedSocketPath }
+  /// Which helper owns an EXISTING session, or where a new one should go.
+  ///
+  /// This is the whole migration. A session the Swift daemon is already holding stays with the
+  /// daemon — it owns that pty and cannot hand it over — so it keeps running until the user closes
+  /// it. Everything new goes to the agent. Nobody has to choose, and nothing is taken away
+  /// mid-use.
+  ///
+  /// Asked rather than remembered: a stored answer goes stale the moment a daemon exits, and being
+  /// wrong here means attaching to the wrong helper and finding no session at all.
+  func backend(forSession sessionID: UUID) -> SessionBackend {
+    daemonOwns(sessionID) ? .swiftDaemon : backend
+  }
+
+  /// Whether the shipped daemon is holding this session. False when it is not running, which is
+  /// the steady state once the migration has drained.
+  private func daemonOwns(_ sessionID: UUID) -> Bool {
+    guard
+      let identifier = SessionIdentifier(uuidString: sessionID.uuidString),
+      let socketPath = existingSocketPath(for: .swiftDaemon)
+    else { return false }
+    return PersistentSessionControlClient(socketPath: socketPath).info(identifier: identifier)
+      != nil
+  }
+
+  func socketPath(for backend: SessionBackend) -> String? {
+    if let cached = resolvedSocketPaths[backend] { return cached }
     do {
       let path = try PersistentSessionPaths.resolveSocketPath(backend: backend)
-      resolvedSocketPath = path
-      resolvedForBackend = backend
+      resolvedSocketPaths[backend] = path
       return path
     } catch {
       logger.error("unable to resolve the session socket path: \(String(describing: error))")
@@ -41,7 +70,9 @@ final class PersistentSessionService {
     }
   }
 
-  var existingSocketPath: String? {
+  var socketPath: String? { socketPath(for: backend) }
+
+  func existingSocketPath(for backend: SessionBackend) -> String? {
     let candidates = [
       try? PersistentSessionPaths.preferredSocketPath(backend: backend),
       try? PersistentSessionPaths.fallbackSocketPath(backend: backend),
@@ -49,23 +80,20 @@ final class PersistentSessionService {
     return candidates.compactMap { $0 }.first { FileManager.default.fileExists(atPath: $0) }
   }
 
-  var binaryPath: String? { PersistentSessionPaths.binaryURL(for: backend)?.path }
+  var existingSocketPath: String? { existingSocketPath(for: backend) }
 
-  /// The control-plane client for whichever helper is in force. `Sendable` because every caller
-  /// uses it from a detached task — these are blocking socket round trips and must not run on the
-  /// main actor.
-  private func controlPlane(socketPath: String) -> any SessionControlPlane & Sendable {
-    switch backend {
-    case .swiftDaemon: return PersistentSessionControlClient(socketPath: socketPath)
-    case .rustAgent: return AgentControlClient(socketPath: socketPath)
-    }
+  func binaryPath(for backend: SessionBackend) -> String? {
+    PersistentSessionPaths.binaryURL(for: backend)?.path
   }
+
+  var binaryPath: String? { binaryPath(for: backend) }
 
   var isAvailable: Bool { socketPath != nil && binaryPath != nil }
 
-  func attachCommand() -> String? {
-    guard let binaryPath else { return nil }
-    return binaryPath.replacingOccurrences(of: " ", with: "\\ ") + " attach"
+  /// The command libghostty forks for this session, from the helper that owns it.
+  func attachCommand(forSession sessionID: UUID) -> String? {
+    guard let path = binaryPath(for: backend(forSession: sessionID)) else { return nil }
+    return path.replacingOccurrences(of: " ", with: "\\ ") + " attach"
   }
 
   func launchEnvironment(
@@ -77,7 +105,13 @@ final class PersistentSessionService {
       .defaultShell,
     resourcesDirectory: String? = GhosttyResources.bundledURL?.path
   ) -> [(key: String, value: String)] {
-    guard let socketPath, let binaryPath else { return [] }
+    // Socket and binary must both come from the helper that owns THIS session, or the relay is
+    // pointed at one implementation while being told to use the other's socket.
+    let backend = backend(forSession: sessionID)
+    guard
+      let socketPath = socketPath(for: backend),
+      let binaryPath = binaryPath(for: backend)
+    else { return [] }
     var entries: [(key: String, value: String)] = [
       ("WORKROOM_SESSION_ID", sessionID.uuidString),
       ("WORKROOM_SESSION_SOCKET", socketPath),
@@ -98,20 +132,52 @@ final class PersistentSessionService {
     return entries
   }
 
+  private func controlPlane(
+    socketPath: String, backend: SessionBackend
+  ) -> any SessionControlPlane & Sendable {
+    switch backend {
+    case .swiftDaemon: return PersistentSessionControlClient(socketPath: socketPath)
+    case .rustAgent: return AgentControlClient(socketPath: socketPath)
+    }
+  }
+
+  /// A client for each helper that is actually running.
+  ///
+  /// Used wherever an operation spans every session rather than one — listing, and killing
+  /// everything — because during the migration sessions genuinely live in both, and a caller that
+  /// saw only one would orphan whatever it could not see.
+  private func liveControlPlanes() -> [any SessionControlPlane & Sendable] {
+    SessionBackend.allCases.compactMap { backend in
+      guard let socketPath = existingSocketPath(for: backend) else { return nil }
+      return controlPlane(socketPath: socketPath, backend: backend)
+    }
+  }
+
+  /// The client for whichever helper owns this session.
+  private func controlPlane(forSession sessionID: UUID) -> (any SessionControlPlane & Sendable)? {
+    let backend = backend(forSession: sessionID)
+    guard let socketPath = existingSocketPath(for: backend) else { return nil }
+    return controlPlane(socketPath: socketPath, backend: backend)
+  }
+
+  /// Every live session, from both helpers.
+  ///
+  /// Merged rather than taken from one: during the migration the daemon still holds the sessions
+  /// it created and the agent holds the new ones, and a caller deciding what to tear down must see
+  /// all of them or it will orphan whatever it could not see.
   func liveSessions() async -> [SessionDescriptor] {
-    guard let socketPath = existingSocketPath else { return [] }
-    // Both backends answer with the same `SessionDescriptor` payload — the agent emits the wire
-    // format this decoder already reads — so only the framing differs, and every caller of this
-    // is backend-agnostic.
-    let client = controlPlane(socketPath: socketPath)
-    return await Task.detached(priority: .utility) { client.list() }.value
+    let clients = liveControlPlanes()
+    guard !clients.isEmpty else { return [] }
+    return await Task.detached(priority: .utility) {
+      clients.flatMap { $0.list() }
+    }.value
   }
 
   func lookup(sessionID: UUID) async -> PersistentSessionLookup {
     guard let socketPath = existingSocketPath,
       let identifier = SessionIdentifier(uuidString: sessionID.uuidString)
     else { return .unreachable }
-    let client = controlPlane(socketPath: socketPath)
+    guard let client = controlPlane(forSession: sessionID) else { return .unreachable }
     return await Task.detached(priority: .utility) {
       guard FileManager.default.fileExists(atPath: socketPath) else { return .unreachable }
       if let descriptor = client.info(identifier: identifier) { return .live(descriptor) }
@@ -130,7 +196,7 @@ final class PersistentSessionService {
     guard let socketPath = existingSocketPath,
       let identifier = SessionIdentifier(uuidString: sessionID.uuidString)
     else { return true }
-    let client = controlPlane(socketPath: socketPath)
+    guard let client = controlPlane(forSession: sessionID) else { return true }
     let killed = await Task.detached(priority: .utility) { client.kill(identifier: identifier) }
       .value
     if !killed {
@@ -156,8 +222,10 @@ final class PersistentSessionService {
     guard !attachedSessionIDs.isEmpty else {
       descriptors.removeAll()
       guard let socketPath = existingSocketPath else { return }
-      let client = controlPlane(socketPath: socketPath)
-      _ = await Task.detached(priority: .utility) { client.killAll() }.value
+      // Every helper: during the migration the daemon may still hold sessions the agent knows
+      // nothing about, and "stop everything" has to mean everything.
+      let clients = liveControlPlanes()
+      _ = await Task.detached(priority: .utility) { clients.map { $0.killAll() } }.value
       return
     }
     let sessions = await liveSessions()

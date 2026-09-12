@@ -412,7 +412,8 @@ final class GhosttySurfaceView: NSView {
     guard let persistentSessionID else { return false }
     guard
       PersistentSessionService.shared.isAvailable,
-      let attach = PersistentSessionService.shared.attachCommand(),
+      let attach = PersistentSessionService.shared.attachCommand(
+        forSession: persistentSessionID),
       let attachPointer = strdup(attach)
     else {
       // A pane that expected a persisted session fell back to a plain login shell. Whatever the

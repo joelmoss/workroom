@@ -6,10 +6,13 @@ import Foundation
 /// Primary: Application Support (per bundle id, so Dev/Nightly/Release never share sessions).
 /// Fallback: `/tmp/workroom-<uid>` only when the preferred path exceeds `sun_path`.
 ///
-/// Everything here is parameterised by `SessionBackend` because the Swift daemon and the Rust
-/// agent must never meet: distinct binaries and, more importantly, distinct socket file names, so
-/// that switching backends cannot produce two pty owners bound to one socket. The defaults
-/// resolve to whichever backend is in force, so existing call sites keep working unchanged.
+/// Everything here takes a `SessionBackend` explicitly, with no default, because there is no such
+/// thing as "the" backend: during the migration the Swift daemon still owns the sessions it
+/// created while the agent owns the new ones, and which helper a path belongs to is a property of
+/// the SESSION. A default here would silently answer for the wrong one.
+///
+/// The two must never meet — distinct binaries and, more importantly, distinct socket names, so
+/// neither can end up bound to the other's socket.
 enum PersistentSessionPaths {
   /// The Swift daemon's socket name, kept as-is so an installed build's existing sessions are
   /// still found after this change. `SessionBackend.socketFileName` is the general answer.
@@ -21,7 +24,7 @@ enum PersistentSessionPaths {
     case insecureFallbackDirectory
   }
 
-  static func binaryURL(for backend: SessionBackend = SessionBackend.selected()) -> URL? {
+  static func binaryURL(for backend: SessionBackend) -> URL? {
     let name = backend.binaryName
     let candidates = [
       Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/\(name)"),
@@ -34,7 +37,7 @@ enum PersistentSessionPaths {
 
   static func resolveSocketPath(
     fileManager: FileManager = .default,
-    backend: SessionBackend = SessionBackend.selected()
+    backend: SessionBackend
   ) throws -> String {
     if let preferred = try? preferredSocketPath(fileManager: fileManager, backend: backend),
       preferred.utf8.count < sunPathLimit
@@ -46,7 +49,7 @@ enum PersistentSessionPaths {
 
   static func preferredSocketPath(
     fileManager: FileManager = .default,
-    backend: SessionBackend = SessionBackend.selected()
+    backend: SessionBackend
   ) throws -> String {
     let support = try fileManager.url(
       for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
@@ -65,7 +68,7 @@ enum PersistentSessionPaths {
   static func fallbackSocketPath(
     userID: uid_t = getuid(),
     fileManager: FileManager = .default,
-    backend: SessionBackend = SessionBackend.selected()
+    backend: SessionBackend
   ) throws -> String {
     let bundle = Bundle.main.bundleIdentifier ?? "com.developwithstyle.workroom"
     let directory = URL(fileURLWithPath: "/tmp/workroom-\(userID)-\(bundle)", isDirectory: true)

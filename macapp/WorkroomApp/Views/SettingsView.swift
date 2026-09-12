@@ -352,13 +352,8 @@ private struct TerminalSettingsPane: View {
   @Default(.backgroundSessions) private var backgroundSessions
   // Bundle id of the editor for ⌘-clicked file paths; "" = the file's default app.
   @Default(.filePathEditor) private var pathEditor
-  @Default(.sessionBackend) private var sessionBackend
   @State private var pendingDisable = false
   @State private var disableTask: Task<Void, Never>?
-  // `@Default` invalidates SwiftUI asynchronously, so the picker mirrors the choice in @State to
-  // stay click-immediate; `pendingBackend` holds the target while the switch is confirmed.
-  @State private var backendHealth: SessionBackendAvailability?
-  @State private var pendingBackend: SessionBackend?
 
   var body: some View {
     Form {
@@ -415,61 +410,6 @@ private struct TerminalSettingsPane: View {
         )
         .font(.caption)
         .foregroundStyle(.secondary)
-      }
-
-      // Dev/Nightly only — see `SessionBackend.isSelectable`. This is the rollback switch for
-      // issue #154: the Rust agent replaces session code every LOCAL user depends on, which the
-      // remote feature flag does not cover.
-      if SessionBackend.isSelectable {
-        VStack(alignment: .leading, spacing: 4) {
-          Picker("Session backend", selection: $sessionBackend) {
-            ForEach(SessionBackend.allCases, id: \.self) { backend in
-              Text(backend.label).tag(backend)
-            }
-          }
-          .accessibilityIdentifier("settings.control.sessionBackend")
-          .help("Which helper owns terminals that outlive the app.")
-          .onChange(of: sessionBackend) { previous, next in
-            // Never switch silently: the other backend's sessions keep running and cannot be
-            // adopted, so the user has to be told before it happens, not after.
-            guard previous != next else { return }
-            pendingBackend = next
-          }
-
-          if let backendHealth {
-            Text(backendHealth.summary)
-              .font(.caption)
-              .foregroundStyle(backendHealth.isReady ? .secondary : Color.orange)
-              .accessibilityIdentifier("settings.status.sessionBackend")
-          }
-
-          Text(
-            "The Swift daemon is the shipped implementation. The Rust agent replaces it and also "
-              + "serves remote workrooms. Switching leaves the other backend's terminals running "
-              + "in the background — they cannot be moved across."
-          )
-          .font(.caption)
-          .foregroundStyle(.secondary)
-        }
-        .task(id: sessionBackend) {
-          backendHealth = SessionBackendProbe.probe(sessionBackend)
-        }
-        .alert("Switch session backend?", isPresented: .constant(pendingBackend != nil)) {
-          Button("Switch", role: .destructive) {
-            pendingBackend = nil
-          }
-          Button("Cancel", role: .cancel) {
-            if let pendingBackend {
-              sessionBackend = pendingBackend == .rustAgent ? .swiftDaemon : .rustAgent
-            }
-            pendingBackend = nil
-          }
-        } message: {
-          Text(
-            "Terminals running under the current backend keep running, but this app will no "
-              + "longer show them. Quit and relaunch to finish switching."
-          )
-        }
       }
 
       Picker("Open file paths in", selection: $pathEditor) {
