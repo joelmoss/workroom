@@ -20,6 +20,8 @@ fn usage() -> &'static str {
     "usage:
   wr-agent serve --socket <path> [--idle-timeout <secs>]
         own ptys and services (the daemon role)
+  wr-agent serve --stdio
+        serve one connection over stdin/stdout; what a driver opens remotely
   wr-agent attach --socket <path> [--session <uuid>]
         relay stdio to a session; what libghostty forks
   wr-agent list --socket <path>
@@ -42,10 +44,11 @@ fn main() -> ExitCode {
             println!("build {BUILD}");
             ExitCode::SUCCESS
         }
+        Some("serve") if args.iter().any(|a| a == "--stdio") => run_serve_stdio(),
         Some("serve") => match flag(&args, "--socket") {
             Some(socket) => run_serve(PathBuf::from(socket), flag(&args, "--idle-timeout")),
             None => {
-                eprintln!("error: serve needs --socket <path>");
+                eprintln!("error: serve needs --socket <path> or --stdio");
                 ExitCode::FAILURE
             }
         },
@@ -53,6 +56,33 @@ fn main() -> ExitCode {
         Some("list") => run_list(&args),
         _ => {
             eprint!("{}", usage());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Serves exactly one connection over stdin/stdout, then exits.
+///
+/// This is the remote entry point: `ssh host wr-agent serve --stdio` is the first implementation
+/// of the driver contract's `openStream`, and a provider SDK's exec call produces the same shape.
+/// There is no socket, no listener and no single-instance lock, because the caller already decided
+/// which machine and which process — the stream IS the session's address.
+///
+/// Note what this deliberately does NOT do: outlive the connection. A remote agent that must
+/// survive a dropped link is a supervised process on the far side owning its own socket; this mode
+/// is one client, one stream, which is what an ssh hop gives you.
+fn run_serve_stdio() -> ExitCode {
+    let sessions = wr_agent::session::SessionStore::new();
+    match wr_agent::serve::handle_connection(wr_agent::transport::StdioTransport, sessions.clone())
+    {
+        Ok(()) => {
+            // Nothing else can reach these sessions: the stream was their only route in.
+            sessions.kill_all();
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            sessions.kill_all();
             ExitCode::FAILURE
         }
     }
