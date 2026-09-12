@@ -14,10 +14,34 @@
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
+use std::io::Write;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+use crate::protocol::envelope::{Envelope, Service};
+use crate::protocol::frame::{Frame, FrameKind};
 use crate::pty::{Pty, PtyError};
 use crate::shadow::Shadow;
+
+/// A connection's write half, shared with whichever session it is attached to.
+///
+/// Boxed because the reader below holds it for the session's life and must not be generic over the
+/// transport — a session outlives the connection that created it, and the next one may arrive over
+/// a different kind of stream entirely.
+pub type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
+
+/// Who is currently attached. At most one, by construction.
+struct Client {
+    writer: SharedWriter,
+    stream: u32,
+    /// Distinguishes THIS attachment from a later one on the same session. Without it a client
+    /// whose connection ends after being superseded detaches the client that replaced it.
+    token: u64,
+}
+
+/// Hands out attachment tokens. Process-wide and monotonic; the value means nothing but "later".
+static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
 
 /// The client-minted session id: 16 bytes, matching `SessionIdentifier`'s UUID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -63,16 +87,18 @@ pub struct SessionInfo {
 
 pub struct Session {
     pub id: SessionId,
-    pty: Pty,
+    /// Shared with the session's reader thread, which outlives any one connection. The `Arc` is
+    /// also what keeps the master descriptor open until that thread has finished with it, so
+    /// killing a session cannot pull the fd out from under a read in progress.
+    pty: Arc<Pty>,
     /// The emulator shadowing this session's screen, so a client that attaches later can be shown
-    /// what is on it. Behind its own lock rather than the store's: the output pump writes to it on
+    /// what is on it. Behind its own lock rather than the store's: the reader writes to it on
     /// every read, and holding the whole store for that would serialise every session's output
     /// behind every other session's.
     shadow: Arc<Mutex<Shadow>>,
-    /// Whether a client currently holds this session. The daemon detaches the previous client on
-    /// a new attach (`SessionDaemon.swift` does the same), so this is single-client by
-    /// construction; the size-owner policy the design doc describes is what generalises it.
-    attached: bool,
+    /// The attached client, or none. Shared with the reader, which forwards to it when there is
+    /// one and to the shadow alone when there is not.
+    client: Arc<Mutex<Option<Client>>>,
 }
 
 impl Session {
@@ -85,7 +111,11 @@ impl Session {
         SessionInfo {
             id: self.id,
             pid: self.pty.child_pid(),
-            attached: self.attached,
+            attached: self
+                .client
+                .lock()
+                .map(|client| client.is_some())
+                .unwrap_or(false),
             foreground: foreground.and_then(crate::process::executable_name),
             cwd: foreground.and_then(crate::process::working_directory),
         }
@@ -167,31 +197,91 @@ impl SessionStore {
         )?;
         let session = Session {
             id: spec.id,
-            pty,
+            pty: Arc::new(pty),
             shadow: Arc::new(Mutex::new(Shadow::new(columns, rows))),
-            attached: true,
+            client: Arc::new(Mutex::new(None)),
         };
         let info = session.info();
+        let pty = Arc::clone(&session.pty);
+        let shadow = Arc::clone(&session.shadow);
+        let client = Arc::clone(&session.client);
+        let store = Arc::clone(&self.sessions);
         sessions.insert(spec.id, session);
+        // Drop the store lock before the reader starts, or its first `ended` removal deadlocks
+        // against this very lock.
+        drop(sessions);
+        std::thread::spawn(move || read_session(spec.id, pty, shadow, client, store));
         Ok(info)
     }
 
-    /// Marks a session attached, detaching whichever client held it. Returns the session's info.
-    pub fn attach(&self, id: SessionId) -> Result<SessionInfo, SessionError> {
-        let mut sessions = self.sessions.lock().expect("session store poisoned");
+    /// Attaches a client, replacing whoever held the session, and repaints it.
+    ///
+    /// The replay is written HERE, under the client-slot lock, rather than by the caller after
+    /// this returns. That ordering is the point: the reader takes the same lock around every
+    /// write, so a repaint cannot be overtaken by output that arrives between registering and
+    /// painting, and cannot duplicate output that the shadow has already absorbed.
+    ///
+    /// Returns the session's info and the attachment's token — hand that token back to `detach`.
+    pub fn attach(
+        &self,
+        id: SessionId,
+        writer: SharedWriter,
+        stream: u32,
+    ) -> Result<(SessionInfo, u64), SessionError> {
+        let (shadow, slot) = {
+            let sessions = self.sessions.lock().expect("session store poisoned");
+            let session = sessions
+                .get(&id)
+                .ok_or_else(|| SessionError::NotFound(id.to_hyphenated()))?;
+            (Arc::clone(&session.shadow), Arc::clone(&session.client))
+        };
+
+        let token = NEXT_TOKEN.fetch_add(1, Ordering::SeqCst);
+        {
+            let mut slot = slot.lock().expect("client slot poisoned");
+            let replay = shadow.lock().map(|s| s.replay()).unwrap_or_default();
+            if !replay.is_empty() {
+                let bytes = terminal_envelope(stream, Frame::new(FrameKind::Output, replay));
+                if let Ok(mut writer) = writer.lock() {
+                    let _ = writer.write_all(&bytes).and_then(|()| writer.flush());
+                }
+            }
+            *slot = Some(Client {
+                writer,
+                stream,
+                token,
+            });
+        }
+
+        let sessions = self.sessions.lock().expect("session store poisoned");
         let session = sessions
-            .get_mut(&id)
+            .get(&id)
             .ok_or_else(|| SessionError::NotFound(id.to_hyphenated()))?;
-        session.attached = true;
-        Ok(session.info())
+        Ok((session.info(), token))
     }
 
-    /// The client went away. The session and its pty keep running — that is the entire point.
-    pub fn detach(&self, id: SessionId) {
-        if let Ok(mut sessions) = self.sessions.lock() {
-            if let Some(session) = sessions.get_mut(&id) {
-                session.attached = false;
+    /// The client went away. The session and its pty keep running — that is the entire point, and
+    /// the reader keeps draining the pty so a detached job neither stalls nor goes unrecorded.
+    ///
+    /// Only clears the slot if `token` still holds it: a superseded client's connection ending
+    /// must not detach the client that superseded it.
+    pub fn detach(&self, id: SessionId, token: u64) {
+        let slot = {
+            let sessions = match self.sessions.lock() {
+                Ok(sessions) => sessions,
+                Err(_) => return,
+            };
+            match sessions.get(&id) {
+                Some(session) => Arc::clone(&session.client),
+                None => return,
             }
+        };
+        let mut held = match slot.lock() {
+            Ok(held) => held,
+            Err(_) => return,
+        };
+        if held.as_ref().is_some_and(|client| client.token == token) {
+            *held = None;
         }
     }
 
@@ -258,6 +348,115 @@ impl SessionStore {
     }
 }
 
+/// Whether the pty's child has actually exited, reaping it if so.
+///
+/// `WNOHANG`, because the read can end a moment before the exit is reapable and telling the client
+/// promptly matters more than the exact status. A negative return is `ECHILD` — already reaped by
+/// someone else, which is equally gone.
+fn child_gone(pid: i32, status: &mut i32) -> bool {
+    if pid <= 0 {
+        return true;
+    }
+    let rc = unsafe { libc::waitpid(pid, status, libc::WNOHANG) };
+    rc != 0
+}
+
+fn terminal_envelope(stream: u32, frame: Frame) -> Vec<u8> {
+    Envelope::new(Service::Terminal, stream, frame.encode()).encode()
+}
+
+/// Reads a session's pty for the session's whole life — attached or not.
+///
+/// **Owned by the session, not by the connection, and that is the fix for a real bug.** While the
+/// reader belonged to the connection, a detached session had NO reader: its output never reached
+/// the shadow, so a reattaching client was repainted with a stale screen, and — worse — once the
+/// pty's output queue filled, the shell BLOCKED on write. A background job in a pane you had
+/// closed the app on would simply stop, and only start again when you came back. The Swift daemon
+/// polled every pty regardless of attachment; this restores that.
+///
+/// It also ends the session when the shell exits, whether or not anyone is watching. Previously a
+/// shell that died while detached left a session in the list that nothing could ever be attached
+/// to.
+fn read_session(
+    id: SessionId,
+    pty: Arc<Pty>,
+    shadow: Arc<Mutex<Shadow>>,
+    client: Arc<Mutex<Option<Client>>>,
+    store: Arc<Mutex<HashMap<SessionId, Session>>>,
+) {
+    let mut buffer = [0u8; 8192];
+    loop {
+        let read = pty.read(&mut buffer);
+
+        // "The child is gone" looks different on each platform: reading a pty master whose child
+        // has exited yields EOF on Darwin and **EIO** on Linux. Deciding it once, here, is what
+        // stops the rest of this loop from having to know that — and matching only on EOF meant
+        // the branch below never ran on Linux at all, while macOS exercised it and made the code
+        // look correct. Found by running the suite in a Linux container.
+        let ended = match &read {
+            Ok(0) => true,
+            Err(e) => matches!(e.raw_os_error(), Some(libc::EIO) | Some(libc::EBADF)),
+            _ => false,
+        };
+
+        // A read saying "ended" is not proof, so confirm it against the CHILD before tearing a
+        // session down. macOS returns a transient `read == 0` on a freshly forked master while the
+        // shell is alive and merely has nothing to say — believing it ends the session moments
+        // after creating it. The old pump never saw this because it only existed once a client had
+        // attached, by which time the window had passed; a reader owned by the session starts
+        // inside it.
+        let mut status = 0;
+        if ended && !child_gone(pty.child_pid(), &mut status) {
+            std::thread::sleep(Duration::from_millis(5));
+            continue;
+        }
+
+        if ended {
+            if let Ok(slot) = client.lock() {
+                if let Some(attached) = slot.as_ref() {
+                    let bytes = terminal_envelope(
+                        attached.stream,
+                        Frame::new(FrameKind::Exited, status.to_be_bytes().to_vec()),
+                    );
+                    if let Ok(mut writer) = attached.writer.lock() {
+                        let _ = writer.write_all(&bytes).and_then(|()| writer.flush());
+                    }
+                }
+            }
+            // The shell IS the session; with it gone there is nothing left to reattach to.
+            if let Ok(mut store) = store.lock() {
+                store.remove(&id);
+            }
+            return;
+        }
+
+        match read {
+            Ok(n) => {
+                // One lock around both writes. The shadow must absorb these bytes and the client
+                // must be told about them as one step, or an attach landing between the two either
+                // misses output or replays it twice.
+                let slot = client.lock().expect("client slot poisoned");
+                if let Ok(mut shadow) = shadow.lock() {
+                    shadow.write(&buffer[..n]);
+                }
+                if let Some(attached) = slot.as_ref() {
+                    let bytes = terminal_envelope(
+                        attached.stream,
+                        Frame::new(FrameKind::Output, buffer[..n].to_vec()),
+                    );
+                    if let Ok(mut writer) = attached.writer.lock() {
+                        let _ = writer.write_all(&bytes).and_then(|()| writer.flush());
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(_) => return,
+        }
+    }
+}
+
 /// SIGHUP first, which is what a terminal closing means and what a shell expects; SIGKILL only if
 /// it is ignored. Sending SIGKILL outright would deny a shell the chance to run its exit traps.
 fn terminate(pty: &Pty) {
@@ -313,32 +512,48 @@ mod tests {
         }
     }
 
-    fn read_until(
-        store: &SessionStore,
-        session: SessionId,
-        needle: &str,
-        timeout: Duration,
-    ) -> String {
-        let deadline = Instant::now() + timeout;
-        let mut seen = String::new();
-        let mut buffer = [0u8; 4096];
-        while Instant::now() < deadline {
-            let read = store.with_pty(session, |pty| pty.read(&mut buffer));
-            match read {
-                Some(Ok(0)) | None => break,
-                Some(Ok(n)) => {
-                    seen.push_str(&String::from_utf8_lossy(&buffer[..n]));
-                    if seen.contains(needle) {
-                        break;
-                    }
-                }
-                Some(Err(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Some(Err(_)) => break,
-            }
+    /// Everything the session sent to its attached client.
+    ///
+    /// Tests read through this rather than off the pty, because the pty has exactly one reader now
+    /// — the session's own — and a test competing with it for bytes would make both flaky.
+    #[derive(Clone, Default)]
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("capture").extend_from_slice(bytes);
+            Ok(bytes.len())
         }
-        seen
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Capture {
+        fn text(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().expect("capture")).into_owned()
+        }
+    }
+
+    /// Attaches a capturing client, returning it and the attachment's token.
+    fn attach_capture(store: &SessionStore, session: SessionId) -> (Capture, u64) {
+        let capture = Capture::default();
+        let writer: SharedWriter = Arc::new(Mutex::new(Box::new(capture.clone())));
+        let (_, token) = store.attach(session, writer, 1).expect("attach");
+        (capture, token)
+    }
+
+    /// Polls a capture until the needle shows up. The bytes carry envelope and frame headers
+    /// around the payload, and a substring search sees straight through them.
+    fn wait_for(capture: &Capture, needle: &str, timeout: Duration) -> String {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let seen = capture.text();
+            if seen.contains(needle) || Instant::now() >= deadline {
+                return seen;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]
@@ -351,7 +566,12 @@ mod tests {
         let listed = store.list();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, id(1));
-        assert!(listed[0].attached);
+        // Created, but nobody is holding it yet: the session exists and its pty is already being
+        // drained, and a client becomes attached only by attaching.
+        assert!(!listed[0].attached);
+
+        let (_client, _) = attach_capture(&store, id(1));
+        assert!(store.list()[0].attached);
         store.kill_all();
     }
 
@@ -379,18 +599,19 @@ mod tests {
         ];
         let e = env();
         store.create(spec(id(3), &args, &e)).expect("create");
-        let before = read_until(&store, id(3), "ready", Duration::from_secs(5));
+        let (first, token) = attach_capture(&store, id(3));
+        let before = wait_for(&first, "ready", Duration::from_secs(5));
         assert!(before.contains("ready"), "got {before:?}");
 
         let pid_before = store.with_pty(id(3), |pty| pty.child_pid()).expect("pty");
-        store.detach(id(3));
+        store.detach(id(3), token);
         assert!(store.contains(id(3)), "detaching must not end the session");
         assert!(!store.list()[0].attached);
 
         std::thread::sleep(Duration::from_millis(300));
 
-        let info = store.attach(id(3)).expect("reattach");
-        assert!(info.attached);
+        let (_second, _) = attach_capture(&store, id(3));
+        assert!(store.list()[0].attached);
         let pid_after = store.with_pty(id(3), |pty| pty.child_pid()).expect("pty");
         assert_eq!(
             pid_before, pid_after,
@@ -406,21 +627,22 @@ mod tests {
         let store = SessionStore::new();
         let args = [
             OsString::from("-c"),
-            OsString::from("read line; sleep 0.3; echo got:$line"),
+            OsString::from("read line; sleep 1; echo got:$line; sleep 5"),
         ];
         let e = env();
         store.create(spec(id(4), &args, &e)).expect("create");
+        let (_first, token) = attach_capture(&store, id(4));
         std::thread::sleep(Duration::from_millis(200));
 
         store
-            .with_pty(id(4), |pty| pty.write(b"sentinel\n"))
+            .with_pty(id(4), |pty| pty.write_all(b"sentinel\n"))
             .expect("session")
             .expect("write");
-        store.detach(id(4));
+        store.detach(id(4), token);
         std::thread::sleep(Duration::from_millis(400));
-        store.attach(id(4)).expect("reattach");
+        let (second, _) = attach_capture(&store, id(4));
 
-        let after = read_until(&store, id(4), "got:sentinel", Duration::from_secs(5));
+        let after = wait_for(&second, "got:sentinel", Duration::from_secs(5));
         assert!(after.contains("got:sentinel"), "got {after:?}");
         store.kill_all();
     }
@@ -447,7 +669,8 @@ mod tests {
             })
             .expect("create");
 
-        let seen = read_until(&store, id(6), "24 80", Duration::from_secs(5));
+        let (capture, _) = attach_capture(&store, id(6));
+        let seen = wait_for(&capture, "24 80", Duration::from_secs(5));
         assert!(
             seen.contains("24 80"),
             "the pty did not get the default size: {seen:?}"
@@ -458,8 +681,9 @@ mod tests {
     #[test]
     fn attaching_an_unknown_session_is_an_error() {
         let store = SessionStore::new();
+        let writer: SharedWriter = Arc::new(Mutex::new(Box::new(Capture::default())));
         assert!(matches!(
-            store.attach(id(9)),
+            store.attach(id(9), writer, 1),
             Err(SessionError::NotFound(_))
         ));
     }

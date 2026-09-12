@@ -27,6 +27,9 @@ const RESET_SIGNALS: [libc::c_int; 8] = [
     libc::SIGTTOU,
 ];
 
+/// How long `write_all` retries a pty that is not draining before calling the shell wedged.
+pub const WRITE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub const DEFAULT_COLUMNS: u16 = 80;
 pub const DEFAULT_ROWS: u16 = 24;
 
@@ -285,6 +288,44 @@ impl Pty {
         Ok(n as usize)
     }
 
+    /// Writes every byte, retrying a short write or `EAGAIN`.
+    ///
+    /// `write` alone is not enough and silently corrupts input: the master is NON-BLOCKING, so a
+    /// paste larger than the pty's input queue — or any write while the shell is not draining —
+    /// returns a short count or `EAGAIN`, and a caller that ignores the result drops the rest of
+    /// the keystrokes. That is a paste arriving truncated, with nothing logged.
+    ///
+    /// Bounded rather than patient: a shell that has not read anything for `WRITE_DEADLINE` is
+    /// wedged, and blocking the connection thread on it would stall every other frame from that
+    /// client. Report it instead.
+    pub fn write_all(&self, bytes: &[u8]) -> std::io::Result<()> {
+        let deadline = std::time::Instant::now() + WRITE_DEADLINE;
+        let mut written = 0;
+        while written < bytes.len() {
+            match self.write(&bytes[written..]) {
+                Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+                Ok(n) => {
+                    written += n;
+                    continue;
+                }
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    ) => {}
+                Err(e) => return Err(e),
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "the shell stopped reading its input",
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        Ok(())
+    }
+
     /// Blocks until the child exits, returning its status. Returns `None` if it was already reaped.
     pub fn wait(&self) -> Option<i32> {
         let mut status = 0;
@@ -395,6 +436,49 @@ mod tests {
         rows: u16,
     ) -> Result<Pty, PtyError> {
         Pty::spawn(program, None, args, env, cwd, columns, rows)
+    }
+
+    /// A single `write` to a pty master does NOT deliver a large payload, and that is the bug
+    /// `write_all` exists for: a paste bigger than the tty's input queue was silently truncated.
+    ///
+    /// Lines are kept under `MAX_INPUT` (1024 on macOS) because the tty layer discards canonical
+    /// lines longer than that on its own — which would look like this bug while being something
+    /// else entirely.
+    #[test]
+    fn write_all_delivers_more_than_one_write_can() {
+        let mut payload = Vec::new();
+        for _ in 0..200 {
+            payload.extend_from_slice(&b"x".repeat(99));
+            payload.push(b'\n');
+        }
+        assert_eq!(payload.len(), 20_000);
+
+        // The child sleeps first, so nothing is draining the input queue while we fill it.
+        let pty = spawn(
+            OsStr::new("/bin/sh"),
+            &[OsString::from("-c"), OsString::from("sleep 0.3; wc -c")],
+            &env(),
+            None,
+            80,
+            24,
+        )
+        .expect("spawn");
+
+        let short = pty.write(&payload).expect("write");
+        assert!(
+            short < payload.len(),
+            "expected a short write to prove the queue is smaller than the payload, wrote all \
+             {short} bytes"
+        );
+        pty.write_all(&payload[short..]).expect("write_all");
+        pty.write_all(&[0x04]).expect("eof");
+
+        let seen = read_until(&pty, "20000", Duration::from_secs(10));
+        assert!(
+            seen.contains("20000"),
+            "the shell did not receive all 20000 bytes; saw {:?}",
+            &seen[seen.len().saturating_sub(200)..]
+        );
     }
 
     #[test]

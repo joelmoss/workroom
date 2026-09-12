@@ -72,19 +72,32 @@ enum SessionBackendProbe {
     process.standardError = Pipe()
     try process.run()
 
+    // The deadline has to be armed BEFORE the read, not after it. `readDataToEndOfFile` returns
+    // only at EOF — when every writer has closed stdout — so a helper that starts and then hangs
+    // with the pipe open blocks here forever and the timeout below is never reached. This runs
+    // synchronously on the main actor during terminal creation, so that is a frozen app rather
+    // than a fall back to the Swift daemon.
+    //
+    // A watchdog rather than a read with a timeout: killing the process closes its end of the
+    // pipe, which is what makes the blocking read return. Same shape as `ShellEnvironment`'s probe
+    // deadline, for the same reason — the work item lives outside the blocking call it bounds.
+    let timedOut = Atomic(false)
+    let watchdog = DispatchWorkItem {
+      guard process.isRunning else { return }
+      timedOut.value = true
+      process.terminate()
+    }
+    DispatchQueue.global(qos: .userInitiated).asyncAfter(
+      deadline: .now() + timeout, execute: watchdog)
+
     // Read before waiting: a helper that fills the pipe buffer would otherwise block forever on
     // write while we block on exit. The output here is two short lines, but the ordering is the
     // kind of thing that only bites once the output grows.
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    watchdog.cancel()
 
-    let deadline = Date().addingTimeInterval(timeout)
-    while process.isRunning && Date() < deadline {
-      usleep(20_000)
-    }
-    if process.isRunning {
-      process.terminate()
-      throw ProbeError.timedOut
-    }
+    if timedOut.value { throw ProbeError.timedOut }
     return (process.terminationStatus, String(decoding: data, as: UTF8.self))
   }
 
@@ -95,5 +108,17 @@ enum SessionBackendProbe {
       case .timedOut: return "no reply within \(Int(SessionBackendProbe.timeout))s"
       }
     }
+  }
+}
+
+/// One value, guarded by a lock. The watchdog sets it from a background queue and the probe reads
+/// it back on the calling thread, which is a data race without one.
+private final class Atomic<Value>: @unchecked Sendable {
+  private let lock = NSLock()
+  private var stored: Value
+  init(_ value: Value) { stored = value }
+  var value: Value {
+    get { lock.withLock { stored } }
+    set { lock.withLock { stored = newValue } }
   }
 }

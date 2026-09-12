@@ -174,12 +174,15 @@ final class PersistentSessionService {
   }
 
   func lookup(sessionID: UUID) async -> PersistentSessionLookup {
-    guard let socketPath = existingSocketPath,
-      let identifier = SessionIdentifier(uuidString: sessionID.uuidString)
+    // Routed by OWNER, with no gate on the preferred backend's socket. That gate was left over
+    // from before per-session routing and inverted the drain: with the agent preferred but no
+    // `agent.sock` yet, every session the daemon still owned reported `.unreachable` — and the
+    // close, delete and quit paths built on this then returned without killing them.
+    // `controlPlane(forSession:)` already resolves an EXISTING socket for the owning backend.
+    guard let identifier = SessionIdentifier(uuidString: sessionID.uuidString),
+      let client = controlPlane(forSession: sessionID)
     else { return .unreachable }
-    guard let client = controlPlane(forSession: sessionID) else { return .unreachable }
     return await Task.detached(priority: .utility) {
-      guard FileManager.default.fileExists(atPath: socketPath) else { return .unreachable }
       if let descriptor = client.info(identifier: identifier) { return .live(descriptor) }
       return .missing
     }.value
@@ -193,10 +196,9 @@ final class PersistentSessionService {
   @discardableResult
   func endSession(sessionID: UUID) async -> Bool {
     descriptors.removeValue(forKey: sessionID)
-    guard let socketPath = existingSocketPath,
-      let identifier = SessionIdentifier(uuidString: sessionID.uuidString)
+    guard let identifier = SessionIdentifier(uuidString: sessionID.uuidString),
+      let client = controlPlane(forSession: sessionID)
     else { return true }
-    guard let client = controlPlane(forSession: sessionID) else { return true }
     let killed = await Task.detached(priority: .utility) { client.kill(identifier: identifier) }
       .value
     if !killed {
@@ -221,9 +223,9 @@ final class PersistentSessionService {
   func endAllSessions(excluding attachedSessionIDs: Set<UUID> = []) async {
     guard !attachedSessionIDs.isEmpty else {
       descriptors.removeAll()
-      guard let socketPath = existingSocketPath else { return }
-      // Every helper: during the migration the daemon may still hold sessions the agent knows
-      // nothing about, and "stop everything" has to mean everything.
+      // Every helper, and NOT gated on the preferred backend's socket: during the migration the
+      // daemon may still hold sessions the agent knows nothing about, and "stop everything" has to
+      // mean everything. `liveControlPlanes()` is already the enumeration of what is running.
       let clients = liveControlPlanes()
       _ = await Task.detached(priority: .utility) { clients.map { $0.killAll() } }.value
       return
