@@ -401,6 +401,12 @@ targets:
         # it with the same identity. See Scripts/embed-session-helper.sh.
         basedOnDependencyAnalysis: false
         script: '"${SRCROOT}/Scripts/embed-session-helper.sh"'
+      - name: Build & embed wr-agent
+        # The Rust agent that will replace workroom-session (issue #154). Lands in
+        # Contents/MacOS beside it — the two are selectable at runtime via the
+        # `sessionBackend` preference and never share a socket. See Scripts/build-agent.sh.
+        basedOnDependencyAnalysis: false
+        script: '"${SRCROOT}/Scripts/build-agent.sh"'
       - name: Symlink ghostty -> app binary
         # Ghostty's bundled shell integration calls "$GHOSTTY_BIN_DIR/ghostty" +ssh-cache, and the
         # engine sets GHOSTTY_BIN_DIR to the running executable's directory — i.e. Contents/MacOS.
