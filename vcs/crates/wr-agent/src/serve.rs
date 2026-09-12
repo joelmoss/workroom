@@ -320,28 +320,10 @@ fn dispatch(
             }
             None
         }
-        FrameKind::List => {
-            // One line per session: id, attached flag, foreground command. Plain text because the
-            // control plane is for humans and logs as much as for the app.
-            let body = sessions
-                .list()
-                .into_iter()
-                .map(|info| {
-                    format!(
-                        "{} {} {}",
-                        info.id.to_hyphenated(),
-                        if info.attached {
-                            "attached"
-                        } else {
-                            "detached"
-                        },
-                        info.foreground.unwrap_or_else(|| "-".into())
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            reply(Frame::new(FrameKind::Sessions, body.into_bytes()))
-        }
+        FrameKind::List => reply(Frame::new(
+            FrameKind::Sessions,
+            encode_descriptor_list(&sessions.list()),
+        )),
         FrameKind::Kill => {
             let id = SessionId::from_slice(frame.payload.get(..16)?)?;
             sessions.kill(id);
@@ -468,8 +450,31 @@ pub fn pump_output<S: Write>(
         }
         let read = sessions.with_pty(id, |pty| pty.read(&mut buffer));
         match read {
+            // The session is gone from the store (killed through the control plane).
             None => break,
-            Some(Ok(0)) => break,
+            // EOF on the pty: the shell exited. The client has to be TOLD, or it waits forever on
+            // a session that will never speak again — `wr-agent attach` hung exactly that way, and
+            // in the app it would leave the relay process alive behind a dead pane.
+            Some(Ok(0)) => {
+                // Read the pid under the lock, reap OUTSIDE it. `pty.wait()` is a blocking
+                // waitpid, and holding the session store across it stalls every other session's
+                // operations — including `list`, which made two unrelated tests fail by timing out
+                // rather than by being wrong.
+                let pid = sessions.with_pty(id, |pty| pty.child_pid()).unwrap_or(-1);
+                let mut status = 0;
+                if pid > 0 {
+                    // Non-blocking: EOF on the pty can precede the child's exit by a moment, and
+                    // the exact status matters less than telling the client promptly.
+                    unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+                }
+                let frame = Frame::new(FrameKind::Exited, status.to_be_bytes().to_vec());
+                let envelope = Envelope::new(Service::Terminal, service_stream, frame.encode());
+                let _ = stream.write_all(&envelope.encode());
+                let _ = stream.flush();
+                // The shell is what the session was; with it gone there is nothing to reattach to.
+                sessions.kill(id);
+                break;
+            }
             Some(Ok(n)) => {
                 // The shadow sees exactly what the client sees, before the client sees it — so a
                 // client that attaches a moment later is shown a screen that includes this.
