@@ -77,6 +77,14 @@ extension Defaults.Keys {
   /// On by default; turn off to restore in-process PTYs that die with the app.
   static let backgroundSessions = Key<Bool>("backgroundSessions", default: true, suite: .app)
 
+  /// Which helper owns persistent sessions (issue #154). Deliberately NOT a third state on
+  /// `backgroundSessions`: that key answers "should terminals outlive the app?" and its `false`
+  /// path tears sessions down, which is the wrong behaviour for "which implementation?". Read it
+  /// through `SessionBackend.selected()`, which also enforces that a build not offering the
+  /// choice never honours a stored one.
+  static let sessionBackend = Key<SessionBackend>(
+    "sessionBackend", default: SessionBackend.default, suite: .app)
+
   /// Whether the global ⌘§ show/hide hotkey is registered (issue #13).
   static let globalHotkey = Key<Bool>("globalHotkeyEnabled", default: true, suite: .app)
 
