@@ -105,8 +105,9 @@ app-uitest: app-vcs ## Run the app's UI tests (XCUITest — needs a real GUI log
 app-test-supervisor: ## Run the run-command supervisor PTY integration test (real shell + fake server)
 	python3 macapp/Tests/run-supervisor/test_supervisor.py
 
-app-test-scripts: ## Run the dependency-free shell-script tests (build-helper archs, channel classify)
+app-test-scripts: ## Run the dependency-free shell-script tests (build-helper/build-agent archs, channel classify)
 	sh macapp/Scripts/build-helper_test.sh
+	sh macapp/Scripts/build-agent_test.sh
 	sh macapp/Scripts/channel-helper_test.sh
 	sh macapp/Scripts/test-invariants_test.sh
 
