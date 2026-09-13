@@ -25,6 +25,17 @@ final class ViewVCSSeamTests: XCTestCase {
   private static let forbidden = [
     "StatusCommandRunner(": "spawns a VCS command from a View — ask the store instead",
     "CLIVCSWriter.": "reaches into the CLI writer's internals — go through `VCSWriting`",
+    // The second half of this file's own claim. Spawning a command is one bypass; reading the
+    // repo's private directory is the other, and `CommitSheet.prefill` did BOTH — the parked-merge
+    // check was a `MERGE_HEAD` stat, which no amount of banning `CLIVCSWriter.` would catch if
+    // someone rewrote it as a plain `FileManager` call.
+    //
+    // A path component rather than the bare extension, so `status.jjWorkingCopy`,
+    // `DiffSource.gitWorktree` and `githubAvatar` — every current `.git`/`.jj` spelling in Views —
+    // are untouched. Banning `FileManager.default` outright would be wrong: `AddProjectSheet`
+    // legitimately stats a directory the user picked, which is not a repo read.
+    ".git/": "reads a repo's private directory from a View — ask the store instead",
+    ".jj/": "reads a repo's private directory from a View — ask the store instead",
   ]
 
   /// Enumerated RECURSIVELY, not with `contentsOfDirectory`.
@@ -66,6 +77,9 @@ final class ViewVCSSeamTests: XCTestCase {
     let realBypasses = [
       #"await StatusCommandRunner().run("jj", CLIVCSWriter.jjDescriptionArgs(), in: path)"#,
       #"CLIVCSWriter.sequencerState(gitDir: CLIVCSWriter.worktreeGitDir(at: item.path))"#,
+      // The same parked-merge check written WITHOUT the writer — the shape the first two needles
+      // miss entirely, and the reason the `.git/` needle exists.
+      #"FileManager.default.fileExists(atPath: item.path + "/.git/MERGE_HEAD")"#,
     ]
     for bypass in realBypasses {
       XCTAssertTrue(
