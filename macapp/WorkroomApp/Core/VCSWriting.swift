@@ -273,31 +273,56 @@ extension VCSWriting {
 extension VCS {
   /// The writer for a repo, or a typed error for an unsupported path.
   ///
-  /// Mirrors `provider(for:)` exactly, registry included: **the declaration is consulted first and
+  /// Routes like `provider(for:)`, registry included: **the declaration is consulted first and
   /// `repoKind(at:)` is the fallback.** The probe answers by looking for `.jj`/`.git` on THIS Mac,
   /// so it reports `.unsupported` for every path in a remote workroom — and this was the last
   /// routing site still asking it (issue #154, Phase 2). `VCSProviderRegistry` stores the backend
   /// name rather than a provider factory precisely so this call has something to read.
+  ///
+  /// **It routes ONCE and derives both answers from that, rather than calling `provider(for:)` and
+  /// letting it read the registry a second time.** The writer needs two things — the tool its
+  /// commands run (`CLIVCSWriter.vcs`) and a provider for `remoteState`'s `currentRef` — and they
+  /// are resolved at different moments: the first when the writer is built, the second when
+  /// `remoteState` actually runs. Two reads of a map that `AppStore.apply` rewrites on every
+  /// `list --json` can straddle a project whose VCS changed, pairing `GitProvider.currentRef` with
+  /// `jjRemoteState`. One read cannot. (Before this routed on the registry at all the gap was
+  /// wider, and needed no race to open: `vcs` came from the probe while the provider already came
+  /// from the registry, so a declaration the probe disagreed with diverged every time.)
+  ///
+  /// An explicitly-passed `makeProvider` still wins — it is the seam the integration tests and any
+  /// future caller inject through, and pinning is about the DEFAULT not going back to the registry
+  /// behind the caller's back.
   ///
   /// Nothing is registered until a `list --json` lands, and a purely local session then registers
   /// only what it already resolves to, so the probe's answers are unchanged. This is the seam, not
   /// the feature.
   static func writer(
     for root: URL, runner: StatusCommandRunning = StatusCommandRunner(),
-    makeProvider: @escaping @Sendable (URL) throws -> VCSProviding = { try VCS.provider(for: $0) },
+    makeProvider: (@Sendable (URL) throws -> VCSProviding)? = nil,
     gate: JJSnapshotGate = .shared
   ) throws -> VCSWriting {
-    if let vcs = VCSProviderRegistry.shared.vcs(for: root) {
-      return CLIVCSWriter(vcs: vcs, runner: runner, makeProvider: makeProvider, gate: gate)
+    let vcs: String
+    if let registered = VCSProviderRegistry.shared.vcs(for: root) {
+      vcs = registered
+    } else {
+      switch repoKind(at: root) {
+      case .jjColocated, .jjNonColocated: vcs = "jj"
+      case .plainGit: vcs = "git"
+      case .unsupported(let reason): throw VCSError.unsupportedRepo(reason)
+      }
     }
-    switch repoKind(at: root) {
-    case .jjColocated, .jjNonColocated:
-      return CLIVCSWriter(vcs: "jj", runner: runner, makeProvider: makeProvider, gate: gate)
-    case .plainGit:
-      return CLIVCSWriter(vcs: "git", runner: runner, makeProvider: makeProvider, gate: gate)
-    case .unsupported(let reason):
-      throw VCSError.unsupportedRepo(reason)
-    }
+    // The `guard` cannot fire in practice — the registry refuses any name `factory(forVCS:)` does
+    // not know and the probe only ever produces these two — but the name is a `String`, so the
+    // impossible case still needs an answer that isn't a crash.
+    let provider =
+      makeProvider
+      ?? { _ in
+        guard let factory = VCSProviderRegistry.factory(forVCS: vcs) else {
+          throw VCSError.unsupportedRepo("no provider for \(vcs)")
+        }
+        return factory()
+      }
+    return CLIVCSWriter(vcs: vcs, runner: runner, makeProvider: provider, gate: gate)
   }
 }
 
