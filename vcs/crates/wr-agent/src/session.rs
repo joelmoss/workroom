@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::input::InputClassifier;
 use crate::protocol::envelope::{Envelope, Service};
 use crate::protocol::frame::{Frame, FrameKind};
 use crate::pty::{Pty, PtyError};
@@ -31,17 +32,75 @@ use crate::shadow::Shadow;
 /// a different kind of stream entirely.
 pub type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
-/// Who is currently attached. At most one, by construction.
+/// One attached client.
 struct Client {
     writer: SharedWriter,
     stream: u32,
     /// Distinguishes THIS attachment from a later one on the same session. Without it a client
     /// whose connection ends after being superseded detaches the client that replaced it.
     token: u64,
+    /// The size this client last advertised. Recorded whether or not it is applied — that is what
+    /// lets a client that claims ownership later have its size take effect at once.
+    columns: u16,
+    rows: u16,
+    /// Per-client, because it holds the tail of an unfinished escape sequence.
+    classifier: InputClassifier,
+}
+
+impl Client {
+    /// Whether this client is allowed to own the size. A client that has not advertised one yet
+    /// cannot: a relay forked into a pipe rather than a terminal reports 0x0, and letting that own
+    /// would resize every other viewer's pty to nothing.
+    fn may_own(&self) -> bool {
+        self.columns > 0 && self.rows > 0
+    }
+}
+
+/// Every client attached to a session, and which of them the pty follows.
+///
+/// **The size-owner policy, from the design doc.** Two clients will not agree on a window size and
+/// last-write-wins makes the pty thrash, so exactly one of them owns it at a time. Ownership is
+/// claimed by ACTING — typing, or clicking — never by merely attaching, resizing in the background,
+/// or having a terminal answer a query. See `crate::input`.
+#[derive(Default)]
+struct Attached {
+    clients: Vec<Client>,
+    /// The token of the client whose size the pty follows, if any.
+    owner: Option<u64>,
+}
+
+impl Attached {
+    fn client(&mut self, token: u64) -> Option<&mut Client> {
+        self.clients.iter_mut().find(|client| client.token == token)
+    }
+
+    /// The size the pty should be at, or none if nobody owns it.
+    fn owned_size(&self) -> Option<(u16, u16)> {
+        let owner = self.owner?;
+        self.clients
+            .iter()
+            .find(|client| client.token == owner)
+            .filter(|client| client.may_own())
+            .map(|client| (client.columns, client.rows))
+    }
+
+    /// Gives `token` the size, if it is allowed to have it. Returns the size to apply.
+    fn claim(&mut self, token: u64) -> Option<(u16, u16)> {
+        let eligible = self.client(token).is_some_and(|client| client.may_own());
+        if !eligible {
+            return None;
+        }
+        self.owner = Some(token);
+        self.owned_size()
+    }
 }
 
 /// Hands out attachment tokens. Process-wide and monotonic; the value means nothing but "later".
 static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
+
+/// The pty, the shadow and the attachments of one session — everything an operation needs, lifted
+/// out of the store so no store lock is held while any of them is touched.
+type SessionParts = (Arc<Pty>, Arc<Mutex<Shadow>>, Arc<Mutex<Attached>>);
 
 /// The client-minted session id: 16 bytes, matching `SessionIdentifier`'s UUID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -96,9 +155,9 @@ pub struct Session {
     /// every read, and holding the whole store for that would serialise every session's output
     /// behind every other session's.
     shadow: Arc<Mutex<Shadow>>,
-    /// The attached client, or none. Shared with the reader, which forwards to it when there is
-    /// one and to the shadow alone when there is not.
-    client: Arc<Mutex<Option<Client>>>,
+    /// Every attached client and the size owner among them. Shared with the reader, which
+    /// forwards to all of them and to the shadow alone when there are none.
+    attached: Arc<Mutex<Attached>>,
 }
 
 impl Session {
@@ -112,9 +171,9 @@ impl Session {
             id: self.id,
             pid: self.pty.child_pid(),
             attached: self
-                .client
+                .attached
                 .lock()
-                .map(|client| client.is_some())
+                .map(|attached| !attached.clients.is_empty())
                 .unwrap_or(false),
             foreground: foreground.and_then(crate::process::executable_name),
             cwd: foreground.and_then(crate::process::working_directory),
@@ -199,27 +258,43 @@ impl SessionStore {
             id: spec.id,
             pty: Arc::new(pty),
             shadow: Arc::new(Mutex::new(Shadow::new(columns, rows))),
-            client: Arc::new(Mutex::new(None)),
+            attached: Arc::new(Mutex::new(Attached::default())),
         };
         let info = session.info();
         let pty = Arc::clone(&session.pty);
         let shadow = Arc::clone(&session.shadow);
-        let client = Arc::clone(&session.client);
+        let attached = Arc::clone(&session.attached);
         let store = Arc::clone(&self.sessions);
         sessions.insert(spec.id, session);
         // Drop the store lock before the reader starts, or its first `ended` removal deadlocks
         // against this very lock.
         drop(sessions);
-        std::thread::spawn(move || read_session(spec.id, pty, shadow, client, store));
+        std::thread::spawn(move || read_session(spec.id, pty, shadow, attached, store));
         Ok(info)
     }
 
-    /// Attaches a client, replacing whoever held the session, and repaints it.
+    /// The three pieces an operation on a live session needs, taken out of the store so nothing
+    /// below holds the store lock while touching a pty, a shadow or a client.
+    fn parts(&self, id: SessionId) -> Option<SessionParts> {
+        let sessions = self.sessions.lock().expect("session store poisoned");
+        let session = sessions.get(&id)?;
+        Some((
+            Arc::clone(&session.pty),
+            Arc::clone(&session.shadow),
+            Arc::clone(&session.attached),
+        ))
+    }
+
+    /// Attaches a client and repaints it. Other clients keep their attachment.
     ///
-    /// The replay is written HERE, under the client-slot lock, rather than by the caller after
-    /// this returns. That ordering is the point: the reader takes the same lock around every
-    /// write, so a repaint cannot be overtaken by output that arrives between registering and
-    /// painting, and cannot duplicate output that the shadow has already absorbed.
+    /// The repaint is written HERE, under the attachment lock, rather than by the caller after this
+    /// returns. That ordering is the point: the reader takes the same lock around every write, so a
+    /// repaint cannot be overtaken by output that arrives between registering and painting, and
+    /// cannot duplicate output the shadow has already absorbed.
+    ///
+    /// `columns`/`rows` are what this client's window is; zero means it has none yet. A brand new
+    /// session is unowned, so the first client to advertise a size takes it — otherwise a session
+    /// would sit at its creation geometry until somebody typed.
     ///
     /// Returns the session's info and the attachment's token — hand that token back to `detach`.
     pub fn attach(
@@ -227,18 +302,16 @@ impl SessionStore {
         id: SessionId,
         writer: SharedWriter,
         stream: u32,
+        columns: u16,
+        rows: u16,
     ) -> Result<(SessionInfo, u64), SessionError> {
-        let (shadow, slot) = {
-            let sessions = self.sessions.lock().expect("session store poisoned");
-            let session = sessions
-                .get(&id)
-                .ok_or_else(|| SessionError::NotFound(id.to_hyphenated()))?;
-            (Arc::clone(&session.shadow), Arc::clone(&session.client))
-        };
+        let (pty, shadow, attached) = self
+            .parts(id)
+            .ok_or_else(|| SessionError::NotFound(id.to_hyphenated()))?;
 
         let token = NEXT_TOKEN.fetch_add(1, Ordering::SeqCst);
-        {
-            let mut slot = slot.lock().expect("client slot poisoned");
+        let size = {
+            let mut attached = attached.lock().expect("attachment lock poisoned");
             let replay = shadow.lock().map(|s| s.replay()).unwrap_or_default();
             if !replay.is_empty() {
                 let bytes = terminal_envelope(stream, Frame::new(FrameKind::Output, replay));
@@ -246,12 +319,22 @@ impl SessionStore {
                     let _ = writer.write_all(&bytes).and_then(|()| writer.flush());
                 }
             }
-            *slot = Some(Client {
+            attached.clients.push(Client {
                 writer,
                 stream,
                 token,
+                columns,
+                rows,
+                classifier: InputClassifier::new(),
             });
-        }
+            // Attaching does not TAKE the size from a client that has it — that needs an act. It
+            // only fills a vacancy.
+            match attached.owner {
+                Some(_) => None,
+                None => attached.claim(token),
+            }
+        };
+        apply_size(&pty, &shadow, size);
 
         let sessions = self.sessions.lock().expect("session store poisoned");
         let session = sessions
@@ -263,26 +346,85 @@ impl SessionStore {
     /// The client went away. The session and its pty keep running — that is the entire point, and
     /// the reader keeps draining the pty so a detached job neither stalls nor goes unrecorded.
     ///
-    /// Only clears the slot if `token` still holds it: a superseded client's connection ending
-    /// must not detach the client that superseded it.
+    /// Only removes the client holding `token`: a superseded client's connection ending must not
+    /// detach the client that superseded it.
+    ///
+    /// **If exactly one client is left, it takes the size immediately** rather than waiting to be
+    /// claimed. Closing one laptop must not strand the terminal at the geometry of the window that
+    /// just went away.
     pub fn detach(&self, id: SessionId, token: u64) {
-        let slot = {
-            let sessions = match self.sessions.lock() {
-                Ok(sessions) => sessions,
-                Err(_) => return,
-            };
-            match sessions.get(&id) {
-                Some(session) => Arc::clone(&session.client),
-                None => return,
+        let Some((pty, shadow, attached)) = self.parts(id) else {
+            return;
+        };
+        let size = {
+            let mut attached = attached.lock().expect("attachment lock poisoned");
+            attached.clients.retain(|client| client.token != token);
+            if attached.owner == Some(token) {
+                attached.owner = None;
+            }
+            match attached.clients.as_slice() {
+                [only] => {
+                    let last = only.token;
+                    attached.claim(last)
+                }
+                _ => None,
             }
         };
-        let mut held = match slot.lock() {
-            Ok(held) => held,
-            Err(_) => return,
+        apply_size(&pty, &shadow, size);
+    }
+
+    /// A client's window changed size.
+    ///
+    /// Always recorded, applied only if that client owns the size or nobody does. A background
+    /// window resizing must not move the pty out from under the person typing in another one.
+    pub fn resize(&self, id: SessionId, token: u64, columns: u16, rows: u16) {
+        let Some((pty, shadow, attached)) = self.parts(id) else {
+            return;
         };
-        if held.as_ref().is_some_and(|client| client.token == token) {
-            *held = None;
-        }
+        let size = {
+            let mut attached = attached.lock().expect("attachment lock poisoned");
+            let Some(client) = attached.client(token) else {
+                return;
+            };
+            client.columns = columns;
+            client.rows = rows;
+            match attached.owner {
+                Some(owner) if owner == token => attached.owned_size(),
+                Some(_) => None,
+                None => attached.claim(token),
+            }
+        };
+        apply_size(&pty, &shadow, size);
+    }
+
+    /// Input from a client: claims the size if it is the USER acting, then goes to the pty.
+    ///
+    /// Typing or clicking in a pane is what makes it yours. A terminal answering a query is not —
+    /// see `crate::input` for why that distinction needs a parser.
+    pub fn write_input(&self, id: SessionId, token: u64, bytes: &[u8]) {
+        let Some((pty, shadow, attached)) = self.parts(id) else {
+            return;
+        };
+        let size = {
+            let mut attached = attached.lock().expect("attachment lock poisoned");
+            let acted = attached
+                .client(token)
+                .is_some_and(|client| client.classifier.is_user_input(bytes));
+            if acted && attached.owner != Some(token) {
+                attached.claim(token)
+            } else {
+                None
+            }
+        };
+        apply_size(&pty, &shadow, size);
+        let _ = pty.write_all(bytes);
+    }
+
+    /// Who owns the size, for tests and diagnostics.
+    pub fn size_owner(&self, id: SessionId) -> Option<u64> {
+        let (_, _, attached) = self.parts(id)?;
+        let owner = attached.lock().ok()?.owner;
+        owner
     }
 
     pub fn contains(&self, id: SessionId) -> bool {
@@ -361,7 +503,7 @@ fn child_gone(pid: i32, status: &mut i32) -> bool {
     rc != 0
 }
 
-/// Where the reader is sending output, captured so the write can happen outside the slot lock.
+/// Where the reader is sending output, captured so the write can happen outside the lock.
 struct Target {
     writer: SharedWriter,
     stream: u32,
@@ -378,18 +520,25 @@ impl Client {
     }
 }
 
-/// The attached client, if any, as a detached copy.
-fn current_client(client: &Arc<Mutex<Option<Client>>>) -> Option<Target> {
-    client.lock().ok()?.as_ref().map(Client::target)
+/// Every attached client, as detached copies.
+fn targets(attached: &Arc<Mutex<Attached>>) -> Vec<Target> {
+    match attached.lock() {
+        Ok(attached) => attached.clients.iter().map(Client::target).collect(),
+        Err(_) => Vec::new(),
+    }
 }
 
-/// Writes to the attached client, and EVICTS it if the write fails.
+/// Writes to one client, and EVICTS it if the write fails.
 ///
 /// Eviction is the point. A client that has stopped reading fails its write after the transport's
 /// deadline, and leaving it installed means paying that deadline again on the very next chunk of
 /// output — the session would spend its life stalling on a peer that is never coming back. Dropping
 /// it costs nothing: the session and its pty carry on, and the client reattaches like any other.
-fn deliver(client: &Arc<Mutex<Option<Client>>>, target: &Target, bytes: &[u8]) {
+///
+/// Returns a size to apply if evicting left exactly one client, which then owns it — the same rule
+/// `detach` follows, for the same reason: a peer that died must not strand the survivor at a
+/// geometry belonging to a window nobody is looking at.
+fn deliver(attached: &Arc<Mutex<Attached>>, target: &Target, bytes: &[u8]) -> Option<(u16, u16)> {
     let delivered = match target.writer.lock() {
         Ok(mut writer) => writer
             .write_all(bytes)
@@ -398,14 +547,35 @@ fn deliver(client: &Arc<Mutex<Option<Client>>>, target: &Target, bytes: &[u8]) {
         Err(_) => false,
     };
     if delivered {
-        return;
+        return None;
     }
-    // Token-checked, for the same reason `detach` is: the client that failed may already have been
-    // replaced, and evicting its successor would detach a healthy connection.
-    if let Ok(mut slot) = client.lock() {
-        if slot.as_ref().is_some_and(|held| held.token == target.token) {
-            *slot = None;
+    let mut attached = attached.lock().ok()?;
+    attached
+        .clients
+        .retain(|client| client.token != target.token);
+    if attached.owner == Some(target.token) {
+        attached.owner = None;
+    }
+    match attached.clients.as_slice() {
+        [only] => {
+            let last = only.token;
+            attached.claim(last)
         }
+        _ => None,
+    }
+}
+
+/// Resizes the pty and the shadow together, if there is a size to apply.
+///
+/// The shadow has to follow the pty or a reattaching client is repainted at the wrong geometry and
+/// every wrapped line is wrong.
+fn apply_size(pty: &Pty, shadow: &Mutex<Shadow>, size: Option<(u16, u16)>) {
+    let Some((columns, rows)) = size else {
+        return;
+    };
+    let _ = pty.resize(columns, rows);
+    if let Ok(mut shadow) = shadow.lock() {
+        shadow.resize(columns, rows);
     }
 }
 
@@ -429,7 +599,7 @@ fn read_session(
     id: SessionId,
     pty: Arc<Pty>,
     shadow: Arc<Mutex<Shadow>>,
-    client: Arc<Mutex<Option<Client>>>,
+    attached: Arc<Mutex<Attached>>,
     store: Arc<Mutex<HashMap<SessionId, Session>>>,
 ) {
     let mut buffer = [0u8; 8192];
@@ -460,12 +630,12 @@ fn read_session(
         }
 
         if ended {
-            if let Some(target) = current_client(&client) {
+            for target in targets(&attached) {
                 let bytes = terminal_envelope(
                     target.stream,
                     Frame::new(FrameKind::Exited, status.to_be_bytes().to_vec()),
                 );
-                deliver(&client, &target, &bytes);
+                deliver(&attached, &target, &bytes);
             }
             // The shell IS the session; with it gone there is nothing left to reattach to.
             if let Ok(mut store) = store.lock() {
@@ -487,19 +657,22 @@ fn read_session(
                 // client that attaches after the capture is painted from the shadow, which already
                 // holds these bytes; it cannot receive them twice, and the superseded client's
                 // writer is the one this write goes to.
-                let target = {
-                    let slot = client.lock().expect("client slot poisoned");
+                let clients = {
+                    let held = attached.lock().expect("attachment lock poisoned");
                     if let Ok(mut shadow) = shadow.lock() {
                         shadow.write(&buffer[..n]);
                     }
-                    slot.as_ref().map(Client::target)
+                    held.clients.iter().map(Client::target).collect::<Vec<_>>()
                 };
-                if let Some(target) = target {
+                // Every attached client sees the same bytes — that is what makes two windows on
+                // one session show the same terminal rather than half of it each.
+                for target in &clients {
                     let bytes = terminal_envelope(
                         target.stream,
                         Frame::new(FrameKind::Output, buffer[..n].to_vec()),
                     );
-                    deliver(&client, &target, &bytes);
+                    let size = deliver(&attached, target, &bytes);
+                    apply_size(&pty, &shadow, size);
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -592,7 +765,7 @@ mod tests {
     fn attach_capture(store: &SessionStore, session: SessionId) -> (Capture, u64) {
         let capture = Capture::default();
         let writer: SharedWriter = Arc::new(Mutex::new(Box::new(capture.clone())));
-        let (_, token) = store.attach(session, writer, 1).expect("attach");
+        let (_, token) = store.attach(session, writer, 1, 80, 24).expect("attach");
         (capture, token)
     }
 
@@ -755,7 +928,7 @@ mod tests {
         store.create(spec(id(7), &args, &e)).expect("create");
 
         let writer: SharedWriter = Arc::new(Mutex::new(Box::new(Broken)));
-        store.attach(id(7), writer, 1).expect("attach");
+        store.attach(id(7), writer, 1, 80, 24).expect("attach");
         assert!(store.list()[0].attached);
 
         // The shell's own output is enough to discover the dead transport.
@@ -774,12 +947,248 @@ mod tests {
         store.kill_all();
     }
 
+    // MARK: The size-owner policy
+
+    /// Reports the pty's actual geometry, which is what the policy is ultimately about.
+    fn pty_size(store: &SessionStore, session: SessionId) -> (u16, u16) {
+        store
+            .with_pty(session, |pty| pty.size())
+            .expect("session")
+            .expect("size")
+    }
+
+    fn attach_sized(
+        store: &SessionStore,
+        session: SessionId,
+        columns: u16,
+        rows: u16,
+    ) -> (Capture, u64) {
+        let capture = Capture::default();
+        let writer: SharedWriter = Arc::new(Mutex::new(Box::new(capture.clone())));
+        let (_, token) = store
+            .attach(session, writer, 1, columns, rows)
+            .expect("attach");
+        (capture, token)
+    }
+
+    fn sized_session(store: &SessionStore, session: SessionId) {
+        let args = [OsString::from("-c"), OsString::from("sleep 30")];
+        let e = env();
+        store
+            .create(SessionSpec {
+                id: session,
+                program: OsStr::new("/bin/sh"),
+                argv0: None,
+                args: &args,
+                env: &e,
+                cwd: None,
+                columns: 80,
+                rows: 24,
+            })
+            .expect("create");
+    }
+
+    /// Nobody owns a new session, so the first client to bring a size takes it — otherwise a
+    /// session would sit at its creation geometry until somebody typed.
+    #[test]
+    fn the_first_client_with_a_size_takes_it() {
+        let store = SessionStore::new();
+        sized_session(&store, id(20));
+        let (_client, token) = attach_sized(&store, id(20), 100, 30);
+        assert_eq!(store.size_owner(id(20)), Some(token));
+        assert_eq!(pty_size(&store, id(20)), (100, 30));
+        store.kill_all();
+    }
+
+    /// A client with no size of its own cannot own one. A relay forked into a pipe rather than a
+    /// terminal reports 0x0, and letting that own would resize everyone else's pty to nothing.
+    #[test]
+    fn a_client_without_a_size_cannot_own_it() {
+        let store = SessionStore::new();
+        sized_session(&store, id(21));
+        let (_client, _) = attach_sized(&store, id(21), 0, 0);
+        assert_eq!(store.size_owner(id(21)), None);
+        assert_eq!(
+            pty_size(&store, id(21)),
+            (80, 24),
+            "the pty keeps its own size"
+        );
+        store.kill_all();
+    }
+
+    /// The core of the policy: a second client's window does not move the pty.
+    #[test]
+    fn a_second_clients_resize_is_recorded_but_not_applied() {
+        let store = SessionStore::new();
+        sized_session(&store, id(22));
+        let (_first, first) = attach_sized(&store, id(22), 100, 30);
+        let (_second, second) = attach_sized(&store, id(22), 120, 40);
+
+        assert_eq!(
+            store.size_owner(id(22)),
+            Some(first),
+            "attaching does not take the size"
+        );
+        assert_eq!(pty_size(&store, id(22)), (100, 30));
+
+        store.resize(id(22), second, 200, 50);
+        assert_eq!(
+            pty_size(&store, id(22)),
+            (100, 30),
+            "a non-owner's resize does not apply"
+        );
+        assert_eq!(store.size_owner(id(22)), Some(first));
+        store.kill_all();
+    }
+
+    /// ...and typing is what takes it, applying the size recorded while it was not the owner.
+    #[test]
+    fn typing_claims_the_size_and_applies_what_was_recorded() {
+        let store = SessionStore::new();
+        sized_session(&store, id(23));
+        let (_first, first) = attach_sized(&store, id(23), 100, 30);
+        let (_second, second) = attach_sized(&store, id(23), 120, 40);
+        store.resize(id(23), second, 200, 50);
+
+        store.write_input(id(23), second, b"x");
+        assert_eq!(store.size_owner(id(23)), Some(second));
+        assert_eq!(
+            pty_size(&store, id(23)),
+            (200, 50),
+            "the size recorded while it was not the owner takes effect at once"
+        );
+        assert_ne!(store.size_owner(id(23)), Some(first));
+        store.kill_all();
+    }
+
+    /// The load-bearing exclusion. A terminal answering a query shares the input channel with the
+    /// user, and a pane merely being focused must not steal the size.
+    #[test]
+    fn a_terminal_answering_a_query_does_not_claim_the_size() {
+        let store = SessionStore::new();
+        sized_session(&store, id(24));
+        let (_first, first) = attach_sized(&store, id(24), 100, 30);
+        let (_second, second) = attach_sized(&store, id(24), 120, 40);
+
+        for answer in [
+            &b"\x1b[I"[..],          // focus in
+            &b"\x1b[24;80R"[..],     // cursor position report
+            &b"\x1b[?62;1;4c"[..],   // device attributes
+            &b"\x1b[<64;10;20M"[..], // wheel scroll
+        ] {
+            store.write_input(id(24), second, answer);
+            assert_eq!(
+                store.size_owner(id(24)),
+                Some(first),
+                "{answer:?} must not claim the session"
+            );
+        }
+
+        // But a click does.
+        store.write_input(id(24), second, b"\x1b[<0;10;20M");
+        assert_eq!(
+            store.size_owner(id(24)),
+            Some(second),
+            "a click is the user acting"
+        );
+        store.kill_all();
+    }
+
+    /// Closing one laptop must not strand the terminal at the geometry of the window that just
+    /// went away — with one client left, it takes the size without having to ask.
+    #[test]
+    fn the_last_client_standing_takes_the_size_immediately() {
+        let store = SessionStore::new();
+        sized_session(&store, id(25));
+        let (_first, first) = attach_sized(&store, id(25), 100, 30);
+        let (_second, second) = attach_sized(&store, id(25), 120, 40);
+        assert_eq!(store.size_owner(id(25)), Some(first));
+
+        store.detach(id(25), first);
+        assert_eq!(store.size_owner(id(25)), Some(second));
+        assert_eq!(pty_size(&store, id(25)), (120, 40));
+        store.kill_all();
+    }
+
+    /// With more than one client left, the owner leaving makes the size UNOWNED rather than
+    /// handing it to an arbitrary survivor — the next one to act takes it.
+    #[test]
+    fn the_size_is_unowned_when_the_owner_leaves_a_crowd() {
+        let store = SessionStore::new();
+        sized_session(&store, id(26));
+        let (_first, first) = attach_sized(&store, id(26), 100, 30);
+        let (_second, second) = attach_sized(&store, id(26), 120, 40);
+        let (_third, third) = attach_sized(&store, id(26), 140, 45);
+
+        store.detach(id(26), first);
+        assert_eq!(store.size_owner(id(26)), None);
+        assert_eq!(
+            pty_size(&store, id(26)),
+            (100, 30),
+            "and the pty holds its last size"
+        );
+
+        store.write_input(id(26), third, b"x");
+        assert_eq!(store.size_owner(id(26)), Some(third));
+        assert_eq!(pty_size(&store, id(26)), (140, 45));
+        assert_ne!(store.size_owner(id(26)), Some(second));
+        store.kill_all();
+    }
+
+    /// An unowned size is claimed by a resize too, not only by typing — otherwise a lone client
+    /// that only ever drags its window would never move the pty.
+    #[test]
+    fn a_resize_claims_an_unowned_size() {
+        let store = SessionStore::new();
+        sized_session(&store, id(27));
+        let (_first, first) = attach_sized(&store, id(27), 100, 30);
+        let (_second, second) = attach_sized(&store, id(27), 0, 0);
+        let (_third, _) = attach_sized(&store, id(27), 0, 0);
+        store.detach(id(27), first);
+        assert_eq!(store.size_owner(id(27)), None);
+
+        store.resize(id(27), second, 90, 20);
+        assert_eq!(store.size_owner(id(27)), Some(second));
+        assert_eq!(pty_size(&store, id(27)), (90, 20));
+        store.kill_all();
+    }
+
+    /// The owner's own resizes keep applying, which is the ordinary single-client case.
+    #[test]
+    fn the_owner_keeps_resizing_the_pty() {
+        let store = SessionStore::new();
+        sized_session(&store, id(28));
+        let (_client, token) = attach_sized(&store, id(28), 100, 30);
+        store.resize(id(28), token, 132, 43);
+        assert_eq!(pty_size(&store, id(28)), (132, 43));
+        store.kill_all();
+    }
+
+    /// Both windows on one session see the same output — otherwise they would each get half a
+    /// terminal, which is the corruption multi-client attach used to cause.
+    #[test]
+    fn every_attached_client_sees_the_same_output() {
+        let store = SessionStore::new();
+        let args = [
+            OsString::from("-c"),
+            OsString::from("sleep 0.2; echo shared; sleep 5"),
+        ];
+        let e = env();
+        store.create(spec(id(29), &args, &e)).expect("create");
+        let (first, _) = attach_capture(&store, id(29));
+        let (second, _) = attach_capture(&store, id(29));
+
+        assert!(wait_for(&first, "shared", Duration::from_secs(5)).contains("shared"));
+        assert!(wait_for(&second, "shared", Duration::from_secs(5)).contains("shared"));
+        store.kill_all();
+    }
+
     #[test]
     fn attaching_an_unknown_session_is_an_error() {
         let store = SessionStore::new();
         let writer: SharedWriter = Arc::new(Mutex::new(Box::new(Capture::default())));
         assert!(matches!(
-            store.attach(id(9), writer, 1),
+            store.attach(id(9), writer, 1, 80, 24),
             Err(SessionError::NotFound(_))
         ));
     }

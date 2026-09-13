@@ -305,7 +305,13 @@ fn dispatch(
                 )
                 .then_some(())
                 .ok_or(crate::session::SessionError::NotFound(id.to_hyphenated()))?;
-                sessions.attach(id, Arc::clone(writer), envelope.stream)
+                sessions.attach(
+                    id,
+                    Arc::clone(writer),
+                    envelope.stream,
+                    request.columns,
+                    request.rows,
+                )
             });
             match result {
                 Ok((_, granted)) => {
@@ -318,7 +324,11 @@ fn dispatch(
         }
         FrameKind::Input => {
             let id = (*attached)?;
-            sessions.with_pty(id, |pty| pty.write(&frame.payload));
+            // Through the session, not straight at the pty, for two reasons: it writes with
+            // `write_all` (the master is non-blocking, so a paste bigger than the pty's input queue
+            // short-writes and the tail would be dropped in silence), and typing is also how a
+            // client CLAIMS the session's size, which only the session can arbitrate.
+            sessions.write_input(id, *token, &frame.payload);
             None
         }
         FrameKind::Resize => {
@@ -326,14 +336,10 @@ fn dispatch(
             if frame.payload.len() >= 4 {
                 let columns = u16::from_be_bytes([frame.payload[0], frame.payload[1]]);
                 let rows = u16::from_be_bytes([frame.payload[2], frame.payload[3]]);
-                sessions.with_pty(id, |pty| pty.resize(columns, rows));
-                // The shadow has to follow the pty, or a reattaching client is repainted at the
-                // wrong geometry and every wrapped line is wrong.
-                if let Some(shadow) = sessions.shadow(id) {
-                    if let Ok(mut shadow) = shadow.lock() {
-                        shadow.resize(columns, rows);
-                    }
-                }
+                // Recorded always, applied only if this client owns the size or nobody does — a
+                // background window resizing must not move the pty out from under whoever is
+                // typing in another one.
+                sessions.resize(id, *token, columns, rows);
             }
             None
         }

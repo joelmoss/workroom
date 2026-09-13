@@ -372,6 +372,75 @@ fn serve_stdio_is_the_remote_entry_point() {
 
 /// A resize must reach the shell, or every full-screen program renders at the geometry the session
 /// happened to be created with. The agent accepted Resize frames long before anything sent one.
+/// Two clients on one session, over the real wire: the size-owner policy end to end.
+///
+/// The unit tests drive `SessionStore` directly; this one goes through the envelope, so it also
+/// proves each connection carries its OWN attachment token. Get that wrong and one client's
+/// keystrokes claim the size on another's behalf, which is invisible to a test that never
+/// multiplexes.
+#[test]
+fn a_second_client_takes_the_size_only_by_acting() {
+    let sessions = SessionStore::new();
+    let (mut first, first_handle) = serve_over_pipe(sessions.clone());
+    first.handshake();
+    first.send(Service::Terminal, 1, attach_frame([9u8; 16]));
+    std::thread::sleep(Duration::from_millis(400));
+
+    // A second window on the same session, with a window of its own.
+    let (mut second, second_handle) = serve_over_pipe(sessions.clone());
+    second.handshake();
+    let request = AttachRequest {
+        id: Some(SessionId([9u8; 16])),
+        shell: Some("/bin/sh".into()),
+        columns: 120,
+        rows: 40,
+        env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+        ..Default::default()
+    };
+    second.send(
+        Service::Terminal,
+        1,
+        Frame::new(FrameKind::Attach, request.encode()),
+    );
+    std::thread::sleep(Duration::from_millis(400));
+
+    // Attaching does not take the size, and neither does resizing in the background.
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&200u16.to_be_bytes());
+    payload.extend_from_slice(&50u16.to_be_bytes());
+    second.send(Service::Terminal, 1, Frame::new(FrameKind::Resize, payload));
+    std::thread::sleep(Duration::from_millis(200));
+
+    first.send(
+        Service::Terminal,
+        1,
+        Frame::new(FrameKind::Input, b"stty size\n".to_vec()),
+    );
+    let seen = first.read_until("24 80", Duration::from_secs(10));
+    assert!(
+        seen.contains("24 80"),
+        "a second client's resize must not move the pty; the shell reported {seen:?}"
+    );
+
+    // Typing in the second window is what takes it, and the size it recorded applies at once.
+    second.send(
+        Service::Terminal,
+        1,
+        Frame::new(FrameKind::Input, b"stty size\n".to_vec()),
+    );
+    let seen = second.read_until("50 200", Duration::from_secs(10));
+    assert!(
+        seen.contains("50 200"),
+        "typing must claim the size and apply what was recorded; the shell reported {seen:?}"
+    );
+
+    close(&first.writer);
+    close(&second.writer);
+    let _ = first_handle.join();
+    let _ = second_handle.join();
+    sessions.kill_all();
+}
+
 #[test]
 fn a_resize_reaches_the_shell() {
     let sessions = SessionStore::new();

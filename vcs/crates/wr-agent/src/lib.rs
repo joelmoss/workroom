@@ -8,6 +8,7 @@
 //! See docs/designs/remote-workrooms.md. Phase 1 is the protocol and the terminal service; VCS,
 //! file and status services arrive in Phase 2 over the same envelope.
 
+pub mod input;
 pub mod process;
 pub mod protocol;
 pub mod pty;
