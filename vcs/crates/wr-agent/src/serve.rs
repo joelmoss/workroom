@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use crate::protocol::envelope::{
     negotiate, Envelope, EnvelopeDecoder, Hello, ProtocolError, Service,
 };
-use crate::protocol::frame::{Frame, FrameDecoder, FrameKind};
+use crate::protocol::frame::{Frame, FrameDecoder, FrameKind, MAX_PAYLOAD_SIZE};
 use crate::session::{SessionId, SessionSpec, SessionStore, SharedWriter};
 use crate::shell;
 use crate::transport::Transport;
@@ -343,10 +343,7 @@ fn dispatch(
             }
             None
         }
-        FrameKind::List => reply(Frame::new(
-            FrameKind::Sessions,
-            encode_descriptor_list(&sessions.list()),
-        )),
+        FrameKind::List => reply(list_reply(encode_descriptor_list(&sessions.list()))),
         FrameKind::Kill => {
             let id = SessionId::from_slice(frame.payload.get(..16)?)?;
             sessions.kill(id);
@@ -370,6 +367,50 @@ fn dispatch(
 ///
 /// `tty` is zero: the Swift daemon reports the pty's device number, and nothing in the app reads
 /// it (verified by grep). Reporting a fabricated value would be worse than reporting none.
+/// Wraps an encoded session list in the frame to send, refusing one that is too big.
+///
+/// A `Sessions` reply grows with the session count and each session's cwd, and unlike output it
+/// goes out as ONE frame. `Frame::encode` panics past the cap rather than truncating — and even if
+/// it did not, a client that sees a declared length over the cap fails its decoder permanently, so
+/// an over-long list would not merely fail, it would poison every later frame on that connection.
+/// Answer with the failure the app already knows how to show instead.
+fn list_reply(payload: Vec<u8>) -> Frame {
+    if payload.len() > MAX_PAYLOAD_SIZE {
+        return Frame::new(
+            FrameKind::Failure,
+            format!(
+                "session list of {} bytes exceeds the {MAX_PAYLOAD_SIZE}-byte frame cap",
+                payload.len()
+            )
+            .into_bytes(),
+        );
+    }
+    Frame::new(FrameKind::Sessions, payload)
+}
+
+/// A `waitpid` status as the exit code a shell would report, which is what the `Exited` frame
+/// carries.
+///
+/// The raw status is not that number: it packs the exit code into its high byte, so `exit 7`
+/// arrives as 1792. Both ends of this wire already agree on the shell convention —
+/// `SessionDaemon.exitCode` produces it and `SessionAttachClient` returns it as its own exit
+/// status — so sending the raw value would make the same frame mean a different number depending
+/// on which backend served the session, and a caller checking `$? == 7` would silently never
+/// match.
+pub fn exit_code(status: i32) -> i32 {
+    // The low seven bits are the terminating signal, 0 when the process exited normally.
+    let signal = status & 0o177;
+    if signal == 0 {
+        return (status >> 8) & 0xFF;
+    }
+    // 0o177 means stopped rather than terminated — not an exit at all, so report success rather
+    // than inventing a failure for a process that is still there.
+    if signal == 0o177 {
+        return 0;
+    }
+    128 + signal
+}
+
 pub fn encode_descriptor_list(sessions: &[crate::session::SessionInfo]) -> Vec<u8> {
     fn put_string(out: &mut Vec<u8>, value: &str) {
         out.extend_from_slice(&(value.len() as u32).to_be_bytes());
@@ -505,7 +546,7 @@ pub fn pump_output<S: Write>(
                 // telling the client promptly matters more than the exact status.
                 unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
             }
-            let frame = Frame::new(FrameKind::Exited, status.to_be_bytes().to_vec());
+            let frame = Frame::new(FrameKind::Exited, exit_code(status).to_be_bytes().to_vec());
             let envelope = Envelope::new(Service::Terminal, service_stream, frame.encode());
             send(&envelope.encode());
             // The shell IS the session; with it gone there is nothing left to reattach to.
@@ -802,6 +843,37 @@ mod tests {
             1 <= bytes.len() / 37,
             "a single descriptor must satisfy Swift's minimumEncodedSize guard"
         );
+    }
+
+    /// The number in an `Exited` frame is the one a shell would report, not the raw `waitpid`
+    /// status — the two differ by a byte shift, and `SessionAttachClient` hands whatever arrives
+    /// straight back as its own exit status.
+    #[test]
+    fn an_exit_status_becomes_the_code_a_shell_would_report() {
+        assert_eq!(exit_code(7 << 8), 7, "exit 7, not the raw 1792");
+        assert_eq!(exit_code(0), 0);
+        assert_eq!(exit_code(255 << 8), 255, "the widest normal exit");
+        assert_eq!(
+            exit_code(libc::SIGKILL),
+            128 + 9,
+            "killed, by shell convention"
+        );
+        assert_eq!(exit_code(libc::SIGHUP), 128 + 1);
+        assert_eq!(exit_code(0o177), 0, "stopped is not an exit");
+    }
+
+    /// A `Sessions` reply is one frame, and `Frame::encode` panics rather than truncating past the
+    /// cap. Reply with a failure instead — which the app already renders — rather than killing the
+    /// connection thread and leaving the client waiting for a frame that will never come.
+    #[test]
+    fn an_oversized_session_list_is_refused_rather_than_panicking() {
+        let ordinary = list_reply(encode_descriptor_list(&[]));
+        assert_eq!(ordinary.kind, FrameKind::Sessions);
+
+        let over = list_reply(vec![0u8; MAX_PAYLOAD_SIZE + 1]);
+        assert_eq!(over.kind, FrameKind::Failure);
+        // And the refusal must itself be sendable, which is the whole point.
+        let _ = over.encode();
     }
 
     #[test]

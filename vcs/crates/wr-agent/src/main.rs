@@ -230,7 +230,19 @@ fn run_attach(args: &[String]) -> ExitCode {
                                 }
                                 let _ = stdout.flush();
                             }
-                            FrameKind::Exited => return ExitCode::SUCCESS,
+                            // The shell's own exit code becomes this process's, so a command run
+                            // through an attach is indistinguishable from running it directly —
+                            // which is what `workroom-session attach` did, and what any caller
+                            // testing `$?` depends on.
+                            FrameKind::Exited => {
+                                let code = frame
+                                    .payload
+                                    .get(..4)
+                                    .map(|b| i32::from_be_bytes(b.try_into().unwrap()))
+                                    .unwrap_or(0);
+                                // `ExitCode` is a byte; a shell status is already 0-255.
+                                return ExitCode::from(code.clamp(0, 255) as u8);
+                            }
                             FrameKind::Failure => {
                                 eprintln!("wr-agent: {}", String::from_utf8_lossy(&frame.payload));
                                 return ExitCode::FAILURE;
