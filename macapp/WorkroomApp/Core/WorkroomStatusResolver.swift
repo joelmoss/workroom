@@ -53,9 +53,9 @@ struct WorkroomStatusResolver: Sendable {
   /// workrooms share a backing repo, so concurrent snapshots can contend on it.
   var gate: JJSnapshotGate
   /// `resolveGit`/`resolveJJ`'s native status seam — real reads by default (`GitProvider`/
-  /// `RustJJProvider`), a gated/counting double in tests. `workingStatus` isn't on `VCSProviding`
-  /// (the two backends return different concrete types today — see "Unify `workingStatus` onto the
-  /// `VCSProviding` protocol" in TODOS.md), so this is its own pair of seams, not that protocol.
+  /// `RustJJProvider`), a gated/counting double in tests. `workingStatus` IS on `VCSProviding` now
+  /// and both backends return `WorkroomStatus`; these stay as injection points for the doubles, not
+  /// because the two sides differ. See `VCSWorkingStatusReading`.
   var gitStatus: VCSWorkingStatusReading
   var jjStatus: VCSWorkingStatusReading
 

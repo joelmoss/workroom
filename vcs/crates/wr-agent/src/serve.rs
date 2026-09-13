@@ -193,17 +193,34 @@ pub fn handle_connection<T: Transport>(
     // taken the session over.
     let mut token = 0u64;
 
+    // The decoder's failure is carried out rather than returned with `?`, so that EVERY exit runs
+    // the detach below. It used to propagate straight out of the function: an unknown service byte
+    // or an oversized declared length left the client registered on the session, holding this
+    // connection's write half — so the fd stayed open, the session reported `attached: true`
+    // forever, and if that client was the size owner nobody else could claim the geometry. A quiet
+    // session never notices, because the eviction that would clean it up only happens on a failed
+    // delivery.
+    let mut failure = None;
     'outer: loop {
-        while let Some(envelope) = decoder.next_envelope()? {
-            if let Some(reply) = dispatch(
-                &envelope,
-                &sessions,
-                &mut attached,
-                &mut token,
-                &writer,
-                &send,
-            ) {
-                if !send(&reply.encode()) {
+        loop {
+            match decoder.next_envelope() {
+                Ok(Some(envelope)) => {
+                    if let Some(reply) = dispatch(
+                        &envelope,
+                        &sessions,
+                        &mut attached,
+                        &mut token,
+                        &writer,
+                        &send,
+                    ) {
+                        if !send(&reply.encode()) {
+                            break 'outer;
+                        }
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    failure = Some(e);
                     break 'outer;
                 }
             }
@@ -221,7 +238,10 @@ pub fn handle_connection<T: Transport>(
     if let Some(id) = attached {
         sessions.detach(id, token);
     }
-    Ok(())
+    match failure {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 /// Handles one envelope. Returns a reply to send, if any.

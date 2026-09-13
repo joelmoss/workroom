@@ -123,6 +123,39 @@ Clang module (`wr_vcs_uniffiFFI`) is a separate SPM C target — a headers-beari
 copies its `module.modulemap` into the shared `Debug/include/` and collides with GhosttyKit's
 ("Multiple commands produce include/module.modulemap").
 
+## Terminal sessions: `wr-agent` (Rust) and the daemon it replaces
+
+A pane's shell outlives the pane, so the app does not own the pty — a **session helper** does, and
+the app attaches to it. There are two, mid-migration (issue #154, Phase 1):
+
+- **`wr-agent`** (`vcs/crates/wr-agent`, Rust) — where every NEW session goes. One binary,
+  `serve | attach`, multiplexing services over one stream with a versioned envelope
+  (`service:u8 | stream:u32 | length:u32 | payload`). It keeps a **shadow terminal** (libghostty-vt,
+  behind the `terminal-state` cargo feature) so a reattaching pane is repainted from emulator state
+  rather than a byte replay.
+- **`workroom-session`** (`macapp/WorkroomSession/`, Swift) — the shipped daemon. It keeps the
+  sessions it already holds until the user closes them; it cannot hand a live pty over.
+
+**The migration is a drain, not a switch.** `SessionBackend.preferred()` returns `.rustAgent` unless
+the agent fails its probe; `PersistentSessionService.backend(forSession:)` resolves each EXISTING
+session to whichever helper owns it. Two rules there are load-bearing and were both got wrong once:
+the answer is resolved **once per session and cached** (a pane asks twice — `attachCommand` for the
+binary, `launchEnvironment` for the socket — and the two must agree, or the daemon binds the agent's
+socket), and an **unanswered** ownership probe resolves to the *daemon*, because the agent creates on
+first attach and would fork a second pty under the same id, orphaning the user's shell.
+
+**Building it.** `macapp/Scripts/build-agent.sh` is a build phase, mirroring `build-helper.sh` (the
+Go CLI): it iterates `ARCHS`, so a universal Release build produces both slices and `lipo`s them.
+`build-agent_test.sh` guards that loop — the same regression once shipped an arm64-only CLI inside 23
+universal betas — and its cross cases need `rustup target add x86_64-apple-darwin aarch64-apple-darwin`,
+which CI installs. `terminal-state` is **not optional for the app**: without it a reattaching pane
+repaints blank, which only shows up after a quit-and-relaunch. `wr-agent protocol` reports
+`terminal-state yes|no`, and the build test asserts it against the shipped binary.
+
+The Zig toolchain and the pinned Ghostty engine come from `vcs/scripts/build-ghostty-vt.sh`
+(cached per `(engine sha, target)` outside the repo). That pin must stay in step with the
+GhosttyKit the app links — see the comment in `project.yml`.
+
 ## Formatting & linting
 
 Swift is formatted/linted with **swift-format** (bundled with the Xcode toolchain — run via

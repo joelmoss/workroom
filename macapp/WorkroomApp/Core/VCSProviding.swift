@@ -123,8 +123,11 @@ enum VCS {
   /// therefore cannot stay a property of the filesystem; it has to be something a workroom
   /// declares. `VCSProviderRegistry` is where it declares it.
   ///
-  /// Nothing is registered for a purely local session today, so today every call still reaches the
-  /// probe and behaves exactly as it did. That is deliberate: this is the seam, not the feature.
+  /// Every local project and workroom IS registered, on each `list --json` — so most calls now
+  /// resolve here rather than probing. Routing is unchanged because the registered name is the same
+  /// answer the probe would have given: the CLI derives `Project.vcs` by stating `.jj` before
+  /// `.git`, which is `repoKind(at:)`'s colocated preference. The probe remains the fallback for a
+  /// path no listing has mentioned yet.
   static func provider(for root: URL) throws -> VCSProviding {
     if let registered = VCSProviderRegistry.shared.provider(for: root) { return registered }
     switch repoKind(at: root) {
@@ -184,7 +187,13 @@ final class VCSProviderRegistry: @unchecked Sendable {
   /// The backend a repo root declares, or nil when nothing has declared one. `"git"` or `"jj"` —
   /// `replace` refuses anything else, so a caller never has to re-check.
   func vcs(for root: URL) -> String? {
-    lock.withLock { backends[Self.key(root.path)] }
+    // Keyed OUTSIDE the lock, as `replace` already does. `key` calls `resolvingSymlinksInPath()`,
+    // which is a `realpath(3)` — on a stalled network or FUSE mount that blocks, and inside the
+    // critical section it would block `replace` too, which runs on the main actor from
+    // `AppStore.apply`. Status sweeps call this ~5-wide from background closures, so that is a
+    // background read stalling the main thread.
+    let key = Self.key(root.path)
+    return lock.withLock { backends[key] }
   }
 
   func provider(for root: URL) -> VCSProviding? {

@@ -568,16 +568,31 @@ mod tests {
             .unwrap_or(0);
         assert_eq!(got, want, "history depth differs from the producer's");
         assert!(got > 20, "history was not restored at all: {got} rows");
-        // The oldest line must be there, not just some rows.
+        // History CONTENT, not just depth. Both checks below this were once the same copy-pasted
+        // assertion on `line 59`, so the one whose comment promised "the oldest line" tested
+        // nothing at all: padding the depth with blank rows would have satisfied every assertion
+        // above while silently losing `line 0` through `line 35`.
+        //
+        // Asserted on the replay bytes as well as the client, because they fail differently — an
+        // empty replay and a client that dropped what it was sent both lose the history, and only
+        // the pair says which.
+        let replay = String::from_utf8_lossy(&producer.replay()).into_owned();
         assert!(
-            client.visible_text().contains("line 59"),
-            "screen lost its last line"
+            replay.contains("line 0") && replay.contains("line 35"),
+            "the replay carries no scrolled-off history, only the visible screen"
         );
-        // The visible screen must still be the recent lines, not the replayed history.
+
+        // Note `visible_text()` is NOT screen-scoped: with a NULL selection the formatter emits the
+        // whole terminal in Ghostty's sense, scrollback included (the module doc records the same
+        // thing about `format`). So it sees both ends, and both are checked.
         assert!(
             client.visible_text().contains("line 59"),
             "screen lost its last line: {:?}",
             client.visible_text()
+        );
+        assert!(
+            client.visible_text().contains("line 0"),
+            "the oldest line did not survive into the client's history"
         );
     }
 
