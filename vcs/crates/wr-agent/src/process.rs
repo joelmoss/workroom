@@ -67,6 +67,49 @@ pub fn working_directory(pid: i32) -> Option<String> {
     platform::working_directory(pid)
 }
 
+/// Every transitive descendant of `roots`, found by walking parent-pid links.
+///
+/// Killing a pty's shell is not enough on its own. A child that calls `setsid()` leaves both the
+/// pty's foreground process group and the shell's session, becoming the leader of a session
+/// nothing is tracking — so `killpg` on the shell's group never reaches it, and neither does
+/// matching on `getsid`. The parent link is the one relation it cannot escape, which is why this
+/// walks that and not group or session membership. `SessionPTY.swift`'s `descendantProcessIDs`
+/// exists for the same reason; the finding that put it there predates this port and the behaviour
+/// must not be lost with the daemon.
+///
+/// Returns an empty vector when the process table cannot be read, rather than erroring: the caller
+/// still signals the roots, which is exactly what it did before this existed.
+pub fn descendants(roots: &[i32]) -> Vec<i32> {
+    use std::collections::{HashMap, HashSet};
+
+    let roots: HashSet<i32> = roots.iter().copied().filter(|pid| *pid > 0).collect();
+    if roots.is_empty() {
+        return Vec::new();
+    }
+
+    let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
+    for (pid, parent) in platform::parent_links() {
+        if pid > 0 {
+            children.entry(parent).or_default().push(pid);
+        }
+    }
+
+    // Breadth is irrelevant here, only reachability, so this is a plain worklist. `insert`
+    // returning false is what stops a cycle — which cannot happen in a real process tree, but a
+    // torn read of a live table can produce one and an infinite loop in the kill path is not an
+    // acceptable way to find that out.
+    let mut found: HashSet<i32> = HashSet::new();
+    let mut frontier: Vec<i32> = roots.iter().copied().collect();
+    while let Some(parent) = frontier.pop() {
+        for child in children.get(&parent).into_iter().flatten() {
+            if !roots.contains(child) && found.insert(*child) {
+                frontier.push(*child);
+            }
+        }
+    }
+    found.into_iter().collect()
+}
+
 /// Picks the user-meaningful name out of a full argv. Shared by both platforms because the
 /// interpreter problem is identical on each: the kernel rewrites a shebang invocation so argv[0]
 /// is the runtime, and the script the user actually typed is argv[1].
@@ -193,6 +236,67 @@ mod platform {
         let end = path.iter().position(|b| *b == 0).unwrap_or(path.len());
         (end > 0).then(|| String::from_utf8_lossy(&path[..end]).into_owned())
     }
+
+    /// `(pid, parent pid)` for every process this user can see.
+    ///
+    /// `proc_listallpids` + one `proc_pidinfo` each, rather than the single `KERN_PROC_ALL` sysctl
+    /// the Swift original uses, because that sysctl hands back an array of `kinfo_proc` — a large
+    /// struct the libc crate does not define for Apple targets, so consuming it would mean
+    /// hand-writing a kernel-fixed layout. These three symbols are all typed in libc, and the cost
+    /// is a few hundred cheap syscalls once, on the kill path.
+    pub(super) fn parent_links() -> Vec<(i32, i32)> {
+        let pids = all_pids();
+        let mut links = Vec::with_capacity(pids.len());
+        for pid in pids {
+            let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+            let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+            let written = unsafe {
+                libc::proc_pidinfo(
+                    pid,
+                    libc::PROC_PIDTBSDINFO,
+                    0,
+                    &mut info as *mut _ as *mut libc::c_void,
+                    size,
+                )
+            };
+            // A process that exited between the listing and this call returns 0. Skipping it is
+            // correct — it is already gone.
+            if written == size {
+                links.push((pid, info.pbi_ppid as i32));
+            }
+        }
+        links
+    }
+
+    fn all_pids() -> Vec<i32> {
+        // A zero-size call returns the byte count the table currently needs. Processes can start
+        // between that and the read, so ask for extra room and retry if the buffer came back
+        // exactly full — "full" is indistinguishable from "truncated".
+        for _ in 0..3 {
+            let needed = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+            if needed <= 0 {
+                return Vec::new();
+            }
+            let stride = std::mem::size_of::<libc::c_int>();
+            let capacity = needed as usize / stride + 64;
+            let mut buffer = vec![0 as libc::c_int; capacity];
+            let written = unsafe {
+                libc::proc_listallpids(
+                    buffer.as_mut_ptr() as *mut libc::c_void,
+                    (capacity * stride) as libc::c_int,
+                )
+            };
+            if written <= 0 {
+                return Vec::new();
+            }
+            let count = written as usize / stride;
+            if count < capacity {
+                buffer.truncate(count);
+                return buffer.into_iter().filter(|pid| *pid > 0).collect();
+            }
+        }
+        Vec::new()
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -240,6 +344,39 @@ mod platform {
         fs::read_link(format!("/proc/{pid}/cwd"))
             .ok()
             .and_then(|p| p.to_str().map(str::to_string))
+    }
+
+    /// `(pid, parent pid)` for every process this user can see, from `/proc/<pid>/stat` field 4.
+    ///
+    /// Field 2 is the executable name in parentheses and may itself contain spaces AND
+    /// parentheses, so the fields after it can only be found from the LAST `)` in the line.
+    /// Splitting the whole line on whitespace — the obvious reading of the proc(5) table — parses
+    /// a process named `my prog` into the wrong columns entirely.
+    pub(super) fn parent_links() -> Vec<(i32, i32)> {
+        let Ok(entries) = fs::read_dir("/proc") else {
+            return Vec::new();
+        };
+        let mut links = Vec::new();
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(pid) = name.to_str().and_then(|n| n.parse::<i32>().ok()) else {
+                continue;
+            };
+            // Unreadable or already gone: skip it, the same as a process that exited mid-scan.
+            let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+                continue;
+            };
+            let Some(after_comm) = stat.rfind(')').map(|at| &stat[at + 1..]) else {
+                continue;
+            };
+            // What follows the name is " S <ppid> ...": state first, then the parent.
+            let mut fields = after_comm.split_whitespace();
+            let parent = fields.nth(1).and_then(|f| f.parse::<i32>().ok());
+            if let Some(parent) = parent {
+                links.push((pid, parent));
+            }
+        }
+        links
     }
 }
 

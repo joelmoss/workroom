@@ -465,24 +465,36 @@ impl SessionStore {
     }
 
     /// Ends a session and its pty. Returns whether there was one to end.
+    ///
+    /// The session leaves the map first and the killing happens with the lock released: a
+    /// termination now scans the process table and waits out a shell's exit traps, and holding the
+    /// store lock across that would stall every `list` and `attach` for the duration.
     pub fn kill(&self, id: SessionId) -> bool {
-        let mut sessions = self.sessions.lock().expect("session store poisoned");
-        match sessions.remove(&id) {
+        let session = self
+            .sessions
+            .lock()
+            .expect("session store poisoned")
+            .remove(&id);
+        match session {
             Some(session) => {
-                terminate(&session.pty);
+                terminate(&[&session.pty]);
                 true
             }
             None => false,
         }
     }
 
+    /// One sweep for every session rather than a loop of single kills, so the process-table scan
+    /// happens once and every shell gets its hangup at the same moment instead of each waiting out
+    /// the one before it. That matters on quit, where this runs with the user watching.
     pub fn kill_all(&self) -> usize {
-        let mut sessions = self.sessions.lock().expect("session store poisoned");
-        let count = sessions.len();
-        for (_, session) in sessions.drain() {
-            terminate(&session.pty);
-        }
-        count
+        let ending: Vec<Session> = {
+            let mut sessions = self.sessions.lock().expect("session store poisoned");
+            sessions.drain().map(|(_, session)| session).collect()
+        };
+        let ptys: Vec<&Arc<Pty>> = ending.iter().map(|session| &session.pty).collect();
+        terminate(&ptys);
+        ending.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -683,26 +695,70 @@ fn read_session(
     }
 }
 
-/// SIGHUP first, which is what a terminal closing means and what a shell expects; SIGKILL only if
-/// it is ignored. Sending SIGKILL outright would deny a shell the chance to run its exit traps.
-fn terminate(pty: &Pty) {
-    let pid = pty.child_pid();
-    unsafe {
-        libc::kill(pid, libc::SIGHUP);
+/// Ends these ptys' shells and everything they started.
+///
+/// SIGHUP first, which is what a terminal closing means and what a shell expects; SIGKILL only for
+/// whatever is still there afterwards. Sending SIGKILL outright would deny a shell the chance to
+/// run its exit traps.
+///
+/// Signalling the shell alone is not enough, and that is the whole reason this takes a descendant
+/// snapshot. Killing the shell hangs up the pty, and the kernel delivers SIGHUP to the pty's
+/// foreground process group — but a child that called `setsid()` is in neither that group nor the
+/// shell's session, so nothing reaches it and it survives the app quitting. See
+/// `process::descendants`.
+///
+/// **The snapshot must be taken before anything is signalled.** Once the shell is hung up its
+/// children start exiting, and a descendant that has already left the process table is one no
+/// later sweep can find — it would be missed precisely in the common case where it exits slowly
+/// enough to matter.
+fn terminate(ptys: &[&Arc<Pty>]) {
+    let roots: Vec<i32> = ptys
+        .iter()
+        .map(|pty| pty.child_pid())
+        .filter(|pid| *pid > 0)
+        .collect();
+    if roots.is_empty() {
+        return;
     }
+    let descendants = crate::process::descendants(&roots);
+
+    for pid in roots.iter().chain(&descendants) {
+        unsafe { libc::kill(*pid, libc::SIGHUP) };
+    }
+
+    // Only the roots are our children, so only they can be reaped; a descendant's exit is observed
+    // by `kill(pid, 0)` instead. Both are checked, because the point is that nothing is left.
+    let mut unreaped: Vec<i32> = roots.clone();
     for _ in 0..50 {
-        let mut status = 0;
-        let rc = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
-        if rc == pid || rc < 0 {
+        unreaped.retain(|pid| {
+            let mut status = 0;
+            let rc = unsafe { libc::waitpid(*pid, &mut status, libc::WNOHANG) };
+            rc == 0
+        });
+        if unreaped.is_empty() && descendants.iter().all(|pid| !alive(*pid)) {
             return;
         }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(10));
     }
-    unsafe {
-        libc::kill(pid, libc::SIGKILL);
+
+    // Half a second of SIGHUP was declined. Anything still answering gets SIGKILL — checked first,
+    // because a pid that has already gone may by now name an unrelated process.
+    for pid in unreaped
+        .iter()
+        .chain(descendants.iter().filter(|pid| alive(**pid)))
+    {
+        unsafe { libc::kill(*pid, libc::SIGKILL) };
+    }
+    for pid in &unreaped {
         let mut status = 0;
-        libc::waitpid(pid, &mut status, 0);
+        unsafe { libc::waitpid(*pid, &mut status, 0) };
     }
+}
+
+/// Whether a pid still names a running process. Only meaningful for processes that are not ours to
+/// reap — a zombie child of this process answers yes until it is waited for.
+fn alive(pid: i32) -> bool {
+    pid > 0 && unsafe { libc::kill(pid, 0) } == 0
 }
 
 #[cfg(test)]
@@ -1208,6 +1264,69 @@ mod tests {
         // The child must be gone, not a zombie: signal 0 probes for existence.
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "child should be reaped");
+    }
+
+    /// The reason `terminate` snapshots descendants. A child that calls `setsid()` leaves the
+    /// pty's foreground process group and the shell's session both, so hanging up the pty reaches
+    /// everything EXCEPT it — and the app quitting used to leave it running forever.
+    ///
+    /// Uses a real detached grandchild rather than a simulation, and observes its pid from outside
+    /// the session, because the escape is a property of the OS and a stand-in would not have it.
+    #[test]
+    fn kill_reaches_a_setsid_grandchild() {
+        let Some(perl) = which("perl") else {
+            eprintln!("skipping: no perl to make a setsid'd grandchild with");
+            return;
+        };
+        let pid_file = std::env::temp_dir().join(format!("wr-setsid-{}.pid", std::process::id()));
+        let _ = std::fs::remove_file(&pid_file);
+
+        let script = format!(
+            "{perl} -MPOSIX=setsid -e 'setsid(); open(F, \">\", $ARGV[0]) or exit 1; \
+             print F $$; close F; while (1) {{ sleep 1 }}' {} & exec cat",
+            pid_file.display()
+        );
+        let args = [OsString::from("-c"), OsString::from(script)];
+        let e = env();
+        let store = SessionStore::new();
+        store.create(spec(id(30), &args, &e)).expect("create");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut grandchild = 0;
+        while Instant::now() < deadline {
+            if let Some(pid) = std::fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|raw| raw.trim().parse::<i32>().ok())
+            {
+                grandchild = pid;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = std::fs::remove_file(&pid_file);
+        assert!(grandchild > 0, "the setsid'd grandchild never started");
+        assert!(alive(grandchild), "it should be running before the kill");
+
+        assert!(store.kill(id(30)));
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && alive(grandchild) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let survived = alive(grandchild);
+        if survived {
+            unsafe { libc::kill(grandchild, libc::SIGKILL) };
+        }
+        assert!(!survived, "a setsid'd grandchild must not survive the kill");
+    }
+
+    fn which(program: &str) -> Option<String> {
+        std::env::var("PATH").ok().and_then(|path| {
+            path.split(':')
+                .map(|dir| std::path::Path::new(dir).join(program))
+                .find(|candidate| candidate.is_file())
+                .and_then(|candidate| candidate.to_str().map(str::to_string))
+        })
     }
 
     #[test]
