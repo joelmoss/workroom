@@ -410,8 +410,26 @@ jobs:
       - name: Test (run-command supervisor)
         run: make app-test-supervisor
 
+      # `build-agent_test.sh`'s universal cases need BOTH darwin targets installed and skip
+      # themselves otherwise — and the step still prints OK, so the skip is invisible. Measured on
+      # run 34783566140: "SKIP universal cases (rustup targets not installed)" followed by
+      # "build-agent_test: OK". The wr-agent half of the guard below had therefore never run on a
+      # PR, only on nightly/release, which install these before `make app-release`.
+      #
+      # Its Go sibling has no such gate (Go cross-compiles with no extra install), which is why the
+      # asymmetry went unnoticed: `build-helper_test.sh` really was exercising the multi-arch path
+      # on every PR while `build-agent_test.sh` quietly was not.
+      #
+      # `--toolchain stable` explicitly, because that is the toolchain the test's own
+      # `rustup target list --installed --toolchain stable` query checks. A bare `rustup target add`
+      # installs into the DEFAULT toolchain, which would leave the query — and so the skip —
+      # unchanged if the default is ever not `stable`.
+      - name: Install darwin cross targets (for the universal-arch script tests)
+        run: rustup target add --toolchain stable x86_64-apple-darwin aarch64-apple-darwin
+
       # Shell-script tests. `make app-test` builds Debug with a single native arch, so it can never
-      # exercise build-helper.sh's multi-arch path — the branch whose absence shipped an arm64-only
-      # CLI inside every universal .app. These run it directly with ARCHS="arm64 x86_64".
+      # exercise build-helper.sh's / build-agent.sh's multi-arch path — the branch whose absence
+      # shipped an arm64-only CLI inside every universal .app. These run them directly with
+      # ARCHS="arm64 x86_64".
       - name: Test (build + channel helper scripts)
         run: make app-test-scripts

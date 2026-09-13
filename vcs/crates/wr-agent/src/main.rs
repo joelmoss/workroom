@@ -387,8 +387,21 @@ fn handshake<S: Read + Write>(stream: &mut S) -> Result<(), ()> {
     let mut greeting = Vec::new();
     let mut byte = [0u8; 1];
     let remote = loop {
-        if let Ok(Some((hello, _))) = Hello::decode(&greeting) {
-            break hello;
+        // `Err` is a DECISION, not a "keep reading". `Hello::decode` reports `NotAnAgent` on the
+        // first byte that cannot be the magic — that early rejection is the whole reason the magic
+        // exists, and its own doc says so: "otherwise an ssh banner stalls the connection instead
+        // of reporting it".
+        //
+        // Swallowing it with `if let Ok(Some(..))` did exactly what the magic was added to prevent:
+        // a peer that is not an agent looped forever, one byte per iteration, appending each to
+        // `greeting` without bound. An MOTD or an ssh warning on the stream hung the relay instead
+        // of failing to `DAEMON_UNAVAILABLE` — and `serve --stdio` over ssh is the stated remote
+        // path, so a banner is expected input rather than a hostile one. `serve.rs` propagates the
+        // same error with `?`; this side now agrees with it.
+        match Hello::decode(&greeting) {
+            Ok(Some((hello, _))) => break hello,
+            Err(_) => return Err(()),
+            Ok(None) => {}
         }
         match stream.read(&mut byte) {
             Ok(0) | Err(_) => return Err(()),
@@ -397,4 +410,97 @@ fn handshake<S: Read + Write>(stream: &mut S) -> Result<(), ()> {
     };
     negotiate(&local, &remote).map_err(|_| ())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A stream that serves an endless login banner, counting how much of it is consumed.
+    ///
+    /// The byte cap is what keeps a regression a FAILURE rather than a hung suite: without it a
+    /// handshake that never gives up would read forever. With it, both the fixed and the broken
+    /// version end in `Err` — so the discriminating assertion is the COUNT, not the result.
+    struct Banner {
+        served: usize,
+        cap: usize,
+    }
+
+    impl Read for Banner {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if self.served >= self.cap {
+                return Ok(0);
+            }
+            const TEXT: &[u8] = b"Welcome to Ubuntu 24.04.1 LTS (GNU/Linux)\r\n";
+            buffer[0] = TEXT[self.served % TEXT.len()];
+            self.served += 1;
+            Ok(1)
+        }
+    }
+
+    impl Write for Banner {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A peer that is not an agent must be rejected on the first byte that cannot be the magic.
+    ///
+    /// `serve --stdio` over ssh is the stated remote path, so an MOTD or an ssh warning on the
+    /// stream is expected input, not a hostile one. `Hello::decode` reports `NotAnAgent`
+    /// immediately for exactly this reason; the relay used to discard that error and loop one byte
+    /// at a time, appending each to an unbounded buffer, so the banner hung the client instead of
+    /// failing it.
+    #[test]
+    fn a_login_banner_is_rejected_without_reading_it_all() {
+        let mut banner = Banner {
+            served: 0,
+            cap: 64 * 1024,
+        };
+
+        assert!(handshake(&mut banner).is_err(), "a banner is not an agent");
+        assert!(
+            banner.served <= 8,
+            "consumed {} bytes of the banner before giving up — the decode error is being \
+             swallowed and the loop is reading to EOF",
+            banner.served
+        );
+    }
+
+    /// The control: a real agent greeting still completes, so the rejection above is not simply
+    /// "this handshake never succeeds".
+    #[test]
+    fn a_real_agent_greeting_still_handshakes() {
+        struct Peer {
+            greeting: Vec<u8>,
+            offset: usize,
+        }
+        impl Read for Peer {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                if self.offset >= self.greeting.len() {
+                    return Ok(0);
+                }
+                buffer[0] = self.greeting[self.offset];
+                self.offset += 1;
+                Ok(1)
+            }
+        }
+        impl Write for Peer {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut peer = Peer {
+            greeting: Hello::current("test").encode(),
+            offset: 0,
+        };
+        assert!(handshake(&mut peer).is_ok());
+    }
 }
