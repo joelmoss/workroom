@@ -1062,6 +1062,34 @@ final class VCSWritingTests: XCTestCase {
     XCTAssertEqual((try VCS.writer(for: repo) as? CLIVCSWriter)?.vcs, "jj", "the registry, after")
   }
 
+  /// One operation runs one backend, even when the registry changes underneath it.
+  ///
+  /// A writer resolves two things at two different moments: the tool its commands run, fixed when
+  /// the writer is built, and a provider for `remoteState`'s `currentRef`, resolved when
+  /// `remoteState` actually runs. `AppStore.apply` rewrites the registry on every `list --json`, so
+  /// a reload landing between those two moments used to hand one operation a `GitProvider` and jj
+  /// commands. Pinning the provider to the name the writer already resolved closes it.
+  ///
+  /// The reload is simulated rather than raced, so the assertion is deterministic: the second
+  /// `replace` is exactly what a project that switched VCS would produce.
+  func testWriterKeepsOneBackendWhenTheRegistryChangesUnderIt() throws {
+    let repo = tempDir()
+    defer {
+      VCSProviderRegistry.shared.removeAll()
+      try? FileManager.default.removeItem(at: repo)
+    }
+    VCSProviderRegistry.shared.replace(with: [repo.path: "jj"])
+    let writer = try XCTUnwrap(VCS.writer(for: repo) as? CLIVCSWriter)
+    XCTAssertEqual(writer.vcs, "jj")
+
+    VCSProviderRegistry.shared.replace(with: [repo.path: "git"])
+
+    XCTAssertEqual(writer.vcs, "jj", "the commands are fixed when the writer is built")
+    XCTAssertTrue(
+      try writer.makeProvider(repo) is RustJJProvider,
+      "so is the provider — re-reading the registry here pairs a git provider with jj commands")
+  }
+
   func testWriterThrowsForAnUnsupportedPath() {
     let dir = tempDir()
     defer { try? FileManager.default.removeItem(at: dir) }
