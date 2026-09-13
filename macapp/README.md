@@ -153,7 +153,9 @@ release is a baseline; auto-update kicks in for the release after it. **Never de
   `~/Library/Application Support/Workroom/<bundle id>/session.json` — scoped by bundle id so
   Workroom, Workroom Dev and Workroom Nightly never restore each other's windows. Deleting that file
   is always safe: the app then launches as it would on a fresh install. Ordinary workroom shells
-  reattach via `workroom-session` when background sessions are on (the default). A pane whose
+  reattach via the bundled session helper when background sessions are on (the default) — `wr-agent`
+  for anything created since the migration, and the older `workroom-session` for sessions that
+  helper is still holding, resolved per session so nothing is taken away mid-use. A pane whose
   session is gone still opens a fresh shell in its remembered directory. Run tabs are
   deliberately never restored.
 

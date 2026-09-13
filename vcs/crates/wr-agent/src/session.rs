@@ -17,13 +17,14 @@ use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::input::InputClassifier;
 use crate::protocol::envelope::{Envelope, Service};
 use crate::protocol::frame::{Frame, FrameKind};
 use crate::pty::{Pty, PtyError};
 use crate::shadow::Shadow;
+use crate::transport::WRITE_TIMEOUT;
 
 /// A connection's write half, shared with whichever session it is attached to.
 ///
@@ -331,7 +332,29 @@ impl SessionStore {
                     // envelope codec is explicitly built to survive a stream that chunks
                     // arbitrarily. A truncated repaint would instead leave the client's parser
                     // mid-sequence with the continuation record never arriving.
+                    // ONE budget for the whole repaint, not one timeout per chunk.
+                    //
+                    // These writes happen under the attachment lock, which the reader takes around
+                    // every delivery — so while this runs, the pty is not drained for ANY client
+                    // on the session. Holding it is deliberate (the ordering note above) but it
+                    // has to be BOUNDED, and `SO_SNDTIMEO` bounds a single `write`, not a loop of
+                    // them: a peer reading just slowly enough that each chunk succeeds just under
+                    // the limit would hold the lock for chunks × timeout. Chunking is what made
+                    // that reachable, so the bound lands with it.
+                    //
+                    // A client too slow to take its own repaint inside the budget stops being
+                    // painted, and the next failed delivery evicts it — the same fate as a client
+                    // that cannot be written to at all.
+                    //
+                    // Removing the lock-hold entirely, as the live path does, needs a per-client
+                    // pending queue: releasing it here reverses the repaint against output that
+                    // arrives mid-paint, and painting before registering misses that output
+                    // instead. Bounded, not eliminated.
+                    let deadline = Instant::now() + WRITE_TIMEOUT;
                     for chunk in replay.chunks(READ_CHUNK) {
+                        if Instant::now() >= deadline {
+                            break;
+                        }
                         let bytes = terminal_envelope(
                             stream,
                             Frame::new(FrameKind::Output, chunk.to_vec()),
@@ -726,10 +749,26 @@ fn read_session(
                     apply_size(&pty, &shadow, size);
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            // `Interrupted` is not a failure — a signal arriving mid-read is ordinary, and the
+            // agent takes SIGWINCH and SIGCHLD. Treated as fatal it ended the reader on a read
+            // that had not actually failed.
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::Interrupted =>
+            {
                 std::thread::sleep(Duration::from_millis(5));
             }
-            Err(_) => return,
+            // A genuinely fatal read. The session goes with the reader: this was the one exit that
+            // did not remove it from the store, so the entry outlived the only thread that drains
+            // it — `list` still advertised it, `attach` still succeeded, and nothing read the pty
+            // again, so the shell blocked on a full output queue. It also kept `sessions` non-empty
+            // forever, so the agent never idled out.
+            Err(_) => {
+                if let Ok(mut store) = store.lock() {
+                    store.remove(&id);
+                }
+                return;
+            }
         }
     }
 }

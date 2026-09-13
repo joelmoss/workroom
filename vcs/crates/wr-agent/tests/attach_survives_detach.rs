@@ -401,14 +401,25 @@ fn attach_starts_an_agent_when_none_is_running() {
         "the spawned agent should have bound a socket"
     );
 
+    // End the SHELL, not just the relay. This agent was spawned by `attach` and is detached from
+    // this process, so no `Spawned` guard covers it — and it only exits when it is idle, which
+    // means no connections AND no sessions. Killing the client alone leaves the session's shell
+    // running, so the agent stays busy forever: a permanently leaked agent plus its `/bin/sh`, on
+    // the SUCCESS path. `list` was here before and ends nothing — it is a read.
+    //
+    // Removing the socket afterwards made it worse rather than tidier: it left the agent alive and
+    // unreachable, so nothing could ever ask it to stop.
+    {
+        let stdin = client.stdin.as_mut().expect("stdin");
+        let _ = stdin.write_all(b"exit\n");
+        let _ = stdin.flush();
+    }
+    // Long enough for the shell to exit and the session to leave the store. The agent is then idle
+    // — no connections, no sessions — and exits on its own timer. Not asserted, because this is
+    // cleanup: the test's subject is that an agent STARTED.
+    std::thread::sleep(Duration::from_millis(500));
     let _ = client.kill();
     let _ = client.wait();
-    // The spawned agent is detached from this process, so end it through its own control plane.
-    let _ = Command::new(agent_binary())
-        .args(["list", "--socket"])
-        .arg(&socket)
-        .output();
-    let _ = std::fs::remove_file(&socket);
 }
 
 /// The payoff of the shadow terminal: a client that arrives late must be SHOWN the session, not
