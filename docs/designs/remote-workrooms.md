@@ -1348,6 +1348,109 @@ established either way.
    The practical conclusion (a writer cannot register a deploy key, so OQ20 needs a real answer)
    does not depend on it.
 
+## Phase 1 Results
+
+Landed on `master` 2026-09-12/13 across PRs #181, #182 and #183. Phase 1 is **complete except its
+last bullet** — deleting `macapp/WorkroomSession/` — which is gated on a release, not on code; see
+"The deletion is release-gated" below.
+
+### What shipped
+
+`wr-agent serve | attach` owns ptys, speaks the versioned envelope, and is what the app forks. The
+drain is live: `SessionBackend.preferred()` returns the agent for every new session, daemon-owned
+sessions stay with the daemon until they close on their own, and the two can never contend because
+their sockets are distinct.
+
+The size-owner policy is implemented as specified, including the load-bearing exclusion. It lives
+in `vcs/crates/wr-agent/src/input.rs` as a parser rather than a substring check, carrying state
+between calls so a report split across two frames cannot be misread as a keystroke. Excluded from
+claiming: focus reports, CPR, DSR, DA1/2/3, XTVERSION/XTGETTCAP, OSC colour and clipboard answers,
+kitty keyboard *flags* reports, and wheel scroll. A keystroke or a click claims.
+
+One thing the design doc assumed turned out to be wrong in a way worth recording: the doc frames
+multi-client as a problem to arbitrate, and a review of #181 proposed superseding the earlier
+client, as the Swift daemon did. Neither is right — the end state is several clients attached at
+once seeing the same output, which is the point of remote workrooms. Nothing is superseded; the
+size owner is the only thing arbitrated.
+
+### Bugs found in the port, and how each was found
+
+Six, all in code that had already landed. Grouped by what actually caught them, because that is the
+transferable part:
+
+| Bug | Caught by |
+|---|---|
+| Detached sessions stopped draining; a build left running stopped when the app closed | review of #181 |
+| A stalled client blocked the pty for every other client | review of #181 |
+| `Pty::write_all` shipped **unused** — a large paste lost its tail | writing the size-owner work |
+| `exit_code()` applied to `pump_output`, which had no callers — `exit 7` arrived as 1792 | review of #182 |
+| A `setsid`'d grandchild survived kill, so quitting the app left it running forever | porting `SessionDaemonEndToEndTests` |
+| A mid-stream attach dropped a line; leaving a TUI lost the shell's history | the generated corpus |
+
+**Two of those are the same failure, twice.** An edit landed in a function nothing calls while the
+live path kept the old behaviour, and in both cases a passing unit test hid it because the test
+drives the helper directly and never reaches it through the path that runs. The lesson is not "add
+more tests" — it is that a test which cannot distinguish "the helper works" from "the helper is
+called" proves the wrong thing. Both fixes now carry an assertion on an observable the live path
+produces: bytes arriving at the shell, and the exit status of a real `wr-agent attach` process.
+
+### The corpus found what the hand-written tests could not
+
+The doc schedules this as "a client attaching mid-stream sees the same screen a client that watched
+from byte zero sees". The in-tree `assert_equivalent` was the `k == len` case of that: it repainted a
+client and compared, but never fed it the tail — so a client left one row or one screen out of step
+looked identical to a correct one.
+
+Written in the stronger form the doc actually specifies — both clients then receive the **rest** of
+the stream — at **every** split point rather than a hand-picked one, it found two bugs in shipped
+code immediately:
+
+1. **The formatter stops at the last row with something on it.** A session whose cursor sits on a
+   blank row — every session that has just printed a newline — left the client short, so the next
+   line of output landed on top of the last one. Every split from the moment the session first
+   scrolled was affected. `scrollback_survives_re_synthesis` had this recorded as an accepted
+   "within one row" bound; it was a dropped line, and the bound is now an equality.
+2. **`ghostty_formatter_terminal_new` formats the ACTIVE screen and takes no screen argument**, so
+   while a TUI was running the shell's primary screen was invisible to `replay()`. The fix is the
+   one this doc already names — primary first, then alt — and it needs a *copy* of the terminal,
+   because driving the live one out of the alt screen would destroy what is being replayed. The
+   snapshot format carries both screens, so the copy is a real encode/decode round trip.
+
+Both verified by removal. A chosen split point tests the boundary its author thought of; these were
+at the boundaries they did not.
+
+### The deletion is release-gated
+
+**No shipped release contains the agent at all.** `v2.0.0` was tagged 2026-09-09; the drain landed
+2026-09-12. Every user in the field is on the Swift daemon exclusively, so deleting
+`macapp/WorkroomSession/` today would ship a build whose only pty owner has zero field exposure and
+remove the rollback target this doc names as such.
+
+The deletion should wait until the agent has shipped and soaked for at least one release cycle. The
+drain is designed to complete on its own — the daemon idles out once its last session ends — so
+nothing needs to be done to make it happen, only to confirm it has.
+
+`SessionDaemonEndToEndTests.swift` and `SessionDaemonHarness.swift` therefore stay for now: the
+daemon still ships, and they are live coverage of shipping code. They go together with
+`macapp/WorkroomSession/` in the deletion change.
+
+**What replaced them is narrower than "rewritten against the agent", deliberately.** Three of those
+seven tests cover agent behaviour that Rust tests cover more cheaply and can run on Linux; three
+exercise the attach path, which Swift never drives over the socket — the app hands libghostty an
+attach command and the configuration travels in the environment. What only Swift can test is the
+boundary between the two languages: `AgentControlClient` hand-rolls the greeting, the envelope and
+the descriptor decode against encoders written in Rust, and a field-width or byte-order
+disagreement passes every test on either side alone while presenting as an empty sidebar. That is
+`AgentControlPlaneTests`, verified by reversing the id bytes in the Rust encoder.
+
+### Outstanding
+
+1. **Delete `macapp/WorkroomSession/`** once the agent has shipped and soaked — see above.
+2. **A Linux `wr-agent` as a build artifact.** The cross-build recipe works and the Linux test suite
+   runs in a container (`vcs/scripts/test-linux.sh`), but nothing publishes the ELFs yet. Phase 3
+   needs them; Phase 1 does not.
+3. **OQ21, where the `HostDriver` lives**, is untouched and remains open.
+
 ## Open Questions
 
 1. **How does the Rust agent read git? gix — ANSWERED, both halves now measured.** An early draft
