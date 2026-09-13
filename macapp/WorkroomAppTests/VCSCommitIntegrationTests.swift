@@ -590,10 +590,20 @@ final class VCSCommitIntegrationTests: XCTestCase {
   /// Each backend answers only its own fields. Pins the contract the dialog reads against.
   func testPreflightFieldsAreBackendScoped() async throws {
     try requireTool("jj")
-    let jj = await writer("jj").commitPreflight(path: jjRepo())
+    let dir = jjRepo()
+    // The fixture has to be hostile or this proves nothing. `jj git init` is COLOCATED, so a plain
+    // `jjRepo()` has a real `.git` holding no `MERGE_HEAD` and no commits — under which
+    // `sequencerState` and `gitHeadSubjectArgs` return nil ANYWAY, and these assertions would pass
+    // just as well against a writer that had lost the backend split and ran every read for both.
+    // Planting a commit and a marker gives the git reads confident non-nil answers, so jj reporting
+    // nil can only mean it did not ask them.
+    sh("git commit -q --allow-empty -m 'a git commit in the colocated repo'", in: dir)
+    FileManager.default.createFile(atPath: dir + "/.git/MERGE_HEAD", contents: Data())
+
+    let jj = await writer("jj").commitPreflight(path: dir)
     XCTAssertNil(
-      jj.sequencer, "a jj commit is not path-limited, so a parked git op does not block it")
-    XCTAssertNil(jj.amendTarget, "jj has no amend")
+      jj.sequencer, "a jj commit is not path-limited, so jj must not even read the git marker")
+    XCTAssertNil(jj.amendTarget, "jj has no amend, even where a git HEAD exists to name")
 
     let git = await writer("git").commitPreflight(path: gitRepo())
     XCTAssertNil(git.currentMessage, "git has no @ description")
@@ -638,4 +648,58 @@ final class VCSCommitIntegrationTests: XCTestCase {
     let after = await writer("git").commitPreflight(path: dir)
     XCTAssertEqual(after.sequencer, "merge")
   }
+
+  /// The pre-flight reaching the DIALOG, not just the writer.
+  ///
+  /// Every other test in this section drives `CLIVCSWriter` directly, which leaves the shipped
+  /// feature — `CommitSheet` asking the store, the store asking the writer — with no coverage at
+  /// all. Measured, not assumed: replacing `AppStore.commitPreflight`'s body with
+  /// `completion(.none)` left all 2615 tests green while the dialog opened permanently blank for
+  /// every user. That is the fourth time this session a change landed somewhere nothing exercised,
+  /// so the wiring gets its own test rather than a comment.
+  ///
+  /// Driven through the real `reload()` with a faked CLI, so what is asserted is the observable
+  /// outcome of a listing landing: the store resolves the work item, builds a writer for it, and
+  /// hands back what the repo actually says.
+  @MainActor
+  func testTheStoreDeliversThePreflightToTheDialog() async throws {
+    let dir = gitRepo()
+    sh("git commit -q --allow-empty -m 'the subject the dialog shows'", in: dir)
+    FileManager.default.createFile(atPath: dir + "/.git/MERGE_HEAD", contents: Data())
+    defer { VCSProviderRegistry.shared.removeAll() }
+
+    let store = AppStore(
+      cli: StubPreflightCLI(listed: Project(path: dir, vcs: "git", workrooms: [])))
+    await store.reload()
+
+    let preflight: VCSCommitPreflight = await withCheckedContinuation { continuation in
+      store.commitPreflight(on: .root(project: dir)) { continuation.resume(returning: $0) }
+    }
+
+    XCTAssertEqual(
+      preflight.sequencer, "merge", "the parked-merge warning never reached the dialog")
+    XCTAssertTrue(
+      preflight.amendTarget?.contains("the subject the dialog shows") == true,
+      "the amend target never reached the dialog, got: \(String(describing: preflight.amendTarget))"
+    )
+  }
+}
+
+/// A CLI that answers `list` with one fixed project and does nothing else.
+private struct StubPreflightCLI: WorkroomCLIProtocol {
+  let listed: Project
+
+  func list(warnings: String, project: String?) async throws -> ListResponse {
+    ListResponse(projects: [listed], workroomsDir: nil, configPath: nil)
+  }
+  func addProject(_ path: String, create: Bool) async throws -> String { listed.path }
+  func create(
+    project: String, onLog: ((String) -> Void)?, onReady: ((String, String, Bool) -> Void)?
+  ) async throws -> CreateResponse {
+    CreateResponse(name: "", path: "", vcs: "git", project: project)
+  }
+  func delete(name: String, project: String, onLog: ((String) -> Void)?) async throws {}
+  func deleteProject(
+    _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: ((String) -> Void)?
+  ) async throws -> [URL] { [] }
 }
