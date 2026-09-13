@@ -2963,6 +2963,7 @@ final class AppStore: ObservableObject {
     // resurrect a just-deleted workroom. Cleared from `deletingWorkrooms` when the teardown ends.
     let fresh = applyingDeletionTombstones(sorted)
     projects = fresh
+    registerVCSProviders(for: fresh)
     // Tool-version floor (see `VCSToolVersions`). Here rather than in `init` because whether to probe
     // `jj` at all depends on the project list, which only exists now. Single-flighted process-wide, so
     // repeat calls on later reloads are free once it has landed.
@@ -3026,6 +3027,31 @@ final class AppStore: ObservableObject {
   /// so a stale `list` snapshot (taken before a delete's teardown persisted) can't resurrect a
   /// just-deleted workroom (issue #116, the create/delete reload race). A no-op when nothing is being
   /// deleted; otherwise rebuilds only the projects that actually contained a tombstoned workroom.
+  /// Tells `VCS.provider(for:)` what each known repo root is, so routing does not have to be
+  /// inferred from the local filesystem (issue #154, Phase 2 — see `VCSProviderRegistry`).
+  ///
+  /// Here because `apply` is where the complete project list arrives, and the whole map is replaced
+  /// rather than merged for the same reason: this payload IS the set of repos that exist, so a
+  /// project removed from it should stop resolving.
+  ///
+  /// Both the project root and each of its workrooms are registered, because both are asked for a
+  /// provider — the sidebar's root row resolves through `BranchResolver` exactly as a workroom
+  /// does. All of them take the PROJECT's vcs: a git project's workrooms are git worktrees and a
+  /// jj project's are jj workspaces.
+  private func registerVCSProviders(for projects: [Project]) {
+    var entries: [String: @Sendable () -> VCSProviding] = [:]
+    for project in projects {
+      // An unrecognised vcs string registers nothing, so those paths keep falling through to the
+      // filesystem probe rather than resolving to a confidently wrong backend.
+      guard let factory = VCSProviderRegistry.factory(forVCS: project.vcs) else { continue }
+      entries[project.path] = factory
+      for workroom in project.workrooms {
+        entries[workroom.path] = factory
+      }
+    }
+    VCSProviderRegistry.shared.replace(with: entries)
+  }
+
   private func applyingDeletionTombstones(_ projects: [Project]) -> [Project] {
     let tombstoned = deletingWorkrooms
     guard !tombstoned.isEmpty else { return projects }

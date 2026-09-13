@@ -84,11 +84,91 @@ enum VCS {
   }
 
   /// The provider for a repo, or a typed error for an unsupported path.
+  ///
+  /// **The registry is consulted first, and the filesystem probe is the fallback.** `repoKind(at:)`
+  /// answers by looking for `.jj`/`.git` on THIS Mac, so it returns `.unsupported` for any path
+  /// that is not local — which is every path in a remote workroom (issue #154, Phase 2). Routing
+  /// therefore cannot stay a property of the filesystem; it has to be something a workroom
+  /// declares. `VCSProviderRegistry` is where it declares it.
+  ///
+  /// Nothing is registered for a purely local session today, so today every call still reaches the
+  /// probe and behaves exactly as it did. That is deliberate: this is the seam, not the feature.
   static func provider(for root: URL) throws -> VCSProviding {
+    if let registered = VCSProviderRegistry.shared.provider(for: root) { return registered }
     switch repoKind(at: root) {
     case .jjColocated, .jjNonColocated: return RustJJProvider()
     case .plainGit: return GitProvider()
     case .unsupported(let reason): throw VCSError.unsupportedRepo(reason)
+    }
+  }
+}
+
+/// What each known repo root's provider is, so routing does not have to be inferred from the
+/// local filesystem.
+///
+/// **Why this exists.** `VCS.repoKind(at:)` classifies a repo by looking for `.jj`/`.git` under the
+/// path. That is correct and cheap for a local workroom and structurally impossible for a remote
+/// one: the directory is on another machine, so the probe sees nothing and reports `.unsupported`.
+/// Threading a host parameter through `VCSProviding`'s eight methods and their call sites would
+/// answer it too, at the cost of every local caller carrying a machine identifier forever. Keying
+/// on the workroom instead keeps the call sites exactly as they are — they already pass a `root:
+/// URL`, and that URL is the key.
+///
+/// **Keyed on the path, not on a `Workroom`.** Every call site has a URL in hand and none of them
+/// has a `Workroom`; passing one through would be the host-threading cost wearing this design's
+/// name. Paths are standardised on both write and read so `/tmp/x` and `/private/tmp/x/` agree.
+///
+/// **Factories, not instances.** Both current providers are stateless structs, so it makes no
+/// difference today — but a remote provider will close over a connection, and a stored instance
+/// would fix its lifetime to the registry's rather than the workroom's.
+final class VCSProviderRegistry: @unchecked Sendable {
+  static let shared = VCSProviderRegistry()
+
+  /// `provider(for:)` is called from `@Sendable` closures on arbitrary threads while `replace` runs
+  /// on the main actor, so the map is lock-guarded — the same shape as `SessionBackendProbe`'s
+  /// `Atomic`.
+  private let lock = NSLock()
+  private var factories: [String: @Sendable () -> VCSProviding] = [:]
+
+  /// Replaces the whole map. Rebuilt wholesale on every `list --json` rather than diffed: the
+  /// projects payload is the complete truth about what exists, and a diff would have to invent a
+  /// removal rule to match it.
+  func replace(with entries: [String: @Sendable () -> VCSProviding]) {
+    let keyed = Dictionary(
+      entries.map { (Self.key($0.key), $0.value) }, uniquingKeysWith: { _, last in last })
+    lock.withLock { factories = keyed }
+  }
+
+  func provider(for root: URL) -> VCSProviding? {
+    let key = Self.key(root.path)
+    guard let make = lock.withLock({ factories[key] }) else { return nil }
+    return make()
+  }
+
+  /// Test seam: drop everything, so a test that registered a stub cannot leak into the next one.
+  func removeAll() {
+    lock.withLock { factories.removeAll() }
+  }
+
+  /// `/tmp` is a symlink to `/private/tmp` on macOS and a registered path may or may not have a
+  /// trailing slash, so both sides of the lookup are normalised through here rather than compared
+  /// raw.
+  private static func key(_ path: String) -> String {
+    URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
+  }
+
+  /// The provider a `Project.vcs` string names. `"git"` and `"jj"` are the only values the CLI
+  /// emits (`WorkroomStatusResolver.resolveLocal` switches on the same two).
+  ///
+  /// Note this takes the PROJECT's vcs even for a workroom: a git project's workrooms are git
+  /// worktrees and a jj project's are jj workspaces. `Workroom.vcsName` is the branch/workspace
+  /// name, not a type, and reading it as one has already caused one bug — see the comment in
+  /// `AppStore+WorkroomStatus.statusWorkItems`.
+  static func factory(forVCS vcs: String) -> (@Sendable () -> VCSProviding)? {
+    switch vcs {
+    case "jj": return { RustJJProvider() }
+    case "git": return { GitProvider() }
+    default: return nil
     }
   }
 }
