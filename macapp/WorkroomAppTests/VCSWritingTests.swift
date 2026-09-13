@@ -1041,6 +1041,27 @@ final class VCSWritingTests: XCTestCase {
     XCTAssertEqual(jjWriter?.vcs, "jj", "colocated prefers jj, matching provider(for:)")
   }
 
+  /// A registration beats the probe, and it beats it even when the probe has a confident answer of
+  /// its own.
+  ///
+  /// A path with a real `.git` on disk is what makes this discriminating: `repoKind(at:)` returns
+  /// `.plainGit` for it, so a writer that consulted the filesystem first would answer `"git"` and
+  /// the test would fail. Asserting on a bare directory instead would pass against either order.
+  func testWriterPrefersTheRegistrationOverTheProbe() throws {
+    let repo = tempDir()
+    defer {
+      VCSProviderRegistry.shared.removeAll()
+      try? FileManager.default.removeItem(at: repo)
+    }
+    try FileManager.default.createDirectory(
+      at: repo.appendingPathComponent(".git"), withIntermediateDirectories: true)
+    XCTAssertEqual(
+      (try VCS.writer(for: repo) as? CLIVCSWriter)?.vcs, "git", "the probe, before registration")
+
+    VCSProviderRegistry.shared.replace(with: [repo.path: "jj"])
+    XCTAssertEqual((try VCS.writer(for: repo) as? CLIVCSWriter)?.vcs, "jj", "the registry, after")
+  }
+
   func testWriterThrowsForAnUnsupportedPath() {
     let dir = tempDir()
     defer { try? FileManager.default.removeItem(at: dir) }

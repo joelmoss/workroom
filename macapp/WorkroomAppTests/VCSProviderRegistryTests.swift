@@ -38,10 +38,10 @@ final class VCSProviderRegistryTests: XCTestCase {
   }
 
   func testARegisteredPathResolvesWithoutTouchingTheFilesystem() throws {
-    VCSProviderRegistry.shared.replace(with: [directory.path: { GitProvider() }])
+    VCSProviderRegistry.shared.replace(with: [directory.path: "git"])
     XCTAssertTrue(try VCS.provider(for: directory) is GitProvider)
 
-    VCSProviderRegistry.shared.replace(with: [directory.path: { RustJJProvider() }])
+    VCSProviderRegistry.shared.replace(with: [directory.path: "jj"])
     XCTAssertTrue(try VCS.provider(for: directory) is RustJJProvider)
   }
 
@@ -49,13 +49,13 @@ final class VCSProviderRegistryTests: XCTestCase {
   /// sides of the lookup normalise, so a caller's URL does not have to match the registered string
   /// byte for byte — it would otherwise silently miss and fall through to the probe.
   func testLookupNormalisesSymlinksAndTrailingSlashes() throws {
-    VCSProviderRegistry.shared.replace(with: [directory.path + "/": { GitProvider() }])
+    VCSProviderRegistry.shared.replace(with: [directory.path + "/": "git"])
     XCTAssertTrue(try VCS.provider(for: directory) is GitProvider)
 
     let viaSymlink = URL(fileURLWithPath: "/tmp/wr-registry-symlink-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: viaSymlink, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: viaSymlink) }
-    VCSProviderRegistry.shared.replace(with: [viaSymlink.path: { RustJJProvider() }])
+    VCSProviderRegistry.shared.replace(with: [viaSymlink.path: "jj"])
     XCTAssertTrue(
       try VCS.provider(for: URL(fileURLWithPath: "/private" + viaSymlink.path)) is RustJJProvider,
       "the same directory reached through /private must resolve")
@@ -64,7 +64,7 @@ final class VCSProviderRegistryTests: XCTestCase {
   /// `replace` is a replacement, not a merge: the projects payload is the complete set of repos
   /// that exist, so one dropped from it must stop resolving rather than linger.
   func testReplaceDropsWhatIsNoLongerThere() throws {
-    VCSProviderRegistry.shared.replace(with: [directory.path: { GitProvider() }])
+    VCSProviderRegistry.shared.replace(with: [directory.path: "git"])
     XCTAssertNotNil(VCSProviderRegistry.shared.provider(for: directory))
 
     VCSProviderRegistry.shared.replace(with: [:])
@@ -79,8 +79,30 @@ final class VCSProviderRegistryTests: XCTestCase {
       at: repo.appendingPathComponent(".git"), withIntermediateDirectories: true)
 
     XCTAssertTrue(try VCS.provider(for: repo) is GitProvider, "probe, before registration")
-    VCSProviderRegistry.shared.replace(with: [repo.path: { GitProvider() }])
+    VCSProviderRegistry.shared.replace(with: [repo.path: "git"])
     XCTAssertTrue(try VCS.provider(for: repo) is GitProvider, "registry, after")
+  }
+
+  /// `replace` drops a backend name neither provider knows, rather than storing it and leaving the
+  /// two readers to each re-check.
+  ///
+  /// This only became load-bearing when `VCS.writer(for:)` started reading the same map. An unknown
+  /// name resolves to no provider, so the READ side degrades to the filesystem probe whether or not
+  /// the guard is there — which is why that assertion cannot be the test. The writer builds
+  /// `CLIVCSWriter(vcs:)` straight from the stored string, so a stored `"hg"` would spawn a binary
+  /// called `hg` with git's arguments. Asserted through the writer for that reason.
+  func testAnUnknownBackendNameIsRefusedAtTheDoor() {
+    VCSProviderRegistry.shared.replace(with: [directory.path: "hg"])
+
+    XCTAssertNil(VCSProviderRegistry.shared.vcs(for: directory))
+    XCTAssertNil(VCSProviderRegistry.shared.provider(for: directory))
+    // Falls through to the probe, which finds no repo — rather than returning a writer that would
+    // shell out to `hg`.
+    XCTAssertThrowsError(try VCS.writer(for: directory)) { error in
+      guard case VCSError.unsupportedRepo = error else {
+        return XCTFail("expected unsupportedRepo, got \(error)")
+      }
+    }
   }
 
   func testOnlyTheVCSNamesTheCLIEmitsAreRecognised() {
@@ -102,7 +124,10 @@ final class VCSProviderRegistryTests: XCTestCase {
   /// workroom's `vcsName` is a plausible-looking `"git"`: reading the wrong field resolves the
   /// workroom to the wrong backend rather than to nothing, which is the failure that would actually
   /// ship.
-  func testWorkroomsRegisterUnderTheirProjectsVCSNotTheirOwnName() {
+  ///
+  /// Both readers are asserted. `VCS.writer(for:)` resolves through the same registration, and a
+  /// writer that routed on `vcsName` would run `git` commands against a jj workspace.
+  func testWorkroomsRegisterUnderTheirProjectsVCSNotTheirOwnName() throws {
     let project = Project(
       path: directory.appendingPathComponent("proj").path,
       vcs: "jj",
@@ -122,6 +147,11 @@ final class VCSProviderRegistryTests: XCTestCase {
       VCSProviderRegistry.shared.provider(for: URL(fileURLWithPath: project.workrooms[0].path))
         is RustJJProvider,
       "a jj project's workroom is a jj workspace, whatever its vcsName says")
+
+    let writer = try VCS.writer(for: URL(fileURLWithPath: project.workrooms[0].path))
+    XCTAssertEqual(
+      (writer as? CLIVCSWriter)?.vcs, "jj",
+      "the writer routes on the project's vcs too — vcsName would spawn git against a jj workspace")
   }
 
   /// `workingStatus` is on `VCSProviding` now, and its default THROWS rather than reporting a clean
@@ -171,7 +201,7 @@ final class VCSProviderRegistryTests: XCTestCase {
   /// Driven through the real `reload()` with a faked CLI, so what is asserted is the observable
   /// outcome of a list landing: a path that has no repo on disk resolves, which it cannot do
   /// unless the projects payload reached the registry.
-  func testAListingRegistersItsProjectsThroughTheStore() async {
+  func testAListingRegistersItsProjectsThroughTheStore() async throws {
     let root = directory.appendingPathComponent("listed", isDirectory: true).path
     let workroomPath = directory.appendingPathComponent("listed/wr", isDirectory: true).path
     let store = await AppStore(
@@ -188,6 +218,10 @@ final class VCSProviderRegistryTests: XCTestCase {
     XCTAssertTrue(
       VCSProviderRegistry.shared.provider(for: URL(fileURLWithPath: workroomPath)) is GitProvider,
       "the workroom was never registered")
+    // The writer reads the same registration, and neither path has a repo on disk to fall back to.
+    XCTAssertEqual(
+      (try VCS.writer(for: URL(fileURLWithPath: workroomPath)) as? CLIVCSWriter)?.vcs, "git",
+      "the writer still routes by probing the filesystem")
   }
 }
 
