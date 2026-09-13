@@ -189,10 +189,130 @@ impl ShadowTerminal {
         bytes
     }
 
+    /// A byte-for-byte copy of this terminal, via the snapshot format.
+    ///
+    /// Used to read state the formatter cannot reach on the live terminal without destroying it —
+    /// see `primary_screen`. The snapshot carries BOTH screens, which is exactly why it is the way
+    /// in: the formatter only ever sees the active one.
+    fn clone_via_snapshot(&self) -> Option<ShadowTerminal> {
+        let mut bytes: *mut u8 = ptr::null_mut();
+        let mut len: usize = 0;
+        let rc =
+            unsafe { ghostty_snapshot_encode_alloc(self.inner, ptr::null(), &mut bytes, &mut len) };
+        if rc != OK || bytes.is_null() {
+            return None;
+        }
+        let encoded = unsafe { std::slice::from_raw_parts(bytes, len) }.to_vec();
+        unsafe { ghostty_free(ptr::null(), bytes, len) };
+
+        let mut decoder: GhosttySnapshotDecoder = ptr::null_mut();
+        let rc = unsafe {
+            ghostty_snapshot_decoder_new_buf(
+                ptr::null(),
+                &mut decoder,
+                encoded.as_ptr(),
+                encoded.len(),
+            )
+        };
+        if rc != OK || decoder.is_null() {
+            return None;
+        }
+        let mut inner: GhosttyTerminal = ptr::null_mut();
+        let rc = unsafe { ghostty_snapshot_decoder_decode(decoder, &mut inner) };
+        unsafe { ghostty_snapshot_decoder_free(decoder) };
+        if rc != OK || inner.is_null() {
+            return None;
+        }
+        Some(ShadowTerminal { inner })
+    }
+
+    /// The primary screen's paint, when the alternate screen is the active one.
+    ///
+    /// **Why this needs a copy of the terminal.** `ghostty_formatter_terminal_new` formats the
+    /// terminal's ACTIVE screen and takes no screen argument, so while a full-screen program is
+    /// running the formatter can only see the alt screen — the shell's history is invisible to it.
+    /// A client repainted from that comes back to a blank primary, so quitting the program loses
+    /// every line that came before it. The design doc names the fix: paint the primary first, then
+    /// the alt screen.
+    ///
+    /// Switching THIS terminal to primary and back is not an option — `DECRST 1049` abandons the
+    /// alternate buffer and `DECSET 1049` clears it on re-entry, so the round trip would destroy
+    /// the very screen being replayed. The snapshot carries both screens, so a decoded copy can be
+    /// driven out of the alt screen freely and thrown away.
+    fn primary_screen(&self) -> Option<Vec<u8>> {
+        if self.mode(modes::ALT_SCREEN) != Some(true) {
+            return None;
+        }
+        let mut copy = self.clone_via_snapshot()?;
+        copy.write(b"\x1b[?1049l");
+        let mut out = copy.format(true);
+        // The primary's cursor, explicitly, for the same reason `replay` emits one: the formatter
+        // homes the cursor and leaves it after the last painted cell. Here it matters twice over,
+        // because `DECSET 1049` SAVES the cursor as it switches — so without this the position the
+        // client restores when the program exits is wherever the paint ended, and the shell's next
+        // line is written onto the end of the last history line instead of below it.
+        out.extend_from_slice(&copy.cursor_position());
+        Some(out)
+    }
+
+    /// Newlines to make up rows the formatter did not emit.
+    ///
+    /// The formatter stops at the last row with something on it, so a session whose cursor sits on
+    /// a blank row — every session that has just printed a newline, which is most of them — leaves
+    /// the client one or more rows short. That is invisible in the painted screen and wrong the
+    /// moment the next byte arrives: the client's cursor is at the same VIEWPORT coordinate over
+    /// content that is shifted up, so the next line of output lands on top of the last one instead
+    /// of below it. Measured as one dropped line of output per mid-stream attach, on every session
+    /// that had scrolled at all.
+    ///
+    /// The cursor's absolute row is `scrollback + cursor_y`, and the paint leaves the client at
+    /// `painted_rows`; the difference is what has to be scrolled through.
+    fn scroll_padding(&self, painted_rows: u32) -> Vec<u8> {
+        let (Some(history), Some(cursor_y)) = (
+            self.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS),
+            self.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_Y),
+        ) else {
+            return Vec::new();
+        };
+        let wanted = history + cursor_y;
+        if wanted <= painted_rows {
+            return Vec::new();
+        }
+        // `\r\n` rather than `\n`: the client may have `LNM` unset, where a bare newline moves down
+        // without returning to column 0, and the CUP that follows would then be applied from the
+        // wrong place on every intermediate row.
+        b"\r\n".repeat((wanted - painted_rows) as usize)
+    }
+
+    /// A CUP for wherever this terminal's cursor is, or nothing if it cannot be read.
+    fn cursor_position(&self) -> Vec<u8> {
+        match (
+            self.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_X),
+            self.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_Y),
+        ) {
+            (Some(x), Some(y)) => format!("\x1b[{};{}H", y + 1, x + 1).into_bytes(),
+            _ => Vec::new(),
+        }
+    }
+
     /// The bytes to send a client that has just attached, so it sees what the session looks like
     /// instead of a blank screen. See the module doc for why this is four pieces and not one.
     pub fn replay(&self) -> Vec<u8> {
-        let mut out = self.format(true);
+        // The primary screen first, then re-entering the alt screen, then the alt screen's own
+        // paint below — the order a real session produced them in.
+        let mut out = match self.primary_screen() {
+            Some(mut primary) => {
+                primary.extend_from_slice(b"\x1b[?1049h");
+                primary
+            }
+            None => Vec::new(),
+        };
+        let painted = self.format(true);
+        // How far down the client's content the paint leaves it. The formatter emits one line per
+        // non-empty row and no trailing newline, so this is where its cursor ends up.
+        let painted_rows = painted.iter().filter(|byte| **byte == b'\n').count() as u32;
+        out.extend_from_slice(&painted);
+        out.extend_from_slice(&self.scroll_padding(painted_rows));
 
         if let Some(flags) =
             self.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS)
@@ -202,12 +322,7 @@ impl ShadowTerminal {
             }
         }
 
-        if let (Some(x), Some(y)) = (
-            self.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_X),
-            self.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_CURSOR_Y),
-        ) {
-            out.extend_from_slice(format!("\x1b[{};{}H", y + 1, x + 1).as_bytes());
-        }
+        out.extend_from_slice(&self.cursor_position());
 
         // Last: the continuation leaves the client's parser mid-sequence, exactly as the
         // producer's is, so the bytes that arrive next complete it instead of printing as text.
@@ -440,19 +555,18 @@ mod tests {
         let mut client = ShadowTerminal::new(80, 24).expect("client");
         client.write(&producer.replay());
 
-        // Within one row of the producer: the emission ends without a trailing newline, so the
-        // final line does not scroll and the client holds one fewer history row. Asserted as a
-        // bound rather than equality so the real behaviour is recorded rather than rounded off.
+        // Exactly the producer's depth. This was once asserted as "within one row", because the
+        // formatter's emission ends without a trailing newline and the final line does not scroll
+        // — and that missing row was not a rounding difference, it was a dropped line of output on
+        // the next write. `scroll_padding` makes it up, so the bound is now an equality and the
+        // old one must not come back.
         let want = producer
             .get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS)
             .unwrap_or(0);
         let got = client
             .get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS)
             .unwrap_or(0);
-        assert!(
-            got + 1 >= want && got <= want,
-            "history depth {got} is not within one row of the producer's {want}"
-        );
+        assert_eq!(got, want, "history depth differs from the producer's");
         assert!(got > 20, "history was not restored at all: {got} rows");
         // The oldest line must be there, not just some rows.
         assert!(
@@ -477,6 +591,149 @@ mod tests {
         assert_eq!(
             client.get_u32(GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS),
             Some(0)
+        );
+    }
+
+    /// The design doc's property, in the stronger form it names: a client attaching mid-stream sees
+    /// what a client that watched from byte zero sees — and then **both receive the rest of the
+    /// stream**, so a divergence in mode or parser state shows up in what they render afterwards
+    /// rather than only at the join.
+    ///
+    /// `assert_equivalent` above is the `k == len` case of this: it repaints a client and compares,
+    /// but never feeds it the tail, so a client left in the wrong parser state looks identical to a
+    /// correct one. That is exactly the failure the continuation record exists to prevent.
+    ///
+    /// **Every split point, not a hand-picked one.** A chosen split tests the boundary its author
+    /// thought of; the bugs live at the boundaries they did not — between a CSI's parameter bytes,
+    /// between an OSC's introducer and its terminator, in the middle of a UTF-8 sequence. The
+    /// corpora below are short precisely so that exhausting their split points is cheap.
+    fn assert_equivalent_at_every_split(source: &[u8], label: &str) {
+        let mut watcher = ShadowTerminal::new(80, 24).expect("watcher");
+        watcher.write(source);
+        let want_text = watcher.visible_text();
+
+        for split in 0..=source.len() {
+            let mut producer = ShadowTerminal::new(80, 24).expect("producer");
+            producer.write(&source[..split]);
+
+            let mut client = ShadowTerminal::new(80, 24).expect("client");
+            client.write(&producer.replay());
+            client.write(&source[split..]);
+
+            for (name, mode) in [
+                ("app cursor keys", modes::APP_CURSOR_KEYS),
+                ("mouse 1002", modes::MOUSE_BUTTON),
+                ("mouse 1006", modes::MOUSE_SGR),
+                ("focus events", modes::FOCUS_EVENTS),
+                ("bracketed paste", modes::BRACKETED_PASTE),
+                ("alt screen", modes::ALT_SCREEN),
+            ] {
+                assert_eq!(
+                    watcher.mode(mode),
+                    client.mode(mode),
+                    "{label}: {name} differs after attaching at byte {split} of {}",
+                    source.len()
+                );
+            }
+            assert_eq!(
+                want_text,
+                client.visible_text(),
+                "{label}: screen differs after attaching at byte {split} of {}",
+                source.len()
+            );
+        }
+    }
+
+    /// Escape sequences that a split can land inside, including a nested style change and a CSI
+    /// whose parameters run to several bytes.
+    #[test]
+    fn every_split_of_a_styled_stream_converges() {
+        assert_equivalent_at_every_split(
+            b"top\r\n\x1b[1;31mred\x1b[0m \x1b[38;2;10;200;30mtruecolor\x1b[0m\r\n\x1b[5;12Hparked",
+            "split escapes",
+        );
+    }
+
+    /// Entering and leaving the alternate screen. The doc singles this out because a split inside
+    /// the transition is what decides whether the client comes back to the shell's history or to a
+    /// blank buffer.
+    #[test]
+    fn every_split_of_an_alt_screen_transition_converges() {
+        assert_equivalent_at_every_split(
+            b"history one\r\nhistory two\r\n\x1b[?1049h\x1b[2J\x1b[HTUI\x1b[?1049lback home\r\n",
+            "alt screen transitions",
+        );
+    }
+
+    /// Multi-byte characters, so a split lands mid-codepoint. A client that resumed with a fresh
+    /// parser would render U+FFFD here and never recover the character.
+    #[test]
+    fn every_split_of_multibyte_text_converges() {
+        assert_equivalent_at_every_split(
+            "hello \u{65e5}\u{672c}\u{8a9e} and \u{1f600} done\r\n".as_bytes(),
+            "truncated UTF-8",
+        );
+    }
+
+    /// Queries embedded in the stream. These are the shape that made a reattaching client answer
+    /// stale questions into an idle pane as garbage, so what matters is that they do not change the
+    /// screen — at any split.
+    #[test]
+    fn every_split_of_an_embedded_query_stream_converges() {
+        assert_equivalent_at_every_split(
+            b"before\x1b[6n\x1b[>c\x1b]11;?\x07\x1b[?62;1;4c\x1b[0nafter\r\n",
+            "embedded queries",
+        );
+    }
+
+    /// The named cases plus the one that combines them: negotiated modes over content deep enough
+    /// to have scrolled.
+    ///
+    /// This is the case that found `scroll_padding`'s bug: every split from the moment the session
+    /// first scrolled — which is to say every realistic mid-stream attach — dropped a line.
+    #[test]
+    fn every_split_of_modes_over_scrollback_converges() {
+        let mut source = Vec::new();
+        source.extend_from_slice(b"\x1b[?1h\x1b[?2004h\x1b[?1002h\x1b[?1006h\x1b[?1004h");
+        for n in 0..40 {
+            source.extend_from_slice(format!("line {n}\r\n").as_bytes());
+        }
+        source.extend_from_slice(b"\x1b[1;33mtail\x1b[0m");
+
+        let mut watcher = ShadowTerminal::new(80, 24).expect("watcher");
+        watcher.write(&source);
+
+        for split in 0..=source.len() {
+            let mut producer = ShadowTerminal::new(80, 24).expect("producer");
+            producer.write(&source[..split]);
+            let mut client = ShadowTerminal::new(80, 24).expect("client");
+            client.write(&producer.replay());
+            client.write(&source[split..]);
+
+            assert_eq!(
+                watcher.mode(modes::BRACKETED_PASTE),
+                client.mode(modes::BRACKETED_PASTE),
+                "bracketed paste differs after attaching at byte {split}"
+            );
+            assert_eq!(
+                watcher.visible_text(),
+                client.visible_text(),
+                "screen differs after attaching at byte {split}"
+            );
+        }
+    }
+
+    /// A TUI that draws a few rows and parks the cursor far below them, on the alternate screen.
+    ///
+    /// Worth its own case because `scroll_padding` reasons in absolute rows — scrollback plus the
+    /// cursor's row — and the alternate screen has no scrollback. Padding that made sense for a
+    /// scrolling primary screen could have scrolled a TUI's screen out from under it. Measured: it
+    /// does not, at any split.
+    #[test]
+    fn every_split_of_a_parked_alt_cursor_converges() {
+        assert_equivalent_at_every_split(
+            b"shell history\r\n\x1b[?1049h\x1b[2JTUI HEADER\r\nbody\x1b[20;3Hparked",
+            "parked alt cursor",
         );
     }
 
