@@ -21,7 +21,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -496,87 +496,6 @@ pub fn decode_descriptor_list(payload: &[u8]) -> Vec<(String, bool, String)> {
         out.push((id.to_hyphenated(), attached, command));
     }
     out
-}
-
-/// Pumps a session's pty to the client as `Output` frames. Runs for as long as the client is
-/// attached; the pty keeps running after it stops.
-pub fn pump_output<S: Write>(
-    sessions: &SessionStore,
-    id: SessionId,
-    writer: &Mutex<S>,
-    service_stream: u32,
-    stop: &AtomicBool,
-) {
-    let send = |bytes: &[u8]| -> bool {
-        match writer.lock() {
-            Ok(mut writer) => writer
-                .write_all(bytes)
-                .and_then(|()| writer.flush())
-                .is_ok(),
-            Err(_) => false,
-        }
-    };
-    let mut buffer = [0u8; 8192];
-    loop {
-        if stop.load(Ordering::SeqCst) {
-            break;
-        }
-        let read = sessions.with_pty(id, |pty| pty.read(&mut buffer));
-
-        // "The child is gone" looks different on each platform: reading a pty master whose child
-        // has exited yields EOF on Darwin and **EIO** on Linux. Deciding it once, here, is what
-        // stops the rest of this loop from having to know that — and matching only on EOF meant
-        // the branch below never ran on Linux at all, while macOS exercised it and made the code
-        // look correct. Found by running the suite in a Linux container.
-        let ended = match &read {
-            Some(Ok(0)) => true,
-            Some(Err(e)) => e.raw_os_error() == Some(libc::EIO),
-            _ => false,
-        };
-
-        if ended {
-            // Read the pid under the lock, reap OUTSIDE it. `pty.wait()` is a blocking waitpid,
-            // and holding the session store across it stalls every other session's operations —
-            // including `list`, which made two unrelated tests fail by timing out rather than by
-            // being wrong.
-            let pid = sessions.with_pty(id, |pty| pty.child_pid()).unwrap_or(-1);
-            let mut status = 0;
-            if pid > 0 {
-                // Non-blocking: the read can end a moment before the child's exit is reapable, and
-                // telling the client promptly matters more than the exact status.
-                unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
-            }
-            let frame = Frame::new(FrameKind::Exited, exit_code(status).to_be_bytes().to_vec());
-            let envelope = Envelope::new(Service::Terminal, service_stream, frame.encode());
-            send(&envelope.encode());
-            // The shell IS the session; with it gone there is nothing left to reattach to.
-            sessions.kill(id);
-            break;
-        }
-
-        match read {
-            // The session was removed from the store, i.e. killed through the control plane.
-            None => break,
-            Some(Ok(n)) => {
-                // The shadow sees exactly what the client sees, before the client sees it — so a
-                // client that attaches a moment later is shown a screen that includes this.
-                if let Some(shadow) = sessions.shadow(id) {
-                    if let Ok(mut shadow) = shadow.lock() {
-                        shadow.write(&buffer[..n]);
-                    }
-                }
-                let frame = Frame::new(FrameKind::Output, buffer[..n].to_vec());
-                let envelope = Envelope::new(Service::Terminal, service_stream, frame.encode());
-                if !send(&envelope.encode()) {
-                    break;
-                }
-            }
-            Some(Err(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            Some(Err(_)) => break,
-        }
-    }
 }
 
 /// Connects to a running agent, or returns None if there is nothing listening.

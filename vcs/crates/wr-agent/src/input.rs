@@ -114,6 +114,16 @@ impl InputClassifier {
                     self.params.clear();
                     return user;
                 }
+                // Bounded, because a client controls this stream and the agent is shared: `ESC [`
+                // followed by megabytes of digits and no final byte would otherwise grow this
+                // vector until the agent — and every session it is holding — died. Real sequences
+                // are a handful of bytes; past the cap the sequence is abandoned rather than
+                // truncated, so what follows cannot be read as the tail of something legitimate.
+                if self.params.len() >= MAX_PARAMETERS {
+                    self.state = State::Ground;
+                    self.params.clear();
+                    return false;
+                }
                 self.params.push(byte);
                 false
             }
@@ -152,6 +162,12 @@ impl InputClassifier {
         }
     }
 }
+
+/// The longest parameter run any real control sequence has. A kitty keyboard event or an SGR
+/// mouse report is a dozen bytes; the widest thing in practice is a multi-parameter SGR colour,
+/// still well under this. The cap exists to bound what a client can make the agent hold, not to
+/// reject anything a terminal actually emits.
+const MAX_PARAMETERS: usize = 64;
 
 const ESCAPE: u8 = 0x1B;
 const BELL: u8 = 0x07;
@@ -329,6 +345,51 @@ mod tests {
     #[test]
     fn a_bracketed_paste_is_the_user() {
         assert!(user(b"\x1b[200~some text\x1b[201~"));
+    }
+
+    /// A client controls this stream and the agent is shared, so an unterminated sequence must not
+    /// be able to grow the agent's memory. Bytes arrive in many frames here because that is the
+    /// shape of the attack — one `ESC [` and then an endless tail.
+    ///
+    /// What it does NOT assert is that the flood counts as nothing. Past the cap the sequence is
+    /// abandoned and the parser returns to ground, where those bytes are ordinary input — which is
+    /// the honest answer, because `write_input` passes them to the shell either way. A client
+    /// sending the pty ten thousand bytes IS acting on the session; the bug being fixed here is
+    /// the unbounded buffer, not the classification.
+    #[test]
+    fn an_unterminated_sequence_cannot_grow_without_bound() {
+        let mut classifier = InputClassifier::new();
+        assert!(!classifier.is_user_input(b"\x1b["));
+        for _ in 0..1000 {
+            classifier.is_user_input(&[b'1'; 64]);
+            assert!(
+                classifier.params.len() <= MAX_PARAMETERS,
+                "parameters grew to {}",
+                classifier.params.len()
+            );
+        }
+        // And the parser is still usable rather than wedged mid-sequence.
+        assert!(classifier.is_user_input(b"x"));
+        assert!(!classifier.is_user_input(b"\x1b[I"), "still reads a report");
+    }
+
+    /// Abandoning past the cap must not leave the tail readable as a legitimate sequence. A cap
+    /// that merely stopped pushing — staying in `ControlSequence` — would let an attacker pad past
+    /// it and then have `I` classified as a focus report, which is the one answer this module
+    /// exists to get right.
+    #[test]
+    fn an_abandoned_sequence_does_not_classify_by_its_tail() {
+        let mut classifier = InputClassifier::new();
+        let mut flood = vec![0x1b, b'['];
+        flood.extend(std::iter::repeat_n(b'1', MAX_PARAMETERS + 10));
+        classifier.is_user_input(&flood);
+        assert_eq!(
+            classifier.state,
+            State::Ground,
+            "the sequence was abandoned"
+        );
+        // In ground, `I` is a printable character the user typed — not a focus report.
+        assert!(classifier.is_user_input(b"I"));
     }
 
     #[test]

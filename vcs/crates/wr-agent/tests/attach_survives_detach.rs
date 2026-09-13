@@ -819,3 +819,39 @@ fn the_client_exits_when_the_shell_does() {
     let _ = agent.kill();
     let _ = agent.wait();
 }
+
+/// The shell's exit code reaches the client's own exit status, through the path that actually
+/// runs.
+///
+/// A unit test on the conversion alone is not enough, and this exists because twice now an edit
+/// landed in a function nothing calls while the live path kept the old behaviour — first
+/// `Pty::write_all`, then this very conversion, which was applied to a `pump_output` that had been
+/// dead since the reader moved into the session. Asserting the number a real `wr-agent attach`
+/// exits with is the only version of this test that cannot be satisfied by dead code.
+#[test]
+fn the_shells_exit_code_becomes_the_clients() {
+    let workspace = Workspace::new("exitcode");
+    let socket = workspace.socket();
+    let _agent = start_agent(&socket);
+
+    let mut client = attach(&socket, "0eadc0de-0000-4000-8000-00000eadc0de");
+    {
+        let stdin = client.stdin.as_mut().expect("stdin");
+        std::thread::sleep(Duration::from_millis(400));
+        stdin.write_all(b"exit 7\n").expect("write");
+        stdin.flush().expect("flush");
+    }
+
+    let exited = wait_for(Duration::from_secs(10), || {
+        matches!(client.try_wait(), Ok(Some(_)))
+    });
+    assert!(exited, "the client did not exit after its shell did");
+
+    let status = client.try_wait().expect("wait").expect("status");
+    // 7, not 1792 (the raw waitpid status) and not 255 (that value clamped into a byte).
+    assert_eq!(
+        status.code(),
+        Some(7),
+        "the shell's exit code did not reach the client"
+    );
+}

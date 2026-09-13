@@ -67,6 +67,39 @@ pub fn working_directory(pid: i32) -> Option<String> {
     platform::working_directory(pid)
 }
 
+/// A process found by the descendant walk, and enough to recognise it again later.
+///
+/// The start time is what makes a pid safe to signal after a delay. Pids are recycled, and the
+/// termination path waits up to half a second between its hangup and its SIGKILL sweep — long
+/// enough on a busy machine for a descendant to exit and its number to be handed to something
+/// unrelated. `kill(pid, 0)` cannot tell those apart; a start time can, because the replacement
+/// necessarily started later than the process we recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Descendant {
+    pub pid: i32,
+    /// Platform-specific units — seconds since the epoch on macOS, clock ticks since boot on
+    /// Linux. Never compared across platforms, only against itself, so the unit does not matter;
+    /// what matters is that it changes when the pid is reused. Zero means unknown.
+    pub started: u64,
+}
+
+impl Descendant {
+    /// Whether this exact process is still running — not merely whether something holds its pid.
+    ///
+    /// An unknown start time falls back to bare existence. That is the old behaviour, and it is the
+    /// right fallback: failing to signal a real descendant leaves a process running forever, which
+    /// is worse than the small risk this is guarding.
+    pub fn is_running(&self) -> bool {
+        if self.pid <= 0 || unsafe { libc::kill(self.pid, 0) } != 0 {
+            return false;
+        }
+        match (self.started, platform::start_time(self.pid)) {
+            (0, _) | (_, None) => true,
+            (recorded, Some(current)) => recorded == current,
+        }
+    }
+}
+
 /// Every transitive descendant of `roots`, found by walking parent-pid links.
 ///
 /// Killing a pty's shell is not enough on its own. A child that calls `setsid()` leaves both the
@@ -79,7 +112,7 @@ pub fn working_directory(pid: i32) -> Option<String> {
 ///
 /// Returns an empty vector when the process table cannot be read, rather than erroring: the caller
 /// still signals the roots, which is exactly what it did before this existed.
-pub fn descendants(roots: &[i32]) -> Vec<i32> {
+pub fn descendants(roots: &[i32]) -> Vec<Descendant> {
     use std::collections::{HashMap, HashSet};
 
     let roots: HashSet<i32> = roots.iter().copied().filter(|pid| *pid > 0).collect();
@@ -88,9 +121,11 @@ pub fn descendants(roots: &[i32]) -> Vec<i32> {
     }
 
     let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
-    for (pid, parent) in platform::parent_links() {
-        if pid > 0 {
-            children.entry(parent).or_default().push(pid);
+    let mut started: HashMap<i32, u64> = HashMap::new();
+    for link in platform::parent_links() {
+        if link.pid > 0 {
+            children.entry(link.parent).or_default().push(link.pid);
+            started.insert(link.pid, link.started);
         }
     }
 
@@ -107,7 +142,13 @@ pub fn descendants(roots: &[i32]) -> Vec<i32> {
             }
         }
     }
-    found.into_iter().collect()
+    found
+        .into_iter()
+        .map(|pid| Descendant {
+            pid,
+            started: started.get(&pid).copied().unwrap_or(0),
+        })
+        .collect()
 }
 
 /// Picks the user-meaningful name out of a full argv. Shared by both platforms because the
@@ -126,9 +167,16 @@ fn name_from_argv(argv: &[String]) -> Option<String> {
     Some(name.to_string())
 }
 
+/// One row of the process table: who it is, who started it, and when it started.
+pub(crate) struct ProcessLink {
+    pub pid: i32,
+    pub parent: i32,
+    pub started: u64,
+}
+
 #[cfg(target_os = "macos")]
 mod platform {
-    use super::name_from_argv;
+    use super::{name_from_argv, ProcessLink};
 
     /// `KERN_PROCARGS2`, the exec-time argv snapshot. Layout: `argc` (i32), the exec path
     /// (NUL-terminated), NUL padding, then `argc` NUL-terminated argv strings.
@@ -244,28 +292,41 @@ mod platform {
     /// struct the libc crate does not define for Apple targets, so consuming it would mean
     /// hand-writing a kernel-fixed layout. These three symbols are all typed in libc, and the cost
     /// is a few hundred cheap syscalls once, on the kill path.
-    pub(super) fn parent_links() -> Vec<(i32, i32)> {
+    pub(super) fn parent_links() -> Vec<ProcessLink> {
         let pids = all_pids();
         let mut links = Vec::with_capacity(pids.len());
         for pid in pids {
-            let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-            let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
-            let written = unsafe {
-                libc::proc_pidinfo(
-                    pid,
-                    libc::PROC_PIDTBSDINFO,
-                    0,
-                    &mut info as *mut _ as *mut libc::c_void,
-                    size,
-                )
-            };
-            // A process that exited between the listing and this call returns 0. Skipping it is
+            // A process that exited between the listing and this call yields None. Skipping it is
             // correct — it is already gone.
-            if written == size {
-                links.push((pid, info.pbi_ppid as i32));
+            if let Some(info) = bsdinfo(pid) {
+                links.push(ProcessLink {
+                    pid,
+                    parent: info.pbi_ppid as i32,
+                    started: info.pbi_start_tvsec,
+                });
             }
         }
         links
+    }
+
+    /// When this pid's current occupant started, for recognising pid reuse.
+    pub(super) fn start_time(pid: i32) -> Option<u64> {
+        bsdinfo(pid).map(|info| info.pbi_start_tvsec)
+    }
+
+    fn bsdinfo(pid: i32) -> Option<libc::proc_bsdinfo> {
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        let written = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                &mut info as *mut _ as *mut libc::c_void,
+                size,
+            )
+        };
+        (written == size).then_some(info)
     }
 
     fn all_pids() -> Vec<i32> {
@@ -301,7 +362,7 @@ mod platform {
 
 #[cfg(target_os = "linux")]
 mod platform {
-    use super::{basename, is_interpreter, name_from_argv};
+    use super::{basename, is_interpreter, name_from_argv, ProcessLink};
     use std::fs;
 
     /// Prefers `/proc/<pid>/exe`, which a process cannot rewrite, and only consults `cmdline` when
@@ -352,7 +413,7 @@ mod platform {
     /// parentheses, so the fields after it can only be found from the LAST `)` in the line.
     /// Splitting the whole line on whitespace — the obvious reading of the proc(5) table — parses
     /// a process named `my prog` into the wrong columns entirely.
-    pub(super) fn parent_links() -> Vec<(i32, i32)> {
+    pub(super) fn parent_links() -> Vec<ProcessLink> {
         let Ok(entries) = fs::read_dir("/proc") else {
             return Vec::new();
         };
@@ -363,20 +424,43 @@ mod platform {
                 continue;
             };
             // Unreadable or already gone: skip it, the same as a process that exited mid-scan.
-            let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
-                continue;
-            };
-            let Some(after_comm) = stat.rfind(')').map(|at| &stat[at + 1..]) else {
-                continue;
-            };
-            // What follows the name is " S <ppid> ...": state first, then the parent.
-            let mut fields = after_comm.split_whitespace();
-            let parent = fields.nth(1).and_then(|f| f.parse::<i32>().ok());
-            if let Some(parent) = parent {
-                links.push((pid, parent));
+            if let Some((parent, started)) = stat_fields(pid) {
+                links.push(ProcessLink {
+                    pid,
+                    parent,
+                    started,
+                });
             }
         }
         links
+    }
+
+    /// When this pid's current occupant started, for recognising pid reuse.
+    pub(super) fn start_time(pid: i32) -> Option<u64> {
+        stat_fields(pid).map(|(_, started)| started)
+    }
+
+    /// `(ppid, starttime)` from `/proc/<pid>/stat`.
+    ///
+    /// Field 2 is the executable name in parentheses and may itself contain spaces AND
+    /// parentheses, so the fields after it can only be found from the LAST `)` in the line.
+    /// Splitting the whole line on whitespace — the obvious reading of the proc(5) table — parses
+    /// a process named `my prog` into the wrong columns entirely.
+    ///
+    /// After that `)` the fields are state, ppid, pgrp, session, tty_nr, tpgid, flags, minflt,
+    /// cminflt, majflt, cmajflt, utime, stime, cutime, cstime, priority, nice, num_threads,
+    /// itrealvalue, starttime — so ppid is index 1 and starttime index 19.
+    fn stat_fields(pid: i32) -> Option<(i32, u64)> {
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let after_comm = &stat[stat.rfind(')')? + 1..];
+        let fields: Vec<&str> = after_comm.split_whitespace().collect();
+        let parent = fields.get(1)?.parse::<i32>().ok()?;
+        // A kernel too old to carry starttime, or a truncated read: unknown rather than wrong.
+        let started = fields
+            .get(19)
+            .and_then(|f| f.parse::<u64>().ok())
+            .unwrap_or(0);
+        Some((parent, started))
     }
 }
 

@@ -645,7 +645,12 @@ fn read_session(
             for target in targets(&attached) {
                 let bytes = terminal_envelope(
                     target.stream,
-                    Frame::new(FrameKind::Exited, status.to_be_bytes().to_vec()),
+                    // The code a shell would report, not the raw `waitpid` status: `exit 7` is 7
+                    // here, not 1792. See `serve::exit_code`.
+                    Frame::new(
+                        FrameKind::Exited,
+                        crate::serve::exit_code(status).to_be_bytes().to_vec(),
+                    ),
                 );
                 deliver(&attached, &target, &bytes);
             }
@@ -720,14 +725,17 @@ fn terminate(ptys: &[&Arc<Pty>]) {
     if roots.is_empty() {
         return;
     }
+    // Each descendant is recorded with its start time, not just its pid, because the SIGKILL
+    // sweep below happens up to half a second later — long enough for one to exit and its number
+    // to be reused. See `process::Descendant`.
     let descendants = crate::process::descendants(&roots);
 
-    for pid in roots.iter().chain(&descendants) {
+    for pid in roots.iter().chain(descendants.iter().map(|d| &d.pid)) {
         unsafe { libc::kill(*pid, libc::SIGHUP) };
     }
 
     // Only the roots are our children, so only they can be reaped; a descendant's exit is observed
-    // by `kill(pid, 0)` instead. Both are checked, because the point is that nothing is left.
+    // by probing instead. Both are checked, because the point is that nothing is left.
     let mut unreaped: Vec<i32> = roots.clone();
     for _ in 0..50 {
         unreaped.retain(|pid| {
@@ -735,30 +743,26 @@ fn terminate(ptys: &[&Arc<Pty>]) {
             let rc = unsafe { libc::waitpid(*pid, &mut status, libc::WNOHANG) };
             rc == 0
         });
-        if unreaped.is_empty() && descendants.iter().all(|pid| !alive(*pid)) {
+        if unreaped.is_empty() && !descendants.iter().any(|d| d.is_running()) {
             return;
         }
         std::thread::sleep(Duration::from_millis(10));
     }
 
-    // Half a second of SIGHUP was declined. Anything still answering gets SIGKILL — checked first,
-    // because a pid that has already gone may by now name an unrelated process.
-    for pid in unreaped
+    // Half a second of SIGHUP was declined. Anything still running gets SIGKILL — and `is_running`
+    // is checked first, and compares start times, so a descendant that has exited cannot cost an
+    // unrelated process that inherited its pid a SIGKILL.
+    let survivors = descendants
         .iter()
-        .chain(descendants.iter().filter(|pid| alive(**pid)))
-    {
+        .filter(|d| d.is_running())
+        .map(|d| &d.pid);
+    for pid in unreaped.iter().chain(survivors) {
         unsafe { libc::kill(*pid, libc::SIGKILL) };
     }
     for pid in &unreaped {
         let mut status = 0;
         unsafe { libc::waitpid(*pid, &mut status, 0) };
     }
-}
-
-/// Whether a pid still names a running process. Only meaningful for processes that are not ours to
-/// reap — a zombie child of this process answers yes until it is waited for.
-fn alive(pid: i32) -> bool {
-    pid > 0 && unsafe { libc::kill(pid, 0) } == 0
 }
 
 #[cfg(test)]
@@ -1318,6 +1322,13 @@ mod tests {
             unsafe { libc::kill(grandchild, libc::SIGKILL) };
         }
         assert!(!survived, "a setsid'd grandchild must not survive the kill");
+    }
+
+    /// Whether a pid names a running process. Test-only: the kill path itself compares start
+    /// times through `process::Descendant`, which this deliberately does not — a test that watched
+    /// for pid reuse would be testing the OS, not the agent.
+    fn alive(pid: i32) -> bool {
+        pid > 0 && unsafe { libc::kill(pid, 0) } == 0
     }
 
     fn which(program: &str) -> Option<String> {
