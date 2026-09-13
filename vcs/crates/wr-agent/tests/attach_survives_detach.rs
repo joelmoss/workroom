@@ -26,6 +26,35 @@ fn agent_binary() -> PathBuf {
     }
 }
 
+/// A spawned agent or attach client that is killed when the test ends, panic or not.
+///
+/// Every test here already finishes with `let _ = agent.kill()`, and that line does not run when an
+/// assertion fails — an unwind skips straight past it. The agent does not clean itself up either:
+/// it exits when idle, but a leaked one still holds the session's shell, so it is never idle. A
+/// week of failing runs during development left 88 agents and their shells alive on the developer's
+/// machine. `Drop` runs during unwinding; an explicit kill at the end of the body does not.
+struct Spawned(Child);
+
+impl Drop for Spawned {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+impl std::ops::Deref for Spawned {
+    type Target = Child;
+    fn deref(&self) -> &Child {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Spawned {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.0
+    }
+}
+
 struct Workspace {
     dir: PathBuf,
 }
@@ -49,7 +78,7 @@ impl Drop for Workspace {
     }
 }
 
-fn start_agent(socket: &Path) -> Child {
+fn start_agent(socket: &Path) -> Spawned {
     let child = Command::new(agent_binary())
         .args(["serve", "--socket"])
         .arg(socket)
@@ -64,6 +93,7 @@ fn start_agent(socket: &Path) -> Child {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn agent");
+    let child = Spawned(child);
     wait_for(Duration::from_secs(5), || socket.exists());
     assert!(socket.exists(), "agent never bound its socket");
     child
@@ -80,8 +110,8 @@ fn wait_for(timeout: Duration, mut condition: impl FnMut() -> bool) -> bool {
     false
 }
 
-fn attach(socket: &Path, session: &str) -> Child {
-    Command::new(agent_binary())
+fn attach(socket: &Path, session: &str) -> Spawned {
+    let child = Command::new(agent_binary())
         .args(["attach", "--socket"])
         .arg(socket)
         .args(["--session", session])
@@ -94,7 +124,8 @@ fn attach(socket: &Path, session: &str) -> Child {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn attach")
+        .expect("spawn attach");
+    Spawned(child)
 }
 
 /// A client's stdout, readable more than once.
