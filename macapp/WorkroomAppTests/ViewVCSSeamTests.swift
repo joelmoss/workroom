@@ -27,10 +27,23 @@ final class ViewVCSSeamTests: XCTestCase {
     "CLIVCSWriter.": "reaches into the CLI writer's internals — go through `VCSWriting`",
   ]
 
+  /// Enumerated RECURSIVELY, not with `contentsOfDirectory`.
+  ///
+  /// `Views/` happens to be flat today, but the target's source glob compiles nested files and the
+  /// tree already nests elsewhere (`Core/Session`, `Core/SyntaxHighlighting`). A `Views/Inspector/`
+  /// added tomorrow would sit outside a shallow scan while the count assertion below — which only
+  /// ever saw the direct children — stayed green, which is precisely the silently-passing guard
+  /// this file exists to avoid being.
+  private static func viewSources() throws -> [URL] {
+    guard
+      let walker = FileManager.default.enumerator(
+        at: viewsDirectory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+    else { return [] }
+    return walker.compactMap { $0 as? URL }.filter { $0.pathExtension == "swift" }
+  }
+
   func testNoViewSpawnsVCSCommandsOrReadsARepoDirectly() throws {
-    let files = try FileManager.default.contentsOfDirectory(
-      at: Self.viewsDirectory, includingPropertiesForKeys: nil
-    ).filter { $0.pathExtension == "swift" }
+    let files = try Self.viewSources()
 
     XCTAssertGreaterThan(files.count, 10, "the Views directory did not resolve — the scan is void")
 
