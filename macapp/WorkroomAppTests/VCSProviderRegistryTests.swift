@@ -124,6 +124,35 @@ final class VCSProviderRegistryTests: XCTestCase {
       "a jj project's workroom is a jj workspace, whatever its vcsName says")
   }
 
+  /// `workingStatus` is on `VCSProviding` now, and its default THROWS rather than reporting a clean
+  /// working copy.
+  ///
+  /// The difference matters more than it looks. A default returning an empty `WorkroomStatus` would
+  /// make a backend that forgot the method present as a working app with a permanently clean badge
+  /// — a failure that survives a release because nothing about it looks broken. A throw surfaces on
+  /// the row instead. Both real backends override it, so this only ever catches a new one.
+  func testTheWorkingStatusDefaultThrowsRatherThanReportingClean() {
+    struct NotAVCS: VCSProviding {
+      func log(root: URL, limit: Int) throws -> VCSHistoryPage {
+        VCSHistoryPage(commits: [], reachedEnd: true)
+      }
+      func changeset(root: URL, commitID: String) async throws -> VCSChangeset {
+        throw VCSError.unsupportedRepo("stub")
+      }
+      func fileDiff(root: URL, commitID: String, path: String) async throws -> String { "" }
+      func workingFileDiff(root: URL, path: String, base: VCSWorkingDiffBase) async throws -> String
+      { "" }
+      func fileContent(root: URL, rev: String, path: String) async throws -> String? { nil }
+      func currentRef(root: URL) async throws -> VCSRef { throw VCSError.unsupportedRepo("stub") }
+    }
+
+    XCTAssertThrowsError(try NotAVCS().workingStatus(root: directory)) { error in
+      guard case VCSError.unsupportedRepo = error else {
+        return XCTFail("expected unsupportedRepo, got \(error)")
+      }
+    }
+  }
+
   func testAnUnrecognisedProjectVCSRegistersNothing() {
     let project = Project(
       path: directory.appendingPathComponent("hgproj").path, vcs: "hg",
