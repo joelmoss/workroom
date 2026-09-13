@@ -547,4 +547,95 @@ final class VCSCommitIntegrationTests: XCTestCase {
       request: VCSCommitRequest(message: "m", files: [], mode: .amendMessage))
     XCTAssertEqual(amendOnJJ, .failed(.unsupportedMode))
   }
+
+  // MARK: - Commit pre-flight
+
+  /// jj's description must come back **byte for byte**, which is the whole reason this is its own
+  /// method rather than `VCSProviding.log(limit: 1)`.
+  ///
+  /// Compared against what jj itself holds, read independently — **not** against a round-trip
+  /// through `CommitDraft`, which would prove nothing. `message(summary:body:preserving:)` returns
+  /// the original whenever it re-splits to the same fields, so a `currentMessage` that had been
+  /// trimmed would satisfy that check just as happily as the real one.
+  ///
+  /// A description with no blank separator is the discriminating shape: `CommitDraft.split` +
+  /// `.message` rewrite it to `one\n\ntwo`, which is exactly what routing this through
+  /// `VCSProviding.log(limit: 1)` — whose `VCSCommit` is already split and trimmed — would produce.
+  /// The consequence is not cosmetic: `originalMessage` is what `commit(.describe)` compares against
+  /// to decide the user changed nothing, so a normalised copy makes an untouched dialog rewrite the
+  /// message underneath them.
+  func testJJPreflightReturnsTheDescriptionByteForByte() async throws {
+    try requireTool("jj")
+    let dir = jjRepo()
+    write("hello\n", to: "a.txt", in: dir)
+    // No blank line between the two — legal in jj, and the exact shape that gets rewritten.
+    sh("jj describe -m 'one\ntwo' >/dev/null 2>&1", in: dir)
+
+    let preflight = await writer("jj").commitPreflight(path: dir)
+    let stored = try XCTUnwrap(preflight.currentMessage, "no description came back")
+
+    let asJJHasIt = sh(
+      "jj log --ignore-working-copy --color never --no-pager --no-graph -r @ -T description",
+      in: dir
+    ).out
+    XCTAssertEqual(
+      stored, asJJHasIt,
+      "any post-processing here — a trim, a split-and-rejoin — shows up as a difference")
+    XCTAssertTrue(
+      stored.contains("one\ntwo"),
+      "the un-normalised shape is what makes this discriminating, got: \(stored.debugDescription)")
+    XCTAssertFalse(stored.contains("one\n\ntwo"), "a blank separator was inserted")
+  }
+
+  /// Each backend answers only its own fields. Pins the contract the dialog reads against.
+  func testPreflightFieldsAreBackendScoped() async throws {
+    try requireTool("jj")
+    let jj = await writer("jj").commitPreflight(path: jjRepo())
+    XCTAssertNil(
+      jj.sequencer, "a jj commit is not path-limited, so a parked git op does not block it")
+    XCTAssertNil(jj.amendTarget, "jj has no amend")
+
+    let git = await writer("git").commitPreflight(path: gitRepo())
+    XCTAssertNil(git.currentMessage, "git has no @ description")
+  }
+
+  func testGitPreflightNamesTheCommitAnAmendWouldRewrite() async throws {
+    let dir = gitRepo()
+    sh("git commit -q --allow-empty -m 'the subject being replaced'", in: dir)
+
+    let preflight = await writer("git").commitPreflight(path: dir)
+
+    let target = try XCTUnwrap(preflight.amendTarget)
+    XCTAssertTrue(
+      target.contains("the subject being replaced"),
+      "amend must show what it destroys before the click, got: \(target)")
+    XCTAssertNil(preflight.sequencer, "nothing is parked")
+  }
+
+  /// A repo with no commits has nothing to amend, and must report that rather than an empty label.
+  func testGitPreflightHasNoAmendTargetOnAnUnbornBranch() async {
+    let dir = tempDir()
+    sh("git init -q . && git config user.email t@e.com && git config user.name T", in: dir)
+
+    let preflight = await writer("git").commitPreflight(path: dir)
+
+    XCTAssertNil(preflight.amendTarget)
+  }
+
+  /// The parked-operation check, which is a `.git` directory listing — the read that made this
+  /// dialog work only for a repo on this Mac.
+  ///
+  /// Planted rather than reached through a real conflicting merge: `sequencerState` reads the marker
+  /// file, and that is deliberate (resolving conflicts in a terminal clears the markers but leaves
+  /// `MERGE_HEAD`, so the file is the durable fact and the conflict is not).
+  func testGitPreflightReportsAParkedOperation() async throws {
+    let dir = gitRepo()
+    let before = await writer("git").commitPreflight(path: dir)
+    XCTAssertNil(before.sequencer, "clean, before")
+
+    FileManager.default.createFile(atPath: dir + "/.git/MERGE_HEAD", contents: Data())
+
+    let after = await writer("git").commitPreflight(path: dir)
+    XCTAssertEqual(after.sequencer, "merge")
+  }
 }

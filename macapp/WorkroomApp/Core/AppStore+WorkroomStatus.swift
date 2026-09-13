@@ -378,6 +378,28 @@ extension AppStore {
     }
   }
 
+  /// Ask what the commit dialog should show before it writes — the amend target, `@`'s description,
+  /// and any parked git operation.
+  ///
+  /// Read-only and ungated, for `stagedContentAtRisk`'s reasons. Routed through `VCS.writer` rather
+  /// than spawning `git`/`jj` from the dialog, which is what made these reads work only for a repo
+  /// on this Mac (issue #154, Phase 2).
+  ///
+  /// Degrades to `.none` on any failure: every field is optional and the dialog renders each one's
+  /// absence honestly, so a read that cannot answer costs a label rather than blocking the commit.
+  /// The fixture is NOT short-circuited here — `CommitSheet` seeds its own values, because the jj
+  /// half comes from the seeded status rather than from anything a writer could know.
+  func commitPreflight(
+    on sid: SidebarID, completion: @escaping (VCSCommitPreflight) -> Void
+  ) {
+    guard let item = selectedStatusWorkItem(for: sid) else { return completion(.none) }
+    Task {
+      guard let writer = try? VCS.writer(for: URL(fileURLWithPath: item.path, isDirectory: true))
+      else { return completion(.none) }
+      completion(await writer.commitPreflight(path: item.path))
+    }
+  }
+
   /// Optimistically reflect a PR action in the in-memory status (no `gh`): the badge/state flip
   /// immediately on click, before the command returns. The real path restores the prior PR if `gh`
   /// fails and re-probes on success; fixture mode keeps this as the final result.
