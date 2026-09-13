@@ -21,6 +21,9 @@ final class PersistentSessionService {
   /// Where new sessions go. Cached because resolving it runs the agent to check it works, and
   /// that answer does not change within a launch.
   private var cachedPreferred: SessionBackend?
+  /// Which helper owns each session, resolved once. See `backend(forSession:)` for why one answer
+  /// per session rather than one per call — a pane asks twice and the two must agree.
+  private var owners: [UUID: SessionBackend] = [:]
   private var descriptors: [UUID: SessionDescriptor] = [:]
 
   private init() {}
@@ -41,21 +44,68 @@ final class PersistentSessionService {
   /// it. Everything new goes to the agent. Nobody has to choose, and nothing is taken away
   /// mid-use.
   ///
-  /// Asked rather than remembered: a stored answer goes stale the moment a daemon exits, and being
-  /// wrong here means attaching to the wrong helper and finding no session at all.
+  /// **Resolved once per session and remembered.** It used to re-probe on every call, and one pane
+  /// asks twice — `attachCommand` for the binary, `launchEnvironment` for the socket. A daemon that
+  /// answered the first inside its 2-second deadline and missed the second handed libghostty
+  /// `workroom-session attach` pointed at `agent.sock`: the Swift daemon then binds the agent's
+  /// socket, which `SessionBackend` says cannot happen by construction, and every agent session
+  /// becomes unlistable. One answer per session is what makes the pair consistent.
+  ///
+  /// An answer cached from an `unreachable` probe pins that session to the daemon for the rest of
+  /// the launch. That is the deliberate direction — see `daemonOwnership`.
   func backend(forSession sessionID: UUID) -> SessionBackend {
-    daemonOwns(sessionID) ? .swiftDaemon : backend
+    if let known = owners[sessionID] { return known }
+    let resolved = resolveOwner(sessionID)
+    owners[sessionID] = resolved
+    return resolved
   }
 
-  /// Whether the shipped daemon is holding this session. False when it is not running, which is
-  /// the steady state once the migration has drained.
-  private func daemonOwns(_ sessionID: UUID) -> Bool {
+  private func resolveOwner(_ sessionID: UUID) -> SessionBackend {
+    // No round trip when it cannot change the answer: if new sessions go to the daemon too, then
+    // owned or not, this session's helper is the daemon. Skips a 2-second main-actor block on
+    // every pane of a build with no working agent.
+    guard backend != .swiftDaemon else { return .swiftDaemon }
+    return Self.owner(preferred: backend, daemon: daemonOwnership(sessionID))
+  }
+
+  /// Which helper a session belongs to, given where new sessions go and what the daemon said.
+  ///
+  /// Pure, and separate from the probe, because the interesting part is the RULE and the probe is
+  /// a socket round-trip no unit test should need. Note the asymmetry in the `unreachable` case —
+  /// it is the whole point and it is not a coin flip:
+  ///
+  /// - Wrong toward the daemon fails **loudly**: `workroom-session attach` finds no such session
+  ///   and the pane says so.
+  /// - Wrong toward the agent fails **silently and destructively**: the agent creates on first
+  ///   attach, so it forks a SECOND pty under the same id. The user's running shell is orphaned
+  ///   where no pane can reach it, and the new pane shows a fresh prompt as though nothing was
+  ///   lost.
+  ///
+  /// So an unanswered probe resolves to the daemon. Guessing wrong there costs an error message;
+  /// guessing wrong the other way costs the user their work.
+  /// `nonisolated` because it touches no state — the probe is the caller's job, and a pure rule
+  /// should not need the main actor to evaluate.
+  nonisolated static func owner(preferred: SessionBackend, daemon: SessionOwnership)
+    -> SessionBackend
+  {
+    switch daemon {
+    case .owned: return .swiftDaemon
+    case .notOwned: return preferred
+    case .unreachable: return .swiftDaemon
+    }
+  }
+
+  /// What the shipped daemon says about this session.
+  ///
+  /// `notOwned` — not merely "no answer" — when there is no daemon socket at all: that is the
+  /// steady state once the migration has drained, and it must not push every session at a daemon
+  /// that is not running.
+  private func daemonOwnership(_ sessionID: UUID) -> SessionOwnership {
     guard
       let identifier = SessionIdentifier(uuidString: sessionID.uuidString),
       let socketPath = existingSocketPath(for: .swiftDaemon)
-    else { return false }
-    return PersistentSessionControlClient(socketPath: socketPath).info(identifier: identifier)
-      != nil
+    else { return .notOwned }
+    return PersistentSessionControlClient(socketPath: socketPath).ownership(identifier: identifier)
   }
 
   func socketPath(for backend: SessionBackend) -> String? {
@@ -198,7 +248,13 @@ final class PersistentSessionService {
     descriptors.removeValue(forKey: sessionID)
     guard let identifier = SessionIdentifier(uuidString: sessionID.uuidString),
       let client = controlPlane(forSession: sessionID)
-    else { return true }
+    else {
+      owners.removeValue(forKey: sessionID)
+      return true
+    }
+    // Resolved above, via `controlPlane(forSession:)`, then forgotten: this session is over, and
+    // holding its owner would outlive the thing it describes.
+    defer { owners.removeValue(forKey: sessionID) }
     let killed = await Task.detached(priority: .utility) { client.kill(identifier: identifier) }
       .value
     if !killed {

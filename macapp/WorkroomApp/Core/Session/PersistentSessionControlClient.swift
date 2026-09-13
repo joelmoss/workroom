@@ -2,6 +2,18 @@ import Darwin
 import Foundation
 import WorkroomSessionProtocol
 
+/// What a daemon said about a session it was asked to account for.
+///
+/// Three states rather than a `Bool`, because "the daemon does not hold this" and "the daemon did
+/// not answer" demand opposite routing decisions and a `Bool` cannot tell them apart. See
+/// `PersistentSessionControlClient.ownership(identifier:)`.
+enum SessionOwnership {
+  case owned
+  case notOwned
+  /// No readable reply: unreachable, wedged, timed out, or answering something we cannot parse.
+  case unreachable
+}
+
 /// One-shot list/info/kill client for the session daemon. Used by the app; the helper
 /// binary has its own copy for `workroom-session list` / `kill`.
 struct PersistentSessionControlClient {
@@ -12,6 +24,28 @@ struct PersistentSessionControlClient {
       guard frame.kind == .sessions else { return nil }
       return try? SessionDescriptor.decodeList(frame.payload)
     } ?? []
+  }
+
+  /// Whether the daemon holds this session — **distinguishing "it said no" from "it never
+  /// answered"**, which `info` cannot.
+  ///
+  /// `transact` returns nil for a connect failure, a write failure, an EOF, a 2-second timeout AND
+  /// a reply that simply names no session. Folding all of those into "not owned" is what let a
+  /// slow daemon route one of its own live sessions to the agent, which creates on first attach —
+  /// so the user's running shell was orphaned and the pane showed a fresh one.
+  ///
+  /// Implemented on top of `transact` unchanged: the closure never returns nil for an answer it
+  /// could read, so a nil result can only mean no readable reply arrived. A malformed reply counts
+  /// as no reply — a frame we cannot parse is no better evidence than silence.
+  func ownership(identifier: SessionIdentifier) -> SessionOwnership {
+    transact(
+      SessionFrame(kind: .info, payload: SessionIdentifierPayload.encode(identifier))
+    ) { frame -> SessionOwnership? in
+      guard frame.kind == .sessions,
+        let descriptors = try? SessionDescriptor.decodeList(frame.payload)
+      else { return nil }
+      return descriptors.isEmpty ? .notOwned : .owned
+    } ?? .unreachable
   }
 
   func info(identifier: SessionIdentifier) -> SessionDescriptor? {
