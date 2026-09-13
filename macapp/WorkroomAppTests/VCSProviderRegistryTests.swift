@@ -93,14 +93,90 @@ final class VCSProviderRegistryTests: XCTestCase {
   }
 
   /// The trap this registration has already fallen into once, in `statusWorkItems`: a workroom's
-  /// VCS *type* is its project's, while `Workroom.vcsName` is a branch/workspace name. Registering
-  /// on `vcsName` would resolve nothing for every workroom.
+  /// VCS *type* is its project's, while `Workroom.vcsName` is a branch/workspace name.
+  ///
+  /// Driven through `entries(for:)` rather than `factory(forVCS:)`, because only this can tell the
+  /// two apart. A test that asserted `factory(forVCS: "workroom/feature") == nil` would stay green
+  /// if the registration loop were changed to read `vcsName` — it would simply register nothing for
+  /// any workroom, and the assertion would never notice. So the project here is `jj` while its
+  /// workroom's `vcsName` is a plausible-looking `"git"`: reading the wrong field resolves the
+  /// workroom to the wrong backend rather than to nothing, which is the failure that would actually
+  /// ship.
   func testWorkroomsRegisterUnderTheirProjectsVCSNotTheirOwnName() {
-    let workroom = Workroom(
-      name: "feature", path: directory.appendingPathComponent("wr").path,
-      vcsName: "workroom/feature", warnings: [])
-    XCTAssertNil(
-      VCSProviderRegistry.factory(forVCS: workroom.vcsName),
-      "vcsName is a branch name; treating it as a type must not resolve")
+    let project = Project(
+      path: directory.appendingPathComponent("proj").path,
+      vcs: "jj",
+      workrooms: [
+        Workroom(
+          name: "feature", path: directory.appendingPathComponent("proj/wr").path,
+          vcsName: "git", warnings: [])
+      ])
+
+    VCSProviderRegistry.shared.replace(with: VCSProviderRegistry.entries(for: [project]))
+
+    XCTAssertTrue(
+      VCSProviderRegistry.shared.provider(for: URL(fileURLWithPath: project.path))
+        is RustJJProvider,
+      "the project root must resolve to its own vcs")
+    XCTAssertTrue(
+      VCSProviderRegistry.shared.provider(for: URL(fileURLWithPath: project.workrooms[0].path))
+        is RustJJProvider,
+      "a jj project's workroom is a jj workspace, whatever its vcsName says")
   }
+
+  func testAnUnrecognisedProjectVCSRegistersNothing() {
+    let project = Project(
+      path: directory.appendingPathComponent("hgproj").path, vcs: "hg",
+      workrooms: [
+        Workroom(
+          name: "w", path: directory.appendingPathComponent("hgproj/w").path, vcsName: "hg",
+          warnings: [])
+      ])
+    XCTAssertTrue(
+      VCSProviderRegistry.entries(for: [project]).isEmpty,
+      "an unknown backend must fall through to the probe, not resolve to a wrong one")
+  }
+
+  /// That `apply` actually calls the registration — the link the two tests above cannot see.
+  ///
+  /// Driven through the real `reload()` with a faked CLI, so what is asserted is the observable
+  /// outcome of a list landing: a path that has no repo on disk resolves, which it cannot do
+  /// unless the projects payload reached the registry.
+  func testAListingRegistersItsProjectsThroughTheStore() async {
+    let root = directory.appendingPathComponent("listed", isDirectory: true).path
+    let workroomPath = directory.appendingPathComponent("listed/wr", isDirectory: true).path
+    let store = await AppStore(
+      cli: StubListingCLI(
+        listed: Project(
+          path: root, vcs: "git",
+          workrooms: [Workroom(name: "wr", path: workroomPath, vcsName: "main", warnings: [])])))
+
+    await store.reload()
+
+    XCTAssertTrue(
+      VCSProviderRegistry.shared.provider(for: URL(fileURLWithPath: root)) is GitProvider,
+      "the project root was never registered")
+    XCTAssertTrue(
+      VCSProviderRegistry.shared.provider(for: URL(fileURLWithPath: workroomPath)) is GitProvider,
+      "the workroom was never registered")
+  }
+}
+
+/// A CLI that answers `list` with one fixed project and does nothing else.
+private struct StubListingCLI: WorkroomCLIProtocol {
+  let listed: Project
+
+  func list(warnings: String, project: String?) async throws -> ListResponse {
+    ListResponse(projects: [listed], workroomsDir: nil, configPath: nil)
+  }
+  func addProject(_ path: String, create: Bool) async throws -> String { listed.path }
+  func create(
+    project: String, onLog: ((String) -> Void)?, onReady: ((String, String, Bool) -> Void)?
+  ) async throws -> CreateResponse {
+    CreateResponse(name: "", path: "", vcs: "git", project: project)
+  }
+  func delete(name: String, project: String, onLog: ((String) -> Void)?) async throws {}
+  func deleteProject(
+    _ path: String, withWorkrooms: Bool, fromDisk: Bool, onLog: ((String) -> Void)?
+  ) async throws -> [URL] { [] }
 }
