@@ -411,7 +411,7 @@ struct CommitSheet: View {
     summaryFocused = true
     guard !prefilled else { return }
     prefilled = true
-    guard let item = store.selectedStatusWorkItem(for: pending.sid) else { return }
+    guard store.selectedStatusWorkItem(for: pending.sid) != nil else { return }
     // The fixture's paths are not repos, so every read below would fail and the dialog would show
     // nothing — which is the state these seeds exist to keep testable. Same rationale as
     // `FixtureVCSWriter`.
@@ -425,33 +425,20 @@ struct CommitSheet: View {
       }
       return
     }
-    Task {
-      // Off the main actor: both of these touch the filesystem.
-      let parked = await Task.detached {
-        CLIVCSWriter.sequencerState(gitDir: CLIVCSWriter.worktreeGitDir(at: item.path))
-      }.value
-      if !isJJ { sequencer = parked }
-
-      if isJJ {
-        let result = await StatusCommandRunner().run(
-          "jj", CLIVCSWriter.jjDescriptionArgs(), in: item.path, timeout: 5)
-        guard result.ok else { return }
-        let existing = CommitDraft.split(message: result.stdout)
-        // Never clobber something typed while the read was in flight.
-        if summary.isEmpty && messageBody.isEmpty {
-          summary = existing.summary
-          messageBody = existing.body
-          // Kept verbatim so an untouched Describe re-records the message byte for byte — see
-          // `CommitDraft.message(summary:body:preserving:)`.
-          originalMessage = result.stdout
-        }
-      } else {
-        let result = await StatusCommandRunner().run(
-          "git", CLIVCSWriter.gitHeadSubjectArgs(), in: item.path, timeout: 5)
-        guard result.ok else { return }
-        let subject = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        amendTarget = subject.isEmpty ? nil : subject
-      }
+    // One ask, through the writer. This used to spawn `git`/`jj` and stat a `.git` directory from
+    // here, which works only for a repo on this Mac — see `VCSWriting.commitPreflight`.
+    store.commitPreflight(on: pending.sid) { preflight in
+      sequencer = preflight.sequencer
+      amendTarget = preflight.amendTarget
+      guard let message = preflight.currentMessage else { return }
+      // Never clobber something typed while the read was in flight.
+      guard summary.isEmpty, messageBody.isEmpty else { return }
+      let existing = CommitDraft.split(message: message)
+      summary = existing.summary
+      messageBody = existing.body
+      // Kept verbatim so an untouched Describe re-records the message byte for byte — see
+      // `CommitDraft.message(summary:body:preserving:)`.
+      originalMessage = message
     }
   }
 

@@ -217,6 +217,35 @@ enum VCSCommitFailure: Equatable, Sendable {
   case other(String)
 }
 
+/// What the commit dialog needs to know about a repo before it writes to it.
+///
+/// One value rather than three protocol methods because the dialog asks once, on appear, and every
+/// field is answered from the same repo at the same moment — three calls would be three round trips
+/// for one screen, and for a remote workroom that is three stream round trips.
+///
+/// Each field is backend-scoped, and the absent ones are `nil` rather than empty: git has no `@`
+/// description and jj has neither an amend target nor a git sequencer. The dialog already knows
+/// which backend it is looking at (`PendingCommit.vcs`), so it reads only the fields that apply.
+struct VCSCommitPreflight: Equatable, Sendable {
+  /// A parked merge/cherry-pick/revert/rebase/bisect, named for the user — git only. `commit`
+  /// refuses outright while one is parked (`VCSCommitFailure.sequencerInProgress`), so the dialog
+  /// says so up front instead of letting someone compose a whole message to be told at the click.
+  let sequencer: String?
+  /// The subject of the commit `.amendMessage` would rewrite — git only. Shown so the message being
+  /// destroyed is visible BEFORE the click rather than recoverable only from the reflog.
+  let amendTarget: String?
+  /// `@`'s description — jj only, and **verbatim**, not split or trimmed.
+  ///
+  /// The byte-exactness is load-bearing, not tidiness: `CommitDraft.split` and `.message` are
+  /// deliberately not inverses (a stored `"one\ntwo"` rejoins as `"one\n\ntwo"`), so
+  /// `CommitDraft.message(summary:body:preserving:)` compares against the original to tell "the user
+  /// edited this" from "the user opened the dialog and pressed Describe". Normalising here would
+  /// rewrite a message nobody touched.
+  let currentMessage: String?
+
+  static let none = VCSCommitPreflight(sequencer: nil, amendTarget: nil, currentMessage: nil)
+}
+
 /// The seam for VCS operations that **write** — remote state reads plus fetch/push/pull.
 ///
 /// Separate from `VCSProviding` on purpose. That protocol's doc calls it "the single seam the app
@@ -262,12 +291,35 @@ protocol VCSWriting: Sendable {
   /// Selected paths whose STAGED content a commit would silently discard, so the caller can confirm
   /// first. Empty when there is nothing at risk. See `CLIVCSWriter.stagedContentAtRisk`.
   func stagedContentAtRisk(path: String, files: [ChangedFile]) async -> [String]
+
+  /// What the commit dialog shows before it writes — see `VCSCommitPreflight`.
+  ///
+  /// **Here rather than on `VCSProviding`, even though every field is a read.** The same reasoning
+  /// that put `stagedContentAtRisk` here: these are facts about whether and how a WRITE will land,
+  /// asked by the one screen that is about to perform one, and two of the three have no meaning
+  /// outside that question. It also keeps the git sequencer check — a `.git` directory listing —
+  /// behind the seam rather than in a View, which is what made the dialog fail for any path not on
+  /// this Mac (issue #154, Phase 2).
+  ///
+  /// Deliberately NOT served by `VCSProviding.log(limit: 1)`, which could otherwise answer both
+  /// message fields: it returns `VCSCommit.summary` + `.body`, already split and trimmed, and jj's
+  /// description has to survive byte for byte. See `VCSCommitPreflight.currentMessage`.
+  func commitPreflight(path: String) async -> VCSCommitPreflight
 }
 
 extension VCSWriting {
   /// Test doubles and the fixture have no index to put anything at risk — same reasoning as
   /// `runNetwork`'s default, so they stay short.
   func stagedContentAtRisk(path: String, files: [ChangedFile]) async -> [String] { [] }
+
+  /// Default: nothing to report, so the dialog opens with empty fields.
+  ///
+  /// Non-throwing, unlike `VCSProviding.workingStatus`'s default, and the difference is deliberate.
+  /// A wrong `workingStatus` default reports every workroom clean — a plausible-looking lie that
+  /// survives a release. Every field here is optional and the dialog renders each one's absence
+  /// honestly: no amend label, no parked-operation notice, an empty message box. A conformer that
+  /// forgets this degrades visibly and cannot mislabel anything.
+  func commitPreflight(path: String) async -> VCSCommitPreflight { .none }
 }
 
 extension VCS {
@@ -1895,6 +1947,31 @@ struct CLIVCSWriter: VCSWriting, Sendable {
     guard result.ok else { return [] }
     return Self.stagedContentAtRisk(
       porcelainZ: result.stdout, selecting: Set(files.map(\.path)))
+  }
+
+  /// What the commit dialog shows before it writes. Ungated and read-only: the jj side carries
+  /// `jjReadFlags` so populating a text field cannot take the working-copy lock, and the git side is
+  /// a `rev-parse`-class read plus a directory listing.
+  ///
+  /// Each backend answers only its own fields, which is why the sequencer check is git-only here
+  /// even though `sequencerState` would happily run against a colocated jj root: the dialog
+  /// discards it for jj (a jj commit is not path-limited, so a parked git operation does not block
+  /// it), and computing an answer nobody reads is how a check ends up silently changing meaning.
+  func commitPreflight(path: String) async -> VCSCommitPreflight {
+    if vcs == "jj" {
+      let result = await run(Self.jjDescriptionArgs(), in: path, timeout: refTimeout)
+      // Verbatim — no trim. See `VCSCommitPreflight.currentMessage`.
+      return VCSCommitPreflight(
+        sequencer: nil, amendTarget: nil, currentMessage: result.ok ? result.stdout : nil)
+    }
+    let head = await run(Self.gitHeadSubjectArgs(), in: path, timeout: refTimeout)
+    let subject =
+      head.ok ? head.stdout.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+    return VCSCommitPreflight(
+      sequencer: Self.sequencerState(gitDir: Self.worktreeGitDir(at: path)),
+      // Empty on an unborn branch — a repo with no commits has nothing to amend.
+      amendTarget: subject.isEmpty ? nil : subject,
+      currentMessage: nil)
   }
 
   /// The current ref, for the before/after comparison. Ungated and cheap: git's `rev-parse` touches
