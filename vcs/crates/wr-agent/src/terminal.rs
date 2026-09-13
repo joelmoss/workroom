@@ -750,4 +750,40 @@ mod tests {
             Some(30)
         );
     }
+
+    /// The precondition behind `attach`'s chunking: a repaint really can exceed the protocol's
+    /// 1 MiB frame cap, so this is a reachable state and not a theoretical one.
+    ///
+    /// `Frame::encode` PANICS above that cap rather than truncating, and `attach` builds the
+    /// repaint frame while holding the attachment mutex — so an unchunked oversized replay
+    /// poisons that mutex and the session's reader thread dies on its next chunk, leaving the pty
+    /// undrained and the shell blocked on write for every client on it.
+    ///
+    /// Styled rather than plain: the formatter emits an SGR run per colour change, so colour is
+    /// what makes a screen expensive. A large window running a heavily-coloured TUI is the real
+    /// shape of this.
+    #[test]
+    fn a_repaint_can_exceed_the_frame_cap() {
+        let mut terminal = ShadowTerminal::new(400, 200).expect("terminal");
+        // Alternating 256-colour foreground per cell, so no two adjacent cells share a run.
+        let mut paint = Vec::new();
+        for row in 0..200u32 {
+            for column in 0..400u32 {
+                let colour = ((row * 400 + column) % 255) + 1;
+                paint.extend_from_slice(format!("\x1b[38;5;{colour}mX").as_bytes());
+            }
+            if row < 199 {
+                paint.extend_from_slice(b"\r\n");
+            }
+        }
+        terminal.write(&paint);
+
+        assert!(
+            terminal.replay().len() > crate::protocol::frame::MAX_PAYLOAD_SIZE,
+            "a 400x200 styled screen replayed in {} bytes, under the {} cap — the fixture no \
+             longer reproduces the condition `attach`'s chunking exists for",
+            terminal.replay().len(),
+            crate::protocol::frame::MAX_PAYLOAD_SIZE
+        );
+    }
 }

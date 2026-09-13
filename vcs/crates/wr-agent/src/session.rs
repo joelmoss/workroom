@@ -314,9 +314,36 @@ impl SessionStore {
             let mut attached = attached.lock().expect("attachment lock poisoned");
             let replay = shadow.lock().map(|s| s.replay()).unwrap_or_default();
             if !replay.is_empty() {
-                let bytes = terminal_envelope(stream, Frame::new(FrameKind::Output, replay));
                 if let Ok(mut writer) = writer.lock() {
-                    let _ = writer.write_all(&bytes).and_then(|()| writer.flush());
+                    // CHUNKED, because `replay()` has no size bound and `Frame::encode` PANICS
+                    // above the 1 MiB cap rather than truncating.
+                    //
+                    // A repaint is two full screens — `primary_screen()` plus the active one, each
+                    // with per-cell SGR runs, palette, modes and tabstops — so a large window
+                    // showing a heavily-styled TUI crosses the cap. The panic would unwind out of
+                    // here still holding this guard, poisoning the mutex; `read_session` then hits
+                    // its own `.expect` on the next chunk and dies, so the pty is never drained
+                    // again and the shell blocks on write. One oversized repaint would take the
+                    // whole session down for every client on it, permanently.
+                    //
+                    // Chunking rather than truncating: terminal output is a byte stream, the live
+                    // path already delivers it in arbitrary `READ_CHUNK`-sized pieces, and the
+                    // envelope codec is explicitly built to survive a stream that chunks
+                    // arbitrarily. A truncated repaint would instead leave the client's parser
+                    // mid-sequence with the continuation record never arriving.
+                    for chunk in replay.chunks(READ_CHUNK) {
+                        let bytes = terminal_envelope(
+                            stream,
+                            Frame::new(FrameKind::Output, chunk.to_vec()),
+                        );
+                        if writer
+                            .write_all(&bytes)
+                            .and_then(|()| writer.flush())
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
                 }
             }
             attached.clients.push(Client {
@@ -607,6 +634,13 @@ fn terminal_envelope(stream: u32, frame: Frame) -> Vec<u8> {
 /// It also ends the session when the shell exits, whether or not anyone is watching. Previously a
 /// shell that died while detached left a session in the list that nothing could ever be attached
 /// to.
+/// How much output travels in one frame.
+///
+/// The pty reader's buffer, and also the repaint's chunk size in `attach` — both must stay under
+/// the protocol's 1 MiB frame cap, which `Frame::encode` enforces with a panic rather than a
+/// truncation. Sharing one constant means the two paths cannot drift apart.
+const READ_CHUNK: usize = 8192;
+
 fn read_session(
     id: SessionId,
     pty: Arc<Pty>,
@@ -614,7 +648,7 @@ fn read_session(
     attached: Arc<Mutex<Attached>>,
     store: Arc<Mutex<HashMap<SessionId, Session>>>,
 ) {
-    let mut buffer = [0u8; 8192];
+    let mut buffer = [0u8; READ_CHUNK];
     loop {
         let read = pty.read(&mut buffer);
 
@@ -1383,6 +1417,68 @@ mod tests {
         let second: Vec<SessionId> = store.list().into_iter().map(|i| i.id).collect();
         assert_eq!(first, second);
         assert_eq!(first, vec![id(1), id(3), id(7), id(9)]);
+        store.kill_all();
+    }
+
+    /// An oversized repaint must not take the session down.
+    ///
+    /// `replay()` has no size bound and `Frame::encode` PANICS above the 1 MiB cap. `attach`
+    /// builds that frame while holding the attachment mutex, so before chunking, one big window
+    /// showing a styled TUI poisoned the mutex on unwind — and `read_session`'s own `.expect` on
+    /// the same lock then killed the reader thread, leaving the pty undrained and the shell
+    /// blocked on write for EVERY client on that session, permanently.
+    ///
+    /// The shadow is painted directly rather than through the pty: the fixture has to reliably
+    /// exceed a megabyte, and driving a real shell to emit that much styled output is slow and
+    /// load-dependent. `terminal::tests::a_repaint_can_exceed_the_frame_cap` pins that this size
+    /// is reachable from real output.
+    ///
+    /// Asserting the reader is still ALIVE afterwards is the point — a test that only checked
+    /// `attach` returned `Ok` would pass against a version that poisoned the lock, because the
+    /// poisoning kills the reader rather than the attacher.
+    #[cfg(feature = "terminal-state")]
+    #[test]
+    fn an_oversized_repaint_does_not_wedge_the_session() {
+        let store = SessionStore::new();
+        let args = [
+            OsString::from("-c"),
+            OsString::from("sleep 0.3; echo still-draining; sleep 5"),
+        ];
+        let e = env();
+        let mut spec = spec(id(71), &args, &e);
+        spec.columns = 400;
+        spec.rows = 200;
+        store.create(spec).expect("create");
+
+        // Paint the shadow past the frame cap: an SGR run per cell, so nothing coalesces.
+        let (_, shadow, _) = store.parts(id(71)).expect("parts");
+        {
+            let mut shadow = shadow.lock().expect("shadow");
+            let mut paint = Vec::new();
+            for row in 0..200u32 {
+                for column in 0..400u32 {
+                    let colour = ((row * 400 + column) % 255) + 1;
+                    paint.extend_from_slice(format!("\x1b[38;5;{colour}mX").as_bytes());
+                }
+                if row < 199 {
+                    paint.extend_from_slice(b"\r\n");
+                }
+            }
+            shadow.write(&paint);
+            assert!(
+                shadow.replay().len() > crate::protocol::frame::MAX_PAYLOAD_SIZE,
+                "fixture no longer exceeds the cap, so this proves nothing"
+            );
+        }
+
+        let (capture, _) = attach_capture(&store, id(71));
+
+        // The reader is still running: output produced AFTER the repaint still arrives. This is
+        // what fails when the attachment mutex has been poisoned.
+        assert!(
+            wait_for(&capture, "still-draining", Duration::from_secs(5)).contains("still-draining"),
+            "the pty stopped draining after the repaint — the session is wedged"
+        );
         store.kill_all();
     }
 }
