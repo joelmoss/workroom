@@ -34,8 +34,6 @@ enum ChecksResolution: Equatable, Sendable {
 /// on `VCSProviding`. It is on it now and both return `WorkroomStatus`, so the split has nothing
 /// left to express. A single seam is also the precondition for a third implementation — a remote
 /// backend cannot satisfy a protocol whose shape depends on which backend it is.
-typealias WorkingStatusReading = VCSWorkingStatusReading
-
 protocol VCSWorkingStatusReading: Sendable {
   func workingStatus(root: URL) throws -> WorkroomStatus
 }
