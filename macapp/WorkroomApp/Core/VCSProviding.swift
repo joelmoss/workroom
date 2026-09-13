@@ -135,7 +135,7 @@ enum VCS {
   }
 }
 
-/// What each known repo root's provider is, so routing does not have to be inferred from the
+/// Which VCS backend each known repo root uses, so routing does not have to be inferred from the
 /// local filesystem.
 ///
 /// **Why this exists.** `VCS.repoKind(at:)` classifies a repo by looking for `.jj`/`.git` under the
@@ -150,9 +150,11 @@ enum VCS {
 /// has a `Workroom`; passing one through would be the host-threading cost wearing this design's
 /// name. Paths are standardised on both write and read so `/tmp/x` and `/private/tmp/x/` agree.
 ///
-/// **Factories, not instances.** Both current providers are stateless structs, so it makes no
-/// difference today — but a remote provider will close over a connection, and a stored instance
-/// would fix its lifetime to the registry's rather than the workroom's.
+/// **It stores the backend NAME, not a provider factory.** Both `VCS.provider(for:)` and
+/// `VCS.writer(for:)` have to route, and they need different things out of it — a `VCSProviding`
+/// and a `CLIVCSWriter(vcs:)` string respectively. Registering the name and deriving both keeps one
+/// fact behind both answers; registering a provider factory would leave the writer with nothing to
+/// read and send it back to the filesystem probe, which is the hole this type exists to close.
 final class VCSProviderRegistry: @unchecked Sendable {
   static let shared = VCSProviderRegistry()
 
@@ -160,26 +162,39 @@ final class VCSProviderRegistry: @unchecked Sendable {
   /// on the main actor, so the map is lock-guarded — the same shape as `SessionBackendProbe`'s
   /// `Atomic`.
   private let lock = NSLock()
-  private var factories: [String: @Sendable () -> VCSProviding] = [:]
+  private var backends: [String: String] = [:]
 
   /// Replaces the whole map. Rebuilt wholesale on every `list --json` rather than diffed: the
   /// projects payload is the complete truth about what exists, and a diff would have to invent a
   /// removal rule to match it.
-  func replace(with entries: [String: @Sendable () -> VCSProviding]) {
+  ///
+  /// **An unrecognised name is dropped here, not just in `entries(for:)`.** Storing one would be
+  /// harmless while the registry only answered `provider(for:)` — an unknown name resolves to no
+  /// provider and the path falls through to the probe. It stopped being harmless when
+  /// `VCS.writer(for:)` started reading the same map: a stored `"hg"` would build
+  /// `CLIVCSWriter(vcs: "hg")`, which spawns a binary called `hg` with git's arguments. The guard
+  /// is on the way in, where every caller passes, rather than on each of the two ways out.
+  func replace(with entries: [String: String]) {
     let keyed = Dictionary(
-      entries.map { (Self.key($0.key), $0.value) }, uniquingKeysWith: { _, last in last })
-    lock.withLock { factories = keyed }
+      entries.filter { Self.factory(forVCS: $0.value) != nil }
+        .map { (Self.key($0.key), $0.value) }, uniquingKeysWith: { _, last in last })
+    lock.withLock { backends = keyed }
+  }
+
+  /// The backend a repo root declares, or nil when nothing has declared one. `"git"` or `"jj"` —
+  /// `replace` refuses anything else, so a caller never has to re-check.
+  func vcs(for root: URL) -> String? {
+    lock.withLock { backends[Self.key(root.path)] }
   }
 
   func provider(for root: URL) -> VCSProviding? {
-    let key = Self.key(root.path)
-    guard let make = lock.withLock({ factories[key] }) else { return nil }
-    return make()
+    guard let vcs = vcs(for: root) else { return nil }
+    return Self.factory(forVCS: vcs)?()
   }
 
   /// Test seam: drop everything, so a test that registered a stub cannot leak into the next one.
   func removeAll() {
-    lock.withLock { factories.removeAll() }
+    lock.withLock { backends.removeAll() }
   }
 
   /// `/tmp` is a symlink to `/private/tmp` on macOS and a registered path may or may not have a
@@ -199,14 +214,15 @@ final class VCSProviderRegistry: @unchecked Sendable {
   /// Both roots are included because both are asked for a provider: the sidebar's root row resolves
   /// through `BranchResolver` exactly as a workroom does. A project whose vcs is unrecognised
   /// contributes nothing, so its paths keep falling through to the filesystem probe rather than
-  /// resolving to a confidently wrong backend.
-  static func entries(for projects: [Project]) -> [String: @Sendable () -> VCSProviding] {
-    var entries: [String: @Sendable () -> VCSProviding] = [:]
+  /// resolving to a confidently wrong backend. (`replace` refuses such a name too; this filter is
+  /// what makes the rule true of `entries(for:)` read on its own.)
+  static func entries(for projects: [Project]) -> [String: String] {
+    var entries: [String: String] = [:]
     for project in projects {
-      guard let factory = factory(forVCS: project.vcs) else { continue }
-      entries[project.path] = factory
+      guard factory(forVCS: project.vcs) != nil else { continue }
+      entries[project.path] = project.vcs
       for workroom in project.workrooms {
-        entries[workroom.path] = factory
+        entries[workroom.path] = project.vcs
       }
     }
     return entries

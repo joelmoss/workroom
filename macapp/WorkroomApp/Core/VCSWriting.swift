@@ -271,13 +271,25 @@ extension VCSWriting {
 }
 
 extension VCS {
-  /// The writer for a repo, or a typed error for an unsupported path. Mirrors `provider(for:)`, and
-  /// routes on the same `repoKind(at:)`.
+  /// The writer for a repo, or a typed error for an unsupported path.
+  ///
+  /// Mirrors `provider(for:)` exactly, registry included: **the declaration is consulted first and
+  /// `repoKind(at:)` is the fallback.** The probe answers by looking for `.jj`/`.git` on THIS Mac,
+  /// so it reports `.unsupported` for every path in a remote workroom — and this was the last
+  /// routing site still asking it (issue #154, Phase 2). `VCSProviderRegistry` stores the backend
+  /// name rather than a provider factory precisely so this call has something to read.
+  ///
+  /// Nothing is registered until a `list --json` lands, and a purely local session then registers
+  /// only what it already resolves to, so the probe's answers are unchanged. This is the seam, not
+  /// the feature.
   static func writer(
     for root: URL, runner: StatusCommandRunning = StatusCommandRunner(),
     makeProvider: @escaping @Sendable (URL) throws -> VCSProviding = { try VCS.provider(for: $0) },
     gate: JJSnapshotGate = .shared
   ) throws -> VCSWriting {
+    if let vcs = VCSProviderRegistry.shared.vcs(for: root) {
+      return CLIVCSWriter(vcs: vcs, runner: runner, makeProvider: makeProvider, gate: gate)
+    }
     switch repoKind(at: root) {
     case .jjColocated, .jjNonColocated:
       return CLIVCSWriter(vcs: "jj", runner: runner, makeProvider: makeProvider, gate: gate)
