@@ -157,6 +157,29 @@ final class VCSProviderRegistry: @unchecked Sendable {
     URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
   }
 
+  /// What every repo in `projects` resolves to: the project root and each of its workrooms, all
+  /// under the PROJECT's vcs.
+  ///
+  /// Pure and separate from `AppStore` so it can be tested as itself — the rule it encodes is the
+  /// one that has already been got wrong once (see `factory(forVCS:)`), and a test that only
+  /// exercised `factory(forVCS:)` would stay green if this loop read `workroom.vcsName` instead.
+  ///
+  /// Both roots are included because both are asked for a provider: the sidebar's root row resolves
+  /// through `BranchResolver` exactly as a workroom does. A project whose vcs is unrecognised
+  /// contributes nothing, so its paths keep falling through to the filesystem probe rather than
+  /// resolving to a confidently wrong backend.
+  static func entries(for projects: [Project]) -> [String: @Sendable () -> VCSProviding] {
+    var entries: [String: @Sendable () -> VCSProviding] = [:]
+    for project in projects {
+      guard let factory = factory(forVCS: project.vcs) else { continue }
+      entries[project.path] = factory
+      for workroom in project.workrooms {
+        entries[workroom.path] = factory
+      }
+    }
+    return entries
+  }
+
   /// The provider a `Project.vcs` string names. `"git"` and `"jj"` are the only values the CLI
   /// emits (`WorkroomStatusResolver.resolveLocal` switches on the same two).
   ///

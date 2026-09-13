@@ -3032,24 +3032,10 @@ final class AppStore: ObservableObject {
   ///
   /// Here because `apply` is where the complete project list arrives, and the whole map is replaced
   /// rather than merged for the same reason: this payload IS the set of repos that exist, so a
-  /// project removed from it should stop resolving.
-  ///
-  /// Both the project root and each of its workrooms are registered, because both are asked for a
-  /// provider — the sidebar's root row resolves through `BranchResolver` exactly as a workroom
-  /// does. All of them take the PROJECT's vcs: a git project's workrooms are git worktrees and a
-  /// jj project's are jj workspaces.
+  /// project removed from it should stop resolving. The mapping itself lives on the registry so it
+  /// can be tested without a store.
   private func registerVCSProviders(for projects: [Project]) {
-    var entries: [String: @Sendable () -> VCSProviding] = [:]
-    for project in projects {
-      // An unrecognised vcs string registers nothing, so those paths keep falling through to the
-      // filesystem probe rather than resolving to a confidently wrong backend.
-      guard let factory = VCSProviderRegistry.factory(forVCS: project.vcs) else { continue }
-      entries[project.path] = factory
-      for workroom in project.workrooms {
-        entries[workroom.path] = factory
-      }
-    }
-    VCSProviderRegistry.shared.replace(with: entries)
+    VCSProviderRegistry.shared.replace(with: VCSProviderRegistry.entries(for: projects))
   }
 
   private func applyingDeletionTombstones(_ projects: [Project]) -> [Project] {
