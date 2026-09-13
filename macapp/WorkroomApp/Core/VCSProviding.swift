@@ -13,6 +13,12 @@ enum VCSWorkingDiffBase: Sendable, Equatable {
 /// The single seam the app reads VCS data through. Two implementations — `RustJJProvider` (jj, over
 /// the Rust/UniFFI core) and `GitProvider` (git, over SwiftGitX) — both return the app-native models
 /// in `VCSModels.swift`. Views/models depend on this protocol, not on either backend.
+///
+/// `workingStatus` was for a long time the one VCS read NOT on here, because the two backends
+/// returned differently-shaped concrete types and `WorkroomStatusResolver` bridged each by hand. It
+/// is on here now: a protocol whose shape depends on which backend implements it is one a third
+/// implementation cannot satisfy, and a remote backend is exactly that third implementation
+/// (issue #154, Phase 2).
 protocol VCSProviding: Sendable {
   /// A bounded, newest-first page of history.
   ///
@@ -46,6 +52,20 @@ protocol VCSProviding: Sendable {
   /// absent / unsupported base / binary / over cap → deletions render plain.
   func workingBaseFileContent(root: URL, base: VCSWorkingDiffBase, path: String) async throws
     -> String?
+  /// The working copy's status: dirty flag, changed files, ± line counts, and the branch CI should
+  /// be looked up for. Synchronous and throwing, with no timeout of its own — callers that need one
+  /// wrap it (`WorkroomStatusResolver` bounds it with `withTimeout` and, for jj, serialises it
+  /// through `JJSnapshotGate`).
+  ///
+  /// **The one read that mutates, on jj.** jj's working copy is itself a commit, so on-disk edits do
+  /// not exist to jj-lib until snapshotted — this takes the working-copy lock and rewrites `@`.
+  /// Every other method on this protocol is read-only. That asymmetry is why the resolver gates this
+  /// one per project root and none of the others.
+  ///
+  /// Returns a `WorkroomStatus` with `ci`, `failure` and `localReadAt` unset: those are the
+  /// resolver's to fill, not a backend's.
+  func workingStatus(root: URL) throws -> WorkroomStatus
+
   /// The repo's current ref for the sidebar root-row label — the `@` bookmark / nearest ancestor
   /// bookmark (jj) or current branch / short SHA (git). Read-only; must not take the jj working-copy
   /// lock (backs `BranchResolver`).
@@ -53,6 +73,18 @@ protocol VCSProviding: Sendable {
 }
 
 extension VCSProviding {
+  /// Default: **throws**, rather than reporting a clean working copy.
+  ///
+  /// The two real backends both implement this; the default exists for conformers that are not a
+  /// VCS at all — the test stubs that drive History and diff resolution, which never ask for
+  /// status. It throws rather than returning an empty `WorkroomStatus` on purpose: a backend that
+  /// silently reported every workroom clean would look like a working app with a broken badge,
+  /// which is the kind of failure that survives a whole release. A throw surfaces as
+  /// `.notRepository` on the row instead.
+  func workingStatus(root: URL) throws -> WorkroomStatus {
+    throw VCSError.unsupportedRepo("\(Self.self) does not implement workingStatus")
+  }
+
   /// Default: no pre-image source, so deletions render plain. `GitProvider`/`RustJJProvider` override
   /// these; other conformers (tests, fixtures) inherit the no-op.
   func commitParentFileContent(root: URL, commitID: String, path: String) async throws -> String? {

@@ -142,10 +142,12 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
     let dir = try gitRepoWithUpstream()
     sh("echo two >> a.txt && echo new > untr.txt", in: dir)  // modify tracked + add untracked
     let ws = try GitProvider().workingStatus(root: URL(fileURLWithPath: dir))
-    XCTAssertTrue(ws.dirty)
+    XCTAssertEqual(ws.dirty, true)
     XCTAssertFalse(ws.conflicted)
-    XCTAssertEqual(ws.branch, "main")
-    let byChange = Dictionary(grouping: ws.files, by: \.change).mapValues { $0.map(\.path) }
+    XCTAssertEqual(ws.branchForCI, "main")
+    let byChange = Dictionary(grouping: ws.changedFiles ?? [], by: \.change).mapValues {
+      $0.map(\.path)
+    }
     XCTAssertEqual(byChange[.modified], ["a.txt"])
     XCTAssertEqual(byChange[.untracked], ["untr.txt"])
     // `git diff HEAD` counts the tracked modification (one added line); untracked is excluded.
@@ -156,9 +158,9 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
   func testGitProviderWorkingStatusClean() throws {
     let dir = try gitRepoWithUpstream()
     let ws = try GitProvider().workingStatus(root: URL(fileURLWithPath: dir))
-    XCTAssertFalse(ws.dirty)
-    XCTAssertTrue(ws.files.isEmpty)
-    XCTAssertEqual(ws.branch, "main")
+    XCTAssertEqual(ws.dirty, false)
+    XCTAssertTrue((ws.changedFiles ?? []).isEmpty)
+    XCTAssertEqual(ws.branchForCI, "main")
     // A clean tree is a real `(0, 0)` read, NOT an unanswerable `nil` — `nil` is reserved for a failed
     // read, and the badge presentation distinguishes them.
     XCTAssertEqual(ws.insertions, 0)
@@ -208,7 +210,9 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
       numstat, "0\t0\tbig.txt => moved.txt", "git pairs the rename and counts no lines for it")
 
     let ws = try GitProvider().workingStatus(root: URL(fileURLWithPath: dir))
-    XCTAssertEqual(ws.files.map(\.change), [.renamed], "the file list pairs it: \(ws.files)")
+    XCTAssertEqual(
+      (ws.changedFiles ?? []).map(\.change), [.renamed],
+      "the file list pairs it: \(ws.changedFiles ?? [])")
     XCTAssertEqual(ws.insertions, 0, "a rename inserts nothing")
     XCTAssertEqual(ws.deletions, 0, "a rename deletes nothing")
   }
@@ -242,8 +246,8 @@ final class WorkroomStatusIntegrationTests: XCTestCase {
     sh("printf 'one\\ntwo\\n' > a.txt && git add a.txt", in: dir)
 
     let ws = try GitProvider().workingStatus(root: URL(fileURLWithPath: dir))
-    XCTAssertTrue(ws.dirty)
-    XCTAssertNil(ws.branch, "an unborn branch has no commit for CI to look up")
+    XCTAssertEqual(ws.dirty, true)
+    XCTAssertNil(ws.branchForCI, "an unborn branch has no commit for CI to look up")
     XCTAssertEqual(ws.insertions, 2, "both staged lines count against the empty tree")
     XCTAssertEqual(ws.deletions, 0)
   }

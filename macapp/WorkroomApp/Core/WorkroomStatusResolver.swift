@@ -25,21 +25,22 @@ enum ChecksResolution: Equatable, Sendable {
   case keepPrior
 }
 
-/// `resolveGit`'s native status seam (mirrors `StatusCommandRunning`'s role for the CLI-shelling
-/// probes) — real reads via `GitProvider`, a gated/counting double in tests.
-protocol GitStatusReading: Sendable {
-  func workingStatus(root: URL) throws -> GitWorkingStatus
-}
-extension GitProvider: GitStatusReading {}
+/// `resolveGit`/`resolveJJ`'s native status seam (mirrors `StatusCommandRunning`'s role for the
+/// CLI-shelling probes) — real reads via `GitProvider`/`RustJJProvider`, a gated/counting double in
+/// tests.
+///
+/// ONE protocol, where there were two. They were separate because the two backends' `workingStatus`
+/// returned different concrete types, which is also why `workingStatus` was the one VCS read never
+/// on `VCSProviding`. It is on it now and both return `WorkroomStatus`, so the split has nothing
+/// left to express. A single seam is also the precondition for a third implementation — a remote
+/// backend cannot satisfy a protocol whose shape depends on which backend it is.
+typealias WorkingStatusReading = VCSWorkingStatusReading
 
-/// `resolveJJ`'s native status seam — real reads via `RustJJProvider`, a gated/counting double in
-/// tests. A separate protocol from `GitStatusReading` because the two backends' `workingStatus`
-/// return different concrete types (see "Unify `workingStatus` onto the `VCSProviding` protocol"
-/// in TODOS.md) — this seam doesn't need them unified, just each independently injectable.
-protocol JJStatusReading: Sendable {
+protocol VCSWorkingStatusReading: Sendable {
   func workingStatus(root: URL) throws -> WorkroomStatus
 }
-extension RustJJProvider: JJStatusReading {}
+extension GitProvider: VCSWorkingStatusReading {}
+extension RustJJProvider: VCSWorkingStatusReading {}
 
 /// Resolves a workroom's VCS + CI status app-side by shelling to git/jj/gh. App-side (not in
 /// the `workroom --json` contract) for the same reasons as `BranchResolver`: GUI-only, keeps
@@ -57,8 +58,8 @@ struct WorkroomStatusResolver: Sendable {
   /// `RustJJProvider`), a gated/counting double in tests. `workingStatus` isn't on `VCSProviding`
   /// (the two backends return different concrete types today — see "Unify `workingStatus` onto the
   /// `VCSProviding` protocol" in TODOS.md), so this is its own pair of seams, not that protocol.
-  var gitStatus: GitStatusReading
-  var jjStatus: JJStatusReading
+  var gitStatus: VCSWorkingStatusReading
+  var jjStatus: VCSWorkingStatusReading
 
   /// How long `resolveJJ` waits its turn behind other same-project jj snapshots, before the row
   /// reports `.timeout`. Deliberately larger than `timeout`: with the gate serializing a busy
@@ -70,7 +71,8 @@ struct WorkroomStatusResolver: Sendable {
   init(
     runner: StatusCommandRunning = StatusCommandRunner(), timeout: TimeInterval = 3,
     ciTimeout: TimeInterval = 10, gate: JJSnapshotGate = .shared,
-    gitStatus: GitStatusReading = GitProvider(), jjStatus: JJStatusReading = RustJJProvider()
+    gitStatus: VCSWorkingStatusReading = GitProvider(),
+    jjStatus: VCSWorkingStatusReading = RustJJProvider()
   ) {
     self.runner = runner
     self.timeout = timeout
@@ -143,9 +145,7 @@ struct WorkroomStatusResolver: Sendable {
         let gitStatus = self.gitStatus
         return try await runBlocking { try gitStatus.workingStatus(root: root) }
       }
-      return WorkroomStatus(
-        dirty: ws.dirty, conflicted: ws.conflicted, changedFiles: ws.files,
-        insertions: ws.insertions, deletions: ws.deletions, branchForCI: ws.branch)
+      return ws
     } catch is VCSTimeoutError, is VCSCancellationError {
       return WorkroomStatus(dirty: nil, failure: .timeout)
     } catch let error as VCSError {

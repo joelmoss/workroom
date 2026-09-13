@@ -1488,7 +1488,7 @@ jj via jj-lib regions or `compute(old,new)` fed by `fileContent`. Reuse the exis
 
 **Priority:** P3 (build when a feature — ignore-whitespace / word-diff / staging / diff-edit — needs it).
 
-### Unify `workingStatus` onto the `VCSProviding` protocol (macapp) — VCS-foundation follow-up
+### Unify `workingStatus` onto the `VCSProviding` protocol (macapp) — VCS-foundation follow-up — FIXED
 
 **What:** `workingStatus` is the one VCS read that never made it onto the `VCSProviding` protocol.
 `GitProvider.workingStatus` returns a git-shaped `GitWorkingStatus`; `RustJJProvider.workingStatus`
@@ -1501,6 +1501,19 @@ protocol with one app-native return; `workingStatus` is the odd one out. Unifyin
 special-casing in the resolver and lets a future backend (or a mock) satisfy status through the same
 seam. `GitWorkingStatus` (`GitProvider.swift:335`) is explicitly a placeholder — its own doc says the
 jj status "unifies onto a shared `VCSProviding.workingStatus` in the follow-on."
+
+**Fixed.** `workingStatus(root:)` is on `VCSProviding`; `GitProvider` returns `WorkroomStatus` and
+`GitWorkingStatus` is gone, with the mapping `resolveGit` did by hand moved down into the provider.
+`GitStatusReading`/`JJStatusReading` — two protocols only because the return types differed —
+collapsed into one `VCSWorkingStatusReading`.
+
+The protocol default **throws** rather than returning an empty status: a backend that forgot the
+method would otherwise present as a working app with a permanently clean badge, which is a failure
+that survives a release because nothing about it looks broken.
+
+Done as the precondition for remote status (#154, Phase 2) — a remote backend cannot satisfy a
+protocol whose shape depends on which backend implements it — but it stands on its own as the
+special-casing removal this entry asked for.
 
 **How to start:** Define a backend-neutral working-status return (the app already has `WorkroomStatus`
 + the jj `@`/`@-` disclosure model; give git the same shape, `.parent`/`jjWorkingCopy` fields nil for

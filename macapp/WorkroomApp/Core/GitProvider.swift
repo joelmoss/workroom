@@ -326,7 +326,7 @@ struct GitProvider: VCSProviding {
   /// libgit2 needs no such flags here: its fsmonitor support is the bool/IPC form (it never spawns a
   /// `core.fsmonitor` hook program), and its status/diff don't honor `diff.external`/textconv — so
   /// there's no config-driven code-execution surface to neutralise.
-  func workingStatus(root: URL) throws -> GitWorkingStatus {
+  func workingStatus(root: URL) throws -> WorkroomStatus {
     do {
       let repo = try Repository.open(at: root)
       var files: [ChangedFile] = []
@@ -365,9 +365,13 @@ struct GitProvider: VCSProviding {
       // integers. See `GitDiffStats`. `nil` (a failed read) means the badge shows no count.
       let stats = GitDiffStats.workingTree(root: root)
       let (insertions, deletions) = (stats?.insertions, stats?.deletions)
-      return GitWorkingStatus(
-        dirty: !files.isEmpty, conflicted: conflicted, files: files, branch: branch,
-        insertions: insertions, deletions: deletions)
+      // `branchForCI` rather than a `branch` of its own: the only thing the app does with a
+      // git branch here is look up CI for it, and naming it after its use is what let this type
+      // merge with jj's. `ci`, `failure` and `localReadAt` stay unset — they are the resolver's to
+      // fill, exactly as they already are on the jj side.
+      return WorkroomStatus(
+        dirty: !files.isEmpty, conflicted: conflicted, changedFiles: files,
+        insertions: insertions, deletions: deletions, branchForCI: branch)
     } catch {
       throw VCSError.io("\(error)")
     }
@@ -519,17 +523,4 @@ struct GitProvider: VCSProviding {
     }
   }
 
-}
-
-/// The git working-tree status behind the sidebar/Changes badges (issue #59), read via SwiftGitX.
-/// Git-shaped for now; the jj working status (with its `@`/`@-` disclosure structure) unifies onto a
-/// shared `VCSProviding.workingStatus` in the follow-on that migrates the jj resolver reads.
-struct GitWorkingStatus: Equatable, Sendable {
-  let dirty: Bool
-  let conflicted: Bool
-  let files: [ChangedFile]
-  /// Current branch (for CI lookup); nil when HEAD is detached or unborn.
-  let branch: String?
-  let insertions: Int?
-  let deletions: Int?
 }

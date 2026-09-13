@@ -452,13 +452,13 @@ final class VCSProviderConformanceTests: XCTestCase {
     // git first: jj's status read snapshots `@`, which would rewrite the state git is describing.
     let git = try GitProvider().workingStatus(root: url)
     let gitRow = try XCTUnwrap(
-      git.files.first { $0.path == "new.txt" },
-      "git should report the renamed path; got \(git.files.map(\.id))")
+      (git.changedFiles ?? []).first { $0.path == "new.txt" },
+      "git should report the renamed path; got \((git.changedFiles ?? []).map(\.id))")
     XCTAssertEqual(gitRow.change, .renamed, "git rename detection is on for status")
     XCTAssertEqual(gitRow.oldPath, "old.txt", "git carries the pre-move path")
     XCTAssertFalse(
-      git.files.contains { $0.path == "old.txt" },
-      "git pairs the delete into the rename row; got \(git.files.map(\.id))")
+      (git.changedFiles ?? []).contains { $0.path == "old.txt" },
+      "git pairs the delete into the rename row; got \((git.changedFiles ?? []).map(\.id))")
 
     let jj = try await RustJJProvider().workingStatus(root: url)
     let jjRow = try XCTUnwrap(

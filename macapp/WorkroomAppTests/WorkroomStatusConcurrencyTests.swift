@@ -24,17 +24,16 @@ private final class InFlightCounter: @unchecked Sendable {
   }
 }
 
-/// A `GitStatusReading` double that holds briefly while counting concurrent callers — long enough
+/// A `VCSWorkingStatusReading` double that holds briefly while counting concurrent callers — long enough
 /// that more than `cap` probes would visibly overlap if the fan-out weren't actually bounded, short
 /// enough the test doesn't feel it (8 items / cap 5 ⇒ two sequential batches of ~20ms).
-private struct CountingGitStatus: GitStatusReading {
+private struct CountingGitStatus: VCSWorkingStatusReading {
   let counter: InFlightCounter
-  func workingStatus(root: URL) throws -> GitWorkingStatus {
+  func workingStatus(root: URL) throws -> WorkroomStatus {
     counter.enter()
     defer { counter.leave() }
     Thread.sleep(forTimeInterval: 0.02)
-    return GitWorkingStatus(
-      dirty: false, conflicted: false, files: [], branch: nil, insertions: nil, deletions: nil)
+    return WorkroomStatus(dirty: false)
   }
 }
 

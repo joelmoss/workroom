@@ -1015,6 +1015,14 @@ enum UITestFixture {
 /// diffs are NOT sourced here: `DiffViewer` serves `UITestFixture.diff(for:)` directly in fixture
 /// mode, so `fileDiff` is only a protocol stub.
 struct FixtureVCSProvider: VCSProviding {
+  /// The same canned status the fixture's own status path serves, so a fixture run reading through
+  /// the provider sees what one reading `UITestFixture.workroomStatus` sees. Implemented rather
+  /// than defaulted on the protocol: a default would let a REAL backend that forgot this method
+  /// silently report every workroom clean.
+  func workingStatus(root: URL) throws -> WorkroomStatus {
+    UITestFixture.workroomStatus
+  }
+
   /// Four newest-first commits plus jj's `root()` (see `rootCommit`); the first is the working copy
   /// (`@`) and carries the `main` ref, so the History rows exercise the ref chip + `@` marker.
   /// The two divergent copies of commit 2's change (`wqp`) — off the `::@` line, so they only appear
