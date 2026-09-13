@@ -248,6 +248,24 @@ impl Pty {
         Ok(())
     }
 
+    /// The pty's current geometry, as columns and rows.
+    ///
+    /// Read from the kernel rather than remembered, so a test asserting the size-owner policy is
+    /// asserting what the SHELL sees rather than what the agent believes it set.
+    pub fn size(&self) -> std::io::Result<(u16, u16)> {
+        let mut size = libc::winsize {
+            ws_row: 0,
+            ws_col: 0,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        let rc = unsafe { libc::ioctl(self.master, libc::TIOCGWINSZ, &mut size) };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok((size.ws_col, size.ws_row))
+    }
+
     /// The process group currently in the foreground of this pty — the one that owns the screen,
     /// and therefore the one whose name and cwd the title should reflect.
     ///
