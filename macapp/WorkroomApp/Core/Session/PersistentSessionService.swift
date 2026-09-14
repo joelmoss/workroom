@@ -64,11 +64,25 @@ final class PersistentSessionService {
   }
 
   private func resolveOwner(_ sessionID: UUID) -> SessionBackend? {
-    // No round trip when it cannot change the answer: if new sessions go to the daemon too, then
-    // owned or not, this session's helper is the daemon. Skips a 2-second main-actor block on
-    // every pane of a build with no working agent.
-    guard backend != .swiftDaemon else { return .swiftDaemon }
-    return Self.owner(preferred: backend, daemon: daemonOwnership(sessionID))
+    let preferred = backend
+    let daemon = daemonOwnership(sessionID)
+    if case .owned = daemon { return .swiftDaemon }
+    guard preferred == .swiftDaemon else { return Self.owner(preferred: preferred, daemon: daemon) }
+
+    // New sessions go to the DAEMON, which means the agent probe failed this launch. That does not
+    // mean no agent sessions exist: an agent from an EARLIER launch can still be running and still
+    // holding ptys, reachable through its socket even though this launch could not start one. The
+    // daemon disclaiming the session is therefore not evidence that the daemon owns it, and
+    // answering `.swiftDaemon` here sends `workroom-session attach` at an id the daemon has never
+    // held — which it creates, forking a duplicate shell and orphaning the real one.
+    //
+    // A live agent socket is enough to make that ambiguous, so say so. A definitive answer would
+    // need an ownership query on `SessionControlPlane`, which only the daemon side has; adding one
+    // to the agent is the right fix and is more than this belongs in.
+    guard existingSocketPath(for: .rustAgent) != nil else {
+      return Self.owner(preferred: preferred, daemon: daemon)
+    }
+    return nil
   }
 
   /// Which helper a session belongs to, given where new sessions go and what the daemon said —
@@ -262,16 +276,21 @@ final class PersistentSessionService {
       owners.removeValue(forKey: sessionID)
       return true
     }
-    let owner = backend(forSession: sessionID)
-    guard let client = controlPlane(forSession: sessionID) else {
+    // Resolved ONCE. Going through `controlPlane(forSession:)` as well would re-enter
+    // `backend(forSession:)`, and an unknown owner is deliberately not cached — so a silent daemon
+    // cost two full 2-second probes back to back, on the main actor, during teardown. That is the
+    // same double-resolution this change exists to remove, reintroduced one layer up.
+    guard let owner = backend(forSession: sessionID) else {
       owners.removeValue(forKey: sessionID)
-      if owner == nil {
-        logger.error(
-          "unresolved owner for session \(sessionID.uuidString, privacy: .public); not killed")
-        return false
-      }
+      logger.error(
+        "unresolved owner for session \(sessionID.uuidString, privacy: .public); not killed")
+      return false
+    }
+    guard let socketPath = existingSocketPath(for: owner) else {
+      owners.removeValue(forKey: sessionID)
       return true
     }
+    let client = controlPlane(socketPath: socketPath, backend: owner)
     // Resolved above, via `controlPlane(forSession:)`, then forgotten: this session is over, and
     // holding its owner would outlive the thing it describes.
     defer { owners.removeValue(forKey: sessionID) }
