@@ -85,7 +85,7 @@ final class SessionRestoreTests: XCTestCase {
       TargetSession(
         targetID: target.id,
         tabs: [terminal("a", title: "Terminal 1"), terminal("b", title: "Terminal 2")],
-        split: split("a", "b"), focusedKey: "b"),
+        splits: [split("a", "b")], focusedKey: "b"),
       for: target)
 
     let tabs = sessions.tabs(for: target)
@@ -263,12 +263,121 @@ final class SessionRestoreTests: XCTestCase {
     XCTAssertEqual(
       captured.tabs.compactMap { $0.terminal?.defaultTitle },
       recaptured.tabs.compactMap { $0.terminal?.defaultTitle })
-    XCTAssertEqual(captured.split?.leaves.count, recaptured.split?.leaves.count)
+    // `splits`, not `split`: the legacy field is decode-only and `TargetSession.init` always nils
+    // it, so comparing it here was a vacuous nil == nil that proved no round trip at all.
+    XCTAssertEqual(
+      captured.splits.map { $0.leaves.count }, recaptured.splits.map { $0.leaves.count })
     XCTAssertEqual(captured.terminalCounter, recaptured.terminalCounter)
     // Keys are re-minted, so compare the POSITION of the focused tab rather than its key.
     XCTAssertEqual(
       captured.tabs.firstIndex { $0.key == captured.focusedKey },
       recaptured.tabs.firstIndex { $0.key == recaptured.focusedKey })
+  }
+
+  /// The whole point of the many-groups change, through the PERSISTENCE path: a file holding two
+  /// disjoint groups must come back as two disjoint groups, with every leaf remapped to a freshly
+  /// minted tab id. Every other restore test builds ONE group, so nothing else covers
+  /// `restore`'s `session.splits.compactMap { saved.materialize { idsByKey[$0] } }` with >1 element.
+  func testRestoresTwoDisjointSplitGroups() throws {
+    let s = makeSessions()
+    s.restore(
+      TargetSession(
+        targetID: target.id,
+        tabs: [
+          terminal("a", title: "Terminal 1"), terminal("b", title: "Terminal 2"),
+          terminal("c", title: "Terminal 3"), terminal("d", title: "Terminal 4"),
+        ],
+        splits: [split("a", "b"), split("c", "d")], focusedKey: "c"),
+      for: target)
+
+    let tabs = s.tabs(for: target)
+    XCTAssertEqual(tabs.count, 4)
+    XCTAssertEqual(s.splits(for: target).count, 2, "both groups survive the round trip")
+    // Leaves are remapped to the NEW ids, in strip order, and the groups stay disjoint.
+    let ids = tabs.map(\.id)
+    XCTAssertEqual(s.split(containing: ids[0], for: target)?.tabIDs, [ids[0], ids[1]])
+    XCTAssertEqual(s.split(containing: ids[2], for: target)?.tabIDs, [ids[2], ids[3]])
+    XCTAssertTrue(
+      Set(s.splits(for: target)[0].tabIDs).isDisjoint(with: Set(s.splits(for: target)[1].tabIDs)))
+    // `focusedKey` picked group 2, so only that one is on screen; group 1 persists off screen.
+    XCTAssertEqual(s.split(for: target)?.tabIDs, [ids[2], ids[3]])
+  }
+
+  /// A saved group naming a DETACHED tab must come back without it. `splitsByTarget`'s invariant is
+  /// that a detached tab is never a member: rendering a group containing one puts its surface in the
+  /// origin pane tree as well as its own window, re-homing the libghostty view and blanking the
+  /// detached window. `sanitized()` cannot catch the shape — the tab is live, so the group looks
+  /// valid — which is why `restore` resolves detached ids to nothing.
+  ///
+  /// The group here has exactly two members and one is detached, so it correctly restores as NO
+  /// group: `materialize` drops a tree that falls below two leaves.
+  func testARestoredGroupNeverContainsADetachedTab() throws {
+    let s = makeSessions()
+    var detached = terminal("b", title: "Terminal 2")
+    detached.detachedFrame = NSStringFromRect(NSRect(x: 0, y: 0, width: 400, height: 300))
+    s.restore(
+      TargetSession(
+        targetID: target.id, tabs: [terminal("a", title: "Terminal 1"), detached],
+        splits: [split("a", "b")], focusedKey: "a"),
+      for: target)
+
+    let docked = try XCTUnwrap(s.tabs(for: target).first).id
+    XCTAssertEqual(s.allTabs(for: target).count, 2, "both tabs come back")
+    XCTAssertTrue(
+      s.splits(for: target).isEmpty,
+      "the group held one detached member, so only one leaf resolves — that is not a group")
+    XCTAssertNil(s.split(containing: docked, for: target))
+    XCTAssertEqual(s.visibleTabIDs(for: target).first, docked)
+  }
+
+  /// The same rule with a group big enough to SURVIVE the exclusion: three saved members, one
+  /// detached, so two resolve and the group comes back holding exactly those two.
+  func testARestoredGroupKeepsItsDockedMembersWithoutTheDetachedOne() throws {
+    let s = makeSessions()
+    var detached = terminal("c", title: "Terminal 3")
+    detached.detachedFrame = NSStringFromRect(NSRect(x: 0, y: 0, width: 400, height: 300))
+    s.restore(
+      TargetSession(
+        targetID: target.id,
+        tabs: [terminal("a", title: "Terminal 1"), terminal("b", title: "Terminal 2"), detached],
+        splits: [
+          .split(
+            orientation: LayoutNode<String>.horizontal, ratio: 0.5, first: .leaf("a"),
+            second: .split(
+              orientation: LayoutNode<String>.vertical, ratio: 0.5, first: .leaf("b"),
+              second: .leaf("c")))
+        ],
+        focusedKey: "a"),
+      for: target)
+
+    let docked = s.tabs(for: target).map(\.id)
+    XCTAssertEqual(docked.count, 2, "the detached tab is not in the strip")
+    let group = try XCTUnwrap(s.split(containing: docked[0], for: target))
+    XCTAssertEqual(
+      Set(group.tabIDs), Set(docked), "the group holds the docked members, and only them")
+    XCTAssertEqual(s.splits(for: target).count, 1)
+  }
+
+  /// Restoring must never land focus on a DETACHED pane: focusing one renders it back in this window
+  /// and re-homes its libghostty view out of its own window, which then goes blank. The ordinary flow
+  /// that reached it \u2014 detach your only pane, quit, relaunch \u2014 persists no `focusedKey` at all
+  /// (`closeSuccessor` returns nil for a sole tab), so the fallback had to pick, and `order`
+  /// deliberately includes detached panes.
+  func testRestoreNeverFocusesADetachedPane() throws {
+    let s = makeSessions()
+    var detached = terminal("a", title: "Terminal 1")
+    detached.detachedFrame = NSStringFromRect(NSRect(x: 0, y: 0, width: 400, height: 300))
+    s.restore(
+      TargetSession(
+        targetID: target.id, tabs: [detached, terminal("b", title: "Terminal 2")],
+        focusedKey: nil),
+      for: target)
+
+    let detachedID = try XCTUnwrap(s.allTabs(for: target).first).id
+    let docked = try XCTUnwrap(s.tabs(for: target).first).id
+    XCTAssertNotEqual(detachedID, docked, "the detached pane is not in the strip")
+    XCTAssertEqual(s.focusedTab(for: target)?.id, docked, "focus landed on the docked pane")
+    XCTAssertFalse(s.visibleTabIDs(for: target).isEmpty)
   }
 
   private func capture(_ sessions: TerminalSessions) -> TargetSession? {
@@ -284,7 +393,7 @@ final class SessionRestoreTests: XCTestCase {
     guard !tabs.isEmpty else { return nil }
     return TargetSession(
       targetID: target.id, tabs: tabs,
-      split: captured.split.flatMap { LayoutNode<String>.capture($0) { keys[$0] } },
+      splits: captured.splits.compactMap { LayoutNode<String>.capture($0) { keys[$0] } },
       focusedKey: captured.focused.flatMap { keys[$0] },
       terminalCounter: captured.counter)
   }

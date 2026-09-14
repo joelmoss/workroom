@@ -34,7 +34,7 @@ final class SessionCaptureTests: XCTestCase {
     guard !tabs.isEmpty else { return nil }
     return TargetSession(
       targetID: target.id, tabs: tabs,
-      split: captured.split.flatMap { LayoutNode<String>.capture($0) { keys[$0] } },
+      splits: captured.splits.compactMap { LayoutNode<String>.capture($0) { keys[$0] } },
       focusedKey: captured.focused.flatMap { keys[$0] },
       terminalCounter: captured.counter)
   }
@@ -63,7 +63,7 @@ final class SessionCaptureTests: XCTestCase {
     sessions.splitFocusedPane(for: target, orientation: .horizontal)
 
     let captured = try XCTUnwrap(capture(sessions))
-    let split = try XCTUnwrap(captured.split)
+    let split = try XCTUnwrap(captured.splits.first)
     let keys = Set(captured.tabs.map(\.key))
     XCTAssertEqual(split.leaves.count, 2)
     XCTAssertTrue(
@@ -131,8 +131,8 @@ final class SessionCaptureTests: XCTestCase {
     XCTAssertFalse(
       captured.tabs.contains { $0.terminal?.defaultTitle == "Run" },
       "no run tab reaches the file")
-    XCTAssertNil(
-      captured.split,
+    XCTAssertTrue(
+      captured.splits.isEmpty,
       "the split had two leaves and one was the run tab — a lone leaf is not a split")
   }
 
@@ -162,6 +162,38 @@ final class SessionCaptureTests: XCTestCase {
     let (sanitized, report) = SessionFile(savedAt: Date(), windows: [captured]).sanitized()
     XCTAssertEqual(sanitized.windows.first?.targets.first?.tabs.count, tabs)
     XCTAssertEqual(report.droppedTabs, 0)
+  }
+
+  /// **REGRESSION.** Through the REAL store, not this suite's `capture` helper — the helper
+  /// reimplements `AppStore.captureTargetSessions`' `captured.splits.compactMap`, so nothing else
+  /// exercises that line, and a target may now hold several groups. Two groups in, two disjoint
+  /// groups out, each addressing keys that were actually written.
+  func testCaptureWritesEveryGroupThroughTheStore() throws {
+    let store = AppStore(projectStore: ProjectStore())
+    store.terminals.makeView = { _, cwd, command in
+      GhosttySurfaceView(workingDirectory: cwd, command: command)
+    }
+    store.terminals.recency = SwitcherRecency()
+    let sessions = store.terminals
+    sessions.addTab(for: target)
+    sessions.splitFocusedPane(for: target, orientation: .horizontal)  // group 1
+    let c = sessions.addTab(for: target).id
+    let d = sessions.addTab(for: target).id
+    sessions.moveTabIntoSplit(d, ontoEdge: .right, of: c, for: target)  // group 2
+
+    let captured = try XCTUnwrap(store.captureWindowSession().targets.first)
+    XCTAssertEqual(captured.splits.count, 2, "both groups reach the file, not just the first")
+    let keys = Set(captured.tabs.map(\.key))
+    for group in captured.splits {
+      XCTAssertEqual(group.leaves.count, 2)
+      XCTAssertTrue(Set(group.leaves).isSubset(of: keys), "every leaf addresses a written tab")
+    }
+    // Indexed through `first`/`last`, not `[0]`/`[1]`: a regression that writes ONE group would trap
+    // on the subscript and take the whole test host down with it instead of failing this assertion.
+    if let a = captured.splits.first, let b = captured.splits.last, captured.splits.count == 2 {
+      XCTAssertTrue(Set(a.leaves).isDisjoint(with: Set(b.leaves)))
+    }
+    XCTAssertNil(captured.split, "the legacy single-split key is never written again")
   }
 
   func testNoTabsCapturesNothing() {

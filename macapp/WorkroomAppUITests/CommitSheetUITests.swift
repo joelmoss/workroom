@@ -194,7 +194,11 @@ final class CommitSheetUITests: XCTestCase {
   // MARK: - Render cap
 
   /// A cap on drawn rows is only safe if it cannot lie about the commit. The dialog draws 200, but
-  /// the button must still claim — and the commit still record — all 257.
+  /// the button must still claim — and the commit still record — every changed file.
+  ///
+  /// The count is `UITestFixture.changedFiles`: 8 base entries + the 250 `hugeChangeSet` ones. It
+  /// read 257 until a DELETED source was added to the base list (so `PaneTitleBarUITests` could
+  /// assert "Open File" goes disabled), and nothing here moved with it. Keep the two in step.
   func testTheRenderCapLimitsWhatIsDrawnNotWhatIsCommitted() throws {
     let app = launchedApp(extraArguments: [
       "-WorkroomUITestGitWorkroom", "1", "-WorkroomUITestHugeChangeSet", "1",
@@ -210,7 +214,7 @@ final class CommitSheetUITests: XCTestCase {
     let commit = button(app, id: "commit.commit")
     XCTAssertTrue(commit.waitForExistence(timeout: 5))
     XCTAssertTrue(
-      commit.label.contains("257"),
+      commit.label.contains("258"),
       "the count must be the real total, not the drawn one, got: \(commit.label)")
   }
 

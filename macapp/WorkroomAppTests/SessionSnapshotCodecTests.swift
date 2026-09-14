@@ -416,12 +416,107 @@ final class SessionSnapshotCodecTests: XCTestCase {
       windows: [
         WindowSession(
           windowKey: "W1",
-          targets: [TargetSession(targetID: "root|/p", tabs: tabs, split: tree)])
+          targets: [TargetSession(targetID: "root|/p", tabs: tabs, splits: [tree])])
       ])
     let (sanitized, report) = file.sanitized()
-    XCTAssertNil(sanitized.windows[0].targets[0].split)
+    XCTAssertTrue(sanitized.windows[0].targets[0].splits.isEmpty)
     XCTAssertFalse(sanitized.windows[0].targets[0].tabs.isEmpty)
     XCTAssertEqual(report.droppedSplits, 1)
+  }
+
+  /// A session file written before a target could hold several split groups carries a single `split`
+  /// key. `sanitized()` folds it into `splits`, so an existing user's split comes back instead of
+  /// silently restoring as two solo panes — the one way this change could have lost real state.
+  func testLegacySingleSplitKeyFoldsIntoSplits() throws {
+    let json = """
+      {
+        "schemaVersion": 1,
+        "savedAt": "2026-08-08T10:00:00Z",
+        "windows": [
+          {
+            "windowKey": "W1",
+            "isKey": true,
+            "workroomSplits": [],
+            "targets": [
+              {
+                "targetID": "root|/p",
+                "tabs": [
+                  {"key": "t1", "kind": "terminal", "terminal": {"defaultTitle": "Terminal 1"}},
+                  {"key": "t2", "kind": "terminal", "terminal": {"defaultTitle": "Terminal 2"}}
+                ],
+                "split": {
+                  "kind": "split", "orientation": "vertical", "ratio": 0.25,
+                  "first": {"kind": "leaf", "leaf": "t1"},
+                  "second": {"kind": "leaf", "leaf": "t2"}
+                },
+                "focusedKey": "t2"
+              }
+            ]
+          }
+        ]
+      }
+      """
+    let (sanitized, report) = try decode(json).sanitized()
+    let target = sanitized.windows[0].targets[0]
+    XCTAssertEqual(target.splits.count, 1, "the legacy split survives as one group")
+    XCTAssertEqual(target.splits.first?.leaves, ["t1", "t2"])
+    XCTAssertNil(target.split, "and is cleared, so it is never written again")
+    XCTAssertEqual(report.droppedSplits, 0)
+  }
+
+  /// Groups are disjoint. A hand-edited file claiming the same tab in two groups keeps the first and
+  /// drops the second — a tab in two groups would render in two places at once.
+  func testOverlappingGroupsAreRejectedAfterTheFirst() {
+    let tabs = (1...3).map {
+      TabSession(
+        key: "t\($0)", kind: TabSession.terminalKind,
+        terminal: TerminalPayload(defaultTitle: "Terminal \($0)", cwd: nil))
+    }
+    let file = SessionFile(
+      savedAt: Date(timeIntervalSince1970: 0),
+      windows: [
+        WindowSession(
+          windowKey: "W1",
+          targets: [
+            TargetSession(
+              targetID: "root|/p", tabs: tabs,
+              splits: [split(node("t1"), node("t2")), split(node("t2"), node("t3"))])
+          ])
+      ])
+    let (sanitized, report) = file.sanitized()
+    XCTAssertEqual(sanitized.windows[0].targets[0].splits.count, 1)
+    XCTAssertEqual(sanitized.windows[0].targets[0].splits.first?.leaves, ["t1", "t2"])
+    XCTAssertEqual(report.droppedSplits, 1)
+  }
+
+  /// Disjointness is judged on the LIVE leaves only. Two groups may share a key that resolves to no
+  /// live tab: `materialize` drops it, so it can never render in two places — and reserving it would
+  /// cost the second group for a clash that cannot happen. Both groups keep two live leaves here, so
+  /// a rule that reserved DEAD keys too would drop the second one and this goes red.
+  func testDisjointnessIgnoresLeavesWithNoLiveTab() {
+    let tabs = (1...4).map {
+      TabSession(
+        key: "t\($0)", kind: TabSession.terminalKind,
+        terminal: TerminalPayload(defaultTitle: "Terminal \($0)", cwd: nil))
+    }
+    let file = SessionFile(
+      savedAt: Date(timeIntervalSince1970: 0),
+      windows: [
+        WindowSession(
+          windowKey: "W1",
+          targets: [
+            TargetSession(
+              targetID: "root|/p", tabs: tabs,
+              splits: [
+                split(split(node("t1"), node("t2")), node("gone")),
+                split(split(node("t3"), node("t4")), node("gone")),
+              ])
+          ])
+      ])
+    let (sanitized, report) = file.sanitized()
+    XCTAssertEqual(
+      sanitized.windows[0].targets[0].splits.count, 2, "a dead leaf cannot collide on screen")
+    XCTAssertEqual(report.droppedSplits, 0)
   }
 
   func testSplitLeafPointingAtADroppedTabCollapses() {
@@ -438,14 +533,14 @@ final class SessionSnapshotCodecTests: XCTestCase {
           windowKey: "W1",
           targets: [
             TargetSession(
-              targetID: "root|/p", tabs: tabs, split: split(node("t1"), node("t2")),
+              targetID: "root|/p", tabs: tabs, splits: [split(node("t1"), node("t2"))],
               focusedKey: "t2")
           ])
       ])
     let (sanitized, _) = file.sanitized()
     let target = sanitized.windows[0].targets[0]
     XCTAssertEqual(target.tabs.map(\.key), ["t1"])
-    XCTAssertNil(target.split, "a split with one live leaf is not a split")
+    XCTAssertTrue(target.splits.isEmpty, "a split with one live leaf is not a split")
     XCTAssertNil(target.focusedKey, "focus on a dropped tab must not survive")
   }
 

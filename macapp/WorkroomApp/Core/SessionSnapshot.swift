@@ -421,7 +421,7 @@ struct TabSession: Codable, Hashable, Sendable {
 
 // MARK: - Target, window, file
 
-/// One terminal target's panes: its tabs in strip order, its split, and what was focused.
+/// One terminal target's panes: its tabs in strip order, its split groups, and what was focused.
 struct TargetSession: Codable, Hashable, Sendable {
   /// `TerminalTarget.ID` — "wr|<project>|<name>" or "root|<project>". The same encoding
   /// `Defaults[.sidebarSelection]` and `workroomTabOrder` already use, resolved back through
@@ -429,19 +429,28 @@ struct TargetSession: Codable, Hashable, Sendable {
   var targetID: String
   /// Strip order. The array IS the order — no second field to fall out of sync with it.
   @Lossy var tabs: [TabSession]
-  /// Leaves are `TabSession.key`. Nil when the target has no split.
+  /// `TerminalSessions`' split groups — leaves are `TabSession.key`. Several disjoint groups can
+  /// coexist; each needs two or more live leaves to survive. Same shape (and same `@Lossy` posture)
+  /// as `WindowSession.workroomSplits` one level up.
+  @Lossy var splits: [LayoutNode<String>]
+  /// **Legacy, read-only.** The single `split` written by builds before a target could hold several
+  /// groups. `sanitized()` folds it into `splits` and clears it, so nothing downstream reads it and
+  /// nothing new writes it — but an existing session file still restores its split instead of
+  /// silently coming back as two solo panes. Encoded only while non-nil (synthesised
+  /// `encodeIfPresent`), so a file written today carries just `splits`.
   var split: LayoutNode<String>?
   var focusedKey: String?
   /// `TerminalSessions.counts` — so the next ⌘T after restoring "Terminal 3" is "Terminal 4".
   var terminalCounter: Int?
 
   init(
-    targetID: String, tabs: [TabSession], split: LayoutNode<String>? = nil,
+    targetID: String, tabs: [TabSession], splits: [LayoutNode<String>] = [],
     focusedKey: String? = nil, terminalCounter: Int? = nil
   ) {
     self.targetID = targetID
     self.tabs = tabs
-    self.split = split
+    self.splits = splits
+    self.split = nil
     self.focusedKey = focusedKey
     self.terminalCounter = terminalCounter
   }
@@ -657,23 +666,35 @@ extension TargetSession {
 
     guard !tabs.isEmpty else { return nil }
 
+    // Split groups, legacy single `split` first so a pre-many-groups file keeps its layout. A group
+    // needs two or more live, distinct leaves, a tree within the depth cap, and — the one rule the
+    // single-split model never needed — no leaf already claimed by an earlier group: groups are
+    // disjoint, and a tab in two of them would render in two places at once.
+    //
+    // Disjointness is judged on the LIVE leaves only. A leaf whose tab was dropped above resolves to
+    // nothing in `materialize`, so it can never collide on screen — reserving it would let one dead
+    // key shared between two groups drop the second group for a clash that cannot happen.
     let liveKeys = Set(tabs.map(\.key))
-    var split = self.split
-    if let candidate = split {
+    var seenLeaves = Set<String>()
+    var splits: [LayoutNode<String>] = []
+    for candidate in self.split.map({ [$0] + self.splits }) ?? self.splits {
       let leaves = candidate.leaves
-      let resolvable = leaves.filter { liveKeys.contains($0) }
-      if candidate.depth > SessionLimits.maxSplitDepth || Set(leaves).count != leaves.count
-        || resolvable.count < 2
-      {
-        // The split does not survive, but its tabs do — they simply render as solo panes.
+      let live = leaves.filter(liveKeys.contains)
+      guard candidate.depth <= SessionLimits.maxSplitDepth, Set(leaves).count == leaves.count,
+        seenLeaves.isDisjoint(with: live), live.count >= 2
+      else {
+        // The group does not survive, but its tabs do — they simply render as solo panes.
         report.droppedSplits += 1
-        split = nil
+        continue
       }
+      seenLeaves.formUnion(live)
+      splits.append(candidate)
     }
 
     var target = self
     target.tabs = tabs
-    target.split = split
+    target.splits = splits
+    target.split = nil  // folded into `splits` above; never written again
     target.focusedKey = focusedKey.flatMap { liveKeys.contains($0) ? $0 : nil }
     target.targetID = String(targetID.prefix(SessionLimits.maxStringLength))
     return target
