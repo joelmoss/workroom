@@ -670,19 +670,24 @@ extension TargetSession {
     // needs two or more live, distinct leaves, a tree within the depth cap, and — the one rule the
     // single-split model never needed — no leaf already claimed by an earlier group: groups are
     // disjoint, and a tab in two of them would render in two places at once.
+    //
+    // Disjointness is judged on the LIVE leaves only. A leaf whose tab was dropped above resolves to
+    // nothing in `materialize`, so it can never collide on screen — reserving it would let one dead
+    // key shared between two groups drop the second group for a clash that cannot happen.
     let liveKeys = Set(tabs.map(\.key))
     var seenLeaves = Set<String>()
     var splits: [LayoutNode<String>] = []
     for candidate in self.split.map({ [$0] + self.splits }) ?? self.splits {
       let leaves = candidate.leaves
+      let live = leaves.filter(liveKeys.contains)
       guard candidate.depth <= SessionLimits.maxSplitDepth, Set(leaves).count == leaves.count,
-        seenLeaves.isDisjoint(with: leaves), leaves.filter(liveKeys.contains).count >= 2
+        seenLeaves.isDisjoint(with: live), live.count >= 2
       else {
         // The group does not survive, but its tabs do — they simply render as solo panes.
         report.droppedSplits += 1
         continue
       }
-      seenLeaves.formUnion(leaves)
+      seenLeaves.formUnion(live)
       splits.append(candidate)
     }
 

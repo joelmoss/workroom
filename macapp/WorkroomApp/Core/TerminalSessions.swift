@@ -374,8 +374,8 @@ struct TerminalState {
 final class TerminalSessions: ObservableObject {
   /// Every tab for a target, by id — the single source of truth for surfaces/titles.
   @Published private var tabsByTarget: [TerminalTarget.ID: [TerminalTab.ID: TerminalTab]] = [:]
-  /// The strip order (loose). The displayed order normalises this so the split's members are a
-  /// contiguous run in split-tree order — see `displayedTabIDs`.
+  /// The strip order (loose). The displayed order normalises this so EACH group's members are a
+  /// contiguous run in that group's split-tree order — see `displayedTabIDs`.
   @Published private var orderByTarget: [TerminalTarget.ID: [TerminalTab.ID]] = [:]
   /// The split groups for a target. Disjoint (a tab belongs to at most one) and each always ≥2 leaves
   /// — a lone tab is "no split". **Array order carries no meaning**: a group is addressed by
@@ -890,16 +890,26 @@ final class TerminalSessions: ObservableObject {
     orderByTarget[target.id] = order
     let restoredSplits = session.splits.compactMap { saved in saved.materialize { idsByKey[$0] } }
     splitsByTarget[target.id] = restoredSplits.isEmpty ? nil : restoredSplits
+    // Mark detached panes BEFORE choosing focus. `setFocused`'s own guard refuses to focus a detached
+    // tab (focusing one makes `contentLayout` render it back in THIS window and re-homes the
+    // libghostty view out of its own window, which then goes blank) — but that guard reads
+    // `detachedTabIDs`, so with the insert below it, it could not fire during a restore. The ordinary
+    // flow that reached it: detach your only pane, quit, relaunch — `closeSuccessor` returns nil for a
+    // sole tab, so nothing was persisted as focused and the `?? order.first` fallback landed on the
+    // detached pane (`order` deliberately includes detached tabs, issue #172). The fallback skips them
+    // for the same reason. Windows still open afterwards, once the tab dictionaries are populated.
+    for (tabID, _) in restoredDetached { detachedTabIDs.insert(tabID) }
     setFocused(
-      session.focusedKey.flatMap { idsByKey[$0] } ?? order.first, for: target.id, notify: false)
+      session.focusedKey.flatMap { idsByKey[$0] }.flatMap {
+        detachedTabIDs.contains($0) ? nil : $0
+      } ?? order.first { !detachedTabIDs.contains($0) }, for: target.id, notify: false)
     // `makeTerminalTab` bumps the counter per terminal it builds, so take whichever is higher: the
     // saved value keeps "Terminal 7" from becoming "Terminal 3" again after closes.
     counts[target.id] = max(session.terminalCounter ?? 0, counts[target.id] ?? 0)
-    // Re-detach AFTER the dictionaries are set: `onPaneDetached` builds a window whose content looks
-    // the tab up by id. Restoring is not a user gesture, so this skips `detachPane` — the split was
-    // already captured without these tabs, and focus was set above.
+    // Open the windows AFTER the dictionaries are set: `onPaneDetached` builds a window whose content
+    // looks the tab up by id. Restoring is not a user gesture, so this skips `detachPane` — the split
+    // was already captured without these tabs, and membership was recorded above.
     for (tabID, frame) in restoredDetached {
-      detachedTabIDs.insert(tabID)
       onPaneRestoredDetached?(target.id, tabID, frame)
     }
     reconcileOcclusion(for: target)
@@ -1386,8 +1396,11 @@ final class TerminalSessions: ObservableObject {
 
     // Detach first, insert second — and re-resolve the destination's group AFTER the detach, because
     // removing the last-but-one member deletes a group and shifts every later index. `evening` is
-    // `addsAMember` on BOTH halves, so a rearrange within one group still keeps the dividers the user
-    // dragged while a genuine move evens both the group left behind and the one joined.
+    // `addsAMember` on BOTH halves: a genuine move evens the group left behind and the one joined,
+    // while a rearrange within one group skips evening and so keeps every ANCESTOR ratio the user
+    // dragged. Not every ratio — `removingLeaf` collapses the moved leaf's immediate parent and
+    // `inserting` rebuilds it at 0.5, so that one divider resets (and a two-pane group, which falls
+    // below two leaves and is deleted, resets entirely). That is master's behaviour too, unchanged.
     removeFromGroup(movedID, for: target.id, evening: addsAMember)
     let index = splitIndex(containing: destID, for: target.id)
     let base = index.map { splitsByTarget[target.id]![$0] } ?? .leaf(destID)
@@ -1884,6 +1897,14 @@ final class TerminalSessions: ObservableObject {
       evening
       ? PaneTreeLayout.evenedIfHonourable(tree, in: paneSpace[targetID], enabled: autoEvenSplits())
       : tree
+    // A nil index means "append a new group". A NON-nil index that no longer addresses anything means
+    // a caller held one across a mutation — and appending there would silently seed a SECOND group
+    // over leaves an existing one already owns, breaking disjointness quietly (first-group-wins in
+    // `splitGroupIndices` plus `normalizedTabIDs`' `placed` guard would mask it into "a pane renders
+    // in one place and brackets in another"). No caller can do this today; assert so a future one
+    // fails loudly in debug rather than corrupting the model.
+    assert(
+      index == nil || groups.indices.contains(index!), "stale group index held across a mutation")
     if let index, groups.indices.contains(index) {
       groups[index] = stored
     } else {

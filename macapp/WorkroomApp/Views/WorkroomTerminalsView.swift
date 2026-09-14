@@ -146,10 +146,11 @@ struct WorkroomTerminalsView: View {
       sessions.isSplitVisible(for: target) && !store.hasModalPresentation)
   }
 
-  /// The layout the content area renders: the split when it's visible, else the focused solo tab.
+  /// The layout the content area renders: the focused tab's group when it has one, else that tab
+  /// solo. No `isSplitVisible` branch — it is now defined as exactly `split(for:) != nil`, so the
+  /// nil-coalesce below already is the whole decision.
   private func contentLayout(active: TerminalTab) -> TerminalPaneLayout {
-    sessions.isSplitVisible(for: target)
-      ? (sessions.split(for: target) ?? .leaf(active.id)) : .leaf(active.id)
+    sessions.split(for: target) ?? .leaf(active.id)
   }
 
   /// The content-local point for a chip drag at `global`, or nil when the cursor is outside the pane

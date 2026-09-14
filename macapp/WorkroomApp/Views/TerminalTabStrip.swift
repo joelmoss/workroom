@@ -249,7 +249,7 @@ struct TerminalTabStrip: View {
           .frame(width: 1, height: 14)
           .padding(.leading, -2)
           .padding(.trailing, 4)
-          .opacity(showsTrailingDivider && !overflowing ? 1 : 0)
+          .opacity(showsTrailingDivider(groupOf: groupOf) && !overflowing ? 1 : 0)
       }
     }
     .background(alignment: .leading) { splitWell(tabs, groupOf: groupOf) }
@@ -374,10 +374,10 @@ struct TerminalTabStrip: View {
   /// separates the group from the "+", so a divider there doubles up. Without the split-member case a
   /// group pinned to the far right kept this divider whenever an *inner* member was focused (the last
   /// tab wasn't the active one), so it showed alongside the bracket edge.
-  private var showsTrailingDivider: Bool {
+  private func showsTrailingDivider(groupOf: [TerminalTab.ID: Int]) -> Bool {
     guard let last = tabs.last?.id else { return false }
     if last == activeID || last == hoveredTab { return false }
-    if sessions.split(containing: last, for: target) != nil { return false }
+    if groupOf[last] != nil { return false }
     return true
   }
 

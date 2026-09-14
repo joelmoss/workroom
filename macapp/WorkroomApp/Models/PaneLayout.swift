@@ -5,8 +5,9 @@ import Foundation
 /// - `PaneLayout<TerminalTab.ID>` (alias `TerminalPaneLayout`) — a terminal target's split of tabs.
 /// - `PaneLayout<SidebarID>` — the workroom-into-workroom split (issue #23 follow-up).
 ///
-/// A terminal target holds at most ONE such tree (plus solo tabs); a window holds a LIST of them for
-/// the workroom split (several groups at once, `AppStore.workroomSplits`). Either way a
+/// Both instantiations hold a LIST of these trees: several disjoint groups at once, each with ≥2
+/// leaves and at most one visible — `TerminalSessions.splitsByTarget` per terminal target, and
+/// `AppStore.workroomSplits` per window. Either way a
 /// leaf REFERENCES its content by id — it does not own the view/surface (the tab / target detail does).
 /// That keeps this a pure value tree: `Equatable`, and unit-testable with no AppKit/libghostty in sight.
 ///
