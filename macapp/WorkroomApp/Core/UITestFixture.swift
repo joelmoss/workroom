@@ -871,12 +871,19 @@ enum UITestFixture {
       ChangedFile(path: seededMarkdownFileName, change: .modified),  // drives the preview UI test
       ChangedFile(path: ".env.example", change: .added),
       ChangedFile(path: "app/models/user.rb", change: .modified),
+      // A DELETED source, so the pane title bar's "Open File" disabled state (there is no working
+      // copy left to open — review D4) is assertable. Nothing else in this list is deleted.
+      //
+      // Kept mid-list ON PURPOSE. As the LAST of eight it sat far enough down the Changes section
+      // that XCUITest reported a frame and `isHittable == true` for a row outside the section's
+      // real viewport: the click fell through to a History row and opened that commit's changeset
+      // instead of the file's diff, so `testOpenFileIsDisabledForADeletedSource` went red on a
+      // product that was behaving correctly. Every test addresses these rows by PATH, never by
+      // index, so the order is free to change — but do not push this one back to the end.
+      ChangedFile(path: "app/models/legacy_user.rb", change: .deleted),
       ChangedFile(path: "app/controllers/sessions_controller.rb", change: .added),
       ChangedFile(path: "config/routes.rb", change: .modified),
       ChangedFile(path: "test/models/user_test.rb", change: .added),
-      // A DELETED source, so the pane title bar's "Open File" disabled state (there is no working
-      // copy left to open — review D4) is assertable. Nothing else in this list is deleted.
-      ChangedFile(path: "app/models/legacy_user.rb", change: .deleted),
     ]
     if conflicted {
       base.append(ChangedFile(path: conflictedFilePath, change: .conflicted))
