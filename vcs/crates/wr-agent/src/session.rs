@@ -365,7 +365,21 @@ impl SessionStore {
                     // pending queue: releasing it here reverses the repaint against output that
                     // arrives mid-paint, and painting before registering misses that output
                     // instead. Bounded, not eliminated.
-                    let deadline = Instant::now() + WRITE_TIMEOUT;
+                    // The budget SCALES with the payload, and that is not a detail.
+                    //
+                    // `WRITE_TIMEOUT` means "the peer made no progress for this long" everywhere
+                    // else — `FdStream::write` resets it per call. Reusing it as a flat wall-clock
+                    // budget for the whole repaint turned it into a THROUGHPUT FLOOR: a peer that
+                    // is healthy and reading continuously, but slower than `replay.len()` per ten
+                    // seconds, failed deterministically. On the stated remote transport (`serve
+                    // --stdio` over ssh) with a large styled screen that is a real link, and the
+                    // penalty is not slowness but a permanently unattachable session, since every
+                    // retry repeats it.
+                    //
+                    // So: `WRITE_TIMEOUT` of slack, plus the time the payload needs at a floor
+                    // throughput. Still bounded — that is what keeps the lock hold finite — but the
+                    // bound is one a working peer cannot trip.
+                    let deadline = Instant::now() + repaint_budget(replay.len());
                     for chunk in replay.chunks(READ_CHUNK) {
                         if Instant::now() >= deadline {
                             painted = false;
@@ -383,6 +397,22 @@ impl SessionStore {
                             painted = false;
                             break;
                         }
+                    }
+                    // A partial repaint is bytes the client has ALREADY rendered, mid-escape-
+                    // sequence at an arbitrary chunk boundary. Failing the attach stops it
+                    // receiving more, but it does not un-draw what arrived — the comment on
+                    // `RepaintFailed` used to claim otherwise, and that claim was simply wrong.
+                    //
+                    // RIS puts the terminal back to a known state, so the pane the caller falls
+                    // back to starts clean instead of inheriting a half-parsed escape. Best
+                    // effort: if this write fails too, the peer is gone and there is nothing left
+                    // to reset.
+                    if !painted {
+                        let reset = terminal_envelope(
+                            stream,
+                            Frame::new(FrameKind::Output, b"\x1bc".to_vec()),
+                        );
+                        let _ = writer.write_all(&reset).and_then(|()| writer.flush());
                     }
                 } else {
                     // The writer's lock is poisoned: nothing was painted, so do not register.
@@ -695,6 +725,23 @@ fn terminal_envelope(stream: u32, frame: Frame) -> Vec<u8> {
 /// truncation. Sharing one constant means the two paths cannot drift apart.
 const READ_CHUNK: usize = 8192;
 
+/// The slowest a peer may take its repaint before the agent gives up on it, in bytes per second.
+///
+/// Only a floor, not a target: a local socket moves a megabyte in microseconds and an ssh hop in a
+/// fraction of a second. It exists so the repaint's budget scales with the screen instead of being
+/// a flat wall-clock limit, which made a healthy-but-slow peer permanently unattachable.
+const REPAINT_MIN_THROUGHPUT: usize = 64 * 1024;
+
+/// How long a client gets to accept a repaint of `bytes` before the agent gives up on it.
+///
+/// `WRITE_TIMEOUT` of slack plus the time the payload needs at `REPAINT_MIN_THROUGHPUT`. Pure and
+/// named because the SCALING is the part that was wrong: a flat `WRITE_TIMEOUT` for the whole
+/// repaint is a throughput floor, and a healthy peer slower than `replay.len()` per ten seconds
+/// failed it deterministically — permanently, since every retry repeats it.
+fn repaint_budget(bytes: usize) -> Duration {
+    WRITE_TIMEOUT + Duration::from_secs((bytes / REPAINT_MIN_THROUGHPUT) as u64)
+}
+
 fn read_session(
     id: SessionId,
     pty: Arc<Pty>,
@@ -794,7 +841,24 @@ fn read_session(
             // it — `list` still advertised it, `attach` still succeeded, and nothing read the pty
             // again, so the shell blocked on a full output queue. It also kept `sessions` non-empty
             // forever, so the agent never idled out.
+            //
+            // Torn down the same way the `ended` branch above does, because a client that is told
+            // nothing keeps a pane that looks live over a session that no longer exists, and its
+            // input then vanishes into a `parts(id)` that returns `None`. The child is terminated
+            // too: closing the master alone hangs up the pty's foreground group and leaves exactly
+            // the `setsid()` descendants `terminate`'s snapshot exists to reach.
             Err(_) => {
+                for target in targets(&attached) {
+                    let framed = terminal_envelope(
+                        target.stream,
+                        Frame::new(
+                            FrameKind::Failure,
+                            b"the session's pty could not be read".to_vec(),
+                        ),
+                    );
+                    deliver(&attached, &target, &framed);
+                }
+                terminate(&[&pty]);
                 if let Ok(mut store) = store.lock() {
                     store.remove(&id);
                 }
@@ -1556,7 +1620,18 @@ mod tests {
             );
         }
 
+        let replay_len = shadow.lock().expect("shadow").replay().len();
         let (capture, _) = attach_capture(&store, id(71));
+
+        // The WHOLE repaint arrived, not just its first chunk. Liveness alone is not enough: a
+        // `replay.chunks(..).take(1)` would leave every other assertion here green while sending
+        // 8 KiB of a megabyte screen — and that truncation is exactly the regression this pair of
+        // commits has already shipped once.
+        assert!(
+            capture.text().len() >= replay_len,
+            "client got {} bytes of a {replay_len}-byte repaint",
+            capture.text().len()
+        );
 
         // The reader is still running: output produced AFTER the repaint still arrives. This is
         // what fails when the attachment mutex has been poisoned.
@@ -1614,5 +1689,30 @@ mod tests {
         );
         assert!(store.contains(id(73)), "the session itself survives");
         store.kill_all();
+    }
+
+    /// The budget SCALES with the payload — the part that was wrong, and the cheap part to pin.
+    ///
+    /// A flat `WRITE_TIMEOUT` for the whole repaint is a throughput floor: a peer reading happily
+    /// but slower than `replay.len()` per ten seconds failed every time, and every retry repeated
+    /// it, so the session became permanently unattachable. These assertions fail against that.
+    #[test]
+    fn the_repaint_budget_scales_with_the_screen() {
+        assert_eq!(
+            repaint_budget(0),
+            WRITE_TIMEOUT,
+            "an empty repaint still gets the no-progress slack"
+        );
+        assert!(
+            repaint_budget(4 * 1024 * 1024) > repaint_budget(64 * 1024),
+            "a bigger screen must get longer, or the budget is a throughput floor"
+        );
+        // A megabyte — the size `a_repaint_can_exceed_the_frame_cap` proves is reachable — must get
+        // meaningfully more than the flat slack, or a slow link cannot ever finish it.
+        assert!(
+            repaint_budget(1024 * 1024) >= WRITE_TIMEOUT + Duration::from_secs(16),
+            "a 1 MiB screen got {:?}, which a modest link cannot meet",
+            repaint_budget(1024 * 1024)
+        );
     }
 }

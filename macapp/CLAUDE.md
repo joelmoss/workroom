@@ -141,8 +141,13 @@ the agent fails its probe; `PersistentSessionService.backend(forSession:)` resol
 session to whichever helper owns it. Two rules there are load-bearing and were both got wrong once:
 the answer is resolved **once per session and cached** (a pane asks twice — `attachCommand` for the
 binary, `launchEnvironment` for the socket — and the two must agree, or the daemon binds the agent's
-socket), and an **unanswered** ownership probe resolves to the *daemon*, because the agent creates on
-first attach and would fork a second pty under the same id, orphaning the user's shell.
+socket), and an **unanswered** ownership probe resolves to *neither* — `backend(forSession:)` returns
+nil and the pane opens a plain shell until a later probe succeeds. There is no safe guess, because
+**both** helpers create-on-attach: `SessionDaemon.handleAttach` ends in `create(request:connection:)`
+for an id it does not hold, exactly as the agent does, so either guess forks a second pty under the
+same id and orphans the user's shell. A failed `connect` is NOT an unanswered probe — it means
+nothing is listening, which is a definitive "not owned" (the daemon leaves a stale `session.sock`
+behind on any `pkill`, so this case is common, not exotic).
 
 **Building it.** `macapp/Scripts/build-agent.sh` is a build phase, mirroring `build-helper.sh` (the
 Go CLI): it iterates `ARCHS`, so a universal Release build produces both slices and `lipo`s them.
