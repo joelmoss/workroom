@@ -489,6 +489,36 @@ final class SessionSnapshotCodecTests: XCTestCase {
     XCTAssertEqual(report.droppedSplits, 1)
   }
 
+  /// Disjointness is judged on the LIVE leaves only. Two groups may share a key that resolves to no
+  /// live tab: `materialize` drops it, so it can never render in two places — and reserving it would
+  /// cost the second group for a clash that cannot happen. Both groups keep two live leaves here, so
+  /// a rule that reserved DEAD keys too would drop the second one and this goes red.
+  func testDisjointnessIgnoresLeavesWithNoLiveTab() {
+    let tabs = (1...4).map {
+      TabSession(
+        key: "t\($0)", kind: TabSession.terminalKind,
+        terminal: TerminalPayload(defaultTitle: "Terminal \($0)", cwd: nil))
+    }
+    let file = SessionFile(
+      savedAt: Date(timeIntervalSince1970: 0),
+      windows: [
+        WindowSession(
+          windowKey: "W1",
+          targets: [
+            TargetSession(
+              targetID: "root|/p", tabs: tabs,
+              splits: [
+                split(split(node("t1"), node("t2")), node("gone")),
+                split(split(node("t3"), node("t4")), node("gone")),
+              ])
+          ])
+      ])
+    let (sanitized, report) = file.sanitized()
+    XCTAssertEqual(
+      sanitized.windows[0].targets[0].splits.count, 2, "a dead leaf cannot collide on screen")
+    XCTAssertEqual(report.droppedSplits, 0)
+  }
+
   func testSplitLeafPointingAtADroppedTabCollapses() {
     let tabs = [
       TabSession(

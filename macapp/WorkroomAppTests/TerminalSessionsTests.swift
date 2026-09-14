@@ -769,6 +769,123 @@ final class TerminalSessionsTests: XCTestCase {
     XCTAssertEqual(s.split(containing: c, for: target)?.tabIDs, [c, d])
   }
 
+  /// **REGRESSION.** `moveTabIntoSplit` re-resolves the destination group AFTER the detach, because
+  /// removing the last-but-one member DELETES that group and shifts every later index down. Nothing
+  /// else reaches the shift: the cross-group drag above leaves a three-pane group, which survives.
+  /// Holding the pre-detach index here would hand `setSplit` an index that no longer addresses
+  /// anything, and it appends there — seeding a SECOND group over leaves the first already owns.
+  func testMovingOutOfATwoPaneGroupReindexesTheDestination() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    let a = s.activeTab(for: target)!.id
+    s.splitFocusedPane(for: target, orientation: .horizontal)  // group 0: [a, b]
+    let b = s.activeTab(for: target)!.id
+    let c = s.addTab(for: target).id
+    let d = s.addTab(for: target).id
+    s.moveTabIntoSplit(d, ontoEdge: .right, of: c, for: target)  // group 1: [c, d]
+
+    s.moveTabIntoSplit(a, ontoEdge: .right, of: c, for: target)  // group 0 dies → group 1 becomes 0
+
+    XCTAssertEqual(s.splits(for: target).count, 1, "one group, not a second at a stale index")
+    XCTAssertNil(s.split(containing: b, for: target), "b is solo — its group fell below two")
+    XCTAssertEqual(Set(s.split(containing: c, for: target)?.tabIDs ?? []), Set([a, c, d]))
+  }
+
+  /// ⌘D on a member of a group that is NOT the first one. `splitFocusedPane` grows the FOCUSED pane's
+  /// own group, addressed by index; every other growth test in this file owns exactly one group, where
+  /// "grow group 0" and "grow the focused pane's group" are the same answer and so prove nothing.
+  func testSplittingAMemberOfALaterGroupGrowsOnlyThatGroup() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    let a = s.activeTab(for: target)!.id
+    s.splitFocusedPane(for: target, orientation: .horizontal)  // group 0: [a, b]
+    let b = s.activeTab(for: target)!.id
+    let c = s.addTab(for: target).id
+    let d = s.addTab(for: target).id
+    s.moveTabIntoSplit(d, ontoEdge: .right, of: c, for: target)  // group 1: [c, d], d focused
+
+    s.splitFocusedPane(for: target, orientation: .vertical)
+
+    XCTAssertEqual(s.splits(for: target).count, 2)
+    XCTAssertEqual(s.split(containing: c, for: target)?.tabIDs.count, 3, "the focused group grew")
+    XCTAssertEqual(s.split(containing: a, for: target)?.tabIDs, [a, b], "the first group did not")
+  }
+
+  /// Closing a split member lands focus on a survivor of THAT group — `closeSuccessor` narrows its
+  /// candidates through `splitRemoving`, now an index-addressed lookup among several groups. Recency
+  /// is seeded to prefer a tab in the OTHER group, so a successor that skipped the narrowing would
+  /// land there and sweep the pane beside the closed one off screen.
+  func testCloseSuccessorStaysInsideTheClosedTabsOwnGroup() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    let a = s.activeTab(for: target)!.id
+    s.splitFocusedPane(for: target, orientation: .horizontal)  // group 0: [a, b]
+    let c = s.addTab(for: target).id
+    let d = s.addTab(for: target).id
+    s.moveTabIntoSplit(d, ontoEdge: .right, of: c, for: target)  // group 1: [c, d]
+    s.focus(a, for: target)  // a is the most recent…
+    s.focus(d, for: target)  // …behind d, so recency's next pick is a
+
+    s.closeTab(d, for: target)
+    XCTAssertEqual(s.activeTab(for: target)?.id, c, "d's own survivor, not recency's a")
+    XCTAssertNil(s.split(containing: c, for: target), "and that group is gone — c is solo")
+  }
+
+  /// The tab strip's only view of the split model: `member → group index`, which is what lets it draw
+  /// one bracket per group and tell a group boundary from an interior one. Asserted as two DISTINCT
+  /// indices addressing `splits(for:)`'s own positions — "both tabs are grouped" would pass against a
+  /// map that put every member in group 0 and so drew one bracket across both groups.
+  func testSplitGroupIndicesMapsEachMemberToItsOwnGroup() throws {
+    let s = makeSessions()
+    s.addTab(for: target)
+    let a = s.activeTab(for: target)!.id
+    s.splitFocusedPane(for: target, orientation: .horizontal)
+    let b = s.activeTab(for: target)!.id
+    let c = s.addTab(for: target).id
+    let d = s.addTab(for: target).id
+    s.moveTabIntoSplit(d, ontoEdge: .right, of: c, for: target)
+    let solo = s.addTab(for: target).id
+
+    let groupOf = s.splitGroupIndices(for: target)
+    let first = try XCTUnwrap(groupOf[a])
+    let second = try XCTUnwrap(groupOf[c])
+    XCTAssertEqual(groupOf[b], first)
+    XCTAssertEqual(groupOf[d], second)
+    XCTAssertNotEqual(first, second, "two groups, two brackets — not one drawn over both")
+    XCTAssertNil(groupOf[solo], "an ungrouped chip gets no bracket")
+    let groups = s.splits(for: target)
+    XCTAssertEqual(groups[first].tabIDs, [a, b])
+    XCTAssertEqual(Set(groups[second].tabIDs), Set([c, d]))
+  }
+
+  /// "Resize Splits Evenly" is addressed by the FOCUSED tab's group index, so among several groups it
+  /// must even that one and leave the rest at the dividers the user dragged. BOTH groups are skewed to
+  /// 0.8 first — asserting the even value on the untouched group would pass either way.
+  func testEqualizeSplitOnlyEvensTheFocusedGroup() {
+    let s = makeSessions()
+    s.addTab(for: target)
+    let a = s.activeTab(for: target)!.id
+    s.splitFocusedPane(for: target, orientation: .horizontal)  // group 0: [a, b]
+    let c = s.addTab(for: target).id
+    let d = s.addTab(for: target).id
+    s.moveTabIntoSplit(d, ontoEdge: .right, of: c, for: target)  // group 1: [c, d], d focused
+
+    guard case .split(let firstID, _, _, _, _) = s.split(containing: a, for: target),
+      case .split(let secondID, _, _, _, _) = s.split(containing: c, for: target)
+    else { return XCTFail("both groups are split nodes") }
+    s.setRatio(0.8, forSplit: firstID, for: target)
+    s.setRatio(0.8, forSplit: secondID, for: target)
+
+    s.equalizeSplit(for: target)
+
+    XCTAssertEqual(
+      s.split(containing: c, for: target)?.ratio(forSplit: secondID) ?? -1, 0.5, accuracy: 0.0001,
+      "the group holding the focused tab is evened")
+    XCTAssertEqual(
+      s.split(containing: a, for: target)?.ratio(forSplit: firstID) ?? -1, 0.8, accuracy: 0.0001,
+      "the off-screen group keeps the divider the user dragged")
+  }
+
   func testExtractFromSplitMakesItSolo() throws {
     let s = makeSessions()
     s.addTab(for: target)
