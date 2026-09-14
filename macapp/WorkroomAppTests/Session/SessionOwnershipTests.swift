@@ -107,15 +107,41 @@ final class SessionOwnershipTests: XCTestCase {
     }
   }
 
-  /// No socket at the path at all — connect fails outright. Reported as unreachable rather than
-  /// notOwned; `PersistentSessionService` maps the "there is no daemon socket file" case to
-  /// notOwned itself, before it ever builds a client.
-  func testAnAbsentDaemonIsUnreachable() {
+  /// **A stale socket FILE is `notOwned`, not `unreachable`** — the case that made the previous
+  /// version of this a P0.
+  ///
+  /// The daemon installs no SIGTERM handler and unlinks its socket only on the graceful path
+  /// (`SessionDaemon.swift:167`), so any `pkill` — which is exactly what `make app-run` does —
+  /// leaves `session.sock` behind. `existingSocketPath` finds the file, so the service builds a
+  /// client and asks; `connect` then gets ECONNREFUSED. Folding that into `unreachable` pinned
+  /// EVERY session to a daemon that was not running, and each pane's `workroom-session attach`
+  /// respawned the daemon and forked a fresh pty for an id it had never held.
+  ///
+  /// Simulated exactly: bind and listen so the inode exists, then close the listener. The file
+  /// stays, nothing answers.
+  func testAStaleSocketFileIsNotOwnedRatherThanUnreachable() throws {
+    let socketPath = directory.appendingPathComponent("stale.sock").path
+    let listener = try Self.listen(at: socketPath)
+    close(listener)
+    XCTAssertTrue(
+      FileManager.default.fileExists(atPath: socketPath),
+      "the fixture must leave the FILE behind, or it is testing the absent case instead")
+
+    guard
+      case .notOwned = PersistentSessionControlClient(socketPath: socketPath)
+        .ownership(identifier: identifier())
+    else {
+      return XCTFail("a socket nobody is listening on is a definitive no, not ambiguity")
+    }
+  }
+
+  /// No socket at the path at all — also a definitive no, for the same reason.
+  func testAnAbsentDaemonIsNotOwned() {
     let client = PersistentSessionControlClient(
       socketPath: directory.appendingPathComponent("nothing.sock").path)
 
-    guard case .unreachable = client.ownership(identifier: identifier()) else {
-      return XCTFail("nothing is listening")
+    guard case .notOwned = client.ownership(identifier: identifier()) else {
+      return XCTFail("nothing is listening, so nothing holds this session")
     }
   }
 
@@ -175,17 +201,20 @@ final class SessionOwnerRuleTests: XCTestCase {
       PersistentSessionService.owner(preferred: .swiftDaemon, daemon: .notOwned), .swiftDaemon)
   }
 
-  /// The asymmetry, stated as a test so it cannot be "simplified" into matching `notOwned`.
+  /// An unanswered probe resolves to NEITHER helper.
   ///
-  /// Guessing daemon when the answer was agent costs an error message — `workroom-session attach`
-  /// reports no such session. Guessing agent when the answer was daemon costs the user their
-  /// running shell: the agent creates on first attach, forking a second pty under the same id and
-  /// orphaning the real one behind a pane that looks freshly opened.
-  func testAnUnansweredProbeFailsTowardTheLoudDirection() {
-    XCTAssertEqual(
-      PersistentSessionService.owner(preferred: .rustAgent, daemon: .unreachable), .swiftDaemon,
-      "an unanswered probe routed to the agent forks a second pty under the same id")
-    XCTAssertEqual(
-      PersistentSessionService.owner(preferred: .swiftDaemon, daemon: .unreachable), .swiftDaemon)
+  /// This test previously asserted `.swiftDaemon`, on the reasoning that guessing wrong toward the
+  /// daemon only fails loudly. That premise was false and the test was pinning it:
+  /// `SessionDaemon.handleAttach` ends `create(request:connection:)` for an id it does not hold,
+  /// exactly as the agent does, so BOTH guesses silently fork a second shell and orphan the first.
+  ///
+  /// Nil means the pane opens a plain shell — visible and recoverable — instead of duplicating a
+  /// pty, which is neither.
+  func testAnUnansweredProbeResolvesToNeitherHelper() {
+    for preferred in SessionBackend.allCases {
+      XCTAssertNil(
+        PersistentSessionService.owner(preferred: preferred, daemon: .unreachable),
+        "there is no safe guess: both helpers create-on-attach, so either one forks a duplicate")
+    }
   }
 }
