@@ -362,13 +362,6 @@ final class SplitPaneUITests: XCTestCase {
     assertCount(titlebars(app), reaches: 2)  // exactly A's two members, nothing from B
   }
 
-  /// One strip chip, addressed by its terminal's title. The identifier sits on the whole chip, and the
-  /// title `StaticText` and close button inherit it — any of them is inside the chip's own frame, which
-  /// is what the containment assertions below need.
-  private func terminalChip(_ app: XCUIApplication, titled title: String) -> XCUIElement {
-    app.descendants(matching: .any).matching(identifier: "terminal.tab.\(title)").firstMatch
-  }
-
   /// The reported bug, driven through the real app: four terminals, split two together, then split the
   /// other two. Under the old single-layout model the second ⌘D REPLACED the first group, so the strip
   /// drew ONE bracket and this fails at `bracketB`.
@@ -383,7 +376,18 @@ final class SplitPaneUITests: XCTestCase {
   /// chip must sit inside it, and the two brackets must not overlap. That is the property the centring
   /// fault breaks, and it needs no tolerance.
   func testEachTerminalSplitGroupBracketFramesItsOwnChips() throws {
-    let app = launchedApp()
+    // The long title is load-bearing, not decoration. It caps the first chip at the strip's 180pt
+    // maximum so group 1's bracket comes out WIDER than group 2's two "Terminal N" chips. With two
+    // equal-width brackets the centring fault is a no-op and this test passes straight through it
+    // (measured: flipping the ZStack back to `.center` left it green), which is exactly the vacuous
+    // shape this repo has shipped before. Unequal widths are what make the offset observable.
+    let app = XCUIApplication()
+    app.launchArguments += [
+      "-WorkroomUITestFixture", "1",
+      "-WorkroomUITestLongTabTitle", "1",
+      "-ApplePersistenceIgnoreState", "YES",
+    ]
+    app.launch()
     try openWorkroom(app)
 
     // Group 1: ⌘D splits the fixture's Terminal 1 → [Terminal 1, Terminal 2].
@@ -404,26 +408,36 @@ final class SplitPaneUITests: XCTestCase {
       bracketB.exists,
       "group 2's bracket too — splitting the second pair must not dissolve the first")
 
-    let one = terminalChip(app, titled: "Terminal 1")
-    let two = terminalChip(app, titled: "Terminal 2")
-    let three = terminalChip(app, titled: "Terminal 3")
-    let four = terminalChip(app, titled: "Terminal 4")
+    // By POSITION, not title: the fixture renames the first terminal, and `displayedTabIDs` already
+    // guarantees the order — group 1's two members, then group 2's — which is the property the
+    // brackets are drawn from. Indexing here would be fragile only if that ordering broke, and this
+    // test would then fail for exactly the right reason.
+    let chips = tabs(app)
+    XCTAssertEqual(chips.count, 4)
+    let one = chips.element(boundBy: 0)
+    let two = chips.element(boundBy: 1)
+    let three = chips.element(boundBy: 2)
+    let four = chips.element(boundBy: 3)
     for chip in [one, two, three, four] { XCTAssertTrue(chip.exists, "every chip is in the strip") }
 
     // Each group's members sit INSIDE their own bracket. `displayedTabIDs` keeps each group's run
     // contiguous, so this also pins the ordering the brackets depend on.
-    for (chip, name) in [(one, "Terminal 1"), (two, "Terminal 2")] {
+    for (chip, name) in [(one, "the long-titled chip"), (two, "chip 2")] {
       XCTAssertGreaterThanOrEqual(
         chip.frame.minX, bracketA.frame.minX - 1, "\(name) starts inside group 1's bracket")
       XCTAssertLessThanOrEqual(
         chip.frame.maxX, bracketA.frame.maxX + 1, "\(name) ends inside group 1's bracket")
     }
-    for (chip, name) in [(three, "Terminal 3"), (four, "Terminal 4")] {
+    for (chip, name) in [(three, "chip 3"), (four, "chip 4")] {
       XCTAssertGreaterThanOrEqual(
         chip.frame.minX, bracketB.frame.minX - 1, "\(name) starts inside group 2's bracket")
       XCTAssertLessThanOrEqual(
         chip.frame.maxX, bracketB.frame.maxX + 1, "\(name) ends inside group 2's bracket")
     }
+    // The whole point of the long title: without a width difference the centring fault cannot show.
+    XCTAssertGreaterThan(
+      bracketA.frame.width, bracketB.frame.width + 20,
+      "group 1's bracket must be clearly wider, or a mis-centred bracket lands in the same place")
     // …and the brackets are disjoint: the centring fault draws the narrower one over its neighbour.
     XCTAssertLessThanOrEqual(
       bracketA.frame.maxX, bracketB.frame.minX,

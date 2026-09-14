@@ -888,7 +888,18 @@ final class TerminalSessions: ObservableObject {
 
     tabsByTarget[target.id] = tabs
     orderByTarget[target.id] = order
-    let restoredSplits = session.splits.compactMap { saved in saved.materialize { idsByKey[$0] } }
+    // Detached tabs resolve to NOTHING here, so a saved group naming one comes back without it.
+    // `splitsByTarget`'s invariant is that a detached tab is never a member (see its doc): rendering
+    // a group that contains one puts its surface in the origin pane tree as well as its own window,
+    // re-homing the libghostty view and blanking the detached window — the same failure the
+    // `setFocused` guard below exists to prevent, reached by a different door. `sanitized()` waves
+    // the shape through because the tab is live, so the exclusion belongs here, where the detached
+    // set is known. `materialize` already collapses unresolved leaves and drops a group that falls
+    // below two, so a two-member group with one detached member correctly restores as no group.
+    let detachedIDs = Set(restoredDetached.map(\.0))
+    let restoredSplits = session.splits.compactMap { saved in
+      saved.materialize { key in idsByKey[key].flatMap { detachedIDs.contains($0) ? nil : $0 } }
+    }
     splitsByTarget[target.id] = restoredSplits.isEmpty ? nil : restoredSplits
     // Mark detached panes BEFORE choosing focus. `setFocused`'s own guard refuses to focus a detached
     // tab (focusing one makes `contentLayout` render it back in THIS window and re-homes the
