@@ -161,6 +161,49 @@ The Zig toolchain and the pinned Ghostty engine come from `vcs/scripts/build-gho
 (cached per `(engine sha, target)` outside the repo). That pin must stay in step with the
 GhosttyKit the app links — see the comment in `project.yml`.
 
+## Working rules for the session/VCS layers
+
+Three rules, each written after the failure that produced it. They are narrow on purpose: they
+apply to the terminal-session and VCS-routing code above, which is concurrent, cross-process and
+cross-language, and where a fix that is locally correct is routinely globally wrong.
+
+**1. Verify the premise before writing the justification.** A load-bearing claim about code you did
+not write — "the daemon fails loudly here", "this constant bounds that loop", "nothing else matches
+on this enum" — gets read and quoted before anything is built on it. If you cannot point at the
+line, you do not know it.
+
+Both of these shipped, each under several paragraphs of confident reasoning, each one grep from
+being disproved:
+
+- *"Guessing the daemon fails loudly, so an unanswered ownership probe should resolve there."*
+  `SessionDaemon.handleAttach` ends in `create(request:connection:)` for an id it does not hold —
+  it creates on attach exactly as the agent does. Both guesses silently fork a second shell. The
+  rule was wrong and a test asserted it, which kept it wrong.
+- *"`WRITE_TIMEOUT` bounds the repaint."* It is a **no-progress** bound, reset per `write` call
+  (`transport.rs`). Reused as a total-transfer budget it became a throughput floor, so a healthy
+  peer on a slow link was permanently unattachable.
+
+The standard is the one worth applying to a reviewer's finding: quote the line, or drop the
+confidence. It applies to your own premises first.
+
+**2. Ask what the fix made worse, not only whether it works.** Every fix here gets a negative
+control for the bug it targets. That is necessary and it is not sufficient — the bug it *creates*
+is usually in the property next door, and nothing in the diff points at it.
+
+Three rounds of this on one branch (#188): chunking a repaint fixed a panic and turned one write
+timeout into N; bounding that with a `break` left the client's parser stranded mid-escape-sequence;
+the bound itself became the throughput floor above. Each fix was correct about its target.
+
+So: name the neighbouring property before pushing (the lock hold, the client's parser state, what a
+caller now does with an error it never saw before), and test it.
+
+**3. An independent adversarial pass is required here, not optional.** For any change to
+`Core/Session/`, `VCSProviding`/`VCSWriting` routing, or `vcs/crates/wr-agent`, dispatch a reviewer
+that did not write the code and give it the diff, the intent, and an evidence gate. Every defect
+listed above was found that way; none was found by re-reading.
+
+Being more careful is not a substitute, and on this branch it demonstrably was not one.
+
 ## Formatting & linting
 
 Swift is formatted/linted with **swift-format** (bundled with the Xcode toolchain — run via
