@@ -8,7 +8,7 @@ import Foundation
 /// `target(for:) != nil` — which rejects `.project` and any leaf that no longer resolves (so the model
 /// can never hold an invalid workroom). The focused split member IS `selectedTargetID`.
 ///
-/// **Many groups, not one.** Unlike the terminal split (one layout per target), a window can hold
+/// **Many groups, not one.** Like the terminal split (which learned this from here), a window can hold
 /// SEVERAL workroom split groups at once — `[main | feature]` and `[docs | review]` both grouped, with
 /// solo workrooms alongside. The groups are disjoint (a workroom belongs to at most one) and each holds
 /// ≥2 leaves; at most one is *visible*, the one containing the selection. Splitting two solo workrooms

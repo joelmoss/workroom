@@ -67,11 +67,11 @@ extension AppStore {
       }
       guard !tabs.isEmpty else { return nil }
 
-      let split = captured.split.flatMap { layout in
+      let splits = captured.splits.compactMap { layout in
         LayoutNode<String>.capture(layout) { keysByTabID[$0] }
       }
       return TargetSession(
-        targetID: targetID, tabs: tabs, split: split,
+        targetID: targetID, tabs: tabs, splits: splits,
         focusedKey: captured.focused.flatMap { keysByTabID[$0] },
         terminalCounter: captured.counter)
     }

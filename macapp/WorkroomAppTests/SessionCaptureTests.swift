@@ -34,7 +34,7 @@ final class SessionCaptureTests: XCTestCase {
     guard !tabs.isEmpty else { return nil }
     return TargetSession(
       targetID: target.id, tabs: tabs,
-      split: captured.split.flatMap { LayoutNode<String>.capture($0) { keys[$0] } },
+      splits: captured.splits.compactMap { LayoutNode<String>.capture($0) { keys[$0] } },
       focusedKey: captured.focused.flatMap { keys[$0] },
       terminalCounter: captured.counter)
   }
@@ -63,7 +63,7 @@ final class SessionCaptureTests: XCTestCase {
     sessions.splitFocusedPane(for: target, orientation: .horizontal)
 
     let captured = try XCTUnwrap(capture(sessions))
-    let split = try XCTUnwrap(captured.split)
+    let split = try XCTUnwrap(captured.splits.first)
     let keys = Set(captured.tabs.map(\.key))
     XCTAssertEqual(split.leaves.count, 2)
     XCTAssertTrue(
@@ -131,8 +131,8 @@ final class SessionCaptureTests: XCTestCase {
     XCTAssertFalse(
       captured.tabs.contains { $0.terminal?.defaultTitle == "Run" },
       "no run tab reaches the file")
-    XCTAssertNil(
-      captured.split,
+    XCTAssertTrue(
+      captured.splits.isEmpty,
       "the split had two leaves and one was the run tab — a lone leaf is not a split")
   }
 

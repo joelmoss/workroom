@@ -85,7 +85,7 @@ final class SessionRestoreTests: XCTestCase {
       TargetSession(
         targetID: target.id,
         tabs: [terminal("a", title: "Terminal 1"), terminal("b", title: "Terminal 2")],
-        split: split("a", "b"), focusedKey: "b"),
+        splits: [split("a", "b")], focusedKey: "b"),
       for: target)
 
     let tabs = sessions.tabs(for: target)
@@ -284,7 +284,7 @@ final class SessionRestoreTests: XCTestCase {
     guard !tabs.isEmpty else { return nil }
     return TargetSession(
       targetID: target.id, tabs: tabs,
-      split: captured.split.flatMap { LayoutNode<String>.capture($0) { keys[$0] } },
+      splits: captured.splits.compactMap { LayoutNode<String>.capture($0) { keys[$0] } },
       focusedKey: captured.focused.flatMap { keys[$0] },
       terminalCounter: captured.counter)
   }

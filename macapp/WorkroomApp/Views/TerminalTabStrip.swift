@@ -61,9 +61,11 @@ struct TerminalTabStrip: View {
     let dropIndex = drag.dropIndex(
       ids: tabs.map(\.id), spacing: tabSpacing, suspendedByPaneDrag: chipPaneDrag != nil)
     let draggedWidth = drag.draggedWidth
-    // Members of the split group (≥2), so a grouped chip's selected pill can inset itself to sit
-    // *inside* the `splitWell` bracket rather than overrunning it.
-    let groupMembers = splitMemberSet
+    // `member → group index` for every grouped chip, built ONCE per layout and threaded down: a
+    // grouped chip's selected pill insets itself to sit *inside* its `splitWell` bracket rather than
+    // overrunning it, and the separator rules need to tell one group from the next, not merely
+    // grouped from solo.
+    let groupOf = sessions.splitGroupIndices(for: target)
 
     // `spacing` is the gutter between the scroller region and the per-tab toolbar, and it has to be a
     // real gutter rather than leftover slack. `OverflowingTabScroller`'s pinned "+" rides a
@@ -87,7 +89,7 @@ struct TerminalTabStrip: View {
       ) { overflowing in
         chipRun(
           tabs, draggedIndex: draggedIndex, dropIndex: dropIndex, draggedWidth: draggedWidth,
-          groupMembers: groupMembers, overflowing: overflowing)
+          groupOf: groupOf, overflowing: overflowing)
       } controls: {
         addTerminalButton
       }
@@ -109,7 +111,7 @@ struct TerminalTabStrip: View {
   @ViewBuilder
   private func chipRun(
     _ tabs: [TerminalTab], draggedIndex: Int?, dropIndex: Int?, draggedWidth: CGFloat,
-    groupMembers: Set<TerminalTab.ID>, overflowing: Bool
+    groupOf: [TerminalTab.ID: Int], overflowing: Bool
   ) -> some View {
     HStack(spacing: tabSpacing) {
       ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
@@ -139,8 +141,8 @@ struct TerminalTabStrip: View {
         TerminalTabChip(
           tab: tab, isActive: tab.id == activeID, isHovered: isHovered,
           isDragging: isDragging, hasActivity: hasActivity, runState: runState,
-          showLeadingSeparator: showsLeadingSeparator(at: index),
-          isGrouped: groupMembers.contains(tab.id),
+          showLeadingSeparator: showsLeadingSeparator(at: index, groupOf: groupOf),
+          isGrouped: groupOf[tab.id] != nil,
           agentBadge: agentBadge, onAgentTap: { agentPopoverTab = tab.id }
         ) {
           store.requestCloseTerminalTab(tab.id, for: target)
@@ -250,7 +252,7 @@ struct TerminalTabStrip: View {
           .opacity(showsTrailingDivider && !overflowing ? 1 : 0)
       }
     }
-    .background(alignment: .leading) { splitWell(tabs) }
+    .background(alignment: .leading) { splitWell(tabs, groupOf: groupOf) }
     .onPreferenceChange(TabWidthKey.self) { drag.setWidths($0) }
   }
 
@@ -282,33 +284,61 @@ struct TerminalTabStrip: View {
     .accessibilityIdentifier("NewTerminal")
   }
 
-  /// A rounded *outline* bracketing the split's contiguous chip run, so it's easy to see which tabs
-  /// are grouped/split (issue #3). Deliberately an outline, not a filled backing: a fill occupies the
-  /// same channel as the active-chip fill, so any visible strength made a grouped-but-inactive chip
-  /// read as focused. The border groups without competing with selection. Hidden during a drag
-  /// (group-aware strip drag is Phase 2), and only shown for a real split (≥2).
+  /// A rounded *outline* bracketing EACH split group's contiguous chip run, so it's easy to see which
+  /// tabs are grouped/split (issue #3) — including a group that isn't the one on screen, since groups
+  /// persist while you look at a tab outside them. Deliberately an outline, not a filled backing: a
+  /// fill occupies the same channel as the active-chip fill, so any visible strength made a
+  /// grouped-but-inactive chip read as focused. The border groups without competing with selection.
+  /// Hidden during a drag (group-aware strip drag is Phase 2).
+  ///
+  /// The `ZStack(alignment: .leading)` is load-bearing and NOT redundant with the caller's
+  /// `.background(alignment: .leading)` — see `WorkroomTabBar.splitWell`, which paid for the lesson:
+  /// without it, several brackets are wrapped in an implicit stack of default `.center` alignment, so
+  /// every bracket narrower than the widest is drawn half their difference too far right.
   @ViewBuilder
-  private func splitWell(_ tabs: [TerminalTab]) -> some View {
-    if !drag.isDragging, let run = splitRunRect(tabs) {
-      RoundedRectangle(cornerRadius: 7)
-        .strokeBorder(ThemeService.shared.tokens.border, lineWidth: 1)
-        .frame(width: run.width)
-        .offset(x: run.x)
+  private func splitWell(_ tabs: [TerminalTab], groupOf: [TerminalTab.ID: Int]) -> some View {
+    if !drag.isDragging {
+      ZStack(alignment: .leading) {
+        ForEach(Array(splitRunRects(tabs, groupOf: groupOf).enumerated()), id: \.offset) {
+          index, run in
+          RoundedRectangle(cornerRadius: 7)
+            .strokeBorder(ThemeService.shared.tokens.border, lineWidth: 1)
+            .frame(width: run.width)
+            .offset(x: run.x)
+            // A frame XCUITest can read — a stroked shape is otherwise invisible to it, and with
+            // several brackets the offset arithmetic is exactly what can go wrong (see
+            // `WorkroomTabBar.splitWell`). Kept OUT of the a11y tree in a normal run: it is pure
+            // decoration, and VoiceOver users get the grouping from each chip's own label.
+            .accessibilityElement()
+            .accessibilityHidden(!UITestFixture.isActive)
+            .accessibilityIdentifier("terminal.tab.splitBracket.\(index)")
+        }
+      }
     }
   }
 
-  /// The x-offset and width of the split members' contiguous run within the chip strip, in the chips'
-  /// coordinate space (x = 0 at the first chip). `nil` when there's no split. Members are guaranteed
-  /// contiguous by `displayedTabIDs`. Maps this strip's model to position-indexed widths and delegates
-  /// the arithmetic to `TabStripSplitRun` (unit-tested there, and sharing one summation with the
-  /// overflow predicate's `runWidth`).
-  private func splitRunRect(_ tabs: [TerminalTab]) -> (x: CGFloat, width: CGFloat)? {
-    guard let members = sessions.split(for: target)?.tabIDs, members.count >= 2 else { return nil }
-    let memberSet = Set(members)
-    return TabStripSplitRun.rect(
-      widths: tabs.map { drag.widths[$0.id] ?? 0 },
-      memberIndices: tabs.indices.filter { memberSet.contains(tabs[$0].id) },
-      spacing: tabSpacing)
+  /// The x-offset and width of every split group's contiguous run within the chip strip, in the chips'
+  /// coordinate space (x = 0 at the first chip). Empty when nothing is grouped. Each group's members
+  /// are guaranteed contiguous by `displayedTabIDs`. Maps this strip's model to position-indexed widths
+  /// and delegates the arithmetic to the shared `TabStripSplitRun` (unit-tested there, and sharing one
+  /// summation with the overflow predicate's `runWidth`), exactly as `WorkroomTabBar` does.
+  private func splitRunRects(_ tabs: [TerminalTab], groupOf: [TerminalTab.ID: Int]) -> [(
+    x: CGFloat, width: CGFloat
+  )] {
+    guard !groupOf.isEmpty else { return [] }
+    let widths = tabs.map { drag.widths[$0.id] ?? 0 }
+    // Bucket the chips by group in ONE pass over the strip (a filter per group would be
+    // O(groups × chips)).
+    var byGroup: [Int: [Int]] = [:]
+    for (index, tab) in tabs.enumerated() {
+      guard let group = groupOf[tab.id] else { continue }
+      byGroup[group, default: []].append(index)
+    }
+    // Sorted by group index so the brackets keep a stable draw order across renders.
+    return byGroup.keys.sorted().compactMap { group in
+      TabStripSplitRun.rect(
+        widths: widths, memberIndices: byGroup[group] ?? [], spacing: tabSpacing)
+    }
   }
 
   /// Horizontal shift for a non-dragged chip so the row opens a gap at the drop target (delegates to
@@ -325,14 +355,16 @@ struct TerminalTabStrip: View {
   /// frames it) — no divider immediately before or after either, so they don't double up. Also dropped
   /// at a split group's **outer** boundary (the `splitWell` bracket already separates the members
   /// there) and while dragging (reorder / drop-into-pane). Mirrors `WorkroomTabBar`.
-  private func showsLeadingSeparator(at index: Int) -> Bool {
+  ///
+  /// The boundary test compares GROUP IDENTITY, not mere membership: two adjacent groups are both
+  /// "grouped", and a membership test would draw an interior-style divider between two bracket edges.
+  private func showsLeadingSeparator(at index: Int, groupOf: [TerminalTab.ID: Int]) -> Bool {
     guard index > 0, !drag.isDragging, chipPaneDrag == nil else { return false }
     let here = tabs[index].id
     let prev = tabs[index - 1].id
     if here == activeID || prev == activeID { return false }
     if here == hoveredTab || prev == hoveredTab { return false }
-    let members = splitMemberSet
-    if members.contains(here) != members.contains(prev) { return false }
+    if groupOf[here] != groupOf[prev] { return false }
     return true
   }
 
@@ -345,15 +377,8 @@ struct TerminalTabStrip: View {
   private var showsTrailingDivider: Bool {
     guard let last = tabs.last?.id else { return false }
     if last == activeID || last == hoveredTab { return false }
-    if splitMemberSet.contains(last) { return false }
+    if sessions.split(containing: last, for: target) != nil { return false }
     return true
-  }
-
-  /// The split group's members (≥2), or empty when there's no split — used to drop the separator at
-  /// the group's outer edges (see `showsLeadingSeparator`).
-  private var splitMemberSet: Set<TerminalTab.ID> {
-    guard let members = sessions.split(for: target)?.tabIDs, members.count >= 2 else { return [] }
-    return Set(members)
   }
 
   /// The ✦ agent popover for a tab (inline presentation): the diagnosis + its actions, off the grid.
@@ -935,13 +960,12 @@ extension View {
         }
         Divider()
       }
-      // Split-membership computed once, shared by the Split-disable gate and the "Remove from
-      // Split" item below. `isMember` is true for a member of ANY split — visible or hidden (a
-      // split can exist while a solo tab is focused), so removal still works for that member.
-      let isMember = sessions.split(for: target)?.tabIDs.contains(tab.id) ?? false
-      // Split this tab. Disabled for a tab outside the visible split (review D5) so right-clicking a
-      // chip that isn't part of the shown split can't silently replace it.
-      let splitDisabled = sessions.isSplitVisible(for: target) && !isMember
+      // Membership in ANY group — visible or hidden (a group persists while a solo tab is focused),
+      // so "Remove from Split" still works for a member of an off-screen group.
+      let isMember = sessions.split(containing: tab.id, for: target) != nil
+      // Split this tab — never disabled. The old gate refused this for a chip outside the shown
+      // split (review D5), because splitting it would have REPLACED that split; groups are disjoint
+      // and additive now, so splitting a solo chip seeds a new group and leaves every other alone.
       Group {
         Button {
           sessions.splitTab(tab.id, on: .right, for: target)
@@ -964,7 +988,6 @@ extension View {
           Label("Split Up", systemImage: "rectangle.tophalf.inset.filled")
         }
       }
-      .disabled(splitDisabled)
       // Remove ONLY this tab from the split — the inverse of Split R/L/D/U (issue #122). Shown
       // only for a real split member (hidden on solo tabs), matching the workroom-split menu's
       // "Remove from Split" (WorkroomContextMenu.swift). `extractFromSplit` pops just this leaf,
