@@ -10,10 +10,13 @@
 //! session module's doc comment. What it asserts is that the same shell is still running and still
 //! talking, which is the property the socket layer is responsible for.
 
+use std::ffi::OsString;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+
+use wr_agent::pty::Pty;
 
 fn agent_binary() -> PathBuf {
     // `CARGO_BIN_EXE_wr-agent` is resolved at COMPILE time and bakes in an absolute path from the
@@ -865,4 +868,108 @@ fn the_shells_exit_code_becomes_the_clients() {
         Some(7),
         "the shell's exit code did not reach the client"
     );
+}
+
+/// The attach client must put its own terminal into raw mode.
+///
+/// Every other test in this file gives the client a PIPE for stdin, and a pipe has no line
+/// discipline — so all of them pass against a client that never calls `tcsetattr` at all. That is
+/// exactly what shipped: the agent reached a nightly with its tty left cooked, and the pane it
+/// served echoed every focus report, mouse report and paste marker onto the screen as text while
+/// Ctrl-C killed the relay instead of reaching the program.
+///
+/// So this one gives it a real pty, which is the only way the defect is visible. Two assertions,
+/// because they fail differently: the flags say the mode was never entered, and the Ctrl-C survival
+/// says what the user actually loses when it wasn't.
+#[test]
+fn the_client_puts_its_own_terminal_into_raw_mode() {
+    let workspace = Workspace::new("rawmode");
+    let socket = workspace.socket();
+    let mut agent = start_agent(&socket);
+
+    let session = "f00dfeed-f00d-feed-f00d-feedf00dfeed";
+    let env: Vec<(OsString, OsString)> = vec![
+        ("WORKROOM_SESSION_ID".into(), session.into()),
+        ("WORKROOM_SESSION_SOCKET".into(), socket.clone().into()),
+        ("WORKROOM_SESSION_SHELL".into(), "/bin/sh".into()),
+        ("WORKROOM_SESSION_CWD".into(), workspace.dir.clone().into()),
+        ("WORKROOM_SESSION_COMMAND".into(), "".into()),
+        ("PATH".into(), "/usr/bin:/bin".into()),
+    ];
+    let pty = Pty::spawn(
+        agent_binary().as_os_str(),
+        None,
+        &[OsString::from("attach")],
+        &env,
+        Some(workspace.dir.as_os_str()),
+        80,
+        24,
+    )
+    .expect("spawn attach on a pty");
+
+    // The shell is up once it answers. Proves the relay works at all, so a later failure is about
+    // the terminal mode and not about a session that never started.
+    assert!(
+        wait_for(Duration::from_secs(10), || {
+            list_sessions(&socket).contains(session)
+        }),
+        "the session never registered; the client is not relaying"
+    );
+    pty.write_all(b"echo ready\n").expect("write");
+    assert!(
+        read_until_on_pty(&pty, "ready", Duration::from_secs(10)),
+        "the shell never answered through the pty"
+    );
+
+    // What the mode actually is. `tcgetattr` on the master reads the pty's line discipline, which
+    // is the same one the client's stdin sees.
+    let mut settings: libc::termios = unsafe { std::mem::zeroed() };
+    let rc = unsafe { libc::tcgetattr(pty.master_fd(), &mut settings) };
+    assert_eq!(rc, 0, "could not read the pty's terminal settings");
+    for (name, flag) in [
+        ("ECHO", libc::ECHO),
+        ("ICANON", libc::ICANON),
+        ("ISIG", libc::ISIG),
+    ] {
+        assert_eq!(
+            settings.c_lflag & flag,
+            0,
+            "{name} is still set: the client left its terminal cooked, so the emulator's own \
+             reports echo onto the screen and Ctrl-C never reaches the far side"
+        );
+    }
+
+    // And what that costs. Cooked, `\x03` raises SIGINT in the client's own process group and the
+    // relay dies; raw, it is a byte for the program on the far end and the relay is untouched.
+    pty.write_all(b"\x03").expect("write ^C");
+    std::thread::sleep(Duration::from_millis(500));
+    pty.write_all(b"echo alive\n").expect("write");
+    assert!(
+        read_until_on_pty(&pty, "alive", Duration::from_secs(10)),
+        "the client did not survive Ctrl-C: it took the SIGINT itself instead of forwarding \
+         the byte"
+    );
+
+    let _ = agent.kill();
+    let _ = agent.wait();
+}
+
+/// Reads the pty master until `needle` shows up or the deadline passes.
+fn read_until_on_pty(pty: &Pty, needle: &str, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    let mut seen = String::new();
+    let mut buffer = [0u8; 4096];
+    while Instant::now() < deadline {
+        match pty.read(&mut buffer) {
+            Ok(0) => return false,
+            Ok(n) => {
+                seen.push_str(&String::from_utf8_lossy(&buffer[..n]));
+                if seen.contains(needle) {
+                    return true;
+                }
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(25)),
+        }
+    }
+    false
 }

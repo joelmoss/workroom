@@ -23,6 +23,11 @@ thiserror = { workspace = true }
 # crates are.
 libc = "0.2"
 
+[dev-dependencies]
+# The raw-mode test reads the pty's line discipline directly. `libc` is already a runtime
+# dependency, so this adds nothing to the graph — it only makes it visible to `tests/`.
+libc = "0.2"
+
 [features]
 # Links libghostty-vt so the agent keeps a shadow copy of each session's screen, which is what
 # lets a reattaching client be repainted rather than arriving at a blank terminal.

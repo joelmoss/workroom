@@ -194,6 +194,10 @@ fn run_attach(args: &[String]) -> ExitCode {
         return ExitCode::from(DAEMON_UNAVAILABLE);
     }
 
+    // Before anything reads stdin: a relay that leaves its own tty cooked is not a relay. Held to
+    // the end of this function so every `return` below restores the terminal.
+    let _raw = RawMode::enter();
+
     // stdin -> agent on its own thread; agent -> stdout on this one.
     let input_stream = match stream.try_clone() {
         Ok(clone) => clone,
@@ -308,6 +312,51 @@ fn relay_resizes(
             return;
         }
         let _ = stream.flush();
+    }
+}
+
+/// The attach client's own terminal, in raw mode for the life of the relay.
+///
+/// A relay has to be transparent in both directions, and the kernel's default line discipline is
+/// the opposite of transparent. Without this the client's tty keeps `ECHO`, `ICANON` and `ISIG`,
+/// and all three break the pane in ways that look like unrelated bugs:
+///
+/// - `ECHO` paints every byte the emulator sends back onto the screen as literal text. Those bytes
+///   are not typing: they are focus reports (`ESC [ I`), mouse reports, the replies to the DA1 and
+///   DECRQM probes a TUI makes at startup, and bracketed-paste markers. The pane fills with
+///   `^[[I^[[<35;84;25M…` and the TUI's own probes answer into its input box.
+/// - `ICANON` holds input until Return, so a paste never reaches the far side as a paste, and no
+///   escape sequence arrives in time to be part of a handshake.
+/// - `ISIG` turns `^C` into a `SIGINT` for THIS process instead of a byte for the program on the
+///   far end — so Ctrl-C appears to do nothing, having killed the wrong thing.
+///
+/// `SessionAttachClient.enterRawMode` has done this since the Swift daemon shipped; the agent
+/// arrived without it and reached one nightly that way.
+///
+/// `tcgetattr` failing is the not-a-tty case — a pipe, a test harness — and is deliberately not an
+/// error: there is no line discipline in the way, so there is nothing to get out of the way of.
+struct RawMode(Option<libc::termios>);
+
+impl RawMode {
+    fn enter() -> RawMode {
+        let mut original: libc::termios = unsafe { std::mem::zeroed() };
+        if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut original) } != 0 {
+            return RawMode(None);
+        }
+        let mut raw = original;
+        unsafe { libc::cfmakeraw(&mut raw) };
+        if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &raw) } != 0 {
+            return RawMode(None);
+        }
+        RawMode(Some(original))
+    }
+}
+
+impl Drop for RawMode {
+    fn drop(&mut self) {
+        if let Some(original) = self.0.as_ref() {
+            unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, original) };
+        }
     }
 }
 
