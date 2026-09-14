@@ -362,6 +362,74 @@ final class SplitPaneUITests: XCTestCase {
     assertCount(titlebars(app), reaches: 2)  // exactly A's two members, nothing from B
   }
 
+  /// One strip chip, addressed by its terminal's title. The identifier sits on the whole chip, and the
+  /// title `StaticText` and close button inherit it — any of them is inside the chip's own frame, which
+  /// is what the containment assertions below need.
+  private func terminalChip(_ app: XCUIApplication, titled title: String) -> XCUIElement {
+    app.descendants(matching: .any).matching(identifier: "terminal.tab.\(title)").firstMatch
+  }
+
+  /// The reported bug, driven through the real app: four terminals, split two together, then split the
+  /// other two. Under the old single-layout model the second ⌘D REPLACED the first group, so the strip
+  /// drew ONE bracket and this fails at `bracketB`.
+  ///
+  /// It also pins the geometry, which is the half a model-level test cannot see. The brackets are
+  /// `ForEach` children of ONE background whose implicit stack centres them, so a narrower bracket gets
+  /// drawn `(widest − mine) / 2` too far right — over its neighbour's chips. `WorkroomTabBar` shipped
+  /// exactly that bug the moment a bar could hold two groups (~48pt off); the terminal strip inherited
+  /// the same shape, so it is asserted here before it can.
+  ///
+  /// Containment, not absolute geometry: a bracket wraps its group's contiguous run, so every member
+  /// chip must sit inside it, and the two brackets must not overlap. That is the property the centring
+  /// fault breaks, and it needs no tolerance.
+  func testEachTerminalSplitGroupBracketFramesItsOwnChips() throws {
+    let app = launchedApp()
+    try openWorkroom(app)
+
+    // Group 1: ⌘D splits the fixture's Terminal 1 → [Terminal 1, Terminal 2].
+    app.typeKey("d", modifierFlags: .command)
+    assertCount(panes(app), reaches: 2)
+    // ⌘T opens Terminal 3 SOLO and focuses it, so group 1 goes off screen but must persist…
+    app.typeKey("t", modifierFlags: .command)
+    assertCount(panes(app), reaches: 1)
+    // …and ⌘D on that solo tab seeds group 2: [Terminal 3, Terminal 4].
+    app.typeKey("d", modifierFlags: .command)
+    assertCount(panes(app), reaches: 2)
+    assertCount(tabs(app), reaches: 4)
+
+    let bracketA = app.descendants(matching: .any)["terminal.tab.splitBracket.0"]
+    let bracketB = app.descendants(matching: .any)["terminal.tab.splitBracket.1"]
+    XCTAssertTrue(bracketA.waitForExistence(timeout: 8), "group 1's bracket is in the strip")
+    XCTAssertTrue(
+      bracketB.exists,
+      "group 2's bracket too — splitting the second pair must not dissolve the first")
+
+    let one = terminalChip(app, titled: "Terminal 1")
+    let two = terminalChip(app, titled: "Terminal 2")
+    let three = terminalChip(app, titled: "Terminal 3")
+    let four = terminalChip(app, titled: "Terminal 4")
+    for chip in [one, two, three, four] { XCTAssertTrue(chip.exists, "every chip is in the strip") }
+
+    // Each group's members sit INSIDE their own bracket. `displayedTabIDs` keeps each group's run
+    // contiguous, so this also pins the ordering the brackets depend on.
+    for (chip, name) in [(one, "Terminal 1"), (two, "Terminal 2")] {
+      XCTAssertGreaterThanOrEqual(
+        chip.frame.minX, bracketA.frame.minX - 1, "\(name) starts inside group 1's bracket")
+      XCTAssertLessThanOrEqual(
+        chip.frame.maxX, bracketA.frame.maxX + 1, "\(name) ends inside group 1's bracket")
+    }
+    for (chip, name) in [(three, "Terminal 3"), (four, "Terminal 4")] {
+      XCTAssertGreaterThanOrEqual(
+        chip.frame.minX, bracketB.frame.minX - 1, "\(name) starts inside group 2's bracket")
+      XCTAssertLessThanOrEqual(
+        chip.frame.maxX, bracketB.frame.maxX + 1, "\(name) ends inside group 2's bracket")
+    }
+    // …and the brackets are disjoint: the centring fault draws the narrower one over its neighbour.
+    XCTAssertLessThanOrEqual(
+      bracketA.frame.maxX, bracketB.frame.minX,
+      "the two brackets don't overlap — neither is drawn over the other's chips")
+  }
+
   /// A split group title bar addressed by its member's name (labels are `"<project>, workroom <name>"`).
   private func memberTitleBar(_ app: XCUIApplication, labelled name: String) -> XCUIElement {
     titlebars(app).matching(NSPredicate(format: "label CONTAINS[c] %@", name)).firstMatch
