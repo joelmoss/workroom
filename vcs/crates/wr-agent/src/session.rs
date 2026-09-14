@@ -190,6 +190,16 @@ pub enum SessionError {
     NotFound(String),
     #[error(transparent)]
     Pty(#[from] PtyError),
+    /// The client could not take its repaint whole, so it was not attached at all.
+    ///
+    /// A PARTIAL repaint is worse than none: a chunk boundary can fall inside an escape sequence,
+    /// so the client's parser is left mid-sequence and the next live output completes it as
+    /// garbage. That is the exact failure the chunking comment cites as the reason not to
+    /// truncate, and stopping early is truncating. Failing the attach instead means no half-painted
+    /// pane and no client left registered on a writer that cannot keep up — the caller gets a
+    /// `Failure` frame and can retry from a clean terminal.
+    #[error("session {0} could not be repainted")]
+    RepaintFailed(String),
 }
 
 /// Owns every live session. Cheap to clone; all clones share one map.
@@ -311,6 +321,9 @@ impl SessionStore {
             .ok_or_else(|| SessionError::NotFound(id.to_hyphenated()))?;
 
         let token = NEXT_TOKEN.fetch_add(1, Ordering::SeqCst);
+        // Whether the repaint reached the client WHOLE. A client that only got part of one is not
+        // registered below — see `SessionError::RepaintFailed`.
+        let mut painted = true;
         let size = {
             let mut attached = attached.lock().expect("attachment lock poisoned");
             let replay = shadow.lock().map(|s| s.replay()).unwrap_or_default();
@@ -342,9 +355,11 @@ impl SessionStore {
                     // the limit would hold the lock for chunks × timeout. Chunking is what made
                     // that reachable, so the bound lands with it.
                     //
-                    // A client too slow to take its own repaint inside the budget stops being
-                    // painted, and the next failed delivery evicts it — the same fate as a client
-                    // that cannot be written to at all.
+                    // A client too slow to take its own repaint inside the budget is not attached
+                    // at all — see `SessionError::RepaintFailed`. The budget is enforced BETWEEN
+                    // chunks, so a single `write_all` already in progress can overshoot it by up to
+                    // one `WRITE_TIMEOUT`; bounding that too would mean a non-blocking writer, and
+                    // one chunk of overshoot is the same bound the unchunked version had.
                     //
                     // Removing the lock-hold entirely, as the live path does, needs a per-client
                     // pending queue: releasing it here reverses the repaint against output that
@@ -353,6 +368,7 @@ impl SessionStore {
                     let deadline = Instant::now() + WRITE_TIMEOUT;
                     for chunk in replay.chunks(READ_CHUNK) {
                         if Instant::now() >= deadline {
+                            painted = false;
                             break;
                         }
                         let bytes = terminal_envelope(
@@ -364,26 +380,41 @@ impl SessionStore {
                             .and_then(|()| writer.flush())
                             .is_err()
                         {
+                            painted = false;
                             break;
                         }
                     }
+                } else {
+                    // The writer's lock is poisoned: nothing was painted, so do not register.
+                    painted = false;
                 }
             }
-            attached.clients.push(Client {
-                writer,
-                stream,
-                token,
-                columns,
-                rows,
-                classifier: InputClassifier::new(),
-            });
-            // Attaching does not TAKE the size from a client that has it — that needs an act. It
-            // only fills a vacancy.
-            match attached.owner {
-                Some(_) => None,
-                None => attached.claim(token),
+            if painted {
+                attached.clients.push(Client {
+                    writer,
+                    stream,
+                    token,
+                    columns,
+                    rows,
+                    classifier: InputClassifier::new(),
+                });
+                // Attaching does not TAKE the size from a client that has it — that needs an act.
+                // It only fills a vacancy.
+                match attached.owner {
+                    Some(_) => None,
+                    None => attached.claim(token),
+                }
+            } else {
+                // Not registered, so it owns no size and receives no live output. The caller turns
+                // this into a `Failure` frame.
+                None
             }
         };
+        // Checked after the lock is released, so the early `return None` above leaves nothing
+        // registered and nothing half-owned.
+        if !painted {
+            return Err(SessionError::RepaintFailed(id.to_hyphenated()));
+        }
         apply_size(&pty, &shadow, size);
 
         let sessions = self.sessions.lock().expect("session store poisoned");
@@ -1045,24 +1076,39 @@ mod tests {
     /// arriving through a different door.
     #[test]
     fn a_client_that_cannot_be_written_to_is_dropped() {
-        struct Broken;
-        impl Write for Broken {
-            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
-                Err(std::io::ErrorKind::BrokenPipe.into())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Err(std::io::ErrorKind::BrokenPipe.into())
-            }
-        }
-
         let store = SessionStore::new();
         let args = [OsString::from("-c"), OsString::from("echo noisy; sleep 5")];
         let e = env();
         store.create(spec(id(7), &args, &e)).expect("create");
 
-        let writer: SharedWriter = Arc::new(Mutex::new(Box::new(Broken)));
+        // Healthy at attach, broken afterwards — which is what this test is actually about, and
+        // what it only accidentally exercised before. It used to attach an ALREADY-broken writer,
+        // so with `terminal-state` on it depended on whether the shell had produced output yet: an
+        // empty shadow meant no repaint and the attach succeeded, a painted one meant the repaint
+        // write failed. That race is now a real distinction — a writer that is dead before the
+        // repaint fails the attach outright (`an_unpaintable_client_is_not_attached`), so eviction
+        // has to be provoked the way it actually happens, after a working attach.
+        let broken = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        struct Flaky(Arc<std::sync::atomic::AtomicBool>);
+        impl Write for Flaky {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if self.0.load(Ordering::SeqCst) {
+                    return Err(std::io::ErrorKind::BrokenPipe.into());
+                }
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                if self.0.load(Ordering::SeqCst) {
+                    return Err(std::io::ErrorKind::BrokenPipe.into());
+                }
+                Ok(())
+            }
+        }
+
+        let writer: SharedWriter = Arc::new(Mutex::new(Box::new(Flaky(Arc::clone(&broken)))));
         store.attach(id(7), writer, 1, 80, 24).expect("attach");
         assert!(store.list()[0].attached);
+        broken.store(true, Ordering::SeqCst);
 
         // The shell's own output is enough to discover the dead transport.
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -1518,6 +1564,55 @@ mod tests {
             wait_for(&capture, "still-draining", Duration::from_secs(5)).contains("still-draining"),
             "the pty stopped draining after the repaint — the session is wedged"
         );
+        store.kill_all();
+    }
+
+    /// A client whose transport is already dead is NOT attached, rather than attached and later
+    /// evicted.
+    ///
+    /// A partial repaint is worse than none: an 8 KiB chunk boundary can fall inside an escape
+    /// sequence, so a client that got a prefix has its parser stranded mid-sequence and the next
+    /// live output completes it as garbage. That is the same reason the repaint chunks instead of
+    /// truncating, so stopping early has to fail the attach rather than register a half-painted
+    /// pane.
+    ///
+    /// Needs a NON-EMPTY shadow, or there is no repaint to fail on and the attach legitimately
+    /// succeeds — which is why the eviction test above had to stop using an already-broken writer.
+    #[cfg(feature = "terminal-state")]
+    #[test]
+    fn an_unpaintable_client_is_not_attached() {
+        struct Broken;
+        impl Write for Broken {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+        }
+
+        let store = SessionStore::new();
+        let args = [OsString::from("-c"), OsString::from("sleep 5")];
+        let e = env();
+        store.create(spec(id(73), &args, &e)).expect("create");
+        let (_, shadow, _) = store.parts(id(73)).expect("parts");
+        shadow
+            .lock()
+            .expect("shadow")
+            .write(b"something to repaint\r\n");
+
+        let writer: SharedWriter = Arc::new(Mutex::new(Box::new(Broken)));
+        let result = store.attach(id(73), writer, 1, 80, 24);
+
+        assert!(
+            matches!(result, Err(SessionError::RepaintFailed(_))),
+            "a client that cannot take its repaint must not be attached, got {result:?}"
+        );
+        assert!(
+            !store.list()[0].attached,
+            "nothing may be left registered for a client that was never painted"
+        );
+        assert!(store.contains(id(73)), "the session itself survives");
         store.kill_all();
     }
 }
