@@ -1,5 +1,4 @@
 import Darwin
-import MachO
 import WorkroomSessionProtocol
 
 enum SessionAttachExitCode {
@@ -10,11 +9,39 @@ enum SessionAttachExitCode {
 }
 
 enum SessionAttachClient {
-  static let connectCycles = 3
-  static let connectAttemptsPerCycle = 50
+  /// How hard to retry a refused connect, and for how long to wait once connected.
+  ///
+  /// These used to be far larger (3 cycles of 50 × 20ms) because `connect` STARTED a daemon when
+  /// none answered and then had to wait for it to bind its socket. This build cannot start one —
+  /// the `daemon` subcommand is gone — so there is nothing to wait for that is not already there.
+  /// What remains covers a live helper that is momentarily slow to `accept`, which is the only real
+  /// wait left: 3 cycles of 10 x 20ms plus two 100ms backoffs, so ~0.7s of a refused connect rather
+  /// than ~9.2s. Note that is the CONNECT budget alone — the worst case a user can see is a peer
+  /// that refuses twice and then accepts and goes silent, which adds `attachHandshakeTimeoutSeconds`
+  /// for ~5.6s total.
+  static let connectAttempts = 10
   static let connectRetryMicroseconds: useconds_t = 20000
-  static let handshakeAttempts = 3
-  static let handshakeRetryMicroseconds: useconds_t = 100_000
+  /// How many times to re-open the connection. Named for the connect budget, not the
+  /// handshake: the handshake proper is deliberately NOT retried (see
+  /// `attachHandshakeTimeoutSeconds`), so the only thing that reaches these is a refused connect or
+  /// a transport that dropped before `.attached`.
+  static let connectCycles = 3
+  static let connectCycleRetryMicroseconds: useconds_t = 100_000
+  /// How long to wait, once CONNECTED, for the helper to answer the attach request (seconds).
+  ///
+  /// Shrinking the connect retries above bounds only a REFUSED connect. A helper that accepts and
+  /// then says nothing — a wedged one — is a different failure, and nothing bounded it: `poll`
+  /// blocks indefinitely once no settle check is pending, so the pane sat blank forever with no
+  /// message and no exit.
+  ///
+  /// **Generous, and deliberately not retried.** The v2.0.0 daemon answers an attach from a single
+  /// poll iteration that first runs process introspection (`foregroundProcessGroup`,
+  /// `executableName`, `workingDirectory`) and then enqueues the whole replay buffer, flushing only
+  /// once that returns. On a loaded machine that is slow rather than broken, so a tight deadline
+  /// plus a retry is the worst combination available: each attempt tears down the connection, makes
+  /// the peer redo the same introspection and replay, and hands the next attempt an even busier
+  /// daemon. It cannot converge. One long wait converges or it does not.
+  static let attachHandshakeTimeoutSeconds: Double = 5
   static let inputBacklogLimit = 4 * 1024 * 1024
   /// How long after attaching to re-check the terminal size once more (seconds).
   ///
@@ -46,18 +73,6 @@ enum SessionAttachClient {
     case failed(Int32)
   }
 
-  private enum ConnectionOutcome {
-    case connected(Int32)
-    case retry
-    case failed(Int32)
-  }
-
-  private enum DaemonLaunchOutcome {
-    case started
-    case retryableFailure
-    case fatalFailure
-  }
-
   static func run(configuration: Configuration) -> Int32 {
     signal(SIGPIPE, SIG_IGN)
 
@@ -72,32 +87,35 @@ enum SessionAttachClient {
       }
     }
 
-    for attempt in 0..<handshakeAttempts {
-      switch attach(configuration: configuration, signalPipe: signalPipe) {
+    // Which of the two failures happened, so the final line does not claim the wrong one. A
+    // transport that drops before `.attached` also returns `.retry`, and reporting "nothing is
+    // listening" for a helper we connected to three times is exactly the false message the
+    // handshake timeout was changed to avoid.
+    var everConnected = false
+    for attempt in 0..<connectCycles {
+      switch attach(configuration: configuration, signalPipe: signalPipe, connected: &everConnected)
+      {
       case .finished(let status), .failed(let status):
         return status
       case .retry:
-        if attempt + 1 < handshakeAttempts {
-          usleep(handshakeRetryMicroseconds)
+        if attempt + 1 < connectCycles {
+          usleep(connectCycleRetryMicroseconds)
         }
       }
     }
 
-    report("could not reach the session daemon")
+    report(
+      everConnected
+        ? "the session helper closed the connection before attaching; the session may still exist"
+        : "no session helper is listening; the session it held is gone")
     return SessionAttachExitCode.daemonUnavailable
   }
 
-  private static func attach(configuration: Configuration, signalPipe: SessionSignalPipe) -> Outcome
-  {
-    let socket: Int32
-    switch connect(socketPath: configuration.socketPath) {
-    case .connected(let descriptor):
-      socket = descriptor
-    case .retry:
-      return .retry
-    case .failed(let status):
-      return .failed(status)
-    }
+  private static func attach(
+    configuration: Configuration, signalPipe: SessionSignalPipe, connected: inout Bool
+  ) -> Outcome {
+    guard let socket = connect(socketPath: configuration.socketPath) else { return .retry }
+    connected = true
     defer { SessionIO.close(socket) }
     SessionIO.setNonBlocking(socket)
 
@@ -122,7 +140,23 @@ enum SessionAttachClient {
   {
     var isAttached = false
     var settleDeadline: Double?
+    // Cleared the moment `.attached` lands. Until then it bounds the whole wait, checked at the top
+    // of every iteration rather than only on a poll timeout — a helper can keep this loop busy with
+    // traffic that never includes the attach reply.
+    var handshakeDeadline: Double? =
+      SessionClock.monotonicSeconds() + attachHandshakeTimeoutSeconds
     while true {
+      if let deadline = handshakeDeadline, SessionClock.monotonicSeconds() >= deadline {
+        // TERMINAL, not `.retry`. Retrying reconnects and re-sends the attach, which on a slow peer
+        // makes it redo the introspection and replay this attempt already paid for — three attempts
+        // against a progressively busier daemon, converging on nothing. It also let `run`'s final
+        // "no session helper is listening" overwrite this line on screen, which is false in this
+        // path: the helper was listening, we reached it three times.
+        report(
+          "connected to the session helper, but it did not answer the attach request within "
+            + "\(Int(attachHandshakeTimeoutSeconds))s — the session may still be running")
+        return .failed(SessionAttachExitCode.daemonUnavailable)
+      }
       guard connection.flush() else { return transportOutcome(isAttached: isAttached) }
 
       var descriptors = [
@@ -137,7 +171,9 @@ enum SessionAttachClient {
         descriptors.append(pollfd(fd: STDIN_FILENO, events: Int16(POLLIN), revents: 0))
       }
 
-      let ready = poll(&descriptors, nfds_t(descriptors.count), pollTimeout(until: settleDeadline))
+      let ready = poll(
+        &descriptors, nfds_t(descriptors.count),
+        pollTimeout(untilEarliestOf: settleDeadline, handshakeDeadline))
       if ready == 0, let deadline = settleDeadline, SessionClock.monotonicSeconds() >= deadline {
         settleDeadline = nil
         sendResize(connection)
@@ -160,18 +196,43 @@ enum SessionAttachClient {
           return outcome
         }
       }
-      // Arm the one-shot settle re-check the moment `.attached` lands, not before — there's
-      // nothing to settle until the daemon has actually accepted us.
+      // The attach reply has landed, so the handshake is no longer what we are waiting for. Past
+      // this point an idle connection is a healthy one and blocking indefinitely is correct.
+      // Cleared BEFORE the settle deadline is armed, so the two are never live at once.
+      if isAttached { handshakeDeadline = nil }
+      // Arm the settle re-check the moment `.attached` lands, not before — there's nothing to
+      // settle until the daemon has actually accepted us.
+      //
+      // NOT one-shot, despite how it reads, and this comment used to claim otherwise. Firing it
+      // sets `settleDeadline = nil` and `continue`s past this block; the next wake then finds
+      // `isAttached` with no deadline armed and starts another. So a resize trails every burst of
+      // output by ~300ms. Pre-existing and harmless — the v2.0.0 peer's `.resize` is a plain
+      // `SessionPTY.resize` with no forced redraw — but worth knowing when reading the timeouts.
       if isAttached, settleDeadline == nil {
         settleDeadline = SessionClock.monotonicSeconds() + settleCheckDelaySeconds
       }
     }
   }
 
-  /// `poll`'s timeout in milliseconds: bounded while a settle check is pending (so we wake up to
-  /// fire it even with no other activity), `-1` (block indefinitely) once there's nothing to wait
-  /// for — this is a single terminal session's I/O loop, not a busy-poll.
-  private static func pollTimeout(until deadline: Double?) -> Int32 {
+  /// `poll`'s timeout in milliseconds: the nearest pending deadline, or `-1` (block indefinitely)
+  /// when none is pending — this is a single terminal session's I/O loop, not a busy-poll.
+  ///
+  /// Two plain optionals rather than a variadic: this is called once per wake of the relay's
+  /// busiest loop, and a Swift variadic heap-allocates an Array — then `compactMap` allocates a
+  /// second — where the surrounding code allocates nothing per iteration it does not have to.
+  ///
+  /// Both are passed even though only one can be armed at a time (the handshake deadline is cleared
+  /// in the same block that arms the settle one), because the alternative is a caller that has to
+  /// know which is live. What enforces the handshake bound is the top-of-loop check, not this —
+  /// `poll` only has to wake up in time for it.
+  private static func pollTimeout(untilEarliestOf first: Double?, _ second: Double?) -> Int32 {
+    let deadline: Double?
+    switch (first, second) {
+    case (let a?, let b?): deadline = min(a, b)
+    case (let a?, nil): deadline = a
+    case (nil, let b?): deadline = b
+    case (nil, nil): deadline = nil
+    }
     guard let deadline else { return -1 }
     let remaining = deadline - SessionClock.monotonicSeconds()
     guard remaining > 0 else { return 0 }
@@ -251,7 +312,7 @@ enum SessionAttachClient {
 
   private static func sendResize(_ connection: SessionConnection) {
     let size = SessionWindowSizePolicy.attachSize(
-      from: SessionPTY.windowSize(descriptor: STDIN_FILENO))
+      from: SessionTerminalSize.of(descriptor: STDIN_FILENO))
     guard SessionWindowSizePolicy.isUsable(columns: size.columns, rows: size.rows) else { return }
     connection.enqueue(
       SessionFrame(
@@ -261,7 +322,7 @@ enum SessionAttachClient {
 
   private static func makeRequest(_ configuration: Configuration) -> SessionAttachRequest {
     let size = SessionWindowSizePolicy.attachSize(
-      from: SessionPTY.windowSize(descriptor: STDIN_FILENO))
+      from: SessionTerminalSize.of(descriptor: STDIN_FILENO))
     let environment = SessionProcessEnvironment.current()
       .filter { !$0.key.hasPrefix("WORKROOM_SESSION_") }
       .map { SessionEnvironmentEntry(key: $0.key, value: $0.value) }
@@ -286,69 +347,18 @@ enum SessionAttachClient {
     return original
   }
 
-  private static func connect(socketPath: String) -> ConnectionOutcome {
-    for _ in 0..<connectCycles {
-      if let descriptor = SessionSocket.connect(path: socketPath) {
-        return .connected(descriptor)
-      }
-      switch launchDaemon(socketPath: socketPath) {
-      case .started, .retryableFailure:
-        break
-      case .fatalFailure:
-        return .failed(SessionAttachExitCode.startupFailure)
-      }
-      for _ in 0..<connectAttemptsPerCycle {
-        usleep(connectRetryMicroseconds)
-        if let descriptor = SessionSocket.connect(path: socketPath) {
-          return .connected(descriptor)
-        }
-      }
+  /// Connect to a helper that is ALREADY running, or give up.
+  ///
+  /// This used to `posix_spawn` `workroom-session daemon` when nothing answered, then wait for the
+  /// new process to bind. That is gone with the daemon itself: the only sessions this client can
+  /// reach are held by a daemon some OLDER build of the app started, and starting a fresh one would
+  /// serve no session that exists. What is left is a short retry for a live helper that is
+  /// momentarily slow to `accept`.
+  private static func connect(socketPath: String) -> Int32? {
+    for attempt in 0..<connectAttempts {
+      if let descriptor = SessionSocket.connect(path: socketPath) { return descriptor }
+      if attempt + 1 < connectAttempts { usleep(connectRetryMicroseconds) }
     }
-    return .retry
-  }
-
-  private static func launchDaemon(socketPath: String) -> DaemonLaunchOutcome {
-    guard let binaryPath = executablePath() else {
-      report("unable to locate the session daemon binary")
-      return .fatalFailure
-    }
-    let arguments = SessionCStringArray([binaryPath, "daemon", "--socket", socketPath])
-
-    var fileActions: posix_spawn_file_actions_t?
-    posix_spawn_file_actions_init(&fileActions)
-    defer { posix_spawn_file_actions_destroy(&fileActions) }
-    posix_spawn_file_actions_addopen(&fileActions, STDIN_FILENO, "/dev/null", O_RDWR, 0)
-    posix_spawn_file_actions_addopen(&fileActions, STDOUT_FILENO, "/dev/null", O_RDWR, 0)
-    posix_spawn_file_actions_addopen(
-      &fileActions,
-      STDERR_FILENO,
-      socketPath + ".log",
-      O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW,
-      0o600)
-
-    var attributes: posix_spawnattr_t?
-    posix_spawnattr_init(&attributes)
-    defer { posix_spawnattr_destroy(&attributes) }
-    posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSID))
-
-    var processID: pid_t = 0
-    let result = posix_spawn(
-      &processID, binaryPath, &fileActions, &attributes, arguments.pointer, environ)
-    guard result != 0 else { return .started }
-    report("could not start the session daemon (\(result))")
-    return result == EAGAIN || result == EINTR ? .retryableFailure : .fatalFailure
-  }
-
-  static func executablePath() -> String? {
-    if let provided = SessionProcessEnvironment.value("WORKROOM_SESSION_BINARY") {
-      return provided
-    }
-    var size = UInt32(PATH_MAX)
-    var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
-    guard _NSGetExecutablePath(&buffer, &size) == 0 else { return nil }
-    return buffer.withUnsafeBufferPointer { pointer in
-      guard let base = pointer.baseAddress else { return nil }
-      return String(cString: base)
-    }
+    return nil
   }
 }

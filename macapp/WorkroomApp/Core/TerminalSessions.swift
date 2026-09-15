@@ -2011,6 +2011,9 @@ final class TerminalSessions: ObservableObject {
     let view = makeView(target, cwd, command)
     let assignedSessionID = assignedSessionID(persisted: sessionID, isRunCommand: command != nil)
     view.persistentSessionID = assignedSessionID
+    // `sessionID` non-nil means this pane is being rebuilt from a restore payload, so its id names
+    // a session that may no longer exist. A fresh pane's id was minted a line ago.
+    view.persistentSessionIsRestored = sessionID != nil
     view.sessionMetadata = [
       (SessionMetadataKey.project, projectPath(from: target.id) ?? target.path),
       (SessionMetadataKey.workroom, target.id),
@@ -2118,7 +2121,8 @@ final class TerminalSessions: ObservableObject {
   private func assignedSessionID(persisted: UUID?, isRunCommand: Bool) -> UUID? {
     let policy = TerminalPersistentSessionPolicy.usesPersistentSession(
       isAvailable: PersistentSessionService.shared.isAvailable,
-      isRunCommand: isRunCommand)
+      isRunCommand: isRunCommand,
+      hasExistingSession: persisted != nil)
     guard policy else { return nil }
     return persisted ?? UUID()
   }

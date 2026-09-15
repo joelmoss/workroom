@@ -651,11 +651,16 @@ exists, but run both.
   buffer rather than porting it — see Phase 3's scrollback bullet) and the framing; Swift keeps
   only what a client needs to speak the wire (`SessionFrame`, `SessionBytes`, `SessionIdentifier`), so
   `SessionReplayBuffer`'s Swift copy retires with the daemon rather than living on in parallel.
-  **Two consequences for the deletion:** `macapp/WorkroomSession/` goes in full — daemon, `SessionPTY`,
-  `SessionAttachClient.swift` and `main.swift` alike, since `wr-agent attach` replaces the relay —
-  while `macapp/WorkroomSessionProtocol/` survives in slimmed form for the Swift client. And
-  `SessionDaemonEndToEndTests.swift` (7 tests) plus `SessionDaemonHarness.swift` drive the Swift
-  daemon binary directly, so they must be **rewritten against the agent**, not expected to pass.
+  **Two consequences for the deletion**, and 2026-09-15 corrected the first one: `macapp/WorkroomSession/`
+  was to go in full — daemon, `SessionPTY`, `SessionAttachClient.swift` and `main.swift` alike,
+  since `wr-agent attach` replaces the relay. It does replace it **for sessions the agent owns**,
+  which is not the same claim: a pty a pre-v2.0.0 daemon is holding can only be reached by the
+  Swift relay, so `SessionAttachClient.swift` and `main.swift` stay and the daemon half goes. See
+  "The deletion was release-gated, and that was wrong". `macapp/WorkroomSessionProtocol/` survives
+  as predicted, now frozen while the shim ships. And `SessionDaemonEndToEndTests.swift` (7 tests)
+  plus `SessionDaemonHarness.swift` drove the Swift daemon binary directly, so they were deleted
+  rather than rewritten — the agent's equivalents are Rust tests, and the one piece worth keeping
+  (the version handshake) moved to `SessionShimCompatibilityTests`.
 - New crate `wr-agent` beside `wr-vcs-core`. A **versioned** multiplex envelope carrying stream id,
   service kind, and payload — versioned from the first commit; see the Distribution Plan's resume-policy item for what makes the
   versioning
@@ -1350,9 +1355,10 @@ established either way.
 
 ## Phase 1 Results
 
-Landed on `master` 2026-09-12/13 across PRs #181, #182 and #183. Phase 1 is **complete except its
-last bullet** — deleting `macapp/WorkroomSession/` — which is gated on a release, not on code; see
-"The deletion is release-gated" below.
+Landed on `master` 2026-09-12/13 across PRs #181, #182 and #183, and **completed** 2026-09-15 by
+PR #192. The last bullet was deleting `macapp/WorkroomSession/`. It was not deleted — it was split,
+because the release gate this doc wrote for it turns out not to protect anyone. See "The deletion
+was release-gated, and that was wrong" below, then Outstanding item 1 for what shipped instead.
 
 ### What shipped
 
@@ -1419,7 +1425,12 @@ code immediately:
 Both verified by removal. A chosen split point tests the boundary its author thought of; these were
 at the boundaries they did not.
 
-### The deletion is release-gated
+### The deletion was release-gated, and that was wrong
+
+> **SUPERSEDED 2026-09-15, kept because the error is the useful part.** Everything below is sound
+> about *exposure* — no shipped release contained the agent — and wrong about what a soak buys. A
+> release cycle validates the replacement; it does not drain anyone. The reasoning that replaced it
+> is Outstanding item 1.
 
 **No shipped release contains the agent at all.** `v2.0.0` was tagged 2026-09-09; the drain landed
 2026-09-12. Every user in the field is on the Swift daemon exclusively, so deleting
@@ -1430,9 +1441,11 @@ The deletion should wait until the agent has shipped and soaked for at least one
 drain is designed to complete on its own — the daemon idles out once its last session ends — so
 nothing needs to be done to make it happen, only to confirm it has.
 
-`SessionDaemonEndToEndTests.swift` and `SessionDaemonHarness.swift` therefore stay for now: the
-daemon still ships, and they are live coverage of shipping code. They go together with
-`macapp/WorkroomSession/` in the deletion change.
+`SessionDaemonEndToEndTests.swift` and `SessionDaemonHarness.swift` were said here to stay "for
+now", as live coverage of shipping code. **Both are deleted** (PR #192): they drive a daemon this
+binary can no longer start, so they covered nothing that still exists. The one thing in them worth
+keeping — the version handshake, the only test anywhere that exercised it — was ported into
+`SessionShimCompatibilityTests`, and now runs against the real v2.0.0 binary instead of a fake.
 
 **What replaced them is narrower than "rewritten against the agent", deliberately.** Three of those
 seven tests cover agent behaviour that Rust tests cover more cheaply and can run on Linux; three
@@ -1445,11 +1458,95 @@ disagreement passes every test on either side alone while presenting as an empty
 
 ### Outstanding
 
-1. **Delete `macapp/WorkroomSession/`** once the agent has shipped and soaked — see above.
+1. **~~Delete `macapp/WorkroomSession/`~~ — DONE DIFFERENTLY, 2026-09-15.** The plan above said to
+   delete the directory once the agent had soaked for a release cycle. That reasoning does not
+   survive contact: **a soak drains nobody.** Draining completes only for panes a user actually
+   closes, so someone who skips the intermediate release — or simply holds a long-lived pane through
+   the update — still meets a build whose bundle has no `workroom-session` while their old daemon is
+   still holding their shell. Traced: `resolveOwner` answers `.swiftDaemon`, `binaryPath` is nil,
+   `attachCommand` is nil, and `GhosttySurfaceView` silently opens a plain shell while the real work
+   keeps running in an orphaned daemon that now never exits.
+
+   So the directory was **split, not deleted**: the half that RUNS terminals is gone
+   (`SessionDaemon.swift`, `SessionPTY.swift`, the client's own `launchDaemon` spawn, the `daemon`
+   subcommand), and the half that CONNECTS to them stays. The result can attach to a daemon an app
+   at or before v2.0.0 left running, and can never be one. It self-obsoletes; retiring it is now a
+   TODO with its criteria written down rather than a deletion waiting on a calendar.
+
+   **Compatibility is measured, not assumed.** `git log v2.0.0..master -- macapp/WorkroomSessionProtocol/`
+   is empty, and the shipped v2.0.0 `workroom-session` (464KB, sha256 `6f75e6f7…`, lifted unmodified
+   from `workroom-macos-app_2.0.0.dmg`) is pinned at
+   `macapp/WorkroomAppTests/Fixtures/workroom-session-v2.0.0`. `SessionShimCompatibilityTests` runs
+   that binary as a daemon, has it create a session, and asserts THIS build's client reattaches and
+   receives the replay the old daemon produced. Verified live before any deletion, then made
+   repeatable. A fake built from our own `WorkroomSessionProtocol` was considered and rejected: it
+   reads the same source the client does, so a protocol edit moves both sides together and the test
+   stays green through exactly the break it exists to catch.
+
+   **`WorkroomSessionProtocol` is frozen** while the shim ships, because its only real peer can never
+   be recompiled to match a change.
+
+   Three routing bugs the removal would otherwise have introduced, all fixed in the same change:
+   `preferred()` returning the daemon as a fallback (it now returns nil — there is nowhere to fall
+   back to); that Optional collapsing the probe cache's nil sentinel, turning a once-per-launch 2s
+   main-actor probe into one per access (~16s of frozen app on an eight-pane restore); and the
+   availability gate being asked at **two** layers, so `TerminalPersistentSessionPolicy` discarded a
+   restored pane's session id before anything could ask who owned it — one layer above the guard
+   that was supposed to fix this.
+
+   **What this does NOT do.** It does not restore the rollback target: an agent that breaks in the
+   field now degrades to plain shells rather than falling back to the daemon. And it does not stop
+   the old daemon creating a session on attach for an id it does not hold
+   (`SessionDaemon.handleAttach`, in the shipped binary we cannot change), so a reattach can still
+   silently become a fresh shell — detection for that is outstanding, see item 4.
 2. **A Linux `wr-agent` as a build artifact.** The cross-build recipe works and the Linux test suite
    runs in a container (`vcs/scripts/test-linux.sh`), but nothing publishes the ELFs yet. Phase 3
    needs them; Phase 1 does not.
 3. **OQ21, where the `HostDriver` lives**, is untouched and remains open.
+4. **~~Two items from the 2026-09-15 eng review~~ — BOTH DONE, 2026-09-15.**
+
+   (a) **A failed attach now becomes a shell, not a dead pane.** `SessionBackendProbe` runs
+   `wr-agent protocol` and parses a version, which proves the binary starts and prints — not that it
+   can serve. A stale socket, a failed negotiation, a crash between the two all pass it. And nothing
+   downstream could recover: the app picks session-or-plain-shell before forking, and
+   `wait_after_command` is false, so a relay that exits leaves a pane with no shell in it. So the
+   relay itself execs the user's shell on every pre-attach failure (`fall_back_to_shell`), printing
+   one line saying persistence is gone — a terminal that silently stopped surviving quit is worse
+   than one that admits it. `RawMode::restore()` had to become explicit: `exec` runs no destructors,
+   and a shell handed a raw tty has no line editing, echo or signal keys.
+
+   (b) **A lost session is no longer replaced by an invented one.** The shipped daemon's
+   `handleAttach` creates for an id it does not hold, so a reattach to a session whose shell had
+   exited silently forked a new one — a fresh prompt where a build was running, indistinguishable
+   from success. `confirmBeforeAttach` asks once more immediately before attaching and refuses when
+   the daemon disclaims it, which **prevents** the substitution rather than detecting it: the daemon
+   never receives the request that would make it create. `.unreachable` still attaches, deliberately
+   — it means we could not ask, and a daemon too wedged to answer is also too wedged to fork.
+
+   Residual, and not closable from this side of the socket: the daemon can answer `.owned` and lose
+   the session before the attach lands.
+5. **Rolling BACK to v2.0.0 strands agent-held sessions, and re-updating does not recover them.**
+   This one is release notes, not code: nothing a newer build writes changes what an older one does
+   on relaunch.
+
+   Traced. A v2.0.0 app knows nothing about `wr-agent`. On relaunch it starts its own daemon, and
+   for each restored pane it attaches by session id at its own socket. `SessionDaemon.handleAttach`
+   creates for an id it does not hold, so the user gets a fresh shell in every pane — not an error.
+   The agent's sessions are not destroyed: `wr-agent` outlives the app and the shells keep running,
+   reachable with `wr-agent` directly.
+
+   **Updating forward again does not give them back**, which is the part worth saying out loud.
+   `resolveOwner` asks the daemon first and `owner(preferred:daemon:)` answers `.swiftDaemon` for
+   any `.owned` — the agent is preferred only when the daemon is `.unreachable`. After a rollback
+   both helpers hold a session under the same id, the daemon claims it, and the daemon wins. The
+   user lands back in the rollback-era shell.
+
+   Preferring the agent unconditionally is not the fix: that is the same coin flip in the other
+   direction, and it breaks the case this whole shim exists for, where the daemon legitimately holds
+   the only copy of a user's work. The honest answer is the release note.
+
+   **What the notes must say:** rolling back to v2.0.0 replaces the contents of open terminals with
+   fresh shells, and updating again will not bring them back. Close what matters first.
 
 ## Open Questions
 
@@ -1598,10 +1695,18 @@ disagreement passes every test on either side alone while presenting as an empty
 13. **Can the wakefulness service actually defeat an idle timer?** **ANSWERED — Phase 0 item 5.** Yes, and more cheaply than assumed: both boxd timers measure *network* idle (the CLI help says so), a CPU-busy job with no network I/O was hibernated mid-work with a 193 s clock gap, and the in-VM CLI setting its own `auto-hibernate.timeout` to 0 stopped it recurring. The process survived the hibernate, so the live-process gate is not binding here. The agnosticism decision bets the
     headline capability on it. Phase 0 item 5 settles it. A bad answer does not reopen the provider
     choice — it turns `keepAwake` back into a capability gate, which is a worse product.
-14. **What is the local rollback?** Phases 1-2 replace shipped session code for every *local* user
-    and the Nightly flag protecting remote does not protect that; the Distribution Plan names
-    keeping the Swift daemon selectable for one release as the mitigation, but the rollback trigger
-    and the dual-run period are undecided.
+14. ~~**What is the local rollback?**~~ **ANSWERED 2026-09-15 — there is none, and the question was
+    aimed at the wrong risk.** The proposed mitigation was keeping the Swift daemon selectable for
+    one release. It was never built, and the question it was meant to answer ("what if the agent is
+    bad?") is not the one that strands users: **the app updating at all** is, because a v2.0.0
+    daemon holding a live shell cannot hand it over and cannot be restarted by a build that no
+    longer contains it. That is not a rollback problem, so a rollback would not have fixed it.
+
+    What shipped instead is forward compatibility: an attach-only client that can reach a daemon an
+    older app left running. A bad agent now degrades to plain shells rather than falling back to the
+    daemon — accepted deliberately, since that fallback was what let both helpers create a session
+    for the same id. Rolling back to v2.0.0 remains possible and is lossy in a way the release notes
+    have to state; see Outstanding item 5.
 15. **What is the `maxLifetime` floor?** It is one of three hard gates (see the Goal), so it needs
     a number. A working day
     is the obvious candidate, but a workroom is supposed to outlive a working day — which suggests
@@ -1678,26 +1783,31 @@ disagreement passes every test on either side alone while presenting as an empty
   with what the same commands report on the box itself — including a push, a pull-rebase, and a
   commit, since VCS writes are half the surface.
 - PR and CI badges resolve for a remote workroom rather than failing `launchFailed`.
-- Local workrooms run on the same agent, with the Swift daemon still **selectable** for one release
-  as the rollback named in the Distribution Plan (a third state on the existing
-  `backgroundSessions` preference,
-  `DefaultsKeys.swift:76`). Deletion of `SessionDaemon`, `SessionPTY` and their helpers is a
-  criterion for the release *after* that, not for Phase 1. When it lands, `macapp/WorkroomSession/`
-  goes entirely — `SessionAttachClient.swift` included, since `wr-agent attach` replaces it — while
-  `macapp/WorkroomSessionProtocol/` remains in slimmed form as the Swift client's wire codec.
-  **Note the tension this accepts:** Approach A was chosen partly because it "never has
-  two code paths", and a selectable daemon is two code paths for one release. That is a deliberate,
-  time-boxed exception for rollback safety, not a reversal of the unify decision — and it is
-  narrower than Approach B's rejected version, which would have run two paths indefinitely with the
-  remote one diverging.
+- ~~Local workrooms run on the same agent, with the Swift daemon still **selectable** for one
+  release as the rollback.~~ **RESTATED 2026-09-15 — the selectable daemon was never built and
+  cannot be.** `backgroundSessions` is still a plain `Bool` (`DefaultsKeys.swift:78`); no third
+  state exists. The criterion as written also had the deletion backwards: `SessionDaemon`,
+  `SessionPTY` and the `daemon` subcommand are **already gone**, while `SessionAttachClient.swift`
+  — which this bullet said would go with them — is precisely the part that **stays**, because
+  attaching is the only thing that can reach a pty an older app left running.
+  `macapp/WorkroomSessionProtocol/` does remain as the wire codec, as written, and is frozen.
+
+  The criterion is therefore: local workrooms run on the agent, and a user holding a terminal from
+  a pre-v2.0.0 daemon keeps it. What replaced the rollback is asymmetric by construction — forward
+  compatibility with a daemon we can no longer build, not the ability to go back to it. Outstanding
+  item 5 records what rolling back actually costs.
+
+  **The tension this bullet accepted is resolved, not deferred:** two code paths for one release
+  was the price of a selectable daemon. What ships is one path for new sessions (the agent) plus a
+  read-only bridge to the old one, which is not the dual-run Approach A was chosen to avoid.
 - ~~The ported replay buffer matches the Swift original on the generated/fuzzed corpus.~~
   **Restated — there is no ported replay buffer.** `libghostty-vt` holds the terminal state, so the
   criterion is: on the generated/fuzzed corpus, a snapshot round-trips (grid, styles, cursor,
   modes, continuation), and a client attaching mid-stream renders the same screen as one that
   watched from byte zero — **including under an alternate-screen program**, which the Swift
-  original could not do at all. Every session and store test passes **except**
-  `SessionDaemonEndToEndTests` (7 tests) and `SessionDaemonHarness`, which drive the deleted binary
-  and are rewritten against the agent rather than expected to pass.
+  original could not do at all. The exception this named — `SessionDaemonEndToEndTests` (7 tests)
+  and `SessionDaemonHarness`, which drove the deleted binary — is closed: both files are gone, and
+  the suite passes with no session exception (2662 tests, 1 unrelated skip).
 - **The far-side terminal state survives a provider stop-and-reboot**: reopen after one, and the
   alternate-screen program's screen is still there (the process is not — that is the live-process
   suspend gate, not a bug). This criterion did not previously exist because nothing could satisfy
@@ -1762,9 +1872,12 @@ disagreement passes every test on either side alone while presenting as an empty
   session code with a fresh Rust implementation for **every local user**, unflagged, before any
   remote code ships. The differential harness proves replay parity on a byte corpus; it proves
   nothing about pty ownership, exec-failure detection, or the alt-screen repaint on real hardware
-  with real TUIs. Mitigation: keep the Swift daemon **selectable** for at least one release (the
-  existing `backgroundSessions` preference is the natural place for a third state), dual-run them
-  during development, and write down the rollback before Phase 1 lands. Tracked as open question 14.
+  with real TUIs. The mitigation proposed here — keep the Swift daemon **selectable** for a release
+  via a third state on `backgroundSessions` — **was not built** (see open question 14). The concern
+  itself stands, and was partly borne out: three routing bugs and two create-on-attach hazards were
+  found in exactly this seam, none of them by the differential harness. What guards it now is the
+  attach-only client plus a pinned v2.0.0 binary the suite drives on every run — which tests the
+  boundary a selectable daemon would only have provided an escape from.
 
 ## Next Steps
 
@@ -1860,7 +1973,8 @@ Carried forward, unresolved by design:
   justifies porting a working daemon ahead of the feature. Approach C remains a legitimate fallback,
   and the differential-harness argument that dismissed it cuts both ways.
 - **The local switchover is riskier than the remote feature** and the Nightly flag does not
-  cover it. Open question 14.
+  cover it. Open question 14, now answered — and the concern was right about the seam while wrong
+  about the remedy: the bugs were real and none of them was a rollback away from being survivable.
 - **The base machine is real scope creep** — a fourth product object introduced by a provider
   capability. Justified, named, still unpriced.
 - Round 2 has not re-reviewed the fixes made in response to it.

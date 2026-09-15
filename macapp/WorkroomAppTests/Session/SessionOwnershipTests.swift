@@ -43,7 +43,7 @@ final class SessionOwnershipTests: XCTestCase {
   /// two calls needs two of them, and reusing the path fails to bind with `EADDRINUSE`.
   private func fakeDaemon(reply: [SessionDescriptor]?) throws -> String {
     let socketPath = directory.appendingPathComponent("d\(servers.count).sock").path
-    let listener = try Self.listen(at: socketPath)
+    let listener = try UnixSocketListener.listen(at: socketPath)
     servers.append(listener)
     Thread.detachNewThread {
       let accepted = accept(listener, nil, nil)
@@ -121,7 +121,7 @@ final class SessionOwnershipTests: XCTestCase {
   /// stays, nothing answers.
   func testAStaleSocketFileIsNotOwnedRatherThanUnreachable() throws {
     let socketPath = directory.appendingPathComponent("stale.sock").path
-    let listener = try Self.listen(at: socketPath)
+    let listener = try UnixSocketListener.listen(at: socketPath)
     close(listener)
     XCTAssertTrue(
       FileManager.default.fileExists(atPath: socketPath),
@@ -145,48 +145,20 @@ final class SessionOwnershipTests: XCTestCase {
     }
   }
 
-  private static func listen(at socketPath: String) throws -> Int32 {
-    let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
-    guard descriptor >= 0 else {
-      throw NSError(domain: "test", code: 1, userInfo: [NSLocalizedDescriptionKey: "socket()"])
-    }
-    var address = sockaddr_un()
-    address.sun_family = sa_family_t(AF_UNIX)
-    let pathBytes = Array(socketPath.utf8)
-    guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else {
-      throw NSError(
-        domain: "test", code: 2,
-        userInfo: [NSLocalizedDescriptionKey: "socket path too long: \(socketPath)"])
-    }
-    withUnsafeMutableBytes(of: &address.sun_path) { pointer in
-      pointer.withMemoryRebound(to: CChar.self) { dest in
-        for (index, byte) in pathBytes.enumerated() { dest[index] = CChar(bitPattern: byte) }
-      }
-    }
-    address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
-    let bound = withUnsafePointer(to: &address) { pointer in
-      pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { casted in
-        Darwin.bind(descriptor, casted, socklen_t(MemoryLayout<sockaddr_un>.size))
-      }
-    }
-    guard bound == 0, Darwin.listen(descriptor, 1) == 0 else {
-      close(descriptor)
-      throw NSError(
-        domain: "test", code: 3,
-        userInfo: [NSLocalizedDescriptionKey: "bind/listen failed: \(errno)"])
-    }
-    return descriptor
-  }
 }
 
 /// The routing rule itself, exhaustively.
 ///
-/// Six combinations, all of them asserted, because the interesting one is a deliberate asymmetry
-/// that reads like a bug unless you know why: an unanswered probe resolves to the DAEMON even
-/// though the daemon is the backend being migrated away from.
+/// `preferred` is Optional now — nil means "no backend can take a NEW session", which is what a
+/// failed agent probe produces since the daemon stopped being a fallback. That makes the nil row of
+/// each case the one worth reading.
 final class SessionOwnerRuleTests: XCTestCase {
-  func testADaemonThatOwnsTheSessionKeepsIt() {
-    for preferred in SessionBackend.allCases {
+  /// The property the whole attach-only shim rests on, and the one an earlier draft of the change
+  /// broke: a daemon that CLAIMS the session still wins even when nothing can take a new one. If
+  /// this ever returns nil for `preferred: nil`, a user with an unhealthy agent loses every
+  /// terminal an older build left running.
+  func testADaemonThatOwnsTheSessionKeepsItEvenWithNowhereForNewOnes() {
+    for preferred in [SessionBackend?.none, .rustAgent, .swiftDaemon] {
       XCTAssertEqual(
         PersistentSessionService.owner(preferred: preferred, daemon: .owned), .swiftDaemon,
         "the daemon holds that pty and cannot hand it over, whatever new sessions do")
@@ -194,11 +166,16 @@ final class SessionOwnerRuleTests: XCTestCase {
   }
 
   /// The drain. Without this the migration never happens — every session would stay on the daemon.
+  ///
+  /// REGRESSION: the `preferred: .swiftDaemon` row is gone. `preferred()` can no longer name the
+  /// daemon under any condition, so that input is unreachable and asserting on it pinned behaviour
+  /// that does not exist. The nil row replaces it, and is the live case.
   func testADefinitiveNoSendsTheSessionWhereNewOnesGo() {
     XCTAssertEqual(
       PersistentSessionService.owner(preferred: .rustAgent, daemon: .notOwned), .rustAgent)
-    XCTAssertEqual(
-      PersistentSessionService.owner(preferred: .swiftDaemon, daemon: .notOwned), .swiftDaemon)
+    XCTAssertNil(
+      PersistentSessionService.owner(preferred: nil, daemon: .notOwned),
+      "nothing can take a new session, and the daemon disclaimed this one — so there is nowhere")
   }
 
   /// An unanswered probe resolves to NEITHER helper.
@@ -211,10 +188,616 @@ final class SessionOwnerRuleTests: XCTestCase {
   /// Nil means the pane opens a plain shell — visible and recoverable — instead of duplicating a
   /// pty, which is neither.
   func testAnUnansweredProbeResolvesToNeitherHelper() {
-    for preferred in SessionBackend.allCases {
+    for preferred in [SessionBackend?.none, .rustAgent, .swiftDaemon] {
       XCTAssertNil(
         PersistentSessionService.owner(preferred: preferred, daemon: .unreachable),
         "there is no safe guess: both helpers create-on-attach, so either one forks a duplicate")
     }
+  }
+}
+
+/// The wiring, not just the rule.
+///
+/// `owner(preferred:daemon:)` above is a pure function, and a test of it cannot tell whether
+/// anything CALLS it correctly — the failure this repo has already paid for twice (see the commit
+/// "cover the wiring, not just the writer"). These drive the real service through its injected
+/// seams and assert on `attachCommand`, which is what `GhosttySurfaceView` actually consults.
+final class PersistentSessionRoutingTests: XCTestCase {
+  /// The case the attach-only shim exists for, end to end through the service: the agent is
+  /// installed but broken, and a session the retired daemon still holds must STILL produce an
+  /// attach command.
+  ///
+  /// **This is NOT a control for the view's guard, and an earlier version of this comment claimed
+  /// it was.** Measured: restoring `PersistentSessionService.shared.isAvailable` to the guard in
+  /// `GhosttySurfaceView.applyPersistentSession` leaves all three tests here green, because they
+  /// drive the service directly and never reach the view. What they prove is the service-level
+  /// contract — that the state is reachable and answers correctly. The call site is pinned
+  /// separately by `PersistentSessionAttachGateTests`.
+  @MainActor
+  func testAnUnhealthyAgentStillReachesADaemonOwnedSession() {
+    let service = PersistentSessionService(
+      probe: { _ in .unhealthy(reason: "exited 127") },
+      ownership: { _ in .owned })
+
+    XCTAssertNil(service.backend, "nothing can take a NEW session when the agent is unhealthy")
+    XCTAssertFalse(service.isAvailable, "the global gate is false, which is why it must not gate")
+
+    let sessionID = UUID()
+    XCTAssertEqual(
+      service.backend(forSession: sessionID), .swiftDaemon,
+      "a daemon that claims the session owns it regardless of where new sessions go")
+    let command = service.attachCommand(forSession: sessionID)
+    XCTAssertNotNil(
+      command,
+      """
+      an unhealthy agent stranded a session the daemon still holds. This is the whole reason the \
+      attach client was kept — see docs/designs/remote-workrooms.md.
+      """)
+    XCTAssertTrue(
+      command?.hasSuffix(" attach") == true && command?.contains("workroom-session") == true,
+      "expected the attach-only client, got \(command ?? "nil")")
+  }
+
+  /// And the other half: with nowhere for a new session and no daemon claiming this one, the
+  /// service says so rather than guessing, so the pane opens a plain shell.
+  @MainActor
+  func testAnUnhealthyAgentWithNoDaemonResolvesToNothing() {
+    let service = PersistentSessionService(
+      probe: { _ in .unhealthy(reason: "exited 127") },
+      ownership: { _ in .notOwned })
+
+    XCTAssertNil(service.backend(forSession: UUID()))
+    XCTAssertNil(service.attachCommand(forSession: UUID()))
+  }
+
+  /// The probe runs ONCE even when its answer is nil.
+  ///
+  /// `cachedPreferred` uses nil for the cached value, so before `preferredResolved` existed the
+  /// "no backend" answer was indistinguishable from "not asked yet" and re-probed on every access.
+  /// The real probe is a `Process()` with a 2-second deadline on the main actor, so an eight-pane
+  /// restore against a hung agent froze the app for ~16s. Counting calls is the only way to see it:
+  /// the returned value is identical either way.
+  @MainActor
+  func testTheAgentProbeRunsOnceEvenWhenItAnswersNothing() {
+    let probeCount = Counter()
+    let service = PersistentSessionService(
+      probe: { _ in
+        probeCount.increment()
+        return .unhealthy(reason: "hung")
+      },
+      ownership: { _ in .notOwned })
+
+    for _ in 0..<5 {
+      _ = service.backend
+      _ = service.isAvailable
+      _ = service.socketPath
+      _ = service.binaryPath
+    }
+
+    XCTAssertEqual(
+      probeCount.value, 1,
+      "a nil answer must cache; re-probing costs 2s of frozen main actor per access")
+  }
+
+  /// …but not forever. A nil answer is retried after a cooldown.
+  ///
+  /// Latching it for the launch was worse than the behaviour it replaced: before this change a
+  /// failed probe fell back to the daemon, which could still be started, so a transient failure
+  /// degraded to daemon-backed persistence. Now it degrades to none at all, and the probe is a
+  /// 2-second-watchdogged `Process()` that a loaded machine or a slow first exec of a
+  /// freshly-updated binary is enough to trip once. Without a way back, that user has no persistent
+  /// terminals until they quit the app.
+  @MainActor
+  func testANilAnswerIsRetriedAfterTheCooldown() async {
+    let probeCount = Counter()
+    var clock = 1000.0
+    let service = PersistentSessionService(
+      probe: { _ in
+        probeCount.increment()
+        return probeCount.value == 1
+          ? .unhealthy(reason: "transient") : .ready(version: "protocol 1")
+      },
+      ownership: { _ in .notOwned },
+      now: { clock })
+
+    XCTAssertNil(service.backend)
+    XCTAssertEqual(probeCount.value, 1)
+
+    clock += PersistentSessionService.probeRetryInterval - 1
+    XCTAssertNil(service.backend, "still inside the cooldown")
+    XCTAssertEqual(probeCount.value, 1, "the cooldown is what keeps the main actor free")
+
+    // Past the cooldown the agent gets another chance — but the caller does not wait for it. The
+    // retry is the whole reason this cannot be synchronous: the first probe is paid once at launch,
+    // whereas a retry recurs every 30s for as long as the agent stays unhealthy, and each one would
+    // freeze the main actor for the watchdog's 2 seconds. So the call that ARMS the retry still
+    // answers nil, and the answer arrives on a later read.
+    clock += 2
+    XCTAssertNil(service.backend, "the retry is dispatched, not awaited")
+
+    let deadline = Date().addingTimeInterval(5)
+    while service.backend == nil && Date() < deadline {
+      await Task.yield()
+    }
+
+    XCTAssertEqual(
+      service.backend, .rustAgent, "the background answer lands and is cached from then on")
+    XCTAssertEqual(probeCount.value, 2)
+  }
+
+  /// One retry in flight at a time.
+  ///
+  /// A same-turn burst of panes is already handled by the cooldown — they all read the same
+  /// `lastProbeAt`. What this covers is the case the cooldown cannot: a probe that is SLOW. The
+  /// watchdog gives it 2 seconds, the cooldown lapses at 30, so a helper wedged long enough would
+  /// otherwise accumulate one live `Process()` per retry with nothing to stop them piling up.
+  @MainActor
+  func testARetryStillInFlightIsNotJoinedByAnother() async {
+    let probeCount = Counter()
+    let released = DispatchSemaphore(value: 0)
+    var clock = 1000.0
+    let service = PersistentSessionService(
+      probe: { _ in
+        probeCount.increment()
+        // Only the retries block. The first probe is synchronous, so waiting there would freeze
+        // the main actor this whole change exists to keep free.
+        if probeCount.value == 1 { return .unhealthy(reason: "transient") }
+        released.wait()
+        return .ready(version: "protocol 1")
+      },
+      ownership: { _ in .notOwned },
+      now: { clock })
+
+    XCTAssertNil(service.backend)
+    XCTAssertEqual(probeCount.value, 1)
+
+    clock += PersistentSessionService.probeRetryInterval + 1
+    XCTAssertNil(service.backend, "arms a retry, which has not answered yet")
+
+    // Wait for that retry to actually be running: if the next read arrived first it would be
+    // arming the only background probe, and the guard would never come into it.
+    let startedAt = Date()
+    while probeCount.value < 2 && Date().timeIntervalSince(startedAt) < 5 {
+      await Task.yield()
+    }
+    XCTAssertEqual(probeCount.value, 2, "the retry reached the probe")
+
+    clock += PersistentSessionService.probeRetryInterval + 1
+    XCTAssertNil(service.backend, "the cooldown has lapsed again while the probe is still out")
+
+    released.signal()
+    let deadline = Date().addingTimeInterval(5)
+    while service.backend == nil && Date() < deadline {
+      await Task.yield()
+    }
+
+    XCTAssertEqual(service.backend, .rustAgent)
+    XCTAssertEqual(
+      probeCount.value, 2, "a second read past the cooldown must not start a second probe")
+  }
+
+  /// **A wedged helper costs the window one timeout, not one per pane.**
+  ///
+  /// An unanswered ownership probe is a 2-second wait, and it is paid on the main actor during
+  /// terminal creation. A workroom restoring six panes against a v2.0.0 daemon that accepts and
+  /// then stalls used to pay it six times, serially: twelve seconds of frozen app, well past the
+  /// threshold that files an AppHang, for six copies of one answer.
+  ///
+  /// Each resolve asks twice — the daemon, then the agent, because a wedged daemon must not veto a
+  /// session the live agent holds — so the first session costs two probes and the rest cost none.
+  @MainActor
+  func testAWedgedHelperIsAskedOncePerCooldownNotOncePerPane() {
+    let probes = Counter()
+    var clock = 1000.0
+    let service = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      ownership: { _ in
+        probes.increment()
+        return .unreachable
+      },
+      now: { clock })
+
+    XCTAssertNil(service.backend(forSession: UUID()), "an unanswered probe resolves to neither")
+    XCTAssertEqual(probes.value, 2, "the daemon, then the agent")
+
+    for _ in 0..<5 { XCTAssertNil(service.backend(forSession: UUID())) }
+    XCTAssertEqual(
+      probes.value, 2,
+      """
+      five more panes each waited out a helper that had just been proved silent. That is ~2s of \
+      frozen main actor per pane, during terminal restore, when the answer was already known.
+      """)
+
+    clock += PersistentSessionService.probeRetryInterval + 1
+    XCTAssertNil(service.backend(forSession: UUID()))
+    XCTAssertEqual(
+      probes.value, 4,
+      "past the cooldown the helper is asked for real again; a wedge is not permanent")
+  }
+
+  /// A successful answer is cached for good — no cooldown, no re-probe. An agent that has answered
+  /// does not stop existing, and re-running it would reintroduce the cost the cache exists to avoid.
+  @MainActor
+  func testAHealthyAnswerIsNeverReprobed() {
+    let probeCount = Counter()
+    var clock = 1000.0
+    let service = PersistentSessionService(
+      probe: { _ in
+        probeCount.increment()
+        return .ready(version: "protocol 1")
+      },
+      ownership: { _ in .notOwned },
+      now: { clock })
+
+    XCTAssertEqual(service.backend, .rustAgent)
+    clock += PersistentSessionService.probeRetryInterval * 10
+    XCTAssertEqual(service.backend, .rustAgent)
+    XCTAssertEqual(probeCount.value, 1)
+  }
+}
+
+/// **`attachCommand` and `launchEnvironment` are consumed as a pair.**
+///
+/// A pane asks twice: once for the binary to fork, once for the environment that binary reads. They
+/// are separate calls, and nothing in either signature says they must agree — but if they disagree
+/// the pane runs one helper pointed at the other's socket. The Swift client would bind the agent's
+/// socket, which takes the path a live agent's sessions are reached through and serves none of
+/// them. `macapp/CLAUDE.md` calls this load-bearing; until now nothing tested it.
+final class PersistentSessionPairTests: XCTestCase {
+  /// A session the daemon holds: the attach-only client, on the daemon's socket.
+  @MainActor
+  func testADaemonOwnedSessionGetsTheDaemonsBinaryAndTheDaemonsSocket() {
+    let service = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      ownership: { _ in .owned })
+    let sessionID = UUID()
+
+    let command = service.attachCommand(forSession: sessionID)
+    let environment = Dictionary(
+      uniqueKeysWithValues: service.launchEnvironment(
+        sessionID: sessionID, workingDirectory: NSTemporaryDirectory()))
+
+    XCTAssertEqual(service.backend(forSession: sessionID), .swiftDaemon)
+    XCTAssertEqual(command?.contains("workroom-session"), true, "got \(command ?? "nil")")
+    XCTAssertEqual(
+      environment["WORKROOM_SESSION_SOCKET"], service.socketPath(for: .swiftDaemon),
+      "the daemon's client was handed a socket that is not the daemon's")
+    XCTAssertEqual(environment["WORKROOM_SESSION_ID"], sessionID.uuidString)
+  }
+
+  /// And a session nothing claims goes to the agent, on the agent's socket.
+  @MainActor
+  func testAnAgentOwnedSessionGetsTheAgentsBinaryAndTheAgentsSocket() {
+    let service = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      ownership: { _ in .notOwned })
+    let sessionID = UUID()
+
+    let command = service.attachCommand(forSession: sessionID)
+    let environment = Dictionary(
+      uniqueKeysWithValues: service.launchEnvironment(
+        sessionID: sessionID, workingDirectory: NSTemporaryDirectory()))
+
+    XCTAssertEqual(service.backend(forSession: sessionID), .rustAgent)
+    XCTAssertEqual(command?.contains("wr-agent"), true, "got \(command ?? "nil")")
+    XCTAssertEqual(
+      environment["WORKROOM_SESSION_SOCKET"], service.socketPath(for: .rustAgent),
+      "the agent was handed a socket that is not the agent's")
+  }
+
+  /// **The one that would actually break: ownership that answers differently each time.**
+  ///
+  /// A daemon on a loaded machine answers one probe and misses the next — a dropped answer is a
+  /// timeout, not an error, which is why `.unreachable` exists as its own case. The two calls a
+  /// pane makes are milliseconds apart but they are not atomic, so without the per-session cache
+  /// the first sees `.owned` and the second sees whatever the second probe returned. The pane then
+  /// forks `workroom-session` with the agent's socket in its environment.
+  ///
+  /// One probe per session is therefore not an optimisation. It is what makes the pair coherent.
+  @MainActor
+  func testAFlappingOwnershipProbeCannotProduceAMismatchedPair() {
+    let answers = Counter()
+    let service = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      // Owned, then not owned, then owned… the worst case, not a random one.
+      ownership: { _ in
+        answers.increment()
+        return answers.value.isMultiple(of: 2) ? .notOwned : .owned
+      })
+    let sessionID = UUID()
+
+    let command = service.attachCommand(forSession: sessionID)
+    let environment = Dictionary(
+      uniqueKeysWithValues: service.launchEnvironment(
+        sessionID: sessionID, workingDirectory: NSTemporaryDirectory()))
+
+    XCTAssertEqual(
+      answers.value, 1, "the session was resolved twice; the two answers need not agree")
+
+    let socket = environment["WORKROOM_SESSION_SOCKET"]
+    let usesDaemonBinary = command?.contains("workroom-session") == true
+    XCTAssertEqual(
+      socket, service.socketPath(for: usesDaemonBinary ? .swiftDaemon : .rustAgent),
+      """
+      the pane was told to run \(command ?? "nil") against \(socket ?? "nil"). One helper, the \
+      other's socket: whichever binds first takes the path the other's sessions live on.
+      """)
+  }
+
+  /// Neither, or both — never one.
+  ///
+  /// `attachCommand` returning non-nil beside an empty environment is the shape that already
+  /// shipped once: the relay started with no `WORKROOM_SESSION_ID`, exited 2, and because the
+  /// plain-shell fallback is chosen BEFORE the command is spawned, the pane died instead of
+  /// degrading.
+  @MainActor
+  func testAnUnresolvableSessionRefusesOnBothSidesAtOnce() {
+    let service = PersistentSessionService(
+      probe: { _ in .unhealthy(reason: "exited 127") },
+      ownership: { _ in .notOwned })
+    let sessionID = UUID()
+
+    XCTAssertNil(service.attachCommand(forSession: sessionID))
+    XCTAssertTrue(
+      service.launchEnvironment(sessionID: sessionID, workingDirectory: NSTemporaryDirectory())
+        .isEmpty,
+      "a nil command beside a populated environment is a pane that dies rather than degrades")
+  }
+}
+
+/// The substitution the shipped daemon performs on an id it does not hold, and the re-check that
+/// stops us walking into it.
+///
+/// `SessionDaemon.handleAttach` — in the v2.0.0 binary, which cannot be changed — ends in
+/// `create(request:connection:)` rather than refusing. So attaching to a session whose shell has
+/// exited does not fail: it silently forks a new one. The user gets a fresh prompt where their
+/// build was, and nothing distinguishes it from a successful reattach.
+final class DaemonSessionSubstitutionTests: XCTestCase {
+  /// The ordinary case: the daemon still has it, so nothing changes.
+  @MainActor
+  func testAStillHeldSessionIsAttachable() {
+    let service = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      ownership: { _ in .owned })
+    let sessionID = UUID()
+    XCTAssertEqual(service.backend(forSession: sessionID), .swiftDaemon)
+
+    XCTAssertEqual(
+      service.confirmBeforeAttach(sessionID: sessionID, wasRestored: true), .attachable)
+  }
+
+  /// The bug. The owner is resolved and cached while the daemon holds the session; the shell then
+  /// exits; a later reattach must NOT proceed on the cached answer.
+  @MainActor
+  func testASessionTheDaemonHasLostIsNotAttachedTo() {
+    let answers = OwnershipScript([.owned, .notOwned])
+    let service = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      ownership: { _ in answers.next() })
+    let sessionID = UUID()
+
+    // Resolved and cached while it was still held — this is what makes the cache stale later.
+    XCTAssertEqual(service.backend(forSession: sessionID), .swiftDaemon)
+
+    XCTAssertEqual(
+      service.confirmBeforeAttach(sessionID: sessionID, wasRestored: true), .gone,
+      """
+      attaching here would ask the v2.0.0 daemon for a session it no longer holds, and it creates \
+      one rather than refusing — the user's running work is replaced by an empty shell that looks \
+      exactly like a successful reattach.
+      """)
+  }
+
+  /// And the stale answer is dropped, so a later reattach resolves afresh instead of arriving back
+  /// at the same wrong conclusion.
+  @MainActor
+  func testALostSessionDropsItsCachedOwner() {
+    let answers = OwnershipScript([.owned, .notOwned, .notOwned])
+    let service = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      ownership: { _ in answers.next() })
+    let sessionID = UUID()
+    XCTAssertEqual(service.backend(forSession: sessionID), .swiftDaemon)
+    XCTAssertEqual(service.confirmBeforeAttach(sessionID: sessionID, wasRestored: true), .gone)
+
+    XCTAssertEqual(
+      service.backend(forSession: sessionID), .rustAgent,
+      "the cached daemon answer must be gone, so the session re-resolves to where new ones go")
+  }
+
+  /// **A daemon that cannot answer still gets attached to.** `.unreachable` means we could not ask,
+  /// not that the session is gone — and the substitution needs the daemon responsive enough to
+  /// answer "not mine" and then fork. One too wedged to reply cannot produce the wrong result, so
+  /// refusing here would throw away a session that is probably still running.
+  @MainActor
+  func testAnUnreachableDaemonIsStillAttachedTo() {
+    let answers = OwnershipScript([.owned, .unreachable])
+    let service = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      ownership: { _ in answers.next() })
+    let sessionID = UUID()
+    XCTAssertEqual(service.backend(forSession: sessionID), .swiftDaemon)
+
+    XCTAssertEqual(
+      service.confirmBeforeAttach(sessionID: sessionID, wasRestored: true), .attachable)
+  }
+
+  /// **A freshly minted id is never challenged.** It has never existed anywhere, so create-on-attach
+  /// is the wanted behaviour — asking would refuse every new pane. This is the guard that makes the
+  /// check safe to apply to BOTH backends rather than only the retired one.
+  @MainActor
+  func testAFreshSessionIsNeverChallenged() {
+    let probes = Counter()
+    let service = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      ownership: { _ in
+        probes.increment()
+        return .notOwned
+      })
+
+    XCTAssertEqual(
+      service.confirmBeforeAttach(sessionID: UUID(), wasRestored: false), .attachable,
+      "a pane opening a brand new session must not be refused because nobody holds its id yet")
+    XCTAssertEqual(probes.value, 0, "a fresh id is not worth a round trip to anyone")
+  }
+
+  /// The agent is re-checked too, now. It creates on first attach exactly as the daemon does
+  /// (`serve.rs`: guarded only by `sessions.contains(id)`), so checking only the retired backend
+  /// closed the hole on the one being drained and left it open on the one that owns every new
+  /// session — and once the drain completes, on the only one left.
+  @MainActor
+  func testAnAgentOwnedSessionIsAlsoChallenged() {
+    let answers = OwnershipScript([.notOwned, .notOwned])
+    let service = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      ownership: { _ in answers.next() })
+    let sessionID = UUID()
+    XCTAssertEqual(service.backend(forSession: sessionID), .rustAgent)
+
+    XCTAssertEqual(
+      service.confirmBeforeAttach(sessionID: sessionID, wasRestored: true), .gone,
+      """
+      an agent that disclaims a restored id would CREATE a new session on attach, exactly as the \
+      daemon does
+      """)
+  }
+
+  /// REGRESSION, and the shape of the hole this replaced.
+  ///
+  /// This test used to assert that an agent-owned session is NOT re-checked — "the agent refuses an
+  /// id it does not hold, so there is no substitution to prevent". That premise was false:
+  /// `serve.rs` creates on first attach guarded only by `sessions.contains(id)`, exactly as the
+  /// daemon does. Checking only the retired backend closed the hole on the one being drained and
+  /// left it open on the one that owns every new session — and, once the drain finishes, on the
+  /// only one left. The inverted assertion lives in `testAnAgentOwnedSessionIsAlsoChallenged`; what
+  /// remains here is the cost question, which the answer above must not regress.
+  @MainActor
+  func testAChallengeCostsOneRoundTripAtMost() {
+    let probes = Counter()
+    let service = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      ownership: { _ in
+        probes.increment()
+        return .owned
+      })
+    let sessionID = UUID()
+    _ = service.backend(forSession: sessionID)
+    let afterResolve = probes.value
+
+    XCTAssertEqual(
+      service.confirmBeforeAttach(sessionID: sessionID, wasRestored: true), .attachable)
+    XCTAssertEqual(
+      probes.value, afterResolve + 1,
+      "confirming must cost exactly one ask — it runs on the main actor during pane creation")
+  }
+}
+
+/// The notice a pane shows when its session is gone.
+final class LostSessionCommandTests: XCTestCase {
+  /// It has to actually run. A malformed command string is a pane that opens to nothing, which is
+  /// worse than the silent fresh prompt this replaces.
+  func testTheNoticeCommandRunsAndPrintsThenBecomesTheShell() throws {
+    let command = GhosttySurfaceView.lostSessionCommand(shell: "/bin/sh")
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/sh")
+    process.arguments = ["-c", command]
+    let pipe = Pipe()
+    let input = Pipe()
+    process.standardOutput = pipe
+    process.standardError = pipe
+    process.standardInput = input
+    try process.run()
+
+    // Typed AT the pane, not redirected from `/dev/null`. The earlier version ended the shell with
+    // EOF and could only see the notice — which `printf` alone would satisfy, leaving a pane that
+    // explains itself and then dies. Feeding it a script proves there is a live shell on the other
+    // side to read it, which is the half of the name this test was not testing.
+    input.fileHandleForWriting.write(Data("echo ARGV0=$0\nexit 3\n".utf8))
+    try input.fileHandleForWriting.close()
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+
+    let output = String(decoding: data, as: UTF8.self)
+    XCTAssertTrue(
+      output.contains("has ended, so this is a new shell"),
+      "the pane would come back with no explanation. got: \(output)")
+    XCTAssertTrue(
+      output.contains("ARGV0=/bin/sh"),
+      """
+      nothing read what was typed, so the notice printed into a pane with no shell behind it — \
+      `wait_after_command` is false, so that pane is dead, not idle. got: \(output)
+      """)
+    XCTAssertEqual(
+      process.terminationStatus, 3,
+      """
+      the exit status came from somewhere other than the shell we typed `exit 3` at. `exec` is what \
+      makes this one process rather than a wrapper holding a child, and a wrapper would report its \
+      own status here. got: \(output)
+      """)
+  }
+
+  /// A shell path carrying shell metacharacters must be taken literally. `SHELL` is
+  /// environment-supplied, so it is not ours to trust, and this string is handed to `/bin/sh -c`.
+  ///
+  /// Asserted by RUNNING it and checking the side effect did not happen. The first version of this
+  /// test looked for the injected text as a substring of the command and failed — correctly quoted
+  /// output still contains it, inside quotes, which is the whole point. A substring check cannot
+  /// tell "quoted" from "escaped"; only execution can.
+  func testAnAwkwardShellPathIsQuotedNotInterpreted() throws {
+    let marker = URL(fileURLWithPath: "/tmp/wr-quoting-\(UUID().uuidString.prefix(8))")
+    let hostile = "/nonexistent/sh'; touch \(marker.path); '"
+    let command = GhosttySurfaceView.lostSessionCommand(shell: hostile)
+
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/sh")
+    process.arguments = ["-c", "\(command) < /dev/null"]
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    process.waitUntilExit()
+
+    let escaped = FileManager.default.fileExists(atPath: marker.path)
+    try? FileManager.default.removeItem(at: marker)
+    XCTAssertFalse(
+      escaped,
+      "a shell path from the environment broke out of its quoting and ran: \(command)")
+  }
+}
+
+/// Answers a scripted sequence of ownership results, then repeats the last one.
+private final class OwnershipScript: @unchecked Sendable {
+  private let lock = NSLock()
+  private var answers: [SessionOwnership]
+  private var index = 0
+
+  init(_ answers: [SessionOwnership]) {
+    self.answers = answers
+  }
+
+  func next() -> SessionOwnership {
+    lock.lock()
+    defer { lock.unlock() }
+    let answer = answers[min(index, answers.count - 1)]
+    index += 1
+    return answer
+  }
+}
+
+/// A plain counter rather than a captured `var`: the closure is `@escaping` and stored on the
+/// service, so it cannot capture a local mutable.
+private final class Counter: @unchecked Sendable {
+  private let lock = NSLock()
+  private var count = 0
+
+  func increment() {
+    lock.lock()
+    count += 1
+    lock.unlock()
+  }
+
+  var value: Int {
+    lock.lock()
+    defer { lock.unlock() }
+    return count
   }
 }

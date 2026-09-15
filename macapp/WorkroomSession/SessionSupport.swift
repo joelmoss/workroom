@@ -1,6 +1,20 @@
 import Darwin
 import WorkroomSessionProtocol
 
+/// The terminal geometry of a descriptor.
+///
+/// All that survives of `SessionPTY`, which was deleted with the daemon: this is the one thing the
+/// attach client needed from it, and the only part that was never about owning a pty. Everything
+/// else there — `spawn`, `terminate`, the foreground-pgid and `/proc`-equivalent introspection —
+/// existed to RUN sessions, which this build no longer does.
+enum SessionTerminalSize {
+  static func of(descriptor: Int32) -> (columns: UInt16, rows: UInt16)? {
+    var size = winsize()
+    guard ioctl(descriptor, TIOCGWINSZ, &size) == 0 else { return nil }
+    return (size.ws_col, size.ws_row)
+  }
+}
+
 /// Monotonic clock, unaffected by wall-clock jumps (NTP, user changing the date) — used for
 /// short-lived deadlines (poll timeouts, settle windows) where a `Date()`-based one could stall
 /// or fire early.
@@ -38,27 +52,6 @@ final class SessionSignalPipe {
 
   func drain() {
     while case .bytes = SessionIO.read(readDescriptor, limit: 64) {}
-  }
-}
-
-final class SessionCStringArray {
-  private let storage: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>
-  private let count: Int
-
-  init(_ values: [String]) {
-    count = values.count
-    storage = UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>.allocate(capacity: count + 1)
-    for (index, value) in values.enumerated() {
-      storage[index] = strdup(value)
-    }
-    storage[count] = nil
-  }
-
-  var pointer: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?> { storage }
-
-  deinit {
-    for index in 0..<count { free(storage[index]) }
-    storage.deallocate()
   }
 }
 

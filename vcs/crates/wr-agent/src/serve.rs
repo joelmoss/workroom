@@ -284,6 +284,21 @@ fn dispatch(
                 // Not `<shell>` with no arguments: see `shell::invocation`. Spawning the shell
                 // bare cost the login profile and ghostty's shell integration, which showed up in
                 // the app as panes stuck on the title the user's own prompt sets.
+                // **The session's own variables do not reach the session's shell**, matching what
+                // the Swift attach client has always done (`SessionAttachClient.makeRequest`
+                // filters the same prefix before sending). Leaking them had two consequences, both
+                // real: `wr-agent attach` typed inside a pane picked up THAT pane's id and socket
+                // from its own environment and attached a second relay to the session it was
+                // running in, with the pty fanning output to both; and `run_attach`'s "was I
+                // invoked by the app" test — which reads exactly these variables — was true for
+                // anything the user typed in a pane, so the usage-instead-of-nested-shell guard
+                // could never fire there.
+                let child_environment: Vec<(OsString, OsString)> = request
+                    .env
+                    .iter()
+                    .filter(|(key, _)| !key.to_string_lossy().starts_with("WORKROOM_SESSION_"))
+                    .cloned()
+                    .collect();
                 let invocation = shell::invocation(
                     &request
                         .command
@@ -296,7 +311,7 @@ fn dispatch(
                         .clone()
                         .unwrap_or_default()
                         .to_string_lossy(),
-                    &request.env,
+                    &child_environment,
                 );
                 sessions
                     .create(SessionSpec {

@@ -9,7 +9,48 @@
 
 ## P2 — perf, correctness, and the next VCS phase
 
+### Retire the attach-only `workroom-session` shim (macapp) — issue #154 follow-up
+
+**What:** Delete the remaining `macapp/WorkroomSession/` client, its pinned v2.0.0 binary fixture
+(`macapp/WorkroomAppTests/Fixtures/workroom-session-v2.0.0`, 464KB), `SessionShimCompatibilityTests`,
+and the freeze on `WorkroomSessionProtocol` — once no user can still be running a v2.0.0 daemon.
+
+**Why:** The shim is deliberately temporary. It exists only to reattach terminals held by a daemon
+process started by an app version older than the agent. That population shrinks with every reboot,
+every logout, and every closed pane, and eventually reaches zero — at which point the client, its
+fixture and its tests are pure carrying cost.
+
+**Pros:** Removes the last of two pty client implementations, drops a binary from git, and frees
+`WorkroomSessionProtocol` to change again (it is frozen today because its only real peer — a shipped
+v2.0.0 binary — can never be recompiled to match).
+
+**Cons:** Nothing signals when the population hits zero. It is a judgement call on elapsed time and
+release adoption, so this will sit open for a while. Deleting it early strands exactly the users it
+was added for.
+
+**How to start:** Check whether any reattach-from-old-daemon has been reported since the shim landed.
+Then delete the directory, the fixture, the compatibility tests, and the freeze comment together —
+they are one unit, and leaving the fixture behind without its tests is worse than leaving all of it.
+
+**Depends on / blocked by:** The shim landing first, then elapsed time plus release adoption. No hard
+gate.
+
+**Priority:** P2, not before 2027.
+
 ### `workroom-session` daemon: the findings the `/review` pass didn't fix (macapp) — persist-sessions follow-up
+
+> **RETIRED.** The daemon this section is about no longer exists in the tree: `SessionDaemon.swift`
+> and `SessionPTY.swift` were deleted when `workroom-session` became an attach-only client (issue
+> #154). The `SessionDaemonEndToEndTests.test*` methods cited below as red/green evidence went with
+> it, so those citations now point at git history rather than at runnable tests — read them as a
+> record of what was fixed, not as coverage that still runs. `git log -- macapp/WorkroomSession/`
+> has the originals.
+>
+> **The P0 architectural note below is NOT closed by that removal, and it would be wrong to read it
+> that way.** Deleting the daemon's source from this build does not stop the daemons already running
+> on users' machines: those were started by an app at or before v2.0.0, they keep their original
+> `LOCAL_PEERCRED`-only trust boundary, and reaching them is precisely what the retained attach
+> client is for. The note stands, unchanged, until the last such process is gone.
 
 **What:** The `workroom-session` daemon (persisted ordinary terminals across quit, `b28e9134`) went
 through a two-round `/review` (checklist + specialist dispatch, then a full Claude+Codex adversarial

@@ -1,3 +1,13 @@
+/// **FROZEN while the attach-only client ships.**
+///
+/// Its only real peer is a `workroom-session daemon` started by an app at or before v2.0.0, running
+/// on a user's machine right now. That binary can never be recompiled to match a change here, so
+/// anything this module encodes differently is a terminal the user silently cannot get back.
+/// `SessionShimCompatibilityTests` drives the pinned v2.0.0 binary and will fail if this drifts;
+/// treat that failure as the contract breaking, not the test being stale.
+///
+/// The freeze lifts when `macapp/WorkroomSession/` is deleted — see the TODOS entry that names the
+/// client, the fixture and its tests as one unit.
 public enum SessionProtocolVersion {
   public static let current: UInt16 = 1
 }

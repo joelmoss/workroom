@@ -21,6 +21,14 @@ import WorkroomSessionProtocol
 protocol SessionControlPlane {
   func list() -> [SessionDescriptor]
   func info(identifier: SessionIdentifier) -> SessionDescriptor?
+  /// Whether this helper holds the session, **distinguishing "it said no" from "it never
+  /// answered"** — which `info` cannot, because it returns nil for both.
+  ///
+  /// On the protocol rather than on one client because BOTH helpers create-on-attach: the daemon's
+  /// `handleAttach` ends in `create(request:connection:)` and the agent's is guarded only by
+  /// `sessions.contains(id)` (`serve.rs`). Asking only the daemon closed the substitution hole on
+  /// the backend being retired and left it open on the one that owns every new session.
+  func ownership(identifier: SessionIdentifier) -> SessionOwnership
   func kill(identifier: SessionIdentifier) -> Bool
   func killAll() -> Bool
 }
@@ -51,6 +59,19 @@ struct AgentControlClient: SessionControlPlane {
   /// in step between two languages.
   func info(identifier: SessionIdentifier) -> SessionDescriptor? {
     list().first { $0.identifier == identifier }
+  }
+
+  /// `list()` collapses "no reply" into an empty array, which is why this cannot be written on top
+  /// of it: an agent that is wedged and an agent holding nothing would be indistinguishable, and
+  /// answering `.notOwned` for the first would throw away a live session. Going through `transact`
+  /// directly keeps nil meaning "nothing readable came back".
+  func ownership(identifier: SessionIdentifier) -> SessionOwnership {
+    let sessions = transact(SessionFrame(kind: .list)) { frame -> [SessionDescriptor]? in
+      guard frame.kind == .sessions else { return nil }
+      return try? SessionDescriptor.decodeList(frame.payload)
+    }
+    guard let sessions else { return .unreachable }
+    return sessions.contains { $0.identifier == identifier } ? .owned : .notOwned
   }
 
   func kill(identifier: SessionIdentifier) -> Bool {

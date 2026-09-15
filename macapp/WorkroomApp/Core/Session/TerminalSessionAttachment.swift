@@ -19,6 +19,9 @@ enum TerminalSessionAttachment {
     }
     state.sessionID = sessionID
     state.view.persistentSessionID = sessionID
+    // Always restored: this path exists to point a pane at a session that already exists, chosen
+    // by the user from the detached-sessions list.
+    state.view.persistentSessionIsRestored = true
     state.view.reattachPersistentSession()
     tab.content = .terminal(state)
     sessions.replace(tab, for: target)

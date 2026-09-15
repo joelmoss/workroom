@@ -44,11 +44,14 @@ func fail(_ message: String) -> Never {
   exit(2)
 }
 
+/// `daemon` is deliberately absent. This binary is an attach-only CLIENT: it connects to a daemon
+/// an app at or before v2.0.0 left running and relays a session it already holds. It cannot start
+/// one, and starting one would serve no session that exists — every new session goes to `wr-agent`.
+/// See `docs/designs/remote-workrooms.md`.
 func usage() -> Never {
   fail(
     """
-    usage: workroom-session daemon --socket <path>
-           workroom-session attach
+    usage: workroom-session attach
            workroom-session list --socket <path>
            workroom-session kill --socket <path> --session <id>
            workroom-session kill --socket <path> --all
@@ -59,28 +62,44 @@ let arguments = CommandLine.arguments
 guard arguments.count > 1 else { usage() }
 
 switch arguments[1] {
-case "daemon":
-  guard let socketPath = argumentValue("--socket", in: arguments) else {
-    fail("usage: workroom-session daemon --socket <path>")
-  }
-  let idleTimeout =
-    argumentValue("--idle-timeout", in: arguments).flatMap(Int32.init)
-    ?? SessionDaemon.idleTimeoutMilliseconds
-  switch SessionDaemon.start(socketPath: socketPath, idleTimeoutMilliseconds: idleTimeout) {
-  case .running(let daemon):
-    daemon.run()
-    exit(0)
-  case .lockHeld:
-    exit(0)
-  case .failed(let message):
-    fail(message)
-  }
-
 case "attach":
+  // Only a relay falls back. A hand-typed `attach` with no environment gets an error, exactly as
+  // `list` and `kill` do — opening a login shell inside the user's own shell would be absurd.
   guard let configuration = attachConfiguration() else {
     fail("workroom-session: WORKROOM_SESSION_ID and WORKROOM_SESSION_SOCKET are required")
   }
-  exit(SessionAttachClient.run(configuration: configuration))
+  let status = SessionAttachClient.run(configuration: configuration)
+  // **The pane must not die because the helper did.** `config.wait_after_command` is false, so a
+  // relay that simply exits leaves a pane with no shell in it — nothing to read the error in, and
+  // nothing to type into. The Rust agent solved this with `fall_back_to_shell`; this client had no
+  // equivalent, so the very failure this branch introduced a bound for (a v2.0.0 daemon that
+  // accepts and then stalls) destroyed the pane rather than degrading it, while the identical
+  // failure against the agent degraded to a working shell. Two relays behind one feature must fail
+  // the same way.
+  //
+  // `finished` and `protocolFailure` never fall back: the first carries the shell's own exit
+  // status and must be reported verbatim, and the second means the peer is not a session helper at
+  // all. An earlier version of this comment claimed the list below was "only the pre-attach
+  // outcomes". It is not, and `transportFailure` is the exception — see below.
+  // `transportFailure` is the one that is NOT pre-attach: `transportOutcome(isAttached:)` returns
+  // it only once the `.attached` frame has landed, and answers `.retry` before that. It still falls
+  // back — exiting leaves a pane with nothing in it either way — but it cannot borrow the pre-attach
+  // message, which says persistence is gone. Here the session may well be alive and simply out of
+  // reach, so say that instead and point at the thing that recovers it.
+  if status == SessionAttachExitCode.transportFailure {
+    SessionIO.writeAll(
+      STDERR_FILENO,
+      Array(
+        ("workroom-session: lost the connection to the session helper. If it is still running, "
+          + "closing and reopening this terminal will reattach.\r\n").utf8))
+  }
+  if status == SessionAttachExitCode.daemonUnavailable
+    || status == SessionAttachExitCode.transportFailure
+    || status == SessionAttachExitCode.startupFailure
+  {
+    SessionAttachFallback.becomeShell(configuration: configuration)
+  }
+  exit(status)
 
 case "list":
   guard let socketPath = argumentValue("--socket", in: arguments) else {
