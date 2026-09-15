@@ -319,7 +319,10 @@ private struct WorkroomPaneLeaf: View {
   private var toolbarControls: WorkroomPaneToolbarPresentation.Controls {
     WorkroomPaneToolbarPresentation.controls(
       isMissing: target.isMissing, projectPath: projectPath,
-      hasEditor: !ExternalEditor.installed.isEmpty, multi: multi)
+      hasEditor: !ExternalEditor.installed.isEmpty, multi: multi,
+      // The same set `startRunCommand` guards on, so the button and the action can't disagree about
+      // whether a run could start (issue #171).
+      isCreating: store.creatingWorkrooms.contains(target.id))
   }
 
   /// The project name — the chip's primary label format (`AppStore.projectPath` last component),
@@ -419,13 +422,19 @@ enum WorkroomPaneToolbarPresentation {
   }
 
   static func controls(
-    isMissing: Bool, projectPath: String?, hasEditor: Bool, multi: Bool
+    isMissing: Bool, projectPath: String?, hasEditor: Bool, multi: Bool, isCreating: Bool = false
   ) -> Controls {
     // Run is deliberately NOT gated on a configured command: the button is always there for a present
     // target, and pressing it with nothing configured opens Project Settings with the warning, the same
     // as ⌘R (issue #139 follow-up). It still needs an owning project, since that's what a command would
     // be keyed to. "Open in…" is gated, because with no editor installed there is nowhere to open.
-    let run = !isMissing && projectPath != nil
+    //
+    // `isCreating` is the one gate that IS about the command running: `startRunCommand` refuses a
+    // workroom whose setup script is still writing the worktree (issue #167), so a Run button there
+    // looks alive and silently does nothing. Barely visible until issue #171 put the focused create
+    // inside its pane — where the create now sits under a full title bar for the whole script.
+    // "Open in…" stays: opening the half-built tree in an editor is a real action that really happens.
+    let run = !isMissing && projectPath != nil && !isCreating
     let openIn = !isMissing && hasEditor
     // Close-all is the one control NOT gated on the directory, and deliberately so. Its neighbours are
     // gated because a vanished directory gives them nothing to act on — there is nowhere to run and

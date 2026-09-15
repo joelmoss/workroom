@@ -317,6 +317,20 @@ enum UITestFixture {
     flag("WorkroomUITestSecondWorkroomSplit")
   }
 
+  /// When set (`-WorkroomUITestCreatingSplitMember 1`, alongside `-WorkroomUITestWorkroomSplit 1`),
+  /// the split's selected workroom member is seeded **mid-setup-script**: a `creations` entry whose
+  /// log is still streaming (unfinished, so no Dismiss yet — `SetupOverlay` only offers one once the
+  /// run ends) plus the `creatingWorkrooms` guard, which is the real state during a script and the
+  /// one issue #171's second half is about.
+  ///
+  /// Covers #171's visible half: the FOCUSED create renders inside its own pane, so the pane it was
+  /// created beside stays on screen, and that pane's title bar drops its Run control for the
+  /// duration. A real create can't be driven from a UI test — the fixture never shells out to the
+  /// CLI (see `NewWorkroomDialogUITests`) — so the state is seeded rather than produced.
+  static var creatingSplitMember: Bool {
+    flag("WorkroomUITestCreatingSplitMember")
+  }
+
   /// When set (`-WorkroomUITestConflict 1`), the fixture workroom is **conflicted**: its changed-file
   /// list gains a `.conflicted` entry (`conflictedFilePath`) and the status carries the top-level
   /// `conflicted` flag. Covers the jj per-file conflict status end-to-end in the UI — the Changes row

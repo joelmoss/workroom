@@ -12,10 +12,11 @@ import XCTest
 final class WorkroomPaneToolbarPresentationTests: XCTestCase {
   private func controls(
     isMissing: Bool = false, projectPath: String? = "/a", hasEditor: Bool = true,
-    multi: Bool = false
+    multi: Bool = false, isCreating: Bool = false
   ) -> WorkroomPaneToolbarPresentation.Controls {
     WorkroomPaneToolbarPresentation.controls(
-      isMissing: isMissing, projectPath: projectPath, hasEditor: hasEditor, multi: multi)
+      isMissing: isMissing, projectPath: projectPath, hasEditor: hasEditor, multi: multi,
+      isCreating: isCreating)
   }
 
   /// The common case — a healthy solo workroom on a machine with an editor — shows both groups, the rule
@@ -31,11 +32,27 @@ final class WorkroomPaneToolbarPresentationTests: XCTestCase {
   /// ⌘R does. A configured command isn't an input here at all, which is what makes that unforgettable.
   func testRunIsNotGatedOnAConfiguredCommand() {
     // There is no `hasRunCommand` parameter to pass — the only inputs that can hide Run are a missing
-    // directory and a target with no owning project.
+    // directory, a target with no owning project, and an in-flight create.
     XCTAssertTrue(controls().run)
     XCTAssertTrue(controls(hasEditor: false).run)
     XCTAssertFalse(controls(isMissing: true).run)
     XCTAssertFalse(controls(projectPath: nil).run)
+  }
+
+  /// A workroom whose setup script is still writing its worktree hides Run (issue #171). Not cosmetic:
+  /// `startRunCommand` refuses a creating workroom (issue #167), so the button was live, pressable and
+  /// silent. Invisible until issue #171 put the focused create inside its pane, where it now sits under
+  /// a full title bar for the whole script.
+  ///
+  /// "Open in…" deliberately STAYS — opening the half-built tree in an editor is an action that really
+  /// happens — which is exactly the case the divider's gate exists for: Run goes, its rule goes with it.
+  func testAnInFlightCreateHidesRunAndItsDivider() {
+    let c = controls(multi: true, isCreating: true)
+    XCTAssertFalse(c.run)
+    XCTAssertFalse(c.divider)
+    XCTAssertTrue(c.openIn)
+    XCTAssertTrue(c.closeAll)
+    XCTAssertTrue(c.removeFromSplit, "the ✕ still gets you out of the split mid-create")
   }
 
   /// A vanished directory has nothing to open in an editor and nothing to run in. Leaving either visible
