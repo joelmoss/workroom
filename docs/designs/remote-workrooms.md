@@ -1445,11 +1445,57 @@ disagreement passes every test on either side alone while presenting as an empty
 
 ### Outstanding
 
-1. **Delete `macapp/WorkroomSession/`** once the agent has shipped and soaked — see above.
+1. **~~Delete `macapp/WorkroomSession/`~~ — DONE DIFFERENTLY, 2026-09-15.** The plan above said to
+   delete the directory once the agent had soaked for a release cycle. That reasoning does not
+   survive contact: **a soak drains nobody.** Draining completes only for panes a user actually
+   closes, so someone who skips the intermediate release — or simply holds a long-lived pane through
+   the update — still meets a build whose bundle has no `workroom-session` while their old daemon is
+   still holding their shell. Traced: `resolveOwner` answers `.swiftDaemon`, `binaryPath` is nil,
+   `attachCommand` is nil, and `GhosttySurfaceView` silently opens a plain shell while the real work
+   keeps running in an orphaned daemon that now never exits.
+
+   So the directory was **split, not deleted**: the half that RUNS terminals is gone
+   (`SessionDaemon.swift`, `SessionPTY.swift`, the client's own `launchDaemon` spawn, the `daemon`
+   subcommand), and the half that CONNECTS to them stays. The result can attach to a daemon an app
+   at or before v2.0.0 left running, and can never be one. It self-obsoletes; retiring it is now a
+   TODO with its criteria written down rather than a deletion waiting on a calendar.
+
+   **Compatibility is measured, not assumed.** `git log v2.0.0..master -- macapp/WorkroomSessionProtocol/`
+   is empty, and the shipped v2.0.0 `workroom-session` (464KB, sha256 `6f75e6f7…`, lifted unmodified
+   from `workroom-macos-app_2.0.0.dmg`) is pinned at
+   `macapp/WorkroomAppTests/Fixtures/workroom-session-v2.0.0`. `SessionShimCompatibilityTests` runs
+   that binary as a daemon, has it create a session, and asserts THIS build's client reattaches and
+   receives the replay the old daemon produced. Verified live before any deletion, then made
+   repeatable. A fake built from our own `WorkroomSessionProtocol` was considered and rejected: it
+   reads the same source the client does, so a protocol edit moves both sides together and the test
+   stays green through exactly the break it exists to catch.
+
+   **`WorkroomSessionProtocol` is frozen** while the shim ships, because its only real peer can never
+   be recompiled to match a change.
+
+   Three routing bugs the removal would otherwise have introduced, all fixed in the same change:
+   `preferred()` returning the daemon as a fallback (it now returns nil — there is nowhere to fall
+   back to); that Optional collapsing the probe cache's nil sentinel, turning a once-per-launch 2s
+   main-actor probe into one per access (~16s of frozen app on an eight-pane restore); and the
+   availability gate being asked at **two** layers, so `TerminalPersistentSessionPolicy` discarded a
+   restored pane's session id before anything could ask who owned it — one layer above the guard
+   that was supposed to fix this.
+
+   **What this does NOT do.** It does not restore the rollback target: an agent that breaks in the
+   field now degrades to plain shells rather than falling back to the daemon. And it does not stop
+   the old daemon creating a session on attach for an id it does not hold
+   (`SessionDaemon.handleAttach`, in the shipped binary we cannot change), so a reattach can still
+   silently become a fresh shell — detection for that is outstanding, see item 4.
 2. **A Linux `wr-agent` as a build artifact.** The cross-build recipe works and the Linux test suite
    runs in a container (`vcs/scripts/test-linux.sh`), but nothing publishes the ELFs yet. Phase 3
    needs them; Phase 1 does not.
 3. **OQ21, where the `HostDriver` lives**, is untouched and remains open.
+4. **Two items from the 2026-09-15 eng review are not done.** (a) An agent that passes the
+   `wr-agent protocol` probe and then fails at attach still leaves a dead pane rather than a plain
+   shell — the probe is a liveness check, not a guarantee, so "a broken agent still gives you a
+   working terminal" is not yet true. (b) A daemon-substituted session is not detected or reported:
+   the app cannot prevent it, but it can notice the descriptor changed and say so in the pane
+   instead of letting a fresh prompt pass as a successful reattach.
 
 ## Open Questions
 
