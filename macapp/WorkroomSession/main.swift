@@ -63,10 +63,29 @@ guard arguments.count > 1 else { usage() }
 
 switch arguments[1] {
 case "attach":
+  // Only a relay falls back. A hand-typed `attach` with no environment gets an error, exactly as
+  // `list` and `kill` do — opening a login shell inside the user's own shell would be absurd.
   guard let configuration = attachConfiguration() else {
     fail("workroom-session: WORKROOM_SESSION_ID and WORKROOM_SESSION_SOCKET are required")
   }
-  exit(SessionAttachClient.run(configuration: configuration))
+  let status = SessionAttachClient.run(configuration: configuration)
+  // **The pane must not die because the helper did.** `config.wait_after_command` is false, so a
+  // relay that simply exits leaves a pane with no shell in it — nothing to read the error in, and
+  // nothing to type into. The Rust agent solved this with `fall_back_to_shell`; this client had no
+  // equivalent, so the very failure this branch introduced a bound for (a v2.0.0 daemon that
+  // accepts and then stalls) destroyed the pane rather than degrading it, while the identical
+  // failure against the agent degraded to a working shell. Two relays behind one feature must fail
+  // the same way.
+  //
+  // Only the pre-attach outcomes fall back. `finished` carries the shell's own exit status and
+  // must be reported verbatim.
+  if status == SessionAttachExitCode.daemonUnavailable
+    || status == SessionAttachExitCode.transportFailure
+    || status == SessionAttachExitCode.startupFailure
+  {
+    SessionAttachFallback.becomeShell(configuration: configuration)
+  }
+  exit(status)
 
 case "list":
   guard let socketPath = argumentValue("--socket", in: arguments) else {

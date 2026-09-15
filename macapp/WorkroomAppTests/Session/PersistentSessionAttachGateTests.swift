@@ -3,6 +3,13 @@ import XCTest
 
 @testable import Workroom
 
+/// Thrown after an `XCTFail` so the test stops without the failure reading as a skip. The source
+/// file is located by `#filePath` and therefore always exists: a symbol that cannot be found is
+/// the test's subject moving, not a missing dependency.
+private enum GateTestError: Error {
+  case symbolMissing
+}
+
 /// The one thing about `GhosttySurfaceView.applyPersistentSession` that a behavioural test cannot
 /// reach: that it does **not** consult the global `PersistentSessionService.isAvailable` before
 /// attaching.
@@ -46,7 +53,8 @@ final class PersistentSessionAttachGateTests: XCTestCase {
   /// the comment always claimed.
   private static func applyPersistentSessionBody(in source: String) throws -> String {
     guard let start = source.range(of: "private func applyPersistentSession") else {
-      throw XCTSkip("applyPersistentSession has been renamed; update this test deliberately")
+      XCTFail("applyPersistentSession has been renamed; update this test deliberately")
+      throw GateTestError.symbolMissing
     }
     let rest = source[start.upperBound...]
     guard
@@ -81,15 +89,20 @@ final class PersistentSessionAttachGateTests: XCTestCase {
   /// absence of a guard from a function that still does the right thing rather than from one that
   /// has stopped attaching altogether.
   ///
-  /// Scoped to the body. Searching the whole 2000-line file passed as long as the call appeared
-  /// anywhere in it, which is exactly the regression it exists to catch.
+  /// Scoped to the body, and matched on the FULLY QUALIFIED call. Both were wrong before: the
+  /// first version searched the whole 2000-line file, and the second searched the body for
+  /// `attachCommand(` — which the body's own prose comment contains, so deleting the real call left
+  /// it green. That is the same discriminator the availability test already relies on: the comments
+  /// write `attachCommand(forSession:)` and `PersistentSessionService.isAvailable`, the code writes
+  /// `PersistentSessionService.shared.…`.
   func testTheAttachGuardRoutesPerSession() throws {
     let body = try Self.applyPersistentSessionBody(in: Self.surfaceViewSource)
     XCTAssertTrue(
-      body.contains("attachCommand("), "applyPersistentSession no longer resolves an attach command"
-    )
+      body.contains("PersistentSessionService.shared.attachCommand("),
+      "applyPersistentSession no longer resolves an attach command")
     XCTAssertTrue(
-      body.contains("forSession:"), "applyPersistentSession no longer routes per session")
+      body.contains("forSession: persistentSessionID"),
+      "applyPersistentSession no longer routes per session")
   }
 
   /// The other call site this commit added, and the one with the same blind spot.
@@ -105,7 +118,7 @@ final class PersistentSessionAttachGateTests: XCTestCase {
   func testTheAttachIsConfirmedWithTheDaemonBeforeItIsRouted() throws {
     let body = try Self.applyPersistentSessionBody(in: Self.surfaceViewSource)
 
-    guard let confirm = body.range(of: "confirmBeforeAttach(sessionID:") else {
+    guard let confirm = body.range(of: "confirmBeforeAttach(") else {
       return XCTFail(
         """
         applyPersistentSession no longer asks the daemon whether it still holds this session. The \
@@ -145,7 +158,8 @@ final class PersistentSessionAttachGateTests: XCTestCase {
     let source = try String(contentsOf: url, encoding: .utf8)
 
     guard let start = source.range(of: "private func assignedSessionID") else {
-      throw XCTSkip("assignedSessionID has been renamed; update this test deliberately")
+      XCTFail("assignedSessionID has been renamed; update this test deliberately")
+      throw GateTestError.symbolMissing
     }
     let rest = source[start.upperBound...]
     let body =

@@ -389,7 +389,12 @@ final class VCSRemoteIntegrationTests: XCTestCase {
       return XCTFail("expected .locked, got \(failure)")
     }
     let located = try XCTUnwrap(file, "the path is in git's stderr, so it must be located")
-    XCTAssertEqual(located.path, lockPath)
+    // Resolved on both sides: the fixture builds its path from `NSTemporaryDirectory()` (`/var/…`)
+    // while git reports the one it actually opened (`/private/var/…`), and `/var` is a symlink to
+    // `/private/var`. Comparing the raw strings comes down to which side happened to resolve it.
+    XCTAssertEqual(
+      URL(fileURLWithPath: located.path).resolvingSymlinksInPath().path,
+      URL(fileURLWithPath: lockPath).resolvingSymlinksInPath().path)
     XCTAssertEqual(located.filename, "index.lock")
 
     // The consequence that matters: no Retry, because there is nothing a retry could achieve.

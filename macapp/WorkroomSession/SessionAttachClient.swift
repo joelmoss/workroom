@@ -15,11 +15,18 @@ enum SessionAttachClient {
   /// none answered and then had to wait for it to bind its socket. This build cannot start one —
   /// the `daemon` subcommand is gone — so there is nothing to wait for that is not already there.
   /// What remains covers a live helper that is momentarily slow to `accept`, which is the only real
-  /// wait left. Worst case is now ~0.7s rather than ~9.2s of a pane showing nothing.
+  /// wait left: 3 cycles of 10 x 20ms plus two 100ms backoffs, so ~0.7s of a refused connect rather
+  /// than ~9.2s. Note that is the CONNECT budget alone — the worst case a user can see is a peer
+  /// that refuses twice and then accepts and goes silent, which adds `attachHandshakeTimeoutSeconds`
+  /// for ~5.6s total.
   static let connectAttempts = 10
   static let connectRetryMicroseconds: useconds_t = 20000
-  static let handshakeAttempts = 3
-  static let handshakeRetryMicroseconds: useconds_t = 100_000
+  /// How many times to re-open the connection. Named for the connect budget, not the
+  /// handshake: the handshake proper is deliberately NOT retried (see
+  /// `attachHandshakeTimeoutSeconds`), so the only thing that reaches these is a refused connect or
+  /// a transport that dropped before `.attached`.
+  static let connectCycles = 3
+  static let connectCycleRetryMicroseconds: useconds_t = 100_000
   /// How long to wait, once CONNECTED, for the helper to answer the attach request (seconds).
   ///
   /// Shrinking the connect retries above bounds only a REFUSED connect. A helper that accepts and
@@ -85,27 +92,38 @@ enum SessionAttachClient {
       }
     }
 
-    for attempt in 0..<handshakeAttempts {
-      switch attach(configuration: configuration, signalPipe: signalPipe) {
+    // Which of the two failures happened, so the final line does not claim the wrong one. A
+    // transport that drops before `.attached` also returns `.retry`, and reporting "nothing is
+    // listening" for a helper we connected to three times is exactly the false message the
+    // handshake timeout was changed to avoid.
+    var everConnected = false
+    for attempt in 0..<connectCycles {
+      switch attach(configuration: configuration, signalPipe: signalPipe, connected: &everConnected)
+      {
       case .finished(let status), .failed(let status):
         return status
       case .retry:
-        if attempt + 1 < handshakeAttempts {
-          usleep(handshakeRetryMicroseconds)
+        if attempt + 1 < connectCycles {
+          usleep(connectCycleRetryMicroseconds)
         }
       }
     }
 
-    report("no session helper is listening; the session it held is gone")
+    report(
+      everConnected
+        ? "the session helper closed the connection before attaching; the session may still exist"
+        : "no session helper is listening; the session it held is gone")
     return SessionAttachExitCode.daemonUnavailable
   }
 
-  private static func attach(configuration: Configuration, signalPipe: SessionSignalPipe) -> Outcome
-  {
+  private static func attach(
+    configuration: Configuration, signalPipe: SessionSignalPipe, connected: inout Bool
+  ) -> Outcome {
     let socket: Int32
     switch connect(socketPath: configuration.socketPath) {
     case .connected(let descriptor):
       socket = descriptor
+      connected = true
     case .retry:
       return .retry
     }

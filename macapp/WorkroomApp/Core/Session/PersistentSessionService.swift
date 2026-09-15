@@ -124,7 +124,16 @@ final class PersistentSessionService {
   /// names the daemon under any condition, so a failed probe now yields nil directly and the same
   /// safety falls out of `owner(preferred:daemon:)` with nothing special to say.
   private func resolveOwner(_ sessionID: UUID) -> SessionBackend? {
-    Self.owner(preferred: backend, daemon: daemonOwnership(sessionID))
+    let daemon = daemonOwnership(sessionID)
+    // **A wedged retired daemon must not veto a session the live agent holds.** `.unreachable`
+    // resolves to nil, and nil blocks `endSession` — which `reap` gates deleting a workroom
+    // directory on (issue #7) — so a v2.0.0 daemon that accepts and then stalls made healthy
+    // AGENT sessions unkillable and their workrooms undeletable. The daemon's opinion only needs
+    // to win for ids the agent does not hold, so ask the agent before accepting the veto.
+    if case .unreachable = daemon, case .owned = ownership(of: sessionID, in: .rustAgent) {
+      return .rustAgent
+    }
+    return Self.owner(preferred: backend, daemon: daemon)
   }
 
   /// Which helper a session belongs to, given where new sessions go and what the daemon said —
@@ -165,12 +174,21 @@ final class PersistentSessionService {
   /// steady state once the migration has drained, and it must not push every session at a daemon
   /// that is not running.
   private func daemonOwnership(_ sessionID: UUID) -> SessionOwnership {
+    ownership(of: sessionID, in: .swiftDaemon)
+  }
+
+  /// What a specific helper says about a session.
+  ///
+  /// No socket file at all is `.notOwned` rather than `.unreachable`, for both backends and for the
+  /// same reason: a helper that is not running holds nothing. Its sessions are its children and
+  /// died with it.
+  private func ownership(of sessionID: UUID, in backend: SessionBackend) -> SessionOwnership {
     if let ownershipOverride { return ownershipOverride(sessionID) }
     guard
       let identifier = SessionIdentifier(uuidString: sessionID.uuidString),
-      let socketPath = existingSocketPath(for: .swiftDaemon)
+      let socketPath = existingSocketPath(for: backend)
     else { return .notOwned }
-    return PersistentSessionControlClient(socketPath: socketPath).ownership(identifier: identifier)
+    return controlPlane(socketPath: socketPath, backend: backend).ownership(identifier: identifier)
   }
 
   func socketPath(for backend: SessionBackend) -> String? {
@@ -236,9 +254,13 @@ final class PersistentSessionService {
   ///
   /// What it does not close: the daemon can still answer `.owned` here and lose the session before
   /// the attach lands. That race is narrow and cannot be closed from this side of the socket.
-  func confirmBeforeAttach(sessionID: UUID) -> DaemonSessionState {
-    guard owners[sessionID] == .swiftDaemon else { return .attachable }
-    switch daemonOwnership(sessionID) {
+  func confirmBeforeAttach(sessionID: UUID, wasRestored: Bool) -> DaemonSessionState {
+    // A freshly minted id has never existed anywhere, so create-on-attach is the WANTED behaviour
+    // and asking would refuse every new pane. Only an id carried over from a previous launch can
+    // name a session that has since died.
+    guard wasRestored else { return .attachable }
+    guard let owner = backend(forSession: sessionID) else { return .attachable }
+    switch ownership(of: sessionID, in: owner) {
     case .owned, .unreachable:
       return .attachable
     case .notOwned:

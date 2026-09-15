@@ -184,9 +184,20 @@ fn fall_back_to_shell(request: &serve::AttachRequest, reason: &str) -> ExitCode 
         std::ffi::OsString::from("1"),
     ));
 
+    // A shell with no slash would be PATH-searched by `exec` (which ends in `execvp`), while the
+    // agent's own pty spawn uses `execve` and does not search (`pty.rs`). Two paths documented as
+    // running "the SAME invocation" must not disagree about what a shell path means, so a
+    // slash-less value is treated as unusable rather than resolved differently here.
+    let requested_shell = text(&request.shell);
+    let shell = if requested_shell.contains('/') {
+        requested_shell
+    } else {
+        wr_agent::shell::DEFAULT_SHELL.to_string()
+    };
+
     let invocation = wr_agent::shell::invocation(
         &text(&request.command),
-        &text(&request.shell),
+        &shell,
         &text(&request.resources),
         &environment,
     );
@@ -200,24 +211,43 @@ fn fall_back_to_shell(request: &serve::AttachRequest, reason: &str) -> ExitCode 
     }
     command.env_clear();
     command.envs(invocation.environment.iter().map(|(k, v)| (k, v)));
-    // `chdir` happens INSIDE the exec, so a directory that no longer exists aborts it — producing
-    // the dead pane this function exists to prevent, and blaming the shell for it. A workroom's
-    // directory being deleted while a tab is open is a supported operation (`reap`), so this is
-    // reachable. Same chain the agent's own child uses: requested, then home, then root.
-    if let Some(cwd) = first_usable_directory(request.cwd.as_ref()) {
-        command.current_dir(cwd);
+    // `chdir` happens INSIDE the exec, so a directory it cannot enter aborts the whole thing —
+    // producing the dead pane this function exists to prevent, and blaming the shell for it. A
+    // workroom's directory being deleted while a tab is open is a supported operation (`reap`), so
+    // this is reachable.
+    //
+    // **Tried in turn rather than pre-checked**, because the two are not the same test. An earlier
+    // version picked the first entry passing `is_dir()` and committed to it — but a directory can
+    // exist, pass `is_dir()`, and still refuse `chdir` for want of the execute bit, and then the
+    // exec fails with no second chance. `exec` only returns on failure, so the loop below IS the
+    // fallback chain the agent's own child uses (`pty.rs`: requested, then `$HOME`, then `/`).
+    for directory in candidate_directories(request.cwd.as_ref()) {
+        command.current_dir(&directory);
+        let error = command.exec();
+        // Reached only when exec failed. If the working directory is why, the next candidate may
+        // work; if it is the shell itself, every candidate fails the same way and the loop ends.
+        if error.kind() != std::io::ErrorKind::NotFound
+            && error.kind() != std::io::ErrorKind::PermissionDenied
+        {
+            eprintln!(
+                "wr-agent: could not start {}: {error}\r",
+                invocation.program.to_string_lossy()
+            );
+            return ExitCode::from(DAEMON_UNAVAILABLE);
+        }
     }
-
-    let error = command.exec();
     eprintln!(
-        "wr-agent: could not start {}: {error}\r",
+        "wr-agent: could not start {} in any working directory\r",
         invocation.program.to_string_lossy()
     );
     ExitCode::from(DAEMON_UNAVAILABLE)
 }
 
-/// The pane's directory, or the nearest fallback that actually exists.
-fn first_usable_directory(requested: Option<&std::ffi::OsString>) -> Option<PathBuf> {
+/// The pane's directory, then the fallbacks, in the order they should be attempted.
+///
+/// Empty entries are dropped; existence is NOT checked here, because `chdir` is the only authority
+/// on whether a directory can be entered and it runs inside `exec`.
+fn candidate_directories(requested: Option<&std::ffi::OsString>) -> Vec<PathBuf> {
     [
         requested.cloned().map(PathBuf::from),
         std::env::var_os("HOME").map(PathBuf::from),
@@ -225,10 +255,26 @@ fn first_usable_directory(requested: Option<&std::ffi::OsString>) -> Option<Path
     ]
     .into_iter()
     .flatten()
-    .find(|path| !path.as_os_str().is_empty() && path.is_dir())
+    .filter(|path| !path.as_os_str().is_empty())
+    .collect()
 }
 
 fn run_attach(args: &[String]) -> ExitCode {
+    // **Only a relay falls back**, and this is read BEFORE anything can write to it. `attach` is
+    // also a documented subcommand someone can type, and answering a typo by silently opening a
+    // nested login shell inside their current one is absurd — the same reasoning `run_list` uses.
+    // The app always exports the session variables, so their total absence is the tell.
+    //
+    // Order is the whole correctness argument here. The `--session` flag below writes
+    // `WORKROOM_SESSION_ID` into this process's own environment, so reading the flag first let a
+    // hand-typed `attach --session <uuid>` forge the very evidence that classifies it as
+    // app-invoked — and the only regression test ran bare `attach` with no flags, so it could not
+    // see that. `WORKROOM_SESSION_CWD` is included because it is exported by
+    // `PersistentSessionService.launchEnvironment` and has no flag that can fake it.
+    let invoked_by_the_app = std::env::var_os("WORKROOM_SESSION_SOCKET").is_some()
+        || std::env::var_os("WORKROOM_SESSION_ID").is_some()
+        || std::env::var_os("WORKROOM_SESSION_CWD").is_some();
+
     // Flags win, environment is the fallback — and the environment alone has to be enough, because
     // `PersistentSessionService.attachCommand()` builds the command line as `<binary> attach` with
     // no arguments at all. Everything the app wants to say, it says through the variables it
@@ -242,12 +288,6 @@ fn run_attach(args: &[String]) -> ExitCode {
     // arrive in the same environment.
     let mut request = serve::AttachRequest::from_env();
 
-    // **Only a relay falls back.** `attach` is also a documented subcommand someone can type, and
-    // answering a typo by silently opening a nested login shell inside their current one is absurd
-    // — the same reasoning `run_list` uses. The app always exports the session variables, so their
-    // total absence is the tell: nothing invoked us as a pane's command.
-    let invoked_by_the_app = std::env::var_os("WORKROOM_SESSION_SOCKET").is_some()
-        || std::env::var_os("WORKROOM_SESSION_ID").is_some();
     let give_up = |reason: &str| -> ExitCode {
         if invoked_by_the_app {
             fall_back_to_shell(&request, reason)
@@ -275,8 +315,9 @@ fn run_attach(args: &[String]) -> ExitCode {
     request.columns = columns;
     request.rows = rows;
 
-    // Spawn-on-connect-failure, exactly as the Swift attach client does: the agent is started by
-    // whoever needs it first rather than by an installed service, so there is no install footprint.
+    // Spawn-on-connect-failure: the agent is started by whoever needs it first rather than by an
+    // installed service, so there is no install footprint. (The Swift attach client used to do the
+    // same; it no longer can — its `daemon` subcommand went with the daemon.)
     //
     // Every failure from here to the attach reply becomes a plain shell rather than a dead pane —
     // see `fall_back_to_shell`. These are precisely the states an agent that PASSED the app's
@@ -485,19 +526,6 @@ fn relay_resizes(
 struct RawMode(Option<libc::termios>);
 
 impl RawMode {
-    /// Put the terminal back, idempotently.
-    ///
-    /// Split out of `Drop` when the fallback still exec'd from inside the relay loop, where no
-    /// destructor would have run. It no longer does — see the `FrameKind::Failure` arm — so today
-    /// this has exactly one caller, `drop`. Kept separate because the split is what makes the
-    /// restore callable at all if a future path ever needs it before an `exec`, and because a guard
-    /// whose only behaviour is in `Drop` reads as untestable.
-    fn restore(&self) {
-        if let Some(original) = self.0.as_ref() {
-            unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, original) };
-        }
-    }
-
     fn enter() -> RawMode {
         let mut original: libc::termios = unsafe { std::mem::zeroed() };
         if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut original) } != 0 {
@@ -513,8 +541,13 @@ impl RawMode {
 }
 
 impl Drop for RawMode {
+    /// Was briefly split into a separate `restore()` so an `exec` could call it without a
+    /// destructor. Nothing execs from inside the relay loop any more — see the `FrameKind::Failure`
+    /// arm — so the split was generality for an unreachable state and the two lines live here again.
     fn drop(&mut self) {
-        self.restore();
+        if let Some(original) = self.0.as_ref() {
+            unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, original) };
+        }
     }
 }
 

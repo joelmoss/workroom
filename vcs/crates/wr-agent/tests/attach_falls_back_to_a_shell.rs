@@ -135,9 +135,14 @@ fn a_peer_that_cannot_negotiate_still_leaves_a_working_shell() {
     );
 }
 
-/// Nothing listening at all, and no agent can be started there because the directory does not
-/// exist. Slower than the test above (it waits out the spawn deadline), so it is the second case
-/// rather than the first.
+/// Nothing listening, and the spawned agent cannot start there.
+///
+/// The guard below is load-bearing and was missing. The reason the agent fails is NOT "the
+/// directory does not exist" — `serve.rs` does `create_dir_all(parent)` before binding. It fails
+/// because `acquire_instance_lock` opens `<socket>.lock` first and that ENOENTs. Move the lock
+/// below the mkdir, a plausible refactor, and a REAL agent binds and runs the command, so every
+/// assertion below passes without the fallback ever executing. The notice is what proves which
+/// path ran.
 #[test]
 fn an_agent_that_cannot_be_started_still_leaves_a_working_shell() {
     let dir = scratch("nostart");
@@ -155,6 +160,10 @@ fn an_agent_that_cannot_be_started_still_leaves_a_working_shell() {
     ]);
     let _ = std::fs::remove_dir_all(&dir);
 
+    assert!(
+        output.contains("will not survive quitting"),
+        "the fallback did not fire, so this test is asserting nothing. got: {output:?}"
+    );
     assert!(
         output.contains("FELL-BACK-TO-SHELL"),
         "attach did not become a shell when no agent could be started. got: {output:?}"
@@ -179,6 +188,10 @@ fn a_missing_session_id_still_leaves_a_working_shell() {
     ]);
     let _ = std::fs::remove_dir_all(&dir);
 
+    assert!(
+        output.contains("will not survive quitting"),
+        "the fallback did not fire, so this test is asserting nothing. got: {output:?}"
+    );
     assert!(
         output.contains("FELL-BACK-TO-SHELL"),
         "attach with no session id must open a shell, not exit. got: {output:?}"
@@ -430,6 +443,52 @@ fn a_hand_run_attach_reports_usage_instead_of_opening_a_shell() {
     assert_ne!(output.status.code(), Some(0));
 }
 
+/// REGRESSION. A hand-typed `attach --session <uuid>` must ALSO report usage, not open a shell.
+///
+/// The classification reads `WORKROOM_SESSION_ID` from the environment, and the `--session` flag
+/// WRITES that variable into this process's own environment. Reading the flag first therefore let a
+/// hand-typed invocation forge the evidence that classified it as app-invoked, and the only test
+/// covering the classifier ran bare `attach` with no flags — so it could not see it. The fix is
+/// ordering: the environment is read before any flag can write to it.
+#[test]
+fn a_hand_run_attach_with_a_session_flag_still_reports_usage() {
+    let dir = scratch("handsession");
+    let mut command = Command::new(agent_binary());
+    command.arg("attach");
+    // `--session` ONLY, deliberately. With a socket as well this never reaches the classifier: it
+    // spawns a real agent, attaches, and sits on an interactive shell forever — and because the
+    // agent is setsid'd while inheriting the test's stdout pipe, `output()` then waits on an EOF
+    // that never comes. The classifier is reached exactly when something is missing, which is also
+    // the state a typo produces.
+    command
+        .arg("--session")
+        .arg("6B9B968D-0BD7-4172-850A-A373DA73BC70");
+    command.env_clear();
+    command.env("PATH", "/usr/bin:/bin");
+    command.env("SHELL", "/bin/sh");
+    command.stdin(Stdio::null());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+    let output = command.output().expect("run attach");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !combined.contains("will not survive quitting"),
+        "a flag the user typed classified them as the app and opened a nested login shell inside \
+         their own terminal. got: {combined:?}"
+    );
+    assert!(
+        combined.contains("attach needs"),
+        "a hand-run attach must explain itself. got: {combined:?}"
+    );
+    assert_ne!(output.status.code(), Some(0));
+}
+
 /// Negative control. Without this, every assertion above would pass just as well against a relay
 /// that ALWAYS execs a shell and never attaches to anything — which would be a total regression
 /// wearing the fallback's clothes.
@@ -470,7 +529,7 @@ fn a_healthy_agent_is_not_replaced_by_a_shell() {
         ("WORKROOM_SESSION_CWD", dir.to_str().unwrap()),
         (
             "WORKROOM_SESSION_COMMAND",
-            "echo RAN-IN-A-SESSION id=[${WORKROOM_SESSION_ID:-unset}]",
+            "echo RAN-IN-A-SESSION fb=[${WORKROOM_SESSION_FALLBACK:-unset}]",
         ),
     ]);
 
@@ -483,10 +542,10 @@ fn a_healthy_agent_is_not_replaced_by_a_shell() {
         "a healthy agent should have run the command in a session. got: {output:?}"
     );
     assert!(
-        !output.contains("id=[unset]"),
-        "a real session passes WORKROOM_SESSION_ID through to its shell and the fallback strips \
-         it, so an unset id here means the fallback fired against a HEALTHY agent — and every \
-         other assertion in this file would pass against a relay that always execs. got: {output:?}"
+        output.contains("fb=[unset]"),
+        "WORKROOM_SESSION_FALLBACK is set ONLY by fall_back_to_shell, so seeing it here means the \
+         fallback fired against a HEALTHY agent — and every other assertion in this file would \
+         pass against a relay that always execs. got: {output:?}"
     );
     assert!(
         !output.contains("will not survive quitting"),

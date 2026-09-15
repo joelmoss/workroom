@@ -384,7 +384,8 @@ final class DaemonSessionSubstitutionTests: XCTestCase {
     let sessionID = UUID()
     XCTAssertEqual(service.backend(forSession: sessionID), .swiftDaemon)
 
-    XCTAssertEqual(service.confirmBeforeAttach(sessionID: sessionID), .attachable)
+    XCTAssertEqual(
+      service.confirmBeforeAttach(sessionID: sessionID, wasRestored: true), .attachable)
   }
 
   /// The bug. The owner is resolved and cached while the daemon holds the session; the shell then
@@ -401,7 +402,7 @@ final class DaemonSessionSubstitutionTests: XCTestCase {
     XCTAssertEqual(service.backend(forSession: sessionID), .swiftDaemon)
 
     XCTAssertEqual(
-      service.confirmBeforeAttach(sessionID: sessionID), .gone,
+      service.confirmBeforeAttach(sessionID: sessionID, wasRestored: true), .gone,
       """
       attaching here would ask the v2.0.0 daemon for a session it no longer holds, and it creates \
       one rather than refusing — the user's running work is replaced by an empty shell that looks \
@@ -419,7 +420,7 @@ final class DaemonSessionSubstitutionTests: XCTestCase {
       ownership: { _ in answers.next() })
     let sessionID = UUID()
     XCTAssertEqual(service.backend(forSession: sessionID), .swiftDaemon)
-    XCTAssertEqual(service.confirmBeforeAttach(sessionID: sessionID), .gone)
+    XCTAssertEqual(service.confirmBeforeAttach(sessionID: sessionID, wasRestored: true), .gone)
 
     XCTAssertEqual(
       service.backend(forSession: sessionID), .rustAgent,
@@ -439,13 +440,15 @@ final class DaemonSessionSubstitutionTests: XCTestCase {
     let sessionID = UUID()
     XCTAssertEqual(service.backend(forSession: sessionID), .swiftDaemon)
 
-    XCTAssertEqual(service.confirmBeforeAttach(sessionID: sessionID), .attachable)
+    XCTAssertEqual(
+      service.confirmBeforeAttach(sessionID: sessionID, wasRestored: true), .attachable)
   }
 
-  /// Agent-owned sessions are not re-checked at all: the agent refuses an id it does not hold, so
-  /// there is no substitution to prevent and no round trip worth paying for.
+  /// **A freshly minted id is never challenged.** It has never existed anywhere, so create-on-attach
+  /// is the wanted behaviour — asking would refuse every new pane. This is the guard that makes the
+  /// check safe to apply to BOTH backends rather than only the retired one.
   @MainActor
-  func testAnAgentOwnedSessionIsNotRechecked() {
+  func testAFreshSessionIsNeverChallenged() {
     let probes = Counter()
     let service = PersistentSessionService(
       probe: { _ in .ready(version: "protocol 1") },
@@ -453,12 +456,61 @@ final class DaemonSessionSubstitutionTests: XCTestCase {
         probes.increment()
         return .notOwned
       })
+
+    XCTAssertEqual(
+      service.confirmBeforeAttach(sessionID: UUID(), wasRestored: false), .attachable,
+      "a pane opening a brand new session must not be refused because nobody holds its id yet")
+    XCTAssertEqual(probes.value, 0, "a fresh id is not worth a round trip to anyone")
+  }
+
+  /// The agent is re-checked too, now. It creates on first attach exactly as the daemon does
+  /// (`serve.rs`: guarded only by `sessions.contains(id)`), so checking only the retired backend
+  /// closed the hole on the one being drained and left it open on the one that owns every new
+  /// session — and once the drain completes, on the only one left.
+  @MainActor
+  func testAnAgentOwnedSessionIsAlsoChallenged() {
+    let answers = OwnershipScript([.notOwned, .notOwned])
+    let service = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      ownership: { _ in answers.next() })
     let sessionID = UUID()
     XCTAssertEqual(service.backend(forSession: sessionID), .rustAgent)
+
+    XCTAssertEqual(
+      service.confirmBeforeAttach(sessionID: sessionID, wasRestored: true), .gone,
+      """
+      an agent that disclaims a restored id would CREATE a new session on attach, exactly as the \
+      daemon does
+      """)
+  }
+
+  /// REGRESSION, and the shape of the hole this replaced.
+  ///
+  /// This test used to assert that an agent-owned session is NOT re-checked — "the agent refuses an
+  /// id it does not hold, so there is no substitution to prevent". That premise was false:
+  /// `serve.rs` creates on first attach guarded only by `sessions.contains(id)`, exactly as the
+  /// daemon does. Checking only the retired backend closed the hole on the one being drained and
+  /// left it open on the one that owns every new session — and, once the drain finishes, on the
+  /// only one left. The inverted assertion lives in `testAnAgentOwnedSessionIsAlsoChallenged`; what
+  /// remains here is the cost question, which the answer above must not regress.
+  @MainActor
+  func testAChallengeCostsOneRoundTripAtMost() {
+    let probes = Counter()
+    let service = PersistentSessionService(
+      probe: { _ in .ready(version: "protocol 1") },
+      ownership: { _ in
+        probes.increment()
+        return .owned
+      })
+    let sessionID = UUID()
+    _ = service.backend(forSession: sessionID)
     let afterResolve = probes.value
 
-    XCTAssertEqual(service.confirmBeforeAttach(sessionID: sessionID), .attachable)
-    XCTAssertEqual(probes.value, afterResolve, "an agent-owned session must not ask the daemon")
+    XCTAssertEqual(
+      service.confirmBeforeAttach(sessionID: sessionID, wasRestored: true), .attachable)
+    XCTAssertEqual(
+      probes.value, afterResolve + 1,
+      "confirming must cost exactly one ask — it runs on the main actor during pane creation")
   }
 }
 

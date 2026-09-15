@@ -2,40 +2,6 @@ import Darwin
 import WorkroomSessionProtocol
 
 enum SessionSocket {
-  static let backlog: Int32 = 16
-
-  static func makeListener(path: String) -> Int32? {
-    guard let address = makeAddress(path: path) else {
-      SessionLog.write("socket path too long: \(path)")
-      return nil
-    }
-    unlink(path)
-    let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
-    guard descriptor >= 0 else { return nil }
-    SessionIO.setCloseOnExec(descriptor)
-
-    var storage = address
-    let previousMask = umask(0o077)
-    let bound = withUnsafePointer(to: &storage) { pointer in
-      pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { casted in
-        bind(descriptor, casted, socklen_t(MemoryLayout<sockaddr_un>.size))
-      }
-    }
-    umask(previousMask)
-    guard bound == 0 else {
-      SessionLog.write("bind failed: \(String(cString: strerror(errno)))")
-      SessionIO.close(descriptor)
-      return nil
-    }
-    chmod(path, 0o600)
-    guard listen(descriptor, backlog) == 0 else {
-      SessionLog.write("listen failed: \(String(cString: strerror(errno)))")
-      SessionIO.close(descriptor)
-      return nil
-    }
-    SessionIO.setNonBlocking(descriptor)
-    return descriptor
-  }
 
   static func connect(path: String, timeoutMilliseconds: Int32 = 1000) -> Int32? {
     guard let address = makeAddress(path: path) else { return nil }
@@ -65,35 +31,6 @@ enum SessionSocket {
     var length = socklen_t(MemoryLayout<Int32>.size)
     let result = getsockopt(descriptor, SOL_SOCKET, SO_ERROR, &error, &length)
     guard result == 0, error == 0 else {
-      SessionIO.close(descriptor)
-      return nil
-    }
-    return descriptor
-  }
-
-  static func accept(_ listener: Int32) -> Int32? {
-    let descriptor = Darwin.accept(listener, nil, nil)
-    guard descriptor >= 0 else { return nil }
-    SessionIO.setCloseOnExec(descriptor)
-    SessionIO.setNonBlocking(descriptor)
-    return descriptor
-  }
-
-  static func peerUserID(_ descriptor: Int32) -> uid_t? {
-    var credentials = xucred()
-    var length = socklen_t(MemoryLayout<xucred>.size)
-    let result = withUnsafeMutablePointer(to: &credentials) { pointer in
-      getsockopt(descriptor, SOL_LOCAL, LOCAL_PEERCRED, pointer, &length)
-    }
-    guard result == 0, credentials.cr_version == XUCRED_VERSION else { return nil }
-    return credentials.cr_uid
-  }
-
-  static func acquireLock(path: String) -> Int32? {
-    let descriptor = open(path, O_CREAT | O_RDWR, 0o600)
-    guard descriptor >= 0 else { return nil }
-    SessionIO.setCloseOnExec(descriptor)
-    guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
       SessionIO.close(descriptor)
       return nil
     }

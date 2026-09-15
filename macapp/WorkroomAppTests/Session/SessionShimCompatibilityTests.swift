@@ -187,12 +187,18 @@ final class SessionShimCompatibilityTests: XCTestCase {
         sessionID: SessionIdentifier(UUID()), socketPath: socketPath, command: ""))
     let elapsed = Date().timeIntervalSince(started)
 
-    // 92 is `SessionAttachExitCode.daemonUnavailable`, spelled as a literal because that enum lives
-    // in the helper target rather than the app's.
-    XCTAssertEqual(status, 92, "expected the daemon-unavailable exit code. got: \(output)")
+    // The client BECOMES a shell rather than exiting 92, so the status is the shell's. Asserting
+    // 92 here pinned the dead pane: `config.wait_after_command` is false, so a relay that exits
+    // leaves nothing to read the message in. What must still hold is that it says why first.
     XCTAssertTrue(
       output.contains("no session helper is listening"),
       "the pane fell back with no explanation of why: \(output)")
+    XCTAssertTrue(
+      output.contains("will not survive quitting"),
+      "the user was not told persistence was lost: \(output)")
+    XCTAssertNotEqual(
+      status, 92,
+      "exiting 92 means the relay died instead of becoming a shell, which is the dead pane")
     XCTAssertFalse(
       FileManager.default.fileExists(atPath: socketPath),
       "the client started a helper. It cannot serve any session that exists, and it takes the "
@@ -237,29 +243,53 @@ final class SessionShimCompatibilityTests: XCTestCase {
     process.standardError = output
     process.standardInput = input
 
+    // Collected incrementally rather than by reading to EOF. The client no longer EXITS on this
+    // path — it becomes a shell, which inherits the held-open stdin and waits forever — so the
+    // observable is the message arriving in time, not the process ending. Reading to EOF here is
+    // what made this test sit until its own watchdog fired.
+    let collected = NSMutableData()
+    let lock = NSLock()
+    let sawNotice = XCTestExpectation(description: "the client reports giving up")
+    output.fileHandleForReading.readabilityHandler = { handle in
+      let data = handle.availableData
+      guard !data.isEmpty else { return }
+      lock.lock()
+      collected.append(data)
+      let seen = String(decoding: collected as Data, as: UTF8.self)
+      lock.unlock()
+      if seen.contains("did not answer the attach request") { sawNotice.fulfill() }
+    }
+
     let started = Date()
     try process.run()
     // A regression here is an infinite wait, which would hang the whole suite rather than fail it.
     let watchdog = DispatchWorkItem { if process.isRunning { process.terminate() } }
     DispatchQueue.global().asyncAfter(deadline: .now() + 25, execute: watchdog)
-    // EOF arrives when the client exits, which it does on its own deadline regardless of stdin —
-    // so stdin stays open until after the read, which is the whole point of the pipe.
-    let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    let outcome = XCTWaiter().wait(for: [sawNotice], timeout: 20)
+    let elapsed = Date().timeIntervalSince(started)
+
+    input.fileHandleForWriting.closeFile()
+    process.terminate()
     process.waitUntilExit()
     watchdog.cancel()
-    let elapsed = Date().timeIntervalSince(started)
-    input.fileHandleForWriting.closeFile()
+    output.fileHandleForReading.readabilityHandler = nil
+    lock.lock()
+    let text = String(decoding: collected as Data, as: UTF8.self)
+    lock.unlock()
 
-    XCTAssertLessThan(
-      elapsed, 20,
+    XCTAssertEqual(
+      outcome, .completed,
       """
       the client never gave up on a helper that accepted the connection and then went silent. The \
-      pane shows nothing, forever, with no message and no exit.
+      pane shows nothing, forever, with no message and no exit. got: \(text)
       """)
-    XCTAssertEqual(process.terminationStatus, 92, "got: \(text)")
+    XCTAssertLessThan(elapsed, 20, "gave up, but not within its own deadline. got: \(text)")
     XCTAssertTrue(
-      text.contains("did not answer the attach request"),
-      "the user was not told what happened: \(text)")
+      text.contains("will not survive quitting"),
+      """
+      the client gave up and then exited instead of becoming a shell, which leaves the pane dead — \
+      `wait_after_command` is false, so there is nothing left to read the message in. got: \(text)
+      """)
     XCTAssertFalse(
       text.contains("no session helper is listening"),
       """

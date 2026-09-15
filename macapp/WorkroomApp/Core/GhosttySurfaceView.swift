@@ -1,6 +1,7 @@
 import AppKit
 import Defaults
 import GhosttyKit
+import WorkroomSessionProtocol
 import os
 
 /// One terminal surface: an `NSView` that hosts a `ghostty_surface_t` (Metal-rendered by libghostty
@@ -70,6 +71,11 @@ final class GhosttySurfaceView: NSView {
   /// Daemon session this surface attaches to. When set and the helper is available, `createSurface`
   /// launches `workroom-session attach` instead of a login shell.
   var persistentSessionID: UUID?
+  /// Whether `persistentSessionID` was carried over from a previous launch rather than minted for
+  /// this pane. Only a restored id can name a session that has since died, and only a restored id
+  /// is re-checked before attaching — asking about a fresh one would refuse every new pane, since
+  /// no helper holds an id that has never existed.
+  var persistentSessionIsRestored = false
 
   /// Project / workroom / tab / title metadata sent on attach.
   var sessionMetadata: [(key: String, value: String)] = []
@@ -421,7 +427,8 @@ final class GhosttySurfaceView: NSView {
     // The shipped daemon CREATES a session on attach for an id it does not hold, so a cached
     // ownership answer that has outlived its session turns a reattach into a brand new shell with
     // nothing to mark it as one. See `confirmBeforeAttach`.
-    if PersistentSessionService.shared.confirmBeforeAttach(sessionID: persistentSessionID) == .gone,
+    if PersistentSessionService.shared.confirmBeforeAttach(
+      sessionID: persistentSessionID, wasRestored: persistentSessionIsRestored) == .gone,
       let noticePointer = strdup(Self.lostSessionCommand())
     {
       Self.sessionLogger.error(
@@ -432,6 +439,14 @@ final class GhosttySurfaceView: NSView {
       surfaceCStrings.append(noticePointer)
       config.command = UnsafePointer(noticePointer)
       config.wait_after_command = false
+      // This branch returns before `launchEnvironment`, so without this the notice pane would be a
+      // second-class terminal: no `GHOSTTY_RESOURCES_DIR` means no shell integration, which means
+      // no OSC 133 and no OSC 7 — the title latches to whatever the prompt last set and the footer
+      // never learns the directory. The agent's own fallback keeps them by routing through
+      // `shell::invocation`; losing a session should not also cost you a working title bar.
+      if let resources = GhosttyResources.bundledURL?.path {
+        environment.append(("GHOSTTY_RESOURCES_DIR", resources))
+      }
       return true
     }
     // Deliberately NOT gated on `PersistentSessionService.isAvailable`, and
@@ -478,15 +493,26 @@ final class GhosttySurfaceView: NSView {
   ///
   /// `exec` so the shell IS the pane's process: its exit status, title and signals behave the way
   /// they would in any other terminal, rather than being wrapped by something the user did not ask
-  /// for. Same shape as the agent's own `fall_back_to_shell`, deliberately — one idea in two places
-  /// rather than two.
-  /// `SessionShellIntegration.defaultShell`, repeated rather than imported: this file does not
-  /// depend on `WorkroomSessionProtocol` and adding that dependency for one string would be the
-  /// larger change. Keep them in step.
-  static let fallbackShell = "/bin/zsh"
+  /// for. The agent's `fall_back_to_shell` shares that idea and little else — it builds its argv
+  /// through `shell::invocation`, strips `WORKROOM_SESSION_*` and sets a marker, none of which
+  /// apply here: this branch returns before `launchEnvironment`, so the pane never had those
+  /// variables to strip.
+  /// `SHELL`, or the default when it is unset OR EMPTY.
+  ///
+  /// `??` only defaults on absent, so `SHELL=""` produced `exec '' -l` — exit 127, and with
+  /// `wait_after_command` false that is the dead pane this whole function exists to prevent. The
+  /// Rust side has always filtered empties (`serve.rs`'s `from_vars`); these two are now in step.
+  static func resolvedShell(
+    environment: [String: String] = ProcessInfo.processInfo.environment
+  ) -> String {
+    guard let shell = environment["SHELL"], !shell.isEmpty else {
+      return SessionShellIntegration.defaultShell
+    }
+    return shell
+  }
 
   static func lostSessionCommand(
-    shell: String = ProcessInfo.processInfo.environment["SHELL"] ?? fallbackShell
+    shell: String = GhosttySurfaceView.resolvedShell()
   ) -> String {
     let notice = "The terminal that was running here has ended, so this is a new shell."
     let script = "printf '%s\\n' \(shellQuoted(notice)); exec \(shellQuoted(shell)) -l"

@@ -30,13 +30,6 @@ enum SessionBackend: String, CaseIterable, Sendable {
   /// `wr-agent`, the unified local+remote agent. Where every new session goes.
   case rustAgent = "rust"
 
-  var label: String {
-    switch self {
-    case .swiftDaemon: return "Swift daemon"
-    case .rustAgent: return "Rust agent"
-    }
-  }
-
   /// The helper this backend forks. Distinct binaries, so neither can be mistaken for the other.
   var binaryName: String {
     switch self {
@@ -70,9 +63,12 @@ enum SessionBackend: String, CaseIterable, Sendable {
   }
 }
 
-/// Why a backend cannot be used right now. Distinguishing these matters: "not in this build" is a
-/// packaging fact the user can do nothing about, while "did not respond" is a health failure that
-/// is exactly the signal a rollback decision needs.
+/// Why a backend cannot be used right now.
+///
+/// The distinction used to be justified by a rollback decision; there is no rollback left to make
+/// (see the type doc above). It survives because the two cases are diagnosed differently in a bug
+/// report — "not in this build" is a packaging fault, "did not respond" is a runtime one — and
+/// because only the second is worth re-probing, which is what `probeRetryInterval` does.
 enum SessionBackendAvailability: Equatable, Sendable {
   case ready(version: String)
   case notBundled
@@ -81,13 +77,5 @@ enum SessionBackendAvailability: Equatable, Sendable {
   var isReady: Bool {
     if case .ready = self { return true }
     return false
-  }
-
-  var summary: String {
-    switch self {
-    case .ready(let version): return "Ready — \(version)"
-    case .notBundled: return "Not included in this build"
-    case .unhealthy(let reason): return "Not responding — \(reason)"
-    }
   }
 }
